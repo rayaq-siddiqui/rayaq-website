@@ -4,7 +4,11 @@ from flask import Flask, render_template
 
 from weather import get_weather_for_cities
 
-app = Flask(__name__, static_folder="static", template_folder="templates")
+app = Flask(
+    __name__,
+    static_folder="../frontend/static",
+    template_folder="../frontend/templates",
+)
 
 
 @app.route("/")
