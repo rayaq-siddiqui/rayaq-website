@@ -15,10 +15,7 @@ def fake_city():
     }
 
 
-def test_index_returns_200(monkeypatch):
-    monkeypatch.setattr(
-        app_module, "get_weather_for_cities", lambda: [fake_city()]
-    )
+def test_home_returns_200():
     client = app_module.app.test_client()
 
     response = client.get("/")
@@ -26,26 +23,45 @@ def test_index_returns_200(monkeypatch):
     assert response.status_code == 200
 
 
-def test_index_renders_city_data(monkeypatch):
+def test_home_links_to_weather_page():
+    client = app_module.app.test_client()
+
+    body = client.get("/").get_data(as_text=True)
+
+    assert '/weather' in body
+
+
+def test_weather_returns_200(monkeypatch):
     monkeypatch.setattr(
         app_module, "get_weather_for_cities", lambda: [fake_city()]
     )
     client = app_module.app.test_client()
 
-    body = client.get("/").get_data(as_text=True)
+    response = client.get("/weather")
+
+    assert response.status_code == 200
+
+
+def test_weather_renders_city_data(monkeypatch):
+    monkeypatch.setattr(
+        app_module, "get_weather_for_cities", lambda: [fake_city()]
+    )
+    client = app_module.app.test_client()
+
+    body = client.get("/weather").get_data(as_text=True)
 
     assert "Testville, TS" in body
     assert "20&deg;C" in body
     assert "Mainly clear" in body
 
 
-def test_index_includes_date_header(monkeypatch):
+def test_weather_includes_date_header(monkeypatch):
     monkeypatch.setattr(
         app_module, "get_weather_for_cities", lambda: [fake_city()]
     )
     client = app_module.app.test_client()
 
-    body = client.get("/").get_data(as_text=True)
+    body = client.get("/weather").get_data(as_text=True)
 
     assert "Current Weather for" in body
 

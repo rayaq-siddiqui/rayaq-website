@@ -12,9 +12,14 @@ app = Flask(
 
 
 @app.route("/")
-def index():
+def home():
+    return render_template("home.html")
+
+
+@app.route("/weather")
+def weather():
     return render_template(
-        "index.html",
+        "weather.html",
         cities=get_weather_for_cities(),
         today=datetime.now().strftime("%B %-d, %Y"),
     )
