@@ -7,12 +7,7 @@ CONTACT = {
 HEADLINE = "Software Engineer @ Google · University of Waterloo SE Alum"
 LOCATION = "San Francisco, CA"
 
-SUMMARY = (
-    "I enjoy working on complex problems across software engineering, machine learning, "
-    "and mathematics. My experience spans compilers and low-level systems, machine "
-    "learning training, optimization and deployment, and large-scale build and version "
-    "control infrastructure."
-)
+SUMMARY = "I enjoy working on complex problems across software engineering and mathematics."
 
 EDUCATION = {
     "school": "University of Waterloo",
@@ -46,7 +41,7 @@ EXPERIENCES = [
         "company": "Google",
         "url": "https://about.google/",
         "location": "Toronto, ON",
-        "role": "Software Engineer",
+        "role": "Software Engineer Intern",
         "stack": "Go, GCP, Concurrency, Distributed Computing, Databases, API, Microservices",
         "dates": "May 2024 – Aug. 2024",
         "bullets": [
@@ -60,7 +55,7 @@ EXPERIENCES = [
         "company": "d-Matrix",
         "url": "https://www.d-matrix.ai/",
         "location": "Toronto, ON",
-        "role": "Machine Learning Compiler Engineer",
+        "role": "Machine Learning Compiler Engineer Intern",
         "stack": "C++, PyTorch, LLVM, MLIR, Convolution",
         "dates": "Jan. 2024 – Apr. 2024",
         "bullets": [
@@ -75,7 +70,7 @@ EXPERIENCES = [
         "company": "IBM",
         "url": "https://www.ibm.com",
         "location": "Toronto, ON",
-        "role": "Machine Learning Engineer",
+        "role": "Machine Learning Engineer Intern",
         "stack": "Python, C++, PyTorch, CV, AWS SageMaker",
         "dates": "May 2023 – Aug. 2023",
         "bullets": [
@@ -89,7 +84,7 @@ EXPERIENCES = [
         "company": "BlackBerry Limited",
         "url": "https://www.blackberry.com",
         "location": "Waterloo, ON",
-        "role": "Machine Learning Engineer",
+        "role": "Machine Learning Engineer Intern",
         "stack": "Python, TensorFlow, NLP, NoSQL, Docker, AWS S3, EC2",
         "dates": "Sept. 2022 – Dec. 2022",
         "bullets": [
@@ -105,7 +100,7 @@ EXPERIENCES = [
         "company": "RBC",
         "url": "https://www.rbc.com/about-rbc.html",
         "location": "Toronto, ON",
-        "role": "Software Engineer",
+        "role": "Software Engineer Intern",
         "stack": "Python, Django, SQL, Exchangelib",
         "dates": "Jan. 2022 – Apr. 2022",
         "bullets": [
@@ -118,7 +113,7 @@ EXPERIENCES = [
     {
         "company": "Polar",
         "location": "Toronto, ON",
-        "role": "Software Engineer",
+        "role": "Software Engineer Intern",
         "stack": "Python, JavaScript/TypeScript, React, jQuery, Node.js, Selenium",
         "dates": "May 2021 – Aug. 2021",
         "bullets": [
