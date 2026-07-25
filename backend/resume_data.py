@@ -27,12 +27,14 @@ EDUCATION = {
 EXPERIENCES = [
     {
         "company": "Google",
+        "url": "https://about.google/",
         "location": "Sunnyvale, CA",
         "role": "Software Engineer",
         "stack": "C++, Rust, TypeScript, VCS, Concurrency, Microservices, Software Design & Architecture",
         "dates": "Jul. 2025 – Present",
         "bullets": [
-            "Working on JJ – a modern version control system to accelerate developer productivity for Google worldwide",
+            'Working on <a href="https://github.com/jj-vcs/jj" target="_blank" rel="noopener">JJ</a> – a modern '
+            "version control system to accelerate developer productivity for Google worldwide",
             "Scaling distributed systems and enhancing APIs for JJ's version control operations in C++. Using concurrent operations, load balancers, various caching mechanisms, and rate limiting to deal with scale of requests",
             "Contributing to JJ's open source project and internal CLI in Rust. Writing comprehensive tests to ensure reliability",
             "Developing design documents and plans for new features to interact with various Google internal tooling",
@@ -42,6 +44,7 @@ EXPERIENCES = [
     },
     {
         "company": "Google",
+        "url": "https://about.google/",
         "location": "Toronto, ON",
         "role": "Software Engineer",
         "stack": "Go, GCP, Concurrency, Distributed Computing, Databases, API, Microservices",
@@ -55,6 +58,7 @@ EXPERIENCES = [
     },
     {
         "company": "d-Matrix",
+        "url": "https://www.d-matrix.ai/",
         "location": "Toronto, ON",
         "role": "Machine Learning Compiler Engineer",
         "stack": "C++, PyTorch, LLVM, MLIR, Convolution",
@@ -69,6 +73,7 @@ EXPERIENCES = [
     },
     {
         "company": "IBM",
+        "url": "https://www.ibm.com",
         "location": "Toronto, ON",
         "role": "Machine Learning Engineer",
         "stack": "Python, C++, PyTorch, CV, AWS SageMaker",
@@ -82,6 +87,7 @@ EXPERIENCES = [
     },
     {
         "company": "BlackBerry Limited",
+        "url": "https://www.blackberry.com",
         "location": "Waterloo, ON",
         "role": "Machine Learning Engineer",
         "stack": "Python, TensorFlow, NLP, NoSQL, Docker, AWS S3, EC2",
@@ -89,12 +95,15 @@ EXPERIENCES = [
         "bullets": [
             "Developed a log anomaly detection platform combining NLP, data pipelines, and Elasticsearch using Python",
             "Implemented NLP model and improved model accuracy from 60% to 91% and F1-score from 0.30 to 0.87",
-            "Productionized two anomaly detection models (Autoencoder + Isolation Forest AND Transformer architecture based on Google's paper) and retraining pipeline using TensorFlow, Docker, AWS S3, SageMaker & EC2",
+            "Productionized two anomaly detection models (Autoencoder + Isolation Forest AND Transformer "
+            'architecture based on <a href="https://arxiv.org/abs/1706.03762" target="_blank" rel="noopener">'
+            "Google's paper</a>) and retraining pipeline using TensorFlow, Docker, AWS S3, SageMaker & EC2",
         ],
         "icon": {"type": "img", "src": "https://cdn.simpleicons.org/blackberry/ffffff", "bg": "#000000"},
     },
     {
         "company": "RBC",
+        "url": "https://www.rbc.com/about-rbc.html",
         "location": "Toronto, ON",
         "role": "Software Engineer",
         "stack": "Python, Django, SQL, Exchangelib",
@@ -130,8 +139,12 @@ PROJECTS = [
         "name": "CloudMesh, Decentralized ML Platform (FYDP)",
         "stack": "Python, C++, Distributed ML, Networking",
         "bullets": [
-            "Leading extensive research into advanced distributed ML algorithms (data parallelism, federated learning)",
-            "Implementing a P2P architecture to enable the connection of devices across large-scale distributed networks",
+            "Leading extensive research into "
+            '<a href="https://github.com/DCP-CloudMesh/DistributedML" target="_blank" rel="noopener">'
+            "advanced distributed ML algorithms</a> (data parallelism, federated learning)",
+            "Implementing a "
+            '<a href="https://github.com/DCP-CloudMesh/PeerToPeer" target="_blank" rel="noopener">'
+            "P2P architecture</a> to enable the connection of devices across large-scale distributed networks",
         ],
     },
 ]
