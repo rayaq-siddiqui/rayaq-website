@@ -31,6 +31,43 @@ def test_home_links_to_weather_page():
     assert '/weather' in body
 
 
+def test_home_does_not_link_to_resume_page():
+    client = app_module.app.test_client()
+
+    body = client.get("/").get_data(as_text=True)
+
+    assert '/resume' not in body
+
+
+def test_resume_returns_200():
+    client = app_module.app.test_client()
+
+    response = client.get("/resume")
+
+    assert response.status_code == 200
+
+
+def test_resume_renders_experience_and_education():
+    client = app_module.app.test_client()
+
+    body = client.get("/resume").get_data(as_text=True)
+
+    assert "University of Waterloo" in body
+    assert "Google" in body
+    assert "d-Matrix" in body
+    assert "IBM" in body
+    assert "BlackBerry Limited" in body
+    assert "CloudMesh" in body
+
+
+def test_resume_omits_phone_number():
+    client = app_module.app.test_client()
+
+    body = client.get("/resume").get_data(as_text=True)
+
+    assert "306" not in body
+
+
 def test_weather_returns_200(monkeypatch):
     monkeypatch.setattr(
         app_module, "get_weather_for_cities", lambda: [fake_city()]

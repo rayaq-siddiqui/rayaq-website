@@ -2,6 +2,7 @@ from datetime import datetime
 
 from flask import Flask, render_template
 
+import resume_data
 from weather import get_weather_for_cities
 
 app = Flask(
@@ -22,6 +23,18 @@ def weather():
         "weather.html",
         cities=get_weather_for_cities(),
         today=datetime.now().strftime("%B %-d, %Y"),
+    )
+
+
+@app.route("/resume")
+def resume():
+    return render_template(
+        "resume.html",
+        contact=resume_data.CONTACT,
+        education=resume_data.EDUCATION,
+        experiences=resume_data.EXPERIENCES,
+        projects=resume_data.PROJECTS,
+        skills=resume_data.SKILLS,
     )
 
 
