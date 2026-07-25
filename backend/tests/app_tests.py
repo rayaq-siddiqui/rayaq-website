@@ -57,6 +57,8 @@ def test_resume_renders_experience_and_education():
     assert "d-Matrix" in body
     assert "IBM" in body
     assert "BlackBerry Limited" in body
+    assert "RBC" in body
+    assert "Polar" in body
     assert "CloudMesh" in body
 
 
@@ -66,6 +68,16 @@ def test_resume_omits_phone_number():
     body = client.get("/resume").get_data(as_text=True)
 
     assert "306" not in body
+
+
+def test_resume_renders_summary_honors_and_certifications():
+    client = app_module.app.test_client()
+
+    body = client.get("/resume").get_data(as_text=True)
+
+    assert "Software Engineer @ Google" in body
+    assert "Governor General&#39;s Academic Medal" in body or "Governor General's Academic Medal" in body
+    assert "Deep Neural Networks with PyTorch" in body
 
 
 def test_weather_returns_200(monkeypatch):

@@ -31,9 +31,14 @@ def resume():
     return render_template(
         "resume.html",
         contact=resume_data.CONTACT,
+        headline=resume_data.HEADLINE,
+        location=resume_data.LOCATION,
+        summary=resume_data.SUMMARY,
         education=resume_data.EDUCATION,
         experiences=resume_data.EXPERIENCES,
         projects=resume_data.PROJECTS,
+        honors=resume_data.HONORS,
+        certifications=resume_data.CERTIFICATIONS,
         skills=resume_data.SKILLS,
     )
 

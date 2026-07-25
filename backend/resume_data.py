@@ -4,6 +4,16 @@ CONTACT = {
     "github": "https://github.com/rayaq-siddiqui",
 }
 
+HEADLINE = "Software Engineer @ Google · University of Waterloo SE Alum"
+LOCATION = "San Francisco, CA"
+
+SUMMARY = (
+    "I enjoy working on complex problems across software engineering, machine learning, "
+    "and mathematics. My experience spans compilers and low-level systems, machine "
+    "learning training, optimization and deployment, and large-scale build and version "
+    "control infrastructure."
+)
+
 EDUCATION = {
     "school": "University of Waterloo",
     "location": "Waterloo, ON",
@@ -83,6 +93,36 @@ EXPERIENCES = [
         ],
         "icon": {"type": "img", "src": "https://cdn.simpleicons.org/blackberry/ffffff", "bg": "#000000"},
     },
+    {
+        "company": "RBC",
+        "location": "Toronto, ON",
+        "role": "Software Engineer",
+        "stack": "Python, Django, SQL, Exchangelib",
+        "dates": "Jan. 2022 – Apr. 2022",
+        "bullets": [
+            "Spearheaded a comprehensive dashboard with 7 data source system integrations using Python and Django",
+            "Improved productivity by saving 600 hours/month by developing an automated mailing response system",
+            "Integrated a cloud database using Exchangelib, automated scripts, Django models & SQL queries",
+        ],
+        "icon": {"type": "initials", "initials": "RBC", "bg": "#005DAA", "fg": "#ffffff"},
+    },
+    {
+        "company": "Polar",
+        "location": "Toronto, ON",
+        "role": "Software Engineer",
+        "stack": "Python, JavaScript/TypeScript, React, jQuery, Node.js, Selenium",
+        "dates": "May 2021 – Aug. 2021",
+        "bullets": [
+            "Contributed on the Creative Pod, developing an interactive iframe with Python, JavaScript/TypeScript, "
+            "React, jQuery, Node.js, and Selenium — building features, fixing bugs, and writing unit tests in a "
+            "test-driven, agile environment",
+            "Transitioned the codebase from Sinon/Chai to Jest using the Jest-Extended library, resulting in 2x "
+            "faster tests running independently in parallel across threads",
+            "Optimized two repositories by replacing libraries with manually implemented algorithms, increasing "
+            "runtime of numerous components by 2–8x",
+        ],
+        "icon": {"type": "initials", "initials": "P", "bg": "#0EA5E9", "fg": "#ffffff"},
+    },
 ]
 
 PROJECTS = [
@@ -94,6 +134,22 @@ PROJECTS = [
             "Implementing a P2P architecture to enable the connection of devices across large-scale distributed networks",
         ],
     },
+]
+
+HONORS = [
+    "Governor General's Academic Medal",
+    "Valedictorian",
+    "Most Outstanding Student Award",
+    "Ontario Principals' Council Award",
+    "15 Subject Awards (Highest Mark in Grade)",
+]
+
+CERTIFICATIONS = [
+    "Deep Neural Networks with PyTorch",
+    "Building Deep Learning Models with TensorFlow",
+    "Introduction to Deep Learning & Neural Networks with Keras",
+    "Introduction to Computer Vision and Image Processing",
+    "Machine Learning With Python",
 ]
 
 SKILLS = {
