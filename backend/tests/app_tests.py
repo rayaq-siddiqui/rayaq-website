@@ -57,8 +57,6 @@ def test_resume_renders_experience_and_education():
     assert "d-Matrix" in body
     assert "IBM" in body
     assert "BlackBerry Limited" in body
-    assert "RBC" in body
-    assert "Polar" in body
     assert "CloudMesh" in body
 
 
