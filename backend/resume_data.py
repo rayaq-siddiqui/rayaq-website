@@ -96,6 +96,37 @@ EXPERIENCES = [
         ],
         "icon": {"type": "img", "src": "https://cdn.simpleicons.org/blackberry/ffffff", "bg": "#000000"},
     },
+    {
+        "company": "RBC",
+        "url": "https://www.rbc.com/about-rbc.html",
+        "location": "Toronto, ON",
+        "role": "Software Engineer Intern",
+        "stack": "Python, Django, SQL, Exchangelib",
+        "dates": "Jan. 2022 – Apr. 2022",
+        "bullets": [
+            "Spearheaded a comprehensive dashboard with 7 data source system integrations using Python and Django",
+            "Improved productivity by saving 600 hours/month by developing an automated mailing response system",
+            "Integrated a cloud database using Exchangelib, automated scripts, Django models & SQL queries",
+        ],
+        "icon": {"type": "initials", "initials": "RBC", "bg": "#005DAA", "fg": "#ffffff"},
+    },
+    {
+        "company": "Polar",
+        "location": "Toronto, ON",
+        "role": "Software Engineer Intern",
+        "stack": "Python, JavaScript/TypeScript, React, jQuery, Node.js, Selenium",
+        "dates": "May 2021 – Aug. 2021",
+        "bullets": [
+            "Contributed on the Creative Pod, developing an interactive iframe with Python, JavaScript/TypeScript, "
+            "React, jQuery, Node.js, and Selenium — building features, fixing bugs, and writing unit tests in a "
+            "test-driven, agile environment",
+            "Transitioned the codebase from Sinon/Chai to Jest using the Jest-Extended library, resulting in 2x "
+            "faster tests running independently in parallel across threads",
+            "Optimized two repositories by replacing libraries with manually implemented algorithms, increasing "
+            "runtime of numerous components by 2–8x",
+        ],
+        "icon": {"type": "initials", "initials": "P", "bg": "#0EA5E9", "fg": "#ffffff"},
+    },
 ]
 
 PROJECTS = [
