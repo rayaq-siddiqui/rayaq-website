@@ -59,6 +59,10 @@ _CACHE_TTL_SECONDS = 120
 _cache = {}
 
 
+def _emoji_for_code(code):
+    return WEATHER_EMOJIS.get(code, UNKNOWN_EMOJI)
+
+
 def _fetch_weather(lat, lon):
     response = requests.get(
         "https://api.open-meteo.com/v1/forecast",
@@ -67,6 +71,8 @@ def _fetch_weather(lat, lon):
             "longitude": lon,
             "current_weather": "true",
             "daily": "temperature_2m_max,temperature_2m_min",
+            "hourly": "temperature_2m,weathercode",
+            "forecast_days": 1,
             "timezone": "auto",
         },
         timeout=5,
@@ -77,11 +83,27 @@ def _fetch_weather(lat, lon):
         "current": data["current_weather"],
         "high_c": data["daily"]["temperature_2m_max"][0],
         "low_c": data["daily"]["temperature_2m_min"][0],
+        "hourly_times": data["hourly"]["time"],
+        "hourly_temps": data["hourly"]["temperature_2m"],
+        "hourly_codes": data["hourly"]["weathercode"],
     }
 
 
-def _format_local_time(iso_time):
-    return datetime.fromisoformat(iso_time).strftime("%-I:%M %p")
+def _format_local_time(iso_time, fmt="%-I:%M %p"):
+    return datetime.fromisoformat(iso_time).strftime(fmt)
+
+
+def _build_hourly(weather):
+    return [
+        {
+            "label": _format_local_time(t, "%-I %p"),
+            "temp_c": round(temp),
+            "emoji": _emoji_for_code(code),
+        }
+        for t, temp, code in zip(
+            weather["hourly_times"], weather["hourly_temps"], weather["hourly_codes"]
+        )
+    ]
 
 
 def get_weather_for_cities():
@@ -109,7 +131,8 @@ def get_weather_for_cities():
                     "low_c": round(weather["low_c"]),
                     "windspeed_kmh": weather["current"]["windspeed"],
                     "description": WEATHER_DESCRIPTIONS.get(code, "Unknown"),
-                    "emoji": WEATHER_EMOJIS.get(code, UNKNOWN_EMOJI),
+                    "emoji": _emoji_for_code(code),
+                    "hourly": _build_hourly(weather),
                 }
             )
         else:
@@ -123,6 +146,7 @@ def get_weather_for_cities():
                     "windspeed_kmh": None,
                     "description": "Weather unavailable",
                     "emoji": UNKNOWN_EMOJI,
+                    "hourly": [],
                 }
             )
     return results
