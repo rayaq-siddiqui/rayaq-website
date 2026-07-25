@@ -1,16 +1,13 @@
-from flask import Flask, send_from_directory
+from flask import Flask, render_template
 
-app = Flask(__name__, static_folder="static")
+from weather import get_weather_for_cities
+
+app = Flask(__name__, static_folder="static", template_folder="templates")
 
 
 @app.route("/")
 def index():
-    return send_from_directory(app.static_folder, "index.html")
-
-
-@app.route("/<path:filename>")
-def static_files(filename):
-    return send_from_directory(app.static_folder, filename)
+    return render_template("index.html", cities=get_weather_for_cities())
 
 
 if __name__ == "__main__":
