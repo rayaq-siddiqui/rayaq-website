@@ -1,4 +1,5 @@
 import time
+from datetime import datetime
 
 import requests
 
@@ -9,7 +10,7 @@ CITIES = [
     {"name": "Toronto, ON", "lat": 43.6532, "lon": -79.3832},
 ]
 
-WEATHER_CODES = {
+WEATHER_DESCRIPTIONS = {
     0: "Clear sky",
     1: "Mainly clear",
     2: "Partly cloudy",
@@ -31,22 +32,56 @@ WEATHER_CODES = {
     95: "Thunderstorm",
 }
 
+WEATHER_EMOJIS = {
+    0: "☀️",
+    1: "🌤️",
+    2: "⛅",
+    3: "☁️",
+    45: "🌫️",
+    48: "🌫️",
+    51: "🌦️",
+    53: "🌦️",
+    55: "🌦️",
+    61: "🌧️",
+    63: "🌧️",
+    65: "🌧️",
+    71: "❄️",
+    73: "❄️",
+    75: "❄️",
+    80: "🌦️",
+    81: "🌦️",
+    82: "🌦️",
+    95: "⛈️",
+}
+UNKNOWN_EMOJI = "🤷"
+
 _CACHE_TTL_SECONDS = 600
 _cache = {}
 
 
-def _fetch_current_weather(lat, lon):
+def _fetch_weather(lat, lon):
     response = requests.get(
         "https://api.open-meteo.com/v1/forecast",
         params={
             "latitude": lat,
             "longitude": lon,
             "current_weather": "true",
+            "daily": "temperature_2m_max,temperature_2m_min",
+            "timezone": "auto",
         },
         timeout=5,
     )
     response.raise_for_status()
-    return response.json()["current_weather"]
+    data = response.json()
+    return {
+        "current": data["current_weather"],
+        "high_c": data["daily"]["temperature_2m_max"][0],
+        "low_c": data["daily"]["temperature_2m_min"][0],
+    }
+
+
+def _format_local_time(iso_time):
+    return datetime.fromisoformat(iso_time).strftime("%-I:%M %p")
 
 
 def get_weather_for_cities():
@@ -55,22 +90,39 @@ def get_weather_for_cities():
         cache_key = city["name"]
         cached = _cache.get(cache_key)
         if cached and time.time() - cached["fetched_at"] < _CACHE_TTL_SECONDS:
-            current = cached["current"]
+            weather = cached["weather"]
         else:
             try:
-                current = _fetch_current_weather(city["lat"], city["lon"])
-                _cache[cache_key] = {"current": current, "fetched_at": time.time()}
-            except requests.RequestException:
-                current = None
+                weather = _fetch_weather(city["lat"], city["lon"])
+                _cache[cache_key] = {"weather": weather, "fetched_at": time.time()}
+            except (requests.RequestException, KeyError, IndexError):
+                weather = None
 
-        results.append(
-            {
-                "name": city["name"],
-                "temperature_c": current["temperature"] if current else None,
-                "windspeed_kmh": current["windspeed"] if current else None,
-                "description": WEATHER_CODES.get(current["weathercode"], "Unknown")
-                if current
-                else "Unavailable",
-            }
-        )
+        if weather:
+            code = weather["current"]["weathercode"]
+            results.append(
+                {
+                    "name": city["name"],
+                    "local_time": _format_local_time(weather["current"]["time"]),
+                    "temperature_c": round(weather["current"]["temperature"]),
+                    "high_c": round(weather["high_c"]),
+                    "low_c": round(weather["low_c"]),
+                    "windspeed_kmh": weather["current"]["windspeed"],
+                    "description": WEATHER_DESCRIPTIONS.get(code, "Unknown"),
+                    "emoji": WEATHER_EMOJIS.get(code, UNKNOWN_EMOJI),
+                }
+            )
+        else:
+            results.append(
+                {
+                    "name": city["name"],
+                    "local_time": None,
+                    "temperature_c": None,
+                    "high_c": None,
+                    "low_c": None,
+                    "windspeed_kmh": None,
+                    "description": "Weather unavailable",
+                    "emoji": UNKNOWN_EMOJI,
+                }
+            )
     return results
