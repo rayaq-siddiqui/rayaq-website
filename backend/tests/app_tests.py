@@ -48,3 +48,12 @@ def test_index_includes_date_header(monkeypatch):
     body = client.get("/").get_data(as_text=True)
 
     assert "Current Weather for" in body
+
+
+def test_health_returns_200_ok():
+    client = app_module.app.test_client()
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "ok"}
