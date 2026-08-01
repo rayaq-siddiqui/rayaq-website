@@ -31,12 +31,12 @@ def test_home_links_to_weather_page():
     assert '/weather' in body
 
 
-def test_home_does_not_link_to_resume_page():
+def test_home_links_to_resume_page():
     client = app_module.app.test_client()
 
     body = client.get("/").get_data(as_text=True)
 
-    assert '/resume' not in body
+    assert '/resume' in body
 
 
 def test_resume_returns_200():
