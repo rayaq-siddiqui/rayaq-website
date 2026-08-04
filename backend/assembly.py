@@ -20,7 +20,7 @@ def _commit_url(sha):
     return f"{REPO_URL}/commit/{sha}"
 
 
-def _build_view(showcase):
+def build_view(showcase):
     project = showcase["project"]
     milestones = showcase["milestones"]
     in_progress = showcase["in_progress"]
@@ -57,7 +57,7 @@ def get_showcase():
         return cached
 
     try:
-        view = _build_view(_read_showcase())
+        view = build_view(_read_showcase())
     except (OSError, KeyError, TypeError, ValueError):
         return cached
 
