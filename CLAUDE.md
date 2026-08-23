@@ -19,6 +19,19 @@ backend/            Flask app (Python) — all server-side logic
   showcase.json     The Assembly project digest. SYNCED FROM UPSTREAM — do not
                      hand-edit (see "Assembly" under Feature-specific notes)
   sync_showcase.py  Copies that digest out of an assembly-agents checkout
+  flights/          The rayaq.ca/flights project (see "Flights" under Feature-specific
+                     notes). Provider-agnostic domain code, one provider adapter, a
+                     SQLite cache, and the JSON API the /flights page calls.
+    models.py       SearchRequest / FlightCandidate / ProviderResult
+    validation.py   Raw request JSON -> SearchRequest, enforcing the input limits
+    ranking.py      Filter, dedupe, and rank candidates
+    insights.py     Deterministic "cheapest day / date shift / trip length" insights
+    airports.py     Search over data/airports.json (bundled, so autocomplete is free)
+    cache.py        SQLite search cache + price observations + search events
+    rate_limit.py   In-process per-client sliding window
+    service.py      Orchestration and structured logging
+    api.py          (body, status) mapping so app.py stays route-only
+    providers/      base.py is the interface; aviasales.py is the only implementation
   requirements.txt       Runtime deps
   requirements-dev.txt   Runtime + pytest, for local dev / CI
   pytest.ini         Configures pytest to discover *_tests.py (not the pytest default
@@ -31,12 +44,21 @@ backend/            Flask app (Python) — all server-side logic
     assembly_tests.py     Tests for assembly.py against a fabricated digest, plus one
                      test that the committed showcase.json actually renders
     sync_showcase_tests.py Tests the sync refuses anything the page cannot render
+    flights_*_tests.py     The flights suite, split by layer (domain, airports,
+                     provider contract, cache, rate limit, service, api)
+    fixtures/        Sanitized provider payloads for the contract tests
+
+specs/
+  flights.md          The rayaq.ca/flights product & technical spec — the contract the
+                      implementation is held to. Don't edit without the owner's say-so.
+  flights-progress.md Running status of that build: acceptance criteria, deliberate
+                      deviations, open owner actions, next increments.
 
 frontend/
   templates/         Jinja2 templates. One per route: home.html, weather.html,
-                     resume.html, assembly.html
-  static/            style.css (shared/global), resume.css, assembly.css,
-                     script.js (weather chart only)
+                     resume.html, assembly.html, flights.html
+  static/            style.css (shared/global), resume.css, assembly.css, flights.css,
+                     script.js (weather chart only), flights.js
 
 deploy/
   Caddyfile           Reverse proxy config — proxies rayaq.ca/www.rayaq.ca to
@@ -59,6 +81,10 @@ vmrun.sh            Convenience wrapper: `./vmrun.sh '<command>'` runs a single 
 | `/weather` | Live weather dashboard for 4 fixed cities, click a card for an hourly chart |
 | `/resume` | Resume page, **not currently linked from `/`** (disabled "Coming soon" card on homepage — ask before enabling, it's an intentional choice by the site owner) |
 | `/assembly-agents` | Project page for Assembly, rendered from `backend/showcase.json` |
+| `/flights` | Flexible-date flight discovery. Search UI only — the browser calls the JSON API below. |
+| `GET /api/flights/airports?q=` | Airport/city autocomplete from the bundled dataset |
+| `POST /api/flights/search` | Flexible-date search. 400 invalid input, 429 rate limited, 503 provider down, 200 (with a message) for no results. |
+| `GET /api/flights/health` | `{"status": "ok", "providerConfigured": bool}`. Never returns the token. |
 | `/health` | Returns `{"status": "ok"}`, 200. Used to verify a deploy actually succeeded. |
 
 ## Local development
@@ -126,6 +152,29 @@ Each call is one command over SSH — deliberately kept to single, auditable com
   - Sync manually with `./venv/bin/python3 sync_showcase.py <path-to-assembly-agents-checkout>` from `backend/`; it prints `updated` or `unchanged`, and refuses to write anything `assembly.build_view` can't render, so upstream schema drift fails the sync instead of the live page.
   - A Routine ("Sync Assembly showcase to rayaq.ca") runs that sync every 6 hours and pushes the result straight to `main`, which deploys via the normal CI/CD path. If the digest gains fields the page should show, the website is what adapts — keep the copy verbatim.
   - Upstream also has `.github/workflows/publish-showcase.yml`, which does the same copy on every push to its `main`. It has never actually published: it skips unless a `SHOWCASE_PUBLISH_TOKEN` secret (a fine-grained PAT scoped to this repo, Contents: read+write) exists on assembly-agents. Creating that secret makes syncing instant and the Routine redundant.
+- **Flights** (`backend/flights/` + `flights.html`): flexible-date flight discovery at
+  `/flights`. Read `specs/flights.md` before changing anything here, and
+  `specs/flights-progress.md` for where the build actually stands.
+  - **The $0 incremental cost constraint is non-negotiable.** No paid API, no paid
+    database, no new hosting, nothing that can silently bill past a free tier. That
+    constraint outranks feature completeness — if the free provider can't do something,
+    implement the subset it can, say so honestly in the UI, and document the gap.
+  - Provider data comes from Travelpayouts' Aviasales Data API. **All** provider-shaped
+    parsing lives in `flights/providers/aviasales.py`; everything above it works on the
+    normalized models only, so a future provider is a new file, not a refactor.
+  - The API token is read from `TRAVELPAYOUTS_API_TOKEN` server-side and must never reach
+    the browser or a log line. It is set on the VM in `/etc/rayaq-website.env` (template:
+    `deploy/rayaq-website.env.example`), read by the systemd unit. Without it the page
+    still renders and search reports itself unavailable.
+  - Prices are cached/indicative, never live. Copy says "recently observed", never
+    "current price" — the UI must not imply a bookable guarantee.
+  - The SQLite file is `FLIGHTS_DB_PATH` (`/var/lib/rayaq-website/flights.db` in prod,
+    `backend/var/flights.db` locally, gitignored). It is a cache and an observation log —
+    losing it is harmless.
+  - A Routine ("rayaq.ca/flights — implementation agent") runs every 6 hours, picks the
+    next increment against the spec, runs the suite, and pushes small commits straight to
+    `main`. It updates `specs/flights-progress.md` each run; that file is the handoff
+    between runs, so keep it accurate if you touch this project by hand.
 - Phone number is intentionally omitted from the public resume page (privacy choice, since the repo is public). Don't add it back without checking with the site owner first.
 
 ## Conventions
