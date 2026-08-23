@@ -83,27 +83,39 @@ keeps pinning reality. Do not paper over it in the UI.
 
 ## 3. Put the token on the VM
 
-Write the secret **interactively**, so it never lands in shell history, in a `ps` listing
-on the VM, or in this repo:
+Get a shell on the VM — either from a computer:
 
 ```sh
 gcloud compute ssh rayaq-server --project=rayaq-website --zone=us-central1-a
 ```
 
-then, on the VM:
+or, if you only have a phone, from the GCP Console: **Compute Engine → VM instances →
+SSH** next to `rayaq-server` opens a browser terminal that works on mobile.
+
+Then feed the secret in over **stdin**, not as a command argument. Typing it into a heredoc
+keeps it out of shell history and out of a `ps` listing on the VM, and needs no text editor:
 
 ```sh
 sudo install -d -o rayaq -g rayaq -m 755 /var/lib/rayaq-website
-sudo touch /etc/rayaq-website.env
-sudo chmod 600 /etc/rayaq-website.env      # systemd reads it as root before dropping to rayaq
-sudo nano /etc/rayaq-website.env
+
+sudo sh -c 'umask 077; cat > /etc/rayaq-website.env'
 ```
 
-Contents (template: `deploy/rayaq-website.env.example`):
+The shell now waits for input with no prompt. Type or paste these two lines, then press
+**Ctrl-D** (template: `deploy/rayaq-website.env.example`):
 
 ```
 TRAVELPAYOUTS_API_TOKEN=paste-token-here
 TRAVELPAYOUTS_MARKER=paste-marker-or-leave-empty
+```
+
+`umask 077` makes the file `600` as it is created, so the token is never briefly
+world-readable. systemd reads it as root before dropping to the `rayaq` user, so root-only
+permissions are correct. Confirm it landed, without printing the secret:
+
+```sh
+sudo wc -l /etc/rayaq-website.env      # expect 2
+sudo ls -l /etc/rayaq-website.env      # expect -rw------- root root
 ```
 
 Exit the SSH session.
