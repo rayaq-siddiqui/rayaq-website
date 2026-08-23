@@ -1,9 +1,10 @@
 from datetime import datetime
 
-from flask import Flask, render_template
+from flask import Flask, render_template, request
 
 import resume_data
 from assembly import get_showcase
+from flights import api as flights_api
 from weather import get_weather_for_cities
 
 app = Flask(
@@ -47,6 +48,26 @@ def resume():
 @app.route("/assembly-agents")
 def assembly_agents():
     return render_template("assembly.html", showcase=get_showcase())
+
+
+@app.route("/api/flights/airports")
+def flights_airports():
+    return flights_api.airports_response(request.args.get("q", ""))
+
+
+@app.route("/api/flights/search", methods=["POST"])
+def flights_search():
+    return flights_api.search_response(
+        request.get_json(silent=True),
+        client_id=flights_api.client_id(
+            request.headers.get("X-Forwarded-For"), request.remote_addr
+        ),
+    )
+
+
+@app.route("/api/flights/health")
+def flights_health():
+    return flights_api.health_response()
 
 
 @app.route("/health")
