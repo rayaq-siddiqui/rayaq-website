@@ -215,3 +215,52 @@ def test_health_returns_200_ok():
 
     assert response.status_code == 200
     assert response.get_json() == {"status": "ok"}
+
+
+def test_flights_returns_200():
+    client = app_module.app.test_client()
+
+    response = client.get("/flights")
+
+    assert response.status_code == 200
+
+
+def test_flights_renders_the_search_form():
+    client = app_module.app.test_client()
+
+    body = client.get("/flights").get_data(as_text=True)
+
+    assert 'id="origin-input"' in body
+    assert 'id="destination-input"' in body
+    assert 'id="earliest-departure"' in body
+    assert 'id="min-nights"' in body
+    assert "Direct flights only" in body
+    assert "Find cheap flights" in body
+
+
+def test_flights_offers_popular_route_shortcuts():
+    client = app_module.app.test_client()
+
+    body = client.get("/flights").get_data(as_text=True)
+
+    assert 'data-origin="YTO"' in body
+    assert 'data-destination="SFO"' in body
+
+
+def test_flights_discloses_that_prices_are_indicative():
+    client = app_module.app.test_client()
+
+    body = client.get("/flights").get_data(as_text=True)
+
+    assert "indicative fares" in body
+    assert "Verify the current fare" in body
+
+
+def test_flights_never_ships_the_provider_token_to_the_browser(monkeypatch):
+    monkeypatch.setenv("TRAVELPAYOUTS_API_TOKEN", "super-secret-token")
+    client = app_module.app.test_client()
+
+    body = client.get("/flights").get_data(as_text=True)
+
+    assert "super-secret-token" not in body
+    assert "TRAVELPAYOUTS" not in body

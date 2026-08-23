@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from . import airports, cache, insights, ranking, rate_limit, validation
 from .errors import ProviderError
+from .models import SUPPORTED_CURRENCIES
 from .providers import get_provider
 
 MAX_CANDIDATES = 10
@@ -36,6 +37,14 @@ def form_defaults(today=None):
         "maxWindowDays": validation.MAX_WINDOW_DAYS,
         "maxNightsAllowed": validation.MAX_NIGHTS,
         "minDate": today.isoformat(),
+    }
+
+
+def page_context(today=None):
+    return {
+        "defaults": form_defaults(today),
+        "popular_routes": POPULAR_ROUTES,
+        "currencies": SUPPORTED_CURRENCIES,
     }
 
 

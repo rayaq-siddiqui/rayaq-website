@@ -50,6 +50,11 @@ def assembly_agents():
     return render_template("assembly.html", showcase=get_showcase())
 
 
+@app.route("/flights")
+def flights():
+    return render_template("flights.html", **flights_api.page_context())
+
+
 @app.route("/api/flights/airports")
 def flights_airports():
     return flights_api.airports_response(request.args.get("q", ""))

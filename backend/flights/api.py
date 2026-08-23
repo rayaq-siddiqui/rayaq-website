@@ -2,6 +2,10 @@ from . import airports, service
 from .errors import FlightSearchError, ProviderError, TooManyRequestsError
 
 
+def page_context():
+    return service.page_context()
+
+
 def client_id(forwarded_for, remote_addr):
     if forwarded_for:
         return forwarded_for.split(",")[0].strip()
