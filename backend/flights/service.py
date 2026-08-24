@@ -147,6 +147,7 @@ def search(payload, client_id=None, today=None, now=None):
 
     cache.write(cache_key, provider.name, request, result, now=now)
     cache.record_observations(candidates[:MAX_CANDIDATES], provider.name, now=now)
+    cache.prune(now=now)
 
     return finish(
         _with_metadata(result, False, provider_result.provider_requests),

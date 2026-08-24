@@ -244,6 +244,20 @@ def test_search_records_observations_and_an_event(monkeypatch):
     assert events == 1
 
 
+def test_a_live_search_prunes_cache_entries_past_the_stale_grace_period(monkeypatch):
+    use_provider(monkeypatch, FakeProvider([candidate("2026-09-15", 7, 487)]))
+    search(body=payload(directOnly=True), now=NOW)
+
+    search(now=NOW + timedelta(seconds=cache.STALE_GRACE_SECONDS + 60))
+
+    with cache._connect() as connection:
+        remaining = connection.execute(
+            "SELECT COUNT(*) AS total FROM flight_search_cache"
+        ).fetchone()["total"]
+
+    assert remaining == 1
+
+
 def test_health_reports_whether_the_provider_is_configured(monkeypatch):
     use_provider(monkeypatch, FakeProvider())
 
