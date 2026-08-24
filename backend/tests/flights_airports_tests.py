@@ -26,3 +26,30 @@ def test_airport_label_reads_naturally():
     assert airports.label("YYZ") == "Toronto (YYZ)"
     assert airports.label("YTO") == "Toronto"
     assert airports.label("ZZZ") == "ZZZ"
+
+
+def test_nearby_finds_a_real_alternate_airport_within_range():
+    codes = [entry["code"] for entry in airports.nearby("YYZ")]
+    assert codes == ["YTZ"]
+
+
+def test_nearby_matches_the_spec_named_bay_area_alternates():
+    codes = [entry["code"] for entry in airports.nearby("SFO")]
+    assert codes == ["OAK"]
+
+
+def test_nearby_respects_a_wider_limit():
+    codes = [entry["code"] for entry in airports.nearby("YYZ", limit=2)]
+    assert codes == ["YTZ", "YHM"]
+
+
+def test_nearby_excludes_airports_outside_the_radius():
+    assert airports.nearby("YYZ", radius_km=5) == []
+
+
+def test_nearby_returns_nothing_for_a_metro_city_code():
+    assert airports.nearby("YTO") == []
+
+
+def test_nearby_returns_nothing_for_an_unknown_code():
+    assert airports.nearby("ZZZ") == []

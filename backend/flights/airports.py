@@ -1,8 +1,12 @@
 import json
+import math
 import os
 
 DATA_PATH = os.path.join(os.path.dirname(__file__), "data", "airports.json")
 MAX_RESULTS = 8
+NEARBY_RADIUS_KM = 100
+NEARBY_LIMIT = 1
+EARTH_RADIUS_KM = 6371.0
 
 _airports = None
 _by_code = None
@@ -66,6 +70,31 @@ def search(query, limit=MAX_RESULTS):
 
     scored.sort(key=lambda row: row[:3])
     return [row[3] for row in scored[:limit]]
+
+
+def _haversine_km(lat1, lon1, lat2, lon2):
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return 2 * EARTH_RADIUS_KM * math.asin(math.sqrt(a))
+
+
+def nearby(code, limit=NEARBY_LIMIT, radius_km=NEARBY_RADIUS_KM):
+    origin = find(code)
+    if origin is None or origin["type"] != "airport":
+        return []
+
+    within_range = []
+    for entry in _load():
+        if entry["type"] != "airport" or entry["code"] == origin["code"]:
+            continue
+        distance = _haversine_km(origin["lat"], origin["lon"], entry["lat"], entry["lon"])
+        if distance <= radius_km:
+            within_range.append((distance, entry))
+
+    within_range.sort(key=lambda pair: pair[0])
+    return [entry for _, entry in within_range[:limit]]
 
 
 def label(code):
