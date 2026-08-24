@@ -3,7 +3,7 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-24 — provider token confirmed live on the VM.
+**Last updated:** 2026-08-24 — dedupe widened across provider endpoints, cache pruning wired up.
 
 ---
 
@@ -103,17 +103,10 @@ Routes live in `backend/app.py`; the page is `frontend/templates/flights.html` w
    month-bound and its cache outlives the endpoint's own 48-hour claim (observed
    `found_at` values spanning multiple weeks), so the provider now queries both and
    merges the results. One more upstream call per search either way.
-5. **Cross-endpoint duplicates aren't deduplicated.** `ranking.dedupe` keys on
-   `(origin, destination, departure_date, return_date, airline_code, price)`.
-   `/v2/latest` tickets carry no `airline_code`, so a fare seen through both endpoints
-   in the same window can render as two near-identical cards rather than collapsing
-   into one. Not incorrect, just slightly redundant — worth widening the dedupe key
-   (or falling back to price+dates when either candidate lacks an airline code) if it
-   turns out to happen often in practice.
-6. **Rate limits are per gunicorn worker.** The counters live in process memory, so the
+5. **Rate limits are per gunicorn worker.** The counters live in process memory, so the
    real limit is roughly `workers × 10/min`. Acceptable at this scale; §17 explicitly
    allows in-memory. Move to SQLite only if it actually matters.
-7. **Search parameters are not encoded in the URL.** That is §27's V1.4, not V1.
+6. **Search parameters are not encoded in the URL.** That is §27's V1.4, not V1.
 
 ---
 
@@ -126,20 +119,20 @@ see `specs/flights-setup.md` if it ever needs rotating or rolling back.
 
 ## Next candidate increments
 
-1. **`cache.prune()` is written but never called.** Either call it (opportunistically
-   after a write, or on a low-frequency path) or delete it. Dead code either way today.
-2. **Widen `ranking.dedupe`'s key** so a fare seen through both Aviasales endpoints in
-   the same search doesn't render as two cards (see deviation 5 above).
-3. **Re-check thin-route coverage on real traffic.** The token is live as of 2026-08-24.
+1. **Re-check thin-route coverage on real traffic.** The token is live as of 2026-08-24.
    The `/v2/latest` merge roughly doubled usable candidates for YTO-SFO in manual testing
    (1 -> ~3), but that was one manual check, not real usage. Watch `flight_search_events`
    for a week and see whether personal routes named in the spec (§1.1: Toronto <-> Bay
    Area, Toronto <-> international vacation spots) return enough candidates for the
    insights to say anything useful. If a route still comes back thin, the honest move
    per §30 is UI copy that says so, not a third provider.
-4. **V1.4 saved URLs** (§27) — encode search criteria in the query string so a search is
+2. **V1.4 saved URLs** (§27) — encode search criteria in the query string so a search is
    bookmarkable/shareable without accounts. Deliberately deferred past V1 already; worth
    picking up now that the core experience is stable.
+3. **Look for more code-cleanliness items.** The two dead-code/dedupe items previously
+   listed here are done (see run log below); next sweep should look for duplicated
+   logic, functions doing too much, or provider details leaking out of `providers/`,
+   per the routine's own priority order.
 
 ---
 
@@ -185,3 +178,23 @@ sandbox's egress proxy blocks both `rayaq.ca` and `travelpayouts.com` outright, 
 production reachability has to be confirmed by the site owner or something outside this
 environment. V1 is feature-complete and live end to end. Cleared the **Open owner
 actions** section accordingly; remaining work is the cleanup items below, not blockers.
+
+### 2026-08-24 — wire up cache pruning, widen cross-endpoint dedupe
+Two cleanup items from the previous run's candidate list, both code-cleanliness rather
+than user-facing behaviour changes:
+- `cache.prune()` existed and was tested but never called in the request path, so the
+  `flight_search_cache` table only ever grew. Now called from `service.search()` right
+  after a live (non-cache-hit) write, so pruning happens on the same cadence as real
+  traffic without adding a scheduler or extra process. Added
+  `test_a_live_search_prunes_cache_entries_past_the_stale_grace_period`.
+- `FlightCandidate.dedupe_key` included `airline_code` in its fallback tuple, but
+  `/v2/prices/latest` tickets never carry one (see the now-removed deviation 5), so the
+  same fare seen through both Aviasales endpoints in one search rendered as two
+  near-identical cards instead of collapsing into one. Dropped `airline_code` from the
+  key — `raw_provider_id` is still tried first when a provider supplies one, and the
+  remaining fields (route, dates, price) are specific enough that two genuinely
+  different fares are vanishingly unlikely to collide. Added
+  `test_dedupe_collapses_the_same_fare_seen_with_and_without_an_airline_code`.
+
+Full suite (137 tests, up from 135) passes. Removed the corresponding items from
+**Next candidate increments** and the now-resolved deviation from the deviations list.

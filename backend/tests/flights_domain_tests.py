@@ -169,6 +169,13 @@ def test_dedupe_removes_identical_candidates():
     assert ranking.dedupe([first, duplicate, other]) == [first, other]
 
 
+def test_dedupe_collapses_the_same_fare_seen_with_and_without_an_airline_code():
+    from_prices_for_dates = candidate("2026-09-15", 7, 487, airline="AC")
+    from_prices_latest = candidate("2026-09-15", 7, 487, airline=None)
+
+    assert ranking.dedupe([from_prices_for_dates, from_prices_latest]) == [from_prices_for_dates]
+
+
 def test_rank_sorts_by_price_then_stops_then_duration():
     cheap_connecting = candidate("2026-09-15", 7, 400, stops=1)
     same_price_direct = candidate("2026-09-16", 7, 400, stops=0)

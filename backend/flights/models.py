@@ -77,7 +77,6 @@ class FlightCandidate:
             self.destination,
             self.departure_date,
             self.return_date,
-            self.airline_code,
             round(self.total_price, 2),
         )
 
