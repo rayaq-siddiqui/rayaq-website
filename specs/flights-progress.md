@@ -3,8 +3,8 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-24 — added saved/shareable search URLs (§27 V1.4, pulled
-forward from V1).
+**Last updated:** 2026-08-24 — empty-state suggestions now reflect the filters actually
+used in the search.
 
 ---
 
@@ -138,9 +138,19 @@ see `specs/flights-setup.md` if it ever needs rotating or rolling back.
    abstraction means adding it later is a new file in `providers/`, not a rewrite. This
    needs the site owner to apply — not something an agent session can do — but it's the
    spec-sanctioned path to denser data if nearby-airport search still isn't enough.
-4. **Look for more code-cleanliness items,** per the routine's own priority order:
+4. **§27 V1.3, local price history.** `flight_price_observations` has been recording
+   every result card since the token went live on 2026-08-24, but nothing reads it back
+   yet. Once a route has accumulated a few weeks of observations, surface "Lowest price
+   we've observed in the last 30 days" per the spec's own wording — precise that it's
+   this site's own observed history, not full market history. Worth waiting for real
+   data to accumulate first; the table is nearly empty right now (live only since
+   today), so the insight would have nothing to say.
+5. **Look for more code-cleanliness items,** per the routine's own priority order:
    duplicated logic, functions doing too much, or provider details leaking out of
-   `providers/`.
+   `providers/`. A full read-through this run (`service.py`, `ranking.py`, `insights.py`,
+   `models.py`, `cache.py`, `validation.py`, `providers/aviasales.py`, `airports.py`,
+   `rate_limit.py`, `api.py`, `errors.py`, `app.py`) found nothing worth changing — the
+   backend stays small and each module does one thing.
 
 ---
 
@@ -270,3 +280,27 @@ surfaced as an error, since a stale or hand-edited URL shouldn't look broken. Ad
 tests to `flights_service_tests.py` (query overrides, unknown-code handling, malformed
 values, window clamping, the `autoSearch` flag) and 2 to `app_tests.py` (end-to-end
 query-string rendering). Full suite (155 tests, up from 148) passes.
+
+### 2026-08-24 — honest empty-state suggestions
+Read through the entire `backend/flights/` package this run (all modules) looking for
+cleanliness items per the routine's priority order; found nothing worth changing — no
+duplicated logic, no oversized functions, no provider details leaking above
+`providers/`. Full suite (155 tests) already green with no changes needed there.
+
+Did find one small UI honesty gap: the "No fares found" empty state
+(`frontend/static/flights.js`) always suggested "Widen the departure window / Allow more
+trip lengths / Try a nearby airport" verbatim, even when the search that came back empty
+already had "Include nearby airports" checked — recommending an option the user had
+already tried. `emptyState()` now takes the full response payload instead of just the
+message string, and builds suggestions from the search's own `request.directOnly` /
+`request.includeNearby` flags: "Allow flights with stops" only when direct-only was on,
+"Try a nearby airport" only when nearby wasn't already included. Matches §15/§28's intent
+that copy should be honest about what the search actually did.
+
+Verified in a real browser (Playwright against the dev server, dependency not added to
+the project) at 390px: a no-filters search shows all three original suggestions; a
+search with both `directOnly` and `includeNearby` checked shows "Allow flights with
+stops" in place of "Try a nearby airport", no console errors. No backend change, so the
+existing 155 tests stand unchanged (this project has no frontend JS test harness — see
+CLAUDE.md — so verification here is manual/Playwright, matching how prior JS-only
+changes in this log were checked).
