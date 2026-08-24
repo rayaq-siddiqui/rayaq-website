@@ -3,7 +3,8 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-24 — proactive unconfigured-provider banner.
+**Last updated:** 2026-08-24 — merged in /v2/prices/latest and added a proactive
+unconfigured-provider banner.
 
 ---
 
@@ -11,7 +12,7 @@ The contract is `specs/flights.md`; this file records where the code actually st
 
 V1 is built end to end and deployed through the normal `main` → CI/CD path. The page,
 the API, the provider adapter, the SQLite cache, rate limiting, and the deterministic
-insights all exist and are covered by tests (132 passing).
+insights all exist and are covered by tests (135 passing).
 
 The one thing standing between this and a working public search is the provider token
 (see **Open owner actions**). Without it the page renders and honestly reports that
@@ -92,10 +93,26 @@ Routes live in `backend/app.py`; the page is `frontend/templates/flights.html` w
 3. **`foundAt` is usually absent.** `prices_for_dates` does not reliably return it, so
    the UI falls back to "last checked <when we fetched>" rather than inventing an
    observation time. Do not fabricate a fare age.
-4. **Rate limits are per gunicorn worker.** The counters live in process memory, so the
+4. **Two upstream endpoints feed the provider, not one.** `/v3/prices_for_dates` is
+   grouped by calendar month, so a lightly-searched route can show almost nothing for a
+   given month even when Aviasales has more data elsewhere. Confirmed by hand on
+   2026-08-24: YTO-SFO for October 2026 alone returned 1 ticket at limit=1000, while
+   LON-NYC returned 23 and MOW-LED returned 367 for the same window — real cache
+   scarcity for this specific corridor, not a bad parameter. `/v2/prices/latest` isn't
+   month-bound and its cache outlives the endpoint's own 48-hour claim (observed
+   `found_at` values spanning multiple weeks), so the provider now queries both and
+   merges the results. One more upstream call per search either way.
+5. **Cross-endpoint duplicates aren't deduplicated.** `ranking.dedupe` keys on
+   `(origin, destination, departure_date, return_date, airline_code, price)`.
+   `/v2/latest` tickets carry no `airline_code`, so a fare seen through both endpoints
+   in the same window can render as two near-identical cards rather than collapsing
+   into one. Not incorrect, just slightly redundant — worth widening the dedupe key
+   (or falling back to price+dates when either candidate lacks an airline code) if it
+   turns out to happen often in practice.
+6. **Rate limits are per gunicorn worker.** The counters live in process memory, so the
    real limit is roughly `workers × 10/min`. Acceptable at this scale; §17 explicitly
    allows in-memory. Move to SQLite only if it actually matters.
-5. **Search parameters are not encoded in the URL.** That is §27's V1.4, not V1.
+7. **Search parameters are not encoded in the URL.** That is §27's V1.4, not V1.
 
 ---
 
@@ -116,10 +133,16 @@ Routes live in `backend/app.py`; the page is `frontend/templates/flights.html` w
 
 1. **`cache.prune()` is written but never called.** Either call it (opportunistically
    after a write, or on a low-frequency path) or delete it. Dead code either way today.
-2. **Verify normalization against the real provider** once the token exists. The fixture
-   in `backend/tests/fixtures/` was authored from the documented response shape; if the
-   live payload differs, update the fixture *and* the normalizer together.
-3. **V1.4 saved URLs** (§27) — encode search criteria in the query string so a search is
+2. **Widen `ranking.dedupe`'s key** so a fare seen through both Aviasales endpoints in
+   the same search doesn't render as two cards (see deviation 5 above).
+3. **Re-check thin-route coverage on real traffic.** The `/v2/latest` merge roughly
+   doubled usable candidates for YTO-SFO in manual testing (1 -> ~3). Once the token is
+   live on the VM, watch `flight_search_events` for a week and see whether personal
+   routes named in the spec (§1.1: Toronto <-> Bay Area, Toronto <-> international
+   vacation spots) return enough candidates for the insights to say anything useful. If
+   a route still comes back thin, the honest move per §30 is UI copy that says so, not a
+   third provider.
+4. **V1.4 saved URLs** (§27) — encode search criteria in the query string so a search is
    bookmarkable/shareable without accounts. Deliberately deferred past V1 already; worth
    picking up now that the core experience is stable.
 
@@ -145,4 +168,16 @@ switched on yet rather than implying an outage. When the provider is configured 
 banner stays hidden. Verified both states in a real browser (Playwright against the dev
 server, dependency not added to the project). Added
 `test_flights_page_includes_a_hook_for_the_provider_status_banner` to
-`backend/tests/app_tests.py`; full suite (132 tests) passes.
+`backend/tests/app_tests.py`.
+
+### 2026-08-24 — merge in /v2/prices/latest
+The site owner tested the token by hand and found /v3/prices_for_dates returning only 1
+ticket for YTO-SFO across all of October, versus 23 for LON-NYC and 367 for MOW-LED on
+the same query shape — real cache scarcity for this corridor, confirmed rather than
+assumed. /v2/prices/latest (not month-bound, longer-lived cache, and it actually carries
+found_at, which /v3 doesn't) found 2 more fares for the same route spanning September
+and October. Added it as a second call inside AviasalesDataProvider, filtered on
+show_to_affiliates and actual per the provider's own signals, normalized through a new
+fixture built from the real (already anonymized) response the owner captured by hand.
+Full suite (134 tests) passes. Provider token is still not on the VM; that's the one
+remaining manual step, tracked in specs/flights-setup.md.
