@@ -52,7 +52,7 @@ def assembly_agents():
 
 @app.route("/flights")
 def flights():
-    return render_template("flights.html", **flights_api.page_context())
+    return render_template("flights.html", **flights_api.page_context(request.args))
 
 
 @app.route("/api/flights/airports")

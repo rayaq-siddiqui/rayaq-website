@@ -2,8 +2,8 @@ from . import airports, service
 from .errors import FlightSearchError, ProviderError, TooManyRequestsError
 
 
-def page_context():
-    return service.page_context()
+def page_context(query=None):
+    return service.page_context(query=query)
 
 
 def client_id(forwarded_for, remote_addr):

@@ -331,3 +331,77 @@ def test_form_defaults_sit_inside_the_allowed_limits():
     assert defaults["minDate"] == "2026-09-01"
     assert defaults["earliestDeparture"] < defaults["latestDeparture"]
     assert defaults["minNights"] <= defaults["maxNights"]
+
+
+def test_form_defaults_applies_a_saved_search_from_the_query_string():
+    defaults = service.form_defaults(
+        today=TODAY,
+        query={
+            "from": "yyz",
+            "to": "sfo",
+            "departStart": "2026-09-10",
+            "departEnd": "2026-09-20",
+            "minNights": "5",
+            "maxNights": "12",
+            "currency": "usd",
+            "direct": "1",
+            "nearby": "1",
+        },
+    )
+
+    assert defaults["origin"] == "YYZ"
+    assert defaults["destination"] == "SFO"
+    assert defaults["earliestDeparture"] == "2026-09-10"
+    assert defaults["latestDeparture"] == "2026-09-20"
+    assert defaults["minNights"] == 5
+    assert defaults["maxNights"] == 12
+    assert defaults["currency"] == "USD"
+    assert defaults["directOnly"] is True
+    assert defaults["includeNearby"] is True
+
+
+def test_form_defaults_ignores_unknown_airport_codes_in_the_query_string():
+    defaults = service.form_defaults(today=TODAY, query={"from": "ZZZ", "to": "SFO"})
+
+    assert defaults["origin"] == ""
+    assert defaults["destination"] == "SFO"
+
+
+def test_form_defaults_falls_back_on_malformed_query_values():
+    defaults = service.form_defaults(
+        today=TODAY,
+        query={
+            "departStart": "not-a-date",
+            "minNights": "not-a-number",
+            "maxNights": "-5",
+            "currency": "XYZ",
+        },
+    )
+
+    fallback = service.form_defaults(today=TODAY)
+    assert defaults["earliestDeparture"] == fallback["earliestDeparture"]
+    assert defaults["minNights"] == fallback["minNights"]
+    assert defaults["maxNights"] == fallback["maxNights"]
+    assert defaults["currency"] == fallback["currency"]
+
+
+def test_form_defaults_clamps_a_query_window_that_is_too_wide():
+    defaults = service.form_defaults(
+        today=TODAY,
+        query={"departStart": "2026-09-10", "departEnd": "2026-12-25"},
+    )
+
+    earliest = date.fromisoformat(defaults["earliestDeparture"])
+    latest = date.fromisoformat(defaults["latestDeparture"])
+    assert (latest - earliest).days + 1 <= service.validation.MAX_WINDOW_DAYS
+
+
+def test_page_context_flags_auto_search_only_when_both_places_are_known():
+    with_both = service.page_context(today=TODAY, query={"from": "YYZ", "to": "SFO"})
+    assert with_both["defaults"]["autoSearch"] is True
+
+    with_one = service.page_context(today=TODAY, query={"from": "YYZ"})
+    assert with_one["defaults"]["autoSearch"] is False
+
+    with_none = service.page_context(today=TODAY)
+    assert with_none["defaults"]["autoSearch"] is False

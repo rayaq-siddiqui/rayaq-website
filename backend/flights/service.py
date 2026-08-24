@@ -26,24 +26,68 @@ POPULAR_ROUTES = (
 logger = logging.getLogger("flights")
 
 
-def form_defaults(today=None):
+def _query_date(query, field, today, fallback):
+    try:
+        parsed = datetime.strptime(query.get(field, ""), "%Y-%m-%d").date()
+    except ValueError:
+        return fallback
+    return parsed if parsed >= today else today
+
+
+def _query_nights(query, field, fallback):
+    try:
+        nights = int(query.get(field, ""))
+    except (TypeError, ValueError):
+        return fallback
+    return nights if 0 <= nights <= validation.MAX_NIGHTS else fallback
+
+
+def _query_code(query, field):
+    code = (query.get(field) or "").strip().upper()
+    return code if airports.is_known(code) else ""
+
+
+def form_defaults(today=None, query=None):
     today = today or date.today()
+    query = query or {}
+
+    earliest = _query_date(query, "departStart", today, today + timedelta(days=30))
+    latest = _query_date(query, "departEnd", today, today + timedelta(days=44))
+    if latest < earliest:
+        latest = earliest
+    if (latest - earliest).days + 1 > validation.MAX_WINDOW_DAYS:
+        latest = earliest + timedelta(days=validation.MAX_WINDOW_DAYS - 1)
+
+    min_nights = _query_nights(query, "minNights", 5)
+    max_nights = _query_nights(query, "maxNights", 8)
+    if min_nights > max_nights:
+        min_nights, max_nights = max_nights, min_nights
+
+    currency = (query.get("currency") or "").strip().upper()
+    if currency not in SUPPORTED_CURRENCIES:
+        currency = validation.DEFAULT_CURRENCY
+
     return {
-        "earliestDeparture": (today + timedelta(days=30)).isoformat(),
-        "latestDeparture": (today + timedelta(days=44)).isoformat(),
-        "minNights": 5,
-        "maxNights": 8,
-        "currency": validation.DEFAULT_CURRENCY,
-        "directOnly": False,
+        "earliestDeparture": earliest.isoformat(),
+        "latestDeparture": latest.isoformat(),
+        "minNights": min_nights,
+        "maxNights": max_nights,
+        "currency": currency,
+        "directOnly": query.get("direct") == "1",
+        "includeNearby": query.get("nearby") == "1",
+        "origin": _query_code(query, "from"),
+        "destination": _query_code(query, "to"),
         "maxWindowDays": validation.MAX_WINDOW_DAYS,
         "maxNightsAllowed": validation.MAX_NIGHTS,
         "minDate": today.isoformat(),
     }
 
 
-def page_context(today=None):
+def page_context(today=None, query=None):
+    defaults = form_defaults(today, query)
+    defaults["autoSearch"] = bool(defaults["origin"] and defaults["destination"])
     return {
-        "defaults": form_defaults(today),
+        "defaults": defaults,
         "popular_routes": POPULAR_ROUTES,
         "currencies": SUPPORTED_CURRENCIES,
     }
