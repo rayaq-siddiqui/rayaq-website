@@ -479,23 +479,30 @@
     return panel;
   }
 
-  function emptyState(message) {
+  function emptyState(payload) {
     var block = el("section", "empty-state");
     block.appendChild(el("h2", null, "No fares found"));
     block.appendChild(
       el(
         "p",
         null,
-        message || "We couldn't find a recently observed fare for this route and date window."
+        payload.message || "We couldn't find a recently observed fare for this route and date window."
       )
     );
 
+    var request = payload.request || {};
+    var suggestionTexts = ["Widen the departure window", "Allow more trip lengths"];
+    if (request.directOnly) {
+      suggestionTexts.push("Allow flights with stops");
+    }
+    if (!request.includeNearby) {
+      suggestionTexts.push("Try a nearby airport");
+    }
+
     var suggestions = el("ul");
-    ["Widen the departure window", "Allow more trip lengths", "Try a nearby airport"].forEach(
-      function (text) {
-        suggestions.appendChild(el("li", null, "• " + text));
-      }
-    );
+    suggestionTexts.forEach(function (text) {
+      suggestions.appendChild(el("li", null, "• " + text));
+    });
     block.appendChild(suggestions);
     return block;
   }
@@ -505,7 +512,7 @@
     clear(results);
 
     if (!payload.candidates.length) {
-      results.appendChild(emptyState(payload.message));
+      results.appendChild(emptyState(payload));
       return;
     }
 
