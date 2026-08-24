@@ -3,7 +3,8 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-24 — dedupe widened across provider endpoints, cache pruning wired up.
+**Last updated:** 2026-08-24 — added nearby-airport search widening (§27 V1.1, pulled
+forward from V1).
 
 ---
 
@@ -119,20 +120,30 @@ see `specs/flights-setup.md` if it ever needs rotating or rolling back.
 
 ## Next candidate increments
 
-1. **Re-check thin-route coverage on real traffic.** The token is live as of 2026-08-24.
-   The `/v2/latest` merge roughly doubled usable candidates for YTO-SFO in manual testing
-   (1 -> ~3), but that was one manual check, not real usage. Watch `flight_search_events`
-   for a week and see whether personal routes named in the spec (§1.1: Toronto <-> Bay
-   Area, Toronto <-> international vacation spots) return enough candidates for the
-   insights to say anything useful. If a route still comes back thin, the honest move
-   per §30 is UI copy that says so, not a third provider.
-2. **V1.4 saved URLs** (§27) — encode search criteria in the query string so a search is
+1. **Re-check thin-route coverage on real traffic, now that nearby-airport search
+   exists.** Watch `flight_search_events` for a week and see how often `includeNearby`
+   searches actually turn up a genuinely different (non-exact) airport, and whether
+   personal routes named in the spec (§1.1: Toronto <-> Bay Area, Toronto <->
+   international vacation spots) return enough candidates for the insights to say
+   anything useful once nearby search is in the mix. If a route still comes back thin
+   even with it on, the honest move per §30 is UI copy that says so, not a third
+   provider.
+2. **Consider defaulting `includeNearby` to on.** It's opt-in today, matching how the
+   spec describes it (§27 V1.1: "Allow: Include nearby airports"). Once there's a sense
+   of how often it changes the outcome, it may be worth defaulting it on for routes with
+   known-sparse coverage, or simply always-on, rather than asking a casual user to find
+   the checkbox.
+3. **Apply for Skyscanner's Indicative Prices API** (§6.4, §27 V1.5). Free if approved,
+   purpose-built for flexible-date discovery per Skyscanner's own docs, and the provider
+   abstraction means adding it later is a new file in `providers/`, not a rewrite. This
+   needs the site owner to apply — not something an agent session can do — but it's the
+   spec-sanctioned path to denser data if nearby-airport search still isn't enough.
+4. **V1.4 saved URLs** (§27) — encode search criteria in the query string so a search is
    bookmarkable/shareable without accounts. Deliberately deferred past V1 already; worth
    picking up now that the core experience is stable.
-3. **Look for more code-cleanliness items.** The two dead-code/dedupe items previously
-   listed here are done (see run log below); next sweep should look for duplicated
-   logic, functions doing too much, or provider details leaking out of `providers/`,
-   per the routine's own priority order.
+5. **Look for more code-cleanliness items,** per the routine's own priority order:
+   duplicated logic, functions doing too much, or provider details leaking out of
+   `providers/`.
 
 ---
 
@@ -198,3 +209,34 @@ than user-facing behaviour changes:
 
 Full suite (137 tests, up from 135) passes. Removed the corresponding items from
 **Next candidate increments** and the now-resolved deviation from the deviations list.
+
+### 2026-08-24 — nearby-airport search (§27 V1.1, pulled forward)
+The site owner ran a real search (Toronto -> San Francisco, a 2-day departure window, a
+12-15 night trip) and got "no fares found" — a legitimate complaint, not a bug report to
+dismiss. Discussed three ways to get denser data: SerpApi's Google Flights engine (250
+free searches/month *total across all visitors*, then $25/mo — dies under exactly the
+"some real load" this site expects, per spec §1.3), an MCP flight-search marketplace
+(every listing there wraps a provider already evaluated and rejected — Amadeus, SerpApi,
+or a plain unmaintained Google Flights scraper with no flexible-date support at all), and
+a legacy Aviasales calendar endpoint (`min-prices.aviasales.ru/calendar_preload`,
+untested — same underlying cache, unclear payoff). All three were set aside in favor of
+the thing the spec itself already named as the real fix: §27 V1.1, nearby airports.
+
+Added `airports.nearby(code)` — a haversine lookup over the bundled dataset's lat/lon,
+not a hardcoded route list, so it generalizes past the two examples the spec names
+(Toronto: YYZ/YTZ; Bay Area: SFO/SJC/OAK — both reproduced exactly by the real distance
+calculation). A metro code like YTO returns nothing on purpose, since Aviasales already
+aggregates real airports under those codes. `SearchRequest` gained `include_nearby`
+(part of the cache key, so an exact search and a nearby one never collide). When it's
+set, `service.py` fans out to the searched pair plus up to one real alternate on each
+side — bounded at 3 upstream provider calls total, not a full cross-product — and merges
+the candidates. Every result carries `airportNote` (e.g. "from Toronto (YTZ)") whenever
+its actual origin or destination differs from what was searched, rendered as a distinct
+amber tag in the UI, so a fare from a real-but-different airport is never shown as if it
+departed the one the user picked. Opt-in checkbox next to "Direct flights only", default
+off, matching how the spec itself describes this as something to allow, not force.
+
+Verified in a real browser: unchecked, behavior is byte-for-byte the same as before;
+checked, a stubbed provider whose fares vary by which pair was actually queried produced
+results correctly tagged "from Toronto (YTZ)" / "to Oakland (OAK)" alongside untagged
+exact-match fares, no console errors. Full suite (148 tests, up from 137) passes.
