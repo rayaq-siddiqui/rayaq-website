@@ -3,8 +3,7 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-24 — merged in /v2/prices/latest and added a proactive
-unconfigured-provider banner.
+**Last updated:** 2026-08-24 — provider token confirmed live on the VM.
 
 ---
 
@@ -14,9 +13,11 @@ V1 is built end to end and deployed through the normal `main` → CI/CD path. Th
 the API, the provider adapter, the SQLite cache, rate limiting, and the deterministic
 insights all exist and are covered by tests (135 passing).
 
-The one thing standing between this and a working public search is the provider token
-(see **Open owner actions**). Without it the page renders and honestly reports that
-search is unavailable; with it, search works.
+The provider token is live on the VM — the site owner confirmed
+`GET https://rayaq.ca/api/flights/health` returns `{"providerConfigured": true}` on
+2026-08-24. Real search is working in production. There are no more owner-side setup
+steps; `specs/flights-setup.md` is kept for reference (rotating the token, rolling back)
+but nothing in it is currently outstanding.
 
 ### Layout
 
@@ -118,14 +119,8 @@ Routes live in `backend/app.py`; the page is `frontend/templates/flights.html` w
 
 ## Open owner actions (not agent work)
 
-- Create a free Travelpayouts account, add a project for `rayaq.ca`, and get the Aviasales
-  Data API token.
-- On the VM: `sudo install -d -o rayaq /var/lib/rayaq-website`, write the token into
-  `/etc/rayaq-website.env` (template: `deploy/rayaq-website.env.example`), copy
-  `deploy/rayaq-website.service` to `/etc/systemd/system/`, then
-  `sudo systemctl daemon-reload && sudo systemctl restart rayaq-website`.
-- Until that happens, `/api/flights/health` reports `providerConfigured: false` and
-  searches return 503.
+None outstanding. The Travelpayouts token is live on the VM (confirmed 2026-08-24);
+see `specs/flights-setup.md` if it ever needs rotating or rolling back.
 
 ---
 
@@ -135,13 +130,13 @@ Routes live in `backend/app.py`; the page is `frontend/templates/flights.html` w
    after a write, or on a low-frequency path) or delete it. Dead code either way today.
 2. **Widen `ranking.dedupe`'s key** so a fare seen through both Aviasales endpoints in
    the same search doesn't render as two cards (see deviation 5 above).
-3. **Re-check thin-route coverage on real traffic.** The `/v2/latest` merge roughly
-   doubled usable candidates for YTO-SFO in manual testing (1 -> ~3). Once the token is
-   live on the VM, watch `flight_search_events` for a week and see whether personal
-   routes named in the spec (§1.1: Toronto <-> Bay Area, Toronto <-> international
-   vacation spots) return enough candidates for the insights to say anything useful. If
-   a route still comes back thin, the honest move per §30 is UI copy that says so, not a
-   third provider.
+3. **Re-check thin-route coverage on real traffic.** The token is live as of 2026-08-24.
+   The `/v2/latest` merge roughly doubled usable candidates for YTO-SFO in manual testing
+   (1 -> ~3), but that was one manual check, not real usage. Watch `flight_search_events`
+   for a week and see whether personal routes named in the spec (§1.1: Toronto <-> Bay
+   Area, Toronto <-> international vacation spots) return enough candidates for the
+   insights to say anything useful. If a route still comes back thin, the honest move
+   per §30 is UI copy that says so, not a third provider.
 4. **V1.4 saved URLs** (§27) — encode search criteria in the query string so a search is
    bookmarkable/shareable without accounts. Deliberately deferred past V1 already; worth
    picking up now that the core experience is stable.
@@ -181,3 +176,12 @@ show_to_affiliates and actual per the provider's own signals, normalized through
 fixture built from the real (already anonymized) response the owner captured by hand.
 Full suite (134 tests) passes. Provider token is still not on the VM; that's the one
 remaining manual step, tracked in specs/flights-setup.md.
+
+### 2026-08-24 — provider token confirmed live
+The site owner set `TRAVELPAYOUTS_API_TOKEN` in `/etc/rayaq-website.env` on the VM and
+restarted the service. `GET https://rayaq.ca/api/flights/health` now returns
+`{"providerConfigured": true}`. No agent session verified this directly — the remote
+sandbox's egress proxy blocks both `rayaq.ca` and `travelpayouts.com` outright, so
+production reachability has to be confirmed by the site owner or something outside this
+environment. V1 is feature-complete and live end to end. Cleared the **Open owner
+actions** section accordingly; remaining work is the cleanup items below, not blockers.
