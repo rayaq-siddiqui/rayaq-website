@@ -342,6 +342,9 @@
     if (observed) {
       meta.appendChild(el("span", "tag", "Seen " + observed));
     }
+    if (candidate.airportNote) {
+      meta.appendChild(el("span", "tag tag-airport", candidate.airportNote));
+    }
     return meta;
   }
 
@@ -537,6 +540,7 @@
       maxNights: Number(document.getElementById("max-nights").value),
       currency: document.getElementById("currency").value,
       directOnly: document.getElementById("direct-only").checked,
+      includeNearby: document.getElementById("include-nearby").checked,
     };
   }
 

@@ -244,6 +244,8 @@ def test_flights_renders_the_search_form():
     assert 'id="earliest-departure"' in body
     assert 'id="min-nights"' in body
     assert "Direct flights only" in body
+    assert 'id="include-nearby"' in body
+    assert "Include nearby airports" in body
     assert "Find cheap flights" in body
 
 
