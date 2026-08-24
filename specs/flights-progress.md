@@ -3,7 +3,7 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-24 — added nearby-airport search widening (§27 V1.1, pulled
+**Last updated:** 2026-08-24 — added saved/shareable search URLs (§27 V1.4, pulled
 forward from V1).
 
 ---
@@ -107,7 +107,7 @@ Routes live in `backend/app.py`; the page is `frontend/templates/flights.html` w
 5. **Rate limits are per gunicorn worker.** The counters live in process memory, so the
    real limit is roughly `workers × 10/min`. Acceptable at this scale; §17 explicitly
    allows in-memory. Move to SQLite only if it actually matters.
-6. **Search parameters are not encoded in the URL.** That is §27's V1.4, not V1.
+6. ~~Search parameters are not encoded in the URL.~~ Resolved 2026-08-24 (§27 V1.4).
 
 ---
 
@@ -138,10 +138,7 @@ see `specs/flights-setup.md` if it ever needs rotating or rolling back.
    abstraction means adding it later is a new file in `providers/`, not a rewrite. This
    needs the site owner to apply — not something an agent session can do — but it's the
    spec-sanctioned path to denser data if nearby-airport search still isn't enough.
-4. **V1.4 saved URLs** (§27) — encode search criteria in the query string so a search is
-   bookmarkable/shareable without accounts. Deliberately deferred past V1 already; worth
-   picking up now that the core experience is stable.
-5. **Look for more code-cleanliness items,** per the routine's own priority order:
+4. **Look for more code-cleanliness items,** per the routine's own priority order:
    duplicated logic, functions doing too much, or provider details leaking out of
    `providers/`.
 
@@ -240,3 +237,36 @@ Verified in a real browser: unchecked, behavior is byte-for-byte the same as bef
 checked, a stubbed provider whose fares vary by which pair was actually queried produced
 results correctly tagged "from Toronto (YTZ)" / "to Oakland (OAK)" alongside untagged
 exact-match fares, no console errors. Full suite (148 tests, up from 137) passes.
+
+### 2026-08-24 — saved/shareable search URLs (§27 V1.4, pulled forward)
+Implemented the last deferred-from-V1 deviation. `service.form_defaults()` now takes an
+optional `query` mapping (raw query-string values from Flask's `request.args`, passed
+through by `app.py`'s `/flights` route) and folds it into the computed defaults:
+`from`/`to` (validated against the airport dataset, silently dropped if unknown),
+`departStart`/`departEnd` (clamped to today and to the existing 60-day window limit),
+`minNights`/`maxNights`, `currency`, and `direct`/`nearby` flags. Every value is
+best-effort — a malformed or out-of-range query parameter falls back to the ordinary
+default rather than erroring, since this path renders a page, not the search API (which
+still does full `validation.parse` on submit). `page_context()` adds a computed
+`autoSearch` flag (true only when both origin and destination resolved to known
+airports) so the template doesn't need its own duplicate logic.
+
+On the client, `flights.js` now: prefills the origin/destination combo boxes from
+`defaults.origin`/`defaults.destination` on load (reusing the same `combo.set()` path the
+popular-route chips already used), applies `defaults.includeNearby` alongside the
+existing `defaults.directOnly` (previously the nearby checkbox had no server-driven
+default at all), auto-submits the form when `defaults.autoSearch` is true, and calls
+`history.replaceState` with the full form state as query parameters on every submit
+(manual or chip-triggered) so the address bar always reflects the last search — no new
+history entries are pushed, matching the "bookmarkable/shareable" goal without adding
+back-button semantics the spec doesn't ask for.
+
+Verified in a real browser (Playwright against the dev server): a URL carrying a full
+saved search (`?from=YYZ&to=SFO&departStart=...&direct=1&nearby=1`) prefilled every field
+correctly and auto-ran the search with no console errors (only the expected 503 from the
+unconfigured dev provider); a manual search from a bare `/flights` load correctly updated
+the URL after submit. An unknown airport code in `from`/`to` is dropped rather than
+surfaced as an error, since a stale or hand-edited URL shouldn't look broken. Added 7
+tests to `flights_service_tests.py` (query overrides, unknown-code handling, malformed
+values, window clamping, the `autoSearch` flag) and 2 to `app_tests.py` (end-to-end
+query-string rendering). Full suite (155 tests, up from 148) passes.
