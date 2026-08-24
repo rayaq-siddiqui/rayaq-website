@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 
 from . import airports, cache, insights, ranking, rate_limit, validation
@@ -65,6 +66,32 @@ def _place(code):
     }
 
 
+def _search_pairs(request):
+    pairs = [(request.origin, request.destination)]
+    if not request.include_nearby:
+        return pairs
+    for alt in airports.nearby(request.origin):
+        pairs.append((alt["code"], request.destination))
+    for alt in airports.nearby(request.destination):
+        pairs.append((request.origin, alt["code"]))
+    return pairs
+
+
+def _airport_note(candidate, request):
+    parts = []
+    if candidate.origin != request.origin:
+        parts.append(f"from {airports.label(candidate.origin)}")
+    if candidate.destination != request.destination:
+        parts.append(f"to {airports.label(candidate.destination)}")
+    return " ".join(parts) if parts else None
+
+
+def _candidate_api(candidate, request):
+    data = candidate.to_api()
+    data["airportNote"] = _airport_note(candidate, request)
+    return data
+
+
 def _build_payload(request, provider, candidates, searched_at):
     top = candidates[:MAX_CANDIDATES]
     return {
@@ -77,8 +104,8 @@ def _build_payload(request, provider, candidates, searched_at):
             "origin": _place(request.origin),
             "destination": _place(request.destination),
         },
-        "best": top[0].to_api() if top else None,
-        "candidates": [candidate.to_api() for candidate in top],
+        "best": _candidate_api(top[0], request) if top else None,
+        "candidates": [_candidate_api(candidate, request) for candidate in top],
         "datePrices": insights.date_prices(candidates),
         "insights": insights.build(candidates, request),
         "message": None if top else NO_RESULTS_MESSAGE,
@@ -135,14 +162,20 @@ def search(payload, client_id=None, today=None, now=None):
         return finish(_with_metadata(cached["payload"], True, 0), True, 0, "cache")
 
     try:
-        provider_result = provider.search_flexible_dates(request)
+        raw_candidates = []
+        provider_requests = 0
+        for origin, destination in _search_pairs(request):
+            sub_request = replace(request, origin=origin, destination=destination)
+            provider_result = provider.search_flexible_dates(sub_request)
+            raw_candidates.extend(provider_result.candidates)
+            provider_requests += provider_result.provider_requests
     except ProviderError:
         if cached:
             return finish(_with_metadata(cached["payload"], True, 0, stale=True), True, 0, "stale")
         raise
 
     searched_at = now or datetime.now(timezone.utc)
-    candidates = ranking.prepare(provider_result.candidates, request)
+    candidates = ranking.prepare(raw_candidates, request)
     result = _build_payload(request, provider, candidates, searched_at)
 
     cache.write(cache_key, provider.name, request, result, now=now)
@@ -150,8 +183,8 @@ def search(payload, client_id=None, today=None, now=None):
     cache.prune(now=now)
 
     return finish(
-        _with_metadata(result, False, provider_result.provider_requests),
+        _with_metadata(result, False, provider_requests),
         False,
-        provider_result.provider_requests,
+        provider_requests,
         "live",
     )

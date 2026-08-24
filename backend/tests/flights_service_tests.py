@@ -2,7 +2,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
-from flights import cache, rate_limit, service
+from flights import airports, cache, rate_limit, service
 from flights.errors import (
     FlightSearchError,
     ProviderRateLimitedError,
@@ -30,19 +30,23 @@ class FakeProvider:
     is_live = False
     freshness_message = "Indicative fares."
 
-    def __init__(self, candidates=(), error=None):
+    def __init__(self, candidates=(), error=None, by_pair=None):
         self.candidates = tuple(candidates)
         self.error = error
+        self.by_pair = by_pair or {}
         self.calls = 0
+        self.requests = []
 
     def is_configured(self):
         return True
 
     def search_flexible_dates(self, request):
         self.calls += 1
+        self.requests.append(request)
         if self.error:
             raise self.error
-        return ProviderResult(self.name, self.candidates, self.is_live, 1)
+        candidates = self.by_pair.get((request.origin, request.destination), self.candidates)
+        return ProviderResult(self.name, tuple(candidates), self.is_live, 1)
 
 
 def use_provider(monkeypatch, provider):
@@ -50,11 +54,11 @@ def use_provider(monkeypatch, provider):
     return provider
 
 
-def candidate(departure, nights, price, stops=0, airline="AC"):
+def candidate(departure, nights, price, stops=0, airline="AC", origin="YYZ", destination="SFO"):
     departure_date = date.fromisoformat(departure)
     return FlightCandidate(
-        origin="YYZ",
-        destination="SFO",
+        origin=origin,
+        destination=destination,
         departure_date=departure_date,
         return_date=departure_date + timedelta(days=nights),
         total_price=price,
@@ -149,6 +153,63 @@ def test_search_includes_flexible_date_prices_and_insights(monkeypatch):
 
     assert [entry["price"] for entry in result["datePrices"]] == [487, 612]
     assert result["insights"]
+
+
+def test_nearby_airports_are_not_queried_by_default(monkeypatch):
+    provider = use_provider(monkeypatch, FakeProvider([candidate("2026-09-15", 7, 487)]))
+
+    search(body=payload(origin="YYZ"))
+
+    assert provider.calls == 1
+    assert (provider.requests[0].origin, provider.requests[0].destination) == ("YYZ", "SFO")
+
+
+def test_include_nearby_also_queries_real_alternate_airports(monkeypatch):
+    provider = use_provider(
+        monkeypatch,
+        FakeProvider(
+            by_pair={
+                ("YYZ", "SFO"): [candidate("2026-09-15", 7, 487, origin="YYZ")],
+                ("YTZ", "SFO"): [candidate("2026-09-16", 7, 610, origin="YTZ")],
+                ("YYZ", "OAK"): [candidate("2026-09-17", 7, 399, origin="YYZ", destination="OAK")],
+            }
+        ),
+    )
+
+    result = search(body=payload(origin="YYZ", includeNearby=True))
+
+    pairs = {(r.origin, r.destination) for r in provider.requests}
+    assert pairs == {("YYZ", "SFO"), ("YTZ", "SFO"), ("YYZ", "OAK")}
+    assert provider.calls == 3
+    prices = {c["totalPrice"] for c in result["candidates"]}
+    assert prices == {487, 610, 399}
+
+
+def test_candidates_from_a_different_airport_carry_an_honest_note(monkeypatch):
+    use_provider(
+        monkeypatch,
+        FakeProvider(
+            by_pair={
+                ("YYZ", "SFO"): [candidate("2026-09-15", 7, 487, origin="YYZ")],
+                ("YTZ", "SFO"): [candidate("2026-09-16", 7, 610, origin="YTZ")],
+            }
+        ),
+    )
+
+    result = search(body=payload(origin="YYZ", includeNearby=True))
+
+    notes = {c["origin"]: c["airportNote"] for c in result["candidates"]}
+    assert notes["YYZ"] is None
+    assert notes["YTZ"] == f"from {airports.label('YTZ')}"
+
+
+def test_include_nearby_does_not_reuse_an_exact_search_cache_entry(monkeypatch):
+    provider = use_provider(monkeypatch, FakeProvider([candidate("2026-09-15", 7, 487)]))
+
+    search(body=payload(origin="YYZ", includeNearby=False))
+    search(body=payload(origin="YYZ", includeNearby=True))
+
+    assert provider.calls == 1 + 3
 
 
 def test_a_repeat_search_is_served_from_cache(monkeypatch):
