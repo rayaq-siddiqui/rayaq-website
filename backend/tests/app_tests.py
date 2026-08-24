@@ -283,3 +283,27 @@ def test_flights_never_ships_the_provider_token_to_the_browser(monkeypatch):
 
     assert "super-secret-token" not in body
     assert "TRAVELPAYOUTS" not in body
+
+
+def test_flights_prefills_the_form_from_a_saved_search_url():
+    client = app_module.app.test_client()
+
+    body = client.get(
+        "/flights?from=YYZ&to=SFO&departStart=2026-09-10&departEnd=2026-09-20"
+        "&minNights=5&maxNights=8&currency=USD&direct=1&nearby=1"
+    ).get_data(as_text=True)
+
+    assert '"origin": "YYZ"' in body
+    assert '"destination": "SFO"' in body
+    assert '"autoSearch": true' in body
+    assert '"directOnly": true' in body
+    assert '"includeNearby": true' in body
+
+
+def test_flights_ignores_an_unknown_airport_code_in_the_query_string():
+    client = app_module.app.test_client()
+
+    body = client.get("/flights?from=NOTREAL&to=SFO").get_data(as_text=True)
+
+    assert '"origin": ""' in body
+    assert '"autoSearch": false' in body

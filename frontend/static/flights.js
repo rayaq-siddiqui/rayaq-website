@@ -544,6 +544,24 @@
     };
   }
 
+  function updateUrl(body) {
+    var params = new URLSearchParams();
+    params.set("from", body.origin);
+    params.set("to", body.destination);
+    params.set("departStart", body.earliestDeparture);
+    params.set("departEnd", body.latestDeparture);
+    params.set("minNights", body.minNights);
+    params.set("maxNights", body.maxNights);
+    params.set("currency", body.currency);
+    if (body.directOnly) {
+      params.set("direct", "1");
+    }
+    if (body.includeNearby) {
+      params.set("nearby", "1");
+    }
+    window.history.replaceState(null, "", window.location.pathname + "?" + params.toString());
+  }
+
   function submitSearch(body) {
     submitButton.disabled = true;
     submitButton.textContent = "Searching…";
@@ -589,7 +607,9 @@
         showError("Pick where you are flying to.");
         return;
       }
-      submitSearch(readForm(codes[0], codes[1]));
+      var body = readForm(codes[0], codes[1]);
+      updateUrl(body);
+      submitSearch(body);
     });
   });
 
@@ -618,4 +638,19 @@
   if (defaults.directOnly) {
     document.getElementById("direct-only").checked = true;
   }
+  if (defaults.includeNearby) {
+    document.getElementById("include-nearby").checked = true;
+  }
+
+  function prefillPlace(combo, code) {
+    return code ? combo.set(code) : Promise.resolve();
+  }
+
+  Promise.all([prefillPlace(origin, defaults.origin), prefillPlace(destination, defaults.destination)]).then(
+    function () {
+      if (defaults.autoSearch) {
+        form.dispatchEvent(new Event("submit", { cancelable: true }));
+      }
+    }
+  );
 })();
