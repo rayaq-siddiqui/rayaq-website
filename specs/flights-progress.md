@@ -3,7 +3,7 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-23 — initial V1 build.
+**Last updated:** 2026-08-24 — proactive unconfigured-provider banner.
 
 ---
 
@@ -11,7 +11,7 @@ The contract is `specs/flights.md`; this file records where the code actually st
 
 V1 is built end to end and deployed through the normal `main` → CI/CD path. The page,
 the API, the provider adapter, the SQLite cache, rate limiting, and the deterministic
-insights all exist and are covered by tests (131 passing).
+insights all exist and are covered by tests (132 passing).
 
 The one thing standing between this and a working public search is the provider token
 (see **Open owner actions**). Without it the page renders and honestly reports that
@@ -114,14 +114,14 @@ Routes live in `backend/app.py`; the page is `frontend/templates/flights.html` w
 
 ## Next candidate increments
 
-1. **Friendlier unconfigured state.** When the provider has no token, the page shows a
-   generic "temporarily unavailable" banner. It should say plainly that live search is
-   not switched on yet, rather than implying an outage.
-2. **`cache.prune()` is written but never called.** Either call it (opportunistically
+1. **`cache.prune()` is written but never called.** Either call it (opportunistically
    after a write, or on a low-frequency path) or delete it. Dead code either way today.
-3. **Verify normalization against the real provider** once the token exists. The fixture
+2. **Verify normalization against the real provider** once the token exists. The fixture
    in `backend/tests/fixtures/` was authored from the documented response shape; if the
    live payload differs, update the fixture *and* the normalizer together.
+3. **V1.4 saved URLs** (§27) — encode search criteria in the query string so a search is
+   bookmarkable/shareable without accounts. Deliberately deferred past V1 already; worth
+   picking up now that the core experience is stable.
 
 ---
 
@@ -133,3 +133,16 @@ rate limiter, service orchestration, JSON endpoints, and the mobile-first page. 
 in a real browser at 390px and 1280px against a stubbed provider; fixed a horizontal
 overflow caused by grid children defaulting to `min-width: auto`, and replaced `fieldset`
 /`legend` with labelled groups so the field headings stop colliding.
+
+### 2026-08-24 — proactive unconfigured-provider banner
+The provider token still isn't set on the VM (see **Open owner actions**), so every real
+visitor to the live site was filling out the form, watching the loading skeleton, and
+only then learning search wasn't available. Added a client-side check of
+`/api/flights/health` on page load: when `providerConfigured` is false, an informational
+banner (`#provider-notice` in `flights.html`, populated by `checkProviderStatus()` in
+`flights.js`) appears above the form immediately, saying plainly that live search isn't
+switched on yet rather than implying an outage. When the provider is configured the
+banner stays hidden. Verified both states in a real browser (Playwright against the dev
+server, dependency not added to the project). Added
+`test_flights_page_includes_a_hook_for_the_provider_status_banner` to
+`backend/tests/app_tests.py`; full suite (132 tests) passes.

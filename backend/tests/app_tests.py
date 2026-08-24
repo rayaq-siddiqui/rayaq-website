@@ -265,6 +265,14 @@ def test_flights_discloses_that_prices_are_indicative():
     assert "Verify the current fare" in body
 
 
+def test_flights_page_includes_a_hook_for_the_provider_status_banner():
+    client = app_module.app.test_client()
+
+    body = client.get("/flights").get_data(as_text=True)
+
+    assert 'id="provider-notice"' in body
+
+
 def test_flights_never_ships_the_provider_token_to_the_browser(monkeypatch):
     monkeypatch.setenv("TRAVELPAYOUTS_API_TOKEN", "super-secret-token")
     client = app_module.app.test_client()

@@ -243,6 +243,33 @@
     };
   }
 
+  function checkProviderStatus() {
+    var banner = document.getElementById("provider-notice");
+    fetch("/api/flights/health")
+      .then(function (response) {
+        return response.ok ? response.json() : null;
+      })
+      .then(function (payload) {
+        if (!payload || payload.providerConfigured) {
+          return;
+        }
+        clear(banner);
+        banner.appendChild(el("span", "insight-bullet", "ℹ"));
+        var text = el("div");
+        text.appendChild(el("strong", null, "Live search isn't switched on yet. "));
+        text.appendChild(
+          document.createTextNode(
+            "The site owner hasn't connected a flight-data provider, so searches below won't return results yet."
+          )
+        );
+        banner.appendChild(text);
+        banner.hidden = false;
+      })
+      .catch(function () {});
+  }
+
+  checkProviderStatus();
+
   var origin = setupCombo("origin");
   var destination = setupCombo("destination");
 
