@@ -14,10 +14,16 @@ from flights.models import SearchRequest
 from flights.providers import aviasales, get_provider, reset_providers
 
 FIXTURE_PATH = os.path.join(os.path.dirname(__file__), "fixtures", "aviasales_prices_for_dates.json")
+LATEST_FIXTURE_PATH = os.path.join(os.path.dirname(__file__), "fixtures", "aviasales_prices_latest.json")
 
 
 def fixture_payload():
     with open(FIXTURE_PATH, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def latest_fixture_payload():
+    with open(LATEST_FIXTURE_PATH, encoding="utf-8") as handle:
         return json.load(handle)
 
 
@@ -55,6 +61,15 @@ def patch_get(monkeypatch, response, calls=None):
         if isinstance(response, Exception):
             raise response
         return response
+
+    monkeypatch.setattr(aviasales.requests, "get", fake_get)
+
+
+def patch_get_by_url(monkeypatch, responses, calls=None):
+    def fake_get(url, params=None, timeout=None):
+        if calls is not None:
+            calls.append({"url": url, "params": params, "timeout": timeout})
+        return responses[url]
 
     monkeypatch.setattr(aviasales.requests, "get", fake_get)
 
@@ -143,8 +158,68 @@ def test_one_upstream_request_is_made_per_month_in_the_window(monkeypatch):
         build_request(earliest_departure=date(2026, 9, 25), latest_departure=date(2026, 10, 5))
     )
 
-    assert [call["params"]["departure_at"] for call in calls] == ["2026-09", "2026-10"]
-    assert result.provider_requests == 2
+    month_calls = [call for call in calls if call["url"] == aviasales.API_URL]
+    latest_calls = [call for call in calls if call["url"] == aviasales.LATEST_URL]
+
+    assert [call["params"]["departure_at"] for call in month_calls] == ["2026-09", "2026-10"]
+    assert len(latest_calls) == 1
+    assert result.provider_requests == 3
+
+
+def test_the_latest_prices_endpoint_is_also_queried_once_per_search(monkeypatch):
+    calls = []
+    patch_get(monkeypatch, FakeResponse({"success": True, "data": []}), calls)
+    provider = aviasales.AviasalesDataProvider(token="secret")
+
+    provider.search_flexible_dates(build_request())
+
+    latest_calls = [call for call in calls if call["url"] == aviasales.LATEST_URL]
+    assert len(latest_calls) == 1
+    assert latest_calls[0]["params"]["origin"] == "YTO"
+    assert latest_calls[0]["params"]["destination"] == "SFO"
+    assert latest_calls[0]["params"]["currency"] == "cad"
+
+
+def test_latest_prices_fill_in_a_route_the_month_endpoint_has_thin_data_for(monkeypatch):
+    patch_get_by_url(
+        monkeypatch,
+        {
+            aviasales.API_URL: FakeResponse({"success": True, "data": []}),
+            aviasales.LATEST_URL: FakeResponse(latest_fixture_payload()),
+        },
+    )
+    provider = aviasales.AviasalesDataProvider(token="secret", marker="")
+
+    candidates = provider.search_flexible_dates(build_request()).candidates
+
+    assert len(candidates) == 2
+    best = candidates[0]
+    assert best.origin == "YTO"
+    assert best.destination == "SFO"
+    assert best.departure_date == date(2026, 10, 9)
+    assert best.return_date == date(2026, 10, 12)
+    assert best.total_price == 594.0
+    assert best.stops == 1
+    assert best.duration_minutes == 1030
+    assert best.found_at == "2026-08-18T20:58:17"
+    assert best.booking_url == "https://www.aviasales.com/search/YTO0910SFO12101"
+
+
+def test_latest_prices_hidden_from_affiliates_or_marked_stale_are_dropped(monkeypatch):
+    patch_get_by_url(
+        monkeypatch,
+        {
+            aviasales.API_URL: FakeResponse({"success": True, "data": []}),
+            aviasales.LATEST_URL: FakeResponse(latest_fixture_payload()),
+        },
+    )
+    provider = aviasales.AviasalesDataProvider(token="secret")
+
+    prices = [c.total_price for c in provider.search_flexible_dates(build_request()).candidates]
+
+    assert 410 not in prices
+    assert 399 not in prices
+    assert None not in prices
 
 
 def test_direct_only_searches_ask_the_provider_for_direct_flights(monkeypatch):

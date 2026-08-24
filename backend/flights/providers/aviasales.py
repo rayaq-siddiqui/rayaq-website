@@ -8,10 +8,12 @@ from ..models import FlightCandidate, ProviderResult
 from .base import FlightSearchProvider
 
 API_URL = "https://api.travelpayouts.com/aviasales/v3/prices_for_dates"
+LATEST_URL = "https://api.travelpayouts.com/v2/prices/latest"
 BOOKING_HOST = "https://www.aviasales.com"
 TIMEOUT_SECONDS = 8
 MAX_MONTHS_PER_SEARCH = 3
 MAX_TICKETS_PER_MONTH = 1000
+MAX_LATEST_TICKETS = 100
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
 
@@ -42,9 +44,9 @@ def _stops(ticket):
     return max(known) if known else None
 
 
-def _price(ticket):
+def _price(ticket, field="price"):
     try:
-        return round(float(ticket["price"]), 2)
+        return round(float(ticket[field]), 2)
     except (KeyError, TypeError, ValueError):
         return None
 
@@ -92,16 +94,18 @@ class AviasalesDataProvider(FlightSearchProvider):
         months = _months_in_window(request.earliest_departure, request.latest_departure)
         for month in months:
             candidates.extend(self._tickets_for_month(request, month))
+        candidates.extend(self._latest_tickets(request))
 
         return ProviderResult(
             provider=self.name,
             candidates=tuple(candidates),
             is_live=self.is_live,
-            provider_requests=len(months),
+            provider_requests=len(months) + 1,
         )
 
     def _tickets_for_month(self, request, month):
         payload = self._get(
+            API_URL,
             {
                 "origin": request.origin,
                 "destination": request.destination,
@@ -113,7 +117,7 @@ class AviasalesDataProvider(FlightSearchProvider):
                 "limit": MAX_TICKETS_PER_MONTH,
                 "page": 1,
                 "token": self._token,
-            }
+            },
         )
         tickets = payload.get("data") or []
         if not isinstance(tickets, list):
@@ -124,9 +128,34 @@ class AviasalesDataProvider(FlightSearchProvider):
             if candidate is not None
         ]
 
-    def _get(self, params):
+    def _latest_tickets(self, request):
+        # prices_for_dates is grouped by calendar month, so a lightly-searched route can
+        # show only one or two fares per month even though Aviasales has seen more. This
+        # endpoint isn't month-bound and its cache outlives the 48-hour window, so it
+        # fills in exactly the gap a thin route like Toronto-San Francisco hits.
+        payload = self._get(
+            LATEST_URL,
+            {
+                "origin": request.origin,
+                "destination": request.destination,
+                "currency": request.currency.lower(),
+                "limit": MAX_LATEST_TICKETS,
+                "page": 1,
+                "token": self._token,
+            },
+        )
+        tickets = payload.get("data") or []
+        if not isinstance(tickets, list):
+            raise ProviderUnavailableError()
+        return [
+            candidate
+            for candidate in (self._to_candidate_from_latest(ticket, request) for ticket in tickets)
+            if candidate is not None
+        ]
+
+    def _get(self, url, params):
         try:
-            response = requests.get(API_URL, params=params, timeout=TIMEOUT_SECONDS)
+            response = requests.get(url, params=params, timeout=TIMEOUT_SECONDS)
         except requests.RequestException:
             raise ProviderUnavailableError()
 
@@ -177,4 +206,34 @@ class AviasalesDataProvider(FlightSearchProvider):
             duration_minutes=ticket.get("duration"),
             found_at=ticket.get("found_at"),
             booking_url=booking_url,
+        )
+
+    def _to_candidate_from_latest(self, ticket, request):
+        if not isinstance(ticket, dict):
+            return None
+        if ticket.get("show_to_affiliates") is False or ticket.get("actual") is False:
+            return None
+
+        departure = _parse_date(ticket.get("depart_date"))
+        return_date = _parse_date(ticket.get("return_date"))
+        price = _price(ticket, "value")
+        if departure is None or price is None:
+            return None
+
+        origin = ticket.get("origin") or request.origin
+        destination = ticket.get("destination") or request.destination
+        stops = ticket.get("number_of_changes")
+
+        return FlightCandidate(
+            origin=origin,
+            destination=destination,
+            departure_date=departure,
+            return_date=return_date,
+            total_price=price,
+            currency=request.currency,
+            source=self.name,
+            stops=stops if isinstance(stops, int) else None,
+            duration_minutes=ticket.get("duration"),
+            found_at=ticket.get("found_at"),
+            booking_url=_fallback_link(origin, destination, departure, return_date, self._marker),
         )
