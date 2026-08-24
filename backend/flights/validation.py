@@ -89,4 +89,5 @@ def parse(payload, today=None):
         max_nights=max_nights,
         currency=currency,
         direct_only=bool(payload.get("directOnly")),
+        include_nearby=bool(payload.get("includeNearby")),
     )

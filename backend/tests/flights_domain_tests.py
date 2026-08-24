@@ -52,6 +52,13 @@ def test_parse_builds_a_normalized_request():
     assert request.max_nights == 8
     assert request.currency == "CAD"
     assert request.direct_only is False
+    assert request.include_nearby is False
+
+
+def test_parse_reads_the_include_nearby_flag():
+    request = validation.parse(base_payload(includeNearby=True), today=TODAY)
+
+    assert request.include_nearby is True
 
 
 def test_parse_uppercases_codes_and_defaults_currency():

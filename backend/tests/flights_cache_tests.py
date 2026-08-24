@@ -49,7 +49,7 @@ def test_cache_key_covers_every_field_that_changes_results():
     request = build_request()
 
     assert request.cache_key("aviasales-data") == (
-        "aviasales-data:YTO:SFO:2026-09-10:2026-09-20:5:8:CAD:any"
+        "aviasales-data:YTO:SFO:2026-09-10:2026-09-20:5:8:CAD:any:exact"
     )
 
 

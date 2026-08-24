@@ -16,6 +16,7 @@ class SearchRequest:
     max_nights: int
     currency: str
     direct_only: bool
+    include_nearby: bool = False
 
     def cache_key(self, provider):
         return ":".join(
@@ -29,6 +30,7 @@ class SearchRequest:
                 str(self.max_nights),
                 self.currency,
                 "direct" if self.direct_only else "any",
+                "nearby" if self.include_nearby else "exact",
             ]
         )
 
@@ -42,6 +44,7 @@ class SearchRequest:
             "maxNights": self.max_nights,
             "currency": self.currency,
             "directOnly": self.direct_only,
+            "includeNearby": self.include_nearby,
         }
 
 
