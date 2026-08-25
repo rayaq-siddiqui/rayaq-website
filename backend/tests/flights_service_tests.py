@@ -155,6 +155,29 @@ def test_search_includes_flexible_date_prices_and_insights(monkeypatch):
     assert result["insights"]
 
 
+def test_price_history_is_absent_without_enough_observed_days(monkeypatch):
+    use_provider(monkeypatch, FakeProvider([candidate("2026-09-15", 7, 487)]))
+
+    assert search()["priceHistory"] is None
+
+
+def test_price_history_appears_once_enough_days_are_recorded(monkeypatch):
+    use_provider(monkeypatch, FakeProvider([candidate("2026-09-15", 7, 487)]))
+    for days_ago, price in ((3, 620), (2, 590), (1, 540)):
+        cache.record_observations(
+            [candidate("2026-09-15", 7, price)], "fake-provider", now=NOW - timedelta(days=days_ago)
+        )
+
+    result = search()
+
+    assert result["priceHistory"] == {
+        "lowestPrice": 540,
+        "currency": "CAD",
+        "observedDays": 3,
+        "windowDays": cache.PRICE_HISTORY_WINDOW_DAYS,
+    }
+
+
 def test_nearby_airports_are_not_queried_by_default(monkeypatch):
     provider = use_provider(monkeypatch, FakeProvider([candidate("2026-09-15", 7, 487)]))
 

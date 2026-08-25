@@ -115,6 +115,38 @@ def test_search_events_are_recorded_for_local_analytics():
     assert row["result_count"] == 7
 
 
+def test_price_history_is_withheld_until_enough_distinct_days_are_observed():
+    cache.record_observations([build_candidate(620)], "test", now=NOW)
+    cache.record_observations([build_candidate(590)], "test", now=NOW + timedelta(days=1))
+
+    assert cache.price_history("YYZ", "SFO", "CAD", now=NOW + timedelta(days=1)) is None
+
+
+def test_price_history_reports_the_lowest_price_once_enough_days_are_observed():
+    cache.record_observations([build_candidate(620)], "test", now=NOW)
+    cache.record_observations([build_candidate(590)], "test", now=NOW + timedelta(days=1))
+    cache.record_observations([build_candidate(487)], "test", now=NOW + timedelta(days=2))
+
+    result = cache.price_history("YYZ", "SFO", "CAD", now=NOW + timedelta(days=2))
+
+    assert result == {
+        "lowestPrice": 487,
+        "currency": "CAD",
+        "observedDays": 3,
+        "windowDays": cache.PRICE_HISTORY_WINDOW_DAYS,
+    }
+
+
+def test_price_history_ignores_observations_outside_the_window_and_other_currencies():
+    cache.record_observations([build_candidate(620)], "test", now=NOW)
+    cache.record_observations([build_candidate(590)], "test", now=NOW + timedelta(days=1))
+    cache.record_observations([build_candidate(487)], "test", now=NOW + timedelta(days=2))
+
+    too_old = NOW + timedelta(days=cache.PRICE_HISTORY_WINDOW_DAYS + 5)
+    assert cache.price_history("YYZ", "SFO", "CAD", now=too_old) is None
+    assert cache.price_history("YYZ", "SFO", "USD", now=NOW + timedelta(days=2)) is None
+
+
 def test_prune_removes_entries_beyond_the_stale_grace_period():
     cache.write("key", "test", build_request(), {"candidates": []}, now=NOW)
 

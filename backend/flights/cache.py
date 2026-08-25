@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "var", "flights.db")
 TTL_SECONDS = 45 * 60
 STALE_GRACE_SECONDS = 24 * 60 * 60
+PRICE_HISTORY_WINDOW_DAYS = 30
+PRICE_HISTORY_MIN_OBSERVED_DAYS = 3
 
 SCHEMA = (
     """
@@ -191,6 +193,32 @@ def record_event(origin, destination, cache_hit, result_count, now=None):
     except sqlite3.Error:
         return False
     return True
+
+
+def price_history(origin, destination, currency, now=None):
+    since = _iso(_now(now) - timedelta(days=PRICE_HISTORY_WINDOW_DAYS))
+    try:
+        with _connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT price, observed_at FROM flight_price_observations
+                WHERE origin = ? AND destination = ? AND currency = ? AND observed_at >= ?
+                """,
+                (origin, destination, currency, since),
+            ).fetchall()
+    except sqlite3.Error:
+        return None
+
+    observed_days = {row["observed_at"][:10] for row in rows}
+    if len(observed_days) < PRICE_HISTORY_MIN_OBSERVED_DAYS:
+        return None
+
+    return {
+        "lowestPrice": min(row["price"] for row in rows),
+        "currency": currency,
+        "observedDays": len(observed_days),
+        "windowDays": PRICE_HISTORY_WINDOW_DAYS,
+    }
 
 
 def prune(now=None):

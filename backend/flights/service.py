@@ -138,6 +138,7 @@ def _candidate_api(candidate, request):
 
 def _build_payload(request, provider, candidates, searched_at):
     top = candidates[:MAX_CANDIDATES]
+    best = top[0] if top else None
     return {
         "provider": provider.name,
         "searchedAt": searched_at.isoformat(),
@@ -148,10 +149,15 @@ def _build_payload(request, provider, candidates, searched_at):
             "origin": _place(request.origin),
             "destination": _place(request.destination),
         },
-        "best": _candidate_api(top[0], request) if top else None,
+        "best": _candidate_api(best, request) if best else None,
         "candidates": [_candidate_api(candidate, request) for candidate in top],
         "datePrices": insights.date_prices(candidates),
         "insights": insights.build(candidates, request),
+        "priceHistory": (
+            cache.price_history(best.origin, best.destination, request.currency, now=searched_at)
+            if best
+            else None
+        ),
         "message": None if top else NO_RESULTS_MESSAGE,
     }
 
