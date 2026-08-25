@@ -51,6 +51,11 @@ def _price(ticket, field="price"):
         return None
 
 
+def _duration(ticket, field="duration"):
+    value = ticket.get(field)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def _deep_link(link, marker):
     if not link or not str(link).startswith("/"):
         return None
@@ -203,7 +208,7 @@ class AviasalesDataProvider(FlightSearchProvider):
             airline_code=ticket.get("airline"),
             flight_number=str(ticket["flight_number"]) if ticket.get("flight_number") else None,
             stops=_stops(ticket),
-            duration_minutes=ticket.get("duration"),
+            duration_minutes=_duration(ticket),
             found_at=ticket.get("found_at"),
             booking_url=booking_url,
         )
@@ -233,7 +238,7 @@ class AviasalesDataProvider(FlightSearchProvider):
             currency=request.currency,
             source=self.name,
             stops=stops if isinstance(stops, int) else None,
-            duration_minutes=ticket.get("duration"),
+            duration_minutes=_duration(ticket),
             found_at=ticket.get("found_at"),
             booking_url=_fallback_link(origin, destination, departure, return_date, self._marker),
         )

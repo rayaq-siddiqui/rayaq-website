@@ -284,6 +284,36 @@ def test_oversized_payloads_are_refused(monkeypatch):
         provider.search_flexible_dates(build_request())
 
 
+def test_malformed_durations_normalize_to_none_instead_of_crashing_sort(monkeypatch):
+    payload = {
+        "success": True,
+        "data": [
+            {
+                "origin": "YTO",
+                "destination": "SFO",
+                "departure_at": "2026-09-15",
+                "return_at": "2026-09-22",
+                "price": 487,
+                "duration": "745",
+            },
+            {
+                "origin": "YTO",
+                "destination": "SFO",
+                "departure_at": "2026-09-16",
+                "return_at": "2026-09-23",
+                "price": 500,
+                "duration": None,
+            },
+        ],
+    }
+    patch_get(monkeypatch, FakeResponse(payload))
+    provider = aviasales.AviasalesDataProvider(token="secret")
+
+    candidates = provider.search_flexible_dates(build_request()).candidates
+
+    assert [c.duration_minutes for c in candidates] == [None, None]
+
+
 def test_the_registry_returns_the_aviasales_provider(monkeypatch):
     monkeypatch.setenv("TRAVELPAYOUTS_API_TOKEN", "secret")
     reset_providers()
