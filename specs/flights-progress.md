@@ -3,7 +3,7 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-25 — added trip-length preset chips (§27 V1.2, pulled forward).
+**Last updated:** 2026-08-25 — trip-length preset chips now show which one is active.
 
 ---
 
@@ -145,8 +145,8 @@ see `specs/flights-setup.md` if it ever needs rotating or rolling back.
    table has only ~1 day of real traffic behind it as of this run.
 5. **Look for more code-cleanliness items,** per the routine's own priority order:
    duplicated logic, functions doing too much, or provider details leaking out of
-   `providers/`. Three consecutive full read-throughs (2026-08-24, 2026-08-25 x2) found
-   only one real issue, now fixed (the `duration` type-check) — the backend stays small
+   `providers/`. Four consecutive full read-throughs (2026-08-24, 2026-08-25 x3) found
+   only one backend issue, now fixed (the `duration` type-check) — the backend stays small
    and each module does one thing. `flight_price_observations` and `flight_search_events`
    grow without pruning; at this site's traffic that's years away from mattering and
    `flight_price_observations` is explicitly the substrate for V1.3, so leave it be unless
@@ -351,3 +351,31 @@ overflow (`scrollWidth` == `clientWidth` == 390), and the popular-route chips st
 origin/destination and auto-submit correctly after the selector change. Added
 `test_flights_page_offers_trip_length_presets` to `app_tests.py`. Full suite (157 tests,
 up from 156) passes.
+
+### 2026-08-25 — preset chips show which one is active
+A fourth full read-through of `backend/flights/` this run (models, service, cache,
+validation, ranking, insights, airports, rate_limit, providers/aviasales, api, errors)
+found nothing new — same conclusion as the last three passes. §26 is still fully met, and
+the two data-dependent roadmap items (thin-route re-check, V1.3 price history) both still
+need more than the ~1 day of real traffic the token has accumulated since going live
+2026-08-24, so neither is ready yet.
+
+Did find one real UI gap in last run's own addition: the trip-length preset chips
+(`#trip-length-presets`) updated the min/max nights fields on click but gave no visual
+confirmation afterwards — unlike the popular-route chips, which auto-submit and so make
+their effect obvious immediately, a preset click's only feedback was two number inputs
+changing value, easy to miss on a small screen. Added `aria-pressed` tracking: a chip
+shows as selected (new `.chip[aria-pressed="true"]` style, reusing the site's existing
+`#4da3ff` accent) exactly when the current min/max nights values match its bounds, kept in
+sync via `syncPresetSelection()` on preset click, on manual edits to either nights field
+(so hand-typing a value that no longer matches clears the selected state, and typing one
+that does match highlights it), and on page load (so a saved-search URL or the plain
+5–8-night default shows its matching preset as already selected).
+
+Verified in a real browser (Playwright against the dev server) at 390px: page load shows
+"5–8 days" pre-selected (matches the default 5/8 night values); clicking "Weekend trip"
+selects it and deselects the others while setting the fields to 2/3; manually editing
+minimum nights to a value with no matching preset clears every chip's selected state; no
+horizontal overflow; no console errors beyond the pre-existing missing-favicon 404. Added
+an `aria-pressed="false"` assertion to `test_flights_page_offers_trip_length_presets`.
+Full suite (157 tests) passes.
