@@ -284,6 +284,7 @@ def test_flights_page_offers_trip_length_presets():
     assert 'data-min-nights="2" data-max-nights="3"' in body
     assert "Weekend trip" in body
     assert "Long weekend" in body
+    assert 'aria-pressed="false"' in body
 
 
 def test_flights_never_ships_the_provider_token_to_the_browser(monkeypatch):

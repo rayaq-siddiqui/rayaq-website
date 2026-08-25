@@ -642,12 +642,30 @@
     });
   });
 
-  Array.prototype.forEach.call(document.querySelectorAll("#trip-length-presets .chip"), function (chip) {
+  var presetChips = document.querySelectorAll("#trip-length-presets .chip");
+  var minNightsInput = document.getElementById("min-nights");
+  var maxNightsInput = document.getElementById("max-nights");
+
+  function syncPresetSelection() {
+    Array.prototype.forEach.call(presetChips, function (chip) {
+      var matches =
+        chip.getAttribute("data-min-nights") === minNightsInput.value &&
+        chip.getAttribute("data-max-nights") === maxNightsInput.value;
+      chip.setAttribute("aria-pressed", matches ? "true" : "false");
+    });
+  }
+
+  Array.prototype.forEach.call(presetChips, function (chip) {
     chip.addEventListener("click", function () {
-      document.getElementById("min-nights").value = chip.getAttribute("data-min-nights");
-      document.getElementById("max-nights").value = chip.getAttribute("data-max-nights");
+      minNightsInput.value = chip.getAttribute("data-min-nights");
+      maxNightsInput.value = chip.getAttribute("data-max-nights");
+      syncPresetSelection();
     });
   });
+
+  minNightsInput.addEventListener("input", syncPresetSelection);
+  maxNightsInput.addEventListener("input", syncPresetSelection);
+  syncPresetSelection();
 
   if (defaults.directOnly) {
     document.getElementById("direct-only").checked = true;
