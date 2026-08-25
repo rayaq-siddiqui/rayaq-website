@@ -3,8 +3,7 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-25 — provider `duration` values are now type-checked before
-they reach ranking, closing a crash path a malformed upstream field could trigger.
+**Last updated:** 2026-08-25 — added trip-length preset chips (§27 V1.2, pulled forward).
 
 ---
 
@@ -142,13 +141,12 @@ see `specs/flights-setup.md` if it ever needs rotating or rolling back.
    every result card since the token went live on 2026-08-24, but nothing reads it back
    yet. Once a route has accumulated a few weeks of observations, surface "Lowest price
    we've observed in the last 30 days" per the spec's own wording — precise that it's
-   this site's own observed history, not full market history. Worth waiting for real
-   data to accumulate first; the table is nearly empty right now (live only since
-   today), so the insight would have nothing to say.
+   this site's own observed history, not full market history. Still worth waiting: the
+   table has only ~1 day of real traffic behind it as of this run.
 5. **Look for more code-cleanliness items,** per the routine's own priority order:
    duplicated logic, functions doing too much, or provider details leaking out of
-   `providers/`. Two consecutive full read-throughs (2026-08-24, 2026-08-25) found only
-   one real issue, now fixed (the `duration` type-check above) — the backend stays small
+   `providers/`. Three consecutive full read-throughs (2026-08-24, 2026-08-25 x2) found
+   only one real issue, now fixed (the `duration` type-check) — the backend stays small
    and each module does one thing. `flight_price_observations` and `flight_search_events`
    grow without pruning; at this site's traffic that's years away from mattering and
    `flight_price_observations` is explicitly the substrate for V1.3, so leave it be unless
@@ -326,3 +324,30 @@ other raises `TypeError: '<' not supported between instances of 'int' and 'str'`
 `_to_candidate` and `_to_candidate_from_latest`. Added
 `test_malformed_durations_normalize_to_none_instead_of_crashing_sort`. Full suite (156
 tests, up from 155) passes.
+
+### 2026-08-25 — trip-length preset chips (§27 V1.2, pulled forward)
+§26 acceptance criteria are still all met and a fresh read-through of `backend/flights/`
+found no new cleanliness issue, so picked up the next unbuilt roadmap item instead:
+§27 V1.2, search presets ("Weekend trip", "5–8 days", "7–14 days", "Long weekend").
+Added a row of chip buttons under the trip-length fields in `flights.html`
+(`#trip-length-presets`), each carrying `data-min-nights`/`data-max-nights`. Numeric
+mapping (the spec names the presets but not their bounds): Weekend trip 2–3, Long
+weekend 3–4, 5–8 days 5–8, 7–14 days 7–14 — read as nights, matching how the two fields
+next to them are already labelled.
+
+Reused the existing `.chip` visual style rather than adding new CSS. That meant fixing a
+latent selector bug rather than just adding a listener: `flights.js` previously wired
+click handlers with a bare `document.querySelectorAll(".chip")`, assuming every `.chip`
+on the page was a popular-route chip with `data-origin`/`data-destination`. Adding a
+second kind of chip would have made that handler call `origin.set(null)` on click and
+silently clear whatever was selected. Scoped the existing handler to `.popular .chip`
+and added a second one scoped to `#trip-length-presets .chip` that just writes into
+`#min-nights`/`#max-nights` (no auto-submit, unlike the route chips — trip length is one
+of several inputs, not a complete search on its own).
+
+Verified in a real browser (Playwright against the dev server) at 390px: all 4 presets
+render with the right labels and bounds, clicking one updates both fields, no horizontal
+overflow (`scrollWidth` == `clientWidth` == 390), and the popular-route chips still set
+origin/destination and auto-submit correctly after the selector change. Added
+`test_flights_page_offers_trip_length_presets` to `app_tests.py`. Full suite (157 tests,
+up from 156) passes.
