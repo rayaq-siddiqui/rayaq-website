@@ -368,6 +368,23 @@
     return link;
   }
 
+  function priceHistoryNode(history) {
+    if (!history) {
+      return null;
+    }
+    return el(
+      "p",
+      "price-history",
+      "Our own search history shows a low of " +
+        formatMoney(history.lowestPrice) +
+        " " +
+        history.currency +
+        " for this route in the last " +
+        history.windowDays +
+        " days."
+    );
+  }
+
   function bestCard(payload) {
     var candidate = payload.best;
     var card = el("section", "best-card");
@@ -386,6 +403,11 @@
     );
     card.appendChild(datesNode(candidate));
     card.appendChild(metaTags(candidate));
+
+    var history = priceHistoryNode(payload.priceHistory);
+    if (history) {
+      card.appendChild(history);
+    }
 
     var link = verifyLink(candidate, "verify-link", "Check current price");
     if (link) {
