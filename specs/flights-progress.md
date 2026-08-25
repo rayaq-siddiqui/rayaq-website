@@ -3,7 +3,7 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-25 — trip-length preset chips now show which one is active.
+**Last updated:** 2026-08-25 — local price history (§27 V1.3) built and gated on real data.
 
 ---
 
@@ -137,20 +137,18 @@ see `specs/flights-setup.md` if it ever needs rotating or rolling back.
    abstraction means adding it later is a new file in `providers/`, not a rewrite. This
    needs the site owner to apply — not something an agent session can do — but it's the
    spec-sanctioned path to denser data if nearby-airport search still isn't enough.
-4. **§27 V1.3, local price history.** `flight_price_observations` has been recording
-   every result card since the token went live on 2026-08-24, but nothing reads it back
-   yet. Once a route has accumulated a few weeks of observations, surface "Lowest price
-   we've observed in the last 30 days" per the spec's own wording — precise that it's
-   this site's own observed history, not full market history. Still worth waiting: the
-   table has only ~1 day of real traffic behind it as of this run.
-5. **Look for more code-cleanliness items,** per the routine's own priority order:
+4. **Look for more code-cleanliness items,** per the routine's own priority order:
    duplicated logic, functions doing too much, or provider details leaking out of
-   `providers/`. Four consecutive full read-throughs (2026-08-24, 2026-08-25 x3) found
+   `providers/`. Five consecutive full read-throughs (2026-08-24, 2026-08-25 x4) found
    only one backend issue, now fixed (the `duration` type-check) — the backend stays small
-   and each module does one thing. `flight_price_observations` and `flight_search_events`
-   grow without pruning; at this site's traffic that's years away from mattering and
-   `flight_price_observations` is explicitly the substrate for V1.3, so leave it be unless
-   real growth numbers say otherwise.
+   and each module does one thing. `flight_search_events` grows without pruning; at this
+   site's traffic that's years away from mattering, so leave it be unless real growth
+   numbers say otherwise.
+5. **Watch how often the new price-history line actually appears.** It requires
+   observations spanning at least 3 distinct days for the same real origin/destination
+   pair and currency, so it will stay silent in production until the VM's traffic
+   history (only ~1 day deep as of this run) grows past that. No agent action needed —
+   just note it in a future run once it's had time to accumulate.
 
 ---
 
@@ -379,3 +377,43 @@ minimum nights to a value with no matching preset clears every chip's selected s
 horizontal overflow; no console errors beyond the pre-existing missing-favicon 404. Added
 an `aria-pressed="false"` assertion to `test_flights_page_offers_trip_length_presets`.
 Full suite (157 tests) passes.
+
+### 2026-08-25 — local price history (§27 V1.3, pulled forward)
+A fifth full read-through of `backend/flights/` found nothing new (same conclusion as
+the last four), and both data-dependent items from the previous run's candidate list
+(thin-route re-check, price history) still need more real traffic than the ~1 day the
+token has accumulated. Rather than wait idle, built the read side of V1.3 now, gated so
+it only activates once there is actually enough data behind it — the honest failure mode
+the spec asks for (§30: "implement the subset supported by the free source, surface the
+limitation honestly") applied to a feature waiting on its own data rather than a provider
+gap.
+
+Added `cache.price_history(origin, destination, currency, now=None)`: queries
+`flight_price_observations` for the given real origin/destination/currency over the
+trailing 30 days (`PRICE_HISTORY_WINDOW_DAYS`), and returns `None` unless the rows span
+at least 3 distinct calendar days (`PRICE_HISTORY_MIN_OBSERVED_DAYS`) — otherwise a
+same-day search would just echo its own live price back as "history". `service.py` wires
+it into the response as `priceHistory`, keyed off the **Best Deal** card's own
+origin/destination (`best.origin`/`best.destination`, the real airport pair actually
+shown), not the searched request codes — the two differ whenever the searched code is a
+metro code (`YTO`) or nearby-airport search substituted a real alternate, and observations
+are themselves recorded against the real candidate airports, so querying by request code
+would silently never match. Computed before the current search's own observation is
+written, so a fresh route's very first search correctly shows nothing rather than
+comparing today's price to itself.
+
+`flights.js` renders `payload.priceHistory` as a muted line under the Best Deal card's
+meta tags ("Our own search history shows a low of $540 CAD for this route in the last 30
+days.") when present, and renders nothing when it is `null`. Verified in a real browser
+(Playwright against the dev server, dependency not added to the project) at 390px with a
+stubbed `/api/flights/search` response: the line renders with the expected text when
+`priceHistory` is set, no `.price-history` node is added when it's `null`, no horizontal
+overflow, no console errors beyond the pre-existing missing-favicon 404. Added 3 tests to
+`flights_cache_tests.py` (withheld under 3 days, reported at 3 days, ignores stale/other-
+currency rows) and 2 to `flights_service_tests.py` (absent, then correct once 3 prior
+days exist). Full suite (162 tests, up from 157) passes.
+
+This will stay silent on the live site until real traffic accumulates 3 distinct days of
+observations for a given route/currency — expected soon given the token went live
+2026-08-24, but not verifiable from this sandbox (egress to `rayaq.ca` is blocked here,
+per the 2026-08-24 note).
