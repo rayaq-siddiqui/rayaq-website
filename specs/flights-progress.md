@@ -3,8 +3,8 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-24 — empty-state suggestions now reflect the filters actually
-used in the search.
+**Last updated:** 2026-08-25 — provider `duration` values are now type-checked before
+they reach ranking, closing a crash path a malformed upstream field could trigger.
 
 ---
 
@@ -147,10 +147,12 @@ see `specs/flights-setup.md` if it ever needs rotating or rolling back.
    today), so the insight would have nothing to say.
 5. **Look for more code-cleanliness items,** per the routine's own priority order:
    duplicated logic, functions doing too much, or provider details leaking out of
-   `providers/`. A full read-through this run (`service.py`, `ranking.py`, `insights.py`,
-   `models.py`, `cache.py`, `validation.py`, `providers/aviasales.py`, `airports.py`,
-   `rate_limit.py`, `api.py`, `errors.py`, `app.py`) found nothing worth changing — the
-   backend stays small and each module does one thing.
+   `providers/`. Two consecutive full read-throughs (2026-08-24, 2026-08-25) found only
+   one real issue, now fixed (the `duration` type-check above) — the backend stays small
+   and each module does one thing. `flight_price_observations` and `flight_search_events`
+   grow without pruning; at this site's traffic that's years away from mattering and
+   `flight_price_observations` is explicitly the substrate for V1.3, so leave it be unless
+   real growth numbers say otherwise.
 
 ---
 
@@ -304,3 +306,23 @@ stops" in place of "Try a nearby airport", no console errors. No backend change,
 existing 155 tests stand unchanged (this project has no frontend JS test harness — see
 CLAUDE.md — so verification here is manual/Playwright, matching how prior JS-only
 changes in this log were checked).
+
+### 2026-08-25 — type-check provider `duration` before it reaches ranking
+Read through the whole `backend/flights/` package again this run, then verified the live
+page in a real browser at 390px (Playwright against the dev server, unconfigured
+provider) — no horizontal overflow, no console errors, tap targets already correct
+(`.toggle` labels are `min-height: 44px`, so the whole row is the target, not just the
+checkbox glyph). No UI gap found.
+
+Did find one real robustness gap in `providers/aviasales.py`: `price` and `stops` are
+both validated/coerced before becoming a `FlightCandidate` (`_price` catches conversion
+failures, `_stops` filters to `isinstance(leg, int)`), but `duration` was passed straight
+through as `ticket.get("duration")` with no check. `ranking.score()` sorts on
+`(price, stops, duration_minutes or 10**6)` — confirmed by hand that when two candidates
+tie on price and stops, a string `duration` on one and the `10**6` int fallback on the
+other raises `TypeError: '<' not supported between instances of 'int' and 'str'` inside
+`sorted()`, which would 500 the whole search from one malformed upstream field. Added
+`_duration()`, mirroring the existing `_price`/`_stops` pattern, and used it in both
+`_to_candidate` and `_to_candidate_from_latest`. Added
+`test_malformed_durations_normalize_to_none_instead_of_crashing_sort`. Full suite (156
+tests, up from 155) passes.
