@@ -630,7 +630,7 @@
     destination.set(originCode);
   });
 
-  Array.prototype.forEach.call(document.querySelectorAll(".chip"), function (chip) {
+  Array.prototype.forEach.call(document.querySelectorAll(".popular .chip"), function (chip) {
     chip.addEventListener("click", function () {
       showError("");
       Promise.all([
@@ -639,6 +639,13 @@
       ]).then(function () {
         form.dispatchEvent(new Event("submit", { cancelable: true }));
       });
+    });
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll("#trip-length-presets .chip"), function (chip) {
+    chip.addEventListener("click", function () {
+      document.getElementById("min-nights").value = chip.getAttribute("data-min-nights");
+      document.getElementById("max-nights").value = chip.getAttribute("data-max-nights");
     });
   });
 

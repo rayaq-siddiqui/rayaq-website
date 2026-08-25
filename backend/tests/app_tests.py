@@ -275,6 +275,17 @@ def test_flights_page_includes_a_hook_for_the_provider_status_banner():
     assert 'id="provider-notice"' in body
 
 
+def test_flights_page_offers_trip_length_presets():
+    client = app_module.app.test_client()
+
+    body = client.get("/flights").get_data(as_text=True)
+
+    assert 'id="trip-length-presets"' in body
+    assert 'data-min-nights="2" data-max-nights="3"' in body
+    assert "Weekend trip" in body
+    assert "Long weekend" in body
+
+
 def test_flights_never_ships_the_provider_token_to_the_browser(monkeypatch):
     monkeypatch.setenv("TRAVELPAYOUTS_API_TOKEN", "super-secret-token")
     client = app_module.app.test_client()
