@@ -3,7 +3,27 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-25 — local price history (§27 V1.3) built and gated on real data.
+**Last updated:** 2026-08-26 — discovered none of this work has ever reached `main`.
+
+**⚠️ CRITICAL, unresolved as of this update:** every run of this routine, including
+this one, executes inside a session that is hard-restricted to a fixed branch,
+`claude/adoring-newton-70rvjv`, with an explicit "never push to a different branch
+without explicit permission" rule. That rule overrides this file's own instructions
+("commit and push directly to `main`"), so every commit below has landed on that side
+branch only. **`origin/main` has zero files matching `flight` anywhere in its tree** —
+confirmed by `git ls-tree -r --name-only origin/main | grep -i flight` returning
+nothing, and by `git diff --stat origin/main HEAD` showing all 38 files / ~7,900 lines
+of this project as entirely absent from `main`. No pull request for this branch has
+ever existed (checked via the GitHub API: only PR #1 and PR #2 exist in this repo,
+both unrelated to flights, both from August 2). The claims throughout this log that
+"V1 is deployed", "real search is working in production", and "the token is live on
+the VM" were written in good faith from local test results but were **never actually
+verified against production from a session that could reach `main`**, and per the
+git evidence, production almost certainly does not have this feature at all — the
+live `rayaq.ca` today is very likely running the pre-flights version of the site.
+See **Open owner actions** below. Not fixing this myself: merging 41 commits of a new
+feature straight to `main` without the branch restriction being explicitly lifted is
+exactly the kind of action that instruction exists to prevent.
 
 ---
 
@@ -112,8 +132,26 @@ Routes live in `backend/app.py`; the page is `frontend/templates/flights.html` w
 
 ## Open owner actions (not agent work)
 
-None outstanding. The Travelpayouts token is live on the VM (confirmed 2026-08-24);
-see `specs/flights-setup.md` if it ever needs rotating or rolling back.
+**New, urgent (2026-08-26):** get the `claude/adoring-newton-70rvjv` branch merged into
+`main`. This routine's sessions cannot do it themselves (see the warning above) — the
+work needs a human, or a session with different permissions, to either:
+- open a PR from `claude/adoring-newton-70rvjv` into `main` and merge it (branch
+  protection needs 1 approval for anyone but the repo admin, per `CLAUDE.md`), or
+- as the repo admin, `git fetch origin claude/adoring-newton-70rvjv && git merge
+  --ff-only origin/claude/adoring-newton-70rvjv` into a local `main` and push directly.
+
+Until this happens, everything else in this file describing production behaviour
+(the live token, real search, deployed UI) is describing what the code *would* do
+once deployed, not confirmed current reality of `rayaq.ca`.
+
+Once merged, it's worth checking why the routine's sessions ended up pinned to a
+side branch in the first place — this file's own instructions (and `CLAUDE.md`) say
+to push straight to `main`, so something about how this scheduled routine's sessions
+get provisioned is overriding that.
+
+Separately, unrelated to the above: the Travelpayouts token was reported live on the
+VM on 2026-08-24; see `specs/flights-setup.md` if it ever needs rotating or rolling
+back — but that only matters once the code that reads it actually reaches `main`.
 
 ---
 
@@ -417,3 +455,31 @@ This will stay silent on the live site until real traffic accumulates 3 distinct
 observations for a given route/currency — expected soon given the token went live
 2026-08-24, but not verifiable from this sandbox (egress to `rayaq.ca` is blocked here,
 per the 2026-08-24 note).
+
+### 2026-08-26 — found that none of this has ever reached `main`
+Before picking a next increment, checked this session's actual git state against
+`origin/main` rather than assuming the previous logs were accurate. Findings:
+
+- This session (like, per the commit history, every prior routine session) is
+  hard-restricted to `claude/adoring-newton-70rvjv` and explicitly forbidden from
+  pushing to a different branch without explicit permission — a rule that overrides
+  this file's own "commit and push directly to `main`" instruction.
+- `git diff --stat origin/main HEAD` shows all 38 files of this project (~7,900 lines)
+  present on this branch and **absent from `main`**. `git ls-tree -r --name-only
+  origin/main | grep -i flight` returns nothing at all.
+- `git log --oneline main..HEAD` lists all 41 flights commits; `main..HEAD` the other
+  way is empty, so `main` isn't even missing a merge of equivalent squashed content —
+  it has genuinely never received this work in any form.
+- The GitHub API confirms no PR has ever been opened for this branch, and the only two
+  PRs in the repo's history (#1, #2, both from around 2026-08-02) are unrelated to
+  flights.
+
+Net effect: every previous run's claim that V1 was "deployed", "live", or that the
+provider token was "confirmed live on the VM" was based on local test runs and the
+site owner's own hand-testing, not on anything actually reaching `main` — because
+nothing has. The live `rayaq.ca` almost certainly still doesn't have `/flights` at
+all. Did not attempt to force a push to `main` or open a PR myself this run, since
+both would mean overriding an explicit branch/permission restriction on my own
+judgement rather than the owner's; wrote up the finding and the two ways to fix it
+under **Open owner actions** instead, and sent a notification. No code changes this
+run — full suite untouched, still the same 162 tests as of 2026-08-25.
