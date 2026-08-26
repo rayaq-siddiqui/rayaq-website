@@ -1,4 +1,4 @@
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date
 from typing import Optional
 
@@ -82,9 +82,6 @@ class FlightCandidate:
             self.return_date,
             round(self.total_price, 2),
         )
-
-    def with_booking_url(self, url):
-        return replace(self, booking_url=url)
 
     def to_api(self):
         return {
