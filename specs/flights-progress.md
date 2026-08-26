@@ -3,7 +3,7 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-26 — cap incoming request body size on `/api/flights/search`.
+**Last updated:** 2026-08-26 — trust the rightmost `X-Forwarded-For` hop for rate limiting.
 
 ---
 
@@ -139,11 +139,11 @@ see `specs/flights-setup.md` if it ever needs rotating or rolling back.
    spec-sanctioned path to denser data if nearby-airport search still isn't enough.
 4. **Look for more code-cleanliness items,** per the routine's own priority order:
    duplicated logic, functions doing too much, or provider details leaking out of
-   `providers/`. Six consecutive full read-throughs of `backend/flights/` (2026-08-24,
-   2026-08-25 x4, 2026-08-26) found two real issues, both now fixed: the `duration`
-   type-check and the uncapped request body. `flight_search_events` grows without
-   pruning; at this site's traffic that's years away from mattering, so leave it be
-   unless real growth numbers say otherwise.
+   `providers/`. Seven consecutive full read-throughs of `backend/flights/` (2026-08-24,
+   2026-08-25 x4, 2026-08-26 x2) found three real issues, all now fixed: the `duration`
+   type-check, the uncapped request body, and the `X-Forwarded-For` trust direction.
+   `flight_search_events` grows without pruning; at this site's traffic that's years away
+   from mattering, so leave it be unless real growth numbers say otherwise.
 5. **Watch how often the new price-history line actually appears.** It requires
    observations spanning at least 3 distinct days for the same real origin/destination
    pair and currency, so it will stay silent in production until the VM's traffic
@@ -446,3 +446,32 @@ error, rather than Flask's default HTML error page, since this is a JSON API. Ad
 
 No UI-facing change — a legitimate search body is a few hundred bytes at most, nowhere
 near the new limit.
+
+### 2026-08-26 — trust the rightmost `X-Forwarded-For` hop
+
+A seventh full read-through of `backend/flights/` (models, service, cache, validation,
+ranking, insights, airports, rate_limit, providers/aviasales, api, errors) plus `app.py`
+found one real issue in `flights_api.client_id()`, which decides the identity the §17
+rate limiter counts against. It took `forwarded_for.split(",")[0]` — the leftmost entry.
+`deploy/Caddyfile` has no `trusted_proxies` configured, and `rayaq.ca` sits behind exactly
+one hop (Caddy, no CDN in front of it per the infra notes in `CLAUDE.md`), so the only
+entry in that header a client cannot control is the one the trusted hop itself appends —
+the rightmost one. Depending on the exact Caddy version's default handling of an
+already-present client-supplied header (verified against Caddy's own docs was not
+possible from this sandbox — `caddyserver.com` is on the egress blocklist), trusting the
+leftmost entry ranges from a no-op (if Caddy discards/overwrites inbound values, which
+recent Caddy versions do by default) to a free rate-limit bypass (if it appends, since a
+client can put anything before Caddy's own value). There is no version of this
+single-proxy deployment where trusting the leftmost entry over the rightmost one is more
+correct, so switched `client_id()` to `split(",")[-1]` — behavior-identical when the
+header only ever has one entry (which is likely already the case in production), strictly
+safer otherwise. Updated the existing convention test (it modeled a two-hop chain and
+was itself asserting the vulnerable behavior) and added
+`test_the_forwarded_client_address_ignores_a_client_supplied_leftmost_hop`. Full suite
+(164 tests, up from 163) passes.
+
+Also confirmed this session's designated branch (`claude/adoring-newton-lsce8k`) had
+already been fast-forward-merged into `main` in full (through "cap the incoming request
+body size") with no open PR — `origin/main` and the branch tip were identical commits.
+Restarted the branch from `origin/main` per this routine's standing instructions before
+starting work, rather than stacking on top of already-merged history.
