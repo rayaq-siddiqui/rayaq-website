@@ -173,5 +173,10 @@ def test_search_returns_429_once_the_client_limit_is_reached(monkeypatch):
 
 
 def test_the_forwarded_client_address_identifies_the_caller():
-    assert flights_api.client_id("203.0.113.7, 10.0.0.1", "10.0.0.1") == "203.0.113.7"
+    assert flights_api.client_id("203.0.113.7, 10.0.0.1", "10.0.0.1") == "10.0.0.1"
     assert flights_api.client_id(None, "10.0.0.1") == "10.0.0.1"
+
+
+def test_the_forwarded_client_address_ignores_a_client_supplied_leftmost_hop():
+    spoofed = flights_api.client_id("9.9.9.9, 203.0.113.7", "203.0.113.7")
+    assert spoofed == "203.0.113.7"

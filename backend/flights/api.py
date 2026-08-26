@@ -8,7 +8,10 @@ def page_context(query=None):
 
 def client_id(forwarded_for, remote_addr):
     if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
+        # Only Caddy appends to this header, so the last hop is the one it
+        # observed directly; earlier entries are attacker-suppliable and
+        # would let a scripted abuser rotate past the rate limiter for free.
+        return forwarded_for.split(",")[-1].strip()
     return remote_addr
 
 
