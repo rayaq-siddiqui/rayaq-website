@@ -3,7 +3,7 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-26 — trust the rightmost `X-Forwarded-For` hop for rate limiting.
+**Last updated:** 2026-08-26 — remove the dead `FlightCandidate.with_booking_url` method.
 
 ---
 
@@ -139,11 +139,12 @@ see `specs/flights-setup.md` if it ever needs rotating or rolling back.
    spec-sanctioned path to denser data if nearby-airport search still isn't enough.
 4. **Look for more code-cleanliness items,** per the routine's own priority order:
    duplicated logic, functions doing too much, or provider details leaking out of
-   `providers/`. Seven consecutive full read-throughs of `backend/flights/` (2026-08-24,
-   2026-08-25 x4, 2026-08-26 x2) found three real issues, all now fixed: the `duration`
-   type-check, the uncapped request body, and the `X-Forwarded-For` trust direction.
-   `flight_search_events` grows without pruning; at this site's traffic that's years away
-   from mattering, so leave it be unless real growth numbers say otherwise.
+   `providers/`. Eight consecutive full read-throughs of `backend/flights/` (2026-08-24,
+   2026-08-25 x4, 2026-08-26 x3) found four real issues, all now fixed: the `duration`
+   type-check, the uncapped request body, the `X-Forwarded-For` trust direction, and the
+   dead `with_booking_url` method. `flight_search_events` grows without pruning; at this
+   site's traffic that's years away from mattering, so leave it be unless real growth
+   numbers say otherwise.
 5. **Watch how often the new price-history line actually appears.** It requires
    observations spanning at least 3 distinct days for the same real origin/destination
    pair and currency, so it will stay silent in production until the VM's traffic
@@ -475,3 +476,24 @@ already been fast-forward-merged into `main` in full (through "cap the incoming 
 body size") with no open PR — `origin/main` and the branch tip were identical commits.
 Restarted the branch from `origin/main` per this routine's standing instructions before
 starting work, rather than stacking on top of already-merged history.
+
+### 2026-08-26 — remove the dead `with_booking_url` method
+
+This session's designated branch (`claude/adoring-newton-w217j6`) was also already
+fast-forward-merged into `main` in full (through the previous entry above) with no open
+PR — restarted it from `origin/main` before starting work, same as the prior run.
+
+Confirmed no VM/production access exists from this sandbox this run either (no `gcloud`
+CLI installed at all, so `vmrun.sh` cannot run here), so the two data-dependent roadmap
+items (thin-route re-check, watching price history appear) still cannot be checked from
+an agent session — no change from prior runs' notes.
+
+An eighth full read-through of `backend/flights/`, this time also reading
+`frontend/templates/flights.html` and `frontend/static/flights.js` line by line rather
+than only spot-checking them in a browser, found one real issue:
+`FlightCandidate.with_booking_url()` in `models.py` was dead code — added in the very
+first commit of the domain layer (`2873b34`) and never called by `service.py`,
+`providers/aviasales.py` (which sets `booking_url` directly via the constructor instead),
+or any test. Removed the method and the now-unused `replace` import it was the only user
+of. No behavior change; full suite (164 tests) still passes. Frontend files themselves
+had no issues worth changing.
