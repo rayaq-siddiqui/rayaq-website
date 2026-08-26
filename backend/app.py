@@ -7,11 +7,19 @@ from assembly import get_showcase
 from flights import api as flights_api
 from weather import get_weather_for_cities
 
+MAX_REQUEST_BODY_BYTES = 16 * 1024
+
 app = Flask(
     __name__,
     static_folder="../frontend/static",
     template_folder="../frontend/templates",
 )
+app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BODY_BYTES
+
+
+@app.errorhandler(413)
+def request_body_too_large(_error):
+    return {"error": "Request body is too large."}, 413
 
 
 @app.route("/")

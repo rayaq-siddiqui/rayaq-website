@@ -3,7 +3,7 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-25 — local price history (§27 V1.3) built and gated on real data.
+**Last updated:** 2026-08-26 — cap incoming request body size on `/api/flights/search`.
 
 ---
 
@@ -139,11 +139,11 @@ see `specs/flights-setup.md` if it ever needs rotating or rolling back.
    spec-sanctioned path to denser data if nearby-airport search still isn't enough.
 4. **Look for more code-cleanliness items,** per the routine's own priority order:
    duplicated logic, functions doing too much, or provider details leaking out of
-   `providers/`. Five consecutive full read-throughs (2026-08-24, 2026-08-25 x4) found
-   only one backend issue, now fixed (the `duration` type-check) — the backend stays small
-   and each module does one thing. `flight_search_events` grows without pruning; at this
-   site's traffic that's years away from mattering, so leave it be unless real growth
-   numbers say otherwise.
+   `providers/`. Six consecutive full read-throughs of `backend/flights/` (2026-08-24,
+   2026-08-25 x4, 2026-08-26) found two real issues, both now fixed: the `duration`
+   type-check and the uncapped request body. `flight_search_events` grows without
+   pruning; at this site's traffic that's years away from mattering, so leave it be
+   unless real growth numbers say otherwise.
 5. **Watch how often the new price-history line actually appears.** It requires
    observations spanning at least 3 distinct days for the same real origin/destination
    pair and currency, so it will stay silent in production until the VM's traffic
@@ -417,3 +417,32 @@ This will stay silent on the live site until real traffic accumulates 3 distinct
 observations for a given route/currency — expected soon given the token went live
 2026-08-24, but not verifiable from this sandbox (egress to `rayaq.ca` is blocked here,
 per the 2026-08-24 note).
+
+### 2026-08-26 — cap the incoming request body size
+
+A sixth full read-through of `backend/flights/` (models, service, cache, validation,
+ranking, insights, airports, rate_limit, providers/aviasales, api, errors) found nothing
+new — the package stays small and each module still does one thing. The two
+data-dependent roadmap items (thin-route re-check, watching price history appear) both
+still need more real traffic than this sandbox can observe (egress to `rayaq.ca` is
+blocked here).
+
+Widened the read to `app.py` itself and found a real gap against §18 Security's "cap
+response payload sizes" requirement: the outbound side was already covered
+(`aviasales.py`'s `MAX_RESPONSE_BYTES` refuses an oversized *provider* response, tested
+by `test_oversized_payloads_are_refused`), but nothing capped the *inbound* side —
+`POST /api/flights/search` read `request.get_json(silent=True)` with no limit on the
+request body Werkzeug buffers into memory first. On an e2-micro VM with ~1 GB of RAM,
+an arbitrarily large POST body to that one endpoint (the only route in this app that
+accepts a body at all) is a real, cheap way to pressure the process before validation
+ever gets a chance to reject the input on its merits.
+
+Added `app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BODY_BYTES` (16 KiB — generous for
+a search payload of a handful of short strings, dates, ints, and booleans) plus a `413`
+error handler that returns the same `{"error": ...}` JSON shape as every other flights
+error, rather than Flask's default HTML error page, since this is a JSON API. Added
+`test_flights_search_rejects_an_oversized_request_body` to `app_tests.py`. Full suite
+(163 tests, up from 162) passes.
+
+No UI-facing change — a legitimate search body is a few hundred bytes at most, nowhere
+near the new limit.

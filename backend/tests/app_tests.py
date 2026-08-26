@@ -319,3 +319,17 @@ def test_flights_ignores_an_unknown_airport_code_in_the_query_string():
 
     assert '"origin": ""' in body
     assert '"autoSearch": false' in body
+
+
+def test_flights_search_rejects_an_oversized_request_body():
+    client = app_module.app.test_client()
+    oversized = b"x" * (app_module.MAX_REQUEST_BODY_BYTES + 1)
+
+    response = client.post(
+        "/api/flights/search",
+        data=oversized,
+        content_type="application/json",
+    )
+
+    assert response.status_code == 413
+    assert response.get_json()["error"]
