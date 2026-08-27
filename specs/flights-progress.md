@@ -3,7 +3,7 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-27 — cover the untested cheapest-weekday insight.
+**Last updated:** 2026-08-27 — pin the month-cap/window-size invariant with a test.
 
 ---
 
@@ -11,7 +11,7 @@ The contract is `specs/flights.md`; this file records where the code actually st
 
 V1 is built end to end and deployed through the normal `main` → CI/CD path. The page,
 the API, the provider adapter, the SQLite cache, rate limiting, and the deterministic
-insights all exist and are covered by tests (166 passing).
+insights all exist and are covered by tests (167 passing).
 
 The provider token is live on the VM — the site owner confirmed
 `GET https://rayaq.ca/api/flights/health` returns `{"providerConfigured": true}` on
@@ -139,12 +139,13 @@ see `specs/flights-setup.md` if it ever needs rotating or rolling back.
    spec-sanctioned path to denser data if nearby-airport search still isn't enough.
 4. **Look for more code-cleanliness items,** per the routine's own priority order:
    duplicated logic, functions doing too much, or provider details leaking out of
-   `providers/`. Nine consecutive full read-throughs of `backend/flights/` (2026-08-24,
-   2026-08-25 x4, 2026-08-26 x3, 2026-08-27) found five real issues, all now fixed: the
+   `providers/`. Ten consecutive full read-throughs of `backend/flights/` (2026-08-24,
+   2026-08-25 x4, 2026-08-26 x3, 2026-08-27 x2) found six real issues, all now fixed: the
    `duration` type-check, the uncapped request body, the `X-Forwarded-For` trust
-   direction, the dead `with_booking_url` method, and the untested cheapest-weekday
-   insight. `flight_search_events` grows without pruning; at this site's traffic that's
-   years away from mattering, so leave it be unless real growth numbers say otherwise.
+   direction, the dead `with_booking_url` method, the untested cheapest-weekday
+   insight, and the unpinned month-cap/window-size invariant. `flight_search_events`
+   grows without pruning; at this site's traffic that's years away from mattering, so
+   leave it be unless real growth numbers say otherwise.
 5. **Watch how often the new price-history line actually appears.** It requires
    observations spanning at least 3 distinct days for the same real origin/destination
    pair and currency, so it will stay silent in production until the VM's traffic
@@ -521,3 +522,35 @@ its exact message) and `test_insights_stay_silent_on_a_weekday_split_too_small_t
 (same shape, gap under $15, asserting it does not fire) to `flights_domain_tests.py`. No
 production code changed — this run confirmed existing behavior matches intent rather than
 fixing a bug. Full suite (166 tests, up from 164) passes.
+
+### 2026-08-27 — pin the month-cap/window-size invariant with a test
+
+The designated branch (`claude/adoring-newton-uet06z`) had a stale local `origin/main`
+ref pointing at an old commit (pre-dating the entire flights build); a fresh
+`git fetch origin main` confirmed GitHub's actual `main` was already at this branch's
+tip (`ba487bc`) with no divergence — a local caching artifact, not a real gap between
+the branch and production.
+
+A tenth full read-through of `backend/flights/` (models, service, cache, validation,
+ranking, insights, airports, rate_limit, providers/aviasales, api, errors) plus `app.py`
+and, for the first time this run, a complete line-by-line pass of `flights.html`,
+`flights.js`, and `flights.css` found no new logic bug and no UI/mobile issue.
+
+Chased one near-miss that turned out to be correct-but-unpinned: `aviasales.py`'s
+`_months_in_window` caps at `MAX_MONTHS_PER_SEARCH = 3` months per search, while
+`validation.MAX_WINDOW_DAYS = 60` lives in a different file. If a maximal-length window
+could span 4 calendar months, the cap would silently drop the last month's dates from
+every search touching it — no error, just quietly incomplete results, exactly the kind
+of gap §12.2 warns against papering over. Worked the calendar math by hand: touching 4
+months in a 60-day window needs two full consecutive months in the middle (minimum 59
+days, achieved only by Jan+Feb or Feb+Mar) plus at least one day on each end (2 more),
+i.e. 61 days minimum — one more than `MAX_WINDOW_DAYS` allows. So today's constants are
+correct, but the relationship is implicit across two files with no test enforcing it;
+bumping `MAX_WINDOW_DAYS` alone in a future run would silently reintroduce exactly this
+bug. Added `test_the_month_cap_never_truncates_a_maximum_length_window` to
+`flights_provider_tests.py`: it walks every possible start date across a leap and a
+non-leap year and asserts `_months_in_window`'s output always matches the naturally
+occurring (uncapped) month count for a `MAX_WINDOW_DAYS`-long window. Verified the test
+actually catches a regression by temporarily lowering `MAX_MONTHS_PER_SEARCH` to 2 in a
+throwaway REPL check (685 mismatches), then confirmed the real code has none. Full suite
+(167 tests, up from 166) passes.
