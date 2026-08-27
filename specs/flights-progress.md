@@ -3,7 +3,7 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-27 — pin the month-cap/window-size invariant with a test.
+**Last updated:** 2026-08-27 — eleventh read-through, V1 scope confirmed complete.
 
 ---
 
@@ -139,8 +139,8 @@ see `specs/flights-setup.md` if it ever needs rotating or rolling back.
    spec-sanctioned path to denser data if nearby-airport search still isn't enough.
 4. **Look for more code-cleanliness items,** per the routine's own priority order:
    duplicated logic, functions doing too much, or provider details leaking out of
-   `providers/`. Ten consecutive full read-throughs of `backend/flights/` (2026-08-24,
-   2026-08-25 x4, 2026-08-26 x3, 2026-08-27 x2) found six real issues, all now fixed: the
+   `providers/`. Eleven consecutive full read-throughs of `backend/flights/` (2026-08-24,
+   2026-08-25 x4, 2026-08-26 x3, 2026-08-27 x3) found six real issues, all now fixed: the
    `duration` type-check, the uncapped request body, the `X-Forwarded-For` trust
    direction, the dead `with_booking_url` method, the untested cheapest-weekday
    insight, and the unpinned month-cap/window-size invariant. `flight_search_events`
@@ -554,3 +554,34 @@ occurring (uncapped) month count for a `MAX_WINDOW_DAYS`-long window. Verified t
 actually catches a regression by temporarily lowering `MAX_MONTHS_PER_SEARCH` to 2 in a
 throwaway REPL check (685 mismatches), then confirmed the real code has none. Full suite
 (167 tests, up from 166) passes.
+
+### 2026-08-27 — eleventh read-through, V1 scope confirmed complete
+
+Designated branch (`claude/adoring-newton-r87ni8`) was already identical to
+`origin/main` (tip `ed64839`) — no restart needed.
+
+An eleventh full read-through of the whole surface: every module in `backend/flights/`
+(models, service, cache, validation, ranking, insights, airports, rate_limit,
+providers/aviasales, api, errors), `app.py`, and a complete pass of `flights.html`,
+`flights.js`, and `flights.css`. Specifically re-checked a few areas that hadn't been
+called out by name in recent runs: `_search_pairs`' upstream-call bound (still exactly
+1 exact pair + at most 1 nearby alternate per side, matching `airports.NEARBY_LIMIT =
+1`); the `raw_provider_id` field on `FlightCandidate` (confirmed genuinely
+unpopulatable by Aviasales — neither `/v3/prices_for_dates` nor `/v2/prices/latest`
+tickets carry a stable ID in the real fixtures, so the dedupe fallback tuple is the
+correct permanent path here, not a gap); the CSS rules backing every class the JS
+renders (`.price-history`, `.chip[aria-pressed="true"]`, `.tag-airport`, `.chip-row` are
+all present and styled); and the `dateStrip` weekday/date label's embedded `\n`
+(`.date-label` has `white-space: pre-line`, so it already renders correctly). Found
+nothing new — no logic bug, no missing test, no UI/mobile issue. Full suite (167 tests)
+passes unchanged.
+
+Every §26 acceptance criterion remains met. Every agent-actionable §27 roadmap item
+(V1.1 nearby airports, V1.2 search presets, V1.3 local price history, V1.4 saved URLs)
+is already built. What remains in **Next candidate increments** below is either
+owner-only (V1.5 Skyscanner application) or genuinely data-dependent (thin-route
+re-check, watching price history appear), and none of it can be advanced from this
+sandbox, which still has no network path to `rayaq.ca`, `travelpayouts.com`, or a
+`gcloud`/VM session. V1 is feature-complete and in steady-state maintenance: future runs
+should keep doing full read-throughs (cheap, and this is how the last several real bugs
+got caught) but should not invent busywork when a pass comes up empty, as this one did.
