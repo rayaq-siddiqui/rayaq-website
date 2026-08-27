@@ -3,7 +3,7 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-26 — remove the dead `FlightCandidate.with_booking_url` method.
+**Last updated:** 2026-08-27 — cover the untested cheapest-weekday insight.
 
 ---
 
@@ -11,7 +11,7 @@ The contract is `specs/flights.md`; this file records where the code actually st
 
 V1 is built end to end and deployed through the normal `main` → CI/CD path. The page,
 the API, the provider adapter, the SQLite cache, rate limiting, and the deterministic
-insights all exist and are covered by tests (135 passing).
+insights all exist and are covered by tests (166 passing).
 
 The provider token is live on the VM — the site owner confirmed
 `GET https://rayaq.ca/api/flights/health` returns `{"providerConfigured": true}` on
@@ -139,12 +139,12 @@ see `specs/flights-setup.md` if it ever needs rotating or rolling back.
    spec-sanctioned path to denser data if nearby-airport search still isn't enough.
 4. **Look for more code-cleanliness items,** per the routine's own priority order:
    duplicated logic, functions doing too much, or provider details leaking out of
-   `providers/`. Eight consecutive full read-throughs of `backend/flights/` (2026-08-24,
-   2026-08-25 x4, 2026-08-26 x3) found four real issues, all now fixed: the `duration`
-   type-check, the uncapped request body, the `X-Forwarded-For` trust direction, and the
-   dead `with_booking_url` method. `flight_search_events` grows without pruning; at this
-   site's traffic that's years away from mattering, so leave it be unless real growth
-   numbers say otherwise.
+   `providers/`. Nine consecutive full read-throughs of `backend/flights/` (2026-08-24,
+   2026-08-25 x4, 2026-08-26 x3, 2026-08-27) found five real issues, all now fixed: the
+   `duration` type-check, the uncapped request body, the `X-Forwarded-For` trust
+   direction, the dead `with_booking_url` method, and the untested cheapest-weekday
+   insight. `flight_search_events` grows without pruning; at this site's traffic that's
+   years away from mattering, so leave it be unless real growth numbers say otherwise.
 5. **Watch how often the new price-history line actually appears.** It requires
    observations spanning at least 3 distinct days for the same real origin/destination
    pair and currency, so it will stay silent in production until the VM's traffic
@@ -497,3 +497,27 @@ first commit of the domain layer (`2873b34`) and never called by `service.py`,
 or any test. Removed the method and the now-unused `replace` import it was the only user
 of. No behavior change; full suite (164 tests) still passes. Frontend files themselves
 had no issues worth changing.
+
+### 2026-08-27 — cover the untested cheapest-weekday insight
+
+Confirmed this session's designated branch (`claude/adoring-newton-91zsdm`) was already
+identical to `origin/main` (no unmerged commits) — no restart needed, just continued from
+`origin/main`'s tip.
+
+A ninth full read-through of `backend/flights/` (models, service, cache, validation,
+ranking, insights, airports, rate_limit, providers/aviasales, api, errors) plus `app.py`
+and the frontend (`flights.html`, `flights.js`) found the modules themselves unchanged
+from the last several passes — no new logic bug. But cross-checking module logic against
+`backend/tests/` surfaced a real coverage gap: `insights._cheapest_weekday` (the fourth
+insight type, `"weekday"`, live in `insights.build()` on every real search) had zero test
+coverage anywhere in the suite — no test asserted it fires, stays silent below the
+`MIN_MEANINGFUL_SAVING` threshold, or produces the expected message. `date_prices`'s
+`weekday` field was tested; the separate weekday insight was not. This is exactly the gap
+CLAUDE.md's testing rule exists to catch ("write a test for every ... new piece of logic").
+
+Added `test_insights_report_the_cheapest_weekday` (three candidates split across three
+different weekdays with a >$15 average-price gap, asserting the `weekday` insight type and
+its exact message) and `test_insights_stay_silent_on_a_weekday_split_too_small_to_act_on`
+(same shape, gap under $15, asserting it does not fire) to `flights_domain_tests.py`. No
+production code changed — this run confirmed existing behavior matches intent rather than
+fixing a bug. Full suite (166 tests, up from 164) passes.
