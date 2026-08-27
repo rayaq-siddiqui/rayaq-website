@@ -3,7 +3,7 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-27 — pin the month-cap/window-size invariant with a test.
+**Last updated:** 2026-08-27 — tolerate a single failed upstream call within one pair search.
 
 ---
 
@@ -139,14 +139,26 @@ see `specs/flights-setup.md` if it ever needs rotating or rolling back.
    spec-sanctioned path to denser data if nearby-airport search still isn't enough.
 4. **Look for more code-cleanliness items,** per the routine's own priority order:
    duplicated logic, functions doing too much, or provider details leaking out of
-   `providers/`. Ten consecutive full read-throughs of `backend/flights/` (2026-08-24,
-   2026-08-25 x4, 2026-08-26 x3, 2026-08-27 x2) found six real issues, all now fixed: the
+   `providers/`. Eleven consecutive full read-throughs of `backend/flights/` (2026-08-24,
+   2026-08-25 x4, 2026-08-26 x3, 2026-08-27 x3) found seven real issues, all now fixed: the
    `duration` type-check, the uncapped request body, the `X-Forwarded-For` trust
    direction, the dead `with_booking_url` method, the untested cheapest-weekday
-   insight, and the unpinned month-cap/window-size invariant. `flight_search_events`
-   grows without pruning; at this site's traffic that's years away from mattering, so
-   leave it be unless real growth numbers say otherwise.
-5. **Watch how often the new price-history line actually appears.** It requires
+   insight, the unpinned month-cap/window-size invariant, and the all-or-nothing
+   upstream-call failure handling below. `flight_search_events` grows without pruning;
+   at this site's traffic that's years away from mattering, so leave it be unless real
+   growth numbers say otherwise.
+5. **`service._search_pairs`'s nearby-airport fan-out has the same all-or-nothing gap
+   one level up.** When `includeNearby` is on, `service.search()` calls
+   `provider.search_flexible_dates()` once per origin/destination pair (up to 3: exact,
+   nearby-origin, nearby-destination) in a plain loop with no per-pair try/except. Now that
+   `AviasalesDataProvider.search_flexible_dates()` raises only when *none* of its own
+   calls succeed (this run's fix, below), a single pair whose every upstream call fails
+   still aborts the other pairs' already-fetched candidates too — the same failure mode
+   just fixed one layer down. Only reachable when `includeNearby` is checked (opt-in,
+   §27 V1.1), so lower traffic than the provider-level fix, but the same fix shape
+   applies: catch per-pair, keep whatever candidates the other pairs found, only
+   propagate if literally every pair failed.
+6. **Watch how often the new price-history line actually appears.** It requires
    observations spanning at least 3 distinct days for the same real origin/destination
    pair and currency, so it will stay silent in production until the VM's traffic
    history (only ~1 day deep as of this run) grows past that. No agent action needed —
@@ -554,3 +566,44 @@ occurring (uncapped) month count for a `MAX_WINDOW_DAYS`-long window. Verified t
 actually catches a regression by temporarily lowering `MAX_MONTHS_PER_SEARCH` to 2 in a
 throwaway REPL check (685 mismatches), then confirmed the real code has none. Full suite
 (167 tests, up from 166) passes.
+
+### 2026-08-27 — tolerate a single failed upstream call within one pair search
+
+Confirmed this session's designated branch (`claude/adoring-newton-xbml0r`) was identical
+to `origin/main`'s tip (`ed64839`) — no restart needed. A stale local `origin/main` cache
+from an earlier failed compound `git fetch` briefly looked like `main` was missing the
+entire flights feature; re-fetching `origin/main` on its own confirmed it was current and
+matched `HEAD` exactly. No real divergence, just a local caching artifact from the failed
+fetch command, noted here so a future run isn't alarmed by the same false signal.
+
+An eleventh full read-through of `backend/flights/` (models, service, cache, validation,
+ranking, insights, airports, rate_limit, providers/aviasales, api, errors), plus `app.py`
+and the frontend (`flights.html`, `flights.js`), found one real robustness gap:
+`AviasalesDataProvider.search_flexible_dates()` makes up to 4 upstream calls per pair
+search (up to `MAX_MONTHS_PER_SEARCH` month calls plus one `/v2/prices/latest` call, per
+the 2026-08-24 two-endpoint deviation), and a failure in any single one of them, a network
+error, a 429, a malformed body, propagated immediately and discarded every candidate
+already gathered from the calls that did succeed. The two-endpoint design exists
+specifically because the endpoints are complementary for thin routes (deviation 4 in this
+file); throwing away one endpoint's good data because the other endpoint hiccupped
+defeats that purpose and contradicts the spec's "fails gracefully when the provider has
+no data" — the provider often did have data, and the code discarded it anyway.
+
+Changed `search_flexible_dates()` to catch `ProviderError` around each month call and the
+latest-tickets call individually, keeping whatever candidates each successful call
+contributed. Only when every call in a given pair search fails does it re-raise, the most
+recently seen error, so a search where every call gets rate-limited still surfaces
+`ProviderRateLimitedError` rather than a generic unavailable message, preserving the
+existing distinction the two error types exist for. Verified against the existing
+uniform-failure tests (`test_rate_limited_responses_raise_a_rate_limit_error`,
+`test_error_responses_raise_provider_unavailable`, and friends), unchanged, since when
+every call fails identically the new code still raises the same exception type as before.
+Added `test_a_failed_latest_prices_call_does_not_discard_successful_month_data` and
+`test_a_failed_month_call_does_not_discard_successful_latest_data`, each stubbing one
+endpoint to 500 and the other to a real fixture, asserting the successful endpoint's
+candidates still come through. Full suite (169 tests, up from 167) passes.
+
+Also found, but did not fix, the same failure shape one layer up in `service.py`'s
+nearby-airport pair fan-out, recorded as the next candidate increment below rather than
+bundled into this commit, since it is opt-in (`includeNearby`) and a separate,
+independent fix.
