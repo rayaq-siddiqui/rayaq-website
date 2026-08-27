@@ -1,10 +1,11 @@
 import json
 import os
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 import requests
 
+from flights import validation
 from flights.errors import (
     ProviderNotConfiguredError,
     ProviderRateLimitedError,
@@ -164,6 +165,31 @@ def test_one_upstream_request_is_made_per_month_in_the_window(monkeypatch):
     assert [call["params"]["departure_at"] for call in month_calls] == ["2026-09", "2026-10"]
     assert len(latest_calls) == 1
     assert result.provider_requests == 3
+
+
+def _uncapped_month_count(start, end):
+    months = set()
+    cursor = date(start.year, start.month, 1)
+    while cursor <= end:
+        months.add((cursor.year, cursor.month))
+        cursor = date(cursor.year + (cursor.month // 12), (cursor.month % 12) + 1, 1)
+    return len(months)
+
+
+def test_the_month_cap_never_truncates_a_maximum_length_window():
+    # MAX_MONTHS_PER_SEARCH is 3 because no MAX_WINDOW_DAYS-long window can
+    # naturally span more than 3 calendar months (the two full months in
+    # between already cost at least 59 days). If either constant changes
+    # without the other, this silently drops the tail of a valid window
+    # instead of erroring, so pin the relationship directly.
+    max_days = validation.MAX_WINDOW_DAYS
+    for year in (2026, 2028):  # a non-leap year and a leap year
+        for offset in range(366 if year % 4 == 0 else 365):
+            start = date(year, 1, 1) + timedelta(days=offset)
+            if start.year != year:
+                break
+            end = start + timedelta(days=max_days - 1)
+            assert len(aviasales._months_in_window(start, end)) == _uncapped_month_count(start, end)
 
 
 def test_the_latest_prices_endpoint_is_also_queried_once_per_search(monkeypatch):
