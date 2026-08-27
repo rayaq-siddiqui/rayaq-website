@@ -230,6 +230,34 @@ def test_insights_report_the_cheapest_trip_length():
     assert "trip_length" in types
 
 
+def test_insights_report_the_cheapest_weekday():
+    request = validation.parse(base_payload(), today=TODAY)
+    candidates = [
+        candidate("2026-09-14", 7, 700),  # Monday
+        candidate("2026-09-15", 7, 480),  # Tuesday
+        candidate("2026-09-16", 7, 500),  # Wednesday
+    ]
+
+    messages = " ".join(item["message"] for item in insights.build(candidates, request))
+    types = [item["type"] for item in insights.build(candidates, request)]
+
+    assert "weekday" in types
+    assert "Tuesday departures are averaging the lowest prices" in messages
+
+
+def test_insights_stay_silent_on_a_weekday_split_too_small_to_act_on():
+    request = validation.parse(base_payload(), today=TODAY)
+    candidates = [
+        candidate("2026-09-14", 7, 490),  # Monday
+        candidate("2026-09-15", 7, 480),  # Tuesday
+        candidate("2026-09-16", 7, 487),  # Wednesday
+    ]
+
+    types = [item["type"] for item in insights.build(candidates, request)]
+
+    assert "weekday" not in types
+
+
 def test_insights_stay_silent_on_trivial_differences():
     request = validation.parse(base_payload(), today=TODAY)
     candidates = [candidate("2026-09-15", 7, 487), candidate("2026-09-16", 7, 489)]
