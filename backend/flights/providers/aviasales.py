@@ -3,7 +3,12 @@ from datetime import date, datetime
 
 import requests
 
-from ..errors import ProviderNotConfiguredError, ProviderRateLimitedError, ProviderUnavailableError
+from ..errors import (
+    ProviderError,
+    ProviderNotConfiguredError,
+    ProviderRateLimitedError,
+    ProviderUnavailableError,
+)
 from ..models import FlightCandidate, ProviderResult
 from .base import FlightSearchProvider
 
@@ -96,10 +101,24 @@ class AviasalesDataProvider(FlightSearchProvider):
             raise ProviderNotConfiguredError()
 
         candidates = []
+        any_succeeded = False
+        last_error = None
         months = _months_in_window(request.earliest_departure, request.latest_departure)
         for month in months:
-            candidates.extend(self._tickets_for_month(request, month))
-        candidates.extend(self._latest_tickets(request))
+            try:
+                candidates.extend(self._tickets_for_month(request, month))
+                any_succeeded = True
+            except ProviderError as error:
+                last_error = error
+
+        try:
+            candidates.extend(self._latest_tickets(request))
+            any_succeeded = True
+        except ProviderError as error:
+            last_error = error
+
+        if not any_succeeded:
+            raise last_error
 
         return ProviderResult(
             provider=self.name,

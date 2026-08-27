@@ -248,6 +248,38 @@ def test_latest_prices_hidden_from_affiliates_or_marked_stale_are_dropped(monkey
     assert None not in prices
 
 
+def test_a_failed_latest_prices_call_does_not_discard_successful_month_data(monkeypatch):
+    patch_get_by_url(
+        monkeypatch,
+        {
+            aviasales.API_URL: FakeResponse(fixture_payload()),
+            aviasales.LATEST_URL: FakeResponse({}, status_code=500),
+        },
+    )
+    provider = aviasales.AviasalesDataProvider(token="secret", marker="")
+
+    result = provider.search_flexible_dates(build_request())
+
+    assert len(result.candidates) == 3
+    assert result.provider_requests == 2
+
+
+def test_a_failed_month_call_does_not_discard_successful_latest_data(monkeypatch):
+    patch_get_by_url(
+        monkeypatch,
+        {
+            aviasales.API_URL: FakeResponse({}, status_code=500),
+            aviasales.LATEST_URL: FakeResponse(latest_fixture_payload()),
+        },
+    )
+    provider = aviasales.AviasalesDataProvider(token="secret", marker="")
+
+    result = provider.search_flexible_dates(build_request())
+
+    assert len(result.candidates) == 2
+    assert result.provider_requests == 2
+
+
 def test_direct_only_searches_ask_the_provider_for_direct_flights(monkeypatch):
     calls = []
     patch_get(monkeypatch, FakeResponse({"success": True, "data": []}), calls)
