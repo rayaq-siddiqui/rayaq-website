@@ -3,7 +3,7 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-28 — tolerate a single failed pair within a nearby-airport fan-out.
+**Last updated:** 2026-08-28 — skip degenerate same-airport pairs in the nearby fan-out.
 
 ---
 
@@ -139,15 +139,20 @@ see `specs/flights-setup.md` if it ever needs rotating or rolling back.
    spec-sanctioned path to denser data if nearby-airport search still isn't enough.
 4. **Look for more code-cleanliness items,** per the routine's own priority order:
    duplicated logic, functions doing too much, or provider details leaking out of
-   `providers/`. Twelve consecutive full read-throughs of `backend/flights/` (2026-08-24,
-   2026-08-25 x4, 2026-08-26 x3, 2026-08-27 x3, 2026-08-28) found eight real issues, all
+   `providers/`. Thirteen consecutive full read-throughs of `backend/flights/` (2026-08-24,
+   2026-08-25 x4, 2026-08-26 x3, 2026-08-27 x3, 2026-08-28 x2) found nine real issues, all
    now fixed: the `duration` type-check, the uncapped request body, the
    `X-Forwarded-For` trust direction, the dead `with_booking_url` method, the untested
-   cheapest-weekday insight, the unpinned month-cap/window-size invariant, and the
+   cheapest-weekday insight, the unpinned month-cap/window-size invariant, the
    all-or-nothing upstream-call failure handling at both the provider layer and the
-   `service._search_pairs` fan-out layer. `flight_search_events` grows without pruning;
-   at this site's traffic that's years away from mattering, so leave it be unless real
-   growth numbers say otherwise.
+   `service._search_pairs` fan-out layer, and the degenerate same-airport pairs the
+   nearby fan-out could synthesize. `flight_search_events` grows without pruning; at this
+   site's traffic that's years away from mattering, so leave it be unless real growth
+   numbers say otherwise. Returns are visibly diminishing (5 read-throughs since the last
+   real bug had no findings until this one, and that one needed reasoning about the actual
+   bundled airport data rather than reading code in isolation) — a future run finding
+   nothing after another several passes should treat V1 as genuinely stable rather than
+   keep re-reading the same ~1,450 lines.
 5. **Watch how often the new price-history line actually appears.** It requires
    observations spanning at least 3 distinct days for the same real origin/destination
    pair and currency, so it will stay silent in production until the VM's traffic
@@ -630,3 +635,47 @@ existing distinction between rate-limit and generic-unavailable errors). Extende
 existing `FakeProvider` test double with an `errors_by_pair` option rather than adding a
 new fake, since `by_pair` already existed for per-pair candidates. Full suite (171 tests,
 up from 169) passes.
+
+### 2026-08-28 — skip degenerate same-airport pairs in the nearby fan-out
+
+Confirmed this session's designated branch (`claude/adoring-newton-wn5lky`) was identical
+to `origin/main`'s tip (`ab3ce25`) — no restart needed. (A first `git fetch origin main`
+returned a stale cached ref pointing at an older commit, the same false-alarm pattern
+noted in the 2026-08-27 entries; a forced re-fetch confirmed the real state matched.)
+
+A thirteenth full read-through of `backend/flights/` (models, service, cache, validation,
+ranking, insights, airports, rate_limit, providers/aviasales, api, errors), `app.py`, and
+the frontend (`flights.html`, `flights.js`, `flights.css`) found the modules themselves
+still consistent with the last several passes — no new logic bug on inspection alone. Ran
+`pyflakes` over `backend/flights/` and `app.py` (clean) and `coverage` over the full suite
+(94% on the flights package, the gaps being defensive `except sqlite3.Error` branches and
+a couple of untested `airports._match_rank` tiers — no real gap) to sanity-check that
+manual read-throughs weren't missing something a tool would catch.
+
+Manual reasoning about `service._search_pairs` turned up a real bug, not a proactive
+check: with `includeNearby` on, it builds a pair from each of the *searched* origin/
+destination plus every real nearby alternate on each side, but never checks whether the
+resulting synthesized pair collapses origin and destination onto the same airport. The
+bundled dataset makes this a live scenario, not a theoretical one — Toronto's two airports
+are each other's only nearby alternate (`airports.nearby("YYZ") == [YTZ]` and
+`airports.nearby("YTZ") == [YYZ]`, confirmed by hand), so a search from YYZ to YTZ (a
+plausible real search: Pearson to the island airport, or vice versa) with nearby search on
+synthesizes `_search_pairs` = `[("YYZ", "YTZ"), ("YTZ", "YTZ"), ("YYZ", "YYZ")]` — two of
+the three pairs ask the provider to search an airport against itself. `_search_pairs`
+builds these sub-requests with `dataclasses.replace()` directly, bypassing
+`validation.parse()`'s existing origin != destination check entirely, so nothing catches
+it before it reaches the provider. Best case this wastes two of the three upstream calls
+on a query Aviasales has no meaningful answer for; worst case a same-airport query returns
+provider-side error or garbage data folded into the results as if it were a real nearby
+alternate.
+
+Fixed by having `_search_pairs` skip any synthesized pair where the resulting origin
+equals the resulting destination, and (cheaply, since the guard was already there) dedupe
+against pairs already queued — a defensive measure for airport data denser than today's
+`NEARBY_LIMIT = 1` might later produce duplicate pairs, not something reachable today.
+Verified the fix against the same YYZ/YTZ scenario by hand
+(`service._search_pairs(...)` now returns exactly `[("YYZ", "YTZ")]`) and added
+`test_nearby_fan_out_skips_a_pair_that_would_search_an_airport_against_itself`, which
+asserts the provider is called exactly once for that route pair rather than three times.
+Confirmed the existing three-pair nearby tests (SFO/OAK, none of whose synthesized pairs
+collapse) are unaffected. Full suite (172 tests, up from 171) passes.
