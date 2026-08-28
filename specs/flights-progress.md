@@ -3,7 +3,7 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-28 — skip degenerate same-airport pairs in the nearby fan-out.
+**Last updated:** 2026-08-28 — reject non-string origin/destination/currency instead of crashing.
 
 ---
 
@@ -139,20 +139,19 @@ see `specs/flights-setup.md` if it ever needs rotating or rolling back.
    spec-sanctioned path to denser data if nearby-airport search still isn't enough.
 4. **Look for more code-cleanliness items,** per the routine's own priority order:
    duplicated logic, functions doing too much, or provider details leaking out of
-   `providers/`. Thirteen consecutive full read-throughs of `backend/flights/` (2026-08-24,
-   2026-08-25 x4, 2026-08-26 x3, 2026-08-27 x3, 2026-08-28 x2) found nine real issues, all
+   `providers/`. Fourteen consecutive full read-throughs of `backend/flights/` (2026-08-24,
+   2026-08-25 x4, 2026-08-26 x3, 2026-08-27 x3, 2026-08-28 x3) found ten real issues, all
    now fixed: the `duration` type-check, the uncapped request body, the
    `X-Forwarded-For` trust direction, the dead `with_booking_url` method, the untested
    cheapest-weekday insight, the unpinned month-cap/window-size invariant, the
    all-or-nothing upstream-call failure handling at both the provider layer and the
-   `service._search_pairs` fan-out layer, and the degenerate same-airport pairs the
-   nearby fan-out could synthesize. `flight_search_events` grows without pruning; at this
-   site's traffic that's years away from mattering, so leave it be unless real growth
-   numbers say otherwise. Returns are visibly diminishing (5 read-throughs since the last
-   real bug had no findings until this one, and that one needed reasoning about the actual
-   bundled airport data rather than reading code in isolation) — a future run finding
-   nothing after another several passes should treat V1 as genuinely stable rather than
-   keep re-reading the same ~1,450 lines.
+   `service._search_pairs` fan-out layer, the degenerate same-airport pairs the
+   nearby fan-out could synthesize, and non-string `origin`/`destination`/`currency`
+   values in the request body crashing validation with a 500 instead of a clean 400.
+   `flight_search_events` grows without pruning; at this site's traffic that's years away
+   from mattering, so leave it be unless real growth numbers say otherwise. Returns are
+   visibly diminishing — a future run finding nothing after another several passes should
+   treat V1 as genuinely stable rather than keep re-reading the same ~1,450 lines.
 5. **Watch how often the new price-history line actually appears.** It requires
    observations spanning at least 3 distinct days for the same real origin/destination
    pair and currency, so it will stay silent in production until the VM's traffic
@@ -679,3 +678,40 @@ Verified the fix against the same YYZ/YTZ scenario by hand
 asserts the provider is called exactly once for that route pair rather than three times.
 Confirmed the existing three-pair nearby tests (SFO/OAK, none of whose synthesized pairs
 collapse) are unaffected. Full suite (172 tests, up from 171) passes.
+
+### 2026-08-28 — reject non-string origin/destination/currency instead of crashing
+
+Confirmed this session's designated branch (`claude/adoring-newton-thhg0f`) was identical
+to `origin/main`'s tip (`44b40f9`) — no restart needed.
+
+A fourteenth full read-through of `backend/flights/` (models, service, cache, validation,
+ranking, insights, airports, rate_limit, providers/aviasales, api, errors) plus `app.py`
+found a real gap in `validation.py`, the one module that turns an untyped JSON body into a
+typed `SearchRequest`. `_require_code` computed `(payload.get(field) or "").strip().upper()`
+and the currency line did the same with `DEFAULT_CURRENCY` as the fallback — both assume
+the raw value is either falsy or already a string. Neither holds for a JSON body a client
+fully controls: `{"origin": 123, ...}` is valid JSON, passes the existing
+`isinstance(payload, dict)` check and the `MAX_CONTENT_LENGTH` cap, and then hits
+`123 .strip()`, an `AttributeError` that nothing in `flights_api.search_response` catches
+(it only handles `FlightSearchError`, `TooManyRequestsError`, `ProviderError`), so it
+propagates as an unhandled 500. §16 of the spec lists "unknown airport" and "unsupported
+currency" as clean 400s; a non-string value for the same fields should be no different, and
+should certainly not crash the process. Confirmed the crash by hand before fixing it
+(`validation.parse({"origin": 123, ...})` raised `AttributeError: 'int' object has no
+attribute 'strip'`). `_require_date` and `_require_nights` were already safe — the former
+type-checks before touching the value, the latter's `int()` conversion already raises a
+caught `TypeError`/`ValueError` for a non-numeric type. Checked every other `.strip()`/
+`.upper()`/`.lower()` call in the package: `airports.py` and `service.py`'s copies all
+operate on values already known to be strings (Flask's `request.args` query-string values,
+or a value already validated by `validation.parse`), so this was the only reachable gap.
+
+Fixed by type-checking the raw value before calling any string method: `_require_code` now
+raises `FlightSearchError` immediately when the field isn't a `str`, and the currency line
+does the same, raising when a non-`None` currency value isn't a string, treating `None`
+exactly as before (falls back to `DEFAULT_CURRENCY`). Both reuse the same message students
+already see for a missing/unknown value, since "not a string" and "empty" both mean the
+field is not something the form could have produced honestly. Added
+`test_parse_rejects_a_non_string_origin_instead_of_crashing`,
+`test_parse_rejects_a_non_string_destination_instead_of_crashing`, and
+`test_parse_rejects_a_non_string_currency_instead_of_crashing` to
+`flights_domain_tests.py`. Full suite (175 tests, up from 172) passes.
