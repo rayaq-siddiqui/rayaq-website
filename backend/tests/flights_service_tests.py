@@ -30,10 +30,11 @@ class FakeProvider:
     is_live = False
     freshness_message = "Indicative fares."
 
-    def __init__(self, candidates=(), error=None, by_pair=None):
+    def __init__(self, candidates=(), error=None, by_pair=None, errors_by_pair=None):
         self.candidates = tuple(candidates)
         self.error = error
         self.by_pair = by_pair or {}
+        self.errors_by_pair = errors_by_pair or {}
         self.calls = 0
         self.requests = []
 
@@ -45,6 +46,9 @@ class FakeProvider:
         self.requests.append(request)
         if self.error:
             raise self.error
+        pair_error = self.errors_by_pair.get((request.origin, request.destination))
+        if pair_error:
+            raise pair_error
         candidates = self.by_pair.get((request.origin, request.destination), self.candidates)
         return ProviderResult(self.name, tuple(candidates), self.is_live, 1)
 
@@ -233,6 +237,41 @@ def test_include_nearby_does_not_reuse_an_exact_search_cache_entry(monkeypatch):
     search(body=payload(origin="YYZ", includeNearby=True))
 
     assert provider.calls == 1 + 3
+
+
+def test_a_failed_nearby_pair_does_not_discard_the_other_pairs_candidates(monkeypatch):
+    provider = use_provider(
+        monkeypatch,
+        FakeProvider(
+            by_pair={
+                ("YYZ", "SFO"): [candidate("2026-09-15", 7, 487, origin="YYZ")],
+                ("YYZ", "OAK"): [candidate("2026-09-17", 7, 399, origin="YYZ", destination="OAK")],
+            },
+            errors_by_pair={("YTZ", "SFO"): ProviderUnavailableError()},
+        ),
+    )
+
+    result = search(body=payload(origin="YYZ", includeNearby=True))
+
+    assert provider.calls == 3
+    prices = {c["totalPrice"] for c in result["candidates"]}
+    assert prices == {487, 399}
+
+
+def test_nearby_search_only_fails_when_every_pair_fails(monkeypatch):
+    use_provider(
+        monkeypatch,
+        FakeProvider(
+            errors_by_pair={
+                ("YYZ", "SFO"): ProviderUnavailableError(),
+                ("YTZ", "SFO"): ProviderUnavailableError(),
+                ("YYZ", "OAK"): ProviderRateLimitedError(),
+            }
+        ),
+    )
+
+    with pytest.raises(ProviderRateLimitedError):
+        search(body=payload(origin="YYZ", includeNearby=True))
 
 
 def test_a_repeat_search_is_served_from_cache(monkeypatch):

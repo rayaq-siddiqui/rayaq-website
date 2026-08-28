@@ -214,11 +214,20 @@ def search(payload, client_id=None, today=None, now=None):
     try:
         raw_candidates = []
         provider_requests = 0
+        any_pair_succeeded = False
+        last_error = None
         for origin, destination in _search_pairs(request):
             sub_request = replace(request, origin=origin, destination=destination)
-            provider_result = provider.search_flexible_dates(sub_request)
+            try:
+                provider_result = provider.search_flexible_dates(sub_request)
+            except ProviderError as error:
+                last_error = error
+                continue
             raw_candidates.extend(provider_result.candidates)
             provider_requests += provider_result.provider_requests
+            any_pair_succeeded = True
+        if not any_pair_succeeded and last_error is not None:
+            raise last_error
     except ProviderError:
         if cached:
             return finish(_with_metadata(cached["payload"], True, 0, stale=True), True, 0, "stale")
