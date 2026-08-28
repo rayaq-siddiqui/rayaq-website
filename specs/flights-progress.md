@@ -3,7 +3,7 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-27 — tolerate a single failed upstream call within one pair search.
+**Last updated:** 2026-08-28 — tolerate a single failed pair within a nearby-airport fan-out.
 
 ---
 
@@ -139,30 +139,20 @@ see `specs/flights-setup.md` if it ever needs rotating or rolling back.
    spec-sanctioned path to denser data if nearby-airport search still isn't enough.
 4. **Look for more code-cleanliness items,** per the routine's own priority order:
    duplicated logic, functions doing too much, or provider details leaking out of
-   `providers/`. Eleven consecutive full read-throughs of `backend/flights/` (2026-08-24,
-   2026-08-25 x4, 2026-08-26 x3, 2026-08-27 x3) found seven real issues, all now fixed: the
-   `duration` type-check, the uncapped request body, the `X-Forwarded-For` trust
-   direction, the dead `with_booking_url` method, the untested cheapest-weekday
-   insight, the unpinned month-cap/window-size invariant, and the all-or-nothing
-   upstream-call failure handling below. `flight_search_events` grows without pruning;
+   `providers/`. Twelve consecutive full read-throughs of `backend/flights/` (2026-08-24,
+   2026-08-25 x4, 2026-08-26 x3, 2026-08-27 x3, 2026-08-28) found eight real issues, all
+   now fixed: the `duration` type-check, the uncapped request body, the
+   `X-Forwarded-For` trust direction, the dead `with_booking_url` method, the untested
+   cheapest-weekday insight, the unpinned month-cap/window-size invariant, and the
+   all-or-nothing upstream-call failure handling at both the provider layer and the
+   `service._search_pairs` fan-out layer. `flight_search_events` grows without pruning;
    at this site's traffic that's years away from mattering, so leave it be unless real
    growth numbers say otherwise.
-5. **`service._search_pairs`'s nearby-airport fan-out has the same all-or-nothing gap
-   one level up.** When `includeNearby` is on, `service.search()` calls
-   `provider.search_flexible_dates()` once per origin/destination pair (up to 3: exact,
-   nearby-origin, nearby-destination) in a plain loop with no per-pair try/except. Now that
-   `AviasalesDataProvider.search_flexible_dates()` raises only when *none* of its own
-   calls succeed (this run's fix, below), a single pair whose every upstream call fails
-   still aborts the other pairs' already-fetched candidates too — the same failure mode
-   just fixed one layer down. Only reachable when `includeNearby` is checked (opt-in,
-   §27 V1.1), so lower traffic than the provider-level fix, but the same fix shape
-   applies: catch per-pair, keep whatever candidates the other pairs found, only
-   propagate if literally every pair failed.
-6. **Watch how often the new price-history line actually appears.** It requires
+5. **Watch how often the new price-history line actually appears.** It requires
    observations spanning at least 3 distinct days for the same real origin/destination
    pair and currency, so it will stay silent in production until the VM's traffic
-   history (only ~1 day deep as of this run) grows past that. No agent action needed —
-   just note it in a future run once it's had time to accumulate.
+   history (only ~1 day deep as of the token going live 2026-08-24) grows past that. No
+   agent action needed — just note it in a future run once it's had time to accumulate.
 
 ---
 
@@ -607,3 +597,36 @@ Also found, but did not fix, the same failure shape one layer up in `service.py`
 nearby-airport pair fan-out, recorded as the next candidate increment below rather than
 bundled into this commit, since it is opt-in (`includeNearby`) and a separate,
 independent fix.
+
+### 2026-08-28 — tolerate a single failed pair within a nearby-airport fan-out
+
+Confirmed this session's designated branch (`claude/adoring-newton-veddej`) was identical
+to `origin/main`'s tip (`6fd4791`) — no restart needed.
+
+Picked up the increment flagged, but deliberately not fixed, at the end of the previous
+run: `service._search_pairs`'s nearby-airport fan-out had the same all-or-nothing failure
+shape that `AviasalesDataProvider.search_flexible_dates()` was fixed for one layer down.
+When `includeNearby` is on, `service.search()` loops over up to 3 origin/destination pairs
+(exact, nearby-origin, nearby-destination) calling `provider.search_flexible_dates()` for
+each with no per-pair try/except; since the provider-level fix means that call now only
+raises when *every* one of its own upstream calls failed, a single pair that was
+completely unavailable (provider outage on just that route, or every one of its own
+upstream calls rate-limited) still discarded whatever candidates the other, successful
+pairs had already gathered.
+
+Wrapped each pair's `provider.search_flexible_dates()` call in its own
+`try`/`except ProviderError`, accumulating candidates from every pair that succeeds and
+remembering the most recent error from any pair that fails. Only re-raises (preserving the
+existing stale-cache-fallback/error-propagation behavior in `search()`) when literally
+every pair failed, mirroring the fix shape used one layer down. For the common
+`includeNearby=False` case there is exactly one pair, so behavior is unchanged: a single
+failure still raises exactly as before.
+
+Added `test_a_failed_nearby_pair_does_not_discard_the_other_pairs_candidates` (one pair
+fails, two succeed, asserts both successful pairs' candidates are present) and
+`test_nearby_search_only_fails_when_every_pair_fails` (all three pairs fail with different
+error types, asserts the error from the last-attempted pair propagates, matching the
+existing distinction between rate-limit and generic-unavailable errors). Extended the
+existing `FakeProvider` test double with an `errors_by_pair` option rather than adding a
+new fake, since `by_pair` already existed for per-pair candidates. Full suite (171 tests,
+up from 169) passes.
