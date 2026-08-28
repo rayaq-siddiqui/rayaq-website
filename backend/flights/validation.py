@@ -10,7 +10,10 @@ DEFAULT_CURRENCY = "CAD"
 
 
 def _require_code(payload, field, label):
-    value = (payload.get(field) or "").strip().upper()
+    raw = payload.get(field)
+    if not isinstance(raw, str):
+        raise FlightSearchError(f"Choose {label}.", field)
+    value = raw.strip().upper()
     if not value:
         raise FlightSearchError(f"Choose {label}.", field)
     if not airports.is_known(value):
@@ -74,7 +77,12 @@ def parse(payload, today=None):
             "The minimum trip length cannot exceed the maximum.", "minNights"
         )
 
-    currency = (payload.get("currency") or DEFAULT_CURRENCY).strip().upper()
+    raw_currency = payload.get("currency")
+    if raw_currency is not None and not isinstance(raw_currency, str):
+        raise FlightSearchError(
+            f"Currency must be one of {', '.join(SUPPORTED_CURRENCIES)}.", "currency"
+        )
+    currency = (raw_currency or DEFAULT_CURRENCY).strip().upper()
     if currency not in SUPPORTED_CURRENCIES:
         raise FlightSearchError(
             f"Currency must be one of {', '.join(SUPPORTED_CURRENCIES)}.", "currency"

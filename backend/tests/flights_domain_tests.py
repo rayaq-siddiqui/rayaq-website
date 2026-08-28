@@ -133,6 +133,27 @@ def test_parse_rejects_non_dict_payloads():
         validation.parse("not a payload", today=TODAY)
 
 
+def test_parse_rejects_a_non_string_origin_instead_of_crashing():
+    with pytest.raises(FlightSearchError) as error:
+        validation.parse(base_payload(origin=123), today=TODAY)
+
+    assert error.value.field == "origin"
+
+
+def test_parse_rejects_a_non_string_destination_instead_of_crashing():
+    with pytest.raises(FlightSearchError) as error:
+        validation.parse(base_payload(destination=["SFO"]), today=TODAY)
+
+    assert error.value.field == "destination"
+
+
+def test_parse_rejects_a_non_string_currency_instead_of_crashing():
+    with pytest.raises(FlightSearchError) as error:
+        validation.parse(base_payload(currency=42), today=TODAY)
+
+    assert error.value.field == "currency"
+
+
 def test_filter_keeps_only_candidates_inside_the_window_and_trip_length():
     request = validation.parse(base_payload(), today=TODAY)
     kept = candidate("2026-09-15", 7, 487)
