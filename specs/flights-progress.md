@@ -3,7 +3,7 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-28 — reject non-string origin/destination/currency instead of crashing.
+**Last updated:** 2026-08-28 — cover the reversed-window/reversed-nights branches of a saved-search query string.
 
 ---
 
@@ -11,7 +11,7 @@ The contract is `specs/flights.md`; this file records where the code actually st
 
 V1 is built end to end and deployed through the normal `main` → CI/CD path. The page,
 the API, the provider adapter, the SQLite cache, rate limiting, and the deterministic
-insights all exist and are covered by tests (167 passing).
+insights all exist and are covered by tests (177 passing).
 
 The provider token is live on the VM — the site owner confirmed
 `GET https://rayaq.ca/api/flights/health` returns `{"providerConfigured": true}` on
@@ -139,19 +139,22 @@ see `specs/flights-setup.md` if it ever needs rotating or rolling back.
    spec-sanctioned path to denser data if nearby-airport search still isn't enough.
 4. **Look for more code-cleanliness items,** per the routine's own priority order:
    duplicated logic, functions doing too much, or provider details leaking out of
-   `providers/`. Fourteen consecutive full read-throughs of `backend/flights/` (2026-08-24,
-   2026-08-25 x4, 2026-08-26 x3, 2026-08-27 x3, 2026-08-28 x3) found ten real issues, all
+   `providers/`. Fifteen consecutive full read-throughs of `backend/flights/` (2026-08-24,
+   2026-08-25 x4, 2026-08-26 x3, 2026-08-27 x3, 2026-08-28 x4) found eleven real issues, all
    now fixed: the `duration` type-check, the uncapped request body, the
    `X-Forwarded-For` trust direction, the dead `with_booking_url` method, the untested
    cheapest-weekday insight, the unpinned month-cap/window-size invariant, the
    all-or-nothing upstream-call failure handling at both the provider layer and the
    `service._search_pairs` fan-out layer, the degenerate same-airport pairs the
-   nearby fan-out could synthesize, and non-string `origin`/`destination`/`currency`
-   values in the request body crashing validation with a 500 instead of a clean 400.
-   `flight_search_events` grows without pruning; at this site's traffic that's years away
-   from mattering, so leave it be unless real growth numbers say otherwise. Returns are
-   visibly diminishing — a future run finding nothing after another several passes should
-   treat V1 as genuinely stable rather than keep re-reading the same ~1,450 lines.
+   nearby fan-out could synthesize, non-string `origin`/`destination`/`currency`
+   values in the request body crashing validation with a 500 instead of a clean 400, and
+   the untested reversed-window/reversed-nights branches of the V1.4 saved-search query
+   string. `flight_search_events` grows without pruning; at this site's traffic that's
+   years away from mattering, so leave it be unless real growth numbers say otherwise.
+   Returns are visibly diminishing — the last finding was a coverage gap on
+   already-correct logic, not a behavior bug — a future run finding nothing beyond that
+   tier after another pass or two should treat V1 as genuinely stable rather than keep
+   re-reading the same ~1,450 lines.
 5. **Watch how often the new price-history line actually appears.** It requires
    observations spanning at least 3 distinct days for the same real origin/destination
    pair and currency, so it will stay silent in production until the VM's traffic
@@ -715,3 +718,38 @@ field is not something the form could have produced honestly. Added
 `test_parse_rejects_a_non_string_destination_instead_of_crashing`, and
 `test_parse_rejects_a_non_string_currency_instead_of_crashing` to
 `flights_domain_tests.py`. Full suite (175 tests, up from 172) passes.
+
+### 2026-08-28 — cover the reversed-window/reversed-nights query-string branches
+
+Confirmed this session's designated branch (`claude/adoring-newton-hpx8ik`) was identical
+to `origin/main`'s tip (`47ad3dc`) — no restart needed.
+
+A fifteenth full read-through of `backend/flights/` (models, service, cache, validation,
+ranking, insights, airports, rate_limit, providers/aviasales, api, errors), `app.py`, and
+the frontend (`flights.html`, `flights.js`, `flights.css`) found the modules themselves
+unchanged from the last several passes — no new logic bug. Ran `pyflakes` (clean) and
+`coverage` over the full suite again; the 94%-on-the-package baseline held, with the same
+shape of gaps as the 2026-08-28 same-airport-pair run (defensive `except sqlite3.Error`
+branches, untested `airports._match_rank` tiers) plus two in `service.form_defaults`
+(lines handling a reversed `departStart`/`departEnd` pair and a reversed
+`minNights`/`maxNights` pair from a query string) that weren't part of that prior list.
+
+Chased those two specifically rather than dismissing them as more defensive noise, since
+`form_defaults` is the V1.4 saved/shareable-URL feature (2026-08-24) and both branches are
+genuinely reachable by a human hand-editing a URL or following a stale/reordered bookmark
+— not code that can't run. Verified by hand first
+(`form_defaults(query={"departStart": "2026-09-20", "departEnd": "2026-09-10"})` collapses
+to a single-day window rather than raising or producing a negative-length window;
+`form_defaults(query={"minNights": "8", "maxNights": "5"})` swaps to `5`/`8` rather than
+leaving `min > max`), confirming the existing logic is already correct — the gap was
+coverage, not behavior, and no production code changed. Added
+`test_form_defaults_clamps_a_query_window_with_the_dates_reversed` and
+`test_form_defaults_swaps_a_query_trip_length_with_the_bounds_reversed` to
+`flights_service_tests.py`. Full suite (177 tests, up from 175) passes.
+
+This continues the pattern the last several entries flagged: real findings are
+increasingly narrow (a coverage gap on an already-correct branch, rather than a behavior
+bug) and each read-through now takes a full pass over roughly 1,450 backend lines plus the
+frontend to find one. If the next run or two also comes back with nothing beyond this
+tier, treat V1 as genuinely stable per this file's own standing guidance rather than
+continuing to force a finding.
