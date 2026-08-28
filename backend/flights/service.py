@@ -114,10 +114,18 @@ def _search_pairs(request):
     pairs = [(request.origin, request.destination)]
     if not request.include_nearby:
         return pairs
+    seen = set(pairs)
+
+    def add(origin, destination):
+        pair = (origin, destination)
+        if origin != destination and pair not in seen:
+            seen.add(pair)
+            pairs.append(pair)
+
     for alt in airports.nearby(request.origin):
-        pairs.append((alt["code"], request.destination))
+        add(alt["code"], request.destination)
     for alt in airports.nearby(request.destination):
-        pairs.append((request.origin, alt["code"]))
+        add(request.origin, alt["code"])
     return pairs
 
 

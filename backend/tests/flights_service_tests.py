@@ -239,6 +239,23 @@ def test_include_nearby_does_not_reuse_an_exact_search_cache_entry(monkeypatch):
     assert provider.calls == 1 + 3
 
 
+def test_nearby_fan_out_skips_a_pair_that_would_search_an_airport_against_itself(monkeypatch):
+    provider = use_provider(
+        monkeypatch,
+        FakeProvider(
+            by_pair={("YYZ", "YTZ"): [candidate("2026-09-15", 7, 487, origin="YYZ", destination="YTZ")]}
+        ),
+    )
+
+    result = search(body=payload(origin="YYZ", destination="YTZ", includeNearby=True))
+
+    pairs = {(r.origin, r.destination) for r in provider.requests}
+    assert pairs == {("YYZ", "YTZ")}
+    assert provider.calls == 1
+    prices = {c["totalPrice"] for c in result["candidates"]}
+    assert prices == {487}
+
+
 def test_a_failed_nearby_pair_does_not_discard_the_other_pairs_candidates(monkeypatch):
     provider = use_provider(
         monkeypatch,
