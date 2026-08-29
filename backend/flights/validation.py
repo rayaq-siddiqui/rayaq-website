@@ -23,8 +23,6 @@ def _require_code(payload, field, label):
 
 def _require_date(payload, field, label):
     value = payload.get(field)
-    if isinstance(value, date):
-        return value
     if not isinstance(value, str) or not value.strip():
         raise FlightSearchError(f"Choose {label}.", field)
     try:
