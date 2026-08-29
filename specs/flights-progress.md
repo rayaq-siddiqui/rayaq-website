@@ -3,8 +3,9 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-29 — remove a dead validation branch and close the last real
-test-coverage gaps in `validation.py` and `models.py`.
+**Last updated:** 2026-08-29 — remove two more unreachable branches (`service.py`,
+`insights.py`) and close the last real test-coverage gaps in `rate_limit.py` and
+`insights.py`.
 
 ---
 
@@ -12,7 +13,7 @@ test-coverage gaps in `validation.py` and `models.py`.
 
 V1 is built end to end and deployed through the normal `main` → CI/CD path. The page,
 the API, the provider adapter, the SQLite cache, rate limiting, and the deterministic
-insights all exist and are covered by tests (167 passing).
+insights all exist and are covered by tests (186 passing).
 
 The provider token is live on the VM — the site owner confirmed
 `GET https://rayaq.ca/api/flights/health` returns `{"providerConfigured": true}` on
@@ -140,19 +141,22 @@ see `specs/flights-setup.md` if it ever needs rotating or rolling back.
    spec-sanctioned path to denser data if nearby-airport search still isn't enough.
 4. **Look for more code-cleanliness items,** per the routine's own priority order:
    duplicated logic, functions doing too much, or provider details leaking out of
-   `providers/`. Fourteen consecutive full read-throughs of `backend/flights/` (2026-08-24,
-   2026-08-25 x4, 2026-08-26 x3, 2026-08-27 x3, 2026-08-28 x3) found ten real issues, all
-   now fixed: the `duration` type-check, the uncapped request body, the
+   `providers/`. Sixteen consecutive full read-throughs of `backend/flights/` (2026-08-24,
+   2026-08-25 x4, 2026-08-26 x3, 2026-08-27 x3, 2026-08-28 x3, 2026-08-29 x2) found twelve
+   real issues, all now fixed: the `duration` type-check, the uncapped request body, the
    `X-Forwarded-For` trust direction, the dead `with_booking_url` method, the untested
    cheapest-weekday insight, the unpinned month-cap/window-size invariant, the
    all-or-nothing upstream-call failure handling at both the provider layer and the
    `service._search_pairs` fan-out layer, the degenerate same-airport pairs the
-   nearby fan-out could synthesize, and non-string `origin`/`destination`/`currency`
-   values in the request body crashing validation with a 500 instead of a clean 400.
-   `flight_search_events` grows without pruning; at this site's traffic that's years away
-   from mattering, so leave it be unless real growth numbers say otherwise. Returns are
-   visibly diminishing — a future run finding nothing after another several passes should
-   treat V1 as genuinely stable rather than keep re-reading the same ~1,450 lines.
+   nearby fan-out could synthesize, non-string `origin`/`destination`/`currency`
+   values in the request body crashing validation with a 500 instead of a clean 400, and
+   (this run) two more genuinely unreachable defensive branches (`service._place`,
+   `insights._neighbour_saving`). The most recent pass found its remaining two issues not
+   by reading but by running `coverage` and chasing every non-defensive gap it reported —
+   that method is now clearly outperforming another blind read-through of the same
+   ~1,450 lines; `flight_search_events` grows without pruning; at this site's traffic
+   that's years away from mattering, so leave it be unless real growth numbers say
+   otherwise.
 5. **Watch how often the new price-history line actually appears.** It requires
    observations spanning at least 3 distinct days for the same real origin/destination
    pair and currency, so it will stay silent in production until the VM's traffic
@@ -773,3 +777,67 @@ project's coverage bar is asking for.
 
 Full suite (182 tests, up from 175) passes. `pyflakes` over `flights/` and `app.py` stays
 clean.
+
+### 2026-08-29 — two more dead branches, two more real coverage gaps (via `coverage`, not reading)
+
+Confirmed this session's designated branch (`claude/adoring-newton-2odc8r`) did not exist
+on the remote yet, so it started fresh from `origin/main`'s tip (`86a591e`). A first
+`git log --oneline origin/main` showed a stale cached ref pointing at a much older,
+pre-flights commit — the same false-alarm pattern noted repeatedly in this log's
+2026-08-26/27/28 entries. `git ls-remote origin` and a forced `git fetch origin main`
+confirmed the real `refs/heads/main` matched this branch's tip exactly; no restart needed.
+
+Rather than a seventeenth full manual read-through of `backend/flights/` — the 2026-08-28
+and 2026-08-29 (earlier) entries already flagged diminishing returns from that method —
+went straight to `coverage run -m pytest` and chased every line it flagged that wasn't
+already characterized as defensive, the same tool-assisted method the previous run used
+to close out `validation.py`/`models.py`. Two real findings, both the same dead-branch
+shape as `with_booking_url` and the `_require_date` isinstance check:
+
+1. `service._place(code)` had a `if entry is None: return {"code": code, ...}` fallback.
+   `_place` is only ever called with `request.origin`/`request.destination`
+   (`_build_payload`, lines 157-158), and both are required to satisfy
+   `airports.is_known()` by `validation.parse()` before a `SearchRequest` can exist at
+   all — `is_known` is defined as exactly `find(code) is not None`, so `airports.find()`
+   can never return `None` for a value that already passed `is_known()`. No test reached
+   the branch either. Removed it.
+2. `insights._neighbour_saving()` had an `if not neighbours: return None` guard after
+   building `neighbours` from `ordered[position - 1]`/`ordered[position + 1]`. The
+   function already returns early when fewer than two distinct departure dates exist, so
+   by the time `neighbours` is built, `len(ordered) >= 2` and `position` is a valid index
+   into it — brute-forced every `(length, position)` pair up to 30 to confirm at least one
+   of `position - 1`/`position + 1` is always in range whenever `length >= 2`, so
+   `neighbours` can never be empty. Removed it.
+
+Also closed two real, non-defensive coverage gaps `coverage` surfaced:
+
+- `rate_limit.check()`'s hour-old-hit pruning loop (`while hits and now - hits[0] > 3600:
+  hits.popleft()`) had no test — the existing hourly-cap test never ran long enough for
+  any hit to actually expire. Added
+  `test_rate_limiting_drops_hourly_history_once_it_expires`, and verified it actually
+  catches a regression by temporarily neutering the prune loop and watching the test fail
+  before restoring it.
+- `insights._best_trip_length()`'s "difference too small to act on" branch had no test,
+  unlike the equivalent silence tests already in place for the date-shift and weekday
+  insights (`test_insights_stay_silent_on_trivial_differences`,
+  `test_insights_stay_silent_on_a_weekday_split_too_small_to_act_on`). Added
+  `test_insights_stay_silent_on_a_trip_length_difference_too_small_to_act_on`.
+
+Also added `test_form_defaults_corrects_a_query_window_with_departend_before_departstart`
+and `test_form_defaults_swaps_query_nights_given_in_the_wrong_order` to
+`flights_service_tests.py` — found by inspection while tracing `_place`'s only callers,
+not by `coverage` (both branches execute either way they're taken, so `coverage` can't see
+that only one side was ever tested): a saved-search URL's `departStart`/`departEnd` and
+`minNights`/`maxNights` query parameters are validated independently, so nothing stopped a
+hand-edited or stale link from supplying an end date before its start date, or a minimum
+above the maximum. `form_defaults()` already swaps/corrects both cases correctly; only the
+tests were missing.
+
+`service.py`, `rate_limit.py`, and `insights.py` are now all at 100% line coverage.
+`pyflakes` over `flights/` and `app.py` stays clean. Full suite (186 tests, up from 182)
+passes. Pushed as four small commits (two dead-code removals, two test-only additions),
+each independently green.
+
+The two data-dependent roadmap items (thin-route re-check on real traffic, watching local
+price history appear) remain unverifiable from this sandbox, same as every prior run — no
+`gcloud`/VM access and `rayaq.ca`/`travelpayouts.com` are both on the egress blocklist here.
