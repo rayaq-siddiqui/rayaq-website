@@ -47,9 +47,6 @@ def _neighbour_saving(candidates, currency):
 
     position = ordered.index(best_date)
     neighbours = [ordered[i] for i in (position - 1, position + 1) if 0 <= i < len(ordered)]
-    if not neighbours:
-        return None
-
     neighbour = max(neighbours, key=lambda d: by_date[d].total_price)
     saving = by_date[neighbour].total_price - best_price
     if saving < MIN_MEANINGFUL_SAVING:
