@@ -475,6 +475,26 @@ def test_form_defaults_clamps_a_query_window_that_is_too_wide():
     assert (latest - earliest).days + 1 <= service.validation.MAX_WINDOW_DAYS
 
 
+def test_form_defaults_corrects_a_query_window_with_departend_before_departstart():
+    defaults = service.form_defaults(
+        today=TODAY,
+        query={"departStart": "2026-09-20", "departEnd": "2026-09-10"},
+    )
+
+    assert defaults["earliestDeparture"] == "2026-09-20"
+    assert defaults["latestDeparture"] == "2026-09-20"
+
+
+def test_form_defaults_swaps_query_nights_given_in_the_wrong_order():
+    defaults = service.form_defaults(
+        today=TODAY,
+        query={"minNights": "10", "maxNights": "3"},
+    )
+
+    assert defaults["minNights"] == 3
+    assert defaults["maxNights"] == 10
+
+
 def test_page_context_flags_auto_search_only_when_both_places_are_known():
     with_both = service.page_context(today=TODAY, query={"from": "YYZ", "to": "SFO"})
     assert with_both["defaults"]["autoSearch"] is True
