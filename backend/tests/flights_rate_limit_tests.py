@@ -47,3 +47,13 @@ def test_rate_limiting_caps_the_hourly_total():
 
     with pytest.raises(TooManyRequestsError):
         rate_limit.check("1.2.3.4", now=stamp)
+
+
+def test_rate_limiting_drops_hourly_history_once_it_expires():
+    stamp = 1000
+    for _ in range(rate_limit.PER_HOUR // rate_limit.PER_MINUTE):
+        for offset in range(rate_limit.PER_MINUTE):
+            rate_limit.check("1.2.3.4", now=stamp + offset)
+        stamp += 61
+
+    rate_limit.check("1.2.3.4", now=stamp + 3601)

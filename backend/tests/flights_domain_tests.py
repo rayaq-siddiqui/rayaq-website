@@ -318,6 +318,18 @@ def test_insights_report_the_cheapest_trip_length():
     assert "trip_length" in types
 
 
+def test_insights_stay_silent_on_a_trip_length_difference_too_small_to_act_on():
+    request = validation.parse(base_payload(), today=TODAY)
+    candidates = [
+        candidate("2026-09-15", 5, 490),
+        candidate("2026-09-15", 7, 487),
+    ]
+
+    types = [item["type"] for item in insights.build(candidates, request)]
+
+    assert "trip_length" not in types
+
+
 def test_insights_report_the_cheapest_weekday():
     request = validation.parse(base_payload(), today=TODAY)
     candidates = [
