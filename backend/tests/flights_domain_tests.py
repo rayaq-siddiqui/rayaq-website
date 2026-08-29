@@ -154,6 +154,44 @@ def test_parse_rejects_a_non_string_currency_instead_of_crashing():
     assert error.value.field == "currency"
 
 
+def test_parse_rejects_a_whitespace_only_origin():
+    with pytest.raises(FlightSearchError) as error:
+        validation.parse(base_payload(origin="   "), today=TODAY)
+
+    assert error.value.field == "origin"
+
+
+def test_parse_rejects_a_missing_departure_date():
+    with pytest.raises(FlightSearchError) as error:
+        validation.parse(base_payload(earliestDeparture=""), today=TODAY)
+
+    assert error.value.field == "earliestDeparture"
+
+
+def test_parse_rejects_a_malformed_departure_date():
+    with pytest.raises(FlightSearchError) as error:
+        validation.parse(base_payload(latestDeparture="20/09/2026"), today=TODAY)
+
+    assert error.value.field == "latestDeparture"
+    assert "YYYY-MM-DD" in error.value.message
+
+
+def test_parse_rejects_negative_trip_length():
+    with pytest.raises(FlightSearchError) as error:
+        validation.parse(base_payload(minNights=-1), today=TODAY)
+
+    assert error.value.field == "minNights"
+    assert "negative" in error.value.message
+
+
+def test_parse_rejects_a_non_numeric_trip_length():
+    with pytest.raises(FlightSearchError) as error:
+        validation.parse(base_payload(maxNights="a few"), today=TODAY)
+
+    assert error.value.field == "maxNights"
+    assert "whole number" in error.value.message
+
+
 def test_filter_keeps_only_candidates_inside_the_window_and_trip_length():
     request = validation.parse(base_payload(), today=TODAY)
     kept = candidate("2026-09-15", 7, 487)
@@ -187,6 +225,35 @@ def test_filter_drops_one_way_and_non_positive_prices():
     free = candidate("2026-09-15", 7, 0)
 
     assert ranking.filter_candidates([one_way, free], request) == []
+
+
+def test_a_candidate_without_a_return_date_has_no_nights():
+    one_way = FlightCandidate(
+        origin="YTO",
+        destination="SFO",
+        departure_date=date(2026, 9, 15),
+        return_date=None,
+        total_price=300,
+        currency="CAD",
+        source="test",
+    )
+
+    assert one_way.nights is None
+
+
+def test_dedupe_key_prefers_the_provider_id_when_one_is_supplied():
+    with_id = FlightCandidate(
+        origin="YTO",
+        destination="SFO",
+        departure_date=date(2026, 9, 15),
+        return_date=date(2026, 9, 22),
+        total_price=487,
+        currency="CAD",
+        source="test",
+        raw_provider_id="ticket-abc123",
+    )
+
+    assert with_id.dedupe_key == "ticket-abc123"
 
 
 def test_dedupe_removes_identical_candidates():
