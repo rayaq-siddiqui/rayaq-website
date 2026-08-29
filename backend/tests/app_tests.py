@@ -57,12 +57,12 @@ def test_home_returns_200():
     assert response.status_code == 200
 
 
-def test_home_links_to_flights_page():
+def test_home_does_not_link_to_flights_page():
     client = app_module.app.test_client()
 
     body = client.get("/").get_data(as_text=True)
 
-    assert '/flights' in body
+    assert 'href="/flights"' not in body
     assert "Flights" in body
 
 
