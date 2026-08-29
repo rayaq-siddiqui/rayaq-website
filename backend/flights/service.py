@@ -100,8 +100,6 @@ def health():
 
 def _place(code):
     entry = airports.find(code)
-    if entry is None:
-        return {"code": code, "label": code, "city": code, "country": None}
     return {
         "code": entry["code"],
         "label": airports.label(code),
