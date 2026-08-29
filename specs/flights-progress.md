@@ -3,7 +3,8 @@
 Running log for the flights implementation routine. Read this first, update it last.
 The contract is `specs/flights.md`; this file records where the code actually stands.
 
-**Last updated:** 2026-08-28 — reject non-string origin/destination/currency instead of crashing.
+**Last updated:** 2026-08-29 — remove a dead validation branch and close the last real
+test-coverage gaps in `validation.py` and `models.py`.
 
 ---
 
@@ -715,3 +716,60 @@ field is not something the form could have produced honestly. Added
 `test_parse_rejects_a_non_string_destination_instead_of_crashing`, and
 `test_parse_rejects_a_non_string_currency_instead_of_crashing` to
 `flights_domain_tests.py`. Full suite (175 tests, up from 172) passes.
+
+### 2026-08-29 — remove a dead validation branch, close the last real coverage gaps
+
+Confirmed this session's designated branch (`claude/adoring-newton-bbee3q`) was identical
+to `origin/main`'s tip (`47ad3dc`) — no restart needed.
+
+A fifteenth full read-through of `backend/flights/` (models, service, cache, validation,
+ranking, insights, airports, rate_limit, providers/aviasales, api, errors) plus `app.py`
+found no new logic bug — consistent with the last several passes. Instead of a sixteenth
+read-through with the same diminishing returns the previous few runs already flagged, ran
+`pyflakes` (clean) and `coverage` over the full suite, same sanity-check tooling the
+2026-08-28 run used, and actually chased every non-defensive gap `coverage` reported rather
+than treating the 94% headline number as good enough.
+
+Two real findings in `validation.py`, the module that turns an untyped JSON body into a
+typed `SearchRequest`:
+
+1. `_require_date`'s `isinstance(value, date)` fast path was dead code. `validation.parse`
+   has exactly one caller in the whole repo, `service.search()`, whose `payload` always
+   comes from `request.get_json()` — JSON has no native date type, so `earliestDeparture`/
+   `latestDeparture` can only ever arrive as strings (or be absent/malformed). No test
+   exercised this branch either. Removed it, mirroring the 2026-08-26 removal of the dead
+   `with_booking_url` method — same shape of finding, a defensive branch nothing can ever
+   reach.
+2. The malformed-date, missing-date, negative-nights, non-numeric-nights, and
+   whitespace-only-airport-code error paths in `_require_code`/`_require_date`/
+   `_require_nights` were all reachable from `POST /api/flights/search` with an ordinary
+   malformed request body, and none of them had a test — a real gap against CLAUDE.md's
+   "write a test for every ... piece of logic" rule, not a hypothetical one. Added
+   `test_parse_rejects_a_whitespace_only_origin`,
+   `test_parse_rejects_a_missing_departure_date`,
+   `test_parse_rejects_a_malformed_departure_date`,
+   `test_parse_rejects_negative_trip_length`, and
+   `test_parse_rejects_a_non_numeric_trip_length` to `flights_domain_tests.py`.
+   `validation.py` is now at 100% line coverage (was 88%).
+
+Also closed the last two real gaps in `models.py`: `FlightCandidate.nights` returning
+`None` for a one-way candidate, and `dedupe_key` preferring `raw_provider_id` when a
+provider supplies one (Aviasales never does today — confirmed against both fixtures, which
+carry no ticket-level ID field — so this exercises the interface's forward-looking branch
+for a future provider, per spec §12.3's "or provider ID where available"). Added
+`test_a_candidate_without_a_return_date_has_no_nights` and
+`test_dedupe_key_prefers_the_provider_id_when_one_is_supplied`. `models.py` is now at 100%
+line coverage (was 96%).
+
+Remaining coverage gaps (86-97% in `cache.py`, `insights.py`, `providers/aviasales.py`,
+`providers/base.py`, `rate_limit.py`, `airports.py`) are the same ones the 2026-08-28 run
+already characterized as legitimately defensive: `except sqlite3.Error` branches around
+every cache operation, `providers/base.py`'s abstract-interface stub, network-error paths
+in the provider that would need a real socket failure to hit, and a couple of
+`airports._match_rank` tiers below what the bundled 206-airport dataset's real
+city/country names happen to trigger. Left those alone — chasing 100% on defensive code
+that only exists for a failure mode a fixture can't cheaply fabricate is not what this
+project's coverage bar is asking for.
+
+Full suite (182 tests, up from 175) passes. `pyflakes` over `flights/` and `app.py` stays
+clean.
