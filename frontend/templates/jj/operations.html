@@ -1,0 +1,244 @@
+{% set os = "core/src/op_store.rs" %}
+{% set oh = "lib/src/op_heads_store.rs" %}
+{% set sh = "lib/src/simple_op_heads_store.rs" %}
+<header class="jj-header">
+  <h1>The operation log</h1>
+  <p class="tagline">
+    Every change jj makes to a repo is recorded as an operation: an immutable record that points at
+    the resulting view and at the operation(s) it came after. Together they form a DAG, the operation
+    log. Undo, <code>--at-op</code>, and safe concurrent use of one repo by several processes all fall out
+    of that structure.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: operations are commits for repo state. Each one stores a view ID, parent operation IDs and
+  metadata. A tiny separate store, the <strong>op heads</strong>, lists which operations are current.
+  Two processes that run concurrently both succeed, leaving two op heads. The next command notices,
+  merges the two views three-way against their common ancestor, and records a merge operation.
+</p>
+
+<h2 id="operation">1. <code>Operation</code></h2>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Field</th><th>Type</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>view_id</code></td><td><code>ViewId</code></td><td>The <a href="{{ url_for('jj', slug='view') }}">view</a> this operation produced.</td></tr>
+    <tr><td><code>parents</code></td><td><code>Vec&lt;OperationId&gt;</code></td><td>Usually one. More than one means this operation merged concurrent operations. Only the root operation has none.</td></tr>
+    <tr><td><code>metadata</code></td><td><code>OperationMetadata</code></td><td>Who, when, what (§2).</td></tr>
+    <tr><td><code>commit_predecessors</code></td><td><code>Option&lt;BTreeMap&lt;CommitId, Vec&lt;CommitId&gt;&gt;&gt;</code></td><td>For each commit this operation created, the commits it was rewritten from (<code>[]</code> for brand-new commits). Every intermediate rewrite in one transaction is kept: X rewritten to Y, then rebased to Z, records <code>{Y: [X], Z: [Y]}</code>. <code>None</code> for operations written before jj 0.30. Commits that merely became visible, such as some Git imports, aren't listed.</td></tr>
+  </tbody>
+</table></div>
+<p class="jj-source"><a href="{{ src(os, 282, 321) }}"><code>op_store::Operation</code></a></p>
+<p>
+  The <strong>root operation</strong> (<a href="{{ src(os, 324, 352) }}"><code>make_root</code></a>) has
+  no parents, the root view, empty metadata at timestamp 0, and an empty predecessor map. In the simple
+  op store, both the root operation and the root view have all-zero 64-byte IDs. They're never written
+  to disk, only synthesized on read. Every other operation ID is a BLAKE2b hash of the operation's
+  content, as covered on <a href="{{ url_for('jj', slug='protobufs') }}#simple-op-store">Every schema</a>.
+</p>
+<p>
+  In jj-lib code, operations are handled through <a href="{{ src('lib/src/operation.rs', 38, 46) }}"><code>operation::Operation</code></a>,
+  which pairs the ID and data with a handle to the op store. It adds <code>parents()</code>,
+  <code>view()</code>, and <code>predecessors_for_commit()</code>, which is what <code>jj evolog</code> walks
+  (<a href="{{ src('lib/src/operation.rs', 128, 140) }}">source</a>).
+</p>
+
+<h2 id="metadata">2. <code>OperationMetadata</code></h2>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Field</th><th>Type</th><th>Set from</th></tr></thead>
+  <tbody>
+    <tr><td><code>time</code></td><td><code>TimestampRange { start, end }</code></td><td>Transaction start, and the moment it's written. Both can be pinned with <code>debug.operation-timestamp</code>.</td></tr>
+    <tr><td><code>description</code></td><td><code>String</code></td><td>The string the command passes to <code>finish</code>, e.g. <code>fixed 3 commits</code>, <code>snapshot working copy</code>, <code>undo: restore to operation …</code>.</td></tr>
+    <tr><td><code>hostname</code>, <code>username</code></td><td><code>String</code></td><td>Settings, overridable with <code>operation.hostname</code> / <code>operation.username</code>.</td></tr>
+    <tr><td><code>is_snapshot</code></td><td><code>bool</code></td><td>True for operations that only recorded the working copy.</td></tr>
+    <tr><td><code>workspace_name</code></td><td><code>Option&lt;WorkspaceNameBuf&gt;</code></td><td>The workspace the command ran in.</td></tr>
+    <tr><td><code>attributes</code></td><td><code>BTreeMap&lt;String, String&gt;</code></td><td>Free-form tags. The CLI always sets <code>args</code> to the shell-quoted command line.</td></tr>
+  </tbody>
+</table></div>
+<p class="jj-source">
+  <a href="{{ src(os, 354, 372) }}"><code>OperationMetadata</code></a> ·
+  <a href="{{ src('lib/src/transaction.rs', 176, 199) }}"><code>create_op_metadata</code></a> ·
+  <a href="{{ url_for('jj', slug='cli') }}#transaction">where <code>args</code> comes from</a>
+</p>
+
+<h2 id="stores">3. Two stores: operations and op heads</h2>
+<p>
+  Operations and views live in the <a href="{{ src(os, 421, 456) }}"><code>OpStore</code></a>
+  (<code>read_view</code>/<code>write_view</code>, <code>read_operation</code>/<code>write_operation</code>,
+  <code>resolve_operation_id_prefix</code>, <code>gc</code>). Writing an operation doesn't make it current.
+  That's the job of the <a href="{{ src(oh, 48, 73) }}"><code>OpHeadsStore</code></a>, which only holds the
+  set of head operation IDs:
+</p>
+<ul>
+  <li>
+    <code>update_op_heads(old_ids, new_id)</code> adds the new head and removes the old ones. The simple
+    implementation adds first, then removes: each head is an empty file named by the operation's hex ID
+    in <code>.jj/repo/op_heads/heads/</code>. A crash in between leaves an extra head, never zero
+    (<a href="{{ src(sh, 112, 133) }}">source</a>).
+  </li>
+  <li>
+    <code>get_op_heads()</code> lists the directory. An empty result is reported as
+    <code>Corrupt repository: no head operation</code> (<a href="{{ src(sh, 135, 160) }}">source</a>).
+  </li>
+  <li>
+    <code>lock()</code> takes <code>op_heads/heads/lock</code>. The trait documents the lock as an
+    optimization, not a correctness requirement: it stops two processes merging the same divergent
+    heads at once (<a href="{{ src(sh, 162, 166) }}">source</a>).
+  </li>
+</ul>
+<p>
+  So a transaction writes view → operation → index, then <strong>publishes</strong> by replacing its
+  parent op heads with the new operation (see <a href="{{ url_for('jj', slug='cli') }}#finish">How a
+  command runs</a>). Readers that loaded the repo earlier keep a consistent snapshot, because nothing
+  they reference is ever modified.
+</p>
+
+<h2 id="concurrency">4. Concurrent operations</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 330" role="img" aria-labelledby="op-merge-title op-merge-desc">
+    <title id="op-merge-title">Two concurrent operations merged by the next command</title>
+    <desc id="op-merge-desc">
+      Operation O is the head. Process 1 writes operation A with parent O, and process 2 concurrently
+      writes operation B, also with parent O. Both publish, so the op heads store lists A and B. The next
+      command finds two heads, removes any that are ancestors of others, sorts the rest by end time, and
+      merges them: it starts from A, merges B's view against the common ancestor O, rebases descendants,
+      and writes merge operation M with parents A and B, described "reconcile divergent operations".
+      M then replaces A and B as the single op head.
+    </desc>
+    <defs>
+      <marker id="op-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <a href="{{ src(os, 282, 321) }}">
+      <rect x="40" y="135" width="100" height="50" rx="8" class="d-box"></rect>
+      <text x="90" y="165" text-anchor="middle" font-size="15">O</text>
+      <rect x="230" y="55" width="140" height="50" rx="8" class="d-box"></rect>
+      <text x="300" y="78" text-anchor="middle" font-size="15">A</text>
+      <text x="300" y="96" text-anchor="middle" font-size="10" class="d-muted">process 1</text>
+      <rect x="230" y="215" width="140" height="50" rx="8" class="d-box"></rect>
+      <text x="300" y="238" text-anchor="middle" font-size="15">B</text>
+      <text x="300" y="256" text-anchor="middle" font-size="10" class="d-muted">process 2</text>
+    </a>
+    <a href="{{ src('lib/src/repo.rs', 869, 985) }}">
+      <rect x="470" y="125" width="250" height="70" rx="8" class="d-box"></rect>
+      <text x="595" y="152" text-anchor="middle" font-size="15">M</text>
+      <text x="595" y="172" text-anchor="middle" font-size="10" class="d-muted">"reconcile divergent operations"</text>
+      <text x="595" y="186" text-anchor="middle" font-size="10" class="d-muted">parents: A, B</text>
+    </a>
+    <path d="M140 150 C 180 150, 190 80, 228 80" class="d-line" marker-end="url(#op-arrow)"></path>
+    <path d="M140 170 C 180 170, 190 240, 228 240" class="d-line" marker-end="url(#op-arrow)"></path>
+    <path d="M370 80 C 420 80, 430 150, 468 150" class="d-line" marker-end="url(#op-arrow)"></path>
+    <path d="M370 240 C 420 240, 430 170, 468 170" class="d-line" marker-end="url(#op-arrow)"></path>
+    <text x="40" y="40" font-size="11" class="d-muted">arrows point parent → child</text>
+    <text x="470" y="230" font-size="11" class="d-muted">op heads before: {A, B}</text>
+    <text x="470" y="248" font-size="11" class="d-muted">op heads after:  {M}</text>
+    <text x="470" y="266" font-size="11" class="d-muted">base for B's changes: O</text>
+  </svg>
+</div>
+
+<p>
+  jj never blocks one command on another. It detects concurrency afterwards.
+  <a href="{{ src(oh, 81, 162) }}"><code>resolve_op_heads</code></a> runs whenever a command loads the repo
+  at head:
+</p>
+<ol>
+  <li>One head: load it. This is the common case.</li>
+  <li>Several heads: take the op-heads lock and re-read, since another process may have just finished merging them.</li>
+  <li>Drop heads that are ancestors of other heads. If only one remains, make it the sole head without creating a merge.</li>
+  <li>
+    Otherwise, sort the remaining heads by end time and call the resolver. In the CLI, that prints
+    <code>Concurrent modification detected, resolving automatically.</code> and calls
+    <a href="{{ src('lib/src/repo.rs', 869, 985) }}"><code>RepoLoader::merge_operations</code></a>.
+  </li>
+  <li>The resulting operation replaces all the old heads.</li>
+</ol>
+<p>
+  <code>merge_operations</code> starts a transaction at the first head, then folds in each further
+  operation with <a href="{{ src('lib/src/transaction.rs', 103, 114) }}"><code>Transaction::merge_operation(base, other)</code></a>.
+  The base is the <a href="{{ src('lib/src/op_walk.rs', 359, 380) }}">closest common ancestor</a>. If
+  there are several, jj first merges them recursively and caches the result. Each step is a three-way
+  <a href="{{ url_for('jj', slug='view') }}#merging">view merge</a>, followed by rebasing descendants of
+  anything either side rewrote. The merge operation's description is
+  <code>reconcile divergent operations</code> from the CLI, or <code>merge N operations</code> by default.
+</p>
+
+<h2 id="opsets">5. Naming operations</h2>
+<p>
+  Commands that take an operation (<code>--at-op</code>, <code>jj op restore</code>, …) accept a small
+  expression language (<a href="{{ src('lib/src/op_walk.rs', 142, 185) }}"><code>resolve_single_op</code></a>):
+</p>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Syntax</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>@</code></td><td>The operation the repo is loaded at.</td></tr>
+    <tr><td><code>&lt;hex prefix&gt;</code></td><td>Any unambiguous prefix of an operation ID. Errors for no match, an ambiguous prefix, or invalid hex.</td></tr>
+    <tr><td><code>X-</code></td><td>X's parent. Repeat for older ones (<code>@--</code>). Errors if X has no parent or several.</td></tr>
+    <tr><td><code>X+</code></td><td>X's child, found by walking down from the current heads. Errors if there isn't exactly one.</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="undo">6. Undo, redo, restore and revert</h2>
+<p>None of these delete anything. Each writes a <em>new</em> operation whose view is computed from older ones:</p>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Command</th><th>New view</th><th>Description recorded</th></tr></thead>
+  <tbody>
+    <tr><td><code>jj op restore X</code></td><td>X's view (see <a href="#what">What gets restored</a>).</td><td><code>restore to operation &lt;X&gt;</code></td></tr>
+    <tr>
+      <td><code>jj op revert X</code></td>
+      <td>
+        The current view with X's change inverted. jj loads the repos at X and at X's parent, then does a
+        three-way merge into the current repo with X as the base and X's parent as the "other" side.
+        Fails for the root operation or a merge operation.
+      </td>
+      <td><code>revert operation &lt;X&gt;</code></td>
+    </tr>
+    <tr>
+      <td><code>jj undo</code></td>
+      <td>
+        Restores the current operation's parent. Repeating it walks further back: if the operation
+        being undone is itself an undo, jj targets what <em>that</em> undo restored, and it skips over
+        undo operations when picking the parent, so undo history never becomes a linked list. It warns
+        before undoing a <code>git push</code> or a workspace removal, and refuses root and merge
+        operations (suggesting <code>jj op restore</code> instead).
+      </td>
+      <td><code>undo: restore to operation &lt;parent&gt;</code></td>
+    </tr>
+    <tr><td><code>jj redo</code></td><td>Undoes the most recent undo, like redo in a text editor. It errors with <code>Nothing to redo</code> unless the current operation is an undo or a redo.</td><td><code>redo: restore to operation &lt;…&gt;</code></td></tr>
+  </tbody>
+</table></div>
+<p class="jj-source">
+  <a href="{{ src('cli/src/commands/undo.rs', 45, 191) }}"><code>cmd_undo</code></a> ·
+  <a href="{{ src('cli/src/commands/operation/restore.rs', 47, 71) }}"><code>cmd_op_restore</code></a> ·
+  <a href="{{ src('cli/src/commands/operation/revert.rs', 54, 89) }}"><code>cmd_op_revert</code></a>
+</p>
+<p>
+  <code>undo</code> finds the operation it restored by parsing its own description prefix,
+  <code>undo: restore to operation </code>. That's why the description is part of how undo works,
+  not just a label.
+</p>
+
+<h3 id="what">What gets restored</h3>
+<p>
+  Restore, revert and undo all go through
+  <a href="{{ src('cli/src/commands/operation/mod.rs', 76, 117) }}"><code>view_with_desired_portions_restored</code></a>,
+  which builds the new view from two sources, controlled by the experimental <code>--what</code> flag on
+  restore and revert. Both parts are restored by default, and <code>jj undo</code> always restores both:
+</p>
+<ul>
+  <li><code>repo</code>: heads, local bookmarks and tags, working-copy commits, and the rest of the jj state.</li>
+  <li><code>remote-tracking</code>: remote bookmarks and tags. Leaving these out keeps jj's record of the remotes current, which matters if you want to push after undoing.</li>
+</ul>
+
+<h2 id="gc">7. Garbage collection</h2>
+<p>
+  Old operations stay forever unless collected. <a href="{{ src('lib/src/simple_op_store.rs', 274, 358) }}"><code>SimpleOpStore::gc(head_ids, keep_newer)</code></a>
+  walks every operation reachable from the given heads, keeps them and their views, and deletes any
+  other operation or view file whose mtime is older than <code>keep_newer</code>. The time check
+  protects objects a concurrent process may have just written. <code>jj util gc</code> calls it with the current
+  operation as the only head. <code>--expire=now</code> sets <code>keep_newer</code> to now; it's the only
+  value accepted. With the Git backend, it also runs the backend's own GC. The command's help suggests
+  running <code>jj op abandon ..&lt;old operation&gt;</code> first, so old history becomes unreachable
+  (<a href="{{ src('cli/src/commands/util/gc.rs', 29, 70) }}">source</a>).
+</p>
