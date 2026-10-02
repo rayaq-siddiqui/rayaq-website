@@ -3,7 +3,7 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md`; this file records where the build actually stands.
 
-**Last updated:** 2026-10-02 — spec written; nothing built yet.
+**Last updated:** 2026-10-02 — spec v2: every jj command now gets a page (§8A).
 
 ## Upstream
 
@@ -15,18 +15,21 @@ The contract is `specs/jj.md`; this file records where the build actually stands
 
 Nothing is built. No route, template, registry or test exists yet.
 
-## Queue (build in this order)
+## Queue (build in this order, per spec §9)
 
-1. Scaffold: `backend/jj_docs.py` (pin, registry, link helper, `PROTO_MESSAGES`),
-   `/jj` + `/jj/<slug>` routes, `jj/base.html`, `jj.css`, index page with the
-   "In progress" page list, §7.5 tests, homepage card.
-2. `fix` page (§8): the flagship. It may take several runs.
+1. Scaffold (registry, pin, routes, layout, tests, homepage card).
+2. `fix` page (§8).
 3. `protobufs` page.
 4. Index architecture diagram (§6).
-5. `commits`, `trees`, `conflicts`.
-6. `operations`, `view`, `transactions`.
-7. `storage`, `working-copy`, `index`.
-8. `revsets`, `backends`.
+5. `cli` lifecycle page; add `kind`/`COMMANDS` to the registry (§7.4, §8A.1) and group the
+   nav and index into Architecture and Commands.
+6. Topic pages that command pages lean on: `commits`, `view`, `operations`,
+   `transactions`, `working-copy`.
+7. Tier A commands, alternating with the remaining topics (`trees`, `conflicts`,
+   `storage`, `index`, `revsets`, `backends`): `new`, `edit`, `describe`, `commit`,
+   `squash`, `rebase`, `abandon`, `undo`, then the rest of Tier A.
+8. Tier B commands.
+9. Tier C commands.
 
 ## Deliberate deviations
 

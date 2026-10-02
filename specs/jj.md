@@ -1,6 +1,6 @@
 # rayaq.ca/jj — Jujutsu architecture reference
 
-**Status:** approved for build · **Owner:** Rayaq Siddiqui · **Spec version:** 1 (2026-10-02)
+**Status:** approved for build · **Owner:** Rayaq Siddiqui · **Spec version:** 2 (2026-10-02)
 
 This is the product and technical contract for `rayaq.ca/jj`. The daily implementation
 Routine builds and maintains the section against it. Build progress lives in
@@ -21,7 +21,10 @@ to:
   which Rust type it maps to;
 - explain the core data model (commits, trees, conflicts, operations, views, the
   working copy and the index) down to field level;
-- trace a real command end to end. The first and most detailed one is `jj fix`.
+- trace **every** jj command end to end (`jj new`, `jj edit`, `jj rebase`, … all of them),
+  through the CLI and down into the core architecture: which jj-lib functions it calls, which
+  data structures it reads and writes, and what operation it records. `jj fix` is the first
+  and reference-quality example (§8). The full command catalogue is §8A.
 
 It's a reference, not a tutorial. Depth and accuracy matter more than approachability,
 but every page opens with a short plain-language summary.
@@ -30,8 +33,6 @@ but every page opens with a short plain-language summary.
 
 - User documentation for jj commands. Link to `docs.jj-vcs.dev` instead.
 - Opinion, comparison with Git, or roadmap speculation.
-- Covering every CLI command. Only commands listed in §5 get pages, unless the
-  owner adds more.
 - Runtime interactivity beyond plain links and anchors.
 
 ## 3. Hard constraints
@@ -64,10 +65,17 @@ but every page opens with a short plain-language summary.
 
 ```
 /jj                     Overview: summary, the architecture diagram, page index
-/jj/<slug>              One deep-dive page per topic (§5)
+/jj/<slug>              One deep-dive page per architecture topic (§5)
+/jj/<command>           One page per top-level command, e.g. /jj/new, /jj/fix (§8A)
+/jj/<command>-<sub>     One page per subcommand, e.g. /jj/git-fetch, /jj/operation-log
 ```
 
-- Every page shares one layout: a section nav listing every page in reading order, a
+- Command slugs use the command's canonical name (not an alias), lowercase, with `_`
+  replaced by `-`. Topic slugs must never collide with a command slug; the registry tests
+  enforce this.
+
+- Every page shares one layout: a section nav listing every page, grouped into
+  "Architecture" (topics) and "Commands" (grouped by §8A category), a
   breadcrumb, an on-page table of contents built from its `h2`/`h3`, and a footer
   showing the pinned upstream commit, its date, the jj version from `Cargo.toml`, and
   the date of the last analysis.
@@ -82,6 +90,7 @@ Routine uses source sets to work out which pages an upstream change affects.
 
 | Slug | Title | Must cover | Source set |
 |---|---|---|---|
+| `cli` | How a command runs | The shared lifecycle every command page builds on: `main` → `CliRunner` → clap dispatch (`commands/mod.rs`) → `CommandHelper`; `workspace_helper` (load the workspace and repo at the op head, snapshot the working copy, stale-working-copy handling, Git ref import in colocated repos); `start_transaction`; `WorkspaceCommandTransaction::finish` (rebase descendants, update the working copy, export Git refs, write and publish the operation); `--at-operation`/`--ignore-working-copy`; error mapping (`CommandError`). Command pages link here instead of repeating it | `cli/src/main.rs`, `cli/src/cli_util.rs`, `cli/src/commands/mod.rs`, `cli/src/command_error.rs` |
 | *(index)* | jj architecture | §6 diagram; one-paragraph tour of each layer; crate map (`cli`, `lib` = jj-lib, `core`, `core/proc-macros`, `lib/gen-protos`, `lib/testutils`); links to every page | `Cargo.toml`, `docs/technical/architecture.md` |
 | `storage` | On-disk layout | The `.jj/` tree: `repo/` (`store/` with `type`, `git_target`, `extra/`; `op_store/` with `operations/`, `views/`; `op_heads/heads/`; `index/` with `segments/`, `op_links/`, `changed_paths/`; `submodule_store/`), `working_copy/` (`checkout`, `tree_state`, `type`), `workspace_store/`. Which component owns each path and which format each file uses | `lib/src/repo.rs`, `workspace.rs`, `simple_op_store.rs`, `simple_op_heads_store.rs`, `default_index/store.rs`, `local_working_copy.rs`, `simple_workspace_store.rs` |
 | `commits` | Commits and change IDs | `backend::Commit` field by field; `CommitId` (content hash) vs `ChangeId` (stable, reverse-hex display); predecessors (deprecated field vs `Operation.commit_predecessors`); root commit (`make_root_commit`); `Signature`/`Timestamp`; `SecureSig` and signing; `commit::Commit` wrapper; `CommitBuilder`/`DetachedCommitBuilder` | `core/src/backend.rs`, `lib/src/commit.rs`, `commit_builder.rs`, `signing_factory.rs` |
@@ -95,10 +104,9 @@ Routine uses source sets to work out which pages an upstream change affects.
 | `revsets` | Revset engine | Pipeline: pest grammar → AST → `RevsetExpression` → symbol resolution (`SymbolResolver`) → `ResolvedExpression` → evaluation by the index's revset engine; filters and extensions; filesets as the path counterpart | `lib/src/revset.rs`, `revset_parser.rs`, `revset.pest`, `default_index/revset_engine.rs`, `fileset.rs`, `docs/technical/revset-evaluation.md` |
 | `backends` | Storage backends | `Backend` trait method by method; `Store` (caching layer over a backend); `GitBackend` (jj metadata in `extra/` via `git_store.proto`, change IDs, conflicts in trees); `SimpleBackend`; `SecretBackend`; backend selection through the `type` file and `StoreFactories` | `core/src/backend.rs`, `lib/src/store.rs`, `git_backend.rs`, `simple_backend.rs`, `secret_backend.rs`, `default_backend_factories.rs` |
 | `protobufs` | Every schema | All seven `.proto` files, each message and enum with every field, number, type, deprecation status and meaning, plus the Rust type it is converted to and from. Reserved and deprecated fields explained | `lib/src/protos/*.proto` and the `*_store.rs`/`*_working_copy.rs` conversion code |
-| `fix` | How `jj fix` works | §8, in full | `lib/src/fix.rs`, `cli/src/commands/fix.rs`, `cli/src/config/revsets.toml`, `docs/config.md` (fix section) |
 
-The owner may add more command pages later (candidates: `rebase`, `absorb`,
-`squash`, `git-fetch`). Each one needs a §8-style requirement block in this spec first.
+Command pages are specified separately in §8A. `fix` is a command page; §8 is its
+reference-quality requirement block and the bar for every other complex command.
 
 ## 6. The architecture diagram
 
@@ -165,8 +173,12 @@ link. Bumping the pin is the only way a page's described version changes.
 
 ### 7.4 Page registry
 
-An ordered list of pages, each with `slug`, `title`, `summary` (one sentence, used on
-the index and in `<meta name="description">`), and `sources` (its §5 source set). The
+An ordered list of pages, each with `slug`, `title`, `kind` (`"topic"` or `"command"`),
+`summary` (one sentence, used on the index and in `<meta name="description">`), and
+`sources` (its §5 source set, or for a command its §8A source set). Command entries also
+carry `command` (the full invocation, e.g. `"git fetch"`), `category` (§8A) and `tier`.
+The canonical list of commands lives in `COMMANDS` in `jj_docs.py` and is regenerated from
+upstream (§9). The
 nav, the index page list and the slug allowlist all derive from this one list. A page
 appears in the registry only once its template exists and meets its §5 bar.
 Until then it's listed on the index as "In progress", without a link.
@@ -184,6 +196,9 @@ Until then it's listed on the index as "In progress", without a link.
   (`PROTO_MESSAGES` in `jj_docs.py`). The Routine refreshes that list from upstream
   when it bumps the pin.
 - The homepage links to `/jj`.
+- Every entry in `COMMANDS` has a registry entry (ready or "In progress"), and no topic
+  slug collides with a command slug.
+- The index lists every command, grouped by category.
 
 ## 8. `jj fix` deep dive — requirements
 
@@ -240,6 +255,78 @@ The `fix` page is the flagship command page. It must explain, with source links:
 10. **Worked example.** The A/B/C history from the command's own help, redrawn as an
     SVG showing which files go to which tool in each commit.
 
+## 8A. Every command — catalogue and requirements
+
+### 8A.1 Coverage
+
+Every user-facing command and subcommand in jj gets a page, including feature-gated ones
+(`git`, `gerrit`). Coverage is driven by the CLI's own definitions, not by a hand-picked
+list: the top-level `Command` enum in `cli/src/commands/mod.rs`, and the subcommand enum in
+each command directory (`cli/src/commands/<command>/mod.rs`). At spec version 2, scoped against
+upstream `0cb02a8`, that is:
+
+| Category | Commands |
+|---|---|
+| Creating and editing changes | `new`, `edit`, `describe`, `commit`, `metaedit`, `next`, `prev` |
+| Moving and combining changes | `rebase`, `squash`, `split`, `absorb`, `duplicate`, `abandon`, `parallelize`, `simplify-parents`, `arrange`, `converge`, `revert`, `restore`, `diffedit` |
+| Content and conflicts | `fix`, `run`, `resolve`, `file annotate`, `file chmod`, `file list`, `file search`, `file show`, `file track`, `file untrack`, `sparse edit`, `sparse list`, `sparse reset`, `sparse set` |
+| Inspecting history | `log`, `show`, `diff`, `interdiff`, `status`, `evolog`, `root`, `bisect run` |
+| Operation log | `undo`, `redo`, `operation abandon`, `operation diff`, `operation integrate`, `operation log`, `operation restore`, `operation revert`, `operation show` |
+| Bookmarks and tags | `bookmark advance`, `bookmark create`, `bookmark delete`, `bookmark forget`, `bookmark list`, `bookmark move`, `bookmark rename`, `bookmark set`, `bookmark track`, `bookmark untrack`, `tag delete`, `tag list`, `tag set`, `tag track`, `tag untrack` |
+| Git and remotes | `git clone`, `git colocation`, `git export`, `git fetch`, `git import`, `git init`, `git push`, `git remote` (and its subcommands), `git root`, `gerrit upload` |
+| Workspaces | `workspace add`, `workspace forget`, `workspace list`, `workspace remove`, `workspace rename`, `workspace root`, `workspace update-stale` |
+| Signing | `sign`, `unsign` |
+| Configuration | `config edit`, `config gc`, `config get`, `config list`, `config path`, `config set`, `config unset` |
+| Utilities and internals | `help`, `version`, `util backend`, `util completion`, `util config-schema`, `util diff`, `util exec`, `util gc`, `util install-man-pages`, `util markdown-help`, `util snapshot`, `debug *` (hidden), `bench *` (feature-gated) |
+
+When upstream adds, renames or removes a command, the Routine updates `COMMANDS` and the
+registry to match (§9). A removed command's page is retired, and the progress file records
+the removal.
+
+### 8A.2 Tiers
+
+- **Tier A, state-changing commands:** anything that starts a transaction, or that changes
+  commits, the view, the working copy, refs or remotes. Every §8A.3 section is required,
+  including the SVG diagrams.
+- **Tier B, read-only commands** (`log`, `show`, `diff`, `status`, `file show`, `config get`, …):
+  §8A.3 items 1–4, 7 and 8 are required. Item 5 becomes "what it reads and whether it
+  snapshots the working copy". Item 6 covers the algorithm that computes the output (graph
+  rendering, diff and template evaluation, and so on).
+- **Tier C, utilities and internals** (`help`, `version`, `util *`, `debug *`, `bench *`):
+  a short page with items 1, 3 and 4 is enough. Closely related subcommands (for example all of
+  `debug *`) may share one page with an anchor per subcommand, but they still each get a
+  `COMMANDS` entry pointing at that anchor.
+
+### 8A.3 What every command page covers
+
+The same structure as §8, generalized:
+
+1. **Purpose and CLI surface.** The clap `Args` struct, flag by flag: type, default, aliases,
+   and every config key that supplies a default (e.g. `revsets.*`, `ui.*`).
+2. **Configuration** it reads, with defaults from `cli/src/config/*.toml`.
+3. **End-to-end flow:** an SVG sequence diagram from `cmd_<name>` through the CLI helpers into
+   jj-lib, naming the real functions. Steps already covered by `cli` (the shared lifecycle)
+   are drawn as one box linking to that page.
+4. **Core architecture touchpoints:** a table of every data structure the command reads
+   or writes (commits and their fields, `View` fields such as `head_ids`,
+   `local_bookmarks`, `wc_commit_ids`, the operation and its metadata, the working copy's
+   `TreeState`, the index, Git refs or remotes). Each row says read/write and links to the
+   topic page that explains that structure.
+5. **Transaction and operation:** whether it starts a transaction, the exact operation
+   description it records, which commits it creates or rewrites and how descendants are
+   rebased, whether and how the working copy is snapshotted or updated, and what
+   `jj undo` would revert.
+6. **Algorithm and invariants:** how it decides what to do (revset defaults, parent
+   selection, conflict handling, empty-commit behaviour), with the invariants it keeps.
+7. **Errors and edge cases:** user-facing error and warning messages, quoted from source,
+   with the condition that triggers each.
+8. **Worked example:** a small before/after commit graph as an SVG, for Tier A. Tier B uses
+   example output instead.
+
+Every step links to pinned source (§3.3). Where a command shares machinery with another
+(for example `squash` and `absorb`), each page explains its own entry point and links to
+the other for the shared part, instead of duplicating it.
+
 ## 9. Keeping it current (the daily Routine)
 
 A Routine ("rayaq.ca/jj — architecture reference agent") runs once a day. Each run:
@@ -247,9 +334,16 @@ A Routine ("rayaq.ca/jj — architecture reference agent") runs once a day. Each
 1. Shallow-clones `jj-vcs/jj` at `HEAD` into scratch space (never into this repo).
 2. Compares upstream `HEAD` with `UPSTREAM.commit`. Using the §5 source sets, it lists
    the pages whose sources changed (`git diff --stat <pinned>..HEAD -- <paths>`; when
-   the pinned commit isn't in a shallow clone, deepen or fetch it).
-3. **Build phase** (until every §5 page and §6/§7/§8 item is done): builds the next
-   item from the queue in `specs/jj-progress.md`. Pages are built against the pinned
+   the pinned commit isn't in a shallow clone, deepen or fetch it). It also regenerates
+   the command list from `cli/src/commands/` and reconciles `COMMANDS` and the registry
+   with it (§8A.1).
+3. **Build phase** (until every §5 page, every §8A command page and every §6/§7/§8 item
+   is done): builds the next item from the queue in `specs/jj-progress.md`. The build
+   order is: the scaffold, `fix`, `protobufs`, the §6 diagram, the `cli` lifecycle page,
+   then the topic pages that command pages lean on (`commits`, `view`, `operations`,
+   `transactions`, `working-copy`). After that it alternates between Tier A commands
+   (starting with `new`, `edit`, `describe`, `commit`, `squash`, `rebase`, `abandon`,
+   `undo`) and the remaining topic pages, then does Tier B, then Tier C. Pages are built against the pinned
    commit; the pin isn't bumped while a page is half-built.
 4. **Maintenance phase** (always, once the build is done; before building new pages
    while the build is still going): updates every affected page so it matches the new
@@ -265,6 +359,9 @@ A Routine ("rayaq.ca/jj — architecture reference agent") runs once a day. Each
 - [ ] `/jj` renders the §6 diagram and links to every page in §5.
 - [ ] Every §5 page exists, meets its "Must cover" column, and is registered.
 - [ ] The `fix` page meets all ten §8 items, with at least two SVG diagrams.
+- [ ] The `cli` lifecycle page exists.
+- [ ] Every command in §8A.1 (as reconciled with upstream) has a page that meets its
+      tier's §8A.3 bar, and the index lists all of them by category.
 - [ ] The `protobufs` page covers all seven `.proto` files, every field.
 - [ ] Every source link is pinned to `UPSTREAM.commit`.
 - [ ] §7.5 tests exist and pass.
