@@ -1,0 +1,230 @@
+{% set wc = "lib/src/working_copy.rs" %}
+{% set lw = "lib/src/local_working_copy.rs" %}
+<header class="jj-header">
+  <h1>The working copy</h1>
+  <p class="tagline">
+    In jj, the files you edit are a commit: <code>@</code>. The working copy layer turns the directory on
+    disk into a tree (<em>snapshot</em>) and turns a tree back into files (<em>check out</em>). It
+    remembers enough about each file to avoid re-reading the ones that haven't changed.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: <code>.jj/working_copy/</code> holds two small files. <code>checkout</code> records which
+  operation and workspace the files on disk belong to. <code>tree_state</code> records the checked-out
+  tree plus, for every tracked file, its type, mtime and size. Snapshotting walks the directory in
+  parallel, re-reads only files whose recorded state no longer matches, and writes a new tree. The
+  repo layer then rewrites <code>@</code> to point at it.
+</p>
+
+<h2 id="traits">1. The interface</h2>
+<p>
+  Working copies are pluggable. The CLI picks a <a href="{{ src(wc, 85, 106) }}"><code>WorkingCopyFactory</code></a>
+  by name; <code>local</code> is the default.
+</p>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Trait</th><th>Methods</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><a href="{{ src(wc, 51, 82) }}"><code>WorkingCopy</code></a> (unlocked, read-only)</td>
+      <td><code>workspace_name</code>, <code>operation_id</code>, <code>tree</code>, <code>sparse_patterns</code>, and <code>start_mutation()</code>, which takes the lock and returns a <code>LockedWorkingCopy</code>.</td>
+    </tr>
+    <tr>
+      <td><a href="{{ src(wc, 108, 156) }}"><code>LockedWorkingCopy</code></a></td>
+      <td>
+        <code>old_operation_id</code> and <code>old_tree</code> (as of locking); <code>snapshot(options)</code>;
+        <code>check_out(commit)</code>; <code>reset(commit)</code> and <code>recover(commit)</code>, which
+        repoint the state without touching files; <code>set_sparse_patterns</code>;
+        <code>rename_workspace</code>; and <code>finish(operation_id)</code>, which writes the state
+        with the new operation and releases the lock.
+      </td>
+    </tr>
+  </tbody>
+</table></div>
+
+<h3 id="snapshot-options"><code>SnapshotOptions</code> and stats</h3>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Field</th><th>Meaning</th><th>From config</th></tr></thead>
+  <tbody>
+    <tr><td><code>base_ignores</code></td><td>Ignore patterns to start from (user and repo excludes). Each directory's <code>.gitignore</code> is layered on during the walk.</td><td>Git exclude files</td></tr>
+    <tr><td><code>start_tracking_matcher</code></td><td>New, untracked files that match start being tracked.</td><td><code>snapshot.auto-track</code>, default <code>all()</code></td></tr>
+    <tr><td><code>force_tracking_matcher</code></td><td>Track these even if they're ignored or too large (used by <code>jj file track</code>).</td><td></td></tr>
+    <tr><td><code>max_new_file_size</code></td><td>Larger <em>new</em> files stay untracked. Already-tracked files are always snapshotted.</td><td><code>snapshot.max-new-file-size</code>, default <code>1MiB</code></td></tr>
+    <tr><td><code>progress</code></td><td>Callback for the progress bar.</td><td></td></tr>
+  </tbody>
+</table></div>
+<p>
+  A snapshot returns <code>SnapshotStats</code>: untracked paths, each with an <code>UntrackedReason</code>
+  (<code>FileTooLarge { size, max_size }</code> or <code>FileNotAutoTracked</code>), plus paths skipped
+  because their names aren't valid UTF-8. A checkout returns <code>CheckoutStats</code>: updated, added,
+  removed, and <em>skipped</em> files, where skipped means an untracked file was already in the way
+  (<a href="{{ src(wc, 204, 272) }}">source</a>,
+  <a href="{{ src('cli/src/config/misc.toml', 59, 61) }}">defaults</a>).
+</p>
+
+<h2 id="state">2. The stored state</h2>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>File</th><th>Contents</th><th>Rust</th></tr></thead>
+  <tbody>
+    <tr><td><code>.jj/working_copy/checkout</code></td><td>The operation the files were last updated at, and this workspace's name</td><td><a href="{{ src(lw, 2676, 2725) }}"><code>CheckoutState</code></a></td></tr>
+    <tr><td><code>.jj/working_copy/tree_state</code></td><td>The checked-out tree (as <code>Merge&lt;TreeId&gt;</code> plus conflict labels), one <code>FileState</code> per tracked path, sorted, the sparse patterns, and the last Watchman clock</td><td><a href="{{ src(lw, 994, 1014) }}"><code>TreeState</code></a></td></tr>
+    <tr><td><code>.jj/working_copy/working_copy.lock</code></td><td>Held while a <code>LockedWorkingCopy</code> exists</td><td><a href="{{ src(lw, 2759, 2788) }}"><code>start_mutation</code></a></td></tr>
+  </tbody>
+</table></div>
+<p>
+  Each <a href="{{ src(lw, 283, 313) }}"><code>FileState</code></a> holds a <code>file_type</code>
+  (<code>Normal { exec_bit }</code>, <code>Symlink</code> or <code>GitSubmodule</code>), <code>mtime</code>,
+  <code>size</code>, and <code>materialized_conflict_data</code>, which is set when the file on disk
+  holds conflict markers and records their length. The exact encoding is on
+  <a href="{{ url_for('jj', slug='protobufs') }}#local-working-copy">Every schema</a>.
+  <code>start_mutation</code> re-reads both files <em>after</em> taking the lock, so a locked working copy
+  always sees the latest state.
+</p>
+
+<h2 id="snapshot">3. Snapshotting</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 330" role="img" aria-labelledby="wc-snap-title wc-snap-desc">
+    <title id="wc-snap-title">How a snapshot turns files into a tree</title>
+    <desc id="wc-snap-desc">
+      The matcher is the intersection of the sparse patterns with the union of the fsmonitor's changed
+      files and the force-tracking matcher. A rayon scope walks directories in parallel. For each file it
+      compares the on-disk state with the stored FileState: if type, mtime and size match and the mtime
+      is older than the tree_state file's own mtime, the file is skipped; otherwise it's written to the
+      store. Results flow through channels: new tree values into a MergedTreeBuilder, changed FileStates
+      and deletions into the file-state map, and untracked paths into the stats. The builder writes the new
+      tree.
+    </desc>
+    <defs>
+      <marker id="wc-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <a href="{{ src(lw, 1307, 1332) }}">
+      <rect x="20" y="20" width="220" height="64" rx="8" class="d-box"></rect>
+      <text x="130" y="44" text-anchor="middle" font-size="13">matcher</text>
+      <text x="130" y="62" text-anchor="middle" font-size="10" class="d-muted">sparse ∩ (fsmonitor ∪ force-track)</text>
+    </a>
+    <a href="{{ src(lw, 1575, 1621) }}">
+      <rect x="20" y="130" width="220" height="64" rx="8" class="d-box"></rect>
+      <text x="130" y="154" text-anchor="middle" font-size="13">parallel directory walk</text>
+      <text x="130" y="172" text-anchor="middle" font-size="10" class="d-muted">rayon scope · .gitignore per dir</text>
+    </a>
+    <a href="{{ src(lw, 1936, 1993) }}">
+      <rect x="290" y="130" width="200" height="64" rx="8" class="d-box"></rect>
+      <text x="390" y="154" text-anchor="middle" font-size="13">per file</text>
+      <text x="390" y="172" text-anchor="middle" font-size="10" class="d-muted">clean? skip : write to store</text>
+    </a>
+    <a href="{{ src(lw, 1376, 1406) }}">
+      <rect x="540" y="40" width="200" height="56" rx="8" class="d-box"></rect>
+      <text x="640" y="64" text-anchor="middle" font-size="13">MergedTreeBuilder</text>
+      <text x="640" y="82" text-anchor="middle" font-size="10" class="d-muted">→ new tree</text>
+      <rect x="540" y="134" width="200" height="56" rx="8" class="d-box"></rect>
+      <text x="640" y="158" text-anchor="middle" font-size="13">file_states.merge_in</text>
+      <text x="640" y="176" text-anchor="middle" font-size="10" class="d-muted">changed + deleted</text>
+      <rect x="540" y="228" width="200" height="56" rx="8" class="d-box"></rect>
+      <text x="640" y="252" text-anchor="middle" font-size="13">SnapshotStats</text>
+      <text x="640" y="270" text-anchor="middle" font-size="10" class="d-muted">untracked paths</text>
+    </a>
+    <path d="M130 84 V128" class="d-line" marker-end="url(#wc-arrow)"></path>
+    <path d="M240 162 H288" class="d-line" marker-end="url(#wc-arrow)"></path>
+    <path d="M490 150 C 515 150, 515 68, 538 68" class="d-line" marker-end="url(#wc-arrow)"></path>
+    <path d="M490 162 H538" class="d-line" marker-end="url(#wc-arrow)"></path>
+    <path d="M490 176 C 515 176, 515 256, 538 256" class="d-line" marker-end="url(#wc-arrow)"></path>
+    <text x="500" y="310" font-size="10" class="d-muted">results travel over mpsc channels</text>
+  </svg>
+</div>
+
+<p><a href="{{ src(lw, 1295, 1436) }}"><code>TreeState::snapshot</code></a>:</p>
+<ol>
+  <li>
+    Builds the matcher: the sparse patterns, intersected with the union of the fsmonitor's changed
+    paths and the force-tracking matcher. Without an fsmonitor, the fsmonitor part matches
+    everything. If the matcher can't match anything, the snapshot returns immediately.
+  </li>
+  <li>
+    Walks the directory as a queue of per-directory jobs in a rayon scope, layering each
+    directory's <code>.gitignore</code>. Paths that were tracked but are no longer on disk are reported
+    as deleted (<a href="{{ src(lw, 1904, 1934) }}"><code>emit_deleted_files</code></a>).
+  </li>
+  <li>
+    For each present file, <a href="{{ src(lw, 1936, 1993) }}"><code>get_updated_tree_value</code></a>
+    decides whether it's <strong>clean</strong>. It's clean when it was tracked, its type, mtime and
+    size match the stored <code>FileState</code>, <em>and</em> its mtime is older than the
+    <code>tree_state</code> file's own mtime. That last check avoids a race: a file modified in the
+    same instant the state was saved can't be trusted. Clean files are skipped entirely.
+  </li>
+  <li>
+    Otherwise the file is written to the store, keeping the existing <code>copy_id</code> and, where the
+    filesystem can't express it, the executable bit. If the path was <strong>conflicted</strong> in the
+    tree, the contents are parsed for conflict markers with
+    <code>conflicts::update_from_content</code>, using the recorded marker length or the minimum
+    of 7. A fully resolved file becomes a normal file; partly edited markers update the individual
+    conflict sides (<a href="{{ src(lw, 1999, 2106) }}"><code>write_path_to_store</code></a>).
+  </li>
+  <li>
+    Results come back over channels and are folded in: new tree values go into a
+    <code>MergedTreeBuilder</code> seeded with the old tree, deleted paths are removed, changed file
+    states are merged into the sorted map, and the builder writes the new tree.
+  </li>
+  <li>The Watchman clock is saved, but only if no untracked paths were found, so untracked files get rescanned next time.</li>
+</ol>
+<p>
+  The repo layer then compares the new tree with <code>@</code>'s tree and, if they differ, records a
+  <code>snapshot working copy</code> operation. See
+  <a href="{{ url_for('jj', slug='cli') }}#snapshot">How a command runs</a>.
+</p>
+
+<h2 id="checkout">4. Checking out</h2>
+<p>
+  <code>check_out(commit)</code> diffs the old tree against the new one within the sparse patterns and
+  applies each change on disk (<a href="{{ src(lw, 2327, 2598) }}"><code>TreeState::update</code></a>).
+  Files, symlinks and executable bits are written directly. A <strong>conflicted</strong> path is
+  <em>materialized</em>: its sides are rendered into one file with conflict markers in the configured
+  <code>ui.conflict-marker-style</code>, and the marker length is recorded in its <code>FileState</code>
+  so the next snapshot can parse it back (<a href="{{ src(lw, 2253, 2288) }}"><code>write_conflict</code></a>).
+  New files are created with <code>create_new</code>, so an untracked file already at that path is never
+  overwritten. It's counted as <code>skipped</code> instead. Paths that resolve into <code>.git</code> or
+  <code>.jj</code> are rejected.
+</p>
+<p>
+  After checkout, the state is saved with the new tree and fresh file states, and
+  <code>finish(op_id)</code> writes the operation into <code>checkout</code>.
+</p>
+
+<h2 id="stale">5. Stale working copies</h2>
+<p>
+  Each workspace's working copy records the operation it was updated at. The repo's view records the
+  commit it <em>should</em> have (<code>wc_commit_ids</code>). <a href="{{ src(wc, 345, 400) }}"><code>WorkingCopyFreshness::check_stale</code></a>
+  compares the two using the closest common ancestor of the working copy's operation and the repo's:
+</p>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Common ancestor is…</th><th>Result</th></tr></thead>
+  <tbody>
+    <tr><td>(operations equal)</td><td><code>Fresh</code></td></tr>
+    <tr><td>the repo's operation</td><td><code>Updated</code>: another process moved the working copy forward. Reload the repo there.</td></tr>
+    <tr><td>the working copy's operation</td><td><code>Fresh</code> if the checked-out tree already equals <code>@</code>'s tree, otherwise <code>WorkingCopyStale</code>.</td></tr>
+    <tr><td>neither</td><td><code>SiblingOperation</code></td></tr>
+  </tbody>
+</table></div>
+<p>
+  A stale working copy is repaired by <code>jj workspace update-stale</code>, or automatically with
+  <code>snapshot.auto-update-stale</code>. It checks out the commit the repo expects.
+</p>
+
+<h2 id="settings">6. Settings and file monitors</h2>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Setting</th><th>Effect</th></tr></thead>
+  <tbody>
+    <tr><td><code>ui.conflict-marker-style</code></td><td>How conflicts are materialized on checkout and parsed on snapshot.</td></tr>
+    <tr><td><code>working-copy.eol-conversion</code></td><td>Optional CRLF ↔ LF conversion on snapshot and checkout.</td></tr>
+    <tr><td><code>working-copy.exec-bit-change</code></td><td><code>respect</code>, <code>ignore</code> or <code>auto</code> (default): whether executable-bit changes on disk count. <code>auto</code> checks whether the filesystem supports executable bits (<a href="{{ src(lw, 172, 216) }}">source</a>).</td></tr>
+    <tr><td><code>fsmonitor.backend</code></td><td><code>none</code> or <code>watchman</code>. With Watchman, only paths reported changed since the stored clock are examined.</td></tr>
+  </tbody>
+</table></div>
+<p class="jj-source"><a href="{{ src(lw, 966, 992) }}"><code>TreeStateSettings</code></a> · <a href="{{ src('lib/src/fsmonitor.rs', 39, 78) }}"><code>FsmonitorSettings</code></a></p>
+<p>
+  Sparse patterns are currently plain path prefixes. Paths outside them are neither snapshotted nor
+  checked out. <code>jj sparse set</code> changes them through
+  <code>LockedWorkingCopy::set_sparse_patterns</code>, which checks out or removes the affected files.
+</p>

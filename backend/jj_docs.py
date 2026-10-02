@@ -142,8 +142,9 @@ TOPICS = [
             "lib/src/local_working_copy.rs",
             "lib/src/fsmonitor.rs",
             "docs/working-copy.md",
+            "cli/src/config/misc.toml",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "index",
