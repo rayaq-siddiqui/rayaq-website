@@ -144,3 +144,22 @@ def test_render_places_the_header_before_the_table_of_contents():
     html = jj_docs.render(None, fake_render)
 
     assert html.index("<h1>") < html.index("|TOC|") < html.index('id="a"')
+
+
+def test_index_has_an_accessible_architecture_diagram():
+    client = app_module.app.test_client()
+
+    body = client.get("/jj").get_data(as_text=True)
+
+    assert 'role="img"' in body
+    assert '<title id="arch-title">' in body
+    assert '<desc id="arch-desc">' in body
+
+
+def test_every_internal_jj_link_resolves():
+    client = app_module.app.test_client()
+
+    for url in all_urls():
+        body = client.get(url).get_data(as_text=True)
+        for link in set(re.findall(r'href="(/jj[^"#?]*)', body)):
+            assert client.get(link).status_code == 200, (url, link)

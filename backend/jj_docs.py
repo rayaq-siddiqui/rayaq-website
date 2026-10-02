@@ -274,6 +274,7 @@ def render(slug, render_template):
     context = {
         "page": page,
         "pages": PAGES,
+        "ready_slugs": {entry["slug"] for entry in ready_pages()},
         "upstream": UPSTREAM,
         "src": source_url,
         "proto_messages": PROTO_MESSAGES,
