@@ -57,15 +57,6 @@ def test_home_returns_200():
     assert response.status_code == 200
 
 
-def test_home_does_not_link_to_flights_page():
-    client = app_module.app.test_client()
-
-    body = client.get("/").get_data(as_text=True)
-
-    assert 'href="/flights"' not in body
-    assert "Flights" in body
-
-
 def test_home_links_to_weather_page():
     client = app_module.app.test_client()
 
@@ -226,115 +217,6 @@ def test_health_returns_200_ok():
     assert response.get_json() == {"status": "ok"}
 
 
-def test_flights_returns_200():
-    client = app_module.app.test_client()
-
-    response = client.get("/flights")
-
-    assert response.status_code == 200
-
-
-def test_flights_renders_the_search_form():
-    client = app_module.app.test_client()
-
-    body = client.get("/flights").get_data(as_text=True)
-
-    assert 'id="origin-input"' in body
-    assert 'id="destination-input"' in body
-    assert 'id="earliest-departure"' in body
-    assert 'id="min-nights"' in body
-    assert "Direct flights only" in body
-    assert 'id="include-nearby"' in body
-    assert "Include nearby airports" in body
-    assert "Find cheap flights" in body
-
-
-def test_flights_offers_popular_route_shortcuts():
-    client = app_module.app.test_client()
-
-    body = client.get("/flights").get_data(as_text=True)
-
-    assert 'data-origin="YTO"' in body
-    assert 'data-destination="SFO"' in body
-
-
-def test_flights_discloses_that_prices_are_indicative():
-    client = app_module.app.test_client()
-
-    body = client.get("/flights").get_data(as_text=True)
-
-    assert "indicative fares" in body
-    assert "Verify the current fare" in body
-
-
-def test_flights_page_includes_a_hook_for_the_provider_status_banner():
-    client = app_module.app.test_client()
-
-    body = client.get("/flights").get_data(as_text=True)
-
-    assert 'id="provider-notice"' in body
-
-
-def test_flights_page_offers_trip_length_presets():
-    client = app_module.app.test_client()
-
-    body = client.get("/flights").get_data(as_text=True)
-
-    assert 'id="trip-length-presets"' in body
-    assert 'data-min-nights="2" data-max-nights="3"' in body
-    assert "Weekend trip" in body
-    assert "Long weekend" in body
-    assert 'aria-pressed="false"' in body
-
-
-def test_flights_never_ships_the_provider_token_to_the_browser(monkeypatch):
-    monkeypatch.setenv("TRAVELPAYOUTS_API_TOKEN", "super-secret-token")
-    client = app_module.app.test_client()
-
-    body = client.get("/flights").get_data(as_text=True)
-
-    assert "super-secret-token" not in body
-    assert "TRAVELPAYOUTS" not in body
-
-
-def test_flights_prefills_the_form_from_a_saved_search_url():
-    client = app_module.app.test_client()
-
-    body = client.get(
-        "/flights?from=YYZ&to=SFO&departStart=2026-09-10&departEnd=2026-09-20"
-        "&minNights=5&maxNights=8&currency=USD&direct=1&nearby=1"
-    ).get_data(as_text=True)
-
-    assert '"origin": "YYZ"' in body
-    assert '"destination": "SFO"' in body
-    assert '"autoSearch": true' in body
-    assert '"directOnly": true' in body
-    assert '"includeNearby": true' in body
-
-
-def test_flights_ignores_an_unknown_airport_code_in_the_query_string():
-    client = app_module.app.test_client()
-
-    body = client.get("/flights?from=NOTREAL&to=SFO").get_data(as_text=True)
-
-    assert '"origin": ""' in body
-    assert '"autoSearch": false' in body
-
-
-def test_flights_search_rejects_an_oversized_request_body():
-    client = app_module.app.test_client()
-    oversized = b"x" * (app_module.MAX_REQUEST_BODY_BYTES + 1)
-
-    response = client.post(
-        "/api/flights/search",
-        data=oversized,
-        content_type="application/json",
-    )
-
-    assert response.status_code == 413
-    assert response.get_json()["error"]
-
-
 def test_pages_link_static_assets_with_a_version():
     client = app_module.app.test_client()
 
@@ -350,3 +232,10 @@ def test_static_assets_are_cacheable_for_a_year():
 
     assert response.status_code == 200
     assert response.headers["Cache-Control"] == "public, max-age=31536000"
+
+
+def test_flights_pages_are_gone():
+    client = app_module.app.test_client()
+
+    assert client.get("/flights").status_code == 404
+    assert client.get("/api/flights/health").status_code == 404
