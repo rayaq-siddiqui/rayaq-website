@@ -149,8 +149,17 @@ PAGES = [
         "slug": "protobufs",
         "title": "Every schema",
         "summary": "All seven .proto files, every message, enum and field, and the Rust types they map to.",
-        "sources": ["lib/src/protos/"],
-        "ready": False,
+        "sources": [
+            "lib/src/protos/",
+            "lib/src/simple_backend.rs",
+            "lib/src/simple_op_store.rs",
+            "lib/src/git_backend.rs",
+            "lib/src/local_working_copy.rs",
+            "lib/src/default_index/store.rs",
+            "lib/src/simple_workspace_store.rs",
+            "lib/src/secure_config.rs",
+        ],
+        "ready": True,
     },
     {
         "slug": "fix",
@@ -272,9 +281,15 @@ def render(slug, render_template):
         "next_page": following,
     }
     content = render_template(template, **context)
+    intro, separator, body = content.partition("</header>")
+    if not separator:
+        intro, body = "", content
+    else:
+        intro += separator
     return render_template(
         "jj/base.html",
-        content=content,
-        toc=table_of_contents(content),
+        intro=intro,
+        content=body,
+        toc=table_of_contents(body),
         **context,
     )

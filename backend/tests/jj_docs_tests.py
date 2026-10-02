@@ -119,3 +119,28 @@ def test_pages_show_the_pinned_commit_and_license():
         body = client.get(url).get_data(as_text=True)
         assert jj_docs.UPSTREAM["commit"][:12] in body
         assert "Apache-2.0" in body
+
+
+def test_protobufs_page_names_every_message_and_enum():
+    if jj_docs.find_page("protobufs") is None:
+        return
+    client = app_module.app.test_client()
+
+    body = client.get("/jj/protobufs").get_data(as_text=True)
+
+    for filename, names in jj_docs.PROTO_MESSAGES.items():
+        assert filename in body
+        for name in names:
+            leaf = name.split(".")[-1]
+            assert re.search(rf"\b(message|enum) {re.escape(leaf)}\b", body), (filename, name)
+
+
+def test_render_places_the_header_before_the_table_of_contents():
+    def fake_render(template, **context):
+        if template == "jj/base.html":
+            return f"{context['intro']}|TOC|{context['content']}"
+        return '<header><h1>T</h1></header><h2 id="a">A</h2><h2 id="b">B</h2>'
+
+    html = jj_docs.render(None, fake_render)
+
+    assert html.index("<h1>") < html.index("|TOC|") < html.index('id="a"')

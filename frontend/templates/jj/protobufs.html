@@ -1,0 +1,667 @@
+{% set p = "lib/src/protos/" %}
+<header class="jj-header">
+  <h1>Every schema</h1>
+  <p class="tagline">
+    jj persists everything that isn't a Git object as Protocol Buffers: commits and trees in the
+    simple backend, jj-only commit metadata in the Git backend, every operation and view, the
+    working copy's state, index segment links, the workspace registry and secure-config metadata.
+    This page covers all seven <code>.proto</code> files, every field, and the Rust code that converts each one.
+  </p>
+</header>
+
+<h2 id="conventions">Conventions</h2>
+<ul>
+  <li>
+    All files are <code>proto3</code> and compiled with <code>prost</code> into
+    <code>jj_lib::protos::&lt;package&gt;</code>. In proto3, an unset scalar reads as its zero value,
+    which is why so much of the conversion code checks for an empty <code>bytes</code> or
+    <code>string</code> to detect old formats.
+  </li>
+  <li>
+    IDs are raw <code>bytes</code>, not hex. Commit, tree, file, view and operation IDs are all
+    stored this way.
+  </li>
+  <li>
+    Content-addressed objects are <strong>named by a hash of the Rust value, not of the
+    proto bytes</strong>. The simple backend and the simple op store both compute the ID as
+    <code>blake2b_hash(&amp;value)</code> over the Rust struct's <code>ContentHash</code>, then
+    write the encoded proto to a file named after that ID
+    (<a href="{{ src('lib/src/simple_backend.rs', 317, 330) }}">commit</a>,
+    <a href="{{ src('lib/src/simple_op_store.rs', 161, 174) }}">view</a>,
+    <a href="{{ src('lib/src/simple_op_store.rs', 205, 219) }}">operation</a>).
+  </li>
+  <li>
+    Deprecated fields are kept so old repos still load. New code writes only the current fields;
+    readers fall back to the deprecated ones when the current ones are empty.
+  </li>
+</ul>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Stored at</th><th>Written by</th><th>Rust types</th></tr></thead>
+    <tbody>
+      <tr><td><a href="#simple-store"><code>simple_store.proto</code></a></td><td><code>.jj/repo/store/{commits,trees}/&lt;hex id&gt;</code> (simple backend only)</td><td><code>SimpleBackend</code></td><td><code>backend::{Commit, Tree, TreeValue, Signature}</code></td></tr>
+      <tr><td><a href="#git-store"><code>git_store.proto</code></a></td><td><code>.jj/repo/store/extra/</code> stacked table, keyed by commit ID</td><td><code>GitBackend</code></td><td>jj-only parts of <code>backend::Commit</code></td></tr>
+      <tr><td><a href="#simple-op-store"><code>simple_op_store.proto</code></a></td><td><code>.jj/repo/op_store/{operations,views}/&lt;hex id&gt;</code></td><td><code>SimpleOpStore</code></td><td><code>op_store::{Operation, OperationMetadata, View, RemoteView, RemoteRef, RefTarget}</code></td></tr>
+      <tr><td><a href="#local-working-copy"><code>local_working_copy.proto</code></a></td><td><code>.jj/working_copy/{tree_state,checkout}</code></td><td><code>LocalWorkingCopy</code> / <code>TreeState</code></td><td><code>TreeState</code>, <code>FileState</code>, <code>CheckoutState</code></td></tr>
+      <tr><td><a href="#default-index"><code>default_index.proto</code></a></td><td><code>.jj/repo/index/op_links/&lt;op id hex&gt;</code></td><td><code>DefaultIndexStore</code></td><td>commit and changed-path segment IDs</td></tr>
+      <tr><td><a href="#simple-workspace-store"><code>simple_workspace_store.proto</code></a></td><td><code>.jj/repo/workspace_store/index</code></td><td><code>SimpleWorkspaceStore</code></td><td>workspace name → path</td></tr>
+      <tr><td><a href="#secure-config"><code>secure_config.proto</code></a></td><td><code>metadata.binpb</code> in a per-repo/workspace config directory</td><td><code>secure_config</code></td><td><code>ConfigMetadata</code></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="simple-store"><code>simple_store.proto</code></h2>
+<p>
+  The native object format of <code>SimpleBackend</code>, a backend that stores everything as
+  individual proto files. Git-backed repos never use these messages: commits and trees are Git
+  objects there. <a href="{{ src(p ~ 'simple_store.proto') }}">Full file</a>.
+</p>
+<pre><code>syntax = &quot;proto3&quot;;
+
+package simple_store;
+
+message TreeValue {
+  message File {
+    bytes id = 1;
+    bool executable = 2;
+    bytes copy_id = 3;
+  }
+
+  oneof value {
+    File file = 2;
+    bytes symlink_id = 3;
+    bytes tree_id = 4;
+  }
+}
+
+message Tree {
+  message Entry {
+    string name = 1;
+    TreeValue value = 2;
+  }
+
+  repeated Entry entries = 1;
+}
+
+message Commit {
+  repeated bytes parents = 1;
+  repeated bytes predecessors = 2;
+  // Alternating positive and negative terms
+  repeated bytes root_tree = 3;
+  // Labels for the terms of a conflict.
+  repeated string conflict_labels = 10;
+  bytes change_id = 4;
+  string description = 5;
+
+  message Timestamp {
+    int64 millis_since_epoch = 1;
+    int32 tz_offset = 2;
+  }
+  message Signature {
+    string name = 1;
+    string email = 2;
+    Timestamp timestamp = 3;
+  }
+  Signature author = 6;
+  Signature committer = 7;
+  optional bytes secure_sig = 9;
+}</code></pre>
+
+<h3 id="simple-store-treevalue"><code>TreeValue</code> and <code>TreeValue.File</code></h3>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Field</th><th>#</th><th>Type</th><th>Meaning</th><th>Rust</th></tr></thead>
+  <tbody>
+    <tr><td><code>file</code></td><td>2</td><td><code>File</code> (oneof)</td><td>A regular file.</td><td><code>TreeValue::File</code></td></tr>
+    <tr><td><code>file.id</code></td><td>1</td><td><code>bytes</code></td><td>Content ID of the file.</td><td><code>FileId</code></td></tr>
+    <tr><td><code>file.executable</code></td><td>2</td><td><code>bool</code></td><td>Executable bit.</td><td><code>executable</code></td></tr>
+    <tr><td><code>file.copy_id</code></td><td>3</td><td><code>bytes</code></td><td>Copy-tracking identity.</td><td><code>CopyId</code></td></tr>
+    <tr><td><code>symlink_id</code></td><td>3</td><td><code>bytes</code> (oneof)</td><td>A symlink's target object.</td><td><code>TreeValue::Symlink(SymlinkId)</code></td></tr>
+    <tr><td><code>tree_id</code></td><td>4</td><td><code>bytes</code> (oneof)</td><td>A subdirectory.</td><td><code>TreeValue::Tree(TreeId)</code></td></tr>
+  </tbody>
+</table></div>
+<p>
+  There's no variant for Git submodules: writing <code>TreeValue::GitSubmodule</code> to the
+  simple backend panics with <code>cannot store git submodules</code>
+  (<a href="{{ src('lib/src/simple_backend.rs', 420, 451) }}"><code>tree_value_to_proto</code></a>,
+  <a href="{{ src('lib/src/simple_backend.rs', 453, 473) }}"><code>tree_value_from_proto</code></a>).
+</p>
+
+<h3 id="simple-store-tree"><code>Tree</code> and <code>Tree.Entry</code></h3>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Field</th><th>#</th><th>Type</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>entries</code></td><td>1</td><td><code>repeated Entry</code></td><td>Directory entries, sorted by name. The reader trusts the order and builds the tree with <code>Tree::from_sorted_entries</code>.</td></tr>
+    <tr><td><code>Entry.name</code></td><td>1</td><td><code>string</code></td><td>One path component.</td></tr>
+    <tr><td><code>Entry.value</code></td><td>2</td><td><code>TreeValue</code></td><td>What lives at that name.</td></tr>
+  </tbody>
+</table></div>
+<p class="jj-source"><a href="{{ src('lib/src/simple_backend.rs', 394, 418) }}"><code>tree_to_proto</code> / <code>tree_from_proto</code></a></p>
+
+<h3 id="simple-store-commit"><code>Commit</code>, <code>Commit.Signature</code>, <code>Commit.Timestamp</code></h3>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Field</th><th>#</th><th>Type</th><th>Meaning</th><th>Rust (<code>backend::Commit</code>)</th></tr></thead>
+  <tbody>
+    <tr><td><code>parents</code></td><td>1</td><td><code>repeated bytes</code></td><td>Parent commit IDs. The simple backend refuses to write a commit with none.</td><td><code>parents: Vec&lt;CommitId&gt;</code></td></tr>
+    <tr><td><code>predecessors</code></td><td>2</td><td><code>repeated bytes</code></td><td>Commits this one rewrote. Superseded by <code>Operation.commit_predecessors</code>, but still written.</td><td><code>predecessors</code></td></tr>
+    <tr><td><code>root_tree</code></td><td>3</td><td><code>repeated bytes</code></td><td>Root tree IDs as alternating add/remove terms: one ID when resolved, 2n+1 when conflicted.</td><td><code>root_tree: Merge&lt;TreeId&gt;</code></td></tr>
+    <tr><td><code>conflict_labels</code></td><td>10</td><td><code>repeated string</code></td><td>One label per term. Written only when the labels aren't resolved.</td><td><code>conflict_labels: Merge&lt;String&gt;</code></td></tr>
+    <tr><td><code>change_id</code></td><td>4</td><td><code>bytes</code></td><td>Stable change ID.</td><td><code>ChangeId</code></td></tr>
+    <tr><td><code>description</code></td><td>5</td><td><code>string</code></td><td>Commit message.</td><td><code>description</code></td></tr>
+    <tr><td><code>author</code></td><td>6</td><td><code>Signature</code></td><td>Author. Missing fields default.</td><td><code>Signature</code></td></tr>
+    <tr><td><code>committer</code></td><td>7</td><td><code>Signature</code></td><td>Committer.</td><td><code>Signature</code></td></tr>
+    <tr><td><code>secure_sig</code></td><td>9</td><td><code>optional bytes</code></td><td>Cryptographic signature over the encoded proto <em>without</em> this field.</td><td><code>SecureSig { data, sig }</code></td></tr>
+    <tr><td><code>Signature.name</code> / <code>email</code> / <code>timestamp</code></td><td>1 / 2 / 3</td><td><code>string</code> / <code>string</code> / <code>Timestamp</code></td><td>Identity and time.</td><td><code>Signature</code></td></tr>
+    <tr><td><code>Timestamp.millis_since_epoch</code> / <code>tz_offset</code></td><td>1 / 2</td><td><code>int64</code> / <code>int32</code></td><td>Milliseconds since the Unix epoch, and the UTC offset in minutes.</td><td><code>Timestamp</code></td></tr>
+  </tbody>
+</table></div>
+<p>
+  Signing works on the proto itself: <code>write_commit</code> encodes the commit, passes those
+  bytes to the signing function, and stores the result in <code>secure_sig</code>. When reading,
+  <code>commit_from_proto</code> takes <code>secure_sig</code> out <em>first</em> and re-encodes the
+  remainder, which reproduces exactly the bytes that were signed
+  (<a href="{{ src('lib/src/simple_backend.rs', 302, 330) }}">write</a>,
+  <a href="{{ src('lib/src/simple_backend.rs', 348, 392) }}">convert</a>,
+  <a href="{{ src('lib/src/simple_backend.rs', 475, 496) }}">signatures</a>).
+</p>
+
+<h2 id="git-store"><code>git_store.proto</code></h2>
+<p>
+  The Git backend stores commits as real Git commits. That leaves out what Git can't
+  represent, and this one message carries it. The serialized bytes go into a stacked table under
+  <code>.jj/repo/store/extra</code>, keyed by the Git commit ID. Entries are added both when jj writes a commit and when it imports one from Git
+  (<a href="{{ src('lib/src/git_backend.rs', 1471) }}">write</a>,
+  <a href="{{ src('lib/src/git_backend.rs', 1057) }}">import</a>). <a href="{{ src(p ~ 'git_store.proto') }}">Full file</a>.
+</p>
+<pre><code>syntax = &quot;proto3&quot;;
+
+package git_store;
+
+message Commit {
+  repeated bytes predecessors = 2;
+  bytes change_id = 4;
+
+  // Alternating positive and negative terms. Set only for conflicts.
+  // Resolved trees are stored in the git commit
+  repeated bytes root_tree = 1;
+  // TODO(#1624): delete when we assume that all commits use this format
+  bool uses_tree_conflict_format = 10;
+
+  bool is_open = 8 [deprecated = true];
+  bool is_pruned = 9 [deprecated = true];
+}</code></pre>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Field</th><th>#</th><th>Type</th><th>Status</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>root_tree</code></td><td>1</td><td><code>repeated bytes</code></td><td>read only</td><td>Conflicted root trees for commits written before conflicts moved into a commit header (about March 2024). New writes leave it empty.</td></tr>
+    <tr><td><code>predecessors</code></td><td>2</td><td><code>repeated bytes</code></td><td>current</td><td>Rewritten-from commit IDs.</td></tr>
+    <tr><td><code>change_id</code></td><td>4</td><td><code>bytes</code></td><td>current</td><td>The change ID. If it's empty, the change ID read from the Git commit is kept.</td></tr>
+    <tr><td><code>is_open</code></td><td>8</td><td><code>bool</code></td><td>deprecated</td><td>Not read or written by current code.</td></tr>
+    <tr><td><code>is_pruned</code></td><td>9</td><td><code>bool</code></td><td>deprecated</td><td>Not read or written by current code.</td></tr>
+    <tr><td><code>uses_tree_conflict_format</code></td><td>10</td><td><code>bool</code></td><td>current</td><td>Always written as <code>true</code>. The legacy <code>root_tree</code> is honoured only when it's set.</td></tr>
+  </tbody>
+</table></div>
+<p>
+  Everything else about a commit's jj view lives in the Git commit itself. A conflicted root
+  tree is written as a <code>jj:trees</code> header of space-separated hex tree IDs, which must
+  hold an odd number of at least three, so jj and Git can never disagree about a resolved commit's
+  contents. Conflict labels go in a <code>jj:conflict-labels</code> header, and the change ID can
+  go in a <code>change-id</code> header written as reverse hex. When a Git commit has no change
+  ID, jj derives a synthetic one from the commit ID
+  (<a href="{{ src('lib/src/git_backend.rs', 653, 677) }}">jj:trees</a>,
+  <a href="{{ src('lib/src/git_backend.rs', 1357, 1382) }}">headers on write</a>,
+  <a href="{{ src('lib/src/git_backend.rs', 833, 864) }}"><code>serialize_extras</code> / <code>deserialize_extras</code></a>).
+</p>
+
+<h2 id="simple-op-store"><code>simple_op_store.proto</code></h2>
+<p>
+  The operation log. Every operation and every view is one file under
+  <code>.jj/repo/op_store/operations/</code> or <code>views/</code>, named by the hex of its
+  64-byte ID. The root operation and root view are never stored: both are all-zero IDs, and the
+  store synthesizes them on read (<a href="{{ src('lib/src/simple_op_store.rs', 146, 226) }}">read/write</a>).
+  <a href="{{ src(p ~ 'simple_op_store.proto') }}">Full file</a>.
+</p>
+<pre><code>syntax = &quot;proto3&quot;;
+
+package simple_op_store;
+
+message RefConflictLegacy {
+  repeated bytes removes = 1 [deprecated = true];
+  repeated bytes adds = 2 [deprecated = true];
+}
+
+// This is redundant with `RefTargetTerm`. It exists for historical reasons.
+// TODO: Consider deprecating it.
+message RefConflict {
+  message Term {
+    optional bytes value = 1;
+  }
+  repeated Term removes = 1;
+  repeated Term adds = 2;
+}
+
+// RefTarget that may be serialized in legacy form.
+message RefTarget {
+  // New `RefConflict` type represents both `commit_id` and `conflict_legacy`.
+  oneof value {
+    bytes commit_id = 1 [deprecated = true];
+    RefConflictLegacy conflict_legacy = 2 [deprecated = true];
+    RefConflict conflict = 3;
+  }
+}
+
+// RefTarget term that should be serialized in native form, in which positive
+// and negative terms alternate.
+message RefTargetTerm {
+  optional bytes value = 1;
+}
+
+enum RemoteRefState {
+  New = 0;
+  Tracked = 1;
+}
+
+message RemoteBookmark {
+  string remote_name = 1;
+  RefTarget target = 2;
+  // Introduced in jj 0.11.
+  optional RemoteRefState state = 3;
+}
+
+message Bookmark {
+  string name = 1;
+  // Unset if the bookmark has been deleted locally.
+  RefTarget local_target = 2;
+  // Deprecated since jj 0.34.
+  repeated RemoteBookmark remote_bookmarks = 3 [deprecated = true];
+}
+
+message GitRef {
+  string name = 1;
+  // This field is just for historical reasons (before we had the RefTarget
+  // type). New GitRefs have (only) the target field.
+  // TODO: Delete support for the old format.
+  bytes commit_id = 2 [deprecated = true];
+  RefTarget target = 3;
+}
+
+message GitHead {
+  string name = 1;
+  RefTarget target = 2;
+}
+
+message RemoteRef {
+  string name = 1;
+  repeated RefTargetTerm target_terms = 2;
+  RemoteRefState state = 3;
+}
+
+message Tag {
+  string name = 1;
+  RefTarget target = 2;
+}
+
+message View {
+  repeated bytes head_ids = 1;
+  reserved 4;
+  bytes wc_commit_id = 2 [deprecated = true];
+  map&lt;string, bytes&gt; wc_commit_ids = 8;
+  // Local bookmarks and remote bookmarks in legacy form.
+  repeated Bookmark bookmarks = 5;
+  repeated Tag local_tags = 6;
+  // Introduced in jj 0.34.
+  repeated RemoteView remote_views = 11;
+  // Only a subset of the refs. For example, does not include refs/notes/.
+  repeated GitRef git_refs = 3;
+  // This field is just for historical reasons (before we had the RefTarget
+  // type). New Views have (only) the target field.
+  // TODO: Delete support for the old format.
+  bytes git_head_legacy = 7 [deprecated = true];
+  RefTarget git_head = 9 [deprecated = true];
+  // Whether &quot;@git&quot; tags have been migrated to remote_views.
+  bool has_git_refs_migrated_to_remote_tags = 12;
+  // Per-workspace Git HEAD targets, keyed by workspace name.
+  repeated GitHead git_heads = 13;
+  reserved 10;
+}
+
+message RemoteView {
+  string name = 1;
+  repeated RemoteRef bookmarks = 2;
+  repeated RemoteRef tags = 3;
+}
+
+message Operation {
+  bytes view_id = 1;
+  repeated bytes parents = 2;
+  OperationMetadata metadata = 3;
+  // Introduced in jj 0.30.
+  repeated CommitPredecessors commit_predecessors = 4;
+  // Whether or not `commit_predecessors` is recorded.
+  bool stores_commit_predecessors = 5;
+}
+
+// TODO: Share with store.proto? Do we even need the timezone here?
+message Timestamp {
+  int64 millis_since_epoch = 1;
+  int32 tz_offset = 2;
+}
+
+message OperationMetadata {
+  Timestamp start_time = 1;
+  Timestamp end_time = 2;
+  string description = 3;
+  string hostname = 4;
+  string username = 5;
+  bool is_snapshot = 7;
+  optional string workspace_name = 8;
+  map&lt;string, string&gt; attributes = 6;
+}
+
+message CommitPredecessors {
+  bytes commit_id = 1;
+  repeated bytes predecessor_ids = 2;
+}</code></pre>
+
+<h3 id="op-operation"><code>Operation</code></h3>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Field</th><th>#</th><th>Type</th><th>Meaning</th><th>Rust (<code>op_store::Operation</code>)</th></tr></thead>
+  <tbody>
+    <tr><td><code>view_id</code></td><td>1</td><td><code>bytes</code></td><td>The view this operation produced (must be 64 bytes).</td><td><code>view_id: ViewId</code></td></tr>
+    <tr><td><code>parents</code></td><td>2</td><td><code>repeated bytes</code></td><td>Parent operations. More than one means concurrent operations were merged. An empty list (from before the root operation existed) is read as the root.</td><td><code>parents: Vec&lt;OperationId&gt;</code></td></tr>
+    <tr><td><code>metadata</code></td><td>3</td><td><code>OperationMetadata</code></td><td>Who, when, what.</td><td><code>metadata</code></td></tr>
+    <tr><td><code>commit_predecessors</code></td><td>4</td><td><code>repeated CommitPredecessors</code></td><td>New commit → the commits it was rewritten from (empty list = newly created). Introduced in jj 0.30.</td><td rowspan="2"><code>commit_predecessors: Option&lt;BTreeMap&lt;CommitId, Vec&lt;CommitId&gt;&gt;&gt;</code></td></tr>
+    <tr><td><code>stores_commit_predecessors</code></td><td>5</td><td><code>bool</code></td><td>Distinguishes "recorded and empty" from "not recorded": <code>false</code> reads as <code>None</code>.</td></tr>
+  </tbody>
+</table></div>
+<p class="jj-source"><a href="{{ src('lib/src/simple_op_store.rs', 475, 539) }}">predecessor map and operation conversions</a></p>
+
+<h3 id="op-metadata"><code>OperationMetadata</code>, <code>Timestamp</code>, <code>CommitPredecessors</code></h3>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Field</th><th>#</th><th>Type</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>start_time</code> / <code>end_time</code></td><td>1 / 2</td><td><code>Timestamp</code></td><td>The transaction's start and end. Stored as <code>TimestampRange</code>.</td></tr>
+    <tr><td><code>description</code></td><td>3</td><td><code>string</code></td><td>e.g. <code>fixed 3 commits</code>, shown by <code>jj op log</code>.</td></tr>
+    <tr><td><code>hostname</code> / <code>username</code></td><td>4 / 5</td><td><code>string</code></td><td>Where and who.</td></tr>
+    <tr><td><code>attributes</code></td><td>6</td><td><code>map&lt;string, string&gt;</code></td><td>Free-form key/value tags. Stored as <code>BTreeMap</code>.</td></tr>
+    <tr><td><code>is_snapshot</code></td><td>7</td><td><code>bool</code></td><td>The operation only snapshotted the working copy.</td></tr>
+    <tr><td><code>workspace_name</code></td><td>8</td><td><code>optional string</code></td><td>The workspace that ran it, if any.</td></tr>
+    <tr><td><code>Timestamp.millis_since_epoch</code> / <code>tz_offset</code></td><td>1 / 2</td><td><code>int64</code> / <code>int32</code></td><td>Same encoding as commit timestamps.</td></tr>
+    <tr><td><code>CommitPredecessors.commit_id</code> / <code>predecessor_ids</code></td><td>1 / 2</td><td><code>bytes</code> / <code>repeated bytes</code></td><td>One map entry.</td></tr>
+  </tbody>
+</table></div>
+<p class="jj-source"><a href="{{ src('lib/src/simple_op_store.rs', 437, 473) }}">metadata conversions</a></p>
+
+<h3 id="op-view"><code>View</code></h3>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Field</th><th>#</th><th>Type</th><th>Status</th><th>Meaning → Rust (<code>op_store::View</code>)</th></tr></thead>
+  <tbody>
+    <tr><td><code>head_ids</code></td><td>1</td><td><code>repeated bytes</code></td><td>current</td><td>Visible head commits → <code>head_ids: HashSet&lt;CommitId&gt;</code></td></tr>
+    <tr><td><code>wc_commit_id</code></td><td>2</td><td><code>bytes</code></td><td>deprecated</td><td>Single-workspace era. If set, read as the <code>default</code> workspace's commit.</td></tr>
+    <tr><td><code>git_refs</code></td><td>3</td><td><code>repeated GitRef</code></td><td>current</td><td>Last-imported Git refs (not <code>refs/notes/</code>) → <code>git_refs</code></td></tr>
+    <tr><td><em>4</em></td><td>4</td><td colspan="2"><em>reserved</em></td><td>Never reuse.</td></tr>
+    <tr><td><code>bookmarks</code></td><td>5</td><td><code>repeated Bookmark</code></td><td>current + legacy</td><td>Local bookmarks → <code>local_bookmarks</code>. Still written with remote bookmarks in legacy form for older readers.</td></tr>
+    <tr><td><code>local_tags</code></td><td>6</td><td><code>repeated Tag</code></td><td>current</td><td>→ <code>local_tags</code></td></tr>
+    <tr><td><code>git_head_legacy</code></td><td>7</td><td><code>bytes</code></td><td>deprecated</td><td>Pre-<code>RefTarget</code> Git HEAD.</td></tr>
+    <tr><td><code>wc_commit_ids</code></td><td>8</td><td><code>map&lt;string, bytes&gt;</code></td><td>current</td><td>Workspace name → working-copy commit → <code>wc_commit_ids</code></td></tr>
+    <tr><td><code>git_head</code></td><td>9</td><td><code>RefTarget</code></td><td>deprecated</td><td>Still written for the <code>default</code> workspace (the source says remove in jj 0.51+). Read only when <code>git_heads</code> is empty.</td></tr>
+    <tr><td><em>10</em></td><td>10</td><td colspan="2"><em>reserved</em></td><td>Never reuse.</td></tr>
+    <tr><td><code>remote_views</code></td><td>11</td><td><code>repeated RemoteView</code></td><td>current (jj 0.34+)</td><td>Remote bookmarks and tags per remote → <code>remote_views</code>. If empty, the remote state comes from the legacy <code>bookmarks</code> field.</td></tr>
+    <tr><td><code>has_git_refs_migrated_to_remote_tags</code></td><td>12</td><td><code>bool</code></td><td>current</td><td>Always written <code>true</code>. If <code>false</code>, <code>refs/tags/*</code> in <code>git_refs</code> are moved into the <code>git</code> remote's tags as tracked refs on read.</td></tr>
+    <tr><td><code>git_heads</code></td><td>13</td><td><code>repeated GitHead</code></td><td>current</td><td>Per-workspace Git HEAD → <code>git_heads</code></td></tr>
+  </tbody>
+</table></div>
+<p class="jj-source"><a href="{{ src('lib/src/simple_op_store.rs', 541, 603) }}"><code>view_to_proto</code></a> · <a href="{{ src('lib/src/simple_op_store.rs', 605, 712) }}"><code>view_from_proto</code></a></p>
+
+<h3 id="op-refs">Refs: <code>RefTarget</code>, <code>RefConflict</code>, <code>RefTargetTerm</code>, <code>RefConflictLegacy</code></h3>
+<p>
+  A ref target in Rust is <code>RefTarget = Merge&lt;Option&lt;CommitId&gt;&gt;</code>: a normal ref,
+  an absent one, or a conflicted one. The proto has accumulated three encodings of it:
+</p>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Encoding</th><th>Fields</th><th>Status</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td><code>RefTarget.commit_id</code></td><td>oneof #1, <code>bytes</code></td><td>deprecated</td><td>A plain, non-conflicted ID (jj ≤ 0.8).</td></tr>
+    <tr><td><code>RefTarget.conflict_legacy</code> → <code>RefConflictLegacy</code></td><td>oneof #2; <code>removes</code> #1, <code>adds</code> #2 (<code>repeated bytes</code>)</td><td>deprecated</td><td>Can't represent absent terms. Converted with <code>RefTarget::from_legacy_form</code>.</td></tr>
+    <tr><td><code>RefTarget.conflict</code> → <code>RefConflict</code></td><td>oneof #3; <code>removes</code> #1, <code>adds</code> #2 (<code>repeated Term</code>); <code>Term.value</code> #1 (<code>optional bytes</code>)</td><td><strong>current</strong></td><td>Always written, even for a normal ref, which is just one add and no removes. An absent term is a <code>Term</code> with no value.</td></tr>
+    <tr><td><code>RefTargetTerm</code></td><td><code>value</code> #1 (<code>optional bytes</code>)</td><td>current</td><td>A flat term list used by <code>RemoteRef.target_terms</code>: alternating add/remove, odd length, and an even count is a decode error.</td></tr>
+  </tbody>
+</table></div>
+<p>
+  A missing <code>RefTarget</code> message reads as absent
+  (<a href="{{ src('lib/src/simple_op_store.rs', 843, 865) }}">terms</a>,
+  <a href="{{ src('lib/src/simple_op_store.rs', 867, 882) }}"><code>ref_target_to_proto</code></a>,
+  <a href="{{ src('lib/src/simple_op_store.rs', 915, 946) }}"><code>ref_target_from_proto</code></a>).
+</p>
+
+<h3 id="op-bookmarks">Bookmarks, tags, remotes and Git refs</h3>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Message</th><th>Fields</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>Bookmark</code></td><td><code>name</code> #1 <code>string</code>; <code>local_target</code> #2 <code>RefTarget</code>; <code>remote_bookmarks</code> #3 <code>repeated RemoteBookmark</code> (deprecated since 0.34)</td><td>A bookmark name with its local target. An unset target means the bookmark was deleted locally. Those entries are kept only to carry remote state, and aren't added to <code>local_bookmarks</code>.</td></tr>
+    <tr><td><code>RemoteBookmark</code></td><td><code>remote_name</code> #1; <code>target</code> #2 <code>RefTarget</code>; <code>state</code> #3 <code>optional RemoteRefState</code> (jj 0.11+)</td><td>Legacy remote bookmark. A missing state (jj &lt; 0.11) reads as <code>New</code>.</td></tr>
+    <tr><td><code>RemoteView</code></td><td><code>name</code> #1; <code>bookmarks</code> #2, <code>tags</code> #3 (<code>repeated RemoteRef</code>)</td><td>Everything known about one remote → <code>RemoteView</code>.</td></tr>
+    <tr><td><code>RemoteRef</code></td><td><code>name</code> #1; <code>target_terms</code> #2 <code>repeated RefTargetTerm</code>; <code>state</code> #3 <code>RemoteRefState</code></td><td>→ <code>RemoteRef { target, state }</code></td></tr>
+    <tr><td><code>RemoteRefState</code> (enum)</td><td><code>New = 0</code>, <code>Tracked = 1</code></td><td>Whether the local ref tracks this remote ref. Unknown values are a decode error.</td></tr>
+    <tr><td><code>Tag</code></td><td><code>name</code> #1; <code>target</code> #2 <code>RefTarget</code></td><td>A local tag.</td></tr>
+    <tr><td><code>GitRef</code></td><td><code>name</code> #1; <code>commit_id</code> #2 (deprecated); <code>target</code> #3 <code>RefTarget</code></td><td>A full Git ref name (e.g. <code>refs/heads/main</code>). If <code>target</code> is unset, the legacy <code>commit_id</code> is used.</td></tr>
+    <tr><td><code>GitHead</code></td><td><code>name</code> #1; <code>target</code> #2 <code>RefTarget</code></td><td>Keyed by <em>workspace</em> name.</td></tr>
+  </tbody>
+</table></div>
+<p class="jj-source">
+  <a href="{{ src('lib/src/simple_op_store.rs', 714, 781) }}">legacy bookmark views</a> ·
+  <a href="{{ src('lib/src/simple_op_store.rs', 783, 841) }}">remote views and refs</a> ·
+  <a href="{{ src('lib/src/simple_op_store.rs', 948, 965) }}"><code>RemoteRefState</code></a>
+</p>
+
+<h2 id="local-working-copy"><code>local_working_copy.proto</code></h2>
+<p>
+  The state of one workspace's files on disk. <code>TreeState</code> is the whole
+  <code>.jj/working_copy/tree_state</code> file; <code>Checkout</code> is the
+  <code>.jj/working_copy/checkout</code> file. <a href="{{ src(p ~ 'local_working_copy.proto') }}">Full file</a>.
+</p>
+<pre><code>syntax = &quot;proto3&quot;;
+
+package local_working_copy;
+
+enum FileType {
+  Normal = 0;
+  Symlink = 1;
+  Executable = 2;
+  Conflict = 3 [deprecated = true];
+  GitSubmodule = 4;
+}
+
+message MaterializedConflictData {
+  // TODO: maybe we should store num_sides here as well
+  uint32 conflict_marker_len = 1;
+}
+
+message FileState {
+  int64 mtime_millis_since_epoch = 1;
+  uint64 size = 2;
+  FileType file_type = 3;
+  MaterializedConflictData materialized_conflict_data = 5;
+  reserved 4;
+}
+
+message FileStateEntry {
+  string path = 1;
+  FileState state = 2;
+}
+
+message SparsePatterns {
+  repeated string prefixes = 1;
+}
+
+message TreeState {
+  bytes legacy_tree_id = 1 [deprecated = true];
+  // Alternating positive and negative terms if there&#x27;s a conflict, otherwise a
+  // single (positive) value
+  repeated bytes tree_ids = 5;
+  // Labels for the terms of a conflict.
+  repeated string conflict_labels = 7;
+  repeated FileStateEntry file_states = 2;
+  bool is_file_states_sorted = 6;
+  SparsePatterns sparse_patterns = 3;
+  WatchmanClock watchman_clock = 4;
+}
+
+message WatchmanClock {
+  oneof watchman_clock {
+    string string_clock = 1;
+    int64 unix_timestamp = 2;
+  }
+}
+
+message Checkout {
+  // The operation at which the working copy was updated.
+  bytes operation_id = 2;
+  // An identifier for this workspace. It is used for looking up the current
+  // working-copy commit in the repo view. Currently a human-readable name.
+  // TODO: Is it better to make this a UUID and a have map that to a name in
+  // config? That way users can rename a workspace.
+  string workspace_name = 3;
+  reserved 1;
+}</code></pre>
+
+<h3 id="wc-tree-state"><code>TreeState</code></h3>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Field</th><th>#</th><th>Type</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>legacy_tree_id</code></td><td>1</td><td><code>bytes</code> (deprecated)</td><td>Used only when <code>tree_ids</code> is empty.</td></tr>
+    <tr><td><code>file_states</code></td><td>2</td><td><code>repeated FileStateEntry</code></td><td>One entry per tracked file. This is what makes snapshots cheap: unchanged mtime and size mean the file isn't re-read.</td></tr>
+    <tr><td><code>sparse_patterns</code></td><td>3</td><td><code>SparsePatterns</code></td><td>Which path prefixes are checked out. If missing (very old working copies), it's read as the whole repo.</td></tr>
+    <tr><td><code>watchman_clock</code></td><td>4</td><td><code>WatchmanClock</code></td><td>Last fsmonitor clock, so the next snapshot can ask Watchman only for changes since then.</td></tr>
+    <tr><td><code>tree_ids</code></td><td>5</td><td><code>repeated bytes</code></td><td>The checked-out tree as alternating terms (one when resolved) → <code>MergedTree</code>.</td></tr>
+    <tr><td><code>is_file_states_sorted</code></td><td>6</td><td><code>bool</code></td><td>Always written <code>true</code>. If <code>false</code>, entries are sorted on load.</td></tr>
+    <tr><td><code>conflict_labels</code></td><td>7</td><td><code>repeated string</code></td><td>Labels for a conflicted tree's terms.</td></tr>
+  </tbody>
+</table></div>
+<p class="jj-source">
+  <a href="{{ src('lib/src/local_working_copy.rs', 1142, 1178) }}">read</a> ·
+  <a href="{{ src('lib/src/local_working_copy.rs', 1181, 1225) }}">save</a> ·
+  <a href="{{ src('lib/src/local_working_copy.rs', 653, 667) }}">sparse patterns</a>
+</p>
+
+<h3 id="wc-file-state"><code>FileState</code>, <code>FileStateEntry</code>, <code>FileType</code>, <code>MaterializedConflictData</code></h3>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Field</th><th>#</th><th>Type</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>FileStateEntry.path</code> / <code>state</code></td><td>1 / 2</td><td><code>string</code> / <code>FileState</code></td><td>Repo-relative path (internal form) and its state.</td></tr>
+    <tr><td><code>FileState.mtime_millis_since_epoch</code></td><td>1</td><td><code>int64</code></td><td>Last-seen modification time.</td></tr>
+    <tr><td><code>FileState.size</code></td><td>2</td><td><code>uint64</code></td><td>Last-seen size.</td></tr>
+    <tr><td><code>FileState.file_type</code></td><td>3</td><td><code>FileType</code></td><td>See below.</td></tr>
+    <tr><td><em>4</em></td><td>4</td><td colspan="2"><em>reserved</em></td></tr>
+    <tr><td><code>FileState.materialized_conflict_data</code></td><td>5</td><td><code>MaterializedConflictData</code></td><td>Set when the file on disk holds conflict markers. <code>conflict_marker_len</code> (#1, <code>uint32</code>) records the marker length used, so jj can parse them back.</td></tr>
+  </tbody>
+</table></div>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th><code>FileType</code></th><th>Value</th><th>Rust <code>FileType</code></th></tr></thead>
+  <tbody>
+    <tr><td><code>Normal</code></td><td>0</td><td><code>Normal { exec_bit: false }</code></td></tr>
+    <tr><td><code>Symlink</code></td><td>1</td><td><code>Symlink</code></td></tr>
+    <tr><td><code>Executable</code></td><td>2</td><td><code>Normal { exec_bit: true }</code>. It can appear on Windows when a repo is shared with a Unix jj, such as through WSL.</td></tr>
+    <tr><td><code>Conflict</code></td><td>3 (deprecated)</td><td>Read as <code>Normal { exec_bit: false }</code>, never written.</td></tr>
+    <tr><td><code>GitSubmodule</code></td><td>4</td><td><code>GitSubmodule</code></td></tr>
+  </tbody>
+</table></div>
+<p class="jj-source"><a href="{{ src('lib/src/local_working_copy.rs', 575, 643) }}">file state conversions</a></p>
+
+<h3 id="wc-other"><code>SparsePatterns</code>, <code>WatchmanClock</code>, <code>Checkout</code></h3>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Field</th><th>#</th><th>Type</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>SparsePatterns.prefixes</code></td><td>1</td><td><code>repeated string</code></td><td>Checked-out path prefixes.</td></tr>
+    <tr><td><code>WatchmanClock.string_clock</code></td><td>1 (oneof)</td><td><code>string</code></td><td>Watchman's opaque clock.</td></tr>
+    <tr><td><code>WatchmanClock.unix_timestamp</code></td><td>2 (oneof)</td><td><code>int64</code></td><td>Timestamp form.</td></tr>
+    <tr><td><code>Checkout.operation_id</code></td><td>2</td><td><code>bytes</code></td><td>The operation at which the working copy was last updated. <code>WorkingCopyFreshness::check_stale</code> compares it with the repo's operation to decide whether the working copy is fresh, stale, or was updated by another process (<a href="{{ src('lib/src/working_copy.rs', 345, 400) }}">source</a>).</td></tr>
+    <tr><td><code>Checkout.workspace_name</code></td><td>3</td><td><code>string</code></td><td>This workspace's name, used to look up its commit in <code>View.wc_commit_ids</code>. Empty reads as <code>default</code>.</td></tr>
+    <tr><td><em>1</em></td><td>1</td><td colspan="2"><em>reserved</em> in <code>Checkout</code></td></tr>
+  </tbody>
+</table></div>
+<p class="jj-source"><a href="{{ src('lib/src/local_working_copy.rs', 2676, 2725) }}"><code>CheckoutState</code> load/save</a></p>
+
+<h2 id="default-index"><code>default_index.proto</code></h2>
+<p>
+  The commit index is stored as immutable segment files. This single message links an operation to
+  the segments that make up the index as of that operation. It's written to
+  <code>.jj/repo/index/op_links/&lt;operation id hex&gt;</code>.
+  <a href="{{ src(p ~ 'default_index.proto') }}">Full file</a>.
+</p>
+<pre><code>syntax = &quot;proto3&quot;;
+
+package default_index;
+
+// Control file to link operation to index segments.
+message SegmentControl {
+  // Hash (or file name) of the commit index segment.
+  bytes commit_segment_id = 1;
+  // First commit stored in the changed-path index segments. Unset if
+  // changed-path index is disabled.
+  optional uint32 changed_path_start_commit_pos = 2;
+  // Hashes (or file names) of the changed-path index segments.
+  repeated bytes changed_path_segment_ids = 3;
+}</code></pre>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Field</th><th>#</th><th>Type</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>commit_segment_id</code></td><td>1</td><td><code>bytes</code></td><td>The head commit-index segment (in <code>index/segments/</code>). It names its parent segments itself.</td></tr>
+    <tr><td><code>changed_path_start_commit_pos</code></td><td>2</td><td><code>optional uint32</code></td><td>The global commit position where the changed-path index starts. Unset when the changed-path index is disabled.</td></tr>
+    <tr><td><code>changed_path_segment_ids</code></td><td>3</td><td><code>repeated bytes</code></td><td>Changed-path segments (in <code>index/changed_paths/</code>).</td></tr>
+  </tbody>
+</table></div>
+<p class="jj-source"><a href="{{ src('lib/src/default_index/store.rs', 180, 224) }}">load</a> · <a href="{{ src('lib/src/default_index/store.rs', 485, 511) }}">write</a></p>
+
+<h2 id="simple-workspace-store"><code>simple_workspace_store.proto</code></h2>
+<p>
+  The repo-level registry of workspaces, kept in <code>.jj/repo/workspace_store/index</code>. Adding, forgetting and renaming a workspace each take a file lock around the read-modify-write. <a href="{{ src(p ~ 'simple_workspace_store.proto') }}">Full file</a>.
+</p>
+<pre><code>syntax = &quot;proto3&quot;;
+
+package simple_workspace_store;
+
+message Workspace {
+  string name = 1;
+  bytes path = 2;
+}
+
+message Workspaces {
+  repeated Workspace workspaces = 1;
+}</code></pre>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Field</th><th>#</th><th>Type</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>Workspace.name</code></td><td>1</td><td><code>string</code></td><td>Workspace name. Adding a name that already exists replaces the entry.</td></tr>
+    <tr><td><code>Workspace.path</code></td><td>2</td><td><code>bytes</code></td><td>Workspace root, stored relative to the repo directory when possible (with forward slashes), as raw path bytes.</td></tr>
+    <tr><td><code>Workspaces.workspaces</code></td><td>1</td><td><code>repeated Workspace</code></td><td>The whole file.</td></tr>
+  </tbody>
+</table></div>
+<p class="jj-source"><a href="{{ src('lib/src/simple_workspace_store.rs', 119, 143) }}">read/write</a> · <a href="{{ src('lib/src/simple_workspace_store.rs', 151, 183) }}">add</a></p>
+
+<h2 id="secure-config"><code>secure_config.proto</code></h2>
+<p>
+  jj keeps per-repo and per-workspace config in a config directory identified by a generated
+  config ID. Next to that config's <code>config.toml</code> it writes
+  <code>metadata.binpb</code>, which records which repo or workspace the config belongs to. jj
+  checks the stored path against the actual one when loading.
+  <a href="{{ src(p ~ 'secure_config.proto') }}">Full file</a>.
+</p>
+<pre><code>syntax = &quot;proto3&quot;;
+
+package secure_config;
+
+// Metadata about the configuration files for jj
+message ConfigMetadata {
+  // The absolute path to the workspace&#x27;s .jj or .jj/repo directory for
+  // workspaces and repos respectively.
+  // Access via file_util::path_to/from_bytes
+  optional bytes path = 1;
+}</code></pre>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Field</th><th>#</th><th>Type</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>ConfigMetadata.path</code></td><td>1</td><td><code>optional bytes</code></td><td>Absolute path of the workspace's <code>.jj</code> directory or the repo's <code>.jj/repo</code> directory, encoded with <code>file_util::path_to_bytes</code>.</td></tr>
+  </tbody>
+</table></div>
+<p class="jj-source"><a href="{{ src('lib/src/secure_config.rs', 114, 131) }}">metadata read/write</a> · <a href="{{ src('lib/src/secure_config.rs', 214, 286) }}">path validation</a></p>
