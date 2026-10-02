@@ -73,6 +73,28 @@ def test_get_weather_for_cities_uses_cache_within_ttl(monkeypatch):
     assert call_count["n"] == len(weather.CITIES)
 
 
+def test_weather_is_cached_for_three_hours(monkeypatch):
+    weather._cache.clear()
+    call_count = {"n": 0}
+    now = {"t": 1_000_000.0}
+
+    def fake_fetch(lat, lon):
+        call_count["n"] += 1
+        return make_weather()
+
+    monkeypatch.setattr(weather, "_fetch_weather", fake_fetch)
+    monkeypatch.setattr(weather.time, "time", lambda: now["t"])
+
+    weather.get_weather_for_cities()
+    now["t"] += 3 * 60 * 60 - 1
+    weather.get_weather_for_cities()
+    assert call_count["n"] == len(weather.CITIES)
+
+    now["t"] += 1
+    weather.get_weather_for_cities()
+    assert call_count["n"] == len(weather.CITIES) * 2
+
+
 def test_get_weather_for_cities_refetches_after_ttl_expires(monkeypatch):
     weather._cache.clear()
     call_count = {"n": 0}
