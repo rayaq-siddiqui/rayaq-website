@@ -19,6 +19,7 @@ backend/            Flask app (Python) — all server-side logic
   showcase.json     The Assembly project digest. SYNCED FROM UPSTREAM — do not
                      hand-edit (see "Assembly" under Feature-specific notes)
   sync_showcase.py  Copies that digest out of an assembly-agents checkout
+  static_assets.py  Appends ?v=<mtime> to static URLs so they can be cached for a year
   flights/          The rayaq.ca/flights project (see "Flights" under Feature-specific
                      notes). Provider-agnostic domain code, one provider adapter, a
                      SQLite cache, and the JSON API the /flights page calls.
@@ -145,6 +146,8 @@ CI deploys using a **dedicated SSH keypair** (not the owner's personal key), sco
 Each call is one command over SSH — deliberately kept to single, auditable commands rather than chained scripts, so changes to the production VM stay reviewable.
 
 ## Feature-specific notes
+
+- **Cost optimization**: a weekly Routine looks for measurable server-cost savings and logs each run in `docs/COST_OPTIMIZATION.md`.
 
 - **Weather** (`weather.py`): Open-Meteo API, no API key required. Results are cached in-process per city for 2 minutes (`_CACHE_TTL_SECONDS`) to avoid hammering the API — this is a lazy/on-demand cache (only refetches on a request after the TTL expires), not a background poller. Cities are hardcoded in `CITIES` — order matters, it's the display order on the page.
 - **Resume** (`resume_data.py` + `resume.html`): all content lives in `resume_data.py` as plain data — edit that file, not the template, to change resume content. Company/project logos: `cdn.simpleicons.org` for brands that have an icon there (checked availability before using — not every brand does), fallback to a colored initials badge (`{"type": "initials", ...}`) otherwise. Bullets that need an inline link are pre-authored as HTML strings and rendered with Jinja's `| safe` filter — this is safe because the content is fully author-controlled, not user input; don't apply `| safe` to anything that isn't.
