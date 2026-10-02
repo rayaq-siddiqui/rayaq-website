@@ -3,34 +3,42 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-02 — first build run: scaffold, `fix`, `protobufs`, the
-architecture diagram, and the full command catalogue.
+**Last updated:** 2026-10-02 (second run) — maintenance found no upstream change; built the
+`cli`, `commits` and `view` pages.
 
 ## Upstream pin
 
 `jj-vcs/jj@0cb02a837f28459cd698734264c9fcd3712ec0d1` (committed 2026-10-01, version
-0.45.1), analyzed 2026-10-02. Held in `jj_docs.UPSTREAM`. No maintenance diff has run yet,
-because the pin was set this run.
+0.45.1), analyzed 2026-10-02. Held in `jj_docs.UPSTREAM`. The second run's maintenance check
+found upstream `HEAD` still at the pin, so nothing changed and the pin stayed.
 
 ## §10 acceptance criteria
 
 - [x] `/jj` renders the §6 diagram and links to every page in §5 (boxes for unbuilt
       pages link to pinned source until the page exists).
-- [ ] Every §5 page exists and is registered: `protobufs` done; 12 topic pages to go
-      (`cli`, `storage`, `commits`, `trees`, `conflicts`, `operations`, `view`,
-      `transactions`, `working-copy`, `index`, `revsets`, `backends`).
+- [ ] Every §5 page exists and is registered: `protobufs`, `cli`, `commits`, `view` done;
+      9 to go (`operations`, `transactions`, `working-copy`, `trees`, `conflicts`,
+      `storage`, `index`, `revsets`, `backends`).
 - [x] The `fix` page meets all ten §8 items, with three SVG diagrams.
 - [x] The `protobufs` page covers all seven `.proto` files, every field.
 - [x] Every source link is pinned to `UPSTREAM.commit` (tested).
 - [x] §7.5 tests exist and pass (75 tests in the suite).
 - [x] Homepage card links to `/jj`.
-- [x] Mobile at 390px: no horizontal page scroll on `/jj`, `/jj/fix`, `/jj/protobufs`
+- [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
-- [ ] The `cli` lifecycle page exists.
+- [x] The `cli` lifecycle page exists.
 - [ ] Every §8A.1 command has a page that meets its tier's bar: 1 of 105 (`fix`).
-- [ ] The daily Routine has run once in maintenance mode.
+- [x] The daily Routine has run once in maintenance mode (second run: no upstream change).
 
-## This run
+## Second run (2026-10-02)
+
+| Commit | What |
+|---|---|
+| `0c1aa97` | `cli` page: startup and config, dispatch, loading and op-head merging, snapshot and stale working copies, transactions, finish/write/publish, global flags, exit codes |
+| `99b521c` | `commits` page: stored and in-memory commits, commit vs change IDs, root commit, `CommitBuilder`, predecessors, signing |
+| `34ed812` | `view` page: `View` fields, `RefTarget` conflicts and merging, remote refs and tracking, `view::View` rules, merging views |
+
+## First run
 
 | Commit | What |
 |---|---|
@@ -52,15 +60,13 @@ existing block. On this run its output matched the committed block exactly.
 
 ## Queue (build in this order, per spec §9)
 
-1. `cli` lifecycle page (`cli/src/cli_util.rs`: `CliRunner` at L4422, `CommandHelper`
-   L303, `WorkspaceCommandHelper` L1230, `WorkspaceCommandTransaction` L2764).
-2. Topic pages that command pages lean on: `commits`, `view`, `operations`,
-   `transactions`, `working-copy`.
-3. Tier A commands, alternating with the remaining topics (`trees`, `conflicts`,
+1. Remaining topic pages that command pages lean on: `operations`, `transactions`,
+   `working-copy`.
+2. Tier A commands, alternating with the remaining topics (`trees`, `conflicts`,
    `storage`, `index`, `revsets`, `backends`): `new`, `edit`, `describe`, `commit`,
    `squash`, `rebase`, `abandon`, `undo`, then the rest of Tier A.
-4. Tier B commands.
-5. Tier C commands (`debug` and `bench` each as one shared page).
+3. Tier B commands.
+4. Tier C commands (`debug` and `bench` each as one shared page).
 
 To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
 `"ready": True` and any extra `sources`.
