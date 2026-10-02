@@ -333,3 +333,20 @@ def test_flights_search_rejects_an_oversized_request_body():
 
     assert response.status_code == 413
     assert response.get_json()["error"]
+
+
+def test_pages_link_static_assets_with_a_version():
+    client = app_module.app.test_client()
+
+    body = client.get("/").get_data(as_text=True)
+
+    assert "/static/style.css?v=" in body
+
+
+def test_static_assets_are_cacheable_for_a_year():
+    client = app_module.app.test_client()
+
+    response = client.get("/static/style.css")
+
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "public, max-age=31536000"

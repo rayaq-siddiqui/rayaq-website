@@ -3,6 +3,7 @@ from datetime import datetime
 from flask import Flask, render_template, request
 
 import resume_data
+import static_assets
 from assembly import get_showcase
 from flights import api as flights_api
 from weather import get_weather_for_cities
@@ -15,6 +16,14 @@ app = Flask(
     template_folder="../frontend/templates",
 )
 app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BODY_BYTES
+# Asset URLs carry the file's mtime, so a deploy that changes a file changes its URL.
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = static_assets.MAX_AGE_SECONDS
+
+
+@app.url_defaults
+def version_static_urls(endpoint, values):
+    if endpoint == "static":
+        static_assets.add_version(app.static_folder, values)
 
 
 @app.errorhandler(413)
