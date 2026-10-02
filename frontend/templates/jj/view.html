@@ -1,0 +1,142 @@
+{% set os = "core/src/op_store.rs" %}
+{% set vw = "lib/src/view.rs" %}
+{% set rf = "lib/src/refs.rs" %}
+<header class="jj-header">
+  <h1>Views, bookmarks and tags</h1>
+  <p class="tagline">
+    A view is the state of the repo at one operation: which commits are visible heads, where every
+    bookmark and tag points locally and on each remote, what Git refs were last seen, and which commit
+    each workspace has checked out. Every operation points at exactly one view.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: commits never become "deleted" in jj. They're simply no longer reachable from the view's
+  heads or refs. Moving a bookmark, abandoning a commit or switching workspaces all mean writing a new
+  view. Refs are <code>Merge&lt;Option&lt;CommitId&gt;&gt;</code>, so a bookmark can be <em>conflicted</em>
+  rather than silently overwritten.
+</p>
+
+<h2 id="fields">1. The stored view: <code>op_store::View</code></h2>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Field</th><th>Type</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>head_ids</code></td><td><code>HashSet&lt;CommitId&gt;</code></td><td>The visible head commits. Everything visible is an ancestor of one. Never empty.</td></tr>
+    <tr><td><code>local_bookmarks</code></td><td><code>BTreeMap&lt;RefNameBuf, RefTarget&gt;</code></td><td>Local bookmarks and their (possibly conflicted) targets.</td></tr>
+    <tr><td><code>local_tags</code></td><td><code>BTreeMap&lt;RefNameBuf, RefTarget&gt;</code></td><td>Local tags.</td></tr>
+    <tr><td><code>remote_views</code></td><td><code>BTreeMap&lt;RemoteNameBuf, RemoteView&gt;</code></td><td>Per remote: its bookmarks and tags as last seen, each with a tracking state (§3).</td></tr>
+    <tr><td><code>git_refs</code></td><td><code>BTreeMap&lt;GitRefNameBuf, RefTarget&gt;</code></td><td>Git refs as of the last import/export, by full name (e.g. <code>refs/heads/main</code>). jj compares against these to see what changed in Git.</td></tr>
+    <tr><td><code>git_heads</code></td><td><code>BTreeMap&lt;WorkspaceNameBuf, RefTarget&gt;</code></td><td>Each workspace's Git <code>HEAD</code>, for colocated repos.</td></tr>
+    <tr><td><code>wc_commit_ids</code></td><td><code>BTreeMap&lt;WorkspaceNameBuf, CommitId&gt;</code></td><td>The commit each workspace <em>should</em> have checked out (<code>@</code>). The working copy's own state records which commit it actually has.</td></tr>
+  </tbody>
+</table></div>
+<p class="jj-source">
+  <a href="{{ src(os, 172, 194) }}"><code>op_store::View</code></a> ·
+  <a href="{{ src(os, 197, 208) }}"><code>View::make_root</code></a> (the root view: just the root commit as head) ·
+  storage: <a href="{{ url_for('jj', slug='protobufs') }}#op-view">the View schema</a>
+</p>
+<p>
+  Views are content-addressed: the <code>ViewId</code> is a hash of the view, so two operations that
+  end in the same state share one stored view. Its legacy fields
+  and migrations (single-workspace <code>wc_commit_id</code>, bookmarks with embedded remote state,
+  Git tags moved into the <code>git</code> remote) are covered on
+  <a href="{{ url_for('jj', slug='protobufs') }}#op-view">Every schema</a>.
+</p>
+
+<h2 id="ref-target">2. <code>RefTarget</code>: refs that can conflict</h2>
+<p>
+  <a href="{{ src(os, 63, 64) }}"><code>RefTarget</code></a> is <code>Merge&lt;Option&lt;CommitId&gt;&gt;</code>,
+  the same alternating add/remove structure used for conflicted trees
+  (see <a href="{{ src('core/src/merge.rs', 179, 189) }}"><code>Merge</code></a>). Its shapes:
+</p>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Shape</th><th>Terms</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td>absent</td><td><code>[None]</code></td><td>The ref doesn't exist. Lookups return the static <code>ABSENT_REF_TARGET</code> instead of <code>None</code>.</td></tr>
+    <tr><td>normal</td><td><code>[Some(c)]</code></td><td>Points at one commit.</td></tr>
+    <tr><td>conflicted</td><td><code>[Some(a), Some(base), Some(b)]</code>, …</td><td>Two concurrent moves from <code>base</code>, one to <code>a</code> and one to <code>b</code>. Terms can be <code>None</code>, for example "deleted on one side, moved on the other".</td></tr>
+  </tbody>
+</table></div>
+
+<h3 id="ref-merge">How refs merge</h3>
+<p>
+  When two operations both changed a ref, <a href="{{ src(rf, 95, 118) }}"><code>merge_ref_targets(left, base, right)</code></a>:
+</p>
+<ol>
+  <li>Returns the trivial answer if one side didn't change it, or both sides made the same change.</li>
+  <li>Otherwise it flattens the three targets into one <code>Merge</code>, simplifies it (cancelling equal add/remove pairs), and tries again.</li>
+  <li>
+    If that's still a conflict, <a href="{{ src(rf, 140, 179) }}"><code>find_pair_to_remove</code></a>
+    resolves fast-forwards using the index. When two adds are equal, or one is an ancestor of the
+    other, it takes the older add, finds a remove that's an ancestor of it, and drops that
+    remove/add pair. An absent remove counts as an ancestor of everything. It repeats until no pair
+    qualifies. So "A moved forward to B" concurrently with "A moved forward to C",
+    where C descends from B, resolves to C.
+  </li>
+  <li>Whatever remains is stored as a conflicted bookmark, which the user resolves by moving it.</li>
+</ol>
+
+<h2 id="remotes">3. Remote refs and tracking</h2>
+<p>
+  A <a href="{{ src(os, 66, 110) }}"><code>RemoteRef</code></a> is a <code>target: RefTarget</code> plus a
+  <a href="{{ src(os, 112, 120) }}"><code>state: RemoteRefState</code></a>:
+</p>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>State</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>New</code></td><td>Known from the remote but not merged into the local ref. <code>tracked_target()</code> returns absent.</td></tr>
+    <tr><td><code>Tracked</code></td><td>Merged into the local ref of the same name. Later remote updates are merged too, and pushes compare against it.</td></tr>
+  </tbody>
+</table></div>
+<p>
+  <a href="{{ src(os, 211, 222) }}"><code>RemoteView</code></a> groups one remote's
+  <code>bookmarks</code> and <code>tags</code>. <code>merge_remote_refs</code> merges target and state
+  separately; if the states somehow conflict, the base state is kept
+  (<a href="{{ src(rf, 120, 138) }}">source</a>). When pushing, <code>classify_ref_push_action</code>
+  compares local and remote into a <a href="{{ src(rf, 189, 195) }}"><code>RefPushAction</code></a>:
+  <code>Update</code>, <code>AlreadyMatches</code>, <code>LocalConflicted</code>,
+  <code>RemoteConflicted</code> or <code>RemoteUntracked</code>.
+</p>
+
+<h2 id="wrapper">4. The in-memory view: <code>view::View</code></h2>
+<p>
+  The repo layer wraps the stored view in <a href="{{ src(vw, 44, 49) }}"><code>view::View</code></a>,
+  which adds one flag, <code>head_normalized</code>, and the editing rules:
+</p>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Method</th><th>Rule it enforces</th></tr></thead>
+  <tbody>
+    <tr><td><code>add_head</code> / <code>remove_head</code></td><td>Edit <code>head_ids</code> and mark them un-normalized (<a href="{{ src(vw, 152, 160) }}">source</a>).</td></tr>
+    <tr><td><code>replace_heads</code></td><td>Fast path that keeps the normalized flag. The new head must descend from the removed ones (<a href="{{ src(vw, 162, 173) }}">source</a>).</td></tr>
+    <tr><td><code>normalize_heads</code></td><td>Reduces <code>head_ids</code> to true heads using the index, drops the root commit if anything else is present, and pads an empty set with the root. <code>Transaction::write</code> asserts this ran before a view is persisted (<a href="{{ src(vw, 646, 670) }}">source</a>).</td></tr>
+    <tr><td><code>set_local_bookmark_target</code></td><td>An absent target deletes the bookmark, and also deletes absent remote bookmarks that it tracked (<a href="{{ src(vw, 208, 224) }}">source</a>).</td></tr>
+    <tr><td><code>set_remote_bookmark</code></td><td>Keeps an absent remote ref only if it's tracked and the local bookmark still exists; otherwise removes it (<a href="{{ src(vw, 278, 296) }}">source</a>).</td></tr>
+    <tr><td><code>set_wc_commit</code> / <code>remove_workspace</code> / <code>rename_workspace</code></td><td>Edit <code>wc_commit_ids</code> and the matching <code>git_heads</code> entry together (<a href="{{ src(vw, 119, 150) }}">source</a>).</td></tr>
+    <tr><td><code>all_referenced_commit_ids</code></td><td>Every commit any field mentions, including removed terms of conflicts, which merging views needs (<a href="{{ src(vw, 596, 627) }}">source</a>).</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="merging">5. Merging views after concurrent operations</h2>
+<p>
+  When two operations happen concurrently, the next command merges them (see
+  <a href="{{ url_for('jj', slug='cli') }}#loading">How a command runs</a>).
+  <a href="{{ src('lib/src/repo.rs', 2041, 2057) }}"><code>MutableRepo::merge</code></a> first merges the
+  other side's index in, then normalizes heads, then calls
+  <a href="{{ src('lib/src/repo.rs', 2063, 2133) }}"><code>merge_view(base, other)</code></a>. That
+  walks every field and applies only what <code>other</code> changed relative to <code>base</code>:
+</p>
+<ul>
+  <li>
+    <strong>Working-copy commits</strong> don't use ancestry, since <code>@</code> moves in arbitrary
+    directions. If both sides moved it, this side wins; if either side removed the workspace, it's
+    removed (<a href="{{ src('lib/src/repo.rs', 1672, 1699) }}"><code>merge_wc_commit</code></a>).
+  </li>
+  <li>
+    <strong>Heads:</strong> with the default index, jj walks from the base heads to each side's heads
+    to record which commits were rewritten or abandoned, then adds the other side's new heads.
+  </li>
+  <li>
+    <strong>Bookmarks, tags, Git refs, remote refs and Git heads</strong> each go through
+    <code>merge_ref_targets</code> or <code>merge_remote_refs</code> (§2, §3).
+  </li>
+</ul>

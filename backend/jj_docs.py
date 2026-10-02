@@ -113,8 +113,10 @@ TOPICS = [
             "lib/src/view.rs",
             "lib/src/refs.rs",
             "docs/bookmarks.md",
+            "core/src/merge.rs",
+            "lib/src/repo.rs",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "transactions",
