@@ -55,7 +55,7 @@ WEATHER_EMOJIS = {
 }
 UNKNOWN_EMOJI = "🤷"
 
-_CACHE_TTL_SECONDS = 3 * 60 * 60
+_CACHE_TTL_SECONDS = 60 * 60
 _cache = {}
 
 

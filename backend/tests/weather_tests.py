@@ -73,7 +73,7 @@ def test_get_weather_for_cities_uses_cache_within_ttl(monkeypatch):
     assert call_count["n"] == len(weather.CITIES)
 
 
-def test_weather_is_cached_for_three_hours(monkeypatch):
+def test_weather_is_cached_for_an_hour(monkeypatch):
     weather._cache.clear()
     call_count = {"n": 0}
     now = {"t": 1_000_000.0}
@@ -86,7 +86,7 @@ def test_weather_is_cached_for_three_hours(monkeypatch):
     monkeypatch.setattr(weather.time, "time", lambda: now["t"])
 
     weather.get_weather_for_cities()
-    now["t"] += 3 * 60 * 60 - 1
+    now["t"] += 60 * 60 - 1
     weather.get_weather_for_cities()
     assert call_count["n"] == len(weather.CITIES)
 
