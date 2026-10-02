@@ -50,8 +50,12 @@ TOPICS = [
             "lib/src/commit.rs",
             "lib/src/commit_builder.rs",
             "lib/src/signing_factory.rs",
+            "lib/src/settings.rs",
+            "core/src/signing.rs",
+            "core/src/hex_util.rs",
+            "lib/src/git_backend.rs",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "trees",

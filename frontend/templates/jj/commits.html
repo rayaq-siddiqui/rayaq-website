@@ -1,0 +1,249 @@
+{% set be = "core/src/backend.rs" %}
+{% set cm = "lib/src/commit.rs" %}
+{% set cb = "lib/src/commit_builder.rs" %}
+<header class="jj-header">
+  <h1>Commits and change IDs</h1>
+  <p class="tagline">
+    A jj commit is a snapshot of a tree plus metadata, identified two ways: a content hash that
+    changes every time the commit is rewritten, and a change ID that stays the same across rewrites.
+    This page covers the stored object field by field, the in-memory wrapper, how commits are built
+    and written, the virtual root commit, and signing.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: <code>backend::Commit</code> is the data a backend stores; <code>commit::Commit</code> is
+  that data plus its ID and a handle to the store. You never edit a commit. You build a new one with a
+  <code>CommitBuilder</code> from <code>MutableRepo::new_commit</code> or <code>rewrite_commit</code>, and
+  the repo records that the new commit replaced the old one.
+</p>
+
+<h2 id="stored">1. The stored commit: <code>backend::Commit</code></h2>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Field</th><th>Type</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>parents</code></td><td><code>Vec&lt;CommitId&gt;</code></td><td>Usually one, any number for merges. Only the root commit has none, and backends refuse to write a commit without parents.</td></tr>
+    <tr><td><code>predecessors</code></td><td><code>Vec&lt;CommitId&gt;</code></td><td>Commits this one was rewritten from. <strong>Deprecated</strong>: rewrites are now recorded per operation in <code>Operation.commit_predecessors</code> (§6). Skipped in serialization.</td></tr>
+    <tr><td><code>root_tree</code></td><td><code>Merge&lt;TreeId&gt;</code></td><td>The root tree. A single ID when resolved; an odd number of alternating add/remove terms when the commit is conflicted.</td></tr>
+    <tr><td><code>conflict_labels</code></td><td><code>Merge&lt;String&gt;</code></td><td>Empty when resolved. Otherwise one label per <code>root_tree</code> term, used in conflict markers.</td></tr>
+    <tr><td><code>change_id</code></td><td><code>ChangeId</code></td><td>Stable identity of the change across rewrites (§3).</td></tr>
+    <tr><td><code>description</code></td><td><code>String</code></td><td>The commit message.</td></tr>
+    <tr><td><code>author</code></td><td><code>Signature</code></td><td>Who wrote the change.</td></tr>
+    <tr><td><code>committer</code></td><td><code>Signature</code></td><td>Who last wrote this version. It's reset on every rewrite (§5).</td></tr>
+    <tr><td><code>secure_sig</code></td><td><code>Option&lt;SecureSig&gt;</code></td><td>Cryptographic signature: <code>data</code> (the bytes that were signed) and <code>sig</code> (§7).</td></tr>
+  </tbody>
+</table></div>
+<p class="jj-source"><a href="{{ src(be, 188, 221) }}"><code>backend::Commit</code></a></p>
+<p>
+  A <code>Signature</code> is <code>name</code>, <code>email</code> and <code>timestamp</code>. A
+  <code>Timestamp</code> is milliseconds since the Unix epoch (<code>MillisSinceEpoch(i64)</code>) plus
+  <code>tz_offset</code> in minutes. Backends may store less precision; Git, for example, stores whole
+  seconds (<a href="{{ src(be, 99, 110) }}">Timestamp</a>, <a href="{{ src(be, 162, 172) }}">Signature</a>,
+  <a href="{{ src(be, 174, 181) }}">SecureSig</a>). How each backend serializes these fields is on
+  <a href="{{ url_for('jj', slug='protobufs') }}#simple-store-commit">Every schema</a>.
+</p>
+
+<h2 id="wrapper">2. The in-memory commit: <code>commit::Commit</code></h2>
+<p>
+  jj-lib passes around <a href="{{ src(cm, 46, 54) }}"><code>commit::Commit</code></a>, which holds an
+  <code>Arc&lt;Store&gt;</code>, the <code>CommitId</code>, and an <code>Arc&lt;backend::Commit&gt;</code>.
+  Equality, ordering and hashing all use the ID alone, and <code>Debug</code> deliberately prints only
+  the ID. The wrapper adds the operations most code needs:
+</p>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Method</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td><code>tree()</code></td><td>Builds a <code>MergedTree</code> from <code>root_tree</code> and the conflict labels (<a href="{{ src(cm, 120, 126) }}">source</a>).</td></tr>
+    <tr><td><code>parent_tree(repo)</code></td><td>The parent's tree, or the merge of all parents' trees. If the index says the commit changed no paths, it short-circuits to the commit's own tree (<a href="{{ src(cm, 132, 143) }}">source</a>).</td></tr>
+    <tr><td><code>is_empty(repo)</code></td><td>No content change from its parent(s). The index's changed-path data answers this when available; otherwise it compares <code>root_tree</code> with the parent tree (<a href="{{ src(cm, 158, 165) }}">source</a>, <a href="{{ src(cm, 260, 280) }}">helpers</a>).</td></tr>
+    <tr><td><code>has_conflict()</code></td><td><code>root_tree</code> isn't resolved (<a href="{{ src(cm, 167, 169) }}">source</a>).</td></tr>
+    <tr><td><code>is_hidden(repo)</code></td><td>True if the change-ID index doesn't list this commit as a visible target (<a href="{{ src(cm, 191, 195) }}">source</a>).</td></tr>
+    <tr><td><code>is_discardable(repo)</code></td><td>Empty description <em>and</em> empty content (<a href="{{ src(cm, 197, 201) }}">source</a>).</td></tr>
+    <tr><td><code>verification()</code></td><td>Verifies <code>secure_sig</code> through the store's <code>Signer</code>. Results are cached per commit ID (<a href="{{ src(cm, 208, 215) }}">source</a>).</td></tr>
+    <tr><td><code>conflict_label()</code></td><td>Text for conflict markers: the first 8 characters of the change ID and commit ID, plus the description's first line, e.g. <code>nlqwxzwn 7dd24e73 "subject"</code> (<a href="{{ src(cm, 217, 240) }}">source</a>).</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="ids">3. Commit IDs and change IDs</h2>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th></th><th><code>CommitId</code></th><th><code>ChangeId</code></th></tr></thead>
+  <tbody>
+    <tr><td>What it identifies</td><td>One exact version of a commit</td><td>A change, across all its versions</td></tr>
+    <tr><td>Where it comes from</td><td>The backend's content hash (a Git object ID in the Git backend; BLAKE2b in the simple backend)</td><td>Random bytes from jj's seeded RNG, <code>change_id_length()</code> long (16 bytes for Git)</td></tr>
+    <tr><td>On rewrite</td><td>Changes</td><td>Kept</td></tr>
+    <tr><td>Displayed as</td><td>Normal hex, <code>0-9a-f</code></td><td>"Reverse hex": the same nibbles written with <code>z</code> to <code>k</code>, so 0 is <code>z</code> and 15 is <code>k</code></td></tr>
+  </tbody>
+</table></div>
+<p>
+  Because the two use disjoint alphabets, a short prefix such as <code>kx</code> or <code>3f</code> is
+  never ambiguous between a change ID and a commit ID
+  (<a href="{{ src(be, 45, 54) }}">ID types</a>, <a href="{{ src('core/src/hex_util.rs', 17, 18) }}">alphabets</a>,
+  <a href="{{ src('lib/src/settings.rs', 333, 337) }}"><code>new_change_id</code></a>).
+</p>
+<p>
+  A Git commit may carry its change ID in a <code>change-id</code> header. If it doesn't, for example
+  a commit made by plain <code>git</code>, the Git backend derives a <strong>synthetic change ID</strong>:
+  the last 16 bytes of the commit ID, in reverse order, with each byte's bits reversed. That way it
+  looks nothing like the commit ID it came from
+  (<a href="{{ src('lib/src/git_backend.rs', 754, 779) }}">source</a>).
+</p>
+<p>
+  Normally exactly one visible commit has a given change ID. When several do, for instance after
+  concurrent rewrites of the same change, the change is <strong>divergent</strong>. jj tracks
+  visibility per change ID in the index (see <code>is_hidden</code> above).
+</p>
+
+<h2 id="root">4. The root commit</h2>
+<p>
+  Every repo has a virtual root commit, the ancestor of everything.
+  <a href="{{ src(be, 717, 739) }}"><code>make_root_commit</code></a> builds it in memory: no parents, the
+  backend's empty tree, the backend's root change ID, an empty description, and empty signatures at
+  timestamp 0. The Git backend uses Git's null object ID (all zeros) as the root commit ID, and 16
+  zero bytes as the root change ID, which displays as <code>zzzzzzzz…</code>. It's never written to
+  Git: reading a parentless Git commit adds the root as its parent, and writing a commit whose only
+  parent is the root writes a parentless Git commit. Git can't represent a merge with the root, so
+  writing one fails with <code>The Git backend does not support creating merge commits with the root commit as one of the parents.</code>
+  (<a href="{{ src('lib/src/git_backend.rs', 1280, 1300) }}">read</a>,
+  <a href="{{ src('lib/src/git_backend.rs', 1338, 1352) }}">write</a>).
+</p>
+
+<h2 id="building">5. Building and writing commits</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 360" role="img" aria-labelledby="cm-flow-title cm-flow-desc">
+    <title id="cm-flow-title">How a commit is created or rewritten</title>
+    <desc id="cm-flow-desc">
+      MutableRepo::new_commit and MutableRepo::rewrite_commit both produce a CommitBuilder wrapping a
+      DetachedCommitBuilder. Calling write sends the commit through write_to_store, which decides whether
+      to sign it, to Store and Backend::write_commit, which returns the new CommitId. MutableRepo then
+      adds the commit as a head, records its predecessors, and, for rewrites, records the old commit as
+      rewritten to the new one.
+    </desc>
+    <defs>
+      <marker id="cm-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <a href="{{ src('lib/src/repo.rs', 1092, 1095) }}">
+      <rect x="20" y="20" width="230" height="52" rx="8" class="d-box"></rect>
+      <text x="135" y="42" text-anchor="middle" font-size="13">new_commit(parents, tree)</text>
+      <text x="135" y="60" text-anchor="middle" font-size="10" class="d-muted">fresh change ID, empty description</text>
+    </a>
+    <a href="{{ src('lib/src/repo.rs', 1098, 1103) }}">
+      <rect x="20" y="92" width="230" height="52" rx="8" class="d-box"></rect>
+      <text x="135" y="114" text-anchor="middle" font-size="13">rewrite_commit(old)</text>
+      <text x="135" y="132" text-anchor="middle" font-size="10" class="d-muted">copy of old, new committer</text>
+    </a>
+    <a href="{{ src(cb, 174, 185) }}">
+      <rect x="300" y="56" width="200" height="52" rx="8" class="d-box"></rect>
+      <text x="400" y="78" text-anchor="middle" font-size="13">CommitBuilder</text>
+      <text x="400" y="96" text-anchor="middle" font-size="10" class="d-muted">set_tree · set_parents · …</text>
+    </a>
+    <a href="{{ src(cb, 467, 484) }}">
+      <rect x="300" y="160" width="200" height="52" rx="8" class="d-box"></rect>
+      <text x="400" y="182" text-anchor="middle" font-size="13">write_to_store</text>
+      <text x="400" y="200" text-anchor="middle" font-size="10" class="d-muted">should_sign? → sign_fn</text>
+    </a>
+    <a href="{{ src(be, 840, 853) }}">
+      <rect x="300" y="264" width="200" height="52" rx="8" class="d-box"></rect>
+      <text x="400" y="286" text-anchor="middle" font-size="13">Backend::write_commit</text>
+      <text x="400" y="304" text-anchor="middle" font-size="10" class="d-muted">→ (CommitId, Commit)</text>
+    </a>
+    <a href="{{ src(cb, 400, 434) }}">
+      <rect x="540" y="160" width="200" height="104" rx="8" class="d-box"></rect>
+      <text x="640" y="184" text-anchor="middle" font-size="13">MutableRepo bookkeeping</text>
+      <text x="640" y="206" text-anchor="middle" font-size="10" class="d-muted">add_head</text>
+      <text x="640" y="224" text-anchor="middle" font-size="10" class="d-muted">set_predecessors</text>
+      <text x="640" y="242" text-anchor="middle" font-size="10" class="d-muted">set_rewritten_commit (rewrites)</text>
+    </a>
+    <path d="M250 46 C 275 46, 275 74, 298 74" class="d-line" marker-end="url(#cm-arrow)"></path>
+    <path d="M250 118 C 275 118, 275 92, 298 92" class="d-line" marker-end="url(#cm-arrow)"></path>
+    <path d="M400 108 V158" class="d-line" marker-end="url(#cm-arrow)"></path>
+    <text x="408" y="138" font-size="10" class="d-muted">write()</text>
+    <path d="M400 212 V262" class="d-line" marker-end="url(#cm-arrow)"></path>
+    <path d="M500 290 C 600 290, 640 290, 640 266" class="d-line" marker-end="url(#cm-arrow)"></path>
+  </svg>
+</div>
+
+<p>
+  <a href="{{ src(cb, 41, 45) }}"><code>CommitBuilder</code></a> is a
+  <a href="{{ src(cb, 174, 185) }}"><code>DetachedCommitBuilder</code></a> attached to a
+  <code>&amp;mut MutableRepo</code>. <code>detach()</code> gives a builder that can make throwaway commits
+  without holding the repo. There are two constructors:
+</p>
+<ul>
+  <li>
+    <a href="{{ src(cb, 188, 225) }}"><code>for_new_commit</code></a> (via
+    <code>MutableRepo::new_commit</code>): asserts there's at least one parent, generates a fresh change
+    ID, and sets an empty description. Author and committer both come from
+    <code>settings.signature()</code>, whose timestamp is "now" unless
+    <code>debug.commit-timestamp</code> is set (<a href="{{ src('lib/src/settings.rs', 233, 240) }}">source</a>).
+  </li>
+  <li>
+    <a href="{{ src(cb, 227, 273) }}"><code>for_rewrite_from</code></a> (via
+    <code>MutableRepo::rewrite_commit</code>): copies the old commit, sets a new committer, fills an empty
+    author name or email from the committer, and remembers the old commit as the rewrite source and
+    predecessor. If the author is also the committer and the old commit was discardable, the author
+    timestamp is reset to now too.
+  </li>
+</ul>
+<p><a href="{{ src(cb, 400, 434) }}"><code>write()</code></a> then:</p>
+<ol>
+  <li>
+    Copies the predecessors into the deprecated commit field, but only if
+    <code>experimental.record-predecessors-in-commit</code> is set.
+  </li>
+  <li>Writes through <code>write_to_store</code> (§7).</li>
+  <li>
+    Refuses to record a commit ID that already exists in the index:
+    <code>Newly-created commit … already exists</code>. Recording an existing commit as new would put
+    a cycle into the predecessor graph.
+  </li>
+  <li>
+    Adds the commit as a head, records its predecessors for the operation's
+    <code>commit_predecessors</code> map, and for rewrites calls <code>set_rewritten_commit(old, new)</code>.
+    That's what later makes <code>rebase_descendants</code> move the old commit's children onto the new one.
+  </li>
+</ol>
+<p>
+  <code>write_hidden()</code> writes to the store without making the commit visible.
+  <a href="{{ src(cb, 453, 465) }}"><code>abandon()</code></a> writes nothing, but records the
+  rewrite source as abandoned, so its children get rebased onto its parents.
+</p>
+
+<h2 id="predecessors">6. Predecessors: from the commit to the operation</h2>
+<p>
+  Originally each commit stored its own <code>predecessors</code>, which drove <code>jj evolog</code>.
+  Since jj 0.30, each operation records a <code>commit_predecessors</code> map (new commit → the commits
+  it was rewritten from) for everything the transaction created. The per-commit field is no longer
+  written unless <code>experimental.record-predecessors-in-commit</code> is on. The source marks it
+  for deletion (<a href="{{ src(be, 196, 201) }}">source</a>). See
+  <a href="{{ url_for('jj', slug='protobufs') }}#op-operation">the Operation schema</a> for how the map is stored.
+</p>
+
+<h2 id="signing">7. Signing</h2>
+<p>
+  <a href="{{ src(cb, 467, 484) }}"><code>write_to_store</code></a> decides whether to sign: the store's
+  <code>Signer</code> must have a backend that can sign, and the configured
+  <a href="{{ src('lib/src/settings.rs', 96, 112) }}"><code>SignBehavior</code></a> (<code>signing.behavior</code>) must say yes:
+</p>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th><code>SignBehavior</code></th><th>Signs when</th></tr></thead>
+  <tbody>
+    <tr><td><code>Drop</code></td><td>Never. Existing signatures are dropped on rewrite.</td></tr>
+    <tr><td><code>Keep</code></td><td>The commit was already signed <em>and</em> the author's email is the user's: the signature is preserved across rewrites.</td></tr>
+    <tr><td><code>Own</code></td><td>The author's email is the user's.</td></tr>
+    <tr><td><code>Force</code></td><td>Always (<code>jj sign -f</code>).</td></tr>
+  </tbody>
+</table></div>
+<p class="jj-source"><a href="{{ src('lib/src/settings.rs', 127, 136) }}"><code>SignSettings::should_sign</code></a></p>
+<p>
+  The decision is made against the commit as built, which for a rewrite still carries the old
+  signature. That's how <code>Keep</code> knows the commit was signed. Then <code>secure_sig</code> is
+  cleared, because backends assert it's empty, and the backend calls the signing function on its own
+  serialized bytes before storing them. The <code>Signer</code> is built from the <code>gpg</code>,
+  <code>gpgsm</code> and <code>ssh</code> backends, plus a test backend, and <code>signing.backend</code>
+  picks the one used for new signatures. Verification results are kept in an LRU cache keyed by
+  commit ID (<a href="{{ src('lib/src/signing_factory.rs', 42, 66) }}">factory</a>,
+  <a href="{{ src('core/src/signing.rs', 132, 219) }}"><code>Signer</code></a>).
+</p>
