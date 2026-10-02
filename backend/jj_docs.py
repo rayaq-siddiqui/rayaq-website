@@ -162,7 +162,7 @@ PAGES = [
             "cli/src/config/revsets.toml",
             "docs/config.md",
         ],
-        "ready": False,
+        "ready": True,
     },
 ]
 

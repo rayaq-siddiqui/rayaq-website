@@ -1,0 +1,628 @@
+{% set cli = "cli/src/commands/fix.rs" %}
+{% set lib = "lib/src/fix.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj fix</code> works</h1>
+  <p class="tagline">
+    <code>jj fix</code> runs formatters (or any stdin-to-stdout tool) over the files changed in a set of
+    commits, then rewrites those commits and all their descendants with the results, without
+    touching the working copy and without ever creating a conflict.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj works out which file versions each commit changed, deduplicates them, runs each
+  distinct version through the matching tools exactly once and in parallel, and substitutes the new
+  file contents into every affected commit's tree. Because every descendant is fixed directly
+  instead of being rebased onto a fixed parent, no merge ever happens, so no conflict can appear.
+</p>
+
+<p>
+  The work is split across two crates. The command-line half (<a href="{{ src(cli) }}"><code>{{ cli }}</code></a>)
+  parses arguments and configuration, and knows how to spawn tools. The library half
+  (<a href="{{ src(lib) }}"><code>{{ lib }}</code></a>) decides which files to fix and rewrites history,
+  and knows nothing about subprocesses. It only sees the <code>FileFixer</code> trait.
+</p>
+
+<h2 id="flow">1. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 620" role="img" aria-labelledby="fix-flow-title fix-flow-desc">
+    <title id="fix-flow-title">jj fix: end-to-end call flow</title>
+    <desc id="fix-flow-desc">
+      The CLI's cmd_fix loads the fix.tools configuration, resolves the target revset and checks the
+      commits are rewritable, then starts a transaction and calls jj-lib's fix_files. fix_files
+      collects unique FileToFix values, hands them to a ParallelFileFixer that calls fix_one_file for
+      each one on a rayon thread pool, and fix_one_file pipes the content through each matching tool
+      with run_tool. fix_files then calls transform_descendants to write new trees and commits, and
+      cmd_fix finishes the transaction as one operation.
+    </desc>
+    <defs>
+      <marker id="fix-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+
+    <text x="130" y="28" text-anchor="middle" font-size="13" class="d-muted">jj-cli · {{ cli }}</text>
+    <text x="560" y="28" text-anchor="middle" font-size="13" class="d-muted">jj-lib · {{ lib }}</text>
+    <line x1="330" y1="40" x2="330" y2="600" class="d-line" stroke-dasharray="4 4"></line>
+
+    <a href="{{ src(cli, 188, 265) }}">
+      <rect x="20" y="45" width="220" height="44" rx="8" class="d-box"></rect>
+      <text x="130" y="72" text-anchor="middle" font-size="14">cmd_fix(args)</text>
+    </a>
+    <a href="{{ src(cli, 554, 598) }}">
+      <rect x="20" y="110" width="220" height="44" rx="8" class="d-box"></rect>
+      <text x="130" y="130" text-anchor="middle" font-size="13">get_tools_config</text>
+      <text x="130" y="146" text-anchor="middle" font-size="11" class="d-muted">fix.tools.* → ToolsConfig</text>
+    </a>
+    <a href="{{ src(cli, 201, 210) }}">
+      <rect x="20" y="175" width="220" height="44" rx="8" class="d-box"></rect>
+      <text x="130" y="195" text-anchor="middle" font-size="13">resolve -s / revsets.fix</text>
+      <text x="130" y="211" text-anchor="middle" font-size="11" class="d-muted">check_rewritable_expr</text>
+    </a>
+    <a href="{{ src(cli, 232, 247) }}">
+      <rect x="20" y="240" width="220" height="44" rx="8" class="d-box"></rect>
+      <text x="130" y="260" text-anchor="middle" font-size="13">start_transaction</text>
+      <text x="130" y="276" text-anchor="middle" font-size="11" class="d-muted">ParallelFileFixer::new(fix_one_file)</text>
+    </a>
+
+    <a href="{{ src(lib, 181, 318) }}">
+      <rect x="420" y="240" width="280" height="58" rx="8" class="d-box"></rect>
+      <text x="560" y="262" text-anchor="middle" font-size="14">fix_files: collect</text>
+      <text x="560" y="280" text-anchor="middle" font-size="11" class="d-muted">base commits · tree diffs · HashSet&lt;FileToFix&gt;</text>
+    </a>
+    <a href="{{ src(lib, 137, 168) }}">
+      <rect x="420" y="320" width="280" height="44" rx="8" class="d-box"></rect>
+      <text x="560" y="340" text-anchor="middle" font-size="13">ParallelFileFixer::fix_files</text>
+      <text x="560" y="356" text-anchor="middle" font-size="11" class="d-muted">rayon into_par_iter · mpsc channel</text>
+    </a>
+
+    <a href="{{ src(cli, 279, 385) }}">
+      <rect x="20" y="380" width="220" height="44" rx="8" class="d-box"></rect>
+      <text x="130" y="400" text-anchor="middle" font-size="13">fix_one_file × N</text>
+      <text x="130" y="416" text-anchor="middle" font-size="11" class="d-muted">chain matching tools</text>
+    </a>
+    <a href="{{ src(cli, 417, 489) }}">
+      <rect x="20" y="445" width="220" height="44" rx="8" class="d-box"></rect>
+      <text x="130" y="465" text-anchor="middle" font-size="13">run_tool</text>
+      <text x="130" y="481" text-anchor="middle" font-size="11" class="d-muted">stdin → subprocess → stdout</text>
+    </a>
+
+    <a href="{{ src(lib, 320, 386) }}">
+      <rect x="420" y="470" width="280" height="58" rx="8" class="d-box"></rect>
+      <text x="560" y="492" text-anchor="middle" font-size="14">fix_files: rewrite</text>
+      <text x="560" y="510" text-anchor="middle" font-size="11" class="d-muted">transform_descendants · MergedTreeBuilder</text>
+    </a>
+    <a href="{{ src(cli, 257, 264) }}">
+      <rect x="20" y="545" width="220" height="44" rx="8" class="d-box"></rect>
+      <text x="130" y="565" text-anchor="middle" font-size="13">tx.finish</text>
+      <text x="130" y="581" text-anchor="middle" font-size="11" class="d-muted">"fixed N commits" operation</text>
+    </a>
+
+    <path d="M130 89 V108" class="d-line" marker-end="url(#fix-arrow)"></path>
+    <path d="M130 154 V173" class="d-line" marker-end="url(#fix-arrow)"></path>
+    <path d="M130 219 V238" class="d-line" marker-end="url(#fix-arrow)"></path>
+    <path d="M240 262 H418" class="d-line" marker-end="url(#fix-arrow)"></path>
+    <path d="M560 298 V318" class="d-line" marker-end="url(#fix-arrow)"></path>
+    <path d="M420 350 C 330 350, 330 402, 242 402" class="d-line" marker-end="url(#fix-arrow)"></path>
+    <path d="M130 424 V443" class="d-line" marker-end="url(#fix-arrow)"></path>
+    <path d="M240 470 C 330 470, 330 499, 418 499" class="d-line" marker-end="url(#fix-arrow)"></path>
+    <path d="M420 515 C 330 515, 330 567, 242 567" class="d-line" marker-end="url(#fix-arrow)"></path>
+    <text x="335" y="395" font-size="10" class="d-muted">per unique file</text>
+    <text x="335" y="463" font-size="10" class="d-muted">new FileIds</text>
+  </svg>
+</div>
+
+<ol>
+  <li>
+    <a href="{{ src(cli, 188, 265) }}"><code>cmd_fix</code></a> loads the workspace and parses the
+    <code>fix.tools</code> table first, so a broken configuration fails before any history is examined.
+  </li>
+  <li>
+    It resolves the target revset: the union of every <code>-s/--source</code> argument, or the
+    <code>revsets.fix</code> setting when none is given. It then calls
+    <code>check_rewritable_expr</code>, which refuses to continue if any target is immutable
+    (<a href="{{ src(cli, 201, 210) }}">source</a>).
+  </li>
+  <li>
+    It evaluates the targets' descendants and passes all their commit IDs to the library as
+    <code>root_commits</code>, and builds a path matcher from the positional <code>FILESETS</code>.
+    With no paths given, <code>parse_file_patterns</code> returns
+    <code>FilesetExpression::all()</code>
+    (<a href="{{ src('cli/src/cli_util.rs', 1604, 1617) }}">source</a>).
+  </li>
+  <li>
+    It starts a transaction and wraps <code>fix_one_file</code> in a <code>ParallelFileFixer</code>.
+    Each rayon worker drives the async <code>fix_one_file</code> to completion with
+    <code>pollster</code>'s <code>block_on</code> (<a href="{{ src(cli, 232, 247) }}">source</a>).
+  </li>
+  <li>
+    <code>fix_files</code> in jj-lib does all the history work: it picks files, calls the fixer once
+    with the whole deduplicated set, then rewrites commits (<a href="{{ src(lib, 181, 386) }}">source</a>).
+  </li>
+  <li>
+    The CLI prints <code>Fixed N commits of M checked.</code> and commits the transaction as a single
+    operation described as <code>fixed N commits</code> (<a href="{{ src(cli, 257, 264) }}">source</a>).
+  </li>
+</ol>
+
+<h2 id="cli">2. Command-line surface</h2>
+<p>
+  The arguments are defined by <a href="{{ src(cli, 162, 185) }}"><code>FixArgs</code></a>:
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Argument</th><th>Field</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>-s</code>, <code>--source &lt;REVSETS&gt;</code></td>
+        <td><code>source: Vec&lt;RevisionArg&gt;</code></td>
+        <td>
+          Fix these revisions and their descendants. Without it, the target is the
+          <code>revsets.fix</code> setting, which defaults to <code>reachable(@, mutable())</code>
+          (<a href="{{ src('cli/src/config/revsets.toml', 7) }}">default config</a>).
+        </td>
+      </tr>
+      <tr>
+        <td><code>[FILESETS]…</code></td>
+        <td><code>paths: Vec&lt;String&gt;</code></td>
+        <td>Only fix paths matching these filesets. Empty means every path.</td>
+      </tr>
+      <tr>
+        <td><code>--include-unchanged-files</code></td>
+        <td><code>include_unchanged_files: bool</code></td>
+        <td>
+          Also fix files the commit didn't change. jj diffs against the empty tree instead of the base
+          tree, so every matching file in the commit is a candidate (§4).
+        </td>
+      </tr>
+      <tr>
+        <td><code>-a</code>, <code>--all-lines</code></td>
+        <td><code>all_lines: bool</code></td>
+        <td>
+          Ignore changed-line ranges and format the whole file. Has no effect on tools without
+          <code>line-range-args</code>, which always see the whole file anyway (§6).
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="configuration">3. Tool configuration</h2>
+<p>
+  Each entry of the <code>fix.tools</code> table deserializes into
+  <a href="{{ src(cli, 534, 543) }}"><code>RawToolConfig</code></a> (kebab-case keys), then becomes a
+  <a href="{{ src(cli, 492, 522) }}"><code>ToolConfig</code></a> with a compiled path matcher:
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>command</code></td><td><code>CommandNameAndArgs</code></td><td>required</td>
+        <td>
+          Program and arguments. <code>$path</code> is replaced with the repo-relative path (internal
+          form) and <code>$root</code> with the workspace root, if the root is valid UTF-8
+          (<a href="{{ src(cli, 426, 434) }}">source</a>).
+        </td>
+      </tr>
+      <tr>
+        <td><code>patterns</code></td><td><code>Vec&lt;String&gt;</code></td><td>required</td>
+        <td>
+          Filesets. They're parsed and unioned into one matcher, so a file matching several patterns
+          still goes through the tool once. An empty list matches nothing.
+        </td>
+      </tr>
+      <tr>
+        <td><code>enabled</code></td><td><code>bool</code></td><td><code>true</code></td>
+        <td>Disabled tools are dropped after parsing (<a href="{{ src(cli, 545, 547) }}"><code>default_tool_enabled</code></a>).</td>
+      </tr>
+      <tr>
+        <td><code>line-range-args</code></td><td><code>Vec&lt;String&gt;</code></td><td><code>[]</code></td>
+        <td>
+          Argument templates using <code>$first</code> and <code>$last</code> (1-based, inclusive). When
+          non-empty, the tool is told which lines changed (§6).
+        </td>
+      </tr>
+      <tr>
+        <td><code>run-tool-if-zero-line-ranges</code></td><td><code>bool</code></td><td><code>false</code></td>
+        <td>
+          Run the tool even when no line changed. Only valid together with <code>line-range-args</code>.
+          Setting it alone is a config error.
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="tool-order">Order and validation</h3>
+<p>
+  <a href="{{ src(cli, 554, 598) }}"><code>get_tools_config</code></a> reads the table keys and
+  <strong>sorts them by name</strong> before parsing (<a href="{{ src(cli, 562) }}">source</a>). That
+  makes errors deterministic, and it's also the execution order when several tools match the same
+  file: the docs recommend numeric prefixes such as <code>1-sort</code>, <code>2-truncate</code>
+  (<a href="{{ src('docs/config.md', 1562, 1585) }}">docs</a>). The order is fixed in
+  <a href="{{ src(cli, 525, 529) }}"><code>ToolsConfig.tools</code></a>. There are three config errors:
+</p>
+<ul>
+  <li><code>run-tool-if-zero-line-ranges can only be set when line-range-args is set</code> (<a href="{{ src(cli, 572, 576) }}">source</a>)</li>
+  <li><code>No `fix.tools` are configured</code> (<a href="{{ src(cli, 587, 589) }}">source</a>)</li>
+  <li><code>At least one entry of `fix.tools` must be enabled.</code>, checked after disabled tools are removed (<a href="{{ src(cli, 590, 597) }}">source</a>)</li>
+</ul>
+
+<pre><code>[fix.tools.clang-format]
+command = ["/usr/bin/clang-format", "--assume-filename=$path"]
+patterns = ["glob:'**/*.cc'", "glob:'**/*.h'"]
+line-range-args = ["--lines=$first:$last"]
+
+[fix.tools.biome]
+command = ["$root/node_modules/@biomejs/biome/bin/biome", "format", "--stdin-file-path=$path"]
+patterns = ["glob:'**/*.ts'", "glob:'**/*.tsx'"]</code></pre>
+<p class="jj-source">Adapted from <a href="{{ src('docs/config.md', 1433, 1606) }}">docs/config.md, "Code formatting and other file content transformations"</a>.</p>
+
+<h2 id="choosing-files">4. Choosing which files to fix</h2>
+<p>
+  This is the core of <a href="{{ src(lib, 181, 318) }}"><code>fix_files</code></a>. It runs over the
+  set <em>S</em> = <code>descendants(root_commits)</code>, visiting commits parents-first.
+</p>
+
+<h3 id="base-commits">Base commits: the nearest ancestors outside the set</h3>
+<p>
+  A commit isn't diffed against its parent. It's diffed against its <strong>base commits</strong>:
+  its closest ancestors that are <em>not</em> in <em>S</em>.
+  <a href="{{ src(lib, 471, 505) }}"><code>get_base_commit_map</code></a> computes them in two passes.
+  It first collects every parent of a commit in <em>S</em> that is itself outside <em>S</em>. Then,
+  walking parents before children, each commit inherits its in-set parents' bases and adds any
+  parent that is itself a base. The result is an <code>IndexSet&lt;CommitId&gt;</code> per commit.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 300" role="img" aria-labelledby="fix-base-title fix-base-desc">
+    <title id="fix-base-title">Worked example: base commits</title>
+    <desc id="fix-base-desc">
+      Commits P and Q are outside the fixed set. A's parent is P, B's parent is A, C's parent is Q, and
+      M is a merge of B and C. The bases are: A gets P, B gets P (inherited from A), C gets Q, and M
+      gets both P and Q, so M is diffed against the merge of P's and Q's trees.
+    </desc>
+    <defs>
+      <marker id="fix-arrow-2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <rect x="10" y="10" width="420" height="280" rx="12" fill="none" class="d-accent" stroke-dasharray="6 4"></rect>
+    <text x="22" y="32" font-size="12" class="d-muted">fixed set S = descendants(roots)</text>
+
+    <a href="{{ src(lib, 471, 505) }}">
+      <circle cx="100" cy="230" r="24" class="d-box"></circle><text x="100" y="235" text-anchor="middle" font-size="15">A</text>
+      <circle cx="100" cy="130" r="24" class="d-box"></circle><text x="100" y="135" text-anchor="middle" font-size="15">B</text>
+      <circle cx="300" cy="230" r="24" class="d-box"></circle><text x="300" y="235" text-anchor="middle" font-size="15">C</text>
+      <circle cx="200" cy="65" r="24" class="d-box"></circle><text x="200" y="70" text-anchor="middle" font-size="15">M</text>
+      <rect x="470" y="250" width="56" height="36" rx="8" class="d-box"></rect><text x="498" y="273" text-anchor="middle" font-size="15">P</text>
+      <rect x="600" y="250" width="56" height="36" rx="8" class="d-box"></rect><text x="628" y="273" text-anchor="middle" font-size="15">Q</text>
+    </a>
+    <path d="M100 206 V156" class="d-line" marker-end="url(#fix-arrow-2)"></path>
+    <path d="M118 112 L182 80" class="d-line" marker-end="url(#fix-arrow-2)"></path>
+    <path d="M285 211 L214 87" class="d-line" marker-end="url(#fix-arrow-2)"></path>
+    <path d="M470 262 C 300 262, 160 262, 122 238" class="d-line" marker-end="url(#fix-arrow-2)"></path>
+    <path d="M600 280 C 480 300, 380 280, 322 242" class="d-line" marker-end="url(#fix-arrow-2)"></path>
+    <text x="545" y="40" font-size="13">bases(A) = {P}</text>
+    <text x="545" y="70" font-size="13">bases(B) = {P}</text>
+    <text x="545" y="100" font-size="13">bases(C) = {Q}</text>
+    <text x="545" y="130" font-size="13">bases(M) = {P, Q}</text>
+    <text x="545" y="165" font-size="11" class="d-muted">arrows point parent → child</text>
+    <text x="545" y="185" font-size="11" class="d-muted">M is diffed against</text>
+    <text x="545" y="201" font-size="11" class="d-muted">merge_commit_trees([P, Q])</text>
+  </svg>
+</div>
+
+<p>
+  The base tree is <a href="{{ src('lib/src/rewrite.rs', 61, 71) }}"><code>merge_commit_trees</code></a>
+  of the base commits: the commit's own tree when there is one base, otherwise a merge that jj
+  tries to resolve. Diffing against an out-of-set base makes each commit's diff
+  <strong>cumulative</strong>. B's diff against P includes everything A changed, so B re-fixes A's
+  files with B's own versions of them. That's how fixes reach descendants without rebasing. The
+  library's comment explains why: rebasing risks merge conflicts and "wouldn't reliably produce well
+  formatted code anyway" (<a href="{{ src(lib, 190, 204) }}">source</a>).
+</p>
+
+<h3 id="diffing">Diffing each commit</h3>
+<p>For each commit, parents first (<a href="{{ src(lib, 230, 311) }}">source</a>):</p>
+<ul>
+  <li>
+    The diff's left side is the base tree, or the <strong>empty tree</strong> with
+    <code>--include-unchanged-files</code>, so every matching file counts as added. The right side
+    is the commit's tree, filtered by the path matcher (<a href="{{ src(lib, 245, 255) }}">source</a>).
+    Copy tracking isn't handled yet; the code carries a <code>TODO</code>.
+  </li>
+  <li>Paths whose new value is absent (deletions) are skipped (<a href="{{ src(lib, 263, 265) }}">source</a>).</li>
+  <li>
+    The "before" value is the first term of the diff's left side. With
+    <code>--include-unchanged-files</code> it's the base tree's value at that path. If it's a
+    regular file, its <code>FileId</code> is remembered in
+    <code>base_files[(commit, path)]</code>; it's later used for changed-line ranges
+    (<a href="{{ src(lib, 266, 287) }}">source</a>).
+  </li>
+  <li>
+    <strong>Every term</strong> on the right side that's a regular file becomes a
+    <code>FileToFix</code>, so all sides of a conflicted file are fixed. All sides share the base's
+    first-side <code>FileId</code> (<a href="{{ src(lib, 289, 309) }}">source</a>,
+    <a href="{{ src(lib, 221, 226) }}">rationale</a>). Symlinks, directories and submodules are never
+    passed to tools.
+  </li>
+  <li>The path is recorded in <code>commit_paths[commit]</code>, the list the rewrite phase revisits.</li>
+</ul>
+
+<h3 id="file-to-fix">FileToFix and deduplication</h3>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>file_id</code></td><td><code>FileId</code></td><td>The content to fix.</td></tr>
+      <tr><td><code>base_file_id</code></td><td><code>Option&lt;FileId&gt;</code></td><td>The base commit's content at the same path, used to compute changed lines. <code>None</code> when the base had no regular file there.</td></tr>
+      <tr><td><code>repo_path</code></td><td><code>RepoPathBuf</code></td><td>Lets tools behave differently by name or extension, and selects which tools match.</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(lib, 48, 64) }}">FileToFix, lib/src/fix.rs</a></p>
+<p>
+  All candidates go into one <code>HashSet&lt;FileToFix&gt;</code>, so the same content at the same
+  path with the same base is formatted <strong>once</strong>, however many commits contain it. In a
+  long stack where each commit touches different files, this stops the number of tool runs from
+  growing quadratically. It's also why tools <strong>must be deterministic</strong> and mustn't
+  depend on anything but their input: an output is reused wherever its input appears
+  (<a href="{{ src(lib, 190, 204) }}">source</a>, <a href="{{ src(cli, 75, 80) }}">help text</a>).
+</p>
+
+<h2 id="running-tools">5. Running the tools</h2>
+<p>
+  <a href="{{ src(cli, 279, 385) }}"><code>fix_one_file</code></a> handles one <code>FileToFix</code>:
+</p>
+<ol>
+  <li>It filters the configured tools to those whose matcher accepts the path. None → <code>Ok(None)</code> (<a href="{{ src(cli, 288, 296) }}">source</a>).</li>
+  <li>It reads the content from the store. An empty file is never passed to any tool (<a href="{{ src(cli, 304, 313) }}">source</a>).</li>
+  <li>
+    It loads the base content only when <code>--all-lines</code> is off, a <code>base_file_id</code>
+    exists, and at least one matching tool has <code>line-range-args</code>
+    (<a href="{{ src(cli, 315, 334) }}">source</a>).
+  </li>
+  <li>
+    It <strong>chains</strong> the tools with a fold: the first gets the committed content, and each
+    later one gets the previous tool's output. Line ranges are recomputed for each tool against its
+    own input (<a href="{{ src(cli, 336, 374) }}">source</a>).
+  </li>
+  <li>
+    If the final content differs from the original, it's written to the store as a new file
+    object, and the new <code>FileId</code> is returned. Otherwise the result is <code>None</code>
+    (<a href="{{ src(cli, 376, 384) }}">source</a>).
+  </li>
+</ol>
+
+<h3 id="subprocess">The subprocess</h3>
+<p><a href="{{ src(cli, 417, 489) }}"><code>run_tool</code></a> builds and runs one command:</p>
+<ul>
+  <li>
+    <code>$path</code> and <code>$root</code> are substituted into the configured command. Line-range
+    arguments are appended after the configured arguments.
+  </li>
+  <li>The working directory is the workspace root. stdin, stdout and stderr are all piped (<a href="{{ src(cli, 436, 446) }}">source</a>).</li>
+  <li>
+    The content is written to stdin from a scoped thread while the main thread collects output with
+    <code>wait_with_output</code>, so a tool that writes before it finishes reading can't
+    deadlock on a full pipe (<a href="{{ src(cli, 456, 464) }}">source</a>).
+  </li>
+  <li>Any stderr is passed through to the user, after a line naming the file (<a href="{{ src(cli, 466, 476) }}">source</a>).</li>
+  <li>
+    Exit 0 → stdout becomes the new content. A spawn failure (<code>Failed to start</code>) or a
+    non-zero exit (<code>Fix tool `…` exited with non-zero exit code for `…`</code>) prints a warning
+    and returns <code>Err(())</code>. The fold then keeps the previous content and moves on to the
+    next tool. To the rest of the pipeline, a failed tool looks the same as one that made no change
+    (<a href="{{ src(cli, 267, 278) }}">source</a>).
+  </li>
+</ul>
+
+<h2 id="line-ranges">6. Changed-line ranges</h2>
+<p>
+  For tools with <code>line-range-args</code>,
+  <a href="{{ src(cli, 388, 407) }}"><code>compute_regions_to_format</code></a> decides which lines
+  to send:
+</p>
+<ul>
+  <li>Empty current content → no ranges.</li>
+  <li>
+    A base exists → <a href="{{ src(lib, 416, 443) }}"><code>compute_changed_ranges</code></a>: a line
+    diff (<code>ContentDiff::by_line</code>) where each <em>different</em> hunk with at least one
+    line on the current side becomes an inclusive 1-based <code>LineRange</code>. Pure deletions
+    leave no lines on the current side, so they produce no range.
+  </li>
+  <li>
+    No base (new file, <code>--all-lines</code>, or no tool needs it) → one range covering the whole
+    file, from 1 to <a href="{{ src(lib, 446, 454) }}"><code>compute_file_line_count</code></a>.
+  </li>
+</ul>
+<p>
+  If the ranges are empty and <code>run-tool-if-zero-line-ranges</code> is false, the tool is
+  skipped for that file. Otherwise every range is expanded through every template in order, so
+  ranges 2–4 and 10–10 with <code>["--lines=$first:$last"]</code> become
+  <code>--lines=2:4 --lines=10:10</code> (<a href="{{ src(cli, 339, 357) }}">source</a>).
+</p>
+<p>
+  One interaction worth knowing: <code>--include-unchanged-files</code> still loads the base
+  version of unchanged files, so they get zero ranges. A line-range tool therefore skips them
+  unless <code>run-tool-if-zero-line-ranges = true</code>.
+</p>
+
+<h3 id="range-vectors">Test vectors from the source</h3>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Base</th><th>Current</th><th>Ranges</th></tr></thead>
+    <tbody>
+      <tr><td><em>none</em></td><td><code>a\nb\nc\n</code></td><td>1–3</td></tr>
+      <tr><td><code>""</code></td><td><code>a\nb\nc\n</code></td><td>1–3</td></tr>
+      <tr><td><code>a\nB\nc\n</code></td><td><code>a\nb\nc\n</code></td><td>2–2</td></tr>
+      <tr><td><code>a\nb\nc\nd\n</code></td><td><code>a\nb\nc\n</code></td><td><em>none</em> (deletion)</td></tr>
+      <tr><td><code>A\nb\nC\n</code></td><td><code>a\nb\nc\n</code></td><td>1–1, 3–3</td></tr>
+      <tr><td><code>a\nb\nc\n</code></td><td><code>""</code></td><td><em>none</em></td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cli, 609, 645) }}"><code>test_compute_regions_to_format_default</code></a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Text</th><th><code>compute_file_line_count</code></th></tr></thead>
+    <tbody>
+      <tr><td><code>""</code></td><td>0</td></tr>
+      <tr><td><code>a</code></td><td>1</td></tr>
+      <tr><td><code>a\n</code></td><td>1</td></tr>
+      <tr><td><code>a\nb</code></td><td>2</td></tr>
+      <tr><td><code>a\nb\n</code></td><td>2</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(lib, 511, 518) }}"><code>test_compute_file_line_count</code></a>. A final line without a trailing newline still counts.</p>
+
+<h2 id="parallelism">7. Parallelism</h2>
+<p>
+  The library only sees the <a href="{{ src(lib, 83, 102) }}"><code>FileFixer</code></a> trait: a
+  set of <code>FileToFix</code> in, a map of only the changed ones to their new <code>FileId</code>
+  out. <a href="{{ src(lib, 117, 168) }}"><code>ParallelFileFixer</code></a> implements it with
+  rayon: <code>into_par_iter().try_for_each_init</code> gives each worker a clone of an mpsc sender,
+  each fixed file is sent as <code>(file_to_fix, new_file_id)</code>, and the receiver drains into
+  a <code>HashMap&lt;&amp;FileToFix, FileId&gt;</code> once all workers finish. The first
+  <code>FixError</code> (store I/O, not tool failure) aborts the whole run. A comment in the source
+  questions whether threads are needed at all, since workers mostly wait on pipes.
+</p>
+
+<h2 id="rewriting">8. Rewriting history</h2>
+<p>
+  With all fixed <code>FileId</code>s known, <code>fix_files</code> calls
+  <a href="{{ src('lib/src/repo.rs', 1483, 1507) }}"><code>MutableRepo::transform_descendants</code></a>
+  on the same roots. Its callback gets a <code>CommitRewriter</code> for each commit, parents first,
+  with the new parents already filled in (<a href="{{ src(lib, 323, 382) }}">source</a>):
+</p>
+<ol>
+  <li>It starts a <code>MergedTreeBuilder</code> from the commit's <em>old</em> tree.</li>
+  <li>
+    For each path in <code>commit_paths</code>, it maps every term of the path's merged value: a
+    file whose <code>(file_id, base_file_id, path)</code> was fixed is swapped for the new
+    <code>FileId</code>, keeping its <code>executable</code> bit and <code>copy_id</code>. Anything
+    else is kept as-is.
+  </li>
+  <li>
+    If anything changed, it writes the tree and does
+    <a href="{{ src('lib/src/rewrite.rs', 453, 459) }}"><code>rewriter.reparent()</code></a><code>.set_tree(new_tree).write()</code>,
+    and counts the commit as fixed.
+  </li>
+  <li>
+    If nothing changed but an ancestor was rewritten
+    (<a href="{{ src('lib/src/rewrite.rs', 329, 333) }}"><code>parents_changed()</code></a>), it does a
+    plain <code>reparent().write()</code>.
+  </li>
+</ol>
+<p>
+  <code>reparent()</code> moves the commit onto its new parents <strong>without changing its
+  contents</strong>. Nothing is ever merged, so <strong><code>jj fix</code> can't create a new
+  conflict</strong>. Fixes can't delete or rename files, change the executable bit, or touch the
+  description (<a href="{{ src(lib, 323, 325) }}">source</a>). Existing conflicts stay conflicts,
+  with every side fixed. The help text notes this can increase or decrease the number of conflict
+  markers.
+</p>
+
+<h3 id="summary">FixSummary</h3>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>rewrites</code></td><td><code>HashMap&lt;CommitId, CommitId&gt;</code></td><td>Old → new commit, for both fixed and merely reparented commits.</td></tr>
+      <tr><td><code>num_checked_commits</code></td><td><code>i32</code></td><td>Incremented once per commit the callback visits.</td></tr>
+      <tr><td><code>num_fixed_commits</code></td><td><code>i32</code></td><td>Commits that got a new tree. Reparent-only rewrites aren't counted.</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(lib, 104, 115) }}">FixSummary</a> · <a href="{{ src(lib, 365, 381) }}">counting</a></p>
+
+<h2 id="observability">9. Output and review</h2>
+<ul>
+  <li><code>Fixed N commits of M checked.</code> on the status stream (<a href="{{ src(cli, 257, 262) }}">source</a>).</li>
+  <li>
+    One operation in the op log, described as <code>fixed N commits</code>. Because it's a single
+    transaction, <code>jj undo</code> reverts the whole fix, and <code>jj op show -p</code> shows
+    exactly what changed (<a href="{{ src(cli, 63, 63) }}">help text</a>).
+  </li>
+  <li>Tool stderr and the warnings for tools that failed to start or exited non-zero.</li>
+  <li>Explicit paths that matched no file in any target commit are reported by <code>print_unmatched_explicit_paths</code>.</li>
+</ul>
+
+<h2 id="example">10. Worked example</h2>
+<p>
+  This is the example from the command's own help (<a href="{{ src(cli, 87, 159) }}">source</a>),
+  with <code>clang-format</code> configured for <code>**/*.cc</code> and <code>**/*.h</code>, and
+  <code>black</code> for <code>**/*.py</code>. X is immutable; A, B (the working copy) and C are
+  mutable, so <code>reachable(@, mutable())</code> selects A, B and C, and their only base is X.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 360" role="img" aria-labelledby="fix-ex-title fix-ex-desc">
+    <title id="fix-ex-title">Worked example: A, B and C fixed into A', B' and C'</title>
+    <desc id="fix-ex-desc">
+      A modifies src/bar.cc and src/bar.h; B modifies README.md; C modifies foo.py. Every commit is
+      diffed against X, so A sends bar.cc and bar.h to clang-format; B sends the same two files
+      (cumulative diff) and leaves README.md untouched because no tool matches it; C sends bar.cc and
+      bar.h to clang-format and foo.py to black. Each produces a rewritten commit: A', B' (still the
+      working copy) and C'.
+    </desc>
+    <defs>
+      <marker id="fix-arrow-3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <a href="{{ src(lib, 181, 386) }}">
+      <rect x="20" y="20" width="250" height="70" rx="8" class="d-box"></rect>
+      <text x="35" y="45" font-size="14">C · modifies foo.py</text>
+      <text x="35" y="66" font-size="11" class="d-muted">vs X: bar.cc, bar.h, foo.py, README.md</text>
+
+      <rect x="20" y="110" width="250" height="70" rx="8" class="d-box"></rect>
+      <text x="35" y="135" font-size="14">B @ · modifies README.md</text>
+      <text x="35" y="156" font-size="11" class="d-muted">vs X: bar.cc, bar.h, README.md</text>
+
+      <rect x="20" y="200" width="250" height="70" rx="8" class="d-box"></rect>
+      <text x="35" y="225" font-size="14">A · modifies bar.cc, bar.h</text>
+      <text x="35" y="246" font-size="11" class="d-muted">vs X: bar.cc, bar.h</text>
+
+      <rect x="20" y="290" width="250" height="50" rx="8" class="d-box"></rect>
+      <text x="35" y="320" font-size="14">X · immutable (the base)</text>
+    </a>
+
+    <rect x="305" y="30" width="170" height="40" rx="8" class="d-box"></rect>
+    <text x="390" y="55" text-anchor="middle" font-size="12">clang-format + black</text>
+    <rect x="305" y="125" width="170" height="40" rx="8" class="d-box"></rect>
+    <text x="390" y="150" text-anchor="middle" font-size="12">clang-format</text>
+    <rect x="305" y="215" width="170" height="40" rx="8" class="d-box"></rect>
+    <text x="390" y="240" text-anchor="middle" font-size="12">clang-format</text>
+
+    <rect x="510" y="20" width="220" height="70" rx="8" class="d-box"></rect>
+    <text x="525" y="50" font-size="14">C′</text>
+    <text x="525" y="70" font-size="11" class="d-muted">bar.cc, bar.h, foo.py fixed</text>
+    <rect x="510" y="110" width="220" height="70" rx="8" class="d-box"></rect>
+    <text x="525" y="140" font-size="14">B′ @</text>
+    <text x="525" y="160" font-size="11" class="d-muted">bar.cc, bar.h fixed · README.md as-is</text>
+    <rect x="510" y="200" width="220" height="70" rx="8" class="d-box"></rect>
+    <text x="525" y="230" font-size="14">A′</text>
+    <text x="525" y="250" font-size="11" class="d-muted">bar.cc, bar.h fixed</text>
+    <rect x="510" y="290" width="220" height="50" rx="8" class="d-box"></rect>
+    <text x="525" y="320" font-size="14">X (unchanged)</text>
+
+    <path d="M270 55 H303" class="d-line" marker-end="url(#fix-arrow-3)"></path>
+    <path d="M475 50 H508" class="d-line" marker-end="url(#fix-arrow-3)"></path>
+    <path d="M270 145 H303" class="d-line" marker-end="url(#fix-arrow-3)"></path>
+    <path d="M475 145 H508" class="d-line" marker-end="url(#fix-arrow-3)"></path>
+    <path d="M270 235 H303" class="d-line" marker-end="url(#fix-arrow-3)"></path>
+    <path d="M475 235 H508" class="d-line" marker-end="url(#fix-arrow-3)"></path>
+  </svg>
+</div>
+
+<p>
+  If A, B and C all contain an identical <code>src/bar.h</code> and share the same base version, it's
+  one <code>FileToFix</code>, and <code>clang-format</code> runs on it once. If B changed
+  <code>bar.h</code> again, B's version is a different <code>FileId</code> and gets its own run. B′
+  keeps its own content, with fixed files substituted in; it isn't rebased onto A′'s.
+</p>
