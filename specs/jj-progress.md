@@ -3,21 +3,22 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-02 (second run) — maintenance found no upstream change; built the
-`cli`, `commits` and `view` pages.
+**Last updated:** 2026-10-02 (third run) — maintenance found no upstream change; built the
+`operations`, `transactions` and `working-copy` pages. All the topic pages that command pages
+lean on now exist.
 
 ## Upstream pin
 
 `jj-vcs/jj@0cb02a837f28459cd698734264c9fcd3712ec0d1` (committed 2026-10-01, version
-0.45.1), analyzed 2026-10-02. Held in `jj_docs.UPSTREAM`. The second run's maintenance check
-found upstream `HEAD` still at the pin, so nothing changed and the pin stayed.
+0.45.1), analyzed 2026-10-02. Held in `jj_docs.UPSTREAM`. The second and third runs' maintenance
+checks found upstream `HEAD` still at the pin, so nothing changed and the pin stayed.
 
 ## §10 acceptance criteria
 
 - [x] `/jj` renders the §6 diagram and links to every page in §5 (boxes for unbuilt
       pages link to pinned source until the page exists).
-- [ ] Every §5 page exists and is registered: `protobufs`, `cli`, `commits`, `view` done;
-      9 to go (`operations`, `transactions`, `working-copy`, `trees`, `conflicts`,
+- [ ] Every §5 page exists and is registered: `protobufs`, `cli`, `commits`, `view`,
+      `operations`, `transactions`, `working-copy` done; 6 to go (`trees`, `conflicts`,
       `storage`, `index`, `revsets`, `backends`).
 - [x] The `fix` page meets all ten §8 items, with three SVG diagrams.
 - [x] The `protobufs` page covers all seven `.proto` files, every field.
@@ -29,6 +30,15 @@ found upstream `HEAD` still at the pin, so nothing changed and the pin stayed.
 - [x] The `cli` lifecycle page exists.
 - [ ] Every §8A.1 command has a page that meets its tier's bar: 1 of 105 (`fix`).
 - [x] The daily Routine has run once in maintenance mode (second run: no upstream change).
+
+## Third run (2026-10-02)
+
+| Commit | What |
+|---|---|
+| `8b6d256` | `operations` page: `Operation`/metadata, OpStore vs OpHeadsStore, concurrent-op merging, op expressions, undo/redo/restore/revert, gc |
+| `04f092e` | `transactions` page: repo types, transaction lifecycle, `parent_mapping` rewrites, `rebase_descendants`, the rebase tree merge, rebase options |
+| `5279499` | `working-copy` page: traits, stored state, snapshot pipeline and clean check, checkout and conflict materialization, freshness, settings |
+| `5b20712` | `cli` page fix: `WorkingCopyStale` only when the trees differ |
 
 ## Second run (2026-10-02)
 
@@ -60,13 +70,11 @@ existing block. On this run its output matched the committed block exactly.
 
 ## Queue (build in this order, per spec §9)
 
-1. Remaining topic pages that command pages lean on: `operations`, `transactions`,
-   `working-copy`.
-2. Tier A commands, alternating with the remaining topics (`trees`, `conflicts`,
+1. Tier A commands, alternating with the remaining topics (`trees`, `conflicts`,
    `storage`, `index`, `revsets`, `backends`): `new`, `edit`, `describe`, `commit`,
    `squash`, `rebase`, `abandon`, `undo`, then the rest of Tier A.
-3. Tier B commands.
-4. Tier C commands (`debug` and `bench` each as one shared page).
+2. Tier B commands.
+3. Tier C commands (`debug` and `bench` each as one shared page).
 
 To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
 `"ready": True` and any extra `sources`.
