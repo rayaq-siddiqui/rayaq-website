@@ -19,8 +19,10 @@ TOPICS = [
             "cli/src/cli_util.rs",
             "cli/src/commands/mod.rs",
             "cli/src/command_error.rs",
+            "lib/src/transaction.rs",
+            "lib/src/working_copy.rs",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "storage",

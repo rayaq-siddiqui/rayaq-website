@@ -1,0 +1,286 @@
+{% set cu = "cli/src/cli_util.rs" %}
+{% set tx = "lib/src/transaction.rs" %}
+<header class="jj-header">
+  <h1>How a command runs</h1>
+  <p class="tagline">
+    Every jj command goes through the same machinery: load config, parse arguments, dispatch to a
+    <code>cmd_*</code> function, load the repo at the current operation, snapshot the working copy,
+    make changes in a transaction, then write and publish one new operation and update the files on
+    disk. This page covers that shared lifecycle, so the command pages only need to cover what's
+    specific to each command.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: a command never edits the repo in place. It loads an immutable <code>ReadonlyRepo</code> at
+  the head operation, records the working copy's current state as a commit, makes its changes in a
+  <code>Transaction</code>, and finishes by writing a new view and operation and moving the op heads
+  to it. Undo, concurrency handling and <code>--at-op</code> all build on that.
+</p>
+
+<h2 id="flow">1. The lifecycle at a glance</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 560" role="img" aria-labelledby="cli-flow-title cli-flow-desc">
+    <title id="cli-flow-title">The lifecycle of a jj command</title>
+    <desc id="cli-flow-desc">
+      main calls CliRunner::run, which loads config, expands aliases, parses arguments and dispatches
+      through run_command to the command's cmd function. The command calls workspace_helper, which loads
+      the workspace, resolves the operation to load, loads the repo and snapshots the working copy,
+      possibly recording a "snapshot working copy" operation. The command then calls start_transaction,
+      edits the MutableRepo, and calls finish, which rebases mutable descendants, exports to Git if
+      colocated, writes the view, operation and index, publishes by updating op heads, and updates the
+      working copy on disk.
+    </desc>
+    <defs>
+      <marker id="cli-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <a href="{{ src(cu, 4760, 4772) }}">
+      <rect x="20" y="20" width="220" height="50" rx="8" class="d-box"></rect>
+      <text x="130" y="41" text-anchor="middle" font-size="13">CliRunner::run</text>
+      <text x="130" y="58" text-anchor="middle" font-size="10" class="d-muted">config, aliases, clap parse</text>
+    </a>
+    <a href="{{ src('cli/src/commands/mod.rs', 175, 233) }}">
+      <rect x="20" y="100" width="220" height="50" rx="8" class="d-box"></rect>
+      <text x="130" y="121" text-anchor="middle" font-size="13">run_command</text>
+      <text x="130" y="138" text-anchor="middle" font-size="10" class="d-muted">match → cmd_&lt;name&gt;(ui, helper, args)</text>
+    </a>
+    <a href="{{ src(cu, 473, 517) }}">
+      <rect x="20" y="180" width="220" height="50" rx="8" class="d-box"></rect>
+      <text x="130" y="201" text-anchor="middle" font-size="13">workspace_helper</text>
+      <text x="130" y="218" text-anchor="middle" font-size="10" class="d-muted">load workspace + repo at op head</text>
+    </a>
+    <a href="{{ src(cu, 1326, 1354) }}">
+      <rect x="20" y="260" width="220" height="50" rx="8" class="d-box"></rect>
+      <text x="130" y="281" text-anchor="middle" font-size="13">snapshot</text>
+      <text x="130" y="298" text-anchor="middle" font-size="10" class="d-muted">files on disk → working-copy commit</text>
+    </a>
+    <a href="{{ src(cu, 2333, 2345) }}">
+      <rect x="20" y="340" width="220" height="50" rx="8" class="d-box"></rect>
+      <text x="130" y="361" text-anchor="middle" font-size="13">start_transaction</text>
+      <text x="130" y="378" text-anchor="middle" font-size="10" class="d-muted">command edits the MutableRepo</text>
+    </a>
+    <a href="{{ src(cu, 2849, 2865) }}">
+      <rect x="20" y="420" width="220" height="50" rx="8" class="d-box"></rect>
+      <text x="130" y="441" text-anchor="middle" font-size="13">finish(ui, description)</text>
+      <text x="130" y="458" text-anchor="middle" font-size="10" class="d-muted">rebase descendants, export to Git</text>
+    </a>
+    <a href="{{ src(cu, 2280, 2295) }}">
+      <rect x="20" y="500" width="220" height="44" rx="8" class="d-box"></rect>
+      <text x="130" y="526" text-anchor="middle" font-size="13">update working copy</text>
+    </a>
+    <path d="M130 70 V98" class="d-line" marker-end="url(#cli-arrow)"></path>
+    <path d="M130 150 V178" class="d-line" marker-end="url(#cli-arrow)"></path>
+    <path d="M130 230 V258" class="d-line" marker-end="url(#cli-arrow)"></path>
+    <path d="M130 310 V338" class="d-line" marker-end="url(#cli-arrow)"></path>
+    <path d="M130 390 V418" class="d-line" marker-end="url(#cli-arrow)"></path>
+    <path d="M130 470 V498" class="d-line" marker-end="url(#cli-arrow)"></path>
+
+    <text x="420" y="34" font-size="12" class="d-muted">what reaches the store</text>
+    <a href="{{ src(cu, 798, 830) }}">
+      <rect x="420" y="180" width="320" height="50" rx="8" class="d-box"></rect>
+      <text x="580" y="201" text-anchor="middle" font-size="13">resolve_operation</text>
+      <text x="580" y="218" text-anchor="middle" font-size="10" class="d-muted">--at-op, or op heads (merged if divergent)</text>
+    </a>
+    <a href="{{ src(cu, 2091, 2278) }}">
+      <rect x="420" y="260" width="320" height="50" rx="8" class="d-box"></rect>
+      <text x="580" y="281" text-anchor="middle" font-size="13">"snapshot working copy" operation</text>
+      <text x="580" y="298" text-anchor="middle" font-size="10" class="d-muted">only if the files on disk changed</text>
+    </a>
+    <a href="{{ src(tx, 135, 173) }}">
+      <rect x="420" y="400" width="320" height="50" rx="8" class="d-box"></rect>
+      <text x="580" y="421" text-anchor="middle" font-size="13">Transaction::write</text>
+      <text x="580" y="438" text-anchor="middle" font-size="10" class="d-muted">write_view · write_operation · write_index</text>
+    </a>
+    <a href="{{ src(tx, 231, 237) }}">
+      <rect x="420" y="470" width="320" height="50" rx="8" class="d-box"></rect>
+      <text x="580" y="491" text-anchor="middle" font-size="13">UnpublishedOperation::publish</text>
+      <text x="580" y="508" text-anchor="middle" font-size="10" class="d-muted">lock op heads · update_op_heads</text>
+    </a>
+    <path d="M240 205 H418" class="d-line" marker-end="url(#cli-arrow)"></path>
+    <path d="M240 285 H418" class="d-line" marker-end="url(#cli-arrow)"></path>
+    <path d="M240 445 C 330 445, 330 425, 418 425" class="d-line" marker-end="url(#cli-arrow)"></path>
+    <path d="M580 450 V468" class="d-line" marker-end="url(#cli-arrow)"></path>
+  </svg>
+</div>
+
+<h2 id="startup">2. Startup, config and dispatch</h2>
+<p>
+  <a href="{{ src('cli/src/main.rs', 28, 30) }}"><code>main</code></a> is one line:
+  <code>CliRunner::init().version(…).run()</code>. <a href="{{ src(cu, 4444, 4462) }}"><code>CliRunner::init</code></a>
+  assembles everything a custom jj binary can override: the clap app, default config layers,
+  config migrations, store factories (backends), working-copy factories, the workspace-loader
+  factory, revset and template extensions, and the dispatch function, which defaults to
+  <code>commands::run_command</code>.
+</p>
+<p><a href="{{ src(cu, 4605, 4756) }}"><code>run_internal</code></a> then:</p>
+<ol>
+  <li>Canonicalizes the current directory and finds the nearest workspace, if any, so that repo and workspace config can be read before parsing arguments.</li>
+  <li>Loads config layers in order: system, user, repo, then workspace. Then it resolves and migrates the config, because aliases and the default command depend on config.</li>
+  <li>Expands aliases, parses the "early" arguments (<code>--config</code>, <code>--config-file</code>, <code>--color</code>, …) and adds any config they supply, then runs the full clap parse.</li>
+  <li>If <code>-R/--repository</code> was given, it reloads repo and workspace config from that path instead.</li>
+  <li>Builds <code>UserSettings</code> and a <code>CommandHelper</code> wrapping everything above, then calls the dispatch function, wrapped in any dispatch hooks.</li>
+</ol>
+<p>
+  <a href="{{ src('cli/src/commands/mod.rs', 175, 233) }}"><code>run_command</code></a> is one big
+  <code>match</code> on the parsed <code>Command</code> enum, calling
+  <code>&lt;module&gt;::cmd_&lt;name&gt;(ui, command_helper, args)</code>. Commands with subcommands, such as
+  <code>git</code>, <code>bookmark</code> and <code>operation</code>, dispatch again inside their module.
+  <code>git</code> and <code>gerrit</code> exist only with the <code>git</code> feature, and <code>bench</code> only with <code>bench</code>.
+</p>
+
+<h2 id="loading">3. Loading the repo</h2>
+<p>
+  Almost every command starts with <a href="{{ src(cu, 460, 464) }}"><code>command.workspace_helper(ui)</code></a>,
+  which calls <a href="{{ src(cu, 473, 517) }}"><code>workspace_helper_with_stats</code></a>:
+</p>
+<ol>
+  <li><code>load_workspace</code> finds <code>.jj/</code> and constructs the <code>Workspace</code> with the configured store and working-copy factories.</li>
+  <li>
+    If the working copy is writable, it takes the <strong>Git import/export lock</strong> first, so the
+    repo it loads matches the op head that Git refs will be synced against. Writable means no
+    <code>--at-op</code> (or <code>--at-op=@</code>) and no <code>--ignore-working-copy</code>
+    (<a href="{{ src(cu, 779, 791) }}">source</a>).
+  </li>
+  <li>
+    <a href="{{ src(cu, 798, 830) }}"><code>resolve_operation</code></a> picks the operation to load.
+    With <code>--at-op</code> it resolves that operation. Otherwise it reads the op heads, and if
+    there's more than one (concurrent commands), it prints <code>Concurrent modification detected,
+    resolving automatically.</code> and merges them into a new operation described
+    <code>reconcile divergent operations</code>.
+  </li>
+  <li><code>repo_loader().load_at(&amp;op)</code> builds the <code>ReadonlyRepo</code>: that operation, its view, and its index (<a href="{{ src(cu, 531, 565) }}">source</a>).</li>
+  <li>If the working copy may be snapshotted, it snapshots it (§4) and reports any untracked files.</li>
+</ol>
+<p>
+  Read-only commands that must not touch the working copy use
+  <a href="{{ src(cu, 522, 529) }}"><code>workspace_helper_no_snapshot</code></a> instead.
+</p>
+
+<h2 id="snapshot">4. Snapshotting the working copy</h2>
+<p>
+  In jj, the files on disk <em>are</em> a commit, <code>@</code>. Before a command runs,
+  <a href="{{ src(cu, 1326, 1354) }}"><code>snapshot_impl</code></a> records them:
+</p>
+<ol>
+  <li>In a repo colocated with Git, it first imports Git's <code>HEAD</code>, in case <code>git</code> moved it.</li>
+  <li>
+    <a href="{{ src(cu, 2091, 2278) }}"><code>snapshot_working_copy</code></a> locks the working copy
+    and checks it isn't stale (below). It then asks the working copy for a new tree. The local working copy
+    skips re-reading any file whose type, mtime and size still match its stored <code>FileState</code>
+    (<a href="{{ src('lib/src/local_working_copy.rs', 308, 313) }}"><code>FileState::is_clean</code></a>).
+  </li>
+  <li>
+    If the tree changed, it opens a transaction marked <code>is_snapshot</code> and rewrites the
+    working-copy commit with the new tree. If <code>@</code> has become immutable, it instead creates a
+    new commit on top and warns: <code>The working-copy commit is immutable; a new commit has been
+    created on top of it.</code> It then updates <code>wc_commit_ids</code>, rebases descendants, and
+    commits the transaction as an operation described <code>snapshot working copy</code>.
+  </li>
+  <li>When colocated, it imports Git refs last, which may itself rebase the working-copy commit.</li>
+</ol>
+
+<h3 id="stale">Stale working copies</h3>
+<p>
+  The working copy records the operation it was last updated at (<code>Checkout.operation_id</code>).
+  <a href="{{ src(cu, 3011, 3079) }}"><code>handle_stale_working_copy</code></a> compares it with the
+  loaded repo, using <a href="{{ src('lib/src/working_copy.rs', 345, 400) }}"><code>WorkingCopyFreshness::check_stale</code></a>:
+</p>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Freshness</th><th>Meaning</th><th>What happens</th></tr></thead>
+  <tbody>
+    <tr><td><code>Fresh</code></td><td>Same operation as the repo.</td><td>Continue.</td></tr>
+    <tr><td><code>Updated(op)</code></td><td>Another process updated the working copy after the repo was loaded.</td><td>Reload the repo at that operation and continue.</td></tr>
+    <tr><td><code>WorkingCopyStale</code></td><td>The working copy is behind the repo.</td><td>Error: <code>The working copy is stale (not updated since operation …)</code>, with a hint to run <code>jj workspace update-stale</code>. If <code>snapshot.auto-update-stale</code> is set, jj recovers automatically instead.</td></tr>
+    <tr><td><code>SiblingOperation</code></td><td>The repo and working copy are on sibling operations.</td><td>Internal error with a hint to run <code>jj op integrate &lt;op&gt;</code>.</td></tr>
+    <tr><td>operation missing</td><td>The working copy's operation can't be read.</td><td>Error: <code>Could not read working copy's operation.</code></td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="transaction">5. Making changes in a transaction</h2>
+<p>
+  A mutating command calls <a href="{{ src(cu, 2333, 2345) }}"><code>start_transaction</code></a>.
+  It wraps jj-lib's <code>Transaction</code> (a <code>MutableRepo</code> over the loaded
+  <code>ReadonlyRepo</code>) and tags it via <a href="{{ src(cu, 2942, 2953) }}"><code>start_repo_transaction</code></a>:
+  the workspace name, and an <code>args</code> attribute holding the full command line,
+  shell-quoted (<a href="{{ src(cu, 2955, 2984) }}">source</a>). That's how <code>jj op log</code> can show
+  exactly which command made each operation. The command then works through
+  <code>tx.repo_mut()</code>: it writes commits, rewrites them, and moves bookmarks or the working-copy
+  commit.
+</p>
+
+<h2 id="finish">6. Finishing: rebase, export, write, publish</h2>
+<p><a href="{{ src(cu, 2849, 2865) }}"><code>WorkspaceCommandTransaction::finish(ui, description)</code></a>:</p>
+<ol>
+  <li>If nothing changed, it prints <code>Nothing changed.</code> and records no operation at all.</li>
+  <li>
+    <a href="{{ src(cu, 2986, 3004) }}"><code>rebase_mutable_descendants</code></a> rebases every
+    descendant of a rewritten commit, skipping commits that were already immutable, and reports
+    <code>Rebased N descendant commits.</code>
+  </li>
+  <li>
+    It takes the Git import/export lock, then <a href="{{ src(cu, 2347, 2472) }}"><code>finish_transaction</code></a>
+    runs. If the new <code>@</code> is immutable, it creates a fresh commit on top. When colocated, it
+    resets Git's <code>HEAD</code> and index and exports jj's refs to Git
+    (<code>jj_lib::git::export_refs</code>).
+  </li>
+  <li>
+    <a href="{{ src(cu, 428, 439) }}"><code>maybe_commit_transaction</code></a> calls
+    <a href="{{ src(tx, 135, 173) }}"><code>Transaction::write</code></a>, which writes the
+    <strong>view</strong>, then an <strong>operation</strong> pointing at it (with the parent operation,
+    metadata, and the <code>commit_predecessors</code> map of what was rewritten from what), then the
+    <strong>index</strong> for that operation. Nothing is visible yet.
+  </li>
+  <li>
+    <a href="{{ src(tx, 231, 237) }}"><code>publish</code></a> takes the op-heads lock and replaces the
+    parent op heads with the new operation. From this moment, other jj processes see the change. With
+    <code>--no-integrate-operation</code>, this step is skipped and the operation ID is printed instead
+    (<a href="{{ src(tx, 239, 241) }}"><code>leave_unpublished</code></a>).
+  </li>
+  <li>
+    The working copy on disk is updated to the new <code>@</code>, which prints <code>Working copy (@) now
+    at: …</code> and warns about conflicts. Finally, repo changes are reported, along with a warning if
+    <code>user.name</code> or <code>user.email</code> isn't configured.
+  </li>
+</ol>
+<p class="jj-note">
+  Because the operation is published before the working copy is updated, a crash in between
+  leaves the working copy merely <em>stale</em>, never lost. The next command detects it (§4), and
+  <code>jj workspace update-stale</code> repairs it.
+</p>
+
+<h2 id="global-flags">7. Global flags that change the lifecycle</h2>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Flag</th><th>Effect on the lifecycle</th></tr></thead>
+  <tbody>
+    <tr><td><code>-R</code>, <code>--repository &lt;PATH&gt;</code></td><td>Load this workspace instead of searching up from the current directory. Its repo and workspace config are loaded too.</td></tr>
+    <tr><td><code>--ignore-working-copy</code></td><td>Skip the snapshot at the start, and don't update the working copy at the end.</td></tr>
+    <tr><td><code>--at-operation</code>, <code>--at-op &lt;OP&gt;</code></td><td>Load the repo at that operation instead of the op heads. This implies <code>--ignore-working-copy</code> unless the value is <code>@</code>. Mutating commands still work, as if they'd run concurrently from that point.</td></tr>
+    <tr><td><code>--no-integrate-operation</code></td><td>Write the operation but don't publish it. Print its ID instead, and don't update the working copy. Side effects outside the repo, such as a <code>git push</code>, still happen.</td></tr>
+    <tr><td><code>--ignore-immutable</code></td><td>Disable the immutability check on rewrites, except for the root commit.</td></tr>
+    <tr><td><code>--debug</code></td><td>Turn on debug logging.</td></tr>
+    <tr><td><code>--color</code>, <code>--quiet</code>, <code>--no-pager</code>, <code>--config</code>, <code>--config-file</code></td><td>"Early" arguments, parsed before the rest because they affect config and output.</td></tr>
+  </tbody>
+</table></div>
+<p class="jj-source"><a href="{{ src(cu, 3744, 3864) }}"><code>GlobalArgs</code> and <code>EarlyArgs</code></a></p>
+
+<h2 id="errors">8. Errors and exit codes</h2>
+<p>
+  Commands return <code>Result&lt;(), CommandError&gt;</code>. A <code>CommandError</code> has a kind, the
+  error, and optional hints. <a href="{{ src('cli/src/command_error.rs', 1011, 1052) }}"><code>handle_command_result</code></a>
+  (<a href="{{ src('cli/src/command_error.rs', 1107, 1133) }}">clap errors</a>)
+  maps the kind to an exit code:
+</p>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Kind</th><th>Printed as</th><th>Exit code</th></tr></thead>
+  <tbody>
+    <tr><td><em>success</em></td><td></td><td>0</td></tr>
+    <tr><td><code>User</code></td><td><code>Error: …</code></td><td>1</td></tr>
+    <tr><td><code>Config</code></td><td><code>Config error: …</code> plus a pointer to the config docs</td><td>1</td></tr>
+    <tr><td><code>Cli</code></td><td>clap's rendered message, or <code>Error: …</code> for other CLI errors. <code>--help</code> and <code>--version</code> also go through this path and print to stdout.</td><td>2 (0 for <code>--help</code>/<code>--version</code>)</td></tr>
+    <tr><td><code>BrokenPipe</code></td><td>nothing; the output was closed (e.g. piped to <code>head</code>)</td><td>3</td></tr>
+    <tr><td><code>Internal</code></td><td><code>Internal error: …</code></td><td>255</td></tr>
+  </tbody>
+</table></div>
