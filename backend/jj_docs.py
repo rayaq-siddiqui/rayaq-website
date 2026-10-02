@@ -130,7 +130,7 @@ TOPICS = [
         "kind": "topic",
         "summary": "ReadonlyRepo, MutableRepo and Transaction, and how rewrites propagate to descendants.",
         "sources": ["lib/src/repo.rs", "lib/src/transaction.rs", "lib/src/rewrite.rs"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "working-copy",
