@@ -26,6 +26,7 @@ def test_every_page_has_a_unique_slug_summary_and_sources():
     assert len(slugs) == len(set(slugs))
     for page in jj_docs.PAGES:
         assert re.fullmatch(r"[a-z][a-z-]*", page["slug"])
+        assert page["kind"] in ("topic", "command")
         assert page["title"].strip()
         assert page["summary"].strip()
         assert page["sources"]
@@ -107,7 +108,10 @@ def test_index_lists_every_page_and_links_ready_ones():
     body = client.get("/jj").get_data(as_text=True)
 
     for page in jj_docs.PAGES:
-        assert page["title"] in body
+        if page["kind"] == "topic":
+            assert page["title"] in body
+        else:
+            assert f"jj {page['command']}" in body
     for page in jj_docs.ready_pages():
         assert f'href="/jj/{page["slug"]}"' in body
 
@@ -163,3 +167,35 @@ def test_every_internal_jj_link_resolves():
         body = client.get(url).get_data(as_text=True)
         for link in set(re.findall(r'href="(/jj[^"#?]*)', body)):
             assert client.get(link).status_code == 200, (url, link)
+
+
+def test_every_command_has_a_registry_page():
+    slugs = {page["slug"] for page in jj_docs.PAGES if page["kind"] == "command"}
+
+    for entry in jj_docs.COMMANDS:
+        assert jj_docs.command_slug(entry["command"]) in slugs, entry["command"]
+        assert entry["category"] in jj_docs.COMMAND_CATEGORIES
+        assert entry["tier"] in ("A", "B", "C")
+        assert entry["summary"].strip()
+
+
+def test_topic_slugs_never_collide_with_command_slugs():
+    topics = {page["slug"] for page in jj_docs.PAGES if page["kind"] == "topic"}
+    commands = {page["slug"] for page in jj_docs.PAGES if page["kind"] == "command"}
+
+    assert not topics & commands
+
+
+def test_command_slug_uses_dashes():
+    assert jj_docs.command_slug("operation log") == "operation-log"
+    assert jj_docs.command_slug("workspace update-stale") == "workspace-update-stale"
+    assert jj_docs.command_slug("simplify_parents") == "simplify-parents"
+
+
+def test_index_groups_commands_by_category():
+    client = app_module.app.test_client()
+
+    body = client.get("/jj").get_data(as_text=True)
+
+    for number, category in enumerate(jj_docs.COMMAND_CATEGORIES, start=1):
+        assert f'<h3 id="commands-{number}">{category}</h3>' in body

@@ -146,6 +146,10 @@ Each call is one command over SSH — deliberately kept to single, auditable com
     hand-authored inline SVG.
   - Everything describes exactly one upstream commit, `jj_docs.UPSTREAM`. Every source link
     goes through `jj_docs.source_url` so it is pinned to that commit; never link `blob/main`.
+  - The registry is `TOPICS` (architecture pages) plus one page per entry in `COMMANDS`,
+    which is generated from upstream's clap definitions (names, categories, tiers, and each
+    command's own help summary). Command pages live at `/jj/<command>` with spaces turned
+    into dashes (`/jj/git-fetch`); `COMMAND_PAGE_OVERRIDES` marks them ready.
   - Page templates are fragments rendered into `jj/base.html`; the on-page table of
     contents is built from their `<h2 id>`/`<h3 id>` headings. A page is routable only
     once its registry entry has `"ready": True`.
