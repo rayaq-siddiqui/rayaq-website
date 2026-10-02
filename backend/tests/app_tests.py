@@ -239,3 +239,20 @@ def test_flights_pages_are_gone():
 
     assert client.get("/flights").status_code == 404
     assert client.get("/api/flights/health").status_code == 404
+
+
+def test_jj_returns_200():
+    client = app_module.app.test_client()
+
+    response = client.get("/jj")
+
+    assert response.status_code == 200
+    assert "jj architecture" in response.get_data(as_text=True)
+
+
+def test_home_links_to_jj_page():
+    client = app_module.app.test_client()
+
+    body = client.get("/").get_data(as_text=True)
+
+    assert 'href="/jj"' in body

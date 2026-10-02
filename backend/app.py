@@ -1,7 +1,8 @@
 from datetime import datetime
 
-from flask import Flask, render_template
+from flask import Flask, abort, render_template
 
+import jj_docs
 import resume_data
 import static_assets
 from assembly import get_showcase
@@ -56,6 +57,15 @@ def resume():
 @app.route("/assembly-agents")
 def assembly_agents():
     return render_template("assembly.html", showcase=get_showcase())
+
+
+@app.route("/jj", defaults={"slug": None})
+@app.route("/jj/<slug>")
+def jj(slug):
+    html = jj_docs.render(slug, render_template)
+    if html is None:
+        abort(404)
+    return html
 
 
 @app.route("/health")

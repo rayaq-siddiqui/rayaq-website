@@ -20,6 +20,8 @@ backend/            Flask app (Python) — all server-side logic
                      hand-edit (see "Assembly" under Feature-specific notes)
   sync_showcase.py  Copies that digest out of an assembly-agents checkout
   static_assets.py  Appends ?v=<mtime> to static URLs so they can be cached for a year
+  jj_docs.py        The /jj section: upstream pin, page registry, pinned source-link
+                     helper, protobuf message list, and page rendering (see "jj" below)
   requirements.txt       Runtime deps
   requirements-dev.txt   Runtime + pytest, for local dev / CI
   pytest.ini         Configures pytest to discover *_tests.py (not the pytest default
@@ -32,11 +34,18 @@ backend/            Flask app (Python) — all server-side logic
     assembly_tests.py     Tests for assembly.py against a fabricated digest, plus one
                      test that the committed showcase.json actually renders
     sync_showcase_tests.py Tests the sync refuses anything the page cannot render
+    jj_docs_tests.py Tests the jj registry, pin, pinned links, and every /jj page
+
+specs/
+  jj.md               The rayaq.ca/jj product & technical spec — the contract the
+                      section is held to. Don't edit without the owner's say-so.
+  jj-progress.md      Running status of that build: queue, pin, deviations, gaps.
 
 frontend/
   templates/         Jinja2 templates. One per route: home.html, weather.html,
-                     resume.html, assembly.html
-  static/            style.css (shared/global), resume.css, assembly.css,
+                     resume.html, assembly.html; jj/ holds the /jj layout
+                     (base.html), index.html, and one fragment per /jj/<slug> page
+  static/            style.css (shared/global), resume.css, assembly.css, jj.css,
                      script.js (weather chart only)
 
 deploy/
@@ -60,6 +69,8 @@ vmrun.sh            Convenience wrapper: `./vmrun.sh '<command>'` runs a single 
 | `/weather` | Live weather dashboard for 4 fixed cities, click a card for an hourly chart |
 | `/resume` | Resume page, **not currently linked from `/`** (disabled "Coming soon" card on homepage — ask before enabling, it's an intentional choice by the site owner) |
 | `/assembly-agents` | Project page for Assembly, rendered from `backend/showcase.json` |
+| `/jj` | jj architecture reference: overview, big diagram, index of deep-dive pages |
+| `/jj/<slug>` | One deep-dive page per topic in `jj_docs.PAGES` that is marked ready; 404 otherwise |
 | `/health` | Returns `{"status": "ok"}`, 200. Used to verify a deploy actually succeeded. |
 
 ## Local development
@@ -128,6 +139,20 @@ Each call is one command over SSH — deliberately kept to single, auditable com
   - Sync manually with `./venv/bin/python3 sync_showcase.py <path-to-assembly-agents-checkout>` from `backend/`; it prints `updated` or `unchanged`, and refuses to write anything `assembly.build_view` can't render, so upstream schema drift fails the sync instead of the live page.
   - A Routine ("Sync Assembly showcase to rayaq.ca") runs that sync every 6 hours and pushes the result straight to `main`, which deploys via the normal CI/CD path. If the digest gains fields the page should show, the website is what adapts — keep the copy verbatim.
   - Upstream also has `.github/workflows/publish-showcase.yml`, which does the same copy on every push to its `main`. It has never actually published: it skips unless a `SHOWCASE_PUBLISH_TOKEN` secret (a fine-grained PAT scoped to this repo, Contents: read+write) exists on assembly-agents. Creating that secret makes syncing instant and the Routine redundant.
+- **jj** (`jj_docs.py` + `templates/jj/` + `jj.css`): a static, source-linked reference to
+  Jujutsu's internals at `/jj`. Read `specs/jj.md` before changing anything here, and
+  `specs/jj-progress.md` for where the build stands.
+  - Pages are static: no runtime network calls, no JS libraries. Diagrams are
+    hand-authored inline SVG.
+  - Everything describes exactly one upstream commit, `jj_docs.UPSTREAM`. Every source link
+    goes through `jj_docs.source_url` so it is pinned to that commit; never link `blob/main`.
+  - Page templates are fragments rendered into `jj/base.html`; the on-page table of
+    contents is built from their `<h2 id>`/`<h3 id>` headings. A page is routable only
+    once its registry entry has `"ready": True`.
+  - A Routine ("rayaq.ca/jj — architecture reference agent") runs daily: it builds the
+    next queued page, and once the build is done, diffs upstream against the pin and
+    updates affected pages. It pushes straight to `main` and keeps
+    `specs/jj-progress.md` current, so keep that file accurate if you edit by hand.
 - Phone number is intentionally omitted from the public resume page (privacy choice, since the repo is public). Don't add it back without checking with the site owner first.
 
 ## Conventions
