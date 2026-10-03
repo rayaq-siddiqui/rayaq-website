@@ -956,6 +956,16 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "edit": {
+        "title": "How jj edit works",
+        "sources": [
+            "cli/src/commands/edit.rs",
+            "cli/src/cli_util.rs",
+            "cli/src/revset_util.rs",
+            "lib/src/repo.rs",
+        ],
+        "ready": True,
+    },
     "new": {
         "title": "How jj new works",
         "sources": [
