@@ -55,6 +55,7 @@ deploy/
 
 .github/workflows/ci-cd.yml   GitHub Actions: test job (every push/PR) + deploy job
                                (push to main only, after tests pass)
+.github/CODEOWNERS            Makes the owner the required reviewer for every path
 
 vmrun.sh            Convenience wrapper: `./vmrun.sh '<command>'` runs a single command
                     on the production VM over SSH. Use this instead of writing raw
