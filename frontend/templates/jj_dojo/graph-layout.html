@@ -486,4 +486,261 @@
   If both are empty, it draws nothing. Otherwise it takes the lower row's top-tile lines, drops the
   horizontals, and turns every curve into a straight vertical for the stretched part, leaving the
   last line's bottom empty so the original curves still join up below. <strong>O(tiles)</strong>.
+  The row component only ever renders two lines
+  (<a href="{{ src(comps ~ 'commit_row.ts', 162, 171) }}">source</a>), so
+  <code>intermediateLine</code> is not drawn on its own at this pin. Its tiles reach the screen as
+  the top and glyph tiles of <code>lastLine</code>.
+</p>
+
+<h2 id="lanes">3. Lanes and edges</h2>
+
+<p>
+  jj-dojo has no persistent "lanes" in the sense of a branch keeping its column all the way up.
+  A column is just whatever <code>setXRecursively</code> found free, so it belongs to a commit's
+  stub and to whichever edges were reserved through it. Two facts follow from the passes above:
+</p>
+
+<ul>
+  <li>
+    <strong>A commit's column is never left of its leftmost child's edge.</strong> Edges leave a
+    parent at its own column or further right, because <code>lineX</code> starts at
+    <code>x</code> and only grows. With the leftmost-child rule, this keeps a branch's base under
+    or to the right of where it forks.
+  </li>
+  <li>
+    <strong>Every edge has exactly one vertical column</strong>, its <code>lineX</code>, plus at most
+    two horizontal runs, one at the parent's row and one just below the child's row.
+  </li>
+</ul>
+
+<p>
+  Those constraints leave six possible edge shapes, and
+  <a href="{{ src(pre, 651, 795) }}"><code>setTileGroupsForLine</code></a> has one branch for each,
+  told apart by comparing <code>parent.x</code>, <code>lineX</code> and <code>child.x</code>.
+  The source comments call an edge going right a <em>merge-out</em> and an edge coming back left a
+  <em>merge-back</em>:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Shape</th><th>Condition</th><th>Drawer calls, from the parent's glyph</th></tr></thead>
+    <tbody>
+      <tr><td>Vertical</td><td><code>parent.x = lineX = child.x</code></td><td><code>up(3k + 2)</code></td></tr>
+      <tr><td>Merge-out, common</td><td><code>parent.x = lineX &lt; child.x</code></td><td><code>up(3k)</code>, <code>upToRight</code>, <code>right(child.x − parent.x − 1)</code>, <code>rightToUp</code></td></tr>
+      <tr><td>Merge-out, rare</td><td><code>parent.x &lt; lineX = child.x</code></td><td><code>upToRight</code>, <code>right(…)</code>, <code>rightToUp</code>, <code>moveUp</code>, <code>up(3k)</code></td></tr>
+      <tr><td>Merge-out, two bends</td><td><code>parent.x &lt; lineX &lt; child.x</code></td><td>step right to <code>lineX</code> at the parent's row, <code>up(3k − 2)</code>, step right to the child just below it</td></tr>
+      <tr><td>Merge-back, simple</td><td><code>parent.x = lineX &gt; child.x</code></td><td><code>up(3k)</code>, <code>upToLeft</code>, <code>left(parent.x − child.x − 1)</code>, <code>leftToUp</code></td></tr>
+      <tr><td>Merge-back, complicated</td><td>anything else (<code>lineX &gt; parent.x</code>, <code>lineX &gt; child.x</code>)</td><td>step right to <code>lineX</code> at the parent's row, <code>up(3k − 2)</code>, step left to the child just below it</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Here <code>k = child.y − parent.y − 1</code>, the number of rows strictly between the two. Merges
+  need no special representation: a merge commit is simply a node with several parents, so it is the
+  child end of several edges, and each is routed independently. Edges into the same child may share
+  horizontal space (<code>toSameChild</code>), which is how several merge-back lines can meet in one
+  run under a merge commit.
+</p>
+
+<p class="jj-note">
+  <strong>No elided ranges.</strong> The layout has no notion of hidden or elided commits, unlike
+  <code>jj log</code>'s <code>~</code> marker. Every commit in the input is drawn, and every
+  <code>childrenHashes</code> entry must name a commit that is also in the input. The closest thing
+  is focus mode, which removes commits <em>before</em> layout and simply drops edges to them, leaving
+  no marker in the graph. There is only a count in the "Disable focus mode" link below it.
+</p>
+
+<h2 id="drawing">4. Drawing</h2>
+
+<h3 id="tile-grid">The tile grid</h3>
+
+<p>
+  Every row is a strip of columns, and every column is a
+  <a href="{{ src(types, 492, 496) }}"><code>TileGroup</code></a> of three stacked tiles: a 5px
+  <em>top</em> tile, a 14px <em>glyph</em> tile and a 5px <em>bottom</em> tile, all 14px wide. That
+  makes a 24px row (<a href="{{ src(comps ~ 'constants.ts', 17, 45) }}"><code>constants.ts</code></a>). A
+  tile is just a list of <a href="{{ src(types, 544, 550) }}"><code>Line</code></a>s (a
+  <a href="{{ src(types, 555, 575) }}"><code>LineType</code></a> plus the parent and child it
+  connects) and an optional insert action. Nothing in the grid knows about whole edges. An edge is
+  scattered across every tile it passes through.
+</p>
+
+<h3 id="tile-drawer">TileDrawer</h3>
+
+<p>
+  <a href="{{ src(drawer, 62, 140) }}"><code>TileDrawer</code></a> is a turtle over that grid. It
+  starts on the parent's glyph tile and keeps a cursor <code>(x, y, tile)</code>, where
+  <code>tile</code> is <code>BOTTOM = 0</code>, <code>GLYPH = 1</code> or <code>TOP = 2</code>
+  (<a href="{{ src(drawer, 53, 57) }}">source</a>).
+  <code>moveUp</code> advances <code>tile</code> and, on wrapping past <code>TOP</code>, moves to
+  the next row's bottom tile. Every drawing method moves first and then draws one
+  <code>Line</code> into the tile under the cursor:
+</p>
+
+<ul>
+  <li><code>up(n)</code>: n × (move up, draw <code>VERTICAL</code>).</li>
+  <li><code>right(n)</code> / <code>left(n)</code>: n × (move one column, draw <code>HORIZONTAL</code>).</li>
+  <li><code>upToRight</code> / <code>upToLeft</code>: move up, draw the curve that turns from vertical to horizontal.</li>
+  <li><code>rightToUp</code> / <code>leftToUp</code>: move one column, draw the curve that turns from horizontal to vertical.</li>
+</ul>
+
+<p>
+  Writing uses <a href="{{ src(drawer, 36, 41) }}"><code>getOrInsert</code></a>, which grows the target
+  row's <code>tileGroups</code> with empty groups as needed. That is why rows have different widths, and
+  why the later padding pass only has to guarantee the glyph's own column.
+</p>
+
+<h3 id="line-geometry">Where a line actually appears</h3>
+
+<p>
+  <a href="{{ src(comps ~ 'lines.ts') }}"><code>lines.ts</code></a> turns each <code>Line</code> into
+  its own small SVG the size of its tile, with <code>overflow: visible</code>. The shapes are not centred in
+  the tile the way the names suggest:
+</p>
+
+<ul>
+  <li><code>VERTICAL</code> runs down the tile's centre, and <code>HORIZONTAL</code> along its <em>top edge</em> (<a href="{{ src(comps ~ 'lines.ts', 144, 160) }}">source</a>).</li>
+  <li><code>UP_TO_RIGHT</code> and <code>UP_TO_LEFT</code> are quadratic Béziers between the centre of one edge and a top corner (<a href="{{ src(comps ~ 'lines.ts', 169, 196) }}">source</a>).</li>
+  <li><code>RIGHT_TO_UP</code> and <code>LEFT_TO_UP</code> are drawn inside a <code>translate(0, −tileHeight)</code>, so they paint into the tile <em>above</em> the one that stores them (<a href="{{ src(comps ~ 'lines.ts', 178, 207) }}">source</a>).</li>
+  <li>Every path is stretched by <code>VSCODE_OFFSET</code> (0.5px) at its ends, to hide a sub-pixel gap between tiles that only shows up inside VS Code (<a href="{{ src(comps ~ 'lines.ts', 23, 31) }}">source</a>).</li>
+</ul>
+
+<p>
+  So a horizontal run "at row <code>y</code>" is stored in row <code>y</code>'s top tiles but painted
+  on the border with row <code>y + 1</code>, and the curve that finishes it is painted in row
+  <code>y + 1</code>'s bottom tile. That is the reason for the extra lines in insert actions, the
+  occupied-columns exception and the two-line special case above. All three put back what the
+  storage location hides.
+</p>
+
+<h3 id="components">The rendering components</h3>
+
+<ul>
+  <li>
+    <a href="{{ src(comps ~ 'commit_row_left_side.ts', 46, 63) }}"><code>jj-commit-row-left-side</code></a>
+    renders one <code>jj-tile-group</code> per column. Its width is
+    <code>14 × occupiedColumns + 4</code> px (<a href="{{ src(comps ~ 'commit_row_left_side.ts', 65, 67) }}">source</a>).
+    <a href="{{ src(comps ~ 'commit_row.ts', 162, 171) }}"><code>jj-commit-row</code></a> picks
+    <code>tileGroups</code> or one of the <code>multiLineTileGroups</code> arrays according to the
+    <a href="{{ src(types, 577, 581) }}"><code>CommitRowType</code></a>.
+  </li>
+  <li>
+    <a href="{{ src(comps ~ 'tile_group.ts', 27, 79) }}"><code>jj-tile-group</code></a> stacks a top
+    <code>jj-merge-tile</code>, a <code>jj-glyph-tile</code> and a bottom <code>jj-merge-tile</code>,
+    and decides <code>shouldDrawGlyph</code>: true only in the node's own column, and never on the
+    second line in two-line mode.
+  </li>
+  <li>
+    <a href="{{ src(comps ~ 'merge_tile.ts', 37, 90) }}"><code>jj-merge-tile</code></a> is a 14×5 host
+    that renders its tile's lines and publishes the tile's insert action as a drag-and-drop target.
+  </li>
+  <li>
+    <a href="{{ src(comps ~ 'glyph_tile.ts') }}"><code>jj-glyph-tile</code></a> is 14×14. It renders the
+    lines, then the glyph, chosen in this order: <code>@</code> for the working copy, a diamond for
+    immutable, a cross for conflicted, and otherwise a filled circle of radius 5. The colour is the
+    button colour while dragged or a drop destination, the error colour if conflicted, the foreground
+    colour for working-copy ancestors, and grey otherwise
+    (<a href="{{ src(comps ~ 'glyph_tile.ts', 104, 138) }}">source</a>). On the node's own column the
+    tile is the drag source for the commit itself. In every other column it publishes its insert
+    action instead. It also draws the rebase hint and the insert ghost node and hint text when they
+    apply.
+  </li>
+  <li>
+    <a href="{{ src(comps ~ 'lines.ts', 42, 84) }}"><code>getLineColor</code></a> layers lines with
+    <code>z-index</code>: lines matching the hovered insert action during a drag come first (priority 2,
+    2.5px, button colour), then lines into working-copy ancestors (priority 1), then everything else in
+    <code>--inactiveLineColor</code> (priority 0).
+  </li>
+</ul>
+
+<h2 id="ranges">5. Ranges</h2>
+
+<p>
+  <a href="{{ src(ranges) }}"><code>range_manager.ts</code></a> is the collision detector behind
+  column placement. A <a href="{{ src(ranges, 20, 48) }}"><code>Range</code></a> is an interval
+  <code>start .. end</code> along one row or column, plus the <code>parentHash</code> and
+  <code>childHash</code> of the edge it belongs to and a <code>canBeSharedBy(existing, new)</code>
+  predicate. All fields are <code>readonly</code>.
+</p>
+
+<p>
+  A <a href="{{ src(ranges, 59, 113) }}"><code>RangeManager</code></a> holds
+  <code>rangeGroups: Range[][]</code>, one plain list per coordinate. For the vertical manager the
+  index is the column and the intervals are row spans. For the horizontal manager the index is the row
+  and the intervals are column spans. It has three operations:
+</p>
+
+<ul>
+  <li>
+    <code>reserve(coordinate, range)</code>: grow the outer array if needed, and scan the group
+    linearly. If no existing range overlaps the new one, append it and return <code>true</code>.
+    Otherwise return <code>false</code> and change nothing.
+  </li>
+  <li><code>clone()</code>: copy every group array. The ranges themselves are shared, which is safe because they are immutable.</li>
+  <li><code>replace(groups)</code>: adopt a clone's arrays. This is how a successful attempt in <code>setXRecursively</code> commits.</li>
+</ul>
+
+<p>
+  Ranges are never merged, split or removed. A group only ever grows by appending, and the only query
+  is "does this collide?". The overlap rule is
+  <a href="{{ src(ranges, 124, 139) }}"><code>hasOverlapBetweenRanges</code></a>:
+</p>
+
+<ol>
+  <li>If the <em>existing</em> range's <code>canBeSharedBy</code> accepts the new one, there is no overlap. Only the existing range's predicate is consulted.</li>
+  <li>Intervals that only touch (<code>(1, 2)</code> and <code>(2, 3)</code>) don't overlap.</li>
+  <li>Intervals with the same start overlap only if both have positive length. Zero-length ranges, which an edge between adjacent rows produces, therefore never collide.</li>
+</ol>
+
+<p>
+  The two predicates live in <a href="{{ src(pre, 420, 427) }}"><code>CRITERIA</code></a> in
+  <code>preprocess.ts</code>. <code>fromSameParent</code> is used for edge columns (fan-out may share a
+  line). <code>toSameChild</code> is used for a node's own stub and for horizontal runs (fan-in may
+  share a line).
+</p>
+
+<h2 id="focus-mode">6. Focus mode</h2>
+
+<p>
+  <a href="{{ src(focus, 27, 75) }}"><code>getFocusedCommits(commits)</code></a> runs <em>before</em>
+  layout, in <code>JjApp.setState</code>, whenever the state's options carry a
+  <code>disableFocusMode</code> command. The option is named for the link that turns the mode off, so
+  providing that command is what turns the mode on (<a href="{{ src(types, 162, 165) }}">source</a>).
+</p>
+
+<ol>
+  <li>It throws <code>No working copy commit found.</code> unless some commit has <code>active</code> set.</li>
+  <li>It builds a hash map and a child-to-parents map. A dangling child hash throws.</li>
+  <li>
+    <a href="{{ src(focus, 81, 117) }}"><code>getReachableCommits</code></a> walks out from the
+    working copy through <em>both</em> parents and children, using an explicit stack. A commit reached
+    this way is always included, but it is only expanded further if it is <strong>mutable</strong>.
+    Immutable commits are the boundary: the first immutable ancestor appears, and nothing beyond it does.
+  </li>
+  <li>
+    The result keeps the input order, with each commit's <code>childrenHashes</code> filtered down to
+    focused commits, so the layout's "every child must be present" rule still holds.
+  </li>
+</ol>
+
+<p>
+  The number hidden, <code>state.commits.length − commits.length</code>, becomes
+  <code>unfocusedCommits</code>.
+  <a href="{{ src(comps ~ 'focus_mode_text.ts', 42, 60) }}"><code>jj-focus-mode-text</code></a> renders
+  "Disable focus mode to see the other N commits in this workspace" under the graph, and clicking it
+  runs the command.
+</p>
+
+<p>
+  What "focused" means is broader than either doc comment says. The function's comment says the
+  working copy, its ancestors and its descendants, and the option's comment says only ancestors. But
+  because the walk goes up and down through any mutable commit, it also takes in <em>siblings and
+  cousins</em> joined through a mutable ancestor. The one test,
+  <a href="{{ src(focus_tests, 21, 76) }}"><code>returns the working copy commit, its ancestors, and its descendants</code></a>,
+  shows this. In its graph, <code>f</code> is the working copy, and <code>h</code>, a sibling of
+  <code>f</code> on the mutable parent <code>e</code>, is kept. <code>p4base</code> is immutable, so it
+  is kept but not expanded, which drops its other child <code>b</code>, its parent
+  <code>p4base-ancestor</code> and that commit's child <code>a</code>. <code>p4base</code>'s
+  <code>childrenHashes</code> come back as <code>['c', 'd']</code>.
 </p>
