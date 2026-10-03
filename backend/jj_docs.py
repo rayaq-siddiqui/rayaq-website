@@ -956,6 +956,15 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "redo": {
+        "title": "How jj redo works",
+        "sources": [
+            "cli/src/commands/redo.rs",
+            "cli/src/commands/undo.rs",
+            "cli/src/commands/operation/mod.rs",
+        ],
+        "ready": True,
+    },
     "undo": {
         "title": "How jj undo works",
         "sources": [

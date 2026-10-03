@@ -1,0 +1,269 @@
+{% set cmd = "cli/src/commands/redo.rs" %}
+{% set undo = "cli/src/commands/undo.rs" %}
+{% set opm = "cli/src/commands/operation/mod.rs" %}
+{% set t = "cli/tests/test_undo_redo_commands.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj redo</code> works</h1>
+  <p class="tagline">
+    <code>jj redo</code> takes back the most recent <code>jj undo</code>. Like undo, it never deletes
+    anything: it records a new operation whose view is the one the undo replaced. Repeated undo and redo
+    behave like the Undo and Redo commands in a text editor.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj takes the current operation. If that is itself a redo, it takes the operation that redo
+  restored. That operation must be an undo, or jj reports <code>Nothing to redo</code>. As with undo,
+  an operation from another workspace is refused. jj then restores the undo's parent, the state just
+  before the undo. If that parent is itself a redo, it restores what that redo restored instead. The new
+  operation is recorded as <code>redo: restore to operation &lt;id&gt;</code>.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 52, 197) }}"><code>cmd_redo</code></a>. It is the mirror image of
+  <a href="{{ url_for('jj', slug='undo') }}"><code>jj undo</code></a>: same view restoration, same
+  cross-workspace guard, and the same trick of encoding the stack in operation descriptions. The
+  <a href="{{ url_for('jj', slug='operations') }}#undo">operations page</a> compares both with
+  <code>op restore</code> and <code>op revert</code>. The two stacks are tracked separately, and redo
+  reads undo's prefix through <a href="{{ src(undo, 55) }}"><code>UNDO_OP_DESC_PREFIX</code></a>.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>--allow-cross-workspace</code></td><td>bool</td><td>false</td><td>Redo an undo operation even if it was recorded in a different workspace (<a href="{{ src(cmd, 43, 48) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 29, 48) }}"><code>RedoArgs</code> and its help text</a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<p>
+  <code>jj redo</code> reads no settings of its own. <code>templates.op_summary</code> formats the
+  <code>Restored to operation:</code> line (<a href="{{ src(cmd, 184, 189) }}">source</a>), and the
+  working-copy settings govern the snapshot and checkout. Like <code>undo</code>, it always restores
+  both the repo portion and the remote-tracking portion of the view
+  (<a href="{{ src(opm, 86, 90) }}"><code>DEFAULT_REVERT_WHAT</code></a>).
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 470" role="img" aria-labelledby="re-flow-title re-flow-desc">
+    <title id="re-flow-title">jj redo: call flow</title>
+    <desc id="re-flow-desc">
+      cmd_redo loads the workspace through the shared lifecycle, which snapshots the working copy. It
+      takes the current operation as the target; if its description starts with "redo: restore to
+      operation", it loads the operation named there instead. The target must be an undo operation,
+      otherwise "Nothing to redo". A target from another workspace is refused unless
+      --allow-cross-workspace. The target's single parent is the state before the undo; if that parent
+      is itself a redo, it is replaced by the operation it restored. A transaction sets the view from
+      that operation, prints "Restored to operation", and tx.finish records "redo: restore to operation"
+      plus its ID.
+    </desc>
+    <defs>
+      <marker id="re-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot (may record an operation) (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 108, 121) }}"><rect class="d-box" x="20" y="84" width="340" height="66" rx="6"></rect>
+      <text x="32" y="105">target = current operation</text>
+      <text x="32" y="123" class="d-muted" font-size="11">a redo? → target = the op it restored</text>
+      <text x="32" y="140" class="d-muted" font-size="11">(parsed from "redo: restore to operation &lt;hex&gt;")</text></a>
+
+      <a href="{{ src(cmd, 123, 130) }}"><rect class="d-box" x="420" y="84" width="320" height="66" rx="6"></rect>
+      <text x="432" y="105">target not an undo?</text>
+      <text x="432" y="123" class="d-muted" font-size="11">"Nothing to redo"</text>
+      <text x="432" y="140" class="d-muted" font-size="11">(description lacks "undo: restore to …")</text></a>
+
+      <a href="{{ src(cmd, 132, 145) }}"><rect class="d-box" x="420" y="174" width="320" height="66" rx="6"></rect>
+      <text x="432" y="195">undo from another workspace?</text>
+      <text x="432" y="213" class="d-muted" font-size="11">"Refusing to redo operation …"</text>
+      <text x="432" y="230" class="d-muted" font-size="11">unless --allow-cross-workspace</text></a>
+
+      <a href="{{ src(cmd, 147, 175) }}"><rect class="d-box" x="20" y="174" width="340" height="66" rx="6"></rect>
+      <text x="32" y="195">parent = the undo's single parent</text>
+      <text x="32" y="213" class="d-muted" font-size="11">(the state just before the undo)</text>
+      <text x="32" y="230" class="d-muted" font-size="11">a redo? → parent = the op it restored</text></a>
+
+      <a href="{{ src(opm, 92, 117) }}"><rect class="d-box" x="20" y="264" width="720" height="66" rx="6"></rect>
+      <text x="32" y="285">start_transaction; set_view(view_with_desired_portions_restored(parent's view, current view, [Repo, RemoteTracking]))</text>
+      <text x="32" y="304" class="d-muted" font-size="11">same field-by-field restore as jj undo: heads, bookmarks, tags, working copies and remote refs from the parent;</text>
+      <text x="32" y="321" class="d-muted" font-size="11">git_refs and git_heads kept from the current view</text></a>
+
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="354" width="720" height="56" rx="6"></rect>
+      <text x="380" y="376" text-anchor="middle">print "Restored to operation: …"; tx.finish(ui, "redo: restore to operation &lt;id&gt;"):</text>
+      <text x="380" y="396" text-anchor="middle">write the operation, check out the restored @ (CLI page)</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#re-arrow)">
+      <line x1="190" y1="60" x2="190" y2="80"></line>
+      <line x1="360" y1="117" x2="416" y2="117"></line>
+      <line x1="580" y1="150" x2="580" y2="170"></line>
+      <line x1="420" y1="207" x2="364" y2="207"></line>
+      <line x1="190" y1="240" x2="190" y2="260"></line>
+      <line x1="380" y1="330" x2="380" y2="350"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Current operation and its metadata</td><td>read</td><td><code>description</code>, to tell whether it's a redo and which operation it restored, and whether the target is an undo. Also <code>workspace_name</code> and parents.</td><td><a href="{{ url_for('jj', slug='operations') }}#metadata">operations</a></td></tr>
+      <tr><td>Op store</td><td>read</td><td><code>load_operation</code> for operations named in descriptions, and the restored operation's view.</td><td><a href="{{ url_for('jj', slug='operations') }}#stores">operations</a></td></tr>
+      <tr><td><code>View</code> (all but the Git ref mirrors)</td><td>write</td><td>Replaced by the restored operation's heads, local bookmarks and tags, working-copy pointers, and remote views.</td><td><a href="{{ url_for('jj', slug='undo') }}#restoring">undo</a></td></tr>
+      <tr><td>Commits</td><td>none</td><td>Nothing is created or rewritten. The commits the undo hid become visible again.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td>A new operation on top of the current one.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+      <tr><td>Working copy (<code>TreeState</code>)</td><td>read, then maybe write</td><td>Snapshotted at the start, then the restored <code>@</code> is checked out.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, started after the checks (<a href="{{ src(cmd, 177, 183) }}">source</a>).</li>
+  <li><strong>Operation description:</strong> <code>redo: restore to operation &lt;full hex id&gt;</code> (<a href="{{ src(cmd, 50) }}"><code>REDO_OP_DESC_PREFIX</code></a>, <a href="{{ src(cmd, 190, 194) }}">source</a>). Like undo's, this text is how the next redo finds its place.</li>
+  <li><strong>Commits created or rewritten:</strong> none.</li>
+  <li>
+    <strong>Working copy:</strong> as with undo, the workspace is loaded with a snapshot. Unrecorded
+    edits made after an undo are committed as a snapshot operation first, and that becomes the current
+    operation. It isn't an undo, so <code>jj redo</code> then has nothing to redo. Making any new
+    operation after an undo ends the redo chain.
+  </li>
+  <li>
+    <strong><code>jj undo</code> after a redo</strong> treats the redo as an ordinary operation and
+    restores its parent. A following <code>jj redo</code> restores past that redo, which is the
+    "adjacent redo stacks" case in the example below.
+  </li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<p>
+  The redo stack mirrors the undo stack, with two substitutions
+  (<a href="{{ src(cmd, 61, 107) }}">source comment</a>):
+</p>
+
+<ol>
+  <li>
+    <strong>What to redo.</strong> If the current operation is a redo, the next candidate is the
+    operation it restored (<a href="{{ src(cmd, 108, 121) }}">source</a>). Only undo operations can be
+    redone. Anything else, a regular operation or a chain that leads to one, ends with
+    <code>Nothing to redo</code> (<a href="{{ src(cmd, 123, 130) }}">source</a>).
+  </li>
+  <li>
+    <strong>What to restore.</strong> The undo's parent, which must be unique. A second parent would be
+    an internal error, since undo operations always have exactly one. If that parent is itself a redo,
+    jj restores what it restored, so repeated <code>jj undo; jj redo</code> never builds a linked list
+    of redos (<a href="{{ src(cmd, 147, 175) }}">source</a>).
+  </li>
+</ol>
+
+<p>
+  Note that redo checks for the undo prefix, not for an operation recorded by <code>jj undo</code> as
+  such: an operation's identity as an undo is purely its description. <code>jj op revert</code> writes
+  <code>revert operation &lt;id&gt;</code> (<a href="{{ src('cli/src/commands/operation/revert.rs', 51) }}">source</a>), so
+  <code>jj redo</code> right after it reports <code>Nothing to redo</code>.
+</p>
+
+<p>
+  <strong>Invariants:</strong> redo only ever reverses an undo. It never moves past the newest
+  non-undo state. It appends one operation and deletes nothing. Its result is the exact view the undo
+  replaced, apart from the Git ref mirrors, which keep their current values.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Nothing to redo</code></td><td>The current operation, after following redos, isn't an undo. For example after a regular command, or after redoing everything (<a href="{{ src(t, 197, 210) }}">upstream test</a>).</td><td><a href="{{ src(cmd, 123, 130) }}">redo.rs</a></td></tr>
+      <tr><td><code>Refusing to redo operation &lt;id&gt; because it was performed in workspace &lt;name&gt;</code>, hint about <code>--allow-cross-workspace</code> or <code>jj op revert</code></td><td>The undo being redone was recorded in another workspace (<a href="{{ src(t, 147, 194) }}">upstream test</a>).</td><td><a href="{{ src(cmd, 132, 145) }}">redo.rs</a></td></tr>
+      <tr><td>internal error <code>Undo operation should have a single parent</code></td><td>The undo has zero parents or several.</td><td><a href="{{ src(cmd, 147, 152) }}">redo.rs</a></td></tr>
+      <tr><td>internal error <code>Failed to parse ID of target operation in redo-stack</code> (and <code>… target operation's parent …</code>)</td><td>A description has the redo prefix but no valid hex ID.</td><td><a href="{{ src(cmd, 113, 115) }}">redo.rs</a>, <a href="{{ src(cmd, 166, 169) }}">redo.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  As on the <a href="{{ url_for('jj', slug='undo') }}#example">undo page</a>, this is drawn as an
+  operation log, because redo changes views, not commits. It is upstream's
+  <a href="{{ src(t, 213, 253) }}">test_jump_over_old_redo_stack</a>. Operations A–D each write their
+  letter to a file named <code>state</code>, followed by three undos, two redos, an undo, and redos until
+  nothing is left. The test checks the file after every step.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 510" role="img" aria-labelledby="re-ex-title re-ex-desc">
+    <title id="re-ex-title">The operation log after test_jump_over_old_redo_stack</title>
+    <desc id="re-ex-desc">
+      Oldest to newest: add workspace, A, B, C, D, then undo restoring C, undo restoring B, undo
+      restoring A. Redo 1 restores the parent of the last undo, the undo that restored B. Redo 2
+      follows redo 1 to that undo and restores its parent, the undo that restored C. Then an undo
+      treats redo 2 as ordinary and restores redo 1. Redo 3 targets that undo, whose parent is redo 2,
+      so it restores what redo 2 restored. Redo 4 follows redo 3 to the first undo and restores its
+      parent D. A further redo finds D is not an undo and reports Nothing to redo. The file reads C, B,
+      A, B, C, B, C, D.
+    </desc>
+    <defs>
+      <marker id="re-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% macro op(y, label, note="", kind="") -%}
+      <circle cx="60" cy="{{ y }}" r="8" class="{{ 'd-accent' if kind else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"{% if kind == 'redo' %} stroke-dasharray="3 2"{% endif %}></circle>
+      <text x="80" y="{{ y + 4 }}" font-size="12"{% if kind %} class="d-accent"{% endif %}>{{ label }}</text>
+      {% if note %}<text x="310" y="{{ y + 4 }}" font-size="11" class="d-muted">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <line x1="60" y1="486" x2="60" y2="78" class="d-line" stroke-width="1.5"></line>
+    {{ op(486, "add workspace 'default'") }}
+    {{ op(452, "A  snapshot", "state = A") }}
+    {{ op(418, "B  snapshot", "state = B") }}
+    {{ op(384, "C  snapshot", "state = C") }}
+    {{ op(350, "D  snapshot", "state = D") }}
+    {{ op(316, "undo U1: restore to C", "state C", "undo") }}
+    {{ op(282, "undo U2: restore to B", "state B", "undo") }}
+    {{ op(248, "undo U3: restore to A", "state A", "undo") }}
+    {{ op(214, "redo R1: restore to U2", "parent of U3 → state B", "redo") }}
+    {{ op(180, "redo R2: restore to U1", "via R1 → U2; parent U1 → C", "redo") }}
+    {{ op(146, "undo U4: restore to R1", "R2 is ordinary → state B", "undo") }}
+    {{ op(112, "redo R3: restore to U1", "U4's parent R2 is a redo → C", "redo") }}
+    {{ op(78, "redo R4: restore to D", "via R3 → U1; parent D → D", "redo") }}
+    <text x="80" y="40" font-size="11" class="d-muted">then: jj redo → via R4 → D, not an undo → "Nothing to redo"</text>
+    <g class="d-line" stroke-width="1.3" fill="none" marker-end="url(#re-ex-arrow)">
+      <path d="M560,316 C585,316 585,384 564,384"></path>
+      <path d="M560,282 C600,282 600,418 564,418"></path>
+      <path d="M560,248 C615,248 615,452 564,452"></path>
+      <path d="M560,214 C585,214 585,282 564,282" stroke-dasharray="4 3"></path>
+      <path d="M560,180 C640,180 640,316 564,316" stroke-dasharray="4 3"></path>
+      <path d="M560,146 C585,146 585,214 564,214"></path>
+      <path d="M560,112 C665,112 665,316 564,316" stroke-dasharray="4 3"></path>
+      <path d="M560,78 C700,78 700,350 564,350" stroke-dasharray="4 3"></path>
+    </g>
+    <text x="740" y="500" font-size="10" text-anchor="end" class="d-muted">solid arcs: undo · dashed arcs: redo</text>
+  </svg>
+</div>
+
+<p>
+  The file reads <code>C</code>, <code>B</code>, <code>A</code> after the undos, then <code>B</code>,
+  <code>C</code> after two redos, <code>B</code> after the undo, and <code>C</code>, then
+  <code>D</code> after the final redos. Redo 3 shows the parent substitution: U4's parent is the redo
+  R2, so jj restores what R2 restored (U1) instead of R2 itself. Redo 4 shows target substitution:
+  the current operation R3 is a redo, so its target is the undo R3 restored, U1, and U1's parent D is
+  restored. The two adjacent redo stacks are jumped over.
+</p>
