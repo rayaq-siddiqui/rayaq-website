@@ -229,3 +229,17 @@ Each call is one command over SSH — deliberately kept to single, auditable com
 - Push changes directly to `main` for this project. A pull request is not required
   for the owner's workflow. Successful pushes deploy through the existing CI/CD
   pipeline.
+
+- Every commit you create and push must include a `Co-Authored-By` trailer naming
+  the model that contributed to it, not just the tool name (Claude Code or Codex).
+  Use the actual model name and version available in the session and the
+  provider's attribution email. For example:
+
+  ```text
+  Co-Authored-By: GPT-6 <noreply@openai.com>
+  Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+  ```
+
+  Include only models that contributed to the commit; the lines above are
+  alternatives, not a list to copy wholesale. Preserve any existing human or
+  model co-author trailers. Check the trailers before pushing.
