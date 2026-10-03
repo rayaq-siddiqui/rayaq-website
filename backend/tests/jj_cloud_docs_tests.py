@@ -159,3 +159,25 @@ def test_protobufs_page_names_every_proto_item():
 
     for name in jj_cloud_docs.PROTO_ITEMS:
         assert re.search(rf"\b{name}\b", body), name
+
+
+def test_object_ids_page_covers_the_spec_sections():
+    if jj_cloud_docs.find_page("object-ids") is None:
+        return
+    client = app_module.app.test_client()
+
+    body = client.get("/jj-commit-cloud-poc/object-ids").get_data(as_text=True)
+
+    for anchor in ["ids", "git-hashing", "op-view-hashing", "agreement", "worked-example", "vs-git-backend", "edge-cases"]:
+        assert f'id="{anchor}"' in body, anchor
+    assert body.count('<svg viewBox') >= 2
+    assert "2b6bbf38192d5e2fc7271fe272935a3b6a0283f0" in body
+
+
+def test_links_into_jj_only_target_ready_pages():
+    client = app_module.app.test_client()
+
+    for url in all_urls():
+        body = client.get(url).get_data(as_text=True)
+        for link in set(re.findall(r'href="(/jj(?:/[^"#?]*)?)["#?]', body)):
+            assert client.get(link).status_code == 200, (url, link)

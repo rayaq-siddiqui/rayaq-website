@@ -1,5 +1,7 @@
 import re
 
+import jj_docs
+
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj-commit-cloud-poc",
     "commit": "4b1c77b9db365e426e49846669a1626698fd5fa6",
@@ -63,7 +65,7 @@ PAGES = [
         "title": "Object IDs and hashing",
         "summary": "Which IDs exist and who computes them, the exact bytes hashed for commits, trees, files, operations and views, and how they compare with jj's Git backend.",
         "sources": ["server/src/hash_utils.rs"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "testing",
@@ -202,6 +204,7 @@ def render(slug, render_template):
         "src": source_url,
         "jj_lib": jj_lib_url,
         "proto_items": PROTO_ITEMS,
+        "jj_ready_slugs": {entry["slug"] for entry in jj_docs.ready_pages()},
         "previous_page": previous,
         "next_page": following,
     }

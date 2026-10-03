@@ -1,0 +1,668 @@
+{% set h = "server/src/hash_utils.rs" %}
+{% set be = "server/src/backend.rs" %}
+{% set ops = "server/src/op_store.rs" %}
+{% set cb = "lib/src/cc_backend.rs" %}
+{% set co = "lib/src/cc_op_store.rs" %}
+{% set lib_rs = "common/src/lib.rs" %}
+{% set gb = "lib/src/git_backend.rs" %}
+{% macro jj_link(slug) -%}
+  {%- if slug in jj_ready_slugs -%}{{ url_for('jj', slug=slug) }}{%- else -%}{{ url_for('jj') }}{%- endif -%}
+{%- endmacro %}
+{% macro cell(x, y, w, label, sub="", dashed=False, hl=False) -%}
+  <rect x="{{ x }}" y="{{ y }}" width="{{ w }}" height="40" rx="5" class="{{ 'cc-group' if dashed else ('cc-hash' if hl else 'cc-bytes') }}"></rect>
+  <text x="{{ x + w / 2 }}" y="{{ y + (20 if not sub else 15) }}" text-anchor="middle" dominant-baseline="middle" font-size="11">{{ label }}</text>
+  {% if sub %}<text x="{{ x + w / 2 }}" y="{{ y + 30 }}" text-anchor="middle" dominant-baseline="middle" font-size="9.5" class="d-muted">{{ sub }}</text>{% endif %}
+{%- endmacro %}
+<header class="jj-header">
+  <h1>Object IDs and hashing</h1>
+  <p class="tagline">
+    Every ID in the commit cloud, who computes it, and the exact bytes behind it: Git-compatible SHA-1 for
+    commits, trees and files, a length-prefixed encoding for operations and views, and where all of this
+    matches, and doesn't match, what jj's own Git backend would produce.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: the <em>server</em> computes every content ID, in
+  <a href="{{ src(h) }}"><code>server/src/hash_utils.rs</code></a>. Files, trees and commits get Git
+  object IDs (20-byte SHA-1), built with the <code>gix</code> crate. Operations and views get the first
+  16 bytes of a SHA-1 over a custom length-prefixed encoding. The client computes none of them: it takes
+  whatever ID the write RPC returns. Trees and files get the same IDs jj's <code>GitBackend</code>
+  would give them. Commits never do, because the <code>change-id</code> header is spelled differently.
+  Several jj-only commit fields, such as conflict terms beyond the first, predecessors and signatures,
+  aren't hashed at all. Two different jj commits can therefore share an ID, and the second write
+  silently replaces the first.
+</p>
+
+<p>
+  This page describes upstream at the pinned commit with <code>jj-lib</code>
+  {{ upstream.jj_lib_version }} and <code>gix</code> 0.68.0
+  (<a href="{{ src('server/Cargo.toml', 20) }}">server/Cargo.toml</a>). For how jj itself names objects,
+  see <a href="{{ url_for('jj', slug='commits') }}">/jj/commits</a>,
+  <a href="{{ url_for('jj', slug='trees') }}">/jj/trees</a> and
+  <a href="{{ url_for('jj', slug='operations') }}">/jj/operations</a>. Those pages describe jj's own
+  pinned version, which is newer than {{ upstream.jj_lib_version }}.
+</p>
+
+<h2 id="ids">Every ID</h2>
+
+<p>
+  The lengths come from the shared constants in
+  <a href="{{ src(lib_rs, 9, 21) }}"><code>common/src/lib.rs</code></a>, which the client reports to
+  jj-lib through <code>commit_id_length</code> and <code>change_id_length</code>
+  (<a href="{{ src(cb, 213, 219) }}">source</a>). Every ID travels as raw <code>bytes</code> in the protos.
+  jj displays commit, operation and view IDs as lowercase hex, and change IDs in its reversed
+  <code>z</code>–<code>k</code> alphabet.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>ID</th><th>Computed by</th><th>Length</th><th>What it is</th><th>Root / special value</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>commit ID</td>
+        <td>server, <a href="{{ src(h, 42, 87) }}"><code>compute_git_commit_hash</code></a>, called from <a href="{{ src(be, 67, 71) }}"><code>write_commit</code></a></td>
+        <td>20 bytes</td>
+        <td>Git commit object ID: SHA-1 over <code>"commit &lt;len&gt;\0"</code> and a Git commit built from some of the jj commit's fields</td>
+        <td>root commit: 20 zero bytes, never stored on the server (<a href="{{ src(lib_rs, 13) }}">source</a>)</td>
+      </tr>
+      <tr>
+        <td>change ID</td>
+        <td>client: jj-lib draws a random one when it builds a new commit (<a href="{{ jj_lib('lib/src/commit_builder.rs', 199) }}">commit_builder.rs</a>)</td>
+        <td>16 bytes</td>
+        <td>random, not a hash; stored in the commit and hashed into the commit ID as a header</td>
+        <td>root change: 16 zero bytes (<a href="{{ src(lib_rs, 14) }}">source</a>)</td>
+      </tr>
+      <tr>
+        <td>tree ID</td>
+        <td>server, <a href="{{ src(h, 95, 143) }}"><code>compute_git_tree_hash</code></a>, from <a href="{{ src(be, 108, 122) }}"><code>write_tree</code></a>; the client itself answers for the empty tree</td>
+        <td>20 bytes</td>
+        <td>Git tree object ID over the entries the client sends</td>
+        <td>empty tree: Git's <code>4b825dc642cb6eb9a060e54bf8d69288fbee4904</code> (<a href="{{ src(lib_rs, 17, 21) }}">source</a>)</td>
+      </tr>
+      <tr>
+        <td>file ID</td>
+        <td>server, <a href="{{ src(h, 89, 93) }}"><code>compute_git_blob_hash</code></a>, from <a href="{{ src(be, 151, 167) }}"><code>write_file</code></a></td>
+        <td>20 bytes</td>
+        <td>Git blob ID of the file's full contents</td>
+        <td>none</td>
+      </tr>
+      <tr>
+        <td>symlink ID</td>
+        <td>nobody: both symlink RPCs answer <code>UNIMPLEMENTED</code> and the client returns <code>Unsupported</code> (<a href="{{ src(cb, 308, 314) }}">source</a>)</td>
+        <td>n/a</td>
+        <td>a tree can't contain a symlink written through this client</td>
+        <td>n/a</td>
+      </tr>
+      <tr>
+        <td>operation ID</td>
+        <td>server, <a href="{{ src(h, 146, 176) }}"><code>hash_operation</code></a>, from <a href="{{ src(ops, 78, 101) }}"><code>write_operation</code></a></td>
+        <td>16 bytes</td>
+        <td>first 16 bytes of a Git <em>blob</em> SHA-1 over a custom length-prefixed encoding</td>
+        <td>root operation: 16 zero bytes, made up by the server on read (<a href="{{ src(ops, 49, 69) }}">source</a>)</td>
+      </tr>
+      <tr>
+        <td>view ID</td>
+        <td>server, <a href="{{ src(h, 178, 225) }}"><code>hash_view</code></a>, from <a href="{{ src(ops, 143, 163) }}"><code>write_view</code></a></td>
+        <td>16 bytes</td>
+        <td>same scheme as operation IDs</td>
+        <td>root view: 16 zero bytes, made up by the server on read (<a href="{{ src(ops, 123, 134) }}">source</a>)</td>
+      </tr>
+      <tr>
+        <td>repo ID</td>
+        <td>server, <a href="{{ src(be, 25, 33) }}"><code>register_repository</code></a></td>
+        <td>36 characters</td>
+        <td>a random UUID v4 as a string, not a hash; the client keeps it in its store config and sends it with every request</td>
+        <td>none</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The root IDs aren't hashes of anything. They're agreed constants: no root commit, operation or view is
+  ever written to the server, and both sides recognise the all-zero IDs on read. Operation and view IDs
+  are 16 bytes here. jj's own <code>SimpleOpStore</code> uses 64
+  (<a href="{{ jj_lib('lib/src/simple_op_store.rs', 72, 73) }}">simple_op_store.rs</a>).
+</p>
+
+<h2 id="git-hashing">Git-compatible hashing</h2>
+
+<p>
+  All three Git hashes end in the same call, <code>gix::objs::compute_hash(Kind::Sha1, kind, &amp;buf)</code>.
+  It hashes Git's object header (<code>"&lt;kind&gt; &lt;decimal length&gt;\0"</code>) followed by
+  <code>buf</code>, exactly as <code>git hash-object</code> does. Only how <code>buf</code> is built differs.
+</p>
+
+<h3 id="blob-hash">Files: <code>compute_git_blob_hash</code></h3>
+
+<p>
+  <a href="{{ src(h, 89, 93) }}">Lines 89–93</a>. <code>buf</code> is the file content, unchanged. The
+  client reads the whole file into memory and sends it in a single <code>WriteFile</code>
+  (<a href="{{ src(cb, 283, 306) }}">source</a>), so the ID is exactly <code>git hash-object</code> of
+  the file. Executability isn't part of the blob. It lives in the tree entry.
+</p>
+
+<h3 id="tree-hash">Trees: <code>compute_git_tree_hash</code></h3>
+
+<p><a href="{{ src(h, 95, 143) }}">Lines 95–143</a>. For each <code>TreeEntry</code> in the request:</p>
+
+<ol>
+  <li>
+    Pick a Git mode and a 20-byte object ID from the entry's value
+    (<a href="{{ src(h, 101, 120) }}">lines 101–120</a>):
+    <div class="jj-table-wrap">
+      <table>
+        <thead><tr><th>Value</th><th>gix <code>EntryKind</code></th><th>Mode written</th><th>ID used</th></tr></thead>
+        <tbody>
+          <tr><td><code>File</code>, <code>executable = false</code></td><td><code>Blob</code></td><td><code>100644</code></td><td>the file ID</td></tr>
+          <tr><td><code>File</code>, <code>executable = true</code></td><td><code>BlobExecutable</code></td><td><code>100755</code></td><td>the file ID</td></tr>
+          <tr><td><code>TreeId</code></td><td><code>Tree</code></td><td><code>40000</code></td><td>the subtree ID</td></tr>
+          <tr><td><code>SymlinkId</code></td><td><code>Link</code></td><td><code>120000</code></td><td>the symlink ID</td></tr>
+          <tr><td><code>ConflictId</code>, or no value at all</td><td><code>Blob</code></td><td><code>100644</code></td><td>20 zero bytes</td></tr>
+        </tbody>
+      </table>
+    </div>
+    The <code>File</code>'s <code>copy_id</code> is never hashed.
+  </li>
+  <li>
+    Convert the ID with <code>gix::hash::ObjectId::try_from</code>. If it isn't exactly 20 bytes, the
+    entry is <strong>silently dropped</strong> from the hash, though it's still stored with the tree
+    (<a href="{{ src(h, 121, 127) }}">lines 121–127</a>).
+  </li>
+  <li>
+    Sort the <code>gix::objs::tree::Entry</code> values with <code>sort_unstable</code>, which uses Git's
+    tree order: a directory sorts as if its name ended in <code>/</code>. So <code>a.txt</code> comes
+    before directory <code>a</code>, which comes before <code>a0</code>
+    (<a href="{{ src(h, 130, 131) }}">lines 130–131</a>).
+  </li>
+  <li>
+    Serialise the <code>gix::objs::Tree</code> with <code>WriteTo</code>: for each entry, the mode in
+    ASCII, a space, the name, a NUL byte, then the 20 raw ID bytes. Hash that as <code>Kind::Tree</code>
+    (<a href="{{ src(h, 133, 142) }}">lines 133–142</a>).
+  </li>
+</ol>
+
+<p>
+  The client never sends a <code>ConflictId</code>. Trees in jj-lib {{ upstream.jj_lib_version }} have
+  no conflict values, and <code>tree_entry_to_proto</code> refuses only Git submodules
+  (<a href="{{ src(cb, 156, 186) }}">source</a>). The zero-ID fallback is reached only by a request that
+  some other client built.
+</p>
+
+<h3 id="commit-hash">Commits: <code>compute_git_commit_hash</code></h3>
+
+<p>
+  <a href="{{ src(h, 42, 87) }}">Lines 42–87</a> build a <code>gix::objs::Commit</code> from the proto
+  <code>Commit</code>, then serialise it with <code>WriteTo</code> and hash it as
+  <code>Kind::Commit</code>. Field by field:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Proto field</th><th>Hashed?</th><th>How</th></tr></thead>
+    <tbody>
+      <tr><td><code>root_tree_id</code></td><td>first term only</td><td>The <code>tree</code> line uses the <em>first</em> tree ID. A missing or non-20-byte first ID becomes Git's empty tree. Every other term of a conflicted tree is ignored (<a href="{{ src(h, 46, 50) }}">lines 46–50</a>).</td></tr>
+      <tr><td><code>parent_commit_ids</code></td><td>yes, minus the root</td><td>One <code>parent</code> line per parent, in order. The all-zero root ID is filtered out, and so is any ID that isn't 20 bytes (<a href="{{ src(h, 52, 58) }}">lines 52–58</a>). A child of the root becomes a parentless Git commit.</td></tr>
+      <tr><td><code>author</code>, <code>committer</code></td><td>yes</td><td>Through <a href="{{ src(h, 15, 40) }}"><code>signature_to_git</code></a> into a <code>gix::actor::Signature</code>. An empty name or email, or a missing signature, becomes <code>JJ_EMPTY_STRING</code>. The time is <code>millis_since_epoch / 1000</code> seconds, so sub-second precision is lost, with <code>tz_offset</code> minutes × 60 as the offset (a <code>gix::date::Time</code>).</td></tr>
+      <tr><td><code>change_id</code></td><td>yes, as a header</td><td>If it isn't empty, an extra header <code>change-id</code> whose value is the change ID's bytes <em>in reverse order</em>, as lowercase hex (<a href="{{ src(h, 60, 69) }}">lines 60–69</a>).</td></tr>
+      <tr><td><code>description</code></td><td>yes</td><td>The message, byte for byte. <code>encoding</code> is <code>None</code> (<a href="{{ src(h, 71, 79) }}">lines 71–79</a>).</td></tr>
+      <tr><td><code>predecessors</code></td><td>no</td><td>Not read.</td></tr>
+      <tr><td><code>conflict_labels</code></td><td>no</td><td>Not read.</td></tr>
+      <tr><td><code>secure_sig</code></td><td>no</td><td>Not read. No <code>gpgsig</code> header is written.</td></tr>
+      <tr><td><code>commit_id</code></td><td>n/a</td><td>If the request already carries one, the hash isn't computed at all (see <a href="#agreement">below</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <code>WriteTo</code> lays these out in Git's order: <code>tree</code>, each <code>parent</code>,
+  <code>author</code>, <code>committer</code>, the extra headers, a blank line, then the message. A
+  signature line is <code>name &lt;email&gt; seconds ±hhmm</code>.
+</p>
+
+<h2 id="worked-example">Worked example: a one-file commit</h2>
+
+<p>
+  A commit whose only parent is the root, containing one file <code>hello.txt</code> with the six bytes
+  <code>hello\n</code>. Author and committer are both <code>Alice &lt;alice@example.com&gt;</code> at
+  1759492800 seconds in UTC−4. The change ID is the bytes <code>10 11 … 1f</code> and the description is
+  <code>Add hello\n</code>. The client writes the file, then the tree, then the commit, and the server
+  hashes each. Every ID below was computed by running the same <code>gix</code> 0.68.0 calls as
+  <code>hash_utils.rs</code>, and checked with <code>git hash-object</code>.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 452" role="img" aria-labelledby="cc-ex-title cc-ex-desc">
+    <title id="cc-ex-title">Hashing a one-file commit</title>
+    <desc id="cc-ex-desc">
+      Step 1: the blob preimage is the header "blob 6", a NUL, then "hello\n", which hashes to
+      ce013625030ba8dba906f756967f9e9ca394464a. Step 2: the tree preimage is "tree 37", a NUL, then the
+      entry "100644 hello.txt", a NUL and the blob's 20 raw bytes, which hashes to
+      aaa96ced2d9a1c8e72c56b253a0e2fe78393feb7. Step 3: the commit preimage is "commit 203", a NUL, then
+      the tree line naming that tree, author and committer lines for Alice at 1759492800 -0400, a
+      change-id header holding the change ID's bytes reversed as hex, a blank line, and the message
+      "Add hello". There is no parent line because the only parent is the root. It hashes to the commit
+      ID 2b6bbf38192d5e2fc7271fe272935a3b6a0283f0.
+    </desc>
+    <defs>
+      <marker id="cc-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+
+    <text x="20" y="28" font-size="12.5" font-weight="600">1. File: compute_git_blob_hash</text>
+    <rect x="20" y="38" width="110" height="34" rx="5" class="cc-bytes"></rect>
+    <text x="75" y="55" text-anchor="middle" dominant-baseline="middle" font-size="11" class="d-muted cc-mono">blob 6\0</text>
+    <rect x="130" y="38" width="110" height="34" rx="5" class="cc-bytes"></rect>
+    <text x="185" y="55" text-anchor="middle" dominant-baseline="middle" font-size="11" class="cc-mono">hello\n</text>
+    <line x1="244" y1="55" x2="452" y2="55" class="d-line" marker-end="url(#cc-ex-arrow)"></line>
+    <text x="348" y="47" text-anchor="middle" font-size="10" class="d-muted">SHA-1</text>
+    <rect x="456" y="38" width="284" height="34" rx="5" class="cc-hash"></rect>
+    <text x="598" y="55" text-anchor="middle" dominant-baseline="middle" font-size="10.5" class="d-accent cc-mono">ce013625030ba8dba906f756967f9e9ca394464a</text>
+
+    <path d="M598,72 L598,100 L365,100 L365,134" class="d-line" fill="none" marker-end="url(#cc-ex-arrow)"></path>
+    <text x="606" y="94" font-size="10" class="d-muted">as 20 raw bytes</text>
+
+    <text x="20" y="124" font-size="12.5" font-weight="600">2. Tree: compute_git_tree_hash</text>
+    <rect x="20" y="138" width="90" height="34" rx="5" class="cc-bytes"></rect>
+    <text x="65" y="155" text-anchor="middle" dominant-baseline="middle" font-size="11" class="d-muted cc-mono">tree 37\0</text>
+    <rect x="110" y="138" width="72" height="34" rx="5" class="cc-bytes"></rect>
+    <text x="146" y="155" text-anchor="middle" dominant-baseline="middle" font-size="11" class="cc-mono">100644␣</text>
+    <rect x="182" y="138" width="86" height="34" rx="5" class="cc-bytes"></rect>
+    <text x="225" y="155" text-anchor="middle" dominant-baseline="middle" font-size="11" class="cc-mono">hello.txt</text>
+    <rect x="268" y="138" width="32" height="34" rx="5" class="cc-bytes"></rect>
+    <text x="284" y="155" text-anchor="middle" dominant-baseline="middle" font-size="11" class="cc-mono">\0</text>
+    <rect x="300" y="138" width="130" height="34" rx="5" class="cc-bytes"></rect>
+    <text x="365" y="155" text-anchor="middle" dominant-baseline="middle" font-size="10.5" class="cc-mono">ce 01 36 … 46 4a</text>
+    <line x1="434" y1="155" x2="452" y2="155" class="d-line" marker-end="url(#cc-ex-arrow)"></line>
+    <rect x="456" y="138" width="284" height="34" rx="5" class="cc-hash"></rect>
+    <text x="598" y="155" text-anchor="middle" dominant-baseline="middle" font-size="10.5" class="d-accent cc-mono">aaa96ced2d9a1c8e72c56b253a0e2fe78393feb7</text>
+
+
+    <text x="20" y="224" font-size="12.5" font-weight="600">3. Commit: compute_git_commit_hash</text>
+    <rect x="20" y="234" width="400" height="150" rx="5" class="cc-bytes"></rect>
+    <g class="cc-mono" font-size="10.5">
+      <text x="30" y="252" class="d-muted">commit 203\0</text>
+      <text x="30" y="271">tree aaa96ced2d9a1c8e72c56b253a0e2fe78393feb7⏎</text>
+      <text x="30" y="290">author Alice &lt;alice@example.com&gt; 1759492800 -0400⏎</text>
+      <text x="30" y="309">committer Alice &lt;alice@example.com&gt; 1759492800 -0400⏎</text>
+      <text x="30" y="328">change-id 1f1e1d1c1b1a19181716151413121110⏎</text>
+      <text x="30" y="347">⏎</text>
+      <text x="30" y="366">Add hello⏎</text>
+    </g>
+    <path d="M598,172 L598,200 L404,200 L404,267 L348,267" class="d-line" fill="none" marker-end="url(#cc-ex-arrow)"></path>
+    <g font-size="10" class="d-muted">
+      <text x="432" y="252">Git's object header: kind, byte length, NUL</text>
+      <text x="432" y="271">first root_tree_id term; no parent line follows:</text>
+      <text x="432" y="283">the only parent is the root, which is filtered out</text>
+      <text x="432" y="300">signature_to_git: millis / 1000, tz_offset × 60</text>
+      <text x="432" y="328">change ID bytes 10 … 1f, reversed, as hex</text>
+      <text x="432" y="347">end of headers</text>
+      <text x="432" y="366">description, unchanged</text>
+    </g>
+    <line x1="220" y1="384" x2="220" y2="408" class="d-line" marker-end="url(#cc-ex-arrow)"></line>
+    <text x="228" y="400" font-size="10" class="d-muted">SHA-1</text>
+    <rect x="20" y="410" width="400" height="34" rx="5" class="cc-hash"></rect>
+    <text x="220" y="427" text-anchor="middle" dominant-baseline="middle" font-size="10.5" class="d-accent cc-mono">commit ID 2b6bbf38192d5e2fc7271fe272935a3b6a0283f0</text>
+  </svg>
+</div>
+
+<p>
+  Change any field the commit hash ignores, such as the predecessors, a second tree term or the
+  milliseconds of a timestamp, and the ID stays <code>2b6bbf38…</code>. With an empty author and
+  committer name, both lines read <code>JJ_EMPTY_STRING &lt;alice@example.com&gt;</code> and the ID
+  becomes <code>c020c94bcb0ed4afe8a748df01d35c352b2a5995</code>.
+</p>
+
+<h2 id="op-view-hashing">Operations and views</h2>
+
+<p>
+  Operations and views have no Git equivalent, so <code>hash_utils.rs</code> serialises them by hand into
+  a byte buffer, then hashes that buffer as if it were a Git blob:
+  <code>compute_hash(Sha1, Kind::Blob, &amp;buf)</code>, which is SHA-1 over
+  <code>"blob &lt;len&gt;\0"</code> plus the buffer. It keeps the first 16 bytes
+  (<code>OPERATION_ID_LENGTH</code>, <code>VIEW_ID_LENGTH</code>).
+</p>
+
+<h3 id="length-prefix">The length-prefix helpers</h3>
+
+<p>
+  <a href="{{ src(h, 3, 13) }}"><code>append_length_prefixed_bytes</code></a> writes the byte count as an
+  8-byte little-endian <code>u64</code>, then the bytes. <code>append_length_prefixed_str</code> does
+  the same for a string's UTF-8 bytes. The doc comment gives the reason: without a length, two adjacent
+  fields <code>"foo"</code> + <code>"bar"</code> and <code>"foob"</code> + <code>"ar"</code> would
+  produce the same bytes. With it, a reader always knows where one variable-length field ends and the
+  next begins. Fixed-width fields (the two <code>i64</code> times and the <code>is_snapshot</code> byte)
+  are written raw, little-endian. Maps are walked in sorted key order (via a <code>BTreeMap</code> or an
+  explicit sort), because protobuf map iteration order isn't fixed
+  (<a href="{{ src(h, 145) }}">line 145</a>).
+</p>
+
+<h3 id="operation-hash"><code>hash_operation</code></h3>
+
+<p><a href="{{ src(h, 146, 176) }}">Lines 146–176</a>. Field by field, in this order:</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 330" role="img" aria-labelledby="cc-op-title cc-op-desc">
+    <title id="cc-op-title">The bytes hash_operation hashes</title>
+    <desc id="cc-op-desc">
+      The operation preimage, in order: the view ID with an 8-byte length; each parent operation ID with
+      its length, with no count; start and end time as raw 8-byte integers; description, hostname and
+      username, each length-prefixed; is_snapshot as one byte; the workspace name, length-prefixed, only
+      when present and with no flag; each attribute key and value in sorted key order, with no count;
+      then for each commit-predecessors entry the commit ID and each predecessor ID, all length-prefixed,
+      with no counts. The buffer is hashed as a Git blob with SHA-1, and the first 16 bytes are the
+      operation ID. commit_predecessors_set is not hashed.
+    </desc>
+    <defs>
+      <marker id="cc-op-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <text x="20" y="22" font-size="11" class="d-muted">Solid: always written. Dashed: written only when present, with nothing marking its absence. "×" repeats with no count.</text>
+
+    {{ cell(20, 36, 70, "len u64", "8 B") }}
+    {{ cell(90, 36, 120, "view_id", "16 B") }}
+    {{ cell(226, 36, 70, "len u64", "8 B", dashed=True) }}
+    {{ cell(296, 36, 150, "parent op ID", "× each parent", dashed=True) }}
+
+    <text x="20" y="104" font-size="11" font-weight="600">if metadata is present (the client always sends it):</text>
+    {{ cell(20, 114, 96, "start_time", "i64 LE, ms") }}
+    {{ cell(116, 114, 96, "end_time", "i64 LE, ms") }}
+    {{ cell(228, 114, 110, "len | description") }}
+    {{ cell(338, 114, 100, "len | hostname") }}
+    {{ cell(438, 114, 100, "len | username") }}
+    {{ cell(554, 114, 86, "is_snapshot", "u8") }}
+
+    {{ cell(20, 170, 150, "len | workspace_name", "only if Some", dashed=True) }}
+    {{ cell(186, 170, 92, "len | key", "", dashed=True) }}
+    {{ cell(278, 170, 92, "len | value", "", dashed=True) }}
+    <text x="324" y="226" text-anchor="middle" font-size="9.5" class="d-muted">× each attribute, sorted by key</text>
+
+    {{ cell(20, 240, 122, "len | commit_id", "", dashed=True) }}
+    {{ cell(142, 240, 140, "len | predecessor ID", "× each", dashed=True) }}
+    <text x="151" y="296" text-anchor="middle" font-size="9.5" class="d-muted">× each commit_predecessors entry</text>
+
+    <line x1="462" y1="260" x2="514" y2="260" class="d-line" marker-end="url(#cc-op-arrow)"></line>
+    <text x="488" y="252" text-anchor="middle" font-size="9.5" class="d-muted">"blob n\0"+</text>
+    {{ cell(518, 240, 90, "SHA-1", "20 B") }}
+    <line x1="608" y1="260" x2="626" y2="260" class="d-line" marker-end="url(#cc-op-arrow)"></line>
+    {{ cell(630, 240, 110, "operation ID", "first 16 B", hl=True) }}
+    <text x="20" y="318" font-size="10" class="d-muted">Not hashed: commit_predecessors_set. Not in the proto at all: the timestamps' time-zone offsets.</text>
+  </svg>
+</div>
+
+<p>
+  <code>commit_predecessors_set</code> (whether jj recorded predecessors at all) isn't hashed, so an
+  operation with no predecessor map and one with an empty map get the same ID. The metadata's
+  time-zone offsets never reach the server: the proto has no field for them, and the client reads them
+  back as zero (<a href="{{ src(co, 46, 107) }}">source</a>).
+</p>
+
+<h3 id="view-hash"><code>hash_view</code></h3>
+
+<p><a href="{{ src(h, 178, 225) }}">Lines 178–225</a>, in this order, with no counts anywhere:</p>
+
+<ol>
+  <li><code>head_ids</code>, sorted, each length-prefixed.</li>
+  <li><code>wc_commit_ids</code> sorted by workspace name: the name, then the commit ID, both length-prefixed.</li>
+  <li>
+    <code>local_bookmarks</code> sorted by name: the name, then the target's <code>removes</code>
+    (sorted), then its <code>adds</code> (sorted), each commit ID length-prefixed.
+  </li>
+  <li>
+    <code>remote_bookmarks</code> sorted by key: the key, <code>is_tracked</code> as one byte, then the
+    target as above if there is one.
+  </li>
+</ol>
+
+<h3 id="ambiguity">How far the encoding avoids ambiguity</h3>
+
+<p>
+  Length prefixes make each <em>field</em> unambiguous, which is the case the doc comment guards
+  against. They don't make the whole <em>buffer</em> unambiguous. Neither function writes how many items
+  a list or map holds, or which section an item belongs to, and the optional workspace name has no
+  presence flag. So two different values can serialise to identical bytes, and therefore share an ID.
+  Both cases below were checked by reimplementing the two functions byte for byte:
+</p>
+
+<ul>
+  <li>
+    <strong>Views.</strong> View A has one workspace, <code>default</code>, at commit <code>W</code>, and
+    no bookmarks. View B has no workspaces and a local bookmark named <code>default</code> at
+    <code>W</code>. Both have head <code>W</code>. A's working-copy section and B's bookmark section
+    write the same two fields, so the bytes match (diagram below).
+  </li>
+  <li>
+    <strong>Operations.</strong> One operation has workspace <code>A</code>, the attribute
+    <code>B = C</code> and no predecessors. Another, otherwise identical, has no workspace, the attribute
+    <code>A = B</code>, and a predecessor entry for a commit whose ID is the three bytes <code>C</code>.
+    Each writes the same three length-prefixed strings in a row.
+  </li>
+</ul>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 236" role="img" aria-labelledby="cc-vc-title cc-vc-desc">
+    <title id="cc-vc-title">Two views with the same view ID</title>
+    <desc id="cc-vc-desc">
+      View A, with head W, workspace "default" at W and no bookmarks, serialises to: length and W, length
+      and "default", length and W. View B, with head W, no workspaces and a local bookmark "default"
+      adding W, serialises to the same three fields, the last two from the bookmark section instead of
+      the working-copy section. Both hash to view ID 71d65d953ace7743773509367157d9a2.
+    </desc>
+    <defs>
+      <marker id="cc-vc-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <text x="20" y="24" font-size="12" font-weight="600">View A</text>
+    <text x="110" y="24" font-size="10" class="d-muted">head_ids</text>
+    <text x="270" y="24" font-size="10" class="d-muted">wc_commit_ids: default → W</text>
+    <text x="530" y="24" font-size="10" class="d-muted">local_bookmarks: none</text>
+    {{ cell(110, 32, 140, "len 20 | W") }}
+    {{ cell(270, 32, 140, "len 7 | \"default\"") }}
+    {{ cell(410, 32, 140, "len 20 | W") }}
+
+    <text x="20" y="114" font-size="12" font-weight="600">View B</text>
+    <text x="110" y="114" font-size="10" class="d-muted">head_ids</text>
+    <text x="270" y="114" font-size="10" class="d-muted">wc_commit_ids: none</text>
+    <text x="410" y="114" font-size="10" class="d-muted">… local_bookmarks: default → adds [W]</text>
+    {{ cell(110, 122, 140, "len 20 | W") }}
+    {{ cell(270, 122, 140, "len 7 | \"default\"") }}
+    {{ cell(410, 122, 140, "len 20 | W") }}
+
+    <text x="330" y="98" text-anchor="middle" font-size="10.5" class="d-muted">identical bytes</text>
+    <line x1="330" y1="74" x2="330" y2="86" class="d-line"></line>
+    <line x1="560" y1="142" x2="590" y2="142" class="d-line"></line>
+    <line x1="560" y1="52" x2="590" y2="52" class="d-line"></line>
+    <path d="M590,52 L590,142" class="d-line" fill="none"></path>
+    <line x1="590" y1="97" x2="606" y2="97" class="d-line" marker-end="url(#cc-vc-arrow)"></line>
+    <rect x="610" y="78" width="130" height="40" rx="5" class="cc-hash"></rect>
+    <text x="675" y="92" text-anchor="middle" dominant-baseline="middle" font-size="9.5" class="d-muted">view ID</text>
+    <text x="675" y="106" text-anchor="middle" dominant-baseline="middle" font-size="9" class="d-accent cc-mono">71d65d953ace…57d9a2</text>
+    <text x="20" y="196" font-size="10.5" class="d-muted">W stands for any 20-byte commit ID. With nothing marking where one section ends,</text>
+    <text x="20" y="212" font-size="10.5" class="d-muted">a working-copy entry and a single-target bookmark write the same two fields.</text>
+  </svg>
+</div>
+
+<p>
+  Both examples need unusual inputs, and nothing in normal jj use is known to produce them. The
+  consequence would be the same as for commits, though: the server stores by ID with a plain map
+  insert, so the second write replaces the first. Writing a count before each list, and a presence byte
+  before the workspace name, would close the gap.
+</p>
+
+<h2 id="agreement">Agreement with the client</h2>
+
+<p>
+  The client never computes a content hash. Every write method sends the object and builds its ID from
+  the bytes the server returns: files (<a href="{{ src(cb, 305) }}">line 305</a>), trees
+  (<a href="{{ src(cb, 395) }}">line 395</a>), commits (<a href="{{ src(cb, 458, 459) }}">lines 458–459</a>),
+  views (<a href="{{ src(co, 294) }}">line 294</a>) and operations
+  (<a href="{{ src(co, 335) }}">line 335</a>). Nothing checks a returned ID's length or recomputes it.
+  For commits, <code>commit_to_proto</code> always sends an empty <code>commit_id</code>
+  (<a href="{{ src(cb, 114, 127) }}">source</a>). The server hashes only when that field is empty, and
+  otherwise stores the commit under whatever ID the request names
+  (<a href="{{ src(be, 67, 72) }}">source</a>). This client never takes that path, but the server doesn't
+  verify anyone who does.
+</p>
+
+<p>The client does assume four IDs without asking the server. Each must match what the server does:</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Assumed ID</th><th>Client</th><th>Server</th><th>If they disagreed</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>empty tree</td>
+        <td><code>write_tree</code> returns <code>EMPTY_TREE_ID_HEX</code> for an empty tree without an RPC (<a href="{{ src(cb, 373, 376) }}">source</a>)</td>
+        <td><code>read_tree</code> answers that ID with no entries even though it was never stored (<a href="{{ src(be, 90, 95) }}">source</a>). Hashing an empty entry list gives the same ID anyway.</td>
+        <td>Reading any empty directory, or the root commit's tree, would fail with <code>NOT_FOUND</code>.</td>
+      </tr>
+      <tr>
+        <td>root commit</td>
+        <td><code>read_commit</code> builds it locally with jj-lib's <code>make_root_commit</code> (<a href="{{ src(cb, 398, 404) }}">source</a>)</td>
+        <td>never stores it; <code>compute_git_commit_hash</code> drops it from parent lists (<a href="{{ src(h, 52, 58) }}">source</a>)</td>
+        <td>The root's 20 zero bytes would be hashed as a real Git parent.</td>
+      </tr>
+      <tr>
+        <td>root operation</td>
+        <td><code>root_operation_id</code> is 16 zero bytes (<a href="{{ src(co, 243) }}">source</a>)</td>
+        <td><code>read_operation</code> makes it up on a miss (<a href="{{ src(ops, 49, 69) }}">source</a>), and op heads start there</td>
+        <td>A fresh repository's operation log would have no base.</td>
+      </tr>
+      <tr>
+        <td>root view</td>
+        <td>implied by the root operation's <code>view_id</code></td>
+        <td><code>read_view</code> makes it up with the root commit as the only head (<a href="{{ src(ops, 123, 134) }}">source</a>)</td>
+        <td>Loading the root operation would fail.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The server rebuilds every ID from content. So two clients that write the same file, tree or commit get
+  the same ID, and the second write replaces an identical entry. jj-lib keeps the <code>Commit</code>
+  value it passed in, not one read back from the server, as the client returns it unchanged alongside
+  the server's ID (<a href="{{ src(cb, 458, 459) }}">source</a>).
+</p>
+
+<h2 id="vs-git-backend">Compared with jj's <code>GitBackend</code></h2>
+
+<p>
+  jj-lib's <code>GitBackend</code> also writes commits, trees and blobs as Git objects with
+  <code>gix</code>, so the formats look alike. For jj's own backends, see
+  <a href="{{ jj_link('backends') }}">/jj/backends</a>, which describes jj's own pinned version. The
+  comparison here is against <code>git_backend.rs</code> at <code>v{{ upstream.jj_lib_version }}</code>,
+  the version this project builds against.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Aspect</th><th>Commit cloud</th><th><code>GitBackend</code> ({{ upstream.jj_lib_version }})</th><th>Same ID?</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>file IDs</td>
+        <td>Git blob of the content</td>
+        <td>Git blob of the content</td>
+        <td>yes</td>
+      </tr>
+      <tr>
+        <td>tree IDs</td>
+        <td>Git tree, same modes and order</td>
+        <td>Git tree</td>
+        <td>yes, for trees this client can write: files, executables and subtrees. Symlinks and submodules can't be written here.</td>
+      </tr>
+      <tr>
+        <td><code>change-id</code> header</td>
+        <td>change ID bytes reversed, then ordinary hex: <code>1f1e1d…1110</code> in the example</td>
+        <td>bytes in order, in jj's reverse-hex alphabet <code>zyxwvutsrqponmlk</code>: <code>yzyyyx…ylyk</code> (<a href="{{ jj_lib(gb, 1311, 1316) }}">source</a>, <a href="{{ jj_lib('lib/src/hex_util.rs', 90, 92) }}">hex_util.rs</a>), written by default (<a href="{{ jj_lib('lib/src/config/misc.toml', 16) }}">misc.toml</a>)</td>
+        <td>no. The example commit would be <code>061e91a7ce0ddba6b6fc7d285b8dd9519662248c</code> under <code>GitBackend</code>, not <code>2b6bbf38…</code>. Every commit ID differs.</td>
+      </tr>
+      <tr>
+        <td>conflicted trees</td>
+        <td>hashes only the first tree term; no extra headers</td>
+        <td>writes a combined conflict tree as the Git tree, plus a <code>jj:trees</code> header listing every term and a <code>jj:conflict-labels</code> header (<a href="{{ jj_lib(gb, 1260, 1264) }}">tree</a>, <a href="{{ jj_lib(gb, 1292, 1310) }}">headers</a>)</td>
+        <td>no</td>
+      </tr>
+      <tr>
+        <td>same Git ID, different jj commit</td>
+        <td>not detected; the store's map insert replaces the earlier commit (<a href="{{ src('server/src/store/memorystore.rs', 48, 51) }}">source</a>)</td>
+        <td>detected through its extras table (change ID and predecessors). It moves the committer time back one second until the ID is new (<a href="{{ jj_lib(gb, 1330, 1391) }}">source</a>).</td>
+        <td>n/a</td>
+      </tr>
+      <tr>
+        <td>signatures</td>
+        <td>not hashed; <code>sign_with</code> is ignored, and <code>secure_sig</code> is dropped on read (<a href="{{ src(cb, 440, 444) }}">write</a>, <a href="{{ src(cb, 152) }}">read</a>)</td>
+        <td>signs the serialised commit and adds a <code>gpgsig</code> header, which is part of the ID (<a href="{{ jj_lib(gb, 1350, 1363) }}">source</a>)</td>
+        <td>only for unsigned commits, and they already differ by <code>change-id</code></td>
+      </tr>
+      <tr>
+        <td>timestamp to seconds</td>
+        <td><code>millis / 1000</code>, which rounds toward zero</td>
+        <td><code>div_euclid(1000)</code>, which rounds down (<a href="{{ jj_lib(gb, 748, 769) }}">source</a>)</td>
+        <td>differ only before 1970 with a fractional second</td>
+      </tr>
+      <tr>
+        <td>committer time returned</td>
+        <td>the commit is returned unchanged, milliseconds included</td>
+        <td>the returned commit's committer time is cut to whole seconds, matching what was hashed (<a href="{{ jj_lib(gb, 1400, 1406) }}">source</a>)</td>
+        <td>n/a</td>
+      </tr>
+      <tr>
+        <td>empty name or email</td>
+        <td><code>JJ_EMPTY_STRING</code></td>
+        <td><code>JJ_EMPTY_STRING</code> (the cloud's <code>signature_to_git</code> is a copy of jj's)</td>
+        <td>same bytes</td>
+      </tr>
+      <tr>
+        <td>root parent</td>
+        <td>filtered out of any parent list</td>
+        <td>filtered out, but a merge of the root with another commit is rejected as <code>Unsupported</code> (<a href="{{ jj_lib(gb, 1273, 1290) }}">source</a>)</td>
+        <td>same bytes where both accept it</td>
+      </tr>
+      <tr>
+        <td>ID lengths</td>
+        <td>commit 20, change 16, operation 16, view 16</td>
+        <td>commit 20, change 16 (<a href="{{ jj_lib(gb, 97, 98) }}">source</a>); operations and views belong to the op store, 64 bytes in <code>SimpleOpStore</code></td>
+        <td>n/a</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  A repository moved between the two backends would keep its file and tree IDs, but every commit would
+  get a new ID.
+</p>
+
+<h2 id="edge-cases">Edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Case</th><th>What happens</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>empty tree</td><td>The client never sends one. The server answers reads of <code>4b825dc6…</code> itself, and would hash an empty list to that same ID.</td><td><a href="{{ src(cb, 374, 376) }}">client</a>, <a href="{{ src(be, 90, 95) }}">server</a></td></tr>
+      <tr><td>no tree ID, or an invalid first term</td><td>The commit is hashed as if its tree were empty, and stored with the original field.</td><td><a href="{{ src(h, 46, 50) }}">hash_utils.rs 46–50</a></td></tr>
+      <tr><td>missing signature</td><td>Name and email become <code>JJ_EMPTY_STRING</code> and the time becomes 0 +0000. The client always sends both signatures.</td><td><a href="{{ src(h, 29, 33) }}">hash_utils.rs 29–33</a>, <a href="{{ src(cb, 121, 122) }}">client</a></td></tr>
+      <tr><td>empty name or email</td><td>Hashed as <code>JJ_EMPTY_STRING</code>, stored as empty. Only the hash sees the placeholder.</td><td><a href="{{ src(h, 17, 28) }}">hash_utils.rs 17–28</a></td></tr>
+      <tr><td>root commit</td><td>Never written or read over RPC. It is dropped from parent lists before hashing, so a child of the root has no <code>parent</code> line.</td><td><a href="{{ src(cb, 398, 404) }}">client</a>, <a href="{{ src(h, 52, 58) }}">hash_utils.rs 52–58</a></td></tr>
+      <tr><td>root operation and view</td><td>Never hashed. The server returns made-up all-zero objects on a lookup miss.</td><td><a href="{{ src(ops, 49, 69) }}">operation</a>, <a href="{{ src(ops, 123, 134) }}">view</a></td></tr>
+      <tr><td>empty change ID</td><td>No <code>change-id</code> header. jj always has one, so only another client could hit this.</td><td><a href="{{ src(h, 61, 69) }}">hash_utils.rs 61–69</a></td></tr>
+      <tr><td>tree entry with a non-20-byte ID</td><td>Left out of the hash but kept in the stored tree.</td><td><a href="{{ src(h, 121, 127) }}">hash_utils.rs 121–127</a></td></tr>
+      <tr><td>conflict or empty tree value</td><td>Hashed as a regular file whose ID is 20 zero bytes. The client rejects a <code>ConflictId</code> when it reads the tree back.</td><td><a href="{{ src(h, 116, 119) }}">hash_utils.rs 116–119</a>, <a href="{{ src(cb, 199, 201) }}">client</a></td></tr>
+      <tr><td>commits differing only in ignored fields</td><td>Same commit ID, so the later write replaces the earlier one in the store. That covers predecessors, conflict terms after the first, conflict labels, signatures, and the sub-second part of a timestamp.</td><td><a href="{{ src(h, 42, 87) }}">hash_utils.rs 42–87</a>, <a href="{{ src('server/src/store/memorystore.rs', 48, 51) }}">store</a></td></tr>
+      <tr><td>client-supplied commit ID</td><td>Used as is, without checking.</td><td><a href="{{ src(be, 67, 71) }}">backend.rs 67–71</a></td></tr>
+      <tr><td>op with no predecessor map, or an empty one</td><td>Same ID, since <code>commit_predecessors_set</code> isn't hashed.</td><td><a href="{{ src(h, 168, 173) }}">hash_utils.rs 168–173</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  No upstream test targets <code>hash_utils.rs</code>. The server's only test checks that it starts, and
+  the CLI tests reach the hashing only indirectly. The one ID they assert is the root commit's 40 zeros
+  (<a href="{{ src('cli/tests/test_log_command.rs', 11) }}">source</a>). None of the behaviour above is
+  pinned by a test.
+</p>
