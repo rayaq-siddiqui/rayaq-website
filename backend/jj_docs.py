@@ -70,7 +70,7 @@ TOPICS = [
             "lib/src/copies.rs",
             "docs/design/copy-tracking.md",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "conflicts",

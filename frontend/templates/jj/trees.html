@@ -1,0 +1,306 @@
+{% set be = "core/src/backend.rs" %}
+{% set mt = "lib/src/merged_tree.rs" %}
+{% set mtb = "lib/src/merged_tree_builder.rs" %}
+{% set tr = "lib/src/tree.rs" %}
+{% set cp = "lib/src/copies.rs" %}
+<header class="jj-header">
+  <h1>Trees, files and copies</h1>
+  <p class="tagline">
+    How jj stores the contents of a commit: one sorted <code>Tree</code> object per directory, values
+    that are files, symlinks, subtrees or submodules, and a <code>MergedTree</code> that lets a commit's
+    root be a conflict between several trees. Plus how trees are diffed and how copies are tracked.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: a commit doesn't point at one tree but at a <code>Merge&lt;TreeId&gt;</code>. Usually that
+  merge has one term, a plain snapshot. After a conflicted rebase or merge it has <code>2n+1</code>
+  terms, and every path is looked up in all of them at once. A path's value is then a
+  <code>MergedTreeValue = Merge&lt;Option&lt;TreeValue&gt;&gt;</code>, which is resolved when all terms
+  agree after trivial merging. The trees themselves are immutable, content-addressed objects in the
+  backend, so two commits with the same contents share their tree IDs.
+</p>
+
+<h2 id="structure">1. From commit to file contents</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 330" role="img" aria-labelledby="trees-struct-title trees-struct-desc">
+    <title id="trees-struct-title">How a commit reaches file contents</title>
+    <desc id="trees-struct-desc">
+      A commit's root_tree field is a Merge of TreeIds. MergedTree wraps that merge together with
+      the Store and conflict labels. Each TreeId names a backend Tree object, a sorted list of
+      entries pairing a path component with a TreeValue. A TreeValue is a File with a FileId, an
+      executable bit and a CopyId, a Symlink with a SymlinkId, a Tree with a TreeId for a
+      subdirectory, or a GitSubmodule with a CommitId. FileIds and SymlinkIds are read through the
+      Backend; CopyIds name CopyHistory objects.
+    </desc>
+    <defs>
+      <marker id="trees-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='commits') }}"><rect class="d-box" x="20" y="20" width="200" height="50" rx="6"></rect>
+      <text x="32" y="42" font-family="monospace">Commit.root_tree</text>
+      <text x="32" y="60" class="d-muted" font-size="11">Merge&lt;TreeId&gt;</text></a>
+      <a href="{{ src(mt, 64, 71) }}"><rect class="d-box" x="280" y="20" width="200" height="50" rx="6"></rect>
+      <text x="292" y="42" font-family="monospace">MergedTree</text>
+      <text x="292" y="60" class="d-muted" font-size="11">store, tree_ids, labels</text></a>
+      <a href="{{ src(be, 664, 715) }}"><rect class="d-box" x="540" y="20" width="200" height="50" rx="6"></rect>
+      <text x="552" y="42" font-family="monospace">backend::Tree</text>
+      <text x="552" y="60" class="d-muted" font-size="11">sorted (name, TreeValue)</text></a>
+
+      <a href="{{ src(be, 391, 411) }}"><rect class="d-box" x="400" y="110" width="340" height="40" rx="6"></rect>
+      <text x="412" y="135" font-family="monospace">TreeValue</text></a>
+
+      <a href="{{ src(be, 391, 411) }}"><rect class="d-box" x="20" y="190" width="170" height="56" rx="6"></rect>
+      <text x="32" y="212" font-family="monospace">File</text>
+      <text x="32" y="232" class="d-muted" font-size="11">id, executable, copy_id</text></a>
+      <a href="{{ src(be, 391, 411) }}"><rect class="d-box" x="210" y="190" width="160" height="56" rx="6"></rect>
+      <text x="222" y="212" font-family="monospace">Symlink</text>
+      <text x="222" y="232" class="d-muted" font-size="11">SymlinkId</text></a>
+      <a href="{{ src(be, 391, 411) }}"><rect class="d-box" x="390" y="190" width="160" height="56" rx="6"></rect>
+      <text x="402" y="212" font-family="monospace">Tree</text>
+      <text x="402" y="232" class="d-muted" font-size="11">TreeId (subdirectory)</text></a>
+      <a href="{{ src(be, 391, 411) }}"><rect class="d-box" x="570" y="190" width="170" height="56" rx="6"></rect>
+      <text x="582" y="212" font-family="monospace">GitSubmodule</text>
+      <text x="582" y="232" class="d-muted" font-size="11">CommitId</text></a>
+
+      <a href="{{ src(be, 743, 873) }}"><rect class="d-box" x="20" y="272" width="350" height="40" rx="6"></rect>
+      <text x="32" y="297" font-family="monospace">Backend::read_file / read_symlink</text></a>
+      <a href="#copies"><rect class="d-box" x="390" y="272" width="350" height="40" rx="6"></rect>
+      <text x="402" y="297" font-family="monospace">CopyId → CopyHistory</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#trees-arrow)">
+      <line x1="220" y1="45" x2="276" y2="45"></line>
+      <line x1="480" y1="45" x2="536" y2="45"></line>
+      <line x1="640" y1="70" x2="640" y2="106"></line>
+      <path d="M570 150 V170 H105 V186"></path>
+      <path d="M570 150 V170 H290 V186"></path>
+      <path d="M570 150 V170 H470 V186"></path>
+      <path d="M570 150 V170 H655 V186"></path>
+      <path d="M470 190 V180 H750 V45 H744" stroke-dasharray="4 4"></path>
+      <line x1="105" y1="246" x2="105" y2="268"></line>
+      <line x1="290" y1="246" x2="290" y2="268"></line>
+      <line x1="150" y1="246" x2="470" y2="268"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="tree">2. <code>Tree</code>: one directory</h2>
+
+<p>
+  There are two <code>Tree</code> types. The stored one,
+  <a href="{{ src(be, 664, 715) }}"><code>backend::Tree</code></a>, is just
+  <code>entries: Vec&lt;(RepoPathComponentBuf, TreeValue)&gt;</code>. The entries "must be sorted (by
+  <code>RepoPathComponentBuf</code>'s ordering) and must not contain duplicate names", which
+  <code>from_sorted_entries</code> checks with a <code>debug_assert!</code>. Lookup by name is a binary
+  search (<code>entry</code>, <code>value</code>). The in-memory
+  <a href="{{ src(tr, 43, 49) }}"><code>tree::Tree</code></a> wraps it with the <code>Store</code>, the
+  directory path it lives at, and its <code>TreeId</code>, and adds <code>path_value</code>,
+  <code>sub_tree</code> and <code>sub_tree_recursive</code> for walking down
+  (<a href="{{ src(tr, 75, 174) }}">source</a>).
+</p>
+
+<p>
+  A subdirectory is just an entry whose value is <code>TreeValue::Tree(id)</code>. There is no separate
+  directory object, so a tree only stores its direct children, and an empty directory can't be
+  represented. Every backend must give all empty trees the same ID regardless of path
+  (<a href="{{ src(be, 763, 765) }}"><code>Backend::empty_tree_id</code></a>).
+</p>
+
+<h2 id="tree-value">3. <code>TreeValue</code></h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Variant</th><th>Fields</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>File</code></td><td><code>id: FileId</code>, <code>executable: bool</code>, <code>copy_id: CopyId</code></td><td>A regular file. The content is read with <code>Backend::read_file</code>. The executable bit is part of the value, so changing only <code>chmod +x</code> is a change. <code>copy_id</code> ties the file to its copy history (see <a href="#copies">copies</a>). Today's backends fill it with the empty placeholder (<code>CopyId::placeholder()</code>, marked "TODO: Delete this").</td></tr>
+      <tr><td><code>Symlink</code></td><td><code>SymlinkId</code></td><td>A symbolic link. The target is a <code>String</code>, not a repo path, because it can point outside the repository.</td></tr>
+      <tr><td><code>Tree</code></td><td><code>TreeId</code></td><td>A subdirectory.</td></tr>
+      <tr><td><code>GitSubmodule</code></td><td><code>CommitId</code></td><td>A Git submodule, pinned at a commit of the other repository.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p class="jj-source"><a href="{{ src(be, 391, 421) }}"><code>TreeValue</code></a> · <a href="{{ src(be, 85, 92) }}"><code>CopyId::placeholder</code></a></p>
+
+<p>
+  There is no conflict variant. Conflicts aren't stored inside trees any more: they live one level up,
+  as several whole trees in the commit's <code>Merge&lt;TreeId&gt;</code>.
+</p>
+
+<h2 id="merged-tree">4. <code>MergedTree</code> and <code>MergedTreeValue</code></h2>
+
+<p>
+  <a href="{{ src(mt, 64, 71) }}"><code>MergedTree</code></a> is "a lazily merged view of a set of trees":
+  <code>store</code>, <code>tree_ids: Merge&lt;TreeId&gt;</code> and <code>labels: ConflictLabels</code>
+  (one label per side, used in conflict markers). Nothing is merged up front. Each operation walks all
+  the terms together and merges only the entries it touches.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Method</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(mt, 82, 90) }}"><code>resolved</code></a>, <a href="{{ src(mt, 92, 102) }}"><code>new</code></a></td><td>Wrap one tree ID, or a merge of tree IDs plus labels (the number of labels must match the number of sides).</td></tr>
+      <tr><td><a href="{{ src(mt, 138, 143) }}"><code>trees</code></a></td><td>Load every term's root <code>Tree</code>.</td></tr>
+      <tr><td><a href="{{ src(mt, 218, 232) }}"><code>path_value</code></a></td><td>The <code>MergedTreeValue</code> at a path: walk to the parent directory in all terms (missing directories count as empty), then look the name up in each. The result can be resolved even when the tree as a whole is conflicted.</td></tr>
+      <tr><td><a href="{{ src(mt, 213, 216) }}"><code>has_conflict</code></a>, <a href="{{ src(mt, 195, 211) }}"><code>conflicts</code></a></td><td>Whether there is more than one term, and an iterator over the paths that are actually conflicted (recursing only where every side is a tree).</td></tr>
+      <tr><td><a href="{{ src(mt, 168, 193) }}"><code>resolve</code></a></td><td>Run the tree merge (<code>tree_merge::merge_trees</code>), then simplify the remaining conflict and its labels.</td></tr>
+      <tr><td><a href="{{ src(mt, 334, 365) }}"><code>merge</code></a>, <code>merge_no_resolve</code></td><td>Combine several merged trees into one by flattening their term lists, e.g. for a rebase (new parent + old commit − old parent).</td></tr>
+      <tr><td><a href="{{ src(mt, 250, 269) }}"><code>entries</code></a>, <code>entries_matching</code></td><td>Recursive iteration, merging subtrees on the fly. A subtree that conflicts with a non-tree is reported once and not entered.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  A path's value is <a href="{{ src(be, 426, 432) }}"><code>MergedTreeValue = Merge&lt;Option&lt;TreeValue&gt;&gt;</code></a>:
+  one optional value per term, where <code>None</code> means "absent in this term". Helpers on
+  <a href="{{ src(be, 434, 465) }}"><code>MergedTreeValueExt</code></a> classify it:
+  <code>is_tree</code> (present and every term is a tree or absent), <code>is_file_like</code>
+  (present and not a tree), and <code>to_file_merge</code>, <code>to_executable_merge</code> and
+  <code>to_copy_id_merge</code>, which pull one field out of each term when every term is a file or
+  absent. When the terms of a <code>Merge&lt;Tree&gt;</code> are looked up by name,
+  <a href="{{ src(tr, 307, 323) }}"><code>TreeMergeExt::value</code></a> first tries
+  <code>resolve_trivial</code>, so a path that only one side changed comes back resolved.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 250" role="img" aria-labelledby="trees-merge-title trees-merge-desc">
+    <title id="trees-merge-title">Looking a path up in a three-term merged tree</title>
+    <desc id="trees-merge-desc">
+      A conflicted commit has root tree terms side 1, base and side 2. For path a.txt, side 1 has
+      file F1, the base has F0 and side 2 has F0, so the value resolves trivially to F1. For path
+      b.txt, side 1 has G1, the base G0 and side 2 G2, so the value stays a conflict of three terms.
+      For path new.txt, only side 2 has it, so it resolves to that file.
+    </desc>
+    <g font-size="12">
+      <text x="210" y="24" text-anchor="middle" class="d-muted">side 1 (+)</text>
+      <text x="350" y="24" text-anchor="middle" class="d-muted">base (−)</text>
+      <text x="490" y="24" text-anchor="middle" class="d-muted">side 2 (+)</text>
+      <text x="650" y="24" text-anchor="middle" class="d-muted">path_value</text>
+      <g font-family="monospace">
+        <text x="20" y="74">a.txt</text>
+        <text x="20" y="134">b.txt</text>
+        <text x="20" y="194">new.txt</text>
+      </g>
+      <rect class="d-box" x="160" y="52" width="100" height="34" rx="5"></rect><text x="210" y="74" text-anchor="middle" font-family="monospace">F1</text>
+      <rect class="d-box" x="300" y="52" width="100" height="34" rx="5"></rect><text x="350" y="74" text-anchor="middle" font-family="monospace">F0</text>
+      <rect class="d-box" x="440" y="52" width="100" height="34" rx="5"></rect><text x="490" y="74" text-anchor="middle" font-family="monospace">F0</text>
+      <rect class="d-box d-accent" x="580" y="52" width="160" height="34" rx="5"></rect><text x="660" y="74" text-anchor="middle">resolved: F1</text>
+
+      <rect class="d-box" x="160" y="112" width="100" height="34" rx="5"></rect><text x="210" y="134" text-anchor="middle" font-family="monospace">G1</text>
+      <rect class="d-box" x="300" y="112" width="100" height="34" rx="5"></rect><text x="350" y="134" text-anchor="middle" font-family="monospace">G0</text>
+      <rect class="d-box" x="440" y="112" width="100" height="34" rx="5"></rect><text x="490" y="134" text-anchor="middle" font-family="monospace">G2</text>
+      <rect class="d-box" x="580" y="112" width="160" height="34" rx="5"></rect><text x="660" y="134" text-anchor="middle">conflict: G1 − G0 + G2</text>
+
+      <rect class="d-box" x="160" y="172" width="100" height="34" rx="5"></rect><text x="210" y="194" text-anchor="middle" class="d-muted">absent</text>
+      <rect class="d-box" x="300" y="172" width="100" height="34" rx="5"></rect><text x="350" y="194" text-anchor="middle" class="d-muted">absent</text>
+      <rect class="d-box" x="440" y="172" width="100" height="34" rx="5"></rect><text x="490" y="194" text-anchor="middle" font-family="monospace">N</text>
+      <rect class="d-box d-accent" x="580" y="172" width="160" height="34" rx="5"></rect><text x="660" y="194" text-anchor="middle">resolved: N</text>
+      <text x="20" y="236" class="d-muted" font-size="11">Trivial resolution: if a term equals the base it cancels, so only the side that changed remains.</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="diffs">5. Tree diffs</h2>
+
+<p>
+  Comparing two merged trees yields a <a href="{{ src(mt, 368, 380) }}"><code>TreeDiffStream</code></a> of
+  <code>TreeDiffEntry { path, values: BackendResult&lt;Diff&lt;MergedTreeValue&gt;&gt; }</code>, a stream
+  rather than an iterator "so high-latency backends (e.g. cloud-based ones) can fetch trees
+  asynchronously". There are two engines behind it, chosen by the store's concurrency
+  (<a href="{{ src(mt, 272, 283) }}"><code>diff_stream_internal</code></a>):
+</p>
+
+<ul>
+  <li>
+    <a href="{{ src(mt, 596, 723) }}"><code>TreeDiffIterator</code></a>, for backends with concurrency 1
+    (the Git backend). It keeps a stack of directories. For each directory it merge-joins the sorted
+    entries of the "before" and "after" trees by name, keeps only changed entries the matcher accepts,
+    and descends into any entry where either side is a tree, missing sides counting as empty trees.
+    Paths come out in depth-first order.
+  </li>
+  <li>
+    <a href="{{ src(mt, 725, 920) }}"><code>TreeDiffStreamImpl</code></a>, for concurrent backends.
+    It requests subtrees in parallel (up to <code>max_concurrent_reads</code>) and keeps results in a
+    <code>BTreeMap</code> keyed by path, emitting an entry only once no smaller path is still pending,
+    so the output order is the same.
+  </li>
+</ul>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Entry point</th><th>Output</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(mt, 285, 292) }}"><code>diff_stream</code></a></td><td>Only non-tree changes. Tree values are replaced with absent, and entries absent on both sides are dropped (<code>stream_without_trees</code>).</td></tr>
+      <tr><td><a href="{{ src(mt, 294, 301) }}"><code>diff_stream_with_trees</code></a></td><td>Also the directories that changed.</td></tr>
+      <tr><td><a href="{{ src(mt, 303, 311) }}"><code>diff_stream_for_file_system</code></a></td><td>Reordered for checkout: files under a removed directory come before a file that replaces the directory at the same path.</td></tr>
+      <tr><td><a href="{{ src(mt, 313, 322) }}"><code>diff_stream_with_copies</code></a></td><td>Joins in copy records to report copies and renames (below).</td></tr>
+      <tr><td><a href="{{ src(mt, 324, 332) }}"><code>diff_stream_with_copy_history</code></a></td><td>The same idea driven by <code>CopyHistory</code> objects instead of records.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="builder">6. <code>MergedTreeBuilder</code></h2>
+
+<p>
+  New trees are written with <a href="{{ src(mtb, 31, 127) }}"><code>MergedTreeBuilder</code></a>: start from
+  a base <code>MergedTree</code>, record overrides with <code>set_or_remove(path, MergedTreeValue)</code>
+  (<code>Merge::absent()</code> deletes), then <code>write_tree()</code>. Internally it pads the base to
+  the largest number of sides among the overrides, makes one single-tree <code>TreeBuilder</code> per
+  term, applies a resolved override to every builder and a conflicted one term by term, and writes all
+  of them. The result is simplified and, if still conflicted, run through <code>resolve()</code>. If the
+  number of sides changed, the old conflict labels are dropped (a TODO in the source). The working-copy
+  snapshot and most rewriting commands produce their trees this way.
+</p>
+
+<h2 id="copies">7. Copies</h2>
+
+<p>
+  Copy support has two halves, at different stages. See the design doc,
+  <a href="{{ src('docs/design/copy-tracking.md') }}"><code>docs/design/copy-tracking.md</code></a>.
+</p>
+
+<h3 id="copy-records">Detected copies: <code>CopyRecord</code></h3>
+<p>
+  <a href="{{ src(be, 223, 249) }}"><code>CopyRecord</code></a> describes one copy event:
+  <code>target</code> path, <code>target_commit</code>, <code>source</code> path, <code>source_file</code>
+  (a <code>FileId</code>) and <code>source_commit</code>. Backends produce them on demand with
+  <a href="{{ src(be, 855, 872) }}"><code>Backend::get_copy_records(paths, root, head)</code></a>, a stream
+  in reverse-topological order. The Git backend computes them by running gix's rename and copy detection
+  between the two commits' trees, skipping symlinks
+  (<a href="{{ src('lib/src/git_backend.rs', 1476, 1530) }}">source</a>). The simple backend returns an
+  empty stream.
+</p>
+<p>
+  <a href="{{ src(cp, 54, 119) }}"><code>CopyRecords</code></a> indexes a batch by source and by target.
+  A path that appears as the source or target of two different records is marked conflicting and
+  ignored. Duplicates of the same <code>(source, target)</code> pair, which a merge commit reports once
+  per parent, are skipped. <a href="{{ src(cp, 172, 255) }}"><code>CopiesTreeDiffStream</code></a> then
+  rewrites a plain diff: an entry whose path is a copy target gets its source attached and is classified
+  as a <code>Rename</code> if the source is gone (or became a directory) in the target tree, and as a
+  <code>Copy</code> otherwise. The separate "deleted" entry for a renamed source is dropped. This is what
+  <code>jj diff</code> uses to show renames.
+</p>
+
+<h3 id="copy-history">Tracked copies: <code>CopyHistory</code></h3>
+<p>
+  The other half is persistent identity. <a href="{{ src(be, 251, 267) }}"><code>CopyHistory</code></a>
+  holds a file's <code>current_path</code>, its <code>parents: Vec&lt;CopyId&gt;</code> (none for a new
+  file, one for a copy or rename, several for a merge of files) and a <code>salt</code> to give a
+  logically new file a fresh ID. A file's <code>TreeValue::File.copy_id</code> names its history, which
+  is "unchanged when a file is modified".
+  <a href="{{ src(be, 269, 276) }}"><code>RelatedCopy</code></a> pairs an ID with its history, and
+  <code>Backend::get_related_copies</code> returns the whole family.
+  <a href="{{ src(mt, 234, 243) }}"><code>MergedTree::copy_value</code></a> finds a file by copy ID.
+</p>
+<p>
+  At this pin neither built-in backend implements it. The Git backend answers <code>read_copy</code>,
+  <code>write_copy</code> and <code>get_related_copies</code> with <code>Unsupported</code>: "The Git
+  backend doesn't support tracked copies yet"
+  (<a href="{{ src('lib/src/git_backend.rs', 1145, 1161) }}">source</a>), and the simple backend with
+  "The simple backend doesn't support copies". So in a normal repository renames come only from
+  detection.
+</p>
