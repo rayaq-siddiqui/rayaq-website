@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-03 (fourth run): maintenance moved the pin to `69abfbe` (only
-`jj undo`/`jj redo` changed for the registered pages), then built the `jj new` command page.
+**Last updated:** 2026-10-03 (fifth run): no upstream change since `69abfbe`; built the
+`trees` topic page.
 
 ## Upstream pin
 
@@ -16,7 +16,7 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] `/jj` renders the §6 diagram and links to every page in §5 (boxes for unbuilt
       pages link to pinned source until the page exists).
 - [ ] Every §5 page exists and is registered: `protobufs`, `cli`, `commits`, `view`,
-      `operations`, `transactions`, `working-copy` done; 6 to go (`trees`, `conflicts`,
+      `operations`, `transactions`, `working-copy`, `trees` done; 5 to go (`conflicts`,
       `storage`, `index`, `revsets`, `backends`).
 - [x] The `fix` page meets all ten §8 items, with three SVG diagrams.
 - [x] The `protobufs` page covers all seven `.proto` files, every field.
@@ -29,6 +29,14 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [ ] Every §8A.1 command has a page that meets its tier's bar: 2 of 105 (`fix`, `new`).
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
+
+## Fifth run (2026-10-03)
+
+| Commit | What |
+|---|---|
+| `a760e3f` | `trees` topic page: `Tree`, `TreeValue`, `MergedTree`/`MergedTreeValue`, tree diffs, `MergedTreeBuilder`, copy records and copy history (two SVGs) |
+
+Maintenance: upstream `HEAD` still at `69abfbe`, so the pin stayed.
 
 ## Fourth run (2026-10-03)
 
@@ -77,7 +85,7 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
 ## Queue (build in this order, per spec §9)
 
 1. Tier A commands, alternating with the remaining topics (`trees`, `conflicts`,
-   `storage`, `index`, `revsets`, `backends`): ~~`new`~~, `trees`, `edit`, `describe`, `commit`,
+   `storage`, `index`, `revsets`, `backends`): ~~`new`~~, ~~`trees`~~, `edit`, `describe`, `commit`,
    `squash`, `rebase`, `abandon`, `undo`, then the rest of Tier A.
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
