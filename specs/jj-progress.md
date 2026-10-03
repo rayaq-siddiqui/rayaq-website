@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-03 (ninth run): no upstream change since `69abfbe`; built the
-`jj rebase` command page.
+**Last updated:** 2026-10-03 (tenth run): no upstream change since `69abfbe`; built the
+`jj abandon` command page.
 
 ## Upstream pin
 
@@ -26,10 +26,21 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 7 of 105 (`fix`, `new`, `edit`,
-      `describe`, `commit`, `squash`, `rebase`).
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 8 of 105 (`fix`, `new`, `edit`,
+      `describe`, `commit`, `squash`, `rebase`, `abandon`).
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
+
+## Tenth run (2026-10-03)
+
+| Commit | What |
+|---|---|
+| `b859736` | `abandon` command page (Tier A, all eight §8A.3 items, two SVGs) |
+
+Maintenance: upstream `HEAD` still at `69abfbe`, so the pin stayed. The worked example and its
+output are upstream's `test_basics` (abandon) snapshots. Also checked that every source path
+cited by a `/jj` template exists at the pin. Some core types (`CommitId`, `id_type!`) live in
+the `core/` crate (`core/src/`), not `lib/src/`, and pages should cite them there.
 
 ## Ninth run (2026-10-03)
 
@@ -125,7 +136,7 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
 
 1. Tier A commands, alternating with the remaining topics (`trees`, `conflicts`,
    `storage`, `index`, `revsets`, `backends`): ~~`new`~~, ~~`trees`~~, ~~`edit`~~, ~~`describe`~~, ~~`commit`~~,
-   ~~`squash`~~, ~~`rebase`~~, `abandon`, `undo`, then the rest of Tier A.
+   ~~`squash`~~, ~~`rebase`~~, ~~`abandon`~~, `undo`, then the rest of Tier A.
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
 
