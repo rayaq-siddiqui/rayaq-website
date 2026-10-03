@@ -1,0 +1,349 @@
+{% set cmd = "cli/src/commands/commit.rs" %}
+{% set du = "cli/src/description_util.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+{% set cb = "lib/src/commit_builder.rs" %}
+{% set misc = "cli/src/config/misc.toml" %}
+<header class="jj-header">
+  <h1>How <code>jj commit</code> works</h1>
+  <p class="tagline">
+    <code>jj commit</code> finishes the working-copy commit: it gives <code>@</code> a description,
+    optionally keeps only some of its changes there, and starts a fresh working-copy commit on top that
+    holds everything else.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: with no paths and no <code>-i</code>, <code>jj commit</code> is <code>jj describe</code>
+  followed by <code>jj new</code>, in one operation. It rewrites <code>@</code> (same change ID) with the
+  chosen description and the <em>selected</em> tree. Then it creates a new, undescribed commit on top
+  whose tree is the full, original working-copy tree, and moves every workspace that was on the old
+  <code>@</code> there. So the files on disk never change: unselected changes simply show up as the new
+  <code>@</code>'s diff. The operation is <code>commit &lt;old @ id&gt;</code>.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 82, 196) }}"><code>cmd_commit</code></a>. It shares its description
+  handling with <a href="{{ url_for('jj', slug='describe') }}"><code>jj describe</code></a>, its final
+  step with <a href="{{ url_for('jj', slug='new') }}"><code>jj new</code></a> and
+  <a href="{{ url_for('jj', slug='edit') }}"><code>jj edit</code></a> (<code>MutableRepo::edit</code>),
+  and its change selection with <code>jj split</code>. Its own help text lists how it differs from
+  <code>split</code> (<a href="{{ src(cmd, 33, 53) }}">source</a>): it isn't interactive by default, has
+  no <code>-r</code>, doesn't move bookmarks forward, and can't send the selection elsewhere. The
+  default alias <code>ci</code> comes from <a href="{{ src(misc, 7) }}">misc.toml</a>.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>FILESETS</code> (positional)</td><td>filesets, repeatable</td><td>all files</td><td>Keep only changes to these paths in the committed commit. The rest move to the new <code>@</code>. With none, the matcher is <code>FilesetExpression::all()</code> (<a href="{{ src(cmd, 76, 79) }}">source</a>, <a href="{{ src(util, 1603, 1617) }}"><code>parse_file_patterns</code></a>).</td></tr>
+      <tr><td><code>-i</code>, <code>--interactive</code></td><td>bool</td><td>false</td><td>Choose the changes to keep in a diff editor (<a href="{{ src(cmd, 56, 58) }}">source</a>).</td></tr>
+      <tr><td><code>--tool NAME</code></td><td>string</td><td>none</td><td>Use this diff editor. Implies <code>--interactive</code> (<a href="{{ src(cmd, 60, 63) }}">source</a>).</td></tr>
+      <tr><td><code>-m</code>, <code>--message MESSAGE</code></td><td>string, repeatable</td><td>none</td><td>Use this description and don't open the editor. Several values are joined as paragraphs, exactly as in <a href="{{ url_for('jj', slug='describe') }}#cli"><code>describe</code></a> (<a href="{{ src(cmd, 65, 67) }}">source</a>).</td></tr>
+      <tr><td><code>--editor</code></td><td>bool</td><td>false</td><td>Open the editor even with <code>-m</code> (<a href="{{ src(cmd, 69, 74) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 54, 80) }}"><code>CommitArgs</code></a></p>
+
+<p>
+  Unlike <code>describe</code>, there is no <code>--stdin</code> and no revision argument: the target is
+  always this workspace's <code>@</code> (<a href="{{ src(cmd, 90, 93) }}">source</a>). The editor opens
+  when there's no <code>-m</code>, or when <code>--editor</code> is given
+  (<a href="{{ src(cmd, 139) }}">line 139</a>).
+</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>ui.editor</code></td><td><code>nano</code> / <code>Notepad</code></td><td>The description editor. Precedence with <code>$VISUAL</code>, <code>$EDITOR</code> and <code>$JJ_EDITOR</code> is as on the <a href="{{ url_for('jj', slug='describe') }}#configuration"><code>describe</code> page</a>.</td></tr>
+      <tr><td><code>templates.draft_commit_description</code></td><td><code>builtin_draft_commit_description</code></td><td>The text the description editor starts with, rendered against a hidden temporary commit that already has the <em>selected</em> tree, so its <code>JJ:</code> file list shows only what is being committed (<a href="{{ src(cmd, 154, 159) }}">source</a>).</td></tr>
+      <tr><td><code>templates.commit_trailers</code></td><td>empty</td><td>Trailers appended to the description, with the same empty-description rule as <code>describe</code> (<a href="{{ src(cmd, 144, 153) }}">source</a>).</td></tr>
+      <tr>
+        <td><code>ui.diff-editor</code></td>
+        <td>unset; falls back to <code>:builtin</code></td>
+        <td>
+          The diff editor for <code>-i</code> when <code>--tool</code> isn't given
+          (<a href="{{ src(util, 1753, 1791) }}"><code>diff_editor</code>, <code>diff_selector</code></a>). When unset,
+          jj uses the built-in editor and prints a hint saying so
+          (<a href="{{ src('cli/src/merge_tools/mod.rs', 191, 210) }}">source</a>). External tools are configured under
+          <code>[merge-tools.&lt;name&gt;]</code>.
+        </td>
+      </tr>
+      <tr><td><code>ui.diff-instructions</code></td><td><code>true</code> (<a href="{{ src(misc, 37) }}">source</a>)</td><td>Whether the diff editor is given the instruction text "You are splitting the working-copy commit: …" (<a href="{{ src(cmd, 104, 115) }}">source</a>).</td></tr>
+      <tr>
+        <td><code>experimental-advance-branches.enabled-branches</code> / <code>.disabled-branches</code></td>
+        <td>both empty (<a href="{{ src(misc, 20, 22) }}">source</a>)</td>
+        <td>
+          Name patterns of bookmarks that advance automatically. With no enabled patterns the feature is off
+          (<a href="{{ src(util, 921, 941) }}"><code>load_advance_bookmarks_matcher</code></a>). When it is on,
+          matching bookmarks on <code>@</code>'s <em>parents</em> move to the committed commit
+          (<a href="{{ src(util, 2664, 2701) }}"><code>get_advanceable_bookmarks</code></a>).
+        </td>
+      </tr>
+      <tr><td><code>user.name</code>, <code>user.email</code></td><td>unset</td><td>Committer of the rewritten commit, and author and committer of the new <code>@</code>.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 556" role="img" aria-labelledby="ci-flow-title ci-flow-desc">
+    <title id="ci-flow-title">jj commit: call flow</title>
+    <desc id="ci-flow-desc">
+      cmd_commit loads the workspace through the shared CLI lifecycle, which snapshots the working
+      copy, and gets the working-copy commit or fails with "This command requires a working copy". It
+      builds the path matcher, finds advanceable bookmarks on @'s parents, picks a diff selector, and
+      starts a transaction. DiffSelector::select restores the matched paths from @'s tree onto the
+      parent tree and, if interactive, opens the diff editor; the result is the selected tree. It
+      warns if paths were given but matched nothing. It rewrites @ with the selected tree, adds trailers,
+      and opens the description editor unless -m was given. It writes the rewritten commit, creates a
+      new commit on top with @'s full original tree, advances bookmarks, and runs edit for every
+      workspace that was on @. tx.finish records "commit" with the old @'s ID, rebases any descendants,
+      and updates the working copy.
+    </desc>
+    <defs>
+      <marker id="ci-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 90, 102) }}"><rect class="d-box" x="20" y="84" width="340" height="84" rx="6"></rect>
+      <text x="32" y="105">get_wc_commit (or error)</text>
+      <text x="32" y="123" class="d-muted" font-size="11">parse_file_patterns → matcher</text>
+      <text x="32" y="140" class="d-muted" font-size="11">get_advanceable_bookmarks(@'s parents)</text>
+      <text x="32" y="157" class="d-muted" font-size="11">diff_selector, text_editor, start_transaction</text></a>
+
+      <a href="{{ src(util, 3570, 3610) }}"><rect class="d-box" x="420" y="84" width="320" height="84" rx="6"></rect>
+      <text x="432" y="105">DiffSelector::select</text>
+      <text x="432" y="123" class="d-muted" font-size="11">restore_tree: matched paths from @'s tree</text>
+      <text x="432" y="140" class="d-muted" font-size="11">onto the parent tree</text>
+      <text x="432" y="157" class="d-muted" font-size="11">-i / --tool: then the diff editor</text></a>
+
+      <a href="{{ src(cmd, 128, 137) }}"><rect class="d-box" x="420" y="192" width="320" height="66" rx="6"></rect>
+      <text x="432" y="213">selected tree</text>
+      <text x="432" y="231" class="d-muted" font-size="11">warn if paths matched nothing</text>
+      <text x="432" y="248" class="d-muted" font-size="11">rewrite_commit(@).detach(), set_tree</text></a>
+
+      <a href="{{ src(cmd, 139, 174) }}"><rect class="d-box" x="20" y="192" width="340" height="102" rx="6"></rect>
+      <text x="32" y="213">description</text>
+      <text x="32" y="231" class="d-muted" font-size="11">-m paragraphs, else @'s current text</text>
+      <text x="32" y="248" class="d-muted" font-size="11">add_trailers (unless empty and no editor)</text>
+      <text x="32" y="265" class="d-muted" font-size="11">editor: write_hidden → description_template</text>
+      <text x="32" y="282" class="d-muted" font-size="11">→ edit_description; hint if left empty</text></a>
+
+      <a href="{{ src(cb, 400, 434) }}"><rect class="d-box" x="20" y="318" width="340" height="50" rx="6"></rect>
+      <text x="32" y="339">commit_builder.write</text>
+      <text x="32" y="357" class="d-muted" font-size="11">rewritten @: same change ID, selected tree</text></a>
+
+      <a href="{{ src(cmd, 177, 192) }}"><rect class="d-box" x="420" y="318" width="320" height="102" rx="6"></rect>
+      <text x="432" y="339">for the workspaces on old @:</text>
+      <text x="432" y="358" class="d-muted" font-size="11">new_commit([rewritten], @'s full tree)</text>
+      <text x="432" y="375" class="d-muted" font-size="11">advance_bookmarks → rewritten</text>
+      <text x="432" y="392" class="d-muted" font-size="11">MutableRepo::edit(name, new @)</text>
+      <text x="432" y="409" class="d-muted" font-size="11">per workspace</text></a>
+
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="460" width="720" height="76" rx="6"></rect>
+      <text x="380" y="482" text-anchor="middle">tx.finish(ui, "commit &lt;old @ id&gt;"): rebase descendants of the old @ onto the rewritten commit,</text>
+      <text x="380" y="502" text-anchor="middle">move its bookmarks there, write the operation, and check out the new @,</text>
+      <text x="380" y="522" text-anchor="middle">whose tree equals what was snapshotted, so no files change (CLI page)</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#ci-arrow)">
+      <line x1="190" y1="60" x2="190" y2="80"></line>
+      <line x1="360" y1="126" x2="416" y2="126"></line>
+      <line x1="580" y1="168" x2="580" y2="188"></line>
+      <line x1="420" y1="225" x2="364" y2="225"></line>
+      <line x1="190" y1="294" x2="190" y2="314"></line>
+      <line x1="360" y1="343" x2="416" y2="343"></line>
+      <line x1="580" y1="420" x2="580" y2="456"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Old <code>@</code></td><td>read, then rewritten</td><td>Rewritten into the committed commit: same change ID, parents and author, the selected tree, the new description, and you as committer now.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Parent tree of <code>@</code></td><td>read</td><td>The base the selection is built on (<code>commit.parent_tree</code>, <a href="{{ src(cmd, 103) }}">source</a>). For a merge, this is the merged parents' tree.</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>New <code>@</code></td><td>created</td><td>A new change on top of the committed commit, with the old <code>@</code>'s full tree, an empty description, and fresh author and committer signatures (<a href="{{ src(cb, 187, 211) }}"><code>for_new_commit</code></a>).</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Temporary commit</td><td>written, hidden</td><td>Only when the editor opens: it carries the draft so the description template can render its diff summary.</td><td><a href="{{ url_for('jj', slug='describe') }}#touchpoints">describe</a></td></tr>
+      <tr><td><code>View.wc_commit_ids</code></td><td>write</td><td>Every workspace whose <code>@</code> was the old commit now points at the same new <code>@</code> (<a href="{{ src('lib/src/view.rs', 73, 81) }}"><code>workspaces_for_wc_commit_id</code></a>).</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td><code>View.head_ids</code></td><td>write</td><td>The new <code>@</code> becomes a head, and the old commit stops being visible.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td><code>View.local_bookmarks</code></td><td>write</td><td>Bookmarks on the old <code>@</code> follow the rewrite to the committed commit, <em>not</em> the new <code>@</code>. With advance-bookmarks enabled, matching bookmarks on <code>@</code>'s parents move to the committed commit too.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td>One operation, <code>commit &lt;old @ id&gt;</code>.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+      <tr><td>Working copy (<code>TreeState</code>)</td><td>read, then rewritten</td><td>Snapshotted at the start. The state is then reset to the new <code>@</code>, which has the same tree, so file contents don't change.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, always. Even <code>jj commit -m ""</code> on an empty <code>@</code> records an operation, because a new commit is created (<a href="{{ src(cmd, 102) }}">source</a>).</li>
+  <li><strong>Operation description:</strong> <code>commit &lt;id&gt;</code>, the full hex ID of the working-copy commit <em>before</em> the command (<a href="{{ src(cmd, 193, 194) }}">source</a>).</li>
+  <li>
+    <strong>Commits created or rewritten:</strong> the old <code>@</code> is rewritten, and one new
+    commit is created. If the old <code>@</code> had descendants, which is possible but unusual,
+    <code>finish</code> rebases them onto the <em>committed</em> commit. With a partial selection, that
+    commit lacks the unselected changes, so the rebase may conflict.
+  </li>
+  <li><strong>Working copy:</strong> snapshotted first, so everything you've edited is included. After the operation, the new <code>@</code> is checked out. Its tree equals the snapshot, so nothing on disk changes.</li>
+  <li><strong><code>jj undo</code></strong> restores the previous view: the old <code>@</code> comes back as <code>@</code> with its old description and all its changes, and the two new commits are hidden.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="selection">Choosing what to commit</h3>
+
+<p>
+  <a href="{{ src(util, 3570, 3610) }}"><code>DiffSelector::select</code></a> works on two trees:
+  <em>before</em> is <code>@</code>'s parent tree, and <em>after</em> is <code>@</code>'s tree. It
+  first runs <code>restore_tree</code>, which starts from <em>before</em> and copies in every path the
+  matcher accepts from <em>after</em>. With no paths, the result is simply <code>@</code>'s tree.
+  Non-interactive selection stops there. Interactive selection then opens the diff editor on
+  <em>before</em> → that result, with the instruction text. The tree you leave on the right side is what
+  gets committed. If there's nothing to choose from, it prints <code>Empty diff - won't run diff
+  editor.</code> and skips the editor.
+</p>
+
+<h3 id="building">Building the description</h3>
+
+<ol>
+  <li>Start from the <code>-m</code> paragraphs, or from <code>@</code>'s current description (<a href="{{ src(cmd, 140, 143) }}">source</a>).</li>
+  <li>
+    Add trailers through <a href="{{ src(du, 476, 491) }}"><code>add_trailers</code></a>, unless the
+    description is empty and no editor will open. That would give the commit a description made only of
+    trailers (<a href="{{ src(cmd, 144, 153) }}">source</a>).
+  </li>
+  <li>
+    If the editor is used, write a hidden temporary commit with the selected tree and the draft text,
+    render <code>templates.draft_commit_description</code> for it, and edit it with
+    <a href="{{ url_for('jj', slug='describe') }}#building"><code>edit_description</code></a>. If the result
+    is empty, jj hints that you can <code>jj undo</code>, or describe the parent with
+    <code>jj desc @-</code> (<a href="{{ src(cmd, 154, 173) }}">source</a>). The commit still goes
+    ahead.
+  </li>
+</ol>
+
+<h3 id="rewriting">Rewriting and moving on</h3>
+
+<p>
+  <code>rewrite_commit(@).detach()</code> takes the commit's fields and sets the selected tree and the
+  description. It is then written with <code>write</code>, which records the old <code>@</code> as
+  rewritten (<a href="{{ src(cmd, 136, 137) }}">source</a>, <a href="{{ src(cmd, 174, 175) }}">write</a>).
+  Then, for the workspaces whose <code>@</code> was the old commit, jj:
+</p>
+
+<ol>
+  <li>creates <em>one</em> new commit whose parent is the committed commit and whose tree is the old <code>@</code>'s full tree (<code>commit.tree()</code>, not the selection);</li>
+  <li>advances eligible bookmarks to the committed commit (a no-op unless the experimental setting is on);</li>
+  <li>calls <a href="{{ src(repo, 1722, 1730) }}"><code>MutableRepo::edit</code></a> for each of those workspaces, pointing them all at that new commit (<a href="{{ src(cmd, 177, 192) }}">source</a>).</li>
+</ol>
+
+<p>
+  Because the new <code>@</code>'s tree is the snapshotted tree, the diff between the committed commit
+  and the new <code>@</code> is exactly the unselected changes.
+</p>
+
+<p>
+  <strong>Invariants:</strong> the working-copy files are never modified; the committed commit keeps
+  <code>@</code>'s change ID, so it is the "same change" you were working on; the new <code>@</code> is
+  always a new change; and every workspace that shared the old <code>@</code> ends up on the same new
+  <code>@</code>.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>This command requires a working copy</code></td><td>This workspace has no working-copy commit, for example after <code>jj workspace forget</code>.</td><td><a href="{{ src(cmd, 90, 93) }}">commit.rs</a></td></tr>
+      <tr><td><code>Warning: The given paths do not match any file: …</code></td><td>Paths were given but the selected tree equals the parent tree. The command still runs, committing an empty change.</td><td><a href="{{ src(cmd, 128, 134) }}">commit.rs</a></td></tr>
+      <tr><td><code>Empty diff - won't run diff editor.</code></td><td>Interactive mode with nothing to select.</td><td><a href="{{ src(util, 3593, 3595) }}">cli_util.rs</a></td></tr>
+      <tr><td>Hint: <code>The commit message was left empty. …</code></td><td>The editor returned an empty description. The commit still goes ahead.</td><td><a href="{{ src(cmd, 160, 169) }}">commit.rs</a></td></tr>
+      <tr><td>Hint: <code>Using default editor ':builtin'; run `jj config set --user ui.diff-editor :builtin` to disable this message.</code></td><td>Interactive mode with no <code>ui.diff-editor</code> configured.</td><td><a href="{{ src('cli/src/merge_tools/mod.rs', 201, 207) }}">merge_tools/mod.rs</a></td></tr>
+      <tr><td><code>Failed to edit description</code>, <code>Trailers should be valid utf-8</code></td><td>As on the <a href="{{ url_for('jj', slug='describe') }}#errors"><code>describe</code> page</a>, minus the bulk-file errors (<code>commit</code> only ever edits one description).</td><td><a href="{{ src(du, 43, 76) }}">description_util.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <code>cmd_commit</code> makes no <code>check_rewritable</code> call of its own, unlike
+  <code>describe</code>. A <code>@</code> that is a merge stays a merge: the committed
+  commit keeps all its parents, and the new <code>@</code> has the committed commit as its only parent.
+</p>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  Upstream's <a href="{{ src('cli/tests/test_commit_command.rs', 400, 423) }}">test_commit_paths</a>: a
+  fresh repository whose <code>@</code> (change <code>qpvuntsm</code>) has two new files,
+  <code>file1</code> and <code>file2</code>. Running <code>jj commit -m=first file1</code>:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 270" role="img" aria-labelledby="ci-ex-title ci-ex-desc">
+    <title id="ci-ex-title">jj commit -m=first file1: before and after</title>
+    <desc id="ci-ex-desc">
+      Before: the root, then @ (change qpvuntsm) with no description, adding file1 and file2. After: the
+      root, then qpvuntsm rewritten with description "first" and only file1, then a new working-copy
+      commit (change rlvkpnrz) with no description, adding file2. Its tree contains both files, so
+      nothing on disk changes.
+    </desc>
+    <defs>
+      <marker id="ci-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% macro node(x, y, label, note="", note2="", hl=False, at=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 18 }}" y="{{ y + 4 }}" font-size="12">{{ label }}{% if at %} @{% endif %}</text>
+      {% if note %}<text x="{{ x + 18 }}" y="{{ y + 20 }}" font-size="10.5" class="d-muted">{{ note }}</text>{% endif %}
+      {% if note2 %}<text x="{{ x + 18 }}" y="{{ y + 35 }}" font-size="10.5" class="d-muted">{{ note2 }}</text>{% endif %}
+    {%- endmacro %}
+    <g font-size="13">
+      <text x="60" y="22" class="d-muted">before</text>
+      <text x="460" y="22" class="d-muted">after</text>
+    </g>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="70" y1="231" x2="70" y2="129"></line>
+      <line x1="470" y1="231" x2="470" y2="159"></line>
+      <line x1="470" y1="141" x2="470" y2="69"></line>
+      <line x1="300" y1="140" x2="420" y2="140" marker-end="url(#ci-ex-arrow)"></line>
+    </g>
+    {{ node(70, 240, "root") }}
+    {{ node(70, 120, "qpvuntsm", "(no description set)", "adds file1, file2", at=True) }}
+    {{ node(470, 240, "root") }}
+    {{ node(470, 150, "qpvuntsm  first", "rewritten: adds file1 only", "same change ID, new commit ID", hl=True) }}
+    {{ node(470, 60, "rlvkpnrz", "new change, (no description set)", "adds file2; tree = old @'s tree", at=True) }}
+    <text x="360" y="130" font-size="11" text-anchor="middle" class="d-muted">jj commit</text>
+    <text x="360" y="160" font-size="11" text-anchor="middle" class="d-muted">-m=first file1</text>
+  </svg>
+</div>
+
+<p>
+  Upstream checks the result: <code>jj diff -r @-</code> shows only <code>Added regular file file1</code>,
+  and <code>jj diff</code> shows only <code>file2</code>. The change IDs are the deterministic ones
+  upstream's test environment assigns. In the companion
+  <a href="{{ src('cli/tests/test_commit_command.rs', 425, 451) }}">test_commit_paths_warning</a>, the path
+  <code>file3</code> matches nothing. That produces the warning, an empty <code>first</code> commit as
+  <code>@-</code>, and both files left in the new <code>@</code>:
+</p>
+
+<pre><code>Warning: The given paths do not match any file: file3
+Working copy  (@) now at: rlvkpnrz 4c6f0146 (no description set)
+Parent commit (@-)      : qpvuntsm 68a50538 (empty) first</code></pre>
