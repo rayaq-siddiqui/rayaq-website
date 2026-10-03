@@ -1,0 +1,654 @@
+{% set lib_rs = "common/src/lib.rs" %}
+<header class="jj-header">
+  <h1>Every schema</h1>
+  <p class="tagline">
+    The two <code>.proto</code> files that define the wire between jj's client-side stores and the
+    commit-cloud server: two services, fifteen RPCs and forty-three messages, each field with the jj-lib
+    type it converts to and from.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: <code>BackendService</code> carries the content-addressed objects jj-lib's
+  <code>Backend</code> trait deals in (commits, trees, files, and on paper symlinks), and
+  <code>OpStoreService</code> carries the operation log (operations, views and op heads). Every request
+  names a repository by the UUID the server handed out at registration. On every write, the
+  <em>server</em> computes the object's ID and sends it back. The messages are a trimmed copy of jj's
+  own storage protos: they drop Git refs and tags, and they add the repo ID.
+</p>
+
+<p>
+  Both files are proto3, in packages <code>commit_cloud.backend</code> and
+  <code>commit_cloud.op_store</code>. For the protos jj itself uses on disk, see
+  <a href="{{ url_for('jj', slug='protobufs') }}">/jj/protobufs</a>. That page describes jj's own pinned
+  version, which is newer than the <code>jj-lib</code> {{ upstream.jj_lib_version }} used here.
+</p>
+
+<h2 id="codegen">How the Rust code is generated</h2>
+
+<p>
+  The <code>cc-common</code> crate compiles both files at build time.
+  <a href="{{ src('common/build.rs', 1, 5) }}"><code>common/build.rs</code></a> calls
+  <code>tonic_build::configure().compile_protos(&amp;["proto/backend.proto", "proto/op_store.proto"], &amp;["proto"])</code>,
+  which generates prost message structs plus a tonic client and server for each service.
+  <a href="{{ src(lib_rs, 1, 7) }}"><code>common/src/lib.rs</code></a> includes them as
+  <code>cc_common::backend</code> and <code>cc_common::op_store</code>. That gives types such as
+  <code>cc_common::backend::Commit</code>, the client
+  <code>backend_service_client::BackendServiceClient</code>, and the server trait
+  <code>backend_service_server::BackendService</code>. The same file defines the shared constants
+  both sides rely on (<a href="{{ src(lib_rs, 9, 21) }}">source</a>):
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Value</th></tr></thead>
+    <tbody>
+      <tr><td><code>COMMIT_ID_LENGTH</code></td><td><code>usize</code></td><td>20</td></tr>
+      <tr><td><code>CHANGE_ID_LENGTH</code></td><td><code>usize</code></td><td>16</td></tr>
+      <tr><td><code>OPERATION_ID_LENGTH</code>, <code>VIEW_ID_LENGTH</code></td><td><code>usize</code></td><td>16</td></tr>
+      <tr><td><code>ROOT_COMMIT_ID_BYTES</code>, <code>ROOT_CHANGE_ID_BYTES</code>, <code>ROOT_OPERATION_ID_BYTES</code>, <code>ROOT_VIEW_ID_BYTES</code></td><td>byte arrays</td><td>all zeros, of the lengths above</td></tr>
+      <tr><td><code>EMPTY_TREE_ID_HEX</code> / <code>EMPTY_TREE_ID_BYTES</code></td><td><code>&amp;str</code> / <code>[u8; 20]</code></td><td><code>4b825dc642cb6eb9a060e54bf8d69288fbee4904</code>, Git's empty-tree hash</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="services">The services</h2>
+
+<h3 id="backend-service"><code>BackendService</code></h3>
+<p><a href="{{ src('common/proto/backend.proto', 6, 27) }}">backend.proto, lines 6–27</a>. All RPCs are unary except <code>ReadFile</code>, which streams its response.</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>RPC</th><th>Request</th><th>Response</th><th>Client caller</th><th>Server handler</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src('common/proto/backend.proto', 8, 8) }}"><code>RegisterRepository</code></a></td><td><a href="#msg-RegisterRepositoryRequest"><code>RegisterRepositoryRequest</code></a></td><td><a href="#msg-RegisterRepositoryResponse"><code>RegisterRepositoryResponse</code></a></td><td><a href="{{ src('lib/src/cc_backend.rs', 34, 66) }}"><code>CommitCloudBackend::init</code></a></td><td><a href="{{ src('server/src/backend.rs', 25, 33) }}"><code>register_repository</code></a></td></tr>
+      <tr><td><a href="{{ src('common/proto/backend.proto', 11, 11) }}"><code>ReadCommit</code></a></td><td><a href="#msg-ReadCommitRequest"><code>ReadCommitRequest</code></a></td><td><a href="#msg-ReadCommitResponse"><code>ReadCommitResponse</code></a></td><td><a href="{{ src('lib/src/cc_backend.rs', 398, 438) }}"><code>read_commit</code></a></td><td><a href="{{ src('server/src/backend.rs', 35, 53) }}"><code>read_commit</code></a></td></tr>
+      <tr><td><a href="{{ src('common/proto/backend.proto', 12, 12) }}"><code>WriteCommit</code></a></td><td><a href="#msg-WriteCommitRequest"><code>WriteCommitRequest</code></a></td><td><a href="#msg-WriteCommitResponse"><code>WriteCommitResponse</code></a></td><td><a href="{{ src('lib/src/cc_backend.rs', 440, 460) }}"><code>write_commit</code></a></td><td><a href="{{ src('server/src/backend.rs', 55, 78) }}"><code>write_commit</code></a></td></tr>
+      <tr><td><a href="{{ src('common/proto/backend.proto', 15, 15) }}"><code>ReadTree</code></a></td><td><a href="#msg-ReadTreeRequest"><code>ReadTreeRequest</code></a></td><td><a href="#msg-ReadTreeResponse"><code>ReadTreeResponse</code></a></td><td><a href="{{ src('lib/src/cc_backend.rs', 328, 371) }}"><code>read_tree</code></a></td><td><a href="{{ src('server/src/backend.rs', 80, 106) }}"><code>read_tree</code></a></td></tr>
+      <tr><td><a href="{{ src('common/proto/backend.proto', 16, 16) }}"><code>WriteTree</code></a></td><td><a href="#msg-WriteTreeRequest"><code>WriteTreeRequest</code></a></td><td><a href="#msg-WriteTreeResponse"><code>WriteTreeResponse</code></a></td><td><a href="{{ src('lib/src/cc_backend.rs', 373, 396) }}"><code>write_tree</code></a></td><td><a href="{{ src('server/src/backend.rs', 108, 122) }}"><code>write_tree</code></a></td></tr>
+      <tr><td><a href="{{ src('common/proto/backend.proto', 19, 19) }}"><code>ReadFile</code></a></td><td><a href="#msg-ReadFileRequest"><code>ReadFileRequest</code></a></td><td><code>stream</code> <a href="#msg-ReadFileResponse"><code>ReadFileResponse</code></a></td><td><a href="{{ src('lib/src/cc_backend.rs', 237, 279) }}"><code>read_file</code></a></td><td><a href="{{ src('server/src/backend.rs', 127, 149) }}"><code>read_file</code></a></td></tr>
+      <tr><td><a href="{{ src('common/proto/backend.proto', 22, 22) }}"><code>WriteFile</code></a></td><td><a href="#msg-WriteFileRequest"><code>WriteFileRequest</code></a></td><td><a href="#msg-WriteFileResponse"><code>WriteFileResponse</code></a></td><td><a href="{{ src('lib/src/cc_backend.rs', 283, 306) }}"><code>write_file</code></a></td><td><a href="{{ src('server/src/backend.rs', 151, 167) }}"><code>write_file</code></a></td></tr>
+      <tr><td><a href="{{ src('common/proto/backend.proto', 25, 25) }}"><code>ReadSymlink</code></a></td><td><a href="#msg-ReadSymlinkRequest"><code>ReadSymlinkRequest</code></a></td><td><a href="#msg-ReadSymlinkResponse"><code>ReadSymlinkResponse</code></a></td><td>never called: <code>read_symlink</code> returns <code>Unsupported</code> (<a href="{{ src('lib/src/cc_backend.rs', 308, 310) }}">source</a>)</td><td><a href="{{ src('server/src/backend.rs', 169, 174) }}"><code>UNIMPLEMENTED</code></a></td></tr>
+      <tr><td><a href="{{ src('common/proto/backend.proto', 26, 26) }}"><code>WriteSymlink</code></a></td><td><a href="#msg-WriteSymlinkRequest"><code>WriteSymlinkRequest</code></a></td><td><a href="#msg-WriteSymlinkResponse"><code>WriteSymlinkResponse</code></a></td><td>never called: <code>write_symlink</code> returns <code>Unsupported</code> (<a href="{{ src('lib/src/cc_backend.rs', 312, 314) }}">source</a>)</td><td><a href="{{ src('server/src/backend.rs', 176, 181) }}"><code>UNIMPLEMENTED</code></a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="op-store-service"><code>OpStoreService</code></h3>
+<p><a href="{{ src('common/proto/op_store.proto', 7, 22) }}">op_store.proto, lines 7–22</a>. All six RPCs are unary.</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>RPC</th><th>Request</th><th>Response</th><th>Client caller</th><th>Server handler</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src('common/proto/op_store.proto', 10, 10) }}"><code>ReadOperation</code></a></td><td><a href="#msg-ReadOperationRequest"><code>ReadOperationRequest</code></a></td><td><a href="#msg-ReadOperationResponse"><code>ReadOperationResponse</code></a></td><td><a href="{{ src('lib/src/cc_op_store.rs', 299, 319) }}"><code>read_operation</code></a></td><td><a href="{{ src('server/src/op_store.rs', 25, 76) }}"><code>read_operation</code></a></td></tr>
+      <tr><td><a href="{{ src('common/proto/op_store.proto', 11, 11) }}"><code>WriteOperation</code></a></td><td><a href="#msg-WriteOperationRequest"><code>WriteOperationRequest</code></a></td><td><a href="#msg-WriteOperationResponse"><code>WriteOperationResponse</code></a></td><td><a href="{{ src('lib/src/cc_op_store.rs', 321, 338) }}"><code>write_operation</code></a></td><td><a href="{{ src('server/src/op_store.rs', 78, 101) }}"><code>write_operation</code></a></td></tr>
+      <tr><td><a href="{{ src('common/proto/op_store.proto', 15, 15) }}"><code>ReadView</code></a></td><td><a href="#msg-ReadViewRequest"><code>ReadViewRequest</code></a></td><td><a href="#msg-ReadViewResponse"><code>ReadViewResponse</code></a></td><td><a href="{{ src('lib/src/cc_op_store.rs', 258, 278) }}"><code>read_view</code></a></td><td><a href="{{ src('server/src/op_store.rs', 103, 141) }}"><code>read_view</code></a></td></tr>
+      <tr><td><a href="{{ src('common/proto/op_store.proto', 16, 16) }}"><code>WriteView</code></a></td><td><a href="#msg-WriteViewRequest"><code>WriteViewRequest</code></a></td><td><a href="#msg-WriteViewResponse"><code>WriteViewResponse</code></a></td><td><a href="{{ src('lib/src/cc_op_store.rs', 280, 297) }}"><code>write_view</code></a></td><td><a href="{{ src('server/src/op_store.rs', 143, 163) }}"><code>write_view</code></a></td></tr>
+      <tr><td><a href="{{ src('common/proto/op_store.proto', 20, 20) }}"><code>GetOpHeads</code></a></td><td><a href="#msg-GetOpHeadsRequest"><code>GetOpHeadsRequest</code></a></td><td><a href="#msg-GetOpHeadsResponse"><code>GetOpHeadsResponse</code></a></td><td><a href="{{ src('lib/src/cc_op_heads_store.rs', 71, 87) }}"><code>get_op_heads</code></a></td><td><a href="{{ src('server/src/op_store.rs', 165, 184) }}"><code>get_op_heads</code></a></td></tr>
+      <tr><td><a href="{{ src('common/proto/op_store.proto', 21, 21) }}"><code>UpdateOpHeads</code></a></td><td><a href="#msg-UpdateOpHeadsRequest"><code>UpdateOpHeadsRequest</code></a></td><td><a href="#msg-UpdateOpHeadsResponse"><code>UpdateOpHeadsResponse</code></a></td><td><a href="{{ src('lib/src/cc_op_heads_store.rs', 43, 69) }}"><code>update_op_heads</code></a></td><td><a href="{{ src('server/src/op_store.rs', 186, 204) }}"><code>update_op_heads</code></a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Every handler except <code>RegisterRepository</code> first checks the repo ID is registered and
+  returns <code>NOT_FOUND</code> ("repository should have been registered before …") if it isn't (<a href="{{ src('server/src/error_util.rs', 3, 14) }}"><code>ensure_repo_registered_error</code></a>).
+  On the client, every call opens a fresh tonic connection to the configured server URL. The
+  <a href="{{ url_for('jj_cloud', slug='client-backend') if 'client-backend' in ready_slugs else src('lib/src/cc_backend.rs') }}">client Backend</a>
+  and <a href="{{ url_for('jj_cloud', slug='server') if 'server' in ready_slugs else src('server/src/main.rs') }}">server</a>
+  pages cover the calls themselves.
+</p>
+
+<h2 id="backend-messages">backend.proto messages</h2>
+
+<p>
+  Fields are listed in proto order. "jj-lib type" is the jj-lib {{ upstream.jj_lib_version }} type the
+  client converts the field to and from. "—" means the field never becomes a jj-lib value.
+</p>
+
+<h3 id="msg-RegisterRepositoryRequest"><code>RegisterRepositoryRequest</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 31, 33) }}">backend.proto, lines 31–33</a> · converted by <a href="{{ src('lib/src/cc_backend.rs', 34, 66) }}">client init</a>, <a href="{{ src('server/src/backend.rs', 25, 33) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td><code>optional string</code></td><td>1</td><td>Optional display name. The client always sends <code>None</code>, and the server ignores the field.</td><td>—</td><td><a href="{{ src('common/proto/backend.proto', 32, 32) }}">L32</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-RegisterRepositoryResponse"><code>RegisterRepositoryResponse</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 35, 37) }}">backend.proto, lines 35–37</a> · converted by <a href="{{ src('server/src/backend.rs', 25, 33) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>repo_id</code></td><td><code>string</code></td><td>1</td><td>A random UUID v4 string the server generates. The client saves it in the store's <code>config.toml</code> and sends it on every later request.</td><td><code>CommitCloudConfig.repo_id</code></td><td><a href="{{ src('common/proto/backend.proto', 36, 36) }}">L36</a></td></tr>
+    </tbody>
+  </table>
+</div>
+<h3 id="msg-Timestamp"><code>Timestamp</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 41, 44) }}">backend.proto, lines 41–44</a> · converted by <a href="{{ src('lib/src/cc_backend.rs', 91, 112) }}">signature_to_proto / signature_from_proto</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>millis_since_epoch</code></td><td><code>int64</code></td><td>1</td><td>Milliseconds since the Unix epoch.</td><td><a href="{{ jj_lib('lib/src/backend.rs', 98) }}"><code>MillisSinceEpoch</code></a></td><td><a href="{{ src('common/proto/backend.proto', 42, 42) }}">L42</a></td></tr>
+      <tr><td><code>tz_offset</code></td><td><code>int32</code></td><td>2</td><td>Time-zone offset in minutes.</td><td><a href="{{ jj_lib('lib/src/backend.rs', 102) }}"><code>Timestamp.tz_offset</code></a></td><td><a href="{{ src('common/proto/backend.proto', 43, 43) }}">L43</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-Signature"><code>Signature</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 46, 50) }}">backend.proto, lines 46–50</a> · converted by <a href="{{ src('lib/src/cc_backend.rs', 91, 112) }}">signature_to_proto / signature_from_proto</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td><code>string</code></td><td>1</td><td>Author or committer name.</td><td><a href="{{ jj_lib('lib/src/backend.rs', 161) }}"><code>Signature.name</code></a></td><td><a href="{{ src('common/proto/backend.proto', 47, 47) }}">L47</a></td></tr>
+      <tr><td><code>email</code></td><td><code>string</code></td><td>2</td><td>Email address.</td><td><a href="{{ jj_lib('lib/src/backend.rs', 161) }}"><code>Signature.email</code></a></td><td><a href="{{ src('common/proto/backend.proto', 48, 48) }}">L48</a></td></tr>
+      <tr><td><code>timestamp</code></td><td><code>Timestamp</code></td><td>3</td><td>When it was signed. A missing timestamp decodes as zero (<code>unwrap_or_default</code>).</td><td><a href="{{ jj_lib('lib/src/backend.rs', 102) }}"><code>Timestamp</code></a></td><td><a href="{{ src('common/proto/backend.proto', 49, 49) }}">L49</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-Commit"><code>Commit</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 53, 64) }}">backend.proto, lines 53–64</a> · converted by <a href="{{ src('lib/src/cc_backend.rs', 114, 154) }}">commit_to_proto / commit_from_proto</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>commit_id</code></td><td><code>bytes</code></td><td>1</td><td>Empty when the client writes, because <code>commit_to_proto</code> sets <code>vec![]</code>. The server fills it in with the ID it computes. If a request carries a non-empty ID, the server stores the commit under that ID without checking it.</td><td><code>CommitId</code> (the key, not a field)</td><td><a href="{{ src('common/proto/backend.proto', 54, 54) }}">L54</a></td></tr>
+      <tr><td><code>change_id</code></td><td><code>bytes</code></td><td>2</td><td>The change ID, 16 bytes.</td><td><a href="{{ jj_lib('lib/src/backend.rs', 187) }}"><code>Commit.change_id</code></a></td><td><a href="{{ src('common/proto/backend.proto', 55, 55) }}">L55</a></td></tr>
+      <tr><td><code>parent_commit_ids</code></td><td><code>repeated bytes</code></td><td>3</td><td>Parent commit IDs, in order.</td><td><a href="{{ jj_lib('lib/src/backend.rs', 187) }}"><code>Commit.parents</code></a></td><td><a href="{{ src('common/proto/backend.proto', 56, 56) }}">L56</a></td></tr>
+      <tr><td><code>root_tree_id</code></td><td><code>repeated bytes</code></td><td>4</td><td>One tree ID per term of the root tree. A resolved tree has exactly one.</td><td><a href="{{ jj_lib('lib/src/backend.rs', 187) }}"><code>Commit.root_tree</code></a> (<code>Merge&lt;TreeId&gt;</code>)</td><td><a href="{{ src('common/proto/backend.proto', 57, 57) }}">L57</a></td></tr>
+      <tr><td><code>description</code></td><td><code>string</code></td><td>5</td><td>The commit message.</td><td><a href="{{ jj_lib('lib/src/backend.rs', 187) }}"><code>Commit.description</code></a></td><td><a href="{{ src('common/proto/backend.proto', 58, 58) }}">L58</a></td></tr>
+      <tr><td><code>author</code></td><td><code>Signature</code></td><td>6</td><td>Author signature.</td><td><a href="{{ jj_lib('lib/src/backend.rs', 187) }}"><code>Commit.author</code></a></td><td><a href="{{ src('common/proto/backend.proto', 59, 59) }}">L59</a></td></tr>
+      <tr><td><code>committer</code></td><td><code>Signature</code></td><td>7</td><td>Committer signature.</td><td><a href="{{ jj_lib('lib/src/backend.rs', 187) }}"><code>Commit.committer</code></a></td><td><a href="{{ src('common/proto/backend.proto', 60, 60) }}">L60</a></td></tr>
+      <tr><td><code>predecessors</code></td><td><code>repeated bytes</code></td><td>8</td><td>Commits this one rewrote (deprecated in jj-lib in favour of the operation's <code>commit_predecessors</code>).</td><td><a href="{{ jj_lib('lib/src/backend.rs', 187) }}"><code>Commit.predecessors</code></a></td><td><a href="{{ src('common/proto/backend.proto', 61, 61) }}">L61</a></td></tr>
+      <tr><td><code>conflict_labels</code></td><td><code>repeated string</code></td><td>9</td><td>Labels for each term of a conflicted tree. Converted with <code>ConflictLabels::from_vec</code>.</td><td><a href="{{ jj_lib('lib/src/backend.rs', 187) }}"><code>Commit.conflict_labels</code></a></td><td><a href="{{ src('common/proto/backend.proto', 62, 62) }}">L62</a></td></tr>
+      <tr><td><code>secure_sig</code></td><td><code>optional bytes</code></td><td>10</td><td>Signature bytes, when the commit is signed. On read the client always sets <code>secure_sig: None</code>, so signatures don't survive a round trip, and <code>write_commit</code> ignores its signing function.</td><td><a href="{{ jj_lib('lib/src/backend.rs', 173) }}"><code>SecureSig</code></a></td><td><a href="{{ src('common/proto/backend.proto', 63, 63) }}">L63</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-ReadCommitRequest"><code>ReadCommitRequest</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 66, 69) }}">backend.proto, lines 66–69</a> · converted by <a href="{{ src('lib/src/cc_backend.rs', 398, 438) }}">client</a>, <a href="{{ src('server/src/backend.rs', 35, 53) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>repo_id</code></td><td><code>string</code></td><td>1</td><td>The repository UUID.</td><td>—</td><td><a href="{{ src('common/proto/backend.proto', 67, 67) }}">L67</a></td></tr>
+      <tr><td><code>commit_id</code></td><td><code>bytes</code></td><td>2</td><td>The 20-byte commit ID. The client answers the root commit locally and never asks for it.</td><td><code>CommitId</code></td><td><a href="{{ src('common/proto/backend.proto', 68, 68) }}">L68</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-ReadCommitResponse"><code>ReadCommitResponse</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 71, 73) }}">backend.proto, lines 71–73</a> · converted by <a href="{{ src('server/src/backend.rs', 35, 53) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>commit</code></td><td><code>Commit</code></td><td>1</td><td>The stored commit. A missing commit is a <code>NOT_FOUND</code> status, which the client maps to <code>BackendError::ObjectNotFound</code>.</td><td><a href="{{ jj_lib('lib/src/backend.rs', 187) }}"><code>Commit</code></a></td><td><a href="{{ src('common/proto/backend.proto', 72, 72) }}">L72</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-WriteCommitRequest"><code>WriteCommitRequest</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 75, 78) }}">backend.proto, lines 75–78</a> · converted by <a href="{{ src('lib/src/cc_backend.rs', 440, 460) }}">client</a>, <a href="{{ src('server/src/backend.rs', 55, 78) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>repo_id</code></td><td><code>string</code></td><td>1</td><td>The repository UUID.</td><td>—</td><td><a href="{{ src('common/proto/backend.proto', 76, 76) }}">L76</a></td></tr>
+      <tr><td><code>commit</code></td><td><code>Commit</code></td><td>2</td><td>The commit to store, with <code>commit_id</code> empty.</td><td><a href="{{ jj_lib('lib/src/backend.rs', 187) }}"><code>Commit</code></a></td><td><a href="{{ src('common/proto/backend.proto', 77, 77) }}">L77</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-WriteCommitResponse"><code>WriteCommitResponse</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 80, 82) }}">backend.proto, lines 80–82</a> · converted by <a href="{{ src('server/src/backend.rs', 55, 78) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>commit_id</code></td><td><code>bytes</code></td><td>1</td><td>The ID the server computed with <code>compute_git_commit_hash</code>. The client uses it as the commit's ID.</td><td><code>CommitId</code></td><td><a href="{{ src('common/proto/backend.proto', 81, 81) }}">L81</a></td></tr>
+    </tbody>
+  </table>
+</div>
+<h3 id="msg-File"><code>File</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 86, 90) }}">backend.proto, lines 86–90</a> · converted by <a href="{{ src('lib/src/cc_backend.rs', 156, 204) }}">tree_entry_to_proto / tree_entry_from_proto</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>id</code></td><td><code>bytes</code></td><td>1</td><td>Content ID of the file's blob.</td><td><code>FileId</code></td><td><a href="{{ src('common/proto/backend.proto', 87, 87) }}">L87</a></td></tr>
+      <tr><td><code>executable</code></td><td><code>bool</code></td><td>2</td><td>Executable bit.</td><td><code>bool</code></td><td><a href="{{ src('common/proto/backend.proto', 88, 88) }}">L88</a></td></tr>
+      <tr><td><code>copy_id</code></td><td><code>bytes</code></td><td>3</td><td>Copy-tracking ID. On read it is kept only if it is exactly 20 bytes, and otherwise replaced with 20 zero bytes (the <code>ROOT_COMMIT_ID_BYTES</code> constant).</td><td><code>CopyId</code></td><td><a href="{{ src('common/proto/backend.proto', 89, 89) }}">L89</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-TreeValue"><code>TreeValue</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 92, 99) }}">backend.proto, lines 92–99</a> · converted by <a href="{{ src('lib/src/cc_backend.rs', 156, 204) }}">tree_entry_to_proto / tree_entry_from_proto</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>file</code></td><td><code>File (oneof <code>value</code>)</code></td><td>1</td><td>A regular file.</td><td><a href="{{ jj_lib('lib/src/backend.rs', 390) }}"><code>TreeValue::File</code></a></td><td><a href="{{ src('common/proto/backend.proto', 94, 94) }}">L94</a></td></tr>
+      <tr><td><code>symlink_id</code></td><td><code>bytes (oneof <code>value</code>)</code></td><td>2</td><td>A symlink. It can be stored in a tree, but the symlink content RPCs are not implemented.</td><td><a href="{{ jj_lib('lib/src/backend.rs', 390) }}"><code>TreeValue::Symlink</code></a></td><td><a href="{{ src('common/proto/backend.proto', 95, 95) }}">L95</a></td></tr>
+      <tr><td><code>tree_id</code></td><td><code>bytes (oneof <code>value</code>)</code></td><td>3</td><td>A subdirectory.</td><td><a href="{{ jj_lib('lib/src/backend.rs', 390) }}"><code>TreeValue::Tree</code></a></td><td><a href="{{ src('common/proto/backend.proto', 96, 96) }}">L96</a></td></tr>
+      <tr><td><code>conflict_id</code></td><td><code>bytes (oneof <code>value</code>)</code></td><td>4</td><td>No counterpart in jj-lib 0.43's <code>TreeValue</code>. The client never writes it and rejects it on read ("tree entry should not have contained a ConflictId"). Git submodules have no field here, and the client rejects them on write with <code>BackendError::Unsupported</code>.</td><td>—</td><td><a href="{{ src('common/proto/backend.proto', 97, 97) }}">L97</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-TreeEntry"><code>TreeEntry</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 101, 104) }}">backend.proto, lines 101–104</a> · converted by <a href="{{ src('lib/src/cc_backend.rs', 156, 204) }}">tree_entry_to_proto / tree_entry_from_proto</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td><code>string</code></td><td>1</td><td>One path component.</td><td><code>RepoPathComponentBuf</code></td><td><a href="{{ src('common/proto/backend.proto', 102, 102) }}">L102</a></td></tr>
+      <tr><td><code>value</code></td><td><code>TreeValue</code></td><td>2</td><td>What the name points at.</td><td><a href="{{ jj_lib('lib/src/backend.rs', 390) }}"><code>TreeValue</code></a></td><td><a href="{{ src('common/proto/backend.proto', 103, 103) }}">L103</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-ReadTreeRequest"><code>ReadTreeRequest</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 106, 110) }}">backend.proto, lines 106–110</a> · converted by <a href="{{ src('lib/src/cc_backend.rs', 328, 371) }}">client</a>, <a href="{{ src('server/src/backend.rs', 80, 106) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>repo_id</code></td><td><code>string</code></td><td>1</td><td>The repository UUID.</td><td>—</td><td><a href="{{ src('common/proto/backend.proto', 107, 107) }}">L107</a></td></tr>
+      <tr><td><code>tree_id</code></td><td><code>bytes</code></td><td>2</td><td>The tree's ID. The server answers the well-known empty-tree ID itself, without storage.</td><td><code>TreeId</code></td><td><a href="{{ src('common/proto/backend.proto', 108, 108) }}">L108</a></td></tr>
+      <tr><td><code>path</code></td><td><code>string</code></td><td>3</td><td>The directory's repo path. The client sends it, and the server ignores it.</td><td><code>RepoPath</code></td><td><a href="{{ src('common/proto/backend.proto', 109, 109) }}">L109</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-ReadTreeResponse"><code>ReadTreeResponse</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 112, 115) }}">backend.proto, lines 112–115</a> · converted by <a href="{{ src('server/src/backend.rs', 80, 106) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>tree_id</code></td><td><code>bytes</code></td><td>1</td><td>Echo of the requested ID.</td><td><code>TreeId</code></td><td><a href="{{ src('common/proto/backend.proto', 113, 113) }}">L113</a></td></tr>
+      <tr><td><code>entries</code></td><td><code>repeated TreeEntry</code></td><td>2</td><td>The tree's entries.</td><td><a href="{{ jj_lib('lib/src/backend.rs', 467) }}"><code>Tree</code></a></td><td><a href="{{ src('common/proto/backend.proto', 114, 114) }}">L114</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-WriteTreeRequest"><code>WriteTreeRequest</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 117, 121) }}">backend.proto, lines 117–121</a> · converted by <a href="{{ src('lib/src/cc_backend.rs', 373, 396) }}">client</a>, <a href="{{ src('server/src/backend.rs', 108, 122) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>repo_id</code></td><td><code>string</code></td><td>1</td><td>The repository UUID.</td><td>—</td><td><a href="{{ src('common/proto/backend.proto', 118, 118) }}">L118</a></td></tr>
+      <tr><td><code>path</code></td><td><code>string</code></td><td>2</td><td>The directory's repo path. Sent, and ignored by the server.</td><td><code>RepoPath</code></td><td><a href="{{ src('common/proto/backend.proto', 119, 119) }}">L119</a></td></tr>
+      <tr><td><code>entries</code></td><td><code>repeated TreeEntry</code></td><td>3</td><td>The tree's entries, in the order jj-lib gives them.</td><td><a href="{{ jj_lib('lib/src/backend.rs', 467) }}"><code>Tree</code></a></td><td><a href="{{ src('common/proto/backend.proto', 120, 120) }}">L120</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-WriteTreeResponse"><code>WriteTreeResponse</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 123, 125) }}">backend.proto, lines 123–125</a> · converted by <a href="{{ src('server/src/backend.rs', 108, 122) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>tree_id</code></td><td><code>bytes</code></td><td>1</td><td>The ID the server computed with <code>compute_git_tree_hash</code>.</td><td><code>TreeId</code></td><td><a href="{{ src('common/proto/backend.proto', 124, 124) }}">L124</a></td></tr>
+    </tbody>
+  </table>
+</div>
+<h3 id="msg-ReadFileRequest"><code>ReadFileRequest</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 129, 132) }}">backend.proto, lines 129–132</a> · converted by <a href="{{ src('lib/src/cc_backend.rs', 237, 279) }}">client</a>, <a href="{{ src('server/src/backend.rs', 127, 149) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>repo_id</code></td><td><code>string</code></td><td>1</td><td>The repository UUID.</td><td>—</td><td><a href="{{ src('common/proto/backend.proto', 130, 130) }}">L130</a></td></tr>
+      <tr><td><code>file_id</code></td><td><code>bytes</code></td><td>2</td><td>The blob's ID.</td><td><code>FileId</code></td><td><a href="{{ src('common/proto/backend.proto', 131, 131) }}">L131</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-ReadFileResponse"><code>ReadFileResponse</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 134, 136) }}">backend.proto, lines 134–136</a> · converted by <a href="{{ src('server/src/backend.rs', 127, 149) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>chunk</code></td><td><code>bytes</code></td><td>1</td><td>File content. The RPC is server-streaming, but the server sends the whole file as one chunk.</td><td>file bytes</td><td><a href="{{ src('common/proto/backend.proto', 135, 135) }}">L135</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-WriteFileRequest"><code>WriteFileRequest</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 138, 141) }}">backend.proto, lines 138–141</a> · converted by <a href="{{ src('lib/src/cc_backend.rs', 283, 306) }}">client</a>, <a href="{{ src('server/src/backend.rs', 151, 167) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>repo_id</code></td><td><code>string</code></td><td>1</td><td>The repository UUID.</td><td>—</td><td><a href="{{ src('common/proto/backend.proto', 139, 139) }}">L139</a></td></tr>
+      <tr><td><code>content</code></td><td><code>bytes</code></td><td>2</td><td>The whole file in one message. Both the <code>.proto</code> and the server carry a TODO to make this streaming so files over 4MB don't hit gRPC's message size limit.</td><td>file bytes</td><td><a href="{{ src('common/proto/backend.proto', 140, 140) }}">L140</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-WriteFileResponse"><code>WriteFileResponse</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 143, 145) }}">backend.proto, lines 143–145</a> · converted by <a href="{{ src('server/src/backend.rs', 151, 167) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>file_id</code></td><td><code>bytes</code></td><td>1</td><td>The ID the server computed with <code>compute_git_blob_hash</code>.</td><td><code>FileId</code></td><td><a href="{{ src('common/proto/backend.proto', 144, 144) }}">L144</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-ReadSymlinkRequest"><code>ReadSymlinkRequest</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 149, 152) }}">backend.proto, lines 149–152</a> · converted by <a href="{{ src('server/src/backend.rs', 169, 181) }}">server (unimplemented)</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>repo_id</code></td><td><code>string</code></td><td>1</td><td>The repository UUID.</td><td>—</td><td><a href="{{ src('common/proto/backend.proto', 150, 150) }}">L150</a></td></tr>
+      <tr><td><code>symlink_id</code></td><td><code>bytes</code></td><td>2</td><td>The symlink's ID.</td><td><code>SymlinkId</code></td><td><a href="{{ src('common/proto/backend.proto', 151, 151) }}">L151</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-ReadSymlinkResponse"><code>ReadSymlinkResponse</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 154, 156) }}">backend.proto, lines 154–156</a> · converted by <a href="{{ src('server/src/backend.rs', 169, 181) }}">server (unimplemented)</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>target</code></td><td><code>string</code></td><td>1</td><td>The link target.</td><td><code>String</code></td><td><a href="{{ src('common/proto/backend.proto', 155, 155) }}">L155</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-WriteSymlinkRequest"><code>WriteSymlinkRequest</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 158, 161) }}">backend.proto, lines 158–161</a> · converted by <a href="{{ src('server/src/backend.rs', 169, 181) }}">server (unimplemented)</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>repo_id</code></td><td><code>string</code></td><td>1</td><td>The repository UUID.</td><td>—</td><td><a href="{{ src('common/proto/backend.proto', 159, 159) }}">L159</a></td></tr>
+      <tr><td><code>target</code></td><td><code>string</code></td><td>2</td><td>The link target.</td><td><code>String</code></td><td><a href="{{ src('common/proto/backend.proto', 160, 160) }}">L160</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-WriteSymlinkResponse"><code>WriteSymlinkResponse</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/backend.proto', 163, 165) }}">backend.proto, lines 163–165</a> · converted by <a href="{{ src('server/src/backend.rs', 169, 181) }}">server (unimplemented)</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>symlink_id</code></td><td><code>bytes</code></td><td>1</td><td>The new symlink's ID.</td><td><code>SymlinkId</code></td><td><a href="{{ src('common/proto/backend.proto', 164, 164) }}">L164</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="op-store-messages">op_store.proto messages</h2>
+
+<p>
+  The proto comments flag one subtlety that drives the server's hashing: <code>map</code> fields
+  (<code>attributes</code>, <code>wc_commit_ids</code>, <code>local_bookmarks</code>,
+  <code>remote_bookmarks</code>) serialise in no particular order, so "The server MUST perform key-sorted
+  (or some other deterministic) hashing scheme to generate view_id"
+  (<a href="{{ src('common/proto/op_store.proto', 128, 131) }}">source</a>). The
+  <a href="{{ url_for('jj_cloud', slug='object-ids') if 'object-ids' in ready_slugs else src('server/src/hash_utils.rs') }}">object IDs</a>
+  page shows how it does that.
+</p>
+
+<h3 id="msg-OperationMetadata"><code>OperationMetadata</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/op_store.proto', 88, 97) }}">op_store.proto, lines 88–97</a> · converted by <a href="{{ src('lib/src/cc_op_store.rs', 46, 134) }}">operation_to_proto / operation_from_proto</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>start_time_millis</code></td><td><code>int64</code></td><td>1</td><td>Start time. Only the milliseconds are sent: the time-zone offset is dropped and reads back as 0.</td><td><a href="{{ jj_lib('lib/src/op_store.rs', 341) }}"><code>TimestampRange.start</code></a></td><td><a href="{{ src('common/proto/op_store.proto', 89, 89) }}">L89</a></td></tr>
+      <tr><td><code>end_time_millis</code></td><td><code>int64</code></td><td>2</td><td>End time, likewise without its offset.</td><td><a href="{{ jj_lib('lib/src/op_store.rs', 341) }}"><code>TimestampRange.end</code></a></td><td><a href="{{ src('common/proto/op_store.proto', 90, 90) }}">L90</a></td></tr>
+      <tr><td><code>description</code></td><td><code>string</code></td><td>3</td><td>What the operation did, for example <code>describe commit …</code>.</td><td><a href="{{ jj_lib('lib/src/op_store.rs', 417) }}"><code>OperationMetadata.description</code></a></td><td><a href="{{ src('common/proto/op_store.proto', 91, 91) }}">L91</a></td></tr>
+      <tr><td><code>is_snapshot</code></td><td><code>bool</code></td><td>4</td><td>Whether this operation only snapshotted the working copy.</td><td><a href="{{ jj_lib('lib/src/op_store.rs', 417) }}"><code>OperationMetadata.is_snapshot</code></a></td><td><a href="{{ src('common/proto/op_store.proto', 92, 92) }}">L92</a></td></tr>
+      <tr><td><code>workspace_name</code></td><td><code>optional string</code></td><td>5</td><td>The workspace that ran it, if any.</td><td><code>Option&lt;WorkspaceNameBuf&gt;</code></td><td><a href="{{ src('common/proto/op_store.proto', 93, 93) }}">L93</a></td></tr>
+      <tr><td><code>hostname</code></td><td><code>string</code></td><td>6</td><td>Host that ran it.</td><td><a href="{{ jj_lib('lib/src/op_store.rs', 417) }}"><code>OperationMetadata.hostname</code></a></td><td><a href="{{ src('common/proto/op_store.proto', 94, 94) }}">L94</a></td></tr>
+      <tr><td><code>username</code></td><td><code>string</code></td><td>7</td><td>User that ran it.</td><td><a href="{{ jj_lib('lib/src/op_store.rs', 417) }}"><code>OperationMetadata.username</code></a></td><td><a href="{{ src('common/proto/op_store.proto', 95, 95) }}">L95</a></td></tr>
+      <tr><td><code>attributes</code></td><td><code>map&lt;string, string&gt;</code></td><td>8</td><td>Free-form key/value tags. A proto <code>map</code>, so its wire order isn't deterministic. The proto comment says the server must hash it in a deterministic order.</td><td><code>BTreeMap&lt;String, String&gt;</code></td><td><a href="{{ src('common/proto/op_store.proto', 96, 96) }}">L96</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-CommitPredecessors"><code>CommitPredecessors</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/op_store.proto', 99, 102) }}">op_store.proto, lines 99–102</a> · converted by <a href="{{ src('lib/src/cc_op_store.rs', 66, 75) }}">operation_to_proto</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>commit_id</code></td><td><code>bytes</code></td><td>1</td><td>A commit created by the operation.</td><td><code>CommitId</code></td><td><a href="{{ src('common/proto/op_store.proto', 100, 100) }}">L100</a></td></tr>
+      <tr><td><code>predecessor_ids</code></td><td><code>repeated bytes</code></td><td>2</td><td>The commits it replaced.</td><td><code>Vec&lt;CommitId&gt;</code></td><td><a href="{{ src('common/proto/op_store.proto', 101, 101) }}">L101</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-Operation"><code>Operation</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/op_store.proto', 104, 110) }}">op_store.proto, lines 104–110</a> · converted by <a href="{{ src('lib/src/cc_op_store.rs', 46, 134) }}">operation_to_proto / operation_from_proto</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>view_id</code></td><td><code>bytes</code></td><td>1</td><td>The view this operation produced.</td><td><code>ViewId</code></td><td><a href="{{ src('common/proto/op_store.proto', 105, 105) }}">L105</a></td></tr>
+      <tr><td><code>parents</code></td><td><code>repeated bytes</code></td><td>2</td><td>Parent operations.</td><td><code>Vec&lt;OperationId&gt;</code></td><td><a href="{{ src('common/proto/op_store.proto', 106, 106) }}">L106</a></td></tr>
+      <tr><td><code>metadata</code></td><td><code>OperationMetadata</code></td><td>3</td><td>See <code>OperationMetadata</code>. A missing one decodes as all defaults.</td><td><a href="{{ jj_lib('lib/src/op_store.rs', 417) }}"><code>OperationMetadata</code></a></td><td><a href="{{ src('common/proto/op_store.proto', 107, 107) }}">L107</a></td></tr>
+      <tr><td><code>commit_predecessors</code></td><td><code>repeated CommitPredecessors</code></td><td>4</td><td>One entry per rewritten commit.</td><td><code>Option&lt;BTreeMap&lt;CommitId, Vec&lt;CommitId&gt;&gt;&gt;</code></td><td><a href="{{ src('common/proto/op_store.proto', 108, 108) }}">L108</a></td></tr>
+      <tr><td><code>commit_predecessors_set</code></td><td><code>bool</code></td><td>5</td><td>Whether the map is present at all. A repeated field can't tell <code>None</code> from an empty map, so this flag does.</td><td><code>Option::is_some</code></td><td><a href="{{ src('common/proto/op_store.proto', 109, 109) }}">L109</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-ReadOperationRequest"><code>ReadOperationRequest</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/op_store.proto', 26, 29) }}">op_store.proto, lines 26–29</a> · converted by <a href="{{ src('lib/src/cc_op_store.rs', 299, 319) }}">client</a>, <a href="{{ src('server/src/op_store.rs', 25, 76) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>repo_id</code></td><td><code>string</code></td><td>1</td><td>The repository UUID.</td><td>—</td><td><a href="{{ src('common/proto/op_store.proto', 27, 27) }}">L27</a></td></tr>
+      <tr><td><code>operation_id</code></td><td><code>bytes</code></td><td>2</td><td>The 16-byte operation ID. The server synthesises the root operation if it isn't stored.</td><td><code>OperationId</code></td><td><a href="{{ src('common/proto/op_store.proto', 28, 28) }}">L28</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-ReadOperationResponse"><code>ReadOperationResponse</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/op_store.proto', 31, 33) }}">op_store.proto, lines 31–33</a> · converted by <a href="{{ src('server/src/op_store.rs', 25, 76) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>operation</code></td><td><code>Operation</code></td><td>1</td><td>The stored operation.</td><td><a href="{{ jj_lib('lib/src/op_store.rs', 360) }}"><code>Operation</code></a></td><td><a href="{{ src('common/proto/op_store.proto', 32, 32) }}">L32</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-WriteOperationRequest"><code>WriteOperationRequest</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/op_store.proto', 35, 38) }}">op_store.proto, lines 35–38</a> · converted by <a href="{{ src('lib/src/cc_op_store.rs', 321, 338) }}">client</a>, <a href="{{ src('server/src/op_store.rs', 78, 101) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>repo_id</code></td><td><code>string</code></td><td>1</td><td>The repository UUID.</td><td>—</td><td><a href="{{ src('common/proto/op_store.proto', 36, 36) }}">L36</a></td></tr>
+      <tr><td><code>operation</code></td><td><code>Operation</code></td><td>2</td><td>The operation to store.</td><td><a href="{{ jj_lib('lib/src/op_store.rs', 360) }}"><code>Operation</code></a></td><td><a href="{{ src('common/proto/op_store.proto', 37, 37) }}">L37</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-WriteOperationResponse"><code>WriteOperationResponse</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/op_store.proto', 40, 42) }}">op_store.proto, lines 40–42</a> · converted by <a href="{{ src('server/src/op_store.rs', 78, 101) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>operation_id</code></td><td><code>bytes</code></td><td>1</td><td>The ID the server computed with <code>hash_operation</code>.</td><td><code>OperationId</code></td><td><a href="{{ src('common/proto/op_store.proto', 41, 41) }}">L41</a></td></tr>
+    </tbody>
+  </table>
+</div>
+<h3 id="msg-RefTargetTerm"><code>RefTargetTerm</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/op_store.proto', 114, 116) }}">op_store.proto, lines 114–116</a> · converted by <a href="{{ src('lib/src/cc_op_store.rs', 18, 44) }}">ref_target_to_proto / ref_target_from_proto</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>commit_id</code></td><td><code>bytes</code></td><td>1</td><td>One commit in a ref target's add or remove list.</td><td><code>CommitId</code></td><td><a href="{{ src('common/proto/op_store.proto', 115, 115) }}">L115</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-RefTarget"><code>RefTarget</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/op_store.proto', 118, 121) }}">op_store.proto, lines 118–121</a> · converted by <a href="{{ src('lib/src/cc_op_store.rs', 18, 44) }}">ref_target_to_proto / ref_target_from_proto</a>, rebuilt with <code>RefTarget::from_legacy_form</code></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>removes</code></td><td><code>repeated RefTargetTerm</code></td><td>1</td><td>The removed terms of a possibly conflicted ref.</td><td><code>RefTarget::removed_ids</code></td><td><a href="{{ src('common/proto/op_store.proto', 119, 119) }}">L119</a></td></tr>
+      <tr><td><code>adds</code></td><td><code>repeated RefTargetTerm</code></td><td>2</td><td>The added terms. A plain bookmark has one add and no removes.</td><td><code>RefTarget::added_ids</code></td><td><a href="{{ src('common/proto/op_store.proto', 120, 120) }}">L120</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-RemoteRef"><code>RemoteRef</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/op_store.proto', 123, 126) }}">op_store.proto, lines 123–126</a> · converted by <a href="{{ src('lib/src/cc_op_store.rs', 152, 164) }}">view_to_proto</a>, <a href="{{ src('lib/src/cc_op_store.rs', 190, 213) }}">view_from_proto</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>target</code></td><td><code>RefTarget</code></td><td>1</td><td>Where the bookmark points on the remote. Missing reads as absent.</td><td><a href="{{ jj_lib('lib/src/op_store.rs', 51) }}"><code>RefTarget</code></a></td><td><a href="{{ src('common/proto/op_store.proto', 124, 124) }}">L124</a></td></tr>
+      <tr><td><code>is_tracked</code></td><td><code>bool</code></td><td>2</td><td>Tracked or not.</td><td><code>RemoteRefState::Tracked</code> / <code>New</code></td><td><a href="{{ src('common/proto/op_store.proto', 125, 125) }}">L125</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-View"><code>View</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/op_store.proto', 132, 137) }}">op_store.proto, lines 132–137</a> · converted by <a href="{{ src('lib/src/cc_op_store.rs', 136, 224) }}">view_to_proto / view_from_proto</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>head_ids</code></td><td><code>repeated bytes</code></td><td>1</td><td>Visible head commits.</td><td><code>HashSet&lt;CommitId&gt;</code></td><td><a href="{{ src('common/proto/op_store.proto', 133, 133) }}">L133</a></td></tr>
+      <tr><td><code>wc_commit_ids</code></td><td><code>map&lt;string, bytes&gt;</code></td><td>2</td><td>Working-copy commit per workspace name.</td><td><code>BTreeMap&lt;WorkspaceNameBuf, CommitId&gt;</code></td><td><a href="{{ src('common/proto/op_store.proto', 134, 134) }}">L134</a></td></tr>
+      <tr><td><code>local_bookmarks</code></td><td><code>map&lt;string, RefTarget&gt;</code></td><td>3</td><td>Local bookmarks by name.</td><td><code>BTreeMap&lt;RefNameBuf, RefTarget&gt;</code></td><td><a href="{{ src('common/proto/op_store.proto', 135, 135) }}">L135</a></td></tr>
+      <tr><td><code>remote_bookmarks</code></td><td><code>map&lt;string, RemoteRef&gt;</code></td><td>4</td><td>Remote bookmarks, flattened into one map keyed <code>"bookmark@remote"</code>. On read the key is split at the <em>last</em> <code>@</code>, so a remote name containing <code>@</code> would not round-trip.</td><td><code>remote_views[remote].bookmarks[bookmark]</code></td><td><a href="{{ src('common/proto/op_store.proto', 136, 136) }}">L136</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-ReadViewRequest"><code>ReadViewRequest</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/op_store.proto', 46, 49) }}">op_store.proto, lines 46–49</a> · converted by <a href="{{ src('lib/src/cc_op_store.rs', 258, 278) }}">client</a>, <a href="{{ src('server/src/op_store.rs', 103, 141) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>repo_id</code></td><td><code>string</code></td><td>1</td><td>The repository UUID.</td><td>—</td><td><a href="{{ src('common/proto/op_store.proto', 47, 47) }}">L47</a></td></tr>
+      <tr><td><code>view_id</code></td><td><code>bytes</code></td><td>2</td><td>The 16-byte view ID. The server synthesises the root view if it isn't stored.</td><td><code>ViewId</code></td><td><a href="{{ src('common/proto/op_store.proto', 48, 48) }}">L48</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-ReadViewResponse"><code>ReadViewResponse</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/op_store.proto', 51, 54) }}">op_store.proto, lines 51–54</a> · converted by <a href="{{ src('server/src/op_store.rs', 103, 141) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>view_id</code></td><td><code>bytes</code></td><td>1</td><td>Echo of the requested ID.</td><td><code>ViewId</code></td><td><a href="{{ src('common/proto/op_store.proto', 52, 52) }}">L52</a></td></tr>
+      <tr><td><code>view</code></td><td><code>View</code></td><td>2</td><td>The stored view.</td><td><a href="{{ jj_lib('lib/src/op_store.rs', 249) }}"><code>View</code></a></td><td><a href="{{ src('common/proto/op_store.proto', 53, 53) }}">L53</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-WriteViewRequest"><code>WriteViewRequest</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/op_store.proto', 56, 59) }}">op_store.proto, lines 56–59</a> · converted by <a href="{{ src('lib/src/cc_op_store.rs', 280, 297) }}">client</a>, <a href="{{ src('server/src/op_store.rs', 143, 163) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>repo_id</code></td><td><code>string</code></td><td>1</td><td>The repository UUID.</td><td>—</td><td><a href="{{ src('common/proto/op_store.proto', 57, 57) }}">L57</a></td></tr>
+      <tr><td><code>view</code></td><td><code>View</code></td><td>2</td><td>The view to store.</td><td><a href="{{ jj_lib('lib/src/op_store.rs', 249) }}"><code>View</code></a></td><td><a href="{{ src('common/proto/op_store.proto', 58, 58) }}">L58</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-WriteViewResponse"><code>WriteViewResponse</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/op_store.proto', 61, 63) }}">op_store.proto, lines 61–63</a> · converted by <a href="{{ src('server/src/op_store.rs', 143, 163) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>view_id</code></td><td><code>bytes</code></td><td>1</td><td>The ID the server computed with <code>hash_view</code>.</td><td><code>ViewId</code></td><td><a href="{{ src('common/proto/op_store.proto', 62, 62) }}">L62</a></td></tr>
+    </tbody>
+  </table>
+</div>
+<h3 id="msg-GetOpHeadsRequest"><code>GetOpHeadsRequest</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/op_store.proto', 67, 69) }}">op_store.proto, lines 67–69</a> · converted by <a href="{{ src('lib/src/cc_op_heads_store.rs', 71, 87) }}">client</a>, <a href="{{ src('server/src/op_store.rs', 165, 184) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>repo_id</code></td><td><code>string</code></td><td>1</td><td>The repository UUID.</td><td>—</td><td><a href="{{ src('common/proto/op_store.proto', 68, 68) }}">L68</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-GetOpHeadsResponse"><code>GetOpHeadsResponse</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/op_store.proto', 71, 73) }}">op_store.proto, lines 71–73</a> · converted by <a href="{{ src('server/src/op_store.rs', 165, 184) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>op_head_ids</code></td><td><code>repeated bytes</code></td><td>1</td><td>Current operation heads. A repository with none yet reports the root operation's ID.</td><td><code>Vec&lt;OperationId&gt;</code></td><td><a href="{{ src('common/proto/op_store.proto', 72, 72) }}">L72</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-UpdateOpHeadsRequest"><code>UpdateOpHeadsRequest</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/op_store.proto', 75, 79) }}">op_store.proto, lines 75–79</a> · converted by <a href="{{ src('lib/src/cc_op_heads_store.rs', 43, 69) }}">client</a>, <a href="{{ src('server/src/op_store.rs', 186, 204) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>repo_id</code></td><td><code>string</code></td><td>1</td><td>The repository UUID.</td><td>—</td><td><a href="{{ src('common/proto/op_store.proto', 76, 76) }}">L76</a></td></tr>
+      <tr><td><code>old_op_head_ids</code></td><td><code>repeated bytes</code></td><td>2</td><td>Heads the new operation replaces.</td><td><code>&amp;[OperationId]</code></td><td><a href="{{ src('common/proto/op_store.proto', 77, 77) }}">L77</a></td></tr>
+      <tr><td><code>new_op_head_id</code></td><td><code>bytes</code></td><td>3</td><td>The new head.</td><td><code>OperationId</code></td><td><a href="{{ src('common/proto/op_store.proto', 78, 78) }}">L78</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="msg-UpdateOpHeadsResponse"><code>UpdateOpHeadsResponse</code></h3>
+<p class="jj-muted-line"><a href="{{ src('common/proto/op_store.proto', 81, 83) }}">op_store.proto, lines 81–83</a> · converted by <a href="{{ src('server/src/op_store.rs', 186, 204) }}">server</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Proto #</th><th>Meaning</th><th>jj-lib type</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>current_op_head_ids</code></td><td><code>repeated bytes</code></td><td>1</td><td>The heads after the update, as the store reports them.</td><td><code>Vec&lt;OperationId&gt;</code></td><td><a href="{{ src('common/proto/op_store.proto', 82, 82) }}">L82</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="not-carried">What the wire doesn't carry</h2>
+
+<p>
+  Converting jj-lib's types to these messages loses some information. Each item below is visible in
+  the conversion code:
+</p>
+
+<ul>
+  <li><strong>Tags, Git refs and Git HEAD.</strong> <code>View</code> has no fields for them. <code>view_from_proto</code> fills <code>local_tags</code> and <code>git_refs</code> with empty maps and <code>git_head</code> with an absent target, and <code>view_to_proto</code> never reads a remote's tags (<a href="{{ src('lib/src/cc_op_store.rs', 136, 224) }}">source</a>). The proto comment says the Git fields were omitted on purpose.</li>
+  <li><strong>Operation time zones.</strong> Only the millisecond timestamps are sent. Both offsets read back as 0 (<a href="{{ src('lib/src/cc_op_store.rs', 86, 95) }}">source</a>).</li>
+  <li><strong>Commit signatures.</strong> Written if present, but always read back as <code>None</code> (<a href="{{ src('lib/src/cc_backend.rs', 152, 152) }}">source</a>).</li>
+  <li><strong>Copy IDs</strong> that aren't 20 bytes long are replaced with zeros on read (<a href="{{ src('lib/src/cc_backend.rs', 195, 195) }}">source</a>). Copy history itself isn't supported (<code>read_copy</code>, <code>write_copy</code> and <code>get_related_copies</code> return <code>Unsupported</code>).</li>
+  <li><strong>Symlink contents and Git submodules.</strong> Symlinks can appear in trees, but their targets can't be stored or read. Submodules are rejected outright.</li>
+</ul>

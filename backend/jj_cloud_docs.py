@@ -16,7 +16,7 @@ PAGES = [
         "title": "Every schema",
         "summary": "Both .proto files: every service, RPC, message and field, the jj-lib type each converts to and from, and how the Rust code is generated.",
         "sources": ["common/proto/", "common/build.rs", "common/src/lib.rs"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "client-backend",
