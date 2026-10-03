@@ -134,3 +134,16 @@ def test_graph_protocol_names_every_protocol_type():
 
     for name in jj_dojo_docs.PROTOCOL_TYPES:
         assert re.search(rf"\b{name}\b", body), name
+
+
+def test_graph_layout_covers_every_required_section_with_diagrams():
+    if jj_dojo_docs.find_page("graph-layout") is None:
+        return
+    client = app_module.app.test_client()
+
+    body = client.get("/jj-dojo/graph-layout").get_data(as_text=True)
+
+    for anchor in ["input", "pipeline", "lanes", "drawing", "ranges", "focus-mode", "worked-example", "invariants"]:
+        assert f'<h2 id="{anchor}">' in body, anchor
+    assert body.count('<svg viewBox') >= 2
+    assert "preprocess_test.ts" in body

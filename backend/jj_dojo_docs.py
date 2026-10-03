@@ -32,7 +32,7 @@ PAGES = [
         "title": "Commit graph layout",
         "summary": "How commits become lanes, edges, glyphs and rows: the preprocessing pipeline, drawing, ranges and focus mode.",
         "sources": ["src/ui/commit_graph/algorithms/"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "graph-webview",
