@@ -1,0 +1,361 @@
+{% set cmd = "cli/src/commands/squash.rs" %}
+{% set rw = "lib/src/rewrite.rs" %}
+{% set du = "cli/src/description_util.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj squash</code> works</h1>
+  <p class="tagline">
+    <code>jj squash</code> moves changes out of one or more source commits and into a destination commit.
+    By default that's from <code>@</code> into its parent. A source left empty is abandoned, and their
+    descriptions are combined.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj picks the sources and the destination (<code>@</code> → <code>@-</code>,
+  <code>-r X</code> → <code>X</code>'s only parent, or <code>--from</code>/<code>--into</code>), and
+  refuses if any of them is immutable. For each source it selects a diff: all of it, the given paths,
+  or what you pick in a diff editor. jj-lib's <code>squash_commits</code> then removes that diff from
+  each source, abandoning a source whose whole diff was taken. It applies all the selected diffs to the
+  destination as a 3-way merge. The description is your <code>-m</code>, the destination's
+  (<code>-u</code>), or a combination. If more than one involved commit has a description, an editor
+  opens. One operation records it all: <code>squash commits into &lt;destination id&gt;</code>.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 183, 458) }}"><code>cmd_squash</code></a>. The tree arithmetic
+  lives in jj-lib's <a href="{{ src(rw, 1365, 1479) }}"><code>rewrite::squash_commits</code></a>.
+  <code>jj absorb</code> also moves changes into ancestors, but picks the destination per hunk from
+  blame; its page will cover that entry point. Change selection is the same <code>DiffSelector</code>
+  that <a href="{{ url_for('jj', slug='commit') }}#selection"><code>jj commit</code></a> uses.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>-r</code>, <code>--revision REVSET</code></td><td>revset</td><td><code>@</code></td><td>Squash this one commit into its parent. It must resolve to exactly one commit with exactly one parent. Conflicts with <code>--from</code> and <code>--into</code> (<a href="{{ src(cmd, 89, 93) }}">source</a>).</td></tr>
+      <tr><td><code>-f</code>, <code>--from REVSETS</code></td><td>revsets, repeatable</td><td><code>@</code></td><td>Squash from these commits. They may be any number of commits (<a href="{{ src(cmd, 95, 98) }}">source</a>).</td></tr>
+      <tr><td><code>-t</code>, <code>--into</code>, <code>--to REVSET</code></td><td>revset</td><td><code>@</code></td><td>Squash into this one commit (<a href="{{ src(cmd, 100, 109) }}">source</a>).</td></tr>
+      <tr><td><code>-o</code>, <code>--onto</code>, <code>-d</code>, <code>--destination REVSETS</code></td><td>revsets, repeatable</td><td>none</td><td>Experimental: squash into a <em>new</em> commit with these parents. Conflicts with <code>--into</code> and <code>-r</code> (<a href="{{ src(cmd, 111, 122) }}">source</a>).</td></tr>
+      <tr><td><code>-A</code>, <code>--insert-after</code>, <code>--after REVSETS</code></td><td>revsets, repeatable</td><td>none</td><td>Experimental: the new commit goes after these, and their children are rebased onto it (<a href="{{ src(cmd, 124, 134) }}">source</a>).</td></tr>
+      <tr><td><code>-B</code>, <code>--insert-before</code>, <code>--before REVSETS</code></td><td>revsets, repeatable</td><td>none</td><td>Experimental: the new commit goes before these, taking their parents (<a href="{{ src(cmd, 136, 146) }}">source</a>). <code>-A</code> and <code>-B</code> can be combined.</td></tr>
+      <tr><td><code>-m</code>, <code>--message MESSAGE</code></td><td>string, repeatable</td><td>none</td><td>Use this description for the result, joined as paragraphs (<a href="{{ src(cmd, 148, 150) }}">source</a>).</td></tr>
+      <tr><td><code>-u</code>, <code>--use-destination-message</code></td><td>bool</td><td>false</td><td>Keep the destination's description and discard the sources'. Conflicts with <code>-m</code> (<a href="{{ src(cmd, 152, 155) }}">source</a>).</td></tr>
+      <tr><td><code>--editor</code></td><td>bool</td><td>false</td><td>Open the editor even when the description is already decided (<a href="{{ src(cmd, 157, 162) }}">source</a>).</td></tr>
+      <tr><td><code>-i</code>, <code>--interactive</code></td><td>bool</td><td>false</td><td>Choose the changes to move in a diff editor, per source (<a href="{{ src(cmd, 164, 166) }}">source</a>).</td></tr>
+      <tr><td><code>--tool NAME</code></td><td>string</td><td>none</td><td>Diff editor to use. Implies <code>-i</code> (<a href="{{ src(cmd, 168, 171) }}">source</a>).</td></tr>
+      <tr><td><code>FILESETS</code> (positional)</td><td>filesets</td><td>all files</td><td>Move only changes to these paths (<a href="{{ src(cmd, 173, 176) }}">source</a>).</td></tr>
+      <tr><td><code>-k</code>, <code>--keep-emptied</code></td><td>bool</td><td>false</td><td>Never abandon a source, even if it ends up empty (<a href="{{ src(cmd, 178, 180) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 53, 181) }}"><code>SquashArgs</code> and its help text</a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<p>
+  <code>jj squash</code> has no settings of its own. It reads the same keys as
+  <a href="{{ url_for('jj', slug='commit') }}#configuration"><code>jj commit</code></a>:
+  <code>ui.editor</code> for descriptions, <code>ui.diff-editor</code> (falling back to
+  <code>:builtin</code>) and <code>ui.diff-instructions</code> for <code>-i</code>,
+  <code>templates.draft_commit_description</code> and <code>templates.commit_trailers</code>, and
+  <code>user.name</code>/<code>user.email</code> for the committer. <code>revset-aliases."immutable_heads()"</code>
+  decides what <code>check_rewritable</code> refuses.
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 588" role="img" aria-labelledby="sq-flow-title sq-flow-desc">
+    <title id="sq-flow-title">jj squash: call flow</title>
+    <desc id="sq-flow-desc">
+      cmd_squash loads the workspace through the shared lifecycle, which snapshots the working copy. It
+      chooses sources and destination: with --from, --into, -o, -A or -B it unions the --from revsets
+      (default @) and resolves the single --into (default @), dropping it from the sources; otherwise it
+      takes -r (default @), which must be one commit with one parent, the parent being the destination.
+      It checks every source and the destination are rewritable and builds the operation description.
+      In the experimental mode it creates a new empty destination commit and rebases its new children.
+      select_diff runs the diff selector per source. rewrite::squash_commits abandons or rewrites each
+      source, rebases first if a source is an ancestor of the destination, and merges the selected diffs
+      into the destination. The description is chosen and maybe edited, the destination is written,
+      descendants are rebased, and tx.finish records the operation.
+    </desc>
+    <defs>
+      <marker id="sq-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 197, 219) }}"><rect class="d-box" x="20" y="84" width="340" height="84" rx="6"></rect>
+      <text x="32" y="105">--from / --into / -o / -A / -B</text>
+      <text x="32" y="123" class="d-muted" font-size="11">sources = union(--from) or @</text>
+      <text x="32" y="140" class="d-muted" font-size="11">destination = --into or @ (not with -o/-A/-B)</text>
+      <text x="32" y="157" class="d-muted" font-size="11">drop destination from sources; oldest first</text></a>
+      <a href="{{ src(cmd, 220, 249) }}"><rect class="d-box" x="420" y="84" width="320" height="84" rx="6"></rect>
+      <text x="432" y="105">otherwise: -r (default @)</text>
+      <text x="432" y="123" class="d-muted" font-size="11">exactly one commit</text>
+      <text x="432" y="140" class="d-muted" font-size="11">exactly one parent → the destination</text>
+      <text x="432" y="157" class="d-muted" font-size="11">else "Cannot squash merge commits …"</text></a>
+
+      <a href="{{ src(cmd, 251, 269) }}"><rect class="d-box" x="20" y="192" width="340" height="50" rx="6"></rect>
+      <text x="32" y="213">check_rewritable(sources + destination)</text>
+      <text x="32" y="231" class="d-muted" font-size="11">operation description; start_transaction</text></a>
+      <a href="{{ src(cmd, 271, 326) }}"><rect class="d-box" x="420" y="192" width="320" height="66" rx="6"></rect>
+      <text x="432" y="213">-o / -A / -B only:</text>
+      <text x="432" y="231" class="d-muted" font-size="11">compute_commit_location, new empty commit,</text>
+      <text x="432" y="248" class="d-muted" font-size="11">rebase its new children onto it</text></a>
+
+      <a href="{{ src(cmd, 485, 533) }}"><rect class="d-box" x="20" y="282" width="340" height="66" rx="6"></rect>
+      <text x="32" y="303">select_diff, per source</text>
+      <text x="32" y="321" class="d-muted" font-size="11">DiffSelector::select(parent tree → source tree)</text>
+      <text x="32" y="338" class="d-muted" font-size="11">→ CommitWithSelection</text></a>
+      <a href="{{ src(rw, 1365, 1479) }}"><rect class="d-box" x="420" y="282" width="320" height="102" rx="6"></rect>
+      <text x="432" y="303">rewrite::squash_commits</text>
+      <text x="432" y="321" class="d-muted" font-size="11">full selection → abandon source</text>
+      <text x="432" y="338" class="d-muted" font-size="11">partial → source minus the selected diff</text>
+      <text x="432" y="355" class="d-muted" font-size="11">source an ancestor? rebase first</text>
+      <text x="432" y="372" class="d-muted" font-size="11">destination tree + every selected diff</text></a>
+
+      <a href="{{ src(cmd, 357, 400) }}"><rect class="d-box" x="20" y="408" width="340" height="66" rx="6"></rect>
+      <text x="32" y="429">description</text>
+      <text x="32" y="447" class="d-muted" font-size="11">-m / -u / combine; editor if ambiguous</text>
+      <text x="32" y="464" class="d-muted" font-size="11">or --editor</text></a>
+      <a href="{{ src(cmd, 412, 423) }}"><rect class="d-box" x="420" y="408" width="320" height="66" rx="6"></rect>
+      <text x="432" y="429">write destination</text>
+      <text x="432" y="447" class="d-muted" font-size="11">rebase_descendants → "Rebased N …"</text>
+      <text x="432" y="464" class="d-muted" font-size="11">(nothing selected: no write, or error with -i)</text></a>
+
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="498" width="720" height="56" rx="6"></rect>
+      <text x="380" y="520" text-anchor="middle">tx.finish(ui, "squash commits into &lt;id&gt;"): write the operation; if @ was abandoned,</text>
+      <text x="380" y="540" text-anchor="middle">a new empty @ was created on its parent; update the working copy (CLI page)</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#sq-arrow)">
+      <line x1="190" y1="60" x2="190" y2="80"></line>
+      <line x1="580" y1="60" x2="580" y2="80"></line>
+      <line x1="190" y1="168" x2="190" y2="188"></line>
+      <line x1="580" y1="168" x2="364" y2="208"></line>
+      <line x1="360" y1="226" x2="416" y2="226"></line>
+      <line x1="190" y1="242" x2="190" y2="278"></line>
+      <line x1="360" y1="315" x2="416" y2="315"></line>
+      <line x1="420" y1="384" x2="364" y2="430"></line>
+      <line x1="360" y1="441" x2="416" y2="441"></line>
+      <line x1="580" y1="474" x2="580" y2="494"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Source commits</td><td>read, then abandoned or rewritten</td><td>A source whose whole diff was selected is abandoned (unless <code>-k</code>). Otherwise it's rewritten with the selected diff reversed out of its tree. A source with nothing selected is left alone.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Destination commit</td><td>rewritten</td><td>Same change ID, a tree with every selected diff merged in, and predecessors set to the old destination <em>plus</em> every contributing source (<a href="{{ src(rw, 1455, 1460) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Trees</td><td>read, merged</td><td>Each source's parent tree and tree, and the destination tree, combined by <code>MergedTree::merge</code> 3-way merges, so a squash can produce conflicts.</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>Descendants</td><td>rebased</td><td>Children of the rewritten or abandoned commits are rebased. Abandoned commits' children move to the abandoned commit's parents.</td><td><a href="{{ url_for('jj', slug='transactions') }}">transactions</a></td></tr>
+      <tr><td><code>View.local_bookmarks</code></td><td>write</td><td>Bookmarks on a rewritten commit follow it. Bookmarks on an abandoned source move to its parent's new version.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td><code>View.wc_commit_ids</code></td><td>write</td><td>If <code>@</code> was abandoned, a new empty commit is created on its new parents and becomes <code>@</code> (<a href="{{ src(repo, 1335, 1372) }}"><code>update_wc_commits</code></a>). If <code>@</code> was rewritten, <code>@</code> follows it.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td><code>View.head_ids</code></td><td>write</td><td>Updated by the rewrites, abandons and the new <code>@</code>.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td>One operation, described below.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+      <tr><td>Working copy (<code>TreeState</code>)</td><td>read, then maybe write</td><td>Snapshotted first. Updated if <code>@</code>'s tree changed, for example when changes were squashed out of it partially or into it.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, started after the commits are resolved and checked (<a href="{{ src(cmd, 269) }}">source</a>).</li>
+  <li>
+    <strong>Operation description</strong> (<a href="{{ src(cmd, 255, 267) }}">source</a>):
+    <code>squash commits into &lt;destination id&gt;</code> when the destination already exists. In the
+    experimental mode, it is <code>squash commit &lt;id&gt;</code> or
+    <code>squash commit &lt;id&gt; and &lt;n&gt; more</code>, naming the first source by full hex ID.
+    The text is fixed before anything is rewritten.
+  </li>
+  <li>
+    <strong>Commits created or rewritten:</strong> the destination is rewritten, and partially squashed
+    sources are rewritten. Fully squashed sources are abandoned, and descendants are rebased. In the
+    experimental mode, a new destination commit is created first. Its predecessor record leaves out that
+    intermediate empty commit (<a href="{{ src(cmd, 401, 411) }}">source</a>).
+  </li>
+  <li><strong>Working copy:</strong> snapshotted at the start. If <code>@</code> is abandoned, you get a fresh empty <code>@</code> on its parent, and the files on disk stay the same, since the changes are now in the parent.</li>
+  <li><strong><code>jj undo</code></strong> restores the previous view: the sources come back unchanged and the destination gets its old tree and description.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="choosing">Choosing sources and destination</h3>
+
+<p>
+  There are two modes (<a href="{{ src(cmd, 189, 249) }}">source</a>). With <code>-r</code>, or no
+  revision flags at all, the source is one commit and the destination is its single parent. A merge
+  commit is refused, because it's unclear which parent should receive the changes. With
+  <code>--from</code>/<code>--into</code>, the sources are the union of the <code>--from</code> revsets,
+  minus the destination if it's among them. The order is reversed so that older commits are applied
+  first, which "avoids creating transient conflicts" according to the source comment. The destination
+  can be anywhere: an ancestor, a descendant, or unrelated.
+</p>
+
+<h3 id="squash-commits">What <code>squash_commits</code> does</h3>
+
+<p>
+  Each source arrives as a <a href="{{ src(rw, 1306, 1326) }}"><code>CommitWithSelection</code></a>:
+  the commit, its parent tree, and the selected tree, meaning the parent tree plus the chosen changes.
+  Two predicates decide its fate. The selection is <em>full</em> when it equals the commit's tree, and
+  <em>empty</em> when it equals the parent tree.
+</p>
+
+<ol>
+  <li>
+    <strong>Classify</strong> (<a href="{{ src(rw, 1380, 1406) }}">source</a>). A source is abandoned when
+    the selection is full and <code>-k</code> wasn't given. A source with an empty selection that isn't
+    being abandoned is skipped. An already-empty source is both full and empty, so it <em>is</em>
+    abandoned, which lets <code>jj squash</code> clean an empty commit out of the middle of a stack. If
+    every source is skipped, nothing happens.
+  </li>
+  <li>
+    <strong>Rewrite sources</strong> (<a href="{{ src(rw, 1408, 1426) }}">source</a>). Abandoned sources
+    are recorded as abandoned. Partial sources are rewritten to
+    <code>merge(source tree, inverted selected diff)</code>, which takes the moved changes back out.
+  </li>
+  <li>
+    <strong>Moving into a descendant</strong> (<a href="{{ src(rw, 1428, 1454) }}">source</a>). If any
+    source is an ancestor of the destination, jj rebases descendants first and uses the rebased
+    destination. Otherwise the destination would still contain the changes being moved, applying them
+    again would be a no-op, and they would vanish from history.
+  </li>
+  <li>
+    <strong>Apply to the destination</strong> (<a href="{{ src(rw, 1461, 1479) }}">source</a>). The new
+    tree is <code>MergedTree::merge(Merge::from_diffs(destination tree, [each selected diff]))</code>.
+    Every diff is labelled for conflict markers, for example <code>(squash destination)</code> and
+    <code>(squashed revision)</code>. If the same lines were changed differently, the destination
+    ends up conflicted rather than the command failing. The builder records the old destination and
+    every source as predecessors.
+  </li>
+</ol>
+
+<h3 id="description">Choosing the description</h3>
+
+<p>
+  <a href="{{ src(cmd, 460, 483) }}"><code>SquashedDescription</code></a> is <code>Exact</code> for
+  <code>-m</code>, <code>UseDestination</code> for <code>-u</code>, and <code>Combine</code>
+  otherwise. For <code>Combine</code>,
+  <a href="{{ src(du, 354, 368) }}"><code>try_combine_messages</code></a> looks only at the
+  <em>abandoned</em> sources and the destination. If none has a description, the result is empty. If
+  exactly one does, its description is used. If two or more do, the editor opens with
+  <a href="{{ src(du, 370, 415) }}"><code>combine_messages_for_editing</code></a>: the destination's
+  description under <code>JJ: Description from the destination commit:</code>, each source's under
+  <code>JJ: Description from source commit:</code> (empty ones too), and any configured trailers not
+  already present. The editor intro is "Enter a description for the combined commit." A partially
+  squashed source keeps its own description and doesn't contribute
+  (<a href="{{ src(cmd, 357, 400) }}">source</a>).
+</p>
+
+<p>
+  <strong>Invariants:</strong> the total content is preserved, because every change removed from a
+  source is added to the destination, modulo conflicts. The destination keeps its change ID. A source
+  is only abandoned when nothing of it is left. The result is one operation, so <code>jj undo</code>
+  reverses it all.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Cannot squash merge commits without a specified destination</code>, hint <code>Use `--into` to specify which parent to squash into</code></td><td><code>-r</code> (or <code>@</code>) has more or fewer than one parent.</td><td><a href="{{ src(cmd, 240, 246) }}">squash.rs</a></td></tr>
+      <tr><td><code>Revset `…` resolved to more than one revision</code>, hint <code>--revision must resolve to a single revision. Use --from and --into instead if you want to squash multiple revisions.</code></td><td><code>-r</code> matches several commits.</td><td><a href="{{ src(cmd, 221, 239) }}">squash.rs</a></td></tr>
+      <tr><td><code>Commit … is immutable</code></td><td>Any source or the destination is immutable.</td><td><a href="{{ src(util, 2044, 2088) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>No changes selected</code></td><td><code>-i</code>/<code>--tool</code> and nothing was chosen from any source.</td><td><a href="{{ src(cmd, 424, 427) }}">squash.rs</a></td></tr>
+      <tr><td><code>Warning: No matching entries for paths: …</code></td><td>An explicit path exists in none of the selected trees.</td><td><a href="{{ src(util, 3382, 3410) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Warning: The argument "…" is being interpreted as a fileset expression. To specify a revset, pass -r "…" instead.</code></td><td>Nothing was squashed, exactly one positional argument was given with no revision flags, and it also parses as a revset. A common mistake is <code>jj squash X</code> meaning <code>-r X</code>.</td><td><a href="{{ src(cmd, 440, 454) }}">squash.rs</a></td></tr>
+      <tr><td><code>Refusing to create a loop: commit … would be both an ancestor and a descendant of the squashed commit</code></td><td>Experimental mode: the requested parents and children would form a cycle.</td><td><a href="{{ src(util, 3705, 3727) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>No revisions found to use as parent</code></td><td>Experimental mode: the location resolves to no parents.</td><td><a href="{{ src(util, 3698, 3700) }}">cli_util.rs</a></td></tr>
+      <tr><td>clap conflicts</td><td><code>-r</code> with <code>--from</code>/<code>--into</code>/<code>-o</code>/<code>-A</code>/<code>-B</code>; <code>-o</code> with <code>-A</code>/<code>-B</code>/<code>--into</code>; <code>-m</code> with <code>-u</code>.</td><td><a href="{{ src(cmd, 87, 181) }}">squash.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Edge cases: if nothing at all is selected without <code>-i</code>, nothing is rewritten. The
+  operation is still finished, so <code>finish</code> prints <code>Nothing changed.</code> unless the
+  experimental mode created a commit. With <code>--into</code> equal to one of the
+  <code>--from</code> commits, that commit is silently dropped from the sources.
+</p>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src('cli/tests/test_squash_command.rs', 25, 100) }}">test_squash</a>:
+  three commits <code>a</code>, <code>b</code> and <code>c</code>, each with a bookmark of the same
+  name, and each setting <code>file1</code> to its own letter, with <code>@</code> at <code>c</code>.
+  Running <code>jj squash -r b</code>:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 270" role="img" aria-labelledby="sq-ex-title sq-ex-desc">
+    <title id="sq-ex-title">jj squash -r b: before and after</title>
+    <desc id="sq-ex-desc">
+      Before: root, then e6086990958c with bookmark a, 75591b1896b4 with bookmark b, and 22be6c4e01da with
+      bookmark c at @. After jj squash -r b: b's changes moved into a, giving 105931bfedad with bookmarks
+      a and b, where file1 now reads b. b was abandoned, so its bookmark moved to the rewritten a. c was
+      rebased onto it as 441a7a3a17b0, still @ and still with file1 reading c.
+    </desc>
+    <defs>
+      <marker id="sq-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% macro node(x, y, label, note="", hl=False, gone=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"{% if gone %} stroke-dasharray="3 3" opacity="0.5"{% endif %}></circle>
+      <text x="{{ x + 18 }}" y="{{ y + 4 }}" font-size="12"{% if gone %} opacity="0.5"{% endif %}>{{ label }}</text>
+      {% if note %}<text x="{{ x + 18 }}" y="{{ y + 20 }}" font-size="10.5" class="d-muted">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <g font-size="13">
+      <text x="60" y="22" class="d-muted">before</text>
+      <text x="460" y="22" class="d-muted">after</text>
+    </g>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="70" y1="241" x2="70" y2="199"></line>
+      <line x1="70" y1="181" x2="70" y2="129"></line>
+      <line x1="70" y1="111" x2="70" y2="59"></line>
+      <line x1="470" y1="241" x2="470" y2="169"></line>
+      <line x1="470" y1="151" x2="470" y2="79"></line>
+      <line x1="300" y1="140" x2="420" y2="140" marker-end="url(#sq-ex-arrow)"></line>
+    </g>
+    {{ node(70, 250, "000000000000 (root)") }}
+    {{ node(70, 190, "e6086990958c  a", "file1 = a") }}
+    {{ node(70, 120, "75591b1896b4  b", "file1 = b") }}
+    {{ node(70, 50, "22be6c4e01da  c  @", "file1 = c") }}
+    {{ node(470, 250, "000000000000 (root)") }}
+    {{ node(470, 160, "105931bfedad  a b", "rewritten a: file1 = b", hl=True) }}
+    {{ node(470, 70, "441a7a3a17b0  c  @", "rebased; file1 = c") }}
+    <text x="360" y="130" font-size="11" text-anchor="middle" class="d-muted">jj squash</text>
+    <text x="360" y="160" font-size="11" text-anchor="middle" class="d-muted">-r b</text>
+  </svg>
+</div>
+
+<p>Upstream's snapshot of the output:</p>
+
+<pre><code>Rebased 1 descendant commits.
+Working copy  (@) now at: mzvwutvl 441a7a3a c | (no description set)
+Parent commit (@-)      : qpvuntsm 105931bf a b | (no description set)</code></pre>
+
+<p>
+  <code>b</code>'s whole diff was selected, so it was abandoned, and its bookmark followed it to the
+  rewritten <code>a</code>. The operation is <code>squash commits into e6086990958c…</code>, naming
+  the old <code>a</code> in full. No description was set anywhere, so the editor didn't open. The same
+  test's first case, a plain <code>jj squash</code> from <code>c</code>, instead abandons
+  <code>@</code>. The parent becomes <code>9422c8d6</code> with bookmarks <code>b c</code>, and jj
+  creates a fresh, empty <code>@</code> on top of it.
+</p>

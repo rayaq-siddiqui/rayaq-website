@@ -956,6 +956,17 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "squash": {
+        "title": "How jj squash works",
+        "sources": [
+            "cli/src/commands/squash.rs",
+            "lib/src/rewrite.rs",
+            "cli/src/description_util.rs",
+            "cli/src/cli_util.rs",
+            "lib/src/repo.rs",
+        ],
+        "ready": True,
+    },
     "commit": {
         "title": "How jj commit works",
         "sources": [
