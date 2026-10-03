@@ -24,6 +24,8 @@ backend/            Flask app (Python) — all server-side logic
                      helper, protobuf message list, and page rendering (see "jj" below)
   jj_dojo_docs.py   The /jj-dojo section: the same shape for the Jujutsu Dojo VS Code
                      extension (see "jj-dojo" below)
+  jj_vfs_docs.py    The /jj-vfs-poc section: the same shape for the jj-vfs-poc FUSE file
+                     system, plus a jj-lib link helper and the FUSE op list (see "jj-vfs-poc" below)
   requirements.txt       Runtime deps
   requirements-dev.txt   Runtime + pytest, for local dev / CI
   pytest.ini         Configures pytest to discover *_tests.py (not the pytest default
@@ -38,19 +40,22 @@ backend/            Flask app (Python) — all server-side logic
     sync_showcase_tests.py Tests the sync refuses anything the page cannot render
     jj_docs_tests.py Tests the jj registry, pin, pinned links, and every /jj page
     jj_dojo_docs_tests.py Same checks for /jj-dojo
+    jj_vfs_docs_tests.py  Same checks for /jj-vfs-poc, plus jj-lib link pinning
 
 specs/
   jj.md               The rayaq.ca/jj product & technical spec — the contract the
                       section is held to. Don't edit without the owner's say-so.
   jj-progress.md      Running status of that build: queue, pin, deviations, gaps.
   jj-dojo.md / jj-dojo-progress.md   The same pair for /jj-dojo.
+  jj-vfs-poc.md / jj-vfs-poc-progress.md   The same pair for /jj-vfs-poc.
 
 frontend/
   templates/         Jinja2 templates. One per route: home.html, weather.html,
                      resume.html, assembly.html; jj/ holds the /jj layout
                      (base.html), index.html, and one fragment per /jj/<slug> page;
-                     jj_dojo/ is the same for /jj-dojo
+                     jj_dojo/ and jj_vfs/ are the same for /jj-dojo and /jj-vfs-poc
   static/            style.css (shared/global), resume.css, assembly.css, jj.css, jj_dojo.css,
+                     jj_vfs.css,
                      script.js (weather chart only)
 
 deploy/
@@ -79,6 +84,8 @@ vmrun.sh            Convenience wrapper: `./vmrun.sh '<command>'` runs a single 
 | `/jj/<slug>` | One deep-dive page per topic in `jj_docs.PAGES` that is marked ready; 404 otherwise |
 | `/jj-dojo` | jj-dojo (VS Code extension) architecture reference: overview and page index |
 | `/jj-dojo/<slug>` | One deep-dive page per topic in `jj_dojo_docs.PAGES` that is marked ready; 404 otherwise |
+| `/jj-vfs-poc` | jj-vfs-poc (FUSE file system) architecture reference: overview and page index |
+| `/jj-vfs-poc/<slug>` | One deep-dive page per topic in `jj_vfs_docs.PAGES` that is marked ready; 404 otherwise |
 | `/health` | Returns `{"status": "ok"}`, 200. Used to verify a deploy actually succeeded. |
 
 ## Local development
@@ -173,6 +180,14 @@ Each call is one command over SSH — deliberately kept to single, auditable com
   upstream only describes in `docs/intro.md` is marked *planned*, never shown as implemented.
   The section reuses `jj.css` for its layout but never edits `/jj` files. A daily Routine
   ("rayaq.ca/jj-dojo — architecture reference agent") builds and maintains it.
+- **jj-vfs-poc** (`jj_vfs_docs.py` + `templates/jj_vfs/` + `jj_vfs.css`): the same kind of
+  reference for jj-vfs-poc (crate `jjfsd`), a read-only FUSE file system over a jj repository,
+  at `/jj-vfs-poc`. Read `specs/jj-vfs-poc.md` first and `specs/jj-vfs-poc-progress.md` for
+  status. Links into the crate go through `jj_vfs_docs.source_url` (pinned commit); links into
+  jj-lib go through `jj_vfs_docs.jj_lib_url`, pinned to the `v<jj_lib_version>` tag from the
+  crate's `Cargo.toml`, which can differ from the jj version `/jj` describes. `FUSE_OPS` lists
+  the `Filesystem` methods `src/fuse.rs` implements. A daily Routine
+  ("rayaq.ca/jj-vfs-poc — architecture reference agent") builds and maintains it.
 - Phone number is intentionally omitted from the public resume page (privacy choice, since the repo is public). Don't add it back without checking with the site owner first.
 
 ## Conventions
