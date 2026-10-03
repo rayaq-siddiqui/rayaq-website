@@ -256,3 +256,20 @@ def test_home_links_to_jj_page():
     body = client.get("/").get_data(as_text=True)
 
     assert 'href="/jj"' in body
+
+
+def test_jj_dojo_returns_200():
+    client = app_module.app.test_client()
+
+    response = client.get("/jj-dojo")
+
+    assert response.status_code == 200
+    assert "jj-dojo architecture" in response.get_data(as_text=True)
+
+
+def test_home_links_to_jj_dojo_page():
+    client = app_module.app.test_client()
+
+    body = client.get("/").get_data(as_text=True)
+
+    assert 'href="/jj-dojo"' in body

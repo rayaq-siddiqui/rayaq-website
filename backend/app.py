@@ -3,6 +3,7 @@ from datetime import datetime
 from flask import Flask, abort, render_template
 
 import jj_docs
+import jj_dojo_docs
 import resume_data
 import static_assets
 from assembly import get_showcase
@@ -63,6 +64,15 @@ def assembly_agents():
 @app.route("/jj/<slug>")
 def jj(slug):
     html = jj_docs.render(slug, render_template)
+    if html is None:
+        abort(404)
+    return html
+
+
+@app.route("/jj-dojo", defaults={"slug": None})
+@app.route("/jj-dojo/<slug>")
+def jj_dojo(slug):
+    html = jj_dojo_docs.render(slug, render_template)
     if html is None:
         abort(404)
     return html

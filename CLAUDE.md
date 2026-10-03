@@ -22,6 +22,8 @@ backend/            Flask app (Python) — all server-side logic
   static_assets.py  Appends ?v=<mtime> to static URLs so they can be cached for a year
   jj_docs.py        The /jj section: upstream pin, page registry, pinned source-link
                      helper, protobuf message list, and page rendering (see "jj" below)
+  jj_dojo_docs.py   The /jj-dojo section: the same shape for the Jujutsu Dojo VS Code
+                     extension (see "jj-dojo" below)
   requirements.txt       Runtime deps
   requirements-dev.txt   Runtime + pytest, for local dev / CI
   pytest.ini         Configures pytest to discover *_tests.py (not the pytest default
@@ -35,17 +37,20 @@ backend/            Flask app (Python) — all server-side logic
                      test that the committed showcase.json actually renders
     sync_showcase_tests.py Tests the sync refuses anything the page cannot render
     jj_docs_tests.py Tests the jj registry, pin, pinned links, and every /jj page
+    jj_dojo_docs_tests.py Same checks for /jj-dojo
 
 specs/
   jj.md               The rayaq.ca/jj product & technical spec — the contract the
                       section is held to. Don't edit without the owner's say-so.
   jj-progress.md      Running status of that build: queue, pin, deviations, gaps.
+  jj-dojo.md / jj-dojo-progress.md   The same pair for /jj-dojo.
 
 frontend/
   templates/         Jinja2 templates. One per route: home.html, weather.html,
                      resume.html, assembly.html; jj/ holds the /jj layout
-                     (base.html), index.html, and one fragment per /jj/<slug> page
-  static/            style.css (shared/global), resume.css, assembly.css, jj.css,
+                     (base.html), index.html, and one fragment per /jj/<slug> page;
+                     jj_dojo/ is the same for /jj-dojo
+  static/            style.css (shared/global), resume.css, assembly.css, jj.css, jj_dojo.css,
                      script.js (weather chart only)
 
 deploy/
@@ -72,6 +77,8 @@ vmrun.sh            Convenience wrapper: `./vmrun.sh '<command>'` runs a single 
 | `/assembly-agents` | Project page for Assembly, rendered from `backend/showcase.json` |
 | `/jj` | jj architecture reference: overview, big diagram, index of deep-dive pages |
 | `/jj/<slug>` | One deep-dive page per topic in `jj_docs.PAGES` that is marked ready; 404 otherwise |
+| `/jj-dojo` | jj-dojo (VS Code extension) architecture reference: overview and page index |
+| `/jj-dojo/<slug>` | One deep-dive page per topic in `jj_dojo_docs.PAGES` that is marked ready; 404 otherwise |
 | `/health` | Returns `{"status": "ok"}`, 200. Used to verify a deploy actually succeeded. |
 
 ## Local development
@@ -158,6 +165,14 @@ Each call is one command over SSH — deliberately kept to single, auditable com
     next queued page, and once the build is done, diffs upstream against the pin and
     updates affected pages. It pushes straight to `main` and keeps
     `specs/jj-progress.md` current, so keep that file accurate if you edit by hand.
+- **jj-dojo** (`jj_dojo_docs.py` + `templates/jj_dojo/` + `jj_dojo.css`): a static,
+  source-linked reference to Jujutsu Dojo, the VS Code extension for jj, at `/jj-dojo`. Read
+  `specs/jj-dojo.md` before changing anything here, and `specs/jj-dojo-progress.md` for where
+  the build stands. Same rules as `/jj`: static pages, every link pinned to
+  `jj_dojo_docs.UPSTREAM` through `jj_dojo_docs.source_url`, inline SVG diagrams. Anything
+  upstream only describes in `docs/intro.md` is marked *planned*, never shown as implemented.
+  The section reuses `jj.css` for its layout but never edits `/jj` files. A daily Routine
+  ("rayaq.ca/jj-dojo — architecture reference agent") builds and maintains it.
 - Phone number is intentionally omitted from the public resume page (privacy choice, since the repo is public). Don't add it back without checking with the site owner first.
 
 ## Conventions
