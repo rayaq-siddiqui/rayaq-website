@@ -956,6 +956,16 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "undo": {
+        "title": "How jj undo works",
+        "sources": [
+            "cli/src/commands/undo.rs",
+            "cli/src/commands/operation/mod.rs",
+            "cli/src/cli_util.rs",
+            "lib/src/repo.rs",
+        ],
+        "ready": True,
+    },
     "abandon": {
         "title": "How jj abandon works",
         "sources": [

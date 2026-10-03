@@ -1,0 +1,315 @@
+{% set cmd = "cli/src/commands/undo.rs" %}
+{% set opm = "cli/src/commands/operation/mod.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set t = "cli/tests/test_undo_redo_commands.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj undo</code> works</h1>
+  <p class="tagline">
+    <code>jj undo</code> makes the repository look the way it did before the last operation. It doesn't
+    delete that operation. It records a <em>new</em> operation whose view is the old one, and repeating
+    <code>jj undo</code> walks further back.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj takes the current operation. If it is itself an undo, jj takes the operation <em>that</em>
+  undo restored, read back from its description. It refuses if the operation came from another
+  workspace, is the root, or is a merge, and warns about undoing a push or a workspace removal. It then
+  picks the operation to restore: the target's parent, or, if that parent is an undo, what that undo
+  restored. A transaction copies that operation's view (commits, bookmarks, tags, working-copy
+  pointers and remote-tracking refs) over the current one. It is recorded as
+  <code>undo: restore to operation &lt;id&gt;</code>. That description is how the next
+  <code>jj undo</code> finds its place.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 57, 215) }}"><code>cmd_undo</code></a>. The
+  <a href="{{ url_for('jj', slug='operations') }}#undo">operations page</a> compares undo with
+  <code>redo</code>, <code>op restore</code> and <code>op revert</code>, and explains what a view is. This
+  page follows <code>undo</code> line by line. Restoring an operation never touches commits, which are
+  immutable and stay in the store. Only the view, meaning which commits are visible and where refs
+  point, changes.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>--allow-cross-workspace</code></td><td>bool</td><td>false</td><td>Undo the operation even if it was recorded in a different workspace (<a href="{{ src(cmd, 48, 53) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 30, 53) }}"><code>UndoArgs</code> and its help text</a></p>
+
+<p>
+  There is no argument naming an operation. To restore or revert a particular one, the help text points
+  to <code>jj op restore</code> and <code>jj op revert</code>. The global <code>--at-operation</code>
+  flag changes which operation the repository is loaded at, and therefore which one is "current".
+</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<p>
+  <code>jj undo</code> reads no settings of its own. <code>templates.op_summary</code> formats the
+  <code>Undid operation:</code> and <code>Restored to operation:</code> lines
+  (<a href="{{ src(cmd, 197, 207) }}">source</a>). The working-copy settings on the
+  <a href="{{ url_for('jj', slug='working-copy') }}">working-copy page</a> govern the snapshot at the
+  start and the checkout at the end. <code>jj undo</code> always restores both the repo portion and the
+  remote-tracking portion of the view; the choice that <code>op restore --what</code> offers isn't
+  exposed (<a href="{{ src(opm, 86, 90) }}"><code>DEFAULT_REVERT_WHAT</code></a>).
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 486" role="img" aria-labelledby="un-flow-title un-flow-desc">
+    <title id="un-flow-title">jj undo: call flow</title>
+    <desc id="un-flow-desc">
+      cmd_undo loads the workspace through the shared lifecycle, which snapshots the working copy and may
+      record a snapshot operation. It takes the current operation as the target; if the target's
+      description starts with "undo: restore to operation", it loads the operation named there instead.
+      It refuses a target from another workspace unless --allow-cross-workspace, and warns for a push or
+      a workspace removal. The target must have exactly one parent; the root and merges are refused.
+      If that parent is itself an undo, it is replaced by the operation it restored. A transaction sets
+      the view to view_with_desired_portions_restored of the parent's view, prints what it undid and
+      restored, and tx.finish records "undo: restore to operation" plus the parent's ID, then updates
+      the working copy.
+    </desc>
+    <defs>
+      <marker id="un-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot (may record an operation) (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 64, 119) }}"><rect class="d-box" x="20" y="84" width="340" height="66" rx="6"></rect>
+      <text x="32" y="105">target = current operation</text>
+      <text x="32" y="123" class="d-muted" font-size="11">an undo? → target = the op it restored</text>
+      <text x="32" y="140" class="d-muted" font-size="11">(parsed from "undo: restore to operation &lt;hex&gt;")</text></a>
+
+      <a href="{{ src(cmd, 120, 133) }}"><rect class="d-box" x="420" y="84" width="320" height="66" rx="6"></rect>
+      <text x="432" y="105">target from another workspace?</text>
+      <text x="432" y="123" class="d-muted" font-size="11">"Refusing to undo operation …"</text>
+      <text x="432" y="140" class="d-muted" font-size="11">unless --allow-cross-workspace</text></a>
+
+      <a href="{{ src(cmd, 134, 156) }}"><rect class="d-box" x="420" y="174" width="320" height="66" rx="6"></rect>
+      <text x="432" y="195">warnings</text>
+      <text x="432" y="213" class="d-muted" font-size="11">"push …" → may conflict bookmarks</text>
+      <text x="432" y="230" class="d-muted" font-size="11">"remove workspace …" → directory not restored</text></a>
+
+      <a href="{{ src(cmd, 158, 188) }}"><rect class="d-box" x="20" y="174" width="340" height="84" rx="6"></rect>
+      <text x="32" y="195">parent = target's only parent</text>
+      <text x="32" y="213" class="d-muted" font-size="11">none → "Cannot undo root operation"</text>
+      <text x="32" y="230" class="d-muted" font-size="11">several → "Cannot undo a merge operation"</text>
+      <text x="32" y="247" class="d-muted" font-size="11">an undo? → parent = the op it restored</text></a>
+
+      <a href="{{ src(opm, 92, 117) }}"><rect class="d-box" x="20" y="282" width="720" height="84" rx="6"></rect>
+      <text x="32" y="303">start_transaction; set_view(view_with_desired_portions_restored(parent's view, current view, [Repo, RemoteTracking]))</text>
+      <text x="32" y="322" class="d-muted" font-size="11">from the parent: head_ids, local_bookmarks, local_tags, wc_commit_ids (Repo), remote_views (RemoteTracking)</text>
+      <text x="32" y="339" class="d-muted" font-size="11">kept from the current view: git_refs, git_heads</text>
+      <text x="32" y="356" class="d-muted" font-size="11">print "Undid operation: …" and "Restored to operation: …"</text></a>
+
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="390" width="720" height="76" rx="6"></rect>
+      <text x="380" y="412" text-anchor="middle">tx.finish(ui, "undo: restore to operation &lt;parent id&gt;"): write the operation,</text>
+      <text x="380" y="432" text-anchor="middle">check out the restored @ (or warn if this workspace no longer exists),</text>
+      <text x="380" y="452" text-anchor="middle">and report the changes (CLI page)</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#un-arrow)">
+      <line x1="190" y1="60" x2="190" y2="80"></line>
+      <line x1="360" y1="117" x2="416" y2="117"></line>
+      <line x1="580" y1="150" x2="580" y2="170"></line>
+      <line x1="420" y1="207" x2="364" y2="207"></line>
+      <line x1="190" y1="258" x2="190" y2="278"></line>
+      <line x1="380" y1="366" x2="380" y2="386"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Current operation and its metadata</td><td>read</td><td><code>description</code> (is it an undo or a push? which operation did it restore?), <code>workspace_name</code> (cross-workspace check), and parents.</td><td><a href="{{ url_for('jj', slug='operations') }}#metadata">operations</a></td></tr>
+      <tr><td>Op store</td><td>read</td><td><code>load_operation</code> for the operation named in an undo's description, and that operation's parents and view.</td><td><a href="{{ url_for('jj', slug='operations') }}#stores">operations</a></td></tr>
+      <tr><td><code>View.head_ids</code>, <code>local_bookmarks</code>, <code>local_tags</code>, <code>wc_commit_ids</code></td><td>write</td><td>Replaced wholesale by the restored operation's values. That is the <code>Repo</code> portion.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td><code>View.remote_views</code></td><td>write</td><td>Replaced by the restored operation's remote bookmarks and tags. That is the <code>RemoteTracking</code> portion.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td><code>View.git_refs</code>, <code>git_heads</code></td><td>kept</td><td>Always taken from the current view (<a href="{{ src(opm, 108, 116) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Commits</td><td>none</td><td>No commit is created or rewritten. Commits that become invisible stay in the store, and commits that become visible again were never deleted.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td>A new operation whose parent is the current one, holding the restored view.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+      <tr><td>Working copy (<code>TreeState</code>)</td><td>read, then maybe write</td><td>Snapshotted at the start. If this workspace's <code>@</code> differs in the restored view, its tree is checked out. If the workspace doesn't exist in the restored view, the files are left alone, with a warning.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, started after every check passes (<a href="{{ src(cmd, 190, 196) }}">source</a>).</li>
+  <li>
+    <strong>Operation description:</strong> <code>undo: restore to operation &lt;id&gt;</code>, where
+    <code>&lt;id&gt;</code> is the full hex ID of the restored operation
+    (<a href="{{ src(cmd, 55) }}"><code>UNDO_OP_DESC_PREFIX</code></a>,
+    <a href="{{ src(cmd, 208, 212) }}">source</a>). This exact text is functional: the next
+    <code>jj undo</code> strips the prefix and parses the ID. <code>jj op revert</code> uses a different
+    description, so an undo after <code>op revert</code> undoes the revert rather than continuing a
+    stack (<a href="{{ src(t, 124, 144) }}">upstream test</a>).
+  </li>
+  <li><strong>Commits created or rewritten:</strong> none. Only the view changes.</li>
+  <li>
+    <strong>Working copy:</strong> the workspace is loaded with the usual snapshot. If you have
+    unrecorded edits, that snapshot is committed as its own operation and becomes the current one
+    (<a href="{{ src(util, 2224, 2230) }}">source</a>), so <em>it</em> is what <code>jj undo</code>
+    undoes. After the undo operation is written, the restored <code>@</code> is checked out.
+  </li>
+  <li><strong><code>jj undo</code> again</strong> continues further back. <code>jj redo</code> undoes the undo, by restoring the operation the undo replaced.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="stack">The undo stack, encoded in descriptions</h3>
+
+<p>
+  There is no separate undo stack. It is reconstructed from operation descriptions, using two
+  substitutions (<a href="{{ src(cmd, 66, 119) }}">source comment</a>):
+</p>
+
+<ol>
+  <li>
+    <strong>Choosing what to undo.</strong> If the current operation is an undo, the thing to undo next
+    is the operation it restored, not the undo itself
+    (<a href="{{ src(cmd, 106, 119) }}">source</a>). So repeated <code>jj undo</code> keeps stepping
+    back instead of toggling between two states.
+  </li>
+  <li>
+    <strong>Choosing what to restore.</strong> Normally that's the target's parent. If the parent is
+    itself an undo, jj restores what that undo restored instead
+    (<a href="{{ src(cmd, 167, 188) }}">source</a>). The source comment explains that otherwise,
+    repeated <code>jj new; jj undo</code> would build an ever-longer linked list of undos that a later
+    undo would have to walk.
+  </li>
+</ol>
+
+<p>
+  Together these make the stack "jump over" older undo stacks it runs into, as the worked example below
+  shows.
+</p>
+
+<h3 id="restoring">What restoring means</h3>
+
+<p>
+  <a href="{{ src(opm, 92, 117) }}"><code>view_with_desired_portions_restored</code></a> builds a new
+  <code>View</code> field by field. With <code>Repo</code> selected, <code>head_ids</code>,
+  <code>local_bookmarks</code>, <code>local_tags</code> and <code>wc_commit_ids</code> come from the
+  restored view. With <code>RemoteTracking</code> selected, so does <code>remote_views</code>. The Git
+  ref mirrors <code>git_refs</code> and <code>git_heads</code> always come from the current view
+  (<a href="{{ src(opm, 76, 90) }}"><code>RevertWhatToRestore</code></a>). <code>MutableRepo::set_view</code>
+  installs it un-normalized (<a href="{{ src('lib/src/repo.rs', 2036, 2039) }}">source</a>), and the
+  transaction commits it as usual.
+</p>
+
+<h3 id="guards">Guards</h3>
+
+<ul>
+  <li><strong>Other workspaces.</strong> An operation records the workspace it ran in. Undoing another workspace's operation would usually surprise you, so it needs <code>--allow-cross-workspace</code>. Operations with no recorded workspace pass the check (<a href="{{ src(cmd, 120, 133) }}">source</a>).</li>
+  <li><strong>Pushes.</strong> Undoing a <code>push …</code> operation (<a href="{{ src('cli/src/commands/git/push.rs', 1492, 1494) }}"><code>is_push_operation</code></a>) restores remote-tracking bookmarks to their pre-push positions, while the remote keeps the pushed ones. That's why it warns that the bookmarks will often end up conflicted.</li>
+  <li><strong>Workspace removal.</strong> The workspace's entry in the view comes back, but its directory on disk doesn't.</li>
+  <li><strong>Shape.</strong> The root operation has nothing to restore. A merge operation, created when concurrent operations are reconciled, has no single "before", so jj points you to <code>op restore</code>.</li>
+</ul>
+
+<p>
+  <strong>Invariants:</strong> undo is append-only, because it always adds an operation and never
+  deletes one. Undo can itself be undone (<code>jj redo</code>, or <code>jj op restore</code> to the
+  undo's parent). No commit is ever destroyed. Repeated undos step back monotonically through the
+  non-undo history, without building chains.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Refusing to undo operation &lt;id&gt; because it was performed in workspace &lt;name&gt;</code>, hint about <code>--allow-cross-workspace</code> or <code>jj op revert</code></td><td>The target operation's <code>workspace_name</code> is set and differs from the current workspace.</td><td><a href="{{ src(cmd, 120, 133) }}">undo.rs</a></td></tr>
+      <tr><td><code>Cannot undo root operation</code></td><td>The target has no parent, for example after undoing back to repository creation.</td><td><a href="{{ src(cmd, 158, 160) }}">undo.rs</a></td></tr>
+      <tr><td><code>Cannot undo a merge operation</code>, hint <code>Consider using `jj op restore` instead</code></td><td>The target has several parents.</td><td><a href="{{ src(cmd, 161, 164) }}">undo.rs</a></td></tr>
+      <tr><td>Warning <code>Undoing a push operation often leads to conflicted bookmarks.</code>, hint <code>To avoid this, run `jj redo` now.</code></td><td>The target's description starts with <code>push </code>.</td><td><a href="{{ src(cmd, 134, 141) }}">undo.rs</a></td></tr>
+      <tr><td>Warning <code>Undoing a workspace removal restores the workspace, but does not restore the workspace directory.</code> and a hint</td><td>The target's description starts with <code>remove workspace</code>.</td><td><a href="{{ src(cmd, 142, 156) }}">undo.rs</a></td></tr>
+      <tr><td>Warning <code>The current workspace '…' no longer exists after this operation. The working copy was left untouched.</code></td><td>The restored view has no entry for this workspace, for example after undoing <code>add workspace 'default'</code>.</td><td><a href="{{ src(util, 2488, 2503) }}">cli_util.rs</a></td></tr>
+      <tr><td>internal error <code>Failed to parse ID of target operation in undo-stack</code> (and <code>… target operation's parent …</code>)</td><td>An operation description has the undo prefix but no valid hex ID after it.</td><td><a href="{{ src(cmd, 111, 113) }}">undo.rs</a>, <a href="{{ src(cmd, 179, 182) }}">undo.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Upstream's tests cover the root case, including the missing-workspace warning on the first undo
+  (<a href="{{ src(t, 18, 40) }}">source</a>), the merge case, created with <code>--at-op</code>
+  (<a href="{{ src(t, 43, 59) }}">source</a>), and the push warning
+  (<a href="{{ src(t, 62, 85) }}">source</a>).
+</p>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  <code>undo</code> moves through operations, not commits, so this example draws the <em>operation
+  log</em>. It is upstream's <a href="{{ src(t, 88, 121) }}">test_jump_over_old_undo_stack</a>. Each of
+  operations A–D writes its own letter to a file named <code>state</code> and snapshots. The test then
+  runs undo, undo, writes and snapshots E and F, and runs undo three more times. After each command it
+  checks the file.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 500" role="img" aria-labelledby="un-ex-title un-ex-desc">
+    <title id="un-ex-title">The operation log after test_jump_over_old_undo_stack</title>
+    <desc id="un-ex-desc">
+      Operations from oldest to newest: add workspace, A, B, C, D, then undo 1 restoring C, undo 2
+      restoring B, then E and F, then undo 3 restoring E, undo 4 restoring B, and undo 5 restoring A.
+      Undo 2 targeted C because undo 1 had restored C. Undo 4 targeted E, whose parent is undo 2, so it
+      restored what undo 2 restored, B, jumping over the old undo stack. Undo 5 targeted B and restored
+      its parent A. The file reads C, B, E, B and A after the five undos.
+    </desc>
+    <defs>
+      <marker id="un-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% macro op(y, label, note="", undo=False) -%}
+      <circle cx="60" cy="{{ y }}" r="8" class="{{ 'd-accent' if undo else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="80" y="{{ y + 4 }}" font-size="12"{% if undo %} class="d-accent"{% endif %}>{{ label }}</text>
+      {% if note %}<text x="300" y="{{ y + 4 }}" font-size="11" class="d-muted">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <line x1="60" y1="470" x2="60" y2="52" class="d-line" stroke-width="1.5"></line>
+    {{ op(470, "add workspace 'default'") }}
+    {{ op(432, "A  snapshot", "state = A") }}
+    {{ op(394, "B  snapshot", "state = B") }}
+    {{ op(356, "C  snapshot", "state = C") }}
+    {{ op(318, "D  snapshot", "state = D") }}
+    {{ op(280, "undo 1: restore to C", "undid D → state C", undo=True) }}
+    {{ op(242, "undo 2: restore to B", "target C (what undo 1 restored) → state B", undo=True) }}
+    {{ op(204, "E  snapshot", "state = E") }}
+    {{ op(166, "F  snapshot", "state = F") }}
+    {{ op(128, "undo 3: restore to E", "undid F → state E", undo=True) }}
+    {{ op(90, "undo 4: restore to B", "target E; its parent is undo 2 → B", undo=True) }}
+    {{ op(52, "undo 5: restore to A", "target B; parent A → state A", undo=True) }}
+    <g class="d-line" stroke-width="1.3" fill="none" marker-end="url(#un-ex-arrow)">
+      <path d="M600,280 C640,280 640,356 604,356"></path>
+      <path d="M600,242 C665,242 665,394 604,394"></path>
+      <path d="M600,128 C640,128 640,204 604,204"></path>
+      <path d="M600,90 C700,90 700,394 604,394"></path>
+      <path d="M600,52 C730,52 730,432 604,432"></path>
+    </g>
+  </svg>
+</div>
+
+<p>
+  The test asserts the file reads <code>C</code>, then <code>B</code>, then <code>E</code>,
+  <code>B</code> and <code>A</code>. The fourth undo is the interesting one. Its target is
+  <code>E</code>, the operation undo 3 restored, and <code>E</code>'s parent is undo 2. Rather than
+  restore undo 2, it restores what undo 2 restored, <code>B</code>. The old stack (undo 1, undo 2, C, D)
+  is jumped over, so the fifth undo goes straight from <code>B</code> to <code>A</code>.
+</p>
