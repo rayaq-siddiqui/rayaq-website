@@ -956,6 +956,16 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "abandon": {
+        "title": "How jj abandon works",
+        "sources": [
+            "cli/src/commands/abandon.rs",
+            "lib/src/repo.rs",
+            "lib/src/rewrite.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
     "rebase": {
         "title": "How jj rebase works",
         "sources": [

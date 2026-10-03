@@ -1,0 +1,322 @@
+{% set cmd = "cli/src/commands/abandon.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+{% set rw = "lib/src/rewrite.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj abandon</code> works</h1>
+  <p class="tagline">
+    <code>jj abandon</code> removes commits from the visible history. Their changes disappear and their
+    descendants are rebased onto their parents. Bookmarks pointing at them are deleted, unless you ask
+    to move them to the parents instead.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj resolves the revisions (default <code>@</code>), keeps only the visible ones, and refuses
+  if any is immutable. One <code>transform_descendants_with_options</code> walk records each target as
+  abandoned onto its (possibly rewritten) parents. It rebases every other descendant, or with
+  <code>--restore-descendants</code>, reparents it so its content stays the same. Bookmarks are then
+  updated, which by default means deleting the abandoned commits' bookmarks. If <code>@</code> was
+  abandoned, a new empty <code>@</code> is created on its parents. One operation,
+  <code>abandon commit &lt;id&gt;</code>, records it all. The commits still exist in the store, and
+  <code>jj undo</code> brings them back.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 68, 208) }}"><code>cmd_abandon</code></a>. Its help text compares
+  it with <code>jj restore --changes-in</code>, which removes the same changes but keeps the change
+  rather than giving you a new one (<a href="{{ src(cmd, 38, 45) }}">source</a>). The same
+  "abandoned commit" machinery runs whenever another command empties a commit:
+  <a href="{{ url_for('jj', slug='squash') }}"><code>squash</code></a> sources,
+  <a href="{{ url_for('jj', slug='rebase') }}"><code>rebase --skip-emptied</code></a>, and the empty
+  working-copy commit <a href="{{ url_for('jj', slug='edit') }}"><code>edit</code></a> and
+  <a href="{{ url_for('jj', slug='new') }}"><code>new</code></a> leave behind.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>REVSETS</code> (positional)</td><td>revsets, repeatable</td><td><code>@</code></td><td>The commits to abandon. Positional and <code>-r</code> values are unioned (<a href="{{ src(cmd, 48, 51) }}">source</a>).</td></tr>
+      <tr><td><code>-r REVSETS</code></td><td>revsets, repeatable</td><td>none</td><td>Hidden alias for the positional argument (<a href="{{ src(cmd, 53, 55) }}">source</a>).</td></tr>
+      <tr><td><code>--retain-bookmarks</code></td><td>bool</td><td>false</td><td>Move the abandoned commits' bookmarks to their parents instead of deleting them (<a href="{{ src(cmd, 57, 61) }}">source</a>).</td></tr>
+      <tr><td><code>--restore-descendants</code></td><td>bool</td><td>false</td><td>Reparent descendants without changing their content, so the abandoned changes effectively move into the children (<a href="{{ src(cmd, 63, 65) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 46, 66) }}"><code>AbandonArgs</code></a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<p>
+  <code>jj abandon</code> reads no settings of its own. <code>revset-aliases."immutable_heads()"</code>
+  decides what <code>check_rewritable_expr</code> refuses, so the root commit and anything immutable
+  can't be abandoned. <code>user.name</code>/<code>user.email</code> become the committer of rebased
+  descendants. For the "push deleted bookmarks" hint, the default remote that jj ignores when looking
+  for tracked bookmarks is <code>git</code> on Git-backed repositories
+  (<a href="{{ src(util, 3451, 3459) }}"><code>has_tracked_remote_bookmarks</code></a>).
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 470" role="img" aria-labelledby="ab-flow-title ab-flow-desc">
+    <title id="ab-flow-title">jj abandon: call flow</title>
+    <desc id="ab-flow-desc">
+      cmd_abandon loads the workspace through the shared lifecycle, which snapshots the working copy. It
+      unions the revsets (default @), intersects them with the visible commits, checks those are
+      rewritable, and reports any already-hidden ones it skips. With nothing left it prints "No
+      revisions to abandon." Otherwise it starts a transaction and runs
+      transform_descendants_with_options with delete_abandoned_bookmarks set unless --retain-bookmarks.
+      For each visited commit, a target is abandoned onto its new parents; another descendant is rebased,
+      or reparented with --restore-descendants. Bookmarks and working-copy pointers are updated. The
+      command lists abandoned commits and deleted bookmarks, and tx.finish records "abandon commit".
+      Afterwards it may hint about pushing deleted bookmarks.
+    </desc>
+    <defs>
+      <marker id="ab-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 75, 106) }}"><rect class="d-box" x="20" y="84" width="340" height="84" rx="6"></rect>
+      <text x="32" y="105">targets = revsets (or @)</text>
+      <text x="32" y="123" class="d-muted" font-size="11">∩ ::visible_heads()</text>
+      <text x="32" y="140" class="d-muted" font-size="11">check_rewritable_expr(visible)</text>
+      <text x="32" y="157" class="d-muted" font-size="11">"Skipping N … already hidden."</text></a>
+      <a href="{{ src(cmd, 107, 110) }}"><rect class="d-box" x="420" y="84" width="320" height="50" rx="6"></rect>
+      <text x="432" y="105">none left?</text>
+      <text x="432" y="123" class="d-muted" font-size="11">"No revisions to abandon." — no operation</text></a>
+
+      <a href="{{ src(repo, 1509, 1529) }}"><rect class="d-box" x="20" y="192" width="720" height="102" rx="6"></rect>
+      <text x="32" y="213">start_transaction; transform_descendants_with_options(targets, delete_abandoned_bookmarks = !--retain-bookmarks)</text>
+      <text x="32" y="234" class="d-muted" font-size="11">visit targets and all descendants, parents first:</text>
+      <text x="32" y="252" class="d-muted" font-size="11">• target → rewriter.abandon(): record abandoned onto its (rewritten) parents</text>
+      <text x="32" y="269" class="d-muted" font-size="11">• other → rewriter.rebase().write(), or reparent().write() with --restore-descendants</text>
+      <text x="32" y="286" class="d-muted" font-size="11">then update_rewritten_references: bookmarks deleted or moved, @ replaced</text></a>
+
+      <a href="{{ src(cmd, 138, 180) }}"><rect class="d-box" x="20" y="318" width="340" height="66" rx="6"></rect>
+      <text x="32" y="339">report</text>
+      <text x="32" y="357" class="d-muted" font-size="11">"Abandoned N commits:", "Deleted bookmarks: …",</text>
+      <text x="32" y="374" class="d-muted" font-size="11">"Rebased N descendant commits …"</text></a>
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="420" y="318" width="320" height="66" rx="6"></rect>
+      <text x="432" y="339">tx.finish(ui, "abandon commit &lt;id&gt; …")</text>
+      <text x="432" y="357" class="d-muted" font-size="11">write the operation, check out the new @</text>
+      <text x="432" y="374" class="d-muted" font-size="11">if it changed (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 193, 206) }}"><rect class="d-box" x="420" y="408" width="320" height="50" rx="6"></rect>
+      <text x="432" y="429">Git backend + tracked remote?</text>
+      <text x="432" y="447" class="d-muted" font-size="11">hint: jj git push --deleted</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#ab-arrow)">
+      <line x1="190" y1="60" x2="190" y2="80"></line>
+      <line x1="360" y1="109" x2="416" y2="109"></line>
+      <line x1="190" y1="168" x2="190" y2="188"></line>
+      <line x1="190" y1="294" x2="190" y2="314"></line>
+      <line x1="360" y1="351" x2="416" y2="351"></line>
+      <line x1="580" y1="384" x2="580" y2="404"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Target commits</td><td>abandoned</td><td>Recorded in the transaction's <code>parent_mapping</code> as <code>Rewrite::Abandoned(new parents)</code> (<a href="{{ src(repo, 1158, 1173) }}">source</a>). They aren't deleted: they stay in the store, simply no longer reachable from the view's heads.</td><td><a href="{{ url_for('jj', slug='transactions') }}">transactions</a></td></tr>
+      <tr><td>Descendant commits</td><td>rewritten</td><td>Rebased with a 3-way tree merge, which drops the abandoned changes and may conflict, or reparented with the same tree under <code>--restore-descendants</code>.</td><td><a href="{{ url_for('jj', slug='rebase') }}#applying">rebase</a></td></tr>
+      <tr><td><code>View.head_ids</code></td><td>write</td><td>Abandoned heads are removed. Their parents, or the rebased descendants, become heads as appropriate.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td><code>View.local_bookmarks</code></td><td>write</td><td>A bookmark on an abandoned commit is set absent (deleted), or with <code>--retain-bookmarks</code> moved to the commit's new parents. Bookmarks on rebased commits follow them (<a href="{{ src(repo, 1299, 1333) }}"><code>update_local_bookmarks</code></a>).</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td><code>View.remote_bookmarks</code></td><td>read</td><td>Only to decide whether to show the "push --deleted" hint. Remote bookmarks aren't changed: the deletion reaches the remote only when you push.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td><code>View.wc_commit_ids</code></td><td>write</td><td>A workspace whose <code>@</code> was abandoned gets a new empty commit on the abandoned commit's new parents (<a href="{{ src(repo, 1335, 1372) }}"><code>update_wc_commits</code></a>).</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td>One operation, described below.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+      <tr><td>Working copy (<code>TreeState</code>)</td><td>read, then maybe write</td><td>Snapshotted at the start. If <code>@</code> was abandoned or rebased, its new tree is checked out, so files from abandoned ancestors disappear from disk.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, only if at least one visible commit is to be abandoned (<a href="{{ src(cmd, 107, 112) }}">source</a>).</li>
+  <li>
+    <strong>Operation description</strong> (<a href="{{ src(cmd, 182, 190) }}">source</a>):
+    <code>abandon commit &lt;id&gt;</code> or <code>abandon commit &lt;id&gt; and &lt;n&gt; more</code>.
+    The ID is formatted with <code>Display</code>, which writes the full hex
+    (<a href="{{ src('core/src/object_id.rs', 103, 107) }}">core/src/object_id.rs</a>). It is the first
+    target in evaluation order, which puts children first.
+  </li>
+  <li><strong>Commits created or rewritten:</strong> none are created, except a replacement <code>@</code> when <code>@</code> is abandoned. Every descendant of a target is rewritten.</li>
+  <li><strong>Working copy:</strong> snapshotted first, so abandoning <code>@</code> abandons your latest edits too. The new <code>@</code>'s tree, the merge of its parents, is then checked out.</li>
+  <li><strong><code>jj undo</code></strong> restores the previous view, which brings back the abandoned commits, their bookmarks and the old descendants. Nothing was deleted from the store.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="targets">Choosing the targets</h3>
+
+<p>
+  The revsets are unioned, then intersected with <code>::visible_heads()</code>
+  (<a href="{{ src(cmd, 83, 91) }}">source</a>). A revset can name hidden commits, for example by full
+  commit ID. Those are counted and reported as skipped rather than
+  abandoned again (<a href="{{ src(cmd, 93, 104) }}">source</a>). The immutability check runs only on the
+  visible part.
+</p>
+
+<h3 id="walk">One walk over the descendants</h3>
+
+<p>
+  Everything happens in one call to
+  <a href="{{ src(repo, 1509, 1529) }}"><code>transform_descendants_with_options</code></a> rooted at the
+  targets (<a href="{{ src(cmd, 116, 136) }}">source</a>). It visits the targets and all their
+  descendants, parents first. Each visit gets a <code>CommitRewriter</code> whose new parents already
+  reflect earlier visits. So when a target's parent was itself abandoned, the new parents are that
+  parent's parents, and chains of abandoned commits collapse correctly.
+</p>
+
+<ul>
+  <li>
+    <strong>Target:</strong> <a href="{{ src(rw, 349, 357) }}"><code>rewriter.abandon()</code></a>
+    records <code>Abandoned(new parents)</code> without writing anything. Later commits that had it as a
+    parent get those parents instead.
+  </li>
+  <li>
+    <strong>Other descendant, default:</strong> <a href="{{ src(rw, 446, 451) }}"><code>rebase()</code></a>
+    merges <code>new base + (tree − old base)</code>. The abandoned changes therefore vanish from every
+    descendant, and a descendant that built on them may now conflict.
+  </li>
+  <li>
+    <strong>Other descendant, <code>--restore-descendants</code>:</strong>
+    <a href="{{ src(rw, 453, 459) }}"><code>reparent()</code></a> keeps the tree as it was. Its diff
+    against the new parent now <em>includes</em> the abandoned changes, as if they'd been squashed into
+    it.
+  </li>
+</ul>
+
+<h3 id="refs">Bookmarks and the working copy</h3>
+
+<p>
+  At the end of the walk, <code>update_rewritten_references</code> runs with
+  <code>RewriteRefsOptions { delete_abandoned_bookmarks: !retain_bookmarks }</code>
+  (<a href="{{ src(cmd, 113, 115) }}">source</a>).
+  <a href="{{ src(repo, 1299, 1333) }}"><code>update_local_bookmarks</code></a> sets a bookmark on an
+  abandoned commit to absent. With <code>--retain-bookmarks</code>, it builds a new target from the new
+  parents with the old commit interleaved as the "removed" side. When the abandoned commit was a merge,
+  that means the bookmark becomes <em>conflicted</em> across both parents, shown as <code>e??</code>
+  in the upstream test below. The command then diffs the old and new bookmark tables to list what was
+  deleted (<a href="{{ src(cmd, 138, 144) }}">source</a>).
+  <a href="{{ src(repo, 1335, 1372) }}"><code>update_wc_commits</code></a> gives a workspace whose
+  <code>@</code> was abandoned a new empty commit on the new parents, with their merged tree.
+</p>
+
+<p>
+  <strong>Invariants:</strong> nothing is deleted from storage, so the operation is fully undoable.
+  Every descendant survives, rebased or reparented, and none is abandoned implicitly. The root commit
+  and immutable commits can't be abandoned. Abandoned changes don't vanish under
+  <code>--restore-descendants</code>; they move into the children.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>No revisions to abandon.</code></td><td>Status message: no visible commit matched. No operation is recorded.</td><td><a href="{{ src(cmd, 107, 110) }}">abandon.rs</a></td></tr>
+      <tr><td><code>Skipping &lt;n&gt; revisions that are already hidden.</code></td><td>Status message: some matches were hidden commits.</td><td><a href="{{ src(cmd, 98, 104) }}">abandon.rs</a></td></tr>
+      <tr><td><code>Commit … is immutable</code> / <code>The root commit … is immutable</code></td><td>A visible target is immutable, for example <code>jj abandon 'root()'</code>.</td><td><a href="{{ src(util, 2044, 2088) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Abandoned &lt;n&gt; commits:</code> followed by summaries; <code>Deleted bookmarks: …</code></td><td>Status output on success.</td><td><a href="{{ src(cmd, 146, 165) }}">abandon.rs</a></td></tr>
+      <tr><td><code>Rebased &lt;n&gt; descendant commits onto parents of abandoned commits.</code> (or <code>… (while preserving their content) …</code>)</td><td>Some descendants were rewritten.</td><td><a href="{{ src(cmd, 166, 179) }}">abandon.rs</a></td></tr>
+      <tr><td>Hint: <code>Deleted bookmarks can be pushed by name or all at once with `jj git push --deleted`.</code></td><td>Git backend, and a deleted bookmark has a tracked remote bookmark, ignoring the <code>git</code> pseudo-remote.</td><td><a href="{{ src(cmd, 193, 206) }}">abandon.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src('cli/tests/test_abandon_command.rs', 21, 119) }}">test_basics</a>.
+  <code>b</code> is on <code>a</code>, <code>d</code> is on <code>c</code>, and <code>e</code>
+  (<code>@</code>) merges <code>a</code> and <code>d</code>. Each commit has a bookmark of its own name
+  and adds a file of that name. Run <code>jj abandon 'descendants(d)'</code>:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 270" role="img" aria-labelledby="ab-ex-title ab-ex-desc">
+    <title id="ab-ex-title">jj abandon 'descendants(d)': before and after</title>
+    <desc id="ab-ex-desc">
+      Before: a and c on the root, b on a, d on c, and e at @ merging a and d. After abandoning d and e:
+      both are gone and their bookmarks d and e are deleted. Because @ was abandoned, a new empty
+      working-copy commit merges e's new parents, a and c (d's parent). a, b and c are unchanged.
+    </desc>
+    <defs>
+      <marker id="ab-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% macro node(x, y, label, hl=False, gone=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"{% if gone %} stroke-dasharray="3 3" opacity="0.45"{% endif %}></circle>
+      <text x="{{ x + 15 }}" y="{{ y + 4 }}" font-size="12"{% if gone %} opacity="0.45"{% endif %}>{{ label }}</text>
+    {%- endmacro %}
+    <g font-size="13">
+      <text x="40" y="22" class="d-muted">before</text>
+      <text x="440" y="22" class="d-muted">after</text>
+    </g>
+    <g class="d-line" stroke-width="1.5" fill="none">
+      <path d="M100,231 L140,250 L180,231"></path>
+      <path d="M100,211 L60,149"></path>
+      <path d="M100,211 L138,79"></path>
+      <path d="M180,211 L180,159"></path>
+      <path d="M180,141 L150,79"></path>
+
+      <path d="M500,231 L540,250 L580,231"></path>
+      <path d="M500,211 L460,149"></path>
+      <path d="M500,211 L535,79"></path>
+      <path d="M580,211 L545,79"></path>
+      <g opacity="0.45" stroke-dasharray="3 3">
+        <path d="M580,211 L620,159"></path>
+        <path d="M620,141 L645,79"></path>
+      </g>
+      <line x1="270" y1="140" x2="380" y2="140" marker-end="url(#ab-ex-arrow)"></line>
+    </g>
+    <circle cx="140" cy="255" r="4" style="fill: var(--jj-muted)"></circle>
+    <circle cx="540" cy="255" r="4" style="fill: var(--jj-muted)"></circle>
+    {{ node(100, 220, "a") }}{{ node(180, 220, "c") }}{{ node(60, 140, "b") }}
+    {{ node(180, 150, "d") }}
+    {{ node(145, 70, "e  @") }}
+    {{ node(500, 220, "a") }}{{ node(580, 220, "c") }}{{ node(460, 140, "b") }}
+    {{ node(620, 150, "d", gone=True) }}{{ node(645, 70, "e", gone=True) }}
+    {{ node(540, 70, "(empty)  @", hl=True) }}
+    <text x="325" y="130" font-size="11" text-anchor="middle" class="d-muted">jj abandon</text>
+    <text x="325" y="160" font-size="11" text-anchor="middle" class="d-muted">'descendants(d)'</text>
+  </svg>
+</div>
+
+<p>Upstream's snapshot of the output:</p>
+
+<pre><code>Abandoned 2 commits:
+  znkkpsqq 03e0d4bf e | e
+  vruxwmqv 636920e4 d | d
+Deleted bookmarks: d, e
+Working copy  (@) now at: xtnwkqum 1c70f4d2 (empty) (no description set)
+Parent commit (@-)      : rlvkpnrz 7d980be7 a | a
+Parent commit (@-)      : royxmykx c12952d9 c | c
+Added 0 files, modified 0 files, removed 2 files</code></pre>
+
+<p>
+  <code>e</code> is listed first because it comes first in evaluation order, so the operation is
+  <code>abandon commit 03e0d4bf… and 1 more</code>. <code>d</code> was abandoned onto <code>c</code>.
+  When the walk reached <code>e</code>, its new parents were already <code>a</code> and
+  <code>c</code>, so the replacement <code>@</code> merges those two. The same test shows the bookmark
+  variants. <code>jj abandon --retain-bookmarks d</code> moves bookmark <code>d</code> onto
+  <code>c</code>. Abandoning the merge <code>e</code> with <code>--retain-bookmarks</code> leaves
+  bookmark <code>e</code> conflicted between <code>a</code> and <code>d</code>, shown as
+  <code>a e??</code> and <code>d e??</code>.
+</p>
