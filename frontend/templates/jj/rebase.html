@@ -1,0 +1,427 @@
+{% set cmd = "cli/src/commands/rebase.rs" %}
+{% set rw = "lib/src/rewrite.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj rebase</code> works</h1>
+  <p class="tagline">
+    <code>jj rebase</code> moves commits to new parents while keeping each commit's own changes. You
+    choose what moves (<code>-b</code>, <code>-s</code> or <code>-r</code>) and where it goes
+    (<code>-o</code>, <code>-A</code> or <code>-B</code>). jj-lib works out every commit's new parents
+    up front, then rewrites them in one pass.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: the command turns its flags into a <code>MoveCommitsLocation</code>: the target commits (an
+  explicit set for <code>-r</code>, or roots plus all their descendants for <code>-s</code>/<code>-b</code>),
+  the new parents, and any new children. <code>compute_move_commits</code> computes a new parent list for
+  every commit that has to move. That includes descendants outside the set, which close the "hole" a
+  <code>-r</code> rebase leaves. <code>apply_move_commits</code> then rebases each one in topological
+  order with a 3-way tree merge, recording conflicts instead of stopping. Duplicate divergent commits
+  are abandoned along the way. One operation, such as <code>rebase commit &lt;id&gt; and descendants</code>,
+  records everything.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 368, 429) }}"><code>cmd_rebase</code></a> plus three planning
+  functions, one per mode. The engine is in jj-lib's
+  <a href="{{ src(rw, 594, 1030) }}"><code>rewrite.rs</code></a>, which <code>jj duplicate</code>,
+  <code>jj parallelize</code> and the <code>-A</code>/<code>-B</code> modes of other commands also use.
+  The help text draws a before/after graph for every mode (<a href="{{ src(cmd, 48, 264) }}">source</a>).
+  This page explains the machinery behind those graphs. How a single commit's tree is rebased, and how
+  rewritten commits propagate, is on the <a href="{{ url_for('jj', slug='transactions') }}">transactions
+  page</a>.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<h3 id="what">What to rebase (at most one; default <code>-b @</code>)</h3>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>-b</code>, <code>--branch REVSETS</code></td><td>revsets, repeatable</td><td>The whole "branch" relative to the destination: <code>roots(destination..X)</code> and all their descendants (<a href="{{ src(cmd, 269, 278) }}">source</a>).</td></tr>
+      <tr><td><code>-s</code>, <code>--source REVSETS</code></td><td>revsets, repeatable</td><td>These commits and all their descendants. Each one becomes a direct child of the destination, even if some descend from others (<a href="{{ src(cmd, 280, 290) }}">source</a>).</td></tr>
+      <tr><td><code>-r</code>, <code>--revision</code>, <code>--revisions REVSETS</code></td><td>revsets, repeatable</td><td>Exactly these commits, keeping the edges between them. Their descendants outside the set stay behind, reparented onto the moved commits' old parents. This is the only mode that may move a commit onto its own descendant (<a href="{{ src(cmd, 292, 301) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="where">Where to (exactly one of <code>-o</code> or <code>-A</code>/<code>-B</code>)</h3>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>-o</code>, <code>--onto</code>, <code>-d</code>, <code>--destination REVSETS</code></td><td>revsets, repeatable</td><td>New parents. Repeat it to make the moved roots merges. Existing children of the destination are untouched (<a href="{{ src(cmd, 331, 341) }}">source</a>).</td></tr>
+      <tr><td><code>-A</code>, <code>--insert-after</code>, <code>--after REVSETS</code></td><td>revsets, repeatable</td><td>New parents, and the destination's existing children are moved onto the rebased commits (<a href="{{ src(cmd, 343, 353) }}">source</a>).</td></tr>
+      <tr><td><code>-B</code>, <code>--insert-before</code>, <code>--before REVSETS</code></td><td>revsets, repeatable</td><td>New children: the commits go onto these commits' parents, and these commits are moved onto them. Can be combined with <code>-A</code> (<a href="{{ src(cmd, 355, 365) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 328, 366) }}"><code>RebaseDestinationArgs</code></a>, a required clap group</p>
+
+<h3 id="options">Options</h3>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>--skip-emptied</code></td><td>false</td><td>Abandon a target that becomes empty because of the rebase. Commits that were already empty, and merges, are kept. This becomes <code>EmptyBehavior::AbandonNewlyEmpty</code> (<a href="{{ src(cmd, 306, 311) }}">source</a>).</td></tr>
+      <tr><td><code>--keep-divergent</code></td><td>false</td><td>Don't abandon divergent commits whose identical twin is already in the destination (<a href="{{ src(cmd, 313, 319) }}">source</a>).</td></tr>
+      <tr><td><code>--simplify-parents</code></td><td>false</td><td>Drop any new parent of a target that is an ancestor of another of its new parents (<a href="{{ src(cmd, 321, 325) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 265, 326) }}"><code>RebaseArgs</code></a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<p>
+  <code>jj rebase</code> reads no settings of its own. <code>revset-aliases."immutable_heads()"</code>
+  decides what <code>check_rewritable</code> refuses: the moved commits, and with
+  <code>-A</code>/<code>-B</code> the new children. <code>user.name</code>/<code>user.email</code>
+  become the rewritten commits' committer. The working-copy settings on the
+  <a href="{{ url_for('jj', slug='working-copy') }}">working-copy page</a> govern the snapshot and
+  checkout. The bookmark rules are fixed in code: <code>delete_abandoned_bookmarks</code> is
+  <code>false</code>, so a bookmark on an abandoned commit moves to its parent
+  (<a href="{{ src(cmd, 374, 383) }}">source</a>).
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 560" role="img" aria-labelledby="rb-flow-title rb-flow-desc">
+    <title id="rb-flow-title">jj rebase: call flow</title>
+    <desc id="rb-flow-desc">
+      cmd_rebase builds RebaseOptions from the flags and loads the workspace through the shared
+      lifecycle. One of three planners runs: plan_rebase_revisions for -r, plan_rebase_source for -s,
+      or plan_rebase_branch for -b, defaulting to @. Each resolves the commits, checks they are
+      rewritable, calls compute_commit_location for -o, -A or -B, checks for self or descendant
+      destinations, and returns a MoveCommitsLocation. If there are no targets it prints "No revisions to
+      rebase." Otherwise a transaction starts, compute_move_commits computes every commit's new
+      parents, find_duplicate_divergent_commits marks duplicates to abandon, and apply runs
+      transform_commits, rebasing each commit with a 3-way tree merge. Statistics are printed and
+      tx.finish records the operation.
+    </desc>
+    <defs>
+      <marker id="rb-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">RebaseOptions from flags; shared lifecycle: load workspace, snapshot working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 431, 473) }}"><rect class="d-box" x="20" y="84" width="226" height="84" rx="6"></rect>
+      <text x="32" y="105">-r: plan_rebase_revisions</text>
+      <text x="32" y="123" class="d-muted" font-size="11">target = Commits(set)</text>
+      <text x="32" y="140" class="d-muted" font-size="11">refuse "onto itself"</text>
+      <text x="32" y="157" class="d-muted" font-size="11">(descendant allowed)</text></a>
+      <a href="{{ src(cmd, 475, 515) }}"><rect class="d-box" x="267" y="84" width="226" height="84" rx="6"></rect>
+      <text x="279" y="105">-s: plan_rebase_source</text>
+      <text x="279" y="123" class="d-muted" font-size="11">target = Roots(sources)</text>
+      <text x="279" y="140" class="d-muted" font-size="11">refuse onto itself</text>
+      <text x="279" y="157" class="d-muted" font-size="11">or onto a descendant</text></a>
+      <a href="{{ src(cmd, 517, 576) }}"><rect class="d-box" x="514" y="84" width="226" height="84" rx="6"></rect>
+      <text x="526" y="105">-b (default @):</text>
+      <text x="526" y="123" class="d-muted" font-size="11">plan_rebase_branch</text>
+      <text x="526" y="140" class="d-muted" font-size="11">roots(dest..branch)</text>
+      <text x="526" y="157" class="d-muted" font-size="11">target = Roots(those)</text></a>
+
+      <a href="{{ src(util, 3613, 3703) }}"><rect class="d-box" x="20" y="192" width="720" height="50" rx="6"></rect>
+      <text x="32" y="213">each planner: check_rewritable, then compute_commit_location(-o | -A | -B)</text>
+      <text x="32" y="231" class="d-muted" font-size="11">→ MoveCommitsLocation { new_parent_ids, new_child_ids, target }; -A/-B also check the new children and refuse loops</text></a>
+
+      <a href="{{ src(cmd, 394, 401) }}"><rect class="d-box" x="20" y="266" width="300" height="50" rx="6"></rect>
+      <text x="32" y="287">no targets?</text>
+      <text x="32" y="305" class="d-muted" font-size="11">"No revisions to rebase." — no operation</text></a>
+      <a href="{{ src(rw, 667, 965) }}"><rect class="d-box" x="380" y="266" width="360" height="84" rx="6"></rect>
+      <text x="392" y="287">start_transaction; compute_move_commits</text>
+      <text x="392" y="305" class="d-muted" font-size="11">target set and its roots, external parents,</text>
+      <text x="392" y="322" class="d-muted" font-size="11">new children, descendants to visit,</text>
+      <text x="392" y="339" class="d-muted" font-size="11">→ new parents for every commit</text></a>
+
+      <a href="{{ src(rw, 1481, 1575) }}"><rect class="d-box" x="380" y="374" width="360" height="50" rx="6"></rect>
+      <text x="392" y="395">find_duplicate_divergent_commits</text>
+      <text x="392" y="413" class="d-muted" font-size="11">unless --keep-divergent → record_to_abandon</text></a>
+      <a href="{{ src(rw, 967, 1030) }}"><rect class="d-box" x="20" y="374" width="300" height="84" rx="6"></rect>
+      <text x="32" y="395">apply_move_commits</text>
+      <text x="32" y="413" class="d-muted" font-size="11">transform_commits, parents first:</text>
+      <text x="32" y="430" class="d-muted" font-size="11">abandon, skip if parents unchanged,</text>
+      <text x="32" y="447" class="d-muted" font-size="11">or rebase_commit_with_options</text></a>
+
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="482" width="720" height="56" rx="6"></rect>
+      <text x="380" y="504" text-anchor="middle">print_move_commits_stats; tx.finish(ui, "rebase commit &lt;id&gt; …"): write the operation,</text>
+      <text x="380" y="524" text-anchor="middle">update bookmarks and @, check out the new working-copy tree (CLI page)</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#rb-arrow)">
+      <line x1="133" y1="60" x2="133" y2="80"></line>
+      <line x1="380" y1="60" x2="380" y2="80"></line>
+      <line x1="627" y1="60" x2="627" y2="80"></line>
+      <line x1="133" y1="168" x2="133" y2="188"></line>
+      <line x1="380" y1="168" x2="380" y2="188"></line>
+      <line x1="627" y1="168" x2="627" y2="188"></line>
+      <line x1="170" y1="242" x2="170" y2="262"></line>
+      <line x1="560" y1="242" x2="560" y2="262"></line>
+      <line x1="560" y1="350" x2="560" y2="370"></line>
+      <line x1="380" y1="399" x2="324" y2="410"></line>
+      <line x1="170" y1="458" x2="170" y2="478"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Target commits</td><td>rewritten</td><td>New parents and a merged tree. Each keeps its change ID, description and author. The committer becomes you, now.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Descendants and new children</td><td>rewritten</td><td>Rebased with <code>EmptyBehavior::Keep</code> and no parent simplification, regardless of the flags (<a href="{{ src(rw, 977, 983) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='transactions') }}">transactions</a></td></tr>
+      <tr><td>Trees</td><td>read, merged</td><td>Each rebased tree is <code>new base + (old tree − old base)</code>, where a base is the merge of a commit's parents' trees. Conflicts are stored in the result.</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>Index</td><td>read</td><td>Ancestry checks (<code>is_ancestor</code>, <code>heads</code>) for destination validation, <code>--simplify-parents</code> and new-children handling. Revset evaluation for <code>connected()</code>, <code>descendants()</code> and ranges.</td><td>index (page queued)</td></tr>
+      <tr><td>Change-ID index</td><td>read</td><td><code>resolve_change_id</code> finds other visible commits of each target's change, to detect duplicates.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td><code>View.head_ids</code></td><td>write</td><td>Old versions are replaced by rebased ones.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td><code>View.local_bookmarks</code></td><td>write</td><td>Bookmarks follow their rebased commits. Bookmarks on abandoned commits move to the abandoned commit's parents.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td><code>View.wc_commit_ids</code></td><td>write</td><td>Follows a rebased <code>@</code>. If <code>@</code> was abandoned, a new empty <code>@</code> is created on its parents.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td>One operation, described below.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+      <tr><td>Working copy (<code>TreeState</code>)</td><td>read, then maybe write</td><td>Snapshotted at the start. Checked out again if <code>@</code>'s tree changed.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, started after planning, and only if there is at least one target (<a href="{{ src(cmd, 394, 403) }}">source</a>).</li>
+  <li>
+    <strong>Operation description</strong> (<a href="{{ src(cmd, 601, 615) }}"><code>tx_description</code></a>):
+    for <code>-r</code>, <code>rebase commit &lt;id&gt;</code> or
+    <code>rebase commit &lt;id&gt; and &lt;n&gt; more</code>. For <code>-s</code>/<code>-b</code>,
+    <code>rebase commit &lt;id&gt; and descendants</code> with one root, or
+    <code>rebase &lt;n&gt; commits and their descendants</code> with several. IDs are full hex.
+  </li>
+  <li><strong>Commits created or rewritten:</strong> every target whose parents change, every descendant of a target or new child, and the new children themselves. Commits whose computed parents equal their current ones are skipped and counted as "already in place". No commit is created, except a replacement <code>@</code> if <code>@</code> is abandoned.</li>
+  <li><strong>Working copy:</strong> snapshotted first. If <code>@</code> was rebased, its new tree is checked out, and jj reports the added, modified and removed files.</li>
+  <li><strong><code>jj undo</code></strong> restores the whole previous graph, including commits abandoned by <code>--skip-emptied</code> or the divergence check.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="planning">Planning the move</h3>
+
+<ul>
+  <li>
+    <strong><code>-r</code></strong> evaluates the union of revsets to a set, children first, and checks it
+    is rewritable as a whole. It then refuses only a destination that is one of the targets
+    (<a href="{{ src(cmd, 431, 473) }}">source</a>).
+  </li>
+  <li>
+    <strong><code>-s</code></strong> resolves each revset in order. With <code>-o</code>, it refuses a
+    destination that is the source itself or one of its descendants
+    (<a href="{{ src(cmd, 578, 599) }}"><code>check_rebase_destinations</code></a>).
+  </li>
+  <li>
+    <strong><code>-b</code></strong> defaults to <code>@</code>. It computes
+    <code>roots(new_parents..branch)</code>: the oldest commits that are ancestors of the branch commits
+    but not of the destination. Those become the roots, checked as for <code>-s</code>
+    (<a href="{{ src(cmd, 517, 576) }}">source</a>). A branch already on top of the destination therefore
+    yields its first commit above the destination, which is already in place and gets skipped.
+  </li>
+  <li>
+    The destination comes from the shared
+    <a href="{{ src(util, 3613, 3703) }}"><code>compute_commit_location</code></a>. <code>-o</code>
+    gives parents only. <code>-A X</code> gives parents <code>X</code> and children
+    <code>children(X)</code>. <code>-B Y</code> gives the parents of <code>Y</code> as parents and
+    <code>Y</code> as children. New children must be mutable, and must not create a cycle.
+  </li>
+</ul>
+
+<h3 id="computing">Computing every new parent list</h3>
+
+<p>
+  <a href="{{ src(rw, 667, 965) }}"><code>compute_move_commits</code></a> works in five steps:
+</p>
+
+<ol>
+  <li>
+    <strong>Target set and roots</strong> (<a href="{{ src(rw, 676, 729) }}">source</a>). For
+    <code>Roots</code>, the target set is all descendants of the roots. For <code>Commits</code>, it's the
+    given set, and the roots are the targets with no parent inside <code>connected(set)</code>. Commits
+    between two targets count as connecting them, so <code>-r 'A|C'</code> with <code>B</code> between
+    them keeps <code>C</code> above <code>A</code>.
+  </li>
+  <li>
+    <strong>External parents</strong> (<a href="{{ src(rw, 731, 746) }}">source</a>). For each target,
+    oldest first, find its nearest ancestors <em>outside</em> the set. A commit left behind that had a
+    target as a parent gets these instead, which is how the hole closes.
+  </li>
+  <li>
+    <strong>Self-referencing destinations</strong> (<a href="{{ src(rw, 748, 837) }}">source</a>). A new
+    parent inside the set is replaced by its external parents, so <code>jj rebase -r A -B A</code>
+    works. A new child inside the set is replaced by its nearest descendants outside the set.
+  </li>
+  <li>
+    <strong>New children's parents</strong> (<a href="{{ src(rw, 839, 884) }}">source</a>). Each new
+    child keeps its other parents, except that any parent which is one of the new parents is replaced
+    by the heads of the target set. The target heads are then added if they aren't present, which
+    inserts the targets between the two.
+  </li>
+  <li>
+    <strong>Everything to visit</strong> (<a href="{{ src(rw, 886, 957) }}">source</a>). These are the
+    descendants of the roots and the new children (<a href="{{ src(repo, 1415, 1435) }}"><code>find_descendants_for_rebase</code></a>).
+    A root gets the new parents. Another target keeps its parents inside the set and drops outside
+    parents that descend from a new child. A commit outside the set has any target parents replaced by
+    external parents. Anything else keeps its parents.
+  </li>
+</ol>
+
+<h3 id="applying">Applying it</h3>
+
+<p>
+  <a href="{{ src(rw, 967, 1030) }}"><code>apply_move_commits</code></a> hands the precomputed map to
+  <a href="{{ src(repo, 1536, 1565) }}"><code>transform_commits</code></a>, which visits parents before
+  children. Each visited commit is handled in one of three ways. A commit marked by the divergence check
+  is abandoned. A commit whose parents didn't change is skipped. Otherwise it goes to
+  <a href="{{ src(rw, 468, 495) }}"><code>rebase_commit_with_options</code></a>, using the command's
+  options for targets and keep-everything options for the rest. That function:
+</p>
+
+<ol>
+  <li>with <code>--simplify-parents</code>, keeps only the new parents that are heads among themselves (<a href="{{ src(rw, 337, 347) }}">source</a>);</li>
+  <li>
+    merges trees (<a href="{{ src(rw, 359, 444) }}"><code>rebase_with_empty_behavior</code></a>). If the
+    parents' trees are unchanged, the old tree is kept with no merge. Otherwise the new tree is
+    <code>merge(new base, old base, old tree)</code>, labelled <code>(rebase destination)</code>,
+    <code>(parents of rebased revision)</code> and <code>(rebased revision)</code> for conflict markers;
+  </li>
+  <li>
+    applies the empty rule, single-parent results only. <code>--skip-emptied</code> abandons the commit
+    if the new tree equals the parent's and the commit wasn't empty before
+    (<a href="{{ src(rw, 539, 552) }}"><code>EmptyBehavior</code></a>).
+  </li>
+</ol>
+
+<h3 id="divergent">Duplicate divergent commits</h3>
+
+<p>
+  <a href="{{ src(rw, 1481, 1575) }}"><code>find_duplicate_divergent_commits</code></a> looks, for each
+  target, for <em>other</em> visible commits with the same change ID that would become new ancestors,
+  meaning those in <code>roots..new_parents</code>. For each such twin, it rebases the target onto the
+  twin's parents. If that gives exactly the twin's tree, the target is a duplicate. It is abandoned
+  during the rebase, and its descendants are rebased onto the parents it would have had. This cleans up the common case of
+  rebasing a local commit onto an upstream that already contains the same change.
+</p>
+
+<p>
+  <strong>Invariants:</strong> every commit's own diff is preserved, with conflicts recorded rather than
+  failing. Every parent list is computed before anything is written, so each commit is rewritten at
+  most once. Change IDs never change. Empty and merge commits are never abandoned unless asked, and
+  merges never are. Descendants outside the target set never lose content; they're only reparented
+  around a hole.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>No revisions to rebase.</code></td><td>Status message (not an error) when the target set is empty, for example <code>-r 'none()'</code>. No operation is recorded.</td><td><a href="{{ src(cmd, 398, 401) }}">rebase.rs</a></td></tr>
+      <tr><td><code>Cannot rebase &lt;id&gt; onto itself</code></td><td><code>-o</code> names a commit that is being moved (all modes).</td><td><a href="{{ src(cmd, 458, 467) }}">rebase.rs</a>, <a href="{{ src(cmd, 584, 589) }}">rebase.rs</a></td></tr>
+      <tr><td><code>Cannot rebase &lt;id&gt; onto descendant &lt;id&gt;</code></td><td><code>-s</code> or <code>-b</code> with <code>-o</code> pointing into the moved subtree. Use <code>-r</code> instead.</td><td><a href="{{ src(cmd, 590, 596) }}">rebase.rs</a></td></tr>
+      <tr><td><code>Commit … is immutable</code> / <code>The root commit … is immutable</code></td><td>A target (or <code>-b</code> root), or an <code>-A</code>/<code>-B</code> new child, is immutable.</td><td><a href="{{ src(util, 2044, 2088) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Refusing to create a loop: commit … would be both an ancestor and a descendant of the rebased commits</code></td><td><code>-A</code>/<code>-B</code> where a new child is an ancestor of a new parent.</td><td><a href="{{ src(util, 3705, 3727) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>No revisions found to use as parent</code></td><td>The destination resolves to no parents.</td><td><a href="{{ src(util, 3698, 3700) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Abandoned &lt;n&gt; divergent commits that were already present in the destination:</code> followed by their summaries</td><td>Status message: duplicates were dropped.</td><td><a href="{{ src(cmd, 405, 423) }}">rebase.rs</a></td></tr>
+      <tr><td><code>Skipped rebase of …</code>, <code>Rebased … commits to destination.</code>, <code>Rebased … descendant commits.</code>, <code>Abandoned … newly emptied commits.</code></td><td>Status statistics after the move.</td><td><a href="{{ src(cmd, 617, 654) }}">rebase.rs</a></td></tr>
+      <tr><td>clap: a required argument was not provided; <code>-r</code>/<code>-s</code>/<code>-b</code> conflict; <code>-o</code> with <code>-A</code>/<code>-B</code></td><td>No destination given, two "what" modes given, or <code>-o</code> mixed with <code>-A</code>/<code>-B</code>.</td><td><a href="{{ src(cmd, 265, 366) }}">rebase.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src('cli/tests/test_rebase_command.rs', 333, 380) }}">test_rebase_single_revision</a>.
+  <code>b</code> and <code>c</code> both sit on <code>a</code>, <code>d</code> merges them, and
+  <code>e</code> (<code>@</code>) is on <code>d</code>. Each commit adds a file named after itself. Run
+  <code>jj rebase -r c -o b</code>:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 290" role="img" aria-labelledby="rb-ex-title rb-ex-desc">
+    <title id="rb-ex-title">jj rebase -r c -o b: before and after</title>
+    <desc id="rb-ex-desc">
+      Before: a on the root; b and c both on a; d merging b and c; e on d as @. After rebasing only c
+      onto b: c is now a child of b. d, which had c as a parent, gets c's external parent a in its
+      place, so d merges b and a. e is rebased onto the new d and no longer contains file c. One target
+      and two descendants were rebased.
+    </desc>
+    <defs>
+      <marker id="rb-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% macro node(x, y, label, note="", hl=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 15 }}" y="{{ y + 4 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x + 15 }}" y="{{ y + 19 }}" font-size="10" class="d-muted">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <g font-size="13">
+      <text x="40" y="22" class="d-muted">before</text>
+      <text x="440" y="22" class="d-muted">after</text>
+    </g>
+    <g class="d-line" stroke-width="1.5" fill="none">
+      <path d="M150,241 L150,269"></path>
+      <path d="M150,241 L100,189"></path>
+      <path d="M150,241 L200,189"></path>
+      <path d="M100,171 L150,129"></path>
+      <path d="M200,171 L150,129"></path>
+      <path d="M150,111 L150,69"></path>
+
+      <path d="M550,241 L550,269"></path>
+      <path d="M550,241 L500,189"></path>
+      <path d="M500,171 L460,119"></path>
+      <path d="M500,171 L600,129"></path>
+      <path d="M550,241 C640,220 640,160 600,129"></path>
+      <path d="M600,111 L600,69"></path>
+      <line x1="290" y1="150" x2="400" y2="150" marker-end="url(#rb-ex-arrow)"></line>
+    </g>
+    <circle cx="150" cy="276" r="4" class="d-muted" style="fill: var(--jj-muted)"></circle>
+    <circle cx="550" cy="276" r="4" class="d-muted" style="fill: var(--jj-muted)"></circle>
+    {{ node(150, 250, "a") }}
+    {{ node(100, 180, "b", "a") }}
+    {{ node(200, 180, "c", "a") }}
+    {{ node(150, 120, "d", "b, c") }}
+    {{ node(150, 60, "e  @", "d") }}
+    {{ node(550, 250, "a") }}
+    {{ node(500, 180, "b", "a") }}
+    {{ node(460, 110, "c", "b — target", hl=True) }}
+    {{ node(600, 120, "d", "b, a — descendant") }}
+    {{ node(600, 60, "e  @", "d — descendant") }}
+    <text x="345" y="140" font-size="11" text-anchor="middle" class="d-muted">jj rebase</text>
+    <text x="345" y="170" font-size="11" text-anchor="middle" class="d-muted">-r c -o b</text>
+  </svg>
+</div>
+
+<p>Upstream's snapshot of the output:</p>
+
+<pre><code>Rebased 1 commits to destination.
+Rebased 2 descendant commits.
+Working copy  (@) now at: znkkpsqq 2baedee4 e | e
+Parent commit (@-)      : vruxwmqv 45142a83 d | d
+Added 0 files, modified 0 files, removed 1 files</code></pre>
+
+<p>
+  <code>c</code> was the only target, so it is the root and gets the new parent <code>b</code>.
+  <code>d</code> lies outside the set, but had <code>c</code> as a parent, so it gets <code>c</code>'s
+  external parent <code>a</code> instead and becomes a merge of <code>b</code> and <code>a</code>. That
+  parent list isn't simplified, because descendants never are. <code>e</code> follows <code>d</code>.
+  <code>c</code>'s file is no longer below <code>@</code>, hence "removed 1 files". The operation is
+  <code>rebase commit &lt;c's id&gt;</code>. In the same test, <code>jj rebase -r d -o a</code> moves the
+  merge itself, and <code>e</code> becomes a merge of <code>b</code> and <code>c</code>.
+</p>

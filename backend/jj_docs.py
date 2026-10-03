@@ -956,6 +956,16 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "rebase": {
+        "title": "How jj rebase works",
+        "sources": [
+            "cli/src/commands/rebase.rs",
+            "lib/src/rewrite.rs",
+            "cli/src/cli_util.rs",
+            "lib/src/repo.rs",
+        ],
+        "ready": True,
+    },
     "squash": {
         "title": "How jj squash works",
         "sources": [
