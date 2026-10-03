@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "0cb02a837f28459cd698734264c9fcd3712ec0d1",
-    "commit_date": "2026-10-01",
+    "commit": "69abfbedcc615bb562c31d488b98abb1ab854089",
+    "commit_date": "2026-10-03",
     "version": "0.45.1",
-    "analyzed_on": "2026-10-02",
+    "analyzed_on": "2026-10-03",
 }
 
 TOPICS = [
@@ -517,14 +517,14 @@ COMMANDS = [
         "category": 'Operation log',
         "tier": 'A',
         "summary": 'Undo the last operation',
-        "source": ('cli/src/commands/undo.rs', 43),
+        "source": ('cli/src/commands/undo.rs', 49),
     },
     {
         "command": 'redo',
         "category": 'Operation log',
         "tier": 'A',
         "summary": 'Redo the most recently undone operation',
-        "source": ('cli/src/commands/redo.rs', 38),
+        "source": ('cli/src/commands/redo.rs', 44),
     },
     {
         "command": 'operation abandon',
