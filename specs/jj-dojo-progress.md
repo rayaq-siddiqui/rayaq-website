@@ -3,13 +3,24 @@
 Running log for the daily jj-dojo architecture Routine. Read this first, update it last.
 The contract is `specs/jj-dojo.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-03 (first run). Built the scaffold, the `graph-layout` flagship page
-and the §6 architecture diagram.
+**Last updated:** 2026-10-03 (second run). Upstream unchanged since the pin; built the
+`graph-protocol` page.
 
 ## Upstream pin
 
 `jj-vcs/jj-dojo@978c25dc6a7a84902d6012b05a4e513469eeddfe` (committed 2026-09-30, version
 0.0.1), analyzed 2026-10-03. Held in `jj_dojo_docs.UPSTREAM`.
+
+## Second run (2026-10-03)
+
+| Commit | What |
+|---|---|
+| `1f2a888` | `graph-protocol` page: both RPC interfaces, the transport, the handshake with a sequence diagram, host and webview entry points, every wire type field by field |
+
+Maintenance: upstream `HEAD` still at `978c25d`, so the pin stayed.
+
+The type tables on `graph-protocol` were generated from `api/types.ts` by a scratch parser that
+fails if any field lacks a description. Regenerate them that way when the types change.
 
 ## First run (2026-10-03)
 
@@ -32,7 +43,7 @@ moves and `preprocess.ts` changes.
 1. ~~Scaffold~~
 2. ~~`graph-layout` (flagship, §8)~~
 3. ~~§6 architecture diagram on the index~~
-4. `graph-protocol` (needs a sequence diagram, §6)
+4. ~~`graph-protocol`~~
 5. `activation`
 6. `merge-conflicts`
 7. `graph-webview`
@@ -53,6 +64,11 @@ moves and `preprocess.ts` changes.
   variables from `jj.css`.
 
 ## Open gaps / questions for the owner
+
+- **RPC edge cases (`graph-protocol`).** Two behaviours in the vendored RPC layer are stated on
+  the page as the code shows them: a handshake timeout is an unhandled rejection that leaves
+  every later call blocked, and a failed call rejects with a plain `{message, name, stack}`
+  object even though an `Error` is built just before. Worth confirming against upstream intent.
 
 - **Focus mode is broader than documented.** `getFocusedCommits`'s comment says it keeps
   the working copy, its ancestors and descendants, and the `disableFocusMode` option's comment
