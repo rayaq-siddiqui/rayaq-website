@@ -1,0 +1,324 @@
+{% set cmd = "cli/src/commands/new.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj new</code> works</h1>
+  <p class="tagline">
+    <code>jj new</code> creates a new, empty change on top of one or more parents and, by default,
+    makes it the working-copy commit. With <code>--insert-after</code> or <code>--insert-before</code>
+    it splices the new change into the middle of history and rebases everything above it.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj resolves the parents (default <code>@</code>), merges their trees into one, writes a
+  commit with that tree and an empty (or templated) description, rebases any requested children
+  onto it, points this workspace's working-copy commit at it, and records all of that as one
+  operation, <code>new empty commit</code>. Because the new commit's tree is exactly the parents'
+  merged tree, it has no changes of its own. That's what "empty" means here.
+</p>
+
+<p>
+  Everything specific to <code>jj new</code> lives in one function,
+  <a href="{{ src(cmd, 161, 286) }}"><code>cmd_new</code></a>, plus the shared helper
+  <a href="{{ src(util, 3613, 3703) }}"><code>compute_commit_location</code></a> that it shares with
+  <code>jj duplicate</code>, <code>jj rebase</code> and others. Loading the workspace, snapshotting,
+  and finishing the transaction are the shared lifecycle described on the
+  <a href="{{ url_for('jj', slug='cli') }}">CLI page</a>.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<p>
+  The arguments are <a href="{{ src(cmd, 51, 159) }}"><code>NewArgs</code></a>. The parents can be
+  given positionally or with <code>-o</code>, but not together with <code>-A</code>/<code>-B</code>.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>[REVSETS]...</code></td><td>revsets</td><td><code>@</code></td><td>Parents of the new change. Several revsets, or one revset naming several commits, make a merge. Hidden aliases <code>-o</code>, <code>-d</code> and <code>-r</code> take the same values; if both forms are given they are merged in command-line order (<a href="{{ src(cmd, 169, 178) }}">source</a>).</td></tr>
+      <tr><td><code>-m</code>, <code>--message</code></td><td>string, repeatable</td><td>none</td><td>The description. Several <code>-m</code> values become separate paragraphs (<code>join_message_paragraphs</code>).</td></tr>
+      <tr><td><code>--no-edit</code></td><td>bool</td><td>false</td><td>Create the commit but leave the working copy where it is. <code>--edit</code> is a hidden no-op partner flag.</td></tr>
+      <tr><td><code>-A</code>, <code>--insert-after</code> (alias <code>--after</code>)</td><td>revsets, repeatable</td><td>none</td><td>Make these commits the parents, and move all their current children on top of the new change. Conflicts with positional revisions.</td></tr>
+      <tr><td><code>-B</code>, <code>--insert-before</code> (alias <code>--before</code>)</td><td>revsets, repeatable</td><td>none</td><td>Put the new change between these commits and their parents. Combined with <code>-A</code>, the <code>-A</code> commits become the parents and the <code>-B</code> commits the children.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>templates.new_description</code></td><td><code>''</code> (<a href="{{ src('cli/src/config/templates.toml', 21) }}">source</a>)</td><td>Used when no <code>-m</code> is given. If non-empty, it is rendered against a hidden draft of the new commit, so it can look at <code>parents</code> (the docs' example builds a "Merge X into Y" message).</td></tr>
+      <tr><td><code>templates.commit_trailers</code></td><td><code>''</code> (<a href="{{ src('cli/src/config/templates.toml', 23) }}">source</a>)</td><td>Trailers appended to the description, but only if the description is non-empty, so a plain <code>jj new</code> stays discardable.</td></tr>
+      <tr><td><code>experimental-advance-branches.enabled-branches</code> / <code>disabled-branches</code></td><td><code>[]</code> / <code>[]</code> (<a href="{{ src('cli/src/config/misc.toml', 20, 22) }}">source</a>)</td><td>Name patterns for bookmarks that move forward automatically. With the default empty list, nothing is advanced (<a href="{{ src(util, 921, 941) }}">source</a>).</td></tr>
+      <tr><td><code>revset-aliases."immutable_heads()"</code></td><td>see the <a href="{{ url_for('jj', slug='cli') }}">CLI page</a></td><td>Only matters with <code>-A</code>/<code>-B</code>: the children that get rebased must be mutable.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 640" role="img" aria-labelledby="new-flow-title new-flow-desc">
+    <title id="new-flow-title">jj new: call flow</title>
+    <desc id="new-flow-desc">
+      cmd_new loads the workspace through the shared CLI lifecycle, which snapshots the working copy.
+      compute_commit_location resolves the parent and child commits and checks that children are
+      rewritable and that no loop would form. cmd_new collects advanceable bookmarks, starts a
+      transaction, merges the parents' trees with merge_commit_trees, and builds the commit with
+      MutableRepo::new_commit, filling in the description and trailers. It writes the commit,
+      rebases each child onto it with rebase_commit, then calls rebase_descendants. Unless
+      --no-edit is given it calls edit, which may abandon the old working-copy commit, adds the new
+      commit as a head and sets it as this workspace's working-copy commit. It advances bookmarks
+      and finishes the transaction as the operation "new empty commit", after which the shared
+      lifecycle updates the working copy on disk.
+    </desc>
+    <defs>
+      <marker id="new-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <text x="140" y="20" text-anchor="middle" class="d-muted">jj-cli</text>
+      <text x="560" y="20" text-anchor="middle" class="d-muted">jj-lib</text>
+
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="32" width="720" height="40" rx="6"></rect>
+      <text x="380" y="57" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(util, 3613, 3703) }}"><rect class="d-box" x="20" y="92" width="260" height="56" rx="6"></rect>
+      <text x="32" y="114" font-family="monospace">compute_commit_location</text>
+      <text x="32" y="134" class="d-muted" font-size="11">parents, children, rewritable, no loop</text></a>
+      <a href="{{ url_for('jj', slug='revsets') if 'revsets' in ready_slugs else src('lib/src/revset.rs') }}"><rect class="d-box" x="440" y="92" width="300" height="56" rx="6"></rect>
+      <text x="452" y="114" font-family="monospace">revset evaluation</text>
+      <text x="452" y="134" class="d-muted" font-size="11">resolve_revsets_ordered, children()</text></a>
+
+      <a href="{{ src(util, 2678, 2701) }}"><rect class="d-box" x="20" y="164" width="260" height="40" rx="6"></rect>
+      <text x="32" y="189" font-family="monospace">get_advanceable_bookmarks</text></a>
+
+      <a href="{{ url_for('jj', slug='transactions') }}"><rect class="d-box" x="20" y="220" width="260" height="40" rx="6"></rect>
+      <text x="32" y="245" font-family="monospace">start_transaction</text></a>
+
+      <a href="{{ src('lib/src/rewrite.rs', 59, 70) }}"><rect class="d-box" x="440" y="220" width="300" height="40" rx="6"></rect>
+      <text x="452" y="245" font-family="monospace">merge_commit_trees(parents)</text></a>
+
+      <a href="{{ url_for('jj', slug='commits') }}"><rect class="d-box" x="440" y="276" width="300" height="56" rx="6"></rect>
+      <text x="452" y="298" font-family="monospace">MutableRepo::new_commit</text>
+      <text x="452" y="318" class="d-muted" font-size="11">→ DetachedCommitBuilder, description, trailers</text></a>
+
+      <a href="{{ src('lib/src/commit_builder.rs', 401, 434) }}"><rect class="d-box" x="440" y="348" width="300" height="40" rx="6"></rect>
+      <text x="452" y="373" font-family="monospace">CommitBuilder::write</text></a>
+
+      <a href="{{ url_for('jj', slug='transactions') }}#rebase"><rect class="d-box" x="440" y="404" width="300" height="56" rx="6"></rect>
+      <text x="452" y="426" font-family="monospace">rebase_commit (each child)</text>
+      <text x="452" y="446" class="d-muted" font-size="11">then rebase_descendants</text></a>
+
+      <a href="{{ src(repo, 1722, 1730) }}"><rect class="d-box" x="440" y="476" width="300" height="56" rx="6"></rect>
+      <text x="452" y="498" font-family="monospace">MutableRepo::edit</text>
+      <text x="452" y="518" class="d-muted" font-size="11">maybe abandon old @, add_head, set_wc_commit</text></a>
+
+      <a href="{{ src(util, 2880, 2898) }}"><rect class="d-box" x="20" y="476" width="260" height="56" rx="6"></rect>
+      <text x="32" y="498" font-family="monospace">tx.edit / advance_bookmarks</text>
+      <text x="32" y="518" class="d-muted" font-size="11">skipped with --no-edit / no bookmarks</text></a>
+
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="560" width="720" height="56" rx="6"></rect>
+      <text x="380" y="582" text-anchor="middle">tx.finish(ui, "new empty commit"): write operation, publish op head,</text>
+      <text x="380" y="602" text-anchor="middle">check out the new working-copy commit (CLI page)</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#new-arrow)">
+      <line x1="150" y1="72" x2="150" y2="88"></line>
+      <line x1="280" y1="120" x2="436" y2="120"></line>
+      <line x1="150" y1="148" x2="150" y2="160"></line>
+      <line x1="150" y1="204" x2="150" y2="216"></line>
+      <line x1="280" y1="240" x2="436" y2="240"></line>
+      <line x1="590" y1="260" x2="590" y2="272"></line>
+      <line x1="590" y1="332" x2="590" y2="344"></line>
+      <line x1="590" y1="388" x2="590" y2="400"></line>
+      <line x1="440" y1="432" x2="150" y2="432"></line>
+      <line x1="150" y1="432" x2="150" y2="472"></line>
+      <line x1="280" y1="504" x2="436" y2="504"></line>
+      <line x1="150" y1="532" x2="150" y2="556"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Parent commits (<code>tree</code>, <code>parents</code>)</td><td>read</td><td>Loaded to merge their trees, and the first parent's parents are checked for advanceable bookmarks.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>New commit</td><td>write</td><td>Fresh change ID, the parents in the given order, the merged tree, the description, author and committer from settings.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Child commits (with <code>-A</code>/<code>-B</code>)</td><td>rewrite</td><td>Each gets new parents and is rewritten, recording the old commit as its predecessor. Their descendants are rebased too.</td><td><a href="{{ url_for('jj', slug='transactions') }}">transactions</a></td></tr>
+      <tr><td><code>View.head_ids</code></td><td>write</td><td>The new commit becomes a head, and rewritten children replace their old versions.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td><code>View.wc_commit_ids</code></td><td>write</td><td>This workspace's entry is set to the new commit (not with <code>--no-edit</code>).</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td><code>View.local_bookmarks</code></td><td>write, rarely</td><td>Only advanced bookmarks move. Bookmarks on rewritten children follow them.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Operation and its metadata</td><td>write</td><td>One operation, description <code>new empty commit</code>.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+      <tr><td>Working copy (<code>TreeState</code>)</td><td>read, then write</td><td>Snapshotted at the start. After the operation commits, updated to the new commit's tree, which is the same tree when there is one parent, so nothing on disk changes in the common case.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>One transaction</strong>, started after the parents and children are resolved (<a href="{{ src(cmd, 208, 208) }}">source</a>), finished with the description <code>new empty commit</code> (<a href="{{ src(cmd, 284, 284) }}">source</a>).</li>
+  <li><strong>Commits created:</strong> exactly one. If a description template or trailers template is in use, jj also writes a <em>hidden</em> draft first (<code>write_hidden</code>) just to render the template. It's never added to the view.</li>
+  <li><strong>Commits rewritten:</strong> none by default. With <code>-A</code>/<code>-B</code>, each child and then every descendant (via <a href="{{ src(repo, 1619, 1630) }}"><code>rebase_descendants</code></a>), and jj prints <code>Rebased N descendant commits.</code></li>
+  <li><strong>Working copy:</strong> snapshotted when the workspace is loaded. Afterwards <a href="{{ src(repo, 1722, 1730) }}"><code>MutableRepo::edit</code></a> moves this workspace's <code>@</code> to the new commit. The previous <code>@</code> is abandoned at the same time only if it is discardable (empty with no description), is a head, and isn't referenced by a bookmark, tag or other workspace (<a href="{{ src(repo, 1732, 1768) }}">source</a>). With the default <code>jj new</code>, the old <code>@</code> is the new commit's parent, so it isn't a head and is kept.</li>
+  <li><strong><code>jj undo</code></strong> restores the previous operation's view: the new commit stops being a head (it disappears from <code>jj log</code>), <code>@</code> goes back, and any rebased children and moved bookmarks return to where they were.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="choosing-location">Choosing parents and children</h3>
+<p>
+  <a href="{{ src(util, 3613, 3703) }}"><code>compute_commit_location</code></a> evaluates each revset in
+  order into an <code>IndexSet</code>, so duplicates collapse and order is kept. Then:
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Given</th><th>Parents</th><th>Children to rebase</th></tr></thead>
+    <tbody>
+      <tr><td>revisions (or nothing, meaning <code>@</code>)</td><td>the revisions</td><td>none</td></tr>
+      <tr><td><code>-A X</code></td><td>X</td><td>all current children of X (<code>X.children()</code>)</td></tr>
+      <tr><td><code>-B Y</code></td><td>the parents of Y, in Y's own parent order</td><td>Y</td></tr>
+      <tr><td><code>-A X -B Y</code></td><td>X</td><td>Y</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  If there are children, they must all be rewritable, and none may be an ancestor of a parent,
+  or the commit would sit in a cycle (<code>ensure_no_commit_loop</code>). The parent list must not be
+  empty.
+</p>
+
+<h3 id="tree">The new commit's tree</h3>
+<p>
+  <a href="{{ src('lib/src/rewrite.rs', 59, 70) }}"><code>merge_commit_trees</code></a> returns the single
+  parent's tree unchanged. For several parents it merges their trees against their common ancestors
+  and resolves what it can. Anything left unresolved stays in the tree as a conflict: <code>jj new</code>
+  never fails because a merge conflicts, it creates a conflicted merge commit. Either way the new commit
+  introduces no changes relative to its parents' merge.
+</p>
+
+<h3 id="rewiring">Rewiring the children</h3>
+<p>
+  For each child (<a href="{{ src(cmd, 246, 262) }}">source</a>), every old parent that is also a parent
+  of the new commit is replaced by the new commit, other parents are kept, and the new commit is added
+  if it isn't there yet. In the <code>-A A -B D</code> example from the help text, <code>D</code>'s old
+  parent <code>C</code> is not one of the new commit's parents, so <code>D</code> ends up as a merge of
+  <code>C</code> and the new commit.
+</p>
+
+<h3 id="advance">Advancing bookmarks</h3>
+<p>
+  Only when no <code>-A</code>/<code>-B</code> is given and there is exactly one parent
+  (<a href="{{ src(cmd, 197, 204) }}">source</a>): bookmarks matching the experimental patterns that point
+  at the <em>parent's parents</em> move to the parent. This mirrors <code>jj commit</code>, so a
+  bookmark follows the commit you just finished. It is off by default.
+</p>
+
+<h3 id="description">The description</h3>
+<p>
+  <code>-m</code> wins. Otherwise <code>templates.new_description</code> is rendered, and if empty the
+  description stays empty. Trailers are added only to a non-empty description, because "a commit with
+  no description is treated in a special way in jujutsu: it can be discarded as soon as it's no
+  longer the working copy" (<a href="{{ src(cmd, 228, 236) }}">source</a>).
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>No revisions found to use as parent</code></td><td>The revsets resolved to nothing, for example <code>jj new 'none()'</code>.</td><td><a href="{{ src(util, 3698, 3700) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Refusing to create a loop: commit … would be both an ancestor and a descendant of the new commit</code></td><td>A child given with <code>-B</code> is an ancestor of a parent given with <code>-A</code>.</td><td><a href="{{ src(util, 3705, 3727) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Commit … is immutable</code> / <code>The root commit … is immutable</code></td><td>A commit that <code>-A</code>/<code>-B</code> would rebase is immutable, with the hint <code>This operation would rewrite N immutable commits.</code></td><td><a href="{{ src(util, 2059, 2082) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Rebased N descendant commits.</code></td><td>Status line after inserting with <code>-A</code>/<code>-B</code>.</td><td><a href="{{ src(cmd, 275, 277) }}">new.rs</a></td></tr>
+      <tr><td><code>Created new commit …</code></td><td>Status line with <code>--no-edit</code>. Otherwise the new working-copy commit is printed by <code>tx.finish</code>.</td><td><a href="{{ src(cmd, 265, 274) }}">new.rs</a></td></tr>
+      <tr><td>clap argument conflict</td><td>Positional revisions combined with <code>-A</code>/<code>-B</code>, or <code>--no-edit</code> with <code>--edit</code>.</td><td><a href="{{ src(cmd, 51, 159) }}">new.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Parents may be immutable (that's the usual <code>jj new main</code>), since they aren't rewritten. The
+  root commit is a valid parent too.
+</p>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  Three common uses, starting from <code>A ← B</code> with <code>@</code> on <code>B</code> and a bookmark
+  <code>main</code> on a side commit <code>M</code> (a child of <code>X</code>). New commits are highlighted, and primes mark
+  rewritten commits.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 520" role="img" aria-labelledby="new-ex-title new-ex-desc">
+    <title id="new-ex-title">jj new: before and after</title>
+    <desc id="new-ex-desc">
+      Row one: jj new on top of B adds an empty commit N with parent B, and the working copy moves to N.
+      Row two: jj new @ main adds a merge commit N with parents B and M. Row three: jj new -A A adds N
+      between A and B, and B is rebased into B prime with parent N; the working copy moves to N.
+    </desc>
+    <defs>
+      <marker id="new-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% macro node(x, y, label, hl=False, at=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="13" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x }}" y="{{ y + 4 }}" text-anchor="middle" font-size="12" font-family="monospace">{{ label }}</text>
+      {% if at %}<text x="{{ x + 20 }}" y="{{ y + 4 }}" font-size="12" font-family="monospace" class="d-muted">@</text>{% endif %}
+    {%- endmacro %}
+    <g font-size="13">
+      <text x="20" y="30" font-family="monospace">jj new</text>
+      <text x="20" y="200" font-family="monospace">jj new @ main</text>
+      <text x="20" y="370" font-family="monospace">jj new -A A</text>
+      <text x="300" y="16" class="d-muted">before</text>
+      <text x="520" y="16" class="d-muted">after</text>
+    </g>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="320" y1="137" x2="320" y2="103"></line>
+      <line x1="580" y1="137" x2="580" y2="103"></line>
+      <line x1="580" y1="77" x2="580" y2="57"></line>
+      <line x1="320" y1="307" x2="320" y2="273"></line>
+      <line x1="380" y1="307" x2="380" y2="273"></line>
+      <line x1="580" y1="307" x2="580" y2="273"></line>
+      <line x1="640" y1="307" x2="640" y2="273"></line>
+      <line x1="580" y1="247" x2="606" y2="225"></line>
+      <line x1="640" y1="247" x2="614" y2="225"></line>
+      <line x1="320" y1="477" x2="320" y2="443"></line>
+      <line x1="580" y1="477" x2="580" y2="453"></line>
+      <line x1="580" y1="427" x2="580" y2="407"></line>
+    </g>
+    {{ node(320, 150, 'A') }}{{ node(320, 90, 'B', at=True) }}
+    {{ node(580, 150, 'A') }}{{ node(580, 90, 'B') }}{{ node(580, 44, 'N', hl=True, at=True) }}
+    {{ node(320, 320, 'A') }}{{ node(380, 320, 'X') }}{{ node(320, 260, 'B', at=True) }}{{ node(380, 260, 'M') }}
+    <text x="400" y="264" font-size="11" class="d-muted">main</text>
+    {{ node(580, 320, 'A') }}{{ node(640, 320, 'X') }}{{ node(580, 260, 'B') }}{{ node(640, 260, 'M') }}{{ node(610, 212, 'N', hl=True, at=True) }}
+    <text x="660" y="264" font-size="11" class="d-muted">main</text>
+    {{ node(320, 490, 'A') }}{{ node(320, 430, 'B', at=True) }}
+    {{ node(580, 490, 'A') }}{{ node(580, 440, 'N', hl=True, at=True) }}{{ node(580, 394, "B'") }}
+    <g class="d-line" stroke-width="1.5" marker-end="url(#new-ex-arrow)">
+      <line x1="420" y1="100" x2="520" y2="100"></line>
+      <line x1="440" y1="270" x2="520" y2="270"></line>
+      <line x1="420" y1="450" x2="520" y2="450"></line>
+    </g>
+  </svg>
+</div>
+
+<p>
+  In the first row the old <code>@</code> (<code>B</code>) survives even if empty, because it is now
+  <code>N</code>'s parent rather than a head. In the third row <code>B</code> is rewritten to
+  <code>B'</code> with the same change ID, and jj prints <code>Rebased 1 descendant commits.</code> Because
+  <code>-A</code> was used, no bookmark is advanced.
+</p>
