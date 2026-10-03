@@ -1,0 +1,305 @@
+{% set cmd = "cli/src/commands/restore.rs" %}
+{% set rw = "lib/src/rewrite.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set t = "cli/tests/test_restore_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj restore</code> works</h1>
+  <p class="tagline">
+    <code>jj restore</code> rewrites one commit so that some or all of its paths get their content from a
+    source tree: the commit's parents by default, or any revision you name. It is jj's way of
+    discarding changes, either whole files or interactively chosen hunks.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj picks a destination commit and a source tree. That is <code>@</code> and
+  <code>@</code>'s parents by default, <code>--changes-in X</code> for <code>X</code> and its parents, or
+  <code>--from</code>/<code>--into</code>, each defaulting to <code>@</code>. It refuses an immutable
+  destination. The shared <code>DiffSelector</code> builds the new tree: the destination with the
+  matching paths copied from the source, optionally refined in a diff editor. If that equals the old
+  tree, it prints <code>Nothing changed.</code>. Otherwise it rewrites the destination, keeping its
+  change ID and description. Descendants are rebased, which can conflict, or reparented with
+  <code>--restore-descendants</code>. The operation is <code>restore into commit &lt;id&gt;</code>.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 103, 213) }}"><code>cmd_restore</code></a>. Its help text compares
+  plain <code>jj restore</code> with <a href="{{ url_for('jj', slug='abandon') }}"><code>jj abandon</code></a>:
+  both drop <code>@</code>'s changes, but restore keeps the commit and its metadata, leaving it empty
+  (<a href="{{ src(cmd, 34, 49) }}">source</a>). Selection works as in
+  <a href="{{ url_for('jj', slug='commit') }}#selection"><code>jj commit</code></a>. For moving changes
+  rather than discarding them, see <a href="{{ url_for('jj', slug='squash') }}"><code>jj squash</code></a>.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>FILESETS</code> (positional)</td><td>filesets</td><td>all files</td><td>Restore only these paths (<a href="{{ src(cmd, 52, 55) }}">source</a>).</td></tr>
+      <tr><td><code>-f</code>, <code>--from REVSET</code></td><td>revset</td><td><code>@</code> if <code>--into</code> is given</td><td>The commit whose tree is the source. It must resolve to one commit (<a href="{{ src(cmd, 57, 60) }}">source</a>).</td></tr>
+      <tr><td><code>-t</code>, <code>--into</code>, <code>--to REVSET</code></td><td>revset</td><td><code>@</code> if <code>--from</code> is given</td><td>The commit to rewrite (<a href="{{ src(cmd, 62, 65) }}">source</a>).</td></tr>
+      <tr><td><code>-c</code>, <code>--changes-in REVSET</code></td><td>revset</td><td><code>@</code> when no <code>--from</code>/<code>--into</code></td><td>Undo this commit's own changes, restoring it from the merge of its parents. Conflicts with <code>--from</code> and <code>--into</code> (<a href="{{ src(cmd, 67, 77) }}">source</a>).</td></tr>
+      <tr><td><code>-r</code>, <code>--revision</code></td><td>revset</td><td>hidden</td><td>Exists only to print an error, so <code>-r</code> isn't mistaken for <code>--from</code> (<a href="{{ src(cmd, 79, 87) }}">source</a>).</td></tr>
+      <tr><td><code>-i</code>, <code>--interactive</code></td><td>bool</td><td>false</td><td>Choose what to restore in a diff editor (<a href="{{ src(cmd, 89, 91) }}">source</a>).</td></tr>
+      <tr><td><code>--tool NAME</code></td><td>string</td><td>none</td><td>Diff editor to use. Implies <code>-i</code> (<a href="{{ src(cmd, 93, 96) }}">source</a>).</td></tr>
+      <tr><td><code>--restore-descendants</code></td><td>bool</td><td>false</td><td>Keep descendants' content, not their diffs, when moving them onto the rewritten commit (<a href="{{ src(cmd, 98, 100) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 50, 101) }}"><code>RestoreArgs</code></a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<p>
+  No restore-specific keys. <code>ui.diff-editor</code> (defaulting to <code>:builtin</code> with a hint)
+  and <code>ui.diff-instructions</code> apply to <code>-i</code>, as described on the
+  <a href="{{ url_for('jj', slug='commit') }}#configuration"><code>commit</code> page</a>.
+  <code>revset-aliases."immutable_heads()"</code> decides whether the destination may be rewritten.
+  <code>user.name</code>/<code>user.email</code> become the committer of the rewritten commits.
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 470" role="img" aria-labelledby="rs-flow-title rs-flow-desc">
+    <title id="rs-flow-title">jj restore: call flow</title>
+    <desc id="rs-flow-desc">
+      cmd_restore loads the workspace through the shared lifecycle, which snapshots the working copy. It
+      rejects -r. With --from or --into it resolves both, each defaulting to @, and uses the source
+      commit's tree; otherwise the destination is --changes-in (default @) and the source is the merge
+      of its parents' trees. It checks the destination is rewritable, builds the path matcher and diff
+      selector, and runs DiffSelector::select, which calls restore_tree to copy matching paths from the
+      source onto the destination tree, then optionally opens the diff editor. It warns about unmatched
+      paths. If the tree is unchanged it prints Nothing changed. Otherwise a transaction rewrites the
+      destination with the new tree, rebases or reparents descendants, and tx.finish records "restore
+      into commit".
+    </desc>
+    <defs>
+      <marker id="rs-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 120, 128) }}"><rect class="d-box" x="20" y="84" width="340" height="66" rx="6"></rect>
+      <text x="32" y="105">--from / --into given</text>
+      <text x="32" y="123" class="d-muted" font-size="11">destination = --into or @</text>
+      <text x="32" y="140" class="d-muted" font-size="11">source tree = (--from or @).tree()</text></a>
+      <a href="{{ src(cmd, 129, 137) }}"><rect class="d-box" x="420" y="84" width="320" height="66" rx="6"></rect>
+      <text x="432" y="105">otherwise: --changes-in (default @)</text>
+      <text x="432" y="123" class="d-muted" font-size="11">destination = that commit</text>
+      <text x="432" y="140" class="d-muted" font-size="11">source tree = merge of its parents' trees</text></a>
+
+      <a href="{{ src(cmd, 138, 143) }}"><rect class="d-box" x="20" y="174" width="720" height="40" rx="6"></rect>
+      <text x="32" y="199">check_rewritable(destination); parse_file_patterns → matcher; diff_selector(-i / --tool)</text></a>
+
+      <a href="{{ src(rw, 180, 255) }}"><rect class="d-box" x="20" y="238" width="430" height="84" rx="6"></rect>
+      <text x="32" y="259">DiffSelector::select → restore_tree(source, destination)</text>
+      <text x="32" y="277" class="d-muted" font-size="11">all paths: the source tree as is</text>
+      <text x="32" y="294" class="d-muted" font-size="11">some paths: merge(dest, dest's matched, source's matched)</text>
+      <text x="32" y="311" class="d-muted" font-size="11">-i: then edit the right side in the diff editor</text></a>
+      <a href="{{ src(cmd, 174, 183) }}"><rect class="d-box" x="490" y="238" width="250" height="84" rx="6"></rect>
+      <text x="502" y="259">warn on unmatched paths</text>
+      <text x="502" y="277" class="d-muted" font-size="11">new tree == old tree?</text>
+      <text x="502" y="294" class="d-muted" font-size="11">"Nothing changed." —</text>
+      <text x="502" y="311" class="d-muted" font-size="11">no transaction</text></a>
+
+      <a href="{{ src(cmd, 184, 208) }}"><rect class="d-box" x="20" y="346" width="720" height="50" rx="6"></rect>
+      <text x="32" y="367">start_transaction; rewrite_commit(destination).set_tree(new tree).write()</text>
+      <text x="32" y="385" class="d-muted" font-size="11">then rebase_descendants() — or reparent_descendants() with --restore-descendants — "Rebased N descendant commits …"</text></a>
+
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="420" width="720" height="36" rx="6"></rect>
+      <text x="380" y="443" text-anchor="middle">tx.finish(ui, "restore into commit &lt;id&gt;"): write the operation, update the working copy (CLI page)</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#rs-arrow)">
+      <line x1="190" y1="60" x2="190" y2="80"></line>
+      <line x1="580" y1="60" x2="580" y2="80"></line>
+      <line x1="190" y1="150" x2="190" y2="170"></line>
+      <line x1="580" y1="150" x2="580" y2="170"></line>
+      <line x1="235" y1="214" x2="235" y2="234"></line>
+      <line x1="450" y1="280" x2="486" y2="280"></line>
+      <line x1="235" y1="322" x2="235" y2="342"></line>
+      <line x1="380" y1="396" x2="380" y2="416"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Destination commit</td><td>rewritten</td><td>A new commit with the restored tree. It keeps the parents, change ID, description and author, and you become the committer.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Source commits</td><td>read</td><td>Only their trees: one commit's tree for <code>--from</code>, or the merged parent tree for <code>--changes-in</code>.</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>Trees</td><td>read, merged</td><td><code>restore_tree</code> diffs source against destination under the matcher, then 3-way merges them so conflict labels survive (<a href="{{ src(rw, 229, 254) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>Descendants</td><td>rewritten</td><td>Rebased, applying their diffs to the restored commit, or reparented with their trees unchanged.</td><td><a href="{{ url_for('jj', slug='transactions') }}">transactions</a></td></tr>
+      <tr><td><code>View</code>: heads, bookmarks, <code>wc_commit_ids</code></td><td>write</td><td>Follow the rewritten and rebased commits.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td>One operation, unless nothing changed.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+      <tr><td>Working copy (<code>TreeState</code>)</td><td>read, then maybe write</td><td>Snapshotted first. If <code>@</code> was rewritten or rebased, the restored files are written to disk.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, but only if the new tree differs from the destination's. Otherwise jj prints <code>Nothing changed.</code> and records no operation (<a href="{{ src(cmd, 182, 185) }}">source</a>).</li>
+  <li><strong>Operation description:</strong> <code>restore into commit &lt;full hex id of the destination before the rewrite&gt;</code> (<a href="{{ src(cmd, 209, 210) }}">source</a>).</li>
+  <li><strong>Commits created or rewritten:</strong> the destination, plus every descendant. Descendants are handled right after the write because, as the source comment puts it, the new commit would otherwise "always have a conflicted change id at this point" (<a href="{{ src(cmd, 191, 200) }}">source</a>).</li>
+  <li><strong>Working copy:</strong> snapshotted at the start, so plain <code>jj restore</code> discards your latest edits too, though they remain recoverable through the operation log. If <code>@</code> changed, its new tree is checked out.</li>
+  <li><strong><code>jj undo</code></strong> restores the previous view, bringing back the destination's old tree and the old descendants.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="choosing">Choosing source and destination</h3>
+
+<p>
+  There are two shapes (<a href="{{ src(cmd, 120, 137) }}">source</a>). With <code>--from</code> or
+  <code>--into</code>, both are single commits, each defaulting to <code>@</code>, and the source is one
+  tree. Otherwise the destination is <code>--changes-in</code> (default <code>@</code>) and the source
+  is <code>parent_tree</code>, the merge of all its parents' trees. So for a merge commit, "undo its
+  changes" means restoring the merged parents, not one parent. <code>-r</code> is rejected outright: in
+  <code>jj diff</code>'s convention it would name the destination, and the source comment worries that
+  someone meaning <code>--from</code> would empty the wrong commit without noticing
+  (<a href="{{ src(cmd, 79, 87) }}">source</a>, <a href="{{ src(cmd, 111, 119) }}">error</a>).
+</p>
+
+<h3 id="building">Building the new tree</h3>
+
+<p>
+  <code>DiffSelector::select</code> is called with the destination tree as "before" and the source tree
+  as "after" (<a href="{{ src(cmd, 161, 172) }}">source</a>). It first runs
+  <a href="{{ src(rw, 180, 255) }}"><code>restore_tree</code></a>:
+</p>
+
+<ol>
+  <li>If the matcher matches everything, the result is simply the source tree (<a href="{{ src(rw, 188, 191) }}">source</a>).</li>
+  <li>Otherwise it streams the diff between source and destination under the matcher, and keeps the paths that differ (<a href="{{ src(rw, 192, 199) }}">source</a>).</li>
+  <li>
+    It builds two trees containing only those paths, one from each side, and merges
+    <code>destination + (source's paths − destination's paths)</code>. The result is the destination
+    with exactly those paths replaced. Using a merge rather than overwriting keeps the conflict labels of
+    both sides when restoring a conflicted file into a conflicted commit
+    (<a href="{{ src(rw, 217, 254) }}">source</a>).
+  </li>
+</ol>
+
+<p>
+  With <code>-i</code>, the diff editor then opens on <em>destination → that result</em>. Whatever you
+  leave on the right becomes the destination's tree, which is how partial-file restores work. The
+  instructions tell you which commits you're restoring from and into
+  (<a href="{{ src(cmd, 145, 160) }}">source</a>).
+</p>
+
+<h3 id="descendants">Descendants</h3>
+
+<p>
+  <a href="{{ src(repo, 1619, 1630) }}"><code>rebase_descendants</code></a> applies each descendant's
+  own diff on top of its rewritten parent. If a descendant edited content the restore removed, it
+  conflicts, as in the example below.
+  <a href="{{ src(repo, 1632, 1652) }}"><code>reparent_descendants</code></a> instead gives each
+  descendant its new parents with its tree untouched. Its content stays the same, and its diff absorbs
+  what was restored away.
+</p>
+
+<p>
+  <strong>Invariants:</strong> only the destination's tree changes, never its identity or metadata.
+  Paths outside the matcher are never touched. A no-op restore records nothing. Restoring is a tree
+  replacement, not a reverse patch, so the result for a matched path is the source's content, whatever
+  the destination had.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>`jj restore` does not have a `--revision`/`-r` option.</code>, with hints pointing to <code>--from</code> and <code>--changes-in</code></td><td><code>-r</code> was passed.</td><td><a href="{{ src(cmd, 111, 119) }}">restore.rs</a></td></tr>
+      <tr><td><code>Nothing changed.</code></td><td>The restored tree equals the destination's. No operation is recorded.</td><td><a href="{{ src(cmd, 182, 183) }}">restore.rs</a></td></tr>
+      <tr><td><code>Warning: No matching entries for paths: …</code></td><td>An explicit path exists in neither the destination nor the source.</td><td><a href="{{ src(util, 3382, 3410) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Commit … is immutable</code></td><td>The destination is immutable.</td><td><a href="{{ src(util, 2035, 2042) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Revset `…` resolved to more than one revision</code> (or to none)</td><td><code>--from</code>, <code>--into</code> or <code>--changes-in</code> isn't exactly one commit.</td><td><a href="{{ src('cli/src/revset_util.rs', 302, 331) }}">revset_util.rs</a></td></tr>
+      <tr><td><code>Empty diff - won't run diff editor.</code></td><td><code>-i</code> when nothing differs.</td><td><a href="{{ src(util, 3593, 3595) }}">cli_util.rs</a></td></tr>
+      <tr><td>clap: <code>--changes-in</code> cannot be used with <code>--from</code>/<code>--into</code></td><td>Both forms given.</td><td><a href="{{ src(cmd, 75, 77) }}">restore.rs</a></td></tr>
+      <tr><td><code>Rebased &lt;n&gt; descendant commits[ (while preserving their content)].</code></td><td>Status after rewriting descendants.</td><td><a href="{{ src(cmd, 201, 208) }}">restore.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 23, 88) }}">test_restore</a>. <code>A</code> adds
+  <code>file1</code>, <code>B</code> adds <code>file2</code> (<code>b</code>), and <code>@</code>
+  removes <code>file1</code>, changes <code>file2</code> to <code>c</code> and adds <code>file3</code>.
+  Running <code>jj restore -c=@-</code> undoes <code>B</code>'s own change:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 250" role="img" aria-labelledby="rs-ex-title rs-ex-desc">
+    <title id="rs-ex-title">jj restore -c=@-: before and after</title>
+    <desc id="rs-ex-desc">
+      Before: A adds file1; B adds file2 with content b; C at @ deletes file1, changes file2 to c and adds
+      file3. After restoring the changes in B: B is rewritten and is now empty, keeping its change ID.
+      C is rebased onto it. C's change to file2 has nothing to apply to now that file2 no longer exists
+      in B, so C becomes conflicted on file2: a 2-sided conflict including one deletion.
+    </desc>
+    <defs>
+      <marker id="rs-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% macro node(x, y, label, note="", hl=False, warn=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 18 }}" y="{{ y + 4 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x + 18 }}" y="{{ y + 20 }}" font-size="10.5" class="{{ 'd-accent' if warn else 'd-muted' }}">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <g font-size="13">
+      <text x="60" y="22" class="d-muted">before</text>
+      <text x="460" y="22" class="d-muted">after</text>
+    </g>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="70" y1="211" x2="70" y2="139"></line>
+      <line x1="70" y1="121" x2="70" y2="69"></line>
+      <line x1="470" y1="211" x2="470" y2="139"></line>
+      <line x1="470" y1="121" x2="470" y2="69"></line>
+      <line x1="300" y1="130" x2="420" y2="130" marker-end="url(#rs-ex-arrow)"></line>
+    </g>
+    {{ node(70, 220, "A  qpvuntsm", "adds file1") }}
+    {{ node(70, 130, "B  rlvkpnrz", "adds file2 = b") }}
+    {{ node(70, 60, "C  kkmpptxz  @", "−file1, file2 = c, +file3") }}
+    {{ node(470, 220, "A  qpvuntsm", "unchanged") }}
+    {{ node(470, 130, "B  rlvkpnrz  67841e01", "restored: now (empty)", hl=True) }}
+    {{ node(470, 60, "C  kkmpptxz  faa5911c  @", "rebased: (conflict) on file2", warn=True) }}
+    <text x="360" y="120" font-size="11" text-anchor="middle" class="d-muted">jj restore</text>
+    <text x="360" y="150" font-size="11" text-anchor="middle" class="d-muted">-c=@-</text>
+  </svg>
+</div>
+
+<p>Upstream's snapshot of the start of the output:</p>
+
+<pre><code>Rebased 1 descendant commits.
+Working copy  (@) now at: kkmpptxz faa5911c (conflict) (no description set)
+Parent commit (@-)      : rlvkpnrz 67841e01 (empty) (no description set)
+Added 0 files, modified 1 files, removed 0 files
+Warning: There are unresolved conflicts at these paths:
+file2    2-sided conflict including 1 deletion</code></pre>
+
+<p>
+  <code>B</code> keeps its change ID but is now empty. Its one change, adding <code>file2</code>, was
+  restored from its parent, where <code>file2</code> doesn't exist. The default rebase then replays
+  <code>@</code>'s modification of <code>file2</code> onto a parent without the file, hence the
+  conflict. The operation is <code>restore into commit &lt;B's old id&gt;</code>. Upstream's
+  <a href="{{ src(t, 287, 355) }}">test_restore_restore_descendants</a> shows the alternative:
+  <code>jj restore -c b file --restore-descendants</code> fixes a commit that shouldn't have touched
+  <code>file</code>, while the merge on top keeps exactly its content. It prints
+  <code>Rebased 1 descendant commits (while preserving their content).</code>
+</p>

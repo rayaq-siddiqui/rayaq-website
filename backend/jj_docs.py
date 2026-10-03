@@ -956,6 +956,16 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "restore": {
+        "title": "How jj restore works",
+        "sources": [
+            "cli/src/commands/restore.rs",
+            "lib/src/rewrite.rs",
+            "lib/src/repo.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
     "redo": {
         "title": "How jj redo works",
         "sources": [
