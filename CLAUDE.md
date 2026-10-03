@@ -26,6 +26,8 @@ backend/            Flask app (Python) — all server-side logic
                      extension (see "jj-dojo" below)
   jj_vfs_docs.py    The /jj-vfs-poc section: the same shape for the jj-vfs-poc FUSE file
                      system, plus a jj-lib link helper and the FUSE op list (see "jj-vfs-poc" below)
+  jj_cloud_docs.py  The /jj-commit-cloud-poc section: the same shape for the commit cloud,
+                     with the protobuf item list (see "jj-commit-cloud-poc" below)
   requirements.txt       Runtime deps
   requirements-dev.txt   Runtime + pytest, for local dev / CI
   pytest.ini         Configures pytest to discover *_tests.py (not the pytest default
@@ -41,6 +43,7 @@ backend/            Flask app (Python) — all server-side logic
     jj_docs_tests.py Tests the jj registry, pin, pinned links, and every /jj page
     jj_dojo_docs_tests.py Same checks for /jj-dojo
     jj_vfs_docs_tests.py  Same checks for /jj-vfs-poc, plus jj-lib link pinning
+    jj_cloud_docs_tests.py Same checks for /jj-commit-cloud-poc
 
 specs/
   jj.md               The rayaq.ca/jj product & technical spec — the contract the
@@ -48,14 +51,17 @@ specs/
   jj-progress.md      Running status of that build: queue, pin, deviations, gaps.
   jj-dojo.md / jj-dojo-progress.md   The same pair for /jj-dojo.
   jj-vfs-poc.md / jj-vfs-poc-progress.md   The same pair for /jj-vfs-poc.
+  jj-commit-cloud-poc.md / jj-commit-cloud-poc-progress.md   The same pair for
+                      /jj-commit-cloud-poc.
 
 frontend/
   templates/         Jinja2 templates. One per route: home.html, weather.html,
                      resume.html, assembly.html; jj/ holds the /jj layout
                      (base.html), index.html, and one fragment per /jj/<slug> page;
-                     jj_dojo/ and jj_vfs/ are the same for /jj-dojo and /jj-vfs-poc
+                     jj_dojo/, jj_vfs/ and jj_cloud/ are the same for /jj-dojo,
+                     /jj-vfs-poc and /jj-commit-cloud-poc
   static/            style.css (shared/global), resume.css, assembly.css, jj.css, jj_dojo.css,
-                     jj_vfs.css,
+                     jj_vfs.css, jj_cloud.css,
                      script.js (weather chart only)
 
 deploy/
@@ -86,6 +92,8 @@ vmrun.sh            Convenience wrapper: `./vmrun.sh '<command>'` runs a single 
 | `/jj-dojo/<slug>` | One deep-dive page per topic in `jj_dojo_docs.PAGES` that is marked ready; 404 otherwise |
 | `/jj-vfs-poc` | jj-vfs-poc (FUSE file system) architecture reference: overview and page index |
 | `/jj-vfs-poc/<slug>` | One deep-dive page per topic in `jj_vfs_docs.PAGES` that is marked ready; 404 otherwise |
+| `/jj-commit-cloud-poc` | jj-commit-cloud-poc (gRPC commit cloud) architecture reference: overview and page index |
+| `/jj-commit-cloud-poc/<slug>` | One deep-dive page per topic in `jj_cloud_docs.PAGES` that is marked ready; 404 otherwise |
 | `/health` | Returns `{"status": "ok"}`, 200. Used to verify a deploy actually succeeded. |
 
 ## Local development
@@ -188,6 +196,14 @@ Each call is one command over SSH — deliberately kept to single, auditable com
   crate's `Cargo.toml`, which can differ from the jj version `/jj` describes. `FUSE_OPS` lists
   the `Filesystem` methods `src/fuse.rs` implements. A daily Routine
   ("rayaq.ca/jj-vfs-poc — architecture reference agent") builds and maintains it.
+- **jj-commit-cloud-poc** (`jj_cloud_docs.py` + `templates/jj_cloud/` + `jj_cloud.css`): the
+  same kind of reference for jj-commit-cloud-poc, a gRPC server storing a jj repository plus
+  client store implementations and a custom `jj` binary, at `/jj-commit-cloud-poc`. Read
+  `specs/jj-commit-cloud-poc.md` first and `specs/jj-commit-cloud-poc-progress.md` for status.
+  Links go through `jj_cloud_docs.source_url` (pinned commit) and `jj_cloud_docs.jj_lib_url`
+  (the `v<jj_lib_version>` tag). `PROTO_ITEMS` lists every service, RPC and message in
+  `common/proto/*.proto`. A daily Routine ("rayaq.ca/jj-commit-cloud-poc — architecture
+  reference agent") builds and maintains it.
 - Phone number is intentionally omitted from the public resume page (privacy choice, since the repo is public). Don't add it back without checking with the site owner first.
 
 ## Conventions

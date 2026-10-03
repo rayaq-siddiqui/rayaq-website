@@ -5,6 +5,7 @@ from flask import Flask, abort, render_template
 import jj_docs
 import jj_dojo_docs
 import jj_vfs_docs
+import jj_cloud_docs
 import resume_data
 import static_assets
 from assembly import get_showcase
@@ -83,6 +84,15 @@ def jj_dojo(slug):
 @app.route("/jj-vfs-poc/<slug>")
 def jj_vfs(slug):
     html = jj_vfs_docs.render(slug, render_template)
+    if html is None:
+        abort(404)
+    return html
+
+
+@app.route("/jj-commit-cloud-poc", defaults={"slug": None})
+@app.route("/jj-commit-cloud-poc/<slug>")
+def jj_cloud(slug):
+    html = jj_cloud_docs.render(slug, render_template)
     if html is None:
         abort(404)
     return html
