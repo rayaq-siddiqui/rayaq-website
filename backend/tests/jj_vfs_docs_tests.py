@@ -160,3 +160,13 @@ def test_namespace_covers_every_required_section_with_diagrams():
     for anchor in ["tree", "path-resolution", "directory-types", "snapshot", "worked-example", "limitations"]:
         assert f'<h2 id="{anchor}">' in body, anchor
     assert body.count("<svg viewBox") >= 2
+
+
+def test_index_has_the_architecture_diagram():
+    client = app_module.app.test_client()
+
+    body = client.get("/jj-vfs-poc").get_data(as_text=True)
+
+    assert 'role="img"' in body
+    assert '<title id="vfs-arch-title">' in body
+    assert '<desc id="vfs-arch-desc">' in body
