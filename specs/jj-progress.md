@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-03 (twelfth run): no upstream change since `69abfbe`; built the
-`jj redo` command page.
+**Last updated:** 2026-10-03 (thirteenth run): no upstream change since `69abfbe`; built the
+`jj restore` command page.
 
 ## Upstream pin
 
@@ -26,10 +26,18 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 10 of 105 (`fix`, `new`, `edit`,
-      `describe`, `commit`, `squash`, `rebase`, `abandon`, `undo`, `redo`).
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 11 of 105 (`fix`, `new`, `edit`,
+      `describe`, `commit`, `squash`, `rebase`, `abandon`, `undo`, `redo`, `restore`).
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
+
+## Thirteenth run (2026-10-03)
+
+| Commit | What |
+|---|---|
+| `86bb02b` | `restore` command page (Tier A, all eight §8A.3 items, two SVGs; example from upstream's `test_restore`) |
+
+Maintenance: upstream `HEAD` still at `69abfbe`, so the pin stayed.
 
 ## Twelfth run (2026-10-03)
 
@@ -109,7 +117,7 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
 1. Tier A commands, alternating with the remaining topics (`trees`, `conflicts`,
    `storage`, `index`, `revsets`, `backends`): ~~`new`~~, ~~`trees`~~, ~~`edit`~~, ~~`describe`~~, ~~`commit`~~,
    ~~`squash`~~, ~~`rebase`~~, ~~`abandon`~~, ~~`undo`~~, then the rest of Tier A. Next, in this order:
-   ~~`redo`~~, `restore`, `split`, `absorb`, `duplicate`, `bookmark-create`/`-set`/`-move`, `git-fetch`,
+   ~~`redo`~~, ~~`restore`~~, `split`, `absorb`, `duplicate`, `bookmark-create`/`-set`/`-move`, `git-fetch`,
    `git-push`, then the remaining 46 Tier A commands in registry order.
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
