@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-03 (sixth run): no upstream change since `69abfbe`; built the
-`jj edit` command page.
+**Last updated:** 2026-10-03 (seventh run): no upstream change since `69abfbe`; built the
+`jj describe` and `jj commit` command pages.
 
 ## Upstream pin
 
@@ -21,14 +21,27 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] The `fix` page meets all ten §8 items, with three SVG diagrams.
 - [x] The `protobufs` page covers all seven `.proto` files, every field.
 - [x] Every source link is pinned to `UPSTREAM.commit` (tested).
-- [x] §7.5 tests exist and pass (75 tests in the suite).
+- [x] §7.5 tests exist and pass (132 tests in the suite, including the other sections').
 - [x] Homepage card links to `/jj`.
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 3 of 105 (`fix`, `new`, `edit`).
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 5 of 105 (`fix`, `new`, `edit`,
+      `describe`, `commit`).
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
+
+## Seventh run (2026-10-03)
+
+| Commit | What |
+|---|---|
+| `0e29d5e` | `describe` command page (Tier A, all eight §8A.3 items, two SVGs), plus a test that every ready Tier A command page except `fix` has the eight section anchors and at least two diagrams |
+| `a25d7eb` | `commit` command page (Tier A, all eight §8A.3 items, two SVGs) |
+
+Maintenance: upstream `HEAD` still at `69abfbe`, so the pin stayed.
+
+Both worked examples come from upstream's own CLI tests (`test_describe_multiple_commits`,
+`test_commit_paths`), so the commit IDs, change IDs and output shown are upstream's snapshots.
 
 ## Sixth run (2026-10-03)
 
@@ -93,7 +106,7 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
 ## Queue (build in this order, per spec §9)
 
 1. Tier A commands, alternating with the remaining topics (`trees`, `conflicts`,
-   `storage`, `index`, `revsets`, `backends`): ~~`new`~~, ~~`trees`~~, ~~`edit`~~, `describe`, `commit`,
+   `storage`, `index`, `revsets`, `backends`): ~~`new`~~, ~~`trees`~~, ~~`edit`~~, ~~`describe`~~, ~~`commit`~~,
    `squash`, `rebase`, `abandon`, `undo`, then the rest of Tier A.
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
@@ -114,6 +127,14 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
   shared pages for Tier C; the first three are a judgment call to keep slugs to two levels).
 
 ## Open gaps / questions for the owner
+
+- **Monospace text in diagrams.** Several `/jj` diagrams set `font-family="monospace"` on SVG
+  text, but `jj.css`'s `.jj-diagram svg text` rule overrides presentation attributes, so that
+  text renders in the sans font. It's cosmetic only. A small `jj.css` class (as `/jj-commit-cloud-poc`
+  now uses) would fix it in a later run.
+- **`jj commit` and immutability.** `cmd_commit` makes no `check_rewritable` call of its own,
+  unlike `describe`. The page states only that, without claiming what happens if `@` is
+  immutable, since that wasn't traced.
 
 - On `/jj/fix`, I chose not to mention that `fix_files`' `paths.extend(...)` lookup of
   base commits in `commit_paths` appears unable to match: base commits are by definition
