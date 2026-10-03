@@ -199,3 +199,16 @@ def test_index_groups_commands_by_category():
 
     for number, category in enumerate(jj_docs.COMMAND_CATEGORIES, start=1):
         assert f'<h3 id="commands-{number}">{category}</h3>' in body
+
+
+def test_ready_tier_a_command_pages_cover_every_section():
+    tiers = {jj_docs.command_slug(entry["command"]): entry["tier"] for entry in jj_docs.COMMANDS}
+    client = app_module.app.test_client()
+
+    for page in jj_docs.ready_pages():
+        if page["kind"] != "command" or tiers[page["slug"]] != "A" or page["slug"] == "fix":
+            continue
+        body = client.get(f"/jj/{page['slug']}").get_data(as_text=True)
+        for anchor in ["cli", "configuration", "flow", "touchpoints", "transaction", "algorithm", "errors", "example"]:
+            assert f'<h2 id="{anchor}"' in body, (page["slug"], anchor)
+        assert body.count('role="img"') >= 2, page["slug"]

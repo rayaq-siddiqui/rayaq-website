@@ -1,0 +1,429 @@
+{% set cmd = "cli/src/commands/describe.rs" %}
+{% set du = "cli/src/description_util.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+{% set cb = "lib/src/commit_builder.rs" %}
+{% set tpl = "cli/src/config/templates.toml" %}
+<header class="jj-header">
+  <h1>How <code>jj describe</code> works</h1>
+  <p class="tagline">
+    <code>jj describe</code> sets the description of one or more commits, from <code>-m</code>, from
+    stdin, or in your editor. It rewrites each commit with the same tree and change ID and a new
+    message, and reparents its descendants onto the rewritten versions without touching their
+    contents.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj resolves the revisions (default <code>@</code>), refuses if any is immutable, and builds
+  the new descriptions. With one commit and no <code>-m</code>/<code>--stdin</code>, it opens one file
+  in your editor. With several, it opens one file with a <code>JJ: describe &lt;id&gt;</code> section
+  per commit. Commits whose description didn't change are dropped. The rest go through
+  <code>transform_descendants</code>, which writes each described commit and <em>reparents</em> every
+  descendant. Everything is one operation, <code>describe commit &lt;id&gt;</code>. If nothing
+  changed, no operation is recorded at all.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 88, 239) }}"><code>cmd_describe</code></a>. Building and parsing
+  the editor text lives in <a href="{{ src(du) }}"><code>description_util.rs</code></a>, which
+  <a href="{{ url_for('jj', slug='new') }}"><code>jj new</code></a>, <code>commit</code>,
+  <code>squash</code> and others share. The default alias <code>desc</code> comes from
+  <a href="{{ src('cli/src/config/misc.toml', 8) }}">misc.toml</a>.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>REVSETS</code> (positional)</td><td>revsets, repeatable</td><td><code>@</code></td><td>The commits to describe. All positional and <code>-r</code> values are unioned (<a href="{{ src(cmd, 52, 55) }}">source</a>).</td></tr>
+      <tr><td><code>-r REVSETS</code></td><td>revsets, repeatable</td><td>none</td><td>Hidden alias for the positional argument, kept for symmetry with other commands (<a href="{{ src(cmd, 57, 59) }}">source</a>).</td></tr>
+      <tr><td><code>-m</code>, <code>--message MESSAGE</code></td><td>string, repeatable</td><td>none</td><td>Use this description and don't open the editor. Several <code>-m</code> values become paragraphs: each gets a trailing newline, and they are joined with a blank line (<a href="{{ src(du, 417, 428) }}"><code>join_message_paragraphs</code></a>). The same text goes on every target. Conflicts with <code>--stdin</code> (<a href="{{ src(cmd, 61, 71) }}">source</a>).</td></tr>
+      <tr><td><code>--stdin</code></td><td>bool</td><td>false</td><td>Read the description from standard input. A trailing newline is added if missing (<a href="{{ src(cmd, 73, 78) }}">source</a>, <a href="{{ src(cmd, 130, 133) }}">read</a>).</td></tr>
+      <tr><td><code>--editor</code></td><td>bool</td><td>false</td><td>Open the editor even with <code>-m</code> or <code>--stdin</code>, pre-filled with that text (<a href="{{ src(cmd, 80, 85) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 43, 86) }}"><code>DescribeArgs</code></a></p>
+
+<p>
+  The editor opens when <code>--editor</code> is given or no description was supplied:
+  <code>use_editor = args.editor || shared_description.is_none()</code>
+  (<a href="{{ src(cmd, 151) }}">line 151</a>). At this pin, <code>describe</code> has no flags for
+  the author or for trailers. Authorship is handled elsewhere, as described below.
+</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>ui.editor</code></td>
+        <td><code>nano</code> on Unix (<a href="{{ src('cli/src/config/unix.toml', 2) }}">unix.toml</a>), <code>Notepad</code> on Windows (<a href="{{ src('cli/src/config/windows.toml', 3) }}">windows.toml</a>)</td>
+        <td>
+          The editor command (<a href="{{ src(du, 84, 88) }}"><code>TextEditor::from_settings</code></a>). It may use
+          <code>$path</code> and <code>$line</code>; without <code>$path</code>, the file path is appended. Environment
+          variables fit into the config layers: <code>$VISUAL</code>, then <code>$EDITOR</code>, sit <em>below</em> your
+          config files (<a href="{{ src('cli/src/config.rs', 850, 854) }}">source</a>), while <code>$JJ_EDITOR</code>
+          sits <em>above</em> them (<a href="{{ src('cli/src/config.rs', 905, 907) }}">source</a>). Layer order:
+          <a href="{{ src('lib/src/config.rs', 284, 298) }}">ConfigSource</a>.
+        </td>
+      </tr>
+      <tr>
+        <td><code>templates.draft_commit_description</code></td>
+        <td><code>builtin_draft_commit_description</code> (<a href="{{ src(tpl, 18) }}">source</a>)</td>
+        <td>
+          Renders the text the editor starts with (<a href="{{ src(du, 493, 514) }}"><code>description_template</code></a>).
+          The built-in version (<a href="{{ src(tpl, 96, 107) }}">source</a>) shows the description, or
+          <code>default_commit_description</code> (empty, <a href="{{ src(tpl, 311) }}">source</a>) if there is none,
+          then <code>JJ: Change ID: …</code> and a <code>JJ:</code>-indented <code>diff.summary()</code>.
+          <code>builtin_draft_commit_description_with_diff</code> adds <code>JJ: ignore-rest</code> and the full Git diff
+          (<a href="{{ src(tpl, 109, 115) }}">source</a>).
+        </td>
+      </tr>
+      <tr>
+        <td><code>templates.commit_trailers</code></td>
+        <td>empty (<a href="{{ src(tpl, 23) }}">source</a>)</td>
+        <td>
+          If set, a commit template whose output lines are trailers (for example <code>Signed-off-by: …</code>) to
+          append to each description (<a href="{{ src(du, 430, 443) }}"><code>parse_trailers_template</code></a>).
+        </td>
+      </tr>
+      <tr>
+        <td><code>user.name</code>, <code>user.email</code></td>
+        <td>unset</td>
+        <td>Become the rewritten commit's committer, and fill in an empty author name or email (<a href="{{ src(cb, 229, 258) }}">source</a>).</td>
+      </tr>
+      <tr>
+        <td><code>revset-aliases."immutable_heads()"</code></td>
+        <td>see the <a href="{{ url_for('jj', slug='cli') }}">CLI page</a></td>
+        <td>Decides which targets <code>check_rewritable_expr</code> rejects.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 560" role="img" aria-labelledby="desc-flow-title desc-flow-desc">
+    <title id="desc-flow-title">jj describe: call flow</title>
+    <desc id="desc-flow-desc">
+      cmd_describe loads the workspace through the shared CLI lifecycle, which snapshots the working
+      copy. It unions the revsets (default @), checks none is immutable, and evaluates them to commits,
+      newest first. If there are none it prints "No revisions to describe." Otherwise it starts a
+      transaction and makes a detached commit builder per commit through rewrite_commit, setting the -m
+      or stdin text if given. If templates.commit_trailers is set, it renders trailers against a hidden
+      temporary commit. If the editor is used, it writes hidden temporary commits, renders the draft
+      template, and opens one editor file, or one bulk file for several commits. It drops commits whose
+      description didn't change, then calls transform_descendants: each target is rewritten with the new
+      description and every other descendant is reparented. tx.finish records "describe commit" and the
+      lifecycle updates the working copy if @ was rewritten.
+    </desc>
+    <defs>
+      <marker id="desc-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 95, 110) }}"><rect class="d-box" x="20" y="84" width="340" height="66" rx="6"></rect>
+      <text x="32" y="105">parse_union_revsets (or @)</text>
+      <text x="32" y="123" class="d-muted" font-size="11">check_rewritable_expr: no immutable target</text>
+      <text x="32" y="140" class="d-muted" font-size="11">evaluate → commits, children first</text></a>
+      <a href="{{ src(cmd, 111, 114) }}"><rect class="d-box" x="420" y="84" width="320" height="66" rx="6"></rect>
+      <text x="432" y="110">no commits?</text>
+      <text x="432" y="130" class="d-muted" font-size="11">"No revisions to describe." — no operation</text></a>
+
+      <a href="{{ src(cmd, 117, 149) }}"><rect class="d-box" x="20" y="174" width="340" height="66" rx="6"></rect>
+      <text x="32" y="195">start_transaction</text>
+      <text x="32" y="213" class="d-muted" font-size="11">rewrite_commit(c).detach() per target</text>
+      <text x="32" y="230" class="d-muted" font-size="11">set -m / --stdin text if given</text></a>
+      <a href="{{ src(cmd, 153, 165) }}"><rect class="d-box" x="420" y="174" width="320" height="66" rx="6"></rect>
+      <text x="432" y="195">templates.commit_trailers set?</text>
+      <text x="432" y="213" class="d-muted" font-size="11">write_hidden temp commit, render trailers,</text>
+      <text x="432" y="230" class="d-muted" font-size="11">add_trailers_with_template</text></a>
+
+      <a href="{{ src(cmd, 167, 192) }}"><rect class="d-box" x="20" y="264" width="720" height="84" rx="6"></rect>
+      <text x="32" y="285">use_editor? write_hidden temp commits, then:</text>
+      <text x="32" y="306" class="d-muted" font-size="11">one commit: description_template → edit_description (one file, .jjdescription)</text>
+      <text x="32" y="324" class="d-muted" font-size="11">several: edit_multiple_descriptions → parse "JJ: describe &lt;id&gt;" sections</text>
+      <text x="32" y="340" class="d-muted" font-size="11">→ validate_commit_descriptions (no missing, duplicate or unexpected IDs)</text></a>
+
+      <a href="{{ src(cmd, 194, 201) }}"><rect class="d-box" x="20" y="372" width="340" height="50" rx="6"></rect>
+      <text x="32" y="393">drop unchanged descriptions</text>
+      <text x="32" y="411" class="d-muted" font-size="11">HashMap old id → builder</text></a>
+      <a href="{{ src(repo, 1483, 1507) }}"><rect class="d-box" x="420" y="372" width="320" height="84" rx="6"></rect>
+      <text x="432" y="393">transform_descendants(targets)</text>
+      <text x="432" y="412" class="d-muted" font-size="11">target: reparent + set_description, write</text>
+      <text x="432" y="430" class="d-muted" font-size="11">other descendant: reparent, write</text>
+      <text x="432" y="448" class="d-muted" font-size="11">then update bookmarks and @</text></a>
+
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="480" width="720" height="56" rx="6"></rect>
+      <text x="380" y="502" text-anchor="middle">tx.finish(ui, "describe commit &lt;id&gt; [and N more]"): "Nothing changed." if the view didn't</text>
+      <text x="380" y="522" text-anchor="middle">change; otherwise write the operation and update the working copy if @ moved (CLI page)</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#desc-arrow)">
+      <line x1="190" y1="60" x2="190" y2="80"></line>
+      <line x1="360" y1="117" x2="416" y2="117"></line>
+      <line x1="190" y1="150" x2="190" y2="170"></line>
+      <line x1="360" y1="207" x2="416" y2="207"></line>
+      <line x1="580" y1="240" x2="580" y2="260"></line>
+      <line x1="190" y1="348" x2="190" y2="368"></line>
+      <line x1="360" y1="397" x2="416" y2="397"></line>
+      <line x1="580" y1="456" x2="580" y2="476"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Target commits</td><td>read, then rewritten</td><td>Each changed target gets a new commit: same tree, parents (possibly rewritten), change ID and author, a new <code>description</code>, and a new committer signature. The old commit is recorded as its predecessor.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Descendant commits</td><td>rewritten</td><td>Reparented onto the rewritten parents with <code>CommitRewriter::reparent</code>, which keeps their tree as is (<a href="{{ src('lib/src/rewrite.rs', 453, 459) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='transactions') }}">transactions</a></td></tr>
+      <tr><td>Temporary commits</td><td>written, hidden</td><td><code>write_hidden</code> stores a commit so templates and trailers can be rendered against it, without adding it to the view (<a href="{{ src(cb, 436, 452) }}">source</a>). Nothing references these commits afterwards.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td><code>View.head_ids</code></td><td>write</td><td>Rewritten commits replace the old ones as heads.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td><code>View.local_bookmarks</code></td><td>write</td><td>Bookmarks on a rewritten commit move to its new version (<a href="{{ src(repo, 1278, 1297) }}"><code>update_rewritten_references</code></a>).</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td><code>View.wc_commit_ids</code></td><td>write</td><td>Any workspace whose <code>@</code> was rewritten now points at the new commit.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td>One operation, described below, holding the predecessor records.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+      <tr><td>Working copy (<code>TreeState</code>)</td><td>read, then maybe write</td><td>Snapshotted when the workspace loads. If <code>@</code> was rewritten, the lifecycle checks out the new <code>@</code>. Its tree is unchanged, so no file contents change.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, started after the revisions are resolved and checked (<a href="{{ src(cmd, 117) }}">source</a>).</li>
+  <li>
+    <strong>Operation description</strong> (<a href="{{ src(cmd, 118, 128) }}">source</a>):
+    <code>describe commit &lt;id&gt;</code> for one commit, or
+    <code>describe commit &lt;id&gt; and &lt;n&gt; more</code> for several. <code>&lt;id&gt;</code> is the
+    full hex ID of the first commit in evaluation order, which is the newest, since revsets evaluate
+    children first. It is computed from <em>all</em> resolved targets, including any whose description
+    ends up unchanged.
+  </li>
+  <li>
+    <strong>Commits created or rewritten:</strong> one new commit per target whose description
+    changed, plus one per descendant of those targets. Descendants are reparented, not rebased: their
+    trees are kept, so describing can never introduce conflicts.
+  </li>
+  <li>
+    <strong>Nothing changed:</strong> if every new description equals the old one, no commit is
+    rewritten. <code>finish</code> sees no view change, prints <code>Nothing changed.</code> and records
+    no operation (<a href="{{ src(util, 2849, 2854) }}">source</a>). The hidden temporary commits don't
+    count, because they never enter the view.
+  </li>
+  <li><strong>Working copy:</strong> snapshotted at the start, so the commits you describe include your latest edits. If <code>@</code> was rewritten, the new <code>@</code> is checked out after the operation commits.</li>
+  <li><strong><code>jj undo</code></strong> restores the previous view: the old commits become visible again with their old descriptions, and the rewritten ones are hidden.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="building">Building each description</h3>
+
+<ol>
+  <li>
+    <strong>Start from the existing description.</strong>
+    <a href="{{ src(repo, 1098, 1103) }}"><code>rewrite_commit</code></a> copies the stored commit
+    (<a href="{{ src(cb, 229, 258) }}"><code>for_rewrite_from</code></a>). It clears predecessors, sets
+    the committer to you, now, and fills in an empty author name or email from the committer. If the old
+    commit was discardable (empty, with no description) and you are its author, the author timestamp
+    is reset to now as well. <code>.detach()</code> turns it into a <code>DetachedCommitBuilder</code>
+    that holds the draft without touching the repo.
+  </li>
+  <li><strong>Apply <code>-m</code> or <code>--stdin</code></strong> to every builder, if given (<a href="{{ src(cmd, 140, 149) }}">source</a>).</li>
+  <li>
+    <strong>Add trailers</strong> if <code>templates.commit_trailers</code> is non-empty. They are
+    skipped for a builder whose description is still empty and no editor will open. The source comment
+    explains why: the first trailer would become the subject line, and an empty description is what lets
+    an untouched working-copy commit be discarded (<a href="{{ src(cmd, 153, 165) }}">source</a>).
+    Trailers already present aren't repeated, and a new trailer paragraph is separated by a blank line
+    (<a href="{{ src(du, 445, 474) }}"><code>add_trailers_with_template</code></a>).
+  </li>
+  <li>
+    <strong>Edit</strong>, if <code>use_editor</code>. For one commit,
+    <a href="{{ src(du, 193, 204) }}"><code>edit_description</code></a> appends a blank line and
+    <code>JJ: Lines starting with "JJ:" (like this one) will be removed.</code>, then writes a temporary
+    <code>.jjdescription</code> file. The cursor goes to the first line that isn't a <code>JJ:</code>
+    comment. For several,
+    <a href="{{ src(du, 206, 241) }}"><code>edit_multiple_descriptions</code></a> writes one file. It
+    has a header, then a <code>JJ: describe &lt;12-hex commit id&gt; -------</code> section per commit
+    in topological order (parents first), each filled from the draft template.
+  </li>
+  <li>
+    <strong>Clean up</strong> what the editor returns
+    (<a href="{{ src(du, 162, 183) }}"><code>cleanup_description_lines</code></a>). Lines starting with
+    <code>JJ:</code> are dropped, everything from <code>JJ: ignore-rest</code> onwards is dropped, and
+    leading and trailing blank lines are trimmed. A non-empty result ends in exactly one newline.
+  </li>
+</ol>
+
+<h3 id="bulk-parse">Parsing the bulk file</h3>
+
+<p>
+  <a href="{{ src(du, 296, 352) }}"><code>parse_bulk_edit_message</code></a> starts a new section at
+  each line beginning <code>JJ: describe </code>. It strips trailing whitespace and dashes from the rest
+  of that line to get the commit ID prefix. Before the first section, only blank lines and
+  <code>JJ:</code> lines are allowed. Each section is matched to a commit by its exact 12-character
+  short ID, and the IDs are then validated: any commit with no section, any section repeated, or any
+  unknown ID is an error, and nothing is written
+  (<a href="{{ src(du, 258, 288) }}">source</a>). The order of sections in the file doesn't matter.
+</p>
+
+<h3 id="rewrite">Rewriting</h3>
+
+<p>
+  Unchanged descriptions are filtered out first, so descendants aren't rewritten for nothing
+  (<a href="{{ src(cmd, 194, 201) }}">source</a>). The source comment explains why it then uses
+  <a href="{{ src(repo, 1483, 1507) }}"><code>transform_descendants</code></a> rather than rewriting
+  each target and calling <code>rebase_descendants</code>. When one target descends from another, the
+  later approach would rewrite it twice and add an extra predecessor link. <code>transform_descendants</code>
+  visits each commit in the descendants of the targets exactly once, parents first
+  (<a href="{{ src(repo, 1536, 1565) }}"><code>transform_commits</code></a>). It hands each one a
+  <code>CommitRewriter</code> whose new parents already account for rewrites made earlier in the walk
+  (<a href="{{ src(cmd, 203, 236) }}">source</a>):
+</p>
+
+<ul>
+  <li>a target: <code>reparent()</code>, set the edited description, <code>write()</code>, and count it as described;</li>
+  <li>any other descendant: <code>reparent()</code> and <code>write()</code>, and count it as rebased.</li>
+</ul>
+
+<p>
+  Note that the final commits come from a <em>fresh</em> <code>rewrite_commit</code> inside
+  <code>reparent()</code>. Only the description text is taken from the draft builders. Then bookmarks
+  and working-copy pointers move to the new commits. <code>Updated N commits.</code> is printed only when
+  N &gt; 1, and <code>Rebased N descendant commits.</code> whenever a non-target was rewritten.
+</p>
+
+<p>
+  <strong>Invariants:</strong> trees never change, so no conflicts can arise; change IDs are kept, so
+  every rewritten commit is the same change; and each commit is rewritten at most once per invocation.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>No revisions to describe.</code></td><td>Status message (not an error) when the revsets match nothing. No transaction is started.</td><td><a href="{{ src(cmd, 111, 114) }}">describe.rs</a></td></tr>
+      <tr><td><code>Commit … is immutable</code> / <code>The root commit … is immutable</code></td><td>Any target is immutable. Hints name the commit and say how many immutable commits would be rewritten.</td><td><a href="{{ src(util, 2044, 2088) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Nothing changed.</code></td><td>Every description came out the same as before, including a <code>-m</code> that differs only by the trailing newline. No operation is recorded.</td><td><a href="{{ src(util, 2851, 2854) }}">cli_util.rs</a></td></tr>
+      <tr><td>clap: <code>--message</code> cannot be used with <code>--stdin</code></td><td>Both are given.</td><td><a href="{{ src(cmd, 65, 70) }}">describe.rs</a></td></tr>
+      <tr><td><code>Failed to edit description</code>, caused by <code>Failed to run editor '…'</code> or <code>Editor '…' exited with …</code></td><td>The editor can't be started or exits non-zero. A hint says <code>Edited description is left in &lt;path&gt;</code>.</td><td><a href="{{ src(du, 43, 76) }}">description_util.rs</a>, <a href="{{ src('cli/src/command_error.rs', 512, 522) }}">command_error.rs</a></td></tr>
+      <tr><td><code>Found the following line without a commit header: "…"</code></td><td>Bulk file: text before the first <code>JJ: describe</code> line.</td><td><a href="{{ src(du, 290, 294) }}">description_util.rs</a></td></tr>
+      <tr><td><code>The description for the following commits were not found in the edited message: …</code></td><td>Bulk file: a commit's section was deleted.</td><td><a href="{{ src(du, 266, 272) }}">description_util.rs</a></td></tr>
+      <tr><td><code>The following commits were found in the edited message multiple times: …</code></td><td>Bulk file: a section appears twice.</td><td><a href="{{ src(du, 273, 278) }}">description_util.rs</a></td></tr>
+      <tr><td><code>The following commits were not being edited, but were found in the edited message: …</code></td><td>Bulk file: a section names an ID that isn't a target.</td><td><a href="{{ src(du, 279, 285) }}">description_util.rs</a></td></tr>
+      <tr><td><code>Trailers should be valid utf-8</code></td><td>The trailer template rendered non-UTF-8 text. Output that doesn't parse as trailers fails with the trailer parser's error.</td><td><a href="{{ src(du, 454, 458) }}">description_util.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Edge cases: an empty <code>-m ""</code> clears the description, and makes an empty commit discardable
+  again. The bulk-file header warns that a syntax error loses your text. That's because the temporary
+  file is deleted as soon as the editor exits successfully, before the text is parsed
+  (<a href="{{ src(du, 115, 133) }}"><code>edit_str</code></a>). Describing the same commit through two
+  revsets is fine, since the targets are a set.
+</p>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  This is upstream's own test (<a href="{{ src('cli/tests/test_describe_command.rs', 292, 330) }}">test_describe_multiple_commits</a>).
+  It starts from a chain of three empty, undescribed commits on the root, with <code>@</code> at the
+  top, and describes the top and the bottom in one go:
+  <code>jj describe -r@ -r@-- -m "description from CLI"</code>.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 280" role="img" aria-labelledby="desc-ex-title desc-ex-desc">
+    <title id="desc-ex-title">jj describe -r@ -r@--: before and after</title>
+    <desc id="desc-ex-desc">
+      Before: root, then e8849ae12c70, 43444d88b009 and 3cd3b246e098 at @, none described. After
+      describing @ and @--: 0ff65c91377a replaces e8849ae12c70 with the new description,
+      650ac8f249be replaces 43444d88b009 with no description because it was only reparented, and
+      4c3ccb9d4fb2 replaces 3cd3b246e098 as @ with the new description. All three keep their change
+      IDs and trees.
+    </desc>
+    <defs>
+      <marker id="desc-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% macro node(x, y, label, note="", hl=False, at=False, muted=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 18 }}" y="{{ y + 4 }}" font-size="12">{{ label }}{% if at %} @{% endif %}</text>
+      {% if note %}<text x="{{ x + 18 }}" y="{{ y + 20 }}" font-size="10.5" class="{{ 'd-muted' if muted else 'd-accent' }}">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <g font-size="13">
+      <text x="60" y="22" class="d-muted">before</text>
+      <text x="460" y="22" class="d-muted">after</text>
+    </g>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="70" y1="241" x2="70" y2="199"></line>
+      <line x1="70" y1="181" x2="70" y2="129"></line>
+      <line x1="70" y1="111" x2="70" y2="59"></line>
+      <line x1="470" y1="241" x2="470" y2="199"></line>
+      <line x1="470" y1="181" x2="470" y2="129"></line>
+      <line x1="470" y1="111" x2="470" y2="59"></line>
+      <line x1="300" y1="140" x2="420" y2="140" marker-end="url(#desc-ex-arrow)"></line>
+    </g>
+    {{ node(70, 250, "000000000000 (root)") }}
+    {{ node(70, 190, "e8849ae12c70", "(no description set)", muted=True) }}
+    {{ node(70, 120, "43444d88b009", "(no description set)", muted=True) }}
+    {{ node(70, 50, "3cd3b246e098", "(no description set)", at=True, muted=True) }}
+    {{ node(470, 250, "000000000000 (root)") }}
+    {{ node(470, 190, "0ff65c91377a", "description from CLI · described", hl=True) }}
+    {{ node(470, 120, "650ac8f249be", "(no description set) · reparented", muted=True) }}
+    {{ node(470, 50, "4c3ccb9d4fb2", "description from CLI · described", hl=True, at=True) }}
+    <text x="360" y="130" font-size="11" text-anchor="middle" class="d-muted">jj describe</text>
+    <text x="360" y="160" font-size="11" text-anchor="middle" class="d-muted">-r@ -r@--</text>
+  </svg>
+</div>
+
+<p>The command prints, on stderr:</p>
+
+<pre><code>Updated 2 commits.
+Rebased 1 descendant commits.
+Working copy  (@) now at: kkmpptxz 4c3ccb9d (empty) description from CLI
+Parent commit (@-)      : rlvkpnrz 650ac8f2 (empty) (no description set)</code></pre>
+
+<p>
+  All three commits get new IDs, because each one's parent changed or its own description did. The
+  middle commit only got a new parent, so its description and tree are untouched. The operation is
+  <code>describe commit 3cd3b246e098… and 1 more</code>, naming the old <code>@</code> in full.
+  Running the same command again prints <code>Nothing changed.</code> and records nothing. Running plain
+  <code>jj describe -r@ @-</code> instead opens a bulk file like this
+  (<a href="{{ src('cli/tests/test_describe_command.rs', 339, 362) }}">from the same test</a>), with
+  the parent first:
+</p>
+
+<pre><code>JJ: Enter or edit commit descriptions after the `JJ: describe` lines.
+JJ: Warning:
+JJ: - The text you enter will be lost on a syntax error.
+JJ: - The syntax of the separator lines may change in the future.
+JJ:
+JJ: describe 650ac8f249be -------
+
+
+JJ: Change ID: rlvkpnrz
+JJ:
+JJ: describe 4c3ccb9d4fb2 -------
+description from CLI
+
+JJ: Change ID: kkmpptxz
+JJ:
+JJ: Lines starting with "JJ:" (like this one) will be removed.</code></pre>

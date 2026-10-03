@@ -956,6 +956,20 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "describe": {
+        "title": "How jj describe works",
+        "sources": [
+            "cli/src/commands/describe.rs",
+            "cli/src/description_util.rs",
+            "cli/src/cli_util.rs",
+            "lib/src/repo.rs",
+            "lib/src/commit_builder.rs",
+            "lib/src/rewrite.rs",
+            "cli/src/config/templates.toml",
+            "cli/src/config/misc.toml",
+        ],
+        "ready": True,
+    },
     "edit": {
         "title": "How jj edit works",
         "sources": [
