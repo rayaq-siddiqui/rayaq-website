@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-03 (eleventh run): no upstream change since `69abfbe`; built the
-`jj undo` command page.
+**Last updated:** 2026-10-03 (twelfth run): no upstream change since `69abfbe`; built the
+`jj redo` command page.
 
 ## Upstream pin
 
@@ -26,75 +26,39 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 9 of 105 (`fix`, `new`, `edit`,
-      `describe`, `commit`, `squash`, `rebase`, `abandon`, `undo`).
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 10 of 105 (`fix`, `new`, `edit`,
+      `describe`, `commit`, `squash`, `rebase`, `abandon`, `undo`, `redo`).
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
 
-## Eleventh run (2026-10-03)
+## Twelfth run (2026-10-03)
 
 | Commit | What |
 |---|---|
-| `f332523` | `undo` command page (Tier A, all eight §8A.3 items, two SVGs) |
+| `261b4f6` | `redo` command page (Tier A, all eight §8A.3 items, two SVGs; worked example drawn as an operation log) |
 
 Maintenance: upstream `HEAD` still at `69abfbe`, so the pin stayed.
 
-## Tenth run (2026-10-03)
+## Fifth to eleventh runs (2026-10-03)
 
-| Commit | What |
-|---|---|
-| `b859736` | `abandon` command page (Tier A, all eight §8A.3 items, two SVGs) |
+Upstream `HEAD` stayed at `69abfbe` throughout, so the pin never moved.
 
-Maintenance: upstream `HEAD` still at `69abfbe`, so the pin stayed. The worked example and its
-output are upstream's `test_basics` (abandon) snapshots. Also checked that every source path
-cited by a `/jj` template exists at the pin. Some core types (`CommitId`, `id_type!`) live in
-the `core/` crate (`core/src/`), not `lib/src/`, and pages should cite them there.
+| Run | Commit | What |
+|---|---|---|
+| 11 | `f332523` | `undo` command page (worked example drawn as an operation log) |
+| 10 | `b859736` | `abandon` command page |
+| 9 | `6dfaf93` | `rebase` command page, including how `compute_move_commits` derives every new parent list and the duplicate-divergent check |
+| 8 | `b95d84e` | `squash` command page, including the experimental `-o`/`-A`/`-B` mode |
+| 7 | `0e29d5e` | `describe` command page, plus a test that every ready Tier A command page except `fix` has the eight section anchors and at least two diagrams |
+| 7 | `a25d7eb` | `commit` command page |
+| 6 | `42d2f3d` | `edit` command page |
+| 5 | `a760e3f` | `trees` topic page: `Tree`, `TreeValue`, `MergedTree`/`MergedTreeValue`, tree diffs, `MergedTreeBuilder`, copy records and copy history (two SVGs) |
 
-## Ninth run (2026-10-03)
-
-| Commit | What |
-|---|---|
-| `6dfaf93` | `rebase` command page (Tier A, all eight §8A.3 items, two SVGs), including how `compute_move_commits` derives every new parent list and the duplicate-divergent check |
-
-Maintenance: upstream `HEAD` still at `69abfbe`, so the pin stayed. The worked example and its
-output are upstream's `test_rebase_single_revision` snapshots.
-
-## Eighth run (2026-10-03)
-
-| Commit | What |
-|---|---|
-| `b95d84e` | `squash` command page (Tier A, all eight §8A.3 items, two SVGs; covers the experimental `-o`/`-A`/`-B` mode) |
-
-Maintenance: upstream `HEAD` still at `69abfbe`, so the pin stayed. The worked example and its
-output are upstream's `test_squash` snapshots.
-
-## Seventh run (2026-10-03)
-
-| Commit | What |
-|---|---|
-| `0e29d5e` | `describe` command page (Tier A, all eight §8A.3 items, two SVGs), plus a test that every ready Tier A command page except `fix` has the eight section anchors and at least two diagrams |
-| `a25d7eb` | `commit` command page (Tier A, all eight §8A.3 items, two SVGs) |
-
-Maintenance: upstream `HEAD` still at `69abfbe`, so the pin stayed.
-
-Both worked examples come from upstream's own CLI tests (`test_describe_multiple_commits`,
-`test_commit_paths`), so the commit IDs, change IDs and output shown are upstream's snapshots.
-
-## Sixth run (2026-10-03)
-
-| Commit | What |
-|---|---|
-| `42d2f3d` | `edit` command page (Tier A, all eight §8A.3 items, two SVGs) |
-
-Maintenance: upstream `HEAD` still at `69abfbe`, so the pin stayed.
-
-## Fifth run (2026-10-03)
-
-| Commit | What |
-|---|---|
-| `a760e3f` | `trees` topic page: `Tree`, `TreeValue`, `MergedTree`/`MergedTreeValue`, tree diffs, `MergedTreeBuilder`, copy records and copy history (two SVGs) |
-
-Maintenance: upstream `HEAD` still at `69abfbe`, so the pin stayed.
+Every command page meets all eight §8A.3 items with two SVGs. Each worked example and its output
+are an upstream CLI test's snapshot (`test_describe_multiple_commits`, `test_commit_paths`,
+`test_squash`, `test_rebase_single_revision`, `test_basics`, `test_jump_over_old_undo_stack`).
+Some core types (`CommitId`, `id_type!`) live in the `core/` crate (`core/src/`), not `lib/src/`,
+so cite them there. Every source path cited by a `/jj` template was checked to exist at the pin.
 
 ## Fourth run (2026-10-03)
 
@@ -145,7 +109,7 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
 1. Tier A commands, alternating with the remaining topics (`trees`, `conflicts`,
    `storage`, `index`, `revsets`, `backends`): ~~`new`~~, ~~`trees`~~, ~~`edit`~~, ~~`describe`~~, ~~`commit`~~,
    ~~`squash`~~, ~~`rebase`~~, ~~`abandon`~~, ~~`undo`~~, then the rest of Tier A. Next, in this order:
-   `redo`, `restore`, `split`, `absorb`, `duplicate`, `bookmark-create`/`-set`/`-move`, `git-fetch`,
+   ~~`redo`~~, `restore`, `split`, `absorb`, `duplicate`, `bookmark-create`/`-set`/`-move`, `git-fetch`,
    `git-push`, then the remaining 46 Tier A commands in registry order.
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
