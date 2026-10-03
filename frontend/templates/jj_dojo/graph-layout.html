@@ -315,3 +315,175 @@
   rendered graph, so <em>no two commits ever share a row</em>, and every child is above all its
   parents. <strong>O(n + e)</strong>.
 </p>
+
+<h3 id="columns">Columns: <code>setXRecursively</code></h3>
+
+<p>
+  <a href="{{ src(pre, 435, 595) }}"><code>setXRecursively(node, rangeManagers)</code></a> places
+  a node and, recursively, the part of the graph that branches out of it. It is a search: try
+  <code>x = 0</code>, and if anything doesn't fit, throw the attempt away and try one column
+  further right. Each attempt works on <em>clones</em> of the two range managers (one for vertical
+  segments, keyed by column, and one for horizontal segments, keyed by row), and only a successful
+  attempt copies its clones back with <code>replace</code>. One attempt at column <code>x</code>:
+</p>
+
+<ol>
+  <li>
+    <strong>Reserve the node's own stub</strong>: the vertical range <code>y - 1 .. y</code> in
+    column <code>x</code>, the unit of line just below the glyph. It is shareable only with a range
+    that leads to the same child (<code>CRITERIA.toSameChild</code>). If the column is taken, try
+    the next <code>x</code>.
+  </li>
+  <li>
+    <strong>For each child, in children order</strong>:
+    <ul>
+      <li>
+        If <code>child.traverseOrder &gt; node.traverseOrder</code>, the child was first reached
+        through this node in the ordering DFS. The code calls this a <em>merge-out</em>. It places
+        the child first, recursively, using the same cloned managers. Otherwise the child was
+        already placed through another parent (a <em>merge-back</em>), and only the edge needs a
+        route.
+      </li>
+      <li>
+        <strong>Pick the edge's column</strong> (<code>lineX</code>): starting at the parent's own
+        <code>x</code>, find the first column where the vertical range <code>node.y ..
+        child.y - 1</code> can be reserved. Ranges from the same parent may share a column
+        (<code>CRITERIA.fromSameParent</code>), which is why fan-out from one commit can run up a
+        single line.
+      </li>
+      <li>
+        <strong>Reserve the edge's horizontal run</strong>, if it has one. If the edge runs up the
+        parent's own column and turns sideways only just below the child, the run lies on row
+        <code>child.y - 1</code>. If the edge first steps right from the parent
+        to a column further over, it lies on row <code>node.y</code>. Horizontal runs may only
+        overlap runs into the same child. If this one collides, the whole attempt is abandoned
+        and the <em>parent</em> moves right.
+      </li>
+    </ul>
+  </li>
+  <li>
+    <strong>Respect the leftmost child</strong>: if the smallest <code>lineX</code> among the
+    children is further right than <code>x</code>, the attempt is rejected too. In the source's
+    words, "It's visually better for parent nodes to be placed at least as right as the left-most
+    child node."
+  </li>
+  <li>Otherwise commit: set <code>node.x = x</code> and replace the real managers' contents with the clones.</li>
+</ol>
+
+<p>
+  Because column placement recurses before the parent is finished, a branch's commits are placed
+  before the commit they fork from. And because every retry re-runs the recursive placement of the
+  whole merge-out subtree on fresh clones, a retry high up in a deep graph redoes everything above
+  it. There is no polynomial bound in the code. Each recursion level just gives up with
+  <code>Unreachable: node.x should never be this large.</code> at column 10,000, and every attempt
+  also pays for cloning both managers, which is linear in the number of reserved ranges. For the
+  graphs a VS Code side panel shows, this is fast in practice. The test
+  <a href="{{ src(tests, 1389, 1433) }}"><code>No overlapping horizontal lines to the same child</code></a>
+  is the case the horizontal check exists for: without it, two runs into different children
+  would be drawn on top of each other.
+</p>
+
+<p>
+  The magic root, when there is one, goes through all of this too. Its edges to the real roots
+  reserve vertical and horizontal space, but it is not in <code>sortedNodes</code>, so those edges
+  are never drawn. In effect it keeps the separate roots of one component from sharing a column.
+</p>
+
+<h3 id="wc-ancestor">The working-copy flag</h3>
+
+<p>
+  <a href="{{ src(pre, 797, 813) }}"><code>setIsWorkingCopyCommitAncestorRecursively</code></a>
+  marks the <code>active</code> commit and, by memoised post-order over children, every commit with
+  the working copy above it. It is the last per-component pass. <strong>O(n + e)</strong>. The
+  flag only affects colour: a line takes the foreground colour when the commit it leads
+  <em>into</em> carries it.
+</p>
+
+<h3 id="tile-groups">Tiles: <code>setTileGroupsForAllNodes</code></h3>
+
+<p>
+  With every node at an <code>(x, y)</code> and every edge at a <code>lineX</code>, the remaining
+  passes run once over all nodes, sorted by <code>y</code> ascending (so <code>sortedNodes[y]</code>
+  is the row-<code>y</code> node). <a href="{{ src(pre, 630, 641) }}"><code>setTileGroupsForAllNodes</code></a>
+  calls <a href="{{ src(pre, 651, 795) }}"><code>setTileGroupsForLine</code></a> for every edge, then
+  pads each row with empty tile groups so it has at least <code>x + 1</code> of them (the glyph's own
+  column must exist). How an edge becomes tiles is the <a href="#drawing">drawing</a> section. The cost
+  is <strong>O(Σ edge length in tiles)</strong>, at most O(e · (rows + columns)).
+</p>
+
+<h3 id="insert-actions">Insert actions</h3>
+
+<p>
+  Every tile can be a drop target: dragging a commit onto a line means "insert it here".
+  <a href="{{ src(pre, 851, 928) }}"><code>setInsertActionForAllNodes</code></a> precomputes, for
+  each tile, the <a href="{{ src(types, 501, 531) }}"><code>InsertAction</code></a> to offer:
+  <code>from</code> and <code>to</code> (either may be <code>undefined</code>), where to draw
+  the ghost node (<code>insertNode</code>, in grid units where <code>.5</code> means between two
+  rows), and where to put the hint text (<code>insertHint</code>).
+</p>
+
+<ul>
+  <li>
+    <strong>The glyph's own column.</strong> The top tile means "between me and my children": no
+    action if the node has no children (unless lines pass through), <em>insert here</em> for one child,
+    and <em>insert as common parent</em> (<code>to: undefined</code>) for several. The bottom
+    tile is the mirror image: <em>insert here</em> for one parent, <em>insert as common child</em>
+    (<code>from: undefined</code>) for several.
+  </li>
+  <li>
+    <strong>Every other tile</strong> goes through
+    <a href="{{ src(pre, 941, 1001) }}"><code>calculateInsertAction</code></a> on the lines it holds.
+    One line gives <em>insert here</em>. If all the lines share a parent, the result is <em>insert as
+    common parent</em> when they cover all of that parent's children, and otherwise <em>insert
+    here</em> on the first. If they share a child, the result is <em>insert as common child</em> when
+    they cover all its parents, and otherwise the line with the leftmost <code>lineX</code>. In any
+    other mix, the function retries with only the horizontal lines, and gives up
+    (<code>undefined</code>) if there are none.
+  </li>
+  <li>
+    Because horizontal runs and right-to-up curves are drawn on the boundary of the tile <em>below</em>
+    (see <a href="#drawing">drawing</a>), a row's bottom tile also considers the
+    <code>HORIZONTAL</code> and <code>RIGHT_TO_UP</code> lines from the top tile of the row below
+    it. Hovering over where a line <em>appears</em> then picks it up.
+  </li>
+</ul>
+
+<p>
+  <a href="{{ src(pre, 1055, 1167) }}"><code>getInsertNode</code></a> picks the ghost node's position
+  from the edge's shape, case by case. On a straight edge between adjacent rows it goes halfway between
+  them, and otherwise one row below the child, "because there could be more branches forked after
+  the midway point". On a common merge-out it goes at the midpoint of the horizontal run. On the
+  rarer shapes it goes on the vertical segment. The hint text goes in the rightmost of the parent's,
+  child's and line's columns, so it never covers the line
+  (<a href="{{ src(pre, 1003, 1021) }}"><code>insertHere</code></a>). The pass costs
+  <strong>O(lines in all tiles)</strong> plus the parent/child set checks.
+</p>
+
+<h3 id="occupied-columns">Occupied columns</h3>
+
+<p>
+  <a href="{{ src(pre, 603, 620) }}"><code>setOccupiedColumnsForAllNodes</code></a> trims trailing
+  columns from each row's tile count until one holds a "space-occupying" line, meaning anything
+  except <code>HORIZONTAL</code> and <code>RIGHT_TO_UP</code>
+  (<a href="{{ src(pre, 597, 601) }}"><code>isSpaceOccupyingLine</code></a>). Those two are drawn on
+  the border with the row above, so they don't need room in this row. It then clamps the result to
+  at least <code>x + 1</code>. The row's text starts right after <code>occupiedColumns</code>, which is
+  why text can tuck in under a horizontal run. <strong>O(tiles)</strong>.
+</p>
+
+<h3 id="two-line-mode">Two-line mode</h3>
+
+<p>
+  In <code>RenderMode.TWO_LINE</code> a commit takes two text lines, so the graph must stretch each
+  row without breaking any edge.
+  <a href="{{ src(pre, 1177, 1233) }}"><code>setMultiLineTiles</code></a> builds three tile-group
+  arrays per row: <code>firstLine</code> (the real top and glyph tiles plus an extended bottom),
+  <code>intermediateLine</code> and <code>lastLine</code>. The tricky part, explained at length in the
+  source, is that the curves joining a row to the row below are stored in the <em>lower</em> row's
+  top tile, to avoid sub-pixel gaps between tiles. So
+  <a href="{{ src(pre, 1235, 1304) }}"><code>calculateMultiLineBottomTiles</code></a> reads both
+  tiles. If the row's bottom tile already has vertical lines, it repeats them all the way down.
+  If both are empty, it draws nothing. Otherwise it takes the lower row's top-tile lines, drops the
+  horizontals, and turns every curve into a straight vertical for the stretched part, leaving the
+  last line's bottom empty so the original curves still join up below. <strong>O(tiles)</strong>.
+</p>
