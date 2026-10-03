@@ -3,14 +3,22 @@
 Running log for the daily jj-vfs-poc architecture Routine. Read this first, update it last.
 The contract is `specs/jj-vfs-poc.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-03 (first run). Built the scaffold, the `namespace` flagship page
-and the §6 architecture diagram.
+**Last updated:** 2026-10-03 (second run). Upstream unchanged since the pin; built the
+`vfs-layer` page.
 
 ## Upstream pin
 
 `jj-vcs/jj-vfs-poc@37b8f8625556778f5ce41cbb2d5220bcea245675` (committed 2026-09-03, crate
 `jjfsd` 0.1.0, `jj-lib` 0.43.0), analyzed 2026-10-03. Held in `jj_vfs_docs.UPSTREAM`.
 jj-lib links point at the `v0.43.0` tag of `jj-vcs/jj`.
+
+## Second run (2026-10-03)
+
+| Commit | What |
+|---|---|
+| `8f5ba16` | `vfs-layer` page: the three traits, the four implementors, the data types, `PathMappedVfs` and how reads at an offset are served, the unit tests |
+
+Maintenance: upstream `HEAD` still at `37b8f86`, so the pin stayed.
 
 ## First run (2026-10-03)
 
@@ -32,7 +40,7 @@ uses the local backend (128-hex IDs), where a prefix gives `ObjectNotFound` inst
 1. ~~Scaffold~~
 2. ~~`namespace` (flagship, §8)~~
 3. ~~§6 architecture diagram on the index~~
-4. `vfs-layer`
+4. ~~`vfs-layer`~~
 5. `fuse` (needs a sequence diagram for one `read`, §6)
 6. `inodes`
 7. `commit-trees`
