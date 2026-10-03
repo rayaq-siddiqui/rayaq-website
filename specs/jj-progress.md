@@ -3,15 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-02 (third run) — maintenance found no upstream change; built the
-`operations`, `transactions` and `working-copy` pages. All the topic pages that command pages
-lean on now exist.
+**Last updated:** 2026-10-03 (fourth run): maintenance moved the pin to `69abfbe` (only
+`jj undo`/`jj redo` changed for the registered pages), then built the `jj new` command page.
 
 ## Upstream pin
 
-`jj-vcs/jj@0cb02a837f28459cd698734264c9fcd3712ec0d1` (committed 2026-10-01, version
-0.45.1), analyzed 2026-10-02. Held in `jj_docs.UPSTREAM`. The second and third runs' maintenance
-checks found upstream `HEAD` still at the pin, so nothing changed and the pin stayed.
+`jj-vcs/jj@69abfbedcc615bb562c31d488b98abb1ab854089` (committed 2026-10-03, version
+0.45.1), analyzed 2026-10-03. Held in `jj_docs.UPSTREAM`. Previous pin: `0cb02a8`.
 
 ## §10 acceptance criteria
 
@@ -28,8 +26,16 @@ checks found upstream `HEAD` still at the pin, so nothing changed and the pin st
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 1 of 105 (`fix`).
-- [x] The daily Routine has run once in maintenance mode (second run: no upstream change).
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 2 of 105 (`fix`, `new`).
+- [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
+      run: pin bumped).
+
+## Fourth run (2026-10-03)
+
+| Commit | What |
+|---|---|
+| `2cebd0f` | Maintenance `0cb02a8..69abfbe` (8 commits). Only `cli/src/commands/undo.rs` and `redo.rs` touched a source set: both now refuse an operation from another workspace unless `--allow-cross-workspace`. Updated the `operations` page and the `undo`/`redo` catalogue lines; other changes were Cargo/Nix/governance only |
+| `bac9988` | `new` command page (Tier A, all eight §8A.3 items, two SVGs) |
 
 ## Third run (2026-10-02)
 
@@ -66,12 +72,12 @@ checks found upstream `HEAD` still at the pin, so nothing changed and the pin st
 doc comment and pins its source line. It exits non-zero if upstream has a command its
 `CATEGORIES` table doesn't list, or the table lists one upstream removed. Add new commands
 to that table (category and tier per §8A.2), regenerate, and paste the output over the
-existing block. On this run its output matched the committed block exactly.
+existing block. On the fourth run it moved only the `undo` and `redo` source lines.
 
 ## Queue (build in this order, per spec §9)
 
 1. Tier A commands, alternating with the remaining topics (`trees`, `conflicts`,
-   `storage`, `index`, `revsets`, `backends`): `new`, `edit`, `describe`, `commit`,
+   `storage`, `index`, `revsets`, `backends`): ~~`new`~~, `trees`, `edit`, `describe`, `commit`,
    `squash`, `rebase`, `abandon`, `undo`, then the rest of Tier A.
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
