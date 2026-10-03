@@ -1,0 +1,496 @@
+{% set types = "src/ui/commit_graph/api/types.ts" %}
+{% set es = "src/ui/commit_graph/api/extension_shape.ts" %}
+{% set ws = "src/ui/commit_graph/api/webview_shape.ts" %}
+{% set rpc = "third_party/vscode/rpc_protocol/rpc_protocol.ts" %}
+{% set rpcu = "third_party/vscode/rpc_protocol/rpc_protocol_utils.ts" %}
+{% set prov = "src/ui/commit_graph_provider/commit_graph_provider.ts" %}
+{% set impl = "src/ui/commit_graph_provider/extension_shape_impl.ts" %}
+{% set wm = "src/ui/commit_graph/webview_module.ts" %}
+<header class="jj-header">
+  <h1>The graph webview protocol</h1>
+  <p class="tagline">
+    The contract between the extension host and the commit graph webview: two RPC interfaces, a
+    handshake over <code>postMessage</code>, and the state types the host sends across.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: the host and the webview each wrap <code>postMessage</code> in a small RPC layer adapted from
+  VS Code's own. Each side gets a proxy for the other side's interface, so calling
+  <code>webviewApi.$setState(state)</code> on the host becomes a JSON message, a call to the webview's
+  implementation, and a response matched back by ID. Before any call goes out, both sides repeat a
+  handshake until each knows the other is listening. The webview announces itself with
+  <code>$webviewReady</code>, and the host answers with a <code>WebviewState</code>. At this pin that state
+  is a single hard-coded commit.
+</p>
+
+<h2 id="shapes">1. The two interfaces</h2>
+
+<h3 id="extension-shape"><code>ExtensionShape</code>: implemented by the host, called by the webview</h3>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Method</th><th>Arguments</th><th>Called when</th><th>Host behaviour at this pin</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(es, 25) }}"><code>$webviewReady</code></a></td><td>none</td><td>The webview module boots (<a href="{{ src(wm, 57) }}">source</a>).</td><td>Sends the fake state with <code>$setState</code>.</td></tr>
+      <tr><td><a href="{{ src(es, 36, 40) }}"><code>$executeCommand</code></a></td><td><code>repoName</code>, <code>command</code>, <code>args?</code></td><td>Any button, chip, double-click, drag-and-drop drop or focus-mode link that carries a <code>VSCodeCommand</code>.</td><td>No-op.</td></tr>
+      <tr><td><a href="{{ src(es, 45) }}"><code>$informNewOrder</code></a></td><td><code>repoName</code>, <code>Order</code></td><td>After every layout, from <code>JjApp.setState</code>.</td><td>No-op.</td></tr>
+      <tr><td><a href="{{ src(es, 55, 58) }}"><code>$informContextMenuWillOpen</code></a></td><td><code>repoName</code>, <code>hash?</code></td><td>Just before a row's context menu opens, so the host can enable or disable items. No hash means the working copy.</td><td>No-op.</td></tr>
+      <tr><td><a href="{{ src(es, 66, 71) }}"><code>$onClick</code></a></td><td><code>repoName</code>, <code>hash</code>, <code>metaKey</code>, <code>shiftKey</code></td><td>A row is clicked.</td><td>No-op.</td></tr>
+      <tr><td><a href="{{ src(es, 76) }}"><code>$clearMultiSelection</code></a></td><td><code>repoName</code></td><td>The multi-selection is cleared from the top bar or the app.</td><td>No-op.</td></tr>
+      <tr><td><a href="{{ src(es, 81) }}"><code>$dismissCallout</code></a></td><td><code>dismissId</code></td><td>A dismissible callout is dismissed.</td><td>No-op.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <a href="{{ src(es, 87, 108) }}"><code>Order</code></a> carries the layout's results back to the host:
+  <code>childrenOrder</code> (a <a href="{{ src(es, 113, 119) }}"><code>ChildrenOrder</code></a>
+  <code>{parentHash, childrenHashes}</code> per commit, in the order drawn), <code>topToBottomOrder</code>
+  (all hashes as displayed), and <code>wcCommitIndex</code> (the working copy's position in that list, or
+  <code>-1</code>). That lets keyboard navigation or "next/previous commit" commands in the host follow
+  what the user sees.
+</p>
+
+<h3 id="webview-shape"><code>WebviewShape</code>: implemented by the webview, called by the host</h3>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Method</th><th>Arguments</th><th>Webview behaviour</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(ws, 24) }}"><code>$setState</code></a></td><td><code>WebviewState</code></td><td><code>JjApp.setState</code>: focus mode, layout, <code>$informNewOrder</code>, re-render. It resolves on the next animation frame, so the host's call completes once the new state has rendered.</td></tr>
+      <tr><td><a href="{{ src(ws, 25) }}"><code>$openSearchBox</code></a></td><td>none</td><td>Opens the search box. Nothing in the host calls it at this pin.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Every method name starts with <code>$</code>. That's how the RPC proxy recognises remote methods: a
+  property starting with anything else reads as <code>undefined</code>.
+</p>
+
+<h2 id="transport">2. The transport</h2>
+
+<p>
+  The RPC layer lives in <a href="{{ src(rpc) }}"><code>third_party/vscode/rpc_protocol/</code></a>, adapted
+  from VS Code (MIT licensed). Both sides speak to it through a two-method
+  <a href="{{ src(rpc, 123, 126) }}"><code>Channel</code></a>: <code>postMessage(message)</code> and
+  <code>onMessage(callback) → Disposable</code>.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>Shape</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Request</td><td><code>{rpcProtocolId: 'jj-dojo-rpc-protocol-request', data: {name, args, id}}</code></td><td><a href="{{ src(rpcu, 12, 41) }}">rpc_protocol_utils.ts</a></td></tr>
+      <tr><td>Response</td><td><code>{rpcProtocolId: 'jj-dojo-rpc-protocol-response', data: {id, response?, err?}}</code></td><td><a href="{{ src(rpcu, 43, 72) }}">rpc_protocol_utils.ts</a></td></tr>
+      <tr><td>Handshake</td><td><code>{rpcProtocolId: 'jj-dojo-rpc-protocol-handshake', received: boolean}</code></td><td><a href="{{ src(rpcu, 74, 101) }}">rpc_protocol_utils.ts</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Messages with any other <code>rpcProtocolId</code> are ignored, because "We may not be the only ones
+  using the channel" (<a href="{{ src(rpcu, 6, 10) }}">source</a>). Both directions use the same code:
+  the host calls <a href="{{ src(rpc, 69, 74) }}"><code>getWebviewApi</code></a> and the webview calls
+  <a href="{{ src(rpc, 48, 53) }}"><code>getExtensionApi</code></a>. Both are thin wrappers over
+  <a href="{{ src(rpc, 76, 108) }}"><code>getApi</code></a>, which:
+</p>
+<ol>
+  <li>creates a <em>sender</em>: a <code>Proxy</code> whose <code>$</code> methods post a request with an incrementing numeric <code>id</code> and return a promise stored in a <code>pending</code> map (<a href="{{ src(rpc, 131, 199) }}">source</a>);</li>
+  <li>calls the caller's callback with that proxy to get the local implementation;</li>
+  <li>creates a <em>receiver</em> that answers each request by calling <code>impl[name](...args)</code>, awaiting it, and posting a response with the same <code>id</code> (<a href="{{ src(rpc, 201, 266) }}">source</a>);</li>
+  <li>starts the handshake, and returns the proxy immediately. Every proxy call first awaits a "blocker" promise that only resolves once the handshake finishes (<a href="{{ src(rpc, 329, 346) }}">source</a>).</li>
+</ol>
+
+<p>
+  <strong>Pairing.</strong> Each side numbers its own requests independently, and a response is matched
+  only against the sender's own <code>pending</code> map, so the two directions never collide. Calls can
+  overlap, and responses may arrive in any order.
+</p>
+<p>
+  <strong>Errors.</strong> If the implementation throws, the receiver copies <code>message</code>,
+  <code>name</code> and <code>stack</code> into a plain object, because methods don't survive the
+  boundary, and sends it as <code>err</code>. Non-<code>Error</code> throws become
+  <code>{name: 'UNKNOWN_ERROR'}</code> with a stringified message. An unknown method name produces
+  <code>No such function: &lt;name&gt;</code>. On the calling side the code builds a fresh
+  <code>Error</code> from <code>err</code> but then rejects with the original plain object
+  (<a href="{{ src(rpc, 181, 193) }}">source</a>), so callers receive an object that has
+  <code>message</code> and <code>name</code> but isn't an <code>Error</code> instance.
+</p>
+<p>
+  <strong>Disposal.</strong> Disposing the returned disposable removes the listeners and rejects every
+  pending call with <code>RPC channel disposed</code>.
+</p>
+
+<h2 id="handshake">3. The handshake</h2>
+
+<p>
+  Webviews take time to load, and a message posted before the other side is listening is lost.
+  <a href="{{ src(rpc, 273, 317) }}"><code>shakeHands</code></a> solves this symmetrically. Each side posts
+  <code>{received: weHaveReceived}</code> every 100&nbsp;ms. The first handshake message it gets sets
+  <code>weHaveReceived</code>. Once a message arrives saying the other side has received ours
+  (<code>received: true</code>), it resolves, posts one final message so the other side can finish too,
+  and stops. Then the blocker opens and queued calls go out.
+</p>
+<p>
+  <strong>Timeout.</strong> After 300 tries, which is 30 seconds, it rejects with
+  <code>Handshake timed out after 30s</code>. Nothing catches that rejection, since <code>getApi</code>
+  only attaches a <code>.then</code>, and the blocker never opens, so every later call on that side hangs
+  forever. The webview logs <code>JJ Dojo commit graph started</code> on boot, "temporarily to debug
+  handshake time out errors" (<a href="{{ src(wm, 33, 34) }}">source</a>).
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 640" role="img" aria-labelledby="gp-seq-title gp-seq-desc">
+    <title id="gp-seq-title">Startup sequence between the extension host and the commit graph webview</title>
+    <desc id="gp-seq-desc">
+      The host resolves the webview view and starts posting handshake messages saying it has not yet
+      received anything. Once the webview module runs, it starts its own handshake and queues a call to
+      $webviewReady. Each side marks that it has received a handshake and replies with received true;
+      when each sees the other's received true, its blocker opens. The webview's queued $webviewReady
+      request goes out with id 1. The host answers by calling $setState with id 1 from its own counter.
+      While rendering, the webview calls $informNewOrder with id 2, which the host acknowledges. The
+      webview then responds to $setState after the next animation frame, and finally the host responds
+      to $webviewReady.
+    </desc>
+    <defs>
+      <marker id="gp-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12" text-anchor="middle">
+      <a href="{{ src(prov, 28, 73) }}"><rect class="d-box" x="40" y="10" width="200" height="34" rx="6"></rect><text x="140" y="31">extension host</text></a>
+      <a href="{{ src(wm, 32, 69) }}"><rect class="d-box" x="520" y="10" width="200" height="34" rx="6"></rect><text x="620" y="31">commit graph webview</text></a>
+    </g>
+    <line x1="140" y1="44" x2="140" y2="634" class="d-line" stroke-dasharray="3 4"></line>
+    <line x1="620" y1="44" x2="620" y2="634" class="d-line" stroke-dasharray="3 4"></line>
+    <rect class="d-box" x="30" y="56" width="300" height="22" rx="4"></rect><text x="38" y="71" font-size="11">resolveWebviewView: set HTML, getWebviewApi(channel, …)</text><line x1="140" y1="100" x2="616" y2="100" class="d-line" stroke-width="1.4" marker-end="url(#gp-arrow)" stroke-dasharray="5 4"></line><text x="380.0" y="94" text-anchor="middle" font-size="11" font-family="monospace">handshake {received: false}   (every 100 ms, lost until the webview listens)</text><rect class="d-box" x="420" y="118" width="320" height="22" rx="4"></rect><text x="428" y="133" font-size="11">webview_module main(): getExtensionApi(channel, …)</text><rect class="d-box" x="420" y="148" width="320" height="22" rx="4"></rect><text x="428" y="163" font-size="11">callback calls $webviewReady() → queued behind the blocker</text><line x1="620" y1="192" x2="144" y2="192" class="d-line" stroke-width="1.4" marker-end="url(#gp-arrow)"></line><text x="380.0" y="186" text-anchor="middle" font-size="11" font-family="monospace">handshake {received: false}</text><rect class="d-box" x="30" y="210" width="300" height="22" rx="4"></rect><text x="38" y="225" font-size="11">weHaveReceived = true</text><line x1="140" y1="254" x2="616" y2="254" class="d-line" stroke-width="1.4" marker-end="url(#gp-arrow)"></line><text x="380.0" y="248" text-anchor="middle" font-size="11" font-family="monospace">handshake {received: true}</text><rect class="d-box" x="420" y="272" width="320" height="22" rx="4"></rect><text x="428" y="287" font-size="11">theyHaveReceived → resolve; blocker opens</text><line x1="620" y1="316" x2="144" y2="316" class="d-line" stroke-width="1.4" marker-end="url(#gp-arrow)"></line><text x="380.0" y="310" text-anchor="middle" font-size="11" font-family="monospace">handshake {received: true}   (final message)</text><rect class="d-box" x="30" y="334" width="300" height="22" rx="4"></rect><text x="38" y="349" font-size="11">theyHaveReceived → resolve; blocker opens</text><line x1="620" y1="378" x2="144" y2="378" class="d-line" stroke-width="1.4" marker-end="url(#gp-arrow)"></line><text x="380.0" y="372" text-anchor="middle" font-size="11" font-family="monospace">request {name: '$webviewReady', id: 1}</text><rect class="d-box" x="30" y="396" width="300" height="22" rx="4"></rect><text x="38" y="411" font-size="11">ExtensionShapeImpl.$webviewReady()</text><line x1="140" y1="440" x2="616" y2="440" class="d-line" stroke-width="1.4" marker-end="url(#gp-arrow)"></line><text x="380.0" y="434" text-anchor="middle" font-size="11" font-family="monospace">request {name: '$setState', args: [WebviewState], id: 1}</text><rect class="d-box" x="420" y="458" width="320" height="22" rx="4"></rect><text x="428" y="473" font-size="11">JjApp.setState: focus mode, layout, render</text><line x1="620" y1="502" x2="144" y2="502" class="d-line" stroke-width="1.4" marker-end="url(#gp-arrow)"></line><text x="380.0" y="496" text-anchor="middle" font-size="11" font-family="monospace">request {name: '$informNewOrder', id: 2}</text><line x1="140" y1="534" x2="616" y2="534" class="d-line" stroke-width="1.4" marker-end="url(#gp-arrow)"></line><text x="380.0" y="528" text-anchor="middle" font-size="11" font-family="monospace">response {id: 2}   (no-op)</text><line x1="620" y1="566" x2="144" y2="566" class="d-line" stroke-width="1.4" marker-end="url(#gp-arrow)"></line><text x="380.0" y="560" text-anchor="middle" font-size="11" font-family="monospace">response {id: 1}   (after next animation frame)</text><line x1="140" y1="598" x2="616" y2="598" class="d-line" stroke-width="1.4" marker-end="url(#gp-arrow)"></line><text x="380.0" y="592" text-anchor="middle" font-size="11" font-family="monospace">response {id: 1}   ($webviewReady done)</text>
+  </svg>
+</div>
+
+<p>
+  Request IDs are per direction: the webview's <code>$webviewReady</code> and the host's
+  <code>$setState</code> are both <code>id: 1</code> without colliding, because each side only matches
+  responses against its own <code>pending</code> map.
+</p>
+
+<h2 id="host">4. The host side</h2>
+
+<p>
+  <code>JjUi</code> registers <a href="{{ src(prov, 28, 73) }}"><code>CommitGraphViewProvider</code></a> for
+  the view type <code>jj-dojo.commit-graph</code> with <code>retainContextWhenHidden: true</code>, so the
+  webview, and its RPC session, survive the view being hidden
+  (<a href="{{ src('src/ui/ui.ts', 36, 51) }}">source</a>). When VS Code shows the view,
+  <code>resolveWebviewView</code>:
+</p>
+<ol>
+  <li>sets <code>enableScripts: true</code> and limits <code>localResourceRoots</code> to the extension's own directory;</li>
+  <li>writes the HTML (<a href="{{ src(prov, 75, 123) }}"><code>getHtmlForWebview</code></a>): the codicon stylesheet, <code>_jj_graph_base_styles.css</code>, the bundled <code>webview_module.bundle.js</code>, and a body containing <code>&lt;jj-context-menu-provider&gt;</code> and <code>&lt;jj-app id="jj-app"&gt;</code>;</li>
+  <li>builds a <code>Channel</code> from <code>webview.postMessage</code> and <code>webview.onDidReceiveMessage</code>;</li>
+  <li>calls <code>getWebviewApi</code> with a callback that returns a new <code>ExtensionShapeImpl</code> wrapping the webview proxy;</li>
+  <li>disposes the RPC session when the view is disposed (<a href="{{ src(prov, 48, 72) }}">source</a>).</li>
+</ol>
+<p>
+  <a href="{{ src(impl, 32, 50) }}"><code>ExtensionShapeImpl</code></a> is the only host implementation. A
+  TODO in its header says its contents "should be replaced by the Google internal code". Only
+  <code>$webviewReady</code> does anything:
+  it sends <a href="{{ src(impl, 52, 86) }}"><code>createFakeWebviewState()</code></a>, marked
+  <code>// TODO - Replace with a real implementation.</code> That state is one graph named
+  <code>jj-dojo</code> with a single empty working-copy commit, change IDs shown, one-line rendering, and
+  search disabled. Every other method is an empty <code>async</code> function.
+</p>
+
+<h2 id="webview">5. The webview side</h2>
+
+<p>
+  <a href="{{ src(wm, 32, 69) }}"><code>webview_module.ts</code></a> is the webview's entry point. It imports
+  the <code>JjApp</code> component, gets VS Code's webview API with <code>acquireVsCodeApi()</code>, and wraps
+  <code>vscode.postMessage</code> and the window's <code>message</code> events in a <code>Channel</code>. Its
+  <code>getExtensionApi</code> callback hands the host proxy to <code>&lt;jj-app&gt;</code>, fires
+  <code>$webviewReady</code>, and returns the <code>WebviewShape</code> implementation, which forwards
+  <code>$setState</code> and <code>$openSearchBox</code> to the app. The returned disposable is deliberately
+  not kept: the comment says resources are released when the webview itself is disposed.
+</p>
+<p>
+  From there the components call the host through <code>extensionApi</code>, mostly with
+  <code>$executeCommand</code>. See <a href="{{ url_for('jj_dojo', slug='graph-webview') if 'graph-webview' in ready_slugs else src('src/ui/commit_graph/components/') }}">the graph webview UI</a>.
+</p>
+
+<h2 id="types">6. The state types</h2>
+
+<p>
+  Everything the host sends lives in <a href="{{ src(types) }}"><code>api/types.ts</code></a>. All of it
+  must survive structured cloning through <code>postMessage</code>, so it is plain data: strings, numbers,
+  booleans, arrays and objects, with commands named by ID rather than passed as functions. The tables
+  start at the root, <code>WebviewState</code>.
+</p>
+
+<h3 id="type-WebviewState"><code>WebviewState</code></h3>
+<p class="jj-source"><a href="{{ src(types, 247, 251) }}">types.ts, lines 247–251</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>states</code></td><td><code>CommitGraphState[]</code></td><td>One graph per repository.</td><td><a href="{{ src(types, 248) }}">L248</a></td></tr>
+      <tr><td><code>snapshotId</code></td><td><code>number</code> (optional)</td><td>Declared but not read anywhere in the extension at this pin.</td><td><a href="{{ src(types, 249) }}">L249</a></td></tr>
+      <tr><td><code>options</code></td><td><code>WebviewOptions</code></td><td>Webview-wide options.</td><td><a href="{{ src(types, 250) }}">L250</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="type-WebviewOptions"><code>WebviewOptions</code></h3>
+<p class="jj-source"><a href="{{ src(types, 253, 256) }}">types.ts, lines 253–256</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>enableSearch</code></td><td><code>boolean</code></td><td>Whether the search box is enabled.</td><td><a href="{{ src(types, 255) }}">L255</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="type-CommitGraphState"><code>CommitGraphState</code></h3>
+<p class="jj-source"><a href="{{ src(types, 261, 291) }}">types.ts, lines 261–291</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>repoName</code></td><td><code>string</code> (optional)</td><td>Repository name. If absent, no name is shown. Passed back on most <code>ExtensionShape</code> calls.</td><td><a href="{{ src(types, 264) }}">L264</a></td></tr>
+      <tr><td><code>callouts</code></td><td><code>Callout[]</code></td><td>Messages shown above the graph.</td><td><a href="{{ src(types, 267) }}">L267</a></td></tr>
+      <tr><td><code>commits</code></td><td><code>Commit[]</code></td><td>The commits to lay out.</td><td><a href="{{ src(types, 269) }}">L269</a></td></tr>
+      <tr><td><code>topBarButtons</code></td><td><code>TopBarButton[]</code></td><td>Empty: no top bar. One: a full-width button. Several: fixed-width split buttons.</td><td><a href="{{ src(types, 276) }}">L276</a></td></tr>
+      <tr><td><code>options</code></td><td><code>CommitGraphOptions</code></td><td>Per-graph options (above).</td><td><a href="{{ src(types, 278) }}">L278</a></td></tr>
+      <tr><td><code>multiSelectionMode</code></td><td><code>boolean</code> (optional)</td><td>Internal, set by the webview. "The extension should ignore this field."</td><td><a href="{{ src(types, 282) }}">L282</a></td></tr>
+      <tr><td><code>unfocusedCommits</code></td><td><code>number</code> (optional)</td><td>Internal, set by the webview: how many commits focus mode hid.</td><td><a href="{{ src(types, 286) }}">L286</a></td></tr>
+      <tr><td><code>timeAgoTitle</code></td><td><code>string</code> (optional)</td><td>Replaces the default "Submitted" text in the base commit row.</td><td><a href="{{ src(types, 290) }}">L290</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="type-Commit"><code>Commit</code></h3>
+<p class="jj-source"><a href="{{ src(types, 20, 71) }}">types.ts, lines 20–71</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>hash</code></td><td><code>string</code></td><td>Unique identifier. Every map in the layout is keyed by it.</td><td><a href="{{ src(types, 22) }}">L22</a></td></tr>
+      <tr><td><code>childrenHashes</code></td><td><code>readonly string[]</code></td><td>Children in preferred display order. Every child must be in the same <code>commits</code> array, or layout throws.</td><td><a href="{{ src(types, 30) }}">L30</a></td></tr>
+      <tr><td><code>shortDescription</code></td><td><code>string</code></td><td>First line, shown as the row title. Empty means "no description set".</td><td><a href="{{ src(types, 32) }}">L32</a></td></tr>
+      <tr><td><code>fullDescription</code></td><td><code>string</code></td><td>Whole message, shown as the row's tooltip.</td><td><a href="{{ src(types, 34) }}">L34</a></td></tr>
+      <tr><td><code>isImmutable</code></td><td><code>boolean</code> (optional)</td><td>Drawn with a diamond glyph, and bounds focus mode.</td><td><a href="{{ src(types, 37) }}">L37</a></td></tr>
+      <tr><td><code>active</code></td><td><code>boolean</code> (optional)</td><td>Marks the working-copy commit (<code>@</code> glyph).</td><td><a href="{{ src(types, 39) }}">L39</a></td></tr>
+      <tr><td><code>isEmpty</code></td><td><code>boolean</code></td><td>Drives the <code>(empty)</code> tag.</td><td><a href="{{ src(types, 42) }}">L42</a></td></tr>
+      <tr><td><code>hasConflict</code></td><td><code>boolean</code> (optional)</td><td>Drawn with a cross glyph in the error colour, plus a <code>conflict</code> tag.</td><td><a href="{{ src(types, 44) }}">L44</a></td></tr>
+      <tr><td><code>hasDiverged</code></td><td><code>boolean</code> (optional)</td><td>Adds a <code>divergent</code> tag.</td><td><a href="{{ src(types, 46) }}">L46</a></td></tr>
+      <tr><td><code>chips</code></td><td><code>SplitChip[]</code></td><td>Bookmark-style chips on the row.</td><td><a href="{{ src(types, 48) }}">L48</a></td></tr>
+      <tr><td><code>iconButtons</code></td><td><code>IconButton[]</code> (optional)</td><td>Buttons shown when the row is hovered.</td><td><a href="{{ src(types, 51) }}">L51</a></td></tr>
+      <tr><td><code>dblClick</code></td><td><code>VSCodeCommand</code> (optional)</td><td>Command run when the row is double-clicked.</td><td><a href="{{ src(types, 54) }}">L54</a></td></tr>
+      <tr><td><code>displayId</code></td><td><code>string</code></td><td>The ID text to show. The comment points at "<code>Commit.displayId</code> in api.ts", a file not in this repository.</td><td><a href="{{ src(types, 57) }}">L57</a></td></tr>
+      <tr><td><code>highlightedDisplayIdLen</code></td><td><code>number</code></td><td>How many leading characters of <code>displayId</code> to highlight, like jj's shortest unique prefix.</td><td><a href="{{ src(types, 60) }}">L60</a></td></tr>
+      <tr><td><code>updateTime</code></td><td><code>number</code></td><td>Last-updated time in milliseconds since the epoch, shown as "time ago".</td><td><a href="{{ src(types, 63) }}">L63</a></td></tr>
+      <tr><td><code>isMultiSelected</code></td><td><code>boolean</code></td><td>Whether the row is part of a multi-selection.</td><td><a href="{{ src(types, 66) }}">L66</a></td></tr>
+      <tr><td><code>vscodeContext</code></td><td><code>{[key: string]: unknown}</code> (optional)</td><td>Merged into the row's <code>data-vscode-context</code> attribute when its context menu opens.</td><td><a href="{{ src(types, 70) }}">L70</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="type-CommitGraphOptions"><code>CommitGraphOptions</code></h3>
+<p class="jj-source"><a href="{{ src(types, 123, 174) }}">types.ts, lines 123–174</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>showChangeId</code></td><td><code>boolean</code></td><td>Whether to show each commit's display ID.</td><td><a href="{{ src(types, 125) }}">L125</a></td></tr>
+      <tr><td><code>dragAndDropCommands</code></td><td><code>{…}</code> (optional)</td><td>If set, commits can be dragged and dropped.</td><td><a href="{{ src(types, 128) }}">L128</a></td></tr>
+      <tr><td><code>dragAndDropCommands.rebase</code></td><td><code>VSCodeCommand</code></td><td>Run on dropping onto a commit, with <code>[sourceIds…]</code> and the destination ID appended.</td><td><a href="{{ src(types, 134) }}">L134</a></td></tr>
+      <tr><td><code>dragAndDropCommands.abandon</code></td><td><code>VSCodeCommand</code></td><td>Run on dropping onto the garbage section, with every selected commit's ID appended.</td><td><a href="{{ src(types, 138) }}">L138</a></td></tr>
+      <tr><td><code>dragAndDropCommands.insert</code></td><td><code>VSCodeCommand</code></td><td>Run on dropping onto a line between commits, with <code>{target, insertBefore, insertAfter}</code> appended.</td><td><a href="{{ src(types, 150) }}">L150</a></td></tr>
+      <tr><td><code>alwaysShowActions</code></td><td><code>boolean</code></td><td>Show row buttons all the time instead of on hover (default false).</td><td><a href="{{ src(types, 155) }}">L155</a></td></tr>
+      <tr><td><code>uiScaling</code></td><td><code>number</code> (optional)</td><td>UI scale factor, meant to be <code>cssOverrides.fontSizeScale</code>. Default 1.</td><td><a href="{{ src(types, 160) }}">L160</a></td></tr>
+      <tr><td><code>disableFocusMode</code></td><td><code>VSCodeCommand</code> (optional)</td><td>Turns focus mode on, and is the command behind its "Disable focus mode" link (see <a href="{{ url_for('jj_dojo', slug='graph-layout') }}#focus-mode">focus mode</a>).</td><td><a href="{{ src(types, 165) }}">L165</a></td></tr>
+      <tr><td><code>showContextMenuIcon</code></td><td><code>boolean</code> (optional)</td><td>Show a context-menu icon on each row.</td><td><a href="{{ src(types, 168) }}">L168</a></td></tr>
+      <tr><td><code>commitMetadataTextStyle</code></td><td><code>CommitMetadataTextStyle</code> (optional)</td><td>Which metadata tags to show (above).</td><td><a href="{{ src(types, 171) }}">L171</a></td></tr>
+      <tr><td><code>renderMode</code></td><td><code>RenderMode</code></td><td>One-line, two-line or automatic rows.</td><td><a href="{{ src(types, 173) }}">L173</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="type-RenderMode"><code>RenderMode</code></h3>
+<p class="jj-source"><a href="{{ src(types, 180, 188) }}">types.ts, lines 180–188</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Member</th><th>Value</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>ONE_LINE</code></td><td>ordinal</td><td>Every row is one line.</td><td><a href="{{ src(types, 181) }}">L181</a></td></tr>
+      <tr><td><code>TWO_LINE</code></td><td>ordinal</td><td>Every row is two lines.</td><td><a href="{{ src(types, 182) }}">L182</a></td></tr>
+      <tr><td><code>AUTO</code></td><td>ordinal</td><td>One or two lines "depending on the width of the panel".</td><td><a href="{{ src(types, 187) }}">L187</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="type-CommitMetadataTextStyle"><code>CommitMetadataTextStyle</code></h3>
+<p class="jj-source"><a href="{{ src(types, 115, 118) }}">types.ts, lines 115–118</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Member</th><th>Value</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>SHOW_EMPTY_AND_NO_DESCRIPTION_SET</code></td><td><code>&#x27;show empty/no description set&#x27;</code></td><td>Tags <code>(empty)</code> and <code>(no description set)</code> independently. Also the behaviour when the option is unset.</td><td><a href="{{ src(types, 116) }}">L116</a></td></tr>
+      <tr><td><code>SHOW_EMPTY_AND_HAS_CHANGES</code></td><td><code>&#x27;show empty/has changes&#x27;</code></td><td>Tags <code>(empty)</code>, or <code>(has changes)</code> for a non-empty commit without a description, and nothing when both apply.</td><td><a href="{{ src(types, 117) }}">L117</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="type-Callout"><code>Callout</code></h3>
+<p class="jj-source"><a href="{{ src(types, 203, 215) }}">types.ts, lines 203–215</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>type</code></td><td><code>CalloutType</code></td><td>Style.</td><td><a href="{{ src(types, 204) }}">L204</a></td></tr>
+      <tr><td><code>message</code></td><td><code>string</code></td><td>Text, which "can contain HTML, e.g. links".</td><td><a href="{{ src(types, 206) }}">L206</a></td></tr>
+      <tr><td><code>dismissId</code></td><td><code>string</code> (optional)</td><td>If set, the callout gets a dismiss control, and this ID is sent back with <code>$dismissCallout</code>.</td><td><a href="{{ src(types, 211) }}">L211</a></td></tr>
+      <tr><td><code>dismissStyle</code></td><td><code>&#x27;button&#x27; | &#x27;link&#x27;</code> (optional)</td><td><code>button</code> (default) or <code>link</code>.</td><td><a href="{{ src(types, 214) }}">L214</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="type-CalloutType"><code>CalloutType</code></h3>
+<p class="jj-source"><a href="{{ src(types, 193, 198) }}">types.ts, lines 193–198</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Member</th><th>Value</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>UNSTYLED</code></td><td><code>&#x27;UNSTYLED&#x27;</code></td><td>No styling.</td><td><a href="{{ src(types, 194) }}">L194</a></td></tr>
+      <tr><td><code>INFO</code></td><td><code>&#x27;INFO&#x27;</code></td><td>Informational.</td><td><a href="{{ src(types, 195) }}">L195</a></td></tr>
+      <tr><td><code>WARNING</code></td><td><code>&#x27;WARNING&#x27;</code></td><td>Warning.</td><td><a href="{{ src(types, 196) }}">L196</a></td></tr>
+      <tr><td><code>ERROR</code></td><td><code>&#x27;ERROR&#x27;</code></td><td>Error.</td><td><a href="{{ src(types, 197) }}">L197</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="type-TopBarButton"><code>TopBarButton</code></h3>
+<p class="jj-source"><a href="{{ src(types, 220, 242) }}">types.ts, lines 220–242</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>left</code></td><td><code>{…}</code></td><td>The main button.</td><td><a href="{{ src(types, 221) }}">L221</a></td></tr>
+      <tr><td><code>left.command</code></td><td><code>VSCodeCommand</code></td><td>Command to run on click.</td><td><a href="{{ src(types, 223) }}">L223</a></td></tr>
+      <tr><td><code>left.disabled</code></td><td><code>boolean</code></td><td>Disabled state.</td><td><a href="{{ src(types, 225) }}">L225</a></td></tr>
+      <tr><td><code>right</code></td><td><code>{…}</code> (optional)</td><td>Optional split half. If absent, a plain button is drawn.</td><td><a href="{{ src(types, 228) }}">L228</a></td></tr>
+      <tr><td><code>right.origin</code></td><td><code>string</code></td><td>Opens a context menu with <code>origin</code> set to this value, so the extension's <code>package.json</code> menus can match on it.</td><td><a href="{{ src(types, 238) }}">L238</a></td></tr>
+      <tr><td><code>right.disabled</code></td><td><code>boolean</code></td><td>Disabled state.</td><td><a href="{{ src(types, 240) }}">L240</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="type-Chip"><code>Chip</code></h3>
+<p class="jj-source"><a href="{{ src(types, 296, 316) }}">types.ts, lines 296–316</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>text</code></td><td><code>string</code> (optional)</td><td>Label.</td><td><a href="{{ src(types, 298) }}">L298</a></td></tr>
+      <tr><td><code>textOnHover</code></td><td><code>string</code> (optional)</td><td>Label while hovered (defaults to <code>text</code>).</td><td><a href="{{ src(types, 300) }}">L300</a></td></tr>
+      <tr><td><code>searchText</code></td><td><code>string</code> (optional)</td><td>Label while the search box is open (defaults to <code>text</code>).</td><td><a href="{{ src(types, 302) }}">L302</a></td></tr>
+      <tr><td><code>tooltip</code></td><td><code>string</code> (optional)</td><td>Hover text.</td><td><a href="{{ src(types, 303) }}">L303</a></td></tr>
+      <tr><td><code>link</code></td><td><code>string</code> (optional)</td><td>URL to open on click. Ignored if <code>command</code> is set.</td><td><a href="{{ src(types, 304) }}">L304</a></td></tr>
+      <tr><td><code>underlineOnHover</code></td><td><code>boolean</code> (optional)</td><td>Underline the label on hover.</td><td><a href="{{ src(types, 305) }}">L305</a></td></tr>
+      <tr><td><code>command</code></td><td><code>VSCodeCommand</code> (optional)</td><td>Command to run on click.</td><td><a href="{{ src(types, 308) }}">L308</a></td></tr>
+      <tr><td><code>color</code></td><td><code>ChipColors&lt;string&gt;</code></td><td>Colours.</td><td><a href="{{ src(types, 309) }}">L309</a></td></tr>
+      <tr><td><code>codiconBefore</code></td><td><code>string</code> (optional)</td><td>Codicon before the label, e.g. <code>codicon-comment</code>.</td><td><a href="{{ src(types, 311) }}">L311</a></td></tr>
+      <tr><td><code>codiconAfter</code></td><td><code>string</code> (optional)</td><td>Codicon after the label.</td><td><a href="{{ src(types, 313) }}">L313</a></td></tr>
+      <tr><td><code>minWidth</code></td><td><code>number</code> (optional)</td><td>Minimum width.</td><td><a href="{{ src(types, 315) }}">L315</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="type-SplitChip"><code>SplitChip</code></h3>
+<p class="jj-source"><a href="{{ src(types, 321, 345) }}">types.ts, lines 321–345</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>left</code></td><td><code>Chip</code></td><td>The main chip.</td><td><a href="{{ src(types, 322) }}">L322</a></td></tr>
+      <tr><td><code>dragAndDropCommands</code></td><td><code>{…}</code> (optional)</td><td>If set, the chip can be dragged.</td><td><a href="{{ src(types, 324) }}">L324</a></td></tr>
+      <tr><td><code>dragAndDropCommands.abandon</code></td><td><code>VSCodeCommand</code></td><td>Run when dropped on the garbage section.</td><td><a href="{{ src(types, 326) }}">L326</a></td></tr>
+      <tr><td><code>dragAndDropCommands.move</code></td><td><code>VSCodeCommand</code></td><td>Run when dropped on another commit, with that commit's hash appended.</td><td><a href="{{ src(types, 330) }}">L330</a></td></tr>
+      <tr><td><code>right</code></td><td><code>{…}</code> (optional)</td><td>Optional second half.</td><td><a href="{{ src(types, 333) }}">L333</a></td></tr>
+      <tr><td><code>right.chip</code></td><td><code>Chip</code></td><td>The right-hand chip.</td><td><a href="{{ src(types, 334) }}">L334</a></td></tr>
+      <tr><td><code>right.borderColor</code></td><td><code>string</code></td><td>Border colour for the whole split chip, overriding both halves' borders.</td><td><a href="{{ src(types, 339) }}">L339</a></td></tr>
+      <tr><td><code>vscodeContext</code></td><td><code>{[key: string]: unknown}</code> (optional)</td><td>Merged into <code>data-vscode-context</code> for the chip's context menu. If absent, no menu opens.</td><td><a href="{{ src(types, 344) }}">L344</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="type-ChipColors"><code>ChipColors</code></h3>
+<p class="jj-source"><a href="{{ src(types, 94, 98) }}">types.ts, lines 94–98</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>background</code></td><td><code>T</code></td><td>Background colour.</td><td><a href="{{ src(types, 95) }}">L95</a></td></tr>
+      <tr><td><code>foreground</code></td><td><code>T</code></td><td>Text colour.</td><td><a href="{{ src(types, 96) }}">L96</a></td></tr>
+      <tr><td><code>border</code></td><td><code>T</code></td><td>Border colour.</td><td><a href="{{ src(types, 97) }}">L97</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="type-IconButton"><code>IconButton</code></h3>
+<p class="jj-source"><a href="{{ src(types, 76, 89) }}">types.ts, lines 76–89</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>command</code></td><td><code>VSCodeCommand</code></td><td>Command to run. Its <code>title</code> is ignored.</td><td><a href="{{ src(types, 85) }}">L85</a></td></tr>
+      <tr><td><code>icon</code></td><td><code>string</code></td><td>Codicon name, e.g. <code>split-vertical</code>.</td><td><a href="{{ src(types, 88) }}">L88</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="type-VSCodeCommand"><code>VSCodeCommand</code></h3>
+<p class="jj-source"><a href="{{ src(types, 103, 110) }}">types.ts, lines 103–110</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>title</code></td><td><code>string</code> (optional)</td><td>Display title, e.g. <code>New commit</code>.</td><td><a href="{{ src(types, 105) }}">L105</a></td></tr>
+      <tr><td><code>command</code></td><td><code>string</code></td><td>Command ID, e.g. <code>jj.new</code>.</td><td><a href="{{ src(types, 107) }}">L107</a></td></tr>
+      <tr><td><code>tooltip</code></td><td><code>string</code> (optional)</td><td>Hover text.</td><td><a href="{{ src(types, 108) }}">L108</a></td></tr>
+      <tr><td><code>arguments</code></td><td><code>unknown[]</code> (optional)</td><td>Arguments passed to the command. Several call sites append extra arguments.</td><td><a href="{{ src(types, 109) }}">L109</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="type-File"><code>File</code></h3>
+<p class="jj-source"><a href="{{ src(types, 350, 352) }}">types.ts, lines 350–352</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>path</code></td><td><code>string</code></td><td>Path. The type is exported but not used anywhere at this pin.</td><td><a href="{{ src(types, 351) }}">L351</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+
+<h3 id="webview-only">Types that never cross the wire</h3>
+<p>
+  The same file also defines the layout's own types. The webview builds them from the
+  <code>Commit</code>s it receives, and the host never sees them. They're covered on
+  <a href="{{ url_for('jj_dojo', slug='graph-layout') }}">commit graph layout</a>.
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Type</th><th>Fields</th><th>Explained in</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(types, 358, 448) }}"><code>CommitNode</code></a></td><td>16</td><td><a href="{{ url_for('jj_dojo', slug='graph-layout') }}#input">commit graph layout: input</a></td></tr>
+      <tr><td><a href="{{ src(types, 453, 461) }}"><code>CommitChildNode</code></a></td><td>2</td><td><a href="{{ url_for('jj_dojo', slug='graph-layout') }}#input">input</a></td></tr>
+      <tr><td><a href="{{ src(types, 492, 496) }}"><code>TileGroup</code></a></td><td>3</td><td><a href="{{ url_for('jj_dojo', slug='graph-layout') }}#tile-grid">the tile grid</a></td></tr>
+      <tr><td><a href="{{ src(types, 501, 531) }}"><code>InsertAction</code></a></td><td>union</td><td><a href="{{ url_for('jj_dojo', slug='graph-layout') }}#insert-actions">insert actions</a></td></tr>
+      <tr><td><a href="{{ src(types, 536, 539) }}"><code>Tile</code></a></td><td>2</td><td><a href="{{ url_for('jj_dojo', slug='graph-layout') }}#tile-grid">the tile grid</a></td></tr>
+      <tr><td><a href="{{ src(types, 544, 550) }}"><code>Line</code></a></td><td>3</td><td><a href="{{ url_for('jj_dojo', slug='graph-layout') }}#tile-grid">the tile grid</a></td></tr>
+      <tr><td><a href="{{ src(types, 555, 575) }}"><code>LineType</code></a></td><td>6</td><td><a href="{{ url_for('jj_dojo', slug='graph-layout') }}#lanes">lanes and edges</a></td></tr>
+      <tr><td><a href="{{ src(types, 577, 581) }}"><code>CommitRowType</code></a></td><td>3</td><td><a href="{{ url_for('jj_dojo', slug='graph-layout') }}#components">rendering components</a></td></tr>
+    </tbody>
+  </table>
+</div>

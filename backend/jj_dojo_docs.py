@@ -25,7 +25,7 @@ PAGES = [
             "src/ui/commit_graph_provider/",
             "src/ui/commit_graph/webview_module.ts",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "graph-layout",
