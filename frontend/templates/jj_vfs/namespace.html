@@ -1,0 +1,498 @@
+{% set mapper = "src/path_mapper_all_commits.rs" %}
+{% set static_dir = "src/static_directory.rs" %}
+{% set commits_dir = "src/commits_directory.rs" %}
+{% set ws_dir = "src/workspaces_directory.rs" %}
+{% set ctf = "src/commit_tree_file.rs" %}
+{% set vfs = "src/vfs.rs" %}
+{% set vf = "src/virtual_file.rs" %}
+{% set fuse = "src/fuse.rs" %}
+{% set inodes = "src/inode_map.rs" %}
+{% set err = "src/jj_error.rs" %}
+{% set main = "src/main.rs" %}
+{% set fuser_src = "https://docs.rs/crate/fuser/0.18.0/source/src/lib.rs" %}
+<header class="jj-header">
+  <h1>The mount's namespace</h1>
+  <p class="tagline">
+    What a mounted repository looks like, how <code>AllCommitsPathMapper</code> turns each path into a
+    <code>VirtualFile</code>, and which snapshot of the repository every lookup sees.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: the mount has two top-level directories. <code>commits/</code> holds one directory per
+  visible commit, named by its full hex commit ID. <code>workspaces/</code> holds one directory per
+  workspace, showing that workspace's working-copy commit. Inside either, you see the commit's tree
+  as files, directories and symlinks. Every request re-resolves its full path from scratch against one
+  <code>ReadonlyRepo</code>, loaded once at mount time. The mount never sees later operations, so it
+  is a frozen snapshot.
+</p>
+
+<p>
+  All of this is decided by one type,
+  <a href="{{ src(mapper, 19, 80) }}"><code>AllCommitsPathMapper</code></a>, the only
+  <a href="{{ src('src/path_mapper.rs', 8, 13) }}"><code>PathMapper</code></a> in the crate. A
+  <code>PathMapper</code> has a single method, <code>get_entry(path) → Box&lt;dyn VirtualFile&gt;</code>,
+  and four <code>VirtualFile</code> implementors sit behind it: <code>StaticDirectory</code>,
+  <code>CommitsDirectory</code>, <code>WorkspacesDirectory</code> and <code>CommitTreeFile</code>. The
+  traits themselves are on the <a href="{{ url_for('jj_vfs', slug='vfs-layer') if 'vfs-layer' in ready_slugs else src(vf) }}">virtual file layer</a> page.
+</p>
+
+<h2 id="tree">1. The tree</h2>
+
+<p>
+  This is the complete namespace at the pinned commit. Nothing else exists: any other name at the top
+  level is <code>ENOENT</code>, and there are no hidden files, no <code>.jj</code> directory and no
+  metadata files.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 430" role="img" aria-labelledby="ns-tree-title ns-tree-desc">
+    <title id="ns-tree-title">Directory tree of a jjfsd mount</title>
+    <desc id="ns-tree-desc">
+      The mount root contains exactly two directories, commits and workspaces, served by a
+      StaticDirectory. commits is a CommitsDirectory with one subdirectory per visible commit, named by
+      its full 40-character hex ID, including the all-zero root commit. workspaces is a
+      WorkspacesDirectory with one subdirectory per workspace name. Each commit or workspace directory
+      is a CommitTreeFile showing that commit's tree: directories, regular files and symlinks.
+    </desc>
+    <g font-size="13">
+      <g font-family="monospace">
+        <circle class="vfs-dir" cx="40" cy="40" r="6"></circle>
+        <text x="56" y="45">&lt;mountpoint&gt;/</text>
+        <circle class="vfs-dir" cx="80" cy="96" r="6"></circle>
+        <text x="96" y="101">commits/</text>
+        <circle class="vfs-dir" cx="120" cy="150" r="6"></circle>
+        <text x="136" y="155">0000000000000000000000000000000000000000/</text>
+        <circle class="vfs-dir" cx="120" cy="190" r="6"></circle>
+        <text x="136" y="195">&lt;full hex commit id&gt;/</text>
+        <circle class="vfs-dir" cx="160" cy="226" r="6"></circle>
+        <text x="176" y="231">dir/</text>
+        <circle class="vfs-file" cx="160" cy="256" r="6"></circle>
+        <text x="176" y="261">file1.txt</text>
+        <circle class="vfs-file" cx="160" cy="286" r="6"></circle>
+        <text x="176" y="291">symlink -&gt; file1.txt</text>
+        <text class="d-muted" x="136" y="318">… one directory per visible commit</text>
+        <circle class="vfs-dir" cx="80" cy="354" r="6"></circle>
+        <text x="96" y="359">workspaces/</text>
+        <circle class="vfs-dir" cx="120" cy="394" r="6"></circle>
+        <text x="136" y="399">default/</text>
+        <text class="d-muted" x="232" y="399">… one per workspace, same view as its @ commit</text>
+      </g>
+      <g class="d-line" stroke-width="1.2">
+        <path d="M40 46 V354 H74"></path>
+        <path d="M40 96 H74"></path>
+        <path d="M80 102 V190 H114"></path>
+        <path d="M80 150 H114"></path>
+        <path d="M120 196 V286 H154"></path>
+        <path d="M120 226 H154"></path>
+        <path d="M120 256 H154"></path>
+        <path d="M80 360 V394 H114"></path>
+      </g>
+      <g font-size="12" class="d-muted">
+        <text x="560" y="45">StaticDirectory</text>
+        <text x="560" y="101">CommitsDirectory</text>
+        <text x="560" y="155">CommitTreeFile, path ""</text>
+        <text x="560" y="195">CommitTreeFile, path ""</text>
+        <text x="560" y="261">CommitTreeFile, path "file1.txt"</text>
+        <text x="560" y="359">WorkspacesDirectory</text>
+      </g>
+    </g>
+  </svg>
+</div>
+
+<p>
+  The contents of a commit directory (here <code>dir/</code>, <code>file1.txt</code> and
+  <code>symlink</code>, the tree the upstream test helper builds) are whatever that commit's tree holds.
+  The <a href="{{ url_for('jj_vfs', slug='commit-trees') if 'commit-trees' in ready_slugs else src(ctf) }}">commits as directory trees</a>
+  page covers how. The all-zero entry is jj's root commit, which has an empty tree. It is listed because
+  <code>all()</code> includes it, and it resolves because the Git backend answers the all-zero ID with
+  a synthetic root commit
+  (<a href="{{ jj_lib('lib/src/git_backend.rs', 1214, 1220) }}">source</a>).
+</p>
+
+<h2 id="path-resolution">2. Path resolution</h2>
+
+<h3 id="where-paths-come-from">Where paths come from</h3>
+
+<p>
+  The kernel never sends a path, only an inode number and sometimes a name. Before anything reaches
+  the path mapper, <a href="{{ src(fuse, 18, 51) }}"><code>reply_async!</code></a> in
+  <code>JjFuse</code> asks <a href="{{ src(inodes, 44, 56) }}"><code>InodeMap::get_path</code></a> to
+  rebuild the path by following parent links up to inode 1. The result is <em>relative</em> and has
+  no leading slash: the root is the empty path <code>""</code>, and a file inside a commit is
+  <code>commits/&lt;id&gt;/dir/file2.txt</code>. For <code>lookup</code>, <code>JjFuse</code> pushes the
+  requested name onto the parent's path first. Every
+  <a href="{{ src(vfs, 17, 22) }}"><code>VirtualFilesystem</code></a> method of
+  <a href="{{ src(vfs, 37, 70) }}"><code>PathMappedVfs</code></a> then starts the same way:
+  <code>self.path_mapper.get_entry(path).await?</code>, and then a single trait call on the result. Nothing is
+  cached between requests: every <code>getattr</code>, <code>readdir</code>, <code>read</code> and
+  <code>readlink</code> resolves the full path again.
+</p>
+
+<h3 id="get-entry">get_entry, step by step</h3>
+
+<p>
+  <a href="{{ src(mapper, 31, 79) }}"><code>AllCommitsPathMapper::get_entry</code></a> walks the path with
+  <code>path.iter()</code> and looks at no more than two components itself:
+</p>
+
+<ol>
+  <li>
+    <strong>No components</strong> (the root): return a fresh <code>StaticDirectory</code> listing
+    <code>commits</code> and <code>workspaces</code>, both as directories
+    (<a href="{{ src(mapper, 35, 46) }}">source</a>).
+  </li>
+  <li>
+    <strong>First component</strong>: convert it to UTF-8, or fail with <code>InvalidPath</code>. Then
+    match on it. <code>"commits"</code> and <code>"workspaces"</code> go on to step 3, and anything else is
+    <code>NotFound</code> (<a href="{{ src(mapper, 48, 48) }}">source</a>, <a href="{{ src(mapper, 77, 77) }}">source</a>).
+  </li>
+  <li>
+    <strong>Under <code>commits</code></strong>
+    (<a href="{{ src(mapper, 49, 59) }}">source</a>): with no second component, return a
+    <code>CommitsDirectory</code>. Otherwise parse the second component with
+    <code>CommitId::try_from_hex</code>, where a string that isn't valid hex gives <code>NotFound</code>.
+    Then build a <code>CommitTreeFile</code> from the commit ID and <em>all remaining components</em>
+    (<code>segments.collect()</code>) as the path inside the commit.
+  </li>
+  <li>
+    <strong>Under <code>workspaces</code></strong>
+    (<a href="{{ src(mapper, 60, 76) }}">source</a>): with no second component, return a
+    <code>WorkspacesDirectory</code>. Otherwise look the name up in the repo view's
+    <a href="{{ jj_lib('lib/src/view.rs', 54, 56) }}"><code>wc_commit_ids()</code></a>, where an unknown
+    workspace gives <code>NotFound</code>. Then build a <code>CommitTreeFile</code> for that workspace's
+    working-copy commit and the remaining components, exactly as in step 3.
+  </li>
+</ol>
+
+<p>
+  <a href="{{ src(ctf, 30, 37) }}"><code>CommitTreeFile::new</code></a> immediately loads the commit with
+  <a href="{{ jj_lib('lib/src/store.rs', 155, 158) }}"><code>Store::get_commit_async</code></a>, so a
+  bad commit ID fails during resolution, before any file operation. It does not look at the path inside the
+  commit. A missing file inside a real commit only fails later, when the operation asks the tree
+  for that path.
+</p>
+
+<h3 id="commit-ids">Commit IDs: full only, and how they fail</h3>
+
+<p>
+  The directory name must be the commit's <strong>full</strong> hex ID: 40 digits in a Git-backed
+  repository, which is any repository made with <code>jj git init</code> or <code>jj git clone</code>.
+  There is no prefix resolution, no change IDs, and no revset or bookmark names. The failure modes
+  differ in ways a user can see. Every row below was checked by running the pinned code against a
+  fresh Git-backed repository:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Second component under <code>commits/</code></th><th>What happens</th><th><code>JjError</code></th><th>errno</th></tr></thead>
+    <tbody>
+      <tr><td>Not valid hex, or an odd number of digits</td><td><code>try_from_hex</code> returns <code>None</code></td><td><code>NotFound</code></td><td><code>ENOENT</code></td></tr>
+      <tr><td>Valid hex, but not 40 digits (a prefix)</td><td>The Git backend rejects the length with <code>BackendError::InvalidHashLength</code> (<a href="{{ jj_lib('lib/src/git_backend.rs', 927, 937) }}">source</a>). The local backend the upstream tests use reports <code>ObjectNotFound</code> instead.</td><td><code>JjLibBackendError</code></td><td><code>EIO</code></td></tr>
+      <tr><td>40 hex digits naming no object</td><td>The backend's object lookup fails with <code>BackendError::ObjectNotFound</code></td><td><code>JjLibBackendError</code></td><td><code>EIO</code></td></tr>
+      <tr><td>The ID of any commit object in the store</td><td>Resolves. The store is not checked against the view, so this includes commits that <code>commits/</code> doesn't list</td><td>—</td><td>—</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  So <code>ls &lt;mount&gt;/commits/abcd</code> reports "Input/output error", not "No such file or
+  directory": every error other than <code>NotFound</code>, <code>NotADirectory</code>,
+  <code>NotAFile</code> and <code>NotASymlink</code> becomes <code>EIO</code> in
+  <a href="{{ src(fuse, 231, 241) }}"><code>From&lt;JjError&gt; for Errno</code></a>.
+</p>
+
+<h3 id="errors">All the errors resolution can return</h3>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>InvalidPath</code></td><td><code>JjError</code> → <code>EIO</code></td><td>A component isn't valid UTF-8, or the path inside a commit isn't a valid repo path.</td><td><a href="{{ src(err, 5, 6) }}">jj_error.rs</a></td></tr>
+      <tr><td><code>NotFound</code></td><td><code>JjError</code> → <code>ENOENT</code></td><td>Unknown top-level name, non-hex commit directory, unknown workspace, or (later) a missing path inside a commit. Also an inode the <code>InodeMap</code> doesn't know.</td><td><a href="{{ src(err, 8, 9) }}">jj_error.rs</a></td></tr>
+      <tr><td><code>JjLibBackendError</code></td><td><code>JjError</code> → <code>EIO</code></td><td>Any jj-lib backend failure, including a commit ID of the wrong length or one that doesn't exist.</td><td><a href="{{ src(err, 23, 24) }}">jj_error.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="directory-types">3. The directory types</h2>
+
+<p>
+  All three are cheap wrappers built fresh by <code>get_entry</code> on every request. None of them
+  implements <code>read</code> or <code>read_link</code>, so those fall through to the
+  <a href="{{ src(vf, 41, 57) }}"><code>VirtualFile</code></a> defaults and return
+  <code>NotAFile</code> (<code>EISDIR</code>) and <code>NotASymlink</code> (<code>EINVAL</code>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th><code>list</code></th><th><code>attributes</code></th><th><code>file_type</code></th></tr></thead>
+    <tbody>
+      <tr>
+        <td><a href="{{ src(static_dir, 12, 40) }}"><code>StaticDirectory</code></a></td>
+        <td>The <code>Vec&lt;DirectoryEntry&gt;</code> it was built with, cloned into a stream, in that order.</td>
+        <td>size 0, <code>Directory</code>, created and modified at <code>UNIX_EPOCH</code> (marked TODO)</td>
+        <td><code>Directory</code></td>
+      </tr>
+      <tr>
+        <td><a href="{{ src(commits_dir, 18, 67) }}"><code>CommitsDirectory</code></a></td>
+        <td>Every commit in <code>ResolvedRevsetExpression::all()</code> evaluated on the repo, as a directory named <code>commit_id.hex()</code>. Entries whose ID fails to load are silently skipped.</td>
+        <td>size 0, <code>Directory</code>, <code>UNIX_EPOCH</code></td>
+        <td><code>Directory</code></td>
+      </tr>
+      <tr>
+        <td><a href="{{ src(ws_dir, 14, 54) }}"><code>WorkspacesDirectory</code></a></td>
+        <td>The keys of <code>view.wc_commit_ids()</code>, a <code>BTreeMap</code>, so sorted by name, each as a directory.</td>
+        <td>size 0, <code>Directory</code>, <code>UNIX_EPOCH</code></td>
+        <td><code>Directory</code></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="commits-directory">How CommitsDirectory lists commits</h3>
+
+<p>
+  <a href="{{ src(commits_dir, 31, 52) }}"><code>CommitsDirectory::list</code></a> evaluates jj-lib's
+  <a href="{{ jj_lib('lib/src/revset.rs', 365, 367) }}"><code>all()</code></a>, which resolves to the
+  ancestors of the visible heads (<a href="{{ jj_lib('lib/src/revset.rs', 3262, 3268) }}">source</a>),
+  so that is every visible commit, including the root. In jj terms, it is the same set as
+  <code>jj log -r 'all()'</code>. The source explains the next step: "Revset does not implement
+  <code>Send</code>", so the stream can't cross threads. Instead of streaming, it calls
+  <code>futures::executor::block_on</code> inside the async function to collect every ID into a
+  <code>Vec</code>, and then streams that. This blocks a tokio worker thread for the whole
+  evaluation, and the source flags both the blocking and the missing pagination as temporary.
+</p>
+
+<p>
+  The upstream test <a href="{{ src(commits_dir, 74, 88) }}"><code>test_repo_commits</code></a> pins the
+  count: a fresh repo with one test commit lists 3 entries ("root commit + initial workspace commit +
+  our test commit"), all directories.
+  <a href="{{ src(ws_dir, 63, 74) }}"><code>test_repo_workspaces</code></a> pins the single
+  <code>default</code> workspace.
+</p>
+
+<h2 id="snapshot">4. Repo snapshot semantics</h2>
+
+<p>
+  <a href="{{ src(main, 40, 54) }}"><code>main</code></a> loads the workspace, calls
+  <a href="{{ jj_lib('lib/src/repo.rs', 765, 778) }}"><code>RepoLoader::load_at_head</code></a> exactly
+  once (merging divergent operation heads if there are any), and moves the resulting
+  <code>Arc&lt;ReadonlyRepo&gt;</code> into <code>AllCommitsPathMapper::new</code>. That
+  <code>Arc</code> is never replaced. Every directory type clones it, and no code path reloads the
+  repo. So for the whole life of the mount:
+</p>
+
+<ul>
+  <li>
+    <strong><code>commits/</code> lists the visible commits as of mount time.</strong> Commits created,
+    rewritten or abandoned later don't change the listing. Abandoned ones stay listed, and new ones
+    never appear.
+  </li>
+  <li>
+    <strong><code>workspaces/</code> is frozen too.</strong> Workspaces added later don't appear, and
+    <code>workspaces/&lt;name&gt;/</code> keeps showing the working-copy commit as of mount time, even after
+    <code>jj new</code> or <code>jj edit</code> moves <code>@</code>. It is not a live view of the working
+    copy. In particular, it never shows uncommitted edits on disk, which jj only records when it snapshots.
+  </li>
+  <li>
+    <strong>Lookup by commit ID bypasses the view.</strong> <code>commits/&lt;full id&gt;/</code> resolves
+    any commit the store can read, so a hidden commit's tree can still be reached by ID even though
+    <code>ls commits/</code> doesn't show it.
+  </li>
+</ul>
+
+<p>
+  The kernel adds one more layer of staleness: <code>JjFuse</code> replies with a 1-second
+  <code>TTL</code> on every entry and attribute (<a href="{{ src(fuse, 16, 16) }}">source</a>), so the
+  kernel may answer repeated lookups from its cache for up to a second. Since the snapshot never changes,
+  this costs nothing in correctness.
+</p>
+
+<h2 id="worked-example">5. Worked example</h2>
+
+<p>
+  Take a repository with three commits besides the root: <code>A</code>, which adds
+  <code>file1.txt</code> ("hello content 1"); <code>B</code>, a child of <code>A</code>, the
+  working-copy commit of the <code>default</code> workspace; and <code>C</code>, another child of
+  <code>A</code>, the working-copy commit of a second workspace, <code>docs</code>. Mounted with
+  <code>jjfsd &lt;mountpoint&gt; &lt;workspace root&gt;</code>, these are exactly the paths that exist
+  (<code>&lt;A&gt;</code> standing for A's 40-digit ID, and so on):
+</p>
+
+<pre><code>&lt;mountpoint&gt;/
+├── commits/
+│   ├── 0000000000000000000000000000000000000000/   (empty: the root commit's tree)
+│   ├── &lt;A&gt;/file1.txt
+│   ├── &lt;B&gt;/file1.txt
+│   └── &lt;C&gt;/file1.txt
+└── workspaces/
+    ├── default/file1.txt                            (= commits/&lt;B&gt;)
+    └── docs/file1.txt                               (= commits/&lt;C&gt;)</code></pre>
+
+<p>
+  The commit directories are listed newest first, with the root last, which is the order the revset
+  stream yields them. The workspaces are sorted by name. If <code>B</code> and <code>C</code> changed nothing, all three
+  <code>file1.txt</code>s have the same content, but they are separate paths with separate inodes, and
+  each is read from the store independently.
+</p>
+
+<h3 id="example-sequence">What <code>cat &lt;mountpoint&gt;/commits/&lt;A&gt;/file1.txt</code> does</h3>
+
+<p>
+  Starting from a cold kernel cache, the kernel resolves the path one component at a time with
+  <code>lookup</code>, opens the file, and reads until it gets a short read. Each FUSE call arrives on a
+  <code>fuser</code> thread, and <code>JjFuse</code> immediately spawns the work onto the tokio runtime
+  and returns. The reply is sent from inside that task.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 800 690" role="img" aria-labelledby="ns-seq-title ns-seq-desc">
+    <title id="ns-seq-title">Sequence of calls for cat on a file in a commit directory</title>
+    <desc id="ns-seq-desc">
+      cat opens the file. The kernel sends lookup for commits under inode 1, for the commit ID under
+      inode 2, and for file1.txt under inode 3. For each, JjFuse spawns a tokio task that asks the
+      InodeMap for the parent path and a child inode number, then asks PathMappedVfs for attributes,
+      which calls AllCommitsPathMapper.get_entry. For the commit directory and the file this builds a
+      CommitTreeFile, which loads the commit from jj-lib's Store. For the file, attributes reads the
+      whole file to count its size. The kernel's open is answered by fuser's default. Then the kernel
+      sends read for inode 4 at offset 0. The task gets the path back from the InodeMap, resolves it
+      again, reads the file from the Store, skips to the offset and returns up to size bytes. A second
+      read at offset 15 returns no data, which ends the file.
+    </desc>
+    <defs>
+      <marker id="ns-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <rect x="262" y="60" width="532" height="620" rx="8" class="vfs-runtime"></rect>
+    <text x="786" y="76" font-size="11" text-anchor="end" class="vfs-runtime-text">tokio task (spawned per request)</text>
+    <g font-size="12" text-anchor="middle">
+      <rect class="d-box" x="10" y="14" width="80" height="34" rx="6"></rect><text x="50" y="35">cat</text>
+      <rect class="d-box" x="105" y="14" width="90" height="34" rx="6"></rect><text x="150" y="35">kernel</text>
+      <a href="{{ url_for('jj_vfs', slug='fuse') if 'fuse' in ready_slugs else src(fuse) }}"><rect class="d-box" x="210" y="14" width="100" height="34" rx="6"></rect><text x="260" y="35">JjFuse</text></a>
+      <a href="{{ url_for('jj_vfs', slug='inodes') if 'inodes' in ready_slugs else src(inodes) }}"><rect class="d-box" x="325" y="14" width="100" height="34" rx="6"></rect><text x="375" y="35">InodeMap</text></a>
+      <a href="{{ url_for('jj_vfs', slug='vfs-layer') if 'vfs-layer' in ready_slugs else src(vfs) }}"><rect class="d-box" x="440" y="14" width="110" height="34" rx="6"></rect><text x="495" y="30">PathMappedVfs</text><text x="495" y="43" font-size="9" class="d-muted">+ get_entry</text></a>
+      <a href="{{ url_for('jj_vfs', slug='commit-trees') if 'commit-trees' in ready_slugs else src(ctf) }}"><rect class="d-box" x="565" y="14" width="110" height="34" rx="6"></rect><text x="620" y="35">CommitTreeFile</text></a>
+      <a href="{{ url_for('jj', slug='commits') }}"><rect class="d-box" x="690" y="14" width="100" height="34" rx="6"></rect><text x="740" y="35">jj-lib Store</text></a>
+    </g>
+    <g class="vfs-life" stroke-width="1">
+      <line x1="50" y1="48" x2="50" y2="680"></line>
+      <line x1="150" y1="48" x2="150" y2="680"></line>
+      <line x1="260" y1="48" x2="260" y2="680"></line>
+      <line x1="375" y1="48" x2="375" y2="680"></line>
+      <line x1="495" y1="48" x2="495" y2="680"></line>
+      <line x1="620" y1="48" x2="620" y2="680"></line>
+      <line x1="740" y1="48" x2="740" y2="680"></line>
+    </g>
+    <g class="d-line" stroke-width="1.3" marker-end="url(#ns-arrow)">
+      <line x1="50" y1="92" x2="146" y2="92"></line>
+      <line x1="150" y1="118" x2="256" y2="118"></line>
+      <line x1="260" y1="142" x2="371" y2="142"></line>
+      <line x1="260" y1="166" x2="491" y2="166"></line>
+      <line x1="260" y1="190" x2="154" y2="190"></line>
+      <line x1="150" y1="222" x2="256" y2="222"></line>
+      <line x1="260" y1="246" x2="371" y2="246"></line>
+      <line x1="260" y1="270" x2="491" y2="270"></line>
+      <line x1="495" y1="290" x2="616" y2="290"></line>
+      <line x1="620" y1="310" x2="736" y2="310"></line>
+      <line x1="260" y1="334" x2="154" y2="334"></line>
+      <line x1="150" y1="366" x2="256" y2="366"></line>
+      <line x1="260" y1="390" x2="491" y2="390"></line>
+      <line x1="620" y1="414" x2="736" y2="414"></line>
+      <line x1="260" y1="438" x2="154" y2="438"></line>
+      <line x1="50" y1="490" x2="146" y2="490"></line>
+      <line x1="150" y1="514" x2="256" y2="514"></line>
+      <line x1="260" y1="538" x2="371" y2="538"></line>
+      <line x1="260" y1="562" x2="491" y2="562"></line>
+      <line x1="620" y1="586" x2="736" y2="586"></line>
+      <line x1="260" y1="610" x2="154" y2="610"></line>
+      <line x1="150" y1="634" x2="256" y2="634"></line>
+      <line x1="260" y1="658" x2="154" y2="658"></line>
+      <line x1="150" y1="672" x2="54" y2="672"></line>
+    </g>
+    <g font-size="10.5">
+      <text x="56" y="87">open(".../file1.txt")</text>
+      <text x="156" y="113">lookup(1, "commits")</text>
+      <text x="266" y="137">get_path(1) = "", get_ino → 2</text>
+      <text x="266" y="161">get_attributes("commits") → CommitsDirectory</text>
+      <text x="156" y="185">entry(ino 2, dir)</text>
+      <text x="156" y="217">lookup(2, "&lt;A&gt;")</text>
+      <text x="266" y="241">get_ino → 3</text>
+      <text x="266" y="265">get_attributes("commits/&lt;A&gt;")</text>
+      <text x="500" y="285">new(repo, A, "")</text>
+      <text x="626" y="305">get_commit_async</text>
+      <text x="156" y="329">entry(ino 3, dir)</text>
+      <text x="156" y="361">lookup(3, "file1.txt")</text>
+      <text x="266" y="385">get_ino → 4, get_attributes(".../file1.txt")</text>
+      <text x="626" y="409">path_value, read_file ×2</text>
+      <text x="156" y="433">entry(ino 4, file, 15 bytes)</text>
+      <text class="d-muted" x="156" y="462">open: fuser's default, file handle 0</text>
+      <text x="56" y="485">read()</text>
+      <text x="156" y="509">read(4, offset 0, size)</text>
+      <text x="266" y="533">get_path(4)</text>
+      <text x="266" y="557">read("commits/&lt;A&gt;/file1.txt", 0, size)</text>
+      <text x="626" y="581">get_commit, path_value, read_file</text>
+      <text x="156" y="605">data(15 bytes)</text>
+      <text x="156" y="629">read(4, offset 15, size)</text>
+      <text x="156" y="653">data(0 bytes)</text>
+      <text x="56" y="667">EOF</text>
+    </g>
+  </svg>
+</div>
+
+<p>
+  Three details show up here that a reader might not expect:
+</p>
+
+<ul>
+  <li>
+    <strong>Getting the file's size reads the whole file.</strong>
+    <a href="{{ src(ctf, 129, 153) }}"><code>CommitTreeFile::attributes</code></a> calls
+    <code>file_type</code> (one <code>path_value</code>), then for a file calls <code>read()</code> and copies
+    the stream into a sink to count its bytes, with a TODO noting jj-lib would need changes to avoid this.
+    <code>read()</code> does its own <code>path_value</code>, which is why the lookup row says
+    <code>read_file</code> after it.
+  </li>
+  <li>
+    <strong>Each <code>read</code> starts from the beginning.</strong>
+    <a href="{{ src(vfs, 45, 57) }}"><code>PathMappedVfs::read</code></a> opens a new reader, copies
+    <code>offset</code> bytes into a sink ("TODO: handle proper seek()"), then takes <code>size</code>
+    bytes. Reading a large file in chunks costs time proportional to the square of its length.
+  </li>
+  <li>
+    <strong>Inodes are allocated before the path is known to exist.</strong>
+    <a href="{{ src(fuse, 79, 96) }}"><code>lookup</code></a> calls <code>get_ino</code> before
+    <code>get_attributes</code>, so a lookup that ends in <code>ENOENT</code> still leaves a new inode in
+    the map, and <code>forget</code> is left to <code>fuser</code>'s no-op default
+    (<a href="{{ fuser_src }}#425">fuser source</a>). Inodes are never freed.
+  </li>
+</ul>
+
+<h2 id="limitations">6. Limitations the code makes visible</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Limitation</th><th>Where it shows</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Read-only mount. There are no write operations at all, and the mount is created with <code>MountOption::RO</code> and file system name <code>jjfs</code>.</td><td>Writes fail. <code>JjFuse</code> implements only <code>init</code>, <code>lookup</code>, <code>getattr</code>, <code>read</code>, <code>readdir</code> and <code>readlink</code>.</td><td><a href="{{ src(main, 28, 32) }}">main.rs</a>, <a href="{{ src(fuse, 69, 191) }}">fuse.rs</a></td></tr>
+      <tr><td>Frozen snapshot: the repo is loaded once at mount.</td><td>New commits, moved working copies and new workspaces never appear.</td><td><a href="{{ src(main, 48, 54) }}">main.rs</a></td></tr>
+      <tr><td>Full commit IDs only. Prefixes fail with <code>EIO</code>, not <code>ENOENT</code>.</td><td><code>commits/&lt;prefix&gt;</code></td><td><a href="{{ src(mapper, 53, 55) }}">path_mapper_all_commits.rs</a></td></tr>
+      <tr><td>Conflicted paths can't be read, typed or sized.</td><td><code>read</code> returns <code>NotADirectory</code> (<code>ENOTDIR</code>) on a conflict. <code>file_type</code>, and so <code>getattr</code>, returns an <code>InvalidData</code> I/O error ("Conflicted path"), which is <code>EIO</code>. In a listing, conflicted entries show as regular files.</td><td><a href="{{ src(ctf, 48, 48) }}">read</a>, <a href="{{ src(ctf, 161, 165) }}">file_type</a>, <a href="{{ src(ctf, 93, 95) }}">list</a></td></tr>
+      <tr><td>Submodules (and any other value kind) are shown as files but can't be read.</td><td>Listing says file, and <code>read</code> returns <code>NotAFile</code> (<code>EISDIR</code>).</td><td><a href="{{ src(ctf, 49, 54) }}">read</a>, <a href="{{ src(ctf, 91, 91) }}">list</a></td></tr>
+      <tr><td>Executable bit not shown. Every non-directory is <code>0644</code>, every directory <code>0755</code>, owned by uid/gid 1000.</td><td><code>ls -l</code></td><td><a href="{{ src(fuse, 193, 219) }}">fuse.rs</a></td></tr>
+      <tr><td>No timestamps. Created and modified are <code>UNIX_EPOCH</code> everywhere, and access time is "now".</td><td><code>ls -l</code>, <code>stat</code></td><td><a href="{{ src(fuse, 199, 202) }}">fuse.rs</a></td></tr>
+      <tr><td>No pagination. <code>commits/</code> collects every visible commit (blocking a worker thread), and commit directories collect their whole listing before replying.</td><td>Large repositories</td><td><a href="{{ src(commits_dir, 40, 50) }}">commits_directory.rs</a>, <a href="{{ src(ctf, 76, 102) }}">commit_tree_file.rs</a></td></tr>
+      <tr><td>Whole-file reads for size and for every read offset.</td><td>Large files</td><td><a href="{{ src(ctf, 131, 139) }}">attributes</a>, <a href="{{ src(vfs, 48, 49) }}">read</a></td></tr>
+      <tr><td>Inodes are never forgotten.</td><td>Memory grows with every distinct path ever looked up, including failed ones.</td><td><a href="{{ src(inodes, 70, 90) }}">inode_map.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  One upstream test is named for a case it doesn't exercise.
+  <a href="{{ src(mapper, 123, 134) }}"><code>test_all_commit_trees_mapper_invalid_commit_id</code></a>
+  resolves the path <code>invalid_commit_hex</code> at the <em>top level</em>, so it hits the "unknown
+  top-level name" arm, not commit-ID parsing. Nothing in the suite covers a bad ID under
+  <code>commits/</code>.
+</p>

@@ -50,7 +50,7 @@ PAGES = [
             "src/commits_directory.rs",
             "src/workspaces_directory.rs",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "commit-trees",

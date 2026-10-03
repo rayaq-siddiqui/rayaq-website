@@ -148,3 +148,15 @@ def test_fuse_page_names_every_fuse_op():
 
     for name in jj_vfs_docs.FUSE_OPS:
         assert f"<code>{name}</code>" in body, name
+
+
+def test_namespace_covers_every_required_section_with_diagrams():
+    if jj_vfs_docs.find_page("namespace") is None:
+        return
+    client = app_module.app.test_client()
+
+    body = client.get("/jj-vfs-poc/namespace").get_data(as_text=True)
+
+    for anchor in ["tree", "path-resolution", "directory-types", "snapshot", "worked-example", "limitations"]:
+        assert f'<h2 id="{anchor}">' in body, anchor
+    assert body.count("<svg viewBox") >= 2
