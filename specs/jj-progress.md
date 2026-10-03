@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-03 (seventh run): no upstream change since `69abfbe`; built the
-`jj describe` and `jj commit` command pages.
+**Last updated:** 2026-10-03 (eighth run): no upstream change since `69abfbe`; built the
+`jj squash` command page.
 
 ## Upstream pin
 
@@ -26,10 +26,19 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 5 of 105 (`fix`, `new`, `edit`,
-      `describe`, `commit`).
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 6 of 105 (`fix`, `new`, `edit`,
+      `describe`, `commit`, `squash`).
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
+
+## Eighth run (2026-10-03)
+
+| Commit | What |
+|---|---|
+| `b95d84e` | `squash` command page (Tier A, all eight §8A.3 items, two SVGs; covers the experimental `-o`/`-A`/`-B` mode) |
+
+Maintenance: upstream `HEAD` still at `69abfbe`, so the pin stayed. The worked example and its
+output are upstream's `test_squash` snapshots.
 
 ## Seventh run (2026-10-03)
 
@@ -107,7 +116,7 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
 
 1. Tier A commands, alternating with the remaining topics (`trees`, `conflicts`,
    `storage`, `index`, `revsets`, `backends`): ~~`new`~~, ~~`trees`~~, ~~`edit`~~, ~~`describe`~~, ~~`commit`~~,
-   `squash`, `rebase`, `abandon`, `undo`, then the rest of Tier A.
+   ~~`squash`~~, `rebase`, `abandon`, `undo`, then the rest of Tier A.
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
 
