@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-03 (tenth run): no upstream change since `69abfbe`; built the
-`jj abandon` command page.
+**Last updated:** 2026-10-03 (eleventh run): no upstream change since `69abfbe`; built the
+`jj undo` command page.
 
 ## Upstream pin
 
@@ -26,10 +26,18 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 8 of 105 (`fix`, `new`, `edit`,
-      `describe`, `commit`, `squash`, `rebase`, `abandon`).
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 9 of 105 (`fix`, `new`, `edit`,
+      `describe`, `commit`, `squash`, `rebase`, `abandon`, `undo`).
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
+
+## Eleventh run (2026-10-03)
+
+| Commit | What |
+|---|---|
+| `f332523` | `undo` command page (Tier A, all eight §8A.3 items, two SVGs) |
+
+Maintenance: upstream `HEAD` still at `69abfbe`, so the pin stayed.
 
 ## Tenth run (2026-10-03)
 
@@ -136,7 +144,9 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
 
 1. Tier A commands, alternating with the remaining topics (`trees`, `conflicts`,
    `storage`, `index`, `revsets`, `backends`): ~~`new`~~, ~~`trees`~~, ~~`edit`~~, ~~`describe`~~, ~~`commit`~~,
-   ~~`squash`~~, ~~`rebase`~~, ~~`abandon`~~, `undo`, then the rest of Tier A.
+   ~~`squash`~~, ~~`rebase`~~, ~~`abandon`~~, ~~`undo`~~, then the rest of Tier A. Next, in this order:
+   `redo`, `restore`, `split`, `absorb`, `duplicate`, `bookmark-create`/`-set`/`-move`, `git-fetch`,
+   `git-push`, then the remaining 46 Tier A commands in registry order.
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
 
@@ -156,6 +166,14 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
   shared pages for Tier C; the first three are a judgment call to keep slugs to two levels).
 
 ## Open gaps / questions for the owner
+
+- **Worked example for `undo`.** §8A.3 item 8 asks for a before/after *commit* graph. `undo` changes
+  no commits, so its page draws the *operation log* from upstream's
+  `test_jump_over_old_undo_stack` instead. The same will apply to `redo` and the `op` commands.
+- **`jj undo` with unrecorded edits.** From the code, the snapshot taken on load is committed as its
+  own operation before `undo` reads the current operation, so that snapshot is what gets undone.
+  The page states only this. It couldn't be run, because the pinned jj needs rustc 1.97.1 and the
+  sandbox has an older toolchain.
 
 - **Monospace text in diagrams.** Several `/jj` diagrams set `font-family="monospace"` on SVG
   text, but `jj.css`'s `.jj-diagram svg text` rule overrides presentation attributes, so that
