@@ -38,7 +38,7 @@ PAGES = [
         "title": "The virtual file layer",
         "summary": "The VirtualFilesystem, VirtualFile and PathMapper traits, PathMappedVfs, and how reads are served from async streams.",
         "sources": ["src/vfs.rs", "src/virtual_file.rs", "src/path_mapper.rs"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "namespace",

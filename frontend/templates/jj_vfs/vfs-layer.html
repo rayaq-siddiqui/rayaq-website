@@ -1,0 +1,213 @@
+{% set vfs = "src/vfs.rs" %}
+{% set vf = "src/virtual_file.rs" %}
+{% set pm = "src/path_mapper.rs" %}
+<header class="jj-header">
+  <h1>The virtual file layer</h1>
+  <p class="tagline">
+    The three traits between FUSE and jj: <code>VirtualFilesystem</code> (what <code>JjFuse</code> calls),
+    <code>PathMapper</code> (which file a path names) and <code>VirtualFile</code> (what a file can do),
+    plus the one adapter, <code>PathMappedVfs</code>, that joins them.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: the FUSE adapter speaks in paths, and asks a <code>VirtualFilesystem</code> for attributes,
+  bytes, directory entries or a link target. The only implementation, <code>PathMappedVfs</code>, turns
+  every one of those calls into two steps: ask the <code>PathMapper</code> for the
+  <code>VirtualFile</code> at that path, then call one method on it. A <code>VirtualFile</code> is
+  created fresh for each request and dropped afterwards. Nothing in this layer caches.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 360" role="img" aria-labelledby="vl-title vl-desc">
+    <title id="vl-title">How VirtualFilesystem calls map onto VirtualFile methods</title>
+    <desc id="vl-desc">
+      JjFuse calls one of four VirtualFilesystem methods on PathMappedVfs: get_attributes, read,
+      read_directory and read_link. Each one first calls PathMapper::get_entry with the path to get a
+      boxed VirtualFile, then calls exactly one method on it: attributes, read, list or read_link.
+      read additionally skips offset bytes and takes size bytes from the returned AsyncRead.
+    </desc>
+    <defs>
+      <marker id="vl-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj_vfs', slug='fuse') if 'fuse' in ready_slugs else src('src/fuse.rs') }}"><rect class="d-box" x="20" y="20" width="160" height="40" rx="6"></rect><text x="100" y="45" text-anchor="middle" font-family="monospace">JjFuse</text></a>
+      <a href="{{ src(vfs, 17, 22) }}"><rect class="d-box" x="230" y="20" width="250" height="40" rx="6"></rect><text x="355" y="45" text-anchor="middle" font-family="monospace">VirtualFilesystem (PathMappedVfs)</text></a>
+      <a href="{{ src(pm, 8, 13) }}"><rect class="d-box" x="530" y="20" width="210" height="40" rx="6"></rect><text x="635" y="45" text-anchor="middle" font-family="monospace">PathMapper::get_entry</text></a>
+
+      <a href="{{ src(vfs, 39, 42) }}"><rect class="d-box" x="230" y="100" width="250" height="36" rx="6"></rect><text x="242" y="123" font-family="monospace">get_attributes(path)</text></a>
+      <a href="{{ src(vfs, 45, 57) }}"><rect class="d-box" x="230" y="150" width="250" height="36" rx="6"></rect><text x="242" y="173" font-family="monospace">read(path, offset, size)</text></a>
+      <a href="{{ src(vfs, 60, 63) }}"><rect class="d-box" x="230" y="200" width="250" height="36" rx="6"></rect><text x="242" y="223" font-family="monospace">read_directory(path)</text></a>
+      <a href="{{ src(vfs, 66, 69) }}"><rect class="d-box" x="230" y="250" width="250" height="36" rx="6"></rect><text x="242" y="273" font-family="monospace">read_link(path)</text></a>
+
+      <a href="{{ src(vf, 41, 57) }}"><rect class="d-box" x="530" y="100" width="210" height="36" rx="6"></rect><text x="542" y="123" font-family="monospace">VirtualFile::attributes</text></a>
+      <a href="{{ src(vf, 43, 45) }}"><rect class="d-box" x="530" y="150" width="210" height="36" rx="6"></rect><text x="542" y="173" font-family="monospace">VirtualFile::read</text></a>
+      <a href="{{ src(vf, 47, 49) }}"><rect class="d-box" x="530" y="200" width="210" height="36" rx="6"></rect><text x="542" y="223" font-family="monospace">VirtualFile::list</text></a>
+      <a href="{{ src(vf, 51, 53) }}"><rect class="d-box" x="530" y="250" width="210" height="36" rx="6"></rect><text x="542" y="273" font-family="monospace">VirtualFile::read_link</text></a>
+      <text x="355" y="320" text-anchor="middle" class="d-muted" font-size="11">every method: 1. get_entry(path) → Box&lt;dyn VirtualFile&gt;   2. one call on it</text>
+    </g>
+    <g class="d-line" stroke-width="1.4" marker-end="url(#vl-arrow)">
+      <line x1="180" y1="40" x2="226" y2="40"></line>
+      <line x1="480" y1="40" x2="526" y2="40"></line>
+      <line x1="355" y1="60" x2="355" y2="96"></line>
+      <line x1="480" y1="118" x2="526" y2="118"></line>
+      <line x1="480" y1="168" x2="526" y2="168"></line>
+      <line x1="480" y1="218" x2="526" y2="218"></line>
+      <line x1="480" y1="268" x2="526" y2="268"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="virtual-filesystem">1. <code>VirtualFilesystem</code></h2>
+
+<p>
+  <a href="{{ src(vfs, 13, 22) }}"><code>VirtualFilesystem</code></a> is described as the "middle-layer
+  filesystem abstraction representing inode-based VFS operations", between the FUSE layer and the
+  path mapper. It is an <code>async_trait</code>, and every method takes a relative <code>&amp;Path</code>
+  (the root is the empty path) and returns <code>Result&lt;_, JjError&gt;</code>.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>get_attributes</code></td><td><code>(&amp;self, path: &amp;Path) → Result&lt;FileAttributes, JjError&gt;</code></td><td>Size, type and timestamps for <code>lookup</code> and <code>getattr</code>.</td><td><a href="{{ src(vfs, 18) }}">vfs.rs</a></td></tr>
+      <tr><td><code>read</code></td><td><code>(&amp;self, path: &amp;Path, offset: u64, size: u32) → Result&lt;Box&lt;[u8]&gt;, JjError&gt;</code></td><td>Up to <code>size</code> bytes starting at <code>offset</code>. Fewer bytes means end of file.</td><td><a href="{{ src(vfs, 19) }}">vfs.rs</a></td></tr>
+      <tr><td><code>read_directory</code></td><td><code>(&amp;self, path: &amp;Path) → Result&lt;DirectoryStream, JjError&gt;</code></td><td>The directory's entries as a stream.</td><td><a href="{{ src(vfs, 20) }}">vfs.rs</a></td></tr>
+      <tr><td><code>read_link</code></td><td><code>(&amp;self, path: &amp;Path) → Result&lt;PathBuf, JjError&gt;</code></td><td>A symlink's target.</td><td><a href="{{ src(vfs, 21) }}">vfs.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  There is no write, create, rename or remove method. The trait itself makes the mount read-only, not
+  just the mount option.
+</p>
+
+<h2 id="path-mapper">2. <code>PathMapper</code></h2>
+
+<p>
+  <a href="{{ src(pm, 8, 13) }}"><code>PathMapper</code></a> "represents the VFS mountpoint structure by
+  mapping a given absolute path to a <code>VirtualFile</code>". It has a single method,
+  <code>async fn get_entry(&amp;self, path: &amp;Path) → Result&lt;Box&lt;dyn VirtualFile&gt;, JjError&gt;</code>,
+  and requires <code>Send + Sync</code>. Despite the doc's "absolute", every caller passes a path relative
+  to the mount root. The only implementation is <code>AllCommitsPathMapper</code>, described on
+  <a href="{{ url_for('jj_vfs', slug='namespace') if 'namespace' in ready_slugs else src('src/path_mapper_all_commits.rs') }}">the mount's namespace</a>.
+  The point of the trait is that another layout (for example one showing a single workspace) would only
+  need a new mapper.
+</p>
+
+<h2 id="virtual-file">3. <code>VirtualFile</code></h2>
+
+<p>
+  <a href="{{ src(vf, 33, 57) }}"><code>VirtualFile</code></a> is "a file in our virtual file system. This
+  can either be a normal file you can read from or for example a directory". It "is not meant to be
+  created by the user, but instead returned by a <code>PathMapper</code>". Three of its five methods have
+  default implementations that fail, so each implementor only overrides what makes sense for it.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Default</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>read</code></td><td><code>(&amp;self) → Result&lt;Pin&lt;Box&lt;dyn AsyncRead + Send&gt;&gt;, JjError&gt;</code></td><td><code>Err(NotAFile)</code></td><td><a href="{{ src(vf, 43, 45) }}">virtual_file.rs</a></td></tr>
+      <tr><td><code>list</code></td><td><code>(&amp;self) → Result&lt;DirectoryStream, JjError&gt;</code></td><td><code>Err(NotADirectory)</code></td><td><a href="{{ src(vf, 47, 49) }}">virtual_file.rs</a></td></tr>
+      <tr><td><code>read_link</code></td><td><code>(&amp;self) → Result&lt;PathBuf, JjError&gt;</code></td><td><code>Err(NotASymlink)</code></td><td><a href="{{ src(vf, 51, 53) }}">virtual_file.rs</a></td></tr>
+      <tr><td><code>attributes</code></td><td><code>(&amp;self) → Result&lt;FileAttributes, JjError&gt;</code></td><td>required</td><td><a href="{{ src(vf, 55) }}">virtual_file.rs</a></td></tr>
+      <tr><td><code>file_type</code></td><td><code>(&amp;self) → Result&lt;FileType, JjError&gt;</code></td><td>required</td><td><a href="{{ src(vf, 56) }}">virtual_file.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Note that <code>read</code> takes no offset: it hands back a stream positioned at the start of the file.
+  Seeking is the caller's job (see <a href="#reads">serving reads</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Implementor</th><th>Overrides</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td><code>StaticDirectory</code></td><td><code>list</code>, <code>attributes</code>, <code>file_type</code></td><td><a href="{{ url_for('jj_vfs', slug='namespace') if 'namespace' in ready_slugs else src('src/static_directory.rs') }}">namespace</a></td></tr>
+      <tr><td><code>CommitsDirectory</code></td><td><code>list</code>, <code>attributes</code>, <code>file_type</code></td><td><a href="{{ url_for('jj_vfs', slug='namespace') if 'namespace' in ready_slugs else src('src/commits_directory.rs') }}">namespace</a></td></tr>
+      <tr><td><code>WorkspacesDirectory</code></td><td><code>list</code>, <code>attributes</code>, <code>file_type</code></td><td><a href="{{ url_for('jj_vfs', slug='namespace') if 'namespace' in ready_slugs else src('src/workspaces_directory.rs') }}">namespace</a></td></tr>
+      <tr><td><code>CommitTreeFile</code></td><td>all five</td><td><a href="{{ url_for('jj_vfs', slug='commit-trees') if 'commit-trees' in ready_slugs else src('src/commit_tree_file.rs') }}">commits as directory trees</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="data-types">4. The data types</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>FileType</code></td><td><code>enum { File, Directory, Symlink }</code></td><td>The three kinds the file system can show. <code>JjFuse</code> maps them to fuser's <code>RegularFile</code>, <code>Directory</code> and <code>Symlink</code>.</td><td><a href="{{ src(vf, 11, 16) }}">virtual_file.rs</a></td></tr>
+      <tr><td><code>FileAttributes</code></td><td><code>{ size: u64, file_type, created: SystemTime, modified: SystemTime }</code></td><td>Everything a <code>VirtualFile</code> reports about itself. Permissions, ownership and link counts are filled in later by <code>FileAttributes::to_fuse</code>.</td><td><a href="{{ src(vf, 18, 23) }}">virtual_file.rs</a></td></tr>
+      <tr><td><code>DirectoryEntry</code></td><td><code>{ name: String, file_type: FileType }</code></td><td>One listing entry. No size or inode: the FUSE layer allocates inodes itself as it emits entries.</td><td><a href="{{ src(vf, 25, 29) }}">virtual_file.rs</a></td></tr>
+      <tr><td><code>DirectoryStream</code></td><td><code>BoxStream&lt;'static, DirectoryEntry&gt;</code></td><td>A boxed, owned stream of entries, so a listing could in principle be produced lazily. Every implementor at this pin builds a <code>Vec</code> first and streams it.</td><td><a href="{{ src(vf, 31) }}">virtual_file.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="path-mapped-vfs">5. <code>PathMappedVfs</code></h2>
+
+<p>
+  <a href="{{ src(vfs, 24, 70) }}"><code>PathMappedVfs&lt;P: PathMapper&gt;</code></a> holds the mapper in
+  an <code>Arc</code> and implements each <code>VirtualFilesystem</code> method in two lines: resolve, then
+  delegate. <code>get_attributes</code> calls <code>attributes</code>, <code>read_directory</code> calls
+  <code>list</code>, <code>read_link</code> calls <code>read_link</code>, and <code>read</code> calls
+  <code>read</code> and then cuts the requested window out of the stream. Errors from either step pass
+  through unchanged, and I/O errors become <code>JjError::IO</code>, which FUSE reports as
+  <code>EIO</code>.
+</p>
+
+<h3 id="reads">Serving reads</h3>
+
+<p>
+  FUSE asks for a byte window (<code>offset</code>, <code>size</code>), but a <code>VirtualFile</code> only
+  offers a stream from the beginning. <a href="{{ src(vfs, 45, 57) }}"><code>PathMappedVfs::read</code></a>
+  bridges the two with <code>futures::io::AsyncReadExt</code>:
+</p>
+<ol>
+  <li>Open the stream with <code>virtual_file.read()</code>.</li>
+  <li>Wrap it in <code>take(offset)</code> and copy that into <code>futures::io::sink()</code>, which reads and discards the first <code>offset</code> bytes ("TODO: handle proper seek()").</li>
+  <li>Unwrap the original reader with <code>into_inner()</code>, wrap it in <code>take(size)</code>, and <code>read_to_end</code> into a buffer pre-sized to <code>size</code>.</li>
+  <li>Return the buffer as <code>Box&lt;[u8]&gt;</code>.</li>
+</ol>
+<p>
+  If the file ends before <code>offset</code>, step 2 simply stops early and step 3 returns nothing, which
+  the kernel reads as end of file. The cost is that every read starts from byte 0: reading a file in
+  chunks of <em>c</em> bytes costs about <em>n²/2c</em> bytes of decoding for a file of <em>n</em> bytes, on
+  top of the full file read that <code>getattr</code> already does to find the size.
+</p>
+
+<h2 id="tests">6. Tests</h2>
+
+<p>
+  <code>vfs.rs</code> tests <code>PathMappedVfs</code> against an in-memory fake, without jj
+  (<a href="{{ src(vfs, 72, 277) }}">source</a>). <code>MockVirtualFile</code> is a file, a directory of
+  named children, or a symlink, and <code>MockPathMapper</code> walks a tree of them. The tree is
+  <code>file.txt</code>, <code>symlink.txt → file.txt</code> and <code>dir/nested.txt</code>.
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Test</th><th>Asserts</th></tr></thead>
+    <tbody>
+      <tr><td><code>test_read_root_file</code></td><td>Reading 11 bytes from offset 0 returns <code>hello world</code>.</td></tr>
+      <tr><td><code>test_read_nested_file</code></td><td>The same through a subdirectory.</td></tr>
+      <tr><td><code>test_list_directory</code></td><td>Listing <code>dir</code> yields one <code>File</code> entry, <code>nested.txt</code>.</td></tr>
+      <tr><td><code>test_list_directory_not_a_directory</code></td><td>Listing a file fails with <code>NotADirectory</code>.</td></tr>
+      <tr><td><code>test_list_directory_not_found</code></td><td>Listing a missing path fails with <code>NotFound</code>.</td></tr>
+      <tr><td><code>test_read_link</code></td><td>The symlink's target is <code>file.txt</code>.</td></tr>
+      <tr><td><code>test_read_link_not_a_symlink</code></td><td>Reading a file as a link fails with <code>NotASymlink</code>.</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  Every read in the suite starts at offset 0, including the mounted integration test's 5-byte partial
+  read (<a href="{{ src('tests/vfs_integration.rs', 140, 148) }}">source</a>), so no test exercises the
+  offset-skipping step of <code>read</code> with a non-zero offset.
+</p>
