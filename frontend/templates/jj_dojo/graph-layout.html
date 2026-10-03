@@ -1,0 +1,317 @@
+{% set pre = "src/ui/commit_graph/algorithms/preprocess.ts" %}
+{% set drawer = "src/ui/commit_graph/algorithms/drawer.ts" %}
+{% set ranges = "src/ui/commit_graph/algorithms/range_manager.ts" %}
+{% set focus = "src/ui/commit_graph/algorithms/focus_mode.ts" %}
+{% set tests = "src/ui/commit_graph/algorithms/preprocess_test.ts" %}
+{% set focus_tests = "src/ui/commit_graph/algorithms/focus_mode_test.ts" %}
+{% set types = "src/ui/commit_graph/api/types.ts" %}
+{% set comps = "src/ui/commit_graph/components/" %}
+<header class="jj-header">
+  <h1>Commit graph layout</h1>
+  <p class="tagline">
+    How jj-dojo turns a flat list of commits into the drawn graph: an ordering pass, a row
+    for every commit, a column chosen by trial and error against reserved line ranges, and then
+    every edge broken into small tiles of SVG.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: <code>createCommitNodes</code> takes a <code>Commit[]</code> in which each commit lists
+  its children. It reorders each commit's children so branches that merge back sooner sit further
+  left, gives every commit a row (<code>y</code>, counting up from the oldest commit), and then
+  places each commit in the leftmost column (<code>x</code>) where its own line and the lines to
+  its children don't collide with lines already placed. Finally it walks every edge with a
+  <code>TileDrawer</code> that drops line fragments into a grid of three tiles per row. The webview
+  renders that grid as tiny inline SVGs. Everything runs in the webview, in one synchronous call,
+  every time the state changes.
+</p>
+
+<p>
+  All the layout code lives in <a href="{{ src('src/ui/commit_graph/algorithms/') }}"><code>src/ui/commit_graph/algorithms/</code></a>:
+  <a href="{{ src(pre) }}"><code>preprocess.ts</code></a> (1,304 lines) does the work,
+  <a href="{{ src(drawer) }}"><code>drawer.ts</code></a> and
+  <a href="{{ src(ranges) }}"><code>range_manager.ts</code></a> are its helpers, and
+  <a href="{{ src(focus) }}"><code>focus_mode.ts</code></a> filters the input first. The pass
+  is pure TypeScript with no DOM access, which is why
+  <a href="{{ src(tests) }}"><code>preprocess_test.ts</code></a> can check coordinates and
+  line types directly.
+</p>
+
+<h2 id="input">1. Input</h2>
+
+<p>
+  The layout consumes the <code>commits</code> array of one
+  <a href="{{ src(types, 261, 291) }}"><code>CommitGraphState</code></a>. Each element is a
+  <a href="{{ src(types, 20, 71) }}"><code>Commit</code></a>. Only a few of its fields matter to
+  the layout:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Used for</th></tr></thead>
+    <tbody>
+      <tr><td><code>hash</code></td><td>Node identity. Every map in the pass is keyed by it.</td></tr>
+      <tr><td><code>childrenHashes</code></td><td>The edges. Commits point at their <em>children</em> (newer commits), not their parents. The order is a display preference: the type's own comment says the algorithm "tries to respect this order, but would override it if reordering would result in a better graph". Every listed child must be in the array, or the pass throws (<a href="{{ src(types, 24, 30) }}">source</a>).</td></tr>
+      <tr><td><code>active</code></td><td>Marks the working-copy commit. It drives focus mode and the <code>isWorkingCopyCommitAncestor</code> flag that colours lines.</td></tr>
+      <tr><td><code>isImmutable</code></td><td>Stops focus mode from expanding past a commit, and selects the diamond glyph.</td></tr>
+      <tr><td><code>hasConflict</code></td><td>Glyph and colour only (a cross, in the editor's error colour).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The descriptions, chips, display IDs and timestamps are all ignored here. They belong to the row's
+  right-hand side, covered on the <a href="{{ url_for('jj_dojo', slug='graph-webview') if 'graph-webview' in ready_slugs else src(comps) }}">webview UI</a> page.
+</p>
+
+<p>
+  The array arrives through the webview's <code>$setState</code> call, and
+  <a href="{{ src(comps ~ 'app.ts', 62, 85) }}"><code>JjApp.setState</code></a> is the only caller of the
+  layout. For each repository's state it optionally applies focus mode, calls
+  <code>createCommitNodes</code>, sorts the nodes by <code>y</code> descending (newest at the
+  top), and reports the resulting order back to the extension host with
+  <code>$informNewOrder</code>: each node's final children order, the top-to-bottom hash list, and
+  the working-copy row index.
+</p>
+
+<p class="jj-note">
+  At this pin, nothing produces real commit data yet. The only implementation of the extension side,
+  <a href="{{ src('src/ui/commit_graph_provider/extension_shape_impl.ts', 52, 86) }}"><code>createFakeWebviewState</code></a>,
+  is marked <code>// TODO - Replace with a real implementation.</code> and sends a single hard-coded
+  commit. There is no <code>jj log</code> call anywhere in the extension. The layout is complete and
+  heavily tested, but in a running extension it currently draws one dot. The
+  <a href="{{ url_for('jj_dojo', slug='roadmap') if 'roadmap' in ready_slugs else src('docs/intro.md') }}">roadmap</a>
+  page covers where real data is meant to come from.
+</p>
+
+<p>
+  The output is the same objects grown into
+  <a href="{{ src(types, 358, 448) }}"><code>CommitNode</code></a>s (a <code>CommitNode</code>
+  <em>extends</em> <code>Commit</code>). Each node gains:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Meaning</th><th>Set by</th></tr></thead>
+    <tbody>
+      <tr><td><code>parents</code>, <code>children</code></td><td>Object links. Each child is a <a href="{{ src(types, 453, 461) }}"><code>CommitChildNode</code></a>: the node plus <code>lineX</code>, the column the edge to it runs up.</td><td><code>createCommitNodes</code>, <code>setXRecursively</code></td></tr>
+      <tr><td><code>descendants</code></td><td>Set of hashes reachable through children, including the node itself.</td><td><code>setDescendantsFieldRecursively</code></td></tr>
+      <tr><td><code>traverseOrder</code>, <code>smallestTraverseOrder</code></td><td>DFS preorder number, and the smallest preorder number anywhere in the node's subtree.</td><td>the ordering pass</td></tr>
+      <tr><td><code>y</code></td><td>Row. 0 is the oldest commit at the bottom.</td><td><code>setYRecursively</code></td></tr>
+      <tr><td><code>x</code></td><td>Column of the glyph. 0 is leftmost.</td><td><code>setXRecursively</code></td></tr>
+      <tr><td><code>disjointSetId</code></td><td>Which connected component the node is in.</td><td><code>setDisjointSetIdsForAllNodes</code></td></tr>
+      <tr><td><code>isWorkingCopyCommitAncestor</code></td><td>True for the working copy and everything below it. Lines into such nodes are drawn in the foreground colour, everything else greyed.</td><td><code>setIsWorkingCopyCommitAncestorRecursively</code></td></tr>
+      <tr><td><code>tileGroups</code></td><td>One <a href="{{ src(types, 492, 496) }}"><code>TileGroup</code></a> (top, glyph, bottom tile) per column of this row.</td><td><code>setTileGroupsForAllNodes</code></td></tr>
+      <tr><td><code>occupiedColumns</code></td><td>How many columns of this row actually hold something, so the text can start right after them.</td><td><code>setOccupiedColumnsForAllNodes</code></td></tr>
+      <tr><td><code>multiLineTileGroups</code></td><td>Tile groups for two-line render mode: first, intermediate and last line.</td><td><code>setMultiLineTileGroupsForAllNodes</code></td></tr>
+      <tr><td><code>isMagicRoot</code></td><td>Only true on the synthetic root described below. It never appears in the result map.</td><td><code>ROOT_NODE_BASE</code></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="pipeline">2. The preprocessing pipeline</h2>
+
+<p>
+  <a href="{{ src(pre, 66, 171) }}"><code>createCommitNodes(commits)</code></a> is the entry point
+  and the only export of <code>preprocess.ts</code>. It runs these passes in this order. Below,
+  <em>n</em> is the number of commits and <em>e</em> the number of parent–child edges.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 470" role="img" aria-labelledby="lg-pipe-title lg-pipe-desc">
+    <title id="lg-pipe-title">createCommitNodes pass order</title>
+    <desc id="lg-pipe-desc">
+      createCommitNodes first builds nodes and parent and child links and assigns disjoint set IDs.
+      Then for each connected component, from the last to the first, it picks a root (adding a magic
+      root if the component has several), and runs setDescendantsFieldRecursively,
+      optimizeChildrenOrder, fixRedundantLines, setYRecursively, setXRecursively and
+      setIsWorkingCopyCommitAncestorRecursively. After all components it sorts nodes by y and runs
+      setTileGroupsForAllNodes, setInsertActionForAllNodes, setOccupiedColumnsForAllNodes and
+      setMultiLineTileGroupsForAllNodes.
+    </desc>
+    <defs>
+      <marker id="lg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="13">
+      <rect class="d-box" x="20" y="16" width="340" height="56" rx="6"></rect>
+      <text x="36" y="40" font-family="monospace">build nodes + parent/child links</text>
+      <text class="d-muted" x="36" y="60">throws on a child missing from the array</text>
+
+      <rect class="d-box" x="400" y="16" width="340" height="56" rx="6"></rect>
+      <text x="416" y="40" font-family="monospace">setDisjointSetIdsForAllNodes</text>
+      <text class="d-muted" x="416" y="60">one id per connected component</text>
+
+      <rect class="lg-loop" x="20" y="96" width="720" height="236" rx="10"></rect>
+      <text class="d-muted" x="36" y="118">for each component, last id first (a shared y counter keeps rows unique):</text>
+
+      <rect class="d-box" x="40" y="132" width="210" height="50" rx="6"></rect>
+      <text x="54" y="154" font-family="monospace">pick root</text>
+      <text class="d-muted" x="54" y="172">magic root if several</text>
+      <rect class="d-box" x="275" y="132" width="210" height="50" rx="6"></rect>
+      <text x="289" y="154" font-family="monospace">setDescendants…</text>
+      <text class="d-muted" x="289" y="172">descendant hash sets</text>
+      <rect class="d-box" x="510" y="132" width="210" height="50" rx="6"></rect>
+      <text x="524" y="154" font-family="monospace">optimizeChildrenOrder</text>
+      <text class="d-muted" x="524" y="172">reorder siblings</text>
+
+      <rect class="d-box" x="40" y="204" width="210" height="50" rx="6"></rect>
+      <text x="54" y="226" font-family="monospace">fixRedundantLines</text>
+      <text class="d-muted" x="54" y="244">descendant-of-sibling first</text>
+      <rect class="d-box" x="275" y="204" width="210" height="50" rx="6"></rect>
+      <text x="289" y="226" font-family="monospace">setYRecursively</text>
+      <text class="d-muted" x="289" y="244">rows, bottom up</text>
+      <rect class="d-box" x="510" y="204" width="210" height="50" rx="6"></rect>
+      <text x="524" y="226" font-family="monospace">setXRecursively</text>
+      <text class="d-muted" x="524" y="244">columns + lineX</text>
+
+      <rect class="d-box" x="275" y="270" width="210" height="50" rx="6"></rect>
+      <text x="289" y="292" font-family="monospace">setIsWorkingCopy…</text>
+      <text class="d-muted" x="289" y="310">line colour flag</text>
+
+      <rect class="d-box" x="20" y="356" width="720" height="40" rx="6"></rect>
+      <text x="36" y="381" font-family="monospace">sortedNodes = all nodes sorted by y ascending</text>
+
+      <rect class="d-box" x="20" y="414" width="168" height="44" rx="6"></rect>
+      <text x="32" y="441" font-family="monospace" font-size="12">setTileGroups…</text>
+      <rect class="d-box" x="204" y="414" width="168" height="44" rx="6"></rect>
+      <text x="216" y="441" font-family="monospace" font-size="12">setInsertAction…</text>
+      <rect class="d-box" x="388" y="414" width="168" height="44" rx="6"></rect>
+      <text x="400" y="441" font-family="monospace" font-size="12">setOccupiedColumns…</text>
+      <rect class="d-box" x="572" y="414" width="168" height="44" rx="6"></rect>
+      <text x="584" y="441" font-family="monospace" font-size="12">setMultiLineTile…</text>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#lg-arrow)">
+      <line x1="360" y1="44" x2="396" y2="44"></line>
+      <line x1="250" y1="157" x2="271" y2="157"></line>
+      <line x1="485" y1="157" x2="506" y2="157"></line>
+      <path d="M615 182 V193 H145 V200"></path>
+      <line x1="250" y1="229" x2="271" y2="229"></line>
+      <line x1="485" y1="229" x2="506" y2="229"></line>
+      <path d="M615 254 V262 H380 V266"></path>
+      <line x1="380" y1="332" x2="380" y2="352"></line>
+      <line x1="188" y1="436" x2="200" y2="436"></line>
+      <line x1="372" y1="436" x2="384" y2="436"></line>
+      <line x1="556" y1="436" x2="568" y2="436"></line>
+    </g>
+  </svg>
+</div>
+
+<h3 id="build-nodes">Building nodes</h3>
+
+<p>
+  Every commit is copied into a fresh <code>CommitNode</code> with zeroed layout fields. A second loop
+  turns <code>childrenHashes</code> into object links in both directions, pushing each child as
+  <code>{node, lineX: 0}</code>. A missing child throws
+  <code>Commit a has child c which is not present in the commits array.</code>
+  (<a href="{{ src(pre, 71, 108) }}">source</a>). An empty input returns an empty map straight away.
+  <strong>O(n + e)</strong>.
+</p>
+
+<h3 id="disjoint-sets">Disjoint sets and the magic root</h3>
+
+<p>
+  <a href="{{ src(pre, 815, 846) }}"><code>setDisjointSetIdsForAllNodes</code></a> walks the input
+  in order and floods each unvisited commit's component (through parents and children) with the next
+  id, so component 0 is whichever contains the first commit in the array. <strong>O(n + e)</strong>.
+</p>
+
+<p>
+  The per-component loop then runs from the <em>last</em> id down to 0, sharing one row counter.
+  Since rows count upwards, the last component ends up at the bottom of the graph and component 0
+  (the first commit's) at the top. Within a component, the roots are the nodes with no parents. If
+  there is exactly one, it is the root. If there are several, the pass makes a synthetic parent from
+  <a href="{{ src(pre, 30, 61) }}"><code>ROOT_NODE_BASE</code></a> (hash
+  <code>ROOT_NODE_UNIQUE_HASH</code>, <code>isMagicRoot: true</code>) whose children are all the roots, so every
+  later pass can treat the component as having one entry point
+  (<a href="{{ src(pre, 118, 140) }}">source</a>). The magic root is never added to the map and never
+  gets a row (<code>setYRecursively</code> skips it), but it does take part in column placement:
+  its own one-unit vertical reservation sits at <code>y = -1..0</code>, below every real row.
+</p>
+
+<h3 id="descendants">Descendant sets</h3>
+
+<p>
+  <a href="{{ src(pre, 239, 258) }}"><code>setDescendantsFieldRecursively</code></a> fills each
+  node's <code>descendants</code> with its own hash plus the union of its children's sets, memoised on
+  "the set is non-empty". Only <code>fixRedundantLines</code> uses it. Because every set can hold up
+  to <em>n</em> hashes, this is <strong>O(n · (n + e))</strong> time and <strong>O(n²)</strong>
+  memory in the worst case.
+</p>
+
+<h3 id="children-order">Optimizing the children order</h3>
+
+<p>
+  <a href="{{ src(pre, 205, 237) }}"><code>optimizeChildrenOrder</code></a> is the aesthetic heart
+  of the layout. Its goal: among a node's children, put the ones whose subtrees <em>merge back
+  sooner</em> to the left, so their lines stay short and don't cross the longer-lived branches. It
+  repeats three steps:
+</p>
+
+<ol>
+  <li>
+    <a href="{{ src(pre, 318, 330) }}"><code>setTraverseOrderRecursively</code></a> numbers nodes in
+    DFS preorder following the current children order. A node reachable from several parents keeps
+    the number from its first visit (the leftmost path).
+  </li>
+  <li>
+    <a href="{{ src(pre, 336, 347) }}"><code>setSmallestTraverseorderRecursively</code></a> gives each
+    node the minimum preorder number in its subtree. A small value means "somewhere above me, this
+    branch rejoins something that was reached early", that is, something to the left.
+  </li>
+  <li>
+    <a href="{{ src(pre, 356, 385) }}"><code>maybeSwapChildren</code></a> walks the tree, stably
+    sorting each node's children by <code>smallestTraverseOrder</code> (ties keep their current
+    order). On the <em>first</em> node whose order changes, it stores the new order and returns
+    <code>true</code> straight away.
+  </li>
+</ol>
+
+<p>
+  A swap invalidates every traverse number, so the loop zeroes them all and starts again. It stops
+  when a full pass swaps nothing. The source comment's example: under <code>a</code>, with children
+  <code>[b, d, e]</code>, if <code>e</code> merges back into <code>c</code> (a child of
+  <code>b</code>) but <code>d</code> never merges back, then <code>e</code>'s subtree contains the
+  early-numbered <code>c</code>, so <code>e</code> sorts before <code>d</code> and the order becomes
+  <code>[b, e, d]</code>. If <code>d</code> also merged into <code>c</code>, the two would tie and
+  the caller's order would stand.
+</p>
+
+<p>
+  The loop is capped at <em>n²</em> iterations, after which it throws
+  <code>The total number of swaps reached the maximum n^2 bound.</code> Each iteration is a full
+  traversal, so the worst case is <strong>O(n² · (n + e))</strong>, though the source notes that in
+  practice "the number of swaps should be much much less than that". (The preorder counter starts
+  at 0, which is also the "unvisited" sentinel, so the root is numbered 0 and is effectively
+  re-entered as unvisited. That's harmless, because nothing points back at a root.)
+</p>
+
+<h3 id="redundant-lines">Fixing redundant lines</h3>
+
+<p>
+  jj can show an edge that is implied by another path, such as <code>A → C</code> when
+  <code>A → B → C</code> also exists. <a href="{{ src(pre, 281, 302) }}"><code>fixRedundantLines</code></a>
+  enforces one ordering rule on top of the optimizer: if a child is a descendant of a sibling listed
+  before it, the descendant moves in front of that sibling, and the rest keep their relative order.
+  The reason is in the doc comment above it: rows are assigned to children right to left, so the
+  child listed first gets its row last, and a commit that sits above its sibling must get its row
+  after that sibling. Otherwise "there's no space for B. B can now only be placed on top of C, which is
+  wrong because it's a descendant of it." Each move retries the same index (<code>--i</code>).
+  It runs over every node in the map, not just the current component's, which is redundant but
+  harmless on later iterations. It costs <strong>O(Σ deg²)</strong> per sweep, with set lookups in
+  <strong>O(1)</strong>.
+</p>
+
+<h3 id="rows">Rows: <code>setYRecursively</code></h3>
+
+<p>
+  <a href="{{ src(pre, 394, 418) }}"><code>setYRecursively</code></a> is a topological sort written as a
+  DFS. A node gets the next row number only once every one of its (non-magic) parents has one. If
+  any parent is still unvisited, the call simply returns, and the node is reached again later
+  through that last parent. It visits children <strong>right to left</strong>, so the rightmost
+  child's branch is numbered first and sits lowest, and the leftmost child's sits highest, nearest
+  its merge-back point. Row 0 is the root, so the graph grows upward. A row is a whole line of the
+  rendered graph, so <em>no two commits ever share a row</em>, and every child is above all its
+  parents. <strong>O(n + e)</strong>.
+</p>
