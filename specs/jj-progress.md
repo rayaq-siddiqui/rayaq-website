@@ -3,9 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-04 (thirty-second run): no upstream change since `4df5265`; built the
-`git clone`/`colocation`/`export`/`import`/`init`/`remote`, `sign`, `unsign` and the five `workspace`
-command pages.
+**Last updated:** 2026-10-04 (thirty-third run): no upstream change since `4df5265`; built
+`gerrit upload`, the last Tier A command page. Tier B is next.
 
 ## Upstream pin
 
@@ -27,7 +26,7 @@ command pages.
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 64 of 105, all Tier A (64 of 65;
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 65 of 105, all Tier A (65 of 65, complete;
       Tier B 0 of 27, Tier C 0 of 13). Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
       `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`, `absorb`, `duplicate`,
       `bookmark create`/`set`/`move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`,
@@ -35,28 +34,26 @@ command pages.
       `resolve`, `file chmod`/`track`/`untrack`, `sparse edit`/`reset`/`set`, `bisect run`,
       `op abandon`/`integrate`/`restore`/`revert`, `bookmark advance`/`delete`/`forget`/`rename`/
       `track`/`untrack`, `tag delete`/`set`/`track`/`untrack`, `git clone`/`colocation`/`export`/
-      `import`/`init`/`remote`, `sign`, `unsign`, `workspace add`/`forget`/`remove`/`rename`/`update-stale`.
+      `import`/`init`/`remote`, `sign`, `unsign`, `workspace add`/`forget`/`remove`/`rename`/`update-stale`, `gerrit upload`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
 
-## Thirty-second run (2026-10-04)
+## Thirty-third run (2026-10-04)
 
-Pin unchanged (`4df5265`). Pages: `git clone` `ca130e3`, `git export`/`import` `5b40048` (landed
-together; both use `test_git_import_move_export_with_default_undo`), `git init` `f3b79f6`,
-`git remote` `77f4574` (all five subcommands on one page), `git colocation` `b40cb83`
-(status/enable/disable), `sign`/`unsign` `56f3709`, `workspace add`/`forget`/`remove`/
-`rename`/`update-stale` `283ba7c` (landed together). Paths: `create_or_reuse_dir` and `Signer` live
-in `core/src/` (`file_util.rs`, `signing.rs`).
+Pin unchanged (`4df5265`). `32f055e`: `gerrit upload` (no operation recorded; Change-Id trailers exist
+only in the pushed copies). Two help-text mismatches logged below.
 
-## Twenty-seventh to thirty-first runs (2026-10-04)
+## Twenty-seventh to thirty-second runs (2026-10-04)
 
 - `d4fc639`: maintenance `03db8d1..4df5265` (signature-only code changes; `docs/config.md` grew 6
   lines, shifting config-doc ranges on 5 pages; fixed `git-push`: sign-on-push signs only *your* commits).
 - Pages: `diffedit` `d12cd80`, `run` `71e79fb`, `resolve` `0da010f`, `file chmod` `a199333`,
-  `file track`/`untrack` `c473761`, `sparse set`/`edit`/`reset` `81ce853` (no operation recorded),
-  `bisect run` `292581a`, `op restore`/`revert`/`abandon`/`integrate` `30dcf98`, `bookmark advance`
-  `5c2f4de`, `bookmark delete`/`forget` `40fcace`, `bookmark rename`/`track`/`untrack` `b241000`,
-  `tag set`/`delete`/`track`/`untrack` `e4557a0`.
+  `file track`/`untrack` `c473761`, `sparse set`/`edit`/`reset` `81ce853`, `bisect run` `292581a`,
+  `op restore`/`revert`/`abandon`/`integrate` `30dcf98`, `bookmark advance` `5c2f4de`, `bookmark
+  delete`/`forget` `40fcace`, `bookmark rename`/`track`/`untrack` `b241000`, `tag *` `e4557a0`,
+  `git clone` `ca130e3`, `git export`/`import` `5b40048`, `git init` `f3b79f6`, `git remote` `77f4574`,
+  `git colocation` `b40cb83`, `sign`/`unsign` `56f3709`, `workspace *` `283ba7c`.
+- `create_or_reuse_dir` and `Signer` live in `core/src/` (`file_util.rs`, `signing.rs`).
 
 ## Twelfth to twenty-sixth runs (2026-10-03 to 2026-10-04)
 
@@ -110,8 +107,11 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
    ~~`operation-integrate`~~, ~~`operation-restore`~~, ~~`operation-revert`~~, ~~`bookmark-advance`~~,
    ~~`bookmark-delete`~~, ~~`bookmark-forget`~~, ~~`bookmark-rename`~~, ~~`bookmark-track`~~,
    ~~`bookmark-untrack`~~, ~~`tag-*`~~, ~~`git-clone`/`-colocation`/`-export`/`-import`/`-init`/
-   `-remote`~~, ~~`sign`~~, ~~`unsign`~~, ~~`workspace-*`~~; 1 left: `gerrit-upload`. Then Tier B.
-2. Tier B commands.
+   `-remote`~~, ~~`sign`~~, ~~`unsign`~~, ~~`workspace-*`~~, ~~`gerrit-upload`~~. Tier A complete.
+2. Tier B commands, in registry order: `file annotate`, `file list`, `file search`, `file show`,
+   `sparse list`, `log`, `show`, `diff`, `interdiff`, `status`, `evolog`, `root`, `operation diff`,
+   `operation log`, `operation show`, `bookmark list`, `tag list`, `git root`, `workspace list`,
+   `workspace root`, `config edit`/`gc`/`get`/`list`/`path`/`set`/`unset`.
 3. Tier C commands (`debug` and `bench` each as one shared page).
 
 To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
@@ -130,6 +130,10 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
   shared pages for Tier C; the first three are a judgment call to keep slugs to two levels).
 
 ## Open gaps / questions for the owner
+
+- **`jj gerrit upload` help text vs code.** `--remote` says it "can be a full SSH URL", but
+  `calculate_push_remote` accepts only configured remote names; and `--merged` is parsed but never
+  turned into a push option. The page describes the code.
 
 - **`jj git remote` doc string.** `RemoteCommand`'s doc comment says "The Git repo will be a bare git
   repo stored inside the `.jj/` directory", which is only true for non-colocated workspaces (the
