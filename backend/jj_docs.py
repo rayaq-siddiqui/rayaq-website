@@ -956,6 +956,21 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "git-clone": {
+        "title": "How jj git clone works",
+        "sources": [
+            "cli/src/commands/git/clone.rs",
+            "cli/src/commands/git/mod.rs",
+            "lib/src/workspace.rs",
+            "lib/src/git.rs",
+            "lib/src/git_subprocess.rs",
+            "cli/src/git_util.rs",
+            "cli/src/revset_util.rs",
+            "cli/src/config/misc.toml",
+            "cli/src/config-schema.json",
+        ],
+        "ready": True,
+    },
     "tag-delete": {
         "title": "How jj tag delete works",
         "sources": [

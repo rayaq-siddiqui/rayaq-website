@@ -1,0 +1,389 @@
+{% set cmd = "cli/src/commands/git/clone.rs" %}
+{% set gmod = "cli/src/commands/git/mod.rs" %}
+{% set ws = "lib/src/workspace.rs" %}
+{% set git = "lib/src/git.rs" %}
+{% set gu = "cli/src/git_util.rs" %}
+{% set rs = "cli/src/revset_util.rs" %}
+{% set misc = "cli/src/config/misc.toml" %}
+{% set schema = "cli/src/config-schema.json" %}
+{% set t = "cli/tests/test_git_clone.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj git clone</code> works</h1>
+  <p class="tagline">
+    <code>jj git clone</code> creates a new jj workspace backed by a fresh Git repository, adds the
+    source as a remote, fetches from it, and checks out a new working-copy commit on top of the
+    remote's default branch. It runs as four separate operations, and removes what it created if any of
+    the first three fail.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj turns the source into an absolute URL and picks a destination directory, which must be
+  missing or empty. It creates a colocated workspace (a <code>.git</code> next to <code>.jj</code>) unless
+  colocation is turned off. Then it adds the remote <code>origin</code> (one operation) and fetches the
+  requested branches and tags (another), asking Git for the remote's default branch. It tracks that
+  branch locally, writes <code>trunk()</code> and any fetch patterns to the repo config, and finally checks
+  out a new empty commit on top of the working branch (a fourth operation).
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 170, 323) }}"><code>cmd_git_clone</code></a>. Most of the fetching
+  is the same library code as <a href="{{ url_for('jj', slug='git-fetch') }}"><code>jj git fetch</code></a>;
+  this page covers what differs. The workspace and repo it creates are described on the
+  <a href="{{ url_for('jj', slug='working-copy') }}">working copy</a> and
+  <a href="{{ url_for('jj', slug='operations') }}">operations</a> pages.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>SOURCE</code> (positional)</td><td>URL or path, required</td><td>—</td><td>The Git repo to clone; a local path is made absolute (<a href="{{ src(cmd, 60, 64) }}">source</a>).</td></tr>
+      <tr><td><code>DESTINATION</code> (positional)</td><td>path</td><td>last component of the source</td><td>The workspace directory; created with all its parents if missing (<a href="{{ src(cmd, 66, 71) }}">source</a>).</td></tr>
+      <tr><td><code>--remote NAME</code></td><td>remote name</td><td><code>origin</code></td><td>Name of the new remote (<a href="{{ src(cmd, 73, 75) }}">source</a>).</td></tr>
+      <tr><td><code>--colocate</code></td><td>bool</td><td>false</td><td>Colocate the jj repo with the Git repo. Has no effect unless <code>git.colocate</code> is <code>false</code> (<a href="{{ src(cmd, 77, 91) }}">source</a>).</td></tr>
+      <tr><td><code>--no-colocate</code></td><td>bool</td><td>false</td><td>Keep the Git repo inside <code>.jj</code> instead; conflicts with <code>--colocate</code> (<a href="{{ src(cmd, 93, 105) }}">source</a>).</td></tr>
+      <tr><td><code>--depth N</code></td><td>non-zero integer</td><td>none (full history)</td><td>Create a shallow clone of that depth (<a href="{{ src(cmd, 107, 109) }}">source</a>).</td></tr>
+      <tr><td><code>-b</code>, <code>--branch</code> (alias <code>--bookmark</code>)</td><td>name pattern, repeatable</td><td>all branches</td><td>Fetch only these branches; the first exact name that exists becomes the working-copy parent (<a href="{{ src(cmd, 111, 129) }}">source</a>).</td></tr>
+      <tr><td><code>-t</code>, <code>--tag</code></td><td>name pattern, repeatable</td><td>all tags</td><td>Fetch only these tags (<a href="{{ src(cmd, 131, 142) }}">source</a>).</td></tr>
+      <tr><td><code>--object-hash</code></td><td><code>sha1</code> or <code>sha256</code></td><td><code>git.object-hash</code></td><td>Hash algorithm of the new local Git repo; must match the remote's (<a href="{{ src(cmd, 144, 159) }}">source</a>, <a href="{{ src(gmod, 283, 298) }}"><code>ObjectHash</code></a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 57, 160) }}"><code>GitCloneArgs</code></a></p>
+
+<p>
+  Without a destination, the name is taken from the source: a trailing <code>.git</code> and then a
+  trailing <code>/</code> are stripped, and whatever follows the last <code>/</code>, <code>\</code> or
+  <code>:</code> is used (<a href="{{ src(cmd, 162, 168) }}"><code>clone_destination_for_source</code></a>).
+  So <code>https://example.com/org/repo.git</code> clones into <code>repo</code>.
+</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>git.colocate</code></td><td><code>true</code></td><td>Whether a clone is colocated; <code>--colocate</code>/<code>--no-colocate</code> override it (<a href="{{ src(misc, 27, 28) }}">default</a>, <a href="{{ src(cmd, 198, 202) }}">use</a>).</td></tr>
+      <tr><td><code>git.object-hash</code></td><td><code>"sha1"</code></td><td>Hash algorithm when <code>--object-hash</code> isn't given (<a href="{{ src(misc, 29, 29) }}">default</a>, <a href="{{ src(cmd, 212, 215) }}">use</a>).</td></tr>
+      <tr><td><code>git.track-default-bookmark-on-clone</code></td><td><code>true</code></td><td>Create a local bookmark tracking the remote's default branch (<a href="{{ src(misc, 32, 32) }}">default</a>, <a href="{{ src(cmd, 390, 390) }}">use</a>).</td></tr>
+      <tr><td><code>remotes.&lt;name&gt;.fetch-bookmarks</code>, <code>fetch-tags</code></td><td>unset (fetch all)</td><td>Used when <code>--branch</code>/<code>--tag</code> aren't given, if set in user config (<a href="{{ src(cmd, 232, 246) }}">use</a>, <a href="{{ src(rs, 478, 502) }}">parsing</a>). Written to the new repo config when they are given.</td></tr>
+      <tr><td><code>remotes.&lt;name&gt;.auto-track-bookmarks</code></td><td><code>"~*"</code> per the schema</td><td>Which fetched branches become tracked local bookmarks, as in <code>git fetch</code> (<a href="{{ src(schema, 581, 585) }}">schema</a>, <a href="{{ src(gu, 204, 214) }}">import options</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Settings are read for the new workspace's path, so conditional config scoped to the destination
+  applies (<a href="{{ src(cmd, 332, 332) }}">source</a>). After a successful clone jj may write a repo
+  config file with <code>revset-aliases."trunk()"</code> and, if <code>--branch</code> or <code>--tag</code>
+  were given, <code>remotes.&lt;name&gt;.fetch-bookmarks</code>/<code>fetch-tags</code>; the patterns are
+  joined with <code>|</code>, and an empty list becomes <code>~*</code> (matches nothing). If none of these
+  apply, no repo config file is written (<a href="{{ src(gmod, 155, 193) }}"><code>write_repo_presets</code></a>,
+  <a href="{{ src(gmod, 276, 281) }}"><code>join_string_expressions</code></a>).
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 520" role="img" aria-labelledby="gc-flow-title gc-flow-desc">
+    <title id="gc-flow-title">jj git clone: call flow</title>
+    <desc id="gc-flow-desc">
+      cmd_git_clone rejects --at-op, makes the source URL absolute, picks the destination and checks it
+      is missing or empty, then creates it. It resolves colocation, the branch and tag patterns and the
+      object hash. Inside one guarded block it initializes the workspace (operation: add workspace
+      default), adds the remote (operation: add git remote), and fetches and imports, tracking the
+      default branch (operation: fetch from git remote into empty repo). If any of those fail, it deletes
+      .jj, .git and the directory it created. Otherwise it writes trunk and fetch presets to the repo
+      config and checks out a new commit on the working branch (operation: check out git remote's branch).
+    </desc>
+    <defs>
+      <marker id="gc-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(cmd, 175, 196) }}"><rect class="d-box" x="20" y="16" width="720" height="52" rx="6"></rect>
+      <text x="32" y="38">reject --at-op; source = absolute_git_url(); destination must be missing or empty</text>
+      <text x="32" y="56" class="d-muted" font-size="11">create_dir_all(destination)</text></a>
+
+      <a href="{{ src(cmd, 198, 220) }}"><rect class="d-box" x="20" y="84" width="720" height="40" rx="6"></rect>
+      <text x="32" y="109">resolve colocate, --branch / --tag patterns, object hash; canonicalize the path</text></a>
+
+      <rect x="20" y="140" width="720" height="236" rx="8" class="d-line" fill="none" stroke-dasharray="5 4"></rect>
+      <text x="32" y="158" font-size="11" class="d-muted">guarded: any error here triggers clean-up</text>
+
+      <a href="{{ src(cmd, 325, 341) }}"><rect class="d-box" x="40" y="168" width="680" height="52" rx="6"></rect>
+      <text x="52" y="190">init_workspace: init_colocated_git or init_internal_git, maybe write .jj/.gitignore</text>
+      <text x="52" y="208" class="d-muted" font-size="11">op: add workspace 'default'</text></a>
+
+      <a href="{{ src(cmd, 343, 366) }}"><rect class="d-box" x="40" y="232" width="680" height="52" rx="6"></rect>
+      <text x="52" y="254">configure_remote: git::add_remote, then reload the workspace and repo</text>
+      <text x="52" y="272" class="d-muted" font-size="11">op: add git remote origin</text></a>
+
+      <a href="{{ src(cmd, 368, 460) }}"><rect class="d-box" x="40" y="296" width="680" height="68" rx="6"></rect>
+      <text x="52" y="318">fetch_new_remote: GitFetch fetch + import_refs, get_default_branch</text>
+      <text x="52" y="336" class="d-muted" font-size="11">pick the working branch, warn on missing names, track the default branch</text>
+      <text x="52" y="352" class="d-muted" font-size="11">op: fetch from git remote into empty repo</text></a>
+
+      <a href="{{ src(cmd, 261, 285) }}"><rect class="d-box" x="20" y="392" width="230" height="52" rx="6"></rect>
+      <text x="32" y="414">on error: remove .jj, .git</text>
+      <text x="32" y="432" class="d-muted" font-size="11">and the directory if jj made it</text></a>
+
+      <a href="{{ src(gmod, 155, 193) }}"><rect class="d-box" x="270" y="392" width="470" height="52" rx="6"></rect>
+      <text x="282" y="414">write_repo_presets: trunk(), fetch-bookmarks, fetch-tags</text>
+      <text x="282" y="432" class="d-muted" font-size="11">"Setting the revset alias `trunk()` to ..."</text></a>
+
+      <a href="{{ src(cmd, 303, 320) }}"><rect class="d-box" x="270" y="456" width="470" height="52" rx="6"></rect>
+      <text x="282" y="478">tx.check_out(working branch's commit)</text>
+      <text x="282" y="496" class="d-muted" font-size="11">op: check out git remote's branch: NAME</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" fill="none">
+      <line x1="380" y1="68" x2="380" y2="82" marker-end="url(#gc-arrow)"></line>
+      <line x1="380" y1="124" x2="380" y2="166" marker-end="url(#gc-arrow)"></line>
+      <line x1="380" y1="220" x2="380" y2="230" marker-end="url(#gc-arrow)"></line>
+      <line x1="380" y1="284" x2="380" y2="294" marker-end="url(#gc-arrow)"></line>
+      <line x1="135" y1="376" x2="135" y2="390" marker-end="url(#gc-arrow)"></line>
+      <line x1="505" y1="376" x2="505" y2="390" marker-end="url(#gc-arrow)"></line>
+      <line x1="505" y1="444" x2="505" y2="454" marker-end="url(#gc-arrow)"></line>
+    </g>
+  </svg>
+</div>
+
+<ol>
+  <li><strong>Pre-checks.</strong> <code>--at-op</code> is refused because there is no repo yet. The source
+    goes through <a href="{{ src(gu, 80, 94) }}"><code>absolute_git_url</code></a>, which lets
+    <code>gix</code> parse it as a URL, an scp-like address or a local path and canonicalizes it against
+    the current directory; that is why a later <code>jj git fetch</code> works even if the source was a
+    relative path. The destination must not exist or must be an empty directory
+    (<a href="{{ src(cmd, 175, 196) }}">source</a>).</li>
+  <li><strong>Options.</strong> Colocation is <code>!--no-colocate</code> when <code>git.colocate</code> is
+    true, otherwise <code>--colocate</code>. If either <code>--branch</code> or <code>--tag</code> is given,
+    the other one defaults to "nothing" rather than "everything", so <code>--branch main</code> fetches no
+    tags (<a href="{{ src(cmd, 198, 215) }}">source</a>).</li>
+  <li><strong>Workspace.</strong> <code>init_workspace</code> uses the settings for the new path and calls
+    <a href="{{ src(ws, 223, 253) }}"><code>Workspace::init_colocated_git</code></a> or
+    <a href="{{ src(ws, 204, 221) }}"><code>init_internal_git</code></a> (a bare Git repo in
+    <code>.jj/repo/store/git</code>). Initialization commits the first operation, which checks out the
+    root commit in workspace <code>default</code> (<a href="{{ src(ws, 143, 149) }}">source</a>). In a
+    colocated workspace, <code>.jj/.gitignore</code> is written with <code>/*</code> so Git ignores
+    <code>.jj</code> (<a href="{{ src(gmod, 110, 123) }}"><code>maybe_add_gitignore</code></a>).</li>
+  <li><strong>Remote.</strong> <a href="{{ src(git, 2613, 2651) }}"><code>git::add_remote</code></a> writes the
+    remote with fetch refspec <code>+refs/heads/*:refs/remotes/&lt;name&gt;/*</code> into the Git config
+    (<a href="{{ src(git, 2394, 2399) }}"><code>default_fetch_refspec</code></a>) and registers the remote in
+    the view. The workspace is then reloaded so the store's Git handle sees the new remote
+    (<a href="{{ src(cmd, 343, 366) }}">source</a>).</li>
+  <li><strong>Fetch.</strong> Prints <code>Fetching into new repo in "…"</code>, then runs the same
+    <code>GitFetch</code> as <code>jj git fetch</code>, with <code>--depth</code> passed through and
+    synthetic predecessors turned off because there may be many new commits. It asks Git for the
+    remote's default branch with <code>git remote show</code>
+    (<a href="{{ src(git, 3365, 3377) }}"><code>get_default_branch</code></a>,
+    <a href="{{ src('lib/src/git_subprocess.rs', 230, 244) }}"><code>spawn_remote_show</code></a>)
+    (<a href="{{ src(cmd, 375, 408) }}">source</a>).</li>
+  <li><strong>Working branch and tracking.</strong> See §6. Then the import stats are printed and the
+    transaction finishes (<a href="{{ src(cmd, 410, 460) }}">source</a>).</li>
+  <li><strong>Presets and checkout.</strong> <code>trunk()</code> is set to
+    <code>&lt;default&gt;@&lt;remote&gt;</code> only when the working branch is the default branch. If the
+    working branch's remote bookmark is a single commit, a last transaction checks it out
+    (<a href="{{ src(cmd, 287, 320) }}">source</a>).</li>
+</ol>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<ul>
+  <li><strong>Workspace and repo creation:</strong> <a href="{{ src(ws, 296, 350) }}"><code>Workspace::init_with_factories</code></a>
+    creates <code>.jj</code>, the repo directory and its stores, then the working copy. If it fails,
+    it removes <code>.jj</code> itself.</li>
+  <li><strong>Git backend:</strong> the commit store is a Git repo, colocated or internal; see the
+    <a href="{{ url_for('jj', slug='commits') }}">commits</a> page.</li>
+  <li><strong>View:</strong> the fetch imports <code>&lt;name&gt;@&lt;remote&gt;</code> remote bookmarks and
+    tags, and <code>track_remote_bookmark</code> creates the local bookmark; see the
+    <a href="{{ url_for('jj', slug='view') }}">view</a> page and
+    <a href="{{ url_for('jj', slug='bookmark-track') }}"><code>jj bookmark track</code></a>.</li>
+  <li><strong>Working copy:</strong> <code>check_out</code> creates a new empty commit on the working
+    branch and the working copy is updated to it, which is where <code>Added N files</code> comes from.</li>
+  <li><strong>Config:</strong> the repo-level config file is created only if there is something to write.</li>
+</ul>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<p>A successful clone writes four operations, in this order (<a href="{{ src(t, 1013, 1021) }}">test</a>, where the newest entry, <code>new empty commit</code>, comes from a later <code>jj new</code>):</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Operation description</th><th>What it does</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>add workspace 'default'</code></td><td>Checks out the root commit in the new workspace.</td><td><a href="{{ src(ws, 143, 149) }}">workspace.rs</a></td></tr>
+      <tr><td><code>add git remote &lt;name&gt;</code></td><td>Adds the remote to the Git config and the view.</td><td><a href="{{ src(cmd, 350, 353) }}">clone.rs</a></td></tr>
+      <tr><td><code>fetch from git remote into empty repo</code></td><td>Imports remote bookmarks and tags; may track the default branch.</td><td><a href="{{ src(cmd, 457, 458) }}">clone.rs</a></td></tr>
+      <tr><td><code>check out git remote's branch: &lt;name&gt;</code></td><td>Creates the working-copy commit on the working branch.</td><td><a href="{{ src(cmd, 310, 318) }}">clone.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The last one is skipped when there is no working branch, for example when cloning an empty repo. In
+  that case the fetch transaction has nothing to record and prints <code>Nothing changed.</code>
+  (<a href="{{ src(t, 51, 58) }}">test</a>). The repo config is written between the third and fourth
+  operations and is not part of any operation, so <code>jj undo</code> doesn't remove it.
+</p>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="working-branch">Choosing the working branch</h3>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 330" role="img" aria-labelledby="gc-wb-title gc-wb-desc">
+    <title id="gc-wb-title">How jj git clone picks the working branch</title>
+    <desc id="gc-wb-desc">
+      For each exact name in the branch patterns that is not excluded by a negative pattern, a name with
+      no remote bookmark after the fetch is recorded as missing, and the first one that exists becomes the
+      working branch. If none exists, the remote's default branch is used, provided it was fetched.
+      Missing names produce a warning. If the working branch is the default branch and
+      git.track-default-bookmark-on-clone is true, the remote bookmark is tracked, creating a local
+      bookmark. trunk is set only when the working branch is the default branch.
+    </desc>
+    <defs>
+      <marker id="gc-wb-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(cmd, 413, 428) }}"><rect class="d-box" x="20" y="16" width="720" height="58" rx="6"></rect>
+      <text x="32" y="38">for each exact name in --branch (not excluded by ~pattern):</text>
+      <text x="32" y="58" class="d-muted" font-size="11">no NAME@remote after fetch → missing; first that exists → working branch</text></a>
+
+      <a href="{{ src(cmd, 429, 434) }}"><rect class="d-box" x="20" y="96" width="350" height="58" rx="6"></rect>
+      <text x="32" y="118">none found → default branch</text>
+      <text x="32" y="138" class="d-muted" font-size="11">only if DEFAULT@remote was fetched</text></a>
+
+      <a href="{{ src(cmd, 435, 445) }}"><rect class="d-box" x="390" y="96" width="350" height="58" rx="6"></rect>
+      <text x="402" y="118">missing names → warning</text>
+      <text x="402" y="138" class="d-muted" font-size="11">"No matching branches found on remote: ..."</text></a>
+
+      <a href="{{ src(cmd, 447, 455) }}"><rect class="d-box" x="20" y="176" width="720" height="58" rx="6"></rect>
+      <text x="32" y="198">working = default and track-default-bookmark-on-clone → track_remote_bookmark</text>
+      <text x="32" y="218" class="d-muted" font-size="11">creates the local bookmark, as Git would</text></a>
+
+      <a href="{{ src(cmd, 289, 301) }}"><rect class="d-box" x="20" y="256" width="350" height="58" rx="6"></rect>
+      <text x="32" y="278">working = default → trunk()</text>
+      <text x="32" y="298" class="d-muted" font-size="11">= DEFAULT@remote in repo config</text></a>
+
+      <a href="{{ src(cmd, 303, 320) }}"><rect class="d-box" x="390" y="256" width="350" height="58" rx="6"></rect>
+      <text x="402" y="278">any working branch → check_out</text>
+      <text x="402" y="298" class="d-muted" font-size="11">if its remote bookmark is one commit</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" fill="none">
+      <line x1="195" y1="74" x2="195" y2="94" marker-end="url(#gc-wb-arrow)"></line>
+      <line x1="565" y1="74" x2="565" y2="94" marker-end="url(#gc-wb-arrow)"></line>
+      <line x1="195" y1="154" x2="195" y2="174" marker-end="url(#gc-wb-arrow)"></line>
+      <line x1="195" y1="234" x2="195" y2="254" marker-end="url(#gc-wb-arrow)"></line>
+      <line x1="565" y1="234" x2="565" y2="254" marker-end="url(#gc-wb-arrow)"></line>
+    </g>
+  </svg>
+</div>
+
+<p>
+  Only exact names count: a glob like <code>push-*</code> limits what is fetched but never selects the
+  working branch. When <code>--branch</code> names a branch other than the default, jj checks it out but
+  neither tracks it automatically nor sets <code>trunk()</code> (<a href="{{ src(cmd, 447, 455) }}">source</a>,
+  <a href="{{ src(cmd, 296, 299) }}">source</a>). Other fetched branches are tracked only if
+  <code>auto-track-bookmarks</code> matches them, exactly as in <code>jj git fetch</code>.
+</p>
+
+<h3 id="cleanup">Clean-up on failure</h3>
+
+<p>
+  Everything from creating the workspace to the end of the fetch runs in one block. If it fails, jj
+  removes <code>.jj</code>, <code>.git</code> too if colocated, and the destination directory if it
+  didn't exist before. A failure to clean up is only a warning: <code>Failed to clean up …</code>
+  (<a href="{{ src(cmd, 222, 285) }}">source</a>). Errors in the later steps (writing the config,
+  the checkout) leave the clone in place.
+</p>
+
+<p>
+  <strong>Invariants:</strong> clone never writes into a non-empty directory. A successful clone has
+  exactly one remote and, if anything was fetched, a working-copy commit whose parent is the working
+  branch's commit. <code>trunk()</code> is only pinned to the remote's default branch.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>--at-op is not respected</code> (exit 2)</td><td><code>--at-op</code> was given.</td><td><a href="{{ src(cmd, 176, 178) }}">clone.rs</a>, <a href="{{ src(t, 823, 838) }}">test</a></td></tr>
+      <tr><td><code>No destination specified and wasn't able to guess it</code></td><td>No destination and nothing usable after the last separator.</td><td><a href="{{ src(cmd, 180, 184) }}">clone.rs</a></td></tr>
+      <tr><td><code>Destination path exists and is not an empty directory</code></td><td>The destination is a file, a non-empty directory or an existing workspace.</td><td><a href="{{ src(cmd, 187, 192) }}">clone.rs</a>, <a href="{{ src(t, 139, 176) }}">test</a></td></tr>
+      <tr><td><code>Failed to create &lt;dir&gt;</code></td><td>The directory couldn't be created or canonicalized.</td><td><a href="{{ src(cmd, 194, 220) }}">clone.rs</a></td></tr>
+      <tr><td><code>Failed to parse name pattern: …</code></td><td>A bad <code>--branch</code>/<code>--tag</code> pattern.</td><td><a href="{{ src(rs, 363, 384) }}">revset_util.rs</a></td></tr>
+      <tr><td><code>Could not find repository at '…'</code></td><td>The source isn't a Git repo; the clone is cleaned up.</td><td><a href="{{ src(t, 93, 103) }}">test</a></td></tr>
+      <tr><td><code>Warning: No matching branches found on remote: …</code></td><td>An exact <code>--branch</code> name wasn't on the remote.</td><td><a href="{{ src(cmd, 435, 444) }}">clone.rs</a></td></tr>
+      <tr><td><code>Warning: Failed to clean up …</code></td><td>Removing the partial clone failed.</td><td><a href="{{ src(cmd, 276, 284) }}">clone.rs</a></td></tr>
+      <tr><td><code>Warning: Failed to resolve `revset-aliases.trunk()` …</code></td><td>Later, if the trunk bookmark is deleted or forgotten.</td><td><a href="{{ src(t, 895, 938) }}">test</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Tags have no equivalent of the missing-branch warning: an upstream TODO notes it would need adding
+  if tag patterns gain it (<a href="{{ src(cmd, 445, 445) }}">source</a>).
+</p>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 613, 739) }}">test_git_clone_remote_default_bookmark</a>. The source
+  repo has <code>main</code> (its <code>HEAD</code>) and <code>feature1</code>, both at one commit. With
+  <code>remotes.origin.auto-track-bookmarks = '~*'</code> (track nothing automatically),
+  <code>jj git clone source clone2</code> imports both remote bookmarks but tracks only the default
+  branch <code>main</code>, sets <code>trunk()</code> to <code>main@origin</code>, and checks out a new
+  commit on top:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 220" role="img" aria-labelledby="gc-ex-title gc-ex-desc">
+    <title id="gc-ex-title">The repo after jj git clone source clone2</title>
+    <desc id="gc-ex-desc">
+      The root commit, then commit ebeb70d8 with message "message", carrying the local bookmark main,
+      the tracked remote bookmark main@origin and the untracked remote bookmark feature1@origin. The new
+      empty working-copy commit 27e56779 is on top of it. trunk() resolves to main@origin.
+    </desc>
+    {% macro node(x, y, label, note="", hl=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 18 }}" y="{{ y + 4 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x + 18 }}" y="{{ y + 20 }}" font-size="10.5" class="d-muted">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <g class="d-line" stroke-width="1.5">
+      <line x1="60" y1="181" x2="60" y2="129"></line>
+      <line x1="60" y1="111" x2="60" y2="59"></line>
+    </g>
+    {{ node(60, 190, "root") }}
+    {{ node(60, 120, "ebeb70d8 message", "main (tracking main@origin), feature1@origin (untracked); trunk()") }}
+    {{ node(60, 50, "27e56779  @", "(empty) new working-copy commit", hl=True) }}
+    <a href="{{ src(t, 661, 681) }}"><rect class="d-box" x="460" y="20" width="280" height="52" rx="6"></rect>
+    <text x="472" y="42" font-size="12">repo config written by clone</text>
+    <text x="472" y="60" font-size="11" class="d-muted">revset-aliases."trunk()" = "main@origin"</text></a>
+  </svg>
+</div>
+
+<p>Upstream's output (<a href="{{ src(t, 663, 674) }}">source</a>):</p>
+
+<pre><code>Fetching into new repo in "$TEST_ENV/clone2"
+bookmark: feature1@origin [new] untracked
+bookmark: main@origin     [new] tracked
+Setting the revset alias `trunk()` to `main@origin`.
+Working copy  (@) now at: rzvqmyuk 27e56779 (empty) (no description set)
+Parent commit (@-)      : qomsplrm ebeb70d8 feature1@origin main | message
+Added 1 files, modified 0 files, removed 0 files</code></pre>
+
+<p>
+  In the same test, moving the source's <code>HEAD</code> to <code>feature1</code> makes the next clone
+  track <code>feature1</code> and set <code>trunk()</code> to <code>feature1@origin</code>. With
+  <code>git.track-default-bookmark-on-clone=false</code>, both stay untracked, but <code>trunk()</code> is
+  still set and the checkout still happens (<a href="{{ src(t, 683, 736) }}">source</a>).
+</p>
