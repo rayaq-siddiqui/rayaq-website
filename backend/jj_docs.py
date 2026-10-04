@@ -956,6 +956,31 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "sign": {
+        "title": "How jj sign works",
+        "sources": [
+            "cli/src/commands/sign.rs",
+            "lib/src/settings.rs",
+            "lib/src/commit_builder.rs",
+            "lib/src/git_backend.rs",
+            "lib/src/repo.rs",
+            "core/src/signing.rs",
+            "lib/src/config/misc.toml",
+            "cli/src/config/revsets.toml",
+        ],
+        "ready": True,
+    },
+    "unsign": {
+        "title": "How jj unsign works",
+        "sources": [
+            "cli/src/commands/unsign.rs",
+            "lib/src/settings.rs",
+            "lib/src/commit_builder.rs",
+            "lib/src/commit.rs",
+            "lib/src/revset.rs",
+        ],
+        "ready": True,
+    },
     "git-colocation": {
         "title": "How jj git colocation works",
         "sources": [

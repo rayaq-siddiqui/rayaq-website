@@ -1,0 +1,292 @@
+{% set cmd = "cli/src/commands/sign.rs" %}
+{% set settings = "lib/src/settings.rs" %}
+{% set cb = "lib/src/commit_builder.rs" %}
+{% set signing = "core/src/signing.rs" %}
+{% set libmisc = "lib/src/config/misc.toml" %}
+{% set revsets = "cli/src/config/revsets.toml" %}
+{% set t = "cli/tests/test_sign_unsign_commands.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj sign</code> works</h1>
+  <p class="tagline">
+    <code>jj sign</code> rewrites revisions so they carry a cryptographic signature from the configured
+    signing backend (GPG, GPGSM or SSH). It always signs again, even commits that are already signed, and
+    rebases their descendants.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj refuses if no signing backend is configured. It resolves <code>-r</code>, or the
+  <code>revsets.sign</code> setting (default <code>reachable(@, mutable())</code>), and checks the commits are
+  mutable. In one transaction it rewrites them and their descendants: target commits are written with the
+  sign behavior forced on, optionally with <code>--key</code>; descendants are just reparented, which signs
+  them only as <code>signing.behavior</code> says. It prints <code>Signed N commits:</code>, warns about commits
+  authored by someone else, and records <code>sign commit &lt;id&gt;</code>.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 65, 179) }}"><code>cmd_sign</code></a>. The reverse is
+  <a href="{{ url_for('jj', slug='unsign') }}"><code>jj unsign</code></a>. Signatures are also made
+  automatically when commits are written, depending on <code>signing.behavior</code>, and at push time with
+  <code>git.sign-on-push</code>; see <a href="{{ url_for('jj', slug='git-push') }}"><code>jj git push</code></a>.
+  How commits are stored is on the <a href="{{ url_for('jj', slug='commits') }}">commits</a> page.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>-r</code>, <code>--revision</code> (alias <code>--revisions</code>)</td><td>revsets, repeatable</td><td><code>revsets.sign</code></td><td>What to sign. Always re-signed: jj can't check whether a commit is already signed by you without creating a signature (<a href="{{ src(cmd, 43, 58) }}">source</a>).</td></tr>
+      <tr><td><code>--key KEY</code></td><td>string</td><td><code>signing.key</code></td><td>The key to sign with, passed to the backend (<a href="{{ src(cmd, 60, 62) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 35, 63) }}"><code>SignArgs</code></a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>signing.backend</code></td><td><code>"none"</code></td><td>Which backend signs; with <code>none</code>, <code>jj sign</code> refuses (<a href="{{ src(libmisc, 28, 31) }}">default</a>).</td></tr>
+      <tr><td><code>signing.behavior</code></td><td><code>"keep"</code></td><td>What every commit write does about signatures, including the rebased descendants here (§6).</td></tr>
+      <tr><td><code>signing.key</code></td><td>unset</td><td>Default key; <code>--key</code> overrides it.</td></tr>
+      <tr><td><code>signing.backends.gpg</code>, <code>.gpgsm</code>, <code>.ssh</code></td><td>programs <code>gpg</code>, <code>gpgsm</code>, <code>ssh-keygen</code></td><td>Backend-specific settings (<a href="{{ src(libmisc, 33, 43) }}">defaults</a>).</td></tr>
+      <tr><td><code>revsets.sign</code></td><td><code>"reachable(@, mutable())"</code></td><td>What to sign without <code>-r</code> (<a href="{{ src(revsets, 19, 19) }}">default</a>, <a href="{{ src(t, 103, 135) }}">test</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 380" role="img" aria-labelledby="sg-flow-title sg-flow-desc">
+    <title id="sg-flow-title">jj sign: call flow</title>
+    <desc id="sg-flow-desc">
+      cmd_sign checks the store's signer can sign, resolves -r or revsets.sign, checks the commits are
+      rewritable and collects them. A transaction runs transform_descendants from those commits: each
+      target is written with SignBehavior Force and the optional key override, each other descendant is
+      just reparented. Then it prints the signed commits, warns about commits not authored by you,
+      reports rebased descendants, and finishes with sign commit and the first ID.
+    </desc>
+    <defs>
+      <marker id="sg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(cmd, 70, 77) }}"><rect class="d-box" x="20" y="16" width="720" height="40" rx="6"></rect>
+      <text x="32" y="41">signer().can_sign()? otherwise "No signing backend configured"</text></a>
+
+      <a href="{{ src(cmd, 79, 96) }}"><rect class="d-box" x="20" y="72" width="720" height="40" rx="6"></rect>
+      <text x="32" y="97">resolve -r (or revsets.sign); check_rewritable_expr; collect the commits</text></a>
+
+      <rect x="20" y="128" width="720" height="128" rx="8" class="d-line" fill="none" stroke-dasharray="5 4"></rect>
+      <text x="32" y="146" font-size="11" class="d-muted">transform_descendants(targets), in one transaction</text>
+
+      <a href="{{ src(cmd, 119, 129) }}"><rect class="d-box" x="40" y="156" width="330" height="88" rx="6"></rect>
+      <text x="52" y="178">target commit</text>
+      <text x="52" y="198" class="d-muted" font-size="11">reparent; set_sign_key_override(--key)</text>
+      <text x="52" y="216" class="d-muted" font-size="11">set_sign_behavior(Force); write</text></a>
+      <a href="{{ src(cmd, 130, 133) }}"><rect class="d-box" x="390" y="156" width="330" height="88" rx="6"></rect>
+      <text x="402" y="178">descendant (not a target)</text>
+      <text x="402" y="198" class="d-muted" font-size="11">reparent; write with signing.behavior</text>
+      <text x="402" y="216" class="d-muted" font-size="11">counted as rebased</text></a>
+
+      <a href="{{ src(cmd, 141, 165) }}"><rect class="d-box" x="20" y="272" width="720" height="40" rx="6"></rect>
+      <text x="32" y="297">"Signed N commits:" list; warn "N of these commits are not authored by you."; "Rebased N ..."</text></a>
+
+      <a href="{{ src(cmd, 167, 176) }}"><rect class="d-box" x="20" y="326" width="720" height="40" rx="6"></rect>
+      <text x="32" y="351">tx.finish("sign commit ID" or "sign commit ID and N more")</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" fill="none">
+      <line x1="380" y1="56" x2="380" y2="70" marker-end="url(#sg-arrow)"></line>
+      <line x1="380" y1="112" x2="380" y2="126" marker-end="url(#sg-arrow)"></line>
+      <line x1="380" y1="256" x2="380" y2="270" marker-end="url(#sg-arrow)"></line>
+      <line x1="380" y1="312" x2="380" y2="324" marker-end="url(#sg-arrow)"></line>
+    </g>
+  </svg>
+</div>
+
+<ol>
+  <li><strong>Backend check.</strong> The store's signer can sign only if a main backend is configured
+    (<a href="{{ src(signing, 156, 159) }}"><code>Signer::can_sign</code></a>, <a href="{{ src(cmd, 72, 77) }}">source</a>).</li>
+  <li><strong>Targets.</strong> <code>-r</code> values are unioned; without any, <code>revsets.sign</code> is
+    parsed. Immutable commits are refused before anything is written (<a href="{{ src(cmd, 79, 96) }}">source</a>).</li>
+  <li><strong>Rewrite.</strong> <code>transform_descendants</code> visits the targets and all their descendants,
+    parents first, with new parents already filled in (<a href="{{ src('lib/src/repo.rs', 1483, 1507) }}">source</a>).
+    A progress bar shows the change being signed
+    (<a href="{{ src(cmd, 103, 139) }}">source</a>).</li>
+  <li><strong>Report and finish.</strong> See §5 and §7.</li>
+</ol>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<ul>
+  <li><strong>Commit writing:</strong> every commit write decides whether to sign with
+    <a href="{{ src(cb, 467, 484) }}"><code>write_to_store</code></a>: sign only if the signer can sign and
+    <code>should_sign</code> says so, then pass a signing function to the backend.</li>
+  <li><strong>Git backend:</strong> the backend serializes the commit, signs those bytes, and adds the
+    signature as a header of the Git commit object, so the commit ID changes
+    (<a href="{{ src('lib/src/git_backend.rs', 1416, 1430) }}">source</a>); see the
+    <a href="{{ url_for('jj', slug='commits') }}">commits</a> page.</li>
+  <li><strong>Signer:</strong> wraps the main backend plus the others used for verifying, with a cache
+    (<a href="{{ src(signing, 130, 154) }}"><code>Signer</code></a>).</li>
+  <li><strong>Rewrites:</strong> each signed commit is a rewrite of the old one, so bookmarks follow and the
+    working copy moves if <code>@</code> was signed.</li>
+</ul>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, covering all targets and descendants.</li>
+  <li><strong>Operation description:</strong> <code>sign commit &lt;id&gt;</code>, or
+    <code>sign commit &lt;first id&gt; and &lt;N&gt; more</code>, using the new commit IDs
+    (<a href="{{ src(cmd, 167, 176) }}">source</a>).</li>
+  <li><strong>No targets:</strong> <code>-r 'none()'</code> is a valid no-op that prints
+    <code>Nothing changed.</code> (<a href="{{ src(t, 94, 100) }}">test</a>).</li>
+  <li><strong><code>jj undo</code></strong> restores the unsigned commits.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="behavior">Sign behaviors</h3>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 240" role="img" aria-labelledby="sg-beh-title sg-beh-desc">
+    <title id="sg-beh-title">The four sign behaviors and when each signs a commit</title>
+    <desc id="sg-beh-desc">
+      drop never signs. keep, the default, signs only commits authored by you that were already signed.
+      own signs every commit authored by you. force signs every commit, which is what jj sign uses for
+      its targets. Descendants rebased by jj sign use the configured behavior.
+    </desc>
+    <g font-size="12">
+      <a href="{{ src(settings, 129, 129) }}"><rect class="d-box" x="20" y="16" width="170" height="80" rx="6"></rect>
+      <text x="32" y="40">drop</text>
+      <text x="32" y="62" class="d-muted" font-size="11">never sign</text></a>
+      <a href="{{ src(settings, 130, 132) }}"><rect class="d-box" x="200" y="16" width="170" height="80" rx="6"></rect>
+      <text x="212" y="40">keep (default)</text>
+      <text x="212" y="62" class="d-muted" font-size="11">yours and already</text>
+      <text x="212" y="78" class="d-muted" font-size="11">signed</text></a>
+      <a href="{{ src(settings, 133, 133) }}"><rect class="d-box" x="380" y="16" width="170" height="80" rx="6"></rect>
+      <text x="392" y="40">own</text>
+      <text x="392" y="62" class="d-muted" font-size="11">authored by you</text></a>
+      <a href="{{ src(settings, 134, 134) }}"><rect class="d-box" x="560" y="16" width="180" height="80" rx="6" style="stroke: var(--jj-accent)"></rect>
+      <text x="572" y="40">force</text>
+      <text x="572" y="62" class="d-muted" font-size="11">always</text></a>
+
+      <a href="{{ src(cmd, 119, 129) }}"><rect class="d-box" x="560" y="136" width="180" height="56" rx="6"></rect>
+      <text x="572" y="158">jj sign targets</text>
+      <text x="572" y="176" class="d-muted" font-size="11">set_sign_behavior(Force)</text></a>
+      <a href="{{ src(cmd, 130, 133) }}"><rect class="d-box" x="20" y="136" width="530" height="56" rx="6"></rect>
+      <text x="32" y="158">rebased descendants: whichever behavior signing.behavior selects</text>
+      <text x="32" y="176" class="d-muted" font-size="11">"yours" = author email equals user.email</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" fill="none">
+      <line x1="650" y1="96" x2="650" y2="134"></line>
+      <line x1="285" y1="134" x2="285" y2="98" stroke-dasharray="4 3"></line>
+    </g>
+  </svg>
+</div>
+
+<p>
+  <a href="{{ src(settings, 94, 112) }}"><code>SignBehavior</code></a> and
+  <a href="{{ src(settings, 124, 137) }}"><code>SignSettings::should_sign</code></a> decide per commit. "Yours"
+  means the commit's author email equals <code>user.email</code>. With the default <code>keep</code>, a signed
+  descendant you authored is signed again when <code>jj sign</code> rebases it; an unsigned one stays unsigned
+  (<a href="{{ src(t, 242, 286) }}">test with <code>drop</code></a>).
+</p>
+
+<p>
+  <strong>Invariants:</strong> every target is signed afterwards, whoever authored it. Commit contents,
+  descriptions and authors are unchanged; the committer timestamp and the commit IDs change. No immutable
+  commit is touched.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>No signing backend configured</code>, with a hint linking the commit-signing docs</td><td><code>signing.backend</code> is <code>none</code>.</td><td><a href="{{ src(cmd, 72, 77) }}">sign.rs</a>, <a href="{{ src(t, 288, 311) }}">test</a></td></tr>
+      <tr><td><code>Warning: N of these commits are not authored by you.</code></td><td>Some targets have another author email; they are still signed.</td><td><a href="{{ src(cmd, 152, 161) }}">sign.rs</a>, <a href="{{ src(t, 185, 240) }}">test</a></td></tr>
+      <tr><td>Immutable-commit error</td><td>A target is immutable.</td><td><a href="{{ src(cmd, 87, 89) }}">sign.rs</a></td></tr>
+      <tr><td><code>Signing error</code> from the backend</td><td>The signing program failed.</td><td><a href="{{ src(signing, 116, 125) }}">signing.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Re-signing on every run is deliberate but costly with hardware keys: upstream issue #5786 tracks
+  skipping commits already signed by you (<a href="{{ src(cmd, 48, 55) }}">source</a>).
+</p>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 17, 101) }}">test_sign</a>, with a test signing backend and
+  <code>behavior = "keep"</code>. Three commits <code>one</code>, <code>two</code>, <code>three</code> and an empty
+  <code>@</code> are unsigned. <code>jj sign -r ..@</code> signs all four, so every commit ID changes:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 290" role="img" aria-labelledby="sg-ex-title sg-ex-desc">
+    <title id="sg-ex-title">jj sign -r ..@</title>
+    <desc id="sg-ex-desc">
+      Before: root, then one 401ea16f, two 26a2c4cb, three 8c63f712 and the working copy fbef508b, none
+      signed. After: one 7fb98da0, two 062a3c5a, three d2174a79 and the working copy 8d7bc037, all with a
+      good signature.
+    </desc>
+    {% macro node(x, y, label, note="", hl=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 18 }}" y="{{ y + 4 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x + 18 }}" y="{{ y + 20 }}" font-size="10.5" class="d-muted">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <defs>
+      <marker id="sg-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <text x="40" y="18" font-size="12" class="d-muted">before</text>
+    <text x="460" y="18" font-size="12" class="d-muted">after jj sign -r ..@</text>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="60" y1="261" x2="60" y2="219"></line>
+      <line x1="60" y1="201" x2="60" y2="159"></line>
+      <line x1="60" y1="141" x2="60" y2="99"></line>
+      <line x1="60" y1="81" x2="60" y2="49"></line>
+      <line x1="480" y1="261" x2="480" y2="219"></line>
+      <line x1="480" y1="201" x2="480" y2="159"></line>
+      <line x1="480" y1="141" x2="480" y2="99"></line>
+      <line x1="480" y1="81" x2="480" y2="49"></line>
+      <line x1="320" y1="150" x2="420" y2="150" marker-end="url(#sg-ex-arrow)"></line>
+    </g>
+    {{ node(60, 270, "root") }}
+    {{ node(60, 210, "401ea16f one") }}
+    {{ node(60, 150, "26a2c4cb two") }}
+    {{ node(60, 90, "8c63f712 three") }}
+    {{ node(60, 40, "fbef508b  @") }}
+    {{ node(480, 270, "root") }}
+    {{ node(480, 210, "7fb98da0 one", "signed", hl=True) }}
+    {{ node(480, 150, "062a3c5a two", "signed", hl=True) }}
+    {{ node(480, 90, "d2174a79 three", "signed", hl=True) }}
+    {{ node(480, 40, "8d7bc037  @", "signed", hl=True) }}
+  </svg>
+</div>
+
+<p>Upstream's output (<a href="{{ src(t, 52, 63) }}">source</a>):</p>
+
+<pre><code>Signed 4 commits:
+  qpvuntsm 7fb98da0 (empty) one
+  rlvkpnrz 062a3c5a (empty) two
+  kkmpptxz d2174a79 (empty) three
+  zsuskuln 8d7bc037 (empty) (no description set)
+Working copy  (@) now at: zsuskuln 8d7bc037 (empty) (no description set)
+Parent commit (@-)      : kkmpptxz d2174a79 (empty) three</code></pre>
+
+<p>
+  Running the same command again signs all four again, with new IDs (<a href="{{ src(t, 79, 92) }}">source</a>).
+  There is no <code>Rebased</code> line because every descendant was itself a target.
+</p>
