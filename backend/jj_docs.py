@@ -37,8 +37,10 @@ TOPICS = [
             "lib/src/default_index/store.rs",
             "lib/src/local_working_copy.rs",
             "lib/src/simple_workspace_store.rs",
+            "lib/src/git_backend.rs",
+            "lib/src/default_backend_factories.rs",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "commits",
