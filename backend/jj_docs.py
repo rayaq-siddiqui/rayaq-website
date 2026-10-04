@@ -956,6 +956,44 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "tag-delete": {
+        "title": "How jj tag delete works",
+        "sources": [
+            "cli/src/commands/tag/delete.rs",
+            "cli/src/commands/tag/mod.rs",
+            "lib/src/view.rs",
+        ],
+        "ready": True,
+    },
+    "tag-set": {
+        "title": "How jj tag set works",
+        "sources": [
+            "cli/src/commands/tag/set.rs",
+            "lib/src/repo.rs",
+            "lib/src/view.rs",
+            "cli/src/cli_util.rs",
+            "cli/src/config/revsets.toml",
+        ],
+        "ready": True,
+    },
+    "tag-track": {
+        "title": "How jj tag track works",
+        "sources": [
+            "cli/src/commands/tag/track.rs",
+            "cli/src/commands/tag/mod.rs",
+            "lib/src/repo.rs",
+        ],
+        "ready": True,
+    },
+    "tag-untrack": {
+        "title": "How jj tag untrack works",
+        "sources": [
+            "cli/src/commands/tag/untrack.rs",
+            "cli/src/commands/tag/mod.rs",
+            "lib/src/repo.rs",
+        ],
+        "ready": True,
+    },
     "bookmark-rename": {
         "title": "How jj bookmark rename works",
         "sources": [
