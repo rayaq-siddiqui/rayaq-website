@@ -1,0 +1,246 @@
+{% set cmd = "cli/src/commands/bookmark/move.rs" %}
+{% set mod = "cli/src/commands/bookmark/mod.rs" %}
+{% set rs = "cli/src/revset_util.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+{% set t = "cli/tests/test_bookmark_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj bookmark move</code> works</h1>
+  <p class="tagline">
+    <code>jj bookmark move</code> moves existing bookmarks to a commit. You pick them by name pattern,
+    by the commits they currently point at, or both. It never creates a bookmark.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj resolves the target (<code>--to</code>, default <code>@</code>). It collects the local
+  bookmarks whose names match the patterns (all of them if none are given), keeping those that point
+  into the <code>--from</code> revsets when that is given. It drops bookmarks already at the target.
+  If nothing is left it prints <code>No bookmarks to update.</code> and stops. Otherwise every match
+  must pass the fast-forward check unless <code>--allow-backwards</code> is set. Then, in one
+  transaction, jj points them all at the target. The operation is
+  <code>point bookmark &lt;names&gt; to commit &lt;id&gt;</code>.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 73, 174) }}"><code>cmd_bookmark_move</code></a>. Its help text
+  says: "Unlike `jj bookmark set`, this command cannot create new bookmarks"
+  (<a href="{{ src(cmd, 34, 43) }}">source</a>). For setting bookmarks by exact name, creating them
+  if needed, see <a href="{{ url_for('jj', slug='bookmark-set') }}"><code>jj bookmark set</code></a>.
+  Bookmark storage is on the <a href="{{ url_for('jj', slug='view') }}">view page</a>.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>NAMES</code> (positional)</td><td>name patterns</td><td>none (all bookmarks)</td><td>Bookmarks to move. Patterns are globs by default, and other string-pattern kinds work too. Several patterns are unioned (<a href="{{ src(cmd, 47, 56) }}">source</a>, <a href="{{ src(rs, 363, 384) }}"><code>parse_union_name_patterns</code></a>).</td></tr>
+      <tr><td><code>-f</code>, <code>--from REVSETS</code></td><td>revsets, repeatable</td><td>none</td><td>Only move bookmarks that currently point into these revisions. Several are unioned (<a href="{{ src(cmd, 58, 61) }}">source</a>).</td></tr>
+      <tr><td><code>-t</code>, <code>--to REVSET</code></td><td>revset</td><td><code>@</code></td><td>The target, exactly one commit (<a href="{{ src(cmd, 63, 66) }}">source</a>). Unlike <code>create</code> and <code>set</code>, there's no <code>-r</code> here.</td></tr>
+      <tr><td><code>-B</code>, <code>--allow-backwards</code></td><td>bool</td><td>off</td><td>Allow backwards or sideways moves (<a href="{{ src(cmd, 68, 70) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  <code>NAMES</code> and <code>--from</code> form a required clap group: at least one must be given
+  (<a href="{{ src(cmd, 45) }}">source</a>). So <code>jj bookmark move</code> alone is a usage error,
+  even though "move every bookmark" would be a possible meaning, as the
+  <a href="{{ src(t, 413, 425) }}">test</a> notes.
+</p>
+<p class="jj-source"><a href="{{ src(cmd, 44, 71) }}"><code>BookmarkMoveArgs</code></a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<p>
+  The command reads no settings of its own. It never creates bookmarks, so the auto-track settings
+  used by <code>create</code> and <code>set</code> don't apply. Revset aliases from
+  <code>[revset-aliases]</code> work in <code>--from</code> and <code>--to</code>, as in any revset.
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 414" role="img" aria-labelledby="bm-flow-title bm-flow-desc">
+    <title id="bm-flow-title">jj bookmark move: call flow</title>
+    <desc id="bm-flow-desc">
+      cmd_bookmark_move loads the workspace, snapshotting the working copy, and resolves the --to target.
+      It evaluates the --from revsets if given, parses the name patterns (all names if none), and keeps
+      local bookmarks matching both. It warns about exact names with no local bookmark and drops matches
+      already at the target. If none remain it prints "No bookmarks to update." and returns. Otherwise,
+      unless --allow-backwards, the first non-fast-forward match fails the command. It warns if the
+      target is empty, sets every match to the target in a transaction, prints "Moved N bookmarks to …"
+      with a hint when several matched without names, and records "point bookmark … to commit …".
+    </desc>
+    <defs>
+      <marker id="bm-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 80, 116) }}"><rect class="d-box" x="20" y="84" width="720" height="102" rx="6"></rect>
+      <text x="32" y="105">resolve_single_rev(--to, default @); select the bookmarks to move</text>
+      <text x="32" y="124" class="d-muted" font-size="11">--from given: evaluate the union of revsets; a bookmark matches if any present add is in it</text>
+      <text x="32" y="142" class="d-muted" font-size="11">names: union of patterns (glob by default), or every name; walk local_bookmarks_matching</text>
+      <text x="32" y="160" class="d-muted" font-size="11">exact names with no local bookmark → "Warning: No matching bookmarks for names: …"</text>
+      <text x="32" y="178" class="d-muted" font-size="11">drop bookmarks already pointing at the target (not counted)</text></a>
+
+      <a href="{{ src(cmd, 118, 121) }}"><rect class="d-box" x="20" y="210" width="300" height="56" rx="6"></rect>
+      <text x="170" y="234" text-anchor="middle">nothing left →</text>
+      <text x="170" y="252" text-anchor="middle">"No bookmarks to update." and return</text></a>
+
+      <a href="{{ src(cmd, 123, 141) }}"><rect class="d-box" x="340" y="210" width="400" height="56" rx="6"></rect>
+      <text x="352" y="232">unless -B: first match failing is_fast_forward → error</text>
+      <text x="352" y="252" class="d-muted" font-size="11">empty target → "Warning: Target revision is empty."</text></a>
+
+      <a href="{{ src(cmd, 143, 172) }}"><rect class="d-box" x="20" y="290" width="720" height="104" rx="6"></rect>
+      <text x="32" y="312">start_transaction; set_local_bookmark_target(name, normal(target)) for each match</text>
+      <text x="32" y="331" class="d-muted" font-size="11">"Moved N bookmarks to …"</text>
+      <text x="32" y="349" class="d-muted" font-size="11">more than one match and no names given → "Hint: Specify bookmark by name to update just one…"</text>
+      <text x="32" y="367" class="d-muted" font-size="11">tx.finish(ui, "point bookmark &lt;names&gt; to commit &lt;id&gt;"): write the operation,</text>
+      <text x="32" y="385" class="d-muted" font-size="11">export to Git if colocated</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#bm-arrow)">
+      <line x1="380" y1="60" x2="380" y2="80"></line>
+      <line x1="170" y1="186" x2="170" y2="206"></line>
+      <line x1="540" y1="186" x2="540" y2="206"></line>
+      <line x1="540" y1="266" x2="540" y2="286"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td><code>View.local_bookmarks</code></td><td>read, write</td><td>Iterated by name matcher, then each match is set to <code>RefTarget::normal(target)</code>. A conflicted bookmark becomes a normal one.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Revset engine</td><td>read</td><td><code>--from</code> is evaluated once into a membership test (<code>containing_fn</code>), then checked against each bookmark's present adds (<a href="{{ src(cmd, 82, 100) }}">source</a>).</td><td>revsets (page planned)</td></tr>
+      <tr><td>Index (ancestry)</td><td>read</td><td><code>is_ancestor</code> for the fast-forward check (<a href="{{ src(mod, 165, 182) }}"><code>is_fast_forward</code></a>).</td><td>index (page planned)</td></tr>
+      <tr><td><code>View.head_ids</code></td><td>maybe write</td><td>The target is added as a head (<a href="{{ src(repo, 1875, 1880) }}"><code>set_local_bookmark_target</code></a>).</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td>One operation if anything moved. None if nothing matched.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, after selection and the fast-forward check (<a href="{{ src(cmd, 143) }}">source</a>). When nothing is left to move, the command returns before starting one, so no operation is recorded.</li>
+  <li><strong>Operation description:</strong> <code>point bookmark &lt;name1, name2, …&gt; to commit &lt;full hex id&gt;</code>, naming only the bookmarks that actually move (<a href="{{ src(cmd, 161, 172) }}">source</a>). It is the same text <code>bookmark set</code> uses.</li>
+  <li><strong>Commits created or rewritten:</strong> none.</li>
+  <li><strong>Working copy:</strong> snapshotted at the start, and otherwise untouched.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<p>
+  Selection (<a href="{{ src(cmd, 81, 116) }}">source</a>) is an intersection. The name side is the
+  union of the patterns, or every name when there are none. The <code>--from</code> side keeps a
+  bookmark if <em>any</em> of its present targets lies in the union of the <code>--from</code> revsets,
+  or keeps everything when <code>--from</code> isn't given. Only local bookmarks are considered. A
+  deleted bookmark, with only remote bookmarks left, can't be moved, since it has no local entry.
+</p>
+
+<p>
+  The unmatched-name warning (<a href="{{ src(mod, 184, 203) }}"><code>warn_unmatched_local_bookmarks</code></a>)
+  covers only <em>exact</em> names in the pattern expression that have no local bookmark. A glob like
+  <code>'a?'</code> that matches nothing gives no warning. A name that exists but is filtered out by
+  <code>--from</code> gives no warning either.
+</p>
+
+<p>
+  The fast-forward check is the same <code>is_fast_forward</code> as <code>bookmark set</code>: some
+  present side of the old target must be an ancestor of the new one. It runs over every match, and the
+  first failure aborts the whole command (<a href="{{ src(cmd, 123, 138) }}">source</a>).
+</p>
+
+<p>
+  <strong>Invariants:</strong> never creates or deletes a bookmark. Never rewrites a commit. Never moves
+  backwards or sideways without <code>-B</code>. Either every match moves, or none does.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>error: the following required arguments were not provided: &lt;NAMES|--from &lt;REVSETS&gt;&gt;</code></td><td>Neither names nor <code>--from</code> were given. Clap exits with status 2.</td><td><a href="{{ src(cmd, 45) }}">move.rs</a></td></tr>
+      <tr><td><code>No bookmarks to update.</code></td><td>Nothing matched, or every match is already at the target. This is a status message, not an error.</td><td><a href="{{ src(cmd, 118, 121) }}">move.rs</a></td></tr>
+      <tr><td><code>Warning: No matching bookmarks for names: &lt;names&gt;</code></td><td>Exact names that have no local bookmark.</td><td><a href="{{ src(mod, 184, 203) }}">mod.rs</a></td></tr>
+      <tr><td><code>Refusing to move bookmark backwards or sideways: &lt;name&gt;</code>, hint <code>Use --allow-backwards to allow it.</code></td><td>The first match that isn't a fast-forward. Nothing moves.</td><td><a href="{{ src(cmd, 123, 138) }}">move.rs</a></td></tr>
+      <tr><td><code>Warning: Target revision is empty.</code></td><td>The target has no changes and no description.</td><td><a href="{{ src(cmd, 139, 141) }}">move.rs</a></td></tr>
+      <tr><td><code>Hint: Specify bookmark by name to update just one of the bookmarks.</code></td><td>More than one bookmark moved and no names were given.</td><td><a href="{{ src(cmd, 154, 159) }}">move.rs</a></td></tr>
+      <tr><td><code>Failed to parse name pattern: …</code></td><td>A name pattern doesn't parse.</td><td><a href="{{ src(rs, 374, 380) }}">revset_util.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 387, 468) }}">test_bookmark_move_matching</a>. Bookmarks
+  <code>a1</code> and <code>a2</code> sit on one branch. <code>b1</code> and <code>c1</code> sit on
+  another, under <code>@</code> (described <code>head2</code>). Then
+  <code>jj bookmark move --from=::@</code> moves every bookmark in <code>@</code>'s ancestry up to
+  <code>@</code>:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 270" role="img" aria-labelledby="bm-ex-title bm-ex-desc">
+    <title id="bm-ex-title">jj bookmark move --from=::@</title>
+    <desc id="bm-ex-desc">
+      Before: from root, one branch has e8849ae1 with a1 and a2, then 9328ecc5. The other branch has
+      c2934cfb with b1, then 2cbf6566 with c1, then @ 0dd9a4b1. After jj bookmark move --from=::@,
+      b1 and c1 are both on @ 0dd9a4b1. a1 and a2 are not ancestors of @, so they stay.
+    </desc>
+    <defs>
+      <marker id="bm-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% macro node(x, y, label, note="", hl=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 15 }}" y="{{ y + 4 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x + 15 }}" y="{{ y + 19 }}" font-size="10.5" class="d-muted">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    {% macro graph(ox, after) -%}
+      <g class="d-line" stroke-width="1.5">
+        <line x1="{{ ox + 60 }}" y1="231" x2="{{ ox + 60 }}" y2="49"></line>
+        <line x1="{{ ox + 60 }}" y1="240" x2="{{ ox + 180 }}" y2="179"></line>
+        <line x1="{{ ox + 180 }}" y1="161" x2="{{ ox + 180 }}" y2="119"></line>
+      </g>
+      {{ node(ox + 60, 240, "root") }}
+      {{ node(ox + 60, 170, "c2934cfb", "" if after else "b1") }}
+      {{ node(ox + 60, 110, "2cbf6566", "" if after else "c1") }}
+      {{ node(ox + 60, 40, "@ 0dd9a4b1", "b1 c1" if after else "head2", hl=after) }}
+      {{ node(ox + 180, 170, "e8849ae1", "a1 a2") }}
+      {{ node(ox + 180, 110, "9328ecc5") }}
+    {%- endmacro %}
+    <text x="20" y="18" font-size="12" class="d-muted">before</text>
+    <text x="420" y="18" font-size="12" class="d-muted">after move --from=::@</text>
+    {{ graph(0, False) }}
+    <line x1="320" y1="140" x2="390" y2="140" class="d-line" stroke-width="1.5" marker-end="url(#bm-ex-arrow)"></line>
+    {{ graph(400, True) }}
+  </svg>
+</div>
+
+<p>Upstream's snapshot:</p>
+
+<pre><code>$ jj bookmark move --from=::@
+Moved 2 bookmarks to vruxwmqv 0dd9a4b1 b1 c1 | (empty) head2
+Hint: Specify bookmark by name to update just one of the bookmarks.</code></pre>
+
+<p>
+  <code>a1</code> and <code>a2</code> aren't in <code>::@</code>, so they aren't selected. The hint
+  appears because two bookmarks moved and no names were given. In the same
+  <a href="{{ src(t, 490, 498) }}">test</a>, <code>jj bookmark move '?1'</code> selects
+  <code>a1</code>, <code>b1</code> and <code>c1</code> by glob. It fails with
+  <code>Refusing to move bookmark backwards or sideways: a1</code>, because <code>a1</code>'s
+  commit isn't an ancestor of <code>@</code>, and nothing moves at all.
+</p>

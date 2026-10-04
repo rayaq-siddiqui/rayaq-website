@@ -956,6 +956,39 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "bookmark-move": {
+        "title": "How jj bookmark move works",
+        "sources": [
+            "cli/src/commands/bookmark/move.rs",
+            "cli/src/commands/bookmark/mod.rs",
+            "cli/src/revset_util.rs",
+            "lib/src/repo.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
+    "bookmark-set": {
+        "title": "How jj bookmark set works",
+        "sources": [
+            "cli/src/commands/bookmark/set.rs",
+            "cli/src/commands/bookmark/mod.rs",
+            "cli/src/revset_util.rs",
+            "lib/src/repo.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
+    "bookmark-create": {
+        "title": "How jj bookmark create works",
+        "sources": [
+            "cli/src/commands/bookmark/create.rs",
+            "cli/src/commands/bookmark/mod.rs",
+            "cli/src/revset_util.rs",
+            "lib/src/repo.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
     "duplicate": {
         "title": "How jj duplicate works",
         "sources": [
