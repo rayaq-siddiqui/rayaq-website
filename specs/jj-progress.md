@@ -64,24 +64,11 @@ GH #8298 TODO), `sparse set`/`edit`/`reset` `81ce853` (no operation recorded).
 
 ## Fifth to eleventh runs (2026-10-03)
 
-Upstream `HEAD` stayed at `69abfbe` throughout, so the pin never moved.
-
-| Run | Commit | What |
-|---|---|---|
-| 11 | `f332523` | `undo` command page (worked example drawn as an operation log) |
-| 10 | `b859736` | `abandon` command page |
-| 9 | `6dfaf93` | `rebase` command page, including how `compute_move_commits` derives every new parent list and the duplicate-divergent check |
-| 8 | `b95d84e` | `squash` command page, including the experimental `-o`/`-A`/`-B` mode |
-| 7 | `0e29d5e` | `describe` command page, plus a test that every ready Tier A command page except `fix` has the eight section anchors and at least two diagrams |
-| 7 | `a25d7eb` | `commit` command page |
-| 6 | `42d2f3d` | `edit` command page |
-| 5 | `a760e3f` | `trees` topic page: `Tree`, `TreeValue`, `MergedTree`/`MergedTreeValue`, tree diffs, `MergedTreeBuilder`, copy records and copy history (two SVGs) |
-
-Every command page meets all eight §8A.3 items with two SVGs. Each worked example and its output
-are an upstream CLI test's snapshot (`test_describe_multiple_commits`, `test_commit_paths`,
-`test_squash`, `test_rebase_single_revision`, `test_basics`, `test_jump_over_old_undo_stack`).
-Some core types (`CommitId`, `id_type!`) live in the `core/` crate (`core/src/`), not `lib/src/`,
-so cite them there. Every source path cited by a `/jj` template was checked to exist at the pin.
+Pin unchanged (`69abfbe`). Pages: `trees` topic `a760e3f`, `edit` `42d2f3d`, `commit` `a25d7eb`,
+`describe` `0e29d5e` (plus a test that every ready Tier A page except `fix` has the eight section
+anchors and at least two diagrams), `squash` `b95d84e`, `rebase` `6dfaf93`, `abandon` `b859736`,
+`undo` `f332523` (example drawn as an operation log). Core types such as `CommitId` and `id_type!`
+live in the `core/` crate (`core/src/`), not `lib/src/`, so cite them there.
 
 ## Second to fourth runs (2026-10-02 to 2026-10-03)
 
