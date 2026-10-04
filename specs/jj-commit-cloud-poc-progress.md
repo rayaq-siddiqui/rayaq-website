@@ -3,14 +3,41 @@
 Running log for the daily jj-commit-cloud-poc architecture Routine. Read this first, update it last.
 The contract is `specs/jj-commit-cloud-poc.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-03 (second run). Upstream unchanged since the pin; built the
-`object-ids` flagship page.
+**Last updated:** 2026-10-04 (third run). Upstream unchanged since the pin; built the
+`client-backend` page.
 
 ## Upstream pin
 
 `jj-vcs/jj-commit-cloud-poc@4b1c77b9db365e426e49846669a1626698fd5fa6` (committed 2026-09-01,
 `jj-lib`/`jj-cli` 0.43.0), analyzed 2026-10-03. Held in `jj_cloud_docs.UPSTREAM`. jj links point
 at the `v0.43.0` tag of `jj-vcs/jj`.
+
+## §10 acceptance criteria
+
+- [x] `/jj-commit-cloud-poc` renders the §6 diagram and links to every page in §5 (boxes for
+      unbuilt pages link to pinned source until the page exists).
+- [ ] Every §5 page exists, meets its "Must cover" column, and is registered: `protobufs`,
+      `object-ids`, `client-backend` done; `client-op-store`, `server`, `storage`, `cli`, `testing`
+      to go.
+- [ ] `object-ids` meets all seven §8 items with at least two SVG diagrams (done, three SVGs);
+      `cli` has its sequence diagram (not built yet).
+- [x] `protobufs` covers both `.proto` files, every RPC and every field.
+- [x] Every source link is pinned (`UPSTREAM.commit` or `v<jj_lib_version>`; tested).
+- [x] §7.5 tests exist and pass (138 tests in the suite, all sections).
+- [x] Homepage card links to `/jj-commit-cloud-poc`.
+- [x] Mobile at 390px: no horizontal page scroll on `/jj-commit-cloud-poc` and every ready page
+      (checked in headless Chromium this run).
+- [x] The daily Routine has run in maintenance mode (second and third runs: no relevant upstream
+      change).
+
+## Third run (2026-10-04)
+
+| Commit | What |
+|---|---|
+| `0ae8f60` | `client-backend` page: struct and fixed IDs, `init`/`load` and `config.toml`, registration, every `Backend` method and its RPC, commit and tree-entry conversions, `run_async`, error mapping, limitations; one call-path SVG |
+
+Maintenance: upstream `HEAD` still at `4b1c77b`, so the pin stayed. jj-lib claims were checked
+against `lib/src/backend.rs` at the `v0.43.0` tag.
 
 ## Second run (2026-10-03)
 
@@ -45,7 +72,7 @@ Regenerate the same way when the schemas change, so names, numbers and line link
 2. ~~`protobufs`~~
 3. ~~§6 architecture diagram on the index~~
 4. ~~`object-ids` (flagship, §8)~~
-5. `client-backend`
+5. ~~`client-backend`~~
 6. `client-op-store`
 7. `server`
 8. `storage`
@@ -67,6 +94,14 @@ Regenerate the same way when the schemas change, so names, numbers and line link
   links jj-lib's `git_backend.rs` at `v0.43.0` directly.
 
 ## Open gaps / questions for the owner
+
+- **A new connection per object.** Every `Backend` call spawns a thread, builds a tokio runtime
+  and opens a new gRPC connection (`run_async` + `connect`), with `concurrency()` at 1 and no
+  timeouts. The `client-backend` page states this from the code. Its cost wasn't measured, since
+  the server isn't built here.
+- **Signatures and `write_commit`'s return value.** Signatures are sent but always read back as
+  `None`, and `write_commit` returns the commit as passed in, not as stored. Combined with the
+  narrow commit hash, two different commits can get one ID.
 
 - **No authentication, and client-supplied commit IDs.** `WriteCommit` stores a commit under the
   ID in the request when one is present, without checking it. The stock client always sends an
