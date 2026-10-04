@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-04 (twenty-sixth run): no upstream change since `03db8d1`; built the
-`jj revert` command page.
+**Last updated:** 2026-10-04 (twenty-seventh run): no upstream change since `03db8d1`; built the
+`jj diffedit`, `jj run`, `jj resolve` and `jj file chmod` command pages.
 
 ## Upstream pin
 
@@ -21,31 +21,38 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] The `fix` page meets all ten §8 items, with three SVG diagrams.
 - [x] The `protobufs` page covers all seven `.proto` files, every field.
 - [x] Every source link is pinned to `UPSTREAM.commit` (tested).
-- [x] §7.5 tests exist and pass (132 tests in the suite, including the other sections').
+- [x] §7.5 tests exist and pass (138 tests in the suite, including the other sections').
 - [x] Homepage card links to `/jj`.
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 27 of 105 (`fix`, `new`, `edit`,
-      `describe`, `commit`, `squash`, `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`,
-      `absorb`, `duplicate`, `bookmark create`, `bookmark set`, `bookmark move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`, `parallelize`, `simplify-parents`, `arrange`, `converge`, `revert`).
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 31 of 105, all Tier A (31 of 65;
+      Tier B 0 of 27, Tier C 0 of 13). Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
+      `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`, `absorb`, `duplicate`,
+      `bookmark create`/`set`/`move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`,
+      `parallelize`, `simplify-parents`, `arrange`, `converge`, `revert`, `diffedit`, `run`,
+      `resolve`, `file chmod`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
 
-## Twenty-sixth run (2026-10-04)
+## Twenty-seventh run (2026-10-04)
+
+Maintenance: upstream `HEAD` still at `03db8d1`, so the pin stayed. Four Tier A pages, each with
+all eight §8A.3 items and two SVGs, every `src()` range checked against the pinned checkout:
 
 | Commit | What |
 |---|---|
-| `cd1593a` | `revert` command page (Tier A, all eight §8A.3 items, two SVGs; example from upstream's `test_revert`) |
+| `d12cd80` | `diffedit`: `-r` vs `--from`/`--to`, the diff editor config, external editors' sparse temp checkouts and `JJ-INSTRUCTIONS`, the built-in editor (example: `test_diffedit`) |
+| `71e79fb` | `run`: the `.jj/run/default` slot pool, scheduling, all-or-nothing failures, the 3-way rewrite (example: `test_run_parallel_changes_propagate_to_descendants`) |
+| `0da010f` | `resolve`: up-front 2-sided/regular-file checks, external tools file by file, `:builtin`/`:ours`/`:theirs`, partial resolution (example: `test_resolution`) |
+| `a199333` | `file chmod`: the bit set on every term, sides and bases (example: `test_chmod_regular_conflict`) |
 
-Maintenance: upstream `HEAD` still at `03db8d1`, so the pin stayed.
+## Twenty-fifth and twenty-sixth runs (2026-10-04)
 
-## Twenty-fifth run (2026-10-04)
-
-| Commit | What |
-|---|---|
-| `197de77` | Maintenance `c16d378..03db8d1` (3 templater commits). Only `cli_util.rs` touched a source set, and its one-line change is outside every cited range; all 72 citations into changed files checked with a diff-based line map. `COMMANDS` regenerated identically, no `.proto` changes: pin only |
-| `c993b6f` | `converge` command page (Tier A, all eight §8A.3 items, two SVGs; example from upstream's `test_converge_simple`), plus a test that diagram `<title>`/`<desc>` text contains no markup |
+`197de77`: maintenance `c16d378..03db8d1` (3 templater commits; only `cli_util.rs` touched a source
+set, outside every cited range; all 72 citations into changed files checked with a diff-based line
+map; `COMMANDS` regenerated identically; pin only). `c993b6f`: `converge` page, plus a test that
+diagram `<title>`/`<desc>` text contains no markup. `cd1593a`: `revert` page.
 
 ## Seventeenth to twenty-fourth runs (2026-10-04)
 
@@ -113,8 +120,9 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
    `storage`, `index`, `revsets`, `backends`): ~~`new`~~, ~~`trees`~~, ~~`edit`~~, ~~`describe`~~, ~~`commit`~~,
    ~~`squash`~~, ~~`rebase`~~, ~~`abandon`~~, ~~`undo`~~, then the rest of Tier A. Next, in this order:
    ~~`redo`~~, ~~`restore`~~, ~~`split`~~, ~~`absorb`~~, ~~`duplicate`~~, ~~`bookmark-create`/`-set`/`-move`~~, ~~`git-fetch`~~,
-   ~~`git-push`~~, then the remaining 38 Tier A commands in registry order (next:
-   `diffedit`, `run`, `resolve`, `file-chmod`).
+   ~~`git-push`~~, then the remaining Tier A commands in registry order: ~~`diffedit`~~, ~~`run`~~,
+   ~~`resolve`~~, ~~`file-chmod`~~; 34 left (next: `file-track`, `file-untrack`, `sparse-edit`,
+   `sparse-reset`, `sparse-set`, `bisect-run`).
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
 
@@ -134,6 +142,10 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
   shared pages for Tier C; the first three are a judgment call to keep slugs to two levels).
 
 ## Open gaps / questions for the owner
+
+- **`jj run` new-file size limit.** Slots snapshot with `max_new_file_size: 64_000_u64`, next to a
+  comment saying "64 MB for now"; 64,000 bytes is about 64 kB, so larger new files a command creates
+  stay untracked. The page states the value in the code and notes the comment.
 
 - **`jj converge` base-commit comment.** A source comment in `lib/src/converge.rs` says the tree
   merge base F is "any of those producer commits (we pick the first one)", but
