@@ -956,6 +956,18 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "gerrit-upload": {
+        "title": "How jj gerrit upload works",
+        "sources": [
+            "cli/src/commands/gerrit/mod.rs",
+            "cli/src/commands/gerrit/upload.rs",
+            "lib/src/git.rs",
+            "lib/src/git_subprocess.rs",
+            "cli/src/config-schema.json",
+            "cli/src/config/templates.toml",
+        ],
+        "ready": True,
+    },
     "workspace-add": {
         "title": "How jj workspace add works",
         "sources": [
