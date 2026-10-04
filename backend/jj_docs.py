@@ -956,6 +956,26 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "prev": {
+        "title": "How jj prev works",
+        "sources": [
+            "cli/src/commands/prev.rs",
+            "cli/src/movement_util.rs",
+            "lib/src/repo.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
+    "next": {
+        "title": "How jj next works",
+        "sources": [
+            "cli/src/commands/next.rs",
+            "cli/src/movement_util.rs",
+            "lib/src/repo.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
     "metaedit": {
         "title": "How jj metaedit works",
         "sources": [
