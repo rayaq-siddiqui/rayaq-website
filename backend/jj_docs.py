@@ -84,7 +84,7 @@ TOPICS = [
             "lib/src/tree_merge.rs",
             "docs/technical/conflicts.md",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "operations",

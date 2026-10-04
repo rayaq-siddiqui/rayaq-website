@@ -1,0 +1,758 @@
+{% set mg = "core/src/merge.rs" %}
+{% set cl = "core/src/conflict_labels.rs" %}
+{% set cf = "lib/src/conflicts.rs" %}
+{% set tm = "lib/src/tree_merge.rs" %}
+{% set doc = "docs/technical/conflicts.md" %}
+{% set be = "core/src/backend.rs" %}
+{% set mt = "lib/src/merged_tree.rs" %}
+{% set fl = "lib/src/files.rs" %}
+{% set gb = "lib/src/git_backend.rs" %}
+{% set sb = "lib/src/simple_backend.rs" %}
+{% set lwc = "lib/src/local_working_copy.rs" %}
+{% set tc = "lib/tests/test_conflicts.rs" %}
+<header class="jj-header">
+  <h1>First-class conflicts</h1>
+  <p class="tagline">
+    How jj records a conflict instead of stopping on it: <code>Merge&lt;T&gt;</code>, an odd-length list
+    of alternating added and removed terms. The same type holds conflicted commits, paths, bookmarks
+    and file hunks. This page covers how it simplifies and resolves, how a conflicted tree is stored,
+    and how a conflict becomes conflict markers in a file and back.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: a conflict is the expression <code>A + (C − B) + (E − D) …</code>, stored as the list
+  <code>[A, B, C, D, E]</code>. Nothing is ever merged up front. Whenever jj needs a value it first
+  tries <code>trivial_merge</code>, which cancels equal added and removed terms, and only falls back
+  to reading contents (subtrees, then file hunks) when that fails. Rebasing a conflicted commit
+  flattens the nested expressions and simplifies away cancelling pairs, so conflicts don't pile up.
+  When written to disk, a conflicted file gets conflict markers, and jj remembers the marker length so
+  it can parse the file back into a <code>Merge</code> on the next snapshot.
+</p>
+
+<h2 id="model">1. The data model</h2>
+
+<p>
+  The design doc puts it this way: "When a merge conflict happens, it is recorded as an ordered list of
+  tree objects linked from the commit (instead of the usual single tree per commit). There will always
+  be an odd number of trees". The first tree is a starting point, and every following pair is a diff to
+  apply to it: trees <code>A, B, C, D, E</code> mean <code>A+(C-B)+(E-D)</code>, and an ordinary
+  three-way merge of <code>A</code> and <code>C</code> with base <code>B</code> is just
+  <code>A, B, C</code> (<a href="{{ src(doc, 15, 34) }}">conflicts.md</a>).
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 260" role="img" aria-labelledby="cf-layout-title cf-layout-desc">
+    <title id="cf-layout-title">How Merge stores a five-term conflict</title>
+    <desc id="cf-layout-desc">
+      Merge's single field, values, is a SmallVec holding A, B, C, D and E at indexes 0 to 4. Even
+      indexes are adds (positive terms) and odd indexes are removes (negative terms). adds() returns A,
+      C and E; removes() returns B and D. get_add(i) reads index 2i and get_remove(i) reads index 2i+1.
+      The conflict reads as A plus the diff from B to C plus the diff from D to E, and has three sides.
+    </desc>
+    <defs>
+      <marker id="cf-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(mg, 179, 189) }}"><rect class="d-box" x="20" y="16" width="230" height="44" rx="6"></rect>
+      <text x="32" y="36" font-family="monospace">Merge&lt;T&gt;</text>
+      <text x="32" y="52" class="d-muted" font-size="11">values: SmallVec&lt;[T; 1]&gt;</text></a>
+
+      <text x="100" y="98" text-anchor="middle" class="d-muted">index 0</text>
+      <text x="230" y="98" text-anchor="middle" class="d-muted">1</text>
+      <text x="360" y="98" text-anchor="middle" class="d-muted">2</text>
+      <text x="490" y="98" text-anchor="middle" class="d-muted">3</text>
+      <text x="620" y="98" text-anchor="middle" class="d-muted">4</text>
+
+      <a href="{{ src(mg, 265, 268) }}"><rect class="d-box" x="40" y="106" width="120" height="44" rx="6" style="stroke: var(--jj-accent)"></rect>
+      <text x="100" y="128" text-anchor="middle" font-family="monospace">+ A</text>
+      <text x="100" y="143" text-anchor="middle" class="d-muted" font-size="10">first() / get_add(0)</text></a>
+      <a href="{{ src(mg, 260, 263) }}"><rect class="d-box" x="170" y="106" width="120" height="44" rx="6"></rect>
+      <text x="230" y="128" text-anchor="middle" font-family="monospace">− B</text>
+      <text x="230" y="143" text-anchor="middle" class="d-muted" font-size="10">get_remove(0)</text></a>
+      <a href="{{ src(mg, 265, 268) }}"><rect class="d-box" x="300" y="106" width="120" height="44" rx="6" style="stroke: var(--jj-accent)"></rect>
+      <text x="360" y="128" text-anchor="middle" font-family="monospace">+ C</text>
+      <text x="360" y="143" text-anchor="middle" class="d-muted" font-size="10">get_add(1)</text></a>
+      <a href="{{ src(mg, 260, 263) }}"><rect class="d-box" x="430" y="106" width="120" height="44" rx="6"></rect>
+      <text x="490" y="128" text-anchor="middle" font-family="monospace">− D</text>
+      <text x="490" y="143" text-anchor="middle" class="d-muted" font-size="10">get_remove(1)</text></a>
+      <a href="{{ src(mg, 265, 268) }}"><rect class="d-box" x="560" y="106" width="120" height="44" rx="6" style="stroke: var(--jj-accent)"></rect>
+      <text x="620" y="128" text-anchor="middle" font-family="monospace">+ E</text>
+      <text x="620" y="143" text-anchor="middle" class="d-muted" font-size="10">get_add(2)</text></a>
+
+      <text x="295" y="190" text-anchor="middle" class="d-muted">diff 0: B → C</text>
+      <text x="555" y="190" text-anchor="middle" class="d-muted">diff 1: D → E</text>
+
+      <a href="{{ src(mg, 235, 241) }}"><rect class="d-box" x="20" y="208" width="350" height="40" rx="6"></rect>
+      <text x="32" y="232" font-family="monospace">= A + (C − B) + (E − D)</text></a>
+      <a href="{{ src(mg, 315, 318) }}"><rect class="d-box" x="390" y="208" width="350" height="40" rx="6"></rect>
+      <text x="402" y="232" font-family="monospace">num_sides() = len / 2 + 1 = 3</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5">
+      <path d="M230 150 V170 H360 V150"></path>
+      <path d="M490 150 V170 H620 V150"></path>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#cf-arrow)">
+      <line x1="135" y1="60" x2="100" y2="84"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="merge">2. <code>Merge&lt;T&gt;</code></h2>
+
+<p>
+  <a href="{{ src(mg, 179, 189) }}"><code>Merge&lt;T&gt;</code></a> has one private field,
+  <code>values: SmallVec&lt;[T; 1]&gt;</code>, which "alternates between positive and negative terms,
+  starting with positive". The invariant is in the doc comment: "There is exactly one more
+  <code>adds()</code> than <code>removes()</code>", and "the merge's (i+1)-st add is matched with the
+  i-th remove. The zeroth add is considered a diff from the non-existent state." A resolved value is
+  the one-element case, so <code>Merge&lt;T&gt;</code> costs nothing extra when there is no conflict:
+  the <code>SmallVec</code> holds one item inline. Its <code>Debug</code> output prints
+  <code>Resolved(..)</code> or <code>Conflicted([..])</code>
+  (<a href="{{ src(mg, 197, 207) }}">source</a>), and <code>ContentHash</code> hashes the slice of terms
+  (<a href="{{ src(mg, 191, 195) }}">source</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Function</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(mg, 210, 216) }}"><code>from_vec</code></a></td><td>Wrap an alternating list. Panics with "must have an odd number of terms".</td></tr>
+      <tr><td><a href="{{ src(mg, 218, 232) }}"><code>from_removes_adds</code></a></td><td>Interleave separate lists; panics unless there is exactly one more add than removes.</td></tr>
+      <tr><td><a href="{{ src(mg, 234, 241) }}"><code>from_diffs</code></a></td><td>A first side plus a series of <code>Diff</code>s, each contributing <code>[before, after]</code>.</td></tr>
+      <tr><td><a href="{{ src(mg, 243, 258) }}"><code>resolved</code></a>, <code>repeated</code></td><td>One term, or one value repeated for <code>num_sides * 2 - 1</code> terms.</td></tr>
+      <tr><td><a href="{{ src(mg, 260, 268) }}"><code>removes</code></a>, <code>adds</code></td><td>Odd indexes and even indexes, via <code>step_by(2)</code>.</td></tr>
+      <tr><td><a href="{{ src(mg, 288, 304) }}"><code>first</code></a>, <code>get_remove</code>, <code>get_add</code></td><td>Index <code>0</code>, <code>2i+1</code> and <code>2i</code>.</td></tr>
+      <tr><td><a href="{{ src(mg, 315, 343) }}"><code>num_sides</code></a>, <code>is_resolved</code>, <code>as_resolved</code>, <code>into_resolved</code></td><td>The number of adds, and whether there is exactly one term. These "do not resolve trivial merges": <code>[0, 0, 1]</code> is not resolved until you ask.</td></tr>
+      <tr><td><a href="{{ src(mg, 394, 427) }}"><code>simplify</code></a>, <code>simplify_by</code>, <code>update_from_simplified</code></td><td>Drop cancelling add/remove pairs (<a href="#simplify">section 5</a>), optionally comparing through a projection, and write a simplified result back into the original shape.</td></tr>
+      <tr><td><a href="{{ src(mg, 429, 436) }}"><code>resolve_trivial</code></a></td><td>Run <code>trivial_merge</code> on the terms (<a href="#trivial">section 4</a>).</td></tr>
+      <tr><td><a href="{{ src(mg, 438, 448) }}"><code>pad_to</code></a></td><td>Grow to more sides by appending copies of a value.</td></tr>
+      <tr><td><a href="{{ src(mg, 469, 520) }}"><code>map</code></a>, <code>into_map</code>, <code>try_map</code>, <code>try_map_async</code>, <code>zip</code></td><td>Term-by-term transforms that keep the shape. <code>zip</code> asserts both sides have the same length.</td></tr>
+      <tr><td><a href="{{ src(mg, 541, 568) }}"><code>MergeBuilder</code></a></td><td>Collect an iterator, then check the odd length in <code>build()</code>. It exists so <code>Merge</code> never needs a <code>FromIterator</code> that could see an even count.</td></tr>
+      <tr><td><a href="{{ src(mg, 687, 721) }}"><code>flatten</code></a></td><td>Turn a <code>Merge&lt;Merge&lt;T&gt;&gt;</code> into a <code>Merge&lt;T&gt;</code> (<a href="#simplify">section 5</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="merge-option">Absent values: <code>Merge&lt;Option&lt;T&gt;&gt;</code></h3>
+<p>
+  Paths and refs use <code>Option</code> terms, where <code>None</code> means "not present on this
+  term". A file added on two sides is <code>[Some(x), None, Some(y)]</code>, a modify/delete conflict
+  has a <code>None</code> add. The extra methods
+  (<a href="{{ src(mg, 611, 678) }}">source</a>) are <code>absent()</code> (resolved <code>None</code>),
+  <code>normal(v)</code> (resolved <code>Some(v)</code>), <code>is_absent</code>/<code>is_present</code>,
+  <code>as_normal</code>, <code>present_adds</code>/<code>present_removes</code>, and a conversion to
+  and from the "legacy form" of two lists with the <code>None</code>s dropped. That conversion "is lossy:
+  the order of <code>None</code> values is not preserved".
+</p>
+
+<h3 id="diff">The two-term companion: <code>Diff&lt;T&gt;</code></h3>
+<p>
+  <a href="{{ src(mg, 36, 46) }}"><code>Diff&lt;T&gt;</code></a> is <code>{ before, after }</code>, "a
+  generic diff/transition from one value to another", explicitly "not a diff in the
+  <code>patch(1)</code> sense". It has <code>map</code>, <code>zip</code>, <code>invert</code> (swap the
+  two), <code>as_ref</code>, <code>into_array</code> and <code>is_changed</code>
+  (<a href="{{ src(mg, 48, 107) }}">source</a>). Tree diffs yield
+  <code>Diff&lt;MergedTreeValue&gt;</code>, and <code>Merge::from_diffs</code> builds a conflict out of
+  a sequence of them.
+</p>
+
+<h2 id="uses">3. Where <code>Merge</code> appears</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Type</th><th>Meaning</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(be, 202, 208) }}"><code>Commit.root_tree: Merge&lt;TreeId&gt;</code></a></td><td>The commit's contents. Conflicted means several whole root trees.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td><a href="{{ src(be, 205, 208) }}"><code>Commit.conflict_labels: Merge&lt;String&gt;</code></a></td><td>"If resolved, must be empty string. Otherwise, must have same number of terms as <code>root_tree</code>."</td><td><a href="#labels">section 6</a></td></tr>
+      <tr><td><a href="{{ src(be, 423, 432) }}"><code>MergedTreeValue = Merge&lt;Option&lt;TreeValue&gt;&gt;</code></a></td><td>One path looked up in every term of a conflicted tree.</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td><a href="{{ src('core/src/op_store.rs', 64, 64) }}"><code>RefTarget = Merge&lt;Option&lt;CommitId&gt;&gt;</code></a></td><td>A bookmark or tag, conflicted when concurrent operations moved it differently.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td><code>Merge&lt;Option&lt;FileId&gt;&gt;</code>, <code>Merge&lt;BString&gt;</code></td><td>A file conflict as IDs, then as contents and as individual hunks.</td><td><a href="#materialize">section 9</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  This page is about the first three. The design doc notes that conflicts between bookmark targets are a
+  separate topic (<a href="{{ src(doc, 5, 7) }}">conflicts.md</a>); they use the same type and the same
+  trivial merge, and the <a href="{{ url_for('jj', slug='operations') }}">operations</a> page covers how
+  they arise.
+</p>
+
+<h2 id="trivial">4. Trivial merge and the same-change rule</h2>
+
+<p>
+  <a href="{{ src(mg, 124, 177) }}"><code>trivial_merge(values, same_change)</code></a> resolves a
+  merge using only equality of its terms, without looking inside them. It asserts the term count is
+  odd, then:
+</p>
+<ol>
+  <li>One term: that's the answer.</li>
+  <li>Three terms <code>[add0, remove, add1]</code> (the common case, handled directly): if both adds are
+    equal and <code>same_change</code> is <code>Accept</code>, return it; else if <code>add0 == remove</code>
+    return <code>add1</code>; else if <code>add1 == remove</code> return <code>add0</code>; else no
+    result.</li>
+  <li>Otherwise count each distinct value, <code>+1</code> for an add and <code>−1</code> for a remove,
+    and drop values whose count is zero ("they have canceled out"). One value left (with count 1): that's
+    the result. Two left and <code>Accept</code>: "All sides made the same change", so return the one
+    with the positive count. Anything else is a real conflict.</li>
+</ol>
+
+<p>
+  <a href="{{ src(mg, 109, 122) }}"><code>SameChange</code></a> has two values. <code>Keep</code>
+  "leaves same-change conflict unresolved". <code>Accept</code> "resolves same-change conflict as if one
+  side were unchanged (i.e. <code>A+(A-B)=A</code>)", matching Git and Mercurial. The doc comment adds
+  that this "means that repeated 3-way merging of multiple trees may give different results depending
+  on the order of merging". The design doc calls it lossy: rebasing onto a commit that already contains
+  the same change and back again can lose changes. jj accepts that "because it is more user-friendly in
+  the vast majority of cases" (<a href="{{ src(doc, 65, 79) }}">conflicts.md</a>). The setting is
+  <code>merge.same-change</code>, default <code>"accept"</code>.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Terms</th><th><code>Keep</code></th><th><code>Accept</code></th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td><code>[0, 0, 1]</code></td><td>1</td><td>1</td><td>Side 1 is unchanged from the base, so side 2 wins.</td></tr>
+      <tr><td><code>[0, 1, 1]</code></td><td>0</td><td>0</td><td>Side 2 is unchanged.</td></tr>
+      <tr><td><code>[0, 1, 0]</code></td><td>none</td><td>0</td><td>Both sides made the same change from 1 to 0.</td></tr>
+      <tr><td><code>[0, 1, 2]</code></td><td>none</td><td>none</td><td>A real conflict.</td></tr>
+      <tr><td><code>[0, 0, 1, 1, 2]</code></td><td>2</td><td>2</td><td>0 and 1 each cancel; only 2 is left.</td></tr>
+      <tr><td><code>[0, 1, 2, 0, 2]</code></td><td>none</td><td>2</td><td>0 cancels; 2 appears twice as an add and once as a remove.</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source">Rows taken from <a href="{{ src(mg, 777, 840) }}"><code>test_trivial_merge</code></a>.</p>
+
+<h2 id="simplify">5. Flattening and simplification</h2>
+
+<p>
+  When one of the inputs to a merge is itself a conflict, jj "simply insert[s] the conflict expression
+  there. Then we simplify by removing canceling terms" (<a href="{{ src(doc, 44, 49) }}">conflicts.md</a>).
+  The two steps are separate functions.
+</p>
+
+<p>
+  <a href="{{ src(mg, 687, 721) }}"><code>flatten</code></a> takes the outer terms in order. Added inner
+  merges are appended as they are. A removed inner merge is negated: its adds become removes and vice
+  versa, done by rotating its terms left by one and then swapping each adjacent pair, "so we preserve the
+  diffs". Its doc comment shows a three-way merge of three-way merges becoming one nine-term merge.
+</p>
+
+<p>
+  <a href="{{ src(mg, 394, 403) }}"><code>simplify</code></a> "joins diffs like A-&gt;B and B-&gt;C into
+  A-&gt;C" and "drops trivial diffs like A-&gt;A". The work is in
+  <a href="{{ src(mg, 345, 378) }}"><code>get_simplified_mapping</code></a>: walk the adds; for each, find
+  a remove with an equal value; if found, move the add into that remove's diff slot and delete the pair.
+  It returns index positions rather than values so that <code>simplify_by</code> can compare through a
+  projection and <code>update_from_simplified</code> can map an edited, simplified merge back to the
+  original shape. Neither function looks inside the terms or cares about <code>SameChange</code>.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 330" role="img" aria-labelledby="cf-simp-title cf-simp-desc">
+    <title id="cf-simp-title">Rebasing a conflicted commit: flatten then simplify</title>
+    <desc id="cf-simp-desc">
+      Commit X has the conflict C plus the diff from A to B, stored as C, A, B. Rebasing X from parent
+      C to parent D builds the outer merge D, C, X: new base, old base, old tree. Flattening appends D,
+      then the negated C, then X's three terms, giving D, C, C, A, B. Simplification finds that the add C
+      at index 2 equals the remove C at index 1 and deletes that pair, leaving D, A, B: a plain
+      three-way merge of D and B with base A, with no trace of C.
+    </desc>
+    <defs>
+      <marker id="cf-arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src('lib/src/rewrite.rs', 393, 420) }}"><rect class="d-box" x="20" y="16" width="720" height="58" rx="6"></rect>
+      <text x="32" y="38" font-family="monospace">rebase: MergedTree::merge([new_base, old_base, old_tree])</text>
+      <text x="32" y="60" class="d-muted" font-size="11">= [ [D], [C], [C, A, B] ]   (X itself is the conflict C + (B − A))</text></a>
+
+      <a href="{{ src(mg, 687, 721) }}"><rect class="d-box" x="20" y="110" width="160" height="44" rx="6"></rect>
+      <text x="100" y="137" text-anchor="middle" font-family="monospace">flatten()</text></a>
+      <rect class="d-box" x="220" y="110" width="520" height="44" rx="6"></rect>
+      <text x="260" y="137" text-anchor="middle" font-family="monospace">+D</text>
+      <text x="340" y="137" text-anchor="middle" font-family="monospace" class="d-accent">−C</text>
+      <text x="420" y="137" text-anchor="middle" font-family="monospace" class="d-accent">+C</text>
+      <text x="500" y="137" text-anchor="middle" font-family="monospace">−A</text>
+      <text x="580" y="137" text-anchor="middle" font-family="monospace">+B</text>
+      <text x="660" y="137" text-anchor="middle" class="d-muted" font-size="11">5 terms</text>
+
+      <a href="{{ src(mg, 345, 403) }}"><rect class="d-box" x="20" y="194" width="160" height="44" rx="6"></rect>
+      <text x="100" y="221" text-anchor="middle" font-family="monospace">simplify()</text></a>
+      <rect class="d-box" x="220" y="194" width="520" height="44" rx="6"></rect>
+      <text x="260" y="221" text-anchor="middle" font-family="monospace">+D</text>
+      <text x="340" y="221" text-anchor="middle" font-family="monospace">−A</text>
+      <text x="420" y="221" text-anchor="middle" font-family="monospace">+B</text>
+      <text x="580" y="221" text-anchor="middle" class="d-muted" font-size="11">= D + (B − A)</text>
+
+      <a href="{{ src(mt, 168, 193) }}"><rect class="d-box" x="20" y="274" width="720" height="40" rx="6"></rect>
+      <text x="32" y="298" font-family="monospace">MergedTree::resolve() then merges what is left path by path (section 7)</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#cf-arrow2)">
+      <line x1="100" y1="74" x2="100" y2="106"></line>
+      <line x1="180" y1="132" x2="216" y2="132"></line>
+      <line x1="100" y1="154" x2="100" y2="190"></line>
+      <line x1="180" y1="216" x2="216" y2="216"></line>
+      <line x1="100" y1="238" x2="100" y2="270"></line>
+    </g>
+  </svg>
+</div>
+
+<p>
+  This is the design doc's own example: B based on A, rebased to C with conflicts, left unresolved, then
+  rebased to D. "That expression can be simplified to <code>D+(B-A)</code> … This is what lets the user
+  keep old commits rebased to head without resolving conflicts and still not get messy recursive
+  conflicts." Reverting a conflicted change cancels the same way, back to a plain tree
+  (<a href="{{ src(doc, 51, 63) }}">conflicts.md</a>). In code, the rebase in
+  <code>CommitRewriter::rebase_with_empty_behavior</code> passes the three trees to
+  <a href="{{ src(mt, 334, 365) }}"><code>MergedTree::merge</code></a>, which flattens the tree IDs and
+  their labels together, simplifies both with <code>ConflictLabels::simplify_with</code>, and then calls
+  <code>resolve()</code>.
+</p>
+
+<h2 id="labels">6. Conflict labels</h2>
+
+<p>
+  <a href="{{ src(cl, 21, 27) }}"><code>ConflictLabels</code></a> wraps a <code>Merge&lt;String&gt;</code>
+  with one label per term. "If the merge is resolved, the label must be empty", and
+  <a href="{{ src(cl, 37, 56) }}"><code>from_merge</code></a>/<code>from_vec</code> collapse a resolved or
+  all-empty merge to <code>unlabeled()</code>. <code>get_add</code>/<code>get_remove</code> treat an empty
+  string as "no label" (<a href="{{ src(cl, 89, 103) }}">source</a>).
+  <a href="{{ src(cl, 105, 120) }}"><code>simplify_with</code></a> zips the labels with a merge,
+  simplifies by the merge's values only, and unzips, so each label stays attached to its term.
+</p>
+
+<p>
+  Labels are chosen where a merge is built. A rebase labels its three inputs
+  <code>"&lt;parents&gt; (rebase destination)"</code>,
+  <code>"&lt;parents&gt; (parents of rebased revision)"</code> and
+  <code>"&lt;commit&gt; (rebased revision)"</code> (<a href="{{ src('lib/src/rewrite.rs', 399, 418) }}">source</a>).
+  A commit's label is its short change ID and commit ID plus the quoted first line of its description,
+  with control characters removed; several parents are joined with <code>", "</code> using only the short
+  form (<a href="{{ src('lib/src/commit.rs', 217, 258) }}">commit.rs</a>). When one of the inputs is already
+  conflicted, <a href="{{ src(mt, 145, 166) }}"><code>labels_by_term</code></a> keeps its existing labels
+  instead, "This ensures that rebasing conflicted commits keeps meaningful labels"; old conflicts without
+  labels get empty strings. Labels show up in conflict markers (<code>+++++++ side #1</code> is the
+  fallback when there is none) and in the commit's stored form below.
+</p>
+
+<h2 id="tree-merge">7. Resolving a conflicted tree</h2>
+
+<p>
+  <a href="{{ src(tm, 76, 96) }}"><code>merge_trees(store, Merge&lt;TreeId&gt;)</code></a> is the
+  recursive merge behind <code>MergedTree::resolve</code>. It promises "The returned conflict will either
+  be resolved or have the same number of sides as the input." It runs a <code>TreeMerger</code>, a small
+  work queue of async jobs bounded by <code>store.concurrency()</code>, that starts by reading the root
+  directory of every term. The design doc's point is that it only descends where it must: "if we can't
+  resolve a sub-tree conflict trivially by looking at just the tree id, we recurse into the sub-tree.
+  Similarly, if we can't resolve a file conflict trivially by looking at just the id, we recurse into the
+  hunks within the file" (<a href="{{ src(doc, 36, 39) }}">conflicts.md</a>).
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 420" role="img" aria-labelledby="cf-tm-title cf-tm-desc">
+    <title id="cf-tm-title">How merge_trees resolves a conflicted tree</title>
+    <desc id="cf-tm-desc">
+      merge_trees returns at once if the input is resolved. Otherwise TreeMerger reads the root
+      directory of every term. process_tree runs resolve_trivial on every entry. Trivially resolved
+      entries go straight into the output. An unresolved subtree is read and processed the same way,
+      recursively. An unresolved file goes to try_resolve_file_conflict, which needs every term to be a
+      file with agreeing executable bit and copy ID, then merges contents hunk by hunk with
+      files::try_merge. Each finished entry is marked completed; when a directory has no pending
+      entries, into_backend_trees builds one tree per side, or a single tree if nothing conflicts, and
+      writes it. The written tree is reported to the parent directory, and when the root is written the
+      result is a Merge of TreeIds.
+    </desc>
+    <defs>
+      <marker id="cf-arrow3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(tm, 76, 96) }}"><rect class="d-box" x="20" y="16" width="300" height="44" rx="6"></rect>
+      <text x="32" y="36" font-family="monospace">merge_trees</text>
+      <text x="32" y="52" class="d-muted" font-size="11">resolved input: return it unchanged</text></a>
+      <a href="{{ src(tm, 289, 298) }}"><rect class="d-box" x="440" y="16" width="300" height="44" rx="6"></rect>
+      <text x="452" y="36" font-family="monospace">enqueue_tree_read / read_trees</text>
+      <text x="452" y="52" class="d-muted" font-size="11">load this dir in every term</text></a>
+
+      <a href="{{ src(tm, 249, 287) }}"><rect class="d-box" x="440" y="96" width="300" height="44" rx="6" style="stroke: var(--jj-accent)"></rect>
+      <text x="452" y="116" font-family="monospace">process_tree</text>
+      <text x="452" y="132" class="d-muted" font-size="11">resolve_trivial on each entry</text></a>
+
+      <a href="{{ src(tm, 98, 130) }}"><rect class="d-box" x="20" y="96" width="300" height="44" rx="6"></rect>
+      <text x="32" y="116" font-family="monospace">MergedTreeInput.resolved</text>
+      <text x="32" y="132" class="d-muted" font-size="11">trivially resolved entries</text></a>
+
+      <a href="{{ src(tm, 308, 317) }}"><rect class="d-box" x="440" y="180" width="300" height="44" rx="6"></rect>
+      <text x="452" y="200" font-family="monospace">enqueue_file_merge</text>
+      <text x="452" y="216" class="d-muted" font-size="11">non-tree entry</text></a>
+      <a href="{{ src(tm, 407, 506) }}"><rect class="d-box" x="440" y="256" width="300" height="56" rx="6"></rect>
+      <text x="452" y="276" font-family="monospace">try_resolve_file_conflict</text>
+      <text x="452" y="292" class="d-muted" font-size="11">all files? exec bit and copy ID agree?</text>
+      <text x="452" y="306" class="d-muted" font-size="11">then files::try_merge on contents</text></a>
+
+      <a href="{{ src(tm, 319, 330) }}"><rect class="d-box" x="20" y="180" width="300" height="44" rx="6"></rect>
+      <text x="32" y="200" font-family="monospace">mark_completed</text>
+      <text x="32" y="216" class="d-muted" font-size="11">resolved, or kept in conflicts</text></a>
+      <a href="{{ src(tm, 132, 170) }}"><rect class="d-box" x="20" y="256" width="300" height="56" rx="6"></rect>
+      <text x="32" y="276" font-family="monospace">into_backend_trees</text>
+      <text x="32" y="292" class="d-muted" font-size="11">no conflicts: one tree</text>
+      <text x="32" y="306" class="d-muted" font-size="11">else one tree per term</text></a>
+      <a href="{{ src(tm, 300, 306) }}"><rect class="d-box" x="20" y="348" width="300" height="56" rx="6"></rect>
+      <text x="32" y="368" font-family="monospace">enqueue_tree_write / write_trees</text>
+      <text x="32" y="384" class="d-muted" font-size="11">empty tree becomes absent</text>
+      <text x="32" y="398" class="d-muted" font-size="11">in the parent</text></a>
+      <a href="{{ src(tm, 209, 247) }}"><rect class="d-box" x="440" y="348" width="300" height="56" rx="6"></rect>
+      <text x="452" y="368" font-family="monospace">TreeMerger::merge</text>
+      <text x="452" y="384" class="d-muted" font-size="11">root written: return</text>
+      <text x="452" y="398" class="d-muted" font-size="11">Merge&lt;TreeId&gt;</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#cf-arrow3)">
+      <line x1="320" y1="38" x2="436" y2="38"></line>
+      <line x1="590" y1="60" x2="590" y2="92"></line>
+      <line x1="440" y1="118" x2="324" y2="118"></line>
+      <path d="M740 118 H752 V38 H744" stroke-dasharray="4 4"></path>
+      <line x1="590" y1="140" x2="590" y2="176"></line>
+      <line x1="590" y1="224" x2="590" y2="252"></line>
+      <path d="M440 284 H380 V202 H324"></path>
+      <line x1="170" y1="224" x2="170" y2="252"></line>
+      <line x1="170" y1="312" x2="170" y2="344"></line>
+      <line x1="320" y1="376" x2="436" y2="376"></line>
+      <path d="M320 390 H350 V230 H170" stroke-dasharray="4 4"></path>
+    </g>
+    <g font-size="10" class="d-muted">
+      <text x="660" y="88">subtree: recurse</text>
+      <text x="356" y="112">resolved</text>
+    </g>
+  </svg>
+</div>
+
+<p>
+  A few details matter for correctness:
+</p>
+<ul>
+  <li><strong>Files are merged only if they can be.</strong>
+    <a href="{{ src(tm, 407, 506) }}"><code>try_resolve_file_conflict</code></a> gives up if any term is
+    absent or not a file. The executable bit and copy ID must resolve trivially (always with
+    <code>Accept</code>, a TODO notes); otherwise "We're unable to determine whether the result should be
+    executable". If the file IDs resolve trivially it doesn't read contents at all. Otherwise it simplifies
+    the file-ID merge again, because terms that differed only in the executable bit can now cancel,
+    reads each content, and calls <code>files::try_merge</code>; a fully merged result is written as a
+    new file.</li>
+  <li><strong>The content merge is one multi-way diff.</strong>
+    <a href="{{ src(fl, 309, 326) }}"><code>files::merge_inner</code></a> diffs all removes and adds
+    together by line, and <a href="{{ src(fl, 466, 488) }}"><code>resolve_diff_hunks</code></a> turns each
+    differing hunk into a <code>Merge</code> and runs <code>resolve_trivial</code> on it. With
+    <code>merge.hunk-level = "word"</code>, an unresolved line hunk is re-diffed by word and accepted only
+    if it then resolves completely. A TODO notes that using the first remove as the base "is how it's
+    usually done for 3-way conflicts" and asks whether there is a better heuristic for more sides.</li>
+  <li><strong>Arity is preserved.</strong> An unresolved directory produces one tree per term, each holding
+    all the resolved entries plus that term's side of every conflicted entry. Shrinking a conflict is left
+    to the caller: <code>MergedTree::resolve</code> simplifies the result with its labels afterwards, and in
+    debug builds checks that merging again changes nothing (<a href="{{ src(mt, 168, 193) }}">source</a>).</li>
+  <li><strong>Settings come from the store.</strong> <a href="{{ src(tm, 55, 74) }}"><code>MergeOptions</code></a>
+    is <code>hunk_level</code> plus <code>same_change</code>, read from <code>merge.hunk-level</code> and
+    <code>merge.same-change</code> when the repo is loaded and kept on the <code>Store</code>
+    (<a href="{{ src('lib/src/repo.rs', 738, 739) }}">repo.rs</a>).</li>
+</ul>
+
+<p>
+  <a href="{{ src(tm, 370, 385) }}"><code>resolve_file_values</code></a> is the single-path version used
+  outside the tree walk: trivial merge first, then the same file merge.
+</p>
+
+<h2 id="storage">8. How each backend stores a conflict</h2>
+
+<p>
+  A conflicted commit is still one commit object. What changes is how its <code>root_tree</code> and
+  <code>conflict_labels</code> are written.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Backend</th><th>Trees</th><th>Labels</th></tr></thead>
+    <tbody>
+      <tr><td>Git</td><td>The term IDs, hex-encoded and joined by spaces, in a non-standard <code>jj:trees</code> commit header. The Git <code>tree</code> field points at a synthetic tree (below).</td><td>A <code>jj:conflict-labels</code> header: the labels joined with <code>\n</code>, plus a trailing newline. Labels may not contain a newline (asserted).</td></tr>
+      <tr><td>Simple</td><td><code>simple_store.Commit.root_tree</code> (field 3, <code>repeated bytes</code>), "Alternating positive and negative terms".</td><td><code>conflict_labels</code> (field 10, <code>repeated string</code>), written only when conflicted.</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source">
+  <a href="{{ src(gb, 1358, 1376) }}">Git write</a> ·
+  <a href="{{ src(gb, 636, 677) }}">Git read</a> ·
+  <a href="{{ src(sb, 347, 392) }}">simple backend</a> ·
+  <a href="{{ src('lib/src/protos/simple_store.proto', 42, 48) }}">simple_store.proto</a>
+</p>
+
+<p>
+  Git itself can't represent a conflict, so
+  <a href="{{ src(gb, 1593, 1663) }}"><code>write_tree_conflict</code></a> writes a tree that keeps every
+  term reachable: subtrees <code>.jjconflict-base-N</code> for the removes and
+  <code>.jjconflict-side-N</code> for the adds, a <code>JJ-CONFLICT-README</code> blob, and then the
+  entries of the first add, "which prevents editors with Git support from highlighting all files as
+  new". The README tells anyone who checked it out with plain <code>git</code> to "Use <code>jj
+  abandon</code> to recover." The Git compatibility doc says the same: those directories exist "only to
+  prevent GC of the relevant trees; the authoritative information is in a non-standard
+  <code>jj:trees</code> commit header"
+  (<a href="{{ src('docs/git-compatibility.md', 231, 236) }}">git-compatibility.md</a>).
+</p>
+
+<p>
+  Reading is strict. <a href="{{ src(gb, 653, 677) }}"><code>extract_root_tree_from_commit</code></a>
+  rejects a <code>jj:trees</code> header with one term or an even number of terms, or with IDs of the
+  wrong length: "It is invalid to use <code>jj:trees</code> with a non-conflicted tree. If this were
+  allowed, it would be possible to construct a commit which appears to have different contents depending
+  on whether it is viewed using <code>jj</code> or <code>git</code>." The error is "Invalid jj:trees
+  header". Conflicts written before the header existed ("~March 2024") kept their terms in the
+  <code>git_store.Commit.root_tree</code> field of jj's extra metadata; on read,
+  <a href="{{ src(gb, 845, 864) }}"><code>deserialize_extras</code></a> still uses that field when the
+  header gave a resolved tree and <code>uses_tree_conflict_format</code> is set. New commits never fill it:
+  <a href="{{ src(gb, 833, 843) }}"><code>serialize_extras</code></a> only sets the flag. The
+  <a href="{{ url_for('jj', slug='protobufs') }}">protobufs</a> page lists those fields.
+</p>
+
+<h2 id="materialize">9. Materialization: from <code>Merge</code> to conflict markers</h2>
+
+<p>
+  To show a conflict in the working copy or in a diff, jj reads each path's value with
+  <a href="{{ src(cf, 206, 261) }}"><code>materialize_tree_value</code></a>, which returns a
+  <a href="{{ src(cf, 132, 149) }}"><code>MaterializedTreeValue</code></a>: <code>Absent</code>,
+  <code>AccessDenied</code>, <code>File</code> (with a content reader), <code>Symlink</code>,
+  <code>GitSubmodule</code>, <code>Tree</code>, or one of two conflict variants:
+</p>
+<ul>
+  <li><a href="{{ src(cf, 186, 204) }}"><code>FileConflict</code></a>, when every term is a file or absent
+    (<a href="{{ src(cf, 263, 287) }}"><code>try_materialize_file_conflict_value</code></a>). It carries
+    the <code>unsimplified_ids</code> (to write an edit back in the original shape), the simplified
+    <code>ids</code> and <code>labels</code>, the <code>contents</code> of each simplified term as
+    <code>Merge&lt;BString&gt;</code> (an absent term reads as empty), the merged executable bit and a
+    placeholder copy ID.</li>
+  <li><code>OtherConflict</code>, for anything else, such as a file against a directory or a symlink. The
+    working copy writes a plain text description instead: <code>Conflict:</code> followed by
+    <code>Removing …</code> and <code>Adding …</code> lines naming each term's kind and ID
+    (<a href="{{ src(be, 561, 588) }}"><code>describe</code></a>, used at
+    <a href="{{ src(lwc, 2531, 2537) }}">local_working_copy.rs</a>).</li>
+</ul>
+
+<p>
+  <a href="{{ src(cf, 289, 301) }}"><code>resolve_file_executable</code></a> trivially merges the
+  executable bits; if the file resolves to absent it falls back to the bit all removes agree on, "so the
+  new file inherits the original executable bit".
+</p>
+
+<p>
+  <a href="{{ src(cf, 476, 501) }}"><code>materialize_merge_result_to_bytes</code></a> then runs the same
+  hunk merge (<code>files::merge_hunks</code>). If every hunk resolves, the merged text is written with no
+  markers at all. Otherwise
+  <a href="{{ src(cf, 503, 569) }}"><code>materialize_conflict_hunks</code></a> writes resolved hunks
+  verbatim and numbers the conflicted ones (<code>conflict 1 of 2</code>, …).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th><a href="{{ src(cf, 303, 316) }}"><code>ConflictMarkerStyle</code></a></th><th>Output</th></tr></thead>
+    <tbody>
+      <tr><td><code>diff</code> (default)</td><td>"a snapshot and a series of diffs to apply". For each base, it diffs to the next side; until a snapshot has been written, if the following side is a smaller diff from that base, it writes the current side as the snapshot and diffs to the following one instead. If no snapshot has been written by the end, the last side is the snapshot.</td></tr>
+      <tr><td><code>diff-experimental</code></td><td>"Similar to "diff", but always picks the first side as the snapshot. May become the default in a future version."</td></tr>
+      <tr><td><code>snapshot</code></td><td>"a snapshot for each base and side": <code>+++++++</code> and <code>-------</code> sections, no diffs.</td></tr>
+      <tr><td><code>git</code></td><td>Git's "diff3" layout (<code>&lt;&lt;&lt;&lt;&lt;&lt;&lt;</code>, <code>|||||||</code>, <code>=======</code>, <code>&gt;&gt;&gt;&gt;&gt;&gt;&gt;</code>) "to support external tools". Only possible with exactly two sides; more sides fall back to the jj layout as <code>snapshot</code>.</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source">
+  <a href="{{ src(cf, 662, 779) }}"><code>materialize_jj_style_conflict</code></a> ·
+  <a href="{{ src(cf, 613, 660) }}"><code>materialize_git_style_conflict</code></a> ·
+  <a href="{{ src(cf, 781, 789) }}"><code>diff_size</code></a>
+</p>
+
+<p>
+  Some details that keep the round trip lossless:
+</p>
+<ul>
+  <li><strong>Marker length.</strong> Markers are at least
+    <a href="{{ src(cf, 60, 67) }}"><code>MIN_CONFLICT_MARKER_LEN</code> = 7</a> characters. If any term
+    already contains lines that look like markers,
+    <a href="{{ src(cf, 418, 432) }}"><code>choose_materialized_conflict_marker_len</code></a> uses the
+    longest such run plus 4, so the real markers are "noticeably longer than the existing markers".</li>
+  <li><strong>Missing final newline.</strong> If any side lacks one, every side gets the separator newline
+    and the end marker loses its own, and labels gain "(no terminating newline)"
+    (<a href="{{ src(cf, 523, 534) }}">source</a>).</li>
+  <li><strong>Line endings.</strong> <a href="{{ src(cf, 434, 449) }}"><code>detect_eol</code></a> uses
+    CRLF for markers only if every term with a newline uses CRLF.</li>
+  <li><strong>Default labels.</strong> Without stored labels, terms are <code>side #N</code> and
+    <code>base</code> (or <code>base #N</code> with several bases), "The vast majority of conflicts one
+    actually tries to resolve manually have 1 base" (<a href="{{ src(cf, 577, 611) }}"><code>build_hunk_sides</code></a>).</li>
+</ul>
+
+<h3 id="snapshot">Back again: parsing markers on snapshot</h3>
+
+<p>
+  When the working copy writes a conflicted file, it records the marker length it used in the file's
+  state as <code>MaterializedConflictData { conflict_marker_len }</code>
+  (<a href="{{ src(lwc, 2508, 2528) }}">source</a>). On the next snapshot, if the path was conflicted and
+  is now a normal file, it calls <a href="{{ src(cf, 1054, 1133) }}"><code>update_from_content</code></a>
+  with that length (<a href="{{ src(lwc, 2067, 2079) }}">source</a>):
+</p>
+<ol>
+  <li>Simplify the old file IDs and re-materialize their hunks. If the new content still parses to exactly
+    those hunks (or to the same resolved text), return the old IDs unchanged, so "unchanged file conflicts
+    aren't updated to partially-resolved contents".</li>
+  <li><a href="{{ src(cf, 828, 901) }}"><code>parse_conflict</code></a> looks for start and end markers
+    at least the expected length, and parses each hunk in whichever style its first line implies (jj or
+    Git), so switching <code>ui.conflict-marker-style</code> doesn't break existing files. A hunk with the
+    wrong number of sides is treated as plain text.</li>
+  <li>No valid markers left: the file is resolved, and its content is written as one new file.</li>
+  <li>Otherwise the parsed hunks are reassembled into one content per term and each is written as a new
+    file (a term that was absent and is still empty stays absent). If the conflict had been simplified,
+    <code>update_from_simplified</code> expands the result back to the original number of terms.</li>
+</ol>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 300" role="img" aria-labelledby="cf-rt-title cf-rt-desc">
+    <title id="cf-rt-title">A conflicted file's round trip through the working copy</title>
+    <desc id="cf-rt-desc">
+      On checkout, materialize_tree_value turns a conflicted path into a FileConflict with one content
+      per term. materialize_merge_result_to_bytes writes conflict markers in the configured style, and
+      the working copy stores the file plus MaterializedConflictData with the marker length. On snapshot,
+      update_from_content reads the edited file, parse_conflict finds markers of that length, and the
+      result is either the old IDs unchanged, a single resolved FileId, or a new Merge of FileIds with
+      the same number of terms.
+    </desc>
+    <defs>
+      <marker id="cf-arrow4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='trees') }}"><rect class="d-box" x="20" y="16" width="220" height="44" rx="6"></rect>
+      <text x="32" y="36" font-family="monospace">MergedTreeValue</text>
+      <text x="32" y="52" class="d-muted" font-size="11">conflicted path in @</text></a>
+      <a href="{{ src(cf, 206, 287) }}"><rect class="d-box" x="270" y="16" width="220" height="44" rx="6"></rect>
+      <text x="282" y="36" font-family="monospace">materialize_tree_value</text>
+      <text x="282" y="52" class="d-muted" font-size="11">→ FileConflict</text></a>
+      <a href="{{ src(cf, 476, 501) }}"><rect class="d-box" x="520" y="16" width="220" height="44" rx="6"></rect>
+      <text x="532" y="36" font-family="monospace">materialize_merge_</text>
+      <text x="532" y="52" font-family="monospace">result_to_bytes</text></a>
+
+      <a href="{{ src(lwc, 2508, 2528) }}"><rect class="d-box" x="400" y="110" width="340" height="56" rx="6" style="stroke: var(--jj-accent)"></rect>
+      <text x="412" y="132" font-family="monospace">file on disk with markers</text>
+      <text x="412" y="150" class="d-muted" font-size="11">+ MaterializedConflictData { conflict_marker_len }</text></a>
+
+      <a href="{{ src(cf, 1054, 1133) }}"><rect class="d-box" x="20" y="110" width="340" height="56" rx="6"></rect>
+      <text x="32" y="132" font-family="monospace">update_from_content</text>
+      <text x="32" y="150" class="d-muted" font-size="11">on snapshot, if the path was conflicted</text></a>
+
+      <a href="{{ src(cf, 828, 901) }}"><rect class="d-box" x="20" y="210" width="220" height="56" rx="6"></rect>
+      <text x="32" y="232" font-family="monospace">parse_conflict</text>
+      <text x="32" y="250" class="d-muted" font-size="11">markers ≥ stored length</text></a>
+      <a href="{{ src(cf, 1077, 1087) }}"><rect class="d-box" x="270" y="210" width="140" height="56" rx="6"></rect>
+      <text x="282" y="232">unchanged</text>
+      <text x="282" y="250" class="d-muted" font-size="11">old IDs</text></a>
+      <a href="{{ src(cf, 1088, 1092) }}"><rect class="d-box" x="430" y="210" width="140" height="56" rx="6"></rect>
+      <text x="442" y="232">no markers</text>
+      <text x="442" y="250" class="d-muted" font-size="11">one FileId</text></a>
+      <a href="{{ src(cf, 1094, 1132) }}"><rect class="d-box" x="590" y="210" width="150" height="56" rx="6"></rect>
+      <text x="602" y="232">still conflicted</text>
+      <text x="602" y="250" class="d-muted" font-size="11">new Merge, same arity</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#cf-arrow4)">
+      <line x1="240" y1="38" x2="266" y2="38"></line>
+      <line x1="490" y1="38" x2="516" y2="38"></line>
+      <line x1="630" y1="60" x2="630" y2="106"></line>
+      <line x1="400" y1="138" x2="364" y2="138"></line>
+      <line x1="130" y1="166" x2="130" y2="206"></line>
+      <path d="M240 238 H266"></path>
+      <path d="M190 166 V190 H500 V206"></path>
+      <path d="M190 166 V190 H665 V206"></path>
+    </g>
+    <text x="410" y="290" font-size="11" class="d-muted" text-anchor="middle">edit the markers, or delete them to resolve</text>
+  </svg>
+</div>
+
+<h2 id="config">10. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>ui.conflict-marker-style</code></td><td><code>"diff"</code> (<a href="{{ src('cli/src/config/misc.toml', 45, 45) }}">misc.toml</a>)</td><td>Marker style when writing conflicts to files; read into the command environment (<a href="{{ src('cli/src/cli_util.rs', 987, 987) }}">cli_util.rs</a>). The built-in <code>smerge</code>, <code>vscode</code> and <code>vscodium</code> merge tools override it with <code>"git"</code> (<a href="{{ src('cli/src/config/merge_tools.toml', 54, 102) }}">merge_tools.toml</a>).</td></tr>
+      <tr><td><code>merge.hunk-level</code></td><td><code>"line"</code></td><td>Granularity of content merges: <code>line</code> or <code>word</code> (<a href="{{ src(fl, 266, 273) }}"><code>FileMergeHunkLevel</code></a>).</td></tr>
+      <tr><td><code>merge.same-change</code></td><td><code>"accept"</code></td><td>The same-change rule; <code>keep</code> leaves such conflicts in place. The default file has a TODO about making <code>keep</code> the default.</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source">Library defaults: <a href="{{ src('lib/src/config/misc.toml', 18, 22) }}">lib/src/config/misc.toml</a></p>
+
+<h2 id="example">11. Worked example: a three-sided conflict</h2>
+
+<p>
+  Upstream's <a href="{{ src(tc, 182, 350) }}"><code>test_materialize_conflict_three_sides</code></a> builds
+  this conflict with <code>Merge::from_removes_adds([base1, base2], [a, b, c])</code>, so the stored order is
+  <code>[a, base1, b, base2, c]</code>: <code>a + (b − base1) + (c − base2)</code>. Every version starts with
+  <code>line 1</code> and ends with <code>line 5</code>, so those lines merge cleanly and appear outside
+  the markers.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Term</th><th>Lines 2 to 4</th></tr></thead>
+    <tbody>
+      <tr><td>side #1 (<code>a</code>)</td><td><code>line 2 a.1</code>, <code>line 3 a.2</code>, <code>line 4 base</code></td></tr>
+      <tr><td>base #1</td><td><code>line 2 base</code>, <code>line 3 base</code>, <code>line 4 base</code></td></tr>
+      <tr><td>side #2 (<code>b</code>)</td><td><code>line 2 b.1</code>, <code>line 3 base</code>, <code>line 4 b.2</code></td></tr>
+      <tr><td>base #2</td><td><code>line 2 base</code> (no lines 3 or 4)</td></tr>
+      <tr><td>side #3 (<code>c</code>)</td><td><code>line 2 base</code>, <code>line 3 c.2</code></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>With the default <code>diff</code> style, the snapshot upstream asserts is:</p>
+<pre class="jj-code"><code>line 1
+&lt;&lt;&lt;&lt;&lt;&lt;&lt; conflict 1 of 1
+%%%%%%% diff from: base #1
+\\\\\\\        to: side #1
+-line 2 base
+-line 3 base
++line 2 a.1
++line 3 a.2
+ line 4 base
++++++++ side #2
+line 2 b.1
+line 3 base
+line 4 b.2
+%%%%%%% diff from: base #2
+\\\\\\\        to: side #3
+ line 2 base
++line 3 c.2
+&gt;&gt;&gt;&gt;&gt;&gt;&gt; conflict 1 of 1 ends
+line 5</code></pre>
+
+<p>
+  Why that shape: for base #1, the diff to side #1 and the diff to side #2 are the same size (two changed
+  lines each), and the code switches only when the next side is strictly smaller, so side #1 is written as
+  a diff. For base #2, the diff to side #2 would be large while the diff to side #3 adds one line, so
+  side #2 becomes the snapshot and side #3 the diff. Markers are 7 characters because no input line
+  looks like a marker.
+</p>
+
+<p>
+  The other styles, from the same test: <code>diff-experimental</code> writes side #1 as the snapshot and
+  then diffs <code>base #1 → side #2</code> and <code>base #2 → side #3</code>. <code>snapshot</code>
+  writes all five terms in order as <code>+++++++ side #1</code>, <code>------- base #1</code>,
+  <code>+++++++ side #2</code>, <code>------- base #2</code>, <code>+++++++ side #3</code>. And
+  <code>git</code> produces exactly the <code>snapshot</code> output, since Git's markers can't express
+  three sides.
+</p>
+
+<p>
+  If the user edits only the lines under <code>+++++++ side #2</code> and saves, the next snapshot parses
+  five terms again and writes each term's content back, so the commit is still a three-sided conflict with
+  only side #2 changed. If they delete all the markers, <code>parse_conflict</code> finds none, and the path
+  becomes a single resolved file. Resolving with a merge tool instead is covered on the
+  <a href="{{ url_for('jj', slug='resolve') }}">resolve</a> page.
+</p>
