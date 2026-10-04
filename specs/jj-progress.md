@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-04 (twenty-third run): no upstream change since `c16d378`; built the
-`jj simplify-parents` command page.
+**Last updated:** 2026-10-04 (twenty-fourth run): no upstream change since `c16d378`; built the
+`jj arrange` command page.
 
 ## Upstream pin
 
@@ -26,11 +26,19 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 24 of 105 (`fix`, `new`, `edit`,
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 25 of 105 (`fix`, `new`, `edit`,
       `describe`, `commit`, `squash`, `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`,
-      `absorb`, `duplicate`, `bookmark create`, `bookmark set`, `bookmark move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`, `parallelize`, `simplify-parents`).
+      `absorb`, `duplicate`, `bookmark create`, `bookmark set`, `bookmark move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`, `parallelize`, `simplify-parents`, `arrange`).
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
+
+## Twenty-fourth run (2026-10-04)
+
+| Commit | What |
+|---|---|
+| `c3348ce` | `arrange` command page (Tier A, all eight §8A.3 items, two SVGs; worked example from the plan executor's unit test `test_execute_plan_abandon`, since the TUI has no CLI snapshot) |
+
+Maintenance: upstream `HEAD` still at `c16d378`, so the pin stayed.
 
 ## Twenty-third run (2026-10-04)
 
@@ -40,29 +48,17 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 
 Maintenance: upstream `HEAD` still at `c16d378`, so the pin stayed.
 
-## Twenty-second run (2026-10-04)
+## Seventeenth to twenty-second runs (2026-10-04)
 
-| Commit | What |
-|---|---|
-| `fe97413` | `parallelize` command page (Tier A, all eight §8A.3 items, two SVGs; example from upstream's `test_parallelize_with_descendants_simple`) |
-
-Maintenance: upstream `HEAD` still at `c16d378`, so the pin stayed.
-
-## Seventeenth to twenty-first runs (2026-10-04)
-
-Pin unchanged. `e62dc52`: `next` and `prev` pages, landed together. `afb1c31`: `metaedit` page. `f156028`: `git push` page. `6bf55c1`: `bookmark create`/`set`/`move` pages, landed together because they
+Pin unchanged. `fe97413`: `parallelize` page. `e62dc52`: `next` and `prev` pages, landed together. `afb1c31`: `metaedit` page. `f156028`: `git push` page. `6bf55c1`: `bookmark create`/`set`/`move` pages, landed together because they
 cross-link. `f8530a8`: `git fetch` page.
 
-## Fourteenth to sixteenth runs (2026-10-04)
+## Twelfth to sixteenth runs (2026-10-03 to 2026-10-04)
 
-- `c9c1103`: maintenance `69abfbe..55921f5` (2 docs commits; `fix`'s `docs/config.md` ranges +17, content unchanged). `ffb1b60`: `split` page.
-- `4ca0bdc`: maintenance `55921f5..c16d378` (4 commits; `protobufs` workspace-path change described, `cli`/`fix` ranges remapped, two `COMMANDS` source lines moved). `1e58788`: `absorb` page.
-- `1733c66`: `duplicate` page (pin unchanged).
-
-## Twelfth and thirteenth runs (2026-10-03)
-
-Upstream `HEAD` stayed at `69abfbe`. `261b4f6`: `redo` page (example drawn as an operation log).
-`86bb02b`: `restore` page (example from upstream's `test_restore`). Both Tier A, two SVGs each.
+- Maintenance `69abfbe..55921f5` (`c9c1103`: 2 docs commits, `fix` config ranges +17) and
+  `55921f5..c16d378` (`4ca0bdc`: `protobufs` workspace-path change, `cli`/`fix` ranges remapped).
+- Pages: `redo` (`261b4f6`), `restore` (`86bb02b`), `split` (`ffb1b60`), `absorb` (`1e58788`),
+  `duplicate` (`1733c66`).
 
 ## Fifth to eleventh runs (2026-10-03)
 
@@ -135,8 +131,8 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
    `storage`, `index`, `revsets`, `backends`): ~~`new`~~, ~~`trees`~~, ~~`edit`~~, ~~`describe`~~, ~~`commit`~~,
    ~~`squash`~~, ~~`rebase`~~, ~~`abandon`~~, ~~`undo`~~, then the rest of Tier A. Next, in this order:
    ~~`redo`~~, ~~`restore`~~, ~~`split`~~, ~~`absorb`~~, ~~`duplicate`~~, ~~`bookmark-create`/`-set`/`-move`~~, ~~`git-fetch`~~,
-   ~~`git-push`~~, then the remaining 41 Tier A commands in registry order (next:
-   `arrange`, `converge`, `revert`, `diffedit`).
+   ~~`git-push`~~, then the remaining 40 Tier A commands in registry order (next:
+   `converge`, `revert`, `diffedit`, `run`).
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
 
@@ -156,6 +152,10 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
   shared pages for Tier C; the first three are a judgment call to keep slugs to two levels).
 
 ## Open gaps / questions for the owner
+
+- **`jj arrange` worked example.** The interactive UI can't be driven from upstream's CLI tests, so
+  the page's example is a unit test of the plan executor (`test_execute_plan_abandon`), not a
+  user-level session. A recorded TUI session would be a better example if upstream adds one.
 
 - **`jj next 0`.** Without `--edit`, `next` computes `descendants_at(offset - 1)` on a `u64`, so an
   offset of 0 would underflow. No upstream test covers it and it couldn't be run here (toolchain), so
