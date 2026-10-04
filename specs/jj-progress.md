@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-04 (thirty-first run): no upstream change since `4df5265`; built the
-`jj tag delete`/`set`/`track`/`untrack` command pages.
+**Last updated:** 2026-10-04 (thirty-second run): no upstream change since `4df5265`; built the
+`git clone`/`colocation`/`export`/`import`/`init`/`remote`, `sign` and `unsign` command pages.
 
 ## Upstream pin
 
@@ -26,37 +26,35 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 51 of 105, all Tier A (51 of 65;
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 59 of 105, all Tier A (59 of 65;
       Tier B 0 of 27, Tier C 0 of 13). Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
       `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`, `absorb`, `duplicate`,
       `bookmark create`/`set`/`move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`,
       `parallelize`, `simplify-parents`, `arrange`, `converge`, `revert`, `diffedit`, `run`,
       `resolve`, `file chmod`/`track`/`untrack`, `sparse edit`/`reset`/`set`, `bisect run`,
       `op abandon`/`integrate`/`restore`/`revert`, `bookmark advance`/`delete`/`forget`/`rename`/
-      `track`/`untrack`, `tag delete`/`set`/`track`/`untrack`.
+      `track`/`untrack`, `tag delete`/`set`/`track`/`untrack`, `git clone`/`colocation`/`export`/
+      `import`/`init`/`remote`, `sign`, `unsign`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
 
-## Thirty-first run (2026-10-04)
+## Thirty-second run (2026-10-04)
 
-Pin unchanged (`4df5265`). `e4557a0`: `tag set`, `tag delete`, `tag track`, `tag untrack`, landed together
-(set: tagging `@` makes it immutable via `tags()` in `immutable_heads()`, so a new working-copy commit is
-created on top; track/untrack mirror the bookmark versions; examples `test_tag_set_delete`,
-`test_tag_track_untrack`).
+Pin unchanged (`4df5265`). Pages: `git clone` `ca130e3`, `git export`/`import` `5b40048` (landed
+together; both use `test_git_import_move_export_with_default_undo`), `git init` `f3b79f6`,
+`git remote` `77f4574` (all five subcommands on one page), `git colocation` `b40cb83`
+(status/enable/disable), `sign`/`unsign` `56f3709`. Paths: `create_or_reuse_dir` and `Signer` live
+in `core/src/` (`file_util.rs`, `signing.rs`).
 
-## Thirtieth run (2026-10-04)
+## Twenty-seventh to thirty-first runs (2026-10-04)
 
-`d4fc639`: maintenance `03db8d1..4df5265` (signature-only code changes; `docs/config.md` grew 6 lines, so
-config-doc ranges on 5 pages shifted; fixed `git-push`, where sign-on-push signs only *your* commits).
-Pages: `bookmark advance` `5c2f4de`, `bookmark delete`/`forget` `40fcace`, `bookmark rename`/`track`/
-`untrack` `b241000`.
-
-## Twenty-seventh to twenty-ninth runs (2026-10-04)
-
-Pin unchanged (`03db8d1`). Pages: `diffedit` `d12cd80`, `run` `71e79fb`, `resolve` `0da010f`,
-`file chmod` `a199333`, `file track`/`untrack` `c473761` (track only rewrites `@` at the next
-snapshot, upstream's GH #8298 TODO), `sparse set`/`edit`/`reset` `81ce853` (no operation recorded),
-`bisect run` `292581a`, `op restore`/`revert`/`abandon`/`integrate` `30dcf98`.
+- `d4fc639`: maintenance `03db8d1..4df5265` (signature-only code changes; `docs/config.md` grew 6
+  lines, shifting config-doc ranges on 5 pages; fixed `git-push`: sign-on-push signs only *your* commits).
+- Pages: `diffedit` `d12cd80`, `run` `71e79fb`, `resolve` `0da010f`, `file chmod` `a199333`,
+  `file track`/`untrack` `c473761`, `sparse set`/`edit`/`reset` `81ce853` (no operation recorded),
+  `bisect run` `292581a`, `op restore`/`revert`/`abandon`/`integrate` `30dcf98`, `bookmark advance`
+  `5c2f4de`, `bookmark delete`/`forget` `40fcace`, `bookmark rename`/`track`/`untrack` `b241000`,
+  `tag set`/`delete`/`track`/`untrack` `e4557a0`.
 
 ## Twelfth to twenty-sixth runs (2026-10-03 to 2026-10-04)
 
@@ -85,14 +83,9 @@ live in the `core/` crate (`core/src/`), not `lib/src/`, so cite them there.
 
 ## First run
 
-| Commit | What |
-|---|---|
-| `1124529` | Scaffold: `jj_docs.py` (pin, registry, pinned-link helper, `PROTO_MESSAGES`), `/jj` + `/jj/<slug>`, `jj/base.html`, `jj.css`, homepage card, tests, CLAUDE.md |
-| `39751dc` | Spec v2 (owner request): every command gets a page (§8A) |
-| `98a7058` | `fix` page (§8) |
-| `5ca3f93` | `protobufs` page; header renders before the on-page TOC |
-| `46c7640` | §6 architecture diagram on `/jj` |
-| `1d27034` | `COMMANDS` (105 entries from upstream clap definitions), `kind`/`category`/`tier`, `cli` topic stub, grouped nav and index |
+Scaffold `1124529` (`jj_docs.py` pin/registry/link helper/`PROTO_MESSAGES`, routes, `jj/base.html`,
+`jj.css`, homepage card, tests, CLAUDE.md); spec v2 `39751dc` (every command gets a page, §8A);
+`fix` `98a7058`; `protobufs` `5ca3f93`; §6 diagram `46c7640`; `COMMANDS` (105 entries) `1d27034`.
 
 ## How to maintain the command list
 
@@ -114,9 +107,9 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
    ~~`sparse-reset`~~, ~~`sparse-set`~~, ~~`bisect-run`~~, ~~`operation-abandon`~~,
    ~~`operation-integrate`~~, ~~`operation-restore`~~, ~~`operation-revert`~~, ~~`bookmark-advance`~~,
    ~~`bookmark-delete`~~, ~~`bookmark-forget`~~, ~~`bookmark-rename`~~, ~~`bookmark-track`~~,
-   ~~`bookmark-untrack`~~, ~~`tag-delete`~~, ~~`tag-set`~~, ~~`tag-track`~~, ~~`tag-untrack`~~; 14 left
-   (next: `git-clone`, `git-colocation`, `git-export`, `git-import`, `git-init`, `git-remote`,
-   `gerrit-upload`, the five `workspace` commands, `sign`, `unsign`).
+   ~~`bookmark-untrack`~~, ~~`tag-*`~~, ~~`git-clone`/`-colocation`/`-export`/`-import`/`-init`/
+   `-remote`~~, ~~`sign`~~, ~~`unsign`~~; 6 left (next: `gerrit-upload`, then the five `workspace`
+   commands: `add`, `forget`, `remove`, `rename`, `update-stale`).
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
 
@@ -136,6 +129,10 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
   shared pages for Tier C; the first three are a judgment call to keep slugs to two levels).
 
 ## Open gaps / questions for the owner
+
+- **`jj git remote` doc string.** `RemoteCommand`'s doc comment says "The Git repo will be a bare git
+  repo stored inside the `.jj/` directory", which is only true for non-colocated workspaces (the
+  default is colocated). The page says so.
 
 - **`jj bisect run` help text vs code.** The `COMMAND` help says each revision "will be directly
   edited (will become the current working copy)", but `evaluate_commit` calls `tx.check_out`, which
