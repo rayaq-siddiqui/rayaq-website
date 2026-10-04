@@ -2,8 +2,8 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "55921f5c6d50aa7d2d836d1cef636c77481bb916",
-    "commit_date": "2026-10-03",
+    "commit": "c16d378c4d5d0cf149ee4c2b9b08f681d7672c7b",
+    "commit_date": "2026-10-04",
     "version": "0.45.1",
     "analyzed_on": "2026-10-04",
 }
@@ -608,7 +608,7 @@ COMMANDS = [
         "category": 'Bookmarks and tags',
         "tier": 'B',
         "summary": 'List bookmarks and their targets',
-        "source": ('cli/src/commands/bookmark/list.rs', 51),
+        "source": ('cli/src/commands/bookmark/list.rs', 50),
     },
     {
         "command": 'bookmark move',
@@ -790,7 +790,7 @@ COMMANDS = [
         "category": 'Workspaces',
         "tier": 'B',
         "summary": 'Show the workspace root directory',
-        "source": ('cli/src/commands/workspace/root.rs', 31),
+        "source": ('cli/src/commands/workspace/root.rs', 30),
     },
     {
         "command": 'workspace update-stale',
