@@ -956,6 +956,20 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "diffedit": {
+        "title": "How jj diffedit works",
+        "sources": [
+            "cli/src/commands/diffedit.rs",
+            "cli/src/merge_tools/mod.rs",
+            "cli/src/merge_tools/external.rs",
+            "cli/src/merge_tools/diff_working_copies.rs",
+            "cli/src/merge_tools/builtin.rs",
+            "lib/src/rewrite.rs",
+            "lib/src/repo.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
     "revert": {
         "title": "How jj revert works",
         "sources": [

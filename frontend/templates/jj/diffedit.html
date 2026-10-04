@@ -1,0 +1,350 @@
+{% set cmd = "cli/src/commands/diffedit.rs" %}
+{% set mt = "cli/src/merge_tools/mod.rs" %}
+{% set ext = "cli/src/merge_tools/external.rs" %}
+{% set dwc = "cli/src/merge_tools/diff_working_copies.rs" %}
+{% set bi = "cli/src/merge_tools/builtin.rs" %}
+{% set rw = "lib/src/rewrite.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set t = "cli/tests/test_diffedit_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj diffedit</code> works</h1>
+  <p class="tagline">
+    <code>jj diffedit</code> opens a diff editor on one commit's changes and makes whatever you leave on
+    the right-hand side that commit's new tree. It is the general way to touch up a commit's content
+    by hand, without checking it out.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj picks a target commit and a base. That is <code>-r</code> (default <code>@</code>)
+  against the merge of its parents, or <code>--to</code> against <code>--from</code>, each defaulting
+  to <code>@</code>. It refuses an immutable target. The diff editor gets the base on the left and the
+  target's tree on the right, and returns the right side as edited. If that tree equals the target's,
+  jj prints <code>Nothing changed.</code> and records nothing. Otherwise it rewrites the target, keeping
+  its change ID and description, then rebases its descendants, which can conflict, or reparents them
+  with <code>--restore-descendants</code>. The operation is <code>edit commit &lt;id&gt;</code>.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 91, 182) }}"><code>cmd_diffedit</code></a>. Its help text points
+  to <a href="{{ url_for('jj', slug='restore') }}"><code>jj restore</code></a> for moving whole files
+  between revisions and to <a href="{{ url_for('jj', slug='squash') }}"><code>jj squash -i</code></a> for
+  moving changes between them (<a href="{{ src(cmd, 31, 47) }}">source</a>). Unlike those commands and
+  <a href="{{ url_for('jj', slug='split') }}"><code>jj split</code></a>, it calls the diff editor
+  directly rather than through the shared <code>DiffSelector</code>.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>FILESETS</code> (positional)</td><td>filesets</td><td>all files</td><td>Edit only these paths. Unmatched paths stay unchanged (<a href="{{ src(cmd, 71, 74) }}">source</a>).</td></tr>
+      <tr><td><code>-r</code>, <code>--revision REVSET</code></td><td>revset</td><td><code>@</code> if neither <code>--from</code> nor <code>--to</code></td><td>The commit to touch up, compared with its parents. Conflicts with <code>--from</code> and <code>--to</code> (<a href="{{ src(cmd, 50, 55) }}">source</a>).</td></tr>
+      <tr><td><code>-f</code>, <code>--from REVSET</code></td><td>revset</td><td><code>@</code> if <code>--to</code> is given</td><td>The commit shown on the left (<a href="{{ src(cmd, 57, 62) }}">source</a>).</td></tr>
+      <tr><td><code>-t</code>, <code>--to REVSET</code></td><td>revset</td><td><code>@</code> if <code>--from</code> is given</td><td>The commit to edit, shown on the right (<a href="{{ src(cmd, 64, 69) }}">source</a>).</td></tr>
+      <tr><td><code>--tool NAME</code></td><td>string</td><td><code>ui.diff-editor</code></td><td>The diff editor to use (<a href="{{ src(cmd, 76, 79) }}">source</a>).</td></tr>
+      <tr><td><code>--restore-descendants</code></td><td>bool</td><td>false</td><td>Keep descendants' content, not their diffs, when moving them onto the edited commit (<a href="{{ src(cmd, 81, 88) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 48, 89) }}"><code>DiffeditArgs</code></a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>ui.diff-editor</code></td><td>unset, meaning <code>:builtin</code></td><td>The editor used without <code>--tool</code>. When it's unset jj prints a hint and uses the built-in one. A plain name is looked up as a tool; anything with arguments is run as a command whose arguments are the edit arguments (<a href="{{ src(mt, 190, 210) }}">editor_args_from_settings</a>, <a href="{{ src(mt, 255, 270) }}">from_settings</a>).</td></tr>
+      <tr><td><code>merge-tools.&lt;name&gt;.edit-args</code></td><td><code>["$left", "$right"]</code></td><td>Arguments for an external editor. A tool whose <code>edit-args</code> is empty can't be a diff editor. If the arguments mention <code>$output</code>, jj prepares three directories instead of two (<a href="{{ src(ext, 63, 68) }}">fields</a>, <a href="{{ src(ext, 104, 124) }}">defaults</a>, <a href="{{ src(mt, 272, 285) }}">check</a>).</td></tr>
+      <tr><td><code>merge-tools.&lt;name&gt;.edit-invocation-mode</code></td><td><code>dir</code></td><td><code>dir</code> runs the tool once on the two directories; <code>file-by-file</code> runs it once per changed file (<a href="{{ src(ext, 95, 102) }}">source</a>).</td></tr>
+      <tr><td><code>merge-tools.&lt;name&gt;.program</code></td><td>the tool's name</td><td>The executable to run (<a href="{{ src(mt, 217, 230) }}">source</a>).</td></tr>
+      <tr><td><code>merge-tools.&lt;name&gt;.conflict-marker-style</code></td><td>unset</td><td>Overrides how conflicted files are written into the temporary directories (<a href="{{ src(ext, 89, 92) }}">field</a>, <a href="{{ src(ext, 390, 392) }}">use</a>).</td></tr>
+      <tr><td><code>ui.diff-instructions</code></td><td><code>true</code></td><td>Whether an external editor gets a <code>JJ-INSTRUCTIONS</code> file. The built-in editor never does (<a href="{{ src('cli/src/config/misc.toml', 37, 37) }}">default</a>, <a href="{{ src(mt, 294, 322) }}">use</a>).</td></tr>
+      <tr><td><code>revset-aliases."immutable_heads()"</code></td><td>built in</td><td>Decides whether the target may be rewritten.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 470" role="img" aria-labelledby="de-flow-title de-flow-desc">
+    <title id="de-flow-title">jj diffedit: call flow</title>
+    <desc id="de-flow-desc">
+      cmd_diffedit loads the workspace through the shared lifecycle, which snapshots the working copy,
+      and parses the path arguments into a matcher. With --from or --to it resolves the target from --to
+      and the base from --from, each defaulting to @; otherwise the target is -r (default @) and the base
+      is its parents. It checks the target is rewritable, loads the diff editor, and starts a transaction.
+      The base tree is the merge of the base commits' trees. The diff editor edits the diff from the base
+      tree to the target's tree and returns the edited right side. It returns early with Nothing changed
+      if that equals the target's tree. Otherwise it rewrites the target with the new tree, rebases or
+      reparents descendants, and tx.finish records "edit commit". Finally it warns about unmatched paths.
+    </desc>
+    <defs>
+      <marker id="de-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 102, 114) }}"><rect class="d-box" x="20" y="84" width="340" height="66" rx="6"></rect>
+      <text x="32" y="105">--from / --to given</text>
+      <text x="32" y="123" class="d-muted" font-size="11">target = --to or @</text>
+      <text x="32" y="140" class="d-muted" font-size="11">base = [--from or @]</text></a>
+      <a href="{{ src(cmd, 115, 121) }}"><rect class="d-box" x="420" y="84" width="320" height="66" rx="6"></rect>
+      <text x="432" y="105">otherwise: -r (default @)</text>
+      <text x="432" y="123" class="d-muted" font-size="11">target = that commit</text>
+      <text x="432" y="140" class="d-muted" font-size="11">base = its parents</text></a>
+
+      <a href="{{ src(cmd, 122, 141) }}"><rect class="d-box" x="20" y="174" width="720" height="40" rx="6"></rect>
+      <text x="32" y="199">check_rewritable(target); diff_editor(--tool); start_transaction; base tree = merge_commit_trees(base)</text></a>
+
+      <a href="{{ src(mt, 294, 322) }}"><rect class="d-box" x="20" y="238" width="430" height="84" rx="6"></rect>
+      <text x="32" y="259">DiffEditor::edit(base tree → target tree, matcher)</text>
+      <text x="32" y="277" class="d-muted" font-size="11">:builtin: the terminal UI, keep or drop each change</text>
+      <text x="32" y="294" class="d-muted" font-size="11">external: check out temp dirs, run the tool,</text>
+      <text x="32" y="311" class="d-muted" font-size="11">snapshot the right (or output) directory</text></a>
+      <a href="{{ src(cmd, 145, 146) }}"><rect class="d-box" x="490" y="238" width="250" height="84" rx="6"></rect>
+      <text x="502" y="259">edited tree == target tree?</text>
+      <text x="502" y="277" class="d-muted" font-size="11">"Nothing changed." —</text>
+      <text x="502" y="294" class="d-muted" font-size="11">the transaction is dropped,</text>
+      <text x="502" y="311" class="d-muted" font-size="11">no operation</text></a>
+
+      <a href="{{ src(cmd, 147, 170) }}"><rect class="d-box" x="20" y="346" width="720" height="50" rx="6"></rect>
+      <text x="32" y="367">rewrite_commit(target).set_tree(edited tree).write()</text>
+      <text x="32" y="385" class="d-muted" font-size="11">then rebase_descendants() — or reparent_descendants() with --restore-descendants — "Rebased N descendant commits …"</text></a>
+
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="420" width="720" height="36" rx="6"></rect>
+      <text x="380" y="443" text-anchor="middle">tx.finish(ui, "edit commit &lt;id&gt;"): write the operation, update the working copy (CLI page)</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#de-arrow)">
+      <line x1="190" y1="60" x2="190" y2="80"></line>
+      <line x1="580" y1="60" x2="580" y2="80"></line>
+      <line x1="190" y1="150" x2="190" y2="170"></line>
+      <line x1="580" y1="150" x2="580" y2="170"></line>
+      <line x1="235" y1="214" x2="235" y2="234"></line>
+      <line x1="450" y1="280" x2="486" y2="280"></line>
+      <line x1="235" y1="322" x2="235" y2="342"></line>
+      <line x1="380" y1="396" x2="380" y2="416"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Target commit</td><td>rewritten</td><td>A new commit with the edited tree. It keeps the parents, change ID, description and author, and you become the committer.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Base commits</td><td>read</td><td>Only their trees: the target's parents merged, or the one <code>--from</code> commit (<a href="{{ src(rw, 61, 70) }}">merge_commit_trees</a>).</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>Trees and files</td><td>read, written</td><td>Changed files are checked out for the editor; the result is written back as new file and tree objects.</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>Temporary <code>TreeState</code>s</td><td>created, snapshotted</td><td>For an external editor: one working copy per side in a <code>jj-diff-</code> temp directory, deleted afterwards (<a href="{{ src(dwc, 140, 191) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+      <tr><td>Descendants</td><td>rewritten</td><td>Rebased, applying their diffs to the edited commit, or reparented with their trees unchanged.</td><td><a href="{{ url_for('jj', slug='transactions') }}">transactions</a></td></tr>
+      <tr><td><code>View</code>: heads, bookmarks, <code>wc_commit_ids</code></td><td>write</td><td>Follow the rewritten and rebased commits.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td>One operation, unless nothing changed.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+      <tr><td>Working copy</td><td>read, then maybe write</td><td>Snapshotted first. If <code>@</code> was edited or rebased, its new tree is written to disk.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> started before the editor opens, so the instructions can format the target's summary, but committed only if the edited tree differs from the target's. Otherwise jj prints <code>Nothing changed.</code> and the transaction is dropped without recording an operation (<a href="{{ src(cmd, 127, 146) }}">source</a>).</li>
+  <li><strong>Operation description:</strong> <code>edit commit &lt;full hex id of the target before the rewrite&gt;</code> (<a href="{{ src(cmd, 171, 172) }}">source</a>).</li>
+  <li><strong>Commits created or rewritten:</strong> the target, plus every descendant. Descendants are handled straight after the write because, as the source comment says, the new commit would otherwise "always have a conflicted change id at this point" (<a href="{{ src(cmd, 153, 170) }}">source</a>).</li>
+  <li><strong>Working copy:</strong> snapshotted at the start. If <code>@</code> changed, its new tree is checked out.</li>
+  <li><strong><code>jj undo</code></strong> restores the previous view, bringing back the target's old tree and the old descendants.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="sides">Choosing the two sides</h3>
+
+<p>
+  There are two shapes (<a href="{{ src(cmd, 101, 121) }}">source</a>). With <code>--from</code> or
+  <code>--to</code>, the target is <code>--to</code> and the base is the single <code>--from</code>
+  commit, each defaulting to <code>@</code>, so <code>jj diffedit --to @-</code> shows <code>@</code> on
+  the left and edits its parent. Otherwise the target is <code>-r</code> and the base is all of its
+  parents. <code>merge_commit_trees</code> returns a single parent's tree as is and merges several,
+  resolving what it can, so for a merge commit you edit its changes relative to the merged parents
+  (<a href="{{ src(rw, 61, 70) }}">source</a>). Either way only the target is rewritten; the base
+  commits are only read. The instructions say which commit you are editing and, for
+  <code>--from</code>/<code>--to</code>, what it is compared with (<a href="{{ src(cmd, 111, 139) }}">source</a>).
+</p>
+
+<h3 id="editor">Loading the editor</h3>
+
+<p>
+  <a href="{{ src(util, 1750, 1774) }}"><code>diff_editor</code></a> uses <code>--tool</code> by name if
+  given, and <code>ui.diff-editor</code> otherwise. <code>:builtin</code> is the only built-in diff
+  editor. Any other name is looked up in <code>[merge-tools.&lt;name&gt;]</code>, and an unknown name is
+  run as a program with the default arguments (<a href="{{ src(mt, 172, 188) }}">DiffEditTool</a>,
+  <a href="{{ src(mt, 241, 253) }}">with_name</a>). An external tool without edit arguments is rejected
+  before anything opens (<a href="{{ src(mt, 272, 285) }}">source</a>).
+</p>
+
+<h3 id="external">An external editor</h3>
+
+<p>
+  <a href="{{ src(ext, 382, 442) }}"><code>edit_diff_external</code></a> does this:
+</p>
+
+<ol>
+  <li>It lists the paths that differ between the two trees under the matcher. Only those are checked out, as sparse patterns, so unchanged files never appear (<a href="{{ src(dwc, 140, 176) }}">source</a>).</li>
+  <li>It checks the base tree out into <code>left</code> and the target tree into <code>right</code>, each a temporary <code>TreeState</code> under a <code>jj-diff-</code> directory. If the edit arguments mention <code>$output</code>, it also checks the target tree out into <code>output</code> (<a href="{{ src(dwc, 180, 185) }}">source</a>, <a href="{{ src(ext, 394, 399) }}">3-pane choice</a>).</li>
+  <li>It makes <code>left</code> read-only, and <code>right</code> too in 3-pane mode (<a href="{{ src(dwc, 200, 221) }}">source</a>).</li>
+  <li>If instructions are enabled and no such path already exists, it writes <code>JJ-INSTRUCTIONS</code> into the editable side. In 3-pane mode each pane gets a note saying whether to edit it (<a href="{{ src(dwc, 223, 286) }}">source</a>).</li>
+  <li>It runs the tool once, or once per checked-out file in <code>file-by-file</code> mode. A non-zero exit aborts the edit (<a href="{{ src(ext, 409, 439) }}">source</a>).</li>
+  <li>It deletes <code>JJ-INSTRUCTIONS</code> and snapshots the editable directory. New files are tracked with no size limit, apart from those the base ignore rules exclude. The snapshot's tree is the result (<a href="{{ src(dwc, 288, 309) }}">source</a>).</li>
+</ol>
+
+<p>
+  Because the editable side starts as the target's full tree with only changed paths materialized,
+  everything you didn't see, including unmatched paths, keeps the target's value.
+</p>
+
+<h3 id="builtin">The built-in editor</h3>
+
+<p>
+  <a href="{{ src(bi, 560, 592) }}"><code>edit_diff_builtin</code></a> shows the same diff in a terminal UI
+  where you keep or drop each change. Copy tracking isn't handled yet; the code passes empty copy
+  records. <a href="{{ src(bi, 405, 465) }}"><code>apply_diff_builtin</code></a> then starts from the target
+  tree, resets every changed path to the base's value, and applies only the changes you kept. As its
+  comment says, this matches the external tool's behaviour for unmatched paths. No instructions file is
+  involved.
+</p>
+
+<h3 id="descendants">Descendants</h3>
+
+<p>
+  <a href="{{ src(repo, 1615, 1630) }}"><code>rebase_descendants</code></a> applies each descendant's
+  own diff on top of the edited commit, which can conflict.
+  <a href="{{ src(repo, 1632, 1652) }}"><code>reparent_descendants</code></a> instead gives each
+  descendant its new parent with its tree untouched, so its content stays the same and its diff
+  absorbs your edit.
+</p>
+
+<p>
+  <strong>Invariants:</strong> only the target's tree changes, never its parents, change ID or
+  description. The base is never rewritten. Paths outside the matcher keep the target's value. A
+  no-op edit records nothing. The editor opens even when the two sides are identical: the
+  <code>Empty diff - won't run diff editor.</code> check belongs to <code>DiffSelector</code>, which
+  <code>diffedit</code> doesn't use (<a href="{{ src(util, 3570, 3610) }}">source</a>).
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Nothing changed.</code></td><td>The edited tree equals the target's, including when the editor is closed without edits. No operation is recorded.</td><td><a href="{{ src(cmd, 145, 146) }}">diffedit.rs</a></td></tr>
+      <tr><td><code>Error: Failed to edit diff</code>, caused by <code>Tool exited with &lt;status&gt; (run with --debug to see the exact invocation)</code></td><td>The external tool exited non-zero. Nothing is changed.</td><td><a href="{{ src('cli/src/command_error.rs', 444, 447) }}">command_error.rs</a>, <a href="{{ src(ext, 175, 176) }}">external.rs</a></td></tr>
+      <tr><td><code>Error executing '&lt;program&gt;' (run with --debug …)</code></td><td>The tool couldn't be started.</td><td><a href="{{ src(ext, 169, 174) }}">external.rs</a></td></tr>
+      <tr><td><code>The tool `&lt;name&gt;` cannot be used as a diff editor</code></td><td>The tool's <code>edit-args</code> is empty.</td><td><a href="{{ src(mt, 132, 133) }}">mod.rs</a></td></tr>
+      <tr><td><code>Hint: Using default editor ':builtin'; run `jj config set --user ui.diff-editor :builtin` to disable this message.</code></td><td><code>ui.diff-editor</code> is unset and no <code>--tool</code> was given.</td><td><a href="{{ src(mt, 200, 208) }}">mod.rs</a></td></tr>
+      <tr><td><code>Commit … is immutable</code> (or <code>The root commit … is immutable</code>)</td><td>The target is immutable.</td><td><a href="{{ src(util, 2044, 2073) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Revset `…` resolved to more than one revision</code> (or to none)</td><td><code>-r</code>, <code>--from</code> or <code>--to</code> isn't exactly one commit.</td><td><a href="{{ src('cli/src/revset_util.rs', 302, 331) }}">revset_util.rs</a></td></tr>
+      <tr><td>clap: <code>--revision</code> cannot be used with <code>--from</code>/<code>--to</code></td><td>Both forms given.</td><td><a href="{{ src(cmd, 60, 67) }}">diffedit.rs</a></td></tr>
+      <tr><td><code>Warning: No matching entries for paths: …</code></td><td>An explicit path exists in neither tree. It is printed after the editor, even when nothing changed.</td><td><a href="{{ src(cmd, 174, 180) }}">diffedit.rs</a>, <a href="{{ src(util, 3380, 3412) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Rebased &lt;n&gt; descendant commits[ (while preserving their content)].</code></td><td>Status after rewriting descendants.</td><td><a href="{{ src(cmd, 163, 170) }}">diffedit.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 21, 240) }}">test_diffedit</a>, which drives a fake external editor.
+  <code>A</code> adds <code>file1</code>, <code>B</code> adds <code>file2</code> and <code>file3</code>,
+  and <code>@</code> deletes <code>file1</code> and changes <code>file2</code> to <code>b</code>. When
+  plain <code>jj diffedit</code> runs, the left directory holds only <code>file1</code> and
+  <code>file2</code>, the two paths that changed, and the right holds <code>JJ-INSTRUCTIONS</code> and
+  <code>file2</code>. <code>file3</code> isn't checked out at all. Closing the editor without changes
+  prints <code>Nothing changed.</code>
+  (<a href="{{ src(t, 38, 62) }}">source</a>). With the editor resetting <code>file2</code> to the
+  left side instead:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 250" role="img" aria-labelledby="de-ex-title de-ex-desc">
+    <title id="de-ex-title">jj diffedit, resetting file2: before and after</title>
+    <desc id="de-ex-desc">
+      Before: A adds file1; B adds file2 and file3; C at @ deletes file1 and changes file2 to b. The diff
+      editor opens with a left directory holding file1 and file2 from B and a right directory holding
+      file2 from C plus JJ-INSTRUCTIONS; file3 is not checked out. The editor resets file2 to the left
+      side. After: C is rewritten with the same change ID and only deletes file1. A and B are unchanged.
+    </desc>
+    <defs>
+      <marker id="de-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% macro node(x, y, label, note="", hl=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 18 }}" y="{{ y + 4 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x + 18 }}" y="{{ y + 20 }}" font-size="10.5" class="d-muted">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <g font-size="13">
+      <text x="60" y="22" class="d-muted">before</text>
+      <text x="490" y="22" class="d-muted">after</text>
+    </g>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="70" y1="211" x2="70" y2="139"></line>
+      <line x1="70" y1="121" x2="70" y2="69"></line>
+      <line x1="500" y1="211" x2="500" y2="139"></line>
+      <line x1="500" y1="121" x2="500" y2="69"></line>
+      <line x1="390" y1="200" x2="470" y2="200" marker-end="url(#de-ex-arrow)"></line>
+    </g>
+    {{ node(70, 220, "A  qpvuntsm", "adds file1") }}
+    {{ node(70, 130, "B  rlvkpnrz", "adds file2, file3") }}
+    {{ node(70, 60, "C  kkmpptxz  @", "−file1, file2 = b") }}
+    <a href="{{ src(dwc, 140, 191) }}">
+      <rect class="d-box" x="230" y="40" width="160" height="110" rx="6"></rect>
+      <text x="242" y="60" font-size="12">temp jj-diff-…/</text>
+      <text x="242" y="80" font-size="11" class="d-muted">left/  file1, file2</text>
+      <text x="242" y="97" font-size="11" class="d-muted">  (read-only)</text>
+      <text x="242" y="117" font-size="11" class="d-muted">right/ file2,</text>
+      <text x="242" y="134" font-size="11" class="d-muted">  JJ-INSTRUCTIONS</text>
+    </a>
+    <text x="310" y="180" font-size="11" text-anchor="middle" class="d-muted">editor resets</text>
+    <text x="310" y="196" font-size="11" text-anchor="middle" class="d-muted">right/file2</text>
+    {{ node(500, 220, "A  qpvuntsm", "unchanged") }}
+    {{ node(500, 130, "B  rlvkpnrz  7e268da3", "unchanged") }}
+    {{ node(500, 60, "C  kkmpptxz  40ad4f80  @", "now only −file1", hl=True) }}
+  </svg>
+</div>
+
+<p>Upstream's snapshot of the output (<a href="{{ src(t, 124, 138) }}">source</a>):</p>
+
+<pre><code>Working copy  (@) now at: kkmpptxz 40ad4f80 (no description set)
+Parent commit (@-)      : rlvkpnrz 7e268da3 (no description set)
+Added 0 files, modified 1 files, removed 0 files</code></pre>
+
+<p>
+  <code>jj diff -s</code> then shows only <code>D file1</code>. The working copy was updated because
+  <code>@</code> itself was rewritten. The same test also covers other cases:
+</p>
+
+<ul>
+  <li><code>jj diffedit -r @-</code> writing <code>file3</code>: <code>Rebased 1 descendant commits.</code>, and the change shows up in <code>@</code> (<a href="{{ src(t, 140, 153) }}">source</a>).</li>
+  <li><code>jj diffedit --from @--</code>: the left side is <code>A</code>, so it holds only <code>file1</code>, and resetting <code>file2</code> deletes it from <code>@</code> (<a href="{{ src(t, 155, 174) }}">source</a>).</li>
+  <li><code>jj diffedit --to @-</code>: edits <code>B</code> against <code>@</code>, and the instructions add <code>The diff initially shows the commit's changes relative to:</code> followed by <code>@</code>'s summary (<a href="{{ src(t, 204, 239) }}">source</a>).</li>
+  <li>A tool that exits with status 1: <code>Error: Failed to edit diff</code>, and the diff is unchanged (<a href="{{ src(t, 107, 122) }}">source</a>).</li>
+</ul>
+
+<p>
+  Upstream's <a href="{{ src(t, 859, 894) }}">test_diffedit_restore_descendants</a> shows the other
+  descendant mode: adding a <code>;</code> to <code>@-</code>'s line with
+  <code>--restore-descendants</code> prints
+  <code>Rebased 1 descendant commits (while preserving their content).</code>, and <code>@</code>'s diff
+  now goes from <code>println!("bar");</code> to <code>println!("baz");</code> with no conflict.
+</p>
