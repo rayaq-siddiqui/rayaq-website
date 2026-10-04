@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-04 (nineteenth run): no upstream change since `c16d378`; built the
-`jj git push` command page.
+**Last updated:** 2026-10-04 (twentieth run): no upstream change since `c16d378`; built the
+`jj metaedit` command page.
 
 ## Upstream pin
 
@@ -26,11 +26,19 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 19 of 105 (`fix`, `new`, `edit`,
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 20 of 105 (`fix`, `new`, `edit`,
       `describe`, `commit`, `squash`, `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`,
-      `absorb`, `duplicate`, `bookmark create`, `bookmark set`, `bookmark move`, `git fetch`, `git push`).
+      `absorb`, `duplicate`, `bookmark create`, `bookmark set`, `bookmark move`, `git fetch`, `git push`, `metaedit`).
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
+
+## Twentieth run (2026-10-04)
+
+| Commit | What |
+|---|---|
+| `afb1c31` | `metaedit` command page (Tier A, all eight §8A.3 items, two SVGs; example from upstream's `test_new_change_id`) |
+
+Maintenance: upstream `HEAD` still at `c16d378`, so the pin stayed.
 
 ## Nineteenth run (2026-10-04)
 
@@ -40,21 +48,10 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 
 Maintenance: upstream `HEAD` still at `c16d378`, so the pin stayed.
 
-## Eighteenth run (2026-10-04)
+## Seventeenth and eighteenth runs (2026-10-04)
 
-| Commit | What |
-|---|---|
-| `f8530a8` | `git fetch` command page (Tier A, all eight §8A.3 items, two SVGs; example from upstream's `test_git_fetch_remotely_rewritten`) |
-
-Maintenance: upstream `HEAD` still at `c16d378`, so the pin stayed.
-
-## Seventeenth run (2026-10-04)
-
-| Commit | What |
-|---|---|
-| `6bf55c1` | `bookmark create`, `bookmark set` and `bookmark move` command pages, landed together because they cross-link (Tier A, all eight §8A.3 items, two SVGs each; examples from upstream's `test_bookmark_command.rs`) |
-
-Maintenance: upstream `HEAD` still at `c16d378`, so the pin stayed.
+Pin unchanged. `6bf55c1`: `bookmark create`/`set`/`move` pages, landed together because they
+cross-link. `f8530a8`: `git fetch` page.
 
 ## Fourteenth to sixteenth runs (2026-10-04)
 
@@ -138,8 +135,8 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
    `storage`, `index`, `revsets`, `backends`): ~~`new`~~, ~~`trees`~~, ~~`edit`~~, ~~`describe`~~, ~~`commit`~~,
    ~~`squash`~~, ~~`rebase`~~, ~~`abandon`~~, ~~`undo`~~, then the rest of Tier A. Next, in this order:
    ~~`redo`~~, ~~`restore`~~, ~~`split`~~, ~~`absorb`~~, ~~`duplicate`~~, ~~`bookmark-create`/`-set`/`-move`~~, ~~`git-fetch`~~,
-   ~~`git-push`~~, then the remaining 46 Tier A commands in registry order (next: `metaedit`,
-   `next`, `prev`, `parallelize`).
+   ~~`git-push`~~, then the remaining 45 Tier A commands in registry order (next: `next`,
+   `prev`, `parallelize`, `simplify-parents`).
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
 
