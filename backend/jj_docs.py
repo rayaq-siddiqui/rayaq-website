@@ -956,6 +956,15 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "simplify-parents": {
+        "title": "How jj simplify-parents works",
+        "sources": [
+            "cli/src/commands/simplify_parents.rs",
+            "lib/src/rewrite.rs",
+            "cli/src/config/revsets.toml",
+        ],
+        "ready": True,
+    },
     "parallelize": {
         "title": "How jj parallelize works",
         "sources": [
