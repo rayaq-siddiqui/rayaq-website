@@ -956,6 +956,16 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "duplicate": {
+        "title": "How jj duplicate works",
+        "sources": [
+            "cli/src/commands/duplicate.rs",
+            "lib/src/rewrite.rs",
+            "cli/src/cli_util.rs",
+            "cli/src/config/templates.toml",
+        ],
+        "ready": True,
+    },
     "absorb": {
         "title": "How jj absorb works",
         "sources": [
