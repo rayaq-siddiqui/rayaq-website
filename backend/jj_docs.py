@@ -956,6 +956,16 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "git-colocation": {
+        "title": "How jj git colocation works",
+        "sources": [
+            "cli/src/commands/git/colocation.rs",
+            "lib/src/git.rs",
+            "lib/src/git_subprocess.rs",
+            "cli/src/git_util.rs",
+        ],
+        "ready": True,
+    },
     "git-remote": {
         "title": "How jj git remote works",
         "sources": [
