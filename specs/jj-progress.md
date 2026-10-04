@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-03 (thirteenth run): no upstream change since `69abfbe`; built the
-`jj restore` command page.
+**Last updated:** 2026-10-04 (fourteenth run): pin bumped `69abfbe`..`55921f5` (docs only); built
+the `jj split` command page.
 
 ## Upstream pin
 
-`jj-vcs/jj@69abfbedcc615bb562c31d488b98abb1ab854089` (committed 2026-10-03, version
-0.45.1), analyzed 2026-10-03. Held in `jj_docs.UPSTREAM`. Previous pin: `0cb02a8`.
+`jj-vcs/jj@55921f5c6d50aa7d2d836d1cef636c77481bb916` (committed 2026-10-03, version
+0.45.1), analyzed 2026-10-04. Held in `jj_docs.UPSTREAM`. Previous pin: `69abfbe`.
 
 ## §10 acceptance criteria
 
@@ -26,10 +26,17 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 11 of 105 (`fix`, `new`, `edit`,
-      `describe`, `commit`, `squash`, `rebase`, `abandon`, `undo`, `redo`, `restore`).
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 12 of 105 (`fix`, `new`, `edit`,
+      `describe`, `commit`, `squash`, `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`).
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
+
+## Fourteenth run (2026-10-04)
+
+| Commit | What |
+|---|---|
+| `c9c1103` | Maintenance `69abfbe..55921f5` (2 docs commits: template-keyword help text, env-var config docs). Touched the `operations` source set (no cited lines changed) and `fix`'s `docs/config.md` (both cited ranges shifted +17, content unchanged). `COMMANDS` regenerated identically; no `.proto` changes |
+| `ffb1b60` | `split` command page (Tier A, all eight §8A.3 items, two SVGs; example from upstream's `test_split_by_paths`) |
 
 ## Thirteenth run (2026-10-03)
 
@@ -117,7 +124,7 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
 1. Tier A commands, alternating with the remaining topics (`trees`, `conflicts`,
    `storage`, `index`, `revsets`, `backends`): ~~`new`~~, ~~`trees`~~, ~~`edit`~~, ~~`describe`~~, ~~`commit`~~,
    ~~`squash`~~, ~~`rebase`~~, ~~`abandon`~~, ~~`undo`~~, then the rest of Tier A. Next, in this order:
-   ~~`redo`~~, ~~`restore`~~, `split`, `absorb`, `duplicate`, `bookmark-create`/`-set`/`-move`, `git-fetch`,
+   ~~`redo`~~, ~~`restore`~~, ~~`split`~~, `absorb`, `duplicate`, `bookmark-create`/`-set`/`-move`, `git-fetch`,
    `git-push`, then the remaining 46 Tier A commands in registry order.
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
@@ -138,6 +145,10 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
   shared pages for Tier C; the first three are a judgment call to keep slugs to two levels).
 
 ## Open gaps / questions for the owner
+
+- **`jj split` help text vs code.** The help text says splitting an empty commit "is not supported",
+  but the code has no such check, and upstream's `test_split_empty` splits one successfully. The page
+  states both.
 
 - **Worked example for `undo`.** §8A.3 item 8 asks for a before/after *commit* graph. `undo` changes
   no commits, so its page draws the *operation log* from upstream's
