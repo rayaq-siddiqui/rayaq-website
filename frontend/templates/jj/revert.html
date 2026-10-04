@@ -1,0 +1,250 @@
+{% set cmd = "cli/src/commands/revert.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set t = "cli/tests/test_revert_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj revert</code> works</h1>
+  <p class="tagline">
+    <code>jj revert</code> creates new commits that undo the changes of existing ones. The originals are
+    left alone. Each new commit applies one revision's diff in reverse, in a chain at a location you pick
+    with <code>-o</code>, <code>-A</code> or <code>-B</code>.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj resolves the revisions to revert (children first) and the location (new parents, plus new
+  children for <code>-A</code>/<code>-B</code>). Starting from the merged tree of the new parents, for
+  each revision it computes <code>base + (reverted revision's parents − reverted revision)</code> as a
+  3-way merge, which may conflict. It writes a commit with that tree and a description from
+  <code>templates.revert_description</code>, and the next revert stacks on top. Finally it inserts the
+  chain above the new children and rebases them. The operation is
+  <code>revert commit &lt;id&gt;</code> (<code>and N more</code>).
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 98, 243) }}"><code>cmd_revert</code></a>. Unlike
+  <a href="{{ url_for('jj', slug='abandon') }}"><code>jj abandon</code></a> or
+  <a href="{{ url_for('jj', slug='restore') }}"><code>jj restore</code></a>, it never rewrites the reverted
+  commits. It only adds new ones. Placement with <code>-o</code>/<code>-A</code>/<code>-B</code> works as
+  for <a href="{{ url_for('jj', slug='duplicate') }}"><code>jj duplicate</code></a>. (Reverting an
+  <em>operation</em> is <code>jj op revert</code>, a different command.)
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>-r</code>, <code>--revision</code>, <code>--revisions REVSETS</code></td><td>revsets, repeatable</td><td>required</td><td>The revisions to undo (<a href="{{ src(cmd, 51, 60) }}">source</a>).</td></tr>
+      <tr><td><code>-o</code>, <code>--onto</code>, <code>-d</code>, <code>--destination REVSETS</code></td><td>revsets, repeatable</td><td>—</td><td>Put the revert chain on top of these commits. Nothing is rebased (<a href="{{ src(cmd, 62, 71) }}">source</a>).</td></tr>
+      <tr><td><code>-A</code>, <code>--insert-after</code>, <code>--after REVSETS</code></td><td>revsets, repeatable</td><td>—</td><td>Insert the chain after these commits. Their children move on top of it (<a href="{{ src(cmd, 73, 83) }}">source</a>).</td></tr>
+      <tr><td><code>-B</code>, <code>--insert-before</code>, <code>--before REVSETS</code></td><td>revsets, repeatable</td><td>—</td><td>Insert the chain before these commits, on their parents (<a href="{{ src(cmd, 85, 95) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  A clap group requires at least one location flag. <code>-A</code> and <code>-B</code> can be combined,
+  and neither can be combined with <code>-o</code> (<a href="{{ src(cmd, 49) }}">source</a>).
+</p>
+<p class="jj-source"><a href="{{ src(cmd, 41, 96) }}"><code>RevertArgs</code></a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>templates.revert_description</code></td><td><code>Revert "&lt;first line&gt;"</code>, a blank line, then <code>This reverts commit &lt;full id&gt;.</code></td><td>The description of each new commit, rendered against the reverted commit (<a href="{{ src('cli/src/config/templates.toml', 37, 43) }}">default</a>, <a href="{{ src(cmd, 132, 145) }}">source</a>).</td></tr>
+      <tr><td><code>revset-aliases."immutable_heads()"</code></td><td>(built-in)</td><td>Only new children (from <code>-A</code>/<code>-B</code>) must be mutable. Reverted commits may be immutable, since they aren't touched.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 400" role="img" aria-labelledby="rv-flow-title rv-flow-desc">
+    <title id="rv-flow-title">jj revert: call flow</title>
+    <desc id="rv-flow-desc">
+      cmd_revert resolves the revisions to revert, children first, and returns "No revisions to revert."
+      if there are none. compute_commit_location turns -o, -A or -B into new parents and new children,
+      checking that new children are mutable and that no loop would form. jj renders each new description
+      from templates.revert_description and starts a transaction. Starting from the merged tree of the new
+      parents, for each revision it merges the base with the reverted revision's parents minus the
+      revision itself, writes a new commit, and makes it the parent of the next. Then it rebases the new
+      children onto the last new commit and records "revert commit … (and N more)".
+    </desc>
+    <defs>
+      <marker id="rv-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(cmd, 104, 122) }}"><rect class="d-box" x="20" y="20" width="350" height="84" rx="6"></rect>
+      <text x="32" y="41">to_revert = -r (children first)</text>
+      <text x="32" y="60" class="d-muted" font-size="11">none → "No revisions to revert."</text>
+      <text x="32" y="77" class="d-muted" font-size="11">compute_commit_location(-o, -A, -B)</text>
+      <text x="32" y="94" class="d-muted" font-size="11">→ new parents, new children</text></a>
+
+      <a href="{{ src(util, 3613, 3727) }}"><rect class="d-box" x="390" y="20" width="350" height="84" rx="6"></rect>
+      <text x="402" y="41">location rules (shared helper)</text>
+      <text x="402" y="60" class="d-muted" font-size="11">-o: parents only; -A: children of targets</text>
+      <text x="402" y="77" class="d-muted" font-size="11">-B: parents of targets; new children must be</text>
+      <text x="402" y="94" class="d-muted" font-size="11">mutable and not ancestors of new parents</text></a>
+
+      <a href="{{ src(cmd, 146, 193) }}"><rect class="d-box" x="20" y="128" width="720" height="104" rx="6"></rect>
+      <text x="32" y="149">start_transaction; base = merge_commit_trees(new parents); for each revision R:</text>
+      <text x="32" y="168" class="d-muted" font-size="11">tree = merge(base, minus R.tree, plus R.parent_tree)  — i.e. base + (R's parents − R)</text>
+      <text x="32" y="185" class="d-muted" font-size="11">labels: "(revert destination)", "(reverted revision)", "(parents of reverted revision)"</text>
+      <text x="32" y="202" class="d-muted" font-size="11">new_commit(parents, tree) with the templated description</text>
+      <text x="32" y="219" class="d-muted" font-size="11">parents := [new commit]; base := tree</text></a>
+
+      <a href="{{ src(cmd, 195, 223) }}"><rect class="d-box" x="20" y="256" width="720" height="66" rx="6"></rect>
+      <text x="32" y="277">transform_descendants(new children): replace parents that were new parents with the chain head</text>
+      <text x="32" y="295" class="d-muted" font-size="11">and always add the chain head; rebase() every visited descendant</text>
+      <text x="32" y="312" class="d-muted" font-size="11">(-o has no new children, so nothing is rebased)</text></a>
+
+      <a href="{{ src(cmd, 225, 240) }}"><rect class="d-box" x="20" y="346" width="720" height="40" rx="6"></rect>
+      <text x="380" y="371" text-anchor="middle">"Reverted N commits as follows:" … [+ "Rebased M descendant commits."]; tx.finish("revert commit &lt;id&gt; [and N more]")</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#rv-arrow)">
+      <line x1="370" y1="62" x2="386" y2="62"></line>
+      <line x1="195" y1="104" x2="195" y2="124"></line>
+      <line x1="380" y1="232" x2="380" y2="252"></line>
+      <line x1="380" y1="322" x2="380" y2="342"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Trees</td><td>read, write</td><td>A 3-way <code>MergedTree::merge</code> per revision, with conflict labels naming each side (<a href="{{ src(cmd, 162, 182) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>Commits</td><td>write</td><td>One new commit per reverted revision, chained. The reverted commits are only read.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Descendants of the location</td><td>write</td><td>With <code>-A</code>/<code>-B</code>, the new children and all their descendants are rebased onto the chain.</td><td><a href="{{ url_for('jj', slug='transactions') }}">transactions</a></td></tr>
+      <tr><td>Templates</td><td>read</td><td>The description template is parsed once and rendered against each reverted commit.</td><td>—</td></tr>
+      <tr><td>Operation</td><td>write</td><td>One operation.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, after the location is resolved and the descriptions rendered (<a href="{{ src(cmd, 146) }}">source</a>).</li>
+  <li><strong>Operation description:</strong> <code>revert commit &lt;full hex&gt;</code>, or <code>revert commit &lt;first&gt; and &lt;N&gt; more</code>, where "first" is the first revision in the children-first order (<a href="{{ src(cmd, 123, 131) }}">source</a>).</li>
+  <li><strong>Commits created:</strong> one per reverted revision. The working copy doesn't move to them.</li>
+  <li><strong>Commits rewritten:</strong> none with <code>-o</code>. With <code>-A</code>/<code>-B</code>, the new children and their descendants.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<p>
+  Revisions are reverted in the order the revset returns them, which is reverse topological, children
+  first (<a href="{{ src(cmd, 105, 109) }}">source</a>). That is the natural order for undoing a stack:
+  the newest change is undone first, so each later reverse diff applies to a tree that no longer has
+  the changes stacked on top of it.
+</p>
+
+<p>
+  For each revision R, with the running base tree B (initially the merged tree of the new parents), the
+  new tree is <code>MergedTree::merge([B, R.tree, R.parent_tree])</code>. That is a merge whose sides
+  are B and R's parent tree, with R's own tree as the base (<a href="{{ src(cmd, 165, 182) }}">source</a>).
+  So the result is B plus the change from R to its parents, which is R's diff reversed. If B has since
+  changed the same lines, the result contains a conflict, labelled
+  <code>(revert destination)</code>, <code>(reverted revision)</code> and
+  <code>(parents of reverted revision)</code> (<a href="{{ src(t, 366, 423) }}">test_revert_with_conflict</a>).
+</p>
+
+<p>
+  Inserting with <code>-A</code>/<code>-B</code> (<a href="{{ src(cmd, 195, 223) }}">source</a>): each new
+  child's parents that were among the new parents are replaced by the chain's head, and the head is
+  always added. <code>IndexSet</code> keeps the order and removes duplicates. Every commit
+  <code>transform_descendants</code> visits is rebased and counted, so "Rebased N" includes descendants
+  further down, not just the direct children.
+</p>
+
+<p>
+  <strong>Invariants:</strong> reverted commits are never modified. Every new commit's tree is a merge,
+  so conflicts are recorded rather than failing the command. The chain is linear.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>error: the following required arguments were not provided: &lt;--onto …|--insert-after …|--insert-before …&gt;</code></td><td>No location flag. Clap exits with status 2.</td><td><a href="{{ src(cmd, 49) }}">revert.rs</a>, <a href="{{ src(t, 46, 58) }}">test</a></td></tr>
+      <tr><td><code>No revisions to revert.</code></td><td>The revset is empty. This is a status message.</td><td><a href="{{ src(cmd, 110, 113) }}">revert.rs</a></td></tr>
+      <tr><td><code>Refusing to create a loop: commit … would be both an ancestor and a descendant of the reverted commits</code></td><td>A new child is an ancestor of a new parent.</td><td><a href="{{ src(util, 3705, 3727) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>No revisions found to use as parent</code></td><td>The location resolves to no parents.</td><td><a href="{{ src(util, 3698, 3700) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Commit … is immutable</code></td><td>A new child from <code>-A</code>/<code>-B</code> is immutable.</td><td><a href="{{ src(util, 3685, 3688) }}">cli_util.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 21, 214) }}">test_revert</a>. A stack <code>a → b → c → d</code>,
+  where only <code>a</code> adds a file (<code>a</code>), and <code>@</code> is <code>d</code>. Then
+  <code>jj revert -ra -d@</code> runs:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 250" role="img" aria-labelledby="rv-ex-title rv-ex-desc">
+    <title id="rv-ex-title">jj revert -ra -d@</title>
+    <desc id="rv-ex-desc">
+      Before: root, a (adds file a), b, c, d which is @. After jj revert -ra -d@: the same stack, plus a new
+      commit 64910788 "Revert a" on top of d that deletes file a. a itself is unchanged and @ stays on d.
+    </desc>
+    <defs>
+      <marker id="rv-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% macro node(x, y, label, note="", hl=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 15 }}" y="{{ y + 4 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x + 15 }}" y="{{ y + 19 }}" font-size="10.5" class="d-muted">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <text x="40" y="12" font-size="12" class="d-muted">before</text>
+    <text x="560" y="12" font-size="12" class="d-muted">after revert -ra -d@</text>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="80" y1="221" x2="80" y2="79"></line>
+      <line x1="480" y1="221" x2="480" y2="39"></line>
+      <line x1="290" y1="140" x2="390" y2="140" marker-end="url(#rv-ex-arrow)"></line>
+    </g>
+    {{ node(80, 230, "root") }}{{ node(80, 190, "a", "A a") }}{{ node(80, 150, "b") }}{{ node(80, 115, "c") }}{{ node(80, 80, "@ d") }}
+    {{ node(480, 230, "root") }}{{ node(480, 190, "a", "A a") }}{{ node(480, 150, "b") }}{{ node(480, 115, "c") }}{{ node(480, 80, "@ d") }}{{ node(480, 40, "64910788", "Revert \"a\" · D a", hl=True) }}
+  </svg>
+</div>
+
+<p>Upstream's snapshot:</p>
+
+<pre><code>$ jj revert -ra -d@
+Reverted 1 commits as follows:
+  wqnwkozp 64910788 Revert "a"
+
+$ jj log
+○  64910788f8a5 Revert "a"
+│
+│  This reverts commit 7d980be7a1d499e4d316ab4c01242885032f7eaf.
+@  98fb6151f954 d
+...
+
+$ jj diff -s -r@+
+D a</code></pre>
+
+<p>
+  The base was <code>d</code>'s tree. Reversing <code>a</code> (parent root, which has no file
+  <code>a</code>) deletes the file. Reverting that revert again with <code>jj revert -r@+ -d@+</code>
+  gives <code>Revert "Revert "a""</code>, which adds it back. With <code>-Ab</code> instead of
+  <code>-d@</code>, the new commit goes between <code>b</code> and <code>c</code>, and the output adds
+  <code>Rebased 2 descendant commits.</code> for <code>c</code> and <code>d</code>
+  (<a href="{{ src(t, 114, 120) }}">test</a>).
+</p>

@@ -956,6 +956,16 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "revert": {
+        "title": "How jj revert works",
+        "sources": [
+            "cli/src/commands/revert.rs",
+            "cli/src/cli_util.rs",
+            "lib/src/merged_tree.rs",
+            "cli/src/config/templates.toml",
+        ],
+        "ready": True,
+    },
     "converge": {
         "title": "How jj converge works",
         "sources": [
