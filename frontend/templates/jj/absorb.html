@@ -1,0 +1,311 @@
+{% set cmd = "cli/src/commands/absorb.rs" %}
+{% set ab = "lib/src/absorb.rs" %}
+{% set an = "lib/src/annotate.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set t = "cli/tests/test_absorb_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj absorb</code> works</h1>
+  <p class="tagline">
+    <code>jj absorb</code> takes the changes in a commit (by default <code>@</code>) and moves each hunk
+    into the mutable ancestor that last touched those lines, using line annotation (blame). Hunks it
+    can't place unambiguously stay where they are.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: for every modified file in the source, jj annotates the parent's version of the file within
+  the destination set (default <code>mutable()</code>). That attributes each line to the closest
+  destination commit that last changed it. It then diffs parent against source and assigns each hunk
+  to the commit owning the lines it touches. A hunk is left alone when it spans several owners, when it
+  sits exactly between two of them, or when its lines belong to no destination. The selected hunks are
+  merged into each destination in one <code>transform_descendants</code> walk. The source is
+  reparented, so its absorbed hunks vanish from its diff, and it is abandoned if that leaves it empty
+  and undescribed. The operation is <code>absorb changes into &lt;n&gt; commits</code>.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 86, 214) }}"><code>cmd_absorb</code></a>. The planning and
+  rewriting live in jj-lib's <a href="{{ src(ab) }}"><code>absorb.rs</code></a>
+  (<code>split_hunks_to_trees</code> and <code>absorb_hunks</code>), and attribution is
+  <code>FileAnnotator</code>, the engine behind <code>jj file annotate</code>. Compare
+  <a href="{{ url_for('jj', slug='squash') }}"><code>jj squash</code></a>, which moves changes into one
+  destination you choose. The help text suggests reviewing the result with <code>jj op show -p</code>
+  (<a href="{{ src(cmd, 35, 50) }}">source</a>).
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>-f</code>, <code>--from REVSET</code></td><td>revset</td><td><code>@</code></td><td>The source commit, exactly one (<a href="{{ src(cmd, 53, 56) }}">source</a>).</td></tr>
+      <tr><td><code>-t</code>, <code>--into</code>, <code>--to REVSETS</code></td><td>revsets, repeatable</td><td><code>mutable()</code></td><td>Destination candidates. Only ancestors of the source that last changed a line can receive hunks (<a href="{{ src(cmd, 58, 69) }}">source</a>).</td></tr>
+      <tr><td><code>FILESETS</code> (positional)</td><td>filesets</td><td>all files</td><td>Absorb only changes to these paths (<a href="{{ src(cmd, 71, 74) }}">source</a>).</td></tr>
+      <tr><td><code>-i</code>, <code>--interactive</code></td><td>bool</td><td>false</td><td>First choose which changes are candidates, in a diff editor (<a href="{{ src(cmd, 76, 78) }}">source</a>).</td></tr>
+      <tr><td><code>--tool NAME</code></td><td>string</td><td>none</td><td>Diff editor to use. Implies <code>-i</code> (<a href="{{ src(cmd, 80, 83) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 51, 84) }}"><code>AbsorbArgs</code></a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<p>
+  No absorb-specific keys. The default destination set <code>mutable()</code> is built from
+  <code>revset-aliases."immutable_heads()"</code>, so that setting decides which ancestors are
+  candidates. <code>ui.diff-editor</code> and <code>ui.diff-instructions</code> apply to <code>-i</code>
+  (see the <a href="{{ url_for('jj', slug='commit') }}#configuration"><code>commit</code> page</a>).
+  <code>user.name</code>/<code>user.email</code> become the committer of rewritten commits.
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 506" role="img" aria-labelledby="ab2-flow-title ab2-flow-desc">
+    <title id="ab2-flow-title">jj absorb: call flow</title>
+    <desc id="ab2-flow-desc">
+      cmd_absorb loads the workspace through the shared lifecycle, which snapshots the working copy. It
+      resolves the source and the destination revsets, builds the matcher, and warns on unmatched
+      paths. With -i it selects candidate changes in a diff editor and errors if none are selected;
+      either way it builds an AbsorbSource. split_hunks_to_trees annotates each modified file's parent
+      version within the destinations, maps diff hunks to annotated commits, and builds a tree per
+      destination, skipping symlinks, conflicts and other unsupported files with a warning. The
+      destinations are checked rewritable. In a transaction absorb_hunks walks the destinations'
+      descendants: each destination is rebased and merged with its selected tree, the source is
+      reparented and abandoned if discardable, others are rebased. tx.finish records "absorb changes
+      into N commits", then any remaining changes in the source are summarized.
+    </desc>
+    <defs>
+      <marker id="ab2-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 94, 108) }}"><rect class="d-box" x="20" y="84" width="340" height="66" rx="6"></rect>
+      <text x="32" y="105">resolve source (one commit)</text>
+      <text x="32" y="123" class="d-muted" font-size="11">destinations = union(--into), default mutable()</text>
+      <text x="32" y="140" class="d-muted" font-size="11">matcher; warn on unmatched paths</text></a>
+      <a href="{{ src(cmd, 110, 151) }}"><rect class="d-box" x="420" y="84" width="320" height="66" rx="6"></rect>
+      <text x="432" y="105">AbsorbSource</text>
+      <text x="432" y="123" class="d-muted" font-size="11">-i: diff editor picks candidates ("No changes</text>
+      <text x="432" y="140" class="d-muted" font-size="11">selected" if none); else whole commit</text></a>
+
+      <a href="{{ src(ab, 106, 195) }}"><rect class="d-box" x="20" y="174" width="720" height="102" rx="6"></rect>
+      <text x="32" y="195">split_hunks_to_trees: for each modified file (parent tree → source tree)</text>
+      <text x="32" y="214" class="d-muted" font-size="11">• new file → skipped (no owner); symlink, conflict, submodule, access denied → "Skipping &lt;path&gt;: &lt;reason&gt;"</text>
+      <text x="32" y="232" class="d-muted" font-size="11">• FileAnnotator on the parent's text within the destinations → line ranges owned by commits</text>
+      <text x="32" y="250" class="d-muted" font-size="11">• line diff parent → source; split_file_hunks assigns each unambiguous hunk to one owner</text>
+      <text x="32" y="268" class="d-muted" font-size="11">• per owner: parent tree + its hunks → MergedTreeBuilder</text></a>
+
+      <a href="{{ src(cmd, 161, 166) }}"><rect class="d-box" x="20" y="300" width="340" height="50" rx="6"></rect>
+      <text x="32" y="321">check_rewritable(owners)</text>
+      <text x="32" y="339" class="d-muted" font-size="11">start_transaction</text></a>
+      <a href="{{ src(ab, 306, 373) }}"><rect class="d-box" x="420" y="300" width="320" height="102" rx="6"></rect>
+      <text x="432" y="321">absorb_hunks: transform_descendants(owners)</text>
+      <text x="432" y="340" class="d-muted" font-size="11">owner: rebase, then merge(own tree,</text>
+      <text x="432" y="357" class="d-muted" font-size="11">  source parent tree, selected tree)</text>
+      <text x="432" y="374" class="d-muted" font-size="11">source: reparent; abandon if discardable</text>
+      <text x="432" y="391" class="d-muted" font-size="11">anything else: rebase</text></a>
+
+      <a href="{{ src(cmd, 168, 212) }}"><rect class="d-box" x="20" y="426" width="720" height="60" rx="6"></rect>
+      <text x="380" y="448" text-anchor="middle">"Absorbed changes into N revisions:" …; tx.finish(ui, "absorb changes into N commits") (CLI page);</text>
+      <text x="380" y="468" text-anchor="middle">then "Remaining changes:" with a summary diff if the source still has changes</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#ab2-arrow)">
+      <line x1="190" y1="60" x2="190" y2="80"></line>
+      <line x1="360" y1="117" x2="416" y2="117"></line>
+      <line x1="580" y1="150" x2="580" y2="170"></line>
+      <line x1="190" y1="276" x2="190" y2="296"></line>
+      <line x1="360" y1="325" x2="416" y2="325"></line>
+      <line x1="580" y1="402" x2="580" y2="422"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Source commit</td><td>read, then reparented or abandoned</td><td>Its tree stays the same while its parents gain the absorbed hunks, so those hunks leave its diff. It is abandoned when that makes it empty and it has no description (<a href="{{ src(ab, 321, 331) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Destination commits</td><td>rewritten</td><td>A 3-way merge adds their hunks to their (rebased) tree. The source is added to their predecessors, so the evolution log shows where the change came from (<a href="{{ src(ab, 337, 363) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Ancestor history of each file</td><td>read</td><td>Line annotation walks <code>destinations &amp; ::source &amp; files(path)</code> (<a href="{{ src(an, 214, 225) }}"><code>FileAnnotator::compute</code></a>).</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>File contents</td><td>read, written</td><td>Parent and source text are materialized, and a new file blob is written per destination and path.</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>Commits between the destinations and the source</td><td>rebased</td><td>So each picks up the absorbed hunks from below.</td><td><a href="{{ url_for('jj', slug='transactions') }}">transactions</a></td></tr>
+      <tr><td><code>View</code>: heads, bookmarks, <code>wc_commit_ids</code></td><td>write</td><td>Follow the rewrites. An abandoned source <code>@</code> is replaced by a new empty working-copy commit.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td>One operation. If nothing could be absorbed, the view doesn't change and <code>finish</code> records nothing.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, started after planning (<a href="{{ src(cmd, 165, 166) }}">source</a>). With no hunks to move it changes nothing, and jj prints <code>Nothing changed.</code></li>
+  <li><strong>Operation description:</strong> <code>absorb changes into &lt;n&gt; commits</code>, where <code>n</code> counts the rewritten destinations (<a href="{{ src(cmd, 190, 197) }}">source</a>). It names no commit IDs.</li>
+  <li><strong>Commits created or rewritten:</strong> every destination that received hunks, every commit between them and the source, and the source itself, which is reparented or abandoned.</li>
+  <li><strong>Working copy:</strong> snapshotted first, so your latest edits are what gets absorbed. If <code>@</code> was the source and is abandoned, you get a new empty <code>@</code>. If it was only reparented, its tree is the same and no files change.</li>
+  <li><strong><code>jj undo</code></strong> restores every destination, the intermediate commits and the source.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="annotation">Attribution</h3>
+
+<p>
+  For each file whose content differs between the source's parent tree and its tree
+  (<a href="{{ src(ab, 116, 154) }}">source</a>), the parent's text is annotated starting <em>at the
+  source commit</em> (<a href="{{ src(an, 173, 187) }}"><code>with_file_content</code></a>) and walking
+  ancestors within the destination set (<a href="{{ src(ab, 156, 164) }}">source</a>). Each line ends up
+  owned by the nearest destination commit that last changed it. Lines last changed outside the set,
+  such as immutable history, stay unresolved and are dropped from the owner list. Consecutive lines with
+  the same owner are merged into ranges
+  (<a href="{{ src(an, 116, 135) }}"><code>compact_line_ranges</code></a>).
+</p>
+
+<h3 id="assigning">Assigning hunks</h3>
+
+<p>
+  <a href="{{ src(ab, 197, 275) }}"><code>split_file_hunks</code></a> walks the line diff's changed hunks
+  alongside the owner ranges:
+</p>
+
+<ul>
+  <li>
+    <strong>Pure deletion:</strong> may span several owners, as long as the owned ranges cover the
+    deleted lines contiguously. Each owner then gets the part of the deletion inside its range
+    (<a href="{{ src(ab, 216, 249) }}">source</a>).
+  </li>
+  <li>
+    <strong>Anything else</strong> (modification or insertion) must lie inside a single owner's range.
+    A pure insertion exactly at the boundary between two owners is <em>ambiguous</em> and skipped. An
+    insertion at the start or end of a file goes to the owner of the adjacent lines
+    (<a href="{{ src(ab, 250, 272) }}">source</a>).
+  </li>
+</ul>
+
+<p>
+  For each owner, jj rebuilds the file from the parent text, splicing in only that owner's hunks
+  (<a href="{{ src(ab, 277, 290) }}"><code>combine_texts</code></a>). It writes the result into a tree that
+  starts as the source's parent tree. A file deletion is propagated only if a single owner receives the
+  whole deletion. New files have no owner, and are never absorbed. Symlinks, conflicts, submodules and
+  unreadable files are skipped with a warning
+  (<a href="{{ src(ab, 375, 387) }}"><code>to_file_value</code></a>).
+</p>
+
+<h3 id="applying">Applying</h3>
+
+<p>
+  <a href="{{ src(ab, 306, 373) }}"><code>absorb_hunks</code></a> runs one
+  <code>transform_descendants</code> over the owners, so each commit is rewritten once and parents come
+  first. An owner is first rebased, picking up absorbed changes from owners below it, then merged:
+  <code>merge(rebased tree, source parent tree, selected tree)</code>, which adds exactly its hunks. Any
+  other commit in between is rebased. The source is <em>reparented</em>, not rebased. Its content stays
+  the same, so the hunks that moved below it simply stop being part of its diff.
+</p>
+
+<p>
+  <strong>Invariants:</strong> the source's final tree, and the files on disk, are unchanged. Every hunk
+  lands either in exactly one owner or stays in the source. Nothing is absorbed into a commit outside
+  the destination set, or one that isn't an ancestor. Immutable commits are never rewritten: they're
+  excluded by default, and if you name them explicitly the command refuses.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>No changes selected</code></td><td><code>-i</code> and the selection matches the parent.</td><td><a href="{{ src(cmd, 145, 147) }}">absorb.rs</a></td></tr>
+      <tr><td><code>Warning: Skipping &lt;path&gt;: Is a symlink</code> / <code>Is a conflict</code> / <code>Is a Git submodule</code> / <code>Access is denied: …</code></td><td>The file's before or after value isn't a plain file.</td><td><a href="{{ src(cmd, 155, 159) }}">absorb.rs</a>, <a href="{{ src(ab, 375, 387) }}">lib absorb.rs</a></td></tr>
+      <tr><td><code>Warning: No matching entries for paths: …</code></td><td>An explicit path isn't in the source tree.</td><td><a href="{{ src(cmd, 102, 108) }}">absorb.rs</a></td></tr>
+      <tr><td><code>Commit … is immutable</code></td><td>A hunk's owner is immutable, which is only possible with an explicit <code>--into</code> such as <code>all()</code> (<a href="{{ src(t, 874, 920) }}">upstream test</a>).</td><td><a href="{{ src(cmd, 161, 163) }}">absorb.rs</a></td></tr>
+      <tr><td><code>Nothing changed.</code></td><td>No hunk could be placed. This also covers an empty source.</td><td><a href="{{ src(util, 2849, 2854) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Absorbed changes into &lt;n&gt; revisions:</code>, <code>Rebased &lt;n&gt; descendant commits.</code>, <code>Remaining changes:</code></td><td>Status output. The last is followed by a summary diff of what stayed in the source.</td><td><a href="{{ src(cmd, 168, 212) }}">absorb.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 22, 90) }}">test_absorb_simple</a>. Commit <code>1</code> wrote
+  <code>1a</code>, <code>1b</code> into <code>file1</code>, and commit <code>2</code> appended
+  <code>2a</code>, <code>2b</code>. In a new <code>@</code>, the test inserts <code>1X</code> at the top
+  and <code>2Z</code> at the bottom, then runs <code>jj absorb</code>:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 300" role="img" aria-labelledby="ab2-ex-title ab2-ex-desc">
+    <title id="ab2-ex-title">jj absorb: assigning two inserted lines</title>
+    <desc id="ab2-ex-desc">
+      Annotation of the parent's file1 gives lines 1a and 1b to commit 1 and lines 2a and 2b to commit
+      2. The source inserts 1X before 1a, which is inside commit 1's range at the file start, and 2Z
+      after 2b, at the end of commit 2's range. 1X is absorbed into commit 1 and 2Z into commit 2. The
+      source becomes empty and undescribed, so it is abandoned and a new empty working-copy commit takes
+      its place. A later insertion Y between 1b and 2a sits on the boundary of two owners and is left
+      in place.
+    </desc>
+    <defs>
+      <marker id="ab2-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <text x="30" y="26" font-size="12" class="d-muted">@'s diff to file1</text>
+    <text x="300" y="26" font-size="12" class="d-muted">owner (annotation of the parent)</text>
+    <text x="560" y="26" font-size="12" class="d-muted">result</text>
+    {% macro line(y, text, kind="") -%}
+      <rect x="30" y="{{ y }}" width="200" height="26" rx="4" class="d-box"{% if kind == 'add' %} style="stroke: var(--jj-accent)"{% endif %}></rect>
+      <text x="42" y="{{ y + 17 }}" font-size="12"{% if kind == 'add' %} class="d-accent"{% endif %}>{{ ('+ ' if kind else '  ') ~ text }}</text>
+    {%- endmacro %}
+    {{ line(40, "1X", "add") }}
+    {{ line(70, "1a") }}{{ line(100, "1b") }}{{ line(130, "2a") }}{{ line(160, "2b") }}
+    {{ line(190, "2Z", "add") }}
+    <a href="{{ src(an, 116, 135) }}">
+      <rect x="300" y="70" width="180" height="56" rx="6" class="d-box"></rect>
+      <text x="390" y="102" font-size="12" text-anchor="middle">commit 1 (1a, 1b)</text>
+      <rect x="300" y="130" width="180" height="56" rx="6" class="d-box"></rect>
+      <text x="390" y="162" font-size="12" text-anchor="middle">commit 2 (2a, 2b)</text>
+    </a>
+    <g class="d-line" stroke-width="1.3" fill="none" marker-end="url(#ab2-ex-arrow)">
+      <path d="M232,53 C270,53 270,90 296,90"></path>
+      <path d="M232,203 C270,203 270,170 296,170"></path>
+      <line x1="482" y1="98" x2="552" y2="98"></line>
+      <line x1="482" y1="158" x2="552" y2="158"></line>
+    </g>
+    <text x="560" y="94" font-size="12">1 ← +1X</text>
+    <text x="560" y="110" font-size="10.5" class="d-muted">bd7d4016</text>
+    <text x="560" y="154" font-size="12">2 ← +2Z</text>
+    <text x="560" y="170" font-size="10.5" class="d-muted">95568809</text>
+    <text x="560" y="210" font-size="12">@ abandoned</text>
+    <text x="560" y="226" font-size="10.5" class="d-muted">new empty @ yqosqzyt</text>
+    <rect x="30" y="240" width="200" height="26" rx="4" class="d-box" stroke-dasharray="4 3"></rect>
+    <text x="42" y="257" font-size="12">+ Y   (between 1b and 2a)</text>
+    <text x="250" y="257" font-size="11" class="d-muted">later step: on the boundary of two owners → ambiguous, stays in @ ("Nothing changed.")</text>
+  </svg>
+</div>
+
+<p>Upstream's snapshot of the output:</p>
+
+<pre><code>Absorbed changes into 2 revisions:
+  zsuskuln 95568809 2
+  kkmpptxz bd7d4016 1
+Working copy  (@) now at: yqosqzyt 977269ac (empty) (no description set)
+Parent commit (@-)      : zsuskuln 95568809 2</code></pre>
+
+<p>
+  <code>1X</code> is an insertion at the start of the file, adjacent only to commit <code>1</code>'s
+  lines. <code>2Z</code> is at the end, adjacent only to commit <code>2</code>'s lines. Each has exactly
+  one owner. The source was then empty with no description, so it was abandoned and a fresh
+  <code>@</code> created, as the new change ID shows. Commit <code>2</code> was rewritten once, after
+  commit <code>1</code>, because the walk goes parents first. The operation is
+  <code>absorb changes into 2 commits</code>. Later in the same test, an inserted <code>Y</code> between
+  <code>1b</code> and <code>2a</code> touches two owners' boundary, so <code>jj absorb</code> prints
+  <code>Nothing changed.</code> and leaves it in <code>@</code>.
+</p>

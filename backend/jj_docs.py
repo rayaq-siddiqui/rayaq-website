@@ -956,6 +956,16 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "absorb": {
+        "title": "How jj absorb works",
+        "sources": [
+            "cli/src/commands/absorb.rs",
+            "lib/src/absorb.rs",
+            "lib/src/annotate.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
     "split": {
         "title": "How jj split works",
         "sources": [
