@@ -1,0 +1,405 @@
+{% set be = "core/src/backend.rs" %}
+{% set st = "lib/src/store.rs" %}
+{% set gb = "lib/src/git_backend.rs" %}
+{% set sb = "lib/src/simple_backend.rs" %}
+{% set sec = "lib/src/secret_backend.rs" %}
+{% set dbf = "lib/src/default_backend_factories.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+{% set gsp = "lib/src/protos/git_store.proto" %}
+{% set gc = "cli/src/commands/util/gc.rs" %}
+<header class="jj-header">
+  <h1>Storage backends</h1>
+  <p class="tagline">
+    Commits, trees, files and symlinks all go through one trait, <code>Backend</code>. The rest of jj
+    talks to it only through <code>Store</code>, which adds caching and friendlier types. Three
+    implementations ship with jj: Git, which is what everyone uses; Simple, a small native format; and
+    Secret, which exists only for tests.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: a backend is a content-addressed object store with a few jj-specific extras: change IDs, a
+  virtual root commit, conflicted trees, and copy records. The Git backend keeps real Git objects and
+  stores what Git cannot hold in a side table, in commit headers, or in specially named tree entries.
+  Which backend a repo uses is the name written in <code>.jj/repo/store/type</code>.
+</p>
+
+<h2 id="layers">1. The layers</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 372" role="img" aria-labelledby="be-layers-title be-layers-desc">
+    <title id="be-layers-title">How the rest of jj reaches stored objects</title>
+    <desc id="be-layers-desc">
+      Callers such as Commit, MergedTree and the rewrite code call Store. Store keeps a commit cache of
+      100 entries and a tree cache of 1000 entries and forwards everything else to a boxed dyn Backend.
+      The Backend is one of three implementations: GitBackend, which writes to a Git object store plus
+      the extra table under store/extra; SimpleBackend, which writes protobuf and raw files under
+      store/commits, trees, files and symlinks; and SecretBackend, which wraps a GitBackend.
+    </desc>
+    <defs>
+      <marker id="be-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"></path>
+      </marker>
+    </defs>
+    <rect x="20" y="16" width="720" height="44" rx="8" class="d-box"></rect>
+    <text x="380" y="36" text-anchor="middle" font-size="14">Callers</text>
+    <text x="380" y="52" text-anchor="middle" font-size="10" class="d-muted">Commit · MergedTree · rewrite · working copy · CLI</text>
+    <a href="{{ src(st, 53, 61) }}">
+      <rect x="140" y="92" width="480" height="56" rx="8" class="d-box" style="stroke: var(--jj-accent)"></rect>
+      <text x="380" y="114" text-anchor="middle" font-size="15">Store</text>
+      <text x="380" y="132" text-anchor="middle" font-size="10" class="d-muted">commit LRU (100) · tree LRU (1000, keyed by dir + id) · signer · merge options</text>
+    </a>
+    <a href="{{ src(be, 741, 873) }}">
+      <rect x="230" y="180" width="300" height="44" rx="8" class="d-box"></rect>
+      <text x="380" y="207" text-anchor="middle" font-size="14" font-family="monospace">Box&lt;dyn Backend&gt;</text>
+    </a>
+    <a href="{{ src(gb, 1076, 1554) }}">
+      <rect x="20" y="262" width="220" height="72" rx="8" class="d-box"></rect>
+      <text x="130" y="284" text-anchor="middle" font-size="14">GitBackend "git"</text>
+      <text x="130" y="302" text-anchor="middle" font-size="10" class="d-muted">Git objects + refs/jj/keep/*</text>
+      <text x="130" y="318" text-anchor="middle" font-size="10" class="d-muted">extras table in store/extra/</text>
+    </a>
+    <a href="{{ src(sb, 149, 345) }}">
+      <rect x="270" y="262" width="220" height="72" rx="8" class="d-box"></rect>
+      <text x="380" y="284" text-anchor="middle" font-size="14">SimpleBackend "Simple"</text>
+      <text x="380" y="302" text-anchor="middle" font-size="10" class="d-muted">store/commits · trees · files</text>
+      <text x="380" y="318" text-anchor="middle" font-size="10" class="d-muted">symlinks · conflicts</text>
+    </a>
+    <a href="{{ src(sec, 84, 202) }}">
+      <rect x="520" y="262" width="220" height="72" rx="8" class="d-box"></rect>
+      <text x="630" y="284" text-anchor="middle" font-size="14">SecretBackend "secret"</text>
+      <text x="630" y="302" text-anchor="middle" font-size="10" class="d-muted">wraps a GitBackend</text>
+      <text x="630" y="318" text-anchor="middle" font-size="10" class="d-muted">tests only</text>
+    </a>
+    <path d="M380,60 V90" class="d-line" fill="none" marker-end="url(#be-arrow)"></path>
+    <path d="M380,148 V178" class="d-line" fill="none" marker-end="url(#be-arrow)"></path>
+    <path d="M330,224 L140,260" class="d-line" fill="none" marker-end="url(#be-arrow)"></path>
+    <path d="M380,224 V260" class="d-line" fill="none" marker-end="url(#be-arrow)"></path>
+    <path d="M430,224 L620,260" class="d-line" fill="none" marker-end="url(#be-arrow)"></path>
+    <path d="M630,334 V356 H130 V338" class="d-line" fill="none" stroke-dasharray="4 3" marker-end="url(#be-arrow)"></path>
+  </svg>
+</div>
+
+<p>
+  The trait is object-safe, so a program built on jj-lib can plug in a backend of its own; the docs for
+  <a href="{{ src(be, 767, 776) }}"><code>concurrency</code></a> have a cloud-backed one in mind. Code
+  that needs a specific implementation downcasts: <code>Store::backend_impl::&lt;GitBackend&gt;()</code>
+  (<a href="{{ src(st, 90, 93) }}">store.rs</a>, via
+  <a href="{{ src(be, 875, 880) }}"><code>downcast_ref</code></a>) returns <code>None</code> for any other
+  backend. That is how <code>jj util gc</code> decides whether there is a Git repo to collect.
+</p>
+
+<h2 id="trait">2. The <code>Backend</code> trait</h2>
+
+<p>
+  <a href="{{ src(be, 741, 873) }}"><code>pub trait Backend: Any + Send + Sync + Debug</code></a> is an
+  <code>#[async_trait]</code>. The file, symlink and tree methods also take the <code>RepoPath</code>
+  the object lives at, even though IDs are content hashes; the Secret backend (§8) uses it to deny
+  access.
+  Errors are a <a href="{{ src(be, 288, 386) }}"><code>BackendError</code></a>: object not found, read
+  failed, read access denied, invalid hash length, invalid UTF-8, write failed,
+  <code>Unsupported</code>, or <code>Other</code>.
+</p>
+
+<div class="jj-table-wrap">
+<table>
+  <thead>
+    <tr><th>Method</th><th>What it promises</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><a href="{{ src(be, 744, 746) }}"><code>name</code></a></td><td>A unique name, written to <code>.jj/repo/store/type</code> at init.</td></tr>
+    <tr><td><a href="{{ src(be, 748, 749) }}"><code>commit_id_length</code></a>, <a href="{{ src(be, 751, 752) }}"><code>change_id_length</code></a></td><td>Fixed ID lengths in bytes, used when parsing hex prefixes.</td></tr>
+    <tr><td><a href="{{ src(be, 754, 758) }}"><code>root_commit_id</code></a>, <a href="{{ src(be, 760, 761) }}"><code>root_change_id</code></a></td><td>The "possibly virtual" root commit, the only commit with no parents.</td></tr>
+    <tr><td><a href="{{ src(be, 763, 765) }}"><code>empty_tree_id</code></a></td><td>One ID for every empty tree, whatever its path.</td></tr>
+    <tr><td><a href="{{ src(be, 767, 776) }}"><code>concurrency</code></a></td><td>How many concurrent requests the backend handles well, at least 1: 1 for a local backend like Git, "100 or so" for a cloud one. Not a hard limit; queueing the excess is the backend's job.</td></tr>
+    <tr><td><a href="{{ src(be, 778, 783) }}"><code>read_file</code></a>, <a href="{{ src(be, 785, 791) }}"><code>write_file</code></a></td><td>File contents as an <code>AsyncRead</code> stream; writing returns the new <code>FileId</code>.</td></tr>
+    <tr><td><a href="{{ src(be, 793, 796) }}"><code>read_symlink</code></a>, <a href="{{ src(be, 798, 800) }}"><code>write_symlink</code></a></td><td>A symlink's target, as a plain string because it may point outside the repo.</td></tr>
+    <tr><td><a href="{{ src(be, 802, 806) }}"><code>read_copy</code></a>, <a href="{{ src(be, 808, 812) }}"><code>write_copy</code></a>, <a href="{{ src(be, 814, 824) }}"><code>get_related_copies</code></a></td><td><code>CopyHistory</code> objects for tracked copies. Backends without copy tracking return <code>Unsupported</code>; all three built-in ones do.</td></tr>
+    <tr><td><a href="{{ src(be, 826, 827) }}"><code>read_tree</code></a>, <a href="{{ src(be, 829, 831) }}"><code>write_tree</code></a></td><td>One directory level: a sorted list of names and <a href="{{ url_for('jj', slug='trees') }}#tree-value"><code>TreeValue</code>s</a>.</td></tr>
+    <tr><td><a href="{{ src(be, 833, 834) }}"><code>read_commit</code></a></td><td>A <code>Commit</code>: parents, predecessors, root tree (a <code>Merge</code> of tree IDs), conflict labels, change ID, description, author, committer, signature.</td></tr>
+    <tr><td><a href="{{ src(be, 836, 853) }}"><code>write_commit</code></a></td><td>Returns the new ID <em>and</em> the commit as actually stored, which may differ (for example, a coarser timestamp). Takes an optional signing function and fills <code>secure_sig</code> if it uses it.</td></tr>
+    <tr><td><a href="{{ src(be, 855, 872) }}"><code>get_copy_records</code></a></td><td>A stream of copy and rename records for <code>root..head</code>, children before parents, so annotate can stop early.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  The root commit is never stored. Every backend answers <code>read_commit(root_commit_id)</code> with
+  <a href="{{ src(be, 717, 739) }}"><code>make_root_commit</code></a>: no parents, the empty tree, empty
+  names and emails, timestamp zero. Writing a commit with no parents is an error in every built-in
+  backend. More on IDs and the root on <a href="{{ url_for('jj', slug='commits') }}#ids">Commits</a>.
+</p>
+
+<h2 id="store">3. <code>Store</code>: caching in front of the backend</h2>
+
+<p>
+  <a href="{{ src(st, 53, 61) }}"><code>Store</code></a> "wraps the low-level backend and makes it return
+  more convenient types. Also adds caching." It holds two <code>CLruCache</code>s behind mutexes:
+  <a href="{{ src(st, 48, 51) }}">100 commits and 1000 trees</a>, because "there are more tree objects
+  than commits, and trees are often shared across commits". Trees are keyed by
+  <code>(directory, TreeId)</code>, matching the backend's <code>read_tree(path, id)</code>.
+</p>
+
+<div class="jj-table-wrap">
+<table>
+  <thead>
+    <tr><th>Call</th><th>Cached?</th><th>Notes</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><a href="{{ src(st, 159, 171) }}"><code>get_backend_commit</code></a></td><td>Yes</td><td>Check the cache, read on a miss, insert. <code>get_commit</code> is a blocking wrapper over the async version.</td></tr>
+    <tr><td><a href="{{ src(st, 173, 188) }}"><code>write_commit</code></a></td><td>Yes</td><td>Asserts the commit has parents, then caches what the backend says it wrote.</td></tr>
+    <tr><td><a href="{{ src(st, 195, 212) }}"><code>get_backend_tree</code></a>, <a href="{{ src(st, 214, 227) }}"><code>write_tree</code></a></td><td>Yes</td><td>Same pattern, keyed by path and ID.</td></tr>
+    <tr><td><a href="{{ src(st, 229, 251) }}">files and symlinks</a></td><td>No</td><td>Straight passthroughs.</td></tr>
+    <tr><td><a href="{{ src(st, 104, 111) }}"><code>get_copy_records</code></a>, ID accessors</td><td>No</td><td>Passthroughs.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  <a href="{{ src(st, 253, 257) }}"><code>clear_caches</code></a> is "mainly intended for testing". Nothing
+  invalidates entries otherwise, and nothing needs to: objects are immutable, so a cached commit or tree
+  can never go stale.
+</p>
+
+<h2 id="choosing">4. Choosing a backend</h2>
+
+<p>
+  <a href="{{ src(repo, 217, 237) }}"><code>ReadonlyRepo::init</code></a> creates <code>store/</code>, runs
+  the backend initializer, and writes the backend's <code>name()</code> into <code>store/type</code>. On
+  load, <a href="{{ src(repo, 523, 536) }}"><code>StoreFactories::load_backend</code></a> reads that
+  file and looks the name up in a map of factories; an unknown name fails with
+  <a href="{{ src(repo, 465, 481) }}">"Unsupported commit backend type '…'"</a>. The
+  <a href="{{ src(dbf, 32, 93) }}">default factories</a> register Simple always, Git when the
+  <code>git</code> feature is on, and Secret only under the <code>testing</code> feature. A program
+  embedding jj-lib can <a href="{{ src(repo, 495, 517) }}">merge</a> its own factories in; registering a
+  name twice <a href="{{ src(repo, 443, 454) }}">panics</a>. The same scheme picks the op store, op
+  heads store, index and submodule store; see
+  <a href="{{ url_for('jj', slug='storage') }}#type-files"><code>type</code> files and factory dispatch</a>.
+</p>
+
+<h2 id="git">5. The Git backend</h2>
+
+<p>
+  <a href="{{ src(gb, 182, 197) }}"><code>GitBackend</code></a> stores every commit, tree and blob as a
+  real Git object, so Git tools see ordinary history. Where the Git repo lives (inside
+  <code>store/git</code>, colocated, or external) is recorded in <code>store/git_target</code>; that
+  and the <code>extra/</code> directory are covered under
+  <a href="{{ url_for('jj', slug='storage') }}#store"><code>store/</code></a>, and colocation under
+  <a href="{{ url_for('jj', slug='git-colocation') }}">Git colocation</a>.
+</p>
+
+<h3 id="git-ids">IDs</h3>
+<ul>
+  <li>
+    Commit, tree and file IDs are Git object IDs, so
+    <a href="{{ src(gb, 1082, 1084) }}"><code>commit_id_length</code></a> is the repo's hash length
+    (SHA-1 or SHA-256).
+  </li>
+  <li>
+    The root commit ID is the all-zero "null" hash and the empty tree is Git's own empty tree
+    (<a href="{{ src(gb, 202, 224) }}"><code>new</code></a>). Since Git has no root commit, a jj commit
+    whose only parent is the root is written as a Git root commit, and a merge that includes the root
+    is <a href="{{ src(gb, 1339, 1356) }}">refused</a> as <code>Unsupported</code>. Reading reverses
+    this: a Git commit with no parents gets the root as its parent
+    (<a href="{{ src(gb, 1279, 1316) }}"><code>read_commit</code></a>).
+  </li>
+  <li>
+    Change IDs are 16 bytes. A commit's change ID comes from its <code>change-id</code> header if it has
+    one (<a href="{{ src(gb, 754, 761) }}">stored as reverse hex</a>); jj writes that header unless
+    <code>git.write-change-id-header</code> is turned off. A commit made by plain Git has none, so jj
+    derives one <a href="{{ src(gb, 763, 780) }}">from the commit ID</a>: the last 16 bytes, reversed,
+    with each byte's bits reversed. The docs warn that "the exact algorithm … should not be relied upon".
+  </li>
+</ul>
+
+<h3 id="git-objects">Objects</h3>
+
+<div class="jj-table-wrap">
+<table>
+  <thead>
+    <tr><th>Git tree entry</th><th>jj <code>TreeValue</code></th></tr>
+  </thead>
+  <tbody>
+    <tr><td>tree</td><td><code>Tree(id)</code></td></tr>
+    <tr><td>blob</td><td><code>File { executable: false, copy_id: placeholder }</code></td></tr>
+    <tr><td>executable blob</td><td><code>File { executable: true, copy_id: placeholder }</code></td></tr>
+    <tr><td>link</td><td><code>Symlink(id)</code></td></tr>
+    <tr><td>commit (gitlink)</td><td><code>GitSubmodule(id)</code></td></tr>
+  </tbody>
+</table>
+</div>
+<p>
+  <a href="{{ src(gb, 1163, 1222) }}"><code>read_tree</code></a> re-sorts entries when needed, because Git
+  sorts directory names "as if they had trailing '/'" and jj sorts plain names.
+  <a href="{{ src(gb, 1115, 1125) }}"><code>write_file</code></a> reads the whole stream into memory and
+  <a href="{{ src(gb, 571, 600) }}">hashes it first</a>, skipping the write if Git already has the object.
+  Tracked copies (<a href="{{ src(gb, 1145, 1161) }}"><code>read_copy</code> and friends</a>) are "not
+  supported yet"; instead,
+  <a href="{{ src(gb, 1476, 1553) }}"><code>get_copy_records</code></a> runs gitoxide's rename tracking
+  over the diff, with copies detected from modified files, a 50% similarity threshold and a limit of 1000.
+</p>
+
+<h3 id="git-extras">What Git cannot hold</h3>
+<p>
+  A jj commit has fields a Git commit does not. They go to three places:
+</p>
+<ul>
+  <li>
+    <strong>Commit headers.</strong> <code>change-id</code> as above. For a conflicted commit,
+    <code>jj:trees</code> lists every term's tree ID and <code>jj:conflict-labels</code> the labels
+    (<a href="{{ src(gb, 1357, 1382) }}">write_commit</a>); the Git commit's own tree is a
+    <a href="{{ src(gb, 1593, 1663) }}">readable stand-in</a> with <code>.jjconflict-*</code> entries.
+    Details on <a href="{{ url_for('jj', slug='conflicts') }}#storage">Conflicts</a>.
+  </li>
+  <li>
+    <strong>The extras table</strong> in <code>store/extra/</code>, keyed by commit ID. Each value is a
+    <a href="{{ src(gsp, 19, 31) }}"><code>git_store.Commit</code></a> message holding the change ID,
+    the predecessors, and a flag saying the commit uses the tree-level conflict format
+    (<a href="{{ src(gb, 833, 843) }}"><code>serialize_extras</code></a>). Predecessors are stored only
+    here.
+  </li>
+  <li>
+    <strong>Signature placeholders.</strong> Git rejects empty names and emails, so jj writes
+    <a href="{{ src(gb, 782, 831) }}"><code>JJ_EMPTY_STRING</code></a> in their place and maps it back
+    on read.
+  </li>
+</ul>
+<p>
+  A Git commit that jj never wrote or imported has no extras row. Rather than fail,
+  <code>read_commit</code> calls <a href="{{ src(gb, 474, 514) }}"><code>import_head_commits</code></a>
+  on it, which walks its ancestors and adds a row for each one that lacks one; the source calls this a
+  hack kept for repos imported by jj older than 0.8.0.
+</p>
+
+<h3 id="git-write">Writing a commit</h3>
+<ol>
+  <li>Write the tree: the resolved tree ID, or a conflict stand-in tree.</li>
+  <li>Drop the root from the parents; refuse a merge with the root.</li>
+  <li>Add the extra headers, and write Git's empty tree if any term uses it.</li>
+  <li>
+    Take the extras table lock, then loop: build the Git commit, sign it if asked (the signature goes in
+    Git's <code>gpgsig</code> header, <code>gpgsig-sha256</code> in a SHA-256 repo), write it, and look its ID up in the table. If the same ID already
+    has <em>different</em> extras, which happens when two changes would otherwise be byte-identical
+    Git commits (issue #694), move the committer time back one second and try again
+    (<a href="{{ src(gb, 1398, 1459) }}">source</a>).
+  </li>
+  <li>
+    Add a <code>refs/jj/keep/&lt;id&gt;</code> ref so Git's GC cannot delete the commit
+    (<a href="{{ src(gb, 866, 884) }}"><code>to_no_gc_ref_update</code></a>), set the returned committer
+    timestamp to the whole seconds Git stored, and save the extras row.
+  </li>
+</ol>
+<p>
+  The table lock is held across the whole loop because, as the
+  <a href="{{ src(gb, 1398, 1403) }}">comment</a> notes, two local writers producing the same ID with
+  different metadata would otherwise lose one entry. It "is still racy if multiple machines are
+  involved and the repository is rsync-ed."
+</p>
+<p>
+  <a href="{{ src(gb, 1102, 1104) }}"><code>concurrency</code></a> is 1: reads go to a local object
+  store through one mutex-guarded <code>gix::Repository</code>.
+</p>
+
+<h2 id="gc">6. Garbage collection</h2>
+
+<p>
+  Because every commit jj writes is pinned by a <code>refs/jj/keep/*</code> ref, Git's own
+  <code>git gc</code> keeps them all, including abandoned ones. <code>jj util gc</code>
+  (<a href="{{ src(gc, 44, 70) }}">cmd_util_gc</a>) first prunes old operations from the op store
+  (see <a href="{{ url_for('jj', slug='operations') }}">Operations</a>) and then calls
+  <a href="{{ src(gb, 1556, 1591) }}"><code>GitBackend::gc</code></a>, which:
+</p>
+<ol>
+  <li>
+    <a href="{{ src(gb, 898, 966) }}">recreates the keep refs</a> so that only the commits the index
+    still reports as heads are pinned (the source: "All commits found in the <code>index</code> won't
+    be removed");
+  </li>
+  <li>garbage-collects the extras table;</li>
+  <li>
+    <a href="{{ src(gb, 968, 987) }}">runs <code>git gc --prune=&lt;time&gt;</code></a> with the
+    cutoff, so objects newer than it survive even if unreferenced, which protects commits another
+    process is writing at the same time.
+  </li>
+</ol>
+<p>
+  The cutoff defaults to 14 days ago; <code>--expire now</code> is the only other value accepted.
+</p>
+
+<h2 id="simple">7. The Simple backend</h2>
+
+<p>
+  <a href="{{ src(sb, 92, 98) }}"><code>SimpleBackend</code></a> is jj's own format, with no Git
+  underneath.
+  <a href="{{ src(sb, 103, 116) }}"><code>init</code></a> makes <code>commits/</code>, <code>trees/</code>,
+  <code>files/</code>, <code>symlinks/</code> and <code>conflicts/</code> under <code>store/</code> and
+  writes the empty tree. Each object is one file named by the hex of its ID.
+</p>
+<ul>
+  <li>
+    IDs are BLAKE2b-512 hashes, so commit IDs are
+    <a href="{{ src(sb, 69, 70) }}">64 bytes</a> and change IDs 16. The root commit ID and root change ID
+    are all zeros (<a href="{{ src(sb, 118, 130) }}"><code>load</code></a>).
+  </li>
+  <li>
+    <a href="{{ src(sb, 196, 221) }}"><code>write_file</code></a> streams to a temp file while hashing,
+    then moves it into place under its hash. <a href="{{ src(sb, 179, 194) }}"><code>read_file</code></a>
+    reads the whole file into memory.
+  </li>
+  <li>
+    Trees and commits are <code>simple_store.proto</code> messages
+    (<a href="{{ url_for('jj', slug='protobufs') }}">schemas</a>).
+    <a href="{{ src(sb, 302, 335) }}"><code>write_commit</code></a> signs the encoded message bytes, so a
+    signature covers the exact stored bytes.
+  </li>
+  <li>
+    Copy tracking is <a href="{{ src(sb, 244, 260) }}">unsupported</a> and
+    <a href="{{ src(sb, 337, 344) }}"><code>get_copy_records</code></a> returns an empty stream, so the
+    Simple backend never reports renames.
+  </li>
+</ul>
+
+<h2 id="secret">8. The Secret backend</h2>
+
+<p>
+  <a href="{{ src(sec, 15, 15) }}">"Provides a backend for testing ACLs."</a>
+  <a href="{{ src(sec, 51, 57) }}"><code>SecretBackend</code></a> wraps a <code>GitBackend</code> and
+  forwards everything to it, except that <a href="{{ src(sec, 114, 129) }}"><code>read_file</code></a>
+  and <a href="{{ src(sec, 139, 150) }}"><code>read_symlink</code></a> return
+  <code>ReadAccessDenied</code> when the path contains "secret" or the content is
+  <a href="{{ src(sec, 46, 49) }}">exactly "secret" or "secret\n"</a>. Tests create it from a Git repo with
+  <a href="{{ src(sec, 69, 81) }}"><code>adopt_git_repo</code></a>, which overwrites
+  <code>store/type</code> (marked "TODO: Avoid this hack"). It is only registered when jj-lib is built
+  with the <code>testing</code> feature.
+</p>
+
+<h2 id="compare">9. Side by side</h2>
+
+<div class="jj-table-wrap">
+<table>
+  <thead>
+    <tr><th></th><th>Git</th><th>Simple</th><th>Secret</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>type</code> file</td><td><code>git</code></td><td><code>Simple</code></td><td><code>secret</code></td></tr>
+    <tr><td>Commit ID</td><td>Git hash (20 or 32 bytes)</td><td>BLAKE2b-512 (64 bytes)</td><td>as Git</td></tr>
+    <tr><td>Root commit ID</td><td>null hash</td><td>64 zero bytes</td><td>as Git</td></tr>
+    <tr><td>Change ID</td><td>header, else derived from commit ID</td><td>stored in the commit</td><td>as Git</td></tr>
+    <tr><td>Predecessors</td><td>extras table</td><td>stored in the commit</td><td>as Git</td></tr>
+    <tr><td>Conflicts</td><td><code>jj:trees</code> header + stand-in tree</td><td>list of tree IDs in the commit</td><td>as Git</td></tr>
+    <tr><td>Copy records</td><td>rename detection</td><td>none</td><td>none</td></tr>
+    <tr><td>Signing</td><td>Git signature header</td><td>field in the commit message</td><td>as Git</td></tr>
+    <tr><td><code>concurrency</code></td><td>1</td><td>1</td><td>1</td></tr>
+    <tr><td>Built in by default</td><td>with the <code>git</code> feature</td><td>always</td><td>tests only</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p class="jj-source">
+  <a href="{{ src(be, 741, 873) }}">Backend trait</a> ·
+  <a href="{{ src(st, 53, 61) }}">Store</a> ·
+  <a href="{{ src(gb, 1076, 1554) }}">GitBackend</a> ·
+  <a href="{{ src(sb, 149, 345) }}">SimpleBackend</a> ·
+  <a href="{{ src(sec, 84, 202) }}">SecretBackend</a> ·
+  <a href="{{ src(dbf, 32, 93) }}">default factories</a>
+</p>

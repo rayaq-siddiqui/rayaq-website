@@ -185,7 +185,7 @@ TOPICS = [
             "lib/src/secret_backend.rs",
             "lib/src/default_backend_factories.rs",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "protobufs",
