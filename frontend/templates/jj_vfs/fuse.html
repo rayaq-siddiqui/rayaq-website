@@ -1,0 +1,249 @@
+{% set fuse = "src/fuse.rs" %}
+{% set err = "src/jj_error.rs" %}
+{% set vfs = "src/vfs.rs" %}
+{% set im = "src/inode_map.rs" %}
+{% set vf = "src/virtual_file.rs" %}
+{% set main = "src/main.rs" %}
+{% set fuser_src = "https://docs.rs/crate/fuser/0.18.0/source/src/lib.rs" %}
+<header class="jj-header">
+  <h1>The FUSE adapter</h1>
+  <p class="tagline">
+    <code>JjFuse</code> is the only code that talks to <code>fuser</code>. It implements six
+    <code>Filesystem</code> methods, turns each inode number back into a path, and runs the actual work on a
+    tokio runtime. Results come back as <code>FileAttr</code>s, bytes, directory entries or errnos.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: <code>fuser</code> calls a <code>JjFuse</code> method on its session thread. The method clones
+  what it needs, and the <code>reply_async!</code> macro spawns a task on the tokio runtime and returns
+  straight away. The task resolves the inode to a path with <code>InodeMap::get_path</code>, awaits the
+  matching <code>VirtualFilesystem</code> call, and replies. Errors become errnos: <code>ENOENT</code>,
+  <code>ENOTDIR</code>, <code>EISDIR</code>, <code>EINVAL</code>, or <code>EIO</code> for everything else.
+  Every method <code>JjFuse</code> doesn't implement falls back to <code>fuser</code>'s default. The mount
+  is read-only (<code>MountOption::RO</code>).
+</p>
+
+<p>
+  This page covers <a href="{{ src(fuse) }}"><code>src/fuse.rs</code></a> and
+  <a href="{{ src(err) }}"><code>src/jj_error.rs</code></a>. The layer beneath,
+  <code>VirtualFilesystem</code> and <code>PathMappedVfs</code>, is on
+  <a href="{{ url_for('jj_vfs', slug='vfs-layer') }}">vfs-layer</a>. How inode numbers are handed out is on
+  <a href="{{ url_for('jj_vfs', slug='inodes') if 'inodes' in ready_slugs else src(im) }}">inodes</a>.
+</p>
+
+<h2 id="struct"><code>JjFuse</code></h2>
+
+<p>
+  <a href="{{ src(fuse, 53, 67) }}"><code>JjFuse&lt;FS: VirtualFilesystem&gt;</code></a> holds three
+  things. <code>fs</code> is the virtual file system behind an <code>Arc</code>. <code>inode_map</code>
+  is an <code>Arc&lt;InodeMap&gt;</code>, created fresh in <code>new</code>, so inode numbers start over at
+  every mount. <code>rt_handle</code> is a <code>tokio::runtime::Handle</code>. <code>main.rs</code> passes
+  the runtime's handle and an <code>Arc</code> of the <code>PathMappedVfs</code>
+  (<a href="{{ src(main, 57, 62) }}">source</a>).
+</p>
+
+<h2 id="methods">Implemented <code>Filesystem</code> methods</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Method</th><th>What it does</th><th><code>VirtualFilesystem</code> call</th><th>Reply</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>init</code></td><td>Asks the kernel for <code>FUSE_PARALLEL_DIROPS</code> and <code>FUSE_ASYNC_READ</code>, ignoring the result. Runs synchronously.</td><td>—</td><td><code>Ok(())</code></td><td><a href="{{ src(fuse, 70, 76) }}">L70</a></td></tr>
+      <tr><td><code>lookup</code></td><td>Rejects non-UTF-8 names (<code>InvalidPath</code>), assigns or reuses the child's inode with <code>get_ino(parent, name)</code>, appends the name to the parent's path, and fetches attributes.</td><td><code>get_attributes(parent/name)</code></td><td><code>reply.entry(TTL, attr, Generation(0))</code></td><td><a href="{{ src(fuse, 78, 96) }}">L78</a></td></tr>
+      <tr><td><code>getattr</code></td><td>Attributes for an inode's path. The file handle is ignored.</td><td><code>get_attributes(path)</code></td><td><code>reply.attr(TTL, attr)</code></td><td><a href="{{ src(fuse, 98, 108) }}">L98</a></td></tr>
+      <tr><td><code>read</code></td><td>Reads <code>size</code> bytes at <code>offset</code>. The file handle, flags and lock owner are ignored.</td><td><code>read(path, offset, size)</code></td><td><code>reply.data(bytes)</code></td><td><a href="{{ src(fuse, 110, 130) }}">L110</a></td></tr>
+      <tr><td><code>readdir</code></td><td>Emits <code>.</code> (offset 1) and <code>..</code> (offset 2), then the listing with offsets 3, 4, …, skipping entries already sent. It assigns each child an inode, and stops when the reply buffer is full.</td><td><code>read_directory(path)</code></td><td><code>reply.ok()</code></td><td><a href="{{ src(fuse, 132, 174) }}">L132</a></td></tr>
+      <tr><td><code>readlink</code></td><td>The symlink target's raw bytes.</td><td><code>read_link(path)</code></td><td><code>reply.data(bytes)</code></td><td><a href="{{ src(fuse, 176, 190) }}">L176</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The list above is <code>FUSE_OPS</code> in <code>jj_vfs_docs.py</code>, which is refreshed whenever the
+  pin moves. <code>readdir</code> lists the whole directory on every call and then skips to
+  <code>offset</code>, so a large directory read in several batches is listed several times. It also
+  answers <code>..</code> of the root with the root itself, since <code>InodeMap::new</code> records the root as its own parent
+  (<a href="{{ src(im, 26, 35) }}">source</a>, <a href="{{ src(im, 58, 67) }}"><code>get_parent_ino</code></a>).
+</p>
+
+<h2 id="defaults">Methods left to <code>fuser</code>'s defaults</h2>
+
+<p>
+  Everything else uses the default bodies in <code>fuser</code> 0.18.0's <code>Filesystem</code> trait
+  (<a href="{{ fuser_src }}#400">source</a>). The ones a reader of this mount actually hits:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Method</th><th>Default behaviour</th><th>Effect here</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>open</code>, <code>opendir</code></td><td>Reply <code>opened(FileHandle(0), empty flags)</code>.</td><td>Opening always succeeds with handle 0. <code>read</code> and <code>readdir</code> ignore the handle, so this is stateless I/O.</td><td><a href="{{ fuser_src }}#576">L576</a>, <a href="{{ fuser_src }}#706">L706</a></td></tr>
+      <tr><td><code>release</code>, <code>releasedir</code></td><td>Reply <code>ok</code>.</td><td>Closing always succeeds.</td><td><a href="{{ fuser_src }}#671">L671</a>, <a href="{{ fuser_src }}#748">L748</a></td></tr>
+      <tr><td><code>forget</code>, <code>batch_forget</code></td><td>Do nothing.</td><td>Inodes are never freed (see <a href="{{ url_for('jj_vfs', slug='namespace') }}">namespace</a>).</td><td><a href="{{ fuser_src }}#425">L425</a></td></tr>
+      <tr><td><code>statfs</code></td><td>Reply all zeros, with block size 512 and a 255-byte name limit.</td><td><code>df</code> shows an empty file system.</td><td><a href="{{ fuser_src }}#776">L776</a></td></tr>
+      <tr><td><code>flush</code>, <code>fsync</code>, <code>fsyncdir</code>, <code>access</code>, <code>readdirplus</code>, xattrs, locks and the rest</td><td>Log <code>[Not Implemented]</code> and reply <code>ENOSYS</code>.</td><td>Callers get "function not implemented".</td><td><a href="{{ fuser_src }}#651">L651</a></td></tr>
+      <tr><td><code>setattr</code>, <code>mknod</code>, <code>mkdir</code>, <code>unlink</code>, <code>write</code>, <code>create</code>, …</td><td><code>ENOSYS</code> as above.</td><td>The mount is <code>RO</code> (<a href="{{ src(main, 28, 32) }}">source</a>), so writes are refused before they reach the file system.</td><td><a href="{{ fuser_src }}#442">L442</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="async-bridge">The async bridge and <code>reply_async!</code></h2>
+
+<p>
+  <code>fuser</code>'s methods are synchronous and take <code>&amp;self</code>, while the
+  <code>VirtualFilesystem</code> is async. <a href="{{ src(fuse, 18, 51) }}"><code>reply_async!</code></a>
+  bridges the two. Its arguments are <code>self</code>, the reply object, the inode, a
+  <code>path =&gt; async body</code> pair and a <code>value =&gt; success body</code> pair. It then:
+</p>
+<ol>
+  <li>clones the inode map and runtime handle, and <code>spawn</code>s a task on the runtime. The FUSE method returns immediately, and the reply object moves into the task.</li>
+  <li>In the task, resolves the inode with <code>inode_map.get_path(ino)</code>. On failure it logs at <code>error</code> level and replies with the errno.</li>
+  <li>Awaits the body with the path bound mutably (<code>lookup</code> pushes the child's name onto it).</li>
+  <li>On <code>Ok</code>, runs the success body, which sends the reply. On <code>Err</code>, logs at <code>debug</code> level with the path, and replies with <code>err.into()</code>.</li>
+</ol>
+<p>
+  Because replies are sent from tokio tasks, several requests can be in flight at once.
+  <code>init</code> requests <code>FUSE_ASYNC_READ</code> and <code>FUSE_PARALLEL_DIROPS</code> so the kernel
+  will send them that way (<a href="{{ src(fuse, 71, 75) }}">source</a>). Every method also carries
+  <code>#[tracing::instrument(level = "debug")]</code>.
+</p>
+
+<h3 id="read-sequence">One <code>read</code>, end to end</h3>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 420" role="img" aria-labelledby="fz-seq-title fz-seq-desc">
+    <title id="fz-seq-title">Sequence of one read through jjfsd</title>
+    <desc id="fz-seq-desc">
+      A process calls read on an open file. The kernel FUSE driver sends a READ request with the inode,
+      offset and size. fuser's session thread calls JjFuse::read, which spawns a task on the tokio runtime
+      and returns. The task calls InodeMap::get_path to turn the inode into a path, then
+      PathMappedVfs::read, which asks the path mapper for the entry, opens a reader, discards offset bytes
+      and reads up to size bytes. The task calls reply.data with the bytes, fuser writes the reply to the
+      kernel, and the process's read returns. Errors take the same way back as an errno.
+    </desc>
+    <defs>
+      <marker id="fz-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(main, 28, 32) }}"><rect class="d-box" x="10" y="14" width="110" height="34" rx="6"></rect><text x="65" y="36" text-anchor="middle">process</text></a>
+      <a href="{{ src(main, 57, 62) }}"><rect class="d-box" x="130" y="14" width="110" height="34" rx="6"></rect><text x="185" y="36" text-anchor="middle">kernel FUSE</text></a>
+      <a href="{{ fuser_src }}#590"><rect class="d-box" x="250" y="14" width="120" height="34" rx="6"></rect><text x="310" y="36" text-anchor="middle">fuser session</text></a>
+      <a href="{{ src(fuse, 110, 130) }}"><rect class="d-box" x="380" y="14" width="120" height="34" rx="6"></rect><text x="440" y="36" text-anchor="middle">JjFuse::read</text></a>
+      <a href="{{ src(im, 43, 56) }}"><rect class="d-box" x="510" y="14" width="110" height="34" rx="6"></rect><text x="565" y="36" text-anchor="middle">InodeMap</text></a>
+      <a href="{{ src(vfs, 44, 57) }}"><rect class="d-box" x="630" y="14" width="120" height="34" rx="6"></rect><text x="690" y="36" text-anchor="middle">PathMappedVfs</text></a>
+    </g>
+    <g class="d-line" stroke-width="1" stroke-dasharray="3 4">
+      <line x1="65" y1="48" x2="65" y2="410"></line>
+      <line x1="185" y1="48" x2="185" y2="410"></line>
+      <line x1="310" y1="48" x2="310" y2="410"></line>
+      <line x1="440" y1="48" x2="440" y2="410"></line>
+      <line x1="565" y1="48" x2="565" y2="410"></line>
+      <line x1="690" y1="48" x2="690" y2="410"></line>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#fz-arrow)">
+      <line x1="65" y1="80" x2="181" y2="80"></line>
+      <line x1="185" y1="112" x2="306" y2="112"></line>
+      <line x1="310" y1="144" x2="436" y2="144"></line>
+      <line x1="440" y1="192" x2="561" y2="192"></line>
+      <line x1="565" y1="222" x2="444" y2="222"></line>
+      <line x1="440" y1="254" x2="686" y2="254"></line>
+      <line x1="690" y1="306" x2="444" y2="306"></line>
+      <line x1="440" y1="338" x2="189" y2="338"></line>
+      <line x1="185" y1="378" x2="69" y2="378"></line>
+    </g>
+    <g font-size="11">
+      <text x="70" y="74">read(fd, buf, n)</text>
+      <text x="190" y="106">READ ino, offset, size</text>
+      <text x="315" y="138">read(…, offset, size, reply)</text>
+      <text x="315" y="166" class="d-muted">spawn task; return</text>
+      <text x="445" y="186">get_path(ino)</text>
+      <text x="445" y="216" class="d-muted">path</text>
+      <text x="445" y="248">read(path, offset, size)</text>
+      <text x="520" y="272" class="d-muted">get_entry · reader · skip offset · take size</text>
+      <text x="445" y="300" class="d-muted">bytes (or JjError)</text>
+      <text x="200" y="332">reply.data(bytes) / reply.error(errno)</text>
+      <text x="75" y="372">n bytes (or −errno)</text>
+    </g>
+  </svg>
+</div>
+
+<p>
+  How <code>PathMappedVfs::read</code> serves an offset, by reading and discarding the first
+  <code>offset</code> bytes every time, is on <a href="{{ url_for('jj_vfs', slug='vfs-layer') }}">vfs-layer</a>
+  (<a href="{{ src(vfs, 44, 57) }}">source</a>). Before any <code>read</code>, the kernel has already
+  looked the path up and opened it with <code>fuser</code>'s default <code>open</code>.
+</p>
+
+<h2 id="file-attr"><code>FileAttributes</code> → <code>FileAttr</code></h2>
+
+<p>
+  <a href="{{ src(vf, 18, 23) }}"><code>FileAttributes</code></a> has four fields: <code>size</code>,
+  <code>file_type</code>, <code>created</code> and <code>modified</code>.
+  <a href="{{ src(fuse, 193, 219) }}"><code>to_fuse(ino)</code></a> fills in every <code>FileAttr</code>
+  field:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th><code>FileAttr</code> field</th><th>Value</th></tr></thead>
+    <tbody>
+      <tr><td><code>ino</code></td><td>The inode passed in.</td></tr>
+      <tr><td><code>size</code></td><td><code>size</code></td></tr>
+      <tr><td><code>blocks</code></td><td><code>size.div_ceil(512)</code></td></tr>
+      <tr><td><code>atime</code></td><td><code>SystemTime::now()</code>, with a <code>TODO: properly set timestamps</code>.</td></tr>
+      <tr><td><code>mtime</code>, <code>ctime</code></td><td><code>modified</code></td></tr>
+      <tr><td><code>crtime</code></td><td><code>created</code></td></tr>
+      <tr><td><code>kind</code></td><td><code>file_type</code> converted as below.</td></tr>
+      <tr><td><code>perm</code></td><td><code>0o755</code> for directories, <code>0o644</code> otherwise, including symlinks. Nothing is ever executable.</td></tr>
+      <tr><td><code>nlink</code></td><td><code>2</code> for directories, <code>1</code> otherwise.</td></tr>
+      <tr><td><code>uid</code>, <code>gid</code></td><td>Hard-coded <code>1000</code>, whoever mounted it.</td></tr>
+      <tr><td><code>rdev</code>, <code>flags</code></td><td><code>0</code></td></tr>
+      <tr><td><code>blksize</code></td><td><code>4096</code></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Both entry and attribute replies use <code>TTL = 1 s</code> (<a href="{{ src(fuse, 16) }}">source</a>), so
+  the kernel re-asks after a second. <code>lookup</code> always reports generation <code>0</code>.
+</p>
+
+<h2 id="file-type"><code>FileType</code> conversion</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th><code>virtual_file::FileType</code></th><th><code>fuser::FileType</code></th></tr></thead>
+    <tbody>
+      <tr><td><code>File</code></td><td><code>RegularFile</code></td></tr>
+      <tr><td><code>Directory</code></td><td><code>Directory</code></td></tr>
+      <tr><td><code>Symlink</code></td><td><code>Symlink</code></td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(fuse, 221, 229) }}"><code>impl From&lt;FileType&gt; for fuser::FileType</code></a></p>
+
+<h2 id="errno"><code>JjError</code> → errno</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th><code>JjError</code> variant</th><th>Message</th><th>errno</th></tr></thead>
+    <tbody>
+      <tr><td><code>NotFound</code></td><td>Not found</td><td><code>ENOENT</code></td></tr>
+      <tr><td><code>NotADirectory</code></td><td>Expected a directory</td><td><code>ENOTDIR</code></td></tr>
+      <tr><td><code>NotAFile</code></td><td>Expected a file</td><td><code>EISDIR</code></td></tr>
+      <tr><td><code>NotASymlink</code></td><td>Expected a symlink</td><td><code>EINVAL</code></td></tr>
+      <tr><td><code>InvalidPath</code></td><td>Invalid path</td><td><code>EIO</code></td></tr>
+      <tr><td><code>IO(std::io::Error)</code></td><td>the I/O error's text</td><td><code>EIO</code></td></tr>
+      <tr><td><code>JjLibBackendError(BackendError)</code></td><td>Underlying jj-lib error: …</td><td><code>EIO</code></td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  (<a href="{{ src(err, 3, 25) }}">enum</a>, <a href="{{ src(fuse, 231, 241) }}">mapping</a>). The fallback
+  arm sends every other variant to <code>EIO</code>, including <code>InvalidPath</code>, so a non-UTF-8
+  name in <code>lookup</code> reports an I/O error rather than "no such file". It also discards the
+  wrapped I/O error's own errno.
+</p>

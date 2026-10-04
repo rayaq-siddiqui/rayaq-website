@@ -24,7 +24,7 @@ PAGES = [
         "title": "The FUSE adapter",
         "summary": "JjFuse: every FUSE operation it answers, how each maps onto the virtual file system, the async bridge, attributes and errno mapping.",
         "sources": ["src/fuse.rs", "src/jj_error.rs"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "inodes",
