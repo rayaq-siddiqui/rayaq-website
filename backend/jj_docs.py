@@ -956,6 +956,16 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "converge": {
+        "title": "How jj converge works",
+        "sources": [
+            "cli/src/commands/converge.rs",
+            "lib/src/converge.rs",
+            "lib/src/graph_dominators.rs",
+            "cli/src/config/revsets.toml",
+        ],
+        "ready": True,
+    },
     "arrange": {
         "title": "How jj arrange works",
         "sources": [

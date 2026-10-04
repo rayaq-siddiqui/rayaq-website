@@ -169,6 +169,15 @@ def test_every_internal_jj_link_resolves():
             assert client.get(link).status_code == 200, (url, link)
 
 
+def test_diagram_titles_and_descriptions_are_plain_text():
+    client = app_module.app.test_client()
+
+    for url in all_urls():
+        body = client.get(url).get_data(as_text=True)
+        for tag, text in re.findall(r"<(title|desc)\b[^>]*>(.*?)</\1>", body, re.S):
+            assert "<" not in text, (url, tag, text[:80])
+
+
 def test_every_command_has_a_registry_page():
     slugs = {page["slug"] for page in jj_docs.PAGES if page["kind"] == "command"}
 

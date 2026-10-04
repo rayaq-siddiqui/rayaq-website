@@ -1,0 +1,295 @@
+{% set cmd = "cli/src/commands/converge.rs" %}
+{% set lib = "lib/src/converge.rs" %}
+{% set dom = "lib/src/graph_dominators.rs" %}
+{% set t = "cli/tests/test_converge_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj converge</code> works</h1>
+  <p class="tagline">
+    <code>jj converge</code> resolves a <em>divergent</em> change, one change ID with several visible
+    commits, by writing one new commit that replaces them all. It works out each attribute (author,
+    description, parents, tree) as a merge over the change's evolution history, and only asks you when
+    that merge doesn't resolve.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj takes the search space (<code>-r</code>, or <code>revsets.converge</code> =
+  <code>mutable() &amp; divergent()</code>) and groups it by change ID. If several changes diverge it
+  makes you pick one, or errors in <code>--no-interactive</code> mode. For the chosen change it builds
+  the <em>truncated evolution graph</em>: the change's commits linked by predecessor edges, starting from
+  where the divergence forked. For each attribute it finds the <em>dominator value</em> in that history
+  and merges each divergent commit's value against it, accepting a trivial result. Parents are settled
+  first, then the trees are rebased onto those parents and merged the same way. The solution commit gets
+  the change ID, the divergent commits as predecessors, and replaces them. Descendants are rebased. The
+  operation is <code>converge &lt;change&gt; with N predecessors</code>.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 122, 170) }}"><code>cmd_converge</code></a>, driving
+  <a href="{{ src(cmd, 213, 327) }}"><code>Converge::run</code></a>. The algorithm lives in jj-lib's
+  <a href="{{ src(lib, 145, 188) }}"><code>converge_change</code></a>, whose module doc points at upstream's
+  design note <code>docs/design/jj-converge-command.md</code> (<a href="{{ src(lib, 15, 17) }}">source</a>).
+  How predecessors are recorded is on the <a href="{{ url_for('jj', slug='commits') }}">commits page</a>,
+  and how trees are merged on the <a href="{{ url_for('jj', slug='trees') }}">trees page</a>.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>-r</code>, <code>--revision</code>, <code>--revisions REVSETS</code></td><td>revsets, repeatable</td><td><code>revsets.converge</code></td><td>The search space for divergent commits (<a href="{{ src(cmd, 95, 101) }}">source</a>). Only commits inside it are replaced. Others with the same change ID stay divergent (<a href="{{ src(cmd, 79, 85) }}">help</a>).</td></tr>
+      <tr><td><code>--no-interactive</code></td><td>bool</td><td>off</td><td>Never prompt. If anything can't be decided automatically, print what's missing and fail without changes (<a href="{{ src(cmd, 103, 109) }}">source</a>).</td></tr>
+      <tr><td><code>-i</code>, <code>--interactive</code></td><td>bool, hidden</td><td>off</td><td>A no-op partner for <code>--no-interactive</code> (<a href="{{ src(cmd, 111, 113) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 60, 114) }}"><code>ConvergeArgs</code></a> (with the full help text)</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>revsets.converge</code></td><td><code>mutable() &amp; divergent()</code></td><td>The default search space (<a href="{{ src('cli/src/config/revsets.toml', 6) }}">default</a>, <a href="{{ src(cmd, 130, 138) }}">source</a>).</td></tr>
+      <tr><td><code>ui.editor</code></td><td>(built-in)</td><td>Used if you choose to merge conflicting descriptions in an editor. The temp file is named <code>.jj-converge-description</code> (<a href="{{ src(cmd, 464, 471) }}">source</a>).</td></tr>
+      <tr><td><code>revset-aliases."immutable_heads()"</code></td><td>(built-in)</td><td>The whole search space must be mutable (<a href="{{ src(cmd, 140, 142) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 470" role="img" aria-labelledby="cv-flow-title cv-flow-desc">
+    <title id="cv-flow-title">jj converge: call flow</title>
+    <desc id="cv-flow-desc">
+      cmd_converge resolves the search space, checks it is rewritable, starts a transaction and calls
+      find_divergent_changes, which groups commits by change ID and keeps groups of two or more. None:
+      prints "No divergent changes found." It reports the groups and chooses one, prompting if there
+      are several. Converge::new builds the truncated evolution graph. run calls converge_change, which
+      solves author, description and parents as value merges against a dominator value, and the tree
+      once parents are known. Unsolved attributes are asked from the user, or the command fails in
+      non-interactive mode. If the tree wasn't solved, converge_change runs again with the chosen
+      attributes. apply_solution writes the solution commit, marks every divergent commit rewritten into
+      it and rebases descendants, and tx.finish records "converge &lt;change&gt; with N predecessors".
+    </desc>
+    <defs>
+      <marker id="cv-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(cmd, 127, 164) }}"><rect class="d-box" x="20" y="20" width="720" height="84" rx="6"></rect>
+      <text x="32" y="41">search space (-r or revsets.converge); check_rewritable_expr; start_transaction</text>
+      <text x="32" y="60" class="d-muted" font-size="11">find_divergent_changes: group by change ID, keep groups with ≥ 2 commits; none → "No divergent changes found."</text>
+      <text x="32" y="77" class="d-muted" font-size="11">"Found N divergent change(s) in the specified revset:" …</text>
+      <text x="32" y="94" class="d-muted" font-size="11">choose_change: one → it; several → prompt (or error with --no-interactive)</text></a>
+
+      <a href="{{ src(lib, 217, 351) }}"><rect class="d-box" x="20" y="128" width="720" height="66" rx="6"></rect>
+      <text x="32" y="149">TruncatedEvolutionGraph::new — walk predecessors of the divergent commits</text>
+      <text x="32" y="167" class="d-muted" font-size="11">keep only commits with this change ID; edges predecessor → successor</text>
+      <text x="32" y="184" class="d-muted" font-size="11">start node = the single initial commit, or a virtual root linking several</text></a>
+
+      <a href="{{ src(lib, 375, 434) }}"><rect class="d-box" x="20" y="218" width="350" height="104" rx="6"></rect>
+      <text x="32" y="239">author, description, parents</text>
+      <text x="32" y="258" class="d-muted" font-size="11">merge = D + Σ(value(Xi) − D)</text>
+      <text x="32" y="275" class="d-muted" font-size="11">D = dominator value over the history</text>
+      <text x="32" y="292" class="d-muted" font-size="11">trivial resolution → Solved</text>
+      <text x="32" y="309" class="d-muted" font-size="11">else Unsolved → prompt (or give up)</text></a>
+
+      <a href="{{ src(lib, 459, 564) }}"><rect class="d-box" x="390" y="218" width="350" height="104" rx="6"></rect>
+      <text x="402" y="239">tree (once parents are solved)</text>
+      <text x="402" y="258" class="d-muted" font-size="11">rebase every history commit's tree onto</text>
+      <text x="402" y="275" class="d-muted" font-size="11">the solution parents; dominator → base F</text>
+      <text x="402" y="292" class="d-muted" font-size="11">F′ + Σ(Xi′ − F′), may contain conflicts</text>
+      <text x="402" y="309" class="d-muted" font-size="11">labels: "converge base", "divergent commit"</text></a>
+
+      <a href="{{ src(lib, 190, 215) }}"><rect class="d-box" x="20" y="346" width="720" height="66" rx="6"></rect>
+      <text x="32" y="367">apply_solution: new_commit(parents, tree) with the change ID, description, author</text>
+      <text x="32" y="385" class="d-muted" font-size="11">predecessors = all divergent commits; set_rewritten_commit(each → solution); rebase_descendants</text>
+      <text x="32" y="402" class="d-muted" font-size="11">bookmarks on divergent commits move to the solution when the transaction finishes</text></a>
+
+      <a href="{{ src(cmd, 299, 325) }}"><rect class="d-box" x="20" y="436" width="720" height="26" rx="6"></rect>
+      <text x="380" y="454" text-anchor="middle">"Successfully converged change: …" [+ "Rebased N descendants"]; tx.finish("converge &lt;change&gt; with N predecessors")</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#cv-arrow)">
+      <line x1="380" y1="104" x2="380" y2="124"></line>
+      <line x1="195" y1="194" x2="195" y2="214"></line>
+      <line x1="370" y1="270" x2="386" y2="270"></line>
+      <line x1="565" y1="322" x2="565" y2="342"></line>
+      <line x1="380" y1="412" x2="380" y2="432"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Commit predecessors (evolution)</td><td>read, write</td><td>Walked with <code>walk_predecessors</code> to build the history (<a href="{{ src(lib, 273, 323) }}">source</a>). The solution records every divergent commit as a predecessor, so <code>jj evolog</code> shows them merging.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Operation log</td><td>read</td><td><code>walk_predecessors</code> may walk back through operations to find old predecessors (see the note in <a href="{{ src(cmd, 116, 121) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+      <tr><td>Trees</td><td>read, write</td><td>Each history commit's tree is rebased onto the solution parents, then merged with <code>MergedTree::merge</code>. The result may be conflicted (<a href="{{ src(lib, 698, 721) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>Rewrite records</td><td>write</td><td><code>set_rewritten_commit(divergent → solution)</code> for each divergent commit, then <code>rebase_descendants</code>.</td><td><a href="{{ url_for('jj', slug='transactions') }}">transactions</a></td></tr>
+      <tr><td>Index (ancestry)</td><td>read</td><td><code>remove_descendants</code> uses <code>roots()</code> to drop divergent commits that descend from other divergent commits before choosing parents (<a href="{{ src(lib, 723, 744) }}">source</a>).</td><td>index (page planned)</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, started before divergent changes are even looked up (<a href="{{ src(cmd, 146) }}">source</a>). The early exits (no divergence, abort) don't finish it, so they record nothing.</li>
+  <li><strong>Operation description:</strong> <code>converge &lt;short change ID&gt; with &lt;N&gt; predecessors</code>, where N counts the change's divergent commits in the search space (<a href="{{ src(cmd, 299, 325) }}">source</a>).</li>
+  <li><strong>Commits created:</strong> exactly one solution commit. Descendants of the divergent commits are rebased onto it.</li>
+  <li><strong>One change per run:</strong> if several changes diverge, a hint says how many remain (<a href="{{ src(cmd, 314, 321) }}">source</a>).</li>
+  <li><strong><code>jj undo</code></strong> restores the divergence. The help text suggests <code>jj op show -p</code> to review the result first.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="evolution-graph">The truncated evolution graph</h3>
+<p>
+  <a href="{{ src(lib, 237, 351) }}"><code>TruncatedEvolutionGraph::new</code></a> walks predecessors
+  from the divergent commits. It ignores commits with other change IDs, and stops once every pending
+  commit is accounted for and an initial commit (one with no same-change predecessors) has been
+  reached. Edges point from predecessor to successor. If several initial commits are found, a virtual
+  start node (the root commit ID) is added above them, so the graph is a flow graph with one start.
+</p>
+
+<h3 id="dominator-merge">Merging an attribute against its dominator value</h3>
+<p>
+  For author, description and parents, <a href="{{ src(lib, 587, 628) }}"><code>create_value_merge</code></a>
+  computes each history commit's value and finds the <em>closest common dominator value</em> of the
+  divergent commits' values, in the graph of value transitions
+  (<a href="{{ src(dom, 531, 545) }}"><code>find_dominator_value_with_value_cache</code></a>). That
+  value D is what the history agreed on before it forked. The merge is
+  <code>D + (v₁ − D) + (v₂ − D) + …</code>. If it resolves trivially (with <code>SameChange::Accept</code>,
+  so identical edits count once), the attribute is <code>Solved</code>. Otherwise it is
+  <code>Unsolved</code>, carrying a base commit that produces D. When several commits produce D, the base
+  is the one with the lowest change offset, then input order, then newest committer time, then commit ID
+  (<a href="{{ src(lib, 630, 696) }}"><code>get_value_producer</code></a>).
+</p>
+<p>
+  Parents are special. Divergent commits that descend from another divergent commit are left out,
+  since using their parents would create a cycle once everything is rebased onto the solution
+  (<a href="{{ src(lib, 409, 434) }}"><code>converge_parents</code></a>).
+</p>
+
+<h3 id="trees">Trees</h3>
+<p>
+  The tree is only computed once parents are solved (<a href="{{ src(lib, 173, 180) }}">source</a>).
+  <a href="{{ src(lib, 459, 564) }}"><code>converge_trees</code></a> rebases every history commit's
+  tree onto the solution parents: <code>P + (X.tree − X.parents)</code>, or <code>X.tree</code> if X
+  already has those parents. It finds the dominator of those rebased tree IDs (labels ignored, to find a
+  closer common value), takes a commit F producing it, and returns
+  <code>F′ + (A′ − F′) + (B′ − F′) + …</code>. The source comment at
+  <a href="{{ src(lib, 459, 489) }}">L459</a> gives the derivation.
+</p>
+
+<h3 id="prompts">Prompts</h3>
+<p>
+  <a href="{{ src(cmd, 329, 355) }}"><code>generic_solver</code></a> accepts <code>Solved</code> values.
+  For <code>Unsolved</code> ones it prompts, or returns nothing with <code>--no-interactive</code>. The
+  author and parent prompts list the distinct values and ask for an index (<code>q</code> aborts). The
+  description prompt offers to open an editor on a conflicted description built from the divergent
+  descriptions against the base commit's, or to keep the conflict markers as is
+  (<a href="{{ src(cmd, 422, 476) }}">source</a>, <a href="{{ src(cmd, 578, 607) }}"><code>materialize_conflicted_description</code></a>).
+</p>
+
+<p>
+  <strong>Invariants:</strong> exactly one change is converged per run. Only divergent commits in the search
+  space are replaced. The solution keeps the change ID. Nothing is written unless author, description,
+  parents and tree are all decided.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>No divergent changes found.</code> / <code>No divergence found among the specified revisions.</code></td><td>Nothing diverges in the search space (default or <code>-r</code>). Not an error.</td><td><a href="{{ src(cmd, 150, 160) }}">converge.rs</a>, <a href="{{ src(t, 24, 54) }}">test</a></td></tr>
+      <tr><td><code>Cannot automatically choose which change to converge</code></td><td>Several divergent changes with <code>--no-interactive</code>. The hint suggests a narrower revset.</td><td><a href="{{ src(cmd, 494, 501) }}">converge.rs</a></td></tr>
+      <tr><td><code>Could not determine which author/description/parents to use.</code> then <code>Could not converge change</code></td><td>An attribute stayed unsolved, for example in non-interactive mode.</td><td><a href="{{ src(cmd, 248, 266) }}">converge.rs</a></td></tr>
+      <tr><td><code>Failed to converge tree</code></td><td>The second <code>converge_change</code> call still produced no tree.</td><td><a href="{{ src(cmd, 270, 286) }}">converge.rs</a></td></tr>
+      <tr><td><code>Aborting... nothing changed.</code></td><td>You chose <code>q</code> at a prompt.</td><td><a href="{{ src(cmd, 520, 525) }}">converge.rs</a>, <a href="{{ src(cmd, 571, 575) }}">L571</a></td></tr>
+      <tr><td><code>Commit … is immutable</code></td><td>The search space includes immutable commits.</td><td><a href="{{ src(cmd, 140, 142) }}">converge.rs</a></td></tr>
+      <tr><td>(conflicts in the solution)</td><td>The tree merge didn't resolve. The help text warns about this.</td><td><a href="{{ src(cmd, 87, 88) }}">help</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 56, 134) }}">test_converge_simple</a>. Change <code>zsuskuln</code>
+  ("b2") was rebased from <code>a</code> onto <code>c</code>, but its old version is still visible through
+  bookmark <code>b1</code>, with child <code>d</code> on top. So the change has two visible commits:
+  <code>59a77004</code> on <code>a</code> and <code>2c2bd25d</code> on <code>c</code>. The evolog is
+  <code>b2852eb2 → 59a77004 → 2c2bd25d</code>.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 270" role="img" aria-labelledby="cv-ex-title cv-ex-desc">
+    <title id="cv-ex-title">jj converge on a rebased-but-still-visible change</title>
+    <desc id="cv-ex-desc">
+      Before: root, a; on a are c and 59a77004 (b1, divergent) with d on top; on c is 2c2bd25d (b2,
+      divergent). After jj converge: root, a, c, then the solution 6b1ce5bc with bookmarks b1 and b2, and d
+      rebased on top as 696cf5e0. The solution's parent is c because the history's dominator parent value
+      was a, and only one side moved away from it.
+    </desc>
+    <defs>
+      <marker id="cv-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% macro node(x, y, label, note="", hl=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 15 }}" y="{{ y + 4 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x + 15 }}" y="{{ y + 19 }}" font-size="10.5" class="d-muted">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <text x="30" y="12" font-size="12" class="d-muted">before</text>
+    <text x="560" y="12" font-size="12" class="d-muted">after jj converge</text>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="60" y1="241" x2="60" y2="189"></line>
+      <line x1="60" y1="180" x2="60" y2="109"></line>
+      <line x1="60" y1="180" x2="200" y2="129"></line>
+      <line x1="200" y1="111" x2="200" y2="59"></line>
+      <line x1="60" y1="100" x2="60" y2="59"></line>
+      <line x1="480" y1="241" x2="480" y2="43"></line>
+      <line x1="320" y1="140" x2="410" y2="140" marker-end="url(#cv-ex-arrow)"></line>
+    </g>
+    {{ node(60, 250, "root") }}{{ node(60, 180, "a") }}{{ node(60, 100, "c") }}{{ node(60, 50, "2c2bd25d", "b2 · divergent") }}
+    {{ node(200, 120, "59a77004", "b1 · divergent") }}{{ node(200, 50, "@ d") }}
+    {{ node(480, 250, "root") }}{{ node(480, 190, "a") }}{{ node(480, 140, "c") }}{{ node(480, 90, "6b1ce5bc", "b1 b2 · solution", hl=True) }}{{ node(480, 34, "@ d", "rebased · 696cf5e0") }}
+  </svg>
+</div>
+
+<p>Upstream's snapshot, which needed no prompts:</p>
+
+<pre><code>$ jj converge
+Found 1 divergent change(s) in the specified revset:
+- Change: zsuskulnrvyr with 2 commits:
+    zsuskuln/0 2c2bd25d b2 | (divergent) b2
+    zsuskuln/1 59a77004 b1 | (divergent) b2
+
+Attempting to converge change zsuskulnrvyr...
+
+Successfully converged change: created commit 6b1ce5bc4cbe.
+Rebased 1 descendants
+Working copy  (@) now at: znkkpsqq 696cf5e0 d | d
+Parent commit (@-)      : zsuskuln 6b1ce5bc b1 b2 | b2
+Added 1 files, modified 0 files, removed 0 files</code></pre>
+
+<p>
+  Here <code>59a77004</code> is itself a predecessor of <code>2c2bd25d</code>. For the parents, the
+  history agreed on <code>[a]</code>, and only one side moved to <code>[c]</code>, so the merge
+  <code>[a] + ([a] − [a]) + ([c] − [a])</code> resolves to <code>[c]</code>. The descriptions are all
+  "b2", and the tree follows the same pattern. Afterwards the evolog shows <code>6b1ce5bc</code> with
+  both old commits as predecessors (<a href="{{ src(t, 124, 133) }}">test</a>).
+</p>
