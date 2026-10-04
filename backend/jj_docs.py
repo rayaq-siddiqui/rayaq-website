@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "69abfbedcc615bb562c31d488b98abb1ab854089",
+    "commit": "55921f5c6d50aa7d2d836d1cef636c77481bb916",
     "commit_date": "2026-10-03",
     "version": "0.45.1",
-    "analyzed_on": "2026-10-03",
+    "analyzed_on": "2026-10-04",
 }
 
 TOPICS = [
