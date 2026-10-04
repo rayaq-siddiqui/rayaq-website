@@ -1,0 +1,333 @@
+{% set cmd = "cli/src/commands/git/export.rs" %}
+{% set git = "lib/src/git.rs" %}
+{% set gu = "cli/src/git_util.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set t = "cli/tests/test_git_import_export.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj git export</code> works</h1>
+  <p class="tagline">
+    <code>jj git export</code> writes jj's bookmarks and tags into the backing Git repository as Git refs.
+    In a colocated workspace this already happens after every command, so the command only matters for
+    non-colocated workspaces or with <code>--ignore-working-copy</code>.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj compares every local bookmark, remote bookmark and local tag with the Git ref it last
+  wrote or read (the view's <code>git_refs</code>). For each difference it creates, moves or deletes the
+  Git ref, but only if Git still has the value jj expects. Refs Git changed in the meantime, refs on the
+  root commit and names Git can't store are reported as failures and left alone. Successfully exported
+  local refs are copied to the <code>git</code> remote (<code>main@git</code>). Everything happens in
+  one operation, <code>export git refs</code>.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 31, 53) }}"><code>cmd_git_export</code></a> and the work is
+  <a href="{{ src(git, 1327, 1430) }}"><code>jj_lib::git::export_refs</code></a>. The reverse direction is
+  <a href="{{ url_for('jj', slug='git-import') }}"><code>jj git import</code></a>. How bookmarks, tags and
+  <code>git_refs</code> are stored is on the <a href="{{ url_for('jj', slug='view') }}">view</a> page.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<p>
+  <code>jj git export</code> takes no arguments of its own (<a href="{{ src(cmd, 23, 29) }}"><code>GitExportArgs</code></a>).
+  Two global flags change what it does:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Global flag</th><th>Effect</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>--ignore-working-copy</code></td><td>Forces the export in a colocated workspace, where it would otherwise be skipped.</td><td><a href="{{ src(cmd, 41, 46) }}">export.rs</a>, <a href="{{ src(util, 779, 781) }}"><code>is_working_copy_writable</code></a></td></tr>
+      <tr><td><code>--at-op</code> (not the head operation)</td><td>Also counts as "working copy not writable", so the export runs even when colocated.</td><td><a href="{{ src(util, 779, 781) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>--no-integrate-operation</code></td><td>Refused: <code>--no-integrate-operation is not respected</code>, because exported refs shouldn't be left unintegrated.</td><td><a href="{{ src(cmd, 36, 39) }}">export.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<p>
+  No configuration key changes how refs are exported. Colocation decides whether the command is needed:
+  in a colocated workspace every command's transaction already calls <code>export_refs</code> when it
+  finishes (<a href="{{ src(util, 2395, 2410) }}">source</a>). Colocation is set when the repo is created; see
+  <a href="{{ url_for('jj', slug='git-clone') }}"><code>jj git clone</code></a>.
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 420" role="img" aria-labelledby="ge-flow-title ge-flow-desc">
+    <title id="ge-flow-title">jj git export: call flow</title>
+    <desc id="ge-flow-desc">
+      cmd_git_export refuses --no-integrate-operation, loads the workspace, and in a colocated workspace
+      with a writable working copy prints No export needed and stops. Otherwise it starts a transaction
+      and calls export_refs, which diffs jj's refs against git_refs, detaches Git HEAD if it points at a
+      ref about to change, deletes and then updates Git refs, records each success in git_refs, and copies
+      exported local refs to the git remote. The transaction finishes as export git refs, then failures
+      are printed.
+    </desc>
+    <defs>
+      <marker id="ge-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(cmd, 36, 40) }}"><rect class="d-box" x="20" y="16" width="720" height="40" rx="6"></rect>
+      <text x="32" y="41">refuse --no-integrate-operation; load the workspace</text></a>
+
+      <a href="{{ src(cmd, 41, 46) }}"><rect class="d-box" x="20" y="72" width="720" height="40" rx="6"></rect>
+      <text x="32" y="97">colocated and working copy writable → "No export needed in colocated workspaces."</text></a>
+
+      <rect x="20" y="128" width="720" height="214" rx="8" class="d-line" fill="none" stroke-dasharray="5 4"></rect>
+      <text x="32" y="146" font-size="11" class="d-muted">export_refs(tx.repo_mut())</text>
+
+      <a href="{{ src(git, 1542, 1600) }}"><rect class="d-box" x="40" y="156" width="680" height="40" rx="6"></rect>
+      <text x="52" y="181">diff_refs_to_export: jj's refs (new) against view git_refs (old)</text></a>
+
+      <a href="{{ src(git, 1356, 1408) }}"><rect class="d-box" x="40" y="208" width="680" height="40" rx="6"></rect>
+      <text x="52" y="233">detach Git HEAD (and each worktree's HEAD) if it points at a ref that will change</text></a>
+
+      <a href="{{ src(git, 1432, 1487) }}"><rect class="d-box" x="40" y="260" width="330" height="70" rx="6"></rect>
+      <text x="52" y="282">export_refs_to_git</text>
+      <text x="52" y="300" class="d-muted" font-size="11">deletions first, then creates/moves;</text>
+      <text x="52" y="316" class="d-muted" font-size="11">set_git_ref_target on success</text></a>
+
+      <a href="{{ src(git, 1489, 1540) }}"><rect class="d-box" x="390" y="260" width="330" height="70" rx="6"></rect>
+      <text x="402" y="282">copy exported local refs</text>
+      <text x="402" y="300" class="d-muted" font-size="11">to NAME@git, state Tracked</text>
+      <text x="402" y="316" class="d-muted" font-size="11">(failed names are skipped)</text></a>
+
+      <a href="{{ src(cmd, 48, 52) }}"><rect class="d-box" x="20" y="360" width="720" height="40" rx="6"></rect>
+      <text x="32" y="385">tx.finish("export git refs"), then print_git_export_stats (warnings for failures)</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" fill="none">
+      <line x1="380" y1="56" x2="380" y2="70" marker-end="url(#ge-arrow)"></line>
+      <line x1="380" y1="112" x2="380" y2="154" marker-end="url(#ge-arrow)"></line>
+      <line x1="380" y1="196" x2="380" y2="206" marker-end="url(#ge-arrow)"></line>
+      <line x1="205" y1="248" x2="205" y2="258" marker-end="url(#ge-arrow)"></line>
+      <line x1="370" y1="295" x2="388" y2="295" marker-end="url(#ge-arrow)"></line>
+      <line x1="380" y1="342" x2="380" y2="358" marker-end="url(#ge-arrow)"></line>
+    </g>
+  </svg>
+</div>
+
+<ol>
+  <li><strong>Colocated check.</strong> Git refs are imported during the snapshot, so jj assumes there
+    is nothing to export and prints <code>No export needed in colocated workspaces.</code>
+    (<a href="{{ src(cmd, 41, 46) }}">source</a>).</li>
+  <li><strong>Diff.</strong> See §6.</li>
+  <li><strong>HEAD.</strong> If Git's <code>HEAD</code> is a symbolic ref to a branch or tag whose value is
+    about to change, jj detaches it at its current commit first, so moving the branch doesn't move
+    Git's checkout. An unborn branch is pointed at the placeholder <code>refs/jj/root</code>
+    (<a href="{{ src(git, 1356, 1399) }}">source</a>, <a href="{{ src(git, 1788, 1827) }}"><code>update_git_head</code></a>).</li>
+  <li><strong>Write.</strong> For each kind (bookmarks, then tags), deletions are applied first so a new ref
+    can't collide on disk with one being removed, then creations and moves
+    (<a href="{{ src(git, 1316, 1322) }}">source</a>). Every write is a compare-and-swap with the reflog
+    message <code>export from jj</code>; see §6.</li>
+  <li><strong>Remember.</strong> Each success updates <code>git_refs</code> in the view, and local refs
+    that exported cleanly are copied to <code>NAME@git</code> (<a href="{{ src(git, 1410, 1424) }}">source</a>).</li>
+</ol>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<ul>
+  <li><strong>View:</strong> reads local bookmarks, remote bookmarks, local tags and <code>git_refs</code>;
+    writes <code>git_refs</code> and the <code>@git</code> remote refs. See the
+    <a href="{{ url_for('jj', slug='view') }}">view</a> page.</li>
+  <li><strong>Git repository:</strong> refs are written directly with <code>gix</code>; no <code>git</code>
+    subprocess runs (<a href="{{ src(git, 1703, 1786) }}">source</a>).</li>
+  <li><strong>Commits:</strong> none are created or rewritten. Commits are already in the Git object
+    store because the Git backend writes every commit there; see the
+    <a href="{{ url_for('jj', slug='commits') }}">commits</a> page.</li>
+</ul>
+
+<p>Refs map to Git like this (<a href="{{ src(git, 389, 412) }}"><code>to_git_ref_name</code></a>):</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 220" role="img" aria-labelledby="ge-map-title ge-map-desc">
+    <title id="ge-map-title">Which jj refs become which Git refs on export</title>
+    <desc id="ge-map-desc">
+      A local bookmark NAME is exported to refs/heads/NAME. A remote bookmark NAME@REMOTE, for any remote
+      except git, is exported to refs/remotes/REMOTE/NAME. A local tag NAME is exported to refs/tags/NAME as
+      a lightweight tag, or by copying an annotated tag object a tracked remote tag already points to.
+      Remote tags are not exported because Git has no remote tags.
+    </desc>
+    <defs>
+      <marker id="ge-map-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <text x="20" y="18" class="d-muted" font-size="11">jj view</text>
+      <text x="460" y="18" class="d-muted" font-size="11">Git refs</text>
+      <a href="{{ src(git, 1550, 1555) }}"><rect class="d-box" x="20" y="28" width="280" height="40" rx="6"></rect>
+      <text x="32" y="53">local bookmark NAME</text></a>
+      <a href="{{ src(git, 1556, 1558) }}"><rect class="d-box" x="20" y="84" width="280" height="40" rx="6"></rect>
+      <text x="32" y="109">remote bookmark NAME@REMOTE</text></a>
+      <a href="{{ src(git, 1563, 1572) }}"><rect class="d-box" x="20" y="140" width="280" height="56" rx="6"></rect>
+      <text x="32" y="162">local tag NAME</text>
+      <text x="32" y="182" class="d-muted" font-size="11">remote tags: not exported</text></a>
+
+      <a href="{{ src(git, 401, 402) }}"><rect class="d-box" x="460" y="28" width="280" height="40" rx="6"></rect>
+      <text x="472" y="53">refs/heads/NAME</text></a>
+      <a href="{{ src(git, 403, 405) }}"><rect class="d-box" x="460" y="84" width="280" height="40" rx="6"></rect>
+      <text x="472" y="109">refs/remotes/REMOTE/NAME</text></a>
+      <a href="{{ src(git, 1456, 1469) }}"><rect class="d-box" x="460" y="140" width="280" height="56" rx="6"></rect>
+      <text x="472" y="162">refs/tags/NAME</text>
+      <text x="472" y="182" class="d-muted" font-size="11">lightweight, or a copied annotated tag</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" fill="none">
+      <line x1="300" y1="48" x2="458" y2="48" marker-end="url(#ge-map-arrow)"></line>
+      <line x1="300" y1="104" x2="458" y2="104" marker-end="url(#ge-map-arrow)"></line>
+      <line x1="300" y1="160" x2="458" y2="160" marker-end="url(#ge-map-arrow)"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, finished as <code>export git refs</code>
+    (<a href="{{ src(cmd, 48, 50) }}">source</a>). If the view didn't change, it prints
+    <code>Nothing changed.</code> and records nothing (<a href="{{ src(util, 2849, 2854) }}">source</a>).</li>
+  <li><strong>Commits:</strong> none.</li>
+  <li><strong><code>jj undo</code></strong> restores <code>git_refs</code> and the <code>@git</code> refs, but
+    not the refs in the Git repo: those stay where the export put them
+    (<a href="{{ src(t, 147, 172) }}">test</a>). Running <code>jj git export</code> again rewrites the
+    <code>@git</code> refs (<a href="{{ src(t, 174, 182) }}">test</a>).</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="diff">The diff</h3>
+
+<p>
+  <a href="{{ src(git, 1542, 1600) }}"><code>diff_refs_to_export</code></a> builds an (old, new) pair per
+  symbol. New is the local bookmark or tag (as <code>NAME@git</code>), or the remote bookmark for other
+  remotes; old is the matching entry in <code>git_refs</code>. A ref in <code>git_refs</code> with no jj
+  counterpart gets an absent new value and is deleted. A comment names the two ways remote refs fall out
+  of sync this way: <code>jj bookmark forget --include-remotes</code>, and <code>jj op revert</code> or
+  <code>restore</code> in a colocated repo (<a href="{{ src(git, 1573, 1594) }}">source</a>).
+</p>
+
+<p>Each pair is then classified (<a href="{{ src(git, 1602, 1650) }}"><code>collect_changed_refs_to_export</code></a>):</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Old (<code>git_refs</code>)</th><th>New (jj)</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td>any</td><td>same as old</td><td>skipped</td></tr>
+      <tr><td>any</td><td>the root commit</td><td>failed: <code>Ref cannot point to the root commit in Git</code></td></tr>
+      <tr><td>conflicted</td><td>anything else</td><td>failed: <code>Ref was in a conflicted state from the last import</code></td></tr>
+      <tr><td>absent or one commit</td><td>one commit</td><td>create or move</td></tr>
+      <tr><td>absent or one commit</td><td>conflicted</td><td>skipped; <code>git_refs</code> keeps the old value</td></tr>
+      <tr><td>one commit</td><td>absent</td><td>delete</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="cas">Compare-and-swap writes</h3>
+
+<p>
+  jj never overwrites a change made in Git. A create requires the ref not to exist; if Git already created
+  it at the same commit, that still counts as success (<a href="{{ src(git, 1703, 1731) }}"><code>create_git_ref</code></a>).
+  A move requires the old commit; if Git already moved it to the new commit, that is fine, and if the ref
+  points at an annotated tag of the old commit, jj retries against that object
+  (<a href="{{ src(git, 1733, 1773) }}"><code>move_git_ref</code></a>). A delete only removes a ref that
+  still resolves to the old commit, and a ref already gone counts as deleted
+  (<a href="{{ src(git, 1680, 1701) }}"><code>delete_git_ref</code></a>). New tags are lightweight unless a
+  tracked remote tag with the same name points at the same commit through an annotated tag object; then
+  that object is copied (<a href="{{ src(git, 1652, 1678) }}"><code>find_git_tag_oid_to_copy</code></a>).
+</p>
+
+<p>
+  <strong>Invariants:</strong> after the export, <code>git_refs</code> records exactly what jj last
+  wrote, so the next import can tell Git's own changes apart from jj's. A failed ref keeps its old
+  <code>git_refs</code> value and doesn't get an <code>@git</code> copy, so it is retried on the next export.
+  Conflicted bookmarks and tags are never exported.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<p>
+  Failures don't stop the command: they're collected per ref and printed as warnings after the
+  transaction is recorded (<a href="{{ src(gu, 467, 505) }}"><code>print_git_export_stats</code></a>).
+  Reasons come from <a href="{{ src(git, 1267, 1295) }}"><code>FailedRefExportReason</code></a>:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th></tr></thead>
+    <tbody>
+      <tr><td><code>Name is not allowed in Git</code></td><td>No Git ref name can be formed, e.g. a bookmark named <code>HEAD</code>.</td></tr>
+      <tr><td><code>Ref was in a conflicted state from the last import</code></td><td>Old value in <code>git_refs</code> is a conflict; a re-import should fix it.</td></tr>
+      <tr><td><code>Ref cannot point to the root commit in Git</code></td><td>The bookmark or tag is on the root commit.</td></tr>
+      <tr><td><code>Deleted ref had been modified in Git</code></td><td>Deleted in jj, moved in Git.</td></tr>
+      <tr><td><code>Added ref had been added with a different target in Git</code></td><td>Created in both, at different commits.</td></tr>
+      <tr><td><code>Modified ref had been deleted in Git</code></td><td>Moved in jj, deleted in Git.</td></tr>
+      <tr><td><code>Failed to set</code> / <code>Failed to delete</code></td><td>The Git write failed. For <code>Failed to set</code>, a hint explains that Git can't have both <code>foo</code> and <code>foo/bar</code> (<a href="{{ src(t, 97, 122) }}">test</a>).</td></tr>
+      <tr><td><code>--no-integrate-operation is not respected</code> (exit 2)</td><td>That global flag was given (<a href="{{ src(t, 34, 40) }}">test</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 246, 339) }}">test_git_import_move_export_with_default_undo</a>, in a
+  non-colocated repo. Bookmark <code>a</code> was imported from Git at <code>e8849ae1</code>. Then
+  <code>jj new</code> and <code>jj bookmark set a --to=@</code> move it to <code>e7d0d5fd</code>, so
+  <code>a@git</code> is one commit behind. <code>jj git export</code> prints nothing and moves both:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 230" role="img" aria-labelledby="ge-ex-title ge-ex-desc">
+    <title id="ge-ex-title">Bookmark a before and after jj git export</title>
+    <desc id="ge-ex-desc">
+      Before: local bookmark a is on e7d0d5fd, while a@git and the Git ref refs/heads/a are on its parent
+      e8849ae1. After the export, refs/heads/a has been moved from e8849ae1 to e7d0d5fd, and a@git is
+      copied from the local bookmark, so all three agree.
+    </desc>
+    {% macro node(x, y, label, note="", hl=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 18 }}" y="{{ y + 4 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x + 18 }}" y="{{ y + 20 }}" font-size="10.5" class="d-muted">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <defs>
+      <marker id="ge-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <text x="40" y="18" font-size="12" class="d-muted">before</text>
+    <text x="460" y="18" font-size="12" class="d-muted">after jj git export</text>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="60" y1="191" x2="60" y2="139"></line>
+      <line x1="60" y1="121" x2="60" y2="69"></line>
+      <line x1="480" y1="191" x2="480" y2="139"></line>
+      <line x1="480" y1="121" x2="480" y2="69"></line>
+      <line x1="320" y1="115" x2="420" y2="115" marker-end="url(#ge-ex-arrow)"></line>
+    </g>
+    {{ node(60, 200, "root") }}
+    {{ node(60, 130, "e8849ae1", "a@git, Git refs/heads/a") }}
+    {{ node(60, 60, "e7d0d5fd  @", "a") }}
+    {{ node(480, 200, "root") }}
+    {{ node(480, 130, "e8849ae1") }}
+    {{ node(480, 60, "e7d0d5fd  @", "a, a@git, Git refs/heads/a", hl=True) }}
+  </svg>
+</div>
+
+<p>Bookmark listing before and after (<a href="{{ src(t, 289, 300) }}">source</a>):</p>
+
+<pre><code>a: royxmykx e7d0d5fd (empty) (no description set)
+  @git (behind by 1 commits): qpvuntsm e8849ae1 (empty) (no description set)
+
+a: royxmykx e7d0d5fd (empty) (no description set)
+  @git: royxmykx e7d0d5fd (empty) (no description set)</code></pre>
+
+<p>
+  The test then runs <code>jj op restore</code> back to before the import. The bookmarks disappear from jj,
+  but Git's <code>refs/heads/a</code> stays at <code>e7d0d5fd</code>, so the next <code>jj git import</code>
+  brings <code>a</code> back there (<a href="{{ src(t, 302, 337) }}">source</a>).
+</p>

@@ -956,6 +956,28 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "git-export": {
+        "title": "How jj git export works",
+        "sources": [
+            "cli/src/commands/git/export.rs",
+            "lib/src/git.rs",
+            "cli/src/git_util.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
+    "git-import": {
+        "title": "How jj git import works",
+        "sources": [
+            "cli/src/commands/git/import.rs",
+            "lib/src/git.rs",
+            "cli/src/git_util.rs",
+            "cli/src/cli_util.rs",
+            "lib/src/config/misc.toml",
+            "cli/src/config-schema.json",
+        ],
+        "ready": True,
+    },
     "git-clone": {
         "title": "How jj git clone works",
         "sources": [
