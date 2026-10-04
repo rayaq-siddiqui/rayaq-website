@@ -6,6 +6,7 @@ import jj_docs
 import jj_dojo_docs
 import jj_vfs_docs
 import jj_cloud_docs
+import rendered_pages
 import resume_data
 import static_assets
 from assembly import get_showcase
@@ -65,7 +66,9 @@ def assembly_agents():
 @app.route("/jj", defaults={"slug": None})
 @app.route("/jj/<slug>")
 def jj(slug):
-    html = jj_docs.render(slug, render_template)
+    html = rendered_pages.get(
+        ("jj", slug), lambda: jj_docs.render(slug, render_template)
+    )
     if html is None:
         abort(404)
     return html
@@ -74,7 +77,9 @@ def jj(slug):
 @app.route("/jj-dojo", defaults={"slug": None})
 @app.route("/jj-dojo/<slug>")
 def jj_dojo(slug):
-    html = jj_dojo_docs.render(slug, render_template)
+    html = rendered_pages.get(
+        ("jj-dojo", slug), lambda: jj_dojo_docs.render(slug, render_template)
+    )
     if html is None:
         abort(404)
     return html
@@ -83,7 +88,9 @@ def jj_dojo(slug):
 @app.route("/jj-vfs-poc", defaults={"slug": None})
 @app.route("/jj-vfs-poc/<slug>")
 def jj_vfs(slug):
-    html = jj_vfs_docs.render(slug, render_template)
+    html = rendered_pages.get(
+        ("jj-vfs-poc", slug), lambda: jj_vfs_docs.render(slug, render_template)
+    )
     if html is None:
         abort(404)
     return html
@@ -92,7 +99,9 @@ def jj_vfs(slug):
 @app.route("/jj-commit-cloud-poc", defaults={"slug": None})
 @app.route("/jj-commit-cloud-poc/<slug>")
 def jj_cloud(slug):
-    html = jj_cloud_docs.render(slug, render_template)
+    html = rendered_pages.get(
+        ("jj-commit-cloud-poc", slug), lambda: jj_cloud_docs.render(slug, render_template)
+    )
     if html is None:
         abort(404)
     return html
