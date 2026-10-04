@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-04 (twenty-ninth run): no upstream change since `03db8d1`; built the
-`jj bisect run` and `jj op abandon`/`integrate`/`restore`/`revert` command pages.
+**Last updated:** 2026-10-04 (thirtieth run): pin bumped `03db8d1..4df5265`; built the
+`jj bookmark advance`/`delete`/`forget`/`rename`/`track`/`untrack` command pages.
 
 ## Upstream pin
 
-`jj-vcs/jj@03db8d1604c7ff75724b20ef3761509843f15a33` (committed 2026-10-04, version
-0.45.1), analyzed 2026-10-04. Held in `jj_docs.UPSTREAM`. Previous pin: `c16d378`.
+`jj-vcs/jj@4df526513289fdee58eb7e8351c2ff87aac099ff` (committed 2026-10-04, version
+0.45.1), analyzed 2026-10-04. Held in `jj_docs.UPSTREAM`. Previous pin: `03db8d1`.
 
 ## §10 acceptance criteria
 
@@ -26,31 +26,32 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 41 of 105, all Tier A (41 of 65;
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 47 of 105, all Tier A (47 of 65;
       Tier B 0 of 27, Tier C 0 of 13). Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
       `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`, `absorb`, `duplicate`,
       `bookmark create`/`set`/`move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`,
       `parallelize`, `simplify-parents`, `arrange`, `converge`, `revert`, `diffedit`, `run`,
       `resolve`, `file chmod`/`track`/`untrack`, `sparse edit`/`reset`/`set`, `bisect run`,
-      `op abandon`/`integrate`/`restore`/`revert`.
+      `op abandon`/`integrate`/`restore`/`revert`, `bookmark advance`/`delete`/`forget`/`rename`/
+      `track`/`untrack`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
 
-## Twenty-ninth run (2026-10-04)
-
-Maintenance: upstream `HEAD` still at `03db8d1`, so the pin stayed. Five Tier A pages, each with all
-eight §8A.3 items and two SVGs, every `src()` range checked against the pinned checkout:
+## Thirtieth run (2026-10-04)
 
 | Commit | What |
 |---|---|
-| `292581a` | `bisect run`: jj-lib's `Bisector` (bad heads, endpoint checks, candidate revset, `bisect()` midpoint), exit-status mapping, one operation per evaluation (example: `test_bisect_run`) |
-| `30dcf98` | `op restore`, `op revert` (inverse as `MutableRepo::merge(X, parent(X))`), `op abandon` (`reparent_range`, no new operation, new IDs), `op integrate` (`update_op_heads` + `resolve_op_heads`). Landed together |
+| `d4fc639` | Maintenance `03db8d1..4df5265` (3 commits: dependency update, revset lifetime cleanup, `git.sign-on-push` docs). Code changes are signature-only; the one touched citation needed no text change. `docs/config.md` grew 6 lines, so config-doc ranges on 5 pages shifted. The docs clarification exposed an error on `git-push`: sign-on-push signs only *your* commits (`SignBehavior::Own`); fixed. `COMMANDS` identical, no `.proto` change, all 1767 citations in range |
+| `5c2f4de` | `bookmark advance` (the two `revsets.bookmark-advance-*` defaults, `to` bound as a local revset variable; example `test_bookmark_advance_default`) |
+| `40fcace` | `bookmark delete` and `forget` (local-only removal vs. untracking or forgetting remotes; examples `test_bookmark_delete_glob`, `test_bookmark_forget_fetched_bookmark`) |
+| `b241000` | `bookmark rename`, `track`, `untrack` (tracking moved per remote; tracking as a 3-way merge into the local bookmark; example `test_bookmark_track_untrack`) |
 
-## Twenty-seventh and twenty-eighth runs (2026-10-04)
+## Twenty-seventh to twenty-ninth runs (2026-10-04)
 
-Pin unchanged. Pages: `diffedit` `d12cd80`, `run` `71e79fb`, `resolve` `0da010f`, `file chmod`
-`a199333`, `file track`/`untrack` `c473761` (track only rewrites `@` at the next snapshot, upstream's
-GH #8298 TODO), `sparse set`/`edit`/`reset` `81ce853` (no operation recorded).
+Pin unchanged (`03db8d1`). Pages: `diffedit` `d12cd80`, `run` `71e79fb`, `resolve` `0da010f`,
+`file chmod` `a199333`, `file track`/`untrack` `c473761` (track only rewrites `@` at the next
+snapshot, upstream's GH #8298 TODO), `sparse set`/`edit`/`reset` `81ce853` (no operation recorded),
+`bisect run` `292581a`, `op restore`/`revert`/`abandon`/`integrate` `30dcf98`.
 
 ## Twelfth to twenty-sixth runs (2026-10-03 to 2026-10-04)
 
@@ -106,9 +107,10 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
    ~~`git-push`~~, then the remaining Tier A commands in registry order: ~~`diffedit`~~, ~~`run`~~,
    ~~`resolve`~~, ~~`file-chmod`~~, ~~`file-track`~~, ~~`file-untrack`~~, ~~`sparse-edit`~~,
    ~~`sparse-reset`~~, ~~`sparse-set`~~, ~~`bisect-run`~~, ~~`operation-abandon`~~,
-   ~~`operation-integrate`~~, ~~`operation-restore`~~, ~~`operation-revert`~~; 24 left (next:
-   `bookmark-advance`, `bookmark-delete`, `bookmark-forget`, `bookmark-rename`, `bookmark-track`,
-   `bookmark-untrack`).
+   ~~`operation-integrate`~~, ~~`operation-restore`~~, ~~`operation-revert`~~, ~~`bookmark-advance`~~,
+   ~~`bookmark-delete`~~, ~~`bookmark-forget`~~, ~~`bookmark-rename`~~, ~~`bookmark-track`~~,
+   ~~`bookmark-untrack`~~; 18 left (next: `tag-delete`, `tag-set`, `tag-track`, `tag-untrack`,
+   `git-clone`, `git-colocation`).
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
 
