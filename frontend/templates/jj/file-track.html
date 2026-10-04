@@ -1,0 +1,270 @@
+{% set cmd = "cli/src/commands/file/track.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set wc = "lib/src/working_copy.rs" %}
+{% set t = "cli/tests/test_file_track_untrack_commands.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj file track</code> works</h1>
+  <p class="tagline">
+    <code>jj file track</code> snapshots the working copy once more, this time also starting to track
+    the paths you name, even if <code>snapshot.auto-track</code> doesn't match them, and, with
+    <code>--include-ignored</code>, even if they are ignored or too large.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj loads the workspace with the usual snapshot. It then takes a second snapshot whose
+  "start tracking" matcher is your paths instead of <code>snapshot.auto-track</code>, and with
+  <code>--include-ignored</code> whose "force tracking" matcher is your paths too. That snapshot updates
+  only the working copy's own tree state. It records an operation, <code>track paths</code>, that
+  changes no commits. The working-copy commit picks the files up at the <em>next</em> command's
+  snapshot; upstream calls this out as a TODO (GH #8298).
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 54, 86) }}"><code>cmd_file_track</code></a>. Its help text points
+  out that by default new files are tracked automatically, so the command matters only when
+  <code>snapshot.auto-track</code> is narrowed (<a href="{{ src(cmd, 29, 38) }}">source</a>). The
+  opposite command is <a href="{{ url_for('jj', slug='file-untrack') }}"><code>jj file untrack</code></a>.
+  Snapshots in general are described on the
+  <a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a> page.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>FILESETS</code> (positional)</td><td>filesets</td><td>required</td><td>The paths to track, relative to the current directory. A directory tracks everything under it (<a href="{{ src(cmd, 41, 43) }}">source</a>).</td></tr>
+      <tr><td><code>--include-ignored</code></td><td>bool</td><td>false</td><td>Also track paths that are ignored or larger than <code>snapshot.max-new-file-size</code> (<a href="{{ src(cmd, 45, 51) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 39, 52) }}"><code>FileTrackArgs</code></a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>snapshot.auto-track</code></td><td><code>all()</code></td><td>Which new files every snapshot tracks on its own. <code>jj file track</code> is for files outside it. Its paths are evaluated from the repo root, while <code>jj file track</code>'s are relative to the current directory (<a href="{{ src('cli/src/config/misc.toml', 61, 61) }}">default</a>, <a href="{{ src(t, 188, 205) }}">test</a>).</td></tr>
+      <tr><td><code>snapshot.max-new-file-size</code></td><td><code>1MiB</code></td><td>New files larger than this stay untracked unless <code>--include-ignored</code> is given. <code>0</code> means no limit (<a href="{{ src('cli/src/config/misc.toml', 60, 60) }}">default</a>, <a href="{{ src(util, 1644, 1662) }}">source</a>).</td></tr>
+      <tr><td><code>.gitignore</code>, <code>.git/info/exclude</code>, <code>core.excludesFile</code></td><td>—</td><td>Ignored files stay untracked unless <code>--include-ignored</code> is given.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 450" role="img" aria-labelledby="ft-flow-title ft-flow-desc">
+    <title id="ft-flow-title">jj file track: call flow</title>
+    <desc id="ft-flow-desc">
+      cmd_file_track loads the workspace with workspace_helper_with_stats, which takes the normal snapshot
+      using snapshot.auto-track and keeps its stats. It parses the paths into a matcher, builds snapshot
+      options that start tracking that matcher, and with --include-ignored force-track it too. It starts a
+      raw transaction, locks the working copy, and snapshots again, which updates only the working copy's
+      tree state. It commits the transaction as "track paths", with no commit changes, and saves the
+      tree state at that operation, then prints any files it still refused. The next command's snapshot
+      sees the tree state differ from the working-copy commit and rewrites that commit.
+    </desc>
+    <defs>
+      <marker id="ft-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(util, 466, 500) }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="32" y="45">workspace_helper_with_stats: the normal snapshot (auto-track matcher); keep its stats</text></a>
+
+      <a href="{{ src(cmd, 61, 68) }}"><rect class="d-box" x="20" y="84" width="720" height="50" rx="6"></rect>
+      <text x="32" y="105">options: start_tracking = your paths (instead of auto-track)</text>
+      <text x="32" y="123" class="d-muted" font-size="11">--include-ignored: force_tracking = your paths too, so ignores and the size limit don't apply</text></a>
+
+      <a href="{{ src(cmd, 70, 72) }}"><rect class="d-box" x="20" y="158" width="720" height="50" rx="6"></rect>
+      <text x="32" y="179">start_transaction().into_inner(); start_working_copy_mutation (lock); snapshot(options)</text>
+      <text x="32" y="197" class="d-muted" font-size="11">updates the working copy's TreeState only; the working-copy commit is not rewritten here</text></a>
+
+      <a href="{{ src(cmd, 73, 78) }}"><rect class="d-box" x="20" y="232" width="720" height="50" rx="6"></rect>
+      <text x="32" y="253">tx.commit("track paths"); locked_ws.finish(op id)</text>
+      <text x="32" y="271" class="d-muted" font-size="11">an operation with no commit changes; the tree state is saved as belonging to it</text></a>
+
+      <a href="{{ src(cmd, 88, 121) }}"><rect class="d-box" x="20" y="306" width="720" height="40" rx="6"></rect>
+      <text x="32" y="331">print_track_snapshot_stats: "Refused to snapshot some files" plus the large-file hint</text></a>
+
+      <a href="{{ src(util, 2131, 2185) }}"><rect class="d-box" x="20" y="370" width="720" height="60" rx="6"></rect>
+      <text x="32" y="391">next command: snapshot_working_copy</text>
+      <text x="32" y="409" class="d-muted" font-size="11">tree state ≠ working-copy commit's tree → rewrite @, rebase descendants,</text>
+      <text x="32" y="424" class="d-muted" font-size="11">operation "snapshot working copy"</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#ft-arrow)">
+      <line x1="380" y1="60" x2="380" y2="80"></line>
+      <line x1="380" y1="134" x2="380" y2="154"></line>
+      <line x1="380" y1="208" x2="380" y2="228"></line>
+      <line x1="380" y1="282" x2="380" y2="302"></line>
+    </g>
+    <g class="d-line d-muted" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#ft-arrow)">
+      <line x1="380" y1="346" x2="380" y2="366"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Working copy (<code>TreeState</code>)</td><td>snapshotted, saved</td><td>Gains the newly tracked files. Saved with the <code>track paths</code> operation's ID (<a href="{{ src(cmd, 71, 78) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+      <tr><td><code>SnapshotOptions</code></td><td>built</td><td><code>start_tracking_matcher</code> and <code>force_tracking_matcher</code> decide which new files become tracked (<a href="{{ src(wc, 203, 227) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+      <tr><td>File and tree objects</td><td>written</td><td>The snapshot writes the new files' contents and trees to the store.</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td><code>track paths</code>, whose view is unchanged.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+      <tr><td>Working-copy commit</td><td>not written here</td><td>Rewritten by the next command's snapshot, which also rebases descendants.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> a raw <code>Transaction</code> (<code>into_inner()</code>), committed directly with <code>tx.commit</code> rather than through <code>tx.finish</code>, so there is no <code>Nothing changed.</code> check (<a href="{{ src(cmd, 70, 77) }}">source</a>).</li>
+  <li><strong>Operation description:</strong> <code>track paths</code>. Its view equals the previous one, since nothing in the repo changed. Before it, the load may record a <code>snapshot working copy</code> operation for edits made since the last command.</li>
+  <li><strong>Commits:</strong> none in this command. The <code>rebase_descendants</code> call has nothing to rebase (<a href="{{ src(cmd, 73, 76) }}">source</a>).</li>
+  <li><strong>Working copy:</strong> locked for the second snapshot, then released with the new operation's ID, so the next command doesn't consider it stale (<a href="{{ src(cmd, 71, 78) }}">source</a>).</li>
+  <li><strong>The real change</strong> lands in the next command's <code>snapshot working copy</code> operation, so that is what <code>jj undo</code> would undo first.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="matchers">Two snapshots, two matchers</h3>
+
+<p>
+  Loading the workspace takes the normal snapshot, whose "start tracking" matcher is
+  <code>snapshot.auto-track</code>, and keeps its stats (<a href="{{ src(cmd, 60, 60) }}">source</a>).
+  The command's own snapshot swaps that matcher for your paths. With <code>--include-ignored</code>, it
+  also sets them as the "force tracking" matcher, which overrides both the ignore rules and the size
+  limit (<a href="{{ src(cmd, 65, 68) }}">source</a>, <a href="{{ src(wc, 215, 226) }}">field docs</a>).
+  Files that are already tracked are always snapshotted, whatever the matchers say.
+</p>
+
+<h3 id="deferred">Why the commit changes later</h3>
+
+<p>
+  <code>locked_wc().snapshot()</code> returns a new tree, but the command ignores it: it never rewrites
+  the working-copy commit or calls <code>set_wc_commit</code>
+  (<a href="{{ src(cmd, 72, 78) }}">source</a>). The working copy's tree state now includes the files,
+  and it is saved as up to date with the <code>track paths</code> operation. On the next command,
+  <a href="{{ src(util, 2091, 2228) }}"><code>snapshot_working_copy</code></a> finds that tree differs
+  from the working-copy commit's and rewrites the commit, printing
+  <code>Rebased N descendant commits onto updated working copy.</code> if it has descendants.
+  Upstream's test marks this with <code>TODO: fix GH #8298 so tracking is immediate</code>
+  (<a href="{{ src(t, 225, 236) }}">source</a>).
+</p>
+
+<h3 id="warnings">Warnings</h3>
+
+<p>
+  <a href="{{ src(cmd, 88, 121) }}"><code>print_track_snapshot_stats</code></a> combines the two
+  snapshots' stats. A path the second snapshot skipped only because it isn't one of yours, which it
+  reports as "not auto-tracked", takes the first snapshot's reason instead, so a file left out for size
+  is still reported as too large. Only too-large files are printed, under
+  <code>Refused to snapshot some files:</code>; the hint lists them and suggests
+  <code>jj file track --include-ignored</code> (<a href="{{ src(util, 3222, 3262) }}">source</a>,
+  <a href="{{ src(util, 3310, 3346) }}">hint</a>).
+</p>
+
+<p>
+  <strong>Invariants:</strong> no file is ever untracked by this command. Without
+  <code>--include-ignored</code>, ignored and oversized files stay untracked. No commit is rewritten
+  during the command itself.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>(no output)</td><td>The usual result. Paths that are ignored, or already tracked, change nothing and print nothing.</td><td><a href="{{ src(t, 260, 267) }}">test</a></td></tr>
+      <tr><td><code>Warning: Refused to snapshot some files:</code> then <code>&lt;path&gt;: &lt;size&gt; (&lt;n&gt; bytes); the maximum size allowed is …</code></td><td>A named file is larger than <code>snapshot.max-new-file-size</code>, without <code>--include-ignored</code>.</td><td><a href="{{ src(util, 3222, 3262) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Hint: This is to prevent large files from being added by accident. …</code></td><td>Follows that warning, with track-specific options.</td><td><a href="{{ src(util, 3310, 3346) }}">cli_util.rs</a></td></tr>
+      <tr><td>(no output, no effect)</td><td>The path is outside the workspace's sparse patterns, so it isn't on disk to snapshot. Upstream notes that a warning would help.</td><td><a href="{{ src(t, 140, 148) }}">test</a></td></tr>
+      <tr><td><code>Concurrent working copy operation. Try again.</code></td><td>The working copy changed between loading and locking.</td><td><a href="{{ src(util, 1518, 1529) }}">cli_util.rs</a></td></tr>
+      <tr><td>clap: <code>the following required arguments were not provided: &lt;FILESETS&gt;...</code></td><td>No paths given.</td><td><a href="{{ src(cmd, 42, 42) }}">track.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 208, 268) }}">test_track_ignored</a>, with
+  <code>snapshot.auto-track = 'none()'</code>. <code>file1</code> and <code>file1.bak</code> exist, and
+  <code>*.bak</code> is ignored. <code>jj file list</code> prints nothing, and <code>jj new --no-edit</code>
+  adds a child on top of <code>@</code>:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 270" role="img" aria-labelledby="ft-ex-title ft-ex-desc">
+    <title id="ft-ex-title">jj file track file1, then the next command</title>
+    <desc id="ft-ex-desc">
+      Before: the working-copy commit tracks nothing and has a child. jj file track file1 prints nothing
+      and records the track paths operation; only the working copy's tree state gains file1. The next
+      command, jj file list, snapshots: it rewrites the working-copy commit so it contains file1, rebases
+      the child onto it, prints Rebased 1 descendant commits onto updated working copy, and lists file1.
+    </desc>
+    <defs>
+      <marker id="ft-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% macro node(x, y, label, note="", hl=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 18 }}" y="{{ y + 4 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x + 18 }}" y="{{ y + 20 }}" font-size="10.5" class="d-muted">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <g font-size="12">
+      <text x="20" y="24" class="d-muted">after jj file track file1</text>
+      <text x="420" y="24" class="d-muted">after the next command (jj file list)</text>
+    </g>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="40" y1="121" x2="40" y2="79"></line>
+      <line x1="440" y1="121" x2="440" y2="79"></line>
+      <line x1="300" y1="130" x2="400" y2="130" marker-end="url(#ft-ex-arrow)"></line>
+    </g>
+    {{ node(40, 70, "child", "no files") }}
+    {{ node(40, 130, "@", "commit: no files") }}
+    <a href="{{ src(cmd, 70, 78) }}">
+      <rect class="d-box" x="20" y="180" width="260" height="66" rx="6"></rect>
+      <text x="32" y="201" font-size="12">working copy tree state</text>
+      <text x="32" y="219" font-size="11" class="d-muted">tracks file1 (saved at "track paths")</text>
+      <text x="32" y="236" font-size="11" class="d-muted">file1.bak: ignored, untracked</text>
+    </a>
+    {{ node(440, 70, "child", "rebased", hl=True) }}
+    {{ node(440, 130, "@", "rewritten: + file1", hl=True) }}
+    <a href="{{ src(util, 2131, 2185) }}">
+      <rect class="d-box" x="420" y="180" width="320" height="66" rx="6"></rect>
+      <text x="432" y="201" font-size="12">operation "snapshot working copy"</text>
+      <text x="432" y="219" font-size="11" class="d-muted">tree state ≠ @'s tree → rewrite @,</text>
+      <text x="432" y="236" font-size="11" class="d-muted">rebase descendants</text>
+    </a>
+  </svg>
+</div>
+
+<p>
+  <code>jj file track file1</code> prints nothing. The next <code>jj file list</code> prints
+  (<a href="{{ src(t, 225, 236) }}">source</a>):
+</p>
+
+<pre><code>file1
+Rebased 1 descendant commits onto updated working copy.</code></pre>
+
+<p>
+  The rebase message comes from that command's snapshot, not from <code>jj file track</code>. Later in
+  the test, <code>jj file track file1.bak</code> without <code>--include-ignored</code> prints nothing
+  and leaves the ignored file untracked. <a href="{{ src(t, 270, 298) }}">test_track_ignored_with_flag</a>
+  shows <code>--include-ignored</code> tracking <code>file2.ignored</code>, and
+  <a href="{{ src(t, 300, 361) }}">test_track_large_file_with_flag</a> shows the size warning for
+  the file left out, with its hint.
+</p>

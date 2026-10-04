@@ -1,0 +1,243 @@
+{% set cmd = "cli/src/commands/file/untrack.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set t = "cli/tests/test_file_track_untrack_commands.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj file untrack</code> works</h1>
+  <p class="tagline">
+    <code>jj file untrack</code> removes paths from the working-copy commit while leaving the files on
+    disk. The paths must already be ignored, or the next snapshot would simply add them back.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj loads the workspace, which snapshots it as usual, and locks the working copy. It writes
+  a new tree for <code>@</code> without the matching paths and rewrites <code>@</code> with it. It then
+  resets the working copy's tree state to that commit without touching any files. A snapshot checks the
+  result: if any of the paths come back because they aren't ignored, it fails and nothing is recorded.
+  Otherwise it rebases descendants, updates the Git index in a colocated workspace, and commits the
+  operation <code>untrack paths</code>.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 44, 124) }}"><code>cmd_file_untrack</code></a>. Its only argument
+  is the paths, which "must already be ignored", via <code>.gitignore</code> or, in colocated
+  workspaces, <code>.git/info/exclude</code> (<a href="{{ src(cmd, 32, 42) }}">source</a>). Unlike
+  <a href="{{ url_for('jj', slug='file-track') }}"><code>jj file track</code></a>, it rewrites
+  <code>@</code> straight away. It only ever changes the working-copy commit.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Argument</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>FILESETS</code> (positional)</td><td>filesets</td><td>required</td><td>Paths to untrack. Every tracked file they match is removed from <code>@</code>, so a directory untracks everything under it (<a href="{{ src(cmd, 35, 41) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 33, 42) }}"><code>FileUntrackArgs</code></a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>.gitignore</code>, <code>.git/info/exclude</code>, <code>core.excludesFile</code></td><td>—</td><td>What counts as ignored. A path that isn't ignored makes the command fail.</td></tr>
+      <tr><td><code>snapshot.auto-track</code></td><td><code>all()</code></td><td>Used for the verifying snapshot. A file outside it isn't added back, so it can be untracked without being ignored (<a href="{{ src(cmd, 53, 55) }}">source</a>, <a href="{{ src(t, 179, 186) }}">test</a>).</td></tr>
+      <tr><td><code>snapshot.max-new-file-size</code></td><td><code>1MiB</code></td><td>Also applies to the verifying snapshot, whose stats are printed at the end (<a href="{{ src(util, 1644, 1662) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Sparse patterns matter too: a file outside them isn't on disk, so it can't come back and needn't be
+  ignored (<a href="{{ src(t, 112, 149) }}">test_track_untrack_sparse</a>).
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 470" role="img" aria-labelledby="fu-flow-title fu-flow-desc">
+    <title id="fu-flow-title">jj file untrack: call flow</title>
+    <desc id="fu-flow-desc">
+      cmd_file_untrack loads the workspace through the shared lifecycle, which snapshots it. It parses the
+      paths and the auto-track matcher, starts a raw transaction and locks the working copy, getting the
+      working-copy commit. It builds a tree without the matching paths and rewrites the working-copy
+      commit with it, then resets the working copy to the new commit without touching files. It snapshots
+      again: if the snapshot brings back any of the paths, it fails because they are not ignored; if it
+      differs for another reason, it resets again. It rebases descendants, updates the Git index in a
+      colocated workspace, commits "untrack paths", releases the working copy, and prints warnings.
+    </desc>
+    <defs>
+      <marker id="fu-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 51, 61) }}"><rect class="d-box" x="20" y="84" width="720" height="40" rx="6"></rect>
+      <text x="32" y="109">matcher, auto-track options; start_transaction().into_inner(); lock the working copy → @</text></a>
+
+      <a href="{{ src(cmd, 62, 76) }}"><rect class="d-box" x="20" y="148" width="720" height="50" rx="6"></rect>
+      <text x="32" y="169">tree without the matching paths → rewrite_commit(@).set_tree(…)</text>
+      <text x="32" y="187" class="d-muted" font-size="11">locked_wc().reset(new @): tree state now matches the new commit; files on disk untouched</text></a>
+
+      <a href="{{ src(cmd, 77, 79) }}"><rect class="d-box" x="20" y="222" width="720" height="40" rx="6"></rect>
+      <text x="32" y="247">snapshot again with the auto-track options</text></a>
+
+      <a href="{{ src(cmd, 80, 98) }}"><rect class="d-box" x="20" y="286" width="330" height="66" rx="6"></rect>
+      <text x="32" y="307">a path came back</text>
+      <text x="32" y="325" class="d-muted" font-size="11">error "is not ignored"; the transaction</text>
+      <text x="32" y="342" class="d-muted" font-size="11">is dropped, nothing recorded</text></a>
+      <a href="{{ src(cmd, 99, 103) }}"><rect class="d-box" x="410" y="286" width="330" height="66" rx="6"></rect>
+      <text x="422" y="307">other paths differ</text>
+      <text x="422" y="325" class="d-muted" font-size="11">concurrent edits: reset again so</text>
+      <text x="422" y="342" class="d-muted" font-size="11">they aren't mixed in</text></a>
+
+      <a href="{{ src(cmd, 105, 120) }}"><rect class="d-box" x="20" y="376" width="720" height="50" rx="6"></rect>
+      <text x="32" y="397">rebase_descendants; colocated: update the Git index; tx.commit("untrack paths"); finish</text>
+      <text x="32" y="415" class="d-muted" font-size="11">then warn about unmatched paths and print the snapshot's stats</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#fu-arrow)">
+      <line x1="380" y1="60" x2="380" y2="80"></line>
+      <line x1="380" y1="124" x2="380" y2="144"></line>
+      <line x1="380" y1="198" x2="380" y2="218"></line>
+      <line x1="195" y1="262" x2="195" y2="282"></line>
+      <line x1="575" y1="262" x2="575" y2="282"></line>
+      <line x1="575" y1="352" x2="575" y2="372"></line>
+    </g>
+    <g class="d-line" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#fu-arrow)">
+      <line x1="380" y1="284" x2="380" y2="372"></line>
+    </g>
+    <text x="380" y="278" font-size="10.5" text-anchor="middle" class="d-muted" style="paint-order: stroke">no difference</text>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Working-copy commit</td><td>rewritten</td><td>Same parents, change ID and description; the matched paths are gone from its tree (<a href="{{ src(cmd, 62, 74) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Trees</td><td>written</td><td>Built from <code>@</code>'s tree with each matching path set to <code>Merge::absent()</code>.</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>Working copy (<code>TreeState</code>)</td><td>reset, snapshotted, saved</td><td><code>reset</code> updates jj's record of the working copy to the new commit "without touching the files in the working copy" (<a href="{{ src('lib/src/working_copy.rs', 129, 130) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+      <tr><td>Descendants</td><td>rewritten</td><td>Rebased onto the new <code>@</code>, so they lose the files too. A descendant that modified one of them gets a conflict instead.</td><td><a href="{{ url_for('jj', slug='transactions') }}">transactions</a></td></tr>
+      <tr><td>Git index (colocated)</td><td>write</td><td>Intent-to-add entries are updated for the tree change, and refs are exported (<a href="{{ src(util, 2704, 2717) }}">source</a>).</td><td>—</td></tr>
+      <tr><td><code>View</code> and operation</td><td>write</td><td><code>wc_commit_ids</code>, heads and bookmarks follow; one operation, <code>untrack paths</code>.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> a raw <code>Transaction</code> committed with <code>tx.commit</code>, with the working copy locked throughout, so the commit rewrite and the working-copy update land together (<a href="{{ src(cmd, 60, 61) }}">start</a>, <a href="{{ src(cmd, 119, 120) }}">commit</a>).</li>
+  <li><strong>Operation description:</strong> <code>untrack paths</code> (<a href="{{ src(cmd, 119, 119) }}">source</a>).</li>
+  <li><strong>Commits rewritten:</strong> <code>@</code>, then its descendants, with <code>Rebased N descendant commits.</code> if any (<a href="{{ src(cmd, 105, 108) }}">source</a>).</li>
+  <li><strong>On error:</strong> when a path isn't ignored, the lock is dropped before the error returns and the transaction is never committed, so the repo and the saved working-copy state stay as they were (<a href="{{ src(cmd, 82, 98) }}">source</a>, <a href="{{ src(t, 58, 70) }}">test</a>).</li>
+  <li><strong><code>jj undo</code></strong> brings the paths back into <code>@</code>.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<ol>
+  <li><strong>Remove.</strong> For every entry of <code>@</code>'s tree matching the filesets, set it to absent, then write the tree (<a href="{{ src(cmd, 62, 68) }}">source</a>).</li>
+  <li><strong>Rewrite.</strong> <code>rewrite_commit(@).set_tree(new_tree)</code> (<a href="{{ src(cmd, 69, 74) }}">source</a>).</li>
+  <li><strong>Reset.</strong> Point the working copy at the new commit without changing any file, so the files stay on disk but jj no longer records them as tracked (<a href="{{ src(cmd, 75, 76) }}">source</a>).</li>
+  <li>
+    <strong>Verify.</strong> Snapshot with the normal auto-track options, as the next command would. If
+    the result differs from the new commit and some of the differing paths match the filesets, those
+    files would be re-added: fail with <code>'…' is not ignored.</code> (or <code>'…' and N other files
+    are not ignored.</code>). If it differs only elsewhere, someone changed the working copy
+    meanwhile; reset again so those edits aren't folded into this operation
+    (<a href="{{ src(cmd, 77, 104) }}">source</a>).
+  </li>
+  <li><strong>Finish.</strong> Rebase descendants, export to Git if colocated, commit, save the working copy at the new operation, then print warnings (<a href="{{ src(cmd, 105, 122) }}">source</a>).</li>
+</ol>
+
+<p>
+  <strong>Invariants:</strong> files on disk are never deleted or modified. Only the working-copy
+  commit's tree loses paths. A path that a later snapshot would re-add is refused. Paths that aren't
+  tracked are ignored, with a warning for explicit ones.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>'&lt;path&gt;' is not ignored.</code> / <code>'&lt;path&gt;' and &lt;n&gt; other files are not ignored.</code>, hint <code>Files that are not ignored will be added back by the next command. Make sure they're ignored, then try again.</code></td><td>A matched file would be re-added by a snapshot.</td><td><a href="{{ src(cmd, 82, 98) }}">untrack.rs</a></td></tr>
+      <tr><td><code>Warning: No matching entries for paths: …</code></td><td>An explicit path isn't in <code>@</code>. The command still succeeds.</td><td><a href="{{ src(cmd, 121, 121) }}">untrack.rs</a></td></tr>
+      <tr><td><code>This command must be able to update the working copy.</code>, hint <code>Don't use --at-op.</code> (or <code>--ignore-working-copy</code>, <code>--no-integrate-operation</code>)</td><td>Run with one of those global flags.</td><td><a href="{{ src(util, 1299, 1312) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Concurrent working copy operation. Try again.</code></td><td>The working copy changed between loading and locking.</td><td><a href="{{ src(util, 1518, 1529) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Warning: Refused to snapshot some files: …</code></td><td>The verifying snapshot left large new files untracked.</td><td><a href="{{ src(cmd, 122, 122) }}">untrack.rs</a></td></tr>
+      <tr><td>clap: <code>the following required arguments were not provided: &lt;FILESETS&gt;...</code></td><td>No paths given.</td><td><a href="{{ src(cmd, 39, 39) }}">untrack.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 17, 110) }}">test_track_untrack</a>. <code>@</code> tracks
+  <code>file1</code>, <code>file1.bak</code>, <code>file2.bak</code>, <code>target/file2</code> and
+  <code>target/file3</code>; then <code>.gitignore</code> gets <code>*.bak</code>:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 250" role="img" aria-labelledby="fu-ex-title fu-ex-desc">
+    <title id="fu-ex-title">jj file untrack: refused, then accepted</title>
+    <desc id="fu-ex-desc">
+      With .gitignore containing *.bak, jj file untrack file1 file1.bak fails because file1 is not ignored,
+      and nothing changes. jj file untrack file1.bak succeeds: the working-copy commit no longer contains
+      file1.bak, file2.bak is still tracked, and both files remain on disk. jj file untrack target fails
+      because target/file2 and one other file are not ignored, until target/ is added to .gitignore,
+      after which it succeeds.
+    </desc>
+    <a href="{{ src(t, 58, 70) }}">
+      <rect class="d-box" x="20" y="20" width="230" height="200" rx="6"></rect>
+      <text x="32" y="42" font-size="12">untrack file1 file1.bak</text>
+      <text x="32" y="64" font-size="11" class="d-accent">Error: 'file1' is not ignored.</text>
+      <text x="32" y="90" font-size="11" class="d-muted">@ unchanged:</text>
+      <text x="32" y="108" font-size="11" class="d-muted">file1, file1.bak, file2.bak,</text>
+      <text x="32" y="126" font-size="11" class="d-muted">target/file2, target/file3</text>
+    </a>
+    <a href="{{ src(t, 72, 83) }}">
+      <rect class="d-box" x="265" y="20" width="230" height="200" rx="6"></rect>
+      <text x="277" y="42" font-size="12">untrack file1.bak</text>
+      <text x="277" y="64" font-size="11" class="d-muted">(no output)</text>
+      <text x="277" y="90" font-size="11" class="d-muted">@ now: file1, file2.bak,</text>
+      <text x="277" y="108" font-size="11" class="d-muted">target/file2, target/file3</text>
+      <text x="277" y="134" font-size="11" class="d-muted">on disk: file1.bak and</text>
+      <text x="277" y="152" font-size="11" class="d-muted">file2.bak both still exist</text>
+    </a>
+    <a href="{{ src(t, 93, 109) }}">
+      <rect class="d-box" x="510" y="20" width="230" height="200" rx="6"></rect>
+      <text x="522" y="42" font-size="12">untrack target</text>
+      <text x="522" y="64" font-size="11" class="d-accent">Error: 'target/file2' and</text>
+      <text x="522" y="80" font-size="11" class="d-accent">1 other files are not ignored.</text>
+      <text x="522" y="106" font-size="11" class="d-muted">add target/ to .gitignore,</text>
+      <text x="522" y="124" font-size="11" class="d-muted">run it again: (no output)</text>
+      <text x="522" y="150" font-size="11" class="d-muted">@ now: file1, file2.bak</text>
+    </a>
+  </svg>
+</div>
+
+<p>Upstream's snapshot of the first, refused attempt (<a href="{{ src(t, 58, 70) }}">source</a>):</p>
+
+<pre><code>Error: 'file1' is not ignored.
+Hint: Files that are not ignored will be added back by the next command.
+Make sure they're ignored, then try again.</code></pre>
+
+<p>
+  The test then checks that <code>jj file list</code> is unchanged. In
+  <a href="{{ src(t, 208, 268) }}">test_track_ignored</a>, where <code>@</code> has a child, untracking
+  prints <code>Rebased 1 descendant commits.</code> at once, unlike <code>jj file track</code>, whose
+  rebase shows up on the next command.
+</p>

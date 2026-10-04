@@ -956,6 +956,25 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "file-track": {
+        "title": "How jj file track works",
+        "sources": [
+            "cli/src/commands/file/track.rs",
+            "cli/src/cli_util.rs",
+            "lib/src/working_copy.rs",
+            "cli/src/config/misc.toml",
+        ],
+        "ready": True,
+    },
+    "file-untrack": {
+        "title": "How jj file untrack works",
+        "sources": [
+            "cli/src/commands/file/untrack.rs",
+            "cli/src/cli_util.rs",
+            "lib/src/working_copy.rs",
+        ],
+        "ready": True,
+    },
     "file-chmod": {
         "title": "How jj file chmod works",
         "sources": [
