@@ -956,6 +956,39 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "sparse-edit": {
+        "title": "How jj sparse edit works",
+        "sources": [
+            "cli/src/commands/sparse/edit.rs",
+            "cli/src/commands/sparse/mod.rs",
+            "lib/src/local_working_copy.rs",
+            "cli/src/cli_util.rs",
+            "cli/src/description_util.rs",
+            "cli/src/config.rs",
+        ],
+        "ready": True,
+    },
+    "sparse-reset": {
+        "title": "How jj sparse reset works",
+        "sources": [
+            "cli/src/commands/sparse/reset.rs",
+            "cli/src/commands/sparse/mod.rs",
+            "lib/src/local_working_copy.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
+    "sparse-set": {
+        "title": "How jj sparse set works",
+        "sources": [
+            "cli/src/commands/sparse/set.rs",
+            "cli/src/commands/sparse/mod.rs",
+            "lib/src/local_working_copy.rs",
+            "cli/src/cli_util.rs",
+            "core/src/repo_path.rs",
+        ],
+        "ready": True,
+    },
     "file-track": {
         "title": "How jj file track works",
         "sources": [

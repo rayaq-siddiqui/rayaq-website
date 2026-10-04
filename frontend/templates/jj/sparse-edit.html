@@ -1,0 +1,237 @@
+{% set cmd = "cli/src/commands/sparse/edit.rs" %}
+{% set mod = "cli/src/commands/sparse/mod.rs" %}
+{% set lwc = "lib/src/local_working_copy.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set du = "cli/src/description_util.rs" %}
+{% set t = "cli/tests/test_sparse_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj sparse edit</code> works</h1>
+  <p class="tagline">
+    <code>jj sparse edit</code> opens the workspace's sparse patterns in your text editor, one per line,
+    and applies whatever list you save: files under new patterns are checked out, files under dropped ones
+    are deleted from disk. Commits and the operation log are untouched.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj loads the workspace, which snapshots it as usual, and locks the working copy. It writes
+  the current patterns to a temporary <code>.jjsparse</code> file, runs <code>ui.editor</code>, then
+  parses each non-blank line that doesn't start with <code>JJ:</code> as a workspace-relative path.
+  The result is sorted and de-duplicated. From there it is exactly
+  <a href="{{ url_for('jj', slug='sparse-set') }}"><code>jj sparse set</code></a>: update the files,
+  save the working-copy state under the same operation ID, and print the checkout stats.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 35, 50) }}"><code>cmd_sparse_edit</code></a>; the editing is
+  <a href="{{ src(cmd, 52, 84) }}"><code>edit_sparse</code></a>. The update itself is the shared
+  <a href="{{ src(mod, 63, 79) }}"><code>update_sparse_patterns_with</code></a>, described in detail on
+  the <a href="{{ url_for('jj', slug='sparse-set') }}#update"><code>sparse set</code></a> page.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<p>
+  No arguments or flags (<a href="{{ src(cmd, 31, 33) }}"><code>SparseEditArgs</code></a>). The global
+  <code>--config ui.editor=…</code> picks the editor for one run.
+</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>ui.editor</code></td><td><code>nano</code> on Unix, <code>Notepad</code> on Windows</td><td>The editor that opens the file, loaded before the working copy is locked (<a href="{{ src(cmd, 41, 42) }}">source</a>, <a href="{{ src(util, 1820, 1822) }}">text_editor</a>, <a href="{{ src('cli/src/config/unix.toml', 1, 2) }}">default</a>). <code>$VISUAL</code> or <code>$EDITOR</code> set it below your own config, and <code>$JJ_EDITOR</code> overrides it (<a href="{{ src('cli/src/config.rs', 850, 854) }}">source</a>, <a href="{{ src('cli/src/config.rs', 905, 907) }}">override</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The patterns themselves live in the workspace's working-copy state, the <code>sparse_patterns</code>
+  field of <code>TreeState</code> (see <a href="{{ url_for('jj', slug='protobufs') }}#wc-tree-state">protobufs</a>).
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 390" role="img" aria-labelledby="se-flow-title se-flow-desc">
+    <title id="se-flow-title">jj sparse edit: call flow</title>
+    <desc id="se-flow-desc">
+      cmd_sparse_edit loads the workspace through the shared lifecycle, which snapshots it, and loads the
+      text editor. update_sparse_patterns_with locks the working copy and reads the patterns. edit_sparse
+      writes them one per line to a temporary file ending in .jjsparse, runs the editor, and parses each
+      remaining line as a repo-relative path. The list is sorted and de-duplicated. set_sparse_patterns
+      checks out newly covered files and deletes uncovered ones; the working copy is saved under the old
+      operation ID and the checkout stats are printed.
+    </desc>
+    <defs>
+      <marker id="se-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 41, 43) }}"><rect class="d-box" x="20" y="84" width="720" height="40" rx="6"></rect>
+      <text x="32" y="109">text_editor(); update_sparse_patterns_with: lock the working copy, read the patterns</text></a>
+
+      <a href="{{ src(cmd, 56, 71) }}"><rect class="d-box" x="20" y="148" width="350" height="84" rx="6"></rect>
+      <text x="32" y="169">edit_sparse: write, then edit</text>
+      <text x="32" y="187" class="d-muted" font-size="11">one pattern per line (root shown as ".")</text>
+      <text x="32" y="204" class="d-muted" font-size="11">temp file editor-….jjsparse</text>
+      <text x="32" y="221" class="d-muted" font-size="11">run ui.editor and wait</text></a>
+      <a href="{{ src(cmd, 73, 84) }}"><rect class="d-box" x="410" y="148" width="330" height="84" rx="6"></rect>
+      <text x="422" y="169">parse the saved text</text>
+      <text x="422" y="187" class="d-muted" font-size="11">drop "JJ:" lines; trim; skip blank</text>
+      <text x="422" y="204" class="d-muted" font-size="11">each line → from_relative_path</text>
+      <text x="422" y="221" class="d-muted" font-size="11">then sort and dedup (lines 45–46)</text></a>
+
+      <a href="{{ src(lwc, 2299, 2325) }}"><rect class="d-box" x="20" y="256" width="720" height="50" rx="6"></rect>
+      <text x="32" y="277">set_sparse_patterns: check out files under added prefixes, delete files under removed ones</text>
+      <text x="32" y="295" class="d-muted" font-size="11">the same step as jj sparse set</text></a>
+
+      <a href="{{ src(mod, 75, 77) }}"><rect class="d-box" x="20" y="330" width="720" height="40" rx="6"></rect>
+      <text x="32" y="355">finish(old operation ID): no operation; print "Added N files, modified 0 files, removed M files"</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#se-arrow)">
+      <line x1="380" y1="60" x2="380" y2="80"></line>
+      <line x1="195" y1="124" x2="195" y2="144"></line>
+      <line x1="370" y1="190" x2="406" y2="190"></line>
+      <line x1="575" y1="232" x2="575" y2="252"></line>
+      <line x1="380" y1="306" x2="380" y2="326"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Sparse patterns (<code>TreeState</code>)</td><td>read, write</td><td>Shown in the editor, then replaced by the edited list (<a href="{{ src(lwc, 3020, 3032) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+      <tr><td>Files on disk, file states</td><td>write</td><td>Created or deleted for prefixes whose inclusion changed.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+      <tr><td>Temporary file</td><td>written, read, deleted</td><td>In the system temp directory, named <code>editor-…</code> with suffix <code>.jjsparse</code>; deleted only if editing succeeded (<a href="{{ src(du, 115, 133) }}">source</a>).</td><td>—</td></tr>
+      <tr><td>Working-copy commit</td><td>read</td><td>Source of the checked-out files; never rewritten.</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>Operation log</td><td>untouched</td><td>Saved under the existing operation ID.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction and operation:</strong> none. The working copy is locked while the editor is open and saved with <code>old_operation_id()</code> (<a href="{{ src(mod, 68, 76) }}">source</a>).</li>
+  <li><strong>Lock held during editing:</strong> because the editor runs inside the closure, the working-copy lock is held until you close the editor.</li>
+  <li><strong>On error</strong> (bad line, editor failure) nothing is written: the closure returns before <code>set_sparse_patterns</code> runs (<a href="{{ src(mod, 69, 69) }}">source</a>).</li>
+  <li><strong><code>jj undo</code></strong> doesn't apply. Edit again or run <code>jj sparse reset</code>.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<ol>
+  <li>
+    <strong>Render.</strong> Each stored pattern is turned into a workspace-relative filesystem path and
+    written on its own line. An invalid stored path doesn't block editing, but one that isn't UTF-8 is an
+    internal error (<a href="{{ src(cmd, 56, 67) }}">source</a>). Upstream's test shows the root pattern
+    written as <code>.</code> (<a href="{{ src(t, 157, 163) }}">source</a>).
+  </li>
+  <li>
+    <strong>Edit.</strong> <code>TextEditor::edit_str</code> writes the temporary file, runs the editor,
+    and reads it back; errors are labelled <code>sparse patterns</code>
+    (<a href="{{ src(cmd, 69, 71) }}">source</a>, <a href="{{ src(du, 115, 133) }}">edit_str</a>).
+  </li>
+  <li>
+    <strong>Parse.</strong> Lines starting with <code>JJ:</code> are dropped, the rest are trimmed and
+    blank ones skipped, and each is parsed with <code>RepoPathBuf::from_relative_path</code>. The first
+    failure aborts with <code>Failed to parse sparse pattern: &lt;line&gt;</code>
+    (<a href="{{ src(cmd, 73, 84) }}">source</a>).
+  </li>
+  <li><strong>Normalize.</strong> Sort and remove duplicates (<a href="{{ src(cmd, 44, 47) }}">source</a>).</li>
+  <li><strong>Apply.</strong> As in <a href="{{ url_for('jj', slug='sparse-set') }}#update"><code>sparse set</code></a>: check out added prefixes, delete removed ones, store the list.</li>
+</ol>
+
+<p>
+  <strong>Invariants:</strong> the saved list is sorted and has no duplicates. Saving an empty file
+  leaves no patterns, so every tracked file is removed from disk. Commits never change.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Failed to parse sparse pattern: &lt;line&gt;</code>, caused by <code>Invalid component "." in repo-relative path "./file1"</code> (or <code>..</code>)</td><td>A line isn't a clean workspace-relative path. <code>.</code> on its own is fine.</td><td><a href="{{ src(cmd, 78, 82) }}">edit.rs</a>, <a href="{{ src(t, 186, 195) }}">test</a></td></tr>
+      <tr><td>Editor errors, labelled <code>sparse patterns</code></td><td>The editor couldn't be run or exited with an error.</td><td><a href="{{ src(cmd, 69, 71) }}">edit.rs</a></td></tr>
+      <tr><td><code>Stored sparse path is not valid utf-8: …</code> (internal error)</td><td>A stored pattern can't be shown as text.</td><td><a href="{{ src(cmd, 60, 65) }}">edit.rs</a></td></tr>
+      <tr><td><code>Failed to update working copy paths</code> (internal error)</td><td>Writing or deleting files failed.</td><td><a href="{{ src(mod, 70, 74) }}">mod.rs</a></td></tr>
+      <tr><td><code>This command must be able to update the working copy.</code></td><td>Run with <code>--at-op</code>, <code>--ignore-working-copy</code> or <code>--no-integrate-operation</code>.</td><td><a href="{{ src(util, 1299, 1312) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Concurrent working copy operation. Try again.</code></td><td>The working copy changed between loading and locking.</td><td><a href="{{ src(util, 1518, 1529) }}">cli_util.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 21, 196) }}">test_sparse_manage_patterns</a>, after
+  <code>jj sparse reset</code>, so the patterns are <code>.</code> and <code>file1</code>,
+  <code>file2</code> and <code>file3</code> are all on disk. The fake editor records what it was given
+  and writes new content:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 230" role="img" aria-labelledby="se-ex-title se-ex-desc">
+    <title id="se-ex-title">Two runs of jj sparse edit</title>
+    <desc id="se-ex-desc">
+      First run: the editor is given a single line, dot. It saves file1. jj removes file2 and file3 from
+      disk: added 0, removed 2. Second run: the editor is given file1. It saves file3, file2, file3. The
+      list becomes file2 and file3, sorted and de-duplicated; jj adds 2 files and removes 1.
+    </desc>
+    <defs>
+      <marker id="se-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <a href="{{ src(t, 145, 168) }}">
+      <rect class="d-box" x="20" y="20" width="340" height="190" rx="6"></rect>
+      <text x="32" y="42" font-size="12">first jj sparse edit</text>
+      <text x="32" y="70" font-size="11" class="d-muted">editor is given:</text>
+      <text x="140" y="70" font-size="11">.</text>
+      <text x="32" y="92" font-size="11" class="d-muted">editor saves:</text>
+      <text x="140" y="92" font-size="11">file1</text>
+      <text x="32" y="122" font-size="11" class="d-muted">patterns:</text>
+      <text x="140" y="122" font-size="11">file1</text>
+      <text x="32" y="144" font-size="11" class="d-muted">on disk:</text>
+      <text x="140" y="144" font-size="11">file1</text>
+      <text x="32" y="184" font-size="11" class="d-accent">Added 0 files, modified 0 files, removed 2 files</text>
+    </a>
+    <a href="{{ src(t, 170, 184) }}">
+      <rect class="d-box" x="400" y="20" width="340" height="190" rx="6"></rect>
+      <text x="412" y="42" font-size="12">second jj sparse edit</text>
+      <text x="412" y="70" font-size="11" class="d-muted">editor is given:</text>
+      <text x="520" y="70" font-size="11">file1</text>
+      <text x="412" y="92" font-size="11" class="d-muted">editor saves:</text>
+      <text x="520" y="92" font-size="11">file3, file2, file3</text>
+      <text x="412" y="122" font-size="11" class="d-muted">patterns:</text>
+      <text x="520" y="122" font-size="11">file2, file3 (sorted, deduped)</text>
+      <text x="412" y="144" font-size="11" class="d-muted">on disk:</text>
+      <text x="520" y="144" font-size="11">file2, file3</text>
+      <text x="412" y="184" font-size="11" class="d-accent">Added 2 files, modified 0 files, removed 1 files</text>
+    </a>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="364" y1="115" x2="396" y2="115" marker-end="url(#se-ex-arrow)"></line>
+    </g>
+  </svg>
+</div>
+
+<p>
+  Upstream checks both outputs and the editor's input, and then that a saved line of
+  <code>./file1</code> fails (<a href="{{ src(t, 186, 195) }}">source</a>):
+</p>
+
+<pre><code>Error: Failed to parse sparse pattern: ./file1
+Caused by: Invalid component "." in repo-relative path "./file1"</code></pre>

@@ -1,0 +1,249 @@
+{% set cmd = "cli/src/commands/sparse/set.rs" %}
+{% set mod = "cli/src/commands/sparse/mod.rs" %}
+{% set lwc = "lib/src/local_working_copy.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set t = "cli/tests/test_sparse_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj sparse set</code> works</h1>
+  <p class="tagline">
+    <code>jj sparse set</code> changes which parts of the working-copy commit are written to disk. It
+    adds or removes path prefixes in the workspace's sparse patterns, then checks out or deletes just the
+    files whose inclusion changed. Commits and the operation log are untouched.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj loads the workspace, which snapshots it as usual, and locks the working copy. It starts
+  from the current patterns, or from none with <code>--clear</code>, removes the <code>--remove</code>
+  paths, adds the <code>--add</code> paths, and sorts the result. The working copy then writes the
+  files that are newly covered and deletes the ones no longer covered. It saves its state under the
+  <em>same</em> operation ID and prints <code>Added N files, modified 0 files, removed M files</code>.
+  No operation is recorded.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 55, 76) }}"><code>cmd_sparse_set</code></a>. It and its siblings
+  <a href="{{ url_for('jj', slug='sparse-edit') }}"><code>jj sparse edit</code></a> and
+  <a href="{{ url_for('jj', slug='sparse-reset') }}"><code>jj sparse reset</code></a> each compute a new
+  pattern list and hand it to the shared
+  <a href="{{ src(mod, 63, 79) }}"><code>update_sparse_patterns_with</code></a>. Its help text's example:
+  <code>jj sparse set --clear --add README.md --add lib</code> to keep only those two
+  (<a href="{{ src(cmd, 26, 30) }}">source</a>).
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>--add PATH</code></td><td>repo path, repeatable</td><td>none</td><td>A prefix to include (<a href="{{ src(cmd, 33, 39) }}">source</a>).</td></tr>
+      <tr><td><code>--remove PATH</code></td><td>repo path, repeatable</td><td>none</td><td>A prefix to drop. It must match an existing pattern exactly. Conflicts with <code>--clear</code> (<a href="{{ src(cmd, 41, 48) }}">source</a>).</td></tr>
+      <tr><td><code>--clear</code></td><td>bool</td><td>false</td><td>Start from no patterns, so only <code>--add</code>'s remain (<a href="{{ src(cmd, 50, 52) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 31, 53) }}"><code>SparseSetArgs</code></a></p>
+
+<p>
+  Paths are parsed by <a href="{{ src('core/src/repo_path.rs', 259, 294) }}"><code>RepoPathBuf::from_relative_path</code></a>,
+  so they are relative to the workspace root, not the current directory. <code>.</code> alone means the
+  whole repo; any other <code>.</code> or <code>..</code> component is rejected. With no flags at all,
+  the patterns stay as they are.
+</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<p>
+  None. The patterns aren't configuration: each workspace keeps its own list in its working-copy state,
+  the <code>sparse_patterns</code> field (3) of the <code>TreeState</code> message, as a list of
+  <code>prefixes</code> (<a href="{{ src('lib/src/protos/local_working_copy.proto', 45, 59) }}">source</a>;
+  see <a href="{{ url_for('jj', slug='protobufs') }}#wc-tree-state">protobufs</a>). A new workspace's
+  list comes from <code>jj workspace add --sparse-patterns</code>, which copies the current
+  workspace's by default.
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 400" role="img" aria-labelledby="ss-flow-title ss-flow-desc">
+    <title id="ss-flow-title">jj sparse set: call flow</title>
+    <desc id="ss-flow-desc">
+      cmd_sparse_set loads the workspace through the shared lifecycle, which snapshots it. The shared
+      update_sparse_patterns_with locks the working copy and reads the current patterns. The closure
+      starts from those patterns, or none with --clear, removes the --remove paths, adds the --add paths,
+      and sorts them. The locked working copy's set_sparse_patterns checks out files under the newly
+      added prefixes and deletes files under the removed ones. It finishes with the old operation ID, so
+      no operation is recorded, and prints the checkout stats.
+    </desc>
+    <defs>
+      <marker id="ss-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(mod, 68, 69) }}"><rect class="d-box" x="20" y="84" width="720" height="40" rx="6"></rect>
+      <text x="32" y="109">update_sparse_patterns_with: start_working_copy_mutation (lock); read the current patterns</text></a>
+
+      <a href="{{ src(cmd, 62, 74) }}"><rect class="d-box" x="20" y="148" width="720" height="50" rx="6"></rect>
+      <text x="32" y="169">new = (--clear ? {} : current − --remove) ∪ --add, sorted</text>
+      <text x="32" y="187" class="d-muted" font-size="11">a HashSet, so duplicates collapse</text></a>
+
+      <a href="{{ src(lwc, 2299, 2325) }}"><rect class="d-box" x="20" y="222" width="350" height="84" rx="6"></rect>
+      <text x="32" y="243">TreeState::set_sparse_patterns</text>
+      <text x="32" y="261" class="d-muted" font-size="11">added = new − old: check out from the tree</text>
+      <text x="32" y="278" class="d-muted" font-size="11">removed = old − new: delete from disk</text>
+      <text x="32" y="295" class="d-muted" font-size="11">store the new patterns</text></a>
+      <a href="{{ src(mod, 75, 77) }}"><rect class="d-box" x="410" y="222" width="330" height="84" rx="6"></rect>
+      <text x="422" y="243">finish(old operation ID)</text>
+      <text x="422" y="261" class="d-muted" font-size="11">save the tree state; no new operation</text>
+      <text x="422" y="278" class="d-muted" font-size="11">print "Added N files, modified 0 files,</text>
+      <text x="422" y="295" class="d-muted" font-size="11">removed M files"</text></a>
+
+      <a href="{{ url_for('jj', slug='working-copy') }}"><rect class="d-box" x="20" y="330" width="720" height="50" rx="6"></rect>
+      <text x="32" y="351">result: disk has exactly the files under the new prefixes</text>
+      <text x="32" y="369" class="d-muted" font-size="11">the working-copy commit still holds every file (working-copy page)</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#ss-arrow)">
+      <line x1="380" y1="60" x2="380" y2="80"></line>
+      <line x1="380" y1="124" x2="380" y2="144"></line>
+      <line x1="195" y1="198" x2="195" y2="218"></line>
+      <line x1="370" y1="264" x2="406" y2="264"></line>
+      <line x1="575" y1="306" x2="575" y2="326"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Sparse patterns (<code>TreeState</code>)</td><td>read, write</td><td>Replaced by the new list and saved with the working-copy state (<a href="{{ src(lwc, 3020, 3032) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+      <tr><td>File states (<code>TreeState</code>)</td><td>write</td><td>Entries are added for checked-out files and dropped for deleted ones.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+      <tr><td>Files on disk</td><td>write</td><td>Created under newly included prefixes, deleted under removed ones.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+      <tr><td>Working-copy commit's tree</td><td>read</td><td>The source of the checked-out files. It is never rewritten.</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>Operation log, <code>View</code></td><td>untouched</td><td>The working copy is saved with the operation ID it already had (<a href="{{ src(mod, 75, 76) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> none. Only the working-copy lock is taken (<a href="{{ src(mod, 68, 68) }}">source</a>).</li>
+  <li><strong>Operation:</strong> none. <code>finish</code> gets <code>old_operation_id()</code>, so the checkout state's operation ID doesn't change and only the tree state is rewritten (<a href="{{ src(mod, 75, 76) }}">source</a>, <a href="{{ src(lwc, 3035, 3061) }}">finish</a>).</li>
+  <li><strong>Before it:</strong> loading may record a <code>snapshot working copy</code> operation. That snapshot runs first, so edits to files about to be deleted are already in the commit.</li>
+  <li><strong><code>jj undo</code></strong> does not reverse it, since there is no operation to undo. Run <code>jj sparse set</code> again, or <code>jj sparse reset</code>.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="patterns">Computing the list</h3>
+
+<p>
+  The closure starts from an empty <code>HashSet</code>. Unless <code>--clear</code> is given, it copies
+  the current patterns in and then removes each <code>--remove</code> path. It then inserts each
+  <code>--add</code> path and returns the set sorted (<a href="{{ src(cmd, 62, 74) }}">source</a>). Removal
+  is by exact equality: <code>--remove lib/foo</code> doesn't narrow a <code>lib</code> pattern, and
+  <code>--remove lib</code> leaves <code>lib/foo</code> in place if both were listed. Adds win over removes
+  of the same path, since they are applied last.
+</p>
+
+<h3 id="update">Updating the files</h3>
+
+<p>
+  Each pattern is a path prefix: <code>lib</code> covers <code>lib</code> and everything under it, and
+  the root covers everything (<a href="{{ src(lwc, 1050, 1052) }}"><code>PrefixMatcher</code></a>).
+  <a href="{{ src(lwc, 2299, 2325) }}"><code>TreeState::set_sparse_patterns</code></a> builds two
+  difference matchers from the old and new patterns:
+</p>
+
+<ol>
+  <li><strong>Added</strong> (new minus old): update from the empty tree to the current tree under it, which writes those files.</li>
+  <li><strong>Removed</strong> (old minus new): update from the current tree to the empty tree under it, which deletes them.</li>
+  <li>Store the new patterns. Assertions check that nothing was "modified"; the stats report only additions, removals, and additions skipped because something already occupied the path on disk.</li>
+</ol>
+
+<p>
+  <strong>Invariants:</strong> the working-copy commit and every other commit are unchanged. After the
+  command, the files on disk match the current tree under the new prefixes. Files outside them, even
+  untracked ones, are not touched by the deletion step, which only removes tracked files. The
+  pattern list is kept sorted.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>clap: <code>invalid value '../file2' for '--add &lt;ADD&gt;': Invalid component ".." in repo-relative path "../file2"</code></td><td>A path with <code>..</code>, or <code>.</code> other than on its own.</td><td><a href="{{ src('core/src/repo_path.rs', 266, 283) }}">repo_path.rs</a>, <a href="{{ src(t, 67, 76) }}">test</a></td></tr>
+      <tr><td>clap: <code>--remove</code> cannot be used with <code>--clear</code></td><td>Both given.</td><td><a href="{{ src(cmd, 44, 44) }}">set.rs</a></td></tr>
+      <tr><td><code>Failed to update working copy paths</code> (internal error)</td><td>Writing or deleting files failed.</td><td><a href="{{ src(mod, 70, 74) }}">mod.rs</a></td></tr>
+      <tr><td><code>Warning: &lt;n&gt; of those updates were skipped because there were conflicting changes in the working copy.</code></td><td>A newly included file's path was already occupied on disk.</td><td><a href="{{ src(util, 3348, 3378) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>This command must be able to update the working copy.</code></td><td>Run with <code>--at-op</code>, <code>--ignore-working-copy</code> or <code>--no-integrate-operation</code>.</td><td><a href="{{ src(util, 1299, 1312) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Concurrent working copy operation. Try again.</code></td><td>The working copy changed between loading and locking.</td><td><a href="{{ src(util, 1518, 1529) }}">cli_util.rs</a></td></tr>
+      <tr><td>(no output)</td><td>No file was added or removed, for instance when no flags are given.</td><td><a href="{{ src(util, 3348, 3360) }}">cli_util.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 21, 196) }}">test_sparse_manage_patterns</a>. <code>@</code> has
+  <code>file1</code>, <code>file2</code> and <code>file3</code>, and the patterns start as
+  <code>.</code>. The commands run from a subdirectory, which makes no difference because paths are
+  workspace-relative:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 250" role="img" aria-labelledby="ss-ex-title ss-ex-desc">
+    <title id="ss-ex-title">jj sparse set: patterns and files on disk, step by step</title>
+    <desc id="ss-ex-desc">
+      Start: patterns are dot, and file1, file2 and file3 are on disk. After --remove dot: no patterns,
+      no files on disk, removed 3, but the commit still has all three. After --add file2 --add file3:
+      patterns file2 and file3, added 2. After --add file1 --remove file2 --remove file3: pattern file1,
+      added 1, removed 2. After --clear --add file2: pattern file2, added 1, removed 1.
+    </desc>
+    <defs>
+      <marker id="ss-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% macro step(x, href, cmdline, pats, disk, stat) -%}
+      <a href="{{ href }}">
+        <rect class="d-box" x="{{ x }}" y="40" width="136" height="170" rx="6"></rect>
+        <text x="{{ x + 10 }}" y="62" font-size="11">{{ cmdline }}</text>
+        <text x="{{ x + 10 }}" y="92" font-size="10.5" class="d-muted">patterns:</text>
+        <text x="{{ x + 10 }}" y="108" font-size="11">{{ pats }}</text>
+        <text x="{{ x + 10 }}" y="138" font-size="10.5" class="d-muted">on disk:</text>
+        <text x="{{ x + 10 }}" y="154" font-size="11">{{ disk }}</text>
+        <text x="{{ x + 10 }}" y="190" font-size="10.5" class="d-accent">{{ stat }}</text>
+      </a>
+    {%- endmacro %}
+    <text x="20" y="26" font-size="12" class="d-muted">the commit always holds file1, file2, file3</text>
+    {{ step(20, src(t, 33, 38), "(start)", ".", "file1 file2 file3", "") }}
+    {{ step(168, src(t, 40, 61), "--remove .", "(none)", "(nothing)", "removed 3") }}
+    {{ step(316, src(t, 78, 93), "--add file2 file3", "file2, file3", "file2 file3", "added 2") }}
+    {{ step(464, src(t, 95, 111), "+file1 −file2 −file3", "file1", "file1", "added 1, removed 2") }}
+    {{ step(612, src(t, 113, 127), "--clear --add file2", "file2", "file2", "added 1, removed 1") }}
+  </svg>
+</div>
+
+<p>Upstream's snapshot for the first step (<a href="{{ src(t, 40, 46) }}">source</a>):</p>
+
+<pre><code>$ jj sparse set --remove .
+Added 0 files, modified 0 files, removed 3 files</code></pre>
+
+<p>
+  <code>jj sparse list</code> then prints nothing, the three files are gone from disk, and
+  <code>jj file list</code> still prints all three: they are in the commit, just not checked out. In
+  the fourth step one call adds <code>file1</code> and removes the other two, and the stats count both
+  directions.
+</p>
