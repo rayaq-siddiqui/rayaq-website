@@ -20,6 +20,8 @@ backend/            Flask app (Python) — all server-side logic
                      hand-edit (see "Assembly" under Feature-specific notes)
   sync_showcase.py  Copies that digest out of an assembly-agents checkout
   static_assets.py  Appends ?v=<mtime> to static URLs so they can be cached for a year
+  rendered_pages.py Keeps each /jj* reference page's HTML after its first render; pages only
+                     change on a deploy, which restarts the process
   jj_docs.py        The /jj section: upstream pin, page registry, pinned source-link
                      helper, protobuf message list, and page rendering (see "jj" below)
   jj_dojo_docs.py   The /jj-dojo section: the same shape for the Jujutsu Dojo VS Code
@@ -40,6 +42,7 @@ backend/            Flask app (Python) — all server-side logic
     assembly_tests.py     Tests for assembly.py against a fabricated digest, plus one
                      test that the committed showcase.json actually renders
     sync_showcase_tests.py Tests the sync refuses anything the page cannot render
+    rendered_pages_tests.py Tests the page cache and that each /jj* page renders once
     jj_docs_tests.py Tests the jj registry, pin, pinned links, and every /jj page
     jj_dojo_docs_tests.py Same checks for /jj-dojo
     jj_vfs_docs_tests.py  Same checks for /jj-vfs-poc, plus jj-lib link pinning
