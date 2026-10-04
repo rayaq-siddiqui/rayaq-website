@@ -956,6 +956,25 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "bookmark-delete": {
+        "title": "How jj bookmark delete works",
+        "sources": [
+            "cli/src/commands/bookmark/delete.rs",
+            "cli/src/commands/bookmark/mod.rs",
+            "lib/src/repo.rs",
+        ],
+        "ready": True,
+    },
+    "bookmark-forget": {
+        "title": "How jj bookmark forget works",
+        "sources": [
+            "cli/src/commands/bookmark/forget.rs",
+            "cli/src/commands/bookmark/mod.rs",
+            "lib/src/repo.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
     "bookmark-advance": {
         "title": "How jj bookmark advance works",
         "sources": [

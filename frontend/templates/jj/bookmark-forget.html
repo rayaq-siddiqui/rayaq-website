@@ -1,0 +1,233 @@
+{% set cmd = "cli/src/commands/bookmark/forget.rs" %}
+{% set mod = "cli/src/commands/bookmark/mod.rs" %}
+{% set rs = "cli/src/revset_util.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set t = "cli/tests/test_bookmark_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj bookmark forget</code> works</h1>
+  <p class="tagline">
+    <code>jj bookmark forget</code> removes a bookmark locally without scheduling a deletion on any
+    remote. It deletes the local target and untracks the remote bookmarks, or with
+    <code>--include-remotes</code> removes jj's record of them altogether.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj matches the patterns against every bookmark name, local or remote. In one transaction, for
+  each match it sets the local target to absent. For each of its remote bookmarks it either forgets it
+  (<code>--include-remotes</code>) or marks it untracked, except the special <code>git</code> remote,
+  which is left alone. It prints how many local and remote bookmarks were forgotten and records
+  <code>forget bookmark &lt;names&gt;</code>.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 61, 114) }}"><code>cmd_bookmark_forget</code></a>. Compare
+  <a href="{{ url_for('jj', slug='bookmark-delete') }}"><code>jj bookmark delete</code></a>, which keeps
+  remote bookmarks tracked so the deletion gets pushed. The help text explains the untracking: it ensures
+  "the forgotten bookmark will not impact remotes on future pushes" (<a href="{{ src(cmd, 32, 36) }}">source</a>).
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>NAMES</code> (positional)</td><td>name patterns, required</td><td>—</td><td>Bookmarks to forget, matched against local and remote names; globs by default (<a href="{{ src(cmd, 49, 58) }}">source</a>).</td></tr>
+      <tr><td><code>--include-remotes</code></td><td>bool</td><td>false</td><td>Forget the matching remote bookmarks too, instead of untracking them. A later fetch recreates them if they still exist on the remote (<a href="{{ src(cmd, 39, 47) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 37, 59) }}"><code>BookmarkForgetArgs</code></a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<p>
+  None of its own. In a Git-backed repo, remote bookmarks under the reserved remote name <code>git</code>
+  (the colocated Git repo's own refs) can't be untracked, so they're skipped unless
+  <code>--include-remotes</code> is given (<a href="{{ src(cmd, 94, 97) }}">source</a>,
+  <a href="{{ src(util, 3438, 3447) }}"><code>default_ignored_remote_name</code></a>).
+  <code>remotes.&lt;name&gt;.auto-track-bookmarks</code> matters afterwards: a re-fetched bookmark may be
+  tracked again automatically.
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 380" role="img" aria-labelledby="bf-flow-title bf-flow-desc">
+    <title id="bf-flow-title">jj bookmark forget: call flow</title>
+    <desc id="bf-flow-desc">
+      cmd_bookmark_forget loads the workspace and finds forgettable bookmarks: all bookmark names, local
+      or remote, matching the patterns, warning about exact names that exist nowhere. With none it prints
+      No bookmarks to forget. Otherwise, in a transaction, each match has its local target set to absent;
+      each of its remote refs is forgotten with --include-remotes, skipped if it belongs to the git remote,
+      or untracked otherwise. It prints the counts and tx.finish records forget bookmark.
+    </desc>
+    <defs>
+      <marker id="bf-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 116, 129) }}"><rect class="d-box" x="20" y="84" width="720" height="40" rx="6"></rect>
+      <text x="32" y="109">find_forgettable_bookmarks: view.bookmarks() (local and remote) filtered by the patterns</text></a>
+
+      <a href="{{ src(cmd, 70, 73) }}"><rect class="d-box" x="20" y="148" width="230" height="56" rx="6"></rect>
+      <text x="135" y="172" text-anchor="middle">none →</text>
+      <text x="135" y="190" text-anchor="middle">"No bookmarks to forget."</text></a>
+      <a href="{{ src(cmd, 75, 83) }}"><rect class="d-box" x="270" y="148" width="470" height="56" rx="6"></rect>
+      <text x="282" y="170">for each match: set_local_bookmark_target(name, absent)</text>
+      <text x="282" y="190" class="d-muted" font-size="11">counted as local only if it had a local target</text></a>
+
+      <a href="{{ src(cmd, 88, 93) }}"><rect class="d-box" x="270" y="228" width="150" height="72" rx="6"></rect>
+      <text x="282" y="249">--include-remotes</text>
+      <text x="282" y="268" class="d-muted" font-size="11">set_remote_bookmark</text>
+      <text x="282" y="285" class="d-muted" font-size="11">(absent): forgotten</text></a>
+      <a href="{{ src(cmd, 94, 97) }}"><rect class="d-box" x="430" y="228" width="150" height="72" rx="6"></rect>
+      <text x="442" y="249">remote "git"</text>
+      <text x="442" y="268" class="d-muted" font-size="11">skipped; it can't</text>
+      <text x="442" y="285" class="d-muted" font-size="11">be untracked</text></a>
+      <a href="{{ src(cmd, 98, 98) }}"><rect class="d-box" x="590" y="228" width="150" height="72" rx="6"></rect>
+      <text x="602" y="249">otherwise</text>
+      <text x="602" y="268" class="d-muted" font-size="11">untrack_remote</text>
+      <text x="602" y="285" class="d-muted" font-size="11">_bookmark</text></a>
+
+      <a href="{{ src(cmd, 101, 112) }}"><rect class="d-box" x="20" y="324" width="720" height="40" rx="6"></rect>
+      <text x="32" y="349">"Forgot N local bookmarks." / "Forgot M remote bookmarks."; tx.finish(ui, "forget bookmark &lt;names&gt;")</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#bf-arrow)">
+      <line x1="380" y1="60" x2="380" y2="80"></line>
+      <line x1="135" y1="124" x2="135" y2="144"></line>
+      <line x1="505" y1="124" x2="505" y2="144"></line>
+      <line x1="345" y1="204" x2="345" y2="224"></line>
+      <line x1="505" y1="204" x2="505" y2="224"></line>
+      <line x1="665" y1="204" x2="665" y2="224"></line>
+      <line x1="505" y1="300" x2="505" y2="320"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td><code>View.local_bookmarks</code></td><td>write</td><td>Set to absent for every match (<a href="{{ src(repo, 1875, 1880) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Remote bookmarks (<code>RemoteRef</code>)</td><td>write</td><td>Either replaced by <code>RemoteRef::absent()</code>, or kept with <code>state</code> set to <code>New</code>, meaning untracked (<a href="{{ src(repo, 1899, 1901) }}"><code>set_remote_bookmark</code></a>, <a href="{{ src(repo, 1929, 1933) }}"><code>untrack_remote_bookmark</code></a>).</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td><code>View.git_refs</code></td><td>untouched</td><td>Upstream's test notes that keeping the Git-tracking record is why a forgotten bookmark isn't resurrected by <code>jj git export</code> then <code>import</code> (<a href="{{ src(t, 1415, 1431) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Commits</td><td>untouched</td><td>Nothing is abandoned.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td>One operation if anything matched.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, only when something matched (<a href="{{ src(cmd, 70, 75) }}">source</a>).</li>
+  <li><strong>Operation description:</strong> <code>forget bookmark &lt;name1, name2, …&gt;</code>, listing every matched name (<a href="{{ src(cmd, 107, 112) }}">source</a>).</li>
+  <li><strong>Commits:</strong> none created or rewritten.</li>
+  <li><strong><code>jj undo</code></strong> restores the bookmarks and their tracking state.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<p>
+  <a href="{{ src(cmd, 116, 129) }}"><code>find_forgettable_bookmarks</code></a> iterates
+  <code>view.bookmarks()</code>, which yields each bookmark name with its local target and all its
+  remote refs, and keeps names the pattern matcher accepts. So a bookmark that only exists remotely, or a
+  deleted one, still matches, unlike with <code>delete</code>. The unmatched-name warning counts a name
+  as present if it exists locally or on any remote (<a href="{{ src(mod, 205, 229) }}">source</a>).
+</p>
+
+<p>For each match (<a href="{{ src(cmd, 78, 100) }}">source</a>):</p>
+
+<ol>
+  <li>The local target is set to absent; it counts toward "local bookmarks" only if it was present.</li>
+  <li>With <code>--include-remotes</code>, every remote ref, including <code>git</code>'s, is set to absent and counted.</li>
+  <li>Otherwise refs on the <code>git</code> remote are skipped, and the rest are untracked: their target stays, but their state becomes <code>New</code>, so <code>jj git push</code> no longer pairs them with a local bookmark.</li>
+</ol>
+
+<p>
+  <strong>Invariants:</strong> forgetting never schedules a push. Without <code>--include-remotes</code>,
+  remote targets are kept, so <code>jj git fetch</code> reports nothing new. With it, a fetch re-creates
+  them as new remote bookmarks.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>No bookmarks to forget.</code></td><td>No name matched anywhere.</td><td><a href="{{ src(cmd, 70, 73) }}">forget.rs</a></td></tr>
+      <tr><td><code>Forgot N local bookmarks.</code> / <code>Forgot M remote bookmarks.</code></td><td>Status lines, each only when its count is non-zero.</td><td><a href="{{ src(cmd, 101, 106) }}">forget.rs</a></td></tr>
+      <tr><td><code>Warning: No matching bookmarks for names: …</code></td><td>An exact name exists neither locally nor on any remote.</td><td><a href="{{ src(mod, 205, 229) }}">mod.rs</a></td></tr>
+      <tr><td><code>Failed to parse name pattern: …</code>, hint listing pattern kinds</td><td>A pattern doesn't parse.</td><td><a href="{{ src(rs, 374, 380) }}">revset_util.rs</a></td></tr>
+      <tr><td>clap: missing <code>&lt;NAMES&gt;</code></td><td>No names given.</td><td><a href="{{ src(cmd, 56, 56) }}">forget.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 1370, 1514) }}">test_bookmark_forget_fetched_bookmark</a>, with
+  <code>remotes.origin.auto-track-bookmarks = '*'</code>. <code>feature1</code> is fetched from
+  <code>origin</code> and tracked. The test forgets it both ways:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 230" role="img" aria-labelledby="bf-ex-title bf-ex-desc">
+    <title id="bf-ex-title">jj bookmark forget, with and without --include-remotes</title>
+    <desc id="bf-ex-desc">
+      Start: feature1 local and feature1@origin tracked. With --include-remotes: both are gone; the next
+      fetch reports feature1@origin as new and tracked, recreating both. Without the flag: the local
+      bookmark is gone and feature1@origin remains, untracked; the next fetch reports Nothing changed.
+    </desc>
+    <defs>
+      <marker id="bf-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <a href="{{ src(t, 1398, 1406) }}">
+      <rect class="d-box" x="20" y="70" width="200" height="90" rx="6"></rect>
+      <text x="32" y="92" font-size="12">after fetch</text>
+      <text x="32" y="116" font-size="11">feature1</text>
+      <text x="32" y="136" font-size="11">  @origin (tracked)</text>
+    </a>
+    <a href="{{ src(t, 1408, 1439) }}">
+      <rect class="d-box" x="280" y="20" width="460" height="80" rx="6"></rect>
+      <text x="292" y="42" font-size="12">forget --include-remotes feature1</text>
+      <text x="292" y="64" font-size="11" class="d-muted">both forgotten; bookmark list is empty</text>
+      <text x="292" y="84" font-size="11" class="d-accent">next fetch: "bookmark: feature1@origin [new] tracked"</text>
+    </a>
+    <a href="{{ src(t, 1495, 1514) }}">
+      <rect class="d-box" x="280" y="130" width="460" height="80" rx="6"></rect>
+      <text x="292" y="152" font-size="12">forget feature1</text>
+      <text x="292" y="174" font-size="11" class="d-muted">local gone; feature1@origin kept, untracked</text>
+      <text x="292" y="194" font-size="11" class="d-accent">next fetch: "Nothing changed."</text>
+    </a>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#bf-ex-arrow)">
+      <line x1="224" y1="100" x2="276" y2="64"></line>
+      <line x1="224" y1="130" x2="276" y2="166"></line>
+    </g>
+  </svg>
+</div>
+
+<p>When the bookmark had moved on the remote before being forgotten with <code>--include-remotes</code>, upstream shows (<a href="{{ src(t, 1474, 1488) }}">source</a>):</p>
+
+<pre><code>Forgot 1 local bookmarks.
+Forgot 1 remote bookmarks.
+$ jj git fetch --remote=origin
+bookmark: feature1@origin [new] tracked</code></pre>
+
+<p>
+  As the test's comment puts it, "Fetching a moved bookmark does not create a conflict": the bookmark simply
+  comes back at its new position.
+</p>
