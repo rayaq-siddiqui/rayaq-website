@@ -1,0 +1,361 @@
+{% set ix = "lib/src/index.rs" %}
+{% set ro = "lib/src/default_index/readonly.rs" %}
+{% set mu = "lib/src/default_index/mutable.rs" %}
+{% set co = "lib/src/default_index/composite.rs" %}
+{% set en = "lib/src/default_index/entry.rs" %}
+{% set st = "lib/src/default_index/store.rs" %}
+{% set cp = "lib/src/default_index/changed_path.rs" %}
+{% set bs = "lib/src/default_index/bit_set.rs" %}
+{% set ip = "lib/src/id_prefix.rs" %}
+<header class="jj-header">
+  <h1>The commit index</h1>
+  <p class="tagline">
+    The backend can fetch a commit by ID and nothing else. Every question that needs the graph,
+    such as "is A an ancestor of B", "which commits have this change ID", or "how short can this ID
+    be", goes to the index: a stack of binary files that number every commit jj has seen and keep
+    its parents, generation number, and IDs in sorted tables.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: each commit gets a position, and a commit's parents always have lower positions. The
+  positions are split over a stack of segment files, each roughly twice the size of the one stacked
+  on it. A transaction adds commits to an in-memory segment on top and writes it out when the
+  transaction commits, merging small segments into their parents so the stack stays
+  <em>O(log n)</em> deep. A file in <code>op_links/</code> records which segment is the index as of
+  each operation. The change-ID index and short ID prefixes are lookups in the same sorted
+  tables, with visibility computed from the view's heads.
+</p>
+
+<h2 id="traits">1. The traits</h2>
+<p>
+  The repo only talks to the index through four traits in <code>index.rs</code>. The one
+  implementation in jj is the default index under <code>lib/src/default_index/</code>.
+  <a href="{{ src(ix, 66, 89) }}"><code>IndexStore</code></a> is the factory: it loads the index
+  as of an operation, and writes a mutable index back and links it to the operation that a
+  transaction just created.
+</p>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Trait</th><th>Methods</th><th>Default implementation</th></tr></thead>
+  <tbody>
+    <tr><td><a href="{{ src(ix, 98, 172) }}"><code>Index</code></a></td><td><code>shortest_unique_commit_id_prefix_len</code>, <code>resolve_commit_id_prefix</code>, <code>has_id</code>, <code>is_ancestor</code>, <code>common_ancestors</code>, <code>all_heads_for_gc</code>, <code>heads</code>, <code>changed_paths_in_commit</code>, <code>evaluate_revset</code></td><td><a href="{{ src(co, 570, 574) }}"><code>CompositeIndex</code></a>, shared by both types below</td></tr>
+    <tr><td><a href="{{ src(ix, 174, 184) }}"><code>ReadonlyIndex</code></a></td><td><code>as_index</code>, <code>change_id_index(heads)</code>, <code>start_modification</code></td><td><a href="{{ src(ro, 612, 614) }}"><code>DefaultReadonlyIndex</code></a></td></tr>
+    <tr><td><a href="{{ src(ix, 193, 206) }}"><code>MutableIndex</code></a></td><td><code>as_index</code>, <code>change_id_index(heads)</code>, <code>add_commit</code>, <code>merge_in</code></td><td><a href="{{ src(mu, 455) }}"><code>DefaultMutableIndex</code></a></td></tr>
+    <tr><td><a href="{{ src(ix, 293, 318) }}"><code>ChangeIdIndex</code></a></td><td><code>resolve_prefix</code>, <code>shortest_unique_prefix_len</code></td><td><a href="{{ src(co, 720, 723) }}"><code>ChangeIdIndexImpl</code></a> (§7)</td></tr>
+  </tbody>
+</table></div>
+<p>
+  A <a href="{{ url_for('jj', slug='view') }}">view</a> is not an index input: the index
+  holds every commit any operation has referenced, visible or not. Visibility is applied later,
+  by passing the view's heads to <code>change_id_index</code> or by evaluating a revset against
+  them.
+</p>
+<p class="jj-source">
+  <a href="{{ src('lib/src/repo.rs', 332, 339) }}"><code>ReadonlyRepo::change_id_index</code></a> ·
+  <a href="{{ src('lib/src/repo.rs', 1051, 1060) }}"><code>MutableRepo::new</code></a> calls <code>start_modification</code> ·
+  <a href="{{ src('lib/src/transaction.rs', 170) }}"><code>Transaction::write</code></a> calls <code>write_index</code>
+</p>
+
+<h2 id="positions">2. Positions and the segment stack</h2>
+<p>
+  A <a href="{{ src(en, 28, 35) }}"><code>GlobalCommitPosition</code></a> is a <code>u32</code>
+  numbering every indexed commit. Commits are added parents first
+  (<a href="{{ src(mu, 129, 164) }}"><code>add_commit_data</code></a> looks each parent up and
+  panics if one is missing), so a parent's position is always lower than its child's. A commit's
+  generation number is one more than the largest of its parents', and 0 for a root. Graph walks
+  rely on both facts to stop early.
+</p>
+<p>
+  The positions are split across segments. Each segment knows its parent segment and how many
+  commits sit below it, so a local position plus that count gives the global one.
+  <a href="{{ src(co, 146, 154) }}"><code>CompositeCommitIndex</code></a> is the stack as a whole.
+  To find an entry by position,
+  <a href="{{ src(co, 184, 192) }}"><code>entry_by_pos</code></a> walks down from the newest segment
+  to the first one whose range contains it. A lookup by ID asks each segment in turn
+  (<a href="{{ src(co, 194, 205) }}"><code>entry_by_id</code></a>).
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 290" role="img" aria-labelledby="ci-stack-title ci-stack-desc">
+    <title id="ci-stack-title">A commit index as a stack of segments</title>
+    <desc id="ci-stack-desc">
+      Three readonly segment files sit side by side, oldest and largest first: one holding positions
+      0 to 3,999, one holding 4,000 to 5,999, and one holding 6,000 to 6,999. Each newer file names
+      the older one as its parent. A mutable segment held in memory during a transaction sits on top,
+      starting at position 7,000. Below, the op_links file for an operation holds a SegmentControl
+      that names the newest readonly segment, which is the index as of that operation. The numbers
+      are illustrative.
+    </desc>
+    <a href="{{ src(ro, 208, 268) }}">
+      <rect x="20" y="40" width="300" height="76" rx="8" class="d-box"></rect>
+      <text x="170" y="68" text-anchor="middle" font-size="14">segments/&lt;hash A&gt;</text>
+      <text x="170" y="88" text-anchor="middle" font-size="11" class="d-muted">positions 0 – 3,999</text>
+      <text x="170" y="104" text-anchor="middle" font-size="10" class="d-muted">parent: none (root)</text>
+    </a>
+    <a href="{{ src(ro, 208, 268) }}">
+      <rect x="340" y="40" width="160" height="76" rx="8" class="d-box"></rect>
+      <text x="420" y="68" text-anchor="middle" font-size="14">&lt;hash B&gt;</text>
+      <text x="420" y="88" text-anchor="middle" font-size="11" class="d-muted">4,000 – 5,999</text>
+      <text x="420" y="104" text-anchor="middle" font-size="10" class="d-muted">parent: A</text>
+    </a>
+    <a href="{{ src(ro, 208, 268) }}">
+      <rect x="520" y="40" width="100" height="76" rx="8" class="d-box"></rect>
+      <text x="570" y="68" text-anchor="middle" font-size="14">&lt;hash C&gt;</text>
+      <text x="570" y="88" text-anchor="middle" font-size="11" class="d-muted">6,000 – 6,999</text>
+      <text x="570" y="104" text-anchor="middle" font-size="10" class="d-muted">parent: B</text>
+    </a>
+    <a href="{{ src(mu, 82, 90) }}">
+      <rect x="640" y="40" width="100" height="76" rx="8" class="d-box" style="stroke: var(--jj-accent); stroke-dasharray: 5 4"></rect>
+      <text x="690" y="68" text-anchor="middle" font-size="14">mutable</text>
+      <text x="690" y="88" text-anchor="middle" font-size="11" class="d-muted">7,000 –</text>
+      <text x="690" y="104" text-anchor="middle" font-size="10" class="d-muted">in memory</text>
+    </a>
+    <a href="{{ src(co, 146, 154) }}">
+      <text x="380" y="24" text-anchor="middle" font-size="12" class="d-accent">CompositeCommitIndex: each segment about twice the size of the next newer one</text>
+    </a>
+    <path d="M330,78 H340 M510,78 H520 M630,78 H640" class="d-line" fill="none"></path>
+    <path d="M570,202 V120" class="d-line" fill="none" marker-end="url(#ci-arrow)"></path>
+    <defs>
+      <marker id="ci-arrow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-accent"></path>
+      </marker>
+    </defs>
+    <a href="{{ src(st, 485, 512) }}">
+      <rect x="430" y="204" width="310" height="66" rx="8" class="d-box"></rect>
+      <text x="446" y="226" font-size="14">op_links/&lt;op hex&gt;</text>
+      <text x="446" y="244" font-size="11" class="d-muted">SegmentControl.commit_segment_id = &lt;hash C&gt;</text>
+      <text x="446" y="260" font-size="10" class="d-muted">plus the changed-path segment IDs (§8)</text>
+    </a>
+    <a href="{{ src(mu, 315, 347) }}">
+      <rect x="20" y="204" width="390" height="66" rx="8" class="d-box"></rect>
+      <text x="36" y="226" font-size="14">On write: squash, hash, save</text>
+      <text x="36" y="244" font-size="11" class="d-muted">merge into parents while new ≥ half the parent's size</text>
+      <text x="36" y="260" font-size="10" class="d-muted">then name the file by its BLAKE2b-512 hash (§4)</text>
+    </a>
+  </svg>
+</div>
+
+<p>
+  The composite stack has <code>O(log n)</code> segments, so each lookup checks a handful of
+  files. The stack only grows at the top, so older segments are never rewritten and can be shared
+  by the index of every later operation.
+</p>
+
+<h2 id="format">3. The segment file format</h2>
+<p>
+  A <a href="{{ src(ro, 208, 268) }}"><code>ReadonlyCommitIndexSegment</code></a> is one file in
+  <code>.jj/repo/index/segments/</code> (layout in
+  <a href="{{ url_for('jj', slug='storage') }}#index">On-disk layout §7</a>), read whole into
+  memory. It holds only the commits it adds. Every integer is a little-endian <code>u32</code>,
+  and the version is
+  <a href="{{ src(ro, 130, 131) }}"><code>COMMIT_INDEX_SEGMENT_FILE_FORMAT_VERSION</code></a>
+  = 6.
+</p>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Section</th><th>Contents</th></tr></thead>
+  <tbody>
+    <tr><td>Header</td><td>Format version; length of the parent segment's file name, 0 for a root segment; that file name.</td></tr>
+    <tr><td>Counts</td><td>Local commits, local change IDs, overflow parent entries, overflow change ID positions.</td></tr>
+    <tr><td>Graph entries</td><td>One per commit, parents first: generation number, two parent fields, the position of its change ID in the change ID table, then the commit ID. Each entry is 16 bytes plus the commit ID length (<a href="{{ src(ro, 171, 206) }}"><code>CommitGraphEntry</code></a>).</td></tr>
+    <tr><td>Parent fields</td><td>With up to two parents, each field is a global position, or <code>0xffff_ffff</code> for none. With more, the fields hold the bit-negated position and count in the overflow parent table; the top bit (<a href="{{ src(ro, 133, 148) }}"><code>OVERFLOW_FLAG</code></a>) tells the two apart.</td></tr>
+    <tr><td>Commit lookup</td><td>Local positions, sorted by commit ID, for binary search.</td></tr>
+    <tr><td>Change IDs</td><td>Each distinct change ID once, sorted.</td></tr>
+    <tr><td>Change positions</td><td>Per change ID: the commit's local position if only one commit has it, else a bit-negated index into the overflow change table.</td></tr>
+    <tr><td>Overflow tables</td><td>Global parent positions for merges with more than two parents; local positions for change IDs shared by several commits.</td></tr>
+  </tbody>
+</table></div>
+<p>
+  <a href="{{ src(ro, 291, 331) }}"><code>load_from</code></a> checks the version, reads the parent
+  file name, and loads the parent recursively before the segment itself. A version mismatch
+  becomes <a href="{{ src(ro, 65, 85) }}"><code>ReadonlyIndexLoadError::UnexpectedVersion</code></a>,
+  which the store treats as "rebuild" (§5). The upstream comments list two possible
+  improvements, a trie for the repeated commit IDs and a Git-style fanout table, as TODOs.
+</p>
+
+<h2 id="writing">4. The mutable segment, squashing, and saving</h2>
+<p>
+  <a href="{{ src(mu, 82, 90) }}"><code>MutableCommitIndexSegment</code></a> keeps the same data in
+  memory: a vector of graph entries, a <code>BTreeMap</code> from commit ID to local position, and
+  one from change ID to positions. <code>start_modification</code> stacks an empty one on the
+  loaded index (<a href="{{ src(mu, 469, 479) }}"><code>DefaultMutableIndex::incremental</code></a>).
+  <a href="{{ src(mu, 499, 514) }}"><code>add_commit</code></a> skips a commit that is already
+  indexed. <a href="{{ src(mu, 175, 198) }}"><code>merge_in</code></a> adds the commits of another
+  index down to the segment the two share, which is how a merged operation's index is built.
+</p>
+<p>When the transaction commits, <a href="{{ src(st, 458, 483) }}"><code>save_mutable_index</code></a> runs:</p>
+<ol>
+  <li>
+    <a href="{{ src(mu, 315, 347) }}"><code>maybe_squash_with_ancestors</code></a> walks down the
+    stack. While the new commits are at least half as many as the next segment's, it absorbs that
+    segment and adds its commits to the count. The absorbed segments and the new commits become
+    one new mutable segment on top of the first segment it stopped at. This is what keeps each
+    segment about twice the size of the one above.
+  </li>
+  <li>
+    <a href="{{ src(mu, 349, 379) }}"><code>save_in</code></a> serializes it, names the file by
+    the hex BLAKE2b-512 hash of its bytes, and moves a temp file into place. Identical content
+    gives an identical name, so a racing process writing the same segment is harmless. An empty
+    segment is not written: the parent segment is reused as is.
+  </li>
+  <li>
+    The changed-path index is squashed and saved the same way (§8), then
+    <a href="{{ src(st, 485, 512) }}"><code>associate_index_with_operation</code></a> writes the
+    operation's <code>op_links</code> file.
+  </li>
+</ol>
+
+<h2 id="operations">5. From an operation to its index</h2>
+<p>
+  Each <a href="{{ url_for('jj', slug='operations') }}">operation</a> that has been indexed
+  has a file <code>op_links/&lt;op hex&gt;</code> holding a protobuf
+  <a href="{{ src('lib/src/protos/default_index.proto', 20, 28) }}"><code>SegmentControl</code></a>:
+  the commit segment's ID, and, if the changed-path index is on, the position its first commit
+  sits at and its segment IDs. Several operations can name the same segment, for example when an
+  operation added no commits.
+</p>
+<p>
+  <a href="{{ src(st, 521, 562) }}"><code>get_index_at_op</code></a> reads that file and loads the
+  segments (<a href="{{ src(st, 180, 224) }}"><code>load_index_at_operation</code></a>). It falls
+  back to building the index in two cases:
+</p>
+<ul>
+  <li>
+    <strong>No link file.</strong> This happens with an operation written by another process
+    or by an older jj, or after <code>jj debug reindex</code>.
+    <a href="{{ src(st, 226, 347) }}"><code>build_index_at_operation</code></a> walks back to
+    the nearest ancestor operation that has a link and loads its index. It then collects every
+    commit ID referenced by the operations in between and their views, orders them parents first
+    (ties broken by committer timestamp), adds each one, and saves the result as above.
+  </li>
+  <li>
+    <strong>Corrupt or old-format segment.</strong> It prints
+    "Reindexing...", clears the whole index directory with
+    <a href="{{ src(st, 127, 152) }}"><code>reinit</code></a>, and builds from scratch.
+  </li>
+</ul>
+<p>
+  The index is therefore a cache. Deleting <code>.jj/repo/index/</code> loses nothing but time.
+  <a href="{{ src(ix, 148) }}"><code>all_heads_for_gc</code></a> reports every head ever indexed,
+  hidden or not, which garbage collection uses to keep commits reachable from older operations.
+</p>
+
+<h2 id="graph-queries">6. Graph queries</h2>
+<p>
+  Positions make the common queries cheap, because a walk toward the roots can stop at the first
+  position or generation number that rules a commit out.
+</p>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Query</th><th>How</th></tr></thead>
+  <tbody>
+    <tr><td><a href="{{ src(co, 364, 388) }}"><code>is_ancestor_pos</code></a></td><td>Depth-first from the descendant. It skips any position below the ancestor's and any entry whose generation is not above the ancestor's. A bit set marks visited positions.</td></tr>
+    <tr><td><a href="{{ src(co, 410, 441) }}"><code>common_ancestors_pos</code></a></td><td>Two max-heaps of positions, one per side. It always advances the larger top to its parents, collects positions both sides reach, then keeps only the heads of that set.</td></tr>
+    <tr><td><a href="{{ src(co, 480, 523) }}"><code>heads_pos</code></a></td><td>Removes every candidate that is an ancestor of another, walking parents in descending position order.</td></tr>
+    <tr><td><a href="{{ src(co, 710, 717) }}"><code>evaluate_revset</code></a></td><td>Hands the resolved expression to the default revset engine, which evaluates set operations over these positions.</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="change-ids">7. Change IDs and visibility</h2>
+<p>
+  The change-ID tables in each segment answer "which commits have this change ID", but some of
+  those commits are hidden: rewritten, abandoned, or only reachable from an old operation.
+  <a href="{{ src(co, 294, 327) }}"><code>resolve_change_id_prefix</code></a> asks each segment in
+  turn. It merges matches of the same ID across segments, and stops as soon as two different IDs
+  match. The result is every position with that ID, newest first.
+</p>
+<p>
+  To tell visible from hidden, <code>change_id_index(heads)</code> builds a
+  <a href="{{ src(co, 725, 740) }}"><code>ChangeIdIndexImpl</code></a> with an
+  <a href="{{ src(bs, 125, 137) }}"><code>AncestorsBitSet</code></a> seeded with the view's heads.
+  The bit set is filled lazily: <a href="{{ src(bs, 168, 199) }}"><code>visit_until</code></a>
+  walks down from the heads only as far as the lowest position being asked about, so a
+  lookup of a recent change touches only the top of the graph.
+  <a href="{{ src(co, 329, 352) }}"><code>resolve_change_targets_for_positions</code></a> tags each
+  commit <code>Visible</code> or <code>Hidden</code>, giving a
+  <a href="{{ src(ix, 229, 240) }}"><code>ResolvedChangeTargets</code></a>. Its helpers report
+  whether any target is visible and whether the change is divergent (more than one visible target),
+  and pick a target by the offset in <code>xyz/1</code> syntax
+  (<a href="{{ src(ix, 242, 291) }}">methods</a>).
+</p>
+<p>
+  The trait's comments spell out the consequence
+  (<a href="{{ src(co, 743, 772) }}"><code>impl ChangeIdIndex</code></a>): the prefix search runs
+  over all change IDs, hidden ones included. A prefix can therefore be ambiguous even when only
+  one matching change is visible, and the shortest unique prefix is "usually a few digits longer"
+  than the visible commits alone would need. §9 covers how the CLI narrows that.
+</p>
+
+<h2 id="changed-paths">8. The changed-path index</h2>
+<p>
+  <code>files()</code> and <code>diff_lines()</code> in a revset normally diff each candidate
+  commit against its parents. The changed-path index stores the result instead: for each commit,
+  the sorted list of paths it changed. The revset engine
+  <a href="{{ src('lib/src/default_index/revset_engine.rs', 1361, 1371) }}">checks it first</a>
+  and diffs only commits outside its range.
+</p>
+<p>
+  It is off by default. A new index starts with
+  <a href="{{ src(cp, 381, 390) }}"><code>CompositeChangedPathIndex::null()</code></a>
+  (<a href="{{ src(mu, 458, 467) }}"><code>DefaultMutableIndex::full</code></a>), which stores
+  nothing. <code>jj debug index-changed-paths</code> turns it on by running
+  <a href="{{ src(st, 349, 456) }}"><code>build_changed_path_index_at_operation</code></a>, which
+  indexes up to <code>--limit</code> commits ending at the newest. From then on it covers one
+  contiguous range of positions: <code>add_commit</code> appends a commit's paths only when the
+  commit lands at the index's next position, so new commits keep being indexed. Paths come from
+  <a href="{{ src(cp, 564, 592) }}"><code>collect_changed_paths</code></a>, which diffs against the
+  merged parent tree and returns nothing for a single-parent commit with the same tree.
+</p>
+<p>
+  The <a href="{{ src(cp, 66, 117) }}">segment format</a> (version 0) has the counts, then
+  per commit its start in the changed-path table, that table (each commit's paths as path
+  numbers, sorted by path), and finally the segment's own sorted table of path bytes. Unlike commit segments, a changed-path segment does not name its parent. Their order
+  lives only in <code>SegmentControl</code>, so segments can be added below without rewriting the
+  ones above. The squash rule is the same as for commit segments
+  (<a href="{{ src(cp, 520, 548) }}"><code>maybe_squash_with_ancestors</code></a>).
+</p>
+
+<h2 id="prefixes">9. Short ID prefixes</h2>
+<p>
+  At the index level, the shortest unique prefix of an ID is one hex digit longer than its longest
+  common prefix with either neighbour in sorted order, computed in each segment, with the largest
+  value kept (<a href="{{ src(co, 235, 247) }}"><code>shortest_unique_commit_id_prefix_len</code></a>).
+  Resolving a prefix asks each segment and stops early once the result is ambiguous
+  (<a href="{{ src(co, 223, 233) }}"><code>resolve_commit_id_prefix</code></a>; the binary search
+  is in <a href="{{ src(ro, 470, 486) }}"><code>readonly.rs</code></a>).
+</p>
+<p>
+  Unique among <em>every</em> commit jj has indexed is longer than a user needs. So the CLI
+  disambiguates within a smaller set first.
+  <a href="{{ src(ip, 114, 147) }}"><code>IdPrefixContext</code></a> holds a revset, which is
+  <code>revsets.short-prefixes</code>, or <code>revsets.log</code> when that is unset
+  (<a href="{{ src('cli/src/cli_util.rs', 1120, 1142) }}"><code>load_short_prefixes_expression</code></a>).
+  On first use, <a href="{{ src(ip, 62, 90) }}"><code>DisambiguationData::indexes</code></a>
+  evaluates it and builds two in-memory
+  <a href="{{ src(ip, 301, 321) }}"><code>IdIndex</code></a>es over the commit and change IDs it
+  yields. Each IdIndex is a sorted vector of the first 4 bytes of each key plus a pointer.
+</p>
+<p>The resulting <a href="{{ src(ip, 149, 152) }}"><code>IdPrefixIndex</code></a> answers in this order:</p>
+<ol>
+  <li>
+    <strong>Within the set.</strong> A single match there wins
+    (<a href="{{ src(ip, 160, 189) }}"><code>resolve_commit_prefix</code></a>,
+    <a href="{{ src(ip, 223, 251) }}"><code>resolve_change_prefix</code></a>), but only if the
+    commit exists in this repo, or the change ID still resolves to a visible commit. An ambiguous
+    match there is final.
+  </li>
+  <li>
+    <strong>The whole repo.</strong> With no match in the set, it falls back to the repo's index
+    and change-ID index.
+  </li>
+  <li>
+    <strong>Bookmarks and tags.</strong> The length shown is then lengthened, if needed, until
+    the prefix is not the name of a local bookmark or tag, since those take priority when a symbol
+    is resolved (<a href="{{ src(ip, 286, 299) }}"><code>disambiguate_prefix_with_refs</code></a>).
+  </li>
+</ol>
+<p>
+  This is why the highlighted prefixes in <code>jj log</code> are often one or two characters long
+  even in a large repo, and why a prefix that works in the log can fail to resolve once the commit
+  falls outside <code>revsets.short-prefixes</code>. A fresh context is created per repo view
+  (<a href="{{ src('cli/src/cli_util.rs', 1072, 1080) }}"><code>new_id_prefix_context</code></a>), so
+  prefixes never come from a stale set.
+</p>

@@ -34,7 +34,14 @@ def test_every_page_has_a_unique_slug_summary_and_sources():
 
 def test_every_ready_page_has_a_template():
     for page in jj_docs.ready_pages():
-        assert os.path.isfile(os.path.join(TEMPLATES_DIR, f"{page['slug']}.html")), page["slug"]
+        name = jj_docs.page_template(page).removeprefix("jj/")
+        assert os.path.isfile(os.path.join(TEMPLATES_DIR, name)), page["slug"]
+
+
+def test_a_page_can_name_its_own_template():
+    assert jj_docs.page_template({"slug": "rebase"}) == "jj/rebase.html"
+    index = next(page for page in jj_docs.PAGES if page["slug"] == "index")
+    assert jj_docs.page_template(index) == "jj/commit-index.html"
 
 
 def test_source_url_is_pinned():

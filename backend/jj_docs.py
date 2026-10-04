@@ -154,7 +154,8 @@ TOPICS = [
         "kind": "topic",
         "summary": "Index segments, the change-ID index, the changed-path index, and short ID prefixes.",
         "sources": ["lib/src/index.rs", "lib/src/default_index/", "lib/src/id_prefix.rs"],
-        "ready": False,
+        "template": "jj/commit-index.html",
+        "ready": True,
     },
     {
         "slug": "revsets",
@@ -1742,6 +1743,10 @@ def ready_pages():
     return [page for page in PAGES if page["ready"]]
 
 
+def page_template(page):
+    return page.get("template", f"jj/{page['slug']}.html")
+
+
 def find_page(slug):
     return next((page for page in ready_pages() if page["slug"] == slug), None)
 
@@ -1772,7 +1777,7 @@ def render(slug, render_template):
         page = find_page(slug)
         if page is None:
             return None
-        template = f"jj/{slug}.html"
+        template = page_template(page)
 
     previous, following = _neighbours(slug)
     context = {
