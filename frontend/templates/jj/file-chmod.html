@@ -1,0 +1,258 @@
+{% set cmd = "cli/src/commands/file/chmod.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set t = "cli/tests/test_file_chmod_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj file chmod</code> works</h1>
+  <p class="tagline">
+    <code>jj file chmod</code> sets or clears the executable bit that jj records for files in a commit.
+    It changes the stored bit directly, so it works on any mutable revision, on Windows, and on
+    conflicted files.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj resolves <code>-r</code> (default <code>@</code>) and refuses it if immutable. For every
+  file entry matching the paths, it sets <code>executable</code> on every term of the value: the one
+  file of a resolved path, or every side and base of a conflict. Symlinks, directories and submodules
+  are rejected. It rewrites the commit with the new tree, <code>tx.finish</code> rebases descendants,
+  and the operation is <code>make paths executable in commit &lt;id&gt;</code> or
+  <code>make paths non-executable …</code>.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 60, 138) }}"><code>cmd_file_chmod</code></a>. Its help text
+  contrasts it with POSIX <code>chmod</code>: this one works on Windows, on conflicts, and on any
+  revision (<a href="{{ src(cmd, 41, 44) }}">source</a>). On disk, the bit only matters once the commit
+  is checked out; see <a href="#configuration">configuration</a>.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Argument</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>MODE</code> (positional)</td><td><code>x</code> | <code>n</code></td><td>required</td><td><code>x</code> (alias <code>executable</code>) sets the bit; <code>n</code> (alias <code>normal</code>) clears it. The short names keep clap's error listing short (<a href="{{ src(cmd, 29, 39) }}">source</a>).</td></tr>
+      <tr><td><code>FILESETS</code> (positional)</td><td>filesets</td><td>required</td><td>The paths to change. At least one is needed (<a href="{{ src(cmd, 54, 57) }}">source</a>).</td></tr>
+      <tr><td><code>-r</code>, <code>--revision REVSET</code></td><td>revset</td><td><code>@</code></td><td>The commit to change. It must be exactly one commit (<a href="{{ src(cmd, 49, 52) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 45, 58) }}"><code>FileChmodArgs</code></a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<p>
+  The command itself reads no keys besides <code>revset-aliases."immutable_heads()"</code>, which
+  decides whether the commit may be rewritten. <code>working-copy.exec-bit-change</code>
+  (<code>respect</code>, <code>ignore</code> or <code>auto</code>, the default) decides what happens on
+  disk. With <code>ignore</code>, jj neither reads nor sets the executable permission in the working
+  copy, so <code>jj file chmod</code> is the way to change the recorded bit. Windows always behaves
+  that way (<a href="{{ src('docs/config.md', 2282, 2305) }}">docs</a>). Upstream's tests for these
+  settings are <a href="{{ src(t, 304, 411) }}">test_chmod_exec_bit_settings</a> and the two that follow.
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 360" role="img" aria-labelledby="fc-flow-title fc-flow-desc">
+    <title id="fc-flow-title">jj file chmod: call flow</title>
+    <desc id="fc-flow-desc">
+      cmd_file_chmod maps the mode to a boolean, loads the workspace through the shared lifecycle,
+      resolves -r (default @), checks it is rewritable, parses the paths and warns about unmatched ones,
+      then starts a transaction. For each matching file entry in the commit's tree it rejects values
+      whose sides are not all files, sets the executable flag on every term, and puts the value in a tree
+      builder. It writes the new tree, rewrites the commit with it, and tx.finish records "make paths
+      executable" or "non-executable" in commit, rebasing descendants.
+    </desc>
+    <defs>
+      <marker id="fc-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 66, 83) }}"><rect class="d-box" x="20" y="84" width="720" height="50" rx="6"></rect>
+      <text x="32" y="105">mode → bool; resolve -r; check_rewritable; parse paths; warn on unmatched; start_transaction</text>
+      <text x="32" y="123" class="d-muted" font-size="11">x / executable → true, n / normal → false</text></a>
+
+      <a href="{{ src(cmd, 85, 105) }}"><rect class="d-box" x="20" y="158" width="350" height="76" rx="6"></rect>
+      <text x="32" y="179">for each matching file entry</text>
+      <text x="32" y="198" class="d-muted" font-size="11">every side a file (or absent)?</text>
+      <text x="32" y="215" class="d-muted" font-size="11">no → error naming the path</text></a>
+      <a href="{{ src(cmd, 106, 116) }}"><rect class="d-box" x="410" y="158" width="330" height="76" rx="6"></rect>
+      <text x="422" y="179">set executable on every term</text>
+      <text x="422" y="198" class="d-muted" font-size="11">sides and bases alike; IDs unchanged</text>
+      <text x="422" y="215" class="d-muted" font-size="11">tree_builder.set_or_remove(path, value)</text></a>
+
+      <a href="{{ src(cmd, 119, 124) }}"><rect class="d-box" x="20" y="258" width="720" height="36" rx="6"></rect>
+      <text x="32" y="281">write_tree; rewrite_commit(commit).set_tree(new tree).write()</text></a>
+
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="314" width="720" height="36" rx="6"></rect>
+      <text x="380" y="337" text-anchor="middle">tx.finish(ui, "make paths [non-]executable in commit &lt;id&gt;"): rebase, write the operation (CLI page)</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#fc-arrow)">
+      <line x1="380" y1="60" x2="380" y2="80"></line>
+      <line x1="195" y1="134" x2="195" y2="154"></line>
+      <line x1="370" y1="196" x2="406" y2="196"></line>
+      <line x1="575" y1="234" x2="575" y2="254"></line>
+      <line x1="380" y1="294" x2="380" y2="310"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Target commit</td><td>rewritten</td><td>A new commit with the new tree. It keeps its parents, change ID, description and author.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td><code>TreeValue::File</code></td><td>read, replaced</td><td>Only the <code>executable</code> field changes. File IDs and copy IDs stay the same, so no file content is written (<a href="{{ src(cmd, 106, 115) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>Trees</td><td>written</td><td>New tree objects along each changed path, via <code>MergedTreeBuilder</code>.</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>Descendants</td><td>rewritten</td><td>Rebased by <code>tx.finish</code>. The bit change is part of the commit's diff, so it carries into descendants that didn't change it.</td><td><a href="{{ url_for('jj', slug='transactions') }}">transactions</a></td></tr>
+      <tr><td><code>View</code></td><td>write</td><td>Heads, bookmarks and <code>wc_commit_ids</code> follow the rewritten commits.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td>One operation.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+      <tr><td>Working copy</td><td>read, then maybe write</td><td>Snapshotted first. If <code>@</code> changed, the file's permission is updated on disk, subject to <code>working-copy.exec-bit-change</code>.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, started after the commit is checked and the paths are parsed (<a href="{{ src(cmd, 83, 83) }}">source</a>).</li>
+  <li><strong>Operation description:</strong> <code>make paths executable in commit &lt;full hex id&gt;</code> or <code>make paths non-executable in commit &lt;full hex id&gt;</code> (<a href="{{ src(cmd, 125, 137) }}">source</a>).</li>
+  <li><strong>Commits rewritten:</strong> the target, then its descendants in <code>tx.finish</code> (<a href="{{ src(util, 2849, 2858) }}">source</a>).</li>
+  <li><strong>No unchanged check:</strong> unlike <code>diffedit</code> or <code>restore</code>, the command doesn't compare trees before rewriting. Whether anything is recorded is left to <code>tx.finish</code>, which only skips when the repo has no changes at all (<a href="{{ src(cmd, 119, 124) }}">source</a>).</li>
+  <li><strong>An error aborts everything:</strong> the first bad path returns an error before the tree is written, so no other path changes either (<a href="{{ src(cmd, 98, 105) }}">source</a>).</li>
+  <li><strong><code>jj undo</code></strong> restores the previous view.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<p>
+  <code>tree.entries_matching(matcher)</code> yields every path in the commit's tree that the filesets
+  match, each with its <code>MergedTreeValue</code>, a <code>Merge</code> of optional tree values
+  (<a href="{{ src(cmd, 85, 87) }}">source</a>). For each one:
+</p>
+
+<ol>
+  <li>
+    It checks that every <em>side</em> (each add term) that is present is a <code>TreeValue::File</code>.
+    Absent sides, as in a modify/delete conflict, are skipped. If a side is something else, the error
+    says <code>Found neither a file nor a conflict</code> for a resolved value and
+    <code>Some of the sides of the conflict are not files</code> for a conflict
+    (<a href="{{ src(cmd, 94, 105) }}">source</a>).
+  </li>
+  <li>
+    It then walks <em>every</em> present term, bases included, and sets <code>executable</code> to the
+    requested value (<a href="{{ src(cmd, 106, 115) }}">source</a>). Because every term gets the same
+    value, the executable bit resolves to that value whatever the conflict's shape.
+    Since only adds are checked, a base that isn't a file is left as it is; upstream has a TODO for a
+    test of exactly that case (<a href="{{ src(t, 189, 190) }}">source</a>).
+  </li>
+  <li>It stores the value back with <code>set_or_remove</code> (<a href="{{ src(cmd, 116, 116) }}">source</a>).</li>
+</ol>
+
+<p>
+  <strong>Invariants:</strong> file contents and copy IDs never change, only the bit. A conflict stays a
+  conflict with the same terms. Paths outside the filesets are untouched. Either every matched path
+  changes or none does.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Found neither a file nor a conflict at '&lt;path&gt;'.</code></td><td>A matched path is a symlink or submodule.</td><td><a href="{{ src(cmd, 88, 105) }}">chmod.rs</a></td></tr>
+      <tr><td><code>Some of the sides of the conflict are not files at '&lt;path&gt;'.</code></td><td>A conflict side is a directory, symlink or submodule.</td><td><a href="{{ src(cmd, 88, 105) }}">chmod.rs</a></td></tr>
+      <tr><td><code>Warning: No matching entries for paths: …</code></td><td>An explicit path isn't in the commit. The others still change.</td><td><a href="{{ src(cmd, 81, 81) }}">chmod.rs</a>, <a href="{{ src(util, 3380, 3412) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Commit … is immutable</code></td><td>The commit is immutable.</td><td><a href="{{ src(util, 2044, 2073) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Revset `…` resolved to more than one revision</code> (or to none)</td><td><code>-r</code> isn't exactly one commit.</td><td><a href="{{ src('cli/src/revset_util.rs', 302, 331) }}">revset_util.rs</a></td></tr>
+      <tr><td>clap: <code>invalid value '…' for '&lt;MODE&gt;'</code>, listing <code>n, x</code></td><td>An unknown mode.</td><td><a href="{{ src(cmd, 29, 39) }}">chmod.rs</a></td></tr>
+      <tr><td>clap: missing <code>&lt;FILESETS&gt;</code></td><td>No paths given.</td><td><a href="{{ src(cmd, 55, 55) }}">chmod.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 56, 151) }}">test_chmod_regular_conflict</a>. <code>base</code>
+  has <code>file</code>; <code>x</code> and <code>n</code> both change it, and
+  <code>jj file chmod x file -r=x</code> makes it executable in <code>x</code>. The merge
+  <code>conflict</code> then has a 2-sided conflict whose terms disagree on the bit: <code>x</code>'s
+  side is executable, while the base and <code>n</code>'s side are not. Running
+  <code>jj file chmod x file</code> on the merge changes all three terms:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 250" role="img" aria-labelledby="fc-ex-title fc-ex-desc">
+    <title id="fc-ex-title">jj file chmod x on a conflicted file</title>
+    <desc id="fc-ex-desc">
+      The conflicted value of file in the conflict commit has three terms: the side from x (executable
+      true), the base from base (false), and the side from n (false). After jj file chmod x file, all
+      three terms have executable true, with the same file IDs. The conflict and its markers are
+      unchanged. Running jj file chmod n file sets all three to false.
+    </desc>
+    <defs>
+      <marker id="fc-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="13">
+      <text x="20" y="24" class="d-muted">file in conflict, before</text>
+      <text x="440" y="24" class="d-muted">after jj file chmod x file</text>
+    </g>
+    <a href="{{ src(t, 82, 86) }}">
+      <rect class="d-box" x="20" y="40" width="300" height="190" rx="6"></rect>
+      <text x="32" y="66" font-size="12">side 1 (x):  587be6b4…</text>
+      <text x="32" y="86" font-size="11" class="d-accent">executable: true</text>
+      <text x="32" y="122" font-size="12">base (base):  df967b96…</text>
+      <text x="32" y="142" font-size="11" class="d-muted">executable: false</text>
+      <text x="32" y="178" font-size="12">side 2 (n):  8ba3a163…</text>
+      <text x="32" y="198" font-size="11" class="d-muted">executable: false</text>
+    </a>
+    <a href="{{ src(t, 100, 106) }}">
+      <rect class="d-box" x="440" y="40" width="300" height="190" rx="6"></rect>
+      <text x="452" y="66" font-size="12">side 1 (x):  587be6b4…</text>
+      <text x="452" y="86" font-size="11" class="d-accent">executable: true</text>
+      <text x="452" y="122" font-size="12">base (base):  df967b96…</text>
+      <text x="452" y="142" font-size="11" class="d-accent">executable: true</text>
+      <text x="452" y="178" font-size="12">side 2 (n):  8ba3a163…</text>
+      <text x="452" y="198" font-size="11" class="d-accent">executable: true</text>
+    </a>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="330" y1="135" x2="430" y2="135" marker-end="url(#fc-ex-arrow)"></line>
+    </g>
+    <text x="380" y="125" font-size="11" text-anchor="middle" class="d-muted">same IDs,</text>
+    <text x="380" y="155" font-size="11" text-anchor="middle" class="d-muted">new bits</text>
+  </svg>
+</div>
+
+<p>
+  <code>jj debug tree</code> before and after shows exactly this, with the file IDs unchanged, and
+  <code>jj file show file</code> prints the same conflict markers both times. A later
+  <code>jj file chmod n file</code> sets all three back to <code>false</code>. Passing an extra path
+  that doesn't exist (<a href="{{ src(t, 139, 150) }}">source</a>):
+</p>
+
+<pre><code>Warning: No matching entries for paths: nonexistent
+Working copy  (@) now at: yostqsxw a1b4dce4 conflict | (conflict) conflict
+Parent commit (@-)      : royxmykx 02247291 x | x
+Parent commit (@-)      : zsuskuln eb0ba805 n | n
+Added 0 files, modified 1 files, removed 0 files
+Warning: There are unresolved conflicts at these paths:
+file    2-sided conflict including an executable</code></pre>
+
+<p>
+  In <a href="{{ src(t, 192, 302) }}">test_chmod_file_dir_deletion_conflicts</a>, a file-vs-directory
+  conflict is refused with <code>Some of the sides of the conflict are not files at 'file'.</code>
+  A modify/delete conflict is accepted: the absent side is skipped, and the summary becomes
+  <code>2-sided conflict including 1 deletion and an executable</code>.
+</p>

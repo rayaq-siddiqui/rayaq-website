@@ -956,6 +956,15 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "file-chmod": {
+        "title": "How jj file chmod works",
+        "sources": [
+            "cli/src/commands/file/chmod.rs",
+            "cli/src/cli_util.rs",
+            "docs/config.md",
+        ],
+        "ready": True,
+    },
     "resolve": {
         "title": "How jj resolve works",
         "sources": [
