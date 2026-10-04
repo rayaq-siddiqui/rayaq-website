@@ -1,0 +1,347 @@
+{% set cmd = "cli/src/commands/run.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set t = "cli/tests/test_run_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj run</code> works</h1>
+  <p class="tagline">
+    <code>jj run</code> checks each selected commit out into its own scratch working copy, runs a command
+    there, and amends the commit with whatever the command left behind. It can also just run a check
+    across many commits without changing any of them.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj resolves the revisions (default <code>revsets.run</code>) and orders them parents first.
+  Unless <code>--ignore-changes</code> is given, it refuses immutable ones. It then runs the command on up
+  to <code>--jobs</code> commits at once, each in a reusable slot under <code>.jj/run/default/</code>,
+  with <code>JJ_CHANGE_ID</code>, <code>JJ_COMMIT_ID</code> and <code>JJ_WORKSPACE_ROOT</code> set.
+  After each command it snapshots the slot. A failure stops the run and rewrites nothing, unless
+  <code>--ignore-errors</code> is given. At the end one transaction rewrites every commit whose tree
+  changed and rebases the rest of their descendants. The operation is
+  <code>run: rewrite &lt;n&gt; commits</code>.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 761, 990) }}"><code>cmd_run</code></a>. Its help text names the
+  environment variables and gives <code>jj run -j 4 -- pre-commit run .github/pre-commit.yaml</code>
+  as an example (<a href="{{ src(cmd, 623, 642) }}">source</a>). Unlike
+  <a href="{{ url_for('jj', slug='fix') }}"><code>jj fix</code></a>, which pipes single files through
+  formatters in memory, <code>jj run</code> materializes whole trees on disk, so it can run builds and
+  test suites.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>COMMAND</code> (positional)</td><td>string</td><td>required</td><td>The program to run in each commit (<a href="{{ src(cmd, 646, 648) }}">source</a>).</td></tr>
+      <tr><td><code>ARGS</code> (positional)</td><td>strings</td><td>none</td><td>Its arguments. Put <code>--</code> first to pass arguments starting with <code>-</code> (<a href="{{ src(cmd, 650, 655) }}">source</a>).</td></tr>
+      <tr><td><code>-r</code>, <code>--revision</code>, <code>--revisions REVSETS</code></td><td>revsets</td><td><code>revsets.run</code></td><td>The commits to run on (<a href="{{ src(cmd, 657, 659) }}">source</a>).</td></tr>
+      <tr><td><code>-x</code></td><td>bool</td><td>hidden</td><td>Does nothing. It exists to match <code>git rebase -x</code> (<a href="{{ src(cmd, 661, 663) }}">source</a>).</td></tr>
+      <tr><td><code>-j</code>, <code>--jobs N</code></td><td>integer</td><td><code>run.jobs</code>, else 1</td><td>How many commands run at once, which is also the number of slots (<a href="{{ src(cmd, 665, 670) }}">source</a>).</td></tr>
+      <tr><td><code>--root</code></td><td>bool</td><td>false</td><td>Run from each slot's root instead of the subdirectory <code>jj run</code> was started in (<a href="{{ src(cmd, 672, 675) }}">source</a>).</td></tr>
+      <tr><td><code>--clean</code></td><td>bool</td><td>false</td><td>Wipe each slot before checking out, so no build artifacts are reused (<a href="{{ src(cmd, 677, 683) }}">source</a>).</td></tr>
+      <tr><td><code>--restore-descendants</code></td><td>bool</td><td>false</td><td>Keep descendants' content, not their diffs (<a href="{{ src(cmd, 685, 687) }}">source</a>).</td></tr>
+      <tr><td><code>--passthrough</code></td><td>bool</td><td>false</td><td>Connect the command's stdout and stderr to the terminal instead of capturing them. Only one job is allowed (<a href="{{ src(cmd, 689, 697) }}">source</a>).</td></tr>
+      <tr><td><code>--ignore-changes</code></td><td>bool</td><td>false</td><td>Run without rewriting anything, which also allows immutable commits. Conflicts with <code>--restore-descendants</code> (<a href="{{ src(cmd, 699, 708) }}">source</a>).</td></tr>
+      <tr><td><code>--ignore-errors</code></td><td>bool</td><td>false</td><td>Keep going after a failing command. Failed commits aren't changed, successful ones still are, and <code>jj run</code> itself still succeeds (<a href="{{ src(cmd, 710, 719) }}">source</a>).</td></tr>
+      <tr><td><code>--sparse-patterns</code></td><td><code>copy</code> | <code>full</code> | <code>empty</code></td><td><code>copy</code></td><td>Which sparse patterns the slots use: the current workspace's, everything, or nothing (<a href="{{ src(cmd, 721, 729) }}">source</a>, <a href="{{ src('cli/src/commands/workspace/add.rs', 43, 52) }}">values</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 643, 730) }}"><code>RunArgs</code></a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>revsets.run</code></td><td><code>reachable(@, mutable())</code></td><td>The commits used when no <code>-r</code> is given (<a href="{{ src('cli/src/config/revsets.toml', 9, 9) }}">default</a>, <a href="{{ src(cmd, 772, 779) }}">use</a>).</td></tr>
+      <tr><td><code>run.jobs</code></td><td>unset, meaning 1</td><td>Number of parallel jobs when <code>--jobs</code> isn't given. Zero or a negative number is an error (<a href="{{ src(cmd, 732, 759) }}">source</a>).</td></tr>
+      <tr><td><code>snapshot.auto-track</code></td><td><code>all()</code></td><td>Which new files a command creates get added to the commit (<a href="{{ src(cmd, 176, 179) }}">field</a>, <a href="{{ src(util, 1635, 1642) }}">matcher</a>).</td></tr>
+      <tr><td><code>revset-aliases."immutable_heads()"</code></td><td>built in</td><td>Decides which commits may be rewritten, unless <code>--ignore-changes</code> is given.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <code>snapshot.max-new-file-size</code> does not apply: slots use a fixed limit of 64,000 bytes, so a
+  larger new file stays untracked. The code comment beside the value says "64 MB"
+  (<a href="{{ src(cmd, 365, 374) }}">source</a>). Gitignore rules come from the workspace's base
+  ignores plus the <code>.gitignore</code> files in each checked-out tree.
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 520" role="img" aria-labelledby="run-flow-title run-flow-desc">
+    <title id="run-flow-title">jj run: call flow</title>
+    <desc id="run-flow-desc">
+      cmd_run creates .jj/run/default, loads the workspace through the shared lifecycle, resolves the
+      revisions (default revsets.run) and reverses them so parents come first. Unless --ignore-changes is
+      given it checks they are rewritable. It resolves the job count, rejects --passthrough with more than
+      one job, works out the subdirectory and sparse patterns, and starts a transaction. A producer,
+      run_inner, keeps up to jobs tasks in flight on a multi-threaded runtime. Each task, rewrite_commit,
+      acquires a slot from the workspace pool, checks the commit out, runs the command with the JJ
+      environment variables, snapshots the slot and sends back the new tree. A consumer prints each job's
+      output, stops on the first failure unless --ignore-errors is given, and records changed trees. If
+      nothing changed, or with --ignore-changes, the transaction finishes with nothing to record.
+      Otherwise transform_descendants rewrites the changed commits and rebases the others, and tx.finish
+      records "run: rewrite N commits".
+    </desc>
+    <defs>
+      <marker id="run-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 771, 801) }}"><rect class="d-box" x="20" y="84" width="720" height="50" rx="6"></rect>
+      <text x="32" y="105">resolve -r (or revsets.run), reverse to parents-first; check_rewritable unless --ignore-changes</text>
+      <text x="32" y="123" class="d-muted" font-size="11">resolve_jobs: --jobs, then run.jobs, then 1; --passthrough needs exactly one job</text></a>
+
+      <a href="{{ src(cmd, 805, 854) }}"><rect class="d-box" x="20" y="158" width="720" height="40" rx="6"></rect>
+      <text x="32" y="183">subdir (unless --root), auto-track matcher, sparsity; start_transaction; tokio runtime; WorkspacePool</text></a>
+
+      <a href="{{ src(cmd, 423, 481) }}"><rect class="d-box" x="20" y="222" width="300" height="104" rx="6"></rect>
+      <text x="32" y="243">run_inner (producer)</text>
+      <text x="32" y="262" class="d-muted" font-size="11">spawn rewrite_commit in commit order,</text>
+      <text x="32" y="279" class="d-muted" font-size="11">at most jobs in flight;</text>
+      <text x="32" y="296" class="d-muted" font-size="11">send each result to the channel;</text>
+      <text x="32" y="313" class="d-muted" font-size="11">on failure: shut down the others</text></a>
+
+      <a href="{{ src(cmd, 483, 621) }}"><rect class="d-box" x="360" y="222" width="380" height="104" rx="6"></rect>
+      <text x="372" y="243">rewrite_commit (one per commit)</text>
+      <text x="372" y="262" class="d-muted" font-size="11">pool.acquire: lock a slot, check the commit out</text>
+      <text x="372" y="279" class="d-muted" font-size="11">skip if the subdir is missing; run the command</text>
+      <text x="372" y="296" class="d-muted" font-size="11">snapshot the slot; persist its tree state</text>
+      <text x="372" y="313" class="d-muted" font-size="11">success: new tree; failure: none</text></a>
+
+      <a href="{{ src(cmd, 876, 918) }}"><rect class="d-box" x="20" y="350" width="720" height="50" rx="6"></rect>
+      <text x="32" y="371">consumer: print each job's stdout and stderr; "Skipped commit …" for a missing subdir</text>
+      <text x="32" y="389" class="d-muted" font-size="11">a failure ends the run with an error (no rewrites) unless --ignore-errors; changed trees are remembered</text></a>
+
+      <a href="{{ src(cmd, 921, 974) }}"><rect class="d-box" x="20" y="424" width="720" height="40" rx="6"></rect>
+      <text x="32" y="449">nothing changed or --ignore-changes: finish with nothing to record; else transform_descendants</text></a>
+
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="476" width="720" height="34" rx="6"></rect>
+      <text x="380" y="498" text-anchor="middle">tx.finish(ui, "run: rewrite N commits"): write the operation, update the working copy (CLI page)</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#run-arrow)">
+      <line x1="380" y1="60" x2="380" y2="80"></line>
+      <line x1="380" y1="134" x2="380" y2="154"></line>
+      <line x1="170" y1="198" x2="170" y2="218"></line>
+      <line x1="320" y1="262" x2="356" y2="262"></line>
+      <line x1="356" y1="300" x2="324" y2="300"></line>
+      <line x1="170" y1="326" x2="170" y2="346"></line>
+      <line x1="380" y1="400" x2="380" y2="420"></line>
+      <line x1="380" y1="464" x2="380" y2="472"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Selected commits</td><td>read, maybe rewritten</td><td>Each one whose snapshot differs from its tree gets a new tree. It keeps its change ID and description, and you become the committer.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Slot <code>TreeState</code>s</td><td>created, loaded, saved</td><td>One per slot in <code>.jj/run/default/N/state/</code>, kept between runs so a checkout only touches changed files (<a href="{{ src(cmd, 125, 143) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+      <tr><td>Slot lock files</td><td>locked</td><td><code>.jj/run/default/N.lock</code>, held for one job. Concurrent <code>jj run</code> processes share the pool this way (<a href="{{ src(cmd, 384, 398) }}">source</a>).</td><td>—</td></tr>
+      <tr><td>Trees and files</td><td>read, written</td><td>Checked out into slots; snapshots write new file and tree objects. Conflicted trees are kept as they are.</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>Descendants</td><td>rewritten</td><td>Commits outside the run set whose parents changed are rebased or, with <code>--restore-descendants</code>, reparented.</td><td><a href="{{ url_for('jj', slug='transactions') }}">transactions</a></td></tr>
+      <tr><td><code>View</code>: heads, bookmarks, <code>wc_commit_ids</code></td><td>write</td><td>Follow the rewritten commits.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td>One operation, only if something was rewritten.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+      <tr><td>Your working copy</td><td>read, then maybe write</td><td>Snapshotted first but never used to run the command. If <code>@</code> was rewritten, its new tree is checked out.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, started before any command runs and committed only after all of them have finished, so the result is all or nothing (<a href="{{ src(cmd, 832, 832) }}">start</a>).</li>
+  <li><strong>Operation description:</strong> <code>run: rewrite &lt;n&gt; commits</code>, where <code>n</code> counts the commits whose own tree changed (<a href="{{ src(cmd, 986, 987) }}">source</a>).</li>
+  <li><strong>No changes:</strong> with <code>--ignore-changes</code>, or when no tree changed, jj finishes the transaction as <code>run: nothing changed</code>. Since the repo is untouched, <code>tx.finish</code> just prints <code>Nothing changed.</code> and records no operation (<a href="{{ src(cmd, 921, 925) }}">source</a>, <a href="{{ src(util, 2849, 2854) }}">finish</a>).</li>
+  <li><strong>Failure:</strong> without <code>--ignore-errors</code>, the first failing command returns an error before the rewrite step. The transaction is dropped, so even commands that already succeeded change nothing (<a href="{{ src(cmd, 899, 908) }}">source</a>).</li>
+  <li><strong>Slots</strong> live outside the operation log. Their files and tree state persist after the run, whatever the outcome.</li>
+  <li><strong><code>jj undo</code></strong> restores the previous view, bringing back the original commits.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="pool">The workspace pool</h3>
+
+<p>
+  <a href="{{ src(cmd, 166, 186) }}"><code>WorkspacePool</code></a> has <code>--jobs</code> slots,
+  numbered from 1, under <code>.jj/run/default/</code>, next to <code>.jj/repo</code> rather than inside
+  it. <a href="{{ src(cmd, 208, 363) }}"><code>acquire</code></a> does this:
+</p>
+
+<ol>
+  <li>It tries each slot's lock without blocking, sleeping from 10 ms, doubling up to 250 ms, until one is free (<a href="{{ src(cmd, 213, 223) }}">source</a>).</li>
+  <li>If the slot has a saved <code>tree_state</code> and <code>--clean</code> wasn't given, it loads it and deletes the file. The missing file marks the slot as dirty until the job saves it again, so a crash mid-job makes the next user wipe the slot (<a href="{{ src(cmd, 230, 248) }}">source</a>).</li>
+  <li>Otherwise it deletes the slot's working copy and state and starts from an empty in-memory tree state (<a href="{{ src(cmd, 249, 277) }}">source</a>).</li>
+  <li>It sets the sparse patterns, or the root path for <code>full</code>, and checks the commit's tree out. Because it diffs against the saved state, only changed files are touched and ignored build artifacts survive (<a href="{{ src(cmd, 279, 312) }}">source</a>).</li>
+  <li>For a reused slot, it snapshots once more to find files that a previous commit ignored but this one doesn't, deletes them, and checks out again (<a href="{{ src(cmd, 314, 356) }}">source</a>).</li>
+</ol>
+
+<h3 id="job">One job</h3>
+
+<p>
+  <a href="{{ src(cmd, 483, 621) }}"><code>rewrite_commit</code></a> runs the command in the slot, or in
+  the same subdirectory you ran <code>jj run</code> from unless <code>--root</code> is given. If that
+  subdirectory doesn't exist in the commit, the commit is skipped
+  (<a href="{{ src(cmd, 497, 523) }}">source</a>, <a href="{{ src(cmd, 805, 818) }}">subdir</a>).
+  The command gets <code>JJ_WORKSPACE_ROOT</code> (the slot directory), <code>JJ_CHANGE_ID</code>,
+  <code>JJ_COMMIT_ID</code>, and a null stdin. It is killed if its task is dropped. Output is buffered
+  and printed whole when the job finishes, so parallel jobs never interleave
+  (<a href="{{ src(cmd, 535, 561) }}">source</a>).
+</p>
+
+<p>
+  Then jj snapshots the slot using the <code>snapshot.auto-track</code> matcher. If the command failed,
+  it deletes the untracked, non-ignored files it left behind and discards the result. Either way it
+  saves the slot's tree state. A successful snapshot becomes the job's new tree, conflicts included
+  (<a href="{{ src(cmd, 563, 610) }}">source</a>).
+</p>
+
+<h3 id="scheduling">Scheduling</h3>
+
+<p>
+  <a href="{{ src(cmd, 423, 481) }}"><code>run_inner</code></a> spawns jobs in parents-first order on a
+  multi-threaded tokio runtime, with at most <code>jobs</code> in flight
+  (<a href="{{ src(cmd, 834, 840) }}">runtime</a>). Results come back in completion order through a
+  channel to a consumer that runs at the same time and prints each one as it arrives
+  (<a href="{{ src(cmd, 857, 919) }}">source</a>). On a failure without <code>--ignore-errors</code>,
+  the producer shuts down the remaining tasks, which kills their processes, and the consumer returns the
+  error. Every job checks out its commit's <em>original</em> tree, so a commit never sees a command's
+  changes to its ancestors.
+</p>
+
+<h3 id="rewriting">Rewriting</h3>
+
+<p>
+  A job's tree counts as changed only if its trees and conflict labels differ from the original
+  (<a href="{{ src(cmd, 910, 914) }}">source</a>). jj then walks the selected commits and their
+  descendants with <code>transform_descendants</code>, parents first
+  (<a href="{{ src(cmd, 927, 974) }}">source</a>):
+</p>
+
+<ul>
+  <li><strong>Changed, default:</strong> rebase the commit onto its rewritten parents, then 3-way merge <code>rebased + (command result − original)</code>. That way the command's diff and any ancestors' changes both carry through (<a href="{{ src(cmd, 944, 958) }}">source</a>).</li>
+  <li><strong>Changed, <code>--restore-descendants</code>:</strong> rebase it and set its tree to the command result exactly, ignoring what changed in its ancestors (<a href="{{ src(cmd, 937, 943) }}">source</a>).</li>
+  <li><strong>Unchanged, or outside the run set:</strong> if its parents changed, rebase it, or reparent it with <code>--restore-descendants</code>. These count as rebased descendants (<a href="{{ src(cmd, 959, 969) }}">source</a>).</li>
+</ul>
+
+<p>
+  <strong>Invariants:</strong> nothing is rewritten unless every command succeeded or
+  <code>--ignore-errors</code> was given. Commands never run in your own working copy. Change IDs and
+  descriptions are kept. Only trees change.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>the command '&lt;command and args&gt;' failed with &lt;status&gt;</code>, with hint <code>Failed revision: …</code></td><td>A command exited unsuccessfully, without <code>--ignore-errors</code>. Nothing is rewritten.</td><td><a href="{{ src(cmd, 899, 908) }}">run.rs</a></td></tr>
+      <tr><td><code>Skipped commit &lt;id&gt;: directory does not exist: &lt;subdir&gt;</code></td><td>The commit doesn't contain the directory <code>jj run</code> was started from.</td><td><a href="{{ src(cmd, 878, 884) }}">run.rs</a></td></tr>
+      <tr><td><code>cannot use --passthrough with more than one job</code></td><td><code>--passthrough</code> with <code>--jobs</code> or <code>run.jobs</code> above 1.</td><td><a href="{{ src(cmd, 796, 801) }}">run.rs</a></td></tr>
+      <tr><td><code>invalid value for `run.jobs`: &lt;n&gt; (must be a positive integer)</code></td><td><code>--jobs 0</code>, or <code>run.jobs</code> zero or negative.</td><td><a href="{{ src(cmd, 732, 759) }}">run.rs</a></td></tr>
+      <tr><td><code>failed to checkout the commit …</code>, <code>failed to snapshot the working copy for commit …</code>, <code>failed to create path …</code>, <code>failed to delete path …</code></td><td>Slot setup or snapshot failed.</td><td><a href="{{ src(cmd, 76, 108) }}">run.rs</a></td></tr>
+      <tr><td><code>Commit … is immutable</code> (or <code>The root commit … is immutable</code>)</td><td>A selected commit is immutable and <code>--ignore-changes</code> wasn't given.</td><td><a href="{{ src(util, 2044, 2073) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Nothing changed.</code></td><td>No command changed a tree, or <code>--ignore-changes</code>.</td><td><a href="{{ src(util, 2849, 2854) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Rewrote &lt;n&gt; commits.</code> then <code>Rebased &lt;m&gt; descendant commits[ (while preserving their content)].</code></td><td>Status after rewriting.</td><td><a href="{{ src(cmd, 975, 985) }}">run.rs</a></td></tr>
+      <tr><td>clap: <code>--ignore-changes</code> cannot be used with <code>--restore-descendants</code></td><td>Both given.</td><td><a href="{{ src(cmd, 707, 708) }}">run.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 1552, 1600) }}">test_run_parallel_changes_<wbr>propagate_to_<wbr>descendants</a>.
+  <code>A</code>, <code>B</code> and <code>C</code> each add one file, and <code>@</code> is empty on
+  top. Running <code>jj run --jobs=3 -r=..@ -- sh -c 'touch newfile-$JJ_CHANGE_ID.txt'</code> runs the
+  command on the four commits, at most three at a time. Each job sees only its commit's original tree,
+  so each adds exactly one new file named after its own change ID:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 290" role="img" aria-labelledby="run-ex-title run-ex-desc">
+    <title id="run-ex-title">jj run --jobs=3: each job adds one file, rewriting merges them upward</title>
+    <desc id="run-ex-desc">
+      Left: three slots run the command on A, B and C (the slot each gets depends on timing) at the same time, each on that commit's original
+      tree, and each job adds newfile named after its change ID. Right: after rewriting parents first,
+      A has a.txt and its own new file; B has a.txt, b.txt and the new files of A and B; C has a.txt,
+      b.txt, c.txt and all three new files. Each commit's diff is still one original file plus its own
+      new file, because the default rewrite merges the rebased tree with the command's diff.
+    </desc>
+    {% macro node(x, y, label, note="", hl=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 18 }}" y="{{ y + 4 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x + 18 }}" y="{{ y + 20 }}" font-size="10.5" class="d-muted">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <g font-size="13">
+      <text x="20" y="22" class="d-muted">jobs in .jj/run/default/</text>
+      <text x="420" y="22" class="d-muted">after the rewrite</text>
+    </g>
+    <a href="{{ src(cmd, 208, 363) }}">
+      <rect class="d-box" x="20" y="40" width="330" height="56" rx="6"></rect>
+      <text x="32" y="62" font-size="12">slot 1: A's tree (a)</text>
+      <text x="32" y="82" font-size="11" class="d-muted">+ newfile-qpvuntsm….txt</text>
+    </a>
+    <a href="{{ src(cmd, 208, 363) }}">
+      <rect class="d-box" x="20" y="110" width="330" height="56" rx="6"></rect>
+      <text x="32" y="132" font-size="12">slot 2: B's tree (a, b)</text>
+      <text x="32" y="152" font-size="11" class="d-muted">+ newfile-rlvkpnrz….txt</text>
+    </a>
+    <a href="{{ src(cmd, 208, 363) }}">
+      <rect class="d-box" x="20" y="180" width="330" height="56" rx="6"></rect>
+      <text x="32" y="202" font-size="12">slot 3: C's tree (a, b, c)</text>
+      <text x="32" y="222" font-size="11" class="d-muted">+ newfile-kkmpptxz….txt</text>
+    </a>
+    <text x="20" y="266" font-size="11" class="d-muted">@ (empty) runs in whichever slot frees up first, and adds a file too</text>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="440" y1="211" x2="440" y2="139"></line>
+      <line x1="440" y1="121" x2="440" y2="69"></line>
+    </g>
+    {{ node(440, 220, "A  qpvuntsm", "a.txt, newfile-qpvuntsm", hl=True) }}
+    {{ node(440, 130, "B  rlvkpnrz", "+ b.txt, newfile-rlvkpnrz", hl=True) }}
+    {{ node(440, 60, "C  kkmpptxz", "+ c.txt, newfile-kkmpptxz", hl=True) }}
+  </svg>
+</div>
+
+<p>Upstream then lists <code>@-</code> (that is, <code>C</code>):</p>
+
+<pre><code>a.txt
+b.txt
+c.txt
+newfile-kkmpptxzrspxrzommnulwmwkkqwworpl.txt
+newfile-qpvuntsmwlqtpsluzzsnyyzlmlwvmlnu.txt
+newfile-rlvkpnrzqnoowoytxnquwvuryrwnrmlp.txt</code></pre>
+
+<p>
+  <code>B</code> and <code>C</code> are rebased onto their rewritten parents, and the 3-way merge adds
+  their own command result on top, so every descendant ends up with all its ancestors' new files. With
+  <code>--restore-descendants</code>, <code>C</code>'s tree would instead be exactly what its command
+  produced, without <code>A</code>'s and <code>B</code>'s new files.
+</p>
+
+<p>
+  Two failure cases from the same file:
+  <a href="{{ src(t, 421, 453) }}">test_run_failure_<wbr>rewrites_nothing</a> fails on <code>B</code> only, and
+  the log afterwards is identical to before, even though the other commands succeeded.
+  <a href="{{ src(t, 1508, 1550) }}">test_run_failure_<wbr>shows_output</a> shows the command's captured
+  output printed first, then
+  <code>Error: the command 'fake-formatter --stdout hello stdout …' failed with exit status: 1</code>
+  and <code>Hint: Failed revision: qpvuntsm 26d8ff9b A</code>.
+</p>

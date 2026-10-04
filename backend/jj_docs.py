@@ -956,6 +956,15 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "run": {
+        "title": "How jj run works",
+        "sources": [
+            "cli/src/commands/run.rs",
+            "cli/src/cli_util.rs",
+            "cli/src/config/revsets.toml",
+        ],
+        "ready": True,
+    },
     "diffedit": {
         "title": "How jj diffedit works",
         "sources": [
