@@ -1,0 +1,323 @@
+{% set cmd = "cli/src/commands/resolve.rs" %}
+{% set mt = "cli/src/merge_tools/mod.rs" %}
+{% set ext = "cli/src/merge_tools/external.rs" %}
+{% set bi = "cli/src/merge_tools/builtin.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set cerr = "cli/src/command_error.rs" %}
+{% set t = "cli/tests/test_resolve_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj resolve</code> works</h1>
+  <p class="tagline">
+    <code>jj resolve</code> hands each conflicted file in a commit to a 3-way merge tool, one file at a
+    time, and writes the tool's output back as the file's new content. With <code>--list</code> it only
+    lists the conflicts.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj resolves <code>-r</code> (default <code>@</code>) and finds the conflicted paths that
+  match the arguments. With none, it fails with <code>No conflicts found</code>. With
+  <code>--list</code>, it prints them and stops. Otherwise it refuses an immutable commit, checks that
+  every chosen conflict is a 2-sided conflict between regular files, and runs the merge tool on them in
+  order. The first failure stops it. jj rewrites the commit with the files resolved so far, even if a
+  later one failed, then reports that error. Descendants are rebased by <code>tx.finish</code>. The
+  operation is <code>Resolve conflicts in commit &lt;id&gt;</code>.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 76, 149) }}"><code>cmd_resolve</code></a>. Its help text notes that
+  you can also resolve conflicts by editing the conflict markers in the file directly
+  (<a href="{{ src(cmd, 31, 41) }}">source</a>). How conflicts are stored is explained on the
+  <a href="{{ url_for('jj', slug='trees') }}">trees</a> page; this page covers only the command and the
+  merge tools.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>FILESETS</code> (positional)</td><td>filesets</td><td>all files</td><td>Only resolve conflicts in these paths (<a href="{{ src(cmd, 69, 73) }}">source</a>).</td></tr>
+      <tr><td><code>-r</code>, <code>--revision REVSET</code></td><td>revset</td><td><code>@</code></td><td>The commit whose conflicts to resolve. It must be exactly one commit (<a href="{{ src(cmd, 51, 53) }}">source</a>).</td></tr>
+      <tr><td><code>-l</code>, <code>--list</code></td><td>bool</td><td>false</td><td>List the conflicts instead of resolving them (<a href="{{ src(cmd, 55, 59) }}">source</a>).</td></tr>
+      <tr><td><code>--tool NAME</code></td><td>string</td><td><code>ui.merge-editor</code></td><td>The merge tool to use. <code>:ours</code> and <code>:theirs</code> pick side 1 or side 2. Conflicts with <code>--list</code> (<a href="{{ src(cmd, 61, 67) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 49, 74) }}"><code>ResolveArgs</code></a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>ui.merge-editor</code></td><td>unset, meaning <code>:builtin</code></td><td>The tool used without <code>--tool</code>. When it's unset jj prints a hint and uses the built-in one. A plain name is looked up as a tool; anything with arguments is run as a command whose arguments are the merge arguments (<a href="{{ src(mt, 393, 407) }}">from_settings</a>, <a href="{{ src(mt, 190, 210) }}">default</a>).</td></tr>
+      <tr><td><code>merge-tools.&lt;name&gt;.merge-args</code></td><td>empty</td><td>Arguments for an external tool, with <code>$base</code>, <code>$left</code>, <code>$right</code>, <code>$output</code>, <code>$marker_length</code> and <code>$path</code> substituted. A tool without them can't be used here (<a href="{{ src(ext, 69, 72) }}">field</a>, <a href="{{ src(mt, 409, 427) }}">check</a>, <a href="{{ src(ext, 244, 260) }}">variables</a>).</td></tr>
+      <tr><td><code>merge-tools.&lt;name&gt;.merge-tool-edits-conflict-markers</code></td><td><code>false</code></td><td>If true, <code>$output</code> starts with the conflict markers and jj re-parses any left in it. If false, it starts empty and is taken as the full resolution (<a href="{{ src(ext, 81, 88) }}">source</a>).</td></tr>
+      <tr><td><code>merge-tools.&lt;name&gt;.merge-conflict-exit-codes</code></td><td>empty</td><td>Exit codes meaning the tool left some conflicts in <code>$output</code>, as conflict markers (<a href="{{ src(ext, 73, 80) }}">source</a>).</td></tr>
+      <tr><td><code>merge-tools.&lt;name&gt;.conflict-marker-style</code>, <code>ui.conflict-marker-style</code></td><td>unset; <code>diff</code></td><td>Marker style for a pre-filled <code>$output</code> (<a href="{{ src(ext, 210, 221) }}">source</a>, <a href="{{ src('cli/src/config/misc.toml', 45, 45) }}">default</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  jj ships settings for several tools, including <code>meld</code>, <code>kdiff3</code>,
+  <code>vimdiff</code>, <code>vscode</code> and <code>mergiraf</code>, so a bare name works for those
+  (<a href="{{ src('cli/src/config/merge_tools.toml', 1, 105) }}">merge_tools.toml</a>).
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 486" role="img" aria-labelledby="rv-flow-title rv-flow-desc">
+    <title id="rv-flow-title">jj resolve: call flow</title>
+    <desc id="rv-flow-desc">
+      cmd_resolve loads the workspace through the shared lifecycle, which snapshots the working copy.
+      It parses the paths, resolves -r (default @), and collects the matching conflicts from the commit's
+      tree, warning about unmatched paths. No conflicts is an error. With --list it prints them and
+      stops. Otherwise it checks the commit is rewritable, loads the merge editor and starts a
+      transaction. MergeEditor::edit_files validates every conflict, then runs the built-in tool, picks a
+      side for :ours or :theirs, or runs the external tool once per file, stopping at the first failure.
+      The commit is rewritten with the resulting tree and tx.finish records "Resolve conflicts in
+      commit", rebasing descendants. Finally it warns about remaining conflicts if the commit isn't the
+      working copy, and returns any partial-resolution error.
+    </desc>
+    <defs>
+      <marker id="rv-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 82, 99) }}"><rect class="d-box" x="20" y="84" width="460" height="50" rx="6"></rect>
+      <text x="32" y="105">resolve -r; tree.conflicts_matching(paths)</text>
+      <text x="32" y="123" class="d-muted" font-size="11">warn on unmatched paths; none → "No conflicts found …"</text></a>
+      <a href="{{ src(cmd, 100, 106) }}"><rect class="d-box" x="520" y="84" width="220" height="50" rx="6"></rect>
+      <text x="532" y="105">--list</text>
+      <text x="532" y="123" class="d-muted" font-size="11">print_conflicted_paths, stop</text></a>
+
+      <a href="{{ src(cmd, 108, 114) }}"><rect class="d-box" x="20" y="158" width="720" height="40" rx="6"></rect>
+      <text x="32" y="183">check_rewritable(commit); merge_editor(--tool or ui.merge-editor); start_transaction</text></a>
+
+      <a href="{{ src(mt, 333, 367) }}"><rect class="d-box" x="20" y="222" width="720" height="40" rx="6"></rect>
+      <text x="32" y="247">validate every conflict: regular files, at most 2 sides, executable bit resolvable</text></a>
+
+      <a href="{{ src(bi, 702, 731) }}"><rect class="d-box" x="20" y="286" width="220" height="66" rx="6"></rect>
+      <text x="32" y="307">:builtin</text>
+      <text x="32" y="325" class="d-muted" font-size="11">terminal UI over all files;</text>
+      <text x="32" y="342" class="d-muted" font-size="11">keep hunks from either side</text></a>
+      <a href="{{ src(mt, 473, 493) }}"><rect class="d-box" x="260" y="286" width="200" height="66" rx="6"></rect>
+      <text x="272" y="307">:ours / :theirs</text>
+      <text x="272" y="325" class="d-muted" font-size="11">take side 1 or side 2</text>
+      <text x="272" y="342" class="d-muted" font-size="11">of every file</text></a>
+      <a href="{{ src(ext, 335, 380) }}"><rect class="d-box" x="480" y="286" width="260" height="66" rx="6"></rect>
+      <text x="492" y="307">external tool, file by file</text>
+      <text x="492" y="325" class="d-muted" font-size="11">"Resolving conflicts in: …";</text>
+      <text x="492" y="342" class="d-muted" font-size="11">stop at the first failure</text></a>
+
+      <a href="{{ src(cmd, 115, 127) }}"><rect class="d-box" x="20" y="376" width="720" height="40" rx="6"></rect>
+      <text x="32" y="401">rewrite_commit(commit).set_tree(new tree); tx.finish(ui, "Resolve conflicts in commit &lt;id&gt;")</text></a>
+
+      <a href="{{ src(cmd, 129, 148) }}"><rect class="d-box" x="20" y="440" width="720" height="36" rx="6"></rect>
+      <text x="32" y="463">warn about remaining conflicts (if not @); then return the partial-resolution error, if any</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#rv-arrow)">
+      <line x1="250" y1="60" x2="250" y2="80"></line>
+      <line x1="480" y1="109" x2="516" y2="109"></line>
+      <line x1="250" y1="134" x2="250" y2="154"></line>
+      <line x1="380" y1="198" x2="380" y2="218"></line>
+      <line x1="130" y1="262" x2="130" y2="282"></line>
+      <line x1="360" y1="262" x2="360" y2="282"></line>
+      <line x1="610" y1="262" x2="610" y2="282"></line>
+      <line x1="130" y1="352" x2="130" y2="372"></line>
+      <line x1="360" y1="352" x2="360" y2="372"></line>
+      <line x1="610" y1="352" x2="610" y2="372"></line>
+      <line x1="380" y1="416" x2="380" y2="436"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Target commit</td><td>rewritten</td><td>A new commit whose tree has the resolved files. It keeps its parents, change ID, description and author.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Conflicted tree values</td><td>read, replaced</td><td>Each conflict is a <code>Merge</code> of file IDs. A resolution replaces it with one file, or with new file IDs if conflicts remain.</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>File objects</td><td>read, written</td><td>The base and both sides are read; the tool's output is written as a new file.</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>Descendants</td><td>rewritten</td><td>Rebased onto the new commit by <code>tx.finish</code>.</td><td><a href="{{ url_for('jj', slug='transactions') }}">transactions</a></td></tr>
+      <tr><td><code>View</code>: heads, bookmarks, <code>wc_commit_ids</code></td><td>write</td><td>Follow the rewritten commits.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td>One operation, even when a later file failed.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+      <tr><td>Working copy</td><td>read, then maybe write</td><td>Snapshotted first. If <code>@</code> was rewritten, the resolved files are written to disk.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, after the conflict list and before the tool runs. <code>--list</code>, and errors before any file is resolved, record nothing (<a href="{{ src(cmd, 100, 116) }}">source</a>).</li>
+  <li><strong>Operation description:</strong> <code>Resolve conflicts in commit &lt;full hex id before the rewrite&gt;</code>. It is capitalized, unlike most of jj's (<a href="{{ src(cmd, 123, 127) }}">source</a>).</li>
+  <li><strong>Partial resolution:</strong> if an external tool fails on the second file or later, the files already resolved are still committed and the operation is recorded. Only then does <code>jj resolve</code> exit with <code>Stopped due to error after resolving &lt;n&gt; conflicts</code> (<a href="{{ src(ext, 363, 375) }}">source</a>, <a href="{{ src(cmd, 145, 147) }}">return</a>).</li>
+  <li><strong>Descendants:</strong> the command doesn't rebase them itself; <code>tx.finish</code> does (<a href="{{ src(util, 2849, 2858) }}">source</a>).</li>
+  <li><strong><code>jj undo</code></strong> restores the previous view, bringing back the conflicted commit.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="finding">Finding and checking conflicts</h3>
+
+<p>
+  <code>tree.conflicts_matching(&amp;matcher)</code> lists the conflicted paths under the arguments
+  (<a href="{{ src(cmd, 88, 89) }}">source</a>). Before any tool runs,
+  <a href="{{ src(mt, 333, 367) }}"><code>MergeToolFile::from_tree_and_path</code></a> checks every one
+  of them, and any failure stops the whole command:
+</p>
+
+<ol>
+  <li>The value must actually be a conflict, and present.</li>
+  <li>Every term must be a regular file or absent. Symlinks, directories and submodules can't be resolved here.</li>
+  <li>After simplifying, the conflict must have at most 2 sides. Simplifying removes terms that cancel out, so a conflict that only looks larger can still qualify (<a href="{{ src('lib/src/conflicts.rs', 265, 287) }}">try_materialize_file_conflict_value</a>).</li>
+  <li>The executable bit must resolve on its own. If it conflicts, the hint points to <code>jj file chmod</code>.</li>
+</ol>
+
+<h3 id="external">An external tool</h3>
+
+<p>
+  <a href="{{ src(ext, 335, 380) }}"><code>run_mergetool_external</code></a> prints
+  <code>Resolving conflicts in: &lt;path&gt;</code> and calls
+  <a href="{{ src(ext, 186, 333) }}"><code>run_mergetool_external_single_file</code></a> for each file in
+  turn:
+</p>
+
+<ol>
+  <li>It writes <code>base_&lt;name&gt;</code>, <code>left_&lt;name&gt;</code>, <code>right_&lt;name&gt;</code> and <code>output_&lt;name&gt;</code> into a <code>jj-resolve-</code> temp directory. Left is side 1, right is side 2. All but <code>output</code> are read-only (<a href="{{ src(ext, 222, 255) }}">source</a>).</li>
+  <li><code>output</code> starts empty, or with conflict markers if the tool edits markers. The marker length is the minimum unless the tool sees markers or asks for <code>$marker_length</code>; then it is long enough not to clash with the file's content (<a href="{{ src(ext, 199, 221) }}">source</a>).</li>
+  <li>It runs the tool. A non-zero exit is a failure unless the code is listed in <code>merge-conflict-exit-codes</code> (<a href="{{ src(ext, 259, 279) }}">source</a>).</li>
+  <li>An empty or unchanged <code>output</code> is a failure. That's how you stop: quit the tool without saving (<a href="{{ src(ext, 281, 285) }}">source</a>).</li>
+  <li>If the tool edits markers, or exited with a conflict code, jj parses <code>output</code> for markers and may keep a smaller conflict. Otherwise <code>output</code> becomes the file. A conflict exit code with no markers is reported as invalid (<a href="{{ src(ext, 287, 317) }}">source</a>).</li>
+  <li>A resolved file keeps the resolved executable bit. A still-conflicted one keeps its executable bits and gets new file IDs (<a href="{{ src(ext, 319, 331) }}">source</a>).</li>
+</ol>
+
+<h3 id="builtin">The built-in tools</h3>
+
+<p>
+  <a href="{{ src(bi, 702, 731) }}"><code>:builtin</code></a> opens one terminal UI over all the
+  conflicted files, where you choose which side's changes to keep. <code>:ours</code> and
+  <code>:theirs</code> need no UI: <a href="{{ src(mt, 473, 493) }}"><code>pick_conflict_side</code></a>
+  sets every file to side 1 or side 2 of its simplified conflict. A side where the file is absent deletes
+  it (<a href="{{ src(mt, 430, 471) }}">edit_files</a>).
+</p>
+
+<p>
+  <strong>Invariants:</strong> only conflicted paths are touched, and only the target commit's tree
+  changes. Files are handled in the order the tree lists them, and a failure on the first one records nothing. 3-sided and
+  larger conflicts are never sent to a tool; edit their markers by hand.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>No conflicts found at this revision</code> / <code>No conflicts found at the given path(s)</code></td><td>Nothing to resolve. A CLI error, exit status 2.</td><td><a href="{{ src(cmd, 93, 99) }}">resolve.rs</a></td></tr>
+      <tr><td><code>Failed to resolve conflicts</code>, caused by <code>The conflict at "…" has &lt;n&gt; sides. At most 2 sides are supported.</code>, hint <code>Edit the conflict markers manually to resolve this.</code></td><td>A chosen conflict has more than 2 sides.</td><td><a href="{{ src(mt, 104, 105) }}">mod.rs</a>, <a href="{{ src(cerr, 462, 483) }}">command_error.rs</a></td></tr>
+      <tr><td><code>Only conflicts that involve normal files (not symlinks, etc.) are supported. …</code></td><td>A term is a symlink, directory or submodule.</td><td><a href="{{ src(mt, 98, 103) }}">mod.rs</a></td></tr>
+      <tr><td><code>"…" has conflicts in executable bit</code>, hint <code>Use `jj file chmod` …</code></td><td>The sides disagree on the executable bit.</td><td><a href="{{ src(mt, 106, 107) }}">mod.rs</a></td></tr>
+      <tr><td><code>The output file is either unchanged or empty after the editor quit …</code></td><td>The tool was closed without a resolution.</td><td><a href="{{ src(mt, 108, 112) }}">mod.rs</a></td></tr>
+      <tr><td><code>Tool exited with &lt;status&gt; …</code>; <code>… but did not produce valid conflict markers …</code></td><td>The tool failed, or used a conflict exit code without leaving markers.</td><td><a href="{{ src(ext, 175, 181) }}">external.rs</a></td></tr>
+      <tr><td><code>Stopped due to error after resolving &lt;n&gt; conflicts</code></td><td>A later file failed. The earlier resolutions are kept.</td><td><a href="{{ src(mt, 119, 124) }}">mod.rs</a></td></tr>
+      <tr><td><code>The tool `&lt;name&gt;` cannot be used as a merge tool with `jj resolve`</code>, with a hint to define <code>merge-args</code></td><td>The tool has no merge arguments.</td><td><a href="{{ src(cerr, 491, 503) }}">command_error.rs</a></td></tr>
+      <tr><td><code>Warning: After this operation, some files at this revision still have conflicts:</code></td><td>Conflicts remain in a commit other than <code>@</code>. For <code>@</code>, <code>tx.finish</code> reports them instead.</td><td><a href="{{ src(cmd, 129, 143) }}">resolve.rs</a></td></tr>
+      <tr><td><code>Commit … is immutable</code></td><td>The commit is immutable. <code>--list</code> works on any commit.</td><td><a href="{{ src(util, 2044, 2073) }}">cli_util.rs</a></td></tr>
+      <tr><td>clap: <code>--tool</code> cannot be used with <code>--list</code></td><td>Both given.</td><td><a href="{{ src(cmd, 65, 65) }}">resolve.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 30, 518) }}">test_resolution</a>. <code>base</code> has
+  <code>file</code> = <code>base</code>; <code>a</code> and <code>b</code> change it to <code>a</code>
+  and <code>b</code>; <code>conflict</code> merges them. <code>jj resolve --list</code> prints
+  <code>file    2-sided conflict</code>. With a merge tool that writes <code>resolution</code> into
+  <code>$output</code>:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 270" role="img" aria-labelledby="rv-ex-title rv-ex-desc">
+    <title id="rv-ex-title">jj resolve on a 2-sided conflict</title>
+    <desc id="rv-ex-desc">
+      The conflict commit merges a and b, both children of base, so file is a 2-sided conflict with base
+      as the removed term and a and b as the two sides. jj writes base_file, left_file (a), right_file
+      (b) and an empty output_file into a temp directory and runs the tool. The tool writes resolution
+      into output_file. jj rewrites the conflict commit with file set to resolution, keeping its change
+      ID, and the conflict is gone.
+    </desc>
+    <defs>
+      <marker id="rv-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% macro node(x, y, label, note="", hl=False, warn=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 18 }}" y="{{ y + 4 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x + 18 }}" y="{{ y + 20 }}" font-size="10.5" class="{{ 'd-accent' if warn else 'd-muted' }}">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <g class="d-line" stroke-width="1.5">
+      <line x1="90" y1="231" x2="44" y2="149"></line>
+      <line x1="90" y1="231" x2="136" y2="149"></line>
+      <line x1="44" y1="131" x2="86" y2="69"></line>
+      <line x1="136" y1="131" x2="94" y2="69"></line>
+      <line x1="560" y1="80" x2="620" y2="80" marker-end="url(#rv-ex-arrow)"></line>
+      <line x1="230" y1="80" x2="290" y2="80" marker-end="url(#rv-ex-arrow)"></line>
+    </g>
+    {{ node(90, 240, "base", "file = base") }}
+    {{ node(40, 140, "a", "file = a") }}
+    {{ node(140, 140, "b", "file = b") }}
+    {{ node(90, 60, "conflict  @", "file: 2-sided conflict", warn=True) }}
+    <a href="{{ src(ext, 222, 255) }}">
+      <rect class="d-box" x="300" y="30" width="250" height="132" rx="6"></rect>
+      <text x="312" y="52" font-size="12">jj-resolve-…/</text>
+      <text x="312" y="74" font-size="11" class="d-muted">base_file</text><text x="400" y="74" font-size="11" class="d-muted">base (read-only)</text>
+      <text x="312" y="92" font-size="11" class="d-muted">left_file</text><text x="400" y="92" font-size="11" class="d-muted">a (read-only)</text>
+      <text x="312" y="110" font-size="11" class="d-muted">right_file</text><text x="400" y="110" font-size="11" class="d-muted">b (read-only)</text>
+      <text x="312" y="128" font-size="11" class="d-muted">output_file</text><text x="400" y="128" font-size="11" class="d-muted">empty</text>
+      <text x="312" y="150" font-size="11">tool writes "resolution"</text>
+    </a>
+    {{ node(640, 80, "conflict  @", "file = resolution", hl=True) }}
+    <text x="640" y="130" font-size="11" class="d-muted">same change ID,</text>
+    <text x="640" y="146" font-size="11" class="d-muted">new commit</text>
+  </svg>
+</div>
+
+<p>Upstream's snapshot (<a href="{{ src(t, 68, 84) }}">source</a>):</p>
+
+<pre><code>Resolving conflicts in: file
+Working copy  (@) now at: vruxwmqv 741263c9 conflict | conflict
+Parent commit (@-)      : zsuskuln 45537d53 a | a
+Parent commit (@-)      : royxmykx 89d1b299 b | b
+Added 0 files, modified 1 files, removed 0 files</code></pre>
+
+<p>
+  The tool saw an empty <code>output</code> file, as the test checks by dumping it. <code>jj diff</code>
+  then shows the conflict markers replaced by <code>resolution</code>, and
+  <code>jj resolve --list</code> fails with <code>No conflicts found at this revision</code>.
+</p>
+
+<p>
+  Upstream's <a href="{{ src(t, 2017, 2199) }}">test_multiple_conflicts_with_error</a> shows a partial
+  run. The tool resolves <code>file1</code>, then quits on <code>file2</code> without writing. jj still
+  rewrites the commit, so <code>file1</code> is resolved, warns that <code>file2</code> is still
+  conflicted, and then exits with:
+</p>
+
+<pre><code>Error: Stopped due to error after resolving 1 conflicts
+Caused by: The output file is either unchanged or empty after the editor quit (run with --debug to see the exact invocation).</code></pre>

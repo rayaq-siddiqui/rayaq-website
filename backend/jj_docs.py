@@ -956,6 +956,20 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "resolve": {
+        "title": "How jj resolve works",
+        "sources": [
+            "cli/src/commands/resolve.rs",
+            "cli/src/merge_tools/mod.rs",
+            "cli/src/merge_tools/external.rs",
+            "cli/src/merge_tools/builtin.rs",
+            "cli/src/config/merge_tools.toml",
+            "lib/src/conflicts.rs",
+            "cli/src/command_error.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
     "run": {
         "title": "How jj run works",
         "sources": [
