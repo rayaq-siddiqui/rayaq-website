@@ -956,6 +956,15 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "parallelize": {
+        "title": "How jj parallelize works",
+        "sources": [
+            "cli/src/commands/parallelize.rs",
+            "lib/src/rewrite.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
     "prev": {
         "title": "How jj prev works",
         "sources": [

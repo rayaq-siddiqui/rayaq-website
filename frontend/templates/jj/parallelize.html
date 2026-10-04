@@ -1,0 +1,242 @@
+{% set cmd = "cli/src/commands/parallelize.rs" %}
+{% set t = "cli/tests/test_parallelize_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj parallelize</code> works</h1>
+  <p class="tagline">
+    <code>jj parallelize</code> turns a chain of commits into siblings. Each target keeps its own changes
+    and its parents from outside the set, but no longer depends on the other targets. Commits that used
+    to sit on top of a target become merges of the targets they depended on.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj evaluates the target set and works through it parents-first. Each target's new parents
+  are its old parents, with any target parent replaced by that parent's own new parents. Only the
+  targets whose parents change must be mutable. A second map gives each target the set of targets that
+  a non-target child must now merge. In one <code>transform_descendants</code> pass, targets get their
+  new parents, non-target children of targets get the merged parent sets, and every commit whose
+  parents changed is <em>rebased</em>, which keeps its own diff. The operation is
+  <code>parallelize N commits</code>.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 70, 156) }}"><code>cmd_parallelize</code></a>. It uses the same
+  rewrite machinery as <a href="{{ url_for('jj', slug='rebase') }}"><code>jj rebase</code></a>: a
+  commit's tree is recomputed by merging its diff onto its new parents. How a rebased commit's tree is
+  computed is on the <a href="{{ url_for('jj', slug='trees') }}">trees page</a>.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>REVSETS</code> (positional), <code>-r</code> (hidden alias)</td><td>revsets, repeatable</td><td>none</td><td>The commits to parallelize. Both forms are unioned (<a href="{{ src(cmd, 60, 67) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  The help text gives the canonical example, <code>jj parallelize 1::2</code>, and explains why
+  <code>jj parallelize '1 | 3'</code> is a no-op: the commit <code>2</code> between them isn't in the set,
+  so it still orders them (<a href="{{ src(cmd, 32, 56) }}">source</a>).
+</p>
+<p class="jj-source"><a href="{{ src(cmd, 57, 68) }}"><code>ParallelizeArgs</code></a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>revset-aliases."immutable_heads()"</code></td><td>(built-in)</td><td>Only targets whose parents change are checked. A target whose parents are all outside the set keeps its parents, so it may be immutable (<a href="{{ src(cmd, 103) }}">source</a>, <a href="{{ src(t, 648, 707) }}">test</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>The command reads no other settings.</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 390" role="img" aria-labelledby="pz-flow-title pz-flow-desc">
+    <title id="pz-flow-title">jj parallelize: call flow</title>
+    <desc id="pz-flow-desc">
+      cmd_parallelize evaluates the targets, ordered children first, and walks them parents first to
+      compute new_target_parents: a target parent is replaced by that parent's new parents. The targets
+      that changed are checked rewritable. In a transaction it computes new_child_parents, the set of
+      targets each target's non-target children must now have as parents. transform_descendants then
+      sets new parents on targets, and on non-target children of targets, and rebases any commit whose
+      parents changed. tx.finish records "parallelize N commits".
+    </desc>
+    <defs>
+      <marker id="pz-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(cmd, 76, 83) }}"><rect class="d-box" x="20" y="20" width="720" height="44" rx="6"></rect>
+      <text x="380" y="47" text-anchor="middle">load workspace (snapshot); targets = REVSETS ∪ -r, evaluated children-first</text></a>
+
+      <a href="{{ src(cmd, 85, 103) }}"><rect class="d-box" x="20" y="88" width="720" height="66" rx="6"></rect>
+      <text x="32" y="109">new_target_parents (parents first): each old parent, or that parent's new parents if it's a target</text>
+      <text x="32" y="127" class="d-muted" font-size="11">targets whose parents changed → needs_rewrite</text>
+      <text x="32" y="144" class="d-muted" font-size="11">check_rewritable(needs_rewrite)</text></a>
+
+      <a href="{{ src(cmd, 104, 119) }}"><rect class="d-box" x="20" y="178" width="720" height="66" rx="6"></rect>
+      <text x="32" y="199">start_transaction; new_child_parents (parents first)</text>
+      <text x="32" y="217" class="d-muted" font-size="11">for target T: the union of new_child_parents of T's target parents, plus T itself</text>
+      <text x="32" y="234" class="d-muted" font-size="11">= every target a child of T used to depend on through the chain</text></a>
+
+      <a href="{{ src(cmd, 121, 152) }}"><rect class="d-box" x="20" y="268" width="720" height="84" rx="6"></rect>
+      <text x="32" y="289">transform_descendants(targets)</text>
+      <text x="32" y="308" class="d-muted" font-size="11">target → set_new_rewritten_parents(new_target_parents[T])</text>
+      <text x="32" y="325" class="d-muted" font-size="11">non-target with a target parent → replace each target parent P with new_child_parents[P]</text>
+      <text x="32" y="342" class="d-muted" font-size="11">parents changed → rebase() (merge its own diff onto the new parents) and write</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#pz-arrow)">
+      <line x1="380" y1="64" x2="380" y2="84"></line>
+      <line x1="380" y1="154" x2="380" y2="174"></line>
+      <line x1="380" y1="244" x2="380" y2="264"></line>
+    </g>
+    <a href="{{ src(cmd, 154, 155) }}"><text x="380" y="378" text-anchor="middle" font-size="11" class="d-muted">tx.finish(ui, "parallelize N commits")</text></a>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Commit parents</td><td>read, write</td><td>The whole point. Targets lose their target parents, and their non-target children gain several parents.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Trees</td><td>write</td><td><code>rewriter.rebase()</code> recomputes each rewritten commit's tree by applying its old diff to the new parents' merged tree. Removing a dependency can therefore create conflicts.</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>Rewrite records</td><td>write</td><td>Every rewritten commit records its predecessor. Bookmarks and <code>@</code> follow the rewritten commits.</td><td><a href="{{ url_for('jj', slug='transactions') }}">transactions</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td>One operation.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, after the rewritability check (<a href="{{ src(cmd, 104) }}">source</a>).</li>
+  <li><strong>Operation description:</strong> <code>parallelize &lt;N&gt; commits</code>, where N counts every target, including those left unchanged (<a href="{{ src(cmd, 154) }}">source</a>).</li>
+  <li><strong>Commits rewritten:</strong> targets with a target parent, non-target children of targets, and all their descendants (rebased with new IDs).</li>
+  <li><strong>Commits unchanged:</strong> targets whose parents are all outside the set. In upstream's tests, target <code>1</code> keeps its commit ID (<a href="{{ src(t, 84, 94) }}">test</a>).</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="target-parents">New parents for targets</h3>
+<p>
+  Targets are processed parents-first (<a href="{{ src(cmd, 88, 101) }}">source</a>). For each parent of
+  target T: if the parent is a target, T takes that parent's <em>already computed</em> new parents.
+  Otherwise T keeps the parent. In a chain <code>0 ← 1 ← 2 ← 3</code> with targets <code>1::3</code>,
+  that gives <code>1 → [0]</code>, <code>2 → [0]</code> and <code>3 → [0]</code>, so all three become
+  children of <code>0</code>.
+</p>
+
+<h3 id="child-parents">New parents for non-target children</h3>
+<p>
+  A non-target commit that sat on a target used to see every target below it in its ancestry. To keep
+  those ancestors, <a href="{{ src(cmd, 106, 119) }}"><code>new_child_parents</code></a> maps each
+  target to itself plus everything its target parents mapped to. For the chain above, that maps
+  <code>3</code> to <code>{1, 2, 3}</code>. A child of <code>3</code> therefore becomes a merge of
+  <code>1</code>, <code>2</code> and <code>3</code> (<a href="{{ src(cmd, 129, 144) }}">source</a>). This
+  is why the help text says descendants outside the set "remain descendants".
+</p>
+
+<h3 id="rebase">Rebasing</h3>
+<p>
+  Only commits whose parents changed are written (<a href="{{ src(cmd, 145, 148) }}">source</a>). They
+  use <code>rebase()</code>, not <code>reparent()</code>, so each commit keeps the <em>changes</em> it
+  introduced, not its old snapshot. A target that depended on an earlier target's edits can therefore
+  end up conflicted.
+</p>
+
+<p>
+  <strong>Invariants:</strong> ancestry with commits outside the set is preserved in both directions.
+  Ancestry among targets is removed. Every changed target is mutable.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Commit &lt;id&gt; is immutable</code>, with <code>This operation would rewrite N immutable commits.</code></td><td>A target whose parents would change is immutable.</td><td><a href="{{ src(cmd, 103) }}">parallelize.rs</a>, <a href="{{ src(t, 709, 754) }}">test</a></td></tr>
+      <tr><td><code>Nothing changed.</code></td><td>No commit's parents changed, for example with one target, disconnected targets, or <code>'1 | 3'</code> as in the help.</td><td><a href="{{ src('cli/src/cli_util.rs', 2852) }}">cli_util.rs</a>, <a href="{{ src(cmd, 54, 56) }}">help text</a></td></tr>
+      <tr><td>(conflicts after the rebase)</td><td>A target that depended on another target's changes. jj doesn't refuse this. The result just shows conflicts.</td><td><a href="{{ src(cmd, 145, 148) }}">parallelize.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 59, 97) }}">test_parallelize_with_descendants_simple</a>. A linear
+  stack <code>1</code> → <code>2</code> → <code>3</code> → <code>4</code> → <code>5</code> →
+  <code>6</code> (<code>@</code>). Then <code>jj parallelize 'subject(1)::subject(4)'</code> runs:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 300" role="img" aria-labelledby="pz-ex-title pz-ex-desc">
+    <title id="pz-ex-title">jj parallelize 1::4</title>
+    <desc id="pz-ex-desc">
+      Before: a linear chain root, 1, 2, 3, 4, 5, 6. After parallelizing 1 through 4: commits 1, 2, 3 and
+      4 are all children of root, 5 is a merge of 1, 2, 3 and 4, and 6 stays on 5. Commit 1 keeps its ID
+      884fe9b9 because its parent didn't change.
+    </desc>
+    <defs>
+      <marker id="pz-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% macro node(x, y, label, note="", hl=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 15 }}" y="{{ y + 4 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x + 15 }}" y="{{ y + 19 }}" font-size="10.5" class="d-muted">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <text x="40" y="16" font-size="12" class="d-muted">before</text>
+    <text x="360" y="16" font-size="12" class="d-muted">after parallelize 1::4</text>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="60" y1="271" x2="60" y2="49"></line>
+      <line x1="230" y1="160" x2="300" y2="160" marker-end="url(#pz-ex-arrow)"></line>
+      <line x1="560" y1="271" x2="410" y2="179"></line>
+      <line x1="560" y1="271" x2="510" y2="179"></line>
+      <line x1="560" y1="271" x2="610" y2="179"></line>
+      <line x1="560" y1="271" x2="710" y2="179"></line>
+      <line x1="410" y1="161" x2="560" y2="109"></line>
+      <line x1="510" y1="161" x2="560" y2="109"></line>
+      <line x1="610" y1="161" x2="560" y2="109"></line>
+      <line x1="710" y1="161" x2="560" y2="109"></line>
+      <line x1="560" y1="91" x2="560" y2="59"></line>
+    </g>
+    {{ node(60, 280, "root") }}{{ node(60, 245, "1") }}{{ node(60, 210, "2") }}{{ node(60, 175, "3") }}{{ node(60, 140, "4") }}{{ node(60, 95, "5") }}{{ node(60, 50, "@ 6") }}
+    {{ node(560, 280, "root") }}{{ node(410, 170, "1", "884fe9b9") }}{{ node(510, 170, "2", hl=True) }}{{ node(610, 170, "3", hl=True) }}{{ node(710, 170, "4", hl=True) }}{{ node(560, 100, "5", "merge of 1 2 3 4", hl=True) }}{{ node(560, 50, "@ 6", "rebased") }}
+  </svg>
+</div>
+
+<p>Upstream's log after the command (template: commit ID, description, parents' descriptions):</p>
+
+<pre><code>@  75ac07d7dedc 6 parents: 5
+○        39791a4c42c5 5 parents: 1 2 3 4
+├─┬─┬─╮
+│ │ │ ○  823bf930aefb 4 parents:
+│ │ ○ │  3b6586259aa9 3 parents:
+│ │ ├─╯
+│ ○ │  dfd927ce07c0 2 parents:
+│ ├─╯
+○ │  884fe9b9c656 1 parents:
+├─╯
+◆  000000000000 parents:</code></pre>
+
+<p>
+  <code>1</code> keeps its ID because its parent (the root) is outside the set. <code>2</code>,
+  <code>3</code> and <code>4</code> now sit on the root. <code>5</code> was a non-target child of
+  <code>4</code>, and <code>new_child_parents[4] = {1, 2, 3, 4}</code>, so it becomes a four-way merge.
+  When a non-target child hangs off an interior target, it merges only the targets up to that point, as
+  in <a href="{{ src(t, 99, 145) }}">test_parallelize_where_interior_<wbr>has_non_target_<wbr>children</a>
+  (<code>2c parents: 1 2</code>).
+</p>
