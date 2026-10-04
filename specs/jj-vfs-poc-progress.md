@@ -3,14 +3,39 @@
 Running log for the daily jj-vfs-poc architecture Routine. Read this first, update it last.
 The contract is `specs/jj-vfs-poc.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-03 (second run). Upstream unchanged since the pin; built the
-`vfs-layer` page.
+**Last updated:** 2026-10-04 (third run). Upstream unchanged since the pin; built the
+`fuse` page.
 
 ## Upstream pin
 
 `jj-vcs/jj-vfs-poc@37b8f8625556778f5ce41cbb2d5220bcea245675` (committed 2026-09-03, crate
 `jjfsd` 0.1.0, `jj-lib` 0.43.0), analyzed 2026-10-03. Held in `jj_vfs_docs.UPSTREAM`.
 jj-lib links point at the `v0.43.0` tag of `jj-vcs/jj`.
+
+## §10 acceptance criteria
+
+- [x] `/jj-vfs-poc` renders the §6 diagram and links to every page in §5 (boxes for unbuilt
+      pages link to pinned source until the page exists).
+- [ ] Every §5 page exists, meets its "Must cover" column, and is registered: `namespace`,
+      `vfs-layer`, `fuse` done; `inodes`, `commit-trees`, `mounting`, `testing` to go.
+- [x] `namespace` meets all six §8 items with at least two SVG diagrams; `fuse` has its sequence
+      diagram.
+- [x] Every source link is pinned (`UPSTREAM.commit` or `v<jj_lib_version>`; tested).
+- [x] §7.5 tests exist and pass (137 tests in the suite, all sections).
+- [x] Homepage card links to `/jj-vfs-poc`.
+- [x] Mobile at 390px: no horizontal page scroll on `/jj-vfs-poc` and every ready page (checked
+      in headless Chromium this run).
+- [x] The daily Routine has run in maintenance mode (second and third runs: no relevant upstream
+      change).
+
+## Third run (2026-10-04)
+
+| Commit | What |
+|---|---|
+| `d4de924` | `fuse` page: `JjFuse`, the six implemented methods, the `fuser` defaults for the rest, the `reply_async!` bridge, a sequence diagram of one `read`, `FileAttr` field by field, `FileType`, and the errno table |
+
+Maintenance: upstream `HEAD` still at `37b8f86`, so the pin stayed. The `fuser` defaults were read
+from the `fuser` 0.18.0 crate source and link to it on docs.rs, like `namespace` does.
 
 ## Second run (2026-10-03)
 
@@ -41,7 +66,7 @@ uses the local backend (128-hex IDs), where a prefix gives `ObjectNotFound` inst
 2. ~~`namespace` (flagship, §8)~~
 3. ~~§6 architecture diagram on the index~~
 4. ~~`vfs-layer`~~
-5. `fuse` (needs a sequence diagram for one `read`, §6)
+5. ~~`fuse`~~
 6. `inodes`
 7. `commit-trees`
 8. `mounting`
@@ -58,6 +83,13 @@ uses the local backend (128-hex IDs), where a prefix gives `ObjectNotFound` inst
   version (0.18.0), since `fuser` isn't covered by either pinned helper.
 
 ## Open gaps / questions for the owner
+
+- **`InvalidPath` reports `EIO`.** The errno mapping's fallback arm sends `InvalidPath` (a
+  non-UTF-8 name in `lookup`) to `EIO`, not `ENOENT` or `EINVAL`, and discards a wrapped
+  `io::Error`'s own errno. The `fuse` page states this as the code does. It may be unintended.
+- **`readdir` re-lists every batch.** Each `readdir` call lists the whole directory and then skips
+  to the offset, so a large directory read in several batches is listed several times. The page
+  states this. It wasn't measured.
 
 - **Commits created after mounting.** Lookup by ID goes straight to the store, so hidden
   commits that existed at mount time resolve. Whether a commit written *after* mounting resolves
