@@ -3,9 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-04 (thirty-seventh run): no upstream change since `4df5265`; built the
-`revsets` topic page and linked the 16 "page planned" touchpoint cells. `backends` comes next,
-then Tier B (spec §9).
+**Last updated:** 2026-10-04 (thirty-eighth run): no upstream change since `4df5265`; built the
+`backends` topic page, the last §5 page. Tier B commands come next, starting with `file annotate`.
 
 ## Upstream pin
 
@@ -16,9 +15,9 @@ then Tier B (spec §9).
 
 - [x] `/jj` renders the §6 diagram and links to every page in §5 (boxes for unbuilt
       pages link to pinned source until the page exists).
-- [ ] Every §5 page exists and is registered: `protobufs`, `cli`, `commits`, `view`,
+- [x] Every §5 page exists and is registered: `protobufs`, `cli`, `commits`, `view`,
       `operations`, `transactions`, `working-copy`, `trees`, `conflicts`, `storage`, `index`,
-      `revsets` done; 1 to go (`backends`).
+      `revsets`, `backends`.
 - [x] The `fix` page meets all ten §8 items, with three SVG diagrams.
 - [x] The `protobufs` page covers all seven `.proto` files, every field.
 - [x] Every source link is pinned to `UPSTREAM.commit` (tested).
@@ -39,29 +38,23 @@ then Tier B (spec §9).
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
 
-## Thirty-seventh run (2026-10-04)
+## Thirty-eighth run (2026-10-04)
 
-Pin unchanged (`4df5265`). `7a715c9`: `revsets` topic page (pipeline diagram from `parse_program`
-to the `Revset` trait, Pratt precedence table, built-in aliases from `revsets.toml`, lowering
-table, the symbol resolver chain plus `present`/`at_operation`, the eleven `optimize` passes in
-run order, visibility resolution, the default engine's `InternalRevset`s, filters and
-`RevsetExtensions`, filesets). `44cd877`/`4fbf569`: the 16 "page planned" touchpoint cells on 14
-command pages now link `revsets` and `index`. Those two commit bodies cite "§6"; the rule is
-§8A.3 item 4 (history not rewritten).
+Pin unchanged (`4df5265`). `f862a0b`: `backends` topic page (layers diagram from callers through
+`Store` to the three backends; the `Backend` trait method by method; `Store`'s 100-commit and
+1000-tree LRU caches versus passthroughs; selection via `store/type`, `StoreFactories` and the
+feature-gated default factories; the Git backend's IDs, tree-entry mapping, headers, extras table,
+same-ID collision loop and `refs/jj/keep` refs; `jj util gc`; the Simple and Secret backends; a
+side-by-side table). The `/jj` diagram boxes and the `revsets` "store" link now resolve to it.
 
-## Thirty-fourth to thirty-sixth runs (2026-10-04)
+## Thirty-fourth to thirty-seventh runs (2026-10-04)
 
-Pin unchanged (`4df5265`). `4c1e053`: `index` topic page at `/jj/index` (the five index traits,
-positions and the segment stack with a diagram, the segment file format, squash/hash/save,
-`op_links` and rebuilds, graph queries, change-ID visibility, the opt-in changed-path index, short
-ID prefixes); template named `jj/commit-index.html` (see deviations). `3b6b9ff`: `storage` topic page (every `.jj/` path with owner and format,
-linked tree diagram, `type` files and factory dispatch, the `.jj/repo` pointer file, Git backend
-`git_target`/`extra/`, content-addressed op store writes, op heads and lock files, index
-`segments`/`op_links`/`changed_paths`, `checkout`/`tree_state`). `0f9c64e`: `conflicts` topic page (`Merge<T>`, trivial merge, flatten/simplify,
-labels, `tree_merge.rs`, Git/simple storage, materialization and parsing; example from upstream's
-`test_materialize_conflict_three_sides`; four diagrams); `resolve` now links to it. The queue had put
-Tier B before the remaining topic pages, against §9; fixed below. Separately, at the owner's request,
-`c805986` added `.claude/settings.json` (`autoCompactWindow: 200000`).
+Pin unchanged (`4df5265`). Topic pages: `revsets` `7a715c9`, `index` `4c1e053` (template
+`jj/commit-index.html`, see deviations), `storage` `3b6b9ff`, `conflicts` `0f9c64e`.
+`44cd877`/`4fbf569` linked the 16 "page planned" touchpoint cells to `revsets` and `index`; their
+bodies cite "§6" where the rule is §8A.3 item 4 (history not rewritten). The queue had put Tier B
+before the remaining topics, against §9; fixed. At the owner's request, `c805986` added
+`.claude/settings.json` (`autoCompactWindow: 200000`).
 
 ## Twenty-seventh to thirty-third runs (2026-10-04)
 
@@ -108,9 +101,9 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
    ~~`bookmark-delete`~~, ~~`bookmark-forget`~~, ~~`bookmark-rename`~~, ~~`bookmark-track`~~,
    ~~`bookmark-untrack`~~, ~~`tag-*`~~, ~~`git-clone`/`-colocation`/`-export`/`-import`/`-init`/
    `-remote`~~, ~~`sign`~~, ~~`unsign`~~, ~~`workspace-*`~~, ~~`gerrit-upload`~~. Tier A complete.
-2. Remaining topic pages: ~~`conflicts`~~, ~~`storage`~~, ~~`index`~~, ~~`revsets`~~, `backends`. When
-   `backends` ships, the `revsets` page's "store" link switches to it automatically.
-3. Tier B commands, in registry order: `file annotate`, `file list`, `file search`, `file show`,
+2. Remaining topic pages: ~~`conflicts`~~, ~~`storage`~~, ~~`index`~~, ~~`revsets`~~, ~~`backends`~~.
+   All topics done.
+3. **Next.** Tier B commands, in registry order: `file annotate`, `file list`, `file search`, `file show`,
    `sparse list`, `log`, `show`, `diff`, `interdiff`, `status`, `evolog`, `root`, `operation diff`,
    `operation log`, `operation show`, `bookmark list`, `tag list`, `git root`, `workspace list`,
    `workspace root`, `config edit`/`gc`/`get`/`list`/`path`/`set`/`unset`.
