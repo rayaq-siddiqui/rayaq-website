@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-04 (twenty-fifth run): maintenance `c16d378..03db8d1` (pin only);
-built the `jj converge` command page.
+**Last updated:** 2026-10-04 (twenty-sixth run): no upstream change since `03db8d1`; built the
+`jj revert` command page.
 
 ## Upstream pin
 
@@ -26,11 +26,19 @@ built the `jj converge` command page.
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 26 of 105 (`fix`, `new`, `edit`,
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 27 of 105 (`fix`, `new`, `edit`,
       `describe`, `commit`, `squash`, `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`,
-      `absorb`, `duplicate`, `bookmark create`, `bookmark set`, `bookmark move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`, `parallelize`, `simplify-parents`, `arrange`, `converge`).
+      `absorb`, `duplicate`, `bookmark create`, `bookmark set`, `bookmark move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`, `parallelize`, `simplify-parents`, `arrange`, `converge`, `revert`).
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
+
+## Twenty-sixth run (2026-10-04)
+
+| Commit | What |
+|---|---|
+| `cd1593a` | `revert` command page (Tier A, all eight §8A.3 items, two SVGs; example from upstream's `test_revert`) |
+
+Maintenance: upstream `HEAD` still at `03db8d1`, so the pin stayed.
 
 ## Twenty-fifth run (2026-10-04)
 
@@ -39,17 +47,9 @@ built the `jj converge` command page.
 | `197de77` | Maintenance `c16d378..03db8d1` (3 templater commits). Only `cli_util.rs` touched a source set, and its one-line change is outside every cited range; all 72 citations into changed files checked with a diff-based line map. `COMMANDS` regenerated identically, no `.proto` changes: pin only |
 | `c993b6f` | `converge` command page (Tier A, all eight §8A.3 items, two SVGs; example from upstream's `test_converge_simple`), plus a test that diagram `<title>`/`<desc>` text contains no markup |
 
-## Twenty-fourth run (2026-10-04)
+## Seventeenth to twenty-fourth runs (2026-10-04)
 
-| Commit | What |
-|---|---|
-| `c3348ce` | `arrange` command page (Tier A, all eight §8A.3 items, two SVGs; worked example from the plan executor's unit test `test_execute_plan_abandon`, since the TUI has no CLI snapshot) |
-
-Maintenance: upstream `HEAD` still at `c16d378`, so the pin stayed.
-
-## Seventeenth to twenty-third runs (2026-10-04)
-
-Pin unchanged. `ab334a4`: `simplify-parents` page. `fe97413`: `parallelize` page. `e62dc52`: `next` and `prev` pages, landed together. `afb1c31`: `metaedit` page. `f156028`: `git push` page. `6bf55c1`: `bookmark create`/`set`/`move` pages, landed together because they
+Pin unchanged (`c16d378`). `c3348ce`: `arrange` page (example from the plan executor's unit test). `ab334a4`: `simplify-parents` page. `fe97413`: `parallelize` page. `e62dc52`: `next` and `prev` pages, landed together. `afb1c31`: `metaedit` page. `f156028`: `git push` page. `6bf55c1`: `bookmark create`/`set`/`move` pages, landed together because they
 cross-link. `f8530a8`: `git fetch` page.
 
 ## Twelfth to sixteenth runs (2026-10-03 to 2026-10-04)
@@ -113,8 +113,8 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
    `storage`, `index`, `revsets`, `backends`): ~~`new`~~, ~~`trees`~~, ~~`edit`~~, ~~`describe`~~, ~~`commit`~~,
    ~~`squash`~~, ~~`rebase`~~, ~~`abandon`~~, ~~`undo`~~, then the rest of Tier A. Next, in this order:
    ~~`redo`~~, ~~`restore`~~, ~~`split`~~, ~~`absorb`~~, ~~`duplicate`~~, ~~`bookmark-create`/`-set`/`-move`~~, ~~`git-fetch`~~,
-   ~~`git-push`~~, then the remaining 39 Tier A commands in registry order (next:
-   `revert`, `diffedit`, `run`, `resolve`).
+   ~~`git-push`~~, then the remaining 38 Tier A commands in registry order (next:
+   `diffedit`, `run`, `resolve`, `file-chmod`).
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
 
