@@ -14,7 +14,7 @@ PAGES = [
         "title": "Activation and wiring",
         "summary": "What the extension contributes to VS Code, what happens when it activates, and how logging and errors are set up.",
         "sources": ["package.json", "src/extension.ts", "src/ui/ui.ts", "src/logging/", "src/error/"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "graph-protocol",
