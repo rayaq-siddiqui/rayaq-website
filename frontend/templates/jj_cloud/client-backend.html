@@ -1,0 +1,230 @@
+{% set be = "lib/src/cc_backend.rs" %}
+{% set util = "lib/src/util.rs" %}
+{% set librs = "lib/src/lib.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+{% set common = "common/src/lib.rs" %}
+{% set proto = "common/proto/backend.proto" %}
+<header class="jj-header">
+  <h1>The client Backend</h1>
+  <p class="tagline">
+    <code>CommitCloudBackend</code> is jj-lib's commit <code>Backend</code> trait implemented as gRPC calls.
+    Every file, tree and commit read or write becomes one call to the server's <code>BackendService</code>,
+    made on a fresh thread with a fresh runtime and a fresh connection.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: the backend holds only the server URL, the repository ID and three fixed IDs (root commit,
+  root change, empty tree). <code>init</code> registers a new repository with the server and writes
+  <code>config.toml</code>. <code>load</code> reads it back. Each trait method converts jj's types to the
+  protobuf messages, runs the RPC through <code>run_async</code>, and converts the answer back. The root
+  commit and the empty tree are answered locally. Symlinks, copy tracking, Git submodules and stored
+  conflict IDs are unsupported. Commit signatures are sent but never read back.
+</p>
+
+<p>
+  The module is <a href="{{ src(be) }}"><code>lib/src/cc_backend.rs</code></a>, re-exported from
+  <a href="{{ src(librs, 1, 7) }}"><code>lib/src/lib.rs</code></a>. The messages it builds are on
+  <a href="{{ url_for('jj_cloud', slug='protobufs') }}">protobufs</a>, and the IDs the server returns on
+  <a href="{{ url_for('jj_cloud', slug='object-ids') }}">object-ids</a>. jj's own view of a backend is on
+  <a href="{% if 'backends' in jj_ready_slugs %}{{ url_for('jj', slug='backends') }}{% else %}{{ url_for('jj') }}{% endif %}">/jj</a>.
+</p>
+
+<h2 id="struct"><code>CommitCloudBackend</code></h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Value</th></tr></thead>
+    <tbody>
+      <tr><td><code>server_url</code></td><td><code>String</code></td><td>From <code>config.toml</code>, or the <code>init</code> argument.</td></tr>
+      <tr><td><code>repo_id</code></td><td><code>String</code></td><td>The UUID the server returned from <code>RegisterRepository</code>, sent with every later request.</td></tr>
+      <tr><td><code>root_commit_id</code></td><td><code>CommitId</code></td><td>20 zero bytes (<code>ROOT_COMMIT_ID_BYTES</code>).</td></tr>
+      <tr><td><code>root_change_id</code></td><td><code>ChangeId</code></td><td>16 zero bytes (<code>ROOT_CHANGE_ID_BYTES</code>).</td></tr>
+      <tr><td><code>empty_tree_id</code></td><td><code>TreeId</code></td><td>Git's empty tree, <code>4b825dc6…4904</code> (<code>EMPTY_TREE_ID_HEX</code>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(be, 18, 25) }}">struct</a> · <a href="{{ src(common, 9, 17) }}">constants</a></p>
+
+<h2 id="init-load">Creating and loading</h2>
+
+<p>
+  <a href="{{ src(be, 32, 66) }}"><code>init(store_path, server_url)</code></a> connects, calls
+  <code>RegisterRepository</code> with <code>name: None</code>, and writes
+  <code>{server_url, repo_id}</code> as pretty TOML to <code>&lt;store&gt;/config.toml</code>. A TODO notes
+  that the optional repository name isn't passed yet. <a href="{{ src(be, 68, 80) }}"><code>load(store_path)</code></a>
+  only reads that file, and makes no network call until the first object is read or written.
+</p>
+
+<p>
+  <a href="{{ src(util, 4, 32) }}"><code>CommitCloudConfig::load_from_store</code></a> reads
+  <code>store_path/config.toml</code> if it exists. Otherwise it falls back to
+  <code>store_path/../store/config.toml</code>, so the op store and op heads store, whose paths are
+  <code>.jj/repo/op_store</code> and <code>.jj/repo/op_heads</code>, share the backend's file. A missing file
+  is an error.
+</p>
+
+<p>
+  The backend is registered under the name <code>commit_cloud</code> by
+  <a href="{{ src(repo, 9, 41) }}"><code>StoreFactoriesExt::add_commit_cloud</code></a>, which also
+  registers the op store and op heads store under the same name. Load errors become
+  <code>BackendLoadError</code>.
+</p>
+
+<h2 id="methods"><code>Backend</code> methods</h2>
+
+<p>
+  Every method of jj-lib 0.43.0's <a href="{{ jj_lib('lib/src/backend.rs', 536, 675) }}"><code>Backend</code></a>
+  trait is implemented (<a href="{{ src(be, 206, 474) }}">impl</a>):
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Method</th><th>Behaviour</th><th>RPC</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td><code>"commit_cloud"</code></td><td>—</td><td><a href="{{ src(be, 209, 211) }}">L209</a></td></tr>
+      <tr><td><code>commit_id_length</code>, <code>change_id_length</code></td><td>20 and 16 bytes.</td><td>—</td><td><a href="{{ src(be, 213, 219) }}">L213</a></td></tr>
+      <tr><td><code>root_commit_id</code>, <code>root_change_id</code>, <code>empty_tree_id</code></td><td>The fixed fields above.</td><td>—</td><td><a href="{{ src(be, 221, 231) }}">L221</a></td></tr>
+      <tr><td><code>concurrency</code></td><td><code>1</code>. jj-lib treats this as a hint: a cloud backend "may want to set it to 100 or so" (<a href="{{ jj_lib('lib/src/backend.rs', 562, 571) }}">doc</a>).</td><td>—</td><td><a href="{{ src(be, 233, 235) }}">L233</a></td></tr>
+      <tr><td><code>read_file</code></td><td>Streams the file's chunks and concatenates them in memory, then returns a <code>Cursor</code>. The path is ignored. <code>NotFound</code> becomes <code>ObjectNotFound("file")</code>.</td><td><code>ReadFile</code> (server stream)</td><td><a href="{{ src(be, 237, 279) }}">L237</a></td></tr>
+      <tr><td><code>write_file</code></td><td>Reads the whole input into memory and sends it in one unary request. A TODO says to stream 64 KB chunks instead. Returns the server's file ID.</td><td><code>WriteFile</code></td><td><a href="{{ src(be, 281, 306) }}">L281</a></td></tr>
+      <tr><td><code>read_symlink</code>, <code>write_symlink</code></td><td><code>Unsupported</code>.</td><td>—</td><td><a href="{{ src(be, 308, 314) }}">L308</a></td></tr>
+      <tr><td><code>read_copy</code>, <code>write_copy</code>, <code>get_related_copies</code></td><td><code>Unsupported("copies not supported")</code>.</td><td>—</td><td><a href="{{ src(be, 316, 326) }}">L316</a></td></tr>
+      <tr><td><code>read_tree</code></td><td>The empty tree ID is answered locally. Otherwise it sends the tree ID and path, and converts the entries. <code>NotFound</code> becomes <code>ObjectNotFound("tree")</code>.</td><td><code>ReadTree</code></td><td><a href="{{ src(be, 328, 371) }}">L328</a></td></tr>
+      <tr><td><code>write_tree</code></td><td>An empty tree returns the empty tree ID without a call. Otherwise it converts the entries (rejecting submodules) and sends them with the path.</td><td><code>WriteTree</code></td><td><a href="{{ src(be, 373, 396) }}">L373</a></td></tr>
+      <tr><td><code>read_commit</code></td><td>The root commit ID returns jj-lib's <code>make_root_commit</code> locally. Otherwise it fetches and converts the commit. A gRPC <code>NotFound</code> becomes <code>ObjectNotFound("commit")</code>. A response with no commit in it becomes <code>BackendError::Other</code>.</td><td><code>ReadCommit</code></td><td><a href="{{ src(be, 398, 438) }}">L398</a></td></tr>
+      <tr><td><code>write_commit</code></td><td>Sends the commit with an empty <code>commit_id</code>, and returns the server's ID with the commit <em>as passed in</em>. <code>sign_with</code> is ignored.</td><td><code>WriteCommit</code></td><td><a href="{{ src(be, 440, 460) }}">L440</a></td></tr>
+      <tr><td><code>get_copy_records</code></td><td>An empty stream.</td><td>—</td><td><a href="{{ src(be, 462, 469) }}">L462</a></td></tr>
+      <tr><td><code>gc</code></td><td>Does nothing.</td><td>—</td><td><a href="{{ src(be, 471, 473) }}">L471</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="conversions">Conversions</h2>
+
+<h3 id="commit-conversion">Commits</h3>
+<p>
+  <a href="{{ src(be, 114, 127) }}"><code>commit_to_proto</code></a> copies every field: change ID,
+  parents, all root tree terms, description, author, committer, predecessors, conflict labels, and the
+  signature bytes if present. The <code>commit_id</code> is left empty for the server to fill in.
+  <a href="{{ src(be, 129, 154) }}"><code>commit_from_proto</code></a> reverses it, rebuilding the tree
+  <code>Merge</code> and the labels. It always sets <code>secure_sig: None</code>, so a signature sent on write
+  is never seen again. Missing signatures and timestamps default to empty or zero
+  (<a href="{{ src(be, 91, 112) }}">signature helpers</a>).
+</p>
+
+<h3 id="tree-conversion">Tree entries</h3>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>jj <code>TreeValue</code></th><th>Write</th><th>Read</th></tr></thead>
+    <tbody>
+      <tr><td><code>File { id, executable, copy_id }</code></td><td>All three sent.</td><td><code>copy_id</code> kept only if exactly 20 bytes, otherwise replaced with 20 zero bytes.</td></tr>
+      <tr><td><code>Symlink(id)</code></td><td>The ID is sent (though <code>write_symlink</code> itself is unsupported).</td><td>Rebuilt.</td></tr>
+      <tr><td><code>Tree(id)</code></td><td>Sent.</td><td>Rebuilt.</td></tr>
+      <tr><td><code>GitSubmodule</code></td><td><code>Unsupported("Git submodules are not supported")</code>.</td><td>—</td></tr>
+      <tr><td>(<code>ConflictId</code> on the wire)</td><td>—</td><td>Error: "tree entry should not have contained a ConflictId".</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(be, 156, 186) }}"><code>tree_entry_to_proto</code></a> · <a href="{{ src(be, 188, 204) }}"><code>tree_entry_from_proto</code></a></p>
+<p>
+  jj-lib's placeholder copy ID is empty (<a href="{{ jj_lib('lib/src/backend.rs', 82, 89) }}"><code>CopyId::placeholder</code></a>),
+  so a file written with it reads back with a 20-byte zero copy ID instead. The server never hashes
+  <code>copy_id</code> (see <a href="{{ url_for('jj_cloud', slug='object-ids') }}">object-ids</a>), so tree IDs
+  don't change.
+</p>
+
+<h2 id="run-async">Sync/async bridging and the tonic channel</h2>
+
+<p>
+  <a href="{{ src(util, 34, 50) }}"><code>run_async(f)</code></a> spawns a new OS thread, builds a
+  <code>current_thread</code> tokio runtime with all drivers enabled, <code>block_on</code>s the future, and
+  joins the thread. A panic in the thread becomes an error string. Every backend method then calls
+  <code>BackendServiceClient::connect(server_url)</code> inside that future, so each read or write of a
+  single object costs:
+</p>
+<ol>
+  <li>a thread spawn and join,</li>
+  <li>a tokio runtime construction,</li>
+  <li>a new TCP connection and HTTP/2 handshake to the server,</li>
+  <li>the RPC itself.</li>
+</ol>
+<p>
+  There is no shared channel, connection pool or timeout.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 300" role="img" aria-labelledby="cb-title cb-desc">
+    <title id="cb-title">One read_commit call through CommitCloudBackend</title>
+    <desc id="cb-desc">
+      jj-lib calls read_commit. If the ID is the root commit ID, the backend returns make_root_commit
+      without a call. Otherwise run_async spawns a thread with a current-thread tokio runtime. Inside it,
+      BackendServiceClient::connect opens a new connection to the server, sends ReadCommitRequest with the
+      repo ID and commit ID, and receives ReadCommitResponse. A NotFound status becomes
+      BackendError::ObjectNotFound. The thread is joined, and commit_from_proto turns the message into a
+      jj Commit, with secure_sig always None.
+    </desc>
+    <defs>
+      <marker id="cb-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ jj_lib('lib/src/backend.rs', 629) }}"><rect class="d-box" x="20" y="20" width="200" height="50" rx="6"></rect>
+      <text x="120" y="42" text-anchor="middle">jj-lib Store</text>
+      <text x="120" y="60" text-anchor="middle" class="d-muted" font-size="11">read_commit(id)</text></a>
+
+      <a href="{{ src(be, 398, 404) }}"><rect class="d-box" x="270" y="20" width="220" height="50" rx="6"></rect>
+      <text x="380" y="42" text-anchor="middle">root commit ID?</text>
+      <text x="380" y="60" text-anchor="middle" class="d-muted" font-size="11">yes → make_root_commit, no RPC</text></a>
+
+      <a href="{{ src(util, 34, 50) }}"><rect class="d-box" x="270" y="110" width="220" height="64" rx="6"></rect>
+      <text x="380" y="132" text-anchor="middle">run_async</text>
+      <text x="380" y="149" text-anchor="middle" class="d-muted" font-size="11">new thread +</text>
+      <text x="380" y="164" text-anchor="middle" class="d-muted" font-size="11">current_thread runtime</text></a>
+
+      <a href="{{ src(be, 411, 431) }}"><rect class="d-box" x="540" y="110" width="200" height="64" rx="6"></rect>
+      <text x="640" y="132" text-anchor="middle">connect + ReadCommit</text>
+      <text x="640" y="149" text-anchor="middle" class="d-muted" font-size="11">{repo_id, commit_id}</text>
+      <text x="640" y="164" text-anchor="middle" class="d-muted" font-size="11">NotFound → ObjectNotFound</text></a>
+
+      <a href="{{ url_for('jj_cloud', slug='protobufs') }}"><rect class="d-box" x="540" y="214" width="200" height="50" rx="6"></rect>
+      <text x="640" y="236" text-anchor="middle">server BackendService</text>
+      <text x="640" y="254" text-anchor="middle" class="d-muted" font-size="11">ReadCommitResponse</text></a>
+
+      <a href="{{ src(be, 129, 154) }}"><rect class="d-box" x="270" y="214" width="220" height="50" rx="6"></rect>
+      <text x="380" y="236" text-anchor="middle">commit_from_proto</text>
+      <text x="380" y="254" text-anchor="middle" class="d-muted" font-size="11">secure_sig: None</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#cb-arrow)">
+      <line x1="220" y1="45" x2="266" y2="45"></line>
+      <line x1="380" y1="70" x2="380" y2="106"></line>
+      <line x1="490" y1="142" x2="536" y2="142"></line>
+      <line x1="640" y1="174" x2="640" y2="210"></line>
+      <line x1="540" y1="239" x2="494" y2="239"></line>
+      <line x1="270" y1="239" x2="120" y2="239"></line>
+      <line x1="120" y1="239" x2="120" y2="74"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="errors">Errors</h2>
+
+<p>
+  Read paths map a gRPC <code>NotFound</code> to <code>BackendError::ObjectNotFound</code> with the object
+  type and hex ID. Any other error, whether a connection failure, another status, or a conversion error,
+  becomes <code>BackendError::Other</code>. Write paths make every failure <code>BackendError::Other</code>
+  (<a href="{{ src(be, 272, 275) }}">read mapping</a>, <a href="{{ src(be, 303) }}">write mapping</a>).
+  Unsupported features return <code>BackendError::Unsupported</code> before any call is made.
+</p>
+
+<h2 id="limitations">What this backend doesn't do</h2>
+
+<ul>
+  <li>Symlinks can't be read or written, and copy tracking is off entirely.</li>
+  <li>Commit signing is ignored on write, and signatures are dropped on read.</li>
+  <li><code>write_commit</code> returns the commit unchanged, though the jj-lib contract says it "should contain the data that was actually written" (<a href="{{ jj_lib('lib/src/backend.rs', 631, 648) }}">doc</a>). Since the server's ID covers fewer fields than the commit holds (<a href="{{ url_for('jj_cloud', slug='object-ids') }}">object-ids</a>), two different commits can come back with the same ID.</li>
+  <li>Whole files are held in memory on both read and write. There is no streaming upload.</li>
+  <li>No connection reuse, no timeouts, no retries, no authentication. <code>concurrency</code> is 1.</li>
+  <li><code>gc</code> does nothing and <code>get_copy_records</code> is always empty.</li>
+</ul>

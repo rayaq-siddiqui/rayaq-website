@@ -25,7 +25,7 @@ PAGES = [
         "title": "The client Backend",
         "summary": "The commit-cloud implementation of jj-lib's Backend trait, method by method: which RPC each calls, IDs, the root commit, and the sync/async bridge.",
         "sources": ["lib/src/cc_backend.rs", "lib/src/util.rs", "lib/src/lib.rs"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "client-op-store",
