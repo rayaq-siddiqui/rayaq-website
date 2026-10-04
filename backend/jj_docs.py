@@ -956,6 +956,17 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "split": {
+        "title": "How jj split works",
+        "sources": [
+            "cli/src/commands/split.rs",
+            "cli/src/description_util.rs",
+            "cli/src/cli_util.rs",
+            "lib/src/rewrite.rs",
+            "cli/src/config/misc.toml",
+        ],
+        "ready": True,
+    },
     "restore": {
         "title": "How jj restore works",
         "sources": [
