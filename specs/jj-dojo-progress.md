@@ -3,13 +3,37 @@
 Running log for the daily jj-dojo architecture Routine. Read this first, update it last.
 The contract is `specs/jj-dojo.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-03 (second run). Upstream unchanged since the pin; built the
-`graph-protocol` page.
+**Last updated:** 2026-10-04 (third run). Upstream unchanged since the pin; built the
+`activation` page.
 
 ## Upstream pin
 
 `jj-vcs/jj-dojo@978c25dc6a7a84902d6012b05a4e513469eeddfe` (committed 2026-09-30, version
 0.0.1), analyzed 2026-10-03. Held in `jj_dojo_docs.UPSTREAM`.
+
+## §10 acceptance criteria
+
+- [x] `/jj-dojo` renders the §6 diagram and links to every page in §5 (boxes for unbuilt pages
+      link to pinned source until the page exists).
+- [ ] Every §5 page exists, meets its "Must cover" column, and is registered: `graph-layout`,
+      `graph-protocol`, `activation` done; 7 to go.
+- [x] `graph-layout` meets all eight §8 items with at least two SVG diagrams (two deviations below).
+- [x] Planned components are visibly marked as planned everywhere they appear.
+- [x] Every source link is pinned to `UPSTREAM.commit` (tested).
+- [x] §7.5 tests exist and pass (132 tests in the suite, all sections).
+- [x] Homepage card links to `/jj-dojo`.
+- [x] Mobile at 390px: no horizontal page scroll on `/jj-dojo` and every ready page (checked in
+      headless Chromium this run).
+- [x] The daily Routine has run in maintenance mode (second and third runs: no relevant upstream
+      change).
+
+## Third run (2026-10-04)
+
+| Commit | What |
+|---|---|
+| `6d109d3` | `activation` page: `package.json` field by field, `activate`/`deactivate`, `ui.ts` registration order, the `Disposable` tree, logging, `JjError` and the error helpers; one activation-sequence SVG |
+
+Maintenance: upstream `HEAD` still at `978c25d`, so the pin stayed.
 
 ## Second run (2026-10-03)
 
@@ -44,7 +68,7 @@ moves and `preprocess.ts` changes.
 2. ~~`graph-layout` (flagship, §8)~~
 3. ~~§6 architecture diagram on the index~~
 4. ~~`graph-protocol`~~
-5. `activation`
+5. ~~`activation`~~
 6. `merge-conflicts`
 7. `graph-webview`
 8. `icon-theme`
@@ -64,6 +88,15 @@ moves and `preprocess.ts` changes.
   variables from `jj.css`.
 
 ## Open gaps / questions for the owner
+
+- **Version log line (`activation`).** `activate` logs `packageJSON.build`, but `package.json` has
+  no `build` field and the `vsix` target packages it unchanged. So outside the test, which injects
+  one, the line reads `Extension version: undefined`. The page states this as following from the
+  code. It wasn't observed in a running VS Code.
+- **Error helpers unused (`activation`).** `logError`, `logAndShowUserError`,
+  `logAndShowInternalError` and the error-callback/feedback hooks have no callers outside
+  `src/logging/` at this pin. Also, `logAndShowInternalError` marks an error as shown even when no
+  feedback provider is registered. Revisit when features start reporting errors.
 
 - **RPC edge cases (`graph-protocol`).** Two behaviours in the vendored RPC layer are stated on
   the page as the code shows them: a handshake timeout is an unhandled rejection that leaves
