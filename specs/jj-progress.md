@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-04 (seventeenth run): no upstream change since `c16d378`; built the
-`jj bookmark create`, `set` and `move` command pages.
+**Last updated:** 2026-10-04 (eighteenth run): no upstream change since `c16d378`; built the
+`jj git fetch` command page.
 
 ## Upstream pin
 
@@ -26,11 +26,19 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 17 of 105 (`fix`, `new`, `edit`,
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 18 of 105 (`fix`, `new`, `edit`,
       `describe`, `commit`, `squash`, `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`,
-      `absorb`, `duplicate`, `bookmark create`, `bookmark set`, `bookmark move`).
+      `absorb`, `duplicate`, `bookmark create`, `bookmark set`, `bookmark move`, `git fetch`).
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
+
+## Eighteenth run (2026-10-04)
+
+| Commit | What |
+|---|---|
+| `f8530a8` | `git fetch` command page (Tier A, all eight §8A.3 items, two SVGs; example from upstream's `test_git_fetch_remotely_rewritten`) |
+
+Maintenance: upstream `HEAD` still at `c16d378`, so the pin stayed.
 
 ## Seventeenth run (2026-10-04)
 
@@ -40,27 +48,11 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 
 Maintenance: upstream `HEAD` still at `c16d378`, so the pin stayed.
 
-## Sixteenth run (2026-10-04)
+## Fourteenth to sixteenth runs (2026-10-04)
 
-| Commit | What |
-|---|---|
-| `1733c66` | `duplicate` command page (Tier A, all eight §8A.3 items, two SVGs; example from upstream's `test_duplicate`) |
-
-Maintenance: upstream `HEAD` still at `c16d378`, so the pin stayed.
-
-## Fifteenth run (2026-10-04)
-
-| Commit | What |
-|---|---|
-| `4ca0bdc` | Maintenance `55921f5..c16d378` (4 commits). `protobufs`: `SimpleWorkspaceStore::get_workspace_path` now resolves stored relative paths to absolute ones (described, links moved +7). `cli`: four `cli_util.rs` ranges after the `Args` doc comment shift −1. `fix`: two `docs/config.md` ranges shift +1. `COMMANDS`: two source lines moved (`bookmark list`, `workspace root`); summaries identical. Every cited range remapped with a diff-based line map and checked |
-| `1e58788` | `absorb` command page (Tier A, all eight §8A.3 items, two SVGs; example from upstream's `test_absorb_simple`) |
-
-## Fourteenth run (2026-10-04)
-
-| Commit | What |
-|---|---|
-| `c9c1103` | Maintenance `69abfbe..55921f5` (2 docs commits: template-keyword help text, env-var config docs). Touched the `operations` source set (no cited lines changed) and `fix`'s `docs/config.md` (both cited ranges shifted +17, content unchanged). `COMMANDS` regenerated identically; no `.proto` changes |
-| `ffb1b60` | `split` command page (Tier A, all eight §8A.3 items, two SVGs; example from upstream's `test_split_by_paths`) |
+- `c9c1103`: maintenance `69abfbe..55921f5` (2 docs commits; `fix`'s `docs/config.md` ranges +17, content unchanged). `ffb1b60`: `split` page.
+- `4ca0bdc`: maintenance `55921f5..c16d378` (4 commits; `protobufs` workspace-path change described, `cli`/`fix` ranges remapped, two `COMMANDS` source lines moved). `1e58788`: `absorb` page.
+- `1733c66`: `duplicate` page (pin unchanged).
 
 ## Twelfth and thirteenth runs (2026-10-03)
 
@@ -137,7 +129,7 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
 1. Tier A commands, alternating with the remaining topics (`trees`, `conflicts`,
    `storage`, `index`, `revsets`, `backends`): ~~`new`~~, ~~`trees`~~, ~~`edit`~~, ~~`describe`~~, ~~`commit`~~,
    ~~`squash`~~, ~~`rebase`~~, ~~`abandon`~~, ~~`undo`~~, then the rest of Tier A. Next, in this order:
-   ~~`redo`~~, ~~`restore`~~, ~~`split`~~, ~~`absorb`~~, ~~`duplicate`~~, ~~`bookmark-create`/`-set`/`-move`~~, `git-fetch`,
+   ~~`redo`~~, ~~`restore`~~, ~~`split`~~, ~~`absorb`~~, ~~`duplicate`~~, ~~`bookmark-create`/`-set`/`-move`~~, ~~`git-fetch`~~,
    `git-push`, then the remaining 46 Tier A commands in registry order.
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
