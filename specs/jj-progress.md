@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-04 (eighteenth run): no upstream change since `c16d378`; built the
-`jj git fetch` command page.
+**Last updated:** 2026-10-04 (nineteenth run): no upstream change since `c16d378`; built the
+`jj git push` command page.
 
 ## Upstream pin
 
@@ -26,11 +26,19 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 18 of 105 (`fix`, `new`, `edit`,
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 19 of 105 (`fix`, `new`, `edit`,
       `describe`, `commit`, `squash`, `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`,
-      `absorb`, `duplicate`, `bookmark create`, `bookmark set`, `bookmark move`, `git fetch`).
+      `absorb`, `duplicate`, `bookmark create`, `bookmark set`, `bookmark move`, `git fetch`, `git push`).
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
+
+## Nineteenth run (2026-10-04)
+
+| Commit | What |
+|---|---|
+| `f156028` | `git push` command page (Tier A, all eight §8A.3 items, two SVGs; example from upstream's `test_git_push_current_bookmark`) |
+
+Maintenance: upstream `HEAD` still at `c16d378`, so the pin stayed.
 
 ## Eighteenth run (2026-10-04)
 
@@ -130,7 +138,8 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
    `storage`, `index`, `revsets`, `backends`): ~~`new`~~, ~~`trees`~~, ~~`edit`~~, ~~`describe`~~, ~~`commit`~~,
    ~~`squash`~~, ~~`rebase`~~, ~~`abandon`~~, ~~`undo`~~, then the rest of Tier A. Next, in this order:
    ~~`redo`~~, ~~`restore`~~, ~~`split`~~, ~~`absorb`~~, ~~`duplicate`~~, ~~`bookmark-create`/`-set`/`-move`~~, ~~`git-fetch`~~,
-   `git-push`, then the remaining 46 Tier A commands in registry order.
+   ~~`git-push`~~, then the remaining 46 Tier A commands in registry order (next: `metaedit`,
+   `next`, `prev`, `parallelize`).
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
 
@@ -150,6 +159,10 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
   shared pages for Tier C; the first three are a judgment call to keep slugs to two levels).
 
 ## Open gaps / questions for the owner
+
+- **`jj git push` help text vs code.** The command's help says "There is no option to push to
+  multiple remotes", but `--remote` is repeatable, takes patterns, and the code pushes to every
+  matching remote (and `git.push` accepts a list). The page describes the code.
 
 - **Links to unbuilt topics.** The `bookmark set`/`move` touchpoint tables name the `index` and
   `revsets` topics as plain text ("page planned"), because a link to an unready page fails
