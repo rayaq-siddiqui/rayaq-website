@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-04 (thirty-fifth run): no upstream change since `4df5265`; built the
-`storage` topic page. `index`, `revsets` and `backends` come next, then Tier B (spec §9).
+**Last updated:** 2026-10-04 (thirty-sixth run): no upstream change since `4df5265`; built the
+`index` topic page. `revsets` and `backends` come next, then Tier B (spec §9).
 
 ## Upstream pin
 
@@ -16,12 +16,12 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] `/jj` renders the §6 diagram and links to every page in §5 (boxes for unbuilt
       pages link to pinned source until the page exists).
 - [ ] Every §5 page exists and is registered: `protobufs`, `cli`, `commits`, `view`,
-      `operations`, `transactions`, `working-copy`, `trees`, `conflicts`, `storage` done; 3 to go
-      (`index`, `revsets`, `backends`).
+      `operations`, `transactions`, `working-copy`, `trees`, `conflicts`, `storage`, `index` done;
+      2 to go (`revsets`, `backends`).
 - [x] The `fix` page meets all ten §8 items, with three SVG diagrams.
 - [x] The `protobufs` page covers all seven `.proto` files, every field.
 - [x] Every source link is pinned to `UPSTREAM.commit` (tested).
-- [x] §7.5 tests exist and pass (138 tests in the suite, including the other sections').
+- [x] §7.5 tests exist and pass (139 tests in the suite, including the other sections').
 - [x] Homepage card links to `/jj`.
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
@@ -38,9 +38,12 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
 
-## Thirty-fourth and thirty-fifth runs (2026-10-04)
+## Thirty-fourth to thirty-sixth runs (2026-10-04)
 
-Pin unchanged (`4df5265`). `3b6b9ff`: `storage` topic page (every `.jj/` path with owner and format,
+Pin unchanged (`4df5265`). `4c1e053`: `index` topic page at `/jj/index` (the five index traits,
+positions and the segment stack with a diagram, the segment file format, squash/hash/save,
+`op_links` and rebuilds, graph queries, change-ID visibility, the opt-in changed-path index, short
+ID prefixes); template named `jj/commit-index.html` (see deviations). `3b6b9ff`: `storage` topic page (every `.jj/` path with owner and format,
 linked tree diagram, `type` files and factory dispatch, the `.jj/repo` pointer file, Git backend
 `git_target`/`extra/`, content-addressed op store writes, op heads and lock files, index
 `segments`/`op_links`/`changed_paths`, `checkout`/`tree_state`). `0f9c64e`: `conflicts` topic page (`Merge<T>`, trivial merge, flatten/simplify,
@@ -61,36 +64,16 @@ Tier B before the remaining topic pages, against §9; fixed below. Separately, a
   `git colocation` `b40cb83`, `sign`/`unsign` `56f3709`, `workspace *` `283ba7c`, `gerrit upload` `32f055e`.
 - `create_or_reuse_dir` and `Signer` live in `core/src/` (`file_util.rs`, `signing.rs`).
 
-## Twelfth to twenty-sixth runs (2026-10-03 to 2026-10-04)
+## First to twenty-sixth runs (2026-10-02 to 2026-10-04)
 
-- Maintenance: `69abfbe..55921f5` (`c9c1103`), `55921f5..c16d378` (`4ca0bdc`), and `c16d378..03db8d1`
-  (`197de77`, pin only; all 72 citations into changed files checked with a diff-based line map).
-- Pages: `redo` `261b4f6`, `restore` `86bb02b`, `split` `ffb1b60`, `absorb` `1e58788`, `duplicate`
-  `1733c66`, `git fetch` `f8530a8`, `bookmark create`/`set`/`move` `6bf55c1`, `git push` `f156028`,
-  `metaedit` `afb1c31`, `next`/`prev` `e62dc52`, `parallelize` `fe97413`, `simplify-parents` `ab334a4`,
-  `arrange` `c3348ce`, `converge` `c993b6f` (plus a test that SVG `<title>`/`<desc>` hold no markup),
-  `revert` `cd1593a`.
-
-## Fifth to eleventh runs (2026-10-03)
-
-Pin unchanged (`69abfbe`). Pages: `trees` topic `a760e3f`, `edit` `42d2f3d`, `commit` `a25d7eb`,
-`describe` `0e29d5e` (plus a test that every ready Tier A page except `fix` has the eight section
-anchors and at least two diagrams), `squash` `b95d84e`, `rebase` `6dfaf93`, `abandon` `b859736`,
-`undo` `f332523` (example drawn as an operation log). Core types such as `CommitId` and `id_type!`
-live in the `core/` crate (`core/src/`), not `lib/src/`, so cite them there.
-
-## Second to fourth runs (2026-10-02 to 2026-10-03)
-
-- Topic pages: `cli` (`0c1aa97`, fix `5b20712`), `commits` (`99b521c`), `view` (`34ed812`),
-  `operations` (`8b6d256`), `transactions` (`04f092e`), `working-copy` (`5279499`).
-- `2cebd0f`: maintenance `0cb02a8..69abfbe` (undo/redo gained `--allow-cross-workspace`;
-  `operations` page and catalogue updated). `bac9988`: `new` command page.
-
-## First run
-
-Scaffold `1124529` (`jj_docs.py` pin/registry/link helper/`PROTO_MESSAGES`, routes, `jj/base.html`,
-`jj.css`, homepage card, tests, CLAUDE.md); spec v2 `39751dc` (every command gets a page, §8A);
-`fix` `98a7058`; `protobufs` `5ca3f93`; §6 diagram `46c7640`; `COMMANDS` (105 entries) `1d27034`.
+- Scaffold `1124529`, spec v2 `39751dc`, `fix` `98a7058`, `protobufs` `5ca3f93`, §6 diagram `46c7640`,
+  `COMMANDS` `1d27034`. Topics: `cli` `0c1aa97`, `commits` `99b521c`, `view` `34ed812`, `operations`
+  `8b6d256`, `transactions` `04f092e`, `working-copy` `5279499`, `trees` `a760e3f`.
+- Maintenance: `0cb02a8..69abfbe` (`2cebd0f`), `69abfbe..55921f5` (`c9c1103`), `55921f5..c16d378`
+  (`4ca0bdc`), `c16d378..03db8d1` (`197de77`).
+- Command pages `new` through `revert` (see the criteria list); later commits are in `git log`.
+- Core types (`CommitId`, `id_type!`, `Signer`, `create_or_reuse_dir`) live in `core/src/`, not
+  `lib/src/`, so cite them there.
 
 ## How to maintain the command list
 
@@ -114,8 +97,8 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
    ~~`bookmark-delete`~~, ~~`bookmark-forget`~~, ~~`bookmark-rename`~~, ~~`bookmark-track`~~,
    ~~`bookmark-untrack`~~, ~~`tag-*`~~, ~~`git-clone`/`-colocation`/`-export`/`-import`/`-init`/
    `-remote`~~, ~~`sign`~~, ~~`unsign`~~, ~~`workspace-*`~~, ~~`gerrit-upload`~~. Tier A complete.
-2. Remaining topic pages: ~~`conflicts`~~, ~~`storage`~~, `index`, `revsets`, `backends`. When `index` and
-   `revsets` ship, link them from the `bookmark set`/`move` touchpoint tables (see gaps).
+2. Remaining topic pages: ~~`conflicts`~~, ~~`storage`~~, ~~`index`~~, `revsets`, `backends`. When `revsets`
+   ships, link them from the `bookmark set`/`move` touchpoint tables (see gaps).
 3. Tier B commands, in registry order: `file annotate`, `file list`, `file search`, `file show`,
    `sparse list`, `log`, `show`, `diff`, `interdiff`, `status`, `evolog`, `root`, `operation diff`,
    `operation log`, `operation show`, `bookmark list`, `tag list`, `git root`, `workspace list`,
@@ -136,6 +119,10 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
 - **Nested subcommands.** `git colocation`, `git remote` and `util backend` each get one
   page covering their own subcommands, and `debug`/`bench` are one page each (§8A.2 allows
   shared pages for Tier C; the first three are a judgment call to keep slugs to two levels).
+
+- **The `index` page's template.** The slug `index` would map to `jj/index.html`, the `/jj` landing
+  page, so a registry entry can set `"template"` (read through `jj_docs.page_template`), and the
+  `index` topic uses `jj/commit-index.html`. Its URL is still `/jj/index`, as §5 names it.
 
 ## Open gaps / questions for the owner
 
@@ -173,7 +160,8 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
   matching remote (and `git.push` accepts a list). The page describes the code.
 - **Links to unbuilt topics.** The `bookmark set`/`move` touchpoint tables name the `index` and
   `revsets` topics as plain text ("page planned"), because a link to an unready page fails
-  `test_every_internal_jj_link_resolves`. Link them when those topic pages ship.
+  `test_every_internal_jj_link_resolves`. `index` has shipped; link both in the run that ships
+  `revsets`.
 - **`jj split` help text vs code.** The help text says splitting an empty commit "is not supported",
   but the code has no such check, and upstream's `test_split_empty` splits one successfully. The page
   states both.
