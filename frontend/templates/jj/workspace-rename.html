@@ -1,0 +1,207 @@
+{% set cmd = "cli/src/commands/workspace/rename.rs" %}
+{% set view = "lib/src/view.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+{% set wss = "lib/src/simple_workspace_store.rs" %}
+{% set t = "cli/tests/test_workspaces.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj workspace rename</code> works</h1>
+  <p class="tagline">
+    <code>jj workspace rename</code> gives the current workspace a new name. The name is stored in three
+    places, the repo's view, the workspace's own working-copy state, and the workspace store, and the command
+    changes all three together.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj refuses an empty name, does nothing if the name is unchanged, and refuses if the current
+  workspace isn't in the view. It then starts a transaction, locks the working copy, renames the workspace
+  in the working-copy state, in the view (which moves its working-copy commit and Git <code>HEAD</code> to
+  the new name, refusing a name that's taken) and in the workspace store, commits the operation
+  <code>Renamed workspace '&lt;old&gt;' to '&lt;new&gt;'</code>, and records it in the working copy.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 30, 83) }}"><code>cmd_workspace_rename</code></a>. It can only rename the
+  workspace it runs in. Workspaces are created by
+  <a href="{{ url_for('jj', slug='workspace-add') }}"><code>jj workspace add</code></a>; the name is what
+  <code>NAME@</code> means in revsets and <code>jj log</code>.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Argument</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>NEW_WORKSPACE_NAME</code> (positional)</td><td>workspace name</td><td>required</td><td>The new name for the current workspace (<a href="{{ src(cmd, 23, 28) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<p>None. The name has no config of its own.</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 360" role="img" aria-labelledby="wn-flow-title wn-flow-desc">
+    <title id="wn-flow-title">jj workspace rename: call flow</title>
+    <desc id="wn-flow-desc">
+      cmd_workspace_rename refuses an empty name, loads the workspace, prints Nothing changed if the name is
+      the same, and refuses if the current workspace isn't in the view. It starts a raw transaction and
+      locks the working copy, then renames the workspace in the working-copy state, the view and the
+      workspace store. The transaction is committed as Renamed workspace, and the working-copy lock is
+      released at the new operation.
+    </desc>
+    <defs>
+      <marker id="wn-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(cmd, 36, 59) }}"><rect class="d-box" x="20" y="16" width="720" height="52" rx="6"></rect>
+      <text x="32" y="38">empty → error; same name → "Nothing changed."</text>
+      <text x="32" y="56" class="d-muted" font-size="11">current workspace not in the view → error</text></a>
+
+      <a href="{{ src(cmd, 61, 64) }}"><rect class="d-box" x="20" y="84" width="720" height="40" rx="6"></rect>
+      <text x="32" y="109">start a transaction; lock the working copy (start_working_copy_mutation)</text></a>
+
+      <a href="{{ src(cmd, 66, 66) }}"><rect class="d-box" x="20" y="146" width="230" height="70" rx="6"></rect>
+      <text x="32" y="168">working-copy state</text>
+      <text x="32" y="188" class="d-muted" font-size="11">locked_wc.rename_workspace</text></a>
+      <a href="{{ src(cmd, 68, 69) }}"><rect class="d-box" x="265" y="146" width="230" height="70" rx="6"></rect>
+      <text x="277" y="168">view</text>
+      <text x="277" y="188" class="d-muted" font-size="11">wc commit ID and Git HEAD</text>
+      <text x="277" y="204" class="d-muted" font-size="11">move to the new name</text></a>
+      <a href="{{ src(cmd, 71, 71) }}"><rect class="d-box" x="510" y="146" width="230" height="70" rx="6"></rect>
+      <text x="522" y="168">workspace store</text>
+      <text x="522" y="188" class="d-muted" font-size="11">rename the entry</text></a>
+
+      <a href="{{ src(cmd, 73, 80) }}"><rect class="d-box" x="20" y="238" width="720" height="52" rx="6"></rect>
+      <text x="32" y="260">tx.commit("Renamed workspace 'OLD' to 'NEW'")</text>
+      <text x="32" y="278" class="d-muted" font-size="11">locked_ws.finish(new op ID): the working copy now records the new operation</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" fill="none">
+      <line x1="380" y1="68" x2="380" y2="82" marker-end="url(#wn-arrow)"></line>
+      <line x1="135" y1="124" x2="135" y2="144" marker-end="url(#wn-arrow)"></line>
+      <line x1="380" y1="124" x2="380" y2="144" marker-end="url(#wn-arrow)"></line>
+      <line x1="625" y1="124" x2="625" y2="144" marker-end="url(#wn-arrow)"></line>
+      <line x1="380" y1="216" x2="380" y2="236" marker-end="url(#wn-arrow)"></line>
+    </g>
+  </svg>
+</div>
+
+<p>
+  The old name is read from the working copy itself, not from command arguments
+  (<a href="{{ src(cmd, 42, 43) }}">source</a>), which is why a forgotten workspace can't be renamed back into
+  the repo: its working copy still has its name, but the view doesn't (<a href="{{ src(t, 2292, 2309) }}">test</a>).
+</p>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<ul>
+  <li><strong>View:</strong> <a href="{{ src(view, 128, 150) }}"><code>View::rename_workspace</code></a> moves the
+    working-copy commit ID and, if recorded, the Git <code>HEAD</code> from the old name to the new one,
+    through <a href="{{ src(repo, 1701, 1707) }}"><code>MutableRepo::rename_workspace</code></a>. See the
+    <a href="{{ url_for('jj', slug='view') }}">view</a> page.</li>
+  <li><strong>Working copy:</strong> the working-copy state stores its workspace name, so it is renamed
+    under the working-copy lock; see the <a href="{{ url_for('jj', slug='working-copy') }}">working copy</a> page.</li>
+  <li><strong>Workspace store:</strong> the entry's name changes and its path stays
+    (<a href="{{ src(wss, 204, 222) }}"><code>rename</code></a>), so <code>jj workspace root --name NEW</code> works
+    and the old name no longer does (<a href="{{ src(t, 2355, 2367) }}">test</a>).</li>
+  <li><strong>Commits:</strong> none change; <code>jj log</code> shows <code>NEW@</code> on the same commit.</li>
+</ul>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> a raw one (<code>into_inner</code>), committed directly rather than through
+    <code>finish</code>, because the working copy is updated by hand: the lock is taken before the view
+    changes and released with the new operation ID (<a href="{{ src(cmd, 63, 80) }}">source</a>).</li>
+  <li><strong>Operation description:</strong> <code>Renamed workspace '&lt;old&gt;' to '&lt;new&gt;'</code>, unusually
+    capitalized and in the past tense compared to other commands (<a href="{{ src(cmd, 73, 79) }}">source</a>).</li>
+  <li><strong>Outside the operation:</strong> the workspace store rename and the working-copy state are
+    written to disk directly, not recorded in the operation.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 210" role="img" aria-labelledby="wn-st-title wn-st-desc">
+    <title id="wn-st-title">The three places a workspace name lives, before and after rename</title>
+    <desc id="wn-st-desc">
+      Before: the view maps second to commit 94f41578, the working-copy state of the secondary directory
+      says second, and the workspace store maps second to ../secondary. After jj workspace rename third,
+      all three say third, with the same commit and path.
+    </desc>
+    <defs>
+      <marker id="wn-st-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <text x="20" y="18" class="d-muted" font-size="11">before</text>
+      <text x="440" y="18" class="d-muted" font-size="11">after rename third</text>
+      <a href="{{ src(view, 128, 150) }}"><rect class="d-box" x="20" y="28" width="300" height="44" rx="6"></rect>
+      <text x="32" y="55">view: second → 94f41578</text>
+      <rect class="d-box" x="440" y="28" width="300" height="44" rx="6" style="stroke: var(--jj-accent)"></rect>
+      <text x="452" y="55">view: third → 94f41578</text></a>
+      <a href="{{ src(cmd, 64, 66) }}"><rect class="d-box" x="20" y="88" width="300" height="44" rx="6"></rect>
+      <text x="32" y="115">secondary/.jj/working_copy: second</text>
+      <rect class="d-box" x="440" y="88" width="300" height="44" rx="6" style="stroke: var(--jj-accent)"></rect>
+      <text x="452" y="115">secondary/.jj/working_copy: third</text></a>
+      <a href="{{ src(wss, 204, 222) }}"><rect class="d-box" x="20" y="148" width="300" height="44" rx="6"></rect>
+      <text x="32" y="175">workspace store: second → ../secondary</text>
+      <rect class="d-box" x="440" y="148" width="300" height="44" rx="6" style="stroke: var(--jj-accent)"></rect>
+      <text x="452" y="175">workspace store: third → ../secondary</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" fill="none">
+      <line x1="320" y1="50" x2="438" y2="50" marker-end="url(#wn-st-arrow)"></line>
+      <line x1="320" y1="110" x2="438" y2="110" marker-end="url(#wn-st-arrow)"></line>
+      <line x1="320" y1="170" x2="438" y2="170" marker-end="url(#wn-st-arrow)"></line>
+    </g>
+  </svg>
+</div>
+
+<p>
+  <strong>Invariants:</strong> names stay unique in the view; no commit changes; the workspace's directory
+  and working-copy commit are the same before and after.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>New workspace name cannot be empty</code></td><td>An empty name.</td><td><a href="{{ src(cmd, 36, 38) }}">rename.rs</a>, <a href="{{ src(t, 40, 47) }}">test</a></td></tr>
+      <tr><td><code>Nothing changed.</code></td><td>The new name equals the current one.</td><td><a href="{{ src(cmd, 44, 47) }}">rename.rs</a>, <a href="{{ src(t, 2209, 2220) }}">test</a></td></tr>
+      <tr><td><code>The current workspace '&lt;name&gt;' is not tracked in the repo.</code></td><td>The workspace was forgotten.</td><td><a href="{{ src(cmd, 49, 59) }}">rename.rs</a>, <a href="{{ src(t, 2292, 2309) }}">test</a></td></tr>
+      <tr><td><code>Failed to rename a workspace</code>, caused by <code>Workspace &lt;name&gt; already exists</code></td><td>Another workspace has that name.</td><td><a href="{{ src(view, 674, 681) }}">view.rs</a>, <a href="{{ src(t, 2222, 2238) }}">test</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 2311, 2368) }}">test_<wbr>workspaces_<wbr>rename_<wbr>workspace</a>. With workspaces
+  <code>default</code> and <code>second</code> (in <code>../secondary</code>), running
+  <code>jj workspace rename third</code> in the secondary directory prints nothing. Afterwards
+  (<a href="{{ src(t, 2332, 2353) }}">source</a>):
+</p>
+
+<pre><code>$ jj workspace list
+default: . qpvuntsm e8849ae1 (empty) (no description set)
+third: ../secondary uuqppmxq 94f41578 (empty) (no description set)
+
+$ jj log    # from the secondary directory
+@  94f41578a9e1 third@
+│ ○  e8849ae12c70 default@
+├─╯
+◆  000000000000</code></pre>
+
+<p>
+  The commit IDs and the directory are unchanged; only the name moved, in all three places shown in §6.
+</p>

@@ -956,6 +956,59 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "workspace-add": {
+        "title": "How jj workspace add works",
+        "sources": [
+            "cli/src/commands/workspace/add.rs",
+            "lib/src/workspace.rs",
+            "lib/src/simple_workspace_store.rs",
+            "lib/src/git.rs",
+            "cli/src/commands/git/mod.rs",
+        ],
+        "ready": True,
+    },
+    "workspace-forget": {
+        "title": "How jj workspace forget works",
+        "sources": [
+            "cli/src/commands/workspace/forget.rs",
+            "lib/src/repo.rs",
+            "lib/src/view.rs",
+            "cli/src/git_util.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
+    "workspace-remove": {
+        "title": "How jj workspace remove works",
+        "sources": [
+            "cli/src/commands/workspace/remove.rs",
+            "lib/src/repo.rs",
+            "lib/src/simple_workspace_store.rs",
+            "cli/src/git_util.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
+    "workspace-rename": {
+        "title": "How jj workspace rename works",
+        "sources": [
+            "cli/src/commands/workspace/rename.rs",
+            "lib/src/view.rs",
+            "lib/src/repo.rs",
+            "lib/src/simple_workspace_store.rs",
+        ],
+        "ready": True,
+    },
+    "workspace-update-stale": {
+        "title": "How jj workspace update-stale works",
+        "sources": [
+            "cli/src/commands/workspace/update_stale.rs",
+            "cli/src/cli_util.rs",
+            "lib/src/working_copy.rs",
+            "cli/src/config/misc.toml",
+        ],
+        "ready": True,
+    },
     "sign": {
         "title": "How jj sign works",
         "sources": [

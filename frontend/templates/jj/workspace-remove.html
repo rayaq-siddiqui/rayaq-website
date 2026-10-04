@@ -1,0 +1,261 @@
+{% set cmd = "cli/src/commands/workspace/remove.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+{% set wss = "lib/src/simple_workspace_store.rs" %}
+{% set gu = "cli/src/git_util.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set t = "cli/tests/test_workspaces.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj workspace remove</code> works</h1>
+  <p class="tagline">
+    <code>jj workspace remove</code> does what <code>jj workspace forget</code> does and then deletes the
+    workspace's directory. Before deleting anything it snapshots the workspace, so tracked changes that were
+    never committed survive as a commit. It refuses the workspace that holds the repository.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj requires a writable working copy, skips unknown names with a warning, and for each workspace
+  looks up its directory in the workspace store. It refuses if the directory contains the repo, or now
+  belongs to another repo. It snapshots each workspace in turn, then removes them from the view in one
+  transaction (<code>remove workspace &lt;name&gt;</code>), deletes their store entries, unlinks Git worktrees,
+  and finally deletes each directory.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 49, 189) }}"><code>cmd_workspace_remove</code></a>. To stop tracking a
+  workspace without touching the disk, use <a href="{{ url_for('jj', slug='workspace-forget') }}"><code>jj workspace forget</code></a>,
+  which every error here suggests.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Argument</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>WORKSPACES</code> (positional, repeatable)</td><td>workspace names</td><td>required</td><td>Which workspaces to remove; unlike <code>forget</code>, there is no default (<a href="{{ src(cmd, 37, 47) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <code>--ignore-working-copy</code>, <code>--at-op</code> and <code>--no-integrate-operation</code> are refused
+  with <code>This command must be able to update the working copy.</code> plus the <code>forget</code> hint
+  (<a href="{{ src(cmd, 55, 58) }}">source</a>, <a href="{{ src(util, 1299, 1312) }}"><code>check_working_copy_writable</code></a>,
+  <a href="{{ src(t, 1814, 1878) }}">test</a>).
+</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<p>
+  None specific. Snapshotting follows the usual snapshot settings (such as <code>snapshot.auto-track</code>),
+  and the Git worktree step uses <code>git.executable-path</code>.
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 470" role="img" aria-labelledby="wr-flow-title wr-flow-desc">
+    <title id="wr-flow-title">jj workspace remove: call flow</title>
+    <desc id="wr-flow-desc">
+      cmd_workspace_remove checks the working copy is writable and filters unknown names. For each
+      workspace it reads the path from the workspace store, canonicalizes it, refuses if it contains the
+      repo or belongs to another repo. It snapshots each workspace, chaining operations. It reloads at the
+      last operation, removes the workspaces in one transaction, forgets them in the workspace store,
+      unlinks Git worktrees, and deletes each directory.
+    </desc>
+    <defs>
+      <marker id="wr-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(cmd, 55, 82) }}"><rect class="d-box" x="20" y="16" width="720" height="40" rx="6"></rect>
+      <text x="32" y="41">writable working copy required; unknown names → warning; none left → "Nothing changed."</text></a>
+
+      <a href="{{ src(cmd, 84, 124) }}"><rect class="d-box" x="20" y="72" width="720" height="70" rx="6"></rect>
+      <text x="32" y="94">for each: path from the workspace store, canonicalized</text>
+      <text x="32" y="114" class="d-muted" font-size="11">refuse: no path, unreadable, contains the repo, or another repo's workspace</text>
+      <text x="32" y="130" class="d-muted" font-size="11">all checks happen before anything changes</text></a>
+
+      <a href="{{ src(cmd, 126, 141) }}"><rect class="d-box" x="20" y="158" width="720" height="52" rx="6"></rect>
+      <text x="32" y="180">snapshot each workspace (maybe_snapshot), each on the previous one's operation</text>
+      <text x="32" y="198" class="d-muted" font-size="11">tracked uncommitted changes become part of its working-copy commit</text></a>
+
+      <a href="{{ src(cmd, 143, 158) }}"><rect class="d-box" x="20" y="226" width="720" height="52" rx="6"></rect>
+      <text x="32" y="248">reload at that operation; one transaction: remove_workspace for each</text>
+      <text x="32" y="266" class="d-muted" font-size="11">op: "remove workspace NAME" / "remove workspaces A, B"</text></a>
+
+      <a href="{{ src(wss, 188, 202) }}"><rect class="d-box" x="20" y="294" width="720" height="40" rx="6"></rect>
+      <text x="32" y="319">workspace_store.forget(names) (forget keeps them; remove doesn't)</text></a>
+
+      <a href="{{ src(cmd, 162, 169) }}"><rect class="d-box" x="20" y="350" width="720" height="40" rx="6"></rect>
+      <text x="32" y="375">unlink_git_worktree for each directory</text></a>
+
+      <a href="{{ src(cmd, 171, 186) }}"><rect class="d-box" x="20" y="406" width="720" height="40" rx="6"></rect>
+      <text x="32" y="431">remove_dir_all → "Removed workspace directory …" (failure: warning)</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" fill="none">
+      <line x1="380" y1="56" x2="380" y2="70" marker-end="url(#wr-arrow)"></line>
+      <line x1="380" y1="142" x2="380" y2="156" marker-end="url(#wr-arrow)"></line>
+      <line x1="380" y1="210" x2="380" y2="224" marker-end="url(#wr-arrow)"></line>
+      <line x1="380" y1="278" x2="380" y2="292" marker-end="url(#wr-arrow)"></line>
+      <line x1="380" y1="334" x2="380" y2="348" marker-end="url(#wr-arrow)"></line>
+      <line x1="380" y1="390" x2="380" y2="404" marker-end="url(#wr-arrow)"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<ul>
+  <li><strong>Workspace store:</strong> the source of each workspace's directory, and the entries are
+    removed afterwards (<a href="{{ src(wss, 188, 202) }}"><code>forget</code></a>,
+    <a href="{{ src(wss, 224, 239) }}"><code>get_workspace_path</code></a>).</li>
+  <li><strong>Working copy:</strong> each workspace is loaded from its own directory and snapshotted like
+    any command would; see the <a href="{{ url_for('jj', slug='working-copy') }}">working copy</a> page.</li>
+  <li><strong>View:</strong> <a href="{{ src(repo, 1666, 1670) }}"><code>remove_workspace</code></a>, which may
+    abandon an empty working-copy commit, exactly as for <code>forget</code>.</li>
+  <li><strong>Git:</strong> worktree unlinking, as for <code>forget</code>
+    (<a href="{{ src(gu, 567, 595) }}"><code>unlink_git_worktree</code></a>).</li>
+</ul>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Snapshots:</strong> one <code>snapshot working copy</code> operation per workspace that had
+    changes, chained so each builds on the last (<a href="{{ src(cmd, 130, 141) }}">source</a>).</li>
+  <li><strong>Removal:</strong> one transaction, <code>remove workspace &lt;name&gt;</code> or
+    <code>remove workspaces &lt;a&gt;, &lt;b&gt;</code> (<a href="{{ src(cmd, 148, 158) }}">source</a>).</li>
+  <li><strong>Outside the operation:</strong> the store entries, Git worktrees and directories.
+    <code>jj undo</code> brings the workspace back in the view, but its files are gone.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 230" role="img" aria-labelledby="wr-safe-title wr-safe-desc">
+    <title id="wr-safe-title">Safety checks before jj workspace remove deletes a directory</title>
+    <desc id="wr-safe-desc">
+      Each named workspace must have a recorded path, the path must be accessible, it must not contain
+      the repository (so the main workspace can't be removed), and loading a workspace there must give the
+      same repository. Failing any check aborts the whole command before anything is changed.
+    </desc>
+    <defs>
+      <marker id="wr-safe-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(cmd, 89, 95) }}"><rect class="d-box" x="20" y="16" width="170" height="64" rx="6"></rect>
+      <text x="32" y="40">path recorded?</text>
+      <text x="32" y="60" class="d-muted" font-size="11">"unreachable workspace"</text></a>
+      <a href="{{ src(cmd, 96, 102) }}"><rect class="d-box" x="205" y="16" width="170" height="64" rx="6"></rect>
+      <text x="217" y="40">accessible?</text>
+      <text x="217" y="60" class="d-muted" font-size="11">"Cannot access …"</text></a>
+      <a href="{{ src(cmd, 103, 112) }}"><rect class="d-box" x="390" y="16" width="170" height="64" rx="6"></rect>
+      <text x="402" y="40">not the repo's?</text>
+      <text x="402" y="60" class="d-muted" font-size="11">"contains the repository"</text></a>
+      <a href="{{ src(cmd, 113, 122) }}"><rect class="d-box" x="575" y="16" width="165" height="64" rx="6"></rect>
+      <text x="587" y="40">same repo?</text>
+      <text x="587" y="60" class="d-muted" font-size="11">"another repository"</text></a>
+      <a href="{{ src(cmd, 123, 141) }}"><rect class="d-box" x="20" y="150" width="720" height="56" rx="6" style="stroke: var(--jj-accent)"></rect>
+      <text x="32" y="172">all workspaces pass → snapshot, remove, delete</text>
+      <text x="32" y="190" class="d-muted" font-size="11">any failure → error with the forget hint (except the main-workspace case); nothing changed</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" fill="none">
+      <line x1="190" y1="48" x2="203" y2="48" marker-end="url(#wr-safe-arrow)"></line>
+      <line x1="375" y1="48" x2="388" y2="48" marker-end="url(#wr-safe-arrow)"></line>
+      <line x1="560" y1="48" x2="573" y2="48" marker-end="url(#wr-safe-arrow)"></line>
+      <line x1="657" y1="80" x2="657" y2="148" marker-end="url(#wr-safe-arrow)"></line>
+    </g>
+  </svg>
+</div>
+
+<p>
+  The "contains the repository" check is why the main workspace (whose <code>.jj/repo</code> is the real repo
+  directory) can't be removed; the source deliberately doesn't suggest <code>forget</code> there either
+  (<a href="{{ src(cmd, 103, 112) }}">source</a>). The "another repository" check protects a directory that was
+  replaced by an unrelated repo after the workspace was added (<a href="{{ src(t, 1896, 1923) }}">test</a>).
+</p>
+
+<p>
+  <strong>Untracked and ignored files are lost.</strong> The snapshot only saves what jj tracks; anything else
+  in the directory is deleted with it (<a href="{{ src(cmd, 126, 129) }}">source</a>).
+</p>
+
+<p>
+  <strong>Invariants:</strong> the repo is never deleted; every removed workspace's tracked changes are in a
+  commit first; the view, store and disk agree that the workspace is gone, unless a directory deletion
+  fails, which is only a warning.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Cannot remove unreachable workspace '&lt;name&gt;'</code></td><td>No path recorded (for example, a workspace from before the store existed).</td><td><a href="{{ src(cmd, 89, 95) }}">remove.rs</a></td></tr>
+      <tr><td><code>Cannot access workspace '&lt;name&gt;' directory</code></td><td>The path can't be canonicalized, e.g. it was deleted.</td><td><a href="{{ src(cmd, 96, 102) }}">remove.rs</a></td></tr>
+      <tr><td><code>Cannot remove workspace '&lt;name&gt;' because it contains the repository</code></td><td>The main workspace.</td><td><a href="{{ src(cmd, 107, 112) }}">remove.rs</a>, <a href="{{ src(t, 1880, 1894) }}">test</a></td></tr>
+      <tr><td><code>Cannot remove workspace '&lt;name&gt;' because it belongs to another repository</code></td><td>The directory now holds a different repo.</td><td><a href="{{ src(cmd, 113, 122) }}">remove.rs</a>, <a href="{{ src(t, 1896, 1923) }}">test</a></td></tr>
+      <tr><td><code>Warning: The current workspace '&lt;name&gt;' no longer exists after this operation. …</code></td><td>Removing the workspace you're in; its directory is still deleted.</td><td><a href="{{ src(t, 1925, 1943) }}">test</a></td></tr>
+      <tr><td><code>Warning: Failed to remove workspace directory "…".</code></td><td>Deleting failed; the workspace is still gone from the repo.</td><td><a href="{{ src(cmd, 172, 178) }}">remove.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 1751, 1783) }}">test_<wbr>workspaces_<wbr>remove_<wbr>snapshots_<wbr>before_<wbr>removal</a>. A
+  workspace <code>secondary</code> is added after <code>initial</code>, then a file is written there without
+  running any jj command in it. <code>jj workspace remove secondary</code> from the main workspace:
+</p>
+
+<pre><code>Removed workspace directory "$TEST_ENV/secondary".</code></pre>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 200" role="img" aria-labelledby="wr-ex-title wr-ex-desc">
+    <title id="wr-ex-title">The secondary workspace's change survives its removal</title>
+    <desc id="wr-ex-desc">
+      Before: secondary@ is an empty working-copy commit on initial, and the file unsnapshotted.txt exists
+      only on disk in the secondary directory. After: the snapshot made secondary's working-copy commit
+      e7db06a0 add unsnapshotted.txt; the workspace is gone, so the commit has no marker, and the directory
+      is deleted.
+    </desc>
+    {% macro node(x, y, label, note="", hl=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 18 }}" y="{{ y + 4 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x + 18 }}" y="{{ y + 20 }}" font-size="10.5" class="d-muted">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <defs>
+      <marker id="wr-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <text x="40" y="18" font-size="12" class="d-muted">before</text>
+    <text x="460" y="18" font-size="12" class="d-muted">after jj workspace remove secondary</text>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="60" y1="161" x2="60" y2="69"></line>
+      <line x1="60" y1="161" x2="160" y2="69"></line>
+      <line x1="480" y1="161" x2="480" y2="69"></line>
+      <line x1="480" y1="161" x2="580" y2="69"></line>
+      <line x1="330" y1="110" x2="420" y2="110" marker-end="url(#wr-ex-arrow)"></line>
+    </g>
+    {{ node(60, 170, "initial") }}
+    {{ node(60, 60, "default@") }}
+    {{ node(160, 60, "secondary@", "(empty) + file on disk only") }}
+    {{ node(480, 170, "initial") }}
+    {{ node(480, 60, "default@") }}
+    {{ node(580, 60, "e7db06a0", "A unsnapshotted.txt", hl=True) }}
+  </svg>
+</div>
+
+<p>The file is now in a commit (<a href="{{ src(t, 1776, 1782) }}">source</a>):</p>
+
+<pre><code>$ jj log -r 'files("unsnapshotted.txt")' --summary
+○  pmmvwywv test.user@example.com 2001-02-03 08:05:10 e7db06a0
+│  (no description set)
+~  A unsnapshotted.txt</code></pre>

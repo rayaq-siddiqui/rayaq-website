@@ -1,0 +1,283 @@
+{% set cmd = "cli/src/commands/workspace/update_stale.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set wc = "lib/src/working_copy.rs" %}
+{% set misc = "cli/src/config/misc.toml" %}
+{% set t = "cli/tests/test_workspaces.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj workspace update-stale</code> works</h1>
+  <p class="tagline">
+    A workspace's files are <em>stale</em> when another workspace (or a concurrent command) changed its
+    working-copy commit, so the files on disk no longer match it. <code>jj workspace update-stale</code>
+    saves any edits made to the stale files, then checks out the commit the repo now says the workspace
+    should have. If the operation the files came from has been lost, it makes a recovery commit instead.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj loads the repo at the operation the working copy last recorded, snapshots the files there
+  (so edits aren't lost), and reloads at the head operation. If the working copy really is stale, it resets
+  Git's <code>HEAD</code> in a colocated workspace, checks out the desired working-copy commit, and prints
+  <code>Updated working copy to fresh commit …</code>. If not, it prints <code>Attempted recovery, but the
+  working copy is not stale.</code> If the working copy's operation can't be read, it creates a
+  <code>RECOVERY COMMIT</code> on the current working-copy commit and checks that out.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 31, 41) }}"><code>cmd_workspace_update_stale</code></a>, a thin wrapper
+  around <a href="{{ src(util, 612, 624) }}"><code>recover_stale_working_copy</code></a>. Workspaces become stale
+  because several share one repo; see <a href="{{ url_for('jj', slug='workspace-add') }}"><code>jj workspace add</code></a>
+  and the <a href="{{ url_for('jj', slug='working-copy') }}">working copy</a> page.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<p>
+  No arguments (<a href="{{ src(cmd, 22, 29) }}"><code>WorkspaceUpdateStaleArgs</code></a>). The command must
+  be able to update the working copy, so <code>--ignore-working-copy</code> is refused
+  (<a href="{{ src(util, 646, 646) }}">source</a>, <a href="{{ src(t, 1236, 1243) }}">test</a>).
+</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>snapshot.auto-update-stale</code></td><td><code>false</code></td><td>When true, any command that finds the working copy stale runs this same recovery itself instead of failing (<a href="{{ src(misc, 62, 62) }}">default</a>, <a href="{{ src(util, 499, 512) }}">use</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 450" role="img" aria-labelledby="us2-flow-title us2-flow-desc">
+    <title id="us2-flow-title">jj workspace update-stale: call flow</title>
+    <desc id="us2-flow-desc">
+      The command loads the operation recorded in the working copy. If it can't be found, jj creates and
+      checks out a recovery commit. Otherwise it loads the repo at that operation, snapshots the files, and
+      reloads at the head operation. It then checks freshness against the desired working-copy commit.
+      Fresh or updated: it says the working copy is not stale. Stale or sibling: it resets Git HEAD if
+      colocated, checks out the desired commit, and prints Updated working copy to fresh commit. Finally it
+      snapshots again to import Git refs.
+    </desc>
+    <defs>
+      <marker id="us2-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(util, 633, 634) }}"><rect class="d-box" x="20" y="16" width="720" height="40" rx="6"></rect>
+      <text x="32" y="41">load the working copy's recorded operation</text></a>
+
+      <a href="{{ src(util, 751, 763) }}"><rect class="d-box" x="20" y="76" width="230" height="86" rx="6"></rect>
+      <text x="32" y="98">not found</text>
+      <text x="32" y="118" class="d-muted" font-size="11">"Failed to read working copy's</text>
+      <text x="32" y="134" class="d-muted" font-size="11">current operation; …"</text>
+      <text x="32" y="150" class="d-muted" font-size="11">→ recovery commit (§6)</text></a>
+
+      <a href="{{ src(util, 635, 662) }}"><rect class="d-box" x="270" y="76" width="470" height="86" rx="6"></rect>
+      <text x="282" y="98">found: load the repo there; snapshot the files</text>
+      <text x="282" y="118" class="d-muted" font-size="11">edits to the stale files go into a commit on that old op</text>
+      <text x="282" y="134" class="d-muted" font-size="11">reload at the head op (merging with the snapshot op)</text>
+      <text x="282" y="150" class="d-muted" font-size="11">desired = the view's working-copy commit</text></a>
+
+      <a href="{{ src(wc, 357, 401) }}"><rect class="d-box" x="270" y="180" width="470" height="40" rx="6"></rect>
+      <text x="282" y="205">WorkingCopyFreshness::check_stale(locked wc, desired, repo)</text></a>
+
+      <a href="{{ src(util, 674, 680) }}"><rect class="d-box" x="270" y="240" width="220" height="70" rx="6"></rect>
+      <text x="282" y="262">Fresh / Updated</text>
+      <text x="282" y="282" class="d-muted" font-size="11">"Attempted recovery, but the</text>
+      <text x="282" y="298" class="d-muted" font-size="11">working copy is not stale."</text></a>
+
+      <a href="{{ src(util, 681, 726) }}"><rect class="d-box" x="505" y="240" width="235" height="86" rx="6"></rect>
+      <text x="517" y="262">Stale / Sibling</text>
+      <text x="517" y="282" class="d-muted" font-size="11">colocated: reset git head</text>
+      <text x="517" y="298" class="d-muted" font-size="11">check out the desired commit</text>
+      <text x="517" y="314" class="d-muted" font-size="11">"Updated working copy to fresh …"</text></a>
+
+      <a href="{{ src(util, 729, 749) }}"><rect class="d-box" x="270" y="346" width="470" height="52" rx="6"></rect>
+      <text x="282" y="368">snapshot again (imports Git refs and HEAD if colocated)</text>
+      <text x="282" y="386" class="d-muted" font-size="11">print untracked-file stats from both snapshots</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" fill="none">
+      <line x1="135" y1="56" x2="135" y2="74" marker-end="url(#us2-arrow)"></line>
+      <line x1="505" y1="56" x2="505" y2="74" marker-end="url(#us2-arrow)"></line>
+      <line x1="505" y1="162" x2="505" y2="178" marker-end="url(#us2-arrow)"></line>
+      <line x1="380" y1="220" x2="380" y2="238" marker-end="url(#us2-arrow)"></line>
+      <line x1="622" y1="220" x2="622" y2="238" marker-end="url(#us2-arrow)"></line>
+      <line x1="380" y1="310" x2="380" y2="344" marker-end="url(#us2-arrow)"></line>
+      <line x1="622" y1="326" x2="622" y2="344" marker-end="url(#us2-arrow)"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<ul>
+  <li><strong>Working copy:</strong> each working copy records the operation it was last updated to.
+    Comparing that with the repo's head operation is how staleness is detected
+    (<a href="{{ src(wc, 343, 401) }}"><code>WorkingCopyFreshness</code></a>). The check-out itself verifies the
+    files still match the stale commit, so a concurrent change fails with
+    <code>Concurrent working copy operation. Try again.</code>
+    (<a href="{{ src(util, 3081, 3107) }}"><code>update_stale_working_copy</code></a>).</li>
+  <li><strong>Operations:</strong> the snapshot is written on the old operation, so it may diverge from the
+    head; loading the repo again merges the two. A source comment notes that the merged repo's
+    working-copy commit stays the one it already had (<a href="{{ src(util, 648, 651) }}">source</a>). See <a href="{{ url_for('jj', slug='operations') }}">operations</a>.</li>
+  <li><strong>Git:</strong> in a colocated workspace, Git's <code>HEAD</code> is moved to the new working-copy
+    parent first, as its own <code>reset git head</code> operation (<a href="{{ src(util, 683, 706) }}">source</a>).</li>
+</ul>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Snapshot:</strong> <code>snapshot working copy</code>, on the stale operation, only if the files
+    had changed.</li>
+  <li><strong><code>reset git head</code></strong>, colocated workspaces only, if <code>HEAD</code> moved.</li>
+  <li><strong>The check-out records no operation:</strong> the repo already says where the working copy
+    should be; only the working copy catches up (<a href="{{ src(util, 708, 714) }}">source</a>). When nothing is
+    stale, nothing at all is recorded (<a href="{{ src(t, 1245, 1250) }}">test</a>).</li>
+  <li><strong>Recovery:</strong> <code>recovery commit</code> (<a href="{{ src(wc, 423, 451) }}">source</a>).</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="freshness">Freshness</h3>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 230" role="img" aria-labelledby="us2-fr-title us2-fr-desc">
+    <title id="us2-fr-title">How WorkingCopyFreshness classifies a working copy</title>
+    <desc id="us2-fr-desc">
+      If the working copy's operation is the repo's operation, it is Fresh. Otherwise jj finds their
+      closest common ancestor operation. If that is the repo's operation, the working copy is ahead:
+      Updated. If it is the working copy's operation, the working copy is behind: Stale, unless the files
+      already match the commit, which is Fresh. Otherwise they are siblings: SiblingOperation.
+    </desc>
+    <g font-size="12">
+      <a href="{{ src(wc, 366, 370) }}"><rect class="d-box" x="20" y="16" width="720" height="40" rx="6"></rect>
+      <text x="32" y="41">wc op == repo op → Fresh; otherwise find their closest common ancestor A</text></a>
+      <a href="{{ src(wc, 381, 384) }}"><rect class="d-box" x="20" y="76" width="230" height="64" rx="6"></rect>
+      <text x="32" y="100">A == repo op</text>
+      <text x="32" y="120" class="d-muted" font-size="11">wc is ahead → Updated</text></a>
+      <a href="{{ src(wc, 385, 395) }}"><rect class="d-box" x="265" y="76" width="230" height="64" rx="6" style="stroke: var(--jj-accent)"></rect>
+      <text x="277" y="100">A == wc op</text>
+      <text x="277" y="120" class="d-muted" font-size="11">wc is behind → Stale</text></a>
+      <a href="{{ src(wc, 396, 398) }}"><rect class="d-box" x="510" y="76" width="230" height="64" rx="6"></rect>
+      <text x="522" y="100">neither</text>
+      <text x="522" y="120" class="d-muted" font-size="11">→ SiblingOperation</text></a>
+      <a href="{{ src(wc, 388, 393) }}"><rect class="d-box" x="265" y="160" width="230" height="56" rx="6"></rect>
+      <text x="277" y="182">files already match</text>
+      <text x="277" y="200" class="d-muted" font-size="11">the commit's tree → Fresh</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" fill="none">
+      <line x1="135" y1="56" x2="135" y2="76"></line>
+      <line x1="380" y1="56" x2="380" y2="76"></line>
+      <line x1="625" y1="56" x2="625" y2="76"></line>
+      <line x1="380" y1="140" x2="380" y2="160" stroke-dasharray="4 3"></line>
+    </g>
+  </svg>
+</div>
+
+<p>
+  An ordinary command treats Stale as an error (<code>The working copy is stale …</code>, with a hint to run
+  this command) and SiblingOperation as an internal error suggesting <code>jj op integrate</code>
+  (<a href="{{ src(util, 3040, 3067) }}">source</a>). This command handles both by checking out the desired
+  commit. A source TODO notes that only one common ancestor is tested (<a href="{{ src(wc, 379, 380) }}">source</a>).
+</p>
+
+<h3 id="recovery">Recovery commit</h3>
+
+<p>
+  If the working copy's operation is gone (for example, abandoned and garbage-collected), jj can't know
+  which commit the files were based on. It makes a new commit on top of the workspace's current
+  working-copy commit with a description starting <code>RECOVERY COMMIT FROM `jj workspace update-stale`</code>,
+  explaining that its diff may include changes from several commits. It makes that commit the working
+  copy's recorded state (<code>recover</code>), then snapshots, so the files on disk end up in it
+  (<a href="{{ src(util, 1531, 1566) }}">source</a>, <a href="{{ src(wc, 423, 451) }}"><code>create_and_check_out_recovery_commit</code></a>).
+</p>
+
+<p>
+  <strong>Invariants:</strong> edits in the stale files are snapshotted before anything is checked out, so
+  they aren't lost; untracked files are reported, not deleted.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Attempted recovery, but the working copy is not stale.</code></td><td>Nothing to do.</td><td><a href="{{ src(util, 674, 680) }}">cli_util.rs</a>, <a href="{{ src(t, 1223, 1234) }}">test</a></td></tr>
+      <tr><td><code>This command must be able to update the working copy.</code>, hint <code>Don't use --ignore-working-copy.</code></td><td>That flag was given.</td><td><a href="{{ src(util, 1299, 1312) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Concurrent working copy operation. Try again.</code></td><td>The files changed again during recovery.</td><td><a href="{{ src(util, 3087, 3093) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Failed to read working copy's current operation; attempting recovery. …</code> then <code>Created and checked out recovery commit …</code></td><td>The recorded operation is missing.</td><td><a href="{{ src(util, 751, 763) }}">cli_util.rs</a>, <a href="{{ src(t, 1121, 1138) }}">test</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 797, 869) }}">test_<wbr>workspaces_<wbr>updated_<wbr>by_<wbr>other</a>. Workspaces
+  <code>default</code> and <code>secondary</code> both sit on commit <code>9a462e35</code>. In <code>default</code>,
+  a change to <code>file</code> is squashed into that parent, which rewrites it to <code>b853f7c8</code> and
+  rebases <code>secondary@</code> onto it. The secondary directory's files now lag behind:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 210" role="img" aria-labelledby="us2-ex-title us2-ex-desc">
+    <title id="us2-ex-title">A secondary workspace made stale by jj squash in default</title>
+    <desc id="us2-ex-desc">
+      Before: default@ 393250c5 and secondary@ 54703666 on 9a462e35. After the squash in default: default@
+      3a9b690d and secondary@ 90f3d42e on b853f7c8, but the secondary directory's files still match the old
+      commit, so the working copy is stale until jj workspace update-stale checks out 90f3d42e.
+    </desc>
+    {% macro node(x, y, label, note="", hl=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 18 }}" y="{{ y + 4 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x + 18 }}" y="{{ y + 20 }}" font-size="10.5" class="d-muted">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <defs>
+      <marker id="us2-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <text x="40" y="18" font-size="12" class="d-muted">before</text>
+    <text x="440" y="18" font-size="12" class="d-muted">after jj squash in default</text>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="80" y1="171" x2="80" y2="129"></line>
+      <line x1="80" y1="111" x2="40" y2="69"></line>
+      <line x1="80" y1="111" x2="200" y2="69"></line>
+      <line x1="480" y1="171" x2="480" y2="129"></line>
+      <line x1="480" y1="111" x2="440" y2="69"></line>
+      <line x1="480" y1="111" x2="600" y2="69"></line>
+      <line x1="330" y1="110" x2="400" y2="110" marker-end="url(#us2-ex-arrow)"></line>
+    </g>
+    {{ node(80, 180, "root") }}
+    {{ node(80, 120, "9a462e35") }}
+    {{ node(40, 60, "393250c5", "default@") }}
+    {{ node(200, 60, "54703666", "secondary@") }}
+    {{ node(480, 180, "root") }}
+    {{ node(480, 120, "b853f7c8", "rewritten parent") }}
+    {{ node(440, 60, "3a9b690d", "default@") }}
+    {{ node(600, 60, "90f3d42e", "secondary@; files still old", hl=True) }}
+  </svg>
+</div>
+
+<p>Upstream's output in the secondary directory (<a href="{{ src(t, 840, 859) }}">source</a>):</p>
+
+<pre><code>$ jj st
+Error: The working copy is stale (not updated since operation 149761aea7d1).
+Hint: Run `jj workspace update-stale` to update it.
+See https://docs.jj-vcs.dev/latest/working-copy/#stale-working-copy for more information.
+
+$ jj workspace update-stale
+Working copy  (@) now at: pmmvwywv 90f3d42e (empty) (no description set)
+Parent commit (@-)      : qpvuntsm b853f7c8 (no description set)
+Added 0 files, modified 1 files, removed 0 files
+Updated working copy to fresh commit 90f3d42e0bff</code></pre>
+
+<p>
+  The secondary files were clean, so the snapshot recorded nothing and no divergent commit was created
+  (<a href="{{ src(t, 849, 850) }}">source</a>).
+</p>
