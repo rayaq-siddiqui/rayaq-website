@@ -1,0 +1,309 @@
+{% set cmd = "cli/src/commands/git/fetch.rs" %}
+{% set git = "lib/src/git.rs" %}
+{% set sub = "lib/src/git_subprocess.rs" %}
+{% set gu = "cli/src/git_util.rs" %}
+{% set t = "cli/tests/test_git_fetch.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj git fetch</code> works</h1>
+  <p class="tagline">
+    <code>jj git fetch</code> runs <code>git fetch</code> for each selected remote, then imports the
+    changed remote-tracking refs into jj's view. Along the way it updates tracked local bookmarks,
+    abandons commits the remote dropped, and records commits the remote rewrote as rewrites.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj picks the remotes (from <code>--remote</code>, <code>--all-remotes</code>,
+  <code>git.fetch</code>, the only remote, or <code>origin</code>). For each remote it builds a
+  bookmark expression and a tag expression, and turns them into forced Git refspecs. It shells out to
+  <code>git fetch --porcelain --prune --no-write-fetch-head --no-tags</code>, dropping and retrying
+  refspecs the remote doesn't have. It then diffs the Git refs against the view and imports the
+  changes. Tracked remote bookmarks are merged into local ones. Commits no longer reachable from any
+  ref are abandoned, and remotely rewritten commits get synthetic predecessors. All of this is one
+  operation, <code>fetch from git remote(s) &lt;names&gt;</code>.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 130, 263) }}"><code>cmd_git_fetch</code></a>. Most of the work
+  happens in jj-lib's <a href="{{ src(git, 3259, 3413) }}"><code>GitFetch</code></a> and the shared
+  import code in <a href="{{ src(git, 630, 782) }}"><code>import_refs_inner</code></a>. Remote bookmarks
+  and their tracking state live in the view (<a href="{{ url_for('jj', slug='view') }}">view page</a>).
+  Abandoning and rebasing descendants is the usual rewrite machinery, run when the transaction
+  finishes (<a href="{{ url_for('jj', slug='cli') }}">CLI page</a>).
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>-b</code>, <code>--branch</code>, <code>--bookmark BRANCH</code></td><td>name patterns, repeatable</td><td>from config</td><td>Fetch only these branches. Globs, but only <code>*</code> is expanded. Union and <code>~</code> (negative intersection) are the only operators (<a href="{{ src(cmd, 71, 91) }}">source</a>).</td></tr>
+      <tr><td><code>-t</code>, <code>--tag TAG</code></td><td>name patterns, repeatable</td><td>from config</td><td>Fetch only these tags, with the same pattern rules (<a href="{{ src(cmd, 93, 104) }}">source</a>).</td></tr>
+      <tr><td><code>--tracked</code></td><td>bool</td><td>off</td><td>Fetch only bookmarks and tags already tracked from each remote. Conflicts with <code>--branch</code>/<code>--tag</code> (<a href="{{ src(cmd, 106, 111) }}">source</a>).</td></tr>
+      <tr><td><code>--remote REMOTE</code></td><td>name patterns, repeatable</td><td><code>git.fetch</code>, else the only remote, else <code>origin</code></td><td>Remotes to fetch from. Globs by default, for example <code>--remote '*'</code> (<a href="{{ src(cmd, 113, 123) }}">source</a>).</td></tr>
+      <tr><td><code>--all-remotes</code></td><td>bool</td><td>off</td><td>Every remote. Conflicts with <code>--remote</code> (<a href="{{ src(cmd, 125, 127) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  If either <code>--branch</code> or <code>--tag</code> is given, the other one defaults to
+  <em>nothing</em>, not to the config. So <code>--branch main</code> fetches no tags
+  (<a href="{{ src(cmd, 177, 185) }}">source</a>). The global <code>--no-integrate-operation</code>
+  flag is rejected with <code>--no-integrate-operation is not respected</code>
+  (<a href="{{ src(cmd, 136, 140) }}">source</a>).
+</p>
+<p class="jj-source"><a href="{{ src(cmd, 50, 128) }}"><code>GitFetchArgs</code></a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>git.fetch</code></td><td>unset</td><td>Remote name pattern, or a list of them, used when <code>--remote</code> isn't given (<a href="{{ src(cmd, 267, 290) }}">source</a>, <a href="{{ src('docs/config.md', 1845, 1877) }}">docs</a>).</td></tr>
+      <tr><td><code>remotes.&lt;name&gt;.fetch-bookmarks</code></td><td>unset</td><td>Which branches to fetch from that remote. When it's unset, the remote's fetch refspecs are read from Git config instead (<a href="{{ src(cmd, 212, 220) }}">source</a>, <a href="{{ src('docs/config.md', 1878, 1895) }}">docs</a>).</td></tr>
+      <tr><td><code>remotes.&lt;name&gt;.fetch-tags</code></td><td>unset (all tags)</td><td>Which tags to fetch (<a href="{{ src(cmd, 221, 227) }}">source</a>).</td></tr>
+      <tr><td><code>remotes.&lt;name&gt;.auto-track-bookmarks</code></td><td>unset</td><td>Newly seen remote bookmarks whose names match start out tracked. Otherwise they're untracked (<a href="{{ src(git, 1125, 1146) }}"><code>default_remote_ref_state_for</code></a>). <code>auto-track-created-bookmarks</code> doesn't apply here (<a href="{{ src(gu, 204, 214) }}">source</a>).</td></tr>
+      <tr><td><code>git.abandon-unreachable-commits</code></td><td><code>true</code></td><td>Abandon commits that only the changed remote refs kept reachable (<a href="{{ src('lib/src/config/misc.toml', 12, 16) }}">default</a>, <a href="{{ src('docs/config.md', 1992, 2005) }}">docs</a>).</td></tr>
+      <tr><td><code>git.record-synthetic-predecessors</code></td><td><code>true</code></td><td>Link newly imported commits to older commits with the same change ID (<a href="{{ src('docs/config.md', 2007, 2016) }}">docs</a>).</td></tr>
+      <tr><td><code>git.executable-path</code></td><td><code>git</code></td><td>The Git binary jj runs (<a href="{{ src(git, 117, 134) }}"><code>GitSettings</code></a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  With no explicit choice, the remote is guessed: a single existing remote is used, with
+  <code>Hint: Fetching from the only existing remote: &lt;name&gt;</code> if it isn't called
+  <code>origin</code>. Otherwise jj uses <code>origin</code> (<a href="{{ src(cmd, 277, 289) }}">source</a>).
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 520" role="img" aria-labelledby="gf-flow-title gf-flow-desc">
+    <title id="gf-flow-title">jj git fetch: call flow</title>
+    <desc id="gf-flow-desc">
+      cmd_git_fetch loads the workspace and picks the remotes, warning about exact names that don't
+      exist and failing if none match. It starts a transaction and, per remote, builds a bookmark and
+      tag expression from flags, config or Git's refspecs, expanding them into forced refspecs.
+      GitFetch::fetch runs git fetch for each remote, retrying without refspecs whose source is
+      missing and pruning those branches. GitFetch::import_refs diffs Git refs against the view and
+      runs import_refs_inner: import the new heads, update remote refs and merge tracked ones into
+      local bookmarks, abandon unreachable commits, record synthetic predecessors. The stats are
+      printed, missing branches warned about, and tx.finish records the operation and rebases
+      descendants.
+    </desc>
+    <defs>
+      <marker id="gf-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(cmd, 141, 172) }}"><rect class="d-box" x="20" y="20" width="720" height="66" rx="6"></rect>
+      <text x="32" y="41">load workspace (snapshot); remotes = --all-remotes | --remote | git.fetch | only remote | origin</text>
+      <text x="32" y="59" class="d-muted" font-size="11">exact names that don't exist → "Warning: No matching remotes for names: …"</text>
+      <text x="32" y="76" class="d-muted" font-size="11">none match → "No git remotes to fetch from"</text></a>
+
+      <a href="{{ src(cmd, 174, 232) }}"><rect class="d-box" x="20" y="110" width="350" height="94" rx="6"></rect>
+      <text x="32" y="131">start_transaction; per remote:</text>
+      <text x="32" y="149" class="d-muted" font-size="11">--tracked → names already tracked</text>
+      <text x="32" y="166" class="d-muted" font-size="11">bookmarks: --branch | fetch-bookmarks | Git refspecs</text>
+      <text x="32" y="183" class="d-muted" font-size="11">tags: --tag | fetch-tags | all</text></a>
+
+      <a href="{{ src(git, 2970, 3024) }}"><rect class="d-box" x="390" y="110" width="350" height="94" rx="6"></rect>
+      <text x="402" y="131">expand_fetch_refspecs</text>
+      <text x="402" y="149" class="d-muted" font-size="11">+refs/heads/G:refs/remotes/R/G</text>
+      <text x="402" y="166" class="d-muted" font-size="11">+refs/tags/G:refs/jj/remote-tags/R/G</text>
+      <text x="402" y="183" class="d-muted" font-size="11">negative patterns → ^refs/heads/G</text></a>
+
+      <a href="{{ src(git, 3286, 3363) }}"><rect class="d-box" x="20" y="228" width="720" height="84" rx="6"></rect>
+      <text x="32" y="249">GitFetch::fetch, once per remote (git subprocess)</text>
+      <text x="32" y="267" class="d-muted" font-size="11">git fetch --porcelain --prune --no-write-fetch-head --no-tags -- R &lt;refspecs&gt;</text>
+      <text x="32" y="285" class="d-muted" font-size="11">remote lacks a source ref → drop that refspec and retry; remember the branch to prune</text>
+      <text x="32" y="302" class="d-muted" font-size="11">rejected updates → error; git branch --remotes --delete the missing branches</text></a>
+
+      <a href="{{ src(git, 3379, 3412) }}"><rect class="d-box" x="20" y="336" width="720" height="102" rx="6"></rect>
+      <text x="32" y="357">GitFetch::import_refs → diff_refs_to_import (fetched patterns only) → import_refs_inner</text>
+      <text x="32" y="376" class="d-muted" font-size="11">import new head commits into the backend and index; add them as visible heads</text>
+      <text x="32" y="394" class="d-muted" font-size="11">set each remote ref; tracked → merge_local_bookmark / merge_local_tag (base = old tracked target)</text>
+      <text x="32" y="412" class="d-muted" font-size="11">abandon commits only old remote targets reached (git.abandon-unreachable-commits)</text>
+      <text x="32" y="430" class="d-muted" font-size="11">same change ID, new commit → synthetic predecessor and rewrite (git.record-synthetic-predecessors)</text></a>
+
+      <a href="{{ src(cmd, 247, 261) }}"><rect class="d-box" x="20" y="462" width="720" height="44" rx="6"></rect>
+      <text x="380" y="481" text-anchor="middle">print "bookmark: name@remote [new|updated|deleted] tracked|untracked", abandoned, rewritten;</text>
+      <text x="380" y="498" text-anchor="middle">tx.finish(ui, "fetch from git remote(s) R1,R2"): rebase descendants, write the operation</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#gf-arrow)">
+      <line x1="195" y1="86" x2="195" y2="106"></line>
+      <line x1="370" y1="157" x2="386" y2="157"></line>
+      <line x1="565" y1="204" x2="565" y2="224"></line>
+      <line x1="380" y1="312" x2="380" y2="332"></line>
+      <line x1="380" y1="438" x2="380" y2="458"></line>
+    </g>
+  </svg>
+</div>
+
+<p>
+  Every remote is fetched before anything is imported, so the import sees all remotes at once
+  (<a href="{{ src(cmd, 242, 247) }}">source</a>). If any <code>git fetch</code> fails, the command
+  errors out before the transaction is committed. Refs that <code>git</code> already wrote stay in the Git
+  repository.
+</p>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Git repository refs</td><td>written by <code>git</code>, then read</td><td><code>refs/remotes/&lt;remote&gt;/*</code> for branches and <code>refs/jj/remote-tags/&lt;remote&gt;/*</code> for tags (<a href="{{ src(git, 96, 98) }}">namespaces</a>). Tags never land in <code>refs/tags</code>.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td><code>View.remote_views</code></td><td>read, write</td><td>Each changed remote bookmark or tag gets its new target. It keeps its tracking state, or gets the default state if it is new (<a href="{{ src(git, 708, 747) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td><code>View.local_bookmarks</code>, <code>local_tags</code></td><td>write</td><td>For tracked refs, a 3-way merge: local, the old remote target as base, and the new remote target. This can move, delete or conflict a local bookmark.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td><code>View.git_refs</code></td><td>write</td><td>The view's copy of Git refs is brought up to date (<a href="{{ src(git, 704, 707) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Commit store and index</td><td>write</td><td>New Git commits are imported in bulk, indexed, and added as heads (<a href="{{ src(git, 658, 702) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Rewrite records</td><td>write</td><td><code>record_abandoned_commit</code>, <code>set_rewritten_commit</code>, <code>set_divergent_rewrite</code> and <code>set_predecessors</code>. Descendants are rebased when the transaction finishes.</td><td><a href="{{ url_for('jj', slug='transactions') }}">transactions</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td>One operation for the whole fetch.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, started after the remotes are chosen and before any refspec is built (<a href="{{ src(cmd, 174) }}">source</a>).</li>
+  <li><strong>Operation description:</strong> <code>fetch from git remote(s) &lt;r1,r2,…&gt;</code>, the matched remotes joined with commas and no space (<a href="{{ src(cmd, 254, 261) }}">source</a>). Upstream's evolog shows it as <code>fetch from git remote(s) origin</code> (<a href="{{ src(t, 2127) }}">test</a>).</li>
+  <li><strong>Commits:</strong> fetched commits are imported unchanged. Abandoned commits are hidden, and their local descendants are rebased. With synthetic predecessors, local descendants of remotely rewritten commits are rebased onto the new versions.</li>
+  <li><strong>Working copy:</strong> if <code>@</code> was rebased or abandoned, it is updated when the transaction finishes, as with any rewrite.</li>
+  <li><strong><code>jj undo</code></strong> restores the previous view. The fetched Git objects stay in the Git store.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="refspecs">Refspecs</h3>
+<p>
+  <a href="{{ src(git, 3045, 3145) }}"><code>split_into_positive_negative_patterns</code></a> requires each
+  expression to be <code>(p1 | p2 | …) ~ (n1 | …)</code>: at most one union of positive patterns,
+  minus unions of negative ones. Each pattern must convert to a Git glob containing none of
+  <code>: ^ ? [ ]</code> (<a href="{{ src(git, 2909) }}">source</a>,
+  <a href="{{ src(git, 3026, 3033) }}"><code>pattern_to_refspec_glob</code></a>). Positive patterns
+  become <em>forced</em> refspecs into jj's namespaces. Negative ones become <code>^refs/…</code>
+  exclusions. Without <code>fetch-bookmarks</code>, the remote's Git refspecs are reused if they have
+  the shape <code>+refs/heads/X:refs/remotes/&lt;remote&gt;/X</code>. Anything else is skipped with a
+  warning (<a href="{{ src(git, 3170, 3257) }}"><code>load_default_fetch_bookmarks</code></a>).
+</p>
+
+<h3 id="missing-refs">Missing remote refs</h3>
+<p>
+  <code>git fetch</code> fails as a whole when one explicit source ref doesn't exist, and reports only
+  one at a time. So <a href="{{ src(git, 3315, 3344) }}"><code>fetch</code></a> loops: run git, drop the
+  failing refspec, and retry. A branch that disappeared upstream is then removed locally with
+  <code>git branch --remotes --delete</code>, because <code>--prune</code> doesn't prune refs whose
+  refspec failed (<a href="{{ src(git, 3353, 3355) }}">source</a>,
+  <a href="{{ src(sub, 202, 222) }}"><code>spawn_branch_prune</code></a>). If no refspecs are left,
+  nothing is fetched from that remote.
+</p>
+
+<h3 id="import">Import</h3>
+<p>
+  The import only considers refs matching what was fetched from each remote, so
+  <code>--branch a1</code> doesn't notice that <code>a2</code> was deleted upstream
+  (<a href="{{ src(git, 3386, 3405) }}">source</a>). <a href="{{ src(git, 903, 1020) }}"><code>diff_refs_to_import</code></a>
+  compares the Git refs with the view. A known ref missing from Git becomes an update to
+  <em>absent</em>.
+</p>
+<p>
+  Abandonment (<a href="{{ src(git, 784, 812) }}"><code>abandon_unreachable_commits</code></a>) hides
+  <code>pinned..old_remote_heads</code>. Here <em>pinned</em> means local bookmarks and tags, plus
+  untracked remote refs that are still visible, plus the root. It only runs when some changed ref had
+  an old target, and only for commits that are currently visible. Synthetic predecessors
+  (<a href="{{ src(git, 814, 901) }}"><code>record_synthetic_predecessors</code></a>) match change IDs
+  between the commits the remote dropped and the newly reachable ones. A match marks the old commit as
+  rewritten into the new one, or as a divergent rewrite if there are several new ones. Rewritten
+  commits are then removed from the abandoned list (<a href="{{ src(git, 773) }}">source</a>).
+</p>
+
+<p>
+  <strong>Invariants:</strong> remote-tracking refs always mirror what the remote last reported, even
+  when the local merge conflicts. Untracked remote bookmarks never move local bookmarks. Fetched
+  commits are never modified.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>No git remotes to fetch from</code></td><td>The remote selection matched no configured remote.</td><td><a href="{{ src(cmd, 170, 172) }}">fetch.rs</a></td></tr>
+      <tr><td><code>Warning: No matching remotes for names: …</code></td><td>Exact remote names that don't exist.</td><td><a href="{{ src(cmd, 157, 169) }}">fetch.rs</a></td></tr>
+      <tr><td><code>Warning: No matching branches found on any specified/configured remote: …</code></td><td>An exact <code>--branch</code> name that exists on none of the remotes, before or after the fetch.</td><td><a href="{{ src(cmd, 292, 321) }}">fetch.rs</a></td></tr>
+      <tr><td><code>Warning: Ignored refspec `…` from `…`: &lt;reason&gt;</code></td><td>A Git-configured refspec jj can't use: fetch-only, non-forced, not under <code>refs/heads/</code>, not into <code>refs/remotes/&lt;remote&gt;/</code>, or renaming.</td><td><a href="{{ src(git, 3211, 3257) }}">git.rs</a></td></tr>
+      <tr><td><code>Invalid branch pattern provided. When fetching, branch names and globs may not contain the characters …</code></td><td>A pattern with <code>: ^ ? [ ]</code>, or one that isn't a glob.</td><td><a href="{{ src(git, 2963, 2967) }}">git.rs</a></td></tr>
+      <tr><td><code>Cannot use `&amp;` for positive expressions</code>, and the other two shape errors</td><td>An expression that isn't a union minus unions.</td><td><a href="{{ src(git, 3035, 3043) }}">git.rs</a></td></tr>
+      <tr><td><code>Failed to update refs: …</code></td><td>Git rejected a ref update. Remote refs are forced, so this is rare.</td><td><a href="{{ src(git, 3346, 3351) }}">git.rs</a></td></tr>
+      <tr><td><code>No git remote named '…'</code></td><td>The remote disappeared from Git config between selection and fetch.</td><td><a href="{{ src(git, 3305, 3308) }}">git.rs</a></td></tr>
+      <tr><td><code>Warning: Failed to import some Git refs:</code></td><td>Refs whose targets couldn't be imported. Refs under the reserved <code>git</code> remote name add a hint to rename the remote.</td><td><a href="{{ src(gu, 269, 294) }}">git_util.rs</a></td></tr>
+      <tr><td><code>--no-integrate-operation is not respected</code></td><td>That global flag was passed.</td><td><a href="{{ src(cmd, 136, 140) }}">fetch.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 2069, 2120) }}">test_git_fetch_remotely_rewritten</a>. The local
+  repo has <code>book@origin</code> (untracked) on <code>eedc2709</code> "bookmarked", whose parent is
+  <code>97604bbe</code> "original", and the working copy <code>@</code> sits on top. On the remote,
+  "original" is re-described as "modified", which rewrites both commits. Then <code>jj git fetch</code>
+  runs:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 250" role="img" aria-labelledby="gf-ex-title gf-ex-desc">
+    <title id="gf-ex-title">jj git fetch after a remote rewrite</title>
+    <desc id="gf-ex-desc">
+      Before: root, 97604bbe "original", eedc2709 "bookmarked" with book@origin, then @ 257ea01f. After
+      jj git fetch: root, f30445f7 "modified", 3ee37bc8 "bookmarked" with book@origin, then @ 0818b176.
+      The two old commits were matched by change ID and recorded as rewritten into the new ones, so the
+      working copy was rebased instead of left on abandoned commits.
+    </desc>
+    <defs>
+      <marker id="gf-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% macro node(x, y, label, note="", hl=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 15 }}" y="{{ y + 4 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x + 15 }}" y="{{ y + 19 }}" font-size="10.5" class="d-muted">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <text x="60" y="20" font-size="12" class="d-muted">before</text>
+    <text x="440" y="20" font-size="12" class="d-muted">after jj git fetch</text>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="80" y1="221" x2="80" y2="49"></line>
+      <line x1="460" y1="221" x2="460" y2="49"></line>
+      <line x1="290" y1="135" x2="390" y2="135" marker-end="url(#gf-ex-arrow)"></line>
+    </g>
+    {{ node(80, 230, "root") }}{{ node(80, 170, "97604bbe", "original") }}{{ node(80, 110, "eedc2709", "bookmarked · book@origin") }}{{ node(80, 40, "@ 257ea01f") }}
+    {{ node(460, 230, "root") }}{{ node(460, 170, "f30445f7", "modified", hl=True) }}{{ node(460, 110, "3ee37bc8", "bookmarked · book@origin", hl=True) }}{{ node(460, 40, "@ 0818b176", "rebased") }}
+  </svg>
+</div>
+
+<p>Upstream's snapshot:</p>
+
+<pre><code>$ jj git fetch
+bookmark: book@origin [updated] untracked
+Updated 2 rewritten commits.
+Rebased 1 descendant commits.
+Working copy  (@) now at: royxmykx 0818b176 (empty) (no description set)
+Parent commit (@-)      : kkmpptxz 3ee37bc8 book@origin | (empty) bookmarked</code></pre>
+
+<p>
+  Both new commits carry the old change IDs, so the commits only <code>eedc2709</code> reached are
+  mapped onto them instead of being abandoned. <code>jj evolog</code> then shows each new commit with
+  the predecessor it replaced, created by the <code>fetch from git remote(s) origin</code> operation.
+  Compare <a href="{{ src(t, 1808, 1816) }}">test_git_fetch_removed_bookmark</a>: there, a tracked
+  bookmark deleted on the remote deletes the local bookmark, and its commit is reported as
+  <code>Abandoned 1 commits that are no longer reachable</code>.
+</p>

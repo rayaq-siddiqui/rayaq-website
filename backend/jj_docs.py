@@ -956,6 +956,17 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "git-fetch": {
+        "title": "How jj git fetch works",
+        "sources": [
+            "cli/src/commands/git/fetch.rs",
+            "lib/src/git.rs",
+            "lib/src/git_subprocess.rs",
+            "cli/src/git_util.rs",
+            "lib/src/config/misc.toml",
+        ],
+        "ready": True,
+    },
     "bookmark-move": {
         "title": "How jj bookmark move works",
         "sources": [
