@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-04 (twenty-fourth run): no upstream change since `c16d378`; built the
-`jj arrange` command page.
+**Last updated:** 2026-10-04 (twenty-fifth run): maintenance `c16d378..03db8d1` (pin only);
+built the `jj converge` command page.
 
 ## Upstream pin
 
-`jj-vcs/jj@c16d378c4d5d0cf149ee4c2b9b08f681d7672c7b` (committed 2026-10-04, version
-0.45.1), analyzed 2026-10-04. Held in `jj_docs.UPSTREAM`. Previous pin: `55921f5`.
+`jj-vcs/jj@03db8d1604c7ff75724b20ef3761509843f15a33` (committed 2026-10-04, version
+0.45.1), analyzed 2026-10-04. Held in `jj_docs.UPSTREAM`. Previous pin: `c16d378`.
 
 ## §10 acceptance criteria
 
@@ -26,11 +26,18 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 25 of 105 (`fix`, `new`, `edit`,
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 26 of 105 (`fix`, `new`, `edit`,
       `describe`, `commit`, `squash`, `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`,
-      `absorb`, `duplicate`, `bookmark create`, `bookmark set`, `bookmark move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`, `parallelize`, `simplify-parents`, `arrange`).
+      `absorb`, `duplicate`, `bookmark create`, `bookmark set`, `bookmark move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`, `parallelize`, `simplify-parents`, `arrange`, `converge`).
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
+
+## Twenty-fifth run (2026-10-04)
+
+| Commit | What |
+|---|---|
+| `197de77` | Maintenance `c16d378..03db8d1` (3 templater commits). Only `cli_util.rs` touched a source set, and its one-line change is outside every cited range; all 72 citations into changed files checked with a diff-based line map. `COMMANDS` regenerated identically, no `.proto` changes: pin only |
+| `c993b6f` | `converge` command page (Tier A, all eight §8A.3 items, two SVGs; example from upstream's `test_converge_simple`), plus a test that diagram `<title>`/`<desc>` text contains no markup |
 
 ## Twenty-fourth run (2026-10-04)
 
@@ -40,17 +47,9 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 
 Maintenance: upstream `HEAD` still at `c16d378`, so the pin stayed.
 
-## Twenty-third run (2026-10-04)
+## Seventeenth to twenty-third runs (2026-10-04)
 
-| Commit | What |
-|---|---|
-| `ab334a4` | `simplify-parents` command page (Tier A, all eight §8A.3 items, two SVGs; example from upstream's `test_simplify_parents_redundant_parent`) |
-
-Maintenance: upstream `HEAD` still at `c16d378`, so the pin stayed.
-
-## Seventeenth to twenty-second runs (2026-10-04)
-
-Pin unchanged. `fe97413`: `parallelize` page. `e62dc52`: `next` and `prev` pages, landed together. `afb1c31`: `metaedit` page. `f156028`: `git push` page. `6bf55c1`: `bookmark create`/`set`/`move` pages, landed together because they
+Pin unchanged. `ab334a4`: `simplify-parents` page. `fe97413`: `parallelize` page. `e62dc52`: `next` and `prev` pages, landed together. `afb1c31`: `metaedit` page. `f156028`: `git push` page. `6bf55c1`: `bookmark create`/`set`/`move` pages, landed together because they
 cross-link. `f8530a8`: `git fetch` page.
 
 ## Twelfth to sixteenth runs (2026-10-03 to 2026-10-04)
@@ -81,29 +80,12 @@ are an upstream CLI test's snapshot (`test_describe_multiple_commits`, `test_com
 Some core types (`CommitId`, `id_type!`) live in the `core/` crate (`core/src/`), not `lib/src/`,
 so cite them there. Every source path cited by a `/jj` template was checked to exist at the pin.
 
-## Fourth run (2026-10-03)
+## Second to fourth runs (2026-10-02 to 2026-10-03)
 
-| Commit | What |
-|---|---|
-| `2cebd0f` | Maintenance `0cb02a8..69abfbe` (8 commits). Only `cli/src/commands/undo.rs` and `redo.rs` touched a source set: both now refuse an operation from another workspace unless `--allow-cross-workspace`. Updated the `operations` page and the `undo`/`redo` catalogue lines; other changes were Cargo/Nix/governance only |
-| `bac9988` | `new` command page (Tier A, all eight §8A.3 items, two SVGs) |
-
-## Third run (2026-10-02)
-
-| Commit | What |
-|---|---|
-| `8b6d256` | `operations` page: `Operation`/metadata, OpStore vs OpHeadsStore, concurrent-op merging, op expressions, undo/redo/restore/revert, gc |
-| `04f092e` | `transactions` page: repo types, transaction lifecycle, `parent_mapping` rewrites, `rebase_descendants`, the rebase tree merge, rebase options |
-| `5279499` | `working-copy` page: traits, stored state, snapshot pipeline and clean check, checkout and conflict materialization, freshness, settings |
-| `5b20712` | `cli` page fix: `WorkingCopyStale` only when the trees differ |
-
-## Second run (2026-10-02)
-
-| Commit | What |
-|---|---|
-| `0c1aa97` | `cli` page: startup and config, dispatch, loading and op-head merging, snapshot and stale working copies, transactions, finish/write/publish, global flags, exit codes |
-| `99b521c` | `commits` page: stored and in-memory commits, commit vs change IDs, root commit, `CommitBuilder`, predecessors, signing |
-| `34ed812` | `view` page: `View` fields, `RefTarget` conflicts and merging, remote refs and tracking, `view::View` rules, merging views |
+- Topic pages: `cli` (`0c1aa97`, fix `5b20712`), `commits` (`99b521c`), `view` (`34ed812`),
+  `operations` (`8b6d256`), `transactions` (`04f092e`), `working-copy` (`5279499`).
+- `2cebd0f`: maintenance `0cb02a8..69abfbe` (undo/redo gained `--allow-cross-workspace`;
+  `operations` page and catalogue updated). `bac9988`: `new` command page.
 
 ## First run
 
@@ -131,8 +113,8 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
    `storage`, `index`, `revsets`, `backends`): ~~`new`~~, ~~`trees`~~, ~~`edit`~~, ~~`describe`~~, ~~`commit`~~,
    ~~`squash`~~, ~~`rebase`~~, ~~`abandon`~~, ~~`undo`~~, then the rest of Tier A. Next, in this order:
    ~~`redo`~~, ~~`restore`~~, ~~`split`~~, ~~`absorb`~~, ~~`duplicate`~~, ~~`bookmark-create`/`-set`/`-move`~~, ~~`git-fetch`~~,
-   ~~`git-push`~~, then the remaining 40 Tier A commands in registry order (next:
-   `converge`, `revert`, `diffedit`, `run`).
+   ~~`git-push`~~, then the remaining 39 Tier A commands in registry order (next:
+   `revert`, `diffedit`, `run`, `resolve`).
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
 
@@ -152,6 +134,11 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
   shared pages for Tier C; the first three are a judgment call to keep slugs to two levels).
 
 ## Open gaps / questions for the owner
+
+- **`jj converge` base-commit comment.** A source comment in `lib/src/converge.rs` says the tree
+  merge base F is "any of those producer commits (we pick the first one)", but
+  `get_value_producer` picks by change offset, then input order, then committer time, then ID. The
+  page describes the code.
 
 - **`jj arrange` worked example.** The interactive UI can't be driven from upstream's CLI tests, so
   the page's example is a unit test of the plan executor (`test_execute_plan_abandon`), not a
