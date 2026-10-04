@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-04 (thirtieth run): pin bumped `03db8d1..4df5265`; built the
-`jj bookmark advance`/`delete`/`forget`/`rename`/`track`/`untrack` command pages.
+**Last updated:** 2026-10-04 (thirty-first run): no upstream change since `4df5265`; built the
+`jj tag delete`/`set`/`track`/`untrack` command pages.
 
 ## Upstream pin
 
@@ -26,25 +26,30 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 47 of 105, all Tier A (47 of 65;
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 51 of 105, all Tier A (51 of 65;
       Tier B 0 of 27, Tier C 0 of 13). Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
       `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`, `absorb`, `duplicate`,
       `bookmark create`/`set`/`move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`,
       `parallelize`, `simplify-parents`, `arrange`, `converge`, `revert`, `diffedit`, `run`,
       `resolve`, `file chmod`/`track`/`untrack`, `sparse edit`/`reset`/`set`, `bisect run`,
       `op abandon`/`integrate`/`restore`/`revert`, `bookmark advance`/`delete`/`forget`/`rename`/
-      `track`/`untrack`.
+      `track`/`untrack`, `tag delete`/`set`/`track`/`untrack`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
 
+## Thirty-first run (2026-10-04)
+
+Pin unchanged (`4df5265`). `e4557a0`: `tag set`, `tag delete`, `tag track`, `tag untrack`, landed together
+(set: tagging `@` makes it immutable via `tags()` in `immutable_heads()`, so a new working-copy commit is
+created on top; track/untrack mirror the bookmark versions; examples `test_tag_set_delete`,
+`test_tag_track_untrack`).
+
 ## Thirtieth run (2026-10-04)
 
-| Commit | What |
-|---|---|
-| `d4fc639` | Maintenance `03db8d1..4df5265` (3 commits: dependency update, revset lifetime cleanup, `git.sign-on-push` docs). Code changes are signature-only; the one touched citation needed no text change. `docs/config.md` grew 6 lines, so config-doc ranges on 5 pages shifted. The docs clarification exposed an error on `git-push`: sign-on-push signs only *your* commits (`SignBehavior::Own`); fixed. `COMMANDS` identical, no `.proto` change, all 1767 citations in range |
-| `5c2f4de` | `bookmark advance` (the two `revsets.bookmark-advance-*` defaults, `to` bound as a local revset variable; example `test_bookmark_advance_default`) |
-| `40fcace` | `bookmark delete` and `forget` (local-only removal vs. untracking or forgetting remotes; examples `test_bookmark_delete_glob`, `test_bookmark_forget_fetched_bookmark`) |
-| `b241000` | `bookmark rename`, `track`, `untrack` (tracking moved per remote; tracking as a 3-way merge into the local bookmark; example `test_bookmark_track_untrack`) |
+`d4fc639`: maintenance `03db8d1..4df5265` (signature-only code changes; `docs/config.md` grew 6 lines, so
+config-doc ranges on 5 pages shifted; fixed `git-push`, where sign-on-push signs only *your* commits).
+Pages: `bookmark advance` `5c2f4de`, `bookmark delete`/`forget` `40fcace`, `bookmark rename`/`track`/
+`untrack` `b241000`.
 
 ## Twenty-seventh to twenty-ninth runs (2026-10-04)
 
@@ -109,8 +114,9 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
    ~~`sparse-reset`~~, ~~`sparse-set`~~, ~~`bisect-run`~~, ~~`operation-abandon`~~,
    ~~`operation-integrate`~~, ~~`operation-restore`~~, ~~`operation-revert`~~, ~~`bookmark-advance`~~,
    ~~`bookmark-delete`~~, ~~`bookmark-forget`~~, ~~`bookmark-rename`~~, ~~`bookmark-track`~~,
-   ~~`bookmark-untrack`~~; 18 left (next: `tag-delete`, `tag-set`, `tag-track`, `tag-untrack`,
-   `git-clone`, `git-colocation`).
+   ~~`bookmark-untrack`~~, ~~`tag-delete`~~, ~~`tag-set`~~, ~~`tag-track`~~, ~~`tag-untrack`~~; 14 left
+   (next: `git-clone`, `git-colocation`, `git-export`, `git-import`, `git-init`, `git-remote`,
+   `gerrit-upload`, the five `workspace` commands, `sign`, `unsign`).
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
 
