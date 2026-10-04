@@ -1,0 +1,246 @@
+{% set cmd = "cli/src/commands/bookmark/advance.rs" %}
+{% set mod = "cli/src/commands/bookmark/mod.rs" %}
+{% set rs = "cli/src/revset_util.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+{% set t = "cli/tests/test_bookmark_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj bookmark advance</code> works</h1>
+  <p class="tagline">
+    <code>jj bookmark advance</code> moves the bookmarks closest to a target revision forward onto it.
+    By default that's the nearest bookmarked ancestors of <code>@</code>, moved to <code>@</code>, and
+    both "closest" and the target come from configurable revsets.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj resolves the target (<code>--to</code>, else <code>revsets.bookmark-advance-to</code>,
+  default <code>@</code>). With bookmark names, it picks the local bookmarks matching them. Without,
+  it evaluates <code>revsets.bookmark-advance-from</code> (default
+  <code>heads(::to &amp; bookmarks())</code>) with <code>to</code> bound to the target, and picks the
+  bookmarks pointing into it. Bookmarks already at the target are dropped; if none remain,
+  <code>No bookmarks to update.</code> Every move must be a fast-forward, and there's no override. In one
+  transaction the bookmarks are pointed at the target, recorded as
+  <code>point bookmark &lt;names&gt; to commit &lt;id&gt;</code>.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 73, 216) }}"><code>cmd_bookmark_advance</code></a>. Its help text
+  calls <code>jj bookmark advance --to x</code> the equivalent of
+  <code>jj bookmark move --from 'heads(::x &amp; bookmarks())' --to x</code>
+  (<a href="{{ src(cmd, 36, 52) }}">source</a>); compare
+  <a href="{{ url_for('jj', slug='bookmark-move') }}"><code>jj bookmark move</code></a>, which has no
+  configured defaults but allows <code>--allow-backwards</code>. Bookmark storage is on the
+  <a href="{{ url_for('jj', slug='view') }}">view page</a>.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>NAMES</code> (positional)</td><td>name patterns</td><td>none</td><td>Advance bookmarks with these names; globs by default. When given, <code>revsets.bookmark-advance-from</code> is ignored (<a href="{{ src(cmd, 55, 63) }}">source</a>, <a href="{{ src(rs, 363, 384) }}"><code>parse_union_name_patterns</code></a>).</td></tr>
+      <tr><td><code>-t</code>, <code>--to REVSET</code></td><td>revset</td><td><code>revsets.bookmark-advance-to</code></td><td>The target, exactly one commit (<a href="{{ src(cmd, 65, 70) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 53, 71) }}"><code>BookmarkAdvanceArgs</code></a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>revsets.bookmark-advance-to</code></td><td><code>@</code></td><td>The target when <code>--to</code> isn't given. If it doesn't resolve to one commit, the error gets a hint naming this key (<a href="{{ src('cli/src/config/revsets.toml', 20, 20) }}">default</a>, <a href="{{ src(cmd, 80, 102) }}">source</a>).</td></tr>
+      <tr><td><code>revsets.bookmark-advance-from</code></td><td><code>heads(::to &amp; bookmarks())</code></td><td>Which commits' bookmarks to advance when no names are given. It can refer to the target as <code>to</code> (<a href="{{ src('cli/src/config/revsets.toml', 21, 21) }}">default</a>, <a href="{{ src(cmd, 118, 151) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The default from-revset means "the nearest bookmarked commits at or below the target", so in a stack
+  only the top bookmark moves, not every bookmark beneath it.
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 420" role="img" aria-labelledby="ba-flow-title ba-flow-desc">
+    <title id="ba-flow-title">jj bookmark advance: call flow</title>
+    <desc id="ba-flow-desc">
+      cmd_bookmark_advance loads the workspace and resolves the target from --to or
+      revsets.bookmark-advance-to, hinting at the config key on failure. With names it matches local
+      bookmarks by pattern and warns about missing exact names. Without names it parses
+      revsets.bookmark-advance-from with the local variable to bound to the target's commit ID, evaluates
+      it, and keeps bookmarks with any present target in it. Bookmarks already at the target are dropped.
+      If none remain it prints No bookmarks to update. Otherwise any non-fast-forward fails, an empty
+      target warns, and a transaction points every match at the target and records the operation.
+    </desc>
+    <defs>
+      <marker id="ba-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(cmd, 78, 102) }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="32" y="45">load workspace; target = resolve_single_rev(--to or revsets.bookmark-advance-to)</text></a>
+
+      <a href="{{ src(cmd, 108, 117) }}"><rect class="d-box" x="20" y="84" width="330" height="84" rx="6"></rect>
+      <text x="32" y="105">NAMES given</text>
+      <text x="32" y="123" class="d-muted" font-size="11">local_bookmarks_matching(patterns)</text>
+      <text x="32" y="140" class="d-muted" font-size="11">warn on exact names with no</text>
+      <text x="32" y="157" class="d-muted" font-size="11">local bookmark</text></a>
+      <a href="{{ src(cmd, 118, 151) }}"><rect class="d-box" x="370" y="84" width="370" height="84" rx="6"></rect>
+      <text x="382" y="105">no NAMES</text>
+      <text x="382" y="123" class="d-muted" font-size="11">parse revsets.bookmark-advance-from, with</text>
+      <text x="382" y="140" class="d-muted" font-size="11">to = target's commit ID; evaluate; keep</text>
+      <text x="382" y="157" class="d-muted" font-size="11">bookmarks with any present target in it</text></a>
+
+      <a href="{{ src(cmd, 153, 161) }}"><rect class="d-box" x="20" y="192" width="720" height="40" rx="6"></rect>
+      <text x="32" y="217">drop bookmarks already at the target; none left → "No bookmarks to update."</text></a>
+
+      <a href="{{ src(cmd, 163, 179) }}"><rect class="d-box" x="20" y="256" width="720" height="50" rx="6"></rect>
+      <text x="32" y="277">any match not a fast-forward → "Refusing to advance bookmark backwards or sideways: …"</text>
+      <text x="32" y="295" class="d-muted" font-size="11">empty target → "Warning: Target revision is empty."</text></a>
+
+      <a href="{{ src(cmd, 181, 214) }}"><rect class="d-box" x="20" y="330" width="720" height="70" rx="6"></rect>
+      <text x="32" y="351">start_transaction; set_local_bookmark_target(name, normal(target)) for each</text>
+      <text x="32" y="369" class="d-muted" font-size="11">"Advanced N bookmarks to …"; several matched without names → hint</text>
+      <text x="32" y="386" class="d-muted" font-size="11">tx.finish(ui, "point bookmark &lt;names&gt; to commit &lt;id&gt;")</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#ba-arrow)">
+      <line x1="185" y1="60" x2="185" y2="80"></line>
+      <line x1="555" y1="60" x2="555" y2="80"></line>
+      <line x1="185" y1="168" x2="185" y2="188"></line>
+      <line x1="555" y1="168" x2="555" y2="188"></line>
+      <line x1="380" y1="232" x2="380" y2="252"></line>
+      <line x1="380" y1="306" x2="380" y2="326"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td><code>View.local_bookmarks</code></td><td>read, write</td><td>Matched by name or by target, then set to <code>RefTarget::normal(target)</code>. A conflicted bookmark becomes a normal one.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Revset engine</td><td>read</td><td>The from-revset is parsed with a local variable <code>to</code> holding the target's commit ID, evaluated once, and used as a membership test (<a href="{{ src(cmd, 123, 136) }}">source</a>).</td><td>revsets (page planned)</td></tr>
+      <tr><td>Index (ancestry)</td><td>read</td><td><code>is_ancestor</code> for the fast-forward check (<a href="{{ src(mod, 165, 182) }}"><code>is_fast_forward</code></a>).</td><td>index (page planned)</td></tr>
+      <tr><td><code>View.head_ids</code></td><td>maybe write</td><td>The target is added as a head (<a href="{{ src(repo, 1875, 1880) }}"><code>set_local_bookmark_target</code></a>).</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td>One operation if anything moved, none otherwise.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, after selection and the checks (<a href="{{ src(cmd, 181, 181) }}">source</a>). With nothing to update, no operation is recorded.</li>
+  <li><strong>Operation description:</strong> <code>point bookmark &lt;name1, name2, …&gt; to commit &lt;full hex id&gt;</code>, the same text as <code>bookmark move</code> and <code>set</code> (<a href="{{ src(cmd, 203, 214) }}">source</a>).</li>
+  <li><strong>Commits created or rewritten:</strong> none. The working copy is only snapshotted.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<p>
+  Without names, the from-revset is parsed with a revset parse context whose local variables include
+  <code>to</code>, set to a string node holding the target's full commit ID, so it behaves like a symbol
+  naming that commit (<a href="{{ src(cmd, 119, 131) }}">source</a>). Parse warnings are printed under
+  <code>In revsets.bookmark-advance-from</code>. Every local bookmark is then checked: it is selected if
+  <em>any</em> of its present targets is in the evaluated set (<a href="{{ src(cmd, 133, 150) }}">source</a>).
+</p>
+
+<p>
+  With the default <code>heads(::to &amp; bookmarks())</code>, that set is the bookmarked commits among the
+  target's ancestors (including itself) that have no bookmarked descendant in that set. If the target
+  already carries a bookmark, the set is just the target, and every selected bookmark is then dropped as
+  "already there", giving <code>No bookmarks to update.</code>
+  (<a href="{{ src(cmd, 153, 155) }}">source</a>).
+</p>
+
+<p>
+  The fast-forward test is <a href="{{ src(mod, 165, 182) }}"><code>is_fast_forward</code></a>: some present
+  side of the old target must be an ancestor of the new one. Unlike <code>bookmark move</code>, there is no
+  flag to skip it (<a href="{{ src(cmd, 163, 176) }}">source</a>).
+</p>
+
+<p>
+  <strong>Invariants:</strong> never creates or deletes bookmarks, never moves one backwards or sideways,
+  never rewrites commits. Either every selected bookmark moves or none does.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>No bookmarks to update.</code></td><td>Nothing selected, or everything is already at the target.</td><td><a href="{{ src(cmd, 158, 161) }}">advance.rs</a></td></tr>
+      <tr><td><code>Refusing to advance bookmark backwards or sideways: &lt;name&gt;</code></td><td>A selected bookmark isn't an ancestor of the target. Nothing moves.</td><td><a href="{{ src(cmd, 163, 176) }}">advance.rs</a></td></tr>
+      <tr><td><code>Revset `…` didn't resolve to any revisions</code>, with hint <code>`revsets.bookmark-advance-to` controls the default target. …</code></td><td>The target doesn't resolve to one commit; the hint appears only when <code>--to</code> wasn't given.</td><td><a href="{{ src(cmd, 90, 102) }}">advance.rs</a></td></tr>
+      <tr><td><code>Warning: Target revision is empty.</code></td><td>The target has no changes and no description.</td><td><a href="{{ src(cmd, 177, 179) }}">advance.rs</a></td></tr>
+      <tr><td><code>Hint: Specify bookmark by name to update just one of the bookmarks.</code></td><td>Several moved and no names were given.</td><td><a href="{{ src(cmd, 196, 201) }}">advance.rs</a></td></tr>
+      <tr><td><code>Warning: No matching bookmarks for names: …</code></td><td>An exact name has no local bookmark.</td><td><a href="{{ src(mod, 184, 203) }}">mod.rs</a></td></tr>
+      <tr><td>Revset parse errors</td><td><code>revsets.bookmark-advance-from</code> doesn't parse.</td><td><a href="{{ src(cmd, 129, 131) }}">advance.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 3427, 3597) }}">test_bookmark_advance_default</a>. A stack
+  <code>a</code> (bookmark <code>A</code>), <code>b</code> (bookmark <code>B</code>), <code>c</code>,
+  <code>d</code>, and <code>@</code> = <code>e</code>. Plain <code>jj bookmark advance</code>:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 290" role="img" aria-labelledby="ba-ex-title ba-ex-desc">
+    <title id="ba-ex-title">jj bookmark advance with the default revsets</title>
+    <desc id="ba-ex-desc">
+      Before: a with bookmark A, b with bookmark B, then c, d, and e at @. The from revset
+      heads(::@ and bookmarks()) is just b, because a is an ancestor of b. So only B moves, to e. A stays
+      on a.
+    </desc>
+    <defs>
+      <marker id="ba-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% macro node(x, y, label, note="", hl=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 18 }}" y="{{ y + 4 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x + 18 }}" y="{{ y + 20 }}" font-size="10.5" class="d-muted">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    {% macro stack(ox, after) -%}
+      <g class="d-line" stroke-width="1.5"><line x1="{{ ox }}" y1="241" x2="{{ ox }}" y2="49"></line></g>
+      {{ node(ox, 250, "a", "A") }}
+      {{ node(ox, 200, "b", "" if after else "B  ← heads(::to & bookmarks())") }}
+      {{ node(ox, 150, "c") }}
+      {{ node(ox, 100, "d (empty)") }}
+      {{ node(ox, 40, "e  @", "B" if after else "", hl=after) }}
+    {%- endmacro %}
+    <text x="40" y="18" font-size="12" class="d-muted">before</text>
+    <text x="480" y="18" font-size="12" class="d-muted">after jj bookmark advance</text>
+    {{ stack(60, False) }}
+    <line x1="340" y1="150" x2="420" y2="150" class="d-line" stroke-width="1.5" marker-end="url(#ba-ex-arrow)"></line>
+    {{ stack(500, True) }}
+  </svg>
+</div>
+
+<p>Upstream's snapshot (<a href="{{ src(t, 3468, 3474) }}">source</a>):</p>
+
+<pre><code>Advanced 1 bookmarks to vruxwmqv 7753a73e B | e</code></pre>
+
+<p>
+  Other cases in the same test: <code>jj bookmark advance A</code> moves <code>A</code> straight to
+  <code>e</code>, since names bypass the from-revset; with
+  <code>--config=revsets.bookmark-advance-from=A|B</code> both move and the "Specify bookmark by name"
+  hint appears; run with <code>@</code> on <code>b</code>, it prints <code>No bookmarks to update.</code>;
+  and <code>jj bookmark advance B --to A</code> fails with
+  <code>Refusing to advance bookmark backwards or sideways: B</code>
+  (<a href="{{ src(t, 3524, 3555) }}">source</a>).
+</p>

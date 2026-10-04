@@ -956,6 +956,16 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "bookmark-advance": {
+        "title": "How jj bookmark advance works",
+        "sources": [
+            "cli/src/commands/bookmark/advance.rs",
+            "cli/src/commands/bookmark/mod.rs",
+            "cli/src/config/revsets.toml",
+            "lib/src/repo.rs",
+        ],
+        "ready": True,
+    },
     "operation-abandon": {
         "title": "How jj operation abandon works",
         "sources": [
