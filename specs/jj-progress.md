@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-04 (twentieth run): no upstream change since `c16d378`; built the
-`jj metaedit` command page.
+**Last updated:** 2026-10-04 (twenty-first run): no upstream change since `c16d378`; built the
+`jj next` and `jj prev` command pages.
 
 ## Upstream pin
 
@@ -26,11 +26,19 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 20 of 105 (`fix`, `new`, `edit`,
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 22 of 105 (`fix`, `new`, `edit`,
       `describe`, `commit`, `squash`, `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`,
-      `absorb`, `duplicate`, `bookmark create`, `bookmark set`, `bookmark move`, `git fetch`, `git push`, `metaedit`).
+      `absorb`, `duplicate`, `bookmark create`, `bookmark set`, `bookmark move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`).
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
+
+## Twenty-first run (2026-10-04)
+
+| Commit | What |
+|---|---|
+| `e62dc52` | `next` and `prev` command pages, landed together because they cross-link (Tier A, all eight §8A.3 items, two SVGs each; examples from upstream's `test_next_simple` and `test_prev_simple`) |
+
+Maintenance: upstream `HEAD` still at `c16d378`, so the pin stayed.
 
 ## Twentieth run (2026-10-04)
 
@@ -40,17 +48,9 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 
 Maintenance: upstream `HEAD` still at `c16d378`, so the pin stayed.
 
-## Nineteenth run (2026-10-04)
+## Seventeenth to nineteenth runs (2026-10-04)
 
-| Commit | What |
-|---|---|
-| `f156028` | `git push` command page (Tier A, all eight §8A.3 items, two SVGs; example from upstream's `test_git_push_current_bookmark`) |
-
-Maintenance: upstream `HEAD` still at `c16d378`, so the pin stayed.
-
-## Seventeenth and eighteenth runs (2026-10-04)
-
-Pin unchanged. `6bf55c1`: `bookmark create`/`set`/`move` pages, landed together because they
+Pin unchanged. `f156028`: `git push` page. `6bf55c1`: `bookmark create`/`set`/`move` pages, landed together because they
 cross-link. `f8530a8`: `git fetch` page.
 
 ## Fourteenth to sixteenth runs (2026-10-04)
@@ -135,8 +135,8 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
    `storage`, `index`, `revsets`, `backends`): ~~`new`~~, ~~`trees`~~, ~~`edit`~~, ~~`describe`~~, ~~`commit`~~,
    ~~`squash`~~, ~~`rebase`~~, ~~`abandon`~~, ~~`undo`~~, then the rest of Tier A. Next, in this order:
    ~~`redo`~~, ~~`restore`~~, ~~`split`~~, ~~`absorb`~~, ~~`duplicate`~~, ~~`bookmark-create`/`-set`/`-move`~~, ~~`git-fetch`~~,
-   ~~`git-push`~~, then the remaining 45 Tier A commands in registry order (next: `next`,
-   `prev`, `parallelize`, `simplify-parents`).
+   ~~`git-push`~~, then the remaining 43 Tier A commands in registry order (next: `parallelize`,
+   `simplify-parents`, `arrange`, `converge`).
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
 
@@ -156,6 +156,10 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
   shared pages for Tier C; the first three are a judgment call to keep slugs to two levels).
 
 ## Open gaps / questions for the owner
+
+- **`jj next 0`.** Without `--edit`, `next` computes `descendants_at(offset - 1)` on a `u64`, so an
+  offset of 0 would underflow. No upstream test covers it and it couldn't be run here (toolchain), so
+  the page doesn't describe it.
 
 - **`jj git push` help text vs code.** The command's help says "There is no option to push to
   multiple remotes", but `--remote` is repeatable, takes patterns, and the code pushes to every
