@@ -956,6 +956,16 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "arrange": {
+        "title": "How jj arrange works",
+        "sources": [
+            "cli/src/commands/arrange.rs",
+            "lib/src/rewrite.rs",
+            "cli/src/config/revsets.toml",
+            "cli/src/config/templates.toml",
+        ],
+        "ready": True,
+    },
     "simplify-parents": {
         "title": "How jj simplify-parents works",
         "sources": [
