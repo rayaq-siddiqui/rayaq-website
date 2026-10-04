@@ -956,6 +956,18 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "git-push": {
+        "title": "How jj git push works",
+        "sources": [
+            "cli/src/commands/git/push.rs",
+            "lib/src/git.rs",
+            "lib/src/git_subprocess.rs",
+            "lib/src/refs.rs",
+            "cli/src/git_util.rs",
+            "cli/src/config/revsets.toml",
+        ],
+        "ready": True,
+    },
     "git-fetch": {
         "title": "How jj git fetch works",
         "sources": [

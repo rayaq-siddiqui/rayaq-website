@@ -1,0 +1,320 @@
+{% set cmd = "cli/src/commands/git/push.rs" %}
+{% set git = "lib/src/git.rs" %}
+{% set sub = "lib/src/git_subprocess.rs" %}
+{% set refs = "lib/src/refs.rs" %}
+{% set gu = "cli/src/git_util.rs" %}
+{% set t = "cli/tests/test_git_push.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj git push</code> works</h1>
+  <p class="tagline">
+    <code>jj git push</code> works out which bookmarks and tags to update on a remote, checks every commit
+    it would send, and runs one <code>git push</code> per remote. Every ref is pushed with
+    <code>--force-with-lease</code>, using what jj last fetched as the lease. Afterwards jj's
+    remote-tracking refs are updated to match.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj picks the remotes. For each one, it collects ref updates from the flags, or by default
+  from the <code>revsets.git-push</code> revset (<code>remote_bookmarks(remote=…)..@</code>).
+  <code>--change</code> and <code>--named</code> first create local bookmarks. Each candidate ref is
+  classified against its tracked remote ref: no change, conflicted, untracked, or an update. Every
+  commit between the remote's known heads and the new targets is validated: it needs a description, an
+  author and committer, no conflicts, and it can't be private. If <code>git.sign-on-push</code> is
+  set, unsigned commits are signed. jj prints <code>Changes to push to &lt;remote&gt;:</code>, runs
+  <code>git push --porcelain --no-verify --force-with-lease=…</code>, updates the pushed remote refs,
+  and records <code>push … to git remote …</code>.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 281, 662) }}"><code>cmd_git_push</code></a>. The decision for each
+  ref is <a href="{{ src(refs, 197, 216) }}"><code>classify_ref_push_action</code></a> in jj-lib. The push
+  itself is <a href="{{ src(git, 3451, 3563) }}"><code>push_refs</code></a>. Remote bookmarks and their
+  tracking state live in the view (<a href="{{ url_for('jj', slug='view') }}">view page</a>). The
+  inverse command is <a href="{{ url_for('jj', slug='git-fetch') }}"><code>jj git fetch</code></a>.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>--remote REMOTE</code></td><td>name patterns, repeatable</td><td><code>git.push</code>, else the only remote, else <code>origin</code></td><td>Remotes to push to, globs by default (<a href="{{ src(cmd, 124, 136) }}">source</a>).</td></tr>
+      <tr><td><code>-b</code>, <code>--bookmark</code></td><td>name patterns, repeatable</td><td>none</td><td>Push matching bookmarks. Creating a new remote bookmark is allowed if the name isn't tracked on any remote yet, and deleting is allowed because the name was given explicitly (<a href="{{ src(cmd, 138, 151) }}">source</a>, <a href="{{ src(cmd, 465, 471) }}">params</a>).</td></tr>
+      <tr><td><code>-t</code>, <code>--tag</code></td><td>name patterns, repeatable</td><td>none</td><td>Push matching tags, with the same rules (<a href="{{ src(cmd, 153, 164) }}">source</a>).</td></tr>
+      <tr><td><code>--all</code></td><td>bool</td><td>off</td><td>Every bookmark and tag, including new ones (<a href="{{ src(cmd, 166, 168) }}">source</a>).</td></tr>
+      <tr><td><code>--tracked</code></td><td>bool</td><td>off</td><td>Every tracked bookmark and tag (<a href="{{ src(cmd, 170, 178) }}">source</a>).</td></tr>
+      <tr><td><code>--deleted</code></td><td>bool</td><td>off</td><td>Push deletions of bookmarks and tags deleted locally. With <code>--all</code>/<code>--tracked</code>, it allows deletions in that set (<a href="{{ src(cmd, 180, 186) }}">source</a>).</td></tr>
+      <tr><td><code>-r</code>, <code>--revisions REVSETS</code></td><td>revsets, repeatable</td><td>none</td><td>Push bookmarks and tags pointing at these commits (<a href="{{ src(cmd, 204, 215) }}">source</a>).</td></tr>
+      <tr><td><code>-c</code>, <code>--change REVSETS</code></td><td>revsets, repeatable</td><td>none</td><td>Create a bookmark named by <code>templates.git_push_bookmark</code> on each commit, then push it (<a href="{{ src(cmd, 217, 228) }}">source</a>).</td></tr>
+      <tr><td><code>--named NAME=REVISION</code></td><td>repeatable</td><td>none</td><td>Create a new bookmark <code>NAME</code> on one commit and push it (<a href="{{ src(cmd, 230, 236) }}">source</a>).</td></tr>
+      <tr><td><code>--allow-empty-description</code>, <code>--allow-private</code>, <code>--allow-conflicts</code></td><td>bool</td><td>off</td><td>Skip one of the commit checks (<a href="{{ src(cmd, 188, 202) }}">source</a>).</td></tr>
+      <tr><td><code>--dry-run</code></td><td>bool</td><td>off</td><td>Print the changes and stop (<a href="{{ src(cmd, 238, 240) }}">source</a>).</td></tr>
+      <tr><td><code>-o</code>, <code>--option</code></td><td>string, repeatable</td><td>none</td><td>Passed to Git as <code>--push-option</code> (<a href="{{ src(cmd, 242, 244) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  Two clap groups shape the flags. <code>--bookmark</code>, <code>--tag</code>, <code>-r</code>,
+  <code>--change</code> and <code>--named</code> form the "specific" group, and <code>--all</code> and
+  <code>--tracked</code> form a "what" group that conflicts with it (<a href="{{ src(cmd, 120, 123) }}">source</a>).
+  The global <code>--no-integrate-operation</code> is rejected with a hint to use <code>--dry-run</code>
+  (<a href="{{ src(cmd, 286, 291) }}">source</a>).
+</p>
+<p class="jj-source"><a href="{{ src(cmd, 88, 245) }}"><code>GitPushArgs</code></a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>git.push</code></td><td>unset</td><td>Remote name pattern, or a list of them, used when <code>--remote</code> isn't given (<a href="{{ src(cmd, 1107, 1130) }}">source</a>, <a href="{{ src('docs/config.md', 1845, 1877) }}">docs</a>).</td></tr>
+      <tr><td><code>revsets.git-push</code></td><td><code>remote_bookmarks(remote=exact:remote)..@</code></td><td>The default selection, with <code>remote</code> bound to each remote's name (<a href="{{ src('cli/src/config/revsets.toml', 8) }}">default</a>, <a href="{{ src(cmd, 1427, 1458) }}">evaluation</a>).</td></tr>
+      <tr><td><code>templates.git_push_bookmark</code></td><td><code>"push-" ++ change_id.short()</code></td><td>Names the bookmarks <code>--change</code> creates (<a href="{{ src('cli/src/config/templates.toml', 30) }}">default</a>).</td></tr>
+      <tr><td><code>git.private-commits</code></td><td><code>none()</code></td><td>A revset of commits that must not be pushed (<a href="{{ src('cli/src/config/misc.toml', 27, 32) }}">default</a>).</td></tr>
+      <tr><td><code>git.sign-on-push</code></td><td><code>false</code></td><td>Sign unsigned mutable commits before pushing (<a href="{{ src(cmd, 566, 579) }}">source</a>).</td></tr>
+      <tr><td><code>revset-aliases."immutable_heads()"</code></td><td>(built-in)</td><td>Immutable commits are treated as already validated, and never signed.</td></tr>
+      <tr><td><code>git.executable-path</code></td><td><code>git</code></td><td>The Git binary jj runs.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 540" role="img" aria-labelledby="gp-flow-title gp-flow-desc">
+    <title id="gp-flow-title">jj git push: call flow</title>
+    <desc id="gp-flow-desc">
+      cmd_git_push loads the workspace and picks the remotes, failing if none match. It starts a
+      transaction. With --all, --tracked or --deleted it classifies every matching ref. Otherwise it
+      creates --change and --named bookmarks, then collects explicit bookmarks and tags, validates their
+      commits strictly, and adds refs pointing into the target revisions (revsets.git-push or -r).
+      Each ref goes through classify_ref_push_action and the commit validator. If nothing is left it
+      prints "Nothing changed.". It optionally signs commits, prints the changes per remote, and runs
+      push_refs, which uses git push with --force-with-lease and then updates the remote refs in the
+      view. If anything was pushed, tx.finish records "push … to git remote …".
+    </desc>
+    <defs>
+      <marker id="gp-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(cmd, 292, 324) }}"><rect class="d-box" x="20" y="20" width="720" height="48" rx="6"></rect>
+      <text x="32" y="40">load workspace (snapshot); remotes = --remote | git.push | only remote | origin</text>
+      <text x="32" y="58" class="d-muted" font-size="11">none match → "No git remotes to push to"; start_transaction</text></a>
+
+      <a href="{{ src(cmd, 327, 396) }}"><rect class="d-box" x="20" y="92" width="270" height="110" rx="6"></rect>
+      <text x="32" y="113">--all / --tracked / --deleted</text>
+      <text x="32" y="132" class="d-muted" font-size="11">every local+remote ref pair</text>
+      <text x="32" y="149" class="d-muted" font-size="11">(tracked only, or deleted only)</text>
+      <text x="32" y="166" class="d-muted" font-size="11">rejected refs are warned about</text>
+      <text x="32" y="183" class="d-muted" font-size="11">and skipped</text></a>
+
+      <a href="{{ src(cmd, 397, 555) }}"><rect class="d-box" x="310" y="92" width="430" height="110" rx="6"></rect>
+      <text x="322" y="113">otherwise, per remote</text>
+      <text x="322" y="132" class="d-muted" font-size="11">--change / --named → create local bookmarks first</text>
+      <text x="322" y="149" class="d-muted" font-size="11">explicit bookmarks and tags → a rejection is an error</text>
+      <text x="322" y="166" class="d-muted" font-size="11">refs pointing into revsets.git-push or -r → only new or</text>
+      <text x="322" y="183" class="d-muted" font-size="11">tracked updates; rejections are warned about and skipped</text></a>
+
+      <a href="{{ src(refs, 197, 216) }}"><rect class="d-box" x="20" y="226" width="350" height="94" rx="6"></rect>
+      <text x="32" y="247">classify_ref_push_action(local, remote)</text>
+      <text x="32" y="266" class="d-muted" font-size="11">equal → nothing; conflicted → reject</text>
+      <text x="32" y="283" class="d-muted" font-size="11">remote present but untracked → reject</text>
+      <text x="32" y="300" class="d-muted" font-size="11">else Update(remote → local); new/delete gated</text></a>
+
+      <a href="{{ src(cmd, 778, 891) }}"><rect class="d-box" x="390" y="226" width="350" height="94" rx="6"></rect>
+      <text x="402" y="247">CommitsValidator</text>
+      <text x="402" y="266" class="d-muted" font-size="11">(remote heads | immutable)..new targets:</text>
+      <text x="402" y="283" class="d-muted" font-size="11">description, author/committer, no conflicts,</text>
+      <text x="402" y="300" class="d-muted" font-size="11">not in git.private-commits</text></a>
+
+      <a href="{{ src(cmd, 558, 596) }}"><rect class="d-box" x="20" y="344" width="720" height="58" rx="6"></rect>
+      <text x="32" y="365">nothing to push → "Nothing changed."; git.sign-on-push → sign and rebase descendants</text>
+      <text x="32" y="384" class="d-muted" font-size="11">"Changes to push to R:" "bookmark: name [move forward from A to B]" / [add to B] / [delete from A]</text></a>
+
+      <a href="{{ src(git, 3451, 3563) }}"><rect class="d-box" x="20" y="426" width="720" height="58" rx="6"></rect>
+      <text x="32" y="447">push_refs → git push --porcelain --no-verify --force-with-lease=refs/heads/N:&lt;expected&gt; -- R &lt;new&gt;:refs/heads/N</text>
+      <text x="32" y="466" class="d-muted" font-size="11">pushed refs → export to Git's refs/remotes and set name@R to the new target, Tracked</text></a>
+
+      <a href="{{ src(cmd, 617, 661) }}"><rect class="d-box" x="20" y="508" width="720" height="26" rx="6"></rect>
+      <text x="380" y="526" text-anchor="middle">all ok or some exported → tx.finish("push … to git remote R"); any failure → "Failed to push some bookmarks"</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#gp-arrow)">
+      <line x1="155" y1="68" x2="155" y2="88"></line>
+      <line x1="525" y1="68" x2="525" y2="88"></line>
+      <line x1="195" y1="202" x2="195" y2="222"></line>
+      <line x1="565" y1="202" x2="565" y2="222"></line>
+      <line x1="380" y1="320" x2="380" y2="340"></line>
+      <line x1="380" y1="402" x2="380" y2="422"></line>
+      <line x1="380" y1="484" x2="380" y2="504"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td><code>View.local_bookmarks</code>, <code>local_tags</code></td><td>read, maybe write</td><td>The local side of every comparison. <code>--change</code> and <code>--named</code> add new bookmarks (<a href="{{ src(cmd, 1302, 1356) }}"><code>create_change_bookmarks</code></a>, <a href="{{ src(cmd, 410, 414) }}">named</a>).</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td><code>View.remote_views</code></td><td>read, write</td><td>The tracked remote target is both the comparison base and the lease. Pushed refs become <code>Tracked</code> at their new target (<a href="{{ src(git, 3537, 3550) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Git refs <code>refs/remotes/&lt;remote&gt;/*</code></td><td>write</td><td>Pushed bookmarks are exported, so the Git repo agrees with the view (<a href="{{ src(git, 3514, 3519) }}">source</a>). Pushed tags update <code>refs/jj/remote-tags/</code>.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Commits</td><td>read, maybe rewrite</td><td>Validated. With <code>git.sign-on-push</code>, unsigned mutable commits are rewritten with signatures and their descendants rebased, and the ref updates are remapped to the new IDs (<a href="{{ src(cmd, 912, 1038) }}"><code>sign_commits_before_push</code></a>).</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td>One operation if anything was pushed. <code>is_push_operation</code> recognises it by its <code>push </code> prefix (<a href="{{ src(cmd, 1492, 1494) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, started right after the remotes are chosen (<a href="{{ src(cmd, 324) }}">source</a>). Everything else (created bookmarks, signatures, updated remote refs) goes into it.</li>
+  <li><strong>When it is committed:</strong> only if every push succeeded or at least one bookmark was exported (<a href="{{ src(cmd, 622, 655) }}">source</a>). <code>--dry-run</code> and "Nothing changed." return without committing, so bookmarks created by <code>--change</code> are dropped. The source notes that on partial success those bookmarks are kept.</li>
+  <li><strong>Operation description:</strong> <code>push all bookmarks/tags to …</code>, <code>push all tracked bookmarks/tags to …</code>, <code>push all deleted bookmarks/tags to …</code>, or <code>push bookmark X</code> / <code>push bookmarks X, Y</code> / <code>push tag T</code> followed by <code>to git remote R</code> (or <code>to git remotes R1, R2</code>) (<a href="{{ src(cmd, 247, 268) }}"><code>make_updates_term</code></a>, <a href="{{ src(cmd, 625, 652) }}">source</a>).</li>
+  <li><strong>Working copy:</strong> untouched, unless signing rebased <code>@</code>.</li>
+  <li><strong><code>jj undo</code></strong> restores the old remote-tracking state locally. It doesn't unpush anything from the remote.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="classify">Classifying a ref</h3>
+<p>
+  <a href="{{ src(refs, 197, 216) }}"><code>classify_ref_push_action</code></a> compares the local target
+  with the remote ref's <em>tracked</em> target, which is absent when the remote ref is untracked:
+</p>
+<ol>
+  <li>Equal: nothing to push.</li>
+  <li>Local conflicted, or remote conflicted: rejected.</li>
+  <li>Remote present but not tracked: rejected (<code>Non-tracking remote bookmark … exists</code>).</li>
+  <li>Otherwise, <code>Update(before = remote, after = local)</code>, where either side may be absent.</li>
+</ol>
+<p>
+  The command then gates updates (<a href="{{ src(cmd, 1157, 1208) }}"><code>classify_bookmark_update</code></a>).
+  Creating an untracked remote ref needs <code>allow_new</code>, and a deletion needs
+  <code>allow_delete</code>. The default and <code>-r</code> paths set neither, so they only update refs already tracked
+  on that remote. That includes a tracked name the remote doesn't have yet, which is created. <code>--bookmark</code> allows creation only for
+  names tracked nowhere (<a href="{{ src(cmd, 465, 471) }}">source</a>).
+</p>
+
+<h3 id="lease">Force-with-lease</h3>
+<p>
+  Every update is a forced refspec, guarded by a lease on the expected remote value, the
+  <code>before</code> side. An empty lease means "must not exist yet" (<a href="{{ src(git, 3565, 3616) }}"><code>push_updates</code></a>,
+  <a href="{{ src(git, 309, 344) }}"><code>RefToPush::to_git_lease</code></a>). Git ignores leases on
+  <code>+</code>-prefixed refspecs, so the refspecs are passed unforced
+  (<a href="{{ src(sub, 246, 295) }}"><code>spawn_push</code></a>). <code>--no-verify</code> skips Git
+  hooks. If the remote ref moved since the last fetch, Git rejects it and jj reports it under
+  <code>The following references unexpectedly moved on the remote</code>
+  (<a href="{{ src(gu, 507, 528) }}">source</a>). This is how jj avoids overwriting someone else's push
+  without a separate fetch.
+</p>
+
+<h3 id="validation">Commit validation</h3>
+<p>
+  <a href="{{ src(cmd, 844, 890) }}"><code>validate_commits</code></a> walks
+  <code>(known remote heads | immutable_heads())..new_heads</code>. It rejects the first commit that
+  has an empty description, a missing author or committer name or email, a conflict, or that is
+  private. Validated heads are added to the known heads, so later refs don't re-check shared ancestry.
+  Refs named explicitly fail the whole command. Refs picked up by the default revset or <code>-r</code>
+  are skipped with <code>Won't push bookmark …</code> (<a href="{{ src(cmd, 505, 538) }}">source</a>).
+</p>
+
+<p>
+  <strong>Invariants:</strong> the remote is only changed where its current value equals jj's last
+  recorded one. Untracked remote refs are never overwritten. Conflicted bookmarks are never pushed. The
+  default selection never deletes a remote ref, and never creates one for a name that isn't tracked.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>No git remotes to push to</code></td><td>The remote selection matched nothing.</td><td><a href="{{ src(cmd, 320, 322) }}">push.rs</a></td></tr>
+      <tr><td><code>Nothing changed.</code></td><td>No ref needs updating on any remote.</td><td><a href="{{ src(cmd, 558, 564) }}">push.rs</a></td></tr>
+      <tr><td><code>Bookmark &lt;name&gt; is conflicted</code> / <code>Bookmark &lt;name&gt;@&lt;remote&gt; is conflicted</code></td><td>The local or remote target has several sides.</td><td><a href="{{ src(cmd, 1165, 1178) }}">push.rs</a></td></tr>
+      <tr><td><code>Non-tracking remote bookmark &lt;name&gt;@&lt;remote&gt; exists</code></td><td>Pushing over an untracked remote bookmark. The hint suggests <code>jj bookmark track</code>.</td><td><a href="{{ src(cmd, 1179, 1184) }}">push.rs</a></td></tr>
+      <tr><td><code>Refusing to create new remote bookmark &lt;name&gt;@&lt;remote&gt;</code></td><td>Creating a remote bookmark from a path that doesn't allow new ones.</td><td><a href="{{ src(cmd, 1185, 1192) }}">push.rs</a></td></tr>
+      <tr><td><code>Refusing to push deleted bookmark &lt;name&gt;</code></td><td>A deletion without <code>--deleted</code> or an explicit name.</td><td><a href="{{ src(cmd, 1193, 1205) }}">push.rs</a></td></tr>
+      <tr><td><code>Won't push commit &lt;id&gt; since it has no description</code> (or <code>has conflicts</code>, <code>is private</code>, <code>has no author and/or committer set</code>)</td><td>An explicitly selected ref would send a failing commit.</td><td><a href="{{ src(cmd, 762, 775) }}">push.rs</a></td></tr>
+      <tr><td><code>Bookmark already exists: &lt;name&gt;</code></td><td><code>--named</code>, or a <code>--change</code> name already in use elsewhere.</td><td><a href="{{ src(cmd, 1256, 1275) }}">push.rs</a></td></tr>
+      <tr><td><code>Argument '…' must include '=' and have the form NAME=REVISION</code></td><td>A malformed <code>--named</code> value.</td><td><a href="{{ src(cmd, 1277, 1300) }}">push.rs</a></td></tr>
+      <tr><td><code>Warning: No bookmarks/tags found in revsets.git-push: … (remote=…)</code></td><td>The default revset selected no refs, for example after moving a bookmark backwards.</td><td><a href="{{ src(cmd, 1450, 1456) }}">push.rs</a></td></tr>
+      <tr><td><code>The following references unexpectedly moved on the remote:</code> … <code>(reason: stale info)</code></td><td>The lease failed. The command ends with <code>Failed to push some bookmarks</code>.</td><td><a href="{{ src(gu, 507, 528) }}">git_util.rs</a>, <a href="{{ src(cmd, 657, 661) }}">push.rs</a></td></tr>
+      <tr><td><code>The remote rejected the following updates:</code></td><td>The server refused, for example a protected branch.</td><td><a href="{{ src(gu, 529, 548) }}">git_util.rs</a></td></tr>
+      <tr><td><code>--no-integrate-operation is not respected; use --dry-run</code></td><td>That global flag was passed.</td><td><a href="{{ src(cmd, 286, 291) }}">push.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 149, 211) }}">test_git_push_current_bookmark</a>.
+  <code>bookmark2@origin</code> is on <code>38a20473</code>. Locally, <code>bookmark2</code> and a new
+  <code>my-bookmark</code> are on its child <code>88ca14a7</code>, which is <code>@</code>.
+  <code>bookmark1</code> was rewritten to <code>e5ce6d9a</code> on a side branch. Then
+  <code>jj git push</code> uses the default revset <code>remote_bookmarks(remote=origin)..@</code>:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 250" role="img" aria-labelledby="gp-ex-title gp-ex-desc">
+    <title id="gp-ex-title">jj git push with the default revset</title>
+    <desc id="gp-ex-desc">
+      Before: root has two children, e5ce6d9a with local bookmark1 (bookmark1@origin is on the hidden
+      older version 9b2e76de) and 38a20473 with bookmark2@origin. 38a20473's child 88ca14a7 is @, with
+      bookmark2 and my-bookmark. After jj git push: bookmark2@origin and my-bookmark@origin are on
+      88ca14a7. bookmark1 is not an ancestor of @, so it isn't pushed.
+    </desc>
+    <defs>
+      <marker id="gp-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% macro node(x, y, label, note="", hl=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 15 }}" y="{{ y + 4 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x + 15 }}" y="{{ y + 19 }}" font-size="10.5" class="d-muted">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    {% macro graph(ox, after) -%}
+      <g class="d-line" stroke-width="1.5">
+        <line x1="{{ ox + 40 }}" y1="221" x2="{{ ox + 40 }}" y2="49"></line>
+        <line x1="{{ ox + 40 }}" y1="230" x2="{{ ox + 180 }}" y2="149"></line>
+      </g>
+      {{ node(ox + 40, 230, "root") }}
+      {{ node(ox + 40, 140, "38a20473", "" if after else "bookmark2@origin") }}
+      {{ node(ox + 40, 50, "@ 88ca14a7", "bookmark2 my-bookmark" ~ (" (+ @origin)" if after else ""), hl=after) }}
+      {{ node(ox + 180, 140, "e5ce6d9a", "bookmark1 (not pushed)") }}
+    {%- endmacro %}
+    <text x="20" y="18" font-size="12" class="d-muted">before</text>
+    <text x="420" y="18" font-size="12" class="d-muted">after jj git push</text>
+    {{ graph(0, False) }}
+    <line x1="330" y1="110" x2="390" y2="110" class="d-line" stroke-width="1.5" marker-end="url(#gp-ex-arrow)"></line>
+    {{ graph(400, True) }}
+  </svg>
+</div>
+
+<p>Upstream's snapshot:</p>
+
+<pre><code>$ jj git push
+Changes to push to origin:
+  bookmark: bookmark2 [move forward from 38a204733702 to 88ca14a7d46f]
+  bookmark: my-bookmark [add to 88ca14a7d46f]</code></pre>
+
+<p>
+  <code>my-bookmark</code> is new on the remote, but the setup configures
+  <code>auto-track-bookmarks = '*'</code>, so it was already tracked and counts as an update. Later in
+  the same test, after <code>bookmark2</code> is moved back to its parent, plain
+  <code>jj git push</code> finds nothing (<code>No bookmarks/tags found in revsets.git-push</code>),
+  and <code>jj git push -b bookmark2</code> pushes
+  <code>[move backward from 88ca14a7d46f to 38a204733702]</code>
+  (<a href="{{ src(t, 213, 239) }}">source</a>). If someone else had moved the bookmark on the remote,
+  the lease would fail instead, as in
+  <a href="{{ src(t, 468, 480) }}">test_git_push_forward_unexpectedly_moved</a>.
+</p>
