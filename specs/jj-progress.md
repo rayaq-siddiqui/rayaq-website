@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-04 (twenty-seventh run): no upstream change since `03db8d1`; built the
-`jj diffedit`, `jj run`, `jj resolve` and `jj file chmod` command pages.
+**Last updated:** 2026-10-04 (twenty-eighth run): no upstream change since `03db8d1`; built the
+`jj file track`/`untrack` and `jj sparse edit`/`reset`/`set` command pages.
 
 ## Upstream pin
 
@@ -26,45 +26,40 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 31 of 105, all Tier A (31 of 65;
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 36 of 105, all Tier A (36 of 65;
       Tier B 0 of 27, Tier C 0 of 13). Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
       `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`, `absorb`, `duplicate`,
       `bookmark create`/`set`/`move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`,
       `parallelize`, `simplify-parents`, `arrange`, `converge`, `revert`, `diffedit`, `run`,
-      `resolve`, `file chmod`.
+      `resolve`, `file chmod`/`track`/`untrack`, `sparse edit`/`reset`/`set`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
 
-## Twenty-seventh run (2026-10-04)
+## Twenty-eighth run (2026-10-04)
 
-Maintenance: upstream `HEAD` still at `03db8d1`, so the pin stayed. Four Tier A pages, each with
-all eight §8A.3 items and two SVGs, every `src()` range checked against the pinned checkout:
+Maintenance: upstream `HEAD` still at `03db8d1`, so the pin stayed. Five Tier A pages, each with all
+eight §8A.3 items and two SVGs, every `src()` range checked against the pinned checkout:
 
 | Commit | What |
 |---|---|
-| `d12cd80` | `diffedit`: `-r` vs `--from`/`--to`, the diff editor config, external editors' sparse temp checkouts and `JJ-INSTRUCTIONS`, the built-in editor (example: `test_diffedit`) |
-| `71e79fb` | `run`: the `.jj/run/default` slot pool, scheduling, all-or-nothing failures, the 3-way rewrite (example: `test_run_parallel_changes_propagate_to_descendants`) |
-| `0da010f` | `resolve`: up-front 2-sided/regular-file checks, external tools file by file, `:builtin`/`:ours`/`:theirs`, partial resolution (example: `test_resolution`) |
-| `a199333` | `file chmod`: the bit set on every term, sides and bases (example: `test_chmod_regular_conflict`) |
+| `c473761` | `file track` (second snapshot with your paths as the start/force-tracking matchers; the working-copy commit is only rewritten by the *next* command's snapshot, upstream's GH #8298 TODO) and `file untrack` (remove from `@`, reset without touching files, verify the paths are ignored). Landed together: they cross-link |
+| `81ce853` | `sparse set`, `sparse edit`, `sparse reset`: shared `update_sparse_patterns_with`, prefix patterns, check-out/delete of the changed prefixes, no operation recorded. Landed together |
 
-## Twenty-fifth and twenty-sixth runs (2026-10-04)
+## Twenty-seventh run (2026-10-04)
 
-`197de77`: maintenance `c16d378..03db8d1` (3 templater commits; only `cli_util.rs` touched a source
-set, outside every cited range; all 72 citations into changed files checked with a diff-based line
-map; `COMMANDS` regenerated identically; pin only). `c993b6f`: `converge` page, plus a test that
-diagram `<title>`/`<desc>` text contains no markup. `cd1593a`: `revert` page.
+Pin unchanged. Pages: `diffedit` `d12cd80` (example `test_diffedit`), `run` `71e79fb` (example
+`test_run_parallel_changes_propagate_to_descendants`), `resolve` `0da010f` (example `test_resolution`),
+`file chmod` `a199333` (example `test_chmod_regular_conflict`).
 
-## Seventeenth to twenty-fourth runs (2026-10-04)
+## Twelfth to twenty-sixth runs (2026-10-03 to 2026-10-04)
 
-Pin unchanged (`c16d378`). `c3348ce`: `arrange` page (example from the plan executor's unit test). `ab334a4`: `simplify-parents` page. `fe97413`: `parallelize` page. `e62dc52`: `next` and `prev` pages, landed together. `afb1c31`: `metaedit` page. `f156028`: `git push` page. `6bf55c1`: `bookmark create`/`set`/`move` pages, landed together because they
-cross-link. `f8530a8`: `git fetch` page.
-
-## Twelfth to sixteenth runs (2026-10-03 to 2026-10-04)
-
-- Maintenance `69abfbe..55921f5` (`c9c1103`: 2 docs commits, `fix` config ranges +17) and
-  `55921f5..c16d378` (`4ca0bdc`: `protobufs` workspace-path change, `cli`/`fix` ranges remapped).
-- Pages: `redo` (`261b4f6`), `restore` (`86bb02b`), `split` (`ffb1b60`), `absorb` (`1e58788`),
-  `duplicate` (`1733c66`).
+- Maintenance: `69abfbe..55921f5` (`c9c1103`), `55921f5..c16d378` (`4ca0bdc`), and `c16d378..03db8d1`
+  (`197de77`, pin only; all 72 citations into changed files checked with a diff-based line map).
+- Pages: `redo` `261b4f6`, `restore` `86bb02b`, `split` `ffb1b60`, `absorb` `1e58788`, `duplicate`
+  `1733c66`, `git fetch` `f8530a8`, `bookmark create`/`set`/`move` `6bf55c1`, `git push` `f156028`,
+  `metaedit` `afb1c31`, `next`/`prev` `e62dc52`, `parallelize` `fe97413`, `simplify-parents` `ab334a4`,
+  `arrange` `c3348ce`, `converge` `c993b6f` (plus a test that SVG `<title>`/`<desc>` hold no markup),
+  `revert` `cd1593a`.
 
 ## Fifth to eleventh runs (2026-10-03)
 
@@ -121,8 +116,9 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
    ~~`squash`~~, ~~`rebase`~~, ~~`abandon`~~, ~~`undo`~~, then the rest of Tier A. Next, in this order:
    ~~`redo`~~, ~~`restore`~~, ~~`split`~~, ~~`absorb`~~, ~~`duplicate`~~, ~~`bookmark-create`/`-set`/`-move`~~, ~~`git-fetch`~~,
    ~~`git-push`~~, then the remaining Tier A commands in registry order: ~~`diffedit`~~, ~~`run`~~,
-   ~~`resolve`~~, ~~`file-chmod`~~; 34 left (next: `file-track`, `file-untrack`, `sparse-edit`,
-   `sparse-reset`, `sparse-set`, `bisect-run`).
+   ~~`resolve`~~, ~~`file-chmod`~~, ~~`file-track`~~, ~~`file-untrack`~~, ~~`sparse-edit`~~,
+   ~~`sparse-reset`~~, ~~`sparse-set`~~; 29 left (next: `bisect-run`, `operation-abandon`,
+   `operation-integrate`, `operation-restore`, `operation-revert`, `bookmark-advance`).
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
 
@@ -142,6 +138,11 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
   shared pages for Tier C; the first three are a judgment call to keep slugs to two levels).
 
 ## Open gaps / questions for the owner
+
+- **`jj file track` couldn't be run.** The page's claim that the working-copy commit changes only at
+  the next command comes from the code (the command never rewrites `@`) and upstream's
+  `test_track_ignored`, whose `Rebased … onto updated working copy` appears on the following
+  `jj file list`. No jj binary could be built or downloaded here to confirm it in an op log.
 
 - **`jj run` new-file size limit.** Slots snapshot with `max_new_file_size: 64_000_u64`, next to a
   comment saying "64 MB for now"; 64,000 bytes is about 64 kB, so larger new files a command creates
