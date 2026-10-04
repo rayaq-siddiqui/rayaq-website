@@ -956,6 +956,35 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "bookmark-rename": {
+        "title": "How jj bookmark rename works",
+        "sources": [
+            "cli/src/commands/bookmark/rename.rs",
+            "lib/src/repo.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
+    "bookmark-track": {
+        "title": "How jj bookmark track works",
+        "sources": [
+            "cli/src/commands/bookmark/track.rs",
+            "cli/src/commands/bookmark/mod.rs",
+            "cli/src/revset_util.rs",
+            "lib/src/repo.rs",
+            "core/src/op_store.rs",
+        ],
+        "ready": True,
+    },
+    "bookmark-untrack": {
+        "title": "How jj bookmark untrack works",
+        "sources": [
+            "cli/src/commands/bookmark/untrack.rs",
+            "cli/src/commands/bookmark/mod.rs",
+            "lib/src/repo.rs",
+        ],
+        "ready": True,
+    },
     "bookmark-delete": {
         "title": "How jj bookmark delete works",
         "sources": [

@@ -1,0 +1,230 @@
+{% set cmd = "cli/src/commands/bookmark/rename.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+{% set rs = "cli/src/revset_util.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set t = "cli/tests/test_bookmark_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj bookmark rename</code> works</h1>
+  <p class="tagline">
+    <code>jj bookmark rename old new</code> moves a local bookmark's target to a new name and carries its
+    remote tracking over. Remote bookmarks themselves are not renamed: the old name becomes a deletion to
+    push, and the new name is ready to be pushed.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj refuses if <code>old</code> doesn't exist, or if <code>new</code> already exists without
+  <code>--overwrite-existing</code>. In one transaction it points <code>new</code> at <code>old</code>'s
+  target and removes <code>old</code>. For every remote where <code>old</code> was tracked, it starts
+  tracking <code>new</code> there, unless an untracked <code>new</code> already exists on that remote.
+  It records <code>rename bookmark old to new</code>, then warns that the old remote bookmarks still
+  need pushing.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 49, 209) }}"><code>cmd_bookmark_rename</code></a>. Tracking is
+  explained on the <a href="{{ url_for('jj', slug='bookmark-track') }}"><code>bookmark track</code></a>
+  page and the deletion that follows on <a href="{{ url_for('jj', slug='bookmark-delete') }}"><code>bookmark delete</code></a>.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Argument</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>OLD</code> (positional)</td><td>bookmark name</td><td>required</td><td>An existing local bookmark. Parsed as a revset symbol, so quoting rules apply; not a pattern (<a href="{{ src(cmd, 35, 38) }}">source</a>, <a href="{{ src(rs, 341, 348) }}"><code>parse_bookmark_name</code></a>).</td></tr>
+      <tr><td><code>NEW</code> (positional)</td><td>bookmark name</td><td>required</td><td>The new name (<a href="{{ src(cmd, 40, 42) }}">source</a>).</td></tr>
+      <tr><td><code>--overwrite-existing</code></td><td>bool</td><td>false</td><td>Allow <code>NEW</code> to exist already; its target is replaced (<a href="{{ src(cmd, 44, 46) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 33, 47) }}"><code>BookmarkRenameArgs</code></a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<p>
+  None of its own. In a Git-backed repo the reserved <code>git</code> remote is excluded from all the
+  tracking logic (<a href="{{ src(cmd, 80, 83) }}">source</a>,
+  <a href="{{ src(util, 3438, 3447) }}"><code>default_ignored_remote_name</code></a>). In a colocated
+  workspace, <code>tx.finish</code> exports the renamed branch to Git.
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 440" role="img" aria-labelledby="br2-flow-title br2-flow-desc">
+    <title id="br2-flow-title">jj bookmark rename: call flow</title>
+    <desc id="br2-flow-desc">
+      cmd_bookmark_rename loads the workspace and reads old's local target, failing if absent. Without
+      --overwrite-existing it fails if new exists. Renaming to the same name is then a no-op. In a
+      transaction, with --overwrite-existing it first untracks new's tracked remotes. It sets new to old's
+      target and old to absent. For each remote where old was tracked, it tracks new there, or warns if an
+      untracked new already exists there. It warns about tracking dropped by the overwrite, records the
+      operation, and then warns about old remote bookmarks not renamed and about existing tracked remote
+      bookmarks of new.
+    </desc>
+    <defs>
+      <marker id="br2-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(cmd, 54, 76) }}"><rect class="d-box" x="20" y="20" width="720" height="50" rx="6"></rect>
+      <text x="32" y="41">old absent → "No such bookmark"; new present without --overwrite-existing → "Bookmark already exists"</text>
+      <text x="32" y="59" class="d-muted" font-size="11">old == new → return (no-op; only reachable with --overwrite-existing)</text></a>
+
+      <a href="{{ src(cmd, 85, 96) }}"><rect class="d-box" x="20" y="94" width="720" height="40" rx="6"></rect>
+      <text x="32" y="119">start_transaction; --overwrite-existing: untrack new's tracked remote bookmarks first</text></a>
+
+      <a href="{{ src(cmd, 97, 100) }}"><rect class="d-box" x="20" y="158" width="720" height="40" rx="6"></rect>
+      <text x="32" y="183">set_local_bookmark_target(new, old's target); set_local_bookmark_target(old, absent)</text></a>
+
+      <a href="{{ src(cmd, 102, 132) }}"><rect class="d-box" x="20" y="222" width="720" height="66" rx="6"></rect>
+      <text x="32" y="243">for each remote where old is tracked (git excluded):</text>
+      <text x="32" y="261" class="d-muted" font-size="11">new@remote present and untracked → warning, tracking dropped for that remote</text>
+      <text x="32" y="278" class="d-muted" font-size="11">otherwise → track_remote_bookmark(new@remote)</text></a>
+
+      <a href="{{ src(cmd, 134, 169) }}"><rect class="d-box" x="20" y="312" width="720" height="40" rx="6"></rect>
+      <text x="32" y="337">overwrite warnings; tx.finish(ui, "rename bookmark old to new")</text></a>
+
+      <a href="{{ src(cmd, 171, 206) }}"><rect class="d-box" x="20" y="376" width="720" height="50" rx="6"></rect>
+      <text x="32" y="397">after: "Tracked remote bookmarks for bookmark old were not renamed." (+ push hint)</text>
+      <text x="32" y="415" class="d-muted" font-size="11">without overwrite: "Tracked remote bookmarks for bookmark new exist." (+ untrack hint)</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#br2-arrow)">
+      <line x1="380" y1="70" x2="380" y2="90"></line>
+      <line x1="380" y1="134" x2="380" y2="154"></line>
+      <line x1="380" y1="198" x2="380" y2="218"></line>
+      <line x1="380" y1="288" x2="380" y2="308"></line>
+      <line x1="380" y1="352" x2="380" y2="372"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td><code>View.local_bookmarks</code></td><td>write</td><td><code>new</code> gets <code>old</code>'s target, conflicts included; <code>old</code> becomes absent (<a href="{{ src(repo, 1875, 1880) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Remote bookmarks of <code>new</code></td><td>write</td><td>Marked tracked on each remote where <code>old</code> was; with <code>--overwrite-existing</code>, first untracked (<a href="{{ src(repo, 1918, 1933) }}"><code>track</code>/<code>untrack_remote_bookmark</code></a>).</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Remote bookmarks of <code>old</code></td><td>untouched</td><td>Still tracked with the local name gone, so they show as <code>old (deleted)</code> until pushed.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Commits</td><td>untouched</td><td>Only names move.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td>One operation, unless it errors or is the no-op.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, after the checks (<a href="{{ src(cmd, 78, 78) }}">source</a>).</li>
+  <li><strong>Operation description:</strong> <code>rename bookmark &lt;old&gt; to &lt;new&gt;</code> (<a href="{{ src(cmd, 161, 169) }}">source</a>).</li>
+  <li><strong>Warnings after the commit:</strong> the "not renamed" and "exist" warnings are printed after <code>tx.finish</code>, so they refer to a rename that already happened (<a href="{{ src(cmd, 171, 206) }}">source</a>).</li>
+  <li><strong><code>jj undo</code></strong> restores both names and their tracking state.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="track">Moving the tracking state</h3>
+
+<p>
+  For each remote bookmark named <code>old</code> that is tracked, outside the <code>git</code> remote
+  (<a href="{{ src(cmd, 102, 132) }}">source</a>):
+</p>
+
+<ul>
+  <li>If it's present, remember that tracked remote copies of <code>old</code> exist, for the warning at the end.</li>
+  <li>If <code>new@remote</code> already exists and is untracked, skip it with a warning: tracking it would merge that unrelated remote bookmark into the local one.</li>
+  <li>Otherwise call <a href="{{ src(repo, 1918, 1926) }}"><code>track_remote_bookmark(new@remote)</code></a>, which merges the remote target into the local bookmark and marks it tracked. When <code>new@remote</code> doesn't exist yet, it's an absent but tracked entry, which makes the next <code>jj git push</code> create <code>new</code> on that remote.</li>
+</ul>
+
+<h3 id="overwrite"><code>--overwrite-existing</code></h3>
+
+<p>
+  Before moving anything, every tracked remote bookmark of <code>new</code> is untracked so the transfer
+  starts clean (<a href="{{ src(cmd, 85, 96) }}">source</a>). Afterwards, for each remote where
+  <code>new</code> was tracked and present but <code>old</code> wasn't tracked, jj warns
+  <code>Tracking of remote bookmark new@remote was dropped.</code> (<a href="{{ src(cmd, 134, 159) }}">source</a>).
+</p>
+
+<p>
+  <strong>Invariants:</strong> the commit <code>new</code> points to is exactly <code>old</code>'s former
+  target. Nothing changes on remotes until you push. The <code>git</code> pseudo-remote is never tracked or
+  untracked here.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>No such bookmark: &lt;old&gt;</code></td><td><code>old</code> has no local target.</td><td><a href="{{ src(cmd, 59, 64) }}">rename.rs</a></td></tr>
+      <tr><td><code>Bookmark already exists: &lt;new&gt;</code></td><td><code>new</code> exists and there's no <code>--overwrite-existing</code>. This includes renaming a bookmark to its own name: the existence check comes before the same-name check.</td><td><a href="{{ src(cmd, 67, 76) }}">rename.rs</a>, <a href="{{ src(t, 632, 639) }}">test</a></td></tr>
+      <tr><td><code>Warning: Tracked remote bookmarks for bookmark &lt;old&gt; were not renamed.</code>, hint to push <code>old</code> then <code>new</code>, or <code>jj git push --all --deleted</code></td><td><code>old</code> had tracked, present remote bookmarks.</td><td><a href="{{ src(cmd, 171, 185) }}">rename.rs</a></td></tr>
+      <tr><td><code>Warning: Tracked remote bookmarks for bookmark &lt;new&gt; exist.</code>, hint <code>Run `jj bookmark untrack &lt;new&gt;` …</code></td><td><code>new</code> already has tracked, present remote bookmarks, without overwrite. Not an error, so that renaming back and forth works.</td><td><a href="{{ src(cmd, 186, 206) }}">rename.rs</a></td></tr>
+      <tr><td><code>Warning: The renamed bookmark already exists on the remote '&lt;remote&gt;', tracking state was dropped.</code></td><td>An untracked <code>new@remote</code> exists where <code>old</code> was tracked.</td><td><a href="{{ src(cmd, 115, 128) }}">rename.rs</a></td></tr>
+      <tr><td><code>Warning: Tracking of remote bookmark &lt;new&gt;@&lt;remote&gt; was dropped.</code></td><td>Overwriting dropped tracking that <code>old</code> didn't have.</td><td><a href="{{ src(cmd, 136, 159) }}">rename.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 595, 697) }}">test_bookmark_rename</a>. <code>bremote</code> was pushed
+  to <code>origin</code> and is tracked. Then <code>jj bookmark rename bremote bremote2</code>:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 230" role="img" aria-labelledby="br2-ex-title br2-ex-desc">
+    <title id="br2-ex-title">Bookmark state across jj bookmark rename bremote bremote2</title>
+    <desc id="br2-ex-desc">
+      Before: bremote is local and tracked on origin. After the rename: bremote is deleted locally with its
+      origin entry kept, tracked; bremote2 is local and tracked on origin but absent there. The next push of
+      bremote2 adds it on origin; pushing bremote deletes the old one.
+    </desc>
+    <defs>
+      <marker id="br2-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <a href="{{ src(t, 641, 648) }}">
+      <rect class="d-box" x="20" y="40" width="280" height="140" rx="6"></rect>
+      <text x="32" y="62" font-size="12">before</text>
+      <text x="32" y="92" font-size="11.5">bremote</text>
+      <text x="130" y="92" font-size="11" class="d-muted">local: commit-2</text>
+      <text x="130" y="112" font-size="11" class="d-muted">@origin: commit-2, tracked</text>
+    </a>
+    <a href="{{ src(t, 650, 674) }}">
+      <rect class="d-box" x="380" y="20" width="360" height="190" rx="6"></rect>
+      <text x="392" y="42" font-size="12">after the rename</text>
+      <text x="392" y="72" font-size="11.5">bremote</text>
+      <text x="490" y="72" font-size="11" class="d-accent">local: (deleted)</text>
+      <text x="490" y="92" font-size="11" class="d-muted">@origin: commit-2, tracked</text>
+      <text x="392" y="126" font-size="11.5">bremote2</text>
+      <text x="490" y="126" font-size="11" class="d-accent">local: commit-2</text>
+      <text x="490" y="146" font-size="11" class="d-muted">@origin: absent, tracked</text>
+      <text x="392" y="184" font-size="11" class="d-muted">push bremote2: "[add to 1e76d54fcfce]"</text>
+      <text x="392" y="200" font-size="11" class="d-muted">push bremote: deletes the old remote name</text>
+    </a>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="310" y1="110" x2="370" y2="110" marker-end="url(#br2-ex-arrow)"></line>
+    </g>
+  </svg>
+</div>
+
+<p>Upstream's output (<a href="{{ src(t, 650, 656) }}">source</a>):</p>
+
+<pre><code>Warning: Tracked remote bookmarks for bookmark bremote were not renamed.
+Hint: To rename the bookmark on the remote, you can `jj git push --bookmark bremote` first (to delete it on the remote), and then `jj git push --bookmark bremote2`. `jj git push --all --deleted` would also be sufficient.</code></pre>
+
+<p>
+  Renaming back with <code>jj bookmark rename bremote2 bremote</code> prints
+  <code>Tracked remote bookmarks for bookmark bremote exist.</code> as a warning, not an error. After restoring,
+  <code>jj git push --bookmark bremote2</code> reports <code>bookmark: bremote2 [add to 1e76d54fcfce]</code>
+  (<a href="{{ src(t, 657, 674) }}">source</a>).
+</p>
