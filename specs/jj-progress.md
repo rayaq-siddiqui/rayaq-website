@@ -3,8 +3,9 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-04 (thirty-sixth run): no upstream change since `4df5265`; built the
-`index` topic page. `revsets` and `backends` come next, then Tier B (spec §9).
+**Last updated:** 2026-10-04 (thirty-seventh run): no upstream change since `4df5265`; built the
+`revsets` topic page and linked the 16 "page planned" touchpoint cells. `backends` comes next,
+then Tier B (spec §9).
 
 ## Upstream pin
 
@@ -16,8 +17,8 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] `/jj` renders the §6 diagram and links to every page in §5 (boxes for unbuilt
       pages link to pinned source until the page exists).
 - [ ] Every §5 page exists and is registered: `protobufs`, `cli`, `commits`, `view`,
-      `operations`, `transactions`, `working-copy`, `trees`, `conflicts`, `storage`, `index` done;
-      2 to go (`revsets`, `backends`).
+      `operations`, `transactions`, `working-copy`, `trees`, `conflicts`, `storage`, `index`,
+      `revsets` done; 1 to go (`backends`).
 - [x] The `fix` page meets all ten §8 items, with three SVG diagrams.
 - [x] The `protobufs` page covers all seven `.proto` files, every field.
 - [x] Every source link is pinned to `UPSTREAM.commit` (tested).
@@ -37,6 +38,16 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
       `import`/`init`/`remote`, `sign`, `unsign`, `workspace add`/`forget`/`remove`/`rename`/`update-stale`, `gerrit upload`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
+
+## Thirty-seventh run (2026-10-04)
+
+Pin unchanged (`4df5265`). `7a715c9`: `revsets` topic page (pipeline diagram from `parse_program`
+to the `Revset` trait, Pratt precedence table, built-in aliases from `revsets.toml`, lowering
+table, the symbol resolver chain plus `present`/`at_operation`, the eleven `optimize` passes in
+run order, visibility resolution, the default engine's `InternalRevset`s, filters and
+`RevsetExtensions`, filesets). `44cd877`/`4fbf569`: the 16 "page planned" touchpoint cells on 14
+command pages now link `revsets` and `index`. Those two commit bodies cite "§6"; the rule is
+§8A.3 item 4 (history not rewritten).
 
 ## Thirty-fourth to thirty-sixth runs (2026-10-04)
 
@@ -97,8 +108,8 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
    ~~`bookmark-delete`~~, ~~`bookmark-forget`~~, ~~`bookmark-rename`~~, ~~`bookmark-track`~~,
    ~~`bookmark-untrack`~~, ~~`tag-*`~~, ~~`git-clone`/`-colocation`/`-export`/`-import`/`-init`/
    `-remote`~~, ~~`sign`~~, ~~`unsign`~~, ~~`workspace-*`~~, ~~`gerrit-upload`~~. Tier A complete.
-2. Remaining topic pages: ~~`conflicts`~~, ~~`storage`~~, ~~`index`~~, `revsets`, `backends`. When `revsets`
-   ships, link them from the `bookmark set`/`move` touchpoint tables (see gaps).
+2. Remaining topic pages: ~~`conflicts`~~, ~~`storage`~~, ~~`index`~~, ~~`revsets`~~, `backends`. When
+   `backends` ships, the `revsets` page's "store" link switches to it automatically.
 3. Tier B commands, in registry order: `file annotate`, `file list`, `file search`, `file show`,
    `sparse list`, `log`, `show`, `diff`, `interdiff`, `status`, `evolog`, `root`, `operation diff`,
    `operation log`, `operation show`, `bookmark list`, `tag list`, `git root`, `workspace list`,
@@ -158,10 +169,6 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
 - **`jj git push` help text vs code.** The command's help says "There is no option to push to
   multiple remotes", but `--remote` is repeatable, takes patterns, and the code pushes to every
   matching remote (and `git.push` accepts a list). The page describes the code.
-- **Links to unbuilt topics.** The `bookmark set`/`move` touchpoint tables name the `index` and
-  `revsets` topics as plain text ("page planned"), because a link to an unready page fails
-  `test_every_internal_jj_link_resolves`. `index` has shipped; link both in the run that ships
-  `revsets`.
 - **`jj split` help text vs code.** The help text says splitting an empty commit "is not supported",
   but the code has no such check, and upstream's `test_split_empty` splits one successfully. The page
   states both.
