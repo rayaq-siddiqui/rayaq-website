@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-04 (sixteenth run): no upstream change since `c16d378`; built the
-`jj duplicate` command page.
+**Last updated:** 2026-10-04 (seventeenth run): no upstream change since `c16d378`; built the
+`jj bookmark create`, `set` and `move` command pages.
 
 ## Upstream pin
 
@@ -26,11 +26,19 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 14 of 105 (`fix`, `new`, `edit`,
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 17 of 105 (`fix`, `new`, `edit`,
       `describe`, `commit`, `squash`, `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`,
-      `absorb`, `duplicate`).
+      `absorb`, `duplicate`, `bookmark create`, `bookmark set`, `bookmark move`).
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
+
+## Seventeenth run (2026-10-04)
+
+| Commit | What |
+|---|---|
+| `6bf55c1` | `bookmark create`, `bookmark set` and `bookmark move` command pages, landed together because they cross-link (Tier A, all eight §8A.3 items, two SVGs each; examples from upstream's `test_bookmark_command.rs`) |
+
+Maintenance: upstream `HEAD` still at `c16d378`, so the pin stayed.
 
 ## Sixteenth run (2026-10-04)
 
@@ -54,21 +62,10 @@ Maintenance: upstream `HEAD` still at `c16d378`, so the pin stayed.
 | `c9c1103` | Maintenance `69abfbe..55921f5` (2 docs commits: template-keyword help text, env-var config docs). Touched the `operations` source set (no cited lines changed) and `fix`'s `docs/config.md` (both cited ranges shifted +17, content unchanged). `COMMANDS` regenerated identically; no `.proto` changes |
 | `ffb1b60` | `split` command page (Tier A, all eight §8A.3 items, two SVGs; example from upstream's `test_split_by_paths`) |
 
-## Thirteenth run (2026-10-03)
+## Twelfth and thirteenth runs (2026-10-03)
 
-| Commit | What |
-|---|---|
-| `86bb02b` | `restore` command page (Tier A, all eight §8A.3 items, two SVGs; example from upstream's `test_restore`) |
-
-Maintenance: upstream `HEAD` still at `69abfbe`, so the pin stayed.
-
-## Twelfth run (2026-10-03)
-
-| Commit | What |
-|---|---|
-| `261b4f6` | `redo` command page (Tier A, all eight §8A.3 items, two SVGs; worked example drawn as an operation log) |
-
-Maintenance: upstream `HEAD` still at `69abfbe`, so the pin stayed.
+Upstream `HEAD` stayed at `69abfbe`. `261b4f6`: `redo` page (example drawn as an operation log).
+`86bb02b`: `restore` page (example from upstream's `test_restore`). Both Tier A, two SVGs each.
 
 ## Fifth to eleventh runs (2026-10-03)
 
@@ -140,7 +137,7 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
 1. Tier A commands, alternating with the remaining topics (`trees`, `conflicts`,
    `storage`, `index`, `revsets`, `backends`): ~~`new`~~, ~~`trees`~~, ~~`edit`~~, ~~`describe`~~, ~~`commit`~~,
    ~~`squash`~~, ~~`rebase`~~, ~~`abandon`~~, ~~`undo`~~, then the rest of Tier A. Next, in this order:
-   ~~`redo`~~, ~~`restore`~~, ~~`split`~~, ~~`absorb`~~, ~~`duplicate`~~, `bookmark-create`/`-set`/`-move`, `git-fetch`,
+   ~~`redo`~~, ~~`restore`~~, ~~`split`~~, ~~`absorb`~~, ~~`duplicate`~~, ~~`bookmark-create`/`-set`/`-move`~~, `git-fetch`,
    `git-push`, then the remaining 46 Tier A commands in registry order.
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
@@ -161,6 +158,10 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
   shared pages for Tier C; the first three are a judgment call to keep slugs to two levels).
 
 ## Open gaps / questions for the owner
+
+- **Links to unbuilt topics.** The `bookmark set`/`move` touchpoint tables name the `index` and
+  `revsets` topics as plain text ("page planned"), because a link to an unready page fails
+  `test_every_internal_jj_link_resolves`. Link them when those topic pages ship.
 
 - **`jj split` help text vs code.** The help text says splitting an empty commit "is not supported",
   but the code has no such check, and upstream's `test_split_empty` splits one successfully. The page
