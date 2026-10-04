@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-04 (thirty-fourth run): no upstream change since `4df5265`; built the
-`conflicts` topic page. The remaining topic pages come next, then Tier B (spec §9).
+**Last updated:** 2026-10-04 (thirty-fifth run): no upstream change since `4df5265`; built the
+`storage` topic page. `index`, `revsets` and `backends` come next, then Tier B (spec §9).
 
 ## Upstream pin
 
@@ -16,8 +16,8 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] `/jj` renders the §6 diagram and links to every page in §5 (boxes for unbuilt
       pages link to pinned source until the page exists).
 - [ ] Every §5 page exists and is registered: `protobufs`, `cli`, `commits`, `view`,
-      `operations`, `transactions`, `working-copy`, `trees`, `conflicts` done; 4 to go
-      (`storage`, `index`, `revsets`, `backends`).
+      `operations`, `transactions`, `working-copy`, `trees`, `conflicts`, `storage` done; 3 to go
+      (`index`, `revsets`, `backends`).
 - [x] The `fix` page meets all ten §8 items, with three SVG diagrams.
 - [x] The `protobufs` page covers all seven `.proto` files, every field.
 - [x] Every source link is pinned to `UPSTREAM.commit` (tested).
@@ -38,9 +38,12 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
 
-## Thirty-fourth run (2026-10-04)
+## Thirty-fourth and thirty-fifth runs (2026-10-04)
 
-Pin unchanged (`4df5265`). `0f9c64e`: `conflicts` topic page (`Merge<T>`, trivial merge, flatten/simplify,
+Pin unchanged (`4df5265`). `3b6b9ff`: `storage` topic page (every `.jj/` path with owner and format,
+linked tree diagram, `type` files and factory dispatch, the `.jj/repo` pointer file, Git backend
+`git_target`/`extra/`, content-addressed op store writes, op heads and lock files, index
+`segments`/`op_links`/`changed_paths`, `checkout`/`tree_state`). `0f9c64e`: `conflicts` topic page (`Merge<T>`, trivial merge, flatten/simplify,
 labels, `tree_merge.rs`, Git/simple storage, materialization and parsing; example from upstream's
 `test_materialize_conflict_three_sides`; four diagrams); `resolve` now links to it. The queue had put
 Tier B before the remaining topic pages, against §9; fixed below. Separately, at the owner's request,
@@ -111,7 +114,7 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
    ~~`bookmark-delete`~~, ~~`bookmark-forget`~~, ~~`bookmark-rename`~~, ~~`bookmark-track`~~,
    ~~`bookmark-untrack`~~, ~~`tag-*`~~, ~~`git-clone`/`-colocation`/`-export`/`-import`/`-init`/
    `-remote`~~, ~~`sign`~~, ~~`unsign`~~, ~~`workspace-*`~~, ~~`gerrit-upload`~~. Tier A complete.
-2. Remaining topic pages: ~~`conflicts`~~, `storage`, `index`, `revsets`, `backends`. When `index` and
+2. Remaining topic pages: ~~`conflicts`~~, ~~`storage`~~, `index`, `revsets`, `backends`. When `index` and
    `revsets` ship, link them from the `bookmark set`/`move` touchpoint tables (see gaps).
 3. Tier B commands, in registry order: `file annotate`, `file list`, `file search`, `file show`,
    `sparse list`, `log`, `show`, `diff`, `interdiff`, `status`, `evolog`, `root`, `operation diff`,
@@ -136,6 +139,9 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
 
 ## Open gaps / questions for the owner
 
+- **`workspace_store/` location in spec §5.** The spec lists `workspace_store/` directly under `.jj/`,
+  but `ReadonlyRepo::init` creates it at `.jj/repo/workspace_store/` (shared by all workspaces). The
+  `storage` page describes the code; the spec may want updating.
 - **`jj gerrit upload` help text vs code.** `--remote` says it "can be a full SSH URL", but only
   configured remote names work; `--merged` is parsed but never sent. The page describes the code.
 - **`jj git remote` doc string.** `RemoteCommand`'s doc comment says "The Git repo will be a bare git
