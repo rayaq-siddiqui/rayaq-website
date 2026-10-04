@@ -1,0 +1,354 @@
+{% set cmd = "cli/src/commands/git/init.rs" %}
+{% set gmod = "cli/src/commands/git/mod.rs" %}
+{% set ws = "lib/src/workspace.rs" %}
+{% set git = "lib/src/git.rs" %}
+{% set gu = "cli/src/git_util.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set misc = "cli/src/config/misc.toml" %}
+{% set t = "cli/tests/test_git_init.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj git init</code> works</h1>
+  <p class="tagline">
+    <code>jj git init</code> creates a jj repo backed by Git in a directory. The Git repository can be new
+    and colocated (a <code>.git</code> next to <code>.jj</code>, the default), new and hidden inside
+    <code>.jj</code>, or an existing one, whose branches, tags and <code>HEAD</code> are imported.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj rejects <code>--at-op</code>, <code>--ignore-working-copy</code> and
+  <code>--no-integrate-operation</code>, creates the directory if needed, and decides the mode. With
+  <code>--git-repo</code>, or when colocating in a directory that already has <code>.git</code>, it uses
+  that existing repository: it imports its refs, sets <code>trunk()</code> from
+  <code>upstream/HEAD</code> or <code>origin/HEAD</code>, and checks out a new commit on top of Git's
+  <code>HEAD</code>. Otherwise it creates a fresh Git repo, colocated or internal, and the working-copy
+  commit sits on the root commit. It ends with <code>Initialized repo in "…"</code>.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 132, 180) }}"><code>cmd_git_init</code></a>, and the work is in
+  <a href="{{ src(cmd, 182, 274) }}"><code>do_init</code></a>. It shares the workspace creation with
+  <a href="{{ url_for('jj', slug='git-clone') }}"><code>jj git clone</code></a> and the ref import with
+  <a href="{{ url_for('jj', slug='git-import') }}"><code>jj git import</code></a>. What a workspace and repo
+  consist of is on the <a href="{{ url_for('jj', slug='working-copy') }}">working copy</a> page.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>DESTINATION</code> (positional)</td><td>path</td><td><code>.</code></td><td>Where to create the workspace; created if missing, but its parent must exist (<a href="{{ src(cmd, 57, 63) }}">source</a>).</td></tr>
+      <tr><td><code>--colocate</code></td><td>bool</td><td>false</td><td>Colocate with Git. Has no effect unless <code>git.colocate</code> is <code>false</code>; conflicts with <code>--git-repo</code> (<a href="{{ src(cmd, 65, 81) }}">source</a>).</td></tr>
+      <tr><td><code>--no-colocate</code></td><td>bool</td><td>false</td><td>Keep the Git repo inside <code>.jj</code>; conflicts with <code>--colocate</code> (<a href="{{ src(cmd, 83, 95) }}">source</a>).</td></tr>
+      <tr><td><code>--object-hash</code></td><td><code>sha1</code> or <code>sha256</code></td><td><code>git.object-hash</code></td><td>Hash algorithm for a newly created Git repo; conflicts with <code>--git-repo</code> (<a href="{{ src(cmd, 97, 112) }}">source</a>).</td></tr>
+      <tr><td><code>--git-repo PATH</code></td><td>path</td><td>none</td><td>Use this existing Git repository; conflicts with <code>--colocate</code> and <code>--object-hash</code> (<a href="{{ src(cmd, 114, 129) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 54, 130) }}"><code>GitInitArgs</code></a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>git.colocate</code></td><td><code>true</code></td><td>Whether to colocate; the flags override it (<a href="{{ src(misc, 27, 28) }}">default</a>, <a href="{{ src(cmd, 152, 156) }}">use</a>).</td></tr>
+      <tr><td><code>git.object-hash</code></td><td><code>"sha1"</code></td><td>Hash algorithm when <code>--object-hash</code> isn't given (<a href="{{ src(misc, 29, 29) }}">default</a>, <a href="{{ src(cmd, 158, 161) }}">use</a>).</td></tr>
+      <tr><td><code>remotes.&lt;name&gt;.auto-track-bookmarks</code></td><td><code>"~*"</code> per the schema</td><td>When importing an existing repo, which remote branches get tracked local bookmarks (<a href="{{ src(cmd, 288, 297) }}">use</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Settings are read for the new workspace's path, so conditional config scoped to it applies
+  (<a href="{{ src(cmd, 227, 227) }}">source</a>). When importing an existing repo, jj may write
+  <code>revset-aliases."trunk()"</code> to the new repo config (§6).
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 470" role="img" aria-labelledby="gn-flow-title gn-flow-desc">
+    <title id="gn-flow-title">jj git init: call flow</title>
+    <desc id="gn-flow-desc">
+      cmd_git_init refuses --no-integrate-operation, --ignore-working-copy and --at-op, creates or reuses
+      the directory and resolves colocation and the object hash. do_init picks a mode. Colocate and
+      Internal create a new Git repo with init_colocated_git or init_internal_git. External uses
+      init_external_git, then imports refs, snapshots, sets trunk from upstream or origin HEAD, and checks
+      out Git's HEAD, then hints about untracked remote bookmarks and warns inside a Git worktree. Finally
+      it prints Initialized repo.
+    </desc>
+    <defs>
+      <marker id="gn-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(cmd, 137, 161) }}"><rect class="d-box" x="20" y="16" width="720" height="52" rx="6"></rect>
+      <text x="32" y="38">refuse --no-integrate-operation, --ignore-working-copy, --at-op</text>
+      <text x="32" y="56" class="d-muted" font-size="11">create_or_reuse_dir(destination); resolve colocate and object hash</text></a>
+
+      <a href="{{ src(cmd, 197, 225) }}"><rect class="d-box" x="20" y="84" width="720" height="40" rx="6"></rect>
+      <text x="32" y="109">do_init: choose the mode (see §6) and load settings for the new path</text></a>
+
+      <a href="{{ src(cmd, 229, 234) }}"><rect class="d-box" x="20" y="144" width="170" height="70" rx="6"></rect>
+      <text x="32" y="166">Colocate</text>
+      <text x="32" y="184" class="d-muted" font-size="11">init_colocated_git</text>
+      <text x="32" y="200" class="d-muted" font-size="11">.jj/.gitignore</text></a>
+
+      <a href="{{ src(cmd, 269, 271) }}"><rect class="d-box" x="20" y="230" width="170" height="70" rx="6"></rect>
+      <text x="32" y="252">Internal</text>
+      <text x="32" y="270" class="d-muted" font-size="11">init_internal_git</text>
+      <text x="32" y="286" class="d-muted" font-size="11">.jj/repo/store/git</text></a>
+
+      <rect x="210" y="144" width="530" height="270" rx="8" class="d-line" fill="none" stroke-dasharray="5 4"></rect>
+      <text x="222" y="162" font-size="11" class="d-muted">External (existing Git repo)</text>
+
+      <a href="{{ src(ws, 255, 293) }}"><rect class="d-box" x="226" y="170" width="498" height="36" rx="6"></rect>
+      <text x="238" y="193">init_external_git: store points at the existing repo</text></a>
+
+      <a href="{{ src(cmd, 276, 316) }}"><rect class="d-box" x="226" y="214" width="498" height="36" rx="6"></rect>
+      <text x="238" y="237">init_git_refs: import_refs (+ export if colocated) → op "import git refs"</text></a>
+
+      <a href="{{ src(cmd, 243, 247) }}"><rect class="d-box" x="226" y="258" width="498" height="36" rx="6"></rect>
+      <text x="238" y="281">.gitignore, maybe_snapshot, set trunk() from upstream/origin HEAD</text></a>
+
+      <a href="{{ src(cmd, 248, 256) }}"><rect class="d-box" x="226" y="302" width="498" height="52" rx="6"></rect>
+      <text x="238" y="324">check out Git HEAD → op "import git head"</text>
+      <text x="238" y="342" class="d-muted" font-size="11">non-colocated here; colocated: done by the snapshot's HEAD import</text></a>
+
+      <a href="{{ src(cmd, 257, 267) }}"><rect class="d-box" x="226" y="362" width="498" height="40" rx="6"></rect>
+      <text x="238" y="387">hint untracked remote bookmarks; warn inside a Git worktree</text></a>
+
+      <a href="{{ src(cmd, 172, 177) }}"><rect class="d-box" x="20" y="426" width="720" height="34" rx="6"></rect>
+      <text x="32" y="448">"Initialized repo in &quot;DIR&quot;"</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" fill="none">
+      <line x1="380" y1="68" x2="380" y2="82" marker-end="url(#gn-arrow)"></line>
+      <line x1="105" y1="124" x2="105" y2="142" marker-end="url(#gn-arrow)"></line>
+      <line x1="475" y1="124" x2="475" y2="142" marker-end="url(#gn-arrow)"></line>
+      <line x1="475" y1="206" x2="475" y2="212" marker-end="url(#gn-arrow)"></line>
+      <line x1="475" y1="250" x2="475" y2="256" marker-end="url(#gn-arrow)"></line>
+      <line x1="475" y1="294" x2="475" y2="300" marker-end="url(#gn-arrow)"></line>
+      <line x1="475" y1="354" x2="475" y2="360" marker-end="url(#gn-arrow)"></line>
+    </g>
+  </svg>
+</div>
+
+<ol>
+  <li><strong>Pre-checks.</strong> The three global flags don't make sense before a repo exists and are
+    refused. The destination is created with <a href="{{ src('core/src/file_util.rs', 64, 76) }}"><code>create_or_reuse_dir</code></a>,
+    which creates one directory level only and is fine if it already exists, then canonicalized
+    (<a href="{{ src(cmd, 137, 150) }}">source</a>).</li>
+  <li><strong>New repo.</strong> For Colocate and Internal, the workspace is created exactly as in
+    <code>jj git clone</code>, with one operation, <code>add workspace 'default'</code>, whose working-copy
+    commit is an empty child of the root (<a href="{{ src(ws, 143, 149) }}">source</a>). A colocated repo
+    also gets <code>.jj/.gitignore</code> (<a href="{{ src(gmod, 110, 123) }}"><code>maybe_add_gitignore</code></a>).</li>
+  <li><strong>Existing repo.</strong> <a href="{{ src(ws, 255, 293) }}"><code>Workspace::init_external_git</code></a>
+    records the Git repo's path, relative if it is inside the workspace so the workspace can be moved.
+    Refs are imported first "so all the reachable commits are indexed in chronological order"
+    (<a href="{{ src(cmd, 236, 242) }}">source</a>).</li>
+  <li><strong>Import.</strong> <code>init_git_refs</code> runs <code>import_refs</code> with abandoning and
+    synthetic predecessors turned off. If anything changed, a colocated repo also exports right away,
+    because auto-tracking may have created local bookmarks. The transaction is committed directly as
+    <code>import git refs</code>, and jj prints <code>Done importing changes from the underlying Git repo.</code>
+    (<a href="{{ src(cmd, 276, 316) }}">source</a>).</li>
+  <li><strong>HEAD.</strong> In a colocated repo, <code>maybe_snapshot</code> imports Git's <code>HEAD</code> and
+    puts the working-copy commit on top of it (<a href="{{ src(util, 1380, 1445) }}"><code>import_git_head</code></a>).
+    Otherwise jj imports the <code>HEAD</code> commit itself and checks out a new commit on top, recorded as
+    <code>import git head</code> (<a href="{{ src(cmd, 248, 256) }}">source</a>,
+    <a href="{{ src(git, 1224, 1251) }}"><code>import_head_commit</code></a>).</li>
+</ol>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<ul>
+  <li><strong>Workspace and repo creation:</strong> <code>.jj/repo</code> with its stores, and
+    <code>.jj/working_copy</code>; on failure, <code>.jj</code> is removed
+    (<a href="{{ src(ws, 296, 350) }}"><code>init_with_factories</code></a>).</li>
+  <li><strong>Git backend:</strong> new (bare internal or colocated) or external; see the
+    <a href="{{ url_for('jj', slug='commits') }}">commits</a> page.</li>
+  <li><strong>View:</strong> imported bookmarks, tags and remote refs, the working-copy commit, and in a
+    colocated repo the recorded Git <code>HEAD</code>; see the <a href="{{ url_for('jj', slug='view') }}">view</a> page.</li>
+  <li><strong>Working copy:</strong> checking out Git's <code>HEAD</code> updates the files in a
+    non-colocated workspace (<code>Added N files</code>); in a colocated one the files are already there and
+    only the working-copy state is reset.</li>
+</ul>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Operation</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>add workspace 'default'</code></td><td>Always.</td><td><a href="{{ src(ws, 143, 149) }}">workspace.rs</a></td></tr>
+      <tr><td><code>import git refs</code></td><td>Existing repo with any refs to import.</td><td><a href="{{ src(cmd, 298, 310) }}">init.rs</a></td></tr>
+      <tr><td><code>import git head</code></td><td>Existing repo whose <code>HEAD</code> points at a commit: by the snapshot when colocated, by <code>do_init</code> otherwise.</td><td><a href="{{ src(util, 1409, 1414) }}">cli_util.rs</a>, <a href="{{ src(cmd, 249, 255) }}">init.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <code>init_git_refs</code> uses a bare <code>start_repo_transaction</code> and commits it itself, because no
+  workspace command helper exists yet at that point (<a href="{{ src(cmd, 298, 310) }}">source</a>).
+</p>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="mode">Choosing the mode</h3>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 270" role="img" aria-labelledby="gn-mode-title gn-mode-desc">
+    <title id="gn-mode-title">How jj git init chooses its mode</title>
+    <desc id="gn-mode-desc">
+      With --git-repo, the mode is External at that path, with .git appended unless the path ends in .git
+      or the .git child doesn't exist, which suggests a bare repo. Otherwise, when colocating, an existing
+      .git in the destination makes it External at that .git, and no .git makes it Colocate. When not
+      colocating, an existing .git is an error, and no .git makes it Internal.
+    </desc>
+    <defs>
+      <marker id="gn-mode-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(cmd, 198, 207) }}"><rect class="d-box" x="20" y="16" width="230" height="70" rx="6"></rect>
+      <text x="32" y="38">--git-repo PATH</text>
+      <text x="32" y="56" class="d-muted" font-size="11">append .git unless it ends in .git</text>
+      <text x="32" y="72" class="d-muted" font-size="11">or PATH/.git is missing (bare)</text></a>
+
+      <a href="{{ src(cmd, 208, 213) }}"><rect class="d-box" x="265" y="16" width="230" height="70" rx="6"></rect>
+      <text x="277" y="38">colocate</text>
+      <text x="277" y="56" class="d-muted" font-size="11">does DEST/.git exist?</text></a>
+
+      <a href="{{ src(cmd, 214, 225) }}"><rect class="d-box" x="510" y="16" width="230" height="70" rx="6"></rect>
+      <text x="522" y="38">not colocate</text>
+      <text x="522" y="56" class="d-muted" font-size="11">does DEST/.git exist?</text></a>
+
+      <a href="{{ src(cmd, 235, 268) }}"><rect class="d-box" x="20" y="150" width="230" height="40" rx="6"></rect>
+      <text x="32" y="175">External(PATH)</text></a>
+      <a href="{{ src(cmd, 209, 210) }}"><rect class="d-box" x="265" y="120" width="110" height="40" rx="6"></rect>
+      <text x="277" y="139" font-size="11">yes: External</text>
+      <text x="277" y="153" font-size="11">(DEST/.git)</text></a>
+      <a href="{{ src(cmd, 211, 212) }}"><rect class="d-box" x="385" y="120" width="110" height="40" rx="6"></rect>
+      <text x="397" y="145" font-size="11">no: Colocate</text></a>
+      <a href="{{ src(cmd, 215, 223) }}"><rect class="d-box" x="510" y="120" width="110" height="40" rx="6"></rect>
+      <text x="522" y="145" font-size="11">yes: error</text></a>
+      <a href="{{ src(cmd, 224, 224) }}"><rect class="d-box" x="630" y="120" width="110" height="40" rx="6"></rect>
+      <text x="642" y="145" font-size="11">no: Internal</text></a>
+
+      <a href="{{ src(cmd, 240, 242) }}"><rect class="d-box" x="20" y="214" width="720" height="40" rx="6"></rect>
+      <text x="32" y="239">External is colocated if the Git repo's working tree is the workspace (is_colocated_git_workspace)</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" fill="none">
+      <line x1="135" y1="86" x2="135" y2="148" marker-end="url(#gn-mode-arrow)"></line>
+      <line x1="320" y1="86" x2="320" y2="118" marker-end="url(#gn-mode-arrow)"></line>
+      <line x1="440" y1="86" x2="440" y2="118" marker-end="url(#gn-mode-arrow)"></line>
+      <line x1="565" y1="86" x2="565" y2="118" marker-end="url(#gn-mode-arrow)"></line>
+      <line x1="685" y1="86" x2="685" y2="118" marker-end="url(#gn-mode-arrow)"></line>
+      <line x1="135" y1="190" x2="135" y2="212" marker-end="url(#gn-mode-arrow)"></line>
+    </g>
+  </svg>
+</div>
+
+<p>
+  So with the default <code>git.colocate = true</code>, running <code>jj git init</code> in an existing Git
+  checkout adopts it as a colocated repo (<a href="{{ src(t, 938, 979) }}">test</a>). Whether an external
+  repo counts as colocated is decided by opening the Git repo at the workspace root
+  (<a href="{{ src(gu, 67, 77) }}"><code>is_colocated_git_workspace</code></a>).
+</p>
+
+<h3 id="trunk">Setting <code>trunk()</code></h3>
+
+<p>
+  For an existing repo, jj looks for <code>refs/remotes/upstream/HEAD</code>, then
+  <code>refs/remotes/origin/HEAD</code>. The first one that exists decides: if it is a symbolic ref to a
+  branch, <code>trunk()</code> is set to that branch at that remote in the repo config, and jj prints
+  <code>Setting the revset alias `trunk()` to `…`</code>. If it exists but can't be parsed, jj stops
+  without setting anything rather than falling back to <code>origin</code>
+  (<a href="{{ src(cmd, 318, 360) }}"><code>maybe_set_repository_level_trunk_alias</code></a>).
+</p>
+
+<h3 id="untracked-hint">Untracked remote bookmarks</h3>
+
+<p>
+  After an import, any local bookmark that has an untracked remote bookmark of the same name is listed,
+  with a ready-made <code>jj bookmark track …</code> command
+  (<a href="{{ src(cmd, 362, 400) }}"><code>print_trackable_remote_bookmarks</code></a>). See
+  <a href="{{ url_for('jj', slug='bookmark-track') }}"><code>jj bookmark track</code></a>.
+</p>
+
+<p>
+  <strong>Invariants:</strong> init never creates a second Git repository next to an existing
+  <code>.git</code>. Importing an existing repo never abandons commits. A non-colocated workspace doesn't
+  record a Git <code>HEAD</code> (<a href="{{ src(t, 223, 228) }}">test</a>).
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>--no-integrate-operation is not respected</code>, <code>--ignore-working-copy is not respected</code>, <code>--at-op is not respected</code> (exit 2)</td><td>One of those global flags was given.</td><td><a href="{{ src(cmd, 137, 145) }}">init.rs</a></td></tr>
+      <tr><td><code>Failed to create workspace</code></td><td>The directory can't be created: the path is an existing file, or its parent doesn't exist.</td><td><a href="{{ src(cmd, 147, 150) }}">init.rs</a>, <a href="{{ src(t, 1203, 1216) }}">test</a></td></tr>
+      <tr><td><code>Did not create a jj repo because there is an existing Git repo in this directory.</code>, hint <code>run `jj git init --colocate` instead</code></td><td>Not colocating, and the directory has <code>.git</code>.</td><td><a href="{{ src(cmd, 215, 223) }}">init.rs</a>, <a href="{{ src(t, 102, 115) }}">test</a></td></tr>
+      <tr><td><code>Warning: Initialized a new colocated jj repo inside a Git worktree.</code>, hint to use <code>jj workspace add</code></td><td>Colocated with a linked Git worktree.</td><td><a href="{{ src(cmd, 258, 267) }}">init.rs</a></td></tr>
+      <tr><td><code>Hint: The following remote bookmarks aren't associated with the existing local bookmarks:</code></td><td>An imported local bookmark has an untracked remote counterpart.</td><td><a href="{{ src(cmd, 378, 397) }}">init.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 274, 333) }}">test_git_init_external_import_trunk</a> (non-bare case). An
+  existing Git repo has <code>my-bookmark</code> at commit <code>e80a42cc</code>, a remote branch
+  <code>origin/trunk</code> at the same commit, and <code>origin/HEAD</code> pointing at it.
+  <code>jj git init repo --git-repo &lt;path&gt;</code> imports the refs, sets <code>trunk()</code>, and checks
+  out a new commit on top of Git's <code>HEAD</code>:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 200" role="img" aria-labelledby="gn-ex-title gn-ex-desc">
+    <title id="gn-ex-title">The new repo after jj git init --git-repo</title>
+    <desc id="gn-ex-desc">
+      The root commit, then e80a42cc "My commit message" carrying my-bookmark and trunk@origin, which
+      trunk() now resolves to, and a new empty working-copy commit ed6b5138 on top.
+    </desc>
+    {% macro node(x, y, label, note="", hl=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 18 }}" y="{{ y + 4 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x + 18 }}" y="{{ y + 20 }}" font-size="10.5" class="d-muted">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <g class="d-line" stroke-width="1.5">
+      <line x1="60" y1="171" x2="60" y2="119"></line>
+      <line x1="60" y1="101" x2="60" y2="59"></line>
+    </g>
+    {{ node(60, 180, "root") }}
+    {{ node(60, 110, "e80a42cc My commit message", "my-bookmark, trunk@origin = trunk(); Git HEAD") }}
+    {{ node(60, 50, "ed6b5138  @", "(empty) new working-copy commit", hl=True) }}
+    <a href="{{ src(t, 323, 331) }}"><rect class="d-box" x="460" y="20" width="280" height="52" rx="6"></rect>
+    <text x="472" y="42" font-size="12">repo config written by init</text>
+    <text x="472" y="60" font-size="11" class="d-muted">revset-aliases."trunk()" = "trunk@origin"</text></a>
+  </svg>
+</div>
+
+<p>Upstream's output (<a href="{{ src(t, 311, 320) }}">source</a>):</p>
+
+<pre><code>Done importing changes from the underlying Git repo.
+Setting the revset alias `trunk()` to `trunk@origin`.
+Working copy  (@) now at: sqpuoqvx ed6b5138 (empty) (no description set)
+Parent commit (@-)      : nntyzxmz e80a42cc my-bookmark trunk@origin | My commit message
+Added 1 files, modified 0 files, removed 0 files
+Initialized repo in "repo"</code></pre>
+
+<p>
+  When the same kind of repo is adopted in place with <code>jj git init --colocate</code>, there is no
+  <code>Working copy now at</code> line: the snapshot's <code>HEAD</code> import puts the working-copy commit
+  on top of <code>HEAD</code> without touching the files, and the workspace records that Git
+  <code>HEAD</code> (<a href="{{ src(t, 938, 963) }}">source</a>).
+</p>

@@ -956,6 +956,20 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "git-init": {
+        "title": "How jj git init works",
+        "sources": [
+            "cli/src/commands/git/init.rs",
+            "cli/src/commands/git/mod.rs",
+            "lib/src/workspace.rs",
+            "lib/src/git.rs",
+            "core/src/file_util.rs",
+            "cli/src/git_util.rs",
+            "cli/src/cli_util.rs",
+            "cli/src/config/misc.toml",
+        ],
+        "ready": True,
+    },
     "git-export": {
         "title": "How jj git export works",
         "sources": [
