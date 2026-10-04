@@ -956,6 +956,16 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "metaedit": {
+        "title": "How jj metaedit works",
+        "sources": [
+            "cli/src/commands/metaedit.rs",
+            "lib/src/commit_builder.rs",
+            "lib/src/rewrite.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
     "git-push": {
         "title": "How jj git push works",
         "sources": [
