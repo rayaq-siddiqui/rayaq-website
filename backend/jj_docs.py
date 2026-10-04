@@ -956,6 +956,21 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "git-remote": {
+        "title": "How jj git remote works",
+        "sources": [
+            "cli/src/commands/git/remote/mod.rs",
+            "cli/src/commands/git/remote/add.rs",
+            "cli/src/commands/git/remote/list.rs",
+            "cli/src/commands/git/remote/remove.rs",
+            "cli/src/commands/git/remote/rename.rs",
+            "cli/src/commands/git/remote/set_url.rs",
+            "cli/src/commands/git/mod.rs",
+            "lib/src/git.rs",
+            "lib/src/view.rs",
+        ],
+        "ready": True,
+    },
     "git-init": {
         "title": "How jj git init works",
         "sources": [
