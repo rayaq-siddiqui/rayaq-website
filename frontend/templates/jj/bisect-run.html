@@ -1,0 +1,304 @@
+{% set cmd = "cli/src/commands/bisect/run.rs" %}
+{% set lib = "lib/src/bisect.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set t = "cli/tests/test_bisect_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj bisect run</code> works</h1>
+  <p class="tagline">
+    <code>jj bisect run</code> binary-searches a range of revisions for the first "bad" one. For each
+    candidate it checks the revision out in your own working copy, runs your command there, and reads
+    the exit status: 0 is good, 125 is skip, 127 aborts, anything else is bad.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj resolves <code>--range</code> and assumes its heads are bad and the parents of its
+  connected roots are good. Unless <code>--trust-endpoints</code> is given, it first runs the command on
+  those endpoints to confirm. Then, until no candidates remain, it picks the middle of the commits
+  between the latest good and the earliest bad ones. It checks that commit out, which records an
+  operation and puts a new empty working-copy commit on top, and runs the command. The commits found
+  are reported as the first bad ones, and the operation to restore to undo the search is printed.
+  <code>--find-good</code> inverts the meaning of the result.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 130, 317) }}"><code>cmd_bisect_run</code></a>, the only subcommand
+  of <code>jj bisect</code> (<a href="{{ src('cli/src/commands/bisect/mod.rs', 21, 35) }}">source</a>).
+  The search itself is jj-lib's <a href="{{ src(lib, 96, 105) }}"><code>Bisector</code></a>, a small state
+  machine the CLI drives one step at a time. The help text's example runs a fix from another revision
+  on top of each candidate: <code>jj bisect run --range v1.0..main -- bash -c "jj duplicate xyz -B @ &amp;&amp; cargo test"</code>
+  (<a href="{{ src(cmd, 36, 57) }}">source</a>).
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>-r</code>, <code>--range REVSETS</code></td><td>revsets, repeatable, required</td><td>—</td><td>The revisions to search; several are unioned. Heads are assumed bad, parents of the range's roots good (<a href="{{ src(cmd, 61, 70) }}">source</a>).</td></tr>
+      <tr><td><code>COMMAND</code> (positional)</td><td>string</td><td>required</td><td>The program run for each revision, with <code>$JJ_BISECT_TARGET</code> set to the commit ID (<a href="{{ src(cmd, 81, 100) }}">source</a>).</td></tr>
+      <tr><td><code>ARGS</code> (positional)</td><td>strings</td><td>none</td><td>Its arguments; put <code>--</code> first for ones starting with <code>-</code> (<a href="{{ src(cmd, 102, 107) }}">source</a>).</td></tr>
+      <tr><td><code>--find-good</code></td><td>bool</td><td>false</td><td>Look for the first good revision instead. Exit status 0 still means good (<a href="{{ src(cmd, 109, 118) }}">source</a>).</td></tr>
+      <tr><td><code>--trust-endpoints</code></td><td>bool</td><td>false</td><td>Skip the pre-bisection checks of the heads and the roots' parents (<a href="{{ src(cmd, 120, 127) }}">source</a>).</td></tr>
+      <tr><td><code>--command CMD</code></td><td>command</td><td>hidden</td><td>Deprecated form of <code>COMMAND</code>; prints a warning (<a href="{{ src(cmd, 72, 79) }}">source</a>, <a href="{{ src(cmd, 138, 146) }}">warning</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 58, 128) }}"><code>BisectRunArgs</code></a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<p>
+  No bisect-specific keys. The commit summaries printed at each step use the usual commit-summary
+  template (<code>templates.commit_summary</code>). Checking out each revision follows the same rules as
+  <a href="{{ url_for('jj', slug='new') }}"><code>jj new</code></a>, so <code>snapshot.*</code> settings
+  apply when the workspace is reloaded between steps. The command receives two environment variables:
+  <code>JJ_BISECT_TARGET</code>, the full commit ID, and <code>JJ_EXECUTABLE_PATH</code>, the running jj
+  binary (<a href="{{ src(cmd, 349, 357) }}">source</a>).
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 500" role="img" aria-labelledby="br-flow-title br-flow-desc">
+    <title id="br-flow-title">jj bisect run: call flow</title>
+    <desc id="br-flow-desc">
+      cmd_bisect_run loads the workspace, requires a command, resolves the range, and remembers the
+      starting repo. Bisector::new records the range's heads as bad and, unless --trust-endpoints is
+      given, queues checks for the heads (bad) and the parents of the connected range (good). The loop
+      asks next_step: a Verify step evaluates an endpoint and stops if it disagrees; an Evaluate step
+      prints the remaining count, evaluates the middle candidate, marks it, and reloads the workspace;
+      Done ends the loop. Each evaluation is a transaction that checks the commit out, then runs the
+      command and maps its exit status. Finally jj prints the jj op restore command and the result.
+    </desc>
+    <defs>
+      <marker id="br-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(cmd, 136, 152) }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="32" y="45">load workspace; require COMMAND; resolve --range; remember the starting operation</text></a>
+
+      <a href="{{ src(lib, 146, 197) }}"><rect class="d-box" x="20" y="84" width="720" height="50" rx="6"></rect>
+      <text x="32" y="105">Bisector::new: bad = heads(range)</text>
+      <text x="32" y="123" class="d-muted" font-size="11">queue checks unless --trust-endpoints: heads must be bad, parents(connected(range)) ~ connected(range) good</text></a>
+
+      <a href="{{ src(lib, 280, 333) }}"><rect class="d-box" x="20" y="158" width="720" height="40" rx="6"></rect>
+      <text x="32" y="183">loop: bisector.next_step()</text></a>
+
+      <a href="{{ src(cmd, 159, 192) }}"><rect class="d-box" x="20" y="222" width="230" height="84" rx="6"></rect>
+      <text x="32" y="243">Verify(commit, expected)</text>
+      <text x="32" y="261" class="d-muted" font-size="11">"Pre-bisection check: …"</text>
+      <text x="32" y="278" class="d-muted" font-size="11">evaluate; mismatch → stop,</text>
+      <text x="32" y="295" class="d-muted" font-size="11">"Cannot bisect: …"</text></a>
+      <a href="{{ src(cmd, 194, 246) }}"><rect class="d-box" x="265" y="222" width="230" height="84" rx="6"></rect>
+      <text x="277" y="243">Evaluate(commit)</text>
+      <text x="277" y="261" class="d-muted" font-size="11">"Bisecting: N revisions left …"</text>
+      <text x="277" y="278" class="d-muted" font-size="11">evaluate; mark good/bad/skip/abort</text>
+      <text x="277" y="295" class="d-muted" font-size="11">reload the workspace</text></a>
+      <a href="{{ src(lib, 301, 332) }}"><rect class="d-box" x="510" y="222" width="230" height="84" rx="6"></rect>
+      <text x="522" y="243">Done(result)</text>
+      <text x="522" y="261" class="d-muted" font-size="11">Found, FoundDespiteSkips,</text>
+      <text x="522" y="278" class="d-muted" font-size="11">Indeterminate, Abort,</text>
+      <text x="522" y="295" class="d-muted" font-size="11">VerificationFailed</text></a>
+
+      <a href="{{ src(cmd, 334, 372) }}"><rect class="d-box" x="20" y="330" width="475" height="84" rx="6"></rect>
+      <text x="32" y="351">evaluate_commit(commit)</text>
+      <text x="32" y="369" class="d-muted" font-size="11">tx.check_out(commit): new empty @ on top of it; tx.finish(…)</text>
+      <text x="32" y="386" class="d-muted" font-size="11">run COMMAND with JJ_BISECT_TARGET, JJ_EXECUTABLE_PATH</text>
+      <text x="32" y="403" class="d-muted" font-size="11">0 → good, 125 → skip, 127 → abort, other → bad</text></a>
+
+      <a href="{{ src(cmd, 253, 314) }}"><rect class="d-box" x="510" y="330" width="230" height="84" rx="6"></rect>
+      <text x="522" y="351">report</text>
+      <text x="522" y="369" class="d-muted" font-size="11">"jj op restore &lt;start op&gt;"</text>
+      <text x="522" y="386" class="d-muted" font-size="11">first bad/good revision(s),</text>
+      <text x="522" y="403" class="d-muted" font-size="11">or an error</text></a>
+
+      <a href="{{ src(cmd, 343, 347) }}"><rect class="d-box" x="20" y="438" width="720" height="40" rx="6"></rect>
+      <text x="32" y="463">each evaluation records one operation: "Updated to revision &lt;id&gt; for bisection"</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#br-arrow)">
+      <line x1="380" y1="60" x2="380" y2="80"></line>
+      <line x1="380" y1="134" x2="380" y2="154"></line>
+      <line x1="135" y1="198" x2="135" y2="218"></line>
+      <line x1="380" y1="198" x2="380" y2="218"></line>
+      <line x1="625" y1="198" x2="625" y2="218"></line>
+      <line x1="135" y1="306" x2="135" y2="326"></line>
+      <line x1="380" y1="306" x2="380" y2="326"></line>
+      <line x1="625" y1="306" x2="625" y2="326"></line>
+      <line x1="257" y1="414" x2="257" y2="434"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Revsets</td><td>evaluated</td><td>The range, its heads, the connected roots' parents, and each step's candidates and <code>bisect()</code> pick (<a href="{{ src(lib, 261, 271) }}">source</a>).</td><td>revsets (page planned)</td></tr>
+      <tr><td>Working-copy commit</td><td>created per step</td><td>A new empty commit on top of each evaluated revision; the previous one is abandoned if it is discardable (empty, no description) and nothing else points to it (<a href="{{ src(repo, 1709, 1730) }}">check_out</a>, <a href="{{ src(repo, 1732, 1772) }}">abandon rule</a>).</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Working copy on disk</td><td>written per step</td><td>Updated to each revision's tree so the command can test it.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+      <tr><td>Operation log</td><td>one operation per evaluation</td><td><code>Updated to revision &lt;id&gt; for bisection</code>, plus whatever the command itself does.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+      <tr><td><code>Bisector</code> state</td><td>in memory</td><td>Good, bad and skipped commit sets, the abort flag, and the queued endpoint checks. Nothing is persisted (<a href="{{ src(lib, 96, 105) }}">source</a>).</td><td>—</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>One transaction per evaluated revision,</strong> including each pre-bisection check. It checks the revision out and is finished as <code>Updated to revision &lt;full hex id&gt; for bisection</code> before the command runs (<a href="{{ src(cmd, 340, 347) }}">source</a>).</li>
+  <li><strong>The command may run jj itself.</strong> After every Evaluate step the workspace is reloaded, because "the evaluation command may run `jj` commands" (<a href="{{ src(cmd, 244, 245) }}">source</a>).</li>
+  <li><strong>Undoing the search:</strong> the final output names the operation that was current at the start; <code>jj op restore &lt;id&gt;</code> discards every revision created during the search (<a href="{{ src(cmd, 253, 262) }}">source</a>).</li>
+  <li><strong>Afterwards</strong> the working copy is left on top of the last evaluated revision, not on the result.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="setup">Setting up</h3>
+
+<p>
+  <a href="{{ src(lib, 146, 197) }}"><code>Bisector::new</code></a> records <code>heads(range)</code> as
+  bad. The good set starts empty. The endpoints to verify are <code>heads(range)</code>, expected bad, and
+  <code>parents(connected(range)) ~ connected(range)</code>, expected good. They are popped from the end
+  of a list, so the heads are checked first. A passing check isn't recorded; it only lets the search
+  continue (<a href="{{ src(lib, 170, 186) }}">source</a>, <a href="{{ src(cmd, 159, 192) }}">CLI</a>).
+</p>
+
+<h3 id="step">Each step</h3>
+
+<p>
+  The candidates are <code>range &amp; (heads(good)..roots(bad)) ~ bad ~ skipped</code>
+  (<a href="{{ src(lib, 261, 271) }}">source</a>). The next revision is
+  <code>latest(bisect(candidates), 1)</code>, where <code>bisect()</code> in the default index takes the
+  middle element of the candidate list in index order. Upstream notes this is "somewhat poor" for
+  non-linear history (<a href="{{ src('lib/src/default_index/revset_engine.rs', 1052, 1062) }}">engine</a>,
+  <a href="{{ src('docs/revsets.md', 367, 369) }}">docs</a>). The "N revisions left" count printed first
+  is the size of that candidate set, which still includes the revision about to be tested, and the step
+  estimate is <code>ceil(log2(N + 1))</code> (<a href="{{ src(cmd, 195, 211) }}">source</a>).
+</p>
+
+<p>
+  The command's exit status is mapped to an <a href="{{ src(lib, 48, 60) }}"><code>Evaluation</code></a>:
+  0 is good, 125 skip, 127 abort, anything else bad, including a signal
+  (<a href="{{ src(cmd, 358, 366) }}">source</a>). With <code>--find-good</code> the result is inverted
+  before it's recorded, so the bisector always looks for "bad" (<a href="{{ src(cmd, 240, 242) }}">source</a>,
+  <a href="{{ src(lib, 62, 80) }}">invert</a>).
+</p>
+
+<h3 id="result">The result</h3>
+
+<p>
+  When no candidates remain, <a href="{{ src(lib, 301, 332) }}"><code>next_step</code></a> takes
+  <code>roots(bad)</code>. None means <code>Indeterminate</code>. Otherwise it walks parents from those
+  roots through skipped commits: any found are "possibly bad", giving <code>FoundDespiteSkips</code>;
+  else <code>Found</code>. Several roots are possible when the range has several disjoint heads
+  (<a href="{{ src(lib, 107, 128) }}">source</a>).
+</p>
+
+<p>
+  <strong>Invariants:</strong> a commit is marked at most once (asserted). Bad is assumed to propagate to
+  descendants within the range. Only the working-copy commit and operation log change; the range itself
+  is never rewritten by jj.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Command argument is required</code> (exit status 2)</td><td>No <code>COMMAND</code> and no legacy <code>--command</code>.</td><td><a href="{{ src(cmd, 144, 146) }}">run.rs</a></td></tr>
+      <tr><td><code>Cannot bisect: this revision was expected to be &lt;good|bad&gt;, but was … (exit status: N) instead.</code> then <code>Bisection preconditions failed</code></td><td>An endpoint check disagreed.</td><td><a href="{{ src(cmd, 183, 191) }}">run.rs</a>, <a href="{{ src(cmd, 270, 272) }}">error</a></td></tr>
+      <tr><td><code>Evaluation command returned 127 (command not found) - aborting bisection.</code> then <code>Bisection aborted</code></td><td>The command exited 127.</td><td><a href="{{ src(cmd, 231, 234) }}">run.rs</a>, <a href="{{ src(cmd, 273, 275) }}">error</a></td></tr>
+      <tr><td><code>Could not find the first &lt;bad|good&gt; revision. Was the input range empty?</code></td><td>No bad commit at the end, e.g. <code>--range=none()</code>.</td><td><a href="{{ src(cmd, 276, 280) }}">run.rs</a></td></tr>
+      <tr><td><code>The first bad revisions are:</code> … <code>These revisions may also be bad, but couldn't be evaluated:</code></td><td>Skipped commits sit between the last good and the first bad.</td><td><a href="{{ src(cmd, 295, 313) }}">run.rs</a></td></tr>
+      <tr><td><code>Failed to run evaluation command</code></td><td>The program couldn't be started.</td><td><a href="{{ src(cmd, 353, 357) }}">run.rs</a></td></tr>
+      <tr><td><code>Warning: `--command` is deprecated; …</code></td><td>The hidden legacy flag was used.</td><td><a href="{{ src(cmd, 138, 143) }}">run.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 58, 137) }}">test_bisect_run</a>. A linear history
+  <code>a</code>–<code>f</code>, each adding one file, and a command that always fails, run as
+  <code>jj bisect run --range=.. --trust-endpoints &lt;cmd&gt;</code>. <code>f</code> is the head and
+  so is assumed bad; the candidates are <code>a</code>–<code>e</code>:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 250" role="img" aria-labelledby="br-ex-title br-ex-desc">
+    <title id="br-ex-title">jj bisect run over a to f with an always-failing command</title>
+    <desc id="br-ex-desc">
+      Linear history a, b, c, d, e, f. f is the head, assumed bad. Step 1: five candidates a to e; the
+      middle one, c, is evaluated and is bad. Step 2: candidates a and b; a is evaluated and is bad. No
+      candidates remain, so the first bad revision is a. The working copy ends as a new empty commit on
+      top of a.
+    </desc>
+    {% macro node(x, y, label, note="", hl=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x - 4 }}" y="{{ y + 28 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x - 14 }}" y="{{ y + 46 }}" font-size="10.5" class="d-muted">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <g class="d-line" stroke-width="1.5">
+      <line x1="69" y1="60" x2="141" y2="60"></line>
+      <line x1="159" y1="60" x2="231" y2="60"></line>
+      <line x1="249" y1="60" x2="321" y2="60"></line>
+      <line x1="339" y1="60" x2="411" y2="60"></line>
+      <line x1="429" y1="60" x2="501" y2="60"></line>
+    </g>
+    {{ node(60, 60, "a", "2: bad", hl=True) }}
+    {{ node(150, 60, "b", "") }}
+    {{ node(240, 60, "c", "1: bad") }}
+    {{ node(330, 60, "d", "") }}
+    {{ node(420, 60, "e", "") }}
+    {{ node(510, 60, "f", "head: bad") }}
+    <a href="{{ src(lib, 261, 271) }}">
+      <rect class="d-box" x="20" y="140" width="350" height="90" rx="6"></rect>
+      <text x="32" y="162" font-size="12">step 1: candidates a b c d e (5)</text>
+      <text x="32" y="182" font-size="11" class="d-muted">middle → c; command fails → bad</text>
+      <text x="32" y="202" font-size="12">step 2: candidates a b (2)</text>
+      <text x="32" y="222" font-size="11" class="d-muted">middle → a; command fails → bad</text>
+    </a>
+    <a href="{{ src(lib, 301, 324) }}">
+      <rect class="d-box" x="390" y="140" width="350" height="90" rx="6"></rect>
+      <text x="402" y="162" font-size="12">no candidates left</text>
+      <text x="402" y="182" font-size="11" class="d-muted">roots(bad) = a; no skipped parents</text>
+      <text x="402" y="202" font-size="12">The first bad revision is: a</text>
+      <text x="402" y="222" font-size="11" class="d-muted">@ = new empty commit on top of a</text>
+    </a>
+  </svg>
+</div>
+
+<p>Upstream's snapshot of standard output (<a href="{{ src(t, 73, 89) }}">source</a>):</p>
+
+<pre><code>Bisecting: 5 revisions left to test after this (roughly 3 steps)
+Now evaluating: royxmykx dffaa0d4 c | c
+fake-bisector testing commit dffaa0d4daccf6cee70bac3498fae3b3fd5d6b5b
+The revision is bad.
+
+Bisecting: 2 revisions left to test after this (roughly 2 steps)
+Now evaluating: rlvkpnrz 7d980be7 a | a
+fake-bisector testing commit 7d980be7a1d499e4d316ab4c01242885032f7eaf
+The revision is bad.
+
+Search complete. To discard any revisions created during search, run:
+  jj op restore e953363a3d33
+The first bad revision is: rlvkpnrz 7d980be7 a | a</code></pre>
+
+<p>
+  On standard error, each step prints <code>Working copy (@) now at: … (empty) (no description set)</code>
+  with the evaluated revision as its parent: the revision is checked out with a new commit on top, not
+  edited. The final log shows one leftover empty commit on <code>a</code>, because the one on
+  <code>c</code> was abandoned when <code>@</code> moved. In
+  <a href="{{ src(t, 544, 577) }}">test_bisect_run_skip</a>, where every evaluation exits 125, the result
+  is <code>The first bad revisions are: b</code> followed by <code>These revisions may also be bad, but
+  couldn't be evaluated: a</code>.
+</p>

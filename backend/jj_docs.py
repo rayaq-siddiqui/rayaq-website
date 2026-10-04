@@ -956,6 +956,17 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "bisect-run": {
+        "title": "How jj bisect run works",
+        "sources": [
+            "cli/src/commands/bisect/run.rs",
+            "cli/src/commands/bisect/mod.rs",
+            "lib/src/bisect.rs",
+            "lib/src/repo.rs",
+            "lib/src/default_index/revset_engine.rs",
+        ],
+        "ready": True,
+    },
     "sparse-edit": {
         "title": "How jj sparse edit works",
         "sources": [
