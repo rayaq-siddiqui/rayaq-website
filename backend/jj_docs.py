@@ -170,7 +170,7 @@ TOPICS = [
             "lib/src/fileset.rs",
             "docs/technical/revset-evaluation.md",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "backends",

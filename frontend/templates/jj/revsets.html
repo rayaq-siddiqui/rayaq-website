@@ -1,0 +1,460 @@
+{% set rs = "lib/src/revset.rs" %}
+{% set rp = "lib/src/revset_parser.rs" %}
+{% set pest = "lib/src/revset.pest" %}
+{% set en = "lib/src/default_index/revset_engine.rs" %}
+{% set fs = "lib/src/fileset.rs" %}
+{% set dsl = "lib/src/dsl_util.rs" %}
+{% set cfg = "cli/src/config/revsets.toml" %}
+{% set ru = "cli/src/revset_util.rs" %}
+{% set ix = "lib/src/index.rs" %}
+{% set doc = "docs/technical/revset-evaluation.md" %}
+<header class="jj-header">
+  <h1>Revset engine</h1>
+  <p class="tagline">
+    Every command that takes <code>-r</code> hands a string like <code>trunk()..@ &amp; mine()</code>
+    to the revset engine. The string is parsed, its aliases are expanded, symbols such as bookmark
+    names become commit IDs, the expression is rewritten into a cheaper one, and the index walks the
+    commit graph to produce the answer.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: a pest grammar and a Pratt parser turn the text into an AST, and alias definitions
+  are substituted in like macros. Lowering turns the AST into a <code>RevsetExpression</code>
+  tree. Symbol resolution replaces every name with commit IDs, using the repo. Eleven optimization
+  passes rewrite the tree, and visibility resolution turns <code>all()</code> and negation into
+  walks from the visible heads, giving a <code>ResolvedExpression</code> that knows nothing about
+  views. The index evaluates that into a lazy <code>Revset</code>, which yields commits children
+  first. Predicates that need commit contents, such as <code>description()</code> or
+  <code>files()</code>, are filters checked one commit at a time. File arguments use the same
+  machinery in a smaller language, filesets.
+</p>
+
+<h2 id="pipeline">1. The pipeline</h2>
+<p>
+  Upstream's own walkthrough of these stages is
+  <a href="{{ src(doc) }}"><code>docs/technical/revset-evaluation.md</code></a>. Each stage
+  produces a stricter type than the one before, so a later stage cannot see anything an earlier
+  stage should have removed. The first three stages need only text and config. From symbol
+  resolution on, the stages need a repo.
+</p>
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 330" role="img" aria-labelledby="rv-pipe-title rv-pipe-desc">
+    <title id="rv-pipe-title">The revset pipeline</title>
+    <desc id="rv-pipe-desc">
+      Eight stages in two rows. The top row runs left to right and needs only the text: parse_program
+      produces an AST of ExpressionNodes, expand_aliases_with_locals substitutes alias definitions,
+      and lower_expression produces a UserRevsetExpression. The fourth stage, resolve_user_expression,
+      uses a SymbolResolver and the repo to produce a ResolvedRevsetExpression. The bottom row runs
+      right to left inside ResolvedRevset::evaluate: optimize rewrites the tree, resolve_visibility
+      produces a ResolvedExpression, Index::evaluate_revset turns it into a Revset, and the Revset
+      streams commits or answers membership tests.
+    </desc>
+    <defs>
+      <marker id="rv-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"></path>
+      </marker>
+    </defs>
+    <text x="205" y="24" text-anchor="middle" font-size="12" class="d-muted">revset::parse: text, aliases and config only</text>
+    <text x="657" y="24" text-anchor="middle" font-size="12" class="d-accent">needs the repo</text>
+    <a href="{{ src(rp, 467, 473) }}">
+      <rect x="20" y="40" width="165" height="80" rx="8" class="d-box"></rect>
+      <text x="102" y="68" text-anchor="middle" font-size="14">parse_program</text>
+      <text x="102" y="88" text-anchor="middle" font-size="11" class="d-muted">pest + Pratt parser</text>
+      <text x="102" y="106" text-anchor="middle" font-size="11" class="d-muted">→ ExpressionNode (AST)</text>
+    </a>
+    <a href="{{ src(dsl, 910, 930) }}">
+      <rect x="205" y="40" width="165" height="80" rx="8" class="d-box"></rect>
+      <text x="287" y="68" text-anchor="middle" font-size="14">expand aliases</text>
+      <text x="287" y="88" text-anchor="middle" font-size="11" class="d-muted">[revset-aliases]</text>
+      <text x="287" y="106" text-anchor="middle" font-size="11" class="d-muted">→ ExpressionNode</text>
+    </a>
+    <a href="{{ src(rs, 1468, 1535) }}">
+      <rect x="390" y="40" width="165" height="80" rx="8" class="d-box"></rect>
+      <text x="472" y="68" text-anchor="middle" font-size="14">lower_expression</text>
+      <text x="472" y="88" text-anchor="middle" font-size="11" class="d-muted">operators → functions</text>
+      <text x="472" y="106" text-anchor="middle" font-size="11" class="d-muted">→ UserRevsetExpression</text>
+    </a>
+    <a href="{{ src(rs, 690, 707) }}">
+      <rect x="575" y="40" width="165" height="80" rx="8" class="d-box" style="stroke: var(--jj-accent)"></rect>
+      <text x="657" y="68" text-anchor="middle" font-size="14">resolve symbols</text>
+      <text x="657" y="88" text-anchor="middle" font-size="11" class="d-muted">SymbolResolver</text>
+      <text x="657" y="106" text-anchor="middle" font-size="11" class="d-muted">→ ResolvedRevsetExpression</text>
+    </a>
+    <a href="{{ src(rs, 2682, 2700) }}">
+      <rect x="575" y="200" width="165" height="80" rx="8" class="d-box"></rect>
+      <text x="657" y="228" text-anchor="middle" font-size="14">optimize</text>
+      <text x="657" y="248" text-anchor="middle" font-size="11" class="d-muted">11 rewrite passes</text>
+      <text x="657" y="266" text-anchor="middle" font-size="11" class="d-muted">→ ResolvedRevsetExpression</text>
+    </a>
+    <a href="{{ src(rs, 3214, 3234) }}">
+      <rect x="390" y="200" width="165" height="80" rx="8" class="d-box"></rect>
+      <text x="472" y="228" text-anchor="middle" font-size="14">resolve_visibility</text>
+      <text x="472" y="248" text-anchor="middle" font-size="11" class="d-muted">view heads → commit IDs</text>
+      <text x="472" y="266" text-anchor="middle" font-size="11" class="d-muted">→ ResolvedExpression</text>
+    </a>
+    <a href="{{ src(ix, 165, 171) }}">
+      <rect x="205" y="200" width="165" height="80" rx="8" class="d-box"></rect>
+      <text x="287" y="228" text-anchor="middle" font-size="14">evaluate_revset</text>
+      <text x="287" y="248" text-anchor="middle" font-size="11" class="d-muted">the index's engine</text>
+      <text x="287" y="266" text-anchor="middle" font-size="11" class="d-muted">→ Box&lt;dyn Revset&gt;</text>
+    </a>
+    <a href="{{ src(rs, 3513, 3552) }}">
+      <rect x="20" y="200" width="165" height="80" rx="8" class="d-box"></rect>
+      <text x="102" y="228" text-anchor="middle" font-size="14">Revset</text>
+      <text x="102" y="248" text-anchor="middle" font-size="11" class="d-muted">stream, count,</text>
+      <text x="102" y="266" text-anchor="middle" font-size="11" class="d-muted">containing_fn</text>
+    </a>
+    <path d="M185,80 H203" class="d-line" fill="none" marker-end="url(#rv-arrow)"></path>
+    <path d="M370,80 H388" class="d-line" fill="none" marker-end="url(#rv-arrow)"></path>
+    <path d="M555,80 H573" class="d-line" fill="none" marker-end="url(#rv-arrow)"></path>
+    <path d="M657,120 V198" class="d-line" fill="none" marker-end="url(#rv-arrow)"></path>
+    <path d="M575,240 H557" class="d-line" fill="none" marker-end="url(#rv-arrow)"></path>
+    <path d="M390,240 H372" class="d-line" fill="none" marker-end="url(#rv-arrow)"></path>
+    <path d="M205,240 H187" class="d-line" fill="none" marker-end="url(#rv-arrow)"></path>
+    <a href="{{ src(rs, 738, 782) }}">
+      <text x="380" y="310" text-anchor="middle" font-size="12" class="d-accent">ResolvedRevset::evaluate runs the bottom row</text>
+    </a>
+  </svg>
+</div>
+<p>
+  <a href="{{ src(rs, 1537, 1547) }}"><code>revset::parse</code></a> runs the top row and returns a
+  <code>UserRevsetExpression</code>. In the CLI,
+  <a href="{{ src('cli/src/cli_util.rs', 1876, 1886) }}"><code>parse_revset</code></a> wraps the
+  result in a <a href="{{ src(ru, 77, 82) }}"><code>RevsetExpressionEvaluator</code></a>, which
+  carries the repo, the extensions and the short-prefix context to the later stages
+  (<a href="{{ src(ru, 84, 166) }}"><code>resolve_revset</code>, <code>evaluate</code></a>).
+  Commands that combine their own expression with the user's, such as intersecting with
+  <code>mutable()</code>, do so on the <code>UserRevsetExpression</code> before resolution.
+</p>
+<p>
+  <code>RevsetExpression</code> is generic over a state type. As a
+  <a href="{{ src(rs, 255, 269) }}"><code>UserRevsetExpression</code></a> it may still hold
+  unresolved commit refs and operation strings. As a <code>ResolvedRevsetExpression</code> those
+  slots have type <code>Infallible</code>, so the compiler guarantees resolution is complete.
+</p>
+<p class="jj-source">
+  <a href="{{ src(doc) }}">revset-evaluation.md</a> ·
+  <a href="{{ src(rs, 709, 727) }}"><code>ResolvedRevset</code></a> ·
+  <a href="{{ src(rs, 784, 818) }}"><code>ResolvedRevsetExpression::evaluate</code></a>
+</p>
+
+<h2 id="grammar">2. Grammar and AST</h2>
+<p>
+  The grammar is <a href="{{ src(pest) }}"><code>revset.pest</code></a>. Its
+  <a href="{{ src(pest, 21, 29) }}"><code>identifier</code></a> rule lets <code>.</code>,
+  <code>-</code> and <code>+</code> appear between name parts, so <code>v1.2.3</code> and
+  <code>feature-x</code> are single symbols rather than ranges or parent operators. A
+  <a href="{{ src(pest, 100, 109) }}"><code>primary</code></a> is a parenthesized expression, a
+  <a href="{{ src(pest, 84) }}">function call</a>, a
+  <a href="{{ src(pest, 97) }}">pattern</a> such as <code>glob:"x*"</code>, or a symbol with an
+  optional <code>@</code> (<code>main@origin</code>, <code>default@</code>, <code>@</code>).
+  <a href="{{ src(pest, 122, 125) }}"><code>expression</code></a> only lists operands and operators;
+  precedence comes from the
+  <a href="{{ src(rp, 521, 543) }}">Pratt parser table</a> in
+  <a href="{{ src(rp, 475, 601) }}"><code>parse_expression_node</code></a>.
+</p>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Precedence (loosest first)</th><th>Operators</th><th>AST node</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td><code>x | y</code></td><td><code>UnionAll</code>, flattened by <a href="{{ src(rp, 453, 465) }}"><code>union_nodes</code></a></td></tr>
+    <tr><td>2</td><td><code>x &amp; y</code>, <code>x ~ y</code></td><td><code>Binary(Intersection | Difference)</code></td></tr>
+    <tr><td>3</td><td>prefix <code>~x</code></td><td><code>Unary(Negate)</code></td></tr>
+    <tr><td>4</td><td><code>x::y</code>, <code>x..y</code></td><td><code>Binary(DagRange | Range)</code></td></tr>
+    <tr><td>5</td><td>prefix <code>::x</code>, <code>..x</code></td><td><code>Unary(DagRangePre | RangePre)</code></td></tr>
+    <tr><td>6</td><td>postfix <code>x::</code>, <code>x..</code></td><td><code>Unary(DagRangePost | RangePost)</code></td></tr>
+    <tr><td>7</td><td>postfix <code>x-</code>, <code>x+</code></td><td><code>Unary(Parents | Children)</code></td></tr>
+  </tbody>
+</table></div>
+<p>
+  The grammar still accepts the old operators <code>:</code>, <code>^</code>, infix
+  <code>+</code> and infix <code>-</code>, only so that the parser can reject them with a hint
+  naming the replacement (<code>::</code>, <code>-</code>, <code>|</code>, <code>~</code>).
+  Ranges cannot nest without parentheses. A bare <code>::</code> and a bare <code>..</code> parse
+  to their own nodes, <code>DagRangeAll</code> and <code>RangeAll</code>.
+</p>
+<p>
+  The AST is <a href="{{ src(rp, 329, 358) }}"><code>ExpressionKind</code></a>, with the operators
+  in <a href="{{ src(rp, 414, 431) }}"><code>UnaryOp</code></a> and
+  <a href="{{ src(rp, 433, 444) }}"><code>BinaryOp</code></a>. No name is looked up at this stage:
+  <code>main</code> is an <code>Identifier</code>, <code>main@origin</code> a
+  <code>RemoteSymbol</code>, and <code>foo()</code> a <code>FunctionCall</code> that may be a
+  built-in or an alias.
+</p>
+
+<h2 id="aliases">3. Aliases</h2>
+<p>
+  Aliases come from the <code>[revset-aliases]</code> config table. They can be symbols
+  (<code>'trunk'</code>) or functions with parameters (<code>'f(x)'</code>). The shared DSL code in
+  <code>dsl_util.rs</code>
+  (<a href="{{ src(dsl, 897, 908) }}"><code>expand_aliases</code></a>,
+  <a href="{{ src(dsl, 910, 930) }}"><code>expand_aliases_with_locals</code></a>) substitutes each
+  use with the parsed definition, recursively, and leaves an <code>AliasExpanded</code> node so
+  errors can say which alias they came from. Expansion is textual, like a macro: a parameter used
+  twice evaluates its argument twice. The same code expands template and fileset aliases.
+</p>
+<p>
+  Much of jj's default behavior is defined as aliases in
+  <a href="{{ src(cfg, 23, 51) }}"><code>cli/src/config/revsets.toml</code></a>, which users can
+  override:
+</p>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Alias</th><th>Default definition</th></tr></thead>
+  <tbody>
+    <tr><td><a href="{{ src(cfg, 25, 35) }}"><code>trunk()</code></a></td><td><code>latest(</code> the remote bookmark <code>main</code>, <code>master</code> or <code>trunk</code> on <code>origin</code> or <code>upstream</code>, or <code>root()</code><code>)</code></td></tr>
+    <tr><td><a href="{{ src(cfg, 39) }}"><code>builtin_log()</code></a></td><td><code>present(@) | ancestors(immutable_heads().., 2) | trunk()</code></td></tr>
+    <tr><td><a href="{{ src(cfg, 43, 45) }}"><code>builtin_immutable_heads()</code></a></td><td><code>trunk() | tags() | untracked_remote_bookmarks() | untracked_remote_tags()</code></td></tr>
+    <tr><td><a href="{{ src(cfg, 46) }}"><code>immutable_heads()</code></a></td><td><code>builtin_immutable_heads()</code></td></tr>
+    <tr><td><a href="{{ src(cfg, 47) }}"><code>immutable()</code></a></td><td><code>::(immutable_heads() | root())</code></td></tr>
+    <tr><td><a href="{{ src(cfg, 48) }}"><code>mutable()</code></a></td><td><code>~immutable()</code></td></tr>
+    <tr><td><a href="{{ src(cfg, 50, 51) }}"><code>visible()</code>, <code>hidden()</code></a></td><td><code>::visible_heads()</code>, <code>~visible()</code></td></tr>
+  </tbody>
+</table></div>
+<p>
+  The <a href="{{ src(cfg, 4, 21) }}"><code>[revsets]</code></a> table above it holds the default
+  revset for each command that has one, such as <code>log = "builtin_log()"</code> and
+  <code>arrange = "reachable(@, mutable())"</code>. The CLI checks that commands do not rewrite
+  immutable commits by parsing <code>immutable_heads()</code> on its own and adding
+  <code>root()</code>
+  (<a href="{{ src(ru, 206, 218) }}"><code>parse_immutable_heads_expression</code></a>).
+</p>
+
+<h2 id="lowering">4. Lowering to <code>RevsetExpression</code></h2>
+<p>
+  <a href="{{ src(rs, 1468, 1535) }}"><code>lower_expression</code></a> turns each AST node into a
+  <a href="{{ src(rs, 271, 366) }}"><code>RevsetExpression</code></a>. Operators become the same
+  nodes as their function forms, so <code>::x</code> and <code>ancestors(x)</code> are identical
+  from here on:
+</p>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>Syntax</th><th>Lowered to</th></tr></thead>
+  <tbody>
+    <tr><td><code>main</code>, <code>"main"</code></td><td><code>CommitRef(Symbol("main"))</code></td></tr>
+    <tr><td><code>main@origin</code></td><td><code>CommitRef(RemoteSymbol)</code></td></tr>
+    <tr><td><code>@</code>, <code>ws@</code></td><td><code>CommitRef(WorkingCopy(workspace))</code>; <code>@</code> fails outside a workspace</td></tr>
+    <tr><td><code>::x</code>, <code>x::</code></td><td><code>Ancestors</code>, <code>Descendants</code></td></tr>
+    <tr><td><code>x::y</code></td><td><code>DagRange</code>: descendants of <code>x</code> that are ancestors of <code>y</code></td></tr>
+    <tr><td><code>x..y</code></td><td><code>Range</code>: ancestors of <code>y</code> that are not ancestors of <code>x</code></td></tr>
+    <tr><td><code>..x</code>, <code>x..</code></td><td><code>root()..x</code>, <code>~::x</code></td></tr>
+    <tr><td><code>::</code>, <code>..</code></td><td><code>all()</code>, <code>~root()</code></td></tr>
+    <tr><td><code>x-</code>, <code>x+</code></td><td><code>Ancestors</code>/<code>Descendants</code> with generation <code>1..2</code></td></tr>
+    <tr><td><code>x ~ y</code>, <code>~x</code></td><td><code>Difference</code>, <code>NotIn</code></td></tr>
+    <tr><td><code>f(…)</code></td><td>the function's entry in the function map</td></tr>
+  </tbody>
+</table></div>
+<p>
+  Functions are looked up by
+  <a href="{{ src(rs, 1448, 1466) }}"><code>lower_function_call</code></a> in a map that starts as
+  <a href="{{ src(rs, 914, 1306) }}"><code>BUILTIN_FUNCTION_MAP</code></a> plus any
+  extension functions. An unknown name is an error that suggests similar names, aliases included.
+  Each <a href="{{ src(rs, 908, 912) }}"><code>RevsetFunction</code></a> checks its own arguments:
+  <a href="{{ src(rs, 1135, 1140) }}"><code>description()</code></a> parses a string pattern and
+  returns a filter, <a href="{{ src(rs, 1219, 1229) }}"><code>files()</code></a> parses a
+  fileset, and <a href="{{ src(rs, 1285, 1296) }}"><code>at_operation()</code></a> keeps its
+  operation argument as unparsed text.
+</p>
+<p>
+  The commit refs that later need the repo are
+  <a href="{{ src(rs, 151, 170) }}"><code>RevsetCommitRef</code></a>: <code>WorkingCopy</code>,
+  <code>WorkingCopies</code>, <code>Symbol</code>, <code>RemoteSymbol</code>,
+  <code>ChangeId</code>, <code>CommitId</code>, <code>Bookmarks</code>,
+  <code>RemoteBookmarks</code>, <code>Tags</code> and <code>RemoteTags</code>.
+</p>
+
+<h2 id="symbols">5. Symbol resolution</h2>
+<p>
+  <a href="{{ src(rs, 690, 707) }}"><code>resolve_user_expression</code></a> walks the tree with an
+  <a href="{{ src(rs, 3125, 3136) }}"><code>ExpressionSymbolResolver</code></a> and replaces every
+  commit ref with <code>Commits(ids)</code>
+  (<a href="{{ src(rs, 3034, 3123) }}"><code>resolve_commit_ref</code></a>). Bookmark and tag
+  functions read the view; <code>@</code> reads the view's working-copy commits. A plain symbol
+  goes to the <a href="{{ src(rs, 2967, 2973) }}"><code>SymbolResolver</code></a>, which asks a
+  chain of <a href="{{ src(rs, 2798, 2807) }}"><code>PartialSymbolResolver</code></a>s and takes
+  the first answer
+  (<a href="{{ src(rs, 2975, 3032) }}"><code>resolve_symbol</code></a>):
+</p>
+<ol>
+  <li>a tag of that name (<a href="{{ src(rs, 2809, 2833) }}"><code>TagResolver</code></a>);</li>
+  <li>a local bookmark of that name (<code>BookmarkResolver</code>);</li>
+  <li>a commit ID prefix;</li>
+  <li>a change ID prefix;</li>
+  <li>resolvers added by extensions
+    (<a href="{{ src(rs, 2950, 2965) }}"><code>SymbolResolverExtension</code></a>).</li>
+</ol>
+<p>
+  An empty symbol is an error, and a symbol nothing resolves is a "no such revision" error with
+  suggestions. The ID prefix resolvers use the short-prefix context from
+  <a href="{{ src(ru, 196, 204) }}"><code>default_symbol_resolver</code></a>, so a prefix is first
+  looked up within <code>revsets.short-prefixes</code>, the same way the
+  <a href="{{ url_for('jj', slug='index') }}">commit index</a> page describes for display.
+</p>
+<p>
+  Two functions change how resolution works
+  (<a href="{{ src(rs, 3156, 3212) }}">the resolver's fold</a>):
+</p>
+<ul>
+  <li>
+    <code>present(x)</code> resolves <code>x</code> in its own scope and turns "no such revision"
+    and "workspace has no working copy" errors into <code>none()</code>. Other errors, such as an
+    ambiguous prefix, still fail.
+  </li>
+  <li>
+    <code>at_operation(op, x)</code> loads the repo at that
+    <a href="{{ url_for('jj', slug='operations') }}">operation</a>, resolves <code>x</code>
+    there, and wraps the result in <code>WithinVisibility</code> so it is evaluated with that
+    operation's heads. The extra repos are kept on the <code>ResolvedRevset</code>, whose
+    evaluation then merges their indexes with the current one.
+  </li>
+</ul>
+
+<h2 id="optimize">6. Optimization</h2>
+<p>
+  <a href="{{ src(rs, 2682, 2700) }}"><code>optimize</code></a> runs eleven rewrite passes in a
+  fixed order, each over the whole tree, and each enabling later ones. The upstream walkthrough
+  lists every rule; the gist is:
+</p>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th>#</th><th>Pass</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td><a href="{{ src(rs, 2033, 2042) }}"><code>resolve_referenced_commits</code></a></td><td>Records every commit ID named in the expression (<code>WithinReference</code>), so <code>all()</code> can include them even if hidden. Runs first because later passes delete subtrees.</td></tr>
+    <tr><td>2</td><td><a href="{{ src(rs, 2592, 2619) }}"><code>unfold_difference</code></a></td><td><code>x..y</code> → <code>::y &amp; ~::x</code>; <code>x ~ y</code> → <code>x &amp; ~y</code></td></tr>
+    <tr><td>3</td><td><a href="{{ src(rs, 2280, 2315) }}"><code>fold_redundant_expression</code></a></td><td>Removes <code>~~x</code>, <code>x &amp; all()</code>, <code>x | none()</code> and similar</td></tr>
+    <tr><td>4</td><td><a href="{{ src(rs, 2621, 2680) }}"><code>fold_generation</code></a></td><td>Merges nested ancestors or descendants: <code>x--</code> becomes one walk with generation <code>2..3</code></td></tr>
+    <tr><td>5</td><td><a href="{{ src(rs, 2113, 2139) }}"><code>flatten_intersections</code></a></td><td>Makes intersections left-associative</td></tr>
+    <tr><td>6</td><td><a href="{{ src(rs, 2173, 2211) }}"><code>sort_negations_and_ancestors</code></a></td><td>Orders intersection terms: <code>~::x</code>, then <code>::x</code>, then others, then <code>~x</code></td></tr>
+    <tr><td>7</td><td><a href="{{ src(rs, 2357, 2389) }}"><code>fold_ancestors_union</code></a></td><td><code>::x | ::y</code> → <code>::(x | y)</code>; <code>~::x &amp; ~::y</code> → <code>~::(x | y)</code></td></tr>
+    <tr><td>8</td><td><a href="{{ src(rs, 2213, 2278) }}"><code>internalize_filter</code></a></td><td>Moves filters to the end of each intersection, so cheap graph terms narrow the set before any commit is loaded</td></tr>
+    <tr><td>9</td><td><a href="{{ src(rs, 2391, 2515) }}"><code>fold_heads_range</code></a></td><td><code>heads(x..y &amp; filter)</code> → <code>HeadsRange</code>, which stops walking a branch once it finds a match</td></tr>
+    <tr><td>10</td><td><a href="{{ src(rs, 2540, 2568) }}"><code>fold_difference</code></a></td><td>Folds negations back: <code>::y &amp; ~::x</code> → <code>x..y</code>; <code>x &amp; ~y</code> → <code>x ~ y</code></td></tr>
+    <tr><td>11</td><td><a href="{{ src(rs, 2570, 2590) }}"><code>fold_not_in_ancestors</code></a></td><td>Any remaining <code>~::x</code> → <code>x..</code> (a range up to the visible heads)</td></tr>
+  </tbody>
+</table></div>
+<p>
+  Passes 2 and 10 are inverses on purpose: unfolding exposes the parts to the passes in between,
+  and folding puts back the forms the engine evaluates fastest. A negation left as
+  <code>~x</code> costs a walk over every visible commit, so the last passes try to remove it.
+</p>
+
+<h2 id="visibility">7. Visibility</h2>
+<p>
+  The index stores every commit any operation has seen, visible or not. It has no idea what the
+  current <a href="{{ url_for('jj', slug='view') }}">view</a> is.
+  <a href="{{ src(rs, 3214, 3234) }}"><code>resolve_visibility</code></a> bakes the view into the
+  expression through a
+  <a href="{{ src(rs, 3236, 3242) }}"><code>VisibilityResolutionContext</code></a>
+  (<a href="{{ src(rs, 3244, 3511) }}">its <code>resolve</code></a>) and produces a
+  <a href="{{ src(rs, 842, 906) }}"><code>ResolvedExpression</code></a>:
+</p>
+<ul>
+  <li><code>all()</code> becomes the ancestors of the visible heads plus every referenced commit, so <code>all() &amp; x</code> is still <code>x</code> when <code>x</code> names a hidden commit.</li>
+  <li><code>visible_heads()</code> and <code>root()</code> become literal commit ID lists.</li>
+  <li><code>~x</code> becomes <code>all() ~ x</code>, and <code>x::</code> becomes a DAG range up to the visible heads.</li>
+  <li>
+    Filters move into a separate
+    <a href="{{ src(rs, 820, 833) }}"><code>ResolvedPredicateExpression</code></a>. An intersection
+    whose right side is a filter becomes <code>FilterWithin { candidates, predicate }</code>; a
+    filter on its own becomes <code>FilterWithin</code> over <code>all()</code>.
+  </li>
+</ul>
+<p>
+  <code>ResolvedExpression</code> has no <code>All</code>, <code>NotIn</code>,
+  <code>Filter</code> or commit-ref variants, so the engine cannot meet them.
+  <a href="{{ src(rs, 738, 782) }}"><code>ResolvedRevset::evaluate</code></a> runs
+  <code>optimize</code> and this step, then hands the result to
+  <a href="{{ src(ix, 165, 171) }}"><code>Index::evaluate_revset</code></a>.
+</p>
+
+<h2 id="engine">8. Evaluation in the default index</h2>
+<p>
+  <code>Index::evaluate_revset</code> is the extension point: another index implementation can
+  evaluate a <code>ResolvedExpression</code> its own way. The default
+  <a href="{{ url_for('jj', slug='index') }}">commit index</a> passes it to
+  <a href="{{ src(en, 726, 737) }}"><code>revset_engine::evaluate</code></a>, which builds a tree
+  of <a href="{{ src(en, 103, 108) }}"><code>InternalRevset</code></a>s. Each one yields index
+  positions in descending order. Because a commit's parents always have lower positions,
+  descending position order is a valid topological order, children first, and two sets can be
+  combined by merging their position streams without sorting.
+</p>
+<div class="jj-table-wrap"><table>
+  <thead><tr><th><code>ResolvedExpression</code></th><th>Evaluated as</th></tr></thead>
+  <tbody>
+    <tr><td><code>Commits(ids)</code></td><td>IDs looked up to positions and sorted (<a href="{{ src(en, 291, 295) }}"><code>EagerRevset</code></a>)</td></tr>
+    <tr><td><code>Ancestors</code>, <code>Range</code></td><td>A lazy <code>RevWalk</code> from the heads, stopping at the roots and limited by generation (<a href="{{ src(en, 325, 328) }}"><code>RevWalkRevset</code></a>). <code>Range</code> first drops heads that are also roots, so <code>immutable_heads()..</code> can finish early.</td></tr>
+    <tr><td><code>DagRange</code>, <code>Reachable</code>, <code>Heads</code>, <code>Roots</code>, …</td><td>Computed eagerly from walks over the index</td></tr>
+    <tr><td><code>Union</code>, <code>Intersection</code>, <code>Difference</code></td><td>Merge-walks of two descending position streams (<a href="{{ src(en, 425, 428) }}"><code>UnionRevset</code></a>, <a href="{{ src(en, 513, 516) }}"><code>IntersectionRevset</code></a>, <a href="{{ src(en, 619, 624) }}"><code>DifferenceRevset</code></a>)</td></tr>
+    <tr><td><code>FilterWithin</code></td><td>The candidates' stream, keeping positions the predicate accepts (<a href="{{ src(en, 373, 377) }}"><code>FilterRevset</code></a>)</td></tr>
+  </tbody>
+</table></div>
+<p>
+  The full case list is
+  <a href="{{ src(en, 755, 1122) }}"><code>EvaluationContext::evaluate</code></a>. The result is
+  wrapped in <a href="{{ src(en, 119, 122) }}"><code>RevsetImpl</code></a>, which implements the
+  public <a href="{{ src(rs, 3513, 3552) }}"><code>Revset</code></a> trait
+  (<a href="{{ src(en, 154, 225) }}">impl</a>): <code>stream</code> of commit IDs,
+  <code>commit_change_ids</code>, <code>stream_graph</code> for <code>jj log</code>,
+  <code>is_empty</code>, <code>count_estimate</code>, and <code>containing_fn</code>, a membership
+  test that advances the walk only as far as the commit asked about.
+</p>
+
+<h2 id="filters">9. Filters and extensions</h2>
+<p>
+  A filter is a predicate the index cannot answer from the graph alone.
+  <a href="{{ src(rs, 201, 235) }}"><code>RevsetFilterPredicate</code></a> lists them:
+  <code>ParentCount</code>, <code>Description</code>, <code>Subject</code>, author and committer
+  name, email and date, <code>File</code>, <code>DiffLines</code>, <code>HasConflict</code>,
+  <code>Signed</code>, and <code>Extension</code>.
+  <a href="{{ src(en, 1283, 1422) }}"><code>build_predicate_fn</code></a> turns each into a
+  function of an index position. Only <code>ParentCount</code> is answered from the index entry;
+  every other filter loads the commit from the
+  <a href="{{ url_for('jj', slug='backends') if 'backends' in ready_slugs else src('lib/src/store.rs') }}">store</a>,
+  which is why pass 8 pushes filters as late as possible. <code>File</code> first tries the
+  <a href="{{ url_for('jj', slug='index') }}">changed-path index</a> and diffs the trees only
+  when it has no entry (<a href="{{ src(en, 1361, 1371) }}">source</a>). <code>divergent()</code>
+  is a predicate too, computed from the change-ID index
+  (<a href="{{ src(en, 1125, 1181) }}"><code>evaluate_predicate</code></a>).
+</p>
+<p>
+  Programs built on jj-lib extend the language through
+  <a href="{{ src(rs, 3582, 3586) }}"><code>RevsetExtensions</code></a>
+  (<a href="{{ src(rs, 3594, 3618) }}">impl</a>):
+</p>
+<ul>
+  <li><code>add_custom_function</code> adds a function to the map, and panics if the name is taken;</li>
+  <li><code>add_symbol_resolver</code> adds a resolver at the end of the chain in §5;</li>
+  <li>
+    a <a href="{{ src(rs, 181, 185) }}"><code>RevsetFilterExtension</code></a> is a custom filter
+    whose <code>matches_commit</code> is called per commit.
+  </li>
+</ul>
+<p>
+  The extensions reach parsing through
+  <a href="{{ src(rs, 3620, 3632) }}"><code>RevsetParseContext</code></a>, which also carries the
+  alias map, the user's email for <code>mine()</code>, the date context, and the workspace.
+</p>
+
+<h2 id="filesets">10. Filesets</h2>
+<p>
+  Path arguments, as in <code>jj diff src/</code> or <code>files()</code>, use a second, smaller
+  language built the same way: its own pest grammar and parser, the same alias expansion, then
+  <a href="{{ src(fs, 546, 598) }}"><code>resolve_expression</code></a> into a
+  <a href="{{ src(fs, 325, 343) }}"><code>FilesetExpression</code></a> of <code>None</code>,
+  <code>All</code>, <code>Pattern</code>, <code>UnionAll</code>, <code>Intersection</code> and
+  <code>Difference</code>. There is no symbol resolution: a bare name or string is a
+  <a href="{{ src(fs, 71, 95) }}"><code>FilePattern</code></a>, by default a glob matching that
+  path and everything under it, relative to the current directory. <code>~x</code> becomes
+  <code>all() ~ x</code>. The only built-in functions are <code>none()</code> and
+  <code>all()</code> (<a href="{{ src(fs, 513, 526) }}">map</a>).
+</p>
+<p>
+  <a href="{{ src(fs, 428, 431) }}"><code>to_matcher</code></a> compiles the expression into a
+  <code>Matcher</code>, the type that tree diffs and walks take
+  (<a href="{{ src(fs, 435, 487) }}"><code>build_union_matcher</code></a> groups patterns of the
+  same kind into one matcher). Command-line paths go through
+  <a href="{{ src(fs, 621, 634) }}"><code>parse_maybe_bare</code></a>, which treats text that does
+  not parse and has no operator characters as a plain path, while
+  <a href="{{ src(fs, 609, 619) }}"><code>parse</code></a> is strict.
+</p>
+<p class="jj-source">
+  <a href="{{ src(fs, 600, 607) }}"><code>FilesetParseContext</code></a> ·
+  <a href="{{ src(rs, 1219, 1229) }}"><code>files()</code></a> parses its argument as a fileset
+</p>
