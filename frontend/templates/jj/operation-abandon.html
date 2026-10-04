@@ -1,0 +1,239 @@
+{% set cmd = "cli/src/commands/operation/abandon.rs" %}
+{% set ow = "lib/src/op_walk.rs" %}
+{% set ohs = "lib/src/op_heads_store.rs" %}
+{% set t = "cli/tests/test_operations.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj operation abandon</code> works</h1>
+  <p class="tagline">
+    <code>jj op abandon</code> removes operations from the operation log's history. Unlike every other
+    command, it doesn't add an operation: it rewrites the operations that come after the abandoned range
+    so their parent skips over it, then repoints the op heads and the working copy at the rewritten ones.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj loads the workspace without loading the repo, so it works even when the repo state is
+  broken, and refuses <code>--at-op</code>. It reads the current op heads and resolves the argument: a
+  range <code>A..B</code>, or a single operation, meaning just that one. It refuses to abandon a current
+  head. It copies every operation from <code>B</code> up to the current heads with new parents that skip
+  the range, counts what became unreachable, replaces each op head with its copy, and moves the working
+  copy's operation ID along. The views are untouched, so the repo looks exactly the same.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 51, 156) }}"><code>cmd_op_abandon</code></a>. Its help gives the
+  two typical uses: <code>jj op abandon ..&lt;id&gt;</code> to discard old history, and
+  <code>jj op restore &lt;id&gt;</code> then <code>jj op abandon &lt;id&gt;..@-</code> to discard recent
+  operations. Old commit versions that only the abandoned operations referred to become eligible for
+  <code>jj util gc</code> (<a href="{{ src(cmd, 31, 43) }}">source</a>). How operations and op heads are
+  stored is on the <a href="{{ url_for('jj', slug='operations') }}#stores">operations</a> page.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Argument</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>OPERATION</code> (positional)</td><td>operation or <code>A..B</code></td><td>required</td><td>A single operation, or a range. <code>..B</code> starts at the root operation; <code>A..</code> runs to the current heads (<a href="{{ src(cmd, 46, 48) }}">source</a>, <a href="{{ src(cmd, 69, 81) }}">parsing</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 44, 49) }}"><code>OperationAbandonArgs</code></a></p>
+
+<p>
+  As with revsets, <code>A..B</code> means the
+  ancestors of <code>B</code> that aren't ancestors of <code>A</code>: <code>A</code> itself is kept.
+</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<p>
+  None. The global <code>--ignore-working-copy</code> skips moving the working copy's operation ID
+  (<a href="{{ src(cmd, 136, 154) }}">source</a>); <code>--at-op</code> is rejected
+  (<a href="{{ src(cmd, 62, 66) }}">source</a>).
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 420" role="img" aria-labelledby="oa-flow-title oa-flow-desc">
+    <title id="oa-flow-title">jj op abandon: call flow</title>
+    <desc id="oa-flow-desc">
+      cmd_op_abandon loads the workspace but not the repo, and rejects --at-op. It reads the current op
+      heads and resolves the argument into a root operation and head operations: for A..B, A (or the root
+      operation) and B (or the current heads); for a single operation X, X's single parent and X. It
+      refuses if a head to abandon is a current op head. reparent_range copies the operations between the
+      abandoned heads and the current heads onto the root, giving new IDs. If nothing changed it says so.
+      Otherwise it prints the counts, swaps each op head for its copy, and updates the working copy's
+      operation ID.
+    </desc>
+    <defs>
+      <marker id="oa-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(cmd, 56, 68) }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="32" y="45">load_workspace (repo not loaded); reject --at-op; current op heads</text></a>
+
+      <a href="{{ src(cmd, 69, 81) }}"><rect class="d-box" x="20" y="84" width="350" height="66" rx="6"></rect>
+      <text x="32" y="105">A..B</text>
+      <text x="32" y="123" class="d-muted" font-size="11">root = A (or the root operation)</text>
+      <text x="32" y="140" class="d-muted" font-size="11">heads = [B] (or the current heads)</text></a>
+      <a href="{{ src(cmd, 82, 91) }}"><rect class="d-box" x="410" y="84" width="330" height="66" rx="6"></rect>
+      <text x="422" y="105">single operation X</text>
+      <text x="422" y="123" class="d-muted" font-size="11">root = X's only parent, heads = [X]</text>
+      <text x="422" y="140" class="d-muted" font-size="11">root or merge operation → error</text></a>
+
+      <a href="{{ src(cmd, 93, 105) }}"><rect class="d-box" x="20" y="174" width="720" height="40" rx="6"></rect>
+      <text x="32" y="199">refuse if any head to abandon is a current op head ("Cannot abandon the current operation …")</text></a>
+
+      <a href="{{ src(ow, 394, 447) }}"><rect class="d-box" x="20" y="238" width="720" height="50" rx="6"></rect>
+      <text x="32" y="259">reparent_range: copy heads..current_heads onto root, oldest first; new IDs</text>
+      <text x="32" y="277" class="d-muted" font-size="11">unreachable_count = root..heads; rewritten_count = copies</text></a>
+
+      <a href="{{ src(cmd, 120, 124) }}"><rect class="d-box" x="20" y="312" width="230" height="84" rx="6"></rect>
+      <text x="32" y="333">heads unchanged?</text>
+      <text x="32" y="351" class="d-muted" font-size="11">"Nothing changed." and stop</text></a>
+      <a href="{{ src(cmd, 125, 154) }}"><rect class="d-box" x="270" y="312" width="470" height="84" rx="6"></rect>
+      <text x="282" y="333">"Abandoned N operations and reparented M descendant operations."</text>
+      <text x="282" y="351" class="d-muted" font-size="11">update_op_heads(old head → copy) for each changed head</text>
+      <text x="282" y="368" class="d-muted" font-size="11">working copy: finish(copy of its operation), or a warning</text>
+      <text x="282" y="385" class="d-muted" font-size="11">if its operation isn't one of the heads</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#oa-arrow)">
+      <line x1="195" y1="60" x2="195" y2="80"></line>
+      <line x1="575" y1="60" x2="575" y2="80"></line>
+      <line x1="195" y1="150" x2="195" y2="170"></line>
+      <line x1="575" y1="150" x2="575" y2="170"></line>
+      <line x1="380" y1="214" x2="380" y2="234"></line>
+      <line x1="135" y1="288" x2="135" y2="308"></line>
+      <line x1="505" y1="288" x2="505" y2="308"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Operation store</td><td>written</td><td>Copies of each later operation with new <code>parents</code>; everything else, including the view ID and commit predecessors, is copied as is (<a href="{{ src(ow, 422, 433) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+      <tr><td>Op heads store</td><td>updated</td><td>Each current head is replaced by its copy (<a href="{{ src(cmd, 131, 135) }}">source</a>, <a href="{{ src(ohs, 53, 61) }}">update_op_heads</a>).</td><td><a href="{{ url_for('jj', slug='operations') }}#stores">operations</a></td></tr>
+      <tr><td>Working-copy state</td><td>updated</td><td>Its recorded operation ID moves to the copy, so the workspace isn't considered stale (<a href="{{ src(cmd, 136, 154) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+      <tr><td>Views, commits</td><td>untouched</td><td>Abandoned operations, and commits only they referenced, stay on disk until <code>jj util gc</code>.</td><td><a href="{{ url_for('jj', slug='operations') }}#gc">operations</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>No transaction and no new operation.</strong> The command writes rewritten copies of existing operations directly to the store (<a href="{{ src(cmd, 107, 135) }}">source</a>).</li>
+  <li><strong>Operation IDs change.</strong> Operation IDs are content hashes, and a copy has different parents, so every operation after the range gets a new ID, including the current one. Old IDs you noted down no longer resolve to the live history.</li>
+  <li><strong>The repo isn't loaded,</strong> by design, "so that this command can be used to recover from corrupted repo state" (<a href="{{ src(cmd, 56, 58) }}">source</a>).</li>
+  <li><strong>Not undoable</strong> with <code>jj undo</code>: there is no operation to undo. The abandoned operations remain in the store until garbage collection.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<p>
+  With <code>root</code> and <code>heads</code> from the argument,
+  <a href="{{ src(ow, 383, 447) }}"><code>reparent_range</code></a> is called with the abandoned heads as
+  its roots, the current heads as its heads, and <code>root</code> as the destination
+  (<a href="{{ src(cmd, 107, 114) }}">source</a>):
+</p>
+
+<ol>
+  <li>Collect the operations in <code>heads..current_heads</code>; those are the ones to copy (<a href="{{ src(ow, 409, 411) }}">source</a>).</li>
+  <li>Count <code>root..heads</code>: the operations about to become unreachable (<a href="{{ src(ow, 412, 414) }}">source</a>).</li>
+  <li>Walk the copies oldest first. Each parent that was already copied is replaced by its copy; the first parent that wasn't, which is in the abandoned range, is replaced by <code>root</code> (at most once per operation). Write the copy and remember its ID (<a href="{{ src(ow, 422, 433) }}">source</a>).</li>
+  <li>Map each current head to its copy (<a href="{{ src(ow, 436, 446) }}">source</a>).</li>
+</ol>
+
+<p>
+  If every head maps to itself, nothing was in the range: <code>Nothing changed.</code>. Otherwise the op
+  heads are swapped. If the working copy's operation is one of the old heads, it is moved to the copy;
+  if it isn't, for instance after divergent operations, jj warns and leaves it, and you'll need to
+  "re-abandon their ancestors" (<a href="{{ src(cmd, 136, 154) }}">source</a>).
+</p>
+
+<p>
+  <strong>Invariants:</strong> the current heads' views are unchanged, so every command sees the same repo
+  before and after. The current operation can't be abandoned, nor can the root operation or a merge
+  operation on their own. Each current head gets exactly one copy (asserted).
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Cannot abandon the current operation &lt;id&gt;</code>, hint <code>Run `jj undo` to revert the current operation, then use `jj op abandon`</code></td><td>The range or operation includes a current op head. The hint appears only with a single head.</td><td><a href="{{ src(cmd, 93, 105) }}">abandon.rs</a></td></tr>
+      <tr><td><code>--at-op is not respected</code> (exit status 2)</td><td><code>--at-op</code> was given.</td><td><a href="{{ src(cmd, 62, 66) }}">abandon.rs</a></td></tr>
+      <tr><td><code>Cannot abandon the root operation</code> / <code>Cannot abandon a merge operation</code></td><td>A single operation with no parent, or several.</td><td><a href="{{ src(cmd, 84, 89) }}">abandon.rs</a></td></tr>
+      <tr><td><code>Nothing changed.</code></td><td>An empty range, e.g. <code>@-..@-</code>.</td><td><a href="{{ src(cmd, 120, 124) }}">abandon.rs</a></td></tr>
+      <tr><td><code>Warning: The working copy operation &lt;id&gt; is not updated because it differs from the repo &lt;ids&gt;.</code></td><td>The working copy was at an operation that isn't a current head.</td><td><a href="{{ src(cmd, 143, 153) }}">abandon.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 724, 842) }}">test_op_abandon_ancestors</a>. After
+  <code>jj commit -m 'commit 1'</code> and <code>jj commit -m 'commit 2'</code>, the operation log has four
+  entries. <code>jj op abandon ..@-</code> drops everything older than the current operation:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 250" role="img" aria-labelledby="oa-ex-title oa-ex-desc">
+    <title id="oa-ex-title">jj op abandon ..@- on the operation log</title>
+    <desc id="oa-ex-desc">
+      Before: root, add workspace (f63ee16f), commit 1 (5d7c2b45), commit 2 (b004de1c, current). The range
+      ..@- covers add workspace and commit 1. After: root, then commit 2 with a new ID, 16e49894, whose
+      parent is now the root. Abandoned 2 operations and reparented 1.
+    </desc>
+    <defs>
+      <marker id="oa-ex-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% macro node(x, y, label, note="", hl=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 18 }}" y="{{ y + 4 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x + 18 }}" y="{{ y + 20 }}" font-size="10.5" class="d-muted">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <g font-size="12">
+      <text x="40" y="22" class="d-muted">op log before</text>
+      <text x="480" y="22" class="d-muted">after jj op abandon ..@-</text>
+    </g>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="60" y1="211" x2="60" y2="169"></line>
+      <line x1="60" y1="151" x2="60" y2="109"></line>
+      <line x1="60" y1="91" x2="60" y2="59"></line>
+      <line x1="500" y1="211" x2="500" y2="59"></line>
+      <line x1="330" y1="130" x2="430" y2="130" marker-end="url(#oa-ex-arrow)"></line>
+    </g>
+    {{ node(60, 50, "b004de1c  commit 2  @") }}
+    {{ node(60, 100, "5d7c2b45  commit 1", "in ..@-: abandoned") }}
+    {{ node(60, 160, "f63ee16f  add workspace", "in ..@-: abandoned") }}
+    {{ node(60, 220, "000000000000  root()") }}
+    {{ node(500, 50, "16e49894  commit 2  @", "same view, new parent → new ID", hl=True) }}
+    {{ node(500, 220, "000000000000  root()") }}
+  </svg>
+</div>
+
+<p>Upstream's output (<a href="{{ src(t, 745, 750) }}">source</a>):</p>
+
+<pre><code>Abandoned 2 operations and reparented 1 descendant operations.</code></pre>
+
+<p>
+  <code>jj debug local-working-copy</code> then reports the new ID <code>16e49894…</code> as the working
+  copy's operation. Later in the test, <code>jj op abandon ..@</code> fails with
+  <code>Cannot abandon the current operation</code> and the <code>jj undo</code> hint, and
+  <code>jj op abandon @-..@-</code> prints <code>Nothing changed.</code>
+</p>

@@ -956,6 +956,45 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "operation-abandon": {
+        "title": "How jj operation abandon works",
+        "sources": [
+            "cli/src/commands/operation/abandon.rs",
+            "lib/src/op_walk.rs",
+            "lib/src/op_heads_store.rs",
+        ],
+        "ready": True,
+    },
+    "operation-integrate": {
+        "title": "How jj operation integrate works",
+        "sources": [
+            "cli/src/commands/operation/integrate.rs",
+            "lib/src/op_heads_store.rs",
+            "lib/src/repo.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
+    "operation-restore": {
+        "title": "How jj operation restore works",
+        "sources": [
+            "cli/src/commands/operation/restore.rs",
+            "cli/src/commands/operation/mod.rs",
+            "lib/src/repo.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
+    "operation-revert": {
+        "title": "How jj operation revert works",
+        "sources": [
+            "cli/src/commands/operation/revert.rs",
+            "cli/src/commands/operation/mod.rs",
+            "lib/src/repo.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
     "bisect-run": {
         "title": "How jj bisect run works",
         "sources": [
