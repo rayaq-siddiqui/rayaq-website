@@ -4,7 +4,8 @@ Running log for the daily jj architecture Routine. Read this first, update it la
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
 **Last updated:** 2026-10-04 (thirty-second run): no upstream change since `4df5265`; built the
-`git clone`/`colocation`/`export`/`import`/`init`/`remote`, `sign` and `unsign` command pages.
+`git clone`/`colocation`/`export`/`import`/`init`/`remote`, `sign`, `unsign` and the five `workspace`
+command pages.
 
 ## Upstream pin
 
@@ -26,7 +27,7 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 59 of 105, all Tier A (59 of 65;
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 64 of 105, all Tier A (64 of 65;
       Tier B 0 of 27, Tier C 0 of 13). Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
       `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`, `absorb`, `duplicate`,
       `bookmark create`/`set`/`move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`,
@@ -34,7 +35,7 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
       `resolve`, `file chmod`/`track`/`untrack`, `sparse edit`/`reset`/`set`, `bisect run`,
       `op abandon`/`integrate`/`restore`/`revert`, `bookmark advance`/`delete`/`forget`/`rename`/
       `track`/`untrack`, `tag delete`/`set`/`track`/`untrack`, `git clone`/`colocation`/`export`/
-      `import`/`init`/`remote`, `sign`, `unsign`.
+      `import`/`init`/`remote`, `sign`, `unsign`, `workspace add`/`forget`/`remove`/`rename`/`update-stale`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
 
@@ -43,7 +44,8 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 Pin unchanged (`4df5265`). Pages: `git clone` `ca130e3`, `git export`/`import` `5b40048` (landed
 together; both use `test_git_import_move_export_with_default_undo`), `git init` `f3b79f6`,
 `git remote` `77f4574` (all five subcommands on one page), `git colocation` `b40cb83`
-(status/enable/disable), `sign`/`unsign` `56f3709`. Paths: `create_or_reuse_dir` and `Signer` live
+(status/enable/disable), `sign`/`unsign` `56f3709`, `workspace add`/`forget`/`remove`/
+`rename`/`update-stale` `283ba7c` (landed together). Paths: `create_or_reuse_dir` and `Signer` live
 in `core/src/` (`file_util.rs`, `signing.rs`).
 
 ## Twenty-seventh to thirty-first runs (2026-10-04)
@@ -108,8 +110,7 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
    ~~`operation-integrate`~~, ~~`operation-restore`~~, ~~`operation-revert`~~, ~~`bookmark-advance`~~,
    ~~`bookmark-delete`~~, ~~`bookmark-forget`~~, ~~`bookmark-rename`~~, ~~`bookmark-track`~~,
    ~~`bookmark-untrack`~~, ~~`tag-*`~~, ~~`git-clone`/`-colocation`/`-export`/`-import`/`-init`/
-   `-remote`~~, ~~`sign`~~, ~~`unsign`~~; 6 left (next: `gerrit-upload`, then the five `workspace`
-   commands: `add`, `forget`, `remove`, `rename`, `update-stale`).
+   `-remote`~~, ~~`sign`~~, ~~`unsign`~~, ~~`workspace-*`~~; 1 left: `gerrit-upload`. Then Tier B.
 2. Tier B commands.
 3. Tier C commands (`debug` and `bench` each as one shared page).
 
