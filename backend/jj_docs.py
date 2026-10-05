@@ -1283,6 +1283,17 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "sparse-list": {
+        "title": "How jj sparse list works",
+        "sources": [
+            "cli/src/commands/sparse/list.rs",
+            "lib/src/working_copy.rs",
+            "lib/src/local_working_copy.rs",
+            "core/src/repo_path.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
     "sparse-reset": {
         "title": "How jj sparse reset works",
         "sources": [
