@@ -993,6 +993,17 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "workspace-list": {
+        "title": "How jj workspace list works",
+        "sources": [
+            "cli/src/commands/workspace/list.rs",
+            "cli/src/commit_templater.rs",
+            "cli/src/config/templates.toml",
+            "lib/src/simple_workspace_store.rs",
+            "lib/src/view.rs",
+        ],
+        "ready": True,
+    },
     "workspace-remove": {
         "title": "How jj workspace remove works",
         "sources": [
