@@ -3,8 +3,8 @@
 Running log for the daily jj-dojo architecture Routine. Read this first, update it last.
 The contract is `specs/jj-dojo.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-04 (third run). Upstream unchanged since the pin; built the
-`activation` page.
+**Last updated:** 2026-10-05 (fourth run). Upstream unchanged since the pin; built the
+`merge-conflicts` page.
 
 ## Upstream pin
 
@@ -16,16 +16,24 @@ The contract is `specs/jj-dojo.md` (spec v1); this file records where the build 
 - [x] `/jj-dojo` renders the §6 diagram and links to every page in §5 (boxes for unbuilt pages
       link to pinned source until the page exists).
 - [ ] Every §5 page exists, meets its "Must cover" column, and is registered: `graph-layout`,
-      `graph-protocol`, `activation` done; 7 to go.
+      `graph-protocol`, `activation`, `merge-conflicts` done; 6 to go.
 - [x] `graph-layout` meets all eight §8 items with at least two SVG diagrams (two deviations below).
 - [x] Planned components are visibly marked as planned everywhere they appear.
 - [x] Every source link is pinned to `UPSTREAM.commit` (tested).
-- [x] §7.5 tests exist and pass (132 tests in the suite, all sections).
+- [x] §7.5 tests exist and pass (142 tests in the suite, all sections).
 - [x] Homepage card links to `/jj-dojo`.
 - [x] Mobile at 390px: no horizontal page scroll on `/jj-dojo` and every ready page (checked in
       headless Chromium this run).
-- [x] The daily Routine has run in maintenance mode (second and third runs: no relevant upstream
+- [x] The daily Routine has run in maintenance mode (second to fourth runs: no relevant upstream
       change).
+
+## Fourth run (2026-10-05)
+
+| Commit | What |
+|---|---|
+| `7c46312` | `merge-conflicts` page: marker grammar, `parser_test.ts`/`getChangeId` vector tables, types, tracker, decorations and the third-side colour, CodeLens, resolver and commands, mapping to `/jj/conflicts`; one data-flow SVG |
+
+Maintenance: upstream `HEAD` still at `978c25d`, so the pin stayed.
 
 ## Third run (2026-10-04)
 
@@ -69,7 +77,7 @@ moves and `preprocess.ts` changes.
 3. ~~§6 architecture diagram on the index~~
 4. ~~`graph-protocol`~~
 5. ~~`activation`~~
-6. `merge-conflicts`
+6. ~~`merge-conflicts`~~
 7. `graph-webview`
 8. `icon-theme`
 9. `build-and-test`
@@ -108,5 +116,14 @@ moves and `preprocess.ts` changes.
   says ancestors only. The code also keeps siblings and cousins reached through mutable
   ancestors, and the upstream test asserts this (`h` is kept). The page describes the code's
   behaviour and points out both comments.
+- **Marker styles the parser misses (`merge-conflicts`).** Following from the code, not observed
+  in VS Code: jj's `snapshot` style (`-------` bases fold into the previous side), `git` style,
+  markers longer than seven characters, and fallback `side #N` labels are not recognized. The
+  page lists them. Upstream's own TODO (`parser.ts:67-68`) acknowledges other styles.
+- **Lifecycle leaks (`merge-conflicts`).** The five decoration types and the CodeLens
+  registration are never disposed, and tracker entries are never removed. `ConflictSide.changeId`
+  is read by nothing.
+- **"Minimap" is the overview ruler.** Upstream's decorator test says minimap; the code sets
+  only `overviewRulerColor`/`overviewRulerLane`. The page uses the accurate term and notes it.
 - **The graph has no real data yet.** `createFakeWebviewState` sends one hard-coded commit.
   The pages say so plainly. Revisit once the subprocess client lands upstream.
