@@ -1,0 +1,386 @@
+{% set cmd = "cli/src/commands/status.rs" %}
+{% set du = "cli/src/diff_util.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set misc = "cli/src/config/misc.toml" %}
+{% set tpl = "cli/src/config/templates.toml" %}
+{% set rv = "cli/src/config/revsets.toml" %}
+{% set lwc = "lib/src/local_working_copy.rs" %}
+{% set t = "cli/tests/test_status_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj status</code> works</h1>
+  <p class="tagline">
+    <code>jj status</code> (alias <code>st</code>) snapshots the working copy, then reports on it: what
+    changed compared to the parents, which new files were left untracked, which commits <code>@</code>
+    sits on, and any conflicts in the working copy or in bookmarks.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj loads the workspace and snapshots it, keeping the snapshot's statistics. If the workspace
+  has a working-copy commit, it prints a summary diff of <code>@</code> against its merged parents (with
+  renames and copies), the untracked paths that snapshot found, collapsed to directories where it can,
+  and one line each for <code>@</code> and its parents. If <code>@</code> is conflicted it lists the
+  conflicted paths and may suggest where to start resolving. Finally it lists conflicted local and remote
+  bookmarks. It writes nothing beyond what the snapshot itself records.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 67, 244) }}"><code>cmd_status</code></a>. The help text: "Show
+  high-level repo status", covering "the working copy commit and its parents, and a summary of the
+  changes in the working copy (compared to the merged parents)", conflicts in the working copy, and
+  conflicted bookmarks (<a href="{{ src(cmd, 44, 59) }}">source</a>). The <code>st</code> alias is a
+  built-in default (<a href="{{ src(misc, 9, 9) }}">source</a>).
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Argument</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>FILESETS</code> (positional, repeatable)</td><td>fileset</td><td>all paths</td><td>"Restrict the status display to these paths" (<a href="{{ src(cmd, 62, 64) }}">source</a>, <a href="{{ src(util, 1604, 1617) }}">source</a>). It filters the changes, the untracked paths and the conflicted paths; the <code>@</code>/<code>@-</code> lines and the bookmark warnings are always printed.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  That is the whole surface: there is no <code>-r</code> and no format flag. The help text points to
+  <code>jj diff --summary -r &lt;rev&gt;</code> for another revision (<a href="{{ src(cmd, 55, 56) }}">source</a>);
+  see <a href="{{ url_for('jj', slug='diff') }}">jj diff</a>.
+</p>
+
+<p class="jj-source">Global flags such as <code>--at-op</code> and <code>--ignore-working-copy</code> are on the <a href="{{ url_for('jj', slug='cli') }}#global-flags">CLI page</a>.</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>snapshot.auto-track</code></td><td><code>all()</code></td><td>New files outside this fileset are left untracked and listed under "Untracked paths" (<a href="{{ src(misc, 61, 61) }}">source</a>, <a href="{{ src(util, 1635, 1642) }}">source</a>, <a href="{{ src(lwc, 1794, 1801) }}">source</a>).</td></tr>
+      <tr><td><code>snapshot.max-new-file-size</code></td><td><code>1MiB</code></td><td>New files larger than this are left untracked, warned about on stderr, and listed under "Untracked paths". <code>0</code> means no limit (<a href="{{ src(misc, 60, 60) }}">source</a>, <a href="{{ src(util, 1649, 1654) }}">source</a>).</td></tr>
+      <tr><td><code>templates.commit_summary</code></td><td><code>format_commit_summary_with_refs(…)</code></td><td>The template for the <code>@</code> and <code>@-</code> lines (<a href="{{ src(tpl, 4, 4) }}">source</a>, <a href="{{ src(tpl, 350, 368) }}">source</a>, <a href="{{ src(util, 1994, 1998) }}">source</a>).</td></tr>
+      <tr><td><code>hints.resolving-conflicts</code></td><td><code>true</code></td><td>Whether to print the "To resolve the conflicts…" hint (<a href="{{ src('cli/src/config/hints.toml', 2, 2) }}">source</a>, <a href="{{ src(util, 2610, 2613) }}">source</a>).</td></tr>
+      <tr><td><code>revset-aliases."immutable_heads()"</code></td><td><code>trunk() | tags() | untracked_remote_bookmarks() | untracked_remote_tags()</code></td><td>Conflicted ancestors that are immutable are left out of the hint (<a href="{{ src(rv, 43, 46) }}">source</a>, <a href="{{ src(cmd, 174, 174) }}">source</a>).</td></tr>
+      <tr><td><code>colors."diff untracked"</code></td><td><code>magenta</code></td><td>Colour of the <code>?</code> lines (<a href="{{ src('cli/src/config/colors.toml', 92, 92) }}">source</a>, <a href="{{ src(cmd, 131, 131) }}">source</a>).</td></tr>
+      <tr><td><code>ui.pager</code>, <code>ui.paginate</code></td><td><code>less -FRXK</code>, <code>auto</code></td><td>Output goes through the pager (<a href="{{ src(misc, 39, 40) }}">source</a>, <a href="{{ src(cmd, 83, 83) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 530" role="img" aria-labelledby="st-flow-title st-flow-desc">
+    <title id="st-flow-title">jj status: call flow</title>
+    <desc id="st-flow-desc">
+      After the shared lifecycle, cmd_status loads the workspace with workspace_helper_with_stats, which
+      snapshots it and returns the snapshot statistics, and prints the snapshot warnings. It loads the
+      working-copy commit, turns the paths into a matcher and requests the pager. With no working-copy
+      commit it prints "No working copy." Otherwise it collects the status and warns about explicit paths
+      absent from @'s tree. It then prints either "The working copy has no changes." or the working copy
+      changes and the untracked paths, then the @ and @- lines, then the conflict report or a hint that a
+      parent's conflict was resolved. In both cases it ends by listing conflicted local and remote
+      bookmarks.
+    </desc>
+    <defs>
+      <marker id="st-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: parse args, load config (CLI page)</text></a>
+
+      <a href="{{ src(util, 473, 516) }}"><rect class="d-box" x="20" y="84" width="350" height="50" rx="6"></rect>
+      <text x="32" y="105">workspace_helper_with_stats</text>
+      <text x="32" y="123" class="d-muted" font-size="11">snapshot, keep SnapshotStats</text></a>
+      <a href="{{ src(util, 3289, 3308) }}"><rect class="d-box" x="400" y="84" width="340" height="50" rx="6"></rect>
+      <text x="412" y="105">print_snapshot_stats (stderr)</text>
+      <text x="412" y="123" class="d-muted" font-size="11">too-large files, non-UTF-8 names</text></a>
+
+      <a href="{{ src(cmd, 79, 85) }}"><rect class="d-box" x="20" y="158" width="720" height="40" rx="6"></rect>
+      <text x="32" y="183">get_wc_commit; parse_file_patterns → matcher; request the pager</text></a>
+
+      <a href="{{ src(cmd, 194, 196) }}"><rect class="d-box" x="20" y="222" width="200" height="50" rx="6"></rect>
+      <text x="32" y="243">no working-copy commit</text>
+      <text x="32" y="261" class="d-muted" font-size="11">"No working copy."</text></a>
+      <a href="{{ src(cmd, 87, 90) }}"><rect class="d-box" x="250" y="222" width="490" height="50" rx="6"></rect>
+      <text x="262" y="243">collect_working_copy_status; warn about unmatched paths</text>
+      <text x="262" y="261" class="d-muted" font-size="11">only @'s tree is checked, not the parents'</text></a>
+
+      <a href="{{ src(cmd, 92, 93) }}"><rect class="d-box" x="250" y="296" width="150" height="66" rx="6"></rect>
+      <text x="262" y="317">nothing changed</text>
+      <text x="262" y="335" class="d-muted" font-size="11">"The working copy</text>
+      <text x="262" y="352" class="d-muted" font-size="11">has no changes."</text></a>
+      <a href="{{ src(cmd, 95, 120) }}"><rect class="d-box" x="420" y="296" width="150" height="66" rx="6"></rect>
+      <text x="432" y="317">changes</text>
+      <text x="432" y="335" class="d-muted" font-size="11">summary diff vs</text>
+      <text x="432" y="352" class="d-accent" font-size="11">merged parents</text></a>
+      <a href="{{ src(cmd, 122, 143) }}"><rect class="d-box" x="590" y="296" width="150" height="66" rx="6"></rect>
+      <text x="602" y="317">untracked</text>
+      <text x="602" y="335" class="d-muted" font-size="11">from the snapshot,</text>
+      <text x="602" y="352" class="d-accent" font-size="11">dirs collapsed</text></a>
+
+      <a href="{{ src(cmd, 146, 155) }}"><rect class="d-box" x="250" y="386" width="230" height="50" rx="6"></rect>
+      <text x="262" y="407">@ and @- lines</text>
+      <text x="262" y="425" class="d-muted" font-size="11">templates.commit_summary</text></a>
+      <a href="{{ src(cmd, 157, 193) }}"><rect class="d-box" x="510" y="386" width="230" height="50" rx="6"></rect>
+      <text x="522" y="407">conflict report</text>
+      <text x="522" y="425" class="d-muted" font-size="11">paths, roots hint, or parent hint</text></a>
+
+      <a href="{{ src(cmd, 198, 241) }}"><rect class="d-box" x="20" y="460" width="720" height="50" rx="6"></rect>
+      <text x="32" y="481">conflicted local bookmarks, then conflicted remote bookmarks</text>
+      <text x="32" y="499" class="d-muted" font-size="11">read from the view; printed whether or not there is a working copy</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#st-arrow)">
+      <line x1="195" y1="60" x2="195" y2="80"></line>
+      <line x1="370" y1="109" x2="396" y2="109"></line>
+      <line x1="570" y1="134" x2="570" y2="154"></line>
+      <line x1="120" y1="198" x2="120" y2="218"></line>
+      <line x1="495" y1="198" x2="495" y2="218"></line>
+      <line x1="325" y1="272" x2="325" y2="292"></line>
+      <line x1="495" y1="272" x2="495" y2="292"></line>
+      <line x1="665" y1="272" x2="665" y2="292"></line>
+      <line x1="365" y1="362" x2="365" y2="382"></line>
+      <line x1="460" y1="362" x2="460" y2="382"></line>
+      <line x1="600" y1="362" x2="476" y2="383"></line>
+      <line x1="480" y1="411" x2="506" y2="411"></line>
+      <line x1="120" y1="272" x2="120" y2="456"></line>
+      <line x1="625" y1="436" x2="625" y2="456"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Working copy</td><td>read (snapshot)</td><td>The snapshot both updates <code>@</code> and reports the new files it left untracked, with a reason for each (<a href="{{ src('lib/src/working_copy.rs', 234, 255) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='working-copy') }}#snapshot">working copy</a></td></tr>
+      <tr><td>Commits</td><td>read</td><td><code>@</code> and its parents, loaded by id (<a href="{{ src(util, 1580, 1587) }}">source</a>, <a href="{{ src(cmd, 271, 289) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Trees</td><td>read</td><td><code>@</code>'s tree is diffed against the parents' merged tree; the untracked-path walk loads tracked subtrees.</td><td><a href="{{ url_for('jj', slug='trees') }}#diffs">trees</a></td></tr>
+      <tr><td>Copy records</td><td>read</td><td>Collected from each parent to <code>@</code>, filtered by the matcher, so renames and copies show as <code>R</code> and <code>C</code> (<a href="{{ src(cmd, 96, 102) }}">source</a>, <a href="{{ src(du, 676, 689) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='trees') }}#copy-records">trees</a></td></tr>
+      <tr><td>Conflicts</td><td>read</td><td>A commit is conflicted when its tree ids are not resolved (<a href="{{ src('lib/src/commit.rs', 167, 169) }}">source</a>); the conflicted paths come from <code>conflicts_matching</code> (<a href="{{ src('lib/src/merged_tree.rs', 205, 211) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='conflicts') }}#model">conflicts</a></td></tr>
+      <tr><td>Revset engine</td><td>read</td><td>Only for the hint: conflicted, mutable ancestors of <code>@</code>, then their roots (<a href="{{ src(cmd, 165, 178) }}">source</a>, <a href="{{ src(util, 2616, 2625) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='revsets') }}#pipeline">revsets</a></td></tr>
+      <tr><td>View</td><td>read</td><td>Local and remote bookmarks whose target is not resolved (<a href="{{ src(cmd, 198, 209) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='view') }}#ref-target">view</a></td></tr>
+      <tr><td>Operation log</td><td>written only by the snapshot</td><td>If the files changed, the snapshot records a <code>snapshot working copy</code> operation; <code>status</code> starts no transaction of its own.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="reads">5. What it reads, and snapshotting</h2>
+
+<ul>
+  <li><strong>Snapshot:</strong> yes, and the statistics matter. <code>status</code> calls <code>workspace_helper_with_stats</code> rather than <code>workspace_helper</code> (<a href="{{ src(cmd, 73, 78) }}">source</a>, <a href="{{ src(util, 460, 464) }}">source</a>), because the "Untracked paths" section is built from <code>SnapshotStats.untracked_paths</code>. That list is not stored anywhere; it exists only for the snapshot just taken (<a href="{{ src(cmd, 280, 280) }}">source</a>).</li>
+  <li><strong>Without a snapshot:</strong> with <code>--ignore-working-copy</code>, or at an <code>--at-op</code> that is not the head operation, no snapshot runs and the statistics are empty (<a href="{{ src(util, 483, 490) }}">source</a>, <a href="{{ src(util, 779, 781) }}">source</a>), so no untracked paths are listed, and the changes shown are those recorded at the last snapshot.</li>
+  <li><strong>Ignored files</strong> are not "untracked": a new file matching <code>.gitignore</code> is skipped silently and never appears (<a href="{{ src(lwc, 1788, 1793) }}">source</a>, <a href="{{ src(t, 72, 91) }}">test</a>).</li>
+  <li><strong>Output:</strong> snapshot warnings and the unmatched-paths warning go to stderr. Everything else, including the conflict and bookmark warnings, goes to stdout through the pager. The changes are rendered into a buffer first, so the "Working copy changes:" header is printed only if the filtered diff is not empty (<a href="{{ src(cmd, 103, 119) }}">source</a>).</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="changes">Changes against the merged parents</h3>
+
+<p>
+  <code>collect_working_copy_status</code> takes <code>@</code>, its parents, <code>@</code>'s tree and
+  the parents' merged tree (<a href="{{ src(cmd, 271, 289) }}">source</a>). For a merge commit the
+  parent tree is the auto-merge of all parents, so a clean merge with no edits on top shows no changes
+  (<a href="{{ src(t, 44, 69) }}">test</a>). The changes are rendered with the ordinary diff renderer in
+  <code>Summary</code> format, one <code>M</code>/<code>A</code>/<code>D</code>/<code>R</code>/<code>C</code>
+  line per path (<a href="{{ src(cmd, 103, 115) }}">source</a>).
+</p>
+
+<p>
+  Whether anything changed is decided on the <em>whole</em> tree, before the path filter: tracked
+  changes exist when the two trees' ids differ (<a href="{{ src(cmd, 255, 257) }}">source</a>), and
+  untracked changes when the snapshot found any untracked path (<a href="{{ src(cmd, 259, 261) }}">source</a>).
+  So <code>jj status file_1</code> prints "The working copy has no changes." only when nothing changed
+  anywhere. If only other files changed it prints neither that line nor a header, just the
+  <code>@</code>/<code>@-</code> lines (<a href="{{ src(t, 133, 143) }}">test</a>,
+  <a href="{{ src(t, 683, 693) }}">test</a>).
+</p>
+
+<h3 id="untracked">Collapsing untracked paths</h3>
+
+<p>
+  The untracked paths that match the filter are passed, in sorted order, to
+  <a href="{{ src(cmd, 291, 349) }}"><code>visit_collapsed_untracked_files</code></a> together with
+  <code>@</code>'s tree. For each path it walks the parent directories down a stack of tracked subtrees.
+  At the first directory with no tracked subtree it prints that directory with a trailing separator and
+  skips every later path under it; if every directory exists in the tracked tree it prints the file
+  itself (<a href="{{ src(cmd, 303, 346) }}">source</a>). The stack is reused between consecutive paths,
+  so siblings do not reload the same subtrees (<a href="{{ src(cmd, 314, 326) }}">source</a>).
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 340" role="img" aria-labelledby="st-collapse-title st-collapse-desc">
+    <title id="st-collapse-title">How jj status collapses untracked paths</title>
+    <desc id="st-collapse-desc">
+      Upstream's unit test. Eight untracked paths and a tracked tree holding top_level_file, dir2/d,
+      dir3/partially_tracked/f and dir3/j produce six lines. dir/a and dir/b become dir/ because dir is
+      not tracked at all; dir3/fully_untracked/g and h become dir3/fully_untracked/. dir2/c,
+      dir3/partially_tracked/e and dir3/k stay as files because their directories are tracked.
+    </desc>
+    <defs>
+      <marker id="st-c-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="11">
+      <a href="{{ src(cmd, 400, 409) }}"><rect class="d-box" x="20" y="30" width="230" height="190" rx="6"></rect>
+      <text x="32" y="52" font-size="12">untracked paths (sorted)</text>
+      <text x="32" y="74" class="d-muted">untracked_top_level_file</text>
+      <text x="32" y="92" class="d-accent">dir/a</text>
+      <text x="32" y="110" class="d-accent">dir/b</text>
+      <text x="32" y="128" class="d-muted">dir2/c</text>
+      <text x="32" y="146" class="d-muted">dir3/partially_tracked/e</text>
+      <text x="32" y="164" class="d-accent">dir3/fully_untracked/g</text>
+      <text x="32" y="182" class="d-accent">dir3/fully_untracked/h</text>
+      <text x="32" y="200" class="d-muted">dir3/k</text></a>
+
+      <a href="{{ src(cmd, 384, 399) }}"><rect class="d-box" x="265" y="30" width="230" height="190" rx="6"></rect>
+      <text x="277" y="52" font-size="12">tracked tree (@)</text>
+      <text x="277" y="74" class="d-muted">top_level_file</text>
+      <text x="277" y="92" class="d-muted">dir2/d</text>
+      <text x="277" y="110" class="d-muted">dir3/partially_tracked/f</text>
+      <text x="277" y="128" class="d-muted">dir3/j</text>
+      <text x="277" y="160">no dir/ subtree</text>
+      <text x="277" y="178">no dir3/fully_untracked/</text>
+      <text x="277" y="196">subtree</text></a>
+
+      <a href="{{ src(cmd, 411, 419) }}"><rect class="d-box" x="510" y="30" width="230" height="190" rx="6"></rect>
+      <text x="522" y="52" font-size="12">printed</text>
+      <text x="522" y="74" class="d-muted">? untracked_top_level_file</text>
+      <text x="522" y="92" class="d-accent">? dir/</text>
+      <text x="522" y="110" class="d-muted">? dir2/c</text>
+      <text x="522" y="128" class="d-muted">? dir3/partially_tracked/e</text>
+      <text x="522" y="146" class="d-accent">? dir3/fully_untracked/</text>
+      <text x="522" y="164" class="d-muted">? dir3/k</text></a>
+
+      <a href="{{ src(cmd, 325, 345) }}"><rect class="d-box" x="20" y="250" width="720" height="66" rx="6"></rect>
+      <text x="32" y="272" font-size="12">per path: walk its parent directories down the tracked tree</text>
+      <text x="32" y="291">a directory with no tracked subtree → print "dir/", skip later paths under it</text>
+      <text x="32" y="308">every directory tracked → print the file</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#st-c-arrow)">
+      <line x1="250" y1="125" x2="261" y2="125"></line>
+      <line x1="495" y1="125" x2="506" y2="125"></line>
+      <line x1="380" y1="220" x2="380" y2="246"></line>
+    </g>
+  </svg>
+</div>
+
+<p>
+  Paths are printed relative to the current directory, so from inside an untracked <code>sub/</code> the
+  collapsed entry is <code>./</code> (<a href="{{ src(t, 633, 642) }}">test</a>). A file that was
+  untracked with <code>jj file untrack</code> but still exists shows up as <code>D</code> in the changes
+  and again under "Untracked paths" (<a href="{{ src(t, 598, 618) }}">test</a>); see
+  <a href="{{ url_for('jj', slug='file-untrack') }}">jj file untrack</a>.
+</p>
+
+<h3 id="conflicts">Conflicts and the resolving hint</h3>
+
+<p>
+  If <code>@</code> has a conflict, <code>status</code> warns and prints each conflicted path that
+  matches the filter with its number of sides and anything unusual among them (a deletion, an executable,
+  a symlink, a directory or a submodule), after simplifying the conflict
+  (<a href="{{ src(cmd, 157, 163) }}">source</a>, <a href="{{ src(util, 3129, 3219) }}">source</a>).
+  It then finds the ancestors of <code>@</code>'s parents that have conflicts, minus the immutable set (<a href="{{ src(cmd, 165, 178) }}">source</a>), and passes them
+  to <code>report_repo_conflicts</code>. That prints the hint only if the list is not empty and
+  <code>hints.resolving-conflicts</code> is on; it names the <em>roots</em> of those commits as
+  <code>jj new &lt;change id&gt;</code> lines, so with a chain of conflicted commits it points at the
+  first one (<a href="{{ src(util, 2604, 2662) }}">source</a>, <a href="{{ src(t, 250, 494) }}">test</a>).
+  If <code>@</code> is the only conflicted commit, as when a merge conflicts in <code>@</code> itself, no
+  hint is printed.
+</p>
+
+<p>
+  If <code>@</code> is not conflicted but a parent is, it prints "Hint: Conflict in parent commit has been
+  resolved in working copy." once (<a href="{{ src(cmd, 183, 193) }}">source</a>).
+  <a href="{{ url_for('jj', slug='resolve') }}">jj resolve</a> is the tool the hint suggests.
+</p>
+
+<h3 id="bookmarks">Conflicted bookmarks</h3>
+
+<p>
+  Last, for any workspace state, it reads the view: local bookmarks whose target is not resolved, and
+  remote bookmarks (<code>name@remote</code>) whose target is not resolved
+  (<a href="{{ src(cmd, 198, 209) }}">source</a>). Each group gets a warning, one indented name per line,
+  and a hint: <code>jj bookmark set</code> for local ones, fetching again for remote ones
+  (<a href="{{ src(cmd, 210, 241) }}">source</a>). A conflicted bookmark arises from concurrent
+  operations, as in <a href="{{ src(t, 173, 246) }}">the test</a>; see
+  <a href="{{ url_for('jj', slug='view') }}#ref-merge">how the view merges refs</a>.
+</p>
+
+<p>
+  <strong>Invariants:</strong> <code>status</code> never rewrites a commit or records an operation of its
+  own; any operation comes from the snapshot. The path filter never hides the <code>@</code>/<code>@-</code>
+  lines or the bookmark warnings, and never changes whether "no changes" is printed.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>No working copy.</code></td><td>The workspace has no working-copy commit, for example after <code>jj workspace forget</code>. Bookmark conflicts are still reported.</td><td><a href="{{ src(cmd, 194, 196) }}">status.rs</a>, <a href="{{ src(t, 696, 707) }}">test</a></td></tr>
+      <tr><td><code>Warning: No matching entries for paths: &lt;paths&gt;</code></td><td>An explicit path is absent from <code>@</code>'s tree. Only <code>@</code>'s tree is checked, so a path deleted in <code>@</code>, or an untracked file that is listed under "Untracked paths", still triggers it.</td><td><a href="{{ src(cmd, 89, 90) }}">status.rs</a>, <a href="{{ src(util, 3406, 3409) }}">cli_util.rs</a>, <a href="{{ src(t, 657, 668) }}">test</a></td></tr>
+      <tr><td><code>Warning: Refused to snapshot some files:</code> with sizes, and a hint to raise <code>snapshot.max-new-file-size</code></td><td>A new file is larger than the limit. The hint's example command is <code>jj --config snapshot.max-new-file-size=&lt;n&gt; status</code>.</td><td><a href="{{ src(util, 3242, 3262) }}">cli_util.rs</a>, <a href="{{ src(util, 3332, 3332) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Warning: Skipped some paths because they are not valid UTF-8:</code></td><td>A file name cannot be represented as a repo path.</td><td><a href="{{ src(util, 3266, 3287) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Warning: There are unresolved conflicts at these paths:</code></td><td><code>@</code> is conflicted. Printed even if the filter matches no conflicted path.</td><td><a href="{{ src(cmd, 157, 163) }}">status.rs</a></td></tr>
+      <tr><td><code>Warning: These bookmarks have conflicts:</code> / <code>These remote bookmarks have conflicts:</code></td><td>A local or remote bookmark has a conflicted target.</td><td><a href="{{ src(cmd, 210, 241) }}">status.rs</a></td></tr>
+      <tr><td>A working-copy error</td><td>The snapshot fails, or the working copy is stale and <code>snapshot.auto-update-stale</code> is off (the default).</td><td><a href="{{ src(util, 497, 503) }}">cli_util.rs</a>, <a href="{{ url_for('jj', slug='working-copy') }}#stale">working copy</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Example output</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 18, 42) }}">test_status_copies</a>: <code>@</code> modifies
+  <code>copy-source</code>, adds <code>copy-target</code> as a copy of it, and renames
+  <code>rename-source</code>. Copy records turn the add and the delete into <code>C</code> and <code>R</code>:
+</p>
+
+<pre><code>$ jj status
+Working copy changes:
+M copy-source
+C {copy-source =&gt; copy-target}
+R {rename-source =&gt; rename-target}
+Working copy  (@) : rlvkpnrz c2fce842 (no description set)
+Parent commit (@-): qpvuntsm ebf799bc (no description set)</code></pre>
+
+<p>
+  With <code>snapshot.auto-track = "none()"</code>, from <a href="{{ src(t, 539, 643) }}">test_status_untracked_files</a>,
+  after two files were tracked explicitly and committed. <code>sub/</code> now has a tracked file, so its
+  untracked file is listed by name:
+</p>
+
+<pre><code>$ jj status
+Untracked paths:
+? always-untracked-file
+? sub/always-untracked
+Working copy  (@) : mzvwutvl daa133b8 (empty) (no description set)
+Parent commit (@-): qpvuntsm b8c1286d (no description set)</code></pre>
+
+<p>
+  A conflict two commits back, from upstream's <a href="{{ src(t, 250, 494) }}">conflict hints test</a>.
+  The hint names <code>mzvwutvl</code>, the merge where the conflict started, not the parent:
+</p>
+
+<pre><code>$ jj status
+The working copy has no changes.
+Working copy  (@) : yqosqzyt 06b8a9dd (conflict) (empty) boom-cont-2
+Parent commit (@-): royxmykx fc966143 (conflict) (empty) boom-cont
+Warning: There are unresolved conflicts at these paths:
+conflicted1.txt    2-sided conflict
+conflicted2.txt    2-sided conflict
+Hint: To resolve the conflicts, start by creating a commit on top of
+the first conflicted commit:
+  jj new mzvwutvl
+Then use `jj resolve`, or edit the conflict markers in the file directly.
+Once the conflicts are resolved, you can inspect the result with `jj diff`.
+Then run `jj squash` to move the resolution into the conflicted commit.</code></pre>

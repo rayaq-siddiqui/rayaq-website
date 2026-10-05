@@ -1753,6 +1753,16 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "status": {
+        "title": "How jj status works",
+        "sources": [
+            "cli/src/commands/status.rs",
+            "cli/src/cli_util.rs",
+            "cli/src/diff_util.rs",
+            "lib/src/local_working_copy.rs",
+        ],
+        "ready": True,
+    },
 }
 
 
