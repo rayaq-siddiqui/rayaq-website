@@ -79,7 +79,8 @@ def test_home_links_to_assembly_page():
     body = client.get("/").get_data(as_text=True)
 
     assert '/assembly-agents' in body
-    assert "Building" in body
+    assert "Building" not in body
+    assert body.index("/assembly-agents") > body.index("/resume")
 
 
 def test_resume_returns_200():
