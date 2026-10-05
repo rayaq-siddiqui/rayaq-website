@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-05 (forty-first run): no upstream change since `4df5265`; built
-`file search`, `file show` and `sparse list`. `log` is next.
+**Last updated:** 2026-10-05 (forty-second run): no upstream change since `4df5265`; built
+`log`. `show` is next.
 
 ## Upstream pin
 
@@ -21,13 +21,13 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] The `fix` page meets all ten §8 items, with three SVG diagrams.
 - [x] The `protobufs` page covers all seven `.proto` files, every field.
 - [x] Every source link is pinned to `UPSTREAM.commit` (tested).
-- [x] §7.5 tests exist and pass (140 tests in the suite, including the other sections').
+- [x] §7.5 tests exist and pass (142 tests in the suite, including the other sections').
 - [x] Homepage card links to `/jj`.
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 70 of 105: Tier A 65 of 65 (complete),
-      Tier B 5 of 27 (`file annotate`, `list`, `search`, `show`, `sparse list`), Tier C 0 of 13. Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 71 of 105: Tier A 65 of 65 (complete),
+      Tier B 6 of 27 (`file annotate`, `list`, `search`, `show`, `sparse list`, `log`), Tier C 0 of 13. Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
       `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`, `absorb`, `duplicate`,
       `bookmark create`/`set`/`move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`,
       `parallelize`, `simplify-parents`, `arrange`, `converge`, `revert`, `diffedit`, `run`,
@@ -38,9 +38,11 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
 
-## Thirty-ninth to forty-first runs (2026-10-05)
+## Thirty-ninth to forty-second runs (2026-10-05)
 
-Pin unchanged (`4df5265`). Forty-first run: `98f13eb`, `file search` (the eight string-pattern
+Pin unchanged (`4df5265`). Forty-second run: `8401046`, `log` (flags and config, the
+`TopoGroupedGraphIterator` ordering, direct/indirect/missing edges, transitive-edge removal,
+elided nodes, `-n`/`--reversed`; a call-flow SVG and an elided-graph SVG). Forty-first run: `98f13eb`, `file search` (the eight string-pattern
 kinds, `write_matches`, add-side-only conflict search); `1b18f74`, `file show` (single-path fast
 path vs. the slow walk, `templates.file_show`, conflict markers); `c338d03`, `sparse list` (lazy
 `tree_state` load, root shown as `.`, one call-flow SVG). Fortieth run: `e3d0baa`,
@@ -107,7 +109,7 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
 2. Remaining topic pages: ~~`conflicts`~~, ~~`storage`~~, ~~`index`~~, ~~`revsets`~~, ~~`backends`~~.
    All topics done.
 3. **Next.** Tier B commands, in registry order: ~~`file annotate`~~, ~~`file list`~~, ~~`file search`~~, ~~`file show`~~,
-   ~~`sparse list`~~, `log`, `show`, `diff`, `interdiff`, `status`, `evolog`, `root`, `operation diff`,
+   ~~`sparse list`~~, ~~`log`~~, `show`, `diff`, `interdiff`, `status`, `evolog`, `root`, `operation diff`,
    `operation log`, `operation show`, `bookmark list`, `tag list`, `git root`, `workspace list`,
    `workspace root`, `config edit`/`gc`/`get`/`list`/`path`/`set`/`unset`.
 4. Tier C commands (`debug` and `bench` each as one shared page).
