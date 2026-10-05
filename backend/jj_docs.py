@@ -1743,6 +1743,16 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "interdiff": {
+        "title": "How jj interdiff works",
+        "sources": [
+            "cli/src/commands/interdiff.rs",
+            "cli/src/diff_util.rs",
+            "lib/src/rewrite.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
 }
 
 

@@ -1,0 +1,352 @@
+{% set cmd = "cli/src/commands/interdiff.rs" %}
+{% set du = "cli/src/diff_util.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set ru = "cli/src/revset_util.rs" %}
+{% set rw = "lib/src/rewrite.rs" %}
+{% set misc = "cli/src/config/misc.toml" %}
+{% set t = "cli/tests/test_interdiff_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj interdiff</code> works</h1>
+  <p class="tagline">
+    <code>jj interdiff</code> compares what two revisions <em>change</em>, not what they contain. It moves
+    the first revision's changes onto the second revision's parents, then diffs the result against the
+    second revision, so differences between their parents drop out.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj loads the workspace, which snapshots it, and resolves <code>--from</code> and
+  <code>--to</code> to one commit each (whichever is missing defaults to <code>@</code>). It warns about
+  explicit paths found in none of the four trees involved. Then it rebases <code>--from</code>'s tree onto
+  <code>--to</code>'s parents in memory, diffs the two descriptions as a pseudo-file, and diffs the rebased
+  tree against <code>--to</code>'s tree. Nothing is written.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 82, 126) }}"><code>cmd_interdiff</code></a>. The help text: "Show
+  differences between the diffs of two revisions". It is "like running <code>jj diff -r</code> on each
+  change, then comparing those results", and the typical use is checking how a change moved since it was
+  pushed, <code>jj interdiff --from push-xyz@origin --to push-xyz</code>
+  (<a href="{{ src(cmd, 29, 57) }}">source</a>). Unlike <code>jj diff --from A --to B</code>, which
+  includes everything that differs between A's and B's parents, <code>interdiff</code> leaves that out.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Argument</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>-f</code>, <code>--from REVSET</code></td><td>revset, one commit</td><td><code>@</code> if only <code>--to</code> is given</td><td>"The first revision to compare" (<a href="{{ src(cmd, 63, 66) }}">source</a>).</td></tr>
+      <tr><td><code>-t</code>, <code>--to REVSET</code></td><td>revset, one commit</td><td><code>@</code> if only <code>--from</code> is given</td><td>"The second revision to compare" (<a href="{{ src(cmd, 68, 71) }}">source</a>).</td></tr>
+      <tr><td colspan="4">At least one of <code>--from</code> and <code>--to</code> is required: they form a clap group that is both <code>multiple</code> and <code>required</code> (<a href="{{ src(cmd, 59, 59) }}">source</a>).</td></tr>
+      <tr><td><code>FILESETS</code> (positional, repeatable)</td><td>fileset</td><td>all paths</td><td>"Restrict the diff to these paths" (<a href="{{ src(cmd, 73, 76) }}">source</a>, <a href="{{ src(util, 1604, 1617) }}">source</a>).</td></tr>
+      <tr><td>Short formats: <code>-s</code>/<code>--summary</code>, <code>--stat</code>, <code>--types</code>, <code>--name-only</code></td><td>flags, at most one</td><td>none</td><td>The shared diff format flags, flattened in (<a href="{{ src(cmd, 78, 79) }}">source</a>, <a href="{{ src(du, 109, 136) }}">source</a>).</td></tr>
+      <tr><td>Long formats: <code>--git</code>, <code>--color-words</code></td><td>flags, at most one</td><td>none</td><td>A Git-format or word-level diff. One short and one long format can be combined (<a href="{{ src(du, 139, 145) }}">source</a>).</td></tr>
+      <tr><td><code>--tool NAME</code></td><td>string</td><td>none</td><td>An external diff command, or <code>:name</code> for a built-in format (<a href="{{ src(du, 147, 153) }}">source</a>).</td></tr>
+      <tr><td><code>--context N</code></td><td>integer</td><td><code>diff.git.context</code> / <code>diff.color-words.context</code></td><td>Lines of context (<a href="{{ src(du, 155, 157) }}">source</a>).</td></tr>
+      <tr><td><code>-w</code>/<code>--ignore-all-space</code>, <code>-b</code>/<code>--ignore-space-change</code></td><td>flags</td><td>off</td><td>Whitespace handling; <code>interdiff</code> gives them their short names (<a href="{{ src(cmd, 60, 61) }}">source</a>, <a href="{{ src(du, 159, 166) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  There is no <code>-r</code> and no <code>-T</code>: unlike <a href="{{ url_for('jj', slug='diff') }}">jj diff</a>,
+  each side is exactly one revision and the output is always a rendered diff.
+</p>
+
+<p class="jj-source">Global flags such as <code>--at-op</code> and <code>--ignore-working-copy</code> are on the <a href="{{ url_for('jj', slug='cli') }}#global-flags">CLI page</a>.</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>ui.diff-formatter</code></td><td><code>:color-words</code></td><td>The format when no format flag is given (<a href="{{ src(misc, 36, 36) }}">source</a>, <a href="{{ src(du, 382, 404) }}">source</a>).</td></tr>
+      <tr><td><code>diff.color-words.*</code></td><td><code>conflict = "materialize"</code>, <code>max-inline-alternation = 3</code>, <code>context = 3</code></td><td>Options for the default format (<a href="{{ src(misc, 11, 14) }}">source</a>).</td></tr>
+      <tr><td><code>diff.git.*</code></td><td><code>context = 3</code>, <code>show-path-prefix = true</code></td><td>Options for <code>--git</code> (<a href="{{ src(misc, 16, 18) }}">source</a>).</td></tr>
+      <tr><td><code>ui.conflict-marker-style</code></td><td><code>diff</code></td><td>How a conflicted file, including one the rebase produced, is written out when diffed (<a href="{{ src(misc, 45, 45) }}">source</a>, <a href="{{ src(util, 1720, 1727) }}">source</a>).</td></tr>
+      <tr><td><code>ui.pager</code>, <code>ui.paginate</code></td><td><code>less -FRXK</code>, <code>auto</code></td><td>Output goes through the pager (<a href="{{ src(misc, 39, 40) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 450" role="img" aria-labelledby="idf-flow-title idf-flow-desc">
+    <title id="idf-flow-title">jj interdiff: call flow</title>
+    <desc id="idf-flow-desc">
+      After the shared lifecycle, cmd_interdiff resolves --from and --to to one commit each, defaulting
+      to @, and parses the paths into a matcher. It warns about explicit paths found in none of from's
+      parent tree, from's tree, to's parent tree and to's tree. It picks the renderer from the format
+      flags and requests the pager. show_inter_diff then diffs the two descriptions as the pseudo-file
+      JJ-COMMIT-DESCRIPTION, rebases from's tree onto to's parents with rebase_to_dest_parent, and diffs
+      that tree against to's tree, without copy records. No operation is recorded.
+    </desc>
+    <defs>
+      <marker id="idf-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 89, 94) }}"><rect class="d-box" x="20" y="84" width="350" height="50" rx="6"></rect>
+      <text x="32" y="105">resolve_single_rev: --from, --to</text>
+      <text x="32" y="123" class="d-muted" font-size="11">the missing one is @</text></a>
+      <a href="{{ src(cmd, 96, 97) }}"><rect class="d-box" x="400" y="84" width="340" height="50" rx="6"></rect>
+      <text x="412" y="105">parse_file_patterns → matcher</text>
+      <text x="412" y="123" class="d-muted" font-size="11">no paths: everything</text></a>
+
+      <a href="{{ src(cmd, 99, 111) }}"><rect class="d-box" x="20" y="158" width="720" height="50" rx="6"></rect>
+      <text x="32" y="179">warn about explicit paths absent from all four trees</text>
+      <text x="32" y="197" class="d-muted" font-size="11">from's parents, from, to's parents, to: a file deleted on one side still counts</text></a>
+
+      <a href="{{ src(cmd, 113, 114) }}"><rect class="d-box" x="20" y="232" width="720" height="40" rx="6"></rect>
+      <text x="32" y="257">diff_renderer_for: format flags, else ui.diff-formatter; request the pager</text></a>
+
+      <a href="{{ src(du, 612, 635) }}"><rect class="d-box" x="20" y="296" width="230" height="84" rx="6"></rect>
+      <text x="32" y="317">description diff</text>
+      <text x="32" y="335" class="d-muted" font-size="11">as JJ-COMMIT-DESCRIPTION</text>
+      <text x="32" y="352" class="d-muted" font-size="11">--git and --color-words only</text>
+      <text x="32" y="369" class="d-muted" font-size="11">skipped when equal</text></a>
+      <a href="{{ src(rw, 497, 537) }}"><rect class="d-box" x="270" y="296" width="230" height="84" rx="6"></rect>
+      <text x="282" y="317">rebase_to_dest_parent</text>
+      <text x="282" y="335" class="d-muted" font-size="11">from's changes onto</text>
+      <text x="282" y="352" class="d-muted" font-size="11">to's parents, in memory</text>
+      <text x="282" y="369" class="d-accent" font-size="11">may produce conflicts</text></a>
+      <a href="{{ src(du, 636, 644) }}"><rect class="d-box" x="520" y="296" width="220" height="84" rx="6"></rect>
+      <text x="532" y="317">show_diff_trees</text>
+      <text x="532" y="335" class="d-muted" font-size="11">rebased tree → to's tree</text>
+      <text x="532" y="352" class="d-muted" font-size="11">matcher applied</text>
+      <text x="532" y="369" class="d-accent" font-size="11">no copy records</text></a>
+
+      <a href="{{ url_for('jj', slug='operations') }}"><rect class="d-box" x="20" y="400" width="720" height="40" rx="6"></rect>
+      <text x="32" y="425">no transaction, no operation: the rebased tree is never stored as a commit</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#idf-arrow)">
+      <line x1="195" y1="60" x2="195" y2="80"></line>
+      <line x1="370" y1="109" x2="396" y2="109"></line>
+      <line x1="570" y1="134" x2="570" y2="154"></line>
+      <line x1="380" y1="208" x2="380" y2="228"></line>
+      <line x1="135" y1="272" x2="135" y2="292"></line>
+      <line x1="250" y1="338" x2="266" y2="338"></line>
+      <line x1="500" y1="338" x2="516" y2="338"></line>
+      <line x1="630" y1="380" x2="630" y2="396"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Revset engine</td><td>read</td><td>Resolves <code>--from</code> and <code>--to</code> to one commit each (<a href="{{ src(util, 1830, 1841) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='revsets') }}#pipeline">revsets</a></td></tr>
+      <tr><td>Filesets</td><td>read</td><td>The positional paths become the matcher that limits the tree diff.</td><td><a href="{{ url_for('jj', slug='revsets') }}#filesets">revsets</a></td></tr>
+      <tr><td>Commits</td><td>read</td><td>Both commits, their parents and their descriptions.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Trees</td><td>read</td><td>Four trees are loaded: each commit's and each commit's parent tree.</td><td><a href="{{ url_for('jj', slug='trees') }}#diffs">trees</a></td></tr>
+      <tr><td>Conflicts</td><td>read</td><td>The rebase is a three-way tree merge; a clash becomes a conflicted file in the "from" side of the diff (<a href="{{ src(rw, 526, 536) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='conflicts') }}#tree-merge">conflicts</a></td></tr>
+      <tr><td>Copy records</td><td>not used</td><td>An empty set is passed, marked <code>// TODO</code>, so renames show as a delete plus an add (<a href="{{ src(du, 628, 628) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='trees') }}#copy-records">trees</a></td></tr>
+      <tr><td>Operation log</td><td>untouched</td><td>No transaction is started.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="reads">5. What it reads, and snapshotting</h2>
+
+<ul>
+  <li><strong>Snapshot:</strong> yes. It loads the workspace with <code>workspace_helper</code> (<a href="{{ src(cmd, 88, 88) }}">source</a>), which snapshots the working copy first (<a href="{{ src(util, 460, 464) }}">source</a>), so <code>--to @</code> sees current edits. That snapshot may record a <code>snapshot working copy</code> operation; <code>interdiff</code> itself records nothing.</li>
+  <li><strong>Reads:</strong> the view at the current (or <code>--at-op</code>) operation, the two commits and their parents, the four trees, and file contents for the matched paths.</li>
+  <li><strong>Output:</strong> the unmatched-paths warning goes to stderr <em>before</em> the pager is requested (<a href="{{ src(cmd, 99, 114) }}">source</a>); the diff goes through the pager.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="rebase">Rebasing --from onto --to's parents</h3>
+
+<p>
+  The "from" side of the diff is not <code>--from</code>'s tree. It is what <code>--from</code>'s tree
+  would be if <code>--from</code> sat on <code>--to</code>'s parents:
+  <a href="{{ src(rw, 497, 537) }}"><code>rebase_to_dest_parent</code></a> takes
+  <code>--to</code>'s parent tree and applies the change from <code>--from</code>'s parent tree to
+  <code>--from</code>'s tree, as one three-way merge (<a href="{{ src(rw, 510, 536) }}">source</a>). The
+  "to" side is <code>--to</code>'s own tree (<a href="{{ src(du, 626, 627) }}">source</a>). Whatever the
+  two parents disagree on is therefore on both sides and cancels out.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 300" role="img" aria-labelledby="idf-rebase-title idf-rebase-desc">
+    <title id="idf-rebase-title">The two trees jj interdiff compares</title>
+    <desc id="idf-rebase-desc">
+      from sits on parent P, to sits on parent Q. The from side of the diff is Q's tree plus the change
+      from P's tree to from's tree, merged in memory; the to side is to's tree. If from and to have the
+      same parents, from's tree is used as it is. The merge labels its sides "(new parents)", "(original
+      parents)" and "(original revision)", which appear in any conflict it produces.
+    </desc>
+    <defs>
+      <marker id="idf-r-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(rw, 512, 518) }}"><rect class="d-box" x="20" y="214" width="120" height="50" rx="6"></rect>
+      <text x="80" y="235" text-anchor="middle">P</text>
+      <text x="80" y="253" text-anchor="middle" class="d-muted" font-size="11">original parents</text></a>
+      <a href="{{ src(rw, 519, 522) }}"><rect class="d-box" x="20" y="40" width="120" height="50" rx="6"></rect>
+      <text x="80" y="61" text-anchor="middle">--from</text>
+      <text x="80" y="79" text-anchor="middle" class="d-muted" font-size="11">original revision</text></a>
+      <a href="{{ src(rw, 527, 533) }}"><rect class="d-box" x="170" y="214" width="120" height="50" rx="6"></rect>
+      <text x="230" y="235" text-anchor="middle">Q</text>
+      <text x="230" y="253" text-anchor="middle" class="d-muted" font-size="11">new parents</text></a>
+      <a href="{{ src(du, 627, 627) }}"><rect class="d-box" x="170" y="40" width="120" height="50" rx="6"></rect>
+      <text x="230" y="69" text-anchor="middle">--to</text></a>
+
+      <a href="{{ src(rw, 526, 536) }}"><rect class="d-box" x="340" y="190" width="220" height="84" rx="6"></rect>
+      <text x="352" y="211">from side</text>
+      <text x="352" y="229" class="d-accent" font-size="11">Q + (P → --from)</text>
+      <text x="352" y="246" class="d-muted" font-size="11">MergedTree::merge, in memory</text>
+      <text x="352" y="263" class="d-muted" font-size="11">same parents: --from's tree</text></a>
+      <a href="{{ src(du, 627, 627) }}"><rect class="d-box" x="340" y="26" width="220" height="66" rx="6"></rect>
+      <text x="352" y="47">to side</text>
+      <text x="352" y="65" class="d-accent" font-size="11">--to's tree</text>
+      <text x="352" y="82" class="d-muted" font-size="11">as it is</text></a>
+      <a href="{{ src(du, 636, 644) }}"><rect class="d-box" x="590" y="120" width="150" height="66" rx="6"></rect>
+      <text x="602" y="141">tree diff</text>
+      <text x="602" y="159" class="d-muted" font-size="11">from side → to side</text>
+      <text x="602" y="176" class="d-muted" font-size="11">P vs Q drops out</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" fill="none">
+      <path d="M80,214 L80,90"></path>
+      <path d="M230,214 L230,90"></path>
+    </g>
+    <g class="d-line" stroke-width="1.5" fill="none" marker-end="url(#idf-r-arrow)">
+      <path d="M140,239 C200,290 300,270 336,250"></path>
+      <path d="M290,239 L336,235"></path>
+      <path d="M140,65 C220,130 300,170 336,205"></path>
+      <path d="M290,59 L336,59"></path>
+      <path d="M560,232 L620,190"></path>
+      <path d="M560,59 L620,116"></path>
+    </g>
+  </svg>
+</div>
+
+<p>
+  There is a fast path: if <code>--from</code> has exactly the same parents as <code>--to</code>, its
+  tree is used unchanged and no merge runs (<a href="{{ src(rw, 504, 508) }}">source</a>). Then
+  <code>interdiff</code> shows the same file changes as <code>jj diff --from A --to B</code>, except that
+  renames are not detected. When the
+  parents differ, the merge can conflict; the conflict is materialized on the "from" side, labelled with
+  the three roles above, and the diff shows it being replaced by <code>--to</code>'s content (see the
+  <a href="#example">example</a>).
+</p>
+
+<h3 id="description">The description pseudo-file</h3>
+
+<p>
+  Before the files, the two commit descriptions are diffed under the dummy path
+  <code>JJ-COMMIT-DESCRIPTION</code> (<a href="{{ src(du, 612, 635) }}">source</a>).
+  <a href="{{ src(du, 691, 748) }}"><code>show_diff_bytes</code></a> prints nothing if they are equal,
+  and nothing for the short formats, where a dummy path "wouldn't be useful"; it prints a hunk for
+  <code>--git</code> and <code>--color-words</code>, and nothing yet for an external <code>--tool</code>
+  (<a href="{{ src(du, 709, 745) }}">source</a>). So <code>interdiff -s</code> lists only real files.
+</p>
+
+<h3 id="shared">Shared with evolog and op log</h3>
+
+<p>
+  The same <code>show_inter_diff</code> renders the patches of <code>jj evolog -p</code>, where each
+  entry is compared with its predecessors (<a href="{{ src('cli/src/commands/evolog.rs', 192, 205) }}">source</a>),
+  and of <code>jj op log -p</code> / <code>jj op show -p</code> for rewritten commits, which use only the
+  first predecessor (<a href="{{ src('cli/src/commands/operation/diff.rs', 857, 870) }}">source</a>).
+  <code>interdiff</code> always passes exactly one "from" commit (<a href="{{ src(cmd, 115, 124) }}">source</a>).
+</p>
+
+<p>
+  <strong>Invariants:</strong> exactly two trees are compared. Neither commit is rewritten and nothing is
+  stored; the rebased tree exists only for the diff. Swapping <code>--from</code> and <code>--to</code>
+  generally does not just reverse the output, since the rebase always goes onto <code>--to</code>'s parents.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>A clap "required arguments were not provided" error</td><td>Neither <code>--from</code> nor <code>--to</code> is given.</td><td><a href="{{ src(cmd, 59, 59) }}">interdiff.rs</a></td></tr>
+      <tr><td><code>Revset `&lt;rev&gt;` didn't resolve to any revisions</code></td><td><code>--from</code> or <code>--to</code> is empty.</td><td><a href="{{ src(ru, 263, 265) }}">revset_util.rs</a></td></tr>
+      <tr><td><code>Revset `&lt;rev&gt;` resolved to more than one revision</code>, listing them</td><td><code>--from</code> or <code>--to</code> names several commits.</td><td><a href="{{ src(ru, 309, 311) }}">revset_util.rs</a></td></tr>
+      <tr><td>A clap "cannot be used with" error</td><td>Two short or two long formats, or <code>-w</code> with <code>-b</code>.</td><td><a href="{{ src(du, 109, 166) }}">diff_util.rs</a></td></tr>
+      <tr><td><code>Warning: No matching entries for paths: &lt;paths&gt;</code></td><td>An explicit path exists in none of the four trees. A file deleted by either commit still counts as found. The diff is still printed.</td><td><a href="{{ src(util, 3406, 3409) }}">cli_util.rs</a>, <a href="{{ src(t, 124, 168) }}">test</a></td></tr>
+      <tr><td>Conflict markers in the "from" side</td><td>The parents differ and <code>--from</code>'s change does not apply cleanly to <code>--to</code>'s parents.</td><td><a href="{{ src(t, 192, 209) }}">test</a></td></tr>
+      <tr><td>A file shown as removed and another as added</td><td>A rename: no copy records are passed.</td><td><a href="{{ src(du, 628, 628) }}">diff_util.rs</a></td></tr>
+      <tr><td>(empty output)</td><td>Both commits make the same change and have the same description, or the paths match nothing.</td><td><a href="{{ src(du, 701, 703) }}">diff_util.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Example output</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 18, 49) }}">test_interdiff_basic</a>: <code>left</code> adds
+  <code>file2</code> containing <code>foo</code> on top of a commit adding <code>file1</code>;
+  <code>right</code>, with <code>@</code> on it, adds <code>file2</code> containing <code>foo</code> and
+  <code>bar</code> on top of a different commit adding <code>file3</code>. The parents' difference
+  (<code>file1</code> against <code>file3</code>) does not appear:
+</p>
+
+<pre><code>$ jj interdiff --from left
+Modified JJ-COMMIT-DESCRIPTION:
+   1     : add file2 left
+        1: add file2 right
+Modified regular file file2:
+   1    1: foo
+        2: bar</code></pre>
+
+<p>The same pair with <code>-s</code>, then <code>--git</code> (<a href="{{ src(t, 66, 88) }}">source</a>):</p>
+
+<pre><code>$ jj interdiff --from left --to right -s
+M file2
+$ jj interdiff --from left --to right --git
+diff --git a/JJ-COMMIT-DESCRIPTION b/JJ-COMMIT-DESCRIPTION
+--- JJ-COMMIT-DESCRIPTION
++++ JJ-COMMIT-DESCRIPTION
+@@ -1,1 +1,1 @@
+-add file2 left
++add file2 right
+diff --git a/file2 b/file2
+index 257cc5642c..3bd1f0e297 100644
+--- a/file2
++++ b/file2
+@@ -1,1 +1,2 @@
+ foo
++bar</code></pre>
+
+<p>
+  When the rebase conflicts, from <a href="{{ src(t, 172, 209) }}">test_interdiff_conflicting</a>:
+  <code>left</code> changes <code>file</code> from <code>foo</code> to <code>bar</code>, while
+  <code>right</code>'s parent has <code>abc</code> and <code>right</code> has <code>def</code>. Moving
+  <code>left</code>'s change onto <code>abc</code> conflicts, and the diff replaces that conflict with
+  <code>def</code>. The descriptions are both empty, so no description hunk is printed:
+</p>
+
+<pre><code>$ jj interdiff --from left --to right --git
+diff --git a/file b/file
+index 0000000000..24c5735c3e 100644
+--- a/file
++++ b/file
+@@ -1,8 +1,1 @@
+-&lt;&lt;&lt;&lt;&lt;&lt;&lt; conflict 1 of 1
+-%%%%%%% diff from: qpvuntsm d0c049cd (original parents)
+-\\\\\\\        to: zsuskuln 0b2c304e (new parents)
+--foo
+-+abc
+-+++++++ rlvkpnrz b23f92c3 (original revision)
+-bar
+-&gt;&gt;&gt;&gt;&gt;&gt;&gt; conflict 1 of 1 ends
++def</code></pre>
