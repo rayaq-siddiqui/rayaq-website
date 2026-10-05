@@ -185,13 +185,6 @@ PROJECTS = [
             "malignant cell clusters",
         ],
     },
-    {
-        "name": "Semantic Segmentation for Self-Driving Cars",
-        "stack": "Python, Deep Learning, Computer Vision",
-        "bullets": [
-            "Semantic segmentation of autonomous-driving imagery, classifying every pixel of each frame",
-        ],
-    },
 ]
 
 LEADERSHIP = [
