@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-05 (forty-sixth run): no upstream change since `4df5265`; built
-`root` and `operation diff`. `operation log` is next.
+**Last updated:** 2026-10-05 (forty-seventh run): no upstream change since `4df5265`; built
+`operation log`. `operation show` is next.
 
 ## Upstream pin
 
@@ -26,8 +26,8 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 78 of 105: Tier A 65 of 65 (complete),
-      Tier B 13 of 27 (`file annotate`/`list`/`search`/`show`, `sparse list`, `log`, `show`, `diff`, `interdiff`, `status`, `evolog`, `root`, `operation diff`), Tier C 0 of 13. Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 79 of 105: Tier A 65 of 65 (complete),
+      Tier B 14 of 27 (`file annotate`/`list`/`search`/`show`, `sparse list`, `log`, `show`, `diff`, `interdiff`, `status`, `evolog`, `root`, `operation diff`, `operation log`), Tier C 0 of 13. Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
       `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`, `absorb`, `duplicate`,
       `bookmark create`/`set`/`move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`,
       `parallelize`, `simplify-parents`, `arrange`, `converge`, `revert`, `diffedit`, `run`,
@@ -38,9 +38,11 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
 
-## Thirty-ninth to forty-sixth runs (2026-10-05)
+## Thirty-ninth to forty-seventh runs (2026-10-05)
 
-Pin unchanged (`4df5265`). Forty-sixth run: `c38a690`, `root`; `05206c7`, `operation diff`
+Pin unchanged (`4df5265`). Forty-seventh run: `a37cec4`, `operation log` (lazy end-time
+ancestor walk, `--limit` before `--reversed`, no op diff under merge operations).
+Forty-sixth: `c38a690`, `root`; `05206c7`, `operation diff`
 (merged from-ops, commit classification by predecessors and change ids, elision). Forty-fifth:
 `048ddfc`, `status`; `64544ef`, `evolog`. Forty-fourth: `2c09138`, `diff` (`--from`/`--to` vs.
 `-r`, merged parents, flow and range SVGs); `b4b1576`, `interdiff`. Forty-third: `44f5c36`,
@@ -106,7 +108,7 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
    All topics done.
 3. **Next.** Tier B commands, in registry order: ~~`file annotate`~~, ~~`file list`~~, ~~`file search`~~, ~~`file show`~~,
    ~~`sparse list`~~, ~~`log`~~, ~~`show`~~, ~~`diff`~~, ~~`interdiff`~~, ~~`status`~~, ~~`evolog`~~, ~~`root`~~, ~~`operation diff`~~,
-   `operation log`, `operation show`, `bookmark list`, `tag list`, `git root`, `workspace list`,
+   ~~`operation log`~~, `operation show`, `bookmark list`, `tag list`, `git root`, `workspace list`,
    `workspace root`, `config edit`/`gc`/`get`/`list`/`path`/`set`/`unset`.
 4. Tier C commands (`debug` and `bench` each as one shared page).
 
