@@ -1059,6 +1059,17 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "git-root": {
+        "title": "How jj git root works",
+        "sources": [
+            "cli/src/commands/git/root.rs",
+            "lib/src/git.rs",
+            "lib/src/git_backend.rs",
+            "lib/src/workspace.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
     "git-remote": {
         "title": "How jj git remote works",
         "sources": [
