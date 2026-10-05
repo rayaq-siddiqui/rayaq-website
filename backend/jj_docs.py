@@ -1805,6 +1805,17 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "operation-show": {
+        "title": "How jj operation show works",
+        "sources": [
+            "cli/src/commands/operation/show.rs",
+            "cli/src/commands/operation/diff.rs",
+            "cli/src/cli_util.rs",
+            "lib/src/repo.rs",
+            "cli/src/diff_util.rs",
+        ],
+        "ready": True,
+    },
 }
 
 
