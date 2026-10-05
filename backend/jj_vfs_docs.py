@@ -31,7 +31,7 @@ PAGES = [
         "title": "Inodes",
         "summary": "How InodeMap hands out inode numbers, maps them to paths and back, and what it never forgets.",
         "sources": ["src/inode_map.rs"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "vfs-layer",

@@ -1,0 +1,238 @@
+{% set im = "src/inode_map.rs" %}
+{% set fuse = "src/fuse.rs" %}
+{% set pmac = "src/path_mapper_all_commits.rs" %}
+{% set fuser_src = "https://docs.rs/crate/fuser/0.18.0/source/src/lib.rs" %}
+{% set ustr_src = "https://docs.rs/crate/ustr/1.1.0/source/src/lib.rs" %}
+<header class="jj-header">
+  <h1>Inodes</h1>
+  <p class="tagline">
+    The kernel names files by inode number, while everything below <code>JjFuse</code> names them by path.
+    <code>InodeMap</code> translates between the two: a tree of entries, one per path ever seen, keyed by
+    a counter that only goes up.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: inode 1 is the mount's root. The first time a name is looked up or listed under a directory,
+  <code>get_ino</code> gives it the next number and records its parent and name. To serve a request,
+  <code>get_path</code> walks parent links back to the root to rebuild the path. One mutex guards the whole
+  map. Nothing is ever removed: <code>forget</code> isn't implemented, so the map holds every path the kernel
+  has asked about since the mount, including names that turned out not to exist.
+</p>
+
+<p>
+  This page covers <a href="{{ src(im) }}"><code>src/inode_map.rs</code></a>. Its only user is
+  <a href="{{ url_for('jj_vfs', slug='fuse') }}">the FUSE adapter</a>, which owns one map per mount.
+  Paths go from there to <a href="{{ url_for('jj_vfs', slug='vfs-layer') }}">the virtual file layer</a>.
+</p>
+
+<h2 id="types">The types</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>ROOT_INODE</code></td><td><code>const INodeNo = INodeNo(1)</code></td><td>The mount's root directory.</td><td><a href="{{ src(im, 12, 12) }}">inode_map.rs</a></td></tr>
+      <tr><td><code>Entry</code></td><td><code>struct { parent: INodeNo, name: Ustr, children: HashMap&lt;Ustr, INodeNo&gt; }</code></td><td>One path: its parent's inode, its last component, and the children seen so far, by name. Private to the module.</td><td><a href="{{ src(im, 14, 18) }}">inode_map.rs</a></td></tr>
+      <tr><td><code>InodeMap</code></td><td><code>struct { inodes: Mutex&lt;HashMap&lt;INodeNo, Entry&gt;&gt;, next_inode: AtomicU64 }</code></td><td>Every entry by number, and the next number to hand out.</td><td><a href="{{ src(im, 20, 23) }}">inode_map.rs</a></td></tr>
+      <tr><td><code>new</code></td><td><code>fn new() -&gt; Self</code></td><td>Inserts the root with itself as parent, the empty name and no children, and sets the counter to 2. <code>Default</code> calls it.</td><td><a href="{{ src(im, 26, 41) }}">L26</a>, <a href="{{ src(im, 93, 97) }}">L93</a></td></tr>
+      <tr><td><code>get_path</code></td><td><code>fn get_path(&amp;self, ino: INodeNo) -&gt; Result&lt;PathBuf, JjError&gt;</code></td><td>The path from the root, built from parent links. The root gives the empty path.</td><td><a href="{{ src(im, 43, 56) }}">L43</a></td></tr>
+      <tr><td><code>get_parent_ino</code></td><td><code>fn get_parent_ino(&amp;self, ino: INodeNo) -&gt; Result&lt;INodeNo, JjError&gt;</code></td><td>The parent's number; the root's is 1.</td><td><a href="{{ src(im, 58, 67) }}">L58</a></td></tr>
+      <tr><td><code>get_ino</code></td><td><code>fn get_ino(&amp;self, parent: INodeNo, name: &amp;str) -&gt; Result&lt;INodeNo, JjError&gt;</code></td><td>The child's number, allocating one if this name hasn't been seen under this parent.</td><td><a href="{{ src(im, 69, 90) }}">L69</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Names are <code>Ustr</code>s from the <code>ustr</code> crate (<a href="{{ src('Cargo.toml', 18, 18) }}">Cargo.toml</a>):
+  interned strings, so each distinct name is stored once and compared cheaply. The crate's own docs note
+  that interned strings are never freed (<a href="{{ ustr_src }}#16">ustr source</a>).
+</p>
+
+<h2 id="allocation">How numbers are allocated</h2>
+
+<p>
+  <a href="{{ src(im, 69, 90) }}"><code>get_ino(parent, name)</code></a> interns the name, takes the lock and
+  finds the parent's entry. An unknown parent is <code>JjError::NotFound</code>. If the parent's
+  <code>children</code> already has the name, that number is returned. Otherwise it takes the next number
+  with <code>next_inode.fetch_add(1, Relaxed)</code>, adds it to the parent's <code>children</code>, inserts a new
+  <code>Entry</code> for it, and returns it.
+</p>
+
+<ul>
+  <li><strong>Numbers follow request order.</strong> They count up from 2 in the order names are first seen, so
+    the same file can get a different number on another mount (each <code>JjFuse</code> creates its own map,
+    <a href="{{ src(fuse, 60, 66) }}">fuse.rs</a>).</li>
+  <li><strong>One number per path, not per object.</strong> The key is (parent, name), so the same file reached
+    through <code>commits/&lt;id&gt;/</code> and <code>workspaces/&lt;name&gt;/</code> has two inodes, and
+    <code>nlink</code> is always 1 for files (<a href="{{ src(fuse, 208, 211) }}">fuse.rs</a>).</li>
+  <li><strong>No checks against the file system.</strong> <code>get_ino</code> doesn't know whether the name
+    exists or whether the parent is a directory. <code>lookup</code> calls it <em>before</em> asking for
+    attributes (<a href="{{ src(fuse, 88, 92) }}">fuse.rs</a>), so a lookup that fails with
+    <code>ENOENT</code> still leaves an entry behind.</li>
+  <li><strong>Never reused.</strong> Nothing is removed and the counter never goes down, so within one mount a
+    number names one path. <code>lookup</code> always replies with generation 0
+    (<a href="{{ src(fuse, 94, 94) }}">fuse.rs</a>).</li>
+</ul>
+
+<h2 id="resolution">How a number becomes a path</h2>
+
+<p>
+  <a href="{{ src(im, 43, 56) }}"><code>get_path(ino)</code></a> holds the lock while it walks from the inode
+  up to <code>ROOT_INODE</code>, collecting each entry's name; an unknown number on the way is
+  <code>NotFound</code>. It then sizes a <code>PathBuf</code> for the names and separators and pushes the names
+  root-first. The cost is one hash lookup per level. The root's empty path is what
+  <a href="{{ url_for('jj_vfs', slug='namespace') }}#path-resolution"><code>AllCommitsPathMapper</code></a> treats as
+  the top directory.
+</p>
+
+<p>
+  <a href="{{ src(im, 58, 67) }}"><code>get_parent_ino(ino)</code></a> returns the entry's <code>parent</code>.
+  Because <code>new</code> makes the root its own parent (<a href="{{ src(im, 28, 35) }}">L28</a>), the root's
+  <code>..</code> is the root.
+</p>
+
+<h2 id="callers">Who calls what</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>FUSE op</th><th>Map calls</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>lookup(parent, name)</code></td><td><code>get_path(parent)</code> through <code>reply_async!</code>, then <code>get_ino(parent, name)</code>; the child number goes into the reply's <code>FileAttr</code>.</td><td><a href="{{ src(fuse, 78, 96) }}">fuse.rs</a></td></tr>
+      <tr><td><code>getattr(ino)</code>, <code>read(ino, …)</code>, <code>readlink(ino)</code></td><td><code>get_path(ino)</code> only.</td><td><a href="{{ src(fuse, 98, 130) }}">L98</a>, <a href="{{ src(fuse, 176, 190) }}">L176</a></td></tr>
+      <tr><td><code>readdir(ino, offset)</code></td><td><code>get_path(ino)</code>; <code>get_parent_ino(ino)</code> for <code>..</code> when the offset is below 2; <code>get_ino(ino, name)</code> for each entry it sends.</td><td><a href="{{ src(fuse, 132, 174) }}">fuse.rs</a></td></tr>
+      <tr><td><code>forget</code>, <code>batch_forget</code></td><td>None. <code>JjFuse</code> doesn't implement them, and <code>fuser</code>'s default <code>forget</code> does nothing.</td><td><a href="{{ fuser_src }}#418">fuser source</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Every <code>get_path</code> failure is logged at <code>error</code> level and answered with
+  <code>ENOENT</code>, the errno for <code>NotFound</code> (<a href="{{ src(fuse, 44, 47) }}">L44</a>,
+  <a href="{{ src(fuse, 231, 241) }}">L231</a>). With nothing ever removed, that can only happen for a number
+  the map never handed out.
+</p>
+
+<h2 id="example">Worked example</h2>
+
+<p>
+  Derived from the code, not recorded from a mount: say the kernel's first requests after mounting are a
+  listing of the root, then a lookup of <code>commits</code>, then a lookup of a name that doesn't exist. The
+  root lists <code>commits</code> then <code>workspaces</code> (<a href="{{ src(pmac, 36, 45) }}">source</a>),
+  so <code>readdir(1, 0)</code> sends <code>.</code> as 1, <code>..</code> as 1 and allocates 2 and 3. The
+  lookup of <code>commits</code> finds 2 already in the root's <code>children</code>. The lookup of
+  <code>nope</code> allocates 4 and then fails with <code>ENOENT</code>, but entry 4 stays.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 330" role="img" aria-labelledby="in-title in-desc">
+    <title id="in-title">InodeMap after listing the root and two lookups</title>
+    <desc id="in-desc">
+      The map holds four entries. Inode 1 is the root, with the empty name and itself as parent; its children
+      map names commits to 2, workspaces to 3 and nope to 4. Inodes 2, 3 and 4 each have parent 1 and no
+      children. Inodes 2 and 3 were allocated by readdir of the root, and inode 4 by a lookup that then failed
+      with ENOENT. get_path(2) walks from 2 to its parent 1 and returns the path commits. The counter
+      next_inode is 5.
+    </desc>
+    <defs>
+      <marker id="in-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(im, 26, 41) }}"><rect class="d-box" x="230" y="20" width="300" height="76" rx="6"></rect>
+      <text x="244" y="42">ino 1 · ROOT_INODE · name ""</text>
+      <text x="244" y="62" class="d-muted" font-size="11">parent: 1 (itself)</text>
+      <text x="244" y="82" class="d-muted" font-size="11">children: commits→2, workspaces→3, nope→4</text></a>
+
+      <a href="{{ src(fuse, 161, 169) }}"><rect class="d-box" x="20" y="160" width="220" height="60" rx="6"></rect>
+      <text x="34" y="183">ino 2 · "commits"</text>
+      <text x="34" y="203" class="d-muted" font-size="11">from readdir(1); parent 1</text></a>
+      <a href="{{ src(fuse, 161, 169) }}"><rect class="d-box" x="270" y="160" width="220" height="60" rx="6"></rect>
+      <text x="284" y="183">ino 3 · "workspaces"</text>
+      <text x="284" y="203" class="d-muted" font-size="11">from readdir(1); parent 1</text></a>
+      <a href="{{ src(fuse, 87, 92) }}"><rect class="d-box" x="520" y="160" width="220" height="60" rx="6"></rect>
+      <text x="534" y="183">ino 4 · "nope"</text>
+      <text x="534" y="203" class="d-muted" font-size="11">from a lookup that got ENOENT</text></a>
+
+      <a href="{{ src(im, 43, 56) }}"><rect class="d-box" x="20" y="260" width="350" height="50" rx="6"></rect>
+      <text x="34" y="282">get_path(2): 2 → parent 1 = root</text>
+      <text x="34" y="300" class="d-muted" font-size="11">names collected leaf first, pushed root first: "commits"</text></a>
+      <a href="{{ src(im, 77, 77) }}"><rect class="d-box" x="390" y="260" width="350" height="50" rx="6"></rect>
+      <text x="404" y="282">next_inode = 5</text>
+      <text x="404" y="300" class="d-muted" font-size="11">fetch_add(1) under the lock; never decremented</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.4" marker-end="url(#in-arrow)">
+      <line x1="330" y1="96" x2="130" y2="156"></line>
+      <line x1="380" y1="96" x2="380" y2="156"></line>
+      <line x1="430" y1="96" x2="630" y2="156"></line>
+      <line x1="130" y1="220" x2="130" y2="256"></line>
+    </g>
+    <text x="250" y="132" class="d-muted" font-size="11">children</text>
+  </svg>
+</div>
+
+<h2 id="lifetime">Lifetime: nothing is forgotten</h2>
+
+<p>
+  The kernel sends <code>forget</code> when it drops an inode from its cache, and <code>fuser</code>'s
+  documentation says a file system "may ignore forget calls, if the inodes don't need to have a limited
+  lifetime" (<a href="{{ fuser_src }}#418">fuser source</a>). <code>JjFuse</code> relies on that default, and
+  <code>InodeMap</code> has no removal method at all. So the map, and the interned names, grow with every
+  distinct (parent, name) pair seen during the mount: each entry listed by <code>readdir</code>, each
+  successful lookup and each failed one. Listing <code>commits/</code> allocates a number for every commit
+  it sends.
+</p>
+
+<p>
+  Because entries are never removed, a number the kernel holds always still resolves. Because the repository
+  snapshot is fixed when the mount starts (see <a href="{{ url_for('jj_vfs', slug='namespace') }}#snapshot">namespace</a>),
+  a path keeps naming the same content for the life of the mount, so the map never needs invalidating.
+</p>
+
+<h2 id="concurrency">Concurrency</h2>
+
+<ul>
+  <li><code>JjFuse</code> shares the map as an <code>Arc&lt;InodeMap&gt;</code> and clones it into every task
+    <code>reply_async!</code> spawns on the tokio runtime (<a href="{{ src(fuse, 26, 29) }}">fuse.rs</a>), so
+    calls can come from several threads at once.</li>
+  <li>Every method takes the single <code>Mutex</code> around the whole <code>HashMap</code> and releases it before
+    returning. They are synchronous, so the lock is never held across an <code>await</code>.</li>
+  <li>The counter is only incremented inside <code>get_ino</code> while the lock is held
+    (<a href="{{ src(im, 72, 77) }}">L72</a>), so two threads looking up the same new name get the same
+    number. The atomic adds nothing the lock doesn't already give.</li>
+  <li>Each method calls <code>lock().unwrap()</code>, so a poisoned lock panics instead of returning an error
+    (<a href="{{ src(im, 45, 45) }}">L45</a>, <a href="{{ src(im, 62, 62) }}">L62</a>, <a href="{{ src(im, 72, 72) }}">L72</a>).</li>
+</ul>
+
+<h2 id="tests">Tests</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Test</th><th>What it pins down</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>test_get_path</code></td><td>The root's path is empty; entries inserted by hand as 2 (<code>foo</code>) and 3 (<code>bar.txt</code> under 2) give <code>foo</code> and <code>foo/bar.txt</code>.</td><td><a href="{{ src(im, 103, 136) }}">L103</a></td></tr>
+      <tr><td><code>test_get_ino</code></td><td>The first name gets 2, asking again returns 2, a child of it gets 3, and an unknown parent is <code>NotFound</code>.</td><td><a href="{{ src(im, 138, 162) }}">L138</a></td></tr>
+      <tr><td><code>test_inode_map_is_sync</code>, <code>test_inode_map_is_send</code></td><td>Compile-time checks that <code>InodeMap</code> is <code>Sync</code> and <code>Send</code>.</td><td><a href="{{ src(im, 164, 176) }}">L164</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  No test covers concurrent use or <code>get_parent_ino</code>. The mounted integration test exercises the map
+  only indirectly; it is described on the testing page.
+</p>
+
+<h2 id="limitations">Limitations</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Limitation</th><th>Effect</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>No <code>forget</code>, no removal.</td><td>Memory grows with every distinct path seen, including failed lookups and every listed commit.</td><td><a href="{{ src(im, 25, 91) }}">inode_map.rs</a></td></tr>
+      <tr><td>Inodes are per path.</td><td>The same content under two paths has two inode numbers; hard links aren't modelled.</td><td><a href="{{ src(im, 69, 90) }}">L69</a></td></tr>
+      <tr><td>Numbers depend on request order.</td><td>They aren't stable across mounts.</td><td><a href="{{ src(fuse, 60, 66) }}">fuse.rs</a></td></tr>
+      <tr><td>One lock for the whole map.</td><td>All map calls are serialized. Each holds it briefly; contention wasn't measured.</td><td><a href="{{ src(im, 21, 21) }}">L21</a></td></tr>
+    </tbody>
+  </table>
+</div>
