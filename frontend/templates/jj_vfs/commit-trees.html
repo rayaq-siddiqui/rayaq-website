@@ -1,0 +1,311 @@
+{% set ct = "src/commit_tree_file.rs" %}
+{% set fuse = "src/fuse.rs" %}
+{% set vfs = "src/vfs.rs" %}
+{% set pmac = "src/path_mapper_all_commits.rs" %}
+{% set backend = "lib/src/backend.rs" %}
+{% set merge = "lib/src/merge.rs" %}
+{% set mt = "lib/src/merged_tree.rs" %}
+{% set store = "lib/src/store.rs" %}
+{% set tree = "lib/src/tree.rs" %}
+<header class="jj-header">
+  <h1>Commits as directory trees</h1>
+  <p class="tagline">
+    Every path below <code>commits/&lt;id&gt;/</code> or <code>workspaces/&lt;name&gt;/</code> is a
+    <code>CommitTreeFile</code>: a commit plus a path inside it. Each call asks jj-lib for the value at
+    that path and turns it into a directory, a file or a symlink.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: a <code>CommitTreeFile</code> is built for every request. It looks the path up in the
+  commit's <code>MergedTree</code>. Directories, regular files and symlinks work. Executable files show as
+  ordinary files, submodules as files that fail on every access, and conflicted paths can't be read or
+  stat'ed. A file's size is found by reading the whole file, and timestamps are always the Unix epoch.
+</p>
+
+<p>
+  This page covers <a href="{{ src(ct) }}"><code>src/commit_tree_file.rs</code></a>, the only
+  <code>VirtualFile</code> that reads repository content. For jj's own model of trees and conflicts, see
+  <a href="{{ url_for('jj', slug='trees') }}">Trees</a> and <a href="{{ url_for('jj', slug='conflicts') }}">Conflicts</a>
+  in the jj reference. The jj-lib links here are pinned to <code>v{{ upstream.jj_lib_version }}</code>.
+</p>
+
+<h2 id="struct">The type</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>CommitTreeFile</code></td><td><code>struct { commit: Commit, path: PathBuf }</code></td><td>One path inside one commit. The path may name nothing; that is only found out when a method runs.</td><td><a href="{{ src(ct, 23, 26) }}">L23</a></td></tr>
+      <tr><td><code>new</code></td><td><code>async fn new(repo: &amp;ReadonlyRepo, commit_id: CommitId, path: PathBuf) -&gt; Result&lt;Self, JjError&gt;</code></td><td>Loads the commit with <a href="{{ jj_lib(store, 155, 155) }}"><code>Store::get_commit_async</code></a>; fails only if the commit can't be read.</td><td><a href="{{ src(ct, 28, 38) }}">L28</a></td></tr>
+      <tr><td><code>read</code></td><td><code>async fn read(&amp;self) -&gt; Result&lt;Pin&lt;Box&lt;dyn AsyncRead + Send&gt;&gt;, JjError&gt;</code></td><td>A reader over a regular file's content.</td><td><a href="{{ src(ct, 42, 58) }}">L42</a></td></tr>
+      <tr><td><code>list</code></td><td><code>async fn list(&amp;self) -&gt; Result&lt;DirectoryStream, JjError&gt;</code></td><td>A directory's entries with their types.</td><td><a href="{{ src(ct, 60, 105) }}">L60</a></td></tr>
+      <tr><td><code>read_link</code></td><td><code>async fn read_link(&amp;self) -&gt; Result&lt;PathBuf, JjError&gt;</code></td><td>A symlink's target.</td><td><a href="{{ src(ct, 107, 126) }}">L107</a></td></tr>
+      <tr><td><code>attributes</code></td><td><code>async fn attributes(&amp;self) -&gt; Result&lt;FileAttributes, JjError&gt;</code></td><td>Type, size and timestamps.</td><td><a href="{{ src(ct, 128, 153) }}">L128</a></td></tr>
+      <tr><td><code>file_type</code></td><td><code>async fn file_type(&amp;self) -&gt; Result&lt;FileType, JjError&gt;</code></td><td>Directory, file or symlink.</td><td><a href="{{ src(ct, 155, 173) }}">L155</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <a href="{{ url_for('jj_vfs', slug='namespace') }}#path-resolution"><code>AllCommitsPathMapper</code></a> creates one
+  for <code>commits/&lt;id&gt;/…</code> and for <code>workspaces/&lt;name&gt;/…</code>, passing the remaining
+  segments as <code>path</code> (<a href="{{ src(pmac, 56, 58) }}">L56</a>, <a href="{{ src(pmac, 73, 75) }}">L73</a>).
+  Nothing is cached: each FUSE request resolves its path again, so each one loads the commit again.
+  <code>commits/&lt;id&gt;</code> itself is the commit's root, with an empty <code>path</code>.
+</p>
+
+<h2 id="lookup">Looking a path up</h2>
+
+<p>
+  Every method starts the same way. It converts <code>path</code> with
+  <code>RepoPathBuf::from_relative_path</code>, which rejects components like <code>..</code> with
+  <code>InvalidPath</code>. Then it reads the commit's tree:
+</p>
+
+<ul>
+  <li><code>read</code>, <code>read_link</code> and <code>file_type</code> call
+    <a href="{{ jj_lib(mt, 218, 229) }}"><code>MergedTree::path_value</code></a>. It walks the merged trees down to the
+    parent directory and returns the <code>Merge&lt;Option&lt;TreeValue&gt;&gt;</code> for the last component. The
+    lookup goes through <a href="{{ jj_lib(merge, 946, 959) }}"><code>Merge&lt;Tree&gt;::value</code></a>, which
+    resolves trivial merges, so a path that is the same on every side of a conflicted commit still comes back
+    resolved. The root path returns the commit's tree IDs unchanged.</li>
+  <li>Each method then calls <a href="{{ jj_lib(merge, 349, 355) }}"><code>as_resolved</code></a>, which only
+    succeeds for a single-term merge. Anything else is treated as a conflict, described below.</li>
+  <li><code>list</code> instead calls <a href="{{ jj_lib(mt, 135, 140) }}"><code>MergedTree::trees</code></a> and
+    <a href="{{ jj_lib(merge, 997, 1011) }}"><code>Merge&lt;Tree&gt;::sub_tree_recursive</code></a> to get the
+    directory's own trees. If that finds no directory, it looks at <code>path_value</code> to choose between
+    <code>NotFound</code> and <code>NotADirectory</code> (<a href="{{ src(ct, 67, 74) }}">L67</a>).</li>
+</ul>
+
+<h2 id="tree-values">How each kind of path is presented</h2>
+
+<p>
+  A resolved value is one of the four <a href="{{ jj_lib(backend, 390, 408) }}"><code>TreeValue</code></a> variants,
+  or absent. Errors become errnos through <a href="{{ url_for('jj_vfs', slug='fuse') }}#errno">the FUSE adapter's
+  mapping</a> (<a href="{{ src(fuse, 231, 241) }}">fuse.rs</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Value at the path</th><th>Listed as</th><th><code>getattr</code> / <code>lookup</code></th><th><code>read</code></th><th><code>readlink</code></th></tr></thead>
+    <tbody>
+      <tr><td><code>Tree</code></td><td>directory</td><td>directory, size 0, mode 755</td><td><code>EISDIR</code></td><td><code>EINVAL</code></td></tr>
+      <tr><td><code>File</code>, not executable</td><td>file</td><td>regular file, mode 644, size from reading it</td><td>its content</td><td><code>EINVAL</code></td></tr>
+      <tr><td><code>File</code>, executable</td><td>file</td><td>the same: <code>executable</code> is never read, so the mode is still 644</td><td>its content</td><td><code>EINVAL</code></td></tr>
+      <tr><td><code>Symlink</code></td><td>symlink</td><td>symlink, size = target length in bytes</td><td><code>EISDIR</code></td><td>its target</td></tr>
+      <tr><td><code>GitSubmodule</code></td><td>file</td><td><code>EISDIR</code>: typed as a file, then sizing it calls <code>read</code>, which refuses</td><td><code>EISDIR</code></td><td><code>EINVAL</code></td></tr>
+      <tr><td>absent</td><td>not listed</td><td><code>ENOENT</code></td><td><code>ENOENT</code></td><td><code>ENOENT</code></td></tr>
+      <tr><td>conflicted</td><td>file</td><td><code>EIO</code> (“Conflicted path”)</td><td><code>ENOTDIR</code></td><td><code>EINVAL</code></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Sources: <code>file_type</code> (<a href="{{ src(ct, 155, 173) }}">L155</a>), <code>read</code>
+  (<a href="{{ src(ct, 48, 54) }}">L48</a>), <code>read_link</code> (<a href="{{ src(ct, 113, 118) }}">L113</a>),
+  <code>attributes</code> (<a href="{{ src(ct, 129, 152) }}">L129</a>), the listing (<a href="{{ src(ct, 86, 95) }}">L86</a>)
+  and the mode, which <code>to_fuse</code> picks from the type alone (<a href="{{ src(fuse, 204, 207) }}">fuse.rs</a>).
+  <code>EISDIR</code> for a symlink or a submodule comes from <code>NotAFile</code>; it doesn't mean they are
+  directories.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 360" role="img" aria-labelledby="ct-title ct-desc">
+    <title id="ct-title">How CommitTreeFile presents one path</title>
+    <desc id="ct-desc">
+      The path inside the commit is converted to a RepoPathBuf; an invalid path fails with EIO. Then
+      MergedTree::path_value returns a merge of tree values. If the merge has more than one term it is a
+      conflict, and the path can't be read or stat'ed. If it is resolved, the value decides: a Tree becomes a
+      directory, a File becomes a regular file with mode 644 whether or not it is executable, a Symlink becomes a
+      symlink, a GitSubmodule becomes a file that fails with EISDIR, and an absent value is ENOENT.
+    </desc>
+    <defs>
+      <marker id="ct-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(ct, 157, 158) }}"><rect class="d-box" x="230" y="14" width="300" height="46" rx="6"></rect>
+      <text x="244" y="34">RepoPathBuf::from_relative_path</text>
+      <text x="244" y="51" class="d-muted" font-size="11">“..” and similar → InvalidPath → EIO</text></a>
+
+      <a href="{{ jj_lib(mt, 218, 229) }}"><rect class="d-box" x="230" y="90" width="300" height="46" rx="6"></rect>
+      <text x="244" y="110">MergedTree::path_value</text>
+      <text x="244" y="127" class="d-muted" font-size="11">Merge&lt;Option&lt;TreeValue&gt;&gt;, trivial merges resolved</text></a>
+
+      <a href="{{ src(ct, 161, 165) }}"><rect class="d-box" x="560" y="90" width="185" height="46" rx="6"></rect>
+      <text x="574" y="110">more than one term</text>
+      <text x="574" y="127" class="d-muted" font-size="11">conflict: EIO / ENOTDIR</text></a>
+
+      <a href="{{ jj_lib(merge, 349, 355) }}"><rect class="d-box" x="230" y="166" width="300" height="40" rx="6"></rect>
+      <text x="244" y="191">as_resolved() → one value</text></a>
+
+      <a href="{{ jj_lib(backend, 405, 405) }}"><rect class="d-box" x="10" y="250" width="138" height="56" rx="6"></rect>
+      <text x="22" y="272">Tree</text>
+      <text x="22" y="292" class="d-muted" font-size="11">directory, 755</text></a>
+      <a href="{{ jj_lib(backend, 394, 401) }}"><rect class="d-box" x="160" y="250" width="138" height="56" rx="6"></rect>
+      <text x="172" y="272">File</text>
+      <text x="172" y="292" class="d-muted" font-size="11">file, 644 even if +x</text></a>
+      <a href="{{ jj_lib(backend, 403, 403) }}"><rect class="d-box" x="310" y="250" width="138" height="56" rx="6"></rect>
+      <text x="322" y="272">Symlink</text>
+      <text x="322" y="292" class="d-muted" font-size="11">symlink → target</text></a>
+      <a href="{{ jj_lib(backend, 407, 407) }}"><rect class="d-box" x="460" y="250" width="138" height="56" rx="6"></rect>
+      <text x="472" y="272">GitSubmodule</text>
+      <text x="472" y="292" class="d-muted" font-size="11">“file”, EISDIR</text></a>
+      <a href="{{ src(ct, 51, 51) }}"><rect class="d-box" x="610" y="250" width="138" height="56" rx="6"></rect>
+      <text x="622" y="272">absent (None)</text>
+      <text x="622" y="292" class="d-muted" font-size="11">ENOENT</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.4" marker-end="url(#ct-arrow)">
+      <line x1="380" y1="60" x2="380" y2="86"></line>
+      <line x1="530" y1="113" x2="556" y2="113"></line>
+      <line x1="380" y1="136" x2="380" y2="162"></line>
+      <line x1="330" y1="206" x2="79" y2="246"></line>
+      <line x1="355" y1="206" x2="229" y2="246"></line>
+      <line x1="380" y1="206" x2="379" y2="246"></line>
+      <line x1="405" y1="206" x2="529" y2="246"></line>
+      <line x1="430" y1="206" x2="679" y2="246"></line>
+    </g>
+    <text x="10" y="340" class="d-muted" font-size="11">Derived from the code at the pin. Only directories, regular files and symlinks are covered by upstream tests.</text>
+  </svg>
+</div>
+
+<h2 id="listing">Listing a directory</h2>
+
+<p>
+  <code>list</code> gets the directory as a <code>Merge&lt;Tree&gt;</code>: one tree when it is resolved, one per
+  term when it is conflicted. Where a term has no directory at that path, jj-lib substitutes an empty tree
+  (<a href="{{ jj_lib(merge, 962, 995) }}"><code>sub_tree</code></a>). It then:
+</p>
+
+<ol>
+  <li>takes the names from every term's <a href="{{ jj_lib(tree, 106, 108) }}"><code>entries_non_recursive</code></a>
+    and drops repeats with <code>itertools</code>' <code>unique</code>, so a name present on any side is listed
+    once (<a href="{{ src(ct, 76, 80) }}">L76</a>);</li>
+  <li>builds each name's <code>Merge&lt;Option&lt;TreeValue&gt;&gt;</code> by mapping
+    <a href="{{ jj_lib(tree, 117, 119) }}"><code>Tree::value</code></a> over the terms
+    (<a href="{{ src(ct, 82, 84) }}">L82</a>);</li>
+  <li>types it as above if that merge has one term, and as a file otherwise (<a href="{{ src(ct, 86, 95) }}">L86</a>);</li>
+  <li>collects everything into a <code>Vec</code> and returns it as a stream (<a href="{{ src(ct, 102, 104) }}">L102</a>).</li>
+</ol>
+
+<p>
+  Step 2 doesn't use <code>Merge&lt;Tree&gt;::value</code>, so it never resolves trivial merges. In a conflicted
+  directory every term is kept, and every entry is listed as a file, even subdirectories and files that are the
+  same on every side. A <code>lookup</code> of such an entry goes through <code>path_value</code>, which does
+  resolve trivial merges, so it can report a different type than the listing did. In a resolved directory there
+  is one term and the types are right.
+</p>
+
+<p>
+  The names come out in the order of the first term's entries, followed by names only the other terms have.
+  Listing is the slow path for large directories: the <code>Vec</code> holds every entry, and
+  <a href="{{ url_for('jj_vfs', slug='fuse') }}#methods"><code>readdir</code></a> calls <code>list</code> again for each batch
+  and skips to its offset. Upstream's TODOs at <a href="{{ src(ct, 80, 81) }}">L80</a> and
+  <a href="{{ src(ct, 102, 102) }}">L102</a> note the lack of pagination.
+</p>
+
+<h2 id="content">Reading content</h2>
+
+<p>
+  <code>read</code> passes the resolved <code>File</code>'s <code>id</code> to
+  <a href="{{ jj_lib(store, 230, 236) }}"><code>Store::read_file</code></a> and returns the backend's
+  <code>AsyncRead</code> as is (<a href="{{ src(ct, 56, 57) }}">L56</a>). <code>read_link</code> does the same
+  for a <code>Symlink</code> with <a href="{{ jj_lib(store, 246, 248) }}"><code>Store::read_symlink</code></a>
+  and returns the target string as a path (<a href="{{ src(ct, 120, 125) }}">L120</a>).
+</p>
+
+<p>
+  The reader always starts at byte 0. For a FUSE <code>read(offset, size)</code>,
+  <a href="{{ url_for('jj_vfs', slug='vfs-layer') }}#reads"><code>PathMappedVfs::read</code></a> discards the first
+  <code>offset</code> bytes and then reads <code>size</code> (<a href="{{ src(vfs, 45, 57) }}">vfs.rs</a>), so reading a
+  file from start to end in chunks reads the earlier part again for every chunk.
+</p>
+
+<h2 id="attributes">Sizes and attributes</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Value</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>size of a file</td><td>The byte count from reading the whole file into a sink. Every <code>getattr</code> and <code>lookup</code> of a file reads all of it; upstream's TODO says jj-lib would need a way to get the size without reading.</td><td><a href="{{ src(ct, 132, 139) }}">L132</a></td></tr>
+      <tr><td>size of a directory</td><td>0.</td><td><a href="{{ src(ct, 140, 140) }}">L140</a></td></tr>
+      <tr><td>size of a symlink</td><td>The target's length in bytes.</td><td><a href="{{ src(ct, 141, 144) }}">L141</a></td></tr>
+      <tr><td><code>created</code>, <code>modified</code></td><td><code>UNIX_EPOCH</code>, marked TODO. The commit's own timestamps aren't used.</td><td><a href="{{ src(ct, 150, 151) }}">L150</a></td></tr>
+      <tr><td>mode, links, owner, <code>atime</code></td><td>Set by the FUSE adapter from the type: 755 or 644, 2 or 1 links, uid and gid 1000, <code>atime</code> the current time.</td><td><a href="{{ url_for('jj_vfs', slug='fuse') }}#file-attr">FileAttr</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <code>attributes</code> calls <code>file_type</code> first, so it looks the path up twice, and for a file a
+  third time inside <code>read</code>.
+</p>
+
+<h2 id="conflicts">Conflicts</h2>
+
+<p>
+  jj stores a conflicted commit's tree as several trees (see
+  <a href="{{ url_for('jj', slug='conflicts') }}#tree-merge">tree merges</a>). Here, a path
+  whose value doesn't resolve, even trivially, is refused: <code>read</code> returns <code>NotADirectory</code>,
+  <code>file_type</code> an I/O error “Conflicted path”, and <code>read_link</code> <code>NotASymlink</code>.
+  Upstream's TODOs at <a href="{{ src(ct, 48, 48) }}">L48</a> and <a href="{{ src(ct, 163, 164) }}">L163</a> plan to
+  show conflicts. Conflict markers are never materialized.
+</p>
+
+<p>
+  Derived from the code, not tested upstream: directories count too. The root of a conflicted commit has one tree
+  per term, and so does every directory on the way down to a conflicted file, unless jj can resolve it trivially.
+  <code>file_type</code> refuses those as well, so <code>getattr</code> on <code>commits/&lt;id&gt;</code> of a
+  conflicted commit fails with <code>EIO</code>, even though <code>list</code> could list it.
+</p>
+
+<h2 id="tests">Tests</h2>
+
+<p>
+  All tests use the repository from <code>test_helpers::setup_test_repo</code>: <code>file1.txt</code>
+  (“hello content 1”), <code>dir/file2.txt</code> and a symlink <code>symlink</code> → <code>file1.txt</code>, in one
+  resolved commit.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Test</th><th>What it pins down</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>test_list_directory_root</code></td><td>The root lists <code>dir</code>, <code>file1.txt</code>, <code>symlink</code> in that order, typed directory, file, symlink.</td><td><a href="{{ src(ct, 187, 204) }}">L187</a></td></tr>
+      <tr><td><code>test_list_directory_sub</code></td><td><code>dir</code> lists one file, <code>file2.txt</code>.</td><td><a href="{{ src(ct, 206, 219) }}">L206</a></td></tr>
+      <tr><td><code>test_file_size</code></td><td>The size is the content's length.</td><td><a href="{{ src(ct, 221, 230) }}">L221</a></td></tr>
+      <tr><td><code>test_read_file</code></td><td><code>read</code> returns the content.</td><td><a href="{{ src(ct, 232, 243) }}">L232</a></td></tr>
+      <tr><td><code>test_invalid_path</code></td><td><code>some/../path</code> is <code>InvalidPath</code> for <code>list</code> and <code>read</code>.</td><td><a href="{{ src(ct, 245, 272) }}">L245</a></td></tr>
+      <tr><td><code>test_not_found</code></td><td>Missing paths are <code>NotFound</code> for <code>list</code> and <code>read</code>.</td><td><a href="{{ src(ct, 274, 303) }}">L274</a></td></tr>
+      <tr><td><code>test_is_directory</code></td><td>Reading a directory is <code>NotAFile</code>.</td><td><a href="{{ src(ct, 305, 317) }}">L305</a></td></tr>
+      <tr><td><code>test_list_file_not_a_directory</code></td><td>Listing a file is <code>NotADirectory</code>.</td><td><a href="{{ src(ct, 319, 331) }}">L319</a></td></tr>
+      <tr><td><code>test_file_type</code></td><td>Directory, file and symlink are typed correctly.</td><td><a href="{{ src(ct, 333, 357) }}">L333</a></td></tr>
+      <tr><td><code>test_read_symlink_file</code></td><td>The symlink's target is <code>file1.txt</code>.</td><td><a href="{{ src(ct, 359, 368) }}">L359</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  No test covers executable files, submodules or conflicts.
+</p>
+
+<h2 id="limitations">Limitations</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Limitation</th><th>Effect</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Conflicts are refused.</td><td>Conflicted files can't be read or stat'ed, and neither can the directories above them.</td><td><a href="{{ src(ct, 161, 165) }}">L161</a></td></tr>
+      <tr><td>Conflicted directories list everything as files.</td><td>The listing's types disagree with <code>lookup</code>.</td><td><a href="{{ src(ct, 82, 95) }}">L82</a></td></tr>
+      <tr><td>The executable bit is dropped.</td><td>Scripts can't be run from the mount.</td><td><a href="{{ src(fuse, 204, 207) }}">fuse.rs</a></td></tr>
+      <tr><td>Submodules aren't supported.</td><td>They appear in listings as files that fail with <code>EISDIR</code>.</td><td><a href="{{ src(ct, 52, 53) }}">L52</a></td></tr>
+      <tr><td>Sizes need a full read.</td><td>Every <code>stat</code> of a file reads the whole file.</td><td><a href="{{ src(ct, 135, 138) }}">L135</a></td></tr>
+      <tr><td>No seeking.</td><td>Each read chunk re-reads everything before it.</td><td><a href="{{ src(vfs, 48, 48) }}">vfs.rs</a></td></tr>
+      <tr><td>Listings aren't paginated.</td><td>Each <code>readdir</code> batch builds the whole listing again.</td><td><a href="{{ src(ct, 102, 102) }}">L102</a></td></tr>
+      <tr><td>No timestamps.</td><td>Every file and directory is dated 1970-01-01.</td><td><a href="{{ src(ct, 150, 151) }}">L150</a></td></tr>
+      <tr><td>Nothing is cached.</td><td>Every request loads the commit and walks the trees again.</td><td><a href="{{ src(ct, 30, 37) }}">L30</a></td></tr>
+    </tbody>
+  </table>
+</div>

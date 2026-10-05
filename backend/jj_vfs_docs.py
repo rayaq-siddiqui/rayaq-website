@@ -57,7 +57,7 @@ PAGES = [
         "title": "Commits as directory trees",
         "summary": "How a commit's tree becomes directories, files and symlinks, how conflicts and other value kinds are shown, and how content is streamed.",
         "sources": ["src/commit_tree_file.rs"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "testing",
