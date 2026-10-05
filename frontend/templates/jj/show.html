@@ -1,0 +1,335 @@
+{% set cmd = "cli/src/commands/show.rs" %}
+{% set du = "cli/src/diff_util.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set ru = "cli/src/revset_util.rs" %}
+{% set cm = "lib/src/commit.rs" %}
+{% set rw = "lib/src/rewrite.rs" %}
+{% set tpl = "cli/src/config/templates.toml" %}
+{% set misc = "cli/src/config/misc.toml" %}
+{% set t = "cli/tests/test_show_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj show</code> works</h1>
+  <p class="tagline">
+    <code>jj show</code> prints each revision's metadata with a template, then its diff against its
+    parents. With no arguments it shows <code>@</code>; given a revset, it shows every commit in it,
+    newest first.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj loads the workspace, which snapshots it, and evaluates the revsets (default
+  <code>@</code>). It picks the template (<code>-T</code>, else <code>templates.show</code>) and the diff
+  formats (the flags, else <code>ui.diff-formatter</code>). For each commit it renders the template, then
+  diffs the merged tree of the commit's parents against the commit's own tree, with copy records from
+  each parent. Nothing is written: no transaction, no operation.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 72, 115) }}"><code>cmd_show</code></a>. The help text: "Show
+  revision metadata and diff" (<a href="{{ src(cmd, 30, 34) }}">source</a>). Unlike
+  <code>jj log</code>, it draws no graph and shows the diff unless <code>--no-patch</code> is given.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Argument</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>REVSETS</code> (positional, repeatable), or the hidden <code>-r REVSETS</code></td><td>revset</td><td><code>@</code></td><td>"Show changes in these revisions, compared to their parent(s)". Positional and <code>-r</code> values are unioned (<a href="{{ src(cmd, 35, 43) }}">source</a>, <a href="{{ src(cmd, 80, 85) }}">source</a>).</td></tr>
+      <tr><td><code>--reversed</code></td><td>flag</td><td>off</td><td>Older revisions first (<a href="{{ src(cmd, 45, 47) }}">source</a>).</td></tr>
+      <tr><td><code>-T</code>, <code>--template TEMPLATE</code></td><td>template</td><td><code>templates.show</code></td><td>How to render each commit; every 0-argument method of <code>Commit</code> is a keyword (<a href="{{ src(cmd, 49, 62) }}">source</a>).</td></tr>
+      <tr><td><code>--no-patch</code></td><td>flag</td><td>off</td><td>Don't show the diff. Conflicts with every diff format flag (<a href="{{ src(cmd, 67, 69) }}">source</a>).</td></tr>
+      <tr><td>Short formats: <code>-s</code>/<code>--summary</code>, <code>--stat</code>, <code>--types</code>, <code>--name-only</code></td><td>flags, at most one</td><td>none</td><td>Per-path summary, histogram, type letters, or path only (<a href="{{ src(du, 109, 136) }}">source</a>).</td></tr>
+      <tr><td>Long formats: <code>--git</code>, <code>--color-words</code></td><td>flags, at most one</td><td>none</td><td>A Git-format or word-level diff. One short and one long format can be combined (<a href="{{ src(du, 139, 145) }}">source</a>).</td></tr>
+      <tr><td><code>--tool NAME</code></td><td>string</td><td>none</td><td>An external diff command, or <code>:name</code> for a built-in format (<a href="{{ src(du, 147, 153) }}">source</a>).</td></tr>
+      <tr><td><code>--context N</code></td><td>integer</td><td><code>diff.git.context</code> / <code>diff.color-words.context</code></td><td>Lines of context (<a href="{{ src(du, 155, 157) }}">source</a>).</td></tr>
+      <tr><td><code>-w</code>/<code>--ignore-all-space</code>, <code>-b</code>/<code>--ignore-space-change</code></td><td>flags</td><td>off</td><td>Whitespace handling when comparing lines; <code>show</code> gives them their short names (<a href="{{ src(cmd, 32, 33) }}">source</a>, <a href="{{ src(du, 159, 166) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p class="jj-source">Global flags such as <code>--at-op</code> and <code>--ignore-working-copy</code> are on the <a href="{{ url_for('jj', slug='cli') }}#global-flags">CLI page</a>.</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>templates.show</code></td><td><code>builtin_log_detailed</code></td><td>The header for each commit (<a href="{{ src(tpl, 33, 33) }}">source</a>): commit and change ID, bookmarks, tags, author, committer, an optional signature line, then the indented description or <code>(no description set)</code> (<a href="{{ src(tpl, 235, 263) }}">source</a>).</td></tr>
+      <tr><td><code>ui.diff-formatter</code></td><td><code>:color-words</code></td><td>The format when no diff flag is given (<a href="{{ src(misc, 36, 36) }}">source</a>). A <code>:name</code> picks a built-in; anything else is an external tool (<a href="{{ src(du, 382, 404) }}">source</a>).</td></tr>
+      <tr><td><code>diff.color-words.*</code></td><td><code>conflict = "materialize"</code>, <code>max-inline-alternation = 3</code>, <code>context = 3</code></td><td>Options for the default format (<a href="{{ src(misc, 11, 14) }}">source</a>).</td></tr>
+      <tr><td><code>diff.git.*</code></td><td><code>context = 3</code>, <code>show-path-prefix = true</code></td><td>Options for <code>--git</code> (<a href="{{ src(misc, 16, 18) }}">source</a>).</td></tr>
+      <tr><td><code>ui.conflict-marker-style</code></td><td><code>diff</code></td><td>How conflicted files are written out when diffed (<a href="{{ src(misc, 45, 45) }}">source</a>, <a href="{{ src(util, 1719, 1727) }}">source</a>).</td></tr>
+      <tr><td><code>ui.show-cryptographic-signatures</code></td><td><code>false</code></td><td>Adds a <code>Signature:</code> line to the default template (<a href="{{ src(misc, 47, 47) }}">source</a>).</td></tr>
+      <tr><td><code>ui.pager</code>, <code>ui.paginate</code></td><td><code>less -FRXK</code>, <code>auto</code></td><td>Output goes through the pager (<a href="{{ src(misc, 39, 40) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 430" role="img" aria-labelledby="sh-flow-title sh-flow-desc">
+    <title id="sh-flow-title">jj show: call flow</title>
+    <desc id="sh-flow-desc">
+      After the shared lifecycle, cmd_show parses the revsets, defaulting to @, then parses the template
+      from -T or templates.show and builds a diff renderer from the format flags or ui.diff-formatter. It
+      evaluates the revset to a stream of commits, collecting and reversing it with --reversed, and asks
+      for the pager. For each commit it renders the template, then, unless --no-patch, calls show_patch:
+      parent_tree merges the parents' trees, copy records are gathered from each parent, and show_diff
+      writes each requested format.
+    </desc>
+    <defs>
+      <marker id="sh-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 80, 85) }}"><rect class="d-box" x="20" y="84" width="230" height="50" rx="6"></rect>
+      <text x="32" y="105">parse the revsets</text>
+      <text x="32" y="123" class="d-muted" font-size="11">none given: @ · else a union</text></a>
+      <a href="{{ src(cmd, 86, 92) }}"><rect class="d-box" x="265" y="84" width="230" height="50" rx="6"></rect>
+      <text x="277" y="105">parse the template</text>
+      <text x="277" y="123" class="d-muted" font-size="11">-T, else templates.show</text></a>
+      <a href="{{ src(util, 1729, 1736) }}"><rect class="d-box" x="510" y="84" width="230" height="50" rx="6"></rect>
+      <text x="522" y="105">diff_renderer_for</text>
+      <text x="522" y="123" class="d-muted" font-size="11">flags, else ui.diff-formatter</text></a>
+
+      <a href="{{ src(ru, 154, 165) }}"><rect class="d-box" x="20" y="158" width="350" height="50" rx="6"></rect>
+      <text x="32" y="179">evaluate_to_commits()</text>
+      <text x="32" y="197" class="d-muted" font-size="11">a stream, newest first</text></a>
+      <a href="{{ src(cmd, 96, 101) }}"><rect class="d-box" x="410" y="158" width="330" height="50" rx="6"></rect>
+      <text x="422" y="179">--reversed: collect, reverse</text>
+      <text x="422" y="197" class="d-muted" font-size="11">then request the pager</text></a>
+
+      <a href="{{ src(cmd, 105, 113) }}"><rect class="d-box" x="20" y="232" width="720" height="40" rx="6"></rect>
+      <text x="32" y="257">for each commit: template.format(commit), then show_patch unless --no-patch</text></a>
+
+      <a href="{{ src(cm, 132, 143) }}"><rect class="d-box" x="20" y="296" width="230" height="66" rx="6"></rect>
+      <text x="32" y="317">parent_tree()</text>
+      <text x="32" y="335" class="d-muted" font-size="11">empty by index: own tree</text>
+      <text x="32" y="352" class="d-muted" font-size="11">else merge the parents</text></a>
+      <a href="{{ src(du, 656, 662) }}"><rect class="d-box" x="265" y="296" width="230" height="66" rx="6"></rect>
+      <text x="277" y="317">get_copy_records()</text>
+      <text x="277" y="335" class="d-muted" font-size="11">from each parent</text>
+      <text x="277" y="352" class="d-muted" font-size="11">to this commit</text></a>
+      <a href="{{ src(du, 475, 581) }}"><rect class="d-box" x="510" y="296" width="230" height="66" rx="6"></rect>
+      <text x="522" y="317">show_diff_trees()</text>
+      <text x="522" y="335" class="d-muted" font-size="11">one pass per format</text>
+      <text x="522" y="352" class="d-muted" font-size="11">over diff_stream_with_copies</text></a>
+
+      <a href="{{ src(cmd, 114, 114) }}"><rect class="d-box" x="20" y="386" width="720" height="34" rx="6"></rect>
+      <text x="32" y="408">done: no transaction, no operation</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#sh-arrow)">
+      <line x1="135" y1="60" x2="135" y2="80"></line>
+      <line x1="250" y1="109" x2="261" y2="109"></line>
+      <line x1="495" y1="109" x2="506" y2="109"></line>
+      <line x1="625" y1="134" x2="195" y2="154"></line>
+      <line x1="370" y1="183" x2="406" y2="183"></line>
+      <line x1="575" y1="208" x2="575" y2="228"></line>
+      <line x1="135" y1="272" x2="135" y2="292"></line>
+      <line x1="250" y1="329" x2="261" y2="329"></line>
+      <line x1="495" y1="329" x2="506" y2="329"></line>
+      <line x1="625" y1="362" x2="625" y2="382"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Revset engine</td><td>read</td><td>Parses and evaluates the revsets (<a href="{{ src(util, 1888, 1903) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='revsets') }}">revsets</a></td></tr>
+      <tr><td>Commit index</td><td>read</td><td>Orders the commits, and its changed-path data can show a commit is empty without merging trees (<a href="{{ src(cm, 273, 281) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='index') }}">index</a></td></tr>
+      <tr><td>Commits</td><td>read</td><td>Each shown commit, for the template, and its parents.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Trees</td><td>read</td><td>The commit's tree and its parents' merged tree, diffed path by path.</td><td><a href="{{ url_for('jj', slug='trees') }}#diffs">trees</a></td></tr>
+      <tr><td>Copy records</td><td>read</td><td>From the backend, per parent; shown as <code>(old =&gt; new)</code> (<a href="{{ src(du, 676, 689) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='trees') }}#copy-records">trees</a></td></tr>
+      <tr><td>Conflicts</td><td>read</td><td>Merge parents are merged recursively; conflicted files are materialized for the diff.</td><td><a href="{{ url_for('jj', slug='conflicts') }}#tree-merge">conflicts</a></td></tr>
+      <tr><td>View</td><td>read</td><td><code>@</code>, bookmarks and tags feed the revset and the template.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Operation log</td><td>untouched</td><td>No transaction is started.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="reads">5. What it reads, and snapshotting</h2>
+
+<ul>
+  <li><strong>Snapshot:</strong> yes. It loads the workspace with <code>workspace_helper</code> (<a href="{{ src(cmd, 78, 78) }}">source</a>), which snapshots the working copy first (<a href="{{ src(util, 460, 464) }}">source</a>), so <code>jj show</code> includes current edits to <code>@</code>. That snapshot may record a <code>snapshot working copy</code> operation; <code>show</code> itself records nothing.</li>
+  <li><strong>Reads:</strong> the view at the current (or <code>--at-op</code>) operation, the index, each shown commit and its parents, their trees, file contents for the diff, and copy records.</li>
+  <li><strong>Output:</strong> through the pager, requested after evaluation and before the first commit is printed (<a href="{{ src(cmd, 101, 103) }}">source</a>). The template output is labelled <code>show commit</code> for colours (<a href="{{ src(cmd, 90, 92) }}">source</a>).</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="formats">Choosing the formats</h3>
+
+<p>
+  <a href="{{ src(du, 309, 320) }}"><code>diff_formats_for</code></a> reads at most one short and one long
+  format from the flags (<a href="{{ src(du, 342, 380) }}">source</a>). <code>--tool=:name</code> fills the
+  slot of that built-in's kind; any other <code>--tool</code> fills the long slot with an external tool.
+  If both slots are empty, it uses <code>ui.diff-formatter</code>. So the list is never empty, and
+  <code>--stat --git</code> prints a histogram followed by a Git diff. Each format then makes its own pass
+  over the tree diff, in that order (<a href="{{ src(du, 493, 581) }}">source</a>).
+</p>
+
+<h3 id="parent-tree">What a commit is diffed against</h3>
+
+<p>
+  <a href="{{ src(du, 647, 674) }}"><code>show_patch</code></a> diffs <code>parent_tree()</code> against the
+  commit's tree. If the index's changed-path data says the commit changed nothing, the parent tree is the
+  commit's own tree and the diff is empty at no cost (<a href="{{ src(cm, 134, 140) }}">source</a>). A single
+  parent's tree is used as it is. For a merge, the parents' trees are merged with their merge bases, found
+  recursively (<a href="{{ src(rw, 61, 70) }}">merge_commit_trees</a>,
+  <a href="{{ src(rw, 86, 103) }}">source</a>), and resolved where possible. The diff therefore shows only
+  what the merge commit itself changed, not everything each side brought in.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 250" role="img" aria-labelledby="sh-merge-title sh-merge-desc">
+    <title id="sh-merge-title">The tree a merge commit is diffed against</title>
+    <desc id="sh-merge-desc">
+      A merge commit M has parents P1 and P2, whose merge base is B. jj show builds the parent tree as
+      P1 plus P2 minus B, resolves what it can, and diffs that against M's tree. For a commit with one
+      parent, the parent tree is just that parent's tree.
+    </desc>
+    <defs>
+      <marker id="sh-m-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(rw, 105, 110) }}"><rect class="d-box" x="20" y="180" width="120" height="40" rx="6"></rect>
+      <text x="80" y="205" text-anchor="middle">B (base)</text></a>
+      <a href="{{ src(cm, 141, 142) }}"><rect class="d-box" x="20" y="100" width="120" height="40" rx="6"></rect>
+      <text x="80" y="125" text-anchor="middle">P1</text></a>
+      <a href="{{ src(cm, 141, 142) }}"><rect class="d-box" x="160" y="100" width="120" height="40" rx="6"></rect>
+      <text x="220" y="125" text-anchor="middle">P2</text></a>
+      <a href="{{ src(cmd, 105, 113) }}"><rect class="d-box" x="90" y="20" width="120" height="40" rx="6"></rect>
+      <text x="150" y="45" text-anchor="middle">M (shown)</text></a>
+
+      <a href="{{ src(rw, 86, 103) }}"><rect class="d-box" x="360" y="100" width="170" height="66" rx="6"></rect>
+      <text x="372" y="121">parent tree</text>
+      <text x="372" y="139" class="d-accent" font-size="11">P1 + P2 − B</text>
+      <text x="372" y="156" class="d-muted" font-size="11">resolved where possible</text></a>
+      <a href="{{ src(du, 475, 581) }}"><rect class="d-box" x="580" y="60" width="160" height="66" rx="6"></rect>
+      <text x="592" y="81">the diff shown</text>
+      <text x="592" y="99" class="d-muted" font-size="11">parent tree → M's tree</text>
+      <text x="592" y="116" class="d-muted" font-size="11">only M's own changes</text></a>
+    </g>
+    <rect class="d-line" x="10" y="90" width="282" height="140" rx="8" fill="none" stroke-dasharray="4 4"></rect>
+    <g class="d-line" stroke-width="1.5" fill="none">
+      <path d="M150,60 L80,100"></path>
+      <path d="M150,60 L220,100"></path>
+      <path d="M80,140 L80,180"></path>
+      <path d="M220,140 L140,190"></path>
+    </g>
+    <g class="d-line" stroke-width="1.5" fill="none" marker-end="url(#sh-m-arrow)">
+      <path d="M292,133 L356,133"></path>
+      <path d="M530,120 L576,100"></path>
+      <path d="M210,40 L576,80"></path>
+    </g>
+  </svg>
+</div>
+
+<p>
+  Copies and renames come from the backend's copy records between each parent and the commit
+  (<a href="{{ src(du, 656, 661) }}">source</a>), filtered by the matcher, which for <code>show</code> is
+  <code>EverythingMatcher</code> (<a href="{{ src(cmd, 108, 112) }}">source</a>). The tree diff pairs them
+  up, so a rename is printed once as <code>file1 =&gt; file3</code> instead of a deletion and an addition.
+</p>
+
+<h3 id="order">Order</h3>
+
+<p>
+  Commits are streamed in index order, newest first (<a href="{{ src(ru, 154, 165) }}">source</a>), not
+  topologically grouped as in <code>jj log</code>. <code>--reversed</code> has to collect the whole stream
+  first to flip it (<a href="{{ src(cmd, 96, 99) }}">source</a>). There is no limit flag.
+</p>
+
+<p>
+  <strong>Invariants:</strong> each commit in the set is printed once, header then diff. An empty
+  revset prints nothing and is not an error (<a href="{{ src(t, 72, 74) }}">test</a>). Nothing in the
+  repository changes.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>error: a value is required for '--template &lt;TEMPLATE&gt;' but none was supplied</code>, with a hint listing template aliases</td><td><code>jj show -T</code> with no value.</td><td><a href="{{ src(t, 338, 380) }}">test</a></td></tr>
+      <tr><td>A clap "cannot be used with" error</td><td><code>--no-patch</code> with a diff flag; two short or two long formats; <code>-w</code> with <code>-b</code>.</td><td><a href="{{ src(cmd, 67, 69) }}">show.rs</a>, <a href="{{ src(du, 109, 112) }}">diff_util.rs</a></td></tr>
+      <tr><td><code>--tool=&lt;name&gt; cannot be used with --&lt;format&gt;</code></td><td><code>--tool</code> asks for a format whose slot a flag already filled.</td><td><a href="{{ src(du, 355, 361) }}">diff_util.rs</a></td></tr>
+      <tr><td><code>Invalid builtin diff format: &lt;name&gt;</code></td><td><code>--tool=:name</code> or <code>ui.diff-formatter</code> names no built-in format.</td><td><a href="{{ src(du, 204, 214) }}">diff_util.rs</a></td></tr>
+      <tr><td><code>The tool `&lt;name&gt;` cannot be used for diff formatting</code></td><td><code>--tool</code> or <code>ui.diff-formatter</code> names a configured tool whose <code>diff-args</code> is empty.</td><td><a href="{{ src(du, 294, 307) }}">diff_util.rs</a></td></tr>
+      <tr><td><code>Failed to generate diff</code></td><td>An external diff tool failed.</td><td><a href="{{ src(du, 406, 409) }}">diff_util.rs</a></td></tr>
+      <tr><td>Revset or template parse errors</td><td>Bad revset, <code>-T</code>, or <code>templates.show</code>.</td><td><a href="{{ src(util, 1888, 1903) }}">cli_util.rs</a></td></tr>
+      <tr><td>(empty output)</td><td>The revset is empty, e.g. <code>jj show 'none()'</code>.</td><td><a href="{{ src(t, 72, 74) }}">test</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Example output</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 78, 102) }}">test_show_basic</a>: <code>@</code> deletes
+  <code>file1</code>, edits <code>file2</code>, and adds <code>file3</code> with <code>file1</code>'s content,
+  which the Git backend reports as a rename. The default <code>:color-words</code> format:
+</p>
+
+<pre><code>$ jj show
+Commit ID: 92e687faa4e5b681937f5a9c47feaa33e6b4892c
+Change ID: rlvkpnrzqnoowoytxnquwvuryrwnrmlp
+Author   : Test User &lt;test.user@example.com&gt; (2001-02-03 08:05:09)
+Committer: Test User &lt;test.user@example.com&gt; (2001-02-03 08:05:09)
+
+    (no description set)
+
+Modified regular file file2:
+   1    1: foo
+   2     : baz qux
+        2: bar
+        3: baz quux
+Modified regular file file3 (file1 =&gt; file3):</code></pre>
+
+<p>
+  Several revisions, from <a href="{{ src(t, 416, 463) }}">test_show_multiple_revisions</a>. Newest first,
+  and with <code>--reversed</code> oldest first (<a href="{{ src(t, 499, 524) }}">source</a>):
+</p>
+
+<pre><code>$ jj show --reversed --no-patch ..
+Commit ID: 456f4073ef89a8fbee17002de8cd8429f35e7dc9
+Change ID: qpvuntsmwlqtpsluzzsnyyzlmlwvmlnu
+Author   : Test User &lt;test.user@example.com&gt; (2001-02-03 08:05:08)
+Committer: Test User &lt;test.user@example.com&gt; (2001-02-03 08:05:08)
+
+    add file1
+
+Commit ID: 9155a29f167b8735506b1c10858a4abb9ef80e21
+Change ID: rlvkpnrzqnoowoytxnquwvuryrwnrmlp
+Author   : Test User &lt;test.user@example.com&gt; (2001-02-03 08:05:09)
+Committer: Test User &lt;test.user@example.com&gt; (2001-02-03 08:05:09)
+
+    add file2
+
+Commit ID: 997b28cbf801ff095e70f203f75731c955688350
+Change ID: kkmpptxzrspxrzommnulwmwkkqwworpl
+Author   : Test User &lt;test.user@example.com&gt; (2001-02-03 08:05:10)
+Committer: Test User &lt;test.user@example.com&gt; (2001-02-03 08:05:10)
+
+    modify file1
+</code></pre>
+
+<p>A custom template replaces the header entirely (<a href="{{ src(t, 285, 297) }}">source</a>):</p>
+
+<pre><code>$ jj show -T description
+a new commit</code></pre>

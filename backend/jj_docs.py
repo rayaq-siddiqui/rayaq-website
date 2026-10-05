@@ -1720,6 +1720,17 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "show": {
+        "title": "How jj show works",
+        "sources": [
+            "cli/src/commands/show.rs",
+            "cli/src/diff_util.rs",
+            "lib/src/commit.rs",
+            "lib/src/rewrite.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
 }
 
 
