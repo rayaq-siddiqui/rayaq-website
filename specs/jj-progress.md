@@ -4,7 +4,7 @@ Running log for the daily jj architecture Routine. Read this first, update it la
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
 **Last updated:** 2026-10-05 (forty-first run): no upstream change since `4df5265`; built
-`file search` and `file show`. `sparse list` is next.
+`file search`, `file show` and `sparse list`. `log` is next.
 
 ## Upstream pin
 
@@ -26,8 +26,8 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 69 of 105: Tier A 65 of 65 (complete),
-      Tier B 4 of 27 (`file annotate`, `list`, `search`, `show`), Tier C 0 of 13. Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 70 of 105: Tier A 65 of 65 (complete),
+      Tier B 5 of 27 (`file annotate`, `list`, `search`, `show`, `sparse list`), Tier C 0 of 13. Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
       `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`, `absorb`, `duplicate`,
       `bookmark create`/`set`/`move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`,
       `parallelize`, `simplify-parents`, `arrange`, `converge`, `revert`, `diffedit`, `run`,
@@ -42,10 +42,11 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 
 Pin unchanged (`4df5265`). Forty-first run: `98f13eb`, `file search` (the eight string-pattern
 kinds, `write_matches`, add-side-only conflict search); `1b18f74`, `file show` (single-path fast
-path vs. the slow walk, `templates.file_show`, conflict markers). Fortieth run: `e3d0baa`,
+path vs. the slow walk, `templates.file_show`, conflict markers); `c338d03`, `sparse list` (lazy
+`tree_state` load, root shown as `.`, one call-flow SVG). Fortieth run: `e3d0baa`,
 `file list` (the `TreeEntry` keywords, the `TreeEntriesIterator` walk with matcher pruning).
 Thirty-ninth run: `72c938f`, `file annotate` (the `FileAnnotator` line-map walk, conflict
-materialization, root-commit fallback). Each has a call-flow SVG, a second algorithm SVG, and
+materialization, root-commit fallback). The `file` pages each have a call-flow SVG, a second algorithm SVG, and
 examples from upstream's tests. Added a test that every ready Tier B page has all eight sections
 (§8A.3 item 5 is the `reads` section; see deviations).
 
@@ -106,7 +107,7 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
 2. Remaining topic pages: ~~`conflicts`~~, ~~`storage`~~, ~~`index`~~, ~~`revsets`~~, ~~`backends`~~.
    All topics done.
 3. **Next.** Tier B commands, in registry order: ~~`file annotate`~~, ~~`file list`~~, ~~`file search`~~, ~~`file show`~~,
-   `sparse list`, `log`, `show`, `diff`, `interdiff`, `status`, `evolog`, `root`, `operation diff`,
+   ~~`sparse list`~~, `log`, `show`, `diff`, `interdiff`, `status`, `evolog`, `root`, `operation diff`,
    `operation log`, `operation show`, `bookmark list`, `tag list`, `git root`, `workspace list`,
    `workspace root`, `config edit`/`gc`/`get`/`list`/`path`/`set`/`unset`.
 4. Tier C commands (`debug` and `bench` each as one shared page).
