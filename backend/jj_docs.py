@@ -1731,6 +1731,18 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "diff": {
+        "title": "How jj diff works",
+        "sources": [
+            "cli/src/commands/diff.rs",
+            "cli/src/diff_util.rs",
+            "lib/src/rewrite.rs",
+            "lib/src/revset.rs",
+            "cli/src/cli_util.rs",
+            "cli/src/revset_util.rs",
+        ],
+        "ready": True,
+    },
 }
 
 
