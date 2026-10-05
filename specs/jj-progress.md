@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-04 (thirty-eighth run): no upstream change since `4df5265`; built the
-`backends` topic page, the last §5 page. Tier B commands come next, starting with `file annotate`.
+**Last updated:** 2026-10-05 (thirty-ninth run): no upstream change since `4df5265`; built
+`file annotate`, the first Tier B page. `file list` is next.
 
 ## Upstream pin
 
@@ -21,13 +21,13 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] The `fix` page meets all ten §8 items, with three SVG diagrams.
 - [x] The `protobufs` page covers all seven `.proto` files, every field.
 - [x] Every source link is pinned to `UPSTREAM.commit` (tested).
-- [x] §7.5 tests exist and pass (139 tests in the suite, including the other sections').
+- [x] §7.5 tests exist and pass (140 tests in the suite, including the other sections').
 - [x] Homepage card links to `/jj`.
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 65 of 105, all Tier A (65 of 65, complete;
-      Tier B 0 of 27, Tier C 0 of 13). Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 66 of 105: Tier A 65 of 65 (complete),
+      Tier B 1 of 27 (`file annotate`), Tier C 0 of 13. Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
       `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`, `absorb`, `duplicate`,
       `bookmark create`/`set`/`move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`,
       `parallelize`, `simplify-parents`, `arrange`, `converge`, `revert`, `diffedit`, `run`,
@@ -38,18 +38,18 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
 
-## Thirty-eighth run (2026-10-04)
+## Thirty-ninth run (2026-10-05)
 
-Pin unchanged (`4df5265`). `f862a0b`: `backends` topic page (layers diagram from callers through
-`Store` to the three backends; the `Backend` trait method by method; `Store`'s 100-commit and
-1000-tree LRU caches versus passthroughs; selection via `store/type`, `StoreFactories` and the
-feature-gated default factories; the Git backend's IDs, tree-entry mapping, headers, extras table,
-same-ID collision loop and `refs/jj/keep` refs; `jj util gc`; the Simple and Secret backends; a
-side-by-side table). The `/jj` diagram boxes and the `revsets` "store" link now resolve to it.
+Pin unchanged (`4df5265`). `72c938f`: `file annotate` page (CLI, `templates.file_annotate` and the
+five `AnnotationLine` keywords, call-flow SVG, touchpoints, what it reads, the `FileAnnotator`
+line-map walk over `heads ∪ (all() & ::start & files(path))` with direct/indirect/missing edges,
+conflict materialization and the root-commit fallback, an SVG traced from upstream's template test,
+errors, and four example outputs from upstream's tests). Added a test that every ready Tier B page
+has all eight sections (§8A.3 item 5 is the `reads` section; see deviations).
 
-## Thirty-fourth to thirty-seventh runs (2026-10-04)
+## Thirty-fourth to thirty-eighth runs (2026-10-04)
 
-Pin unchanged (`4df5265`). Topic pages: `revsets` `7a715c9`, `index` `4c1e053` (template
+Pin unchanged (`4df5265`). Topic pages: `backends` `f862a0b`, `revsets` `7a715c9`, `index` `4c1e053` (template
 `jj/commit-index.html`, see deviations), `storage` `3b6b9ff`, `conflicts` `0f9c64e`.
 `44cd877`/`4fbf569` linked the 16 "page planned" touchpoint cells to `revsets` and `index`; their
 bodies cite "§6" where the rule is §8A.3 item 4 (history not rewritten). The queue had put Tier B
@@ -103,7 +103,7 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
    `-remote`~~, ~~`sign`~~, ~~`unsign`~~, ~~`workspace-*`~~, ~~`gerrit-upload`~~. Tier A complete.
 2. Remaining topic pages: ~~`conflicts`~~, ~~`storage`~~, ~~`index`~~, ~~`revsets`~~, ~~`backends`~~.
    All topics done.
-3. **Next.** Tier B commands, in registry order: `file annotate`, `file list`, `file search`, `file show`,
+3. **Next.** Tier B commands, in registry order: ~~`file annotate`~~, `file list`, `file search`, `file show`,
    `sparse list`, `log`, `show`, `diff`, `interdiff`, `status`, `evolog`, `root`, `operation diff`,
    `operation log`, `operation show`, `bookmark list`, `tag list`, `git root`, `workspace list`,
    `workspace root`, `config edit`/`gc`/`get`/`list`/`path`/`set`/`unset`.
@@ -124,6 +124,9 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
   page covering their own subcommands, and `debug`/`bench` are one page each (§8A.2 allows
   shared pages for Tier C; the first three are a judgment call to keep slugs to two levels).
 
+- **Tier B section 5.** §8A.2 renames item 5 for read-only commands, so Tier B pages use
+  `<h2 id="reads">` ("What it reads, and snapshotting") instead of `transaction`, and need one SVG
+  (the flow) rather than two; `test_ready_tier_b_command_pages_cover_every_section` checks this.
 - **The `index` page's template.** The slug `index` would map to `jj/index.html`, the `/jj` landing
   page, so a registry entry can set `"template"` (read through `jj_docs.page_template`), and the
   `index` topic uses `jj/commit-index.html`. Its URL is still `/jj/index`, as §5 names it.
@@ -142,6 +145,11 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
   edited (will become the current working copy)", but `evaluate_commit` calls `tx.check_out`, which
   creates a new empty commit on top of the revision, as upstream's own test output shows. The page
   describes the code.
+- **`jj file annotate` on conflicts and merges.** The page explains, from the code, why the
+  conflict markers in `test_annotate_conflicted` are credited to the empty child commit: `files()`
+  compares a merge with the merge of its parents, so the unresolved merge doesn't count as modifying
+  the file. It also says that on a merge the first parent holding a line gets it. Both are read from
+  `has_diff_from_parent` and `process_commit` and agree with upstream's snapshots, but weren't run here.
 - **`jj file track` couldn't be run.** The page's claim that the working-copy commit changes only at
   the next command comes from the code (the command never rewrites `@`) and upstream's
   `test_track_ignored`, whose `Rebased … onto updated working copy` appears on the following
