@@ -1323,6 +1323,17 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "file-annotate": {
+        "title": "How jj file annotate works",
+        "sources": [
+            "cli/src/commands/file/annotate.rs",
+            "lib/src/annotate.rs",
+            "lib/src/default_index/revset_graph_iterator.rs",
+            "cli/src/commit_templater.rs",
+            "cli/src/config/templates.toml",
+        ],
+        "ready": True,
+    },
     "file-chmod": {
         "title": "How jj file chmod works",
         "sources": [

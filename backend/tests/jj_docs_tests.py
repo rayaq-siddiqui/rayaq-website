@@ -228,3 +228,16 @@ def test_ready_tier_a_command_pages_cover_every_section():
         for anchor in ["cli", "configuration", "flow", "touchpoints", "transaction", "algorithm", "errors", "example"]:
             assert f'<h2 id="{anchor}"' in body, (page["slug"], anchor)
         assert body.count('role="img"') >= 2, page["slug"]
+
+
+def test_ready_tier_b_command_pages_cover_every_section():
+    tiers = {jj_docs.command_slug(entry["command"]): entry["tier"] for entry in jj_docs.COMMANDS}
+    client = app_module.app.test_client()
+
+    for page in jj_docs.ready_pages():
+        if page["kind"] != "command" or tiers[page["slug"]] != "B":
+            continue
+        body = client.get(f"/jj/{page['slug']}").get_data(as_text=True)
+        for anchor in ["cli", "configuration", "flow", "touchpoints", "reads", "algorithm", "errors", "example"]:
+            assert f'<h2 id="{anchor}"' in body, (page["slug"], anchor)
+        assert 'role="img"' in body, page["slug"]

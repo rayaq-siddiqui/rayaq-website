@@ -1,0 +1,395 @@
+{% set cmd = "cli/src/commands/file/annotate.rs" %}
+{% set ann = "lib/src/annotate.rs" %}
+{% set t = "cli/tests/test_file_annotate_command.rs" %}
+{% set tpl = "cli/src/config/templates.toml" %}
+{% set ctx = "cli/src/commit_templater.rs" %}
+{% set eng = "lib/src/default_index/revset_engine.rs" %}
+{% set gi = "lib/src/default_index/revset_graph_iterator.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj file annotate</code> works</h1>
+  <p class="tagline">
+    <code>jj file annotate</code> prints a file one line at a time, each line labelled with the
+    change that introduced it. It walks the file's history from one commit back towards the root,
+    diffing each commit against its parents and handing matching lines down to the parent.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj resolves <code>-r</code> (default <code>@</code>) and checks that the path is a file
+  or a conflict of files. <code>FileAnnotator</code> then walks the ancestors that modify the file,
+  children before parents. At each commit it diffs the text against each parent's text line by line.
+  Lines that match are handed down to the parent, and lines that match no parent are credited to that
+  commit. The walk stops once no line is left to hand down. Each line is rendered with
+  <code>templates.file_annotate</code>. Nothing is written: no transaction, no operation.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 68, 113) }}"><code>cmd_file_annotate</code></a>, and the work is
+  done by <a href="{{ src(ann, 152, 242) }}"><code>FileAnnotator</code></a> in jj-lib. The help text:
+  "Annotates a revision line by line. Each line includes the source change that introduced the
+  associated line" (<a href="{{ src(cmd, 34, 37) }}">source</a>). There's no copy or rename
+  tracking: the history of one path is followed, and upstream leaves a field for that to change
+  (<a href="{{ src(ann, 155, 156) }}">source</a>).
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Argument</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>PATH</code> (positional)</td><td>file path</td><td>required</td><td>The file to annotate. It is a plain path, not a fileset, so exactly one file (<a href="{{ src(cmd, 40, 43) }}">source</a>).</td></tr>
+      <tr><td><code>-r</code>, <code>--revision REVSET</code></td><td>revset</td><td><code>@</code></td><td>The commit to start from. It must resolve to exactly one commit, and it may be hidden (<a href="{{ src(cmd, 45, 48) }}">source</a>).</td></tr>
+      <tr><td><code>-T</code>, <code>--template TEMPLATE</code></td><td>template</td><td><code>templates.file_annotate</code></td><td>How to render each line. Every 0-argument method of <code>AnnotationLine</code> is a keyword (<a href="{{ src(cmd, 50, 65) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 38, 66) }}"><code>FileAnnotateArgs</code></a></p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<p>
+  <code>templates.file_annotate</code> supplies the template when <code>-T</code> is absent
+  (<a href="{{ src(cmd, 92, 99) }}">source</a>). The built-in default joins four fields with spaces:
+  the change ID's shortest prefix (at least 8 characters), the author's email local part padded or
+  cut to 8, the timestamp, and the line number padded to 4. Then comes <code>": "</code> and the
+  line (<a href="{{ src(tpl, 7, 14) }}">templates.toml</a>):
+</p>
+
+<pre><code>join(" ",
+  commit.change_id().shortest(8),
+  pad_end(8, truncate_end(8, commit.author().email().local())),
+  commit_timestamp(commit).local().format("%Y-%m-%d %H:%M:%S"),
+  pad_start(4, line_number),
+) ++ ": " ++ content</code></pre>
+
+<p>
+  The timestamp comes from the <code>commit_timestamp(commit)</code> template alias, which defaults
+  to the <em>committer</em> timestamp (<a href="{{ src(tpl, 321, 321) }}">source</a>). The keywords
+  are the five methods of <code>AnnotationLine</code>
+  (<a href="{{ src(ctx, 3032, 3086) }}">commit_templater.rs</a>,
+  <a href="{{ src('docs/templates.md', 143, 154) }}">docs</a>):
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Keyword</th><th>Type</th><th>Value</th></tr></thead>
+    <tbody>
+      <tr><td><code>commit</code></td><td><code>Commit</code></td><td>The commit the line is credited to.</td></tr>
+      <tr><td><code>content</code></td><td><code>ByteString</code></td><td>The line, including its newline.</td></tr>
+      <tr><td><code>line_number</code></td><td><code>Integer</code></td><td>1-based line number in the file at <code>-r</code>.</td></tr>
+      <tr><td><code>original_line_number</code></td><td><code>Integer</code></td><td>1-based line number in the credited commit's version of the file.</td></tr>
+      <tr><td><code>first_line_in_hunk</code></td><td><code>Boolean</code></td><td>False when the line just above is credited to the same commit.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <code>revset-aliases</code> apply when resolving <code>-r</code>. Nothing configures the history
+  search itself: the CLI always passes <code>all()</code> as its domain, with a TODO about an option
+  to limit it to recent commits (<a href="{{ src(cmd, 101, 107) }}">source</a>).
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 420" role="img" aria-labelledby="fa-flow-title fa-flow-desc">
+    <title id="fa-flow-title">jj file annotate: call flow</title>
+    <desc id="fa-flow-desc">
+      cmd_file_annotate loads the workspace through the shared lifecycle, resolves -r (default @),
+      parses the path and looks up its value in the commit's tree. An absent value or one that is not
+      all files is an error. It picks the template from -T or templates.file_annotate and parses it.
+      FileAnnotator::from_commit loads the file text, compute walks the ancestors that modify the file
+      in the all() domain, and to_annotation returns one origin per line. render_file_annotation
+      requests the pager and, for each line, loads the credited commit and formats an AnnotationLine.
+    </desc>
+    <defs>
+      <marker id="fa-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 76, 81) }}"><rect class="d-box" x="20" y="84" width="720" height="50" rx="6"></rect>
+      <text x="32" y="105">resolve_single_rev(-r or @); parse_file_path; starting_commit.tree().path_value(path)</text>
+      <text x="32" y="123" class="d-muted" font-size="11">a hidden commit is fine; the revset only has to name one commit</text></a>
+
+      <a href="{{ src(cmd, 83, 90) }}"><rect class="d-box" x="20" y="158" width="350" height="62" rx="6"></rect>
+      <text x="32" y="179">absent → No such path</text>
+      <text x="32" y="198" class="d-muted" font-size="11">to_file_merge() is None →</text>
+      <text x="32" y="213" class="d-muted" font-size="11">Path exists but is not a regular file</text></a>
+      <a href="{{ src(cmd, 92, 99) }}"><rect class="d-box" x="410" y="158" width="330" height="62" rx="6"></rect>
+      <text x="422" y="179">template: -T or templates.file_annotate</text>
+      <text x="422" y="198" class="d-muted" font-size="11">parse_template with the commit template</text>
+      <text x="422" y="213" class="d-muted" font-size="11">language, AnnotationLine as the context</text></a>
+
+      <a href="{{ src(ann, 165, 241) }}"><rect class="d-box" x="20" y="244" width="720" height="62" rx="6"></rect>
+      <text x="32" y="265">FileAnnotator::from_commit → compute(repo, all()) → to_annotation()</text>
+      <text x="32" y="283" class="d-muted" font-size="11">jj-lib: walk heads ∪ (all() &amp; ::start &amp; files(path)), children first</text>
+      <text x="32" y="298" class="d-muted" font-size="11">see the algorithm below</text></a>
+
+      <a href="{{ src(cmd, 115, 151) }}"><rect class="d-box" x="20" y="330" width="720" height="62" rx="6"></rect>
+      <text x="32" y="351">render_file_annotation: request_pager; per line, get_commit_async(origin)</text>
+      <text x="32" y="369" class="d-muted" font-size="11">AnnotationLine { commit, content, line_number, original_line_number,</text>
+      <text x="32" y="384" class="d-muted" font-size="11">first_line_in_hunk } → template.format → stdout</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#fa-arrow)">
+      <line x1="380" y1="60" x2="380" y2="80"></line>
+      <line x1="195" y1="134" x2="195" y2="154"></line>
+      <line x1="370" y1="189" x2="406" y2="189"></line>
+      <line x1="575" y1="220" x2="575" y2="240"></line>
+      <line x1="380" y1="306" x2="380" y2="326"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Starting commit</td><td>read</td><td>Resolved from <code>-r</code>; its tree gives the path's value and the text to annotate.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Trees and file contents</td><td>read</td><td>The path's value is read in the starting commit and in every parent the walk reaches (<a href="{{ src(ann, 272, 276) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>Conflicts</td><td>read</td><td>A conflicted file is materialized into text with markers before diffing (<a href="{{ src(ann, 460, 475) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='conflicts') }}">conflicts</a></td></tr>
+      <tr><td>Revset engine</td><td>read</td><td>Evaluates the walk's revset and streams it as a graph with direct, indirect and missing edges (<a href="{{ src(ann, 311, 317) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='revsets') }}">revsets</a></td></tr>
+      <tr><td>Commit index</td><td>read</td><td>Supplies ancestry, and the changed-path index when present, for the <code>files(path)</code> filter (<a href="{{ src(eng, 1361, 1371) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='index') }}">index</a></td></tr>
+      <tr><td>Credited commits</td><td>read</td><td>Loaded once per output line to render <code>commit</code> (<a href="{{ src(cmd, 134, 138) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td><code>View</code></td><td>read</td><td>Visible heads, for resolving <code>-r</code> and for <code>all()</code>.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Working copy</td><td>read, may snapshot</td><td>Snapshotted by the shared lifecycle, so edits on disk show up in <code>@</code>.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="reads">5. What it reads, and snapshotting</h2>
+
+<ul>
+  <li><strong>No transaction, no operation of its own.</strong> The command only reads the repo it
+    loaded (<a href="{{ src(cmd, 74, 112) }}">source</a>).</li>
+  <li><strong>Snapshot:</strong> <code>workspace_helper</code> snapshots the working copy first, like
+    any command that loads the workspace. If files changed on disk, that snapshot records its own
+    operation, so <code>jj file annotate</code> shows uncommitted edits as part of <code>@</code>.</li>
+  <li><strong>History read:</strong> only commits that are ancestors of <code>-r</code> and change the
+    file, plus the parents those edges point to. Commits that leave the file alone are filtered out by
+    the revset engine, and their text is never read or diffed.</li>
+  <li><strong>Hidden starting commits:</strong> work, since <code>all()</code> covers commits referenced
+    in the expression (<a href="{{ src('lib/src/revset.rs', 375, 379) }}">source</a>). Upstream tests an
+    abandoned commit via <code>-r 'at_operation(@-, @)'</code> (<a href="{{ src(t, 237, 254) }}">source</a>).</li>
+  <li><strong><code>jj undo</code></strong> has nothing to revert, except the snapshot if one was taken.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<p>
+  The state is a <code>Source</code> per pending commit: the file's text there, plus a sorted
+  <code>line_map</code> of pairs (line in this commit, line in the starting file). There's also one
+  origin per starting line (<a href="{{ src(ann, 244, 262) }}">source</a>). At the start, only the
+  starting commit is pending and each line maps to itself (<a href="{{ src(ann, 188, 212) }}">source</a>).
+</p>
+
+<ol>
+  <li>
+    <strong>Pick the commits.</strong> The revset is the pending commits, unioned with
+    <code>domain &amp; ::pending &amp; files(path)</code> (<a href="{{ src(ann, 299, 315) }}">source</a>).
+    <code>files()</code> compares a merge against the merge of its parents, so a merge whose file is
+    exactly what merging the parents gives, even an unresolved conflict, doesn't count as modifying it (<a href="{{ src(eng, 1424, 1457) }}">source</a>).
+  </li>
+  <li>
+    <strong>Walk children before parents</strong> with <code>stream_graph()</code>
+    (<a href="{{ src(ann, 316, 324) }}">source</a>). Its edges skip excluded commits: a parent that
+    doesn't change the file is replaced by its nearest ancestors in the set (an indirect edge). A
+    parent with no way back into the set gives a missing edge
+    (<a href="{{ src(gi, 155, 200) }}">source</a>). Skipping is safe, because a skipped commit has the
+    same text as the ancestor it's replaced by.
+  </li>
+  <li>
+    <strong>At each commit</strong>, take its <code>Source</code> out of the map; commits with no
+    pending lines are skipped. For each parent edge, load the parent's text if it isn't pending
+    already. Run <code>ContentDiff::by_line</code> between the two. Every line of a
+    <code>Matching</code> hunk that this commit still carries moves to the parent's
+    <code>line_map</code>, merged with lines another child already handed down
+    (<a href="{{ src(ann, 338, 383) }}">source</a>, <a href="{{ src(ann, 413, 439) }}">diff</a>). Parents
+    are tried in order, so on a merge the first parent that has a line gets it.
+  </li>
+  <li>
+    <strong>Drop or stop.</strong> A parent left with no lines is removed. If the edge was missing but
+    the parent did get lines, those lines are marked <code>Err(parent, line)</code>, meaning unresolved
+    outside the domain, and the parent counts as an unresolved root
+    (<a href="{{ src(ann, 384, 397) }}">source</a>).
+  </li>
+  <li>
+    <strong>Credit the leftovers.</strong> Lines that matched no parent are credited
+    <code>Ok(this commit, line)</code> (<a href="{{ src(ann, 400, 408) }}">source</a>).
+  </li>
+  <li>
+    <strong>Stop</strong> as soon as every pending commit is an unresolved root. That usually means
+    none are pending, so the walk ends at the oldest commit still contributing a line, not at the root
+    (<a href="{{ src(ann, 320, 323) }}">source</a>).
+  </li>
+</ol>
+
+<p>
+  Where the file first appears, the parent edge reaches outside the set, usually to the root commit.
+  The parent's text there is empty, so nothing matches and the parent is dropped. The new lines are
+  credited to the commit that added them. A line can only stay <code>Err</code> when a parent outside
+  the set really has it. The CLI renders any such line as the root commit with
+  <code>original_line_number</code> 1. Its comment names repositories that jj initialized shallowly
+  and Git later unshallowed (<a href="{{ src(cmd, 124, 133) }}">source</a>).
+</p>
+
+<p>
+  <strong>Conflicts.</strong> A conflicted file at any visited commit is materialized in the
+  <code>diff</code> marker style before diffing, at line granularity, with identical changes on both
+  sides accepted. Upstream marks this with "TODO: track line origins without materializing"
+  (<a href="{{ src(ann, 450, 478) }}">source</a>). The marker lines and the <code>+</code>-prefixed
+  diff lines exist in no parent, so they are credited to the conflicted commit; plain snapshot lines
+  can still match a parent. A path that isn't a file in some commit (a directory, symlink, or
+  deleted) reads as empty text there (<a href="{{ src(ann, 476, 476) }}">source</a>).
+</p>
+
+<p>
+  <strong>Rendering.</strong> Origins are 0-based in jj-lib (<a href="{{ src(ann, 288, 295) }}">source</a>)
+  and shown 1-based. <code>first_line_in_hunk</code> compares the credited commit ID with the
+  previous line's (<a href="{{ src(cmd, 133, 147) }}">source</a>).
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 270" role="img" aria-labelledby="fa-alg-title fa-alg-desc">
+    <title id="fa-alg-title">How lines are handed down from commit2 to commit1 to initial</title>
+    <desc id="fa-alg-desc">
+      From upstream's test_annotate_with_template. commit2 has six lines. Diffing it against commit1
+      matches lines 1 to 3, which move to commit1; lines 4 to 6 match nothing and are credited to
+      commit2. Diffing commit1 against initial matches only "initial 2", commit1's line 1, which is
+      initial's line 2; commit1's lines 2 and 3 are credited to commit1. initial's parent is the root,
+      which has no text, so "initial 2" is credited to initial, and the walk ends.
+    </desc>
+    <defs>
+      <marker id="fa-alg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <text x="20" y="22" class="d-muted">kkmpptxz commit2 (start)</text>
+      <text x="280" y="22" class="d-muted">rlvkpnrz commit1</text>
+      <text x="540" y="22" class="d-muted">qpvuntsm initial</text>
+    </g>
+    <a href="{{ src(t, 265, 275) }}">
+      <rect class="d-box" x="20" y="34" width="220" height="176" rx="6"></rect>
+      <text x="32" y="60" font-size="11">1 initial 2</text>
+      <text x="32" y="86" font-size="11">2 new text from new co…</text>
+      <text x="32" y="112" font-size="11">3 that splits into mul…</text>
+      <text x="32" y="138" font-size="11" class="d-accent">4 new text from new co…</text>
+      <text x="32" y="164" font-size="11" class="d-accent">5 also continuing on a…</text>
+      <text x="32" y="190" font-size="11" class="d-accent">6 and a third!</text>
+    </a>
+    <a href="{{ src(t, 265, 269) }}">
+      <rect class="d-box" x="280" y="34" width="220" height="176" rx="6"></rect>
+      <text x="292" y="60" font-size="11">1 initial 2</text>
+      <text x="292" y="86" font-size="11" class="d-accent">2 new text from new co…</text>
+      <text x="292" y="112" font-size="11" class="d-accent">3 that splits into mul…</text>
+    </a>
+    <a href="{{ src(t, 262, 263) }}">
+      <rect class="d-box" x="540" y="34" width="200" height="176" rx="6"></rect>
+      <text x="552" y="60" font-size="11" class="d-muted">1 initial 1</text>
+      <text x="552" y="86" font-size="11" class="d-accent">2 initial 2</text>
+      <text x="552" y="112" font-size="11" class="d-muted">3 initial 3</text>
+    </a>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#fa-alg-arrow)">
+      <line x1="200" y1="56" x2="284" y2="56"></line>
+      <line x1="200" y1="82" x2="284" y2="82"></line>
+      <line x1="200" y1="108" x2="284" y2="108"></line>
+      <line x1="460" y1="56" x2="548" y2="82"></line>
+    </g>
+    <g font-size="11" class="d-muted">
+      <text x="20" y="232">Highlighted: credited to that commit. Arrows: Matching hunks, handed to the parent.</text>
+      <text x="20" y="252">Root has empty text, so initial keeps "initial 2"; nothing is left pending and the walk stops.</text>
+    </g>
+  </svg>
+</div>
+
+<p>
+  <strong>Invariants:</strong> every line of the file at <code>-r</code> gets exactly one origin. A
+  line is handed down only through an exact line match, so its credited commit has it with the same
+  bytes. The output always has as many lines as the file.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Error: No such path: &lt;path&gt;</code></td><td>The path isn't in the commit's tree.</td><td><a href="{{ src(cmd, 83, 85) }}">annotate.rs</a></td></tr>
+      <tr><td><code>Error: Path exists but is not a regular file: &lt;path&gt;</code></td><td>A directory, symlink or submodule, or a conflict where any term isn't a file (<a href="{{ src('core/src/backend.rs', 486, 500) }}">to_file_merge</a>).</td><td><a href="{{ src(cmd, 86, 90) }}">annotate.rs</a></td></tr>
+      <tr><td><code>Revset `…` resolved to more than one revision</code> (or to none)</td><td><code>-r</code> isn't exactly one commit.</td><td><a href="{{ src('cli/src/revset_util.rs', 302, 331) }}">revset_util.rs</a></td></tr>
+      <tr><td>Template parse error</td><td><code>-T</code>, or the configured template, doesn't parse against <code>AnnotationLine</code>.</td><td><a href="{{ src(cmd, 98, 99) }}">annotate.rs</a></td></tr>
+      <tr><td>clap: missing <code>&lt;PATH&gt;</code></td><td>No path given.</td><td><a href="{{ src(cmd, 40, 43) }}">annotate.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Upstream tests the first two messages on a missing file, a directory and a symlink
+  (<a href="{{ src(t, 57, 91) }}">test_annotate_non_file</a>).
+</p>
+
+<h2 id="example">8. Example output</h2>
+
+<p>
+  A linear history, with the default template. <code>file.txt</code> got <code>line1</code> in
+  <code>qpvuntsm</code> (author <code>foo@example.org</code>), and the working-copy commit appended a
+  line (<a href="{{ src(t, 32, 55) }}">test_annotate_linear</a>):
+</p>
+
+<pre><code>qpvuntsm foo      2001-02-03 08:05:08    1: line1
+kkmpptxz test.use 2001-02-03 08:05:10    2: new text from new commit</code></pre>
+
+<p>
+  A merge whose conflict was resolved by keeping both lines. Each line goes to the side that added it
+  (<a href="{{ src(t, 93, 140) }}">test_annotate_merge</a>):
+</p>
+
+<pre><code>qpvuntsm test.use 2001-02-03 08:05:08    1: line1
+zsuskuln test.use 2001-02-03 08:05:11    2: new text from new commit 1
+royxmykx test.use 2001-02-03 08:05:13    3: new text from new commit 2</code></pre>
+
+<p>
+  The same merge left conflicted, annotated from an empty commit on top of it
+  (<a href="{{ src(t, 142, 190) }}">test_annotate_conflicted</a>). Neither the merge nor the empty
+  commit modifies the file, but the empty commit is where the walk starts, so the materialized markers
+  are credited to it (<code>yostqsxw</code>). <code>line1</code> and commit2's line match a parent and
+  keep their origins:
+</p>
+
+<pre><code>qpvuntsm test.use 2001-02-03 08:05:08    1: line1
+yostqsxw test.use 2001-02-03 08:05:15    2: &lt;&lt;&lt;&lt;&lt;&lt;&lt; conflict 1 of 1
+yostqsxw test.use 2001-02-03 08:05:15    3: %%%%%%% diff from: qpvuntsm a5daff01 "initial"
+yostqsxw test.use 2001-02-03 08:05:15    4: \\\\\\\        to: zsuskuln 30cd4478 "commit1"
+yostqsxw test.use 2001-02-03 08:05:15    5: +new text from new commit 1
+yostqsxw test.use 2001-02-03 08:05:15    6: +++++++ royxmykx ad312256 "commit2"
+royxmykx test.use 2001-02-03 08:05:13    7: new text from new commit 2
+yostqsxw test.use 2001-02-03 08:05:15    8: &gt;&gt;&gt;&gt;&gt;&gt;&gt; conflict 1 of 1 ends</code></pre>
+
+<p>
+  A custom template that prints a header per hunk and the line number in the credited commit,
+  for the history drawn above (<a href="{{ src(t, 256, 307) }}">test_annotate_with_template</a>).
+  The template is
+  <code>if(first_line_in_hunk, "\n" ++ separate("\n", …) ++ "\n") ++ pad_start(4, original_line_number) ++ " -&gt;" ++ pad_start(4, line_number) ++ ": " ++ content</code>:
+</p>
+
+<pre><code>qpvuntsm initial
+2001-02-03 08:05:08 Test User &lt;test.user@example.com&gt;
+   2 -&gt;   1: initial 2
+
+rlvkpnrz commit1
+2001-02-03 08:05:09 Test User &lt;test.user@example.com&gt;
+   2 -&gt;   2: new text from new commit 1
+   3 -&gt;   3: that splits into multiple lines
+
+kkmpptxz commit2
+2001-02-03 08:05:10 Test User &lt;test.user@example.com&gt;
+   4 -&gt;   4: new text from new commit 2
+   5 -&gt;   5: also continuing on a second line
+   6 -&gt;   6: and a third!</code></pre>
