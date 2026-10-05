@@ -1,0 +1,278 @@
+{% set l = "cli/src/commands/bookmark/list.rs" %}
+{% set bm = "cli/src/commands/bookmark/mod.rs" %}
+{% set crl = "cli/src/commit_ref_list.rs" %}
+{% set ct = "cli/src/commit_templater.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set view = "lib/src/view.rs" %}
+{% set tpl = "cli/src/config/templates.toml" %}
+{% set t = "cli/tests/test_bookmark_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj bookmark list</code> works</h1>
+  <p class="tagline">
+    <code>jj bookmark list</code> (alias <code>jj b l</code>) prints bookmarks and their targets: local bookmarks,
+    and below each one the remote bookmarks it tracks, filtered by name, revision, remote and state.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj walks the view's bookmarks by name, keeps those whose name matches or whose local target is in
+  <code>-r</code>, groups each local bookmark with its tracked remotes, drops remotes that agree with the local
+  target unless asked, sorts the groups, and renders every entry with <code>templates.bookmark_list</code>. Then
+  it prints hints about conflicts and deleted bookmarks. It writes nothing.
+</p>
+
+<p>
+  The command is <a href="{{ src(l, 124, 249) }}"><code>cmd_bookmark_list</code></a>. The help text: "List
+  bookmarks and their targets. By default, a tracked remote bookmark will be included only if its target is
+  different from the local target. An untracked remote bookmark won't be listed"
+  (<a href="{{ src(l, 38, 48) }}">source</a>). It is registered as <code>List(BookmarkListArgs)</code> with the
+  visible alias <code>l</code> (<a href="{{ src(bm, 85, 86) }}">source</a>,
+  <a href="{{ src(bm, 108, 108) }}">dispatch</a>).
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>NAMES</code> (positional)</td><td>"Show bookmarks whose local name matches", as glob patterns by default (<a href="{{ src(l, 80, 88) }}">source</a>).</td></tr>
+      <tr><td><code>-r</code>, <code>--revision</code> <code>REVSETS</code></td><td>"Show bookmarks whose local targets are in the given revisions" (alias <code>--revisions</code>). "<code>-r deleted_bookmark</code> will not work since <code>deleted_bookmark</code> wouldn't have a local target" (<a href="{{ src(l, 90, 95) }}">source</a>).</td></tr>
+      <tr><td><code>-a</code>, <code>--all-remotes</code></td><td>"Show all tracked and untracked remote bookmarks including the ones whose targets are synchronized with the local bookmarks" (alias <code>--all</code>) (<a href="{{ src(l, 51, 54) }}">source</a>).</td></tr>
+      <tr><td><code>--remote</code> <code>REMOTE</code></td><td>"Show all tracked and untracked remote bookmarks belonging to this remote"; repeatable, glob by default, conflicts with <code>-a</code> (<a href="{{ src(l, 56, 68) }}">source</a>).</td></tr>
+      <tr><td><code>-t</code>, <code>--tracked</code></td><td>"Show tracked remote bookmarks only. This omits local Git-tracking bookmarks by default"; conflicts with <code>-a</code> (<a href="{{ src(l, 70, 74) }}">source</a>).</td></tr>
+      <tr><td><code>-c</code>, <code>--conflicted</code></td><td>"Show conflicted bookmarks only"; conflicts with <code>-a</code> (<a href="{{ src(l, 76, 78) }}">source</a>).</td></tr>
+      <tr><td><code>-T</code>, <code>--template</code> <code>TEMPLATE</code></td><td>Render each entry with this template; all zero-argument methods of <code>CommitRef</code> are keywords (<a href="{{ src(l, 97, 111) }}">source</a>).</td></tr>
+      <tr><td><code>--sort</code> <code>SORT_KEY</code></td><td>Comma-delimited sort keys, the first most significant; a <code>-</code> suffix sorts descending (<a href="{{ src(l, 113, 121) }}">source</a>). The keys are <code>name</code>, <code>author-name</code>, <code>author-email</code>, <code>author-date</code>, <code>committer-name</code>, <code>committer-email</code> and <code>committer-date</code> (<a href="{{ src(crl, 123, 147) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p class="jj-source">The global flags are on the <a href="{{ url_for('jj', slug='cli') }}#global-flags">CLI page</a>.</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Setting</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>templates.bookmark_list</code></td><td><code>format_commit_ref(self, "bookmark") ++ "\n"</code></td><td>Each entry, labelled <code>bookmark_list</code> (<a href="{{ src(tpl, 2, 2) }}">default</a>, <a href="{{ src(l, 150, 161) }}">source</a>). The alias is described under <a href="#output">what is printed</a>.</td></tr>
+      <tr><td><code>ui.bookmark-list-sort-keys</code></td><td><code>["name"]</code></td><td>The sort keys when <code>--sort</code> is not given; it must be an array of key strings (<a href="{{ src("cli/src/config/misc.toml", 48, 48) }}">default</a>, <a href="{{ src(l, 184, 191) }}">source</a>, <a href="{{ src(crl, 169, 182) }}">parser</a>).</td></tr>
+      <tr><td><code>ui.pager</code></td><td></td><td>The command requests the pager (<a href="{{ src(l, 194, 194) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 594" role="img" aria-labelledby="bl-flow-title bl-flow-desc">
+    <title id="bl-flow-title">jj bookmark list: call flow</title>
+    <desc id="bl-flow-desc">
+      After the shared lifecycle, cmd_bookmark_list loads the workspace and snapshots it. It builds a name
+      pattern from NAMES, evaluates -r intersected with bookmarks() to a set of local targets, compiles the
+      template, and builds a remote pattern, where --tracked implies excluding the git remote. collect_items
+      walks the view's bookmarks by name and builds one group per local bookmark with its tracked remotes,
+      plus a group per untracked remote when asked. The groups are sorted, each entry is rendered with the
+      template, and then a warning for unmatched exact names and hints for conflicted and deleted bookmarks
+      are printed.
+    </desc>
+    <defs>
+      <marker id="bl-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: parse args, load config (CLI page)</text></a>
+
+      <a href="{{ src(l, 129, 131) }}"><rect class="d-box" x="20" y="84" width="720" height="40" rx="6"></rect>
+      <text x="32" y="109">workspace_helper: load the repo at @, snapshot the working copy</text></a>
+
+      <a href="{{ src(l, 133, 148) }}"><rect class="d-box" x="20" y="148" width="350" height="60" rx="6"></rect>
+      <text x="32" y="171">name pattern from NAMES</text>
+      <text x="32" y="191" class="d-muted" font-size="11">none with only -r, all with neither</text></a>
+      <a href="{{ src(l, 139, 148) }}"><rect class="d-box" x="390" y="148" width="350" height="60" rx="6"></rect>
+      <text x="402" y="171">-r &amp; bookmarks(all()) → commit ids</text>
+      <text x="402" y="191" class="d-muted" font-size="11">OR-ed with the names, like jj git push</text></a>
+
+      <a href="{{ src(l, 150, 182) }}"><rect class="d-box" x="20" y="232" width="720" height="50" rx="6"></rect>
+      <text x="32" y="253">compile the template; remote pattern; RefFilterPredicates</text>
+      <text x="32" y="271" class="d-muted" font-size="11">--tracked without --remote means every remote but git</text></a>
+
+      <a href="{{ src(crl, 63, 121) }}"><rect class="d-box" x="20" y="306" width="720" height="60" rx="6"></rect>
+      <text x="32" y="329">collect_items(view.bookmarks()): one group per local bookmark + tracked remotes</text>
+      <text x="32" y="349" class="d-muted" font-size="11">synced remotes dropped unless asked; untracked remotes become their own groups</text></a>
+
+      <a href="{{ src(crl, 184, 207) }}"><rect class="d-box" x="20" y="390" width="720" height="40" rx="6"></rect>
+      <text x="32" y="415">sort the groups by --sort or ui.bookmark-list-sort-keys</text></a>
+
+      <a href="{{ src(l, 194, 200) }}"><rect class="d-box" x="20" y="454" width="720" height="40" rx="6"></rect>
+      <text x="32" y="479">request the pager; render each group's primary, then its tracked remotes</text></a>
+
+      <a href="{{ src(bm, 205, 229) }}"><rect class="d-box" x="20" y="518" width="230" height="56" rx="6"></rect>
+      <text x="32" y="541">Unmatched names</text>
+      <text x="32" y="561" class="d-muted" font-size="11">warning, exact names only</text></a>
+      <a href="{{ src(l, 204, 212) }}"><rect class="d-box" x="265" y="518" width="230" height="56" rx="6"></rect>
+      <text x="277" y="541">Conflict hint</text>
+      <text x="277" y="561" class="d-muted" font-size="11">a listed local is conflicted</text></a>
+      <a href="{{ src(l, 214, 246) }}"><rect class="d-box" x="510" y="518" width="230" height="56" rx="6"></rect>
+      <text x="522" y="541">Deleted hint</text>
+      <text x="522" y="561" class="d-muted" font-size="11">Git backend only</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#bl-arrow)">
+      <line x1="380" y1="60" x2="380" y2="82"></line>
+      <line x1="195" y1="124" x2="195" y2="146"></line>
+      <line x1="565" y1="124" x2="565" y2="146"></line>
+      <line x1="195" y1="208" x2="195" y2="230"></line>
+      <line x1="565" y1="208" x2="565" y2="230"></line>
+      <line x1="380" y1="282" x2="380" y2="304"></line>
+      <line x1="380" y1="366" x2="380" y2="388"></line>
+      <line x1="380" y1="430" x2="380" y2="452"></line>
+      <line x1="135" y1="494" x2="135" y2="516"></line>
+      <line x1="380" y1="494" x2="380" y2="516"></line>
+      <line x1="625" y1="494" x2="625" y2="516"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Piece</th><th>Role here</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(view, 91, 98) }}"><code>View::bookmarks</code></a></td><td>"Iterates pair of local and remote bookmarks by bookmark name": each name with its local target and its remote refs. See <a href="{{ url_for('jj', slug='view') }}">the view</a>.</td></tr>
+      <tr><td><a href="{{ src(crl, 45, 61) }}"><code>RefFilterPredicates</code></a></td><td>The name and remote matchers, the matched local targets, and the three switches for local-only, synced and untracked refs.</td></tr>
+      <tr><td><a href="{{ src(crl, 63, 121) }}"><code>collect_items</code></a></td><td>Builds <a href="{{ src(crl, 36, 43) }}"><code>RefListItem</code></a>s: a primary ref, local or untracked remote, and the remote refs it tracks. Shared with <code>jj tag list</code>.</td></tr>
+      <tr><td><a href="{{ src(crl, 184, 298) }}"><code>sort</code></a></td><td>Stable multi-key sort; loads commits only when a key needs them.</td></tr>
+      <tr><td><a href="{{ src(ct, 1625, 1625) }}"><code>CommitRef</code></a></td><td>The template type, made by <a href="{{ src(ct, 1662, 1662) }}"><code>local</code></a>, <a href="{{ src(ct, 1686, 1686) }}"><code>remote</code></a> or <a href="{{ src(ct, 1715, 1715) }}"><code>remote_only</code></a>; its keywords (<code>name</code>, <code>remote</code>, <code>present</code>, <code>conflict</code>, <code>tracked</code>, <code>tracking_ahead_count</code>, <code>synced</code>, …) are in <a href="{{ src(ct, 1923, 2034) }}"><code>builtin_commit_ref_methods</code></a>.</td></tr>
+      <tr><td><a href="{{ src(util, 3438, 3446) }}"><code>default_ignored_remote_name</code></a></td><td>The <code>git</code> pseudo-remote on the Git backend, none otherwise; <code>--tracked</code> leaves it out (<a href="{{ src(l, 163, 172) }}">source</a>). See <a href="{{ url_for('jj', slug='git-import') }}">jj git import</a>.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="reads">5. What it reads, and snapshotting</h2>
+
+<p>
+  It goes through <code>workspace_helper</code>, so the working copy is snapshotted first unless
+  <code>--ignore-working-copy</code> is given (<a href="{{ src(l, 129, 129) }}">source</a>). It then reads only
+  the view's bookmarks and the commits the template prints, plus, for <code>-r</code>, the revset evaluation, and
+  for commit-based sort keys, each group's first target commit (<a href="{{ src(crl, 193, 204) }}">source</a>). It
+  starts no transaction and writes no operation.
+</p>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="selection">Which bookmarks are listed</h3>
+<p>
+  Names and revisions are OR-ed, "like <code>cmd_git_push()</code>": with only <code>-r</code> the name pattern
+  matches nothing, with neither it matches everything (<a href="{{ src(l, 133, 138) }}">source</a>). The revsets
+  are intersected with <code>bookmarks(all())</code> "to minimize the lookup space" and evaluated to commit ids;
+  a bookmark is kept if its name matches or any of its local targets is one of them. <code>-c</code> then keeps
+  only bookmarks whose local target is conflicted (<a href="{{ src(crl, 69, 78) }}">source</a>).
+</p>
+
+<h3 id="grouping">Grouping local and remote</h3>
+<p>
+  For each kept name, the remote refs whose remote matches are split into tracked and untracked. A tracked ref
+  whose target equals the local target is dropped unless <code>-t</code>, <code>-a</code> or
+  <code>--remote</code> is given. A group, the local ref followed by the remaining tracked refs, is emitted if the
+  local bookmark is present and local-only refs are wanted, or if any tracked ref remains, which is how a deleted
+  local bookmark still shows with its remote. With <code>-a</code> or <code>--remote</code>, each untracked remote
+  ref is its own group, printed as <code>name@remote</code> (<a href="{{ src(crl, 79, 118) }}">source</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flags</th><th>Local-only</th><th>Synced tracked</th><th>Untracked</th></tr></thead>
+    <tbody>
+      <tr><td>none</td><td>yes</td><td>no</td><td>no</td></tr>
+      <tr><td><code>-a</code></td><td>yes</td><td>yes</td><td>yes</td></tr>
+      <tr><td><code>--remote R</code></td><td>no</td><td>yes</td><td>yes</td></tr>
+      <tr><td><code>-t</code></td><td>no</td><td>yes</td><td>no</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source">The three switches are set at <a href="{{ src(l, 174, 182) }}">list.rs</a>.</p>
+
+<h3 id="sorting">Sorting</h3>
+<p>
+  The view yields names in order, so the input is already sorted by name; the sort runs the keys from least to
+  most significant with stable sorts, skipping trailing <code>name</code> keys
+  (<a href="{{ src(crl, 219, 225) }}">source</a>). <code>name</code> compares the name, then the remote. The
+  commit keys use the group's first present target; a group without one sorts as missing, which comes before any commit in ascending order
+  (<a href="{{ src(crl, 214, 217) }}">source</a>). Tracked remote refs always stay under their local bookmark.
+</p>
+
+<h3 id="output">What is printed</h3>
+<p>
+  The default template calls <code>format_commit_ref</code> (<a href="{{ src(tpl, 383, 404) }}">source</a>). A local
+  bookmark prints <code>name: </code> and its commit summary, or <code>(deleted)</code> when absent. A tracked
+  remote prints indented as <code>  @remote</code>, with "(ahead by N commits, behind by N commits)" against the
+  local target, or "(not created yet)" when the remote ref is absent
+  (<a href="{{ src(tpl, 421, 436) }}">source</a>). An untracked remote prints <code>name@remote: </code>. A conflicted
+  target prints <code>(conflicted):</code> and one line per removed (<code>-</code>) and added (<code>+</code>)
+  commit (<a href="{{ src(tpl, 406, 419) }}">source</a>).
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Situation</th><th>Behaviour</th></tr></thead>
+    <tbody>
+      <tr><td>An exact name that matches no local or remote bookmark</td><td>"Warning: No matching bookmarks for names: …"; glob patterns never warn (<a href="{{ src(bm, 205, 229) }}">source</a>).</td></tr>
+      <tr><td>A listed local bookmark is conflicted</td><td>"Hint: Some bookmarks have conflicts. Use <code>jj bookmark set &lt;name&gt; -r &lt;rev&gt;</code> to resolve." (<a href="{{ src(l, 204, 212) }}">source</a>, <a href="{{ src(t, 3084, 3092) }}">test</a>). See <a href="{{ url_for('jj', slug='bookmark-set') }}">jj bookmark set</a>.</td></tr>
+      <tr><td>A listed bookmark is deleted locally but tracked on a real remote</td><td>"Hint: Bookmarks marked as deleted can be *deleted permanently* on the remote by running <code>jj git push --deleted</code>. Use <code>jj bookmark forget</code> if you don't want that." (<a href="{{ src(l, 229, 236) }}">source</a>). See <a href="{{ url_for('jj', slug='git-push') }}">jj git push</a> and <a href="{{ url_for('jj', slug='bookmark-forget') }}">jj bookmark forget</a>.</td></tr>
+      <tr><td>Deleted, tracked only by the <code>git</code> pseudo-remote</td><td>"Hint: Bookmarks marked as deleted will be deleted from the underlying Git repo on the next <code>jj git export</code>." Only one of the two hints is printed, and neither off the Git backend (<a href="{{ src(l, 214, 246) }}">source</a>).</td></tr>
+      <tr><td>An unknown <code>--sort</code> key</td><td>Rejected by clap with the list of possible values, exit status 2 (<a href="{{ src(t, 3096, 3110) }}">test</a>).</td></tr>
+      <tr><td><code>ui.bookmark-list-sort-keys</code> not an array of keys</td><td>A config error: "Expected an array of sort keys as strings" or "Expected sort key as a string" (<a href="{{ src(crl, 169, 182) }}">source</a>).</td></tr>
+      <tr><td><code>-a</code> with <code>--remote</code>, <code>-t</code> or <code>-c</code></td><td>Rejected by clap (<a href="{{ src(l, 66, 77) }}">source</a>).</td></tr>
+      <tr><td><code>-r</code> naming a deleted bookmark</td><td>It has no local target, so it cannot be found that way; list it by name instead (<a href="{{ src(l, 90, 95) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Example output</h2>
+
+<p>
+  After deleting, tracking, untracking and moving bookmarks against a clone, upstream's test shows the default
+  listing (<a href="{{ src(t, 2320, 2334) }}">source</a>):
+</p>
+
+<pre><code>$ jj bookmark list
+absent-tracked: wqnwkozp 0353dd35 (empty) local-only
+  @origin (not created yet)
+local-only: wqnwkozp 0353dd35 (empty) local-only
+remote-delete (deleted)
+  @origin: vruxwmqv b32031cf (empty) remote-delete
+remote-sync: rlvkpnrz 7a07dbee (empty) remote-sync
+remote-unsync: wqnwkozp 0353dd35 (empty) local-only
+  @origin (ahead by 1 commits, behind by 1 commits): zsuskuln 553203ba (empty) remote-unsync
+Hint: Bookmarks marked as deleted can be *deleted permanently* on the remote by running `jj git push --deleted`. Use `jj bookmark forget` if you don't want that.</code></pre>
+
+<p>
+  <code>--all-remotes</code> adds the synced <code>remote-sync@origin</code> under its local bookmark and the
+  untracked <code>remote-untrack@origin</code> as its own entry (<a href="{{ src(t, 2336, 2352) }}">source</a>):
+</p>
+
+<pre><code>$ jj bookmark list --all-remotes
+…
+remote-sync: rlvkpnrz 7a07dbee (empty) remote-sync
+  @origin: rlvkpnrz 7a07dbee (empty) remote-sync
+remote-unsync: wqnwkozp 0353dd35 (empty) local-only
+  @origin (ahead by 1 commits, behind by 1 commits): zsuskuln 553203ba (empty) remote-unsync
+remote-untrack@origin: royxmykx 149bc756 (empty) remote-untrack</code></pre>
+
+<p>
+  A custom template sorted by two keys (<a href="{{ src(t, 3130, 3137) }}">source</a>):
+</p>
+
+<pre><code>$ jj bookmark list -T 'name ++ ": " ++ if(normal_target, normal_target.committer().email()) ++ "\n"' \
+    --sort committer-email,committer-date-
+b: alice@g.c
+a: bob@g.c
+c: bob@g.c</code></pre>
+
+<p class="jj-source">See also <a href="{{ url_for('jj', slug='bookmark-track') }}">jj bookmark track</a> and <a href="{{ url_for('jj', slug='view') }}">the view</a>.</p>

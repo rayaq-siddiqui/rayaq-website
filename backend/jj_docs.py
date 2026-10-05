@@ -1816,6 +1816,17 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "bookmark-list": {
+        "title": "How jj bookmark list works",
+        "sources": [
+            "cli/src/commands/bookmark/list.rs",
+            "cli/src/commit_ref_list.rs",
+            "cli/src/commit_templater.rs",
+            "cli/src/commands/bookmark/mod.rs",
+            "cli/src/config/templates.toml",
+        ],
+        "ready": True,
+    },
 }
 
 
