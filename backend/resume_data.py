@@ -219,10 +219,14 @@ HONORS = [
 
 CERTIFICATIONS = [
     "Deep Learning Specialization (2024)",
-    "IBM DevOps and Software Engineering Professional Certificate (2024)",
-    "IBM AI Enterprise Workflow V1 (2023)",
-    "IBM AI Engineering Professional Certificate (2023)",
     "Machine Learning Specialization (2022)",
+    "IBM AI Engineering Professional Certificate (2022)",
+    "AI Capstone Project with Deep Learning (2022)",
+    "Building Deep Learning Models with TensorFlow (2022)",
+    "Deep Neural Networks with PyTorch (2022)",
+    "Introduction to Computer Vision and Image Processing (2022)",
+    "Introduction to Deep Learning & Neural Networks with Keras (2022)",
+    "Machine Learning With Python (2022)",
 ]
 
 SKILLS = {
