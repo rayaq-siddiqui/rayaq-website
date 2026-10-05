@@ -64,7 +64,7 @@ PAGES = [
         "title": "Tests and CI",
         "summary": "The test helpers, the unit tests per module, the mounted integration test, and the CI workflow.",
         "sources": ["src/test_helpers.rs", "tests/", ".github/workflows/", "rustfmt.toml"],
-        "ready": False,
+        "ready": True,
     },
 ]
 

@@ -1,0 +1,297 @@
+{% set helpers = "src/test_helpers.rs" %}
+{% set integ = "tests/vfs_integration.rs" %}
+{% set ci = ".github/workflows/ci.yml" %}
+{% set inode = "src/inode_map.rs" %}
+{% set vfs = "src/vfs.rs" %}
+{% set pmac = "src/path_mapper_all_commits.rs" %}
+{% set commits = "src/commits_directory.rs" %}
+{% set wss = "src/workspaces_directory.rs" %}
+{% set ctf = "src/commit_tree_file.rs" %}
+<header class="jj-header">
+  <h1>Tests and CI</h1>
+  <p class="tagline">
+    Thirty unit tests, two integration tests and four CI jobs. Most of the tests run against a real
+    jj repository that is built in a temporary directory for each test.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: <code>setup_test_repo</code> creates a real jj workspace in a temporary directory. It
+  writes one commit with two files and a symlink, makes that commit the working-copy commit, and
+  reloads the repository the same way <code>jjfsd</code> does. The unit tests use that repository to
+  check the path mapper, the <code>commits/</code> and <code>workspaces/</code> listings, and commit
+  trees. The inode map and <code>PathMappedVfs</code> are tested with hand-built data instead. One
+  integration test reads the commit through the virtual file layer. The other mounts the commit for
+  real through FUSE and reads it with <code>std::fs</code>. Nothing tests <code>src/fuse.rs</code> or
+  <code>src/main.rs</code> directly. CI runs rustfmt, clippy, <code>cargo check</code> and
+  <code>cargo test</code> on pull requests and merge-queue groups. It does not run on pushes.
+</p>
+
+<p>
+  Run everything with <code>cargo test --all-targets --all-features</code>, the command CI uses. At the
+  pinned commit, on a Linux machine that has FUSE, it reports 30 unit tests and 2 integration tests
+  passing. The library target has 30 tests, the binary has none, and <code>vfs_integration</code> has 2.
+  What the tests exercise is described in <a href="{{ url_for('jj_vfs', slug='inodes') }}">inodes</a>,
+  <a href="{{ url_for('jj_vfs', slug='vfs-layer') }}">the virtual file layer</a>,
+  <a href="{{ url_for('jj_vfs', slug='namespace') }}">the namespace</a>,
+  <a href="{{ url_for('jj_vfs', slug='commit-trees') }}">commit trees</a> and
+  <a href="{{ url_for('jj_vfs', slug='mounting') }}">mounting</a>.
+</p>
+
+<h2 id="helpers">The throwaway repository</h2>
+<p>
+  <a href="{{ src(helpers) }}"><code>src/test_helpers.rs</code></a> has two functions. The library pulls
+  it in only for tests, through <code>#[cfg(test)] pub mod test_helpers;</code> in
+  <a href="{{ src('src/lib.rs', 9, 10) }}"><code>lib.rs</code></a>. The integration test cannot reach a
+  <code>cfg(test)</code> module of the library, so it compiles the same file a second time with
+  <code>#[path = "../src/test_helpers.rs"]</code>. A
+  <a href="{{ src(integ, 6, 12) }}">TODO</a> there suggests a <code>test-helpers</code> Cargo feature as
+  the cleaner fix. <code>tempfile</code> is a dev-dependency only.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Step</th><th>What it does</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>user_settings()</code></td><td>Starts from <code>StackedConfig::with_defaults()</code> and adds a user layer: user name "Test User", email <code>test.user@example.com</code>, a fixed operation username and hostname, and <code>debug.randomness-seed = 42</code>.</td><td><a href="{{ src(helpers, 24, 35) }}">L24</a></td></tr>
+      <tr><td>Workspace</td><td><code>Workspace::init_simple</code> in a fresh <code>tempfile::tempdir()</code>.</td><td><a href="{{ src(helpers, 37, 45) }}">L37</a></td></tr>
+      <tr><td>Tree</td><td>A <code>TreeBuilder</code> on the empty tree writes <code>file1.txt</code> ("hello content 1") and <code>dir/file2.txt</code> ("hello content 2"). Both are non-executable and use <code>CopyId::placeholder()</code>. It also writes <code>symlink</code>, which points to <code>file1.txt</code>.</td><td><a href="{{ src(helpers, 47, 91) }}">L47</a></td></tr>
+      <tr><td>Commit</td><td>A backend commit with the root commit as its only parent, change id <code>…abcd</code>, description "test commit", and both timestamps at 0. It is written with <code>store.write_commit</code>.</td><td><a href="{{ src(helpers, 93, 113) }}">L93</a></td></tr>
+      <tr><td>Operation</td><td>A transaction runs <code>add_head</code>, makes the commit the default workspace's working-copy commit, and commits the operation as "set working copy".</td><td><a href="{{ src(helpers, 115, 121) }}">L115</a></td></tr>
+      <tr><td>Reload</td><td><code>Workspace::load</code> and then <code>repo_loader().load_at_head()</code>, the same path <a href="{{ src('src/main.rs', 37, 51) }}"><code>main</code></a> takes.</td><td><a href="{{ src(helpers, 123, 132) }}">L123</a></td></tr>
+      <tr><td>Returns</td><td><code>(TempDir, Arc&lt;ReadonlyRepo&gt;, CommitId)</code>. Callers keep the <code>TempDir</code> alive because dropping it deletes the repository.</td><td><a href="{{ src(helpers, 134, 135) }}">L134</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The repository contains three commits: the root commit, the empty working-copy commit created by
+  <code>init_simple</code>, and the test commit. <code>test_repo_commits</code> checks that count.
+  Because the helper goes through jj-lib's own
+  <a href="{{ jj_lib('lib/src/workspace.rs') }}">workspace</a> and
+  <a href="{{ jj_lib('lib/src/repo.rs') }}">repo</a> code rather than mocks, the tests that use it also
+  check this crate against the jj-lib version it pins.
+</p>
+
+<h2 id="diagram">What each test reaches</h2>
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 330" role="img" aria-labelledby="ts-title ts-desc">
+    <title id="ts-title">Test coverage by layer</title>
+    <desc id="ts-desc">
+      setup_test_repo builds a real jj repository, which is used by the path mapper, directory and commit
+      tree unit tests and by both integration tests. The inode map and PathMappedVfs unit tests use
+      hand-built data instead. test_vfs_read_real_repo_files goes through PathMappedVfs and the real path
+      mapper. test_vfs_mount goes through the kernel, fuser and JjFuse as well, and JjFuse uses the InodeMap. JjFuse and main have no
+      tests of their own.
+    </desc>
+    <defs>
+      <marker id="ts-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(integ, 92, 167) }}"><rect class="d-box" x="20" y="20" width="220" height="50" rx="6"></rect>
+      <text x="34" y="42">test_vfs_mount</text>
+      <text x="34" y="60" class="d-muted" font-size="11">std::fs over a real FUSE mount</text></a>
+
+      <a href="{{ src('src/fuse.rs') }}"><rect class="d-box" x="300" y="20" width="200" height="50" rx="6"></rect>
+      <text x="314" y="42">kernel · fuser · JjFuse</text>
+      <text x="314" y="60" class="d-muted" font-size="11">no unit tests</text></a>
+
+      <a href="{{ src(integ, 17, 90) }}"><rect class="d-box" x="20" y="100" width="220" height="50" rx="6"></rect>
+      <text x="34" y="122">test_vfs_read_real_repo_files</text>
+      <text x="34" y="140" class="d-muted" font-size="11">calls the VFS trait directly</text></a>
+
+      <a href="{{ src(vfs, 72, 276) }}"><rect class="d-box" x="300" y="100" width="200" height="50" rx="6"></rect>
+      <text x="314" y="122">PathMappedVfs</text>
+      <text x="314" y="140" class="d-muted" font-size="11">7 tests on a mock mapper</text></a>
+
+      <a href="{{ src(inode, 99, 177) }}"><rect class="d-box" x="550" y="20" width="190" height="50" rx="6"></rect>
+      <text x="564" y="42">InodeMap</text>
+      <text x="564" y="60" class="d-muted" font-size="11">4 tests, hand-built entries</text></a>
+
+      <a href="{{ src(pmac, 82, 179) }}"><rect class="d-box" x="300" y="180" width="200" height="50" rx="6"></rect>
+      <text x="314" y="202">AllCommitsPathMapper</text>
+      <text x="314" y="220" class="d-muted" font-size="11">7 tests</text></a>
+
+      <a href="{{ src(commits, 69, 89) }}"><rect class="d-box" x="550" y="140" width="190" height="40" rx="6"></rect>
+      <text x="564" y="165">commits/ · 1 test</text></a>
+
+      <a href="{{ src(wss, 56, 75) }}"><rect class="d-box" x="550" y="190" width="190" height="40" rx="6"></rect>
+      <text x="564" y="215">workspaces/ · 1 test</text></a>
+
+      <a href="{{ src(ctf, 176, 369) }}"><rect class="d-box" x="550" y="240" width="190" height="40" rx="6"></rect>
+      <text x="564" y="265">CommitTreeFile · 10 tests</text></a>
+
+      <a href="{{ src(helpers, 37, 135) }}"><rect class="d-box" x="20" y="260" width="380" height="50" rx="6"></rect>
+      <text x="34" y="282">setup_test_repo()</text>
+      <text x="34" y="300" class="d-muted" font-size="11">real jj workspace in a tempdir: 2 files, 1 symlink, 3 commits</text></a>
+
+      <line class="d-line" x1="240" y1="45" x2="298" y2="45" marker-end="url(#ts-arrow)"></line>
+      <line class="d-line" x1="500" y1="45" x2="548" y2="45" marker-end="url(#ts-arrow)"></line>
+      <line class="d-line" x1="400" y1="70" x2="400" y2="98" marker-end="url(#ts-arrow)"></line>
+      <line class="d-line" x1="240" y1="125" x2="298" y2="125" marker-end="url(#ts-arrow)"></line>
+      <line class="d-line" x1="400" y1="150" x2="400" y2="178" marker-end="url(#ts-arrow)"></line>
+      <line class="d-line" x1="500" y1="205" x2="548" y2="160" marker-end="url(#ts-arrow)"></line>
+      <line class="d-line" x1="500" y1="205" x2="548" y2="210" marker-end="url(#ts-arrow)"></line>
+      <line class="d-line" x1="500" y1="205" x2="548" y2="260" marker-end="url(#ts-arrow)"></line>
+      <line class="d-line" x1="400" y1="258" x2="400" y2="232" marker-end="url(#ts-arrow)"></line>
+    </g>
+  </svg>
+</div>
+<p>
+  Arrows show which code each test reaches. The mapper, the two listings and the commit-tree tests all
+  run on the repository from <code>setup_test_repo</code>. The <code>InodeMap</code> and
+  <code>PathMappedVfs</code> unit tests use hand-built data, and <code>InodeMap</code> is used only by
+  <code>JjFuse</code>. That makes the mounted test the only one that runs every layer together.
+</p>
+
+<h2 id="unit-tests">Unit tests by module</h2>
+
+<h3 id="unit-inode-map">Inode map</h3>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Test</th><th>Pins down</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>test_get_path</code></td><td>The root inode's path is empty, and other inodes resolve to full paths through hand-inserted parent and name entries.</td><td><a href="{{ src(inode, 103, 136) }}">L103</a></td></tr>
+      <tr><td><code>test_get_ino</code></td><td>New names get inodes 2 and then 3. Asking for the same name again returns the existing inode. An unknown parent (999) gives <code>NotFound</code>.</td><td><a href="{{ src(inode, 138, 162) }}">L138</a></td></tr>
+      <tr><td><code>test_inode_map_is_sync</code>, <code>…_is_send</code></td><td>Compile-time checks that <code>InodeMap</code> is <code>Sync</code> and <code>Send</code>. <code>JjFuse</code> shares it across tokio tasks.</td><td><a href="{{ src(inode, 164, 176) }}">L164</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="unit-vfs">PathMappedVfs</h3>
+<p>
+  These tests use <code>MockVirtualFile</code> (a file, directory or symlink with fixed contents) and a
+  <code>MockPathMapper</code> that holds a hash map, so no repository is involved.
+  <a href="{{ src(vfs, 192, 217) }}"><code>setup_test_vfs</code></a> provides <code>file.txt</code>
+  ("hello world"), <code>symlink.txt</code> pointing to <code>file.txt</code>, and
+  <code>dir/nested.txt</code>.
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Test</th><th>Pins down</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>test_read_root_file</code>, <code>test_read_nested_file</code></td><td><code>read</code> at offset 0 returns the mapped file's bytes, at the root and one directory down.</td><td><a href="{{ src(vfs, 219, 232) }}">L219</a></td></tr>
+      <tr><td><code>test_list_directory</code></td><td><code>read_directory("dir")</code> returns exactly one entry, <code>nested.txt</code>, typed as a file.</td><td><a href="{{ src(vfs, 233, 249) }}">L233</a></td></tr>
+      <tr><td><code>test_list_directory_not_a_directory</code>, <code>…_not_found</code></td><td>Listing a file gives <code>NotADirectory</code>. Listing a missing path gives <code>NotFound</code>.</td><td><a href="{{ src(vfs, 250, 263) }}">L250</a></td></tr>
+      <tr><td><code>test_read_link</code>, <code>test_read_link_not_a_symlink</code></td><td><code>read_link</code> returns <code>file.txt</code> for the symlink and <code>NotASymlink</code> for a regular file.</td><td><a href="{{ src(vfs, 264, 276) }}">L264</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="unit-mapper">Path mapper and the two listings</h3>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Test</th><th>Pins down</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>…_mapper_root</code></td><td>The empty path resolves to an entry that can be listed.</td><td><a href="{{ src(pmac, 90, 98) }}">L90</a></td></tr>
+      <tr><td><code>…_commit_root</code>, <code>…_commit_subpath</code></td><td><code>commits/&lt;hex&gt;</code> can be listed, and <code>commits/&lt;hex&gt;/file1.txt</code> can be read. Neither test checks what comes back.</td><td><a href="{{ src(pmac, 99, 122) }}">L99</a></td></tr>
+      <tr><td><code>…_invalid_commit_id</code></td><td>A top-level name the mapper doesn't know (<code>invalid_commit_hex</code>) gives <code>NotFound</code>. Despite its name, this test never looks inside <code>commits/</code>.</td><td><a href="{{ src(pmac, 123, 134) }}">L123</a></td></tr>
+      <tr><td><code>…_workspaces_root</code>, <code>…_workspace_file</code></td><td><code>workspaces</code> lists one entry, <code>default</code>, and <code>workspaces/default/file1.txt</code> can be read (the helper made the test commit the working-copy commit).</td><td><a href="{{ src(pmac, 136, 157) }}">L136</a></td></tr>
+      <tr><td><code>…_non_existent_workspace</code></td><td><code>workspaces/nonexistent</code> and a file below it both give <code>NotFound</code>.</td><td><a href="{{ src(pmac, 158, 178) }}">L158</a></td></tr>
+      <tr><td><code>test_repo_commits</code></td><td><code>commits/</code> lists three entries (the root, the initial working-copy commit and the test commit), all of them directories.</td><td><a href="{{ src(commits, 74, 88) }}">L74</a></td></tr>
+      <tr><td><code>test_repo_workspaces</code></td><td><code>workspaces/</code> lists exactly <code>default</code>, as a directory.</td><td><a href="{{ src(wss, 63, 74) }}">L63</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="unit-commit-tree">Commit trees</h3>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Test</th><th>Pins down</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>test_list_directory_root</code></td><td>The commit root lists <code>dir</code>, <code>file1.txt</code> and <code>symlink</code>, in that order, typed as a directory, a file and a symlink.</td><td><a href="{{ src(ctf, 187, 204) }}">L187</a></td></tr>
+      <tr><td><code>test_list_directory_sub</code></td><td><code>dir</code> lists one entry, <code>file2.txt</code>, typed as a file.</td><td><a href="{{ src(ctf, 206, 219) }}">L206</a></td></tr>
+      <tr><td><code>test_file_size</code>, <code>test_read_file</code></td><td><code>file1.txt</code> has size 15 bytes, and reading it to the end returns "hello content 1".</td><td><a href="{{ src(ctf, 221, 243) }}">L221</a></td></tr>
+      <tr><td><code>test_invalid_path</code></td><td><code>some/../path</code> gives <code>InvalidPath</code> for both list and read.</td><td><a href="{{ src(ctf, 245, 272) }}">L245</a></td></tr>
+      <tr><td><code>test_not_found</code></td><td>A missing path gives <code>NotFound</code> for both list and read.</td><td><a href="{{ src(ctf, 274, 303) }}">L274</a></td></tr>
+      <tr><td><code>test_is_directory</code>, <code>test_list_file_not_a_directory</code></td><td>Reading a directory gives <code>NotAFile</code>. Listing a file gives <code>NotADirectory</code>.</td><td><a href="{{ src(ctf, 305, 331) }}">L305</a></td></tr>
+      <tr><td><code>test_file_type</code>, <code>test_read_symlink_file</code></td><td>Each entry reports the right file type, and the symlink's target reads back as <code>file1.txt</code>.</td><td><a href="{{ src(ctf, 333, 368) }}">L333</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="integration">Integration tests</h2>
+<p>
+  <a href="{{ src(integ) }}"><code>tests/vfs_integration.rs</code></a> uses the crate as an outside user
+  would. Both tests build the repository with <code>setup_test_repo</code> and wrap it in
+  <code>AllCommitsPathMapper</code> and <code>PathMappedVfs</code>, the same stack <code>main</code>
+  builds.
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Test</th><th>Goes through</th><th>Asserts</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>test_vfs_read_real_repo_files</code></td>
+        <td>The <code>VirtualFilesystem</code> trait, called directly. No kernel is involved.</td>
+        <td><code>commits/&lt;hex&gt;</code> is a directory. <code>file1.txt</code> is a 15-byte file whose read returns its content. <code>dir</code> is a directory and <code>dir/file2.txt</code> is a 15-byte file. <code>symlink</code> is a symlink of size 9 whose target is <code>file1.txt</code>.</td>
+        <td><a href="{{ src(integ, 17, 90) }}">L17</a></td>
+      </tr>
+      <tr>
+        <td><code>test_vfs_mount</code></td>
+        <td>A real mount. <code>fuser::spawn_mount</code> runs <code>JjFuse</code> on a temporary directory with <code>RO</code> and <code>FSName("jjfs_test")</code>, using the multi-threaded test runtime's handle.</td>
+        <td>It polls up to 20 × 50&nbsp;ms for <code>commits/&lt;hex&gt;</code> to appear. Then it checks that <code>std::fs</code> reads <code>file1.txt</code> in full, that a 5-byte <code>read_exact</code> returns "hello", that <code>dir/file2.txt</code> reads correctly, and that <code>symlink</code> is a symlink pointing to <code>file1.txt</code>. Dropping the session at the end unmounts.</td>
+        <td><a href="{{ src(integ, 92, 167) }}">L92</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  The mounted test is the only place where <code>JjFuse</code>, <code>InodeMap</code> and fuser's mount
+  path run together. A comment says the partial read guards against returning more data than was
+  requested, which FUSE rejects. The test needs <code>/dev/fuse</code> and permission to mount. Without
+  them, <code>spawn_mount</code> fails and the test panics, because the test is not skipped when FUSE is
+  missing.
+</p>
+
+<h2 id="ci">CI workflow</h2>
+<p>
+  <a href="{{ src(ci) }}"><code>.github/workflows/ci.yml</code></a> runs on <code>pull_request</code> and
+  <code>merge_group</code> only, so a direct push to the default branch is not checked. Runs for the same
+  PR or merge group cancel each other, and the workflow token gets <code>permissions: {}</code>. Every
+  action is pinned by commit SHA, and checkout uses <code>persist-credentials: false</code>.
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Job</th><th>Runner</th><th>Command</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>check-rustfmt</code></td><td>ubuntu-24.04, nightly toolchain</td><td><code>cargo +nightly fmt --all -- --check</code></td><td><a href="{{ src(ci, 18, 29) }}">L18</a></td></tr>
+      <tr><td><code>check-clippy</code></td><td>ubuntu-24.04, stable, <code>checks: write</code></td><td><code>cargo +stable clippy --all-features --workspace --all-targets -- -D warnings</code></td><td><a href="{{ src(ci, 31, 44) }}">L31</a></td></tr>
+      <tr><td><code>check</code></td><td>ubuntu-latest, 20-minute limit</td><td><code>cargo check --all-targets --all-features</code></td><td><a href="{{ src(ci, 46, 60) }}">L46</a></td></tr>
+      <tr><td><code>test</code></td><td>ubuntu-latest, 20-minute limit</td><td><code>cargo test --all-targets --all-features</code></td><td><a href="{{ src(ci, 62, 76) }}">L62</a></td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  No step installs FUSE packages or loads the kernel module, so <code>test_vfs_mount</code> relies on
+  whatever the hosted runner image already provides. This reference has not confirmed whether it
+  passes there.
+</p>
+
+<h2 id="rustfmt">rustfmt settings</h2>
+<p>
+  <a href="{{ src('rustfmt.toml') }}"><code>rustfmt.toml</code></a> sets <code>edition = "2024"</code> and
+  <code>max_width = 100</code>. It also sets <code>wrap_comments</code>, <code>format_strings</code>,
+  <code>error_on_line_overflow</code>, <code>group_imports = "StdExternalCrate"</code> and
+  <code>imports_granularity = "Item"</code>. Those five are unstable rustfmt options, which is why the
+  format job uses nightly. <code>imports_granularity = "Item"</code> gives every imported item its own
+  <code>use</code> line, as at the top of <a href="{{ src(helpers, 1, 22) }}"><code>test_helpers.rs</code></a>.
+</p>
+
+<h2 id="limitations">Limitations</h2>
+<ul>
+  <li><code>src/fuse.rs</code> has no unit tests. Its handlers (attribute building, inode allocation,
+    read offsets, error-to-errno mapping) are exercised only through the one mounted test, and only
+    on its success path.</li>
+  <li><code>src/main.rs</code>, <code>static_directory.rs</code>, <code>jj_error.rs</code> and
+    <code>virtual_file.rs</code> have no tests of their own.</li>
+  <li>The fixture has no conflicts, executable files, submodules or extra workspaces, so the paths
+    for those cases (see <a href="{{ url_for('jj_vfs', slug='commit-trees') }}">commit trees</a>) are
+    untested.</li>
+  <li><code>test_all_commit_trees_mapper_invalid_commit_id</code> tests an unknown top-level name, not
+    an invalid id under <code>commits/</code>.</li>
+  <li>CI does not run on pushes, and whether the mounted test can mount on GitHub's runners is
+    unverified.</li>
+</ul>
