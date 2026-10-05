@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-05 (forty-fifth run): no upstream change since `4df5265`; built
-`status` and `evolog`. `root` is next.
+**Last updated:** 2026-10-05 (forty-sixth run): no upstream change since `4df5265`; built
+`root` and `operation diff`. `operation log` is next.
 
 ## Upstream pin
 
@@ -26,8 +26,8 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 76 of 105: Tier A 65 of 65 (complete),
-      Tier B 11 of 27 (`file annotate`/`list`/`search`/`show`, `sparse list`, `log`, `show`, `diff`, `interdiff`, `status`, `evolog`), Tier C 0 of 13. Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 78 of 105: Tier A 65 of 65 (complete),
+      Tier B 13 of 27 (`file annotate`/`list`/`search`/`show`, `sparse list`, `log`, `show`, `diff`, `interdiff`, `status`, `evolog`, `root`, `operation diff`), Tier C 0 of 13. Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
       `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`, `absorb`, `duplicate`,
       `bookmark create`/`set`/`move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`,
       `parallelize`, `simplify-parents`, `arrange`, `converge`, `revert`, `diffedit`, `run`,
@@ -38,22 +38,17 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
 
-## Thirty-ninth to forty-fourth runs (2026-10-05)
+## Thirty-ninth to forty-sixth runs (2026-10-05)
 
-Pin unchanged (`4df5265`). Forty-fourth run: `2c09138`, `diff` (`--from`/`--to` vs. `-r`, the
-`roots..heads` gap check, merged parents vs. merged heads, `-T`; flow and `B::E` range SVGs);
-`b4b1576`, `interdiff` (`rebase_to_dest_parent` onto `--to`'s parents, `JJ-COMMIT-DESCRIPTION`
-pseudo-file, no copy records). Forty-third run: `44f5c36`, `show` (format flags, `parent_tree` shortcut and merge,
-copy records; a call-flow SVG and a merge-parent-tree SVG). Forty-second run: `8401046`, `log`
-(flags and config, the `TopoGroupedGraphIterator` ordering, direct/indirect/missing edges,
-transitive-edge removal, elided nodes, `-n`/`--reversed`; a call-flow SVG and an elided-graph SVG).
-Forty-first run: `98f13eb`, `file search` (the eight string-pattern kinds, `write_matches`,
-add-side-only conflict search); `1b18f74`, `file show` (single-path fast path vs. the slow walk,
-`templates.file_show`, conflict markers); `c338d03`, `sparse list` (lazy `tree_state` load, root
-shown as `.`, one call-flow SVG). Fortieth run: `e3d0baa`, `file list` (the `TreeEntry` keywords,
-the `TreeEntriesIterator` walk with matcher pruning). Thirty-ninth run: `72c938f`, `file annotate`
-(the `FileAnnotator` line-map walk, conflict materialization, root-commit fallback). Added a test
-that every ready Tier B page has all eight sections (§8A.3 item 5 is `reads`; see deviations).
+Pin unchanged (`4df5265`). Forty-sixth run: `c38a690`, `root`; `05206c7`, `operation diff`
+(merged from-ops, commit classification by predecessors and change ids, elision). Forty-fifth:
+`048ddfc`, `status`; `64544ef`, `evolog`. Forty-fourth: `2c09138`, `diff` (`--from`/`--to` vs.
+`-r`, merged parents, flow and range SVGs); `b4b1576`, `interdiff`. Forty-third: `44f5c36`,
+`show` (format flags, merge-parent tree SVG). Forty-second: `8401046`, `log` (topo-grouped
+ordering, edge kinds, elided nodes; two SVGs). Forty-first: `98f13eb`, `file search`;
+`1b18f74`, `file show`; `c338d03`, `sparse list`. Fortieth: `e3d0baa`, `file list`.
+Thirty-ninth: `72c938f`, `file annotate`, plus a test that every ready Tier B page has all eight
+sections (§8A.3 item 5 is `reads`; see deviations).
 
 ## Thirty-fourth to thirty-eighth runs (2026-10-04)
 
@@ -110,7 +105,7 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
 2. Remaining topic pages: ~~`conflicts`~~, ~~`storage`~~, ~~`index`~~, ~~`revsets`~~, ~~`backends`~~.
    All topics done.
 3. **Next.** Tier B commands, in registry order: ~~`file annotate`~~, ~~`file list`~~, ~~`file search`~~, ~~`file show`~~,
-   ~~`sparse list`~~, ~~`log`~~, ~~`show`~~, ~~`diff`~~, ~~`interdiff`~~, ~~`status`~~, ~~`evolog`~~, `root`, `operation diff`,
+   ~~`sparse list`~~, ~~`log`~~, ~~`show`~~, ~~`diff`~~, ~~`interdiff`~~, ~~`status`~~, ~~`evolog`~~, ~~`root`~~, ~~`operation diff`~~,
    `operation log`, `operation show`, `bookmark list`, `tag list`, `git root`, `workspace list`,
    `workspace root`, `config edit`/`gc`/`get`/`list`/`path`/`set`/`unset`.
 4. Tier C commands (`debug` and `bench` each as one shared page).
