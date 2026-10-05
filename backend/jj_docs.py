@@ -1334,6 +1334,17 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "file-list": {
+        "title": "How jj file list works",
+        "sources": [
+            "cli/src/commands/file/list.rs",
+            "lib/src/merged_tree.rs",
+            "cli/src/commit_templater.rs",
+            "cli/src/config/templates.toml",
+            "lib/src/fileset.rs",
+        ],
+        "ready": True,
+    },
     "file-chmod": {
         "title": "How jj file chmod works",
         "sources": [
