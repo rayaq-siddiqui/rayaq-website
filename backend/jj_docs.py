@@ -1345,6 +1345,17 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "file-search": {
+        "title": "How jj file search works",
+        "sources": [
+            "cli/src/commands/file/search.rs",
+            "core/src/str_util.rs",
+            "lib/src/conflicts.rs",
+            "lib/src/merged_tree.rs",
+            "lib/src/fileset.rs",
+        ],
+        "ready": True,
+    },
     "file-chmod": {
         "title": "How jj file chmod works",
         "sources": [

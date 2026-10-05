@@ -1,0 +1,353 @@
+{% set cmd = "cli/src/commands/file/search.rs" %}
+{% set su = "core/src/str_util.rs" %}
+{% set cf = "lib/src/conflicts.rs" %}
+{% set mt = "lib/src/merged_tree.rs" %}
+{% set t = "cli/tests/test_file_search_command.rs" %}
+{% set cli = "cli/src/cli_util.rs" %}
+{% set fs = "lib/src/fileset.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj file search</code> works</h1>
+  <p class="tagline">
+    <code>jj file search</code> is a grep over one commit's tree. It walks the same filtered tree as
+    <code>jj file list</code>, reads each file's contents from the store, and tests every line against
+    a string pattern. Conflicted files are searched on each of their sides.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj resolves <code>-r</code> (default <code>@</code>), turns the positional filesets into
+  a matcher, and parses <code>--pattern</code> as <code>kind:pattern</code>, with the kind defaulting
+  to <code>regex</code>. For each matching entry it materializes the value. A file's bytes are split
+  on <code>\n</code>, and each matching line is printed as <code>path:line</code> (or
+  <code>path:N:line</code> with <code>-n</code>, or just the path with <code>--name-only</code>).
+  Symlinks, submodules and non-file conflicts are skipped. Nothing is written.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 77, 166) }}"><code>cmd_file_search</code></a>, and the line
+  printer is <a href="{{ src(cmd, 168, 194) }}"><code>write_matches</code></a>. The help text:
+  "Search for content in files". It also warns: "This is an early version of the command. It does not
+  search files concurrently" (<a href="{{ src(cmd, 35, 41) }}">source</a>).
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Argument</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>-p</code>, <code>--pattern PATTERN</code> (required)</td><td>string pattern</td><td>kind <code>regex</code></td><td>The pattern each line is tested against. A glob has to match the whole line, so use <code>'glob:*foo*'</code> to find <code>foo</code> anywhere (<a href="{{ src(cmd, 49, 60) }}">source</a>).</td></tr>
+      <tr><td><code>FILESETS</code> (positional, repeatable)</td><td>fileset</td><td>all files</td><td>Only search files these match. Several are unioned (<a href="{{ src(cmd, 71, 74) }}">source</a>).</td></tr>
+      <tr><td><code>-r</code>, <code>--revision REVSET</code></td><td>revset</td><td><code>@</code></td><td>The commit whose tree is searched. It must resolve to exactly one commit (<a href="{{ src(cmd, 44, 47) }}">source</a>).</td></tr>
+      <tr><td><code>--name-only</code></td><td>flag</td><td>off</td><td>Print each matching file's path once instead of its lines. Can't be combined with <code>-n</code> (<a href="{{ src(cmd, 62, 65) }}">source</a>).</td></tr>
+      <tr><td><code>-n</code>, <code>--line-number</code></td><td>flag</td><td>off</td><td>Prefix each match with its 1-based line number (<a href="{{ src(cmd, 67, 69) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 42, 75) }}"><code>FileSearchArgs</code></a></p>
+
+<p>
+  As with <code>jj file list</code>, the help calls the positional arguments "prefixes", but each is
+  a full fileset expression, parsed by <code>parse_file_patterns</code>
+  (<a href="{{ src(cli, 1604, 1633) }}">cli_util.rs</a>, <a href="{{ src(fs, 625, 634) }}">fileset.rs</a>).
+  Upstream's <a href="{{ src('docs/filesets.md') }}">fileset docs</a> cover the language.
+</p>
+
+<p>
+  <code>--pattern</code> is split at its <em>first</em> colon (<a href="{{ src(cmd, 95, 100) }}">source</a>).
+  The part before the colon has to be one of the eight kinds <code>from_str_kind</code> knows
+  (<a href="{{ src(su, 171, 184) }}">str_util.rs</a>), so <code>foo:bar</code> is an error rather than
+  a regex. Colons after the first are part of the pattern, so <code>regex-i:foo:bar</code> searches for
+  <code>foo:bar</code>. To search for a literal colon in a regex, spell the kind out.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Kind</th><th>A line matches when</th></tr></thead>
+    <tbody>
+      <tr><td><code>regex</code> (default), <code>regex-i</code></td><td>The regular expression matches somewhere in the line. It runs on bytes, so non-UTF-8 files are searched too.</td></tr>
+      <tr><td><code>substring</code>, <code>substring-i</code></td><td>The line contains the text.</td></tr>
+      <tr><td><code>glob</code>, <code>glob-i</code></td><td>The whole line matches the glob. A glob with no wildcard characters becomes <code>exact</code>.</td></tr>
+      <tr><td><code>exact</code>, <code>exact-i</code></td><td>The whole line equals the text, so <code>exact:</code> finds blank lines.</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source">
+  <a href="{{ src(su, 95, 112) }}"><code>StringPattern</code></a>,
+  <a href="{{ src(su, 141, 146) }}"><code>glob</code></a>,
+  <a href="{{ src(su, 512, 520) }}"><code>match_lines</code></a>.
+  <code>exact-i</code> and <code>substring-i</code> fold ASCII case only; regexes are Unicode-aware
+  (<a href="{{ src(su, 252, 285) }}">source</a>).
+</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<p>
+  There is no template and no config key of its own: the output format is hard-coded, and a TODO says
+  so (<a href="{{ src(cmd, 118, 118) }}">source</a>). Paths are printed relative to the current
+  directory with <code>format_file_path</code>, so running in <code>dir/</code> prints
+  <code>file3:…</code> rather than <code>dir/file3:…</code>. <code>revset-aliases</code> apply when
+  resolving <code>-r</code>, <code>fileset-aliases</code> when parsing the filesets, and
+  <code>ui.pager</code> controls paging. The matched line is written as raw bytes, without colour.
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 360" role="img" aria-labelledby="fs-flow-title fs-flow-desc">
+    <title id="fs-flow-title">jj file search: call flow</title>
+    <desc id="fs-flow-desc">
+      cmd_file_search loads the workspace through the shared lifecycle, resolves -r (default @) to one
+      commit, takes its tree and builds a matcher from the filesets. It parses --pattern by splitting at
+      the first colon into kind and pattern, defaulting to regex, and builds a StringMatcher. It
+      requests the pager and iterates tree.entries_matching(matcher). Each entry is materialized from
+      the store, then dispatched by kind: files and file conflicts are searched line by line and
+      printed. Finally print_unmatched_explicit_paths warns about literal paths absent from the tree.
+    </desc>
+    <defs>
+      <marker id="fs-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 83, 89) }}"><rect class="d-box" x="20" y="84" width="350" height="62" rx="6"></rect>
+      <text x="32" y="105">resolve_single_rev(-r or @) → commit.tree()</text>
+      <text x="32" y="123" class="d-muted" font-size="11">parse_file_patterns(FILESETS) → all() if empty</text>
+      <text x="32" y="138" class="d-muted" font-size="11">fileset_expression.to_matcher()</text></a>
+      <a href="{{ src(cmd, 95, 101) }}"><rect class="d-box" x="410" y="84" width="330" height="62" rx="6"></rect>
+      <text x="422" y="105">--pattern → split_once(':')</text>
+      <text x="422" y="123" class="d-muted" font-size="11">from_str_kind(pattern, kind or "regex")</text>
+      <text x="422" y="138" class="d-muted" font-size="11">pattern.to_matcher() → StringMatcher</text></a>
+
+      <a href="{{ src(mt, 448, 514) }}"><rect class="d-box" x="20" y="170" width="720" height="62" rx="6"></rect>
+      <text x="32" y="191">request_pager; for (path, value) in tree.entries_matching(matcher)</text>
+      <text x="32" y="209" class="d-muted" font-size="11">the same walk as jj file list: depth-first, name order, directories pruned by the matcher</text>
+      <text x="32" y="224" class="d-muted" font-size="11">one entry at a time; no concurrency</text></a>
+
+      <a href="{{ src(cmd, 103, 163) }}"><rect class="d-box" x="20" y="256" width="350" height="80" rx="6"></rect>
+      <text x="32" y="277">materialize_tree_value → dispatch</text>
+      <text x="32" y="295" class="d-muted" font-size="11">file: read_all, then match lines</text>
+      <text x="32" y="310" class="d-muted" font-size="11">file conflict: match each add side</text>
+      <text x="32" y="325" class="d-muted" font-size="11">see the algorithm below</text></a>
+      <a href="{{ src(cli, 3382, 3413) }}"><rect class="d-box" x="410" y="256" width="330" height="80" rx="6"></rect>
+      <text x="422" y="277">print_unmatched_explicit_paths</text>
+      <text x="422" y="295" class="d-muted" font-size="11">tree.path_value(p) for each literal path</text>
+      <text x="422" y="310" class="d-muted" font-size="11">absent → Warning: No matching entries</text>
+      <text x="422" y="325" class="d-muted" font-size="11">for paths: … (stderr, exit 0)</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#fs-arrow)">
+      <line x1="195" y1="60" x2="195" y2="80"></line>
+      <line x1="370" y1="115" x2="406" y2="115"></line>
+      <line x1="575" y1="146" x2="575" y2="166"></line>
+      <line x1="195" y1="232" x2="195" y2="252"></line>
+      <line x1="370" y1="296" x2="406" y2="296"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Commit</td><td>read</td><td>Resolved from <code>-r</code>; only its tree is used.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Trees</td><td>read</td><td>Walked with <code>entries_matching</code>, exactly as <code>jj file list</code> does (<a href="{{ src(mt, 448, 514) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='file-list') }}">file list</a>, <a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>File contents</td><td>read</td><td>Every matched file's blob is read in full through the store (<a href="{{ src(cf, 222, 261) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='backends') }}">backends</a></td></tr>
+      <tr><td>Conflicts</td><td>read</td><td>A conflict of files is simplified and each term's contents read; only the add sides are searched (<a href="{{ src(cf, 263, 287) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='conflicts') }}">conflicts</a></td></tr>
+      <tr><td>Filesets and matchers</td><td>read</td><td>The positional arguments become a <code>Matcher</code> (<a href="{{ src(fs, 428, 431) }}">source</a>).</td><td><a href="{{ src('docs/filesets.md') }}">upstream docs</a></td></tr>
+      <tr><td>Revset engine</td><td>read</td><td>Resolves <code>-r</code> to one commit (<a href="{{ src(cli, 1830, 1841) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='revsets') }}">revsets</a></td></tr>
+      <tr><td>Working copy</td><td>read, may snapshot</td><td>Snapshotted by the shared lifecycle, so unsaved edits on disk are searched in <code>@</code>.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="reads">5. What it reads, and snapshotting</h2>
+
+<ul>
+  <li><strong>No transaction, no operation of its own.</strong> The command only reads the repo it
+    loaded (<a href="{{ src(cmd, 83, 165) }}">source</a>).</li>
+  <li><strong>Snapshot:</strong> <code>workspace_helper</code> snapshots the working copy first
+    (<a href="{{ src(cli, 460, 464) }}">source</a>). If files changed on disk, that snapshot records
+    its own operation, so <code>jj file search</code> sees what is on disk now, not the last
+    snapshot.</li>
+  <li><strong>Whole blobs, from the store.</strong> Even for <code>@</code>, contents come from the
+    commit's tree objects, not the files on disk. Each file is read to the end into memory
+    (<a href="{{ src(cf, 169, 184) }}">read_all</a>), and binary files are searched like any other.
+    Symlink targets are read too, by the materializer, but never searched.</li>
+  <li><strong>Sequential.</strong> One file at a time, in tree order; reading concurrently is a TODO
+    (<a href="{{ src(cmd, 102, 102) }}">source</a>).</li>
+  <li><strong><code>jj undo</code></strong> has nothing to revert, except the snapshot if one was taken.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<p>
+  Each entry the walk yields is passed to <code>materialize_tree_value</code>
+  (<a href="{{ src(cf, 206, 220) }}">source</a>), and the command branches on the result:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 300" role="img" aria-labelledby="fs-alg-title fs-alg-desc">
+    <title id="fs-alg-title">jj file search: what happens to each kind of entry</title>
+    <desc id="fs-alg-desc">
+      materialize_tree_value turns a tree entry into one of several kinds. A resolved file is read in
+      full and passed to write_matches, or with --name-only its path is printed if any line matches.
+      A conflict whose terms are all files or absent becomes a file conflict; only its add sides are
+      searched, each one separately, and base sides and conflict markers never are. A read refused by
+      the backend becomes AccessDenied and prints a warning. Symlinks, Git submodules and other
+      conflicts are skipped silently. Absent and tree values are not expected from the walk, which
+      descends into trees, and the command panics on them.
+    </desc>
+    <defs>
+      <marker id="fs-alg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(cf, 206, 261) }}"><rect class="d-box" x="250" y="16" width="260" height="44" rx="6"></rect>
+      <text x="380" y="36" text-anchor="middle">materialize_tree_value(path, value)</text>
+      <text x="380" y="52" text-anchor="middle" class="d-muted" font-size="11">reads the blob(s) from the store</text></a>
+
+      <a href="{{ src(cmd, 116, 133) }}"><rect class="d-box" x="20" y="96" width="220" height="84" rx="6"></rect>
+      <rect class="d-accent" fill="none" x="26" y="102" width="70" height="22" rx="4"></rect>
+      <text x="32" y="118">File</text>
+      <text x="32" y="140" class="d-muted" font-size="11">read_all → write_matches</text>
+      <text x="32" y="156" class="d-muted" font-size="11">--name-only: path if any</text>
+      <text x="32" y="171" class="d-muted" font-size="11">line matches</text></a>
+
+      <a href="{{ src(cmd, 135, 158) }}"><rect class="d-box" x="270" y="96" width="220" height="84" rx="6"></rect>
+      <rect class="d-accent" fill="none" x="276" y="102" width="100" height="22" rx="4"></rect>
+      <text x="282" y="118">FileConflict</text>
+      <text x="282" y="140" class="d-muted" font-size="11">contents.adds(): each side</text>
+      <text x="282" y="156" class="d-muted" font-size="11">searched separately; bases</text>
+      <text x="282" y="171" class="d-muted" font-size="11">and markers never are</text></a>
+
+      <a href="{{ src(cmd, 109, 115) }}"><rect class="d-box" x="520" y="96" width="220" height="84" rx="6"></rect>
+      <text x="532" y="118">AccessDenied</text>
+      <text x="532" y="140" class="d-muted" font-size="11">Warning: Skipping '…' due to</text>
+      <text x="532" y="156" class="d-muted" font-size="11">permission error: …</text>
+      <text x="532" y="171" class="d-muted" font-size="11">then carries on</text></a>
+
+      <a href="{{ src(cmd, 134, 160) }}"><rect class="d-box" x="20" y="216" width="350" height="62" rx="6"></rect>
+      <text x="32" y="237">Symlink, GitSubmodule, OtherConflict</text>
+      <text x="32" y="255" class="d-muted" font-size="11">skipped silently; OtherConflict is any conflict</text>
+      <text x="32" y="270" class="d-muted" font-size="11">with a non-file term, e.g. file vs. symlink</text></a>
+
+      <a href="{{ src(cmd, 108, 161) }}"><rect class="d-box" x="410" y="216" width="330" height="62" rx="6"></rect>
+      <text x="422" y="237">Absent, Tree</text>
+      <text x="422" y="255" class="d-muted" font-size="11">panic: "Entry for … in file listing"; the walk</text>
+      <text x="422" y="270" class="d-muted" font-size="11">descends into trees instead of yielding them</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#fs-alg-arrow)">
+      <line x1="300" y1="60" x2="130" y2="92"></line>
+      <line x1="380" y1="60" x2="380" y2="92"></line>
+      <line x1="460" y1="60" x2="630" y2="92"></line>
+      <line x1="255" y1="60" x2="255" y2="212"></line>
+      <line x1="505" y1="60" x2="505" y2="212"></line>
+    </g>
+  </svg>
+</div>
+
+<p>
+  <strong>Line matching.</strong> <code>write_matches</code> splits the contents with
+  <code>split_inclusive('\n')</code>, numbering pieces from 1. It strips the trailing <code>\n</code>
+  before testing, so patterns can anchor to the line's end, then prints the prefix and the original
+  line, adding a newline when the last line has none (<a href="{{ src(cmd, 168, 194) }}">source</a>).
+  <code>--name-only</code> uses <code>match_lines</code>, which splits the same way, and stops at the
+  first match (<a href="{{ src(su, 512, 520) }}">source</a>). Only <code>\n</code> separates lines, so
+  a CRLF line is tested with its <code>\r</code> still attached.
+</p>
+
+<p>
+  <strong>Conflicts.</strong> <code>try_materialize_file_conflict_value</code> applies only when every
+  term is a file or absent. It simplifies the merge, dropping pairs that cancel out, and reads each
+  remaining term; an absent side reads as empty (<a href="{{ src(cf, 263, 287) }}">source</a>,
+  <a href="{{ src(cf, 97, 130) }}">get_file_contents</a>). The command then searches only the
+  <code>adds()</code>: the contents each side wants, never the base it diverged from, and never the
+  marker text written to the working copy. With <code>-n</code>, numbering restarts on each side,
+  because there is no line numbering shared across sides (<a href="{{ src(cmd, 146, 147) }}">source</a>).
+</p>
+
+<p>
+  <strong>Invariants:</strong> output follows tree order: depth-first, name order, and within a file,
+  line order (sides in merge order for a conflict). Each matching line is printed once per side it
+  appears on; with <code>--name-only</code> each path at most once. Literal paths that name nothing
+  get one warning afterwards (<a href="{{ src(fs, 419, 426) }}">explicit_paths</a>). An entry that
+  matches the filesets but no lines produces no output.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Error: Invalid string pattern kind `foo:`</code> (exit 2)</td><td>The text before the first colon isn't a known kind. It is a CLI error, like a bad flag.</td><td><a href="{{ src(su, 33, 36) }}">str_util.rs</a>, <a href="{{ src(cmd, 95, 100) }}">search.rs</a></td></tr>
+      <tr><td>Glob or regex syntax error (exit 2)</td><td>The pattern doesn't compile; the <code>globset</code> or <code>regex</code> error is shown as-is.</td><td><a href="{{ src(su, 37, 42) }}">str_util.rs</a></td></tr>
+      <tr><td><code>Warning: Skipping '&lt;path&gt;' due to permission error: …</code></td><td>The backend refused to read a file. The search continues.</td><td><a href="{{ src(cmd, 109, 115) }}">search.rs</a>, <a href="{{ src(cf, 214, 217) }}">conflicts.rs</a></td></tr>
+      <tr><td><code>Warning: No matching entries for paths: &lt;paths&gt;</code></td><td>A literal path in the filesets is absent from the tree. The command still succeeds.</td><td><a href="{{ src(cli, 3401, 3410) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Revset `…` resolved to more than one revision</code> (or to none)</td><td><code>-r</code> isn't exactly one commit.</td><td><a href="{{ src('cli/src/revset_util.rs', 302, 331) }}">revset_util.rs</a></td></tr>
+      <tr><td>Fileset parse error</td><td>An argument isn't a valid fileset, or names a path outside the workspace.</td><td><a href="{{ src(cli, 1620, 1633) }}">cli_util.rs</a></td></tr>
+      <tr><td>Usage error</td><td><code>--name-only</code> together with <code>-n</code>, or no <code>--pattern</code>; clap rejects it before the command runs.</td><td><a href="{{ src(cmd, 59, 65) }}">search.rs</a></td></tr>
+      <tr><td>Backend error</td><td>A blob or subtree can't be read for another reason; the command stops after the lines already printed.</td><td><a href="{{ src(cmd, 103, 106) }}">search.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  A pattern that matches nothing prints nothing and exits 0; there is no "no matches" exit status as in
+  <code>grep</code>.
+</p>
+
+<h2 id="example">8. Example output</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 17, 125) }}">test_file_search</a>. <code>@-</code> adds
+  <code>file1</code> (<code>-foo-</code>) and <code>file2</code> (<code>-bar-</code>); <code>@</code>
+  adds <code>dir/file3</code> (<code>-foobar-</code>):
+</p>
+
+<pre><code>$ jj file search --pattern 'glob:*foo*'
+dir/file3:-foobar-
+file1:-foo-
+
+$ jj file search --pattern 'glob:foo'      # a glob must match the whole line
+
+$ jj file search --pattern 'glob:*foo*' -r @-
+file1:-foo-
+
+$ jj file search --pattern 'glob:*foo*' file9
+Warning: No matching entries for paths: file9
+
+$ jj file search --pattern foo:bar
+Error: Invalid string pattern kind `foo:`</code></pre>
+
+<p>Every matching line, with line numbers, or only the path:</p>
+
+<pre><code>$ printf 'hit-one\nmiss\nhit-two\nhit-three\n' &gt; multi
+$ jj file search -n --pattern hit multi
+multi:1:hit-one
+multi:3:hit-two
+multi:4:hit-three
+
+$ jj file search --name-only --pattern hit multi
+multi</code></pre>
+
+<p>
+  From <a href="{{ src(t, 127, 207) }}">test_file_search_conflicts</a>: <code>file1</code> conflicts
+  with add sides <code>-foo-</code> and <code>-baz-</code> and base <code>-bar-</code>. Each side is
+  searched on its own, so both report line 1. The base and the conflict markers are never matched:
+</p>
+
+<pre><code>$ jj file search -n --pattern 'regex:-(foo|baz)-'
+file1:1:-foo-
+file1:1:-baz-
+
+$ jj file search --pattern 'glob:*bar*'
+
+$ jj file search --pattern 'glob:*%%%*'
+</code></pre>
