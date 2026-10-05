@@ -1763,6 +1763,16 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "evolog": {
+        "title": "How jj evolog works",
+        "sources": [
+            "cli/src/commands/evolog.rs",
+            "lib/src/evolution.rs",
+            "lib/src/operation.rs",
+            "cli/src/diff_util.rs",
+        ],
+        "ready": True,
+    },
 }
 
 

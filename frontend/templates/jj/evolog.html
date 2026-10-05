@@ -1,0 +1,374 @@
+{% set cmd = "cli/src/commands/evolog.rs" %}
+{% set evo = "lib/src/evolution.rs" %}
+{% set opr = "lib/src/operation.rs" %}
+{% set opw = "lib/src/op_walk.rs" %}
+{% set ops = "core/src/op_store.rs" %}
+{% set du = "cli/src/diff_util.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set rw = "lib/src/rewrite.rs" %}
+{% set tpl = "cli/src/config/templates.toml" %}
+{% set misc = "cli/src/config/misc.toml" %}
+{% set t = "cli/tests/test_evolog_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj evolog</code> works</h1>
+  <p class="tagline">
+    <code>jj evolog</code> shows the earlier commits a change has pointed to: every snapshot, describe,
+    rebase or squash that replaced its commit. It reconstructs that history by walking the operation log,
+    not the commit graph.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj snapshots the working copy, resolves <code>-r</code> (default <code>@</code>) to commit
+  IDs, and walks the operation log backwards from the current operation. Each operation records which
+  commits it created or rewrote and from what. Whenever an operation has a record for a commit the walk is
+  following, that commit is printed with the operation, and the walk follows its predecessors instead. It
+  stops when nothing is left to follow, when the operation log runs out, or at an operation written by
+  jj&nbsp;&lt;&nbsp;0.30, which recorded no predecessors. Entries are drawn as a graph (or a flat list),
+  optionally with a diff against the previous version. No operation is recorded, apart from a snapshot's.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 105, 247) }}"><code>cmd_evolog</code></a>. The help text: "Show how
+  a change has evolved over time … Lists the previous commits which a change has pointed to. The current
+  commit of a change evolves when the change is updated, rebased, etc."
+  (<a href="{{ src(cmd, 44, 47) }}">source</a>). The walk itself lives in jj-lib, in
+  <a href="{{ src(evo, 85, 101) }}"><code>walk_predecessors</code></a>.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>-r</code>, <code>--revisions</code> (alias <code>--revision</code>)</td><td>revsets, repeatable</td><td><code>@</code></td><td>"Follow changes from these revisions". All revsets are unioned and walked together (<a href="{{ src(cmd, 50, 59) }}">source</a>, <a href="{{ src(cmd, 113, 117) }}">source</a>).</td></tr>
+      <tr><td><code>-n</code>, <code>--limit</code></td><td>number</td><td>none</td><td>"Applied after revisions are reordered topologically, but before being reversed" (<a href="{{ src(cmd, 61, 66) }}">source</a>). With <code>--no-graph</code> there is no reordering, so it cuts the walk order.</td></tr>
+      <tr><td><code>--reversed</code></td><td>flag</td><td>off</td><td>Oldest first (<a href="{{ src(cmd, 68, 70) }}">source</a>).</td></tr>
+      <tr><td><code>-G</code>, <code>--no-graph</code></td><td>flag</td><td>off</td><td>A flat list instead of a graph (<a href="{{ src(cmd, 72, 74) }}">source</a>).</td></tr>
+      <tr><td><code>-T</code>, <code>--template</code></td><td>template</td><td><code>templates.evolog</code></td><td>Rendered once per entry. The keywords are the methods of <code>CommitEvolutionEntry</code>, not <code>Commit</code> (<a href="{{ src(cmd, 76, 91) }}">source</a>).</td></tr>
+      <tr><td><code>-p</code>, <code>--patch</code></td><td>flag</td><td>off</td><td>"Show patch compared to the previous version of this change". A previous version with other parents "will be temporarily rebased to the parents of the new version" (<a href="{{ src(cmd, 93, 99) }}">source</a>).</td></tr>
+      <tr><td><code>--summary</code>, <code>--stat</code>, <code>--git</code>, … (<code>DiffFormatArgs</code>)</td><td>flags</td><td>none</td><td>Any diff format also turns the diff on, with or without <code>-p</code> (<a href="{{ src(cmd, 101, 102) }}">source</a>, <a href="{{ src(du, 324, 340) }}">source</a>). The formats are on the <a href="{{ url_for('jj', slug='diff') }}#cli">jj diff page</a>.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p class="jj-source">Global flags such as <code>--at-op</code> and <code>--ignore-working-copy</code> are on the <a href="{{ url_for('jj', slug='cli') }}#global-flags">CLI page</a>. <code>--at-op</code> also moves where the walk starts, since it begins at the loaded operation.</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>templates.evolog</code></td><td><code>builtin_evolog_compact</code></td><td>The entry template when <code>-T</code> is absent (<a href="{{ src(tpl, 25, 25) }}">source</a>, <a href="{{ src(cmd, 127, 133) }}">source</a>). The built-in is <code>builtin_log_compact(commit)</code> plus a "<code>-- operation &lt;id&gt; &lt;description&gt;</code>" line when the entry has an operation (<a href="{{ src(tpl, 117, 129) }}">source</a>).</td></tr>
+      <tr><td><code>templates.log_node</code></td><td>as for <code>jj log</code></td><td>The node symbol; there is no separate evolog setting yet (<a href="{{ src(cmd, 134, 143) }}">source</a>, <a href="{{ src(tpl, 60, 66) }}">source</a>).</td></tr>
+      <tr><td><code>ui.graph.style</code></td><td><code>curved</code></td><td>The graph's line style (<a href="{{ src(misc, 38, 38) }}">source</a>, <a href="{{ src(cmd, 120, 120) }}">source</a>).</td></tr>
+      <tr><td><code>ui.log-word-wrap</code></td><td><code>false</code></td><td>Wrap each entry to the width beside the graph (<a href="{{ src(misc, 43, 43) }}">source</a>, <a href="{{ src(cmd, 121, 121) }}">source</a>).</td></tr>
+      <tr><td><code>ui.diff-formatter</code></td><td><code>:color-words</code></td><td>The format <code>-p</code> uses when no other long format is given (<a href="{{ src(misc, 36, 36) }}">source</a>, <a href="{{ src(du, 330, 338) }}">source</a>).</td></tr>
+      <tr><td><code>ui.pager</code>, <code>ui.paginate</code></td><td><code>less -FRXK</code>, <code>auto</code></td><td>Output goes through the pager (<a href="{{ src(misc, 39, 40) }}">source</a>, <a href="{{ src(cmd, 146, 146) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  These are the same settings <a href="{{ url_for('jj', slug='log') }}#configuration">jj log</a> uses for
+  its graph. <code>experimental.record-predecessors-in-commit</code> does not affect <code>evolog</code>:
+  the walk reads only the operations' records, never the commits' own predecessor field
+  (<a href="{{ src(evo, 53, 60) }}">source</a>; see <a href="{{ url_for('jj', slug='commits') }}#predecessors">commits</a>).
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 460" role="img" aria-labelledby="ev-flow-title ev-flow-desc">
+    <title id="ev-flow-title">jj evolog: call flow</title>
+    <desc id="ev-flow-desc">
+      After the shared lifecycle, cmd_evolog loads the workspace, which snapshots it, and resolves the
+      revsets to start commit IDs. It sets up the diff renderer, graph style, content format and the two
+      templates, and requests the pager. walk_predecessors walks the operation log from the current
+      operation and yields entries of a commit and an optional operation. In graph mode the entries get
+      edges to their predecessors, are grouped topologically, cut to the limit and optionally reversed; with
+      --no-graph they are cut to the limit in walk order and optionally reversed. Each entry is rendered
+      with the template and, if a diff was asked for, a diff against its predecessors.
+    </desc>
+    <defs>
+      <marker id="ev-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: parse args, load config (CLI page)</text></a>
+
+      <a href="{{ src(util, 460, 464) }}"><rect class="d-box" x="20" y="84" width="350" height="50" rx="6"></rect>
+      <text x="32" y="105">workspace_helper</text>
+      <text x="32" y="123" class="d-muted" font-size="11">snapshots the working copy</text></a>
+      <a href="{{ src(cmd, 113, 117) }}"><rect class="d-box" x="400" y="84" width="340" height="50" rx="6"></rect>
+      <text x="412" y="105">parse_union_revsets → start IDs</text>
+      <text x="412" y="123" class="d-muted" font-size="11">-r, default @</text></a>
+
+      <a href="{{ src(cmd, 119, 146) }}"><rect class="d-box" x="20" y="158" width="720" height="50" rx="6"></rect>
+      <text x="32" y="179">diff_renderer_for_log; graph style; content format; templates; pager</text>
+      <text x="32" y="197" class="d-muted" font-size="11">templates.evolog for entries, templates.log_node for nodes</text></a>
+
+      <a href="{{ src(evo, 85, 131) }}"><rect class="d-box" x="20" y="232" width="720" height="50" rx="6"></rect>
+      <text x="32" y="253">walk_predecessors: walk the operation log back from the current operation</text>
+      <text x="32" y="271" class="d-accent" font-size="11">yields CommitEvolutionEntry { commit, operation }</text></a>
+
+      <a href="{{ src(cmd, 152, 181) }}"><rect class="d-box" x="20" y="306" width="350" height="66" rx="6"></rect>
+      <text x="32" y="327">graph (default)</text>
+      <text x="32" y="345" class="d-muted" font-size="11">edges to predecessors → TopoGroupedGraph</text>
+      <text x="32" y="362" class="d-muted" font-size="11">→ limit → reverse_graph if --reversed</text></a>
+      <a href="{{ src(cmd, 214, 221) }}"><rect class="d-box" x="400" y="306" width="340" height="66" rx="6"></rect>
+      <text x="412" y="327">--no-graph</text>
+      <text x="412" y="345" class="d-muted" font-size="11">limit in walk order</text>
+      <text x="412" y="362" class="d-muted" font-size="11">→ reverse the list if --reversed</text></a>
+
+      <a href="{{ src(du, 603, 645) }}"><rect class="d-box" x="20" y="396" width="720" height="50" rx="6"></rect>
+      <text x="32" y="417">per entry: template, then show_inter_diff if a diff was asked for</text>
+      <text x="32" y="435" class="d-muted" font-size="11">predecessors rebased onto the entry's parents, then diffed</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#ev-arrow)">
+      <line x1="195" y1="60" x2="195" y2="80"></line>
+      <line x1="370" y1="109" x2="396" y2="109"></line>
+      <line x1="570" y1="134" x2="570" y2="154"></line>
+      <line x1="380" y1="208" x2="380" y2="228"></line>
+      <line x1="195" y1="282" x2="195" y2="302"></line>
+      <line x1="570" y1="282" x2="570" y2="302"></line>
+      <line x1="195" y1="372" x2="195" y2="392"></line>
+      <line x1="570" y1="372" x2="570" y2="392"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Operation log</td><td>read</td><td>Walked from the current operation in reverse topological order, loading parents lazily by end time (<a href="{{ src(opw, 262, 284) }}">source</a>). Each operation's <code>commit_predecessors</code> map is the only source of history (<a href="{{ src(opr, 128, 139) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='operations') }}#operation">operations</a></td></tr>
+      <tr><td>Op store</td><td>read</td><td>The map is stored per operation: <code>commit_predecessors</code> and the <code>stores_commit_predecessors</code> flag (<a href="{{ src('lib/src/protos/simple_op_store.proto', 130, 132) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='protobufs') }}#op-operation">protobufs</a></td></tr>
+      <tr><td>Commits</td><td>read</td><td>Every entry's commit is loaded by ID; most are hidden, which is why they print as <code>xyz/1</code>, <code>xyz/2</code> and "(hidden)".</td><td><a href="{{ url_for('jj', slug='index') }}#change-ids">commit index</a></td></tr>
+      <tr><td>Revset engine</td><td>read</td><td>Only to resolve <code>-r</code> to start IDs.</td><td><a href="{{ url_for('jj', slug='revsets') }}#pipeline">revsets</a></td></tr>
+      <tr><td>Trees</td><td>read, with a diff</td><td>Predecessor trees are rebased onto the entry's parents and diffed (<a href="{{ src(rw, 497, 537) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='trees') }}#diffs">trees</a></td></tr>
+      <tr><td>Working copy</td><td>read (snapshot)</td><td>The snapshot may record a <code>snapshot working copy</code> operation, which then shows as the newest entry for <code>@</code>.</td><td><a href="{{ url_for('jj', slug='working-copy') }}#snapshot">working copy</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="reads">5. What it reads, and snapshotting</h2>
+
+<ul>
+  <li><strong>Snapshot:</strong> yes, through <code>workspace_helper</code> (<a href="{{ src(cmd, 111, 111) }}">source</a>). With <code>--ignore-working-copy</code>, edits since the last snapshot are not in the history yet.</li>
+  <li><strong>Where the history comes from:</strong> each transaction writes the map of commits it created or rewrote to their predecessors into its operation (<a href="{{ src('lib/src/transaction.rs', 155, 162) }}">source</a>). Rewrites fill it through <code>set_predecessors</code>; a <code>CommitBuilder</code> made for a rewrite starts with the old commit as its predecessor (<a href="{{ src('lib/src/commit_builder.rs', 268, 268) }}">source</a>, <a href="{{ src('lib/src/commit_builder.rs', 428, 429) }}">source</a>, <a href="{{ src('lib/src/repo.rs', 1105, 1107) }}">source</a>). A new commit maps to an empty list.</li>
+  <li><strong>What the map leaves out:</strong> "Existing commits (including some commits imported from Git) aren't tracked even if they became visible at this operation" (<a href="{{ src(ops, 304, 316) }}">source</a>). The map is kept even when a commit is rewritten several times in one transaction, as <code>{Y: [X], Z: [Y]}</code>.</li>
+  <li><strong>Output:</strong> everything goes to stdout through the pager. No transaction is started, so no operation is recorded beyond the snapshot's.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="walk">Walking the operation log</h3>
+
+<p>
+  The walk keeps a list of commit IDs still to visit, starting with the <code>-r</code> commits, and a
+  queue of entries ready to yield (<a href="{{ src(evo, 103, 108) }}">source</a>). While the list is not
+  empty and the queue is, it takes the next operation (<a href="{{ src(evo, 114, 131) }}">source</a>):
+</p>
+
+<ul>
+  <li>For every listed ID that this operation has a record for, <code>visit_op</code> replaces the ID by
+  its predecessors and marks it to be emitted. A newly created commit is replaced by nothing, so its line of
+  history ends there. IDs without a record stay for older operations
+  (<a href="{{ src(evo, 134, 149) }}">source</a>).</li>
+  <li>Each marked commit is queued with this operation. If one operation marked several, they are sorted
+  newest first through the operation's own map, so <code>{Y: [X], Z: [Y]}</code> gives <code>Z</code> then
+  <code>Y</code>; an ID reached twice in one operation is emitted once
+  (<a href="{{ src(evo, 153, 178) }}">source</a>).</li>
+  <li>When the operation log runs out, or reaches an operation that "was written by jj &lt; 0.30" and so
+  has no map, every remaining ID is queued with no operation and the walk ends. Concurrent branches of the
+  operation log beyond that point are not looked at: "Operation history should be mostly linear"
+  (<a href="{{ src(evo, 117, 127) }}">source</a>, <a href="{{ src(evo, 182, 193) }}">source</a>).</li>
+</ul>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 390" role="img" aria-labelledby="ev-walk-title ev-walk-desc">
+    <title id="ev-walk-title">How walk_predecessors follows a squashed change</title>
+    <desc id="ev-walk-desc">
+      Upstream's reverse-with-graph test. A change was described a, b and c, two new commits d and e were
+      made on c, then d and e were squashed into c as c+d+e. Starting from c+d+e and walking operations
+      newest first: the squash records c+d+e from c, d and e, so c+d+e is emitted and c, d and e are
+      followed. The new-commit operations record e and d with no predecessors, so each is emitted and
+      dropped. The describe operations then lead from c to b to a to the original empty commit, which the
+      add-workspace operation created, leaving nothing to follow.
+    </desc>
+    <defs>
+      <marker id="ev-w-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="11">
+      <text x="32" y="24" class="d-muted">operation (newest first)</text>
+      <text x="300" y="24" class="d-muted">its record</text>
+      <text x="480" y="24" class="d-muted">emitted</text>
+      <text x="600" y="24" class="d-muted">still to visit</text>
+
+      <a href="{{ src(evo, 134, 180) }}"><rect class="d-box" x="20" y="34" width="720" height="34" rx="6"></rect>
+      <text x="32" y="55">squash commits into c</text>
+      <text x="300" y="55">c+d+e ← c, d, e</text>
+      <text x="480" y="55" class="d-accent">c+d+e</text>
+      <text x="600" y="55">c, d, e</text></a>
+
+      <a href="{{ src(evo, 134, 180) }}"><rect class="d-box" x="20" y="76" width="720" height="34" rx="6"></rect>
+      <text x="32" y="97">new empty commit (e)</text>
+      <text x="300" y="97">e ← nothing</text>
+      <text x="480" y="97" class="d-accent">e</text>
+      <text x="600" y="97">c, d</text></a>
+
+      <a href="{{ src(evo, 134, 180) }}"><rect class="d-box" x="20" y="118" width="720" height="34" rx="6"></rect>
+      <text x="32" y="139">new empty commit (d)</text>
+      <text x="300" y="139">d ← nothing</text>
+      <text x="480" y="139" class="d-accent">d</text>
+      <text x="600" y="139">c</text></a>
+
+      <a href="{{ src(evo, 134, 180) }}"><rect class="d-box" x="20" y="160" width="720" height="34" rx="6"></rect>
+      <text x="32" y="181">describe commit (b → c)</text>
+      <text x="300" y="181">c ← b</text>
+      <text x="480" y="181" class="d-accent">c</text>
+      <text x="600" y="181">b</text></a>
+
+      <a href="{{ src(evo, 134, 180) }}"><rect class="d-box" x="20" y="202" width="720" height="34" rx="6"></rect>
+      <text x="32" y="223">describe commit (a → b)</text>
+      <text x="300" y="223">b ← a</text>
+      <text x="480" y="223" class="d-accent">b</text>
+      <text x="600" y="223">a</text></a>
+
+      <a href="{{ src(evo, 134, 180) }}"><rect class="d-box" x="20" y="244" width="720" height="34" rx="6"></rect>
+      <text x="32" y="265">describe commit (empty → a)</text>
+      <text x="300" y="265">a ← empty</text>
+      <text x="480" y="265" class="d-accent">a</text>
+      <text x="600" y="265">empty</text></a>
+
+      <a href="{{ src(evo, 134, 180) }}"><rect class="d-box" x="20" y="286" width="720" height="34" rx="6"></rect>
+      <text x="32" y="307">add workspace 'default'</text>
+      <text x="300" y="307">empty ← nothing</text>
+      <text x="480" y="307" class="d-accent">empty</text>
+      <text x="600" y="307">nothing: stop</text></a>
+
+      <a href="{{ src(t, 663, 708) }}"><rect class="d-box" x="20" y="340" width="720" height="34" rx="6"></rect>
+      <text x="32" y="361">graph: c+d+e has edges to c, d, e; d and e are leaves, c continues down to the empty commit</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#ev-w-arrow)">
+      <line x1="380" y1="320" x2="380" y2="336"></line>
+    </g>
+  </svg>
+</div>
+
+<h3 id="ordering">Graph and list ordering</h3>
+
+<p>
+  In graph mode each entry gets a direct edge to each of its predecessor IDs
+  (<a href="{{ src(cmd, 156, 160) }}">source</a>), and the stream goes through <code>TopoGroupedGraph</code>,
+  as in <a href="{{ url_for('jj', slug='log') }}#ordering">jj log</a>. Upstream's comment gives the reason:
+  the first predecessor is usually the previous version of the change and the others were squashed into
+  it, and grouping shows "squashed commits in reverse chronological order" and "before the squash
+  destination" (<a href="{{ src(cmd, 161, 172) }}">source</a>). The limit is taken from the grouped
+  stream; <code>--reversed</code> then collects it and runs <code>reverse_graph</code>
+  (<a href="{{ src(cmd, 174, 181) }}">source</a>). So <code>--limit=3 --reversed</code> shows the three
+  newest entries, oldest first (<a href="{{ src(t, 712, 722) }}">test</a>).
+</p>
+
+<p>
+  With <code>--no-graph</code> the walk order is used as is: limit, then reverse the list
+  (<a href="{{ src(cmd, 215, 221) }}">source</a>, <a href="{{ src(t, 650, 657) }}">test</a>). Entries are
+  printed as the walk yields them, so a long history starts printing before the walk reaches the end.
+</p>
+
+<h3 id="patch">The patch: comparing with the previous version</h3>
+
+<p>
+  <code>diff_renderer_for_log</code> returns a renderer only if <code>-p</code> or a diff format flag was
+  given (<a href="{{ src(util, 1741, 1748) }}">source</a>). For each entry, <code>show_inter_diff</code>
+  compares its predecessors with its commit (<a href="{{ src(cmd, 192, 205) }}">source</a>), the same
+  routine <a href="{{ url_for('jj', slug='interdiff') }}#shared">jj interdiff</a> uses:
+</p>
+
+<ul>
+  <li>The description is diffed as a pseudo-file, <code>JJ-COMMIT-DESCRIPTION</code>. With several
+  predecessors their descriptions are merged into a conflict, which is why a squash shows conflict markers
+  in that file (<a href="{{ src(du, 612, 635) }}">source</a>, <a href="{{ src(t, 418, 431) }}">test</a>).</li>
+  <li>The old tree is <code>rebase_to_dest_parent</code> of the predecessors onto the entry's parents. A
+  single predecessor with the same parents is used as is; otherwise each predecessor's changes are merged
+  onto the new parents' tree (<a href="{{ src(rw, 497, 537) }}">source</a>). A pure rebase therefore shows
+  no diff, even one that produced a conflict; the later version that resolves it shows the resolution
+  (<a href="{{ src(t, 68, 98) }}">test</a>).</li>
+  <li>An entry with no predecessors (a new commit, or one cut off by the walk) is diffed against its own
+  parents and an empty description.</li>
+  <li>Copy records are not tracked in this diff (<a href="{{ src(du, 628, 628) }}">source</a>).</li>
+</ul>
+
+<p>
+  The template language has the same comparison as <code>inter_diff()</code> on a
+  <code>CommitEvolutionEntry</code>, next to <code>commit</code>, <code>operation</code> and
+  <code>predecessors</code> (<a href="{{ src('cli/src/commit_templater.rs', 1562, 1621) }}">source</a>).
+</p>
+
+<p>
+  <strong>Invariants:</strong> the history comes only from the operation log, so it is exactly as long as
+  the operation log that still holds it. Each emitted commit is printed with the operation that created or
+  rewrote it, except entries cut off by the end of the walk, which have no operation. No operation is recorded, apart from a snapshot's.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message or behaviour</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Predecessors cycle detected around commit &lt;id&gt;</code></td><td>Within one operation the map loops, so the commits it marked cannot be sorted.</td><td><a href="{{ src(evo, 74, 83) }}">evolution.rs</a>, <a href="{{ src(evo, 165, 171) }}">evolution.rs</a></td></tr>
+      <tr><td>The oldest entry has no "operation" line</td><td>The walk ran out: <code>jj op abandon</code> removed the older operations, or it reached operations from before jj&nbsp;0.30. Its diff is then against its parents.</td><td><a href="{{ src(t, 531, 577) }}">test</a>, <a href="{{ url_for('jj', slug='operation-abandon') }}">jj op abandon</a></td></tr>
+      <tr><td>A single entry, with no "operation" line</td><td>The commit has no record in any operation, for example one imported from Git. The whole operation log is walked first.</td><td><a href="{{ src(ops, 315, 316) }}">op_store.rs</a>, <a href="{{ src(evo, 117, 121) }}">evolution.rs</a></td></tr>
+      <tr><td><code>error: a value is required for '--template &lt;TEMPLATE&gt;'</code>, with a hint listing template aliases</td><td><code>-T</code> without a value.</td><td><a href="{{ src(t, 580, 620) }}">test</a></td></tr>
+      <tr><td>A revset or template error</td><td><code>-r</code> or <code>-T</code> does not parse or resolve.</td><td><a href="{{ src(cmd, 113, 133) }}">evolog.rs</a></td></tr>
+      <tr><td>A working-copy error</td><td>The snapshot fails, or the working copy is stale.</td><td><a href="{{ url_for('jj', slug='working-copy') }}#stale">working copy</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Example output</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 19, 46) }}">test_evolog_with_or_without_diff</a>: a new commit was
+  edited, rebased onto the root (which conflicted), and edited again to resolve it. The change ID stays
+  <code>rlvkpnrz</code>; the older commits are hidden and get offsets:
+</p>
+
+<pre><code>$ jj evolog
+@  rlvkpnrz test.user@example.com 2001-02-03 08:05:10 33c10ace
+│  my description
+│  -- operation b78459d9d126 snapshot working copy
+×  rlvkpnrz/1 test.user@example.com 2001-02-03 08:05:09 cdf175ef (hidden) (conflict)
+│  my description
+│  -- operation b2a0c4f0aa5d rebase commit 51e08f95160c897080d035d330aead3ee6ed5588
+○  rlvkpnrz/2 test.user@example.com 2001-02-03 08:05:09 51e08f95 (hidden)
+│  my description
+│  -- operation 8c72466647e6 snapshot working copy
+○  rlvkpnrz/3 test.user@example.com 2001-02-03 08:05:08 b955b72e (hidden)
+   (empty) my description
+   -- operation 390d0e261e11 new empty commit</code></pre>
+
+<p>
+  From <a href="{{ src(t, 531, 577) }}">test_evolog_abandoned_op</a>, after <code>jj op abandon ..@-</code>
+  removed every operation but the last. The second entry has no operation and its summary is against its
+  parent, the empty root:
+</p>
+
+<pre><code>$ jj evolog --summary
+@  qpvuntsm test.user@example.com 2001-02-03 08:05:09 e1869e5d
+│  file2
+│  -- operation 942cfd389e43 describe commit 32cabcfa05c604a36074d74ae59964e4e5eb18e9
+○  qpvuntsm/1 test.user@example.com 2001-02-03 08:05:09 32cabcfa (hidden)
+   file1
+   A file1
+   A file2</code></pre>
