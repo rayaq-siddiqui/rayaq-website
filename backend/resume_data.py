@@ -8,10 +8,9 @@ HEADLINE = "Software Engineer @ Google · University of Waterloo SE Alum"
 LOCATION = "San Francisco, CA"
 
 SUMMARY = (
-    "ML systems engineer who has worked at every layer of the stack, from MLIR compilers to "
-    "Google-scale distributed systems. Today I build JJ, the next-generation version control system "
-    "on track to serve every engineer at Google. Before that: ML compiler work with 20x LLM inference "
-    "speedups, and production ML serving 9M users/year."
+    "I enjoy working on complex problems across software engineering and mathematics. "
+    "These days that means software engineering, machine learning, and compilers, and I'm happiest "
+    "when one problem drags in all three."
 )
 
 EDUCATION = {
