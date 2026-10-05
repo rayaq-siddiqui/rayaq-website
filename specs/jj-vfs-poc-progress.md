@@ -3,8 +3,9 @@
 Running log for the daily jj-vfs-poc architecture Routine. Read this first, update it last.
 The contract is `specs/jj-vfs-poc.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-04 (third run). Upstream unchanged since the pin; built the
-`fuse` page.
+**Last updated:** 2026-10-05 (fourth run). Upstream unchanged since the pin; built the
+last four pages (`inodes`, `commit-trees`, `mounting`, `testing`), so every §5 page is live.
+From the next run on, the Routine is in maintenance mode only.
 
 ## Upstream pin
 
@@ -16,17 +17,30 @@ jj-lib links point at the `v0.43.0` tag of `jj-vcs/jj`.
 
 - [x] `/jj-vfs-poc` renders the §6 diagram and links to every page in §5 (boxes for unbuilt
       pages link to pinned source until the page exists).
-- [ ] Every §5 page exists, meets its "Must cover" column, and is registered: `namespace`,
-      `vfs-layer`, `fuse` done; `inodes`, `commit-trees`, `mounting`, `testing` to go.
+- [x] Every §5 page exists, meets its "Must cover" column, and is registered (all seven
+      ready as of the fourth run).
 - [x] `namespace` meets all six §8 items with at least two SVG diagrams; `fuse` has its sequence
       diagram.
 - [x] Every source link is pinned (`UPSTREAM.commit` or `v<jj_lib_version>`; tested).
-- [x] §7.5 tests exist and pass (137 tests in the suite, all sections).
+- [x] §7.5 tests exist and pass (142 tests in the suite, all sections).
 - [x] Homepage card links to `/jj-vfs-poc`.
 - [x] Mobile at 390px: no horizontal page scroll on `/jj-vfs-poc` and every ready page (checked
       in headless Chromium this run).
 - [x] The daily Routine has run in maintenance mode (second and third runs: no relevant upstream
       change).
+
+## Fourth run (2026-10-05)
+
+| Commit | What |
+|---|---|
+| `a277e85` | `inodes` page: `InodeMap`, inode allocation and path resolution, its locking, and what it never forgets |
+| `14c61ac` | `commit-trees` page: `CommitTreeFile`, how each tree value kind is shown, conflicts, and streamed reads |
+| `1b7a76c` | `mounting` page: `main.rs` step by step, mount options, repo loading, `spawn_mount` internals, threads diagram, shutdown |
+| `a425e51` | `testing` page: `setup_test_repo`, unit tests per module, both integration tests, CI jobs, rustfmt, coverage diagram |
+
+Maintenance: upstream `HEAD` still at `37b8f86`, so the pin stayed. Upstream's own suite
+(`cargo test --all-targets`) was run at the pin in a scratch clone: 30 unit and 2 integration
+tests pass, including the mounted `test_vfs_mount` (this container has FUSE).
 
 ## Third run (2026-10-04)
 
@@ -67,10 +81,12 @@ uses the local backend (128-hex IDs), where a prefix gives `ObjectNotFound` inst
 3. ~~§6 architecture diagram on the index~~
 4. ~~`vfs-layer`~~
 5. ~~`fuse`~~
-6. `inodes`
-7. `commit-trees`
-8. `mounting`
-9. `testing`
+6. ~~`inodes`~~
+7. ~~`commit-trees`~~
+8. ~~`mounting`~~
+9. ~~`testing`~~
+
+The queue is empty. Later runs diff upstream against the pin and update affected pages.
 
 ## Deliberate deviations
 
@@ -96,4 +112,20 @@ uses the local backend (128-hex IDs), where a prefix gives `ObjectNotFound` inst
   depends on the Git backend's caches (its extras table and object lookup). The page doesn't
   claim either way.
 - **Misnamed upstream test.** `test_all_commit_trees_mapper_invalid_commit_id` exercises the
-  unknown-top-level-name path, not commit-ID parsing. The page says so.
+  unknown-top-level-name path, not commit-ID parsing. `namespace` and `testing` say so.
+- **Conflicted tree root gives `EIO` (derived).** `commit-trees` derives this from the code
+  path rather than from a run with a conflicted commit.
+- **Entry types in conflicted directories.** How listing types a path whose value is
+  conflicted was read from the code, not exercised. The page keeps to what the code shows.
+- **Executable bit dropped.** Files never report an executable mode. The page states it as a
+  PoC limitation.
+- **Submodules give `EISDIR`.** A git submodule entry is not readable as a file or directory.
+  The page states it as the code does.
+- **`load_at_head` can write an operation.** If the op heads have diverged, jj-lib merges them
+  and writes the merged operation without publishing it, so starting `jjfsd` is not strictly
+  read-only on the repo store. `mounting` says so.
+- **Mounted test on CI unverified.** `test_vfs_mount` needs `/dev/fuse` and mount permission.
+  `ci.yml` installs nothing for FUSE, and whether GitHub's hosted runners allow the mount
+  wasn't checked. It passes locally here.
+- **CI only on PRs and merge groups.** `ci.yml` has no `push` trigger, so direct pushes to the
+  default branch are never checked. `testing` states it.
