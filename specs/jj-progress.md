@@ -4,7 +4,7 @@ Running log for the daily jj architecture Routine. Read this first, update it la
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
 **Last updated:** 2026-10-05 (forty-first run): no upstream change since `4df5265`; built
-`file search`. `file show` is next.
+`file search` and `file show`. `sparse list` is next.
 
 ## Upstream pin
 
@@ -26,8 +26,8 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 68 of 105: Tier A 65 of 65 (complete),
-      Tier B 3 of 27 (`file annotate`, `list`, `search`), Tier C 0 of 13. Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 69 of 105: Tier A 65 of 65 (complete),
+      Tier B 4 of 27 (`file annotate`, `list`, `search`, `show`), Tier C 0 of 13. Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
       `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`, `absorb`, `duplicate`,
       `bookmark create`/`set`/`move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`,
       `parallelize`, `simplify-parents`, `arrange`, `converge`, `revert`, `diffedit`, `run`,
@@ -40,17 +40,14 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 
 ## Thirty-ninth to forty-first runs (2026-10-05)
 
-Pin unchanged (`4df5265`). Forty-first run: `98f13eb`, the `file search` page (CLI and the eight
-string-pattern kinds, a call-flow SVG and a per-entry dispatch SVG over `MaterializedTreeValue`,
-line matching in `write_matches`, add-side-only conflict search, errors, examples). Fortieth run: `e3d0baa`, the `file list` page (CLI, `templates.file_list`
-and the six `TreeEntry` keywords, call-flow SVG, the `TreeEntriesIterator` walk with matcher pruning
-traced over upstream's `dir` filter in a second SVG, the unmatched-path warning, and five example
-outputs from upstream's tests). Thirty-ninth run: `72c938f`, the `file annotate` page (CLI, `templates.file_annotate` and the
-five `AnnotationLine` keywords, call-flow SVG, touchpoints, what it reads, the `FileAnnotator`
-line-map walk over `heads ∪ (all() & ::start & files(path))` with direct/indirect/missing edges,
-conflict materialization and the root-commit fallback, an SVG traced from upstream's template test,
-errors, and four example outputs from upstream's tests). Added a test that every ready Tier B page
-has all eight sections (§8A.3 item 5 is the `reads` section; see deviations).
+Pin unchanged (`4df5265`). Forty-first run: `98f13eb`, `file search` (the eight string-pattern
+kinds, `write_matches`, add-side-only conflict search); `1b18f74`, `file show` (single-path fast
+path vs. the slow walk, `templates.file_show`, conflict markers). Fortieth run: `e3d0baa`,
+`file list` (the `TreeEntry` keywords, the `TreeEntriesIterator` walk with matcher pruning).
+Thirty-ninth run: `72c938f`, `file annotate` (the `FileAnnotator` line-map walk, conflict
+materialization, root-commit fallback). Each has a call-flow SVG, a second algorithm SVG, and
+examples from upstream's tests. Added a test that every ready Tier B page has all eight sections
+(§8A.3 item 5 is the `reads` section; see deviations).
 
 ## Thirty-fourth to thirty-eighth runs (2026-10-04)
 
@@ -108,7 +105,7 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
    `-remote`~~, ~~`sign`~~, ~~`unsign`~~, ~~`workspace-*`~~, ~~`gerrit-upload`~~. Tier A complete.
 2. Remaining topic pages: ~~`conflicts`~~, ~~`storage`~~, ~~`index`~~, ~~`revsets`~~, ~~`backends`~~.
    All topics done.
-3. **Next.** Tier B commands, in registry order: ~~`file annotate`~~, ~~`file list`~~, ~~`file search`~~, `file show`,
+3. **Next.** Tier B commands, in registry order: ~~`file annotate`~~, ~~`file list`~~, ~~`file search`~~, ~~`file show`~~,
    `sparse list`, `log`, `show`, `diff`, `interdiff`, `status`, `evolog`, `root`, `operation diff`,
    `operation log`, `operation show`, `bookmark list`, `tag list`, `git root`, `workspace list`,
    `workspace root`, `config edit`/`gc`/`get`/`list`/`path`/`set`/`unset`.
@@ -155,8 +152,9 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
   compares a merge with the merge of its parents, so the unresolved merge doesn't count as modifying
   the file. It also says that on a merge the first parent holding a line gets it. Both are read from
   `has_diff_from_parent` and `process_commit` and agree with upstream's snapshots, but weren't run here.
-- **`jj file list`/`search` help text vs code.** The positional help says "matching these prefixes",
-  but each argument is a full fileset. The pages say so; outputs come from code and upstream tests.
+- **`jj file list`/`search`/`show` vs help text.** The positional help says "matching these prefixes",
+  but each argument is a full fileset. `file show`'s single-path fast path returns before the
+  unmatched-path check, so one missing path is an error but two give a warning. Pages state the code.
 - **`jj file track` couldn't be run.** The page's claim that the working-copy commit changes only at
   the next command comes from the code (the command never rewrites `@`) and upstream's
   `test_track_ignored`, whose `Rebased … onto updated working copy` appears on the following
