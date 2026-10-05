@@ -3,8 +3,8 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-05 (thirty-ninth run): no upstream change since `4df5265`; built
-`file annotate`, the first Tier B page. `file list` is next.
+**Last updated:** 2026-10-05 (fortieth run): no upstream change since `4df5265`; built
+`file list`. `file search` is next.
 
 ## Upstream pin
 
@@ -26,8 +26,8 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 66 of 105: Tier A 65 of 65 (complete),
-      Tier B 1 of 27 (`file annotate`), Tier C 0 of 13. Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 67 of 105: Tier A 65 of 65 (complete),
+      Tier B 2 of 27 (`file annotate`, `file list`), Tier C 0 of 13. Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
       `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`, `absorb`, `duplicate`,
       `bookmark create`/`set`/`move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`,
       `parallelize`, `simplify-parents`, `arrange`, `converge`, `revert`, `diffedit`, `run`,
@@ -38,9 +38,12 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
 
-## Thirty-ninth run (2026-10-05)
+## Thirty-ninth and fortieth runs (2026-10-05)
 
-Pin unchanged (`4df5265`). `72c938f`: `file annotate` page (CLI, `templates.file_annotate` and the
+Pin unchanged (`4df5265`). Fortieth run: `e3d0baa`, the `file list` page (CLI, `templates.file_list`
+and the six `TreeEntry` keywords, call-flow SVG, the `TreeEntriesIterator` walk with matcher pruning
+traced over upstream's `dir` filter in a second SVG, the unmatched-path warning, and five example
+outputs from upstream's tests). Thirty-ninth run: `72c938f`, the `file annotate` page (CLI, `templates.file_annotate` and the
 five `AnnotationLine` keywords, call-flow SVG, touchpoints, what it reads, the `FileAnnotator`
 line-map walk over `heads ∪ (all() & ::start & files(path))` with direct/indirect/missing edges,
 conflict materialization and the root-commit fallback, an SVG traced from upstream's template test,
@@ -103,7 +106,7 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
    `-remote`~~, ~~`sign`~~, ~~`unsign`~~, ~~`workspace-*`~~, ~~`gerrit-upload`~~. Tier A complete.
 2. Remaining topic pages: ~~`conflicts`~~, ~~`storage`~~, ~~`index`~~, ~~`revsets`~~, ~~`backends`~~.
    All topics done.
-3. **Next.** Tier B commands, in registry order: ~~`file annotate`~~, `file list`, `file search`, `file show`,
+3. **Next.** Tier B commands, in registry order: ~~`file annotate`~~, ~~`file list`~~, `file search`, `file show`,
    `sparse list`, `log`, `show`, `diff`, `interdiff`, `status`, `evolog`, `root`, `operation diff`,
    `operation log`, `operation show`, `bookmark list`, `tag list`, `git root`, `workspace list`,
    `workspace root`, `config edit`/`gc`/`get`/`list`/`path`/`set`/`unset`.
@@ -150,6 +153,9 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
   compares a merge with the merge of its parents, so the unresolved merge doesn't count as modifying
   the file. It also says that on a merge the first parent holding a line gets it. Both are read from
   `has_diff_from_parent` and `process_commit` and agree with upstream's snapshots, but weren't run here.
+- **`jj file list` help text vs code.** The positional help says "Only list files matching these
+  prefixes", but each argument is a full fileset (globs and operators work). The page says so; like
+  every page here, its outputs come from the code and upstream's tests, not a local run.
 - **`jj file track` couldn't be run.** The page's claim that the working-copy commit changes only at
   the next command comes from the code (the command never rewrites `@`) and upstream's
   `test_track_ignored`, whose `Rebased … onto updated working copy` appears on the following
