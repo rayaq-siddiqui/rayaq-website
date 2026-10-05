@@ -1025,6 +1025,16 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "workspace-root": {
+        "title": "How jj workspace root works",
+        "sources": [
+            "cli/src/commands/workspace/root.rs",
+            "lib/src/simple_workspace_store.rs",
+            "lib/src/view.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
     "workspace-update-stale": {
         "title": "How jj workspace update-stale works",
         "sources": [
