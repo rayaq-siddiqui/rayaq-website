@@ -1773,6 +1773,16 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "root": {
+        "title": "How jj root works",
+        "sources": [
+            "cli/src/commands/root.rs",
+            "cli/src/cli_util.rs",
+            "lib/src/workspace.rs",
+            "core/src/file_util.rs",
+        ],
+        "ready": True,
+    },
 }
 
 
