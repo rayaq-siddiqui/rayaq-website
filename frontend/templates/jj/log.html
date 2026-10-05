@@ -1,0 +1,364 @@
+{% set cmd = "cli/src/commands/log.rs" %}
+{% set g = "core/src/graph.rs" %}
+{% set gw = "lib/src/default_index/revset_graph_iterator.rs" %}
+{% set eng = "lib/src/default_index/revset_engine.rs" %}
+{% set gl = "cli/src/graphlog.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set du = "cli/src/diff_util.rs" %}
+{% set rs = "cli/src/config/revsets.toml" %}
+{% set tpl = "cli/src/config/templates.toml" %}
+{% set misc = "cli/src/config/misc.toml" %}
+{% set t = "cli/tests/test_log_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj log</code> works</h1>
+  <p class="tagline">
+    <code>jj log</code> evaluates a revset and draws it as a graph, children before parents. Edges
+    between shown commits are recomputed so that skipped commits become "elided" nodes, branches are
+    grouped together, and each commit is rendered with a template.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj picks a revset (<code>-r</code>, else <code>revsets.log</code>, narrowed to commits
+  that touch the given paths), evaluates it, and streams it as a graph whose edges are direct,
+  indirect or missing. <code>TopoGroupedGraph</code> reorders that stream so each branch is drawn
+  in one piece, with the branch holding <code>@</code> first. <code>-n</code> cuts it, and
+  <code>--reversed</code> flips it. Each commit is rendered with <code>templates.log</code>, plus an
+  optional diff. The result is drawn by sapling's <code>renderdag</code>. Nothing is written: no
+  transaction, no operation.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 132, 414) }}"><code>cmd_log</code></a>. The help text:
+  "Show revision history" (<a href="{{ src(cmd, 50, 71) }}">source</a>). It also says spans of revisions
+  that <code>-r</code> leaves out are drawn as a synthetic node labelled "(elided revisions)", and
+  that <code>@</code>, <code>◆</code> (immutable) and <code>○</code> mark the nodes.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Argument</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>-r</code>, <code>--revision REVSETS</code> (repeatable; alias <code>--revisions</code>)</td><td>revset</td><td><code>revsets.log</code> if no paths are given</td><td>Which revisions to show. Several are unioned (<a href="{{ src(cmd, 74, 80) }}">source</a>).</td></tr>
+      <tr><td><code>FILESETS</code> (positional, repeatable)</td><td>fileset</td><td>none</td><td>Show only revisions that modify these paths (<a href="{{ src(cmd, 82, 85) }}">source</a>).</td></tr>
+      <tr><td><code>-n</code>, <code>--limit N</code></td><td>integer</td><td>no limit</td><td>"Applied after revisions are filtered and reordered topologically, but before being reversed" (<a href="{{ src(cmd, 87, 92) }}">source</a>).</td></tr>
+      <tr><td><code>--reversed</code></td><td>flag</td><td>off</td><td>Older revisions first (<a href="{{ src(cmd, 94, 96) }}">source</a>).</td></tr>
+      <tr><td><code>-G</code>, <code>--no-graph</code></td><td>flag</td><td>off</td><td>A flat list instead of a graph (<a href="{{ src(cmd, 98, 100) }}">source</a>).</td></tr>
+      <tr><td><code>-T</code>, <code>--template TEMPLATE</code></td><td>template</td><td><code>templates.log</code></td><td>How to render each commit; every 0-argument method of <code>Commit</code> is a keyword. <code>jj log -T</code> with no value lists the built-in templates (<a href="{{ src(cmd, 102, 117) }}">source</a>).</td></tr>
+      <tr><td><code>-p</code>, <code>--patch</code></td><td>flag</td><td>off</td><td>Show each commit's diff under it (<a href="{{ src(cmd, 119, 121) }}">source</a>).</td></tr>
+      <tr><td><code>--count</code></td><td>flag</td><td>off</td><td>Print the number of commits instead. Conflicts with the diff flags, <code>-G</code>, <code>-p</code>, <code>--reversed</code> and <code>-T</code> (<a href="{{ src(cmd, 123, 125) }}">source</a>).</td></tr>
+      <tr><td>Diff format flags: <code>-s</code>, <code>--stat</code>, <code>--types</code>, <code>--name-only</code>, <code>--git</code>, <code>--color-words</code>, <code>--tool</code>, <code>--context</code>, whitespace flags</td><td>flags</td><td>none</td><td>The shared <code>DiffFormatArgs</code> (<a href="{{ src(cmd, 127, 128) }}">source</a>). Any of them turns the diff on; <code>-p</code> alone adds the default long format (<a href="{{ src(du, 324, 340) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p class="jj-source">Global flags such as <code>--at-op</code> and <code>--ignore-working-copy</code> are on the <a href="{{ url_for('jj', slug='cli') }}#global-flags">CLI page</a>.</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>revsets.log</code></td><td><code>builtin_log()</code> = <code>present(@) | ancestors(immutable_heads().., 2) | trunk()</code></td><td>The revset when neither <code>-r</code> nor paths are given (<a href="{{ src(rs, 14, 14) }}">source</a>, <a href="{{ src(rs, 39, 39) }}">alias</a>).</td></tr>
+      <tr><td><code>revsets.log-graph-prioritize</code></td><td><code>present(@)</code></td><td>Branches drawn first (<a href="{{ src(rs, 17, 17) }}">source</a>).</td></tr>
+      <tr><td><code>templates.log</code></td><td><code>builtin_log_compact</code></td><td>Each commit's text (<a href="{{ src(tpl, 32, 32) }}">source</a>, <a href="{{ src(tpl, 163, 164) }}">alias</a>).</td></tr>
+      <tr><td><code>templates.log_node</code></td><td><code>builtin_log_node</code>, or <code>builtin_log_node_ascii</code> when <code>ui.graph.style</code> starts with <code>ascii</code></td><td>The node symbol (<a href="{{ src(tpl, 60, 66) }}">source</a>): <code>@</code>, <code>◆</code>, <code>×</code> (conflict), <code>○</code>, and <code>~</code> for elided nodes (<a href="{{ src(tpl, 579, 596) }}">source</a>); ASCII uses <code>@</code>, <code>+</code>, <code>x</code>, <code>o</code> (<a href="{{ src(tpl, 598, 614) }}">source</a>).</td></tr>
+      <tr><td><code>ui.graph.style</code></td><td><code>curved</code></td><td>One of <code>ascii</code>, <code>ascii-large</code>, <code>curved</code>, <code>square</code> (<a href="{{ src(misc, 38, 38) }}">default</a>, <a href="{{ src(gl, 99, 110) }}">source</a>).</td></tr>
+      <tr><td><code>ui.log-synthetic-elided-nodes</code></td><td><code>true</code></td><td>Draw an indirect edge as a "(elided revisions)" node rather than a dotted line (<a href="{{ src(misc, 44, 44) }}">source</a>).</td></tr>
+      <tr><td><code>ui.log-word-wrap</code></td><td><code>false</code></td><td>Wrap each commit's text to the width left beside the graph (<a href="{{ src(misc, 43, 43) }}">source</a>).</td></tr>
+      <tr><td><code>ui.diff-formatter</code></td><td><code>:color-words</code></td><td>The diff shown by <code>-p</code> (<a href="{{ src(misc, 36, 36) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 540" role="img" aria-labelledby="lg-flow-title lg-flow-desc">
+    <title id="lg-flow-title">jj log: call flow</title>
+    <desc id="lg-flow-desc">
+      After the shared lifecycle, cmd_log picks the revset: the union of -r, or revsets.log, or all(),
+      intersected with a file filter when paths are given. It evaluates it. With --count it prints the
+      size and stops. Otherwise, by default, it streams the revset as a graph, groups branches with
+      TopoGroupedGraph, cuts to the limit and optionally reverses, then renders each commit with its
+      template, diff and node symbol and adds it to the graph renderer. With --no-graph it streams the
+      commits in index order instead. Finally it warns about unmatched paths and arguments that look
+      like revsets.
+    </desc>
+    <defs>
+      <marker id="lg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 141, 159) }}"><rect class="d-box" x="20" y="84" width="720" height="66" rx="6"></rect>
+      <text x="32" y="105">choose the revset</text>
+      <text x="32" y="123" class="d-muted" font-size="11">-r given: union of them · neither -r nor paths: revsets.log · paths only: all()</text>
+      <text x="32" y="140" class="d-muted" font-size="11">paths given: intersect with a File filter (commits that modify them)</text></a>
+
+      <a href="{{ src(cmd, 161, 161) }}"><rect class="d-box" x="20" y="174" width="350" height="50" rx="6"></rect>
+      <text x="32" y="195">evaluate()</text>
+      <text x="32" y="213" class="d-muted" font-size="11">against the index</text></a>
+      <a href="{{ src(cmd, 163, 180) }}"><rect class="d-box" x="410" y="174" width="330" height="50" rx="6"></rect>
+      <text x="422" y="195">--count: print the number, stop</text>
+      <text x="422" y="213" class="d-muted" font-size="11">uses the size estimate when it's exact</text></a>
+
+      <a href="{{ src(eng, 181, 189) }}"><rect class="d-box" x="20" y="264" width="350" height="50" rx="6"></rect>
+      <text x="32" y="285">stream_graph()</text>
+      <text x="32" y="303" class="d-muted" font-size="11">edges: direct, indirect, missing</text></a>
+      <a href="{{ src(cmd, 246, 266) }}"><rect class="d-box" x="20" y="334" width="350" height="66" rx="6"></rect>
+      <text x="32" y="355">TopoGroupedGraph</text>
+      <text x="32" y="373" class="d-muted" font-size="11">prioritize log-graph-prioritize branches</text>
+      <text x="32" y="390" class="d-muted" font-size="11">take(-n), then reverse if --reversed</text></a>
+      <a href="{{ src(cmd, 267, 349) }}"><rect class="d-box" x="20" y="420" width="350" height="50" rx="6"></rect>
+      <text x="32" y="441">per commit: template, diff, node symbol</text>
+      <text x="32" y="459" class="d-muted" font-size="11">add_node to the renderdag graph</text></a>
+
+      <a href="{{ src(cmd, 350, 375) }}"><rect class="d-box" x="410" y="264" width="330" height="66" rx="6"></rect>
+      <text x="422" y="285">--no-graph: stream()</text>
+      <text x="422" y="303" class="d-muted" font-size="11">index order; take(-n), then reverse</text>
+      <text x="422" y="320" class="d-muted" font-size="11">template and diff at full width</text></a>
+
+      <a href="{{ src(cmd, 377, 411) }}"><rect class="d-box" x="20" y="490" width="720" height="40" rx="6"></rect>
+      <text x="32" y="515">warnings: paths no commit had · a lone path that might have meant a revset</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" fill="none" marker-end="url(#lg-arrow)">
+      <line x1="195" y1="60" x2="195" y2="80"></line>
+      <line x1="195" y1="150" x2="195" y2="170"></line>
+      <line x1="370" y1="199" x2="406" y2="199"></line>
+      <line x1="195" y1="224" x2="195" y2="260"></line>
+      <path d="M300,224 L300,244 L575,244 L575,260"></path>
+      <line x1="195" y1="314" x2="195" y2="330"></line>
+      <line x1="195" y1="400" x2="195" y2="416"></line>
+      <line x1="195" y1="470" x2="195" y2="486"></line>
+      <line x1="575" y1="330" x2="575" y2="486"></line>
+    </g>
+    <text x="205" y="248" font-size="11" class="d-muted">graph</text>
+    <text x="585" y="256" font-size="11" class="d-muted">-G</text>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Revset engine</td><td>read</td><td>Parses and evaluates the revset; the file filter uses the changed-path index if there is one, else diffs each commit against its parents (<a href="{{ src(eng, 1361, 1371) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='revsets') }}#filters">revsets</a></td></tr>
+      <tr><td>Commit index</td><td>read</td><td>Walks commits in index order and computes graph edges (<a href="{{ src(gw, 104, 116) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='index') }}">index</a></td></tr>
+      <tr><td>Commits</td><td>read</td><td>Each shown commit is loaded for its template (<a href="{{ src(cmd, 298, 298) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Trees</td><td>read</td><td>Only for <code>-p</code>/diff flags, and to check explicit paths exist (<a href="{{ src(cmd, 221, 237) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>View</td><td>read</td><td>Visible heads, bookmarks and <code>@</code> feed the revset and the template.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Operation log</td><td>untouched</td><td>No transaction is started.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="reads">5. What it reads, and snapshotting</h2>
+
+<ul>
+  <li><strong>Snapshot:</strong> yes. It loads the workspace with <code>workspace_helper</code> (<a href="{{ src(cmd, 137, 137) }}">source</a>), which snapshots the working copy first (<a href="{{ src(util, 460, 464) }}">source</a>), so <code>@</code> shows current edits. That snapshot may record a <code>snapshot working copy</code> operation; <code>log</code> itself records nothing.</li>
+  <li><strong>Reads:</strong> the view at the current (or <code>--at-op</code>) operation, the index, every shown commit, and trees only when a diff or explicit path needs them.</li>
+  <li><strong>Output:</strong> through the pager, requested before anything is written (<a href="{{ src(cmd, 240, 240) }}">source</a>). Warnings go to stderr.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="edges">Edges between shown commits</h3>
+
+<p>
+  <code>stream_graph()</code> walks the evaluated set in index order with
+  <a href="{{ src(gw, 38, 103) }}"><code>RevsetGraphWalk</code></a>, skipping transitive edges
+  (<a href="{{ src(eng, 181, 189) }}">source</a>). A parent in the set gives a <strong>direct</strong>
+  edge. A parent outside it is walked through until the walk reaches commits in the set, giving one
+  <strong>indirect</strong> edge to each nearest such ancestor. A path that never comes back into the set
+  gives a <strong>missing</strong> edge. When a commit has an indirect edge, any edge whose target is
+  also reachable through its other edges is dropped (<a href="{{ src(gw, 284, 337) }}">source</a>), so a
+  commit isn't linked to its grandparent as well as its parent.
+</p>
+
+<p>
+  <code>cmd_log</code> then turns these into renderer edges, keyed by <code>(commit ID, is_synthetic)</code>
+  (<a href="{{ src(cmd, 267, 295) }}">source</a>). Direct stays direct. Indirect becomes a direct edge to a
+  synthetic node for that target, drawn as <code>~ (elided revisions)</code> with the <code>elided</code>
+  label (<a href="{{ src(cmd, 329, 348) }}">source</a>); with <code>ui.log-synthetic-elided-nodes = false</code>
+  it stays a dotted indirect edge. Missing edges collapse into one, drawn as <code>~</code> below the node.
+  <code>graphlog.rs</code> maps them to renderdag's parent, ancestor and anonymous edges
+  (<a href="{{ src(gl, 44, 50) }}">source</a>).
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 320" role="img" aria-labelledby="lg-elide-title lg-elide-desc">
+    <title id="lg-elide-title">How skipped commits become elided nodes</title>
+    <desc id="lg-elide-desc">
+      Left: a history where merge, at @, has parents main 2 and side 2; main 2 is on main 1 and side 2 is on
+      side 1; both are on initial, which is on the root. The revset picks merge, main 2, side 2 and initial.
+      Right: what jj log draws. Merge has direct edges to main 2 and side 2. Each of those has an indirect
+      edge to initial, so each gets its own elided node between it and initial. Initial's parent, the root,
+      is outside the set, so its missing edge is drawn as a tilde.
+    </desc>
+    {% macro node(x, y, label, hl=False, elided=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"{% if elided %} stroke-dasharray="3 3"{% endif %}></circle>
+      <text x="{{ x + 15 }}" y="{{ y + 4 }}" font-size="12"{% if elided %} class="d-muted"{% endif %}>{{ label }}</text>
+    {%- endmacro %}
+    <a href="{{ src(t, 1672, 1690) }}">
+      <rect class="d-box" x="20" y="30" width="340" height="275" rx="6"></rect>
+      <text x="32" y="22" font-size="12" class="d-muted">history; highlighted: -r '@ | @- | subject(initial)'</text>
+      <g class="d-line" stroke-width="1.5" fill="none">
+        <path d="M190,60 L110,105 L110,150 L190,200 L190,250"></path>
+        <path d="M190,60 L250,105 L250,150 L190,200"></path>
+      </g>
+      {{ node(190, 60, "merge  @", hl=True) }}
+      {{ node(110, 105, "main 2", hl=True) }}{{ node(110, 150, "main 1") }}
+      {{ node(250, 105, "side 2", hl=True) }}{{ node(250, 150, "side 1") }}
+      {{ node(190, 200, "initial", hl=True) }}{{ node(190, 250, "root") }}
+    </a>
+    <a href="{{ src(t, 1722, 1737) }}">
+      <rect class="d-box" x="400" y="30" width="340" height="275" rx="6"></rect>
+      <text x="412" y="22" font-size="12" class="d-muted">what jj log draws</text>
+      <g class="d-line" stroke-width="1.5" fill="none">
+        <path d="M520,60 L460,105 L460,150 L520,200"></path>
+        <path d="M520,60 L600,105 L600,150 L520,200"></path>
+        <path d="M520,200 L520,240" stroke-dasharray="3 3"></path>
+      </g>
+      {{ node(520, 60, "merge  @") }}
+      {{ node(460, 105, "main 2") }}{{ node(460, 150, "elided", elided=True) }}
+      {{ node(600, 105, "side 2") }}{{ node(600, 150, "elided", elided=True) }}
+      {{ node(520, 200, "initial") }}
+      <text x="514" y="258" font-size="14">~</text>
+      <text x="535" y="257" font-size="11" class="d-muted">missing edge (root not shown)</text>
+      <text x="412" y="290" font-size="11" class="d-muted">dashed nodes: indirect edges as synthetic nodes</text>
+    </a>
+  </svg>
+</div>
+
+<h3 id="ordering">Ordering and the limit</h3>
+
+<ol>
+  <li>
+    <strong>Group branches.</strong> <a href="{{ src(g, 120, 145) }}"><code>TopoGroupedGraph</code></a> is a
+    depth-first walk from the heads built on Kahn's algorithm (<a href="{{ src(g, 285, 332) }}">source</a>):
+    a commit is emitted once all its children have been, and at a merge the last parent's branch comes
+    first. A new head is only taken when nothing is ready, choosing one that unblocks a waiting fork point
+    (<a href="{{ src(g, 235, 283) }}">source</a>). The input is read lazily (<a href="{{ src(g, 200, 229) }}">source</a>).
+  </li>
+  <li>
+    <strong>Prioritize.</strong> Every commit of <code>revsets.log-graph-prioritize</code> that is also in
+    the shown set is queued first (<a href="{{ src(g, 192, 198) }}">source</a>). The intersection is taken
+    against the query resolved at its own visibility, so the prioritized commit is always in the input,
+    which <code>TopoGroupedGraph</code> requires (<a href="{{ src(cmd, 185, 196) }}">source</a>).
+  </li>
+  <li>
+    <strong>Limit, then reverse.</strong> <code>take(N)</code> is applied to the grouped stream, not its
+    input, for the same reason (<a href="{{ src(cmd, 254, 258) }}">source</a>). <code>--reversed</code>
+    collects those nodes and flips every edge (<a href="{{ src(g, 95, 118) }}">reverse_graph</a>), so
+    commits whose parents were cut off become roots.
+  </li>
+  <li>
+    <strong>Render.</strong> Each commit's template and diff are written into a buffer at the width left
+    beside the graph (<a href="{{ src(cmd, 296, 318) }}">source</a>, <a href="{{ src(util, 3501, 3544) }}">LogContentFormat</a>),
+    the node template picks the symbol, and <code>add_node</code> draws the row
+    (<a href="{{ src(gl, 57, 72) }}">source</a>) with renderdag's <code>GraphRowRenderer</code>
+    (<a href="{{ src(gl, 112, 125) }}">source</a>).
+  </li>
+</ol>
+
+<p>
+  With <code>--no-graph</code> none of the grouping happens: commits come in index order, newest first,
+  so the limit can pick different commits than in graph mode (see the example).
+</p>
+
+<p>
+  <strong>Invariants:</strong> a child is always printed before its parents (after them with
+  <code>--reversed</code>). Every commit in the set is printed exactly once, unless cut by
+  <code>-n</code>. Nothing in the repository changes.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Warning: No matching entries for paths: &lt;paths&gt;</code></td><td>A literal path existed in none of the printed commits' trees.</td><td><a href="{{ src(cmd, 377, 386) }}">log.rs</a></td></tr>
+      <tr><td><code>Warning: The argument "." is being interpreted as a fileset expression, but this is often not useful because all non-empty commits touch '.'. If you meant to show the working copy commit, pass -r '@' instead.</code></td><td><code>jj log .</code> at the workspace root, as a Mercurial user might type.</td><td><a href="{{ src(cmd, 391, 399) }}">log.rs</a></td></tr>
+      <tr><td><code>Warning: The argument "X" is being interpreted as a fileset expression. To specify a revset, pass -r "X" instead.</code></td><td>One path and no <code>-r</code>, nothing matched, and the argument also parses as a revset.</td><td><a href="{{ src(cmd, 400, 410) }}">log.rs</a></td></tr>
+      <tr><td><code>error: a value is required for '--template &lt;TEMPLATE&gt;' but none was supplied</code>, with a hint listing template aliases</td><td><code>jj log -T</code> with no value.</td><td><a href="{{ src(t, 36, 79) }}">test</a></td></tr>
+      <tr><td>A clap "cannot be used with" error</td><td><code>--count</code> with <code>-T</code>, <code>-G</code>, <code>-p</code>, <code>--reversed</code> or a diff flag.</td><td><a href="{{ src(cmd, 123, 124) }}">log.rs</a></td></tr>
+      <tr><td>Revset or template parse errors</td><td>Bad <code>-r</code>, config revsets, or <code>-T</code>.</td><td><a href="{{ src(util, 1876, 1903) }}">cli_util.rs</a></td></tr>
+      <tr><td>(empty output)</td><td>The revset is empty; not an error.</td><td><a href="{{ src(cmd, 244, 375) }}">log.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Edge cases: a path argument also drops empty commits, so <code>jj log root:.</code> differs from
+  <code>jj log</code> (<a href="{{ src(cmd, 152, 157) }}">source</a>). A merge counts as modifying a path only
+  if it differs from the merge of its parents (<a href="{{ src(eng, 1424, 1457) }}">source</a>).
+  <code>--count</code> trusts the engine's size estimate when it's exact or already above the limit,
+  and otherwise counts the stream (<a href="{{ src(cmd, 163, 176) }}">source</a>).
+</p>
+
+<h2 id="example">8. Example output</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 1068, 1145) }}">test_log_limit</a>: <code>a</code>, then
+  <code>b</code> on it, <code>c</code> on <code>a</code>, and <code>d</code> (<code>@</code>) merging
+  <code>c</code> and <code>b</code>.
+</p>
+
+<pre><code>$ jj log -T description --limit=3
+@    d
+├─╮
+│ ○  b
+○ │  c
+├─╯
+
+$ jj log -T description --limit=2
+@    d
+├─╮
+│ ○  b
+
+$ jj log -T description --limit=2 --no-graph
+d
+c
+
+$ jj log -T description --limit=3 --reversed
+○  c
+│ ○  b
+├─╯
+@  d</code></pre>
+
+<p>
+  In graph mode the second parent's branch, <code>b</code>, comes right after the merge; without the graph
+  it's index order, so <code>c</code>. Reversed, <code>a</code> was cut by the limit, so <code>b</code> and
+  <code>c</code> are roots. With a path, from <a href="{{ src(t, 1134, 1144) }}">the same test</a>:
+</p>
+
+<pre><code>$ jj log -T description --limit=1 b c
+○  c
+│
+~
+Warning: No matching entries for paths: b</code></pre>
+
+<p>Elided revisions, from <a href="{{ src(t, 1721, 1737) }}">test_elided</a> (the diagram above):</p>
+
+<pre><code>$ jj log -T 'description ++ "\n"' -r '@ | @- | subject(initial)'
+@    merge
+├─╮
+│ ○  side bookmark 2
+│ │
+│ ~  (elided revisions)
+○ │  main bookmark 2
+│ │
+~ │  (elided revisions)
+├─╯
+○  initial
+│
+~</code></pre>

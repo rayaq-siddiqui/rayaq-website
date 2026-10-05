@@ -1709,6 +1709,17 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "log": {
+        "title": "How jj log works",
+        "sources": [
+            "cli/src/commands/log.rs",
+            "core/src/graph.rs",
+            "lib/src/default_index/revset_graph_iterator.rs",
+            "cli/src/graphlog.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
 }
 
 
