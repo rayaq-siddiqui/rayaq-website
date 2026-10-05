@@ -46,7 +46,7 @@ PAGES = [
         "title": "Merge conflict support",
         "summary": "How conflict markers are parsed, tracked, decorated and resolved in the editor.",
         "sources": ["src/ui/merge_conflict/"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "icon-theme",
