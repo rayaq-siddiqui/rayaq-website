@@ -1356,6 +1356,16 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "file-show": {
+        "title": "How jj file show works",
+        "sources": [
+            "cli/src/commands/file/show.rs",
+            "lib/src/conflicts.rs",
+            "lib/src/merged_tree.rs",
+            "core/src/file_util.rs",
+        ],
+        "ready": True,
+    },
     "file-chmod": {
         "title": "How jj file chmod works",
         "sources": [

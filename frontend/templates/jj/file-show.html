@@ -1,0 +1,380 @@
+{% set cmd = "cli/src/commands/file/show.rs" %}
+{% set mt = "lib/src/merged_tree.rs" %}
+{% set cf = "lib/src/conflicts.rs" %}
+{% set t = "cli/tests/test_file_show_command.rs" %}
+{% set tpl = "cli/src/config/templates.toml" %}
+{% set cli = "cli/src/cli_util.rs" %}
+{% set fs = "lib/src/fileset.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj file show</code> works</h1>
+  <p class="tagline">
+    <code>jj file show</code> prints the contents of files in one commit. A single literal path is
+    looked up directly; anything else walks the tree like <code>jj file list</code>. Each file is
+    written to stdout as stored, and a conflicted file is written with conflict markers.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj resolves <code>-r</code> (default <code>@</code>) and parses the required filesets.
+  If they are one literal path that names a file, it prints just that, and a missing path is an
+  error. Otherwise it iterates <code>tree.entries_matching(matcher)</code> and prints every file
+  under the match, warning about literal paths that named nothing. Before each file it renders
+  <code>-T</code> or <code>templates.file_show</code>, which is empty by default. Nothing is
+  written: no transaction, no operation.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 77, 134) }}"><code>cmd_file_show</code></a>, and the per-file
+  output is <a href="{{ src(cmd, 148, 201) }}"><code>write_tree_entries</code></a>. The help text:
+  "Print contents of files in a revision. If the given path is a directory, files in the directory
+  will be visited recursively" (<a href="{{ src(cmd, 45, 48) }}">source</a>).
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Argument</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>FILESETS</code> (positional, repeatable, required)</td><td>fileset</td><td>none; at least one is needed</td><td>The paths to print. Several are unioned. A bare path is a cwd-relative prefix, so a directory prints every file under it (<a href="{{ src(cmd, 71, 74) }}">source</a>).</td></tr>
+      <tr><td><code>-r</code>, <code>--revision REVSET</code></td><td>revset</td><td><code>@</code></td><td>The commit to read from. It must resolve to exactly one commit (<a href="{{ src(cmd, 51, 54) }}">source</a>).</td></tr>
+      <tr><td><code>-T</code>, <code>--template TEMPLATE</code></td><td>template</td><td><code>templates.file_show</code></td><td>Rendered before each file's contents. Every 0-argument method of <code>TreeEntry</code> is a keyword (<a href="{{ src(cmd, 56, 69) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 45, 75) }}"><code>FileShowArgs</code></a></p>
+
+<p>
+  The positional arguments go through <code>parse_file_patterns</code>, which unions each argument
+  parsed with <code>parse_maybe_bare</code> (<a href="{{ src(cli, 1604, 1633) }}">cli_util.rs</a>,
+  <a href="{{ src(fs, 625, 634) }}">fileset.rs</a>), so globs and operators work. Upstream's
+  <a href="{{ src('docs/filesets.md') }}">fileset docs</a> cover the language.
+</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<p>
+  <code>templates.file_show</code> supplies the template when <code>-T</code> is absent, and the
+  output is labelled <code>file_show</code> for colour rules (<a href="{{ src(cmd, 91, 100) }}">source</a>).
+  Its built-in value is the empty string, so by default the contents are printed with nothing before
+  them (<a href="{{ src(tpl, 28, 28) }}">templates.toml</a>):
+</p>
+
+<pre><code>[templates]
+file_show = ''</code></pre>
+
+<p>
+  Setting it to something like <code>'"--- " ++ path ++ "\n"'</code> puts a header line before each
+  file. The keywords are the same six <code>TreeEntry</code> methods <code>jj file list</code> uses,
+  listed on <a href="{{ url_for('jj', slug='file-list') }}#configuration">its page</a>.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>templates.file_show</code></td><td><code>''</code></td><td>The per-file header template.</td></tr>
+      <tr><td><code>ui.conflict-marker-style</code></td><td><code>"diff"</code></td><td>How a conflicted file is printed: <code>diff</code>, <code>snapshot</code> or <code>git</code> (<a href="{{ src('cli/src/config/misc.toml', 34, 45) }}">default</a>, <a href="{{ src('docs/config.md', 578, 594) }}">docs</a>). Read once when the workspace loads (<a href="{{ src(cli, 987, 987) }}">source</a>).</td></tr>
+      <tr><td><code>revset-aliases</code>, <code>fileset-aliases</code></td><td>none</td><td>Apply when resolving <code>-r</code> and parsing the paths.</td></tr>
+      <tr><td><code>ui.pager</code>, <code>ui.paginate</code></td><td><code>less -FRXK</code> (<code>:builtin</code> on Windows), <code>auto</code></td><td>The pager is requested once a path has been found to print (<a href="{{ src(cmd, 110, 110) }}">fast path</a>, <a href="{{ src(cmd, 121, 121) }}">slow path</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 450" role="img" aria-labelledby="fsh-flow-title fsh-flow-desc">
+    <title id="fsh-flow-title">jj file show: call flow</title>
+    <desc id="fsh-flow-desc">
+      cmd_file_show loads the workspace through the shared lifecycle, resolves -r (default @) to one
+      commit, takes its tree and parses the filesets. It picks the template from -T or
+      templates.file_show. get_single_path then checks whether the fileset is one literal path. If so,
+      the fast path looks the path up with tree.path_value: absent is the error No such path, a
+      directory falls through to the slow path, and anything else becomes a single TreeEntry. The slow
+      path builds a matcher, iterates tree.entries_matching and afterwards warns about literal paths
+      that named nothing. Both paths request the pager and hand their entries to write_tree_entries.
+    </desc>
+    <defs>
+      <marker id="fsh-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 83, 90) }}"><rect class="d-box" x="20" y="84" width="350" height="62" rx="6"></rect>
+      <text x="32" y="105">resolve_single_rev(-r or @) → commit.tree()</text>
+      <text x="32" y="123" class="d-muted" font-size="11">parse_file_patterns(FILESETS)</text>
+      <text x="32" y="138" class="d-muted" font-size="11">at least one is required by clap</text></a>
+      <a href="{{ src(cmd, 91, 100) }}"><rect class="d-box" x="410" y="84" width="330" height="62" rx="6"></rect>
+      <text x="422" y="105">template: -T or templates.file_show</text>
+      <text x="422" y="123" class="d-muted" font-size="11">parse_template, TreeEntry as the context,</text>
+      <text x="422" y="138" class="d-muted" font-size="11">labelled file_show</text></a>
+
+      <a href="{{ src(cmd, 136, 146) }}"><rect class="d-box" x="20" y="170" width="720" height="62" rx="6"></rect>
+      <text x="32" y="191">get_single_path: is the whole expression one literal path pattern?</text>
+      <text x="32" y="209" class="d-muted" font-size="11">yes for one bare path, file:, cwd:, root: and the like → fast path</text>
+      <text x="32" y="224" class="d-muted" font-size="11">no for globs, several arguments, or any operator → slow path</text></a>
+
+      <a href="{{ src(cmd, 102, 118) }}"><rect class="d-box" x="20" y="256" width="350" height="100" rx="6"></rect>
+      <text x="32" y="277">fast path: tree.path_value(path)</text>
+      <text x="32" y="295" class="d-muted" font-size="11">absent → Error: No such path (exit 1)</text>
+      <text x="32" y="310" class="d-muted" font-size="11">a directory → fall through to the slow path</text>
+      <text x="32" y="325" class="d-muted" font-size="11">otherwise request_pager, one TreeEntry,</text>
+      <text x="32" y="340" class="d-muted" font-size="11">and return without the unmatched check</text></a>
+      <a href="{{ src(cmd, 120, 132) }}"><rect class="d-box" x="410" y="256" width="330" height="100" rx="6"></rect>
+      <text x="422" y="277">slow path: to_matcher, request_pager</text>
+      <text x="422" y="295" class="d-muted" font-size="11">tree.entries_matching(matcher), files only,</text>
+      <text x="422" y="310" class="d-muted" font-size="11">depth-first in name order</text>
+      <text x="422" y="325" class="d-muted" font-size="11">then print_unmatched_explicit_paths</text>
+      <text x="422" y="340" class="d-muted" font-size="11">(Warning: No matching entries …)</text></a>
+
+      <a href="{{ src(cmd, 148, 201) }}"><rect class="d-box" x="20" y="380" width="720" height="50" rx="6"></rect>
+      <text x="32" y="401">write_tree_entries: per entry, the template, then the materialized contents</text>
+      <text x="32" y="419" class="d-muted" font-size="11">see the algorithm below</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#fsh-arrow)">
+      <line x1="195" y1="60" x2="195" y2="80"></line>
+      <line x1="370" y1="115" x2="406" y2="115"></line>
+      <line x1="575" y1="146" x2="575" y2="166"></line>
+      <line x1="195" y1="232" x2="195" y2="252"></line>
+      <line x1="575" y1="232" x2="575" y2="252"></line>
+      <line x1="370" y1="306" x2="406" y2="306"></line>
+      <line x1="195" y1="356" x2="195" y2="376"></line>
+      <line x1="575" y1="356" x2="575" y2="376"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Commit</td><td>read</td><td>Resolved from <code>-r</code>; only its tree is used, including the tree's conflict labels.</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Trees</td><td>read</td><td>One path is looked up with <code>path_value</code>, or the matched part of the tree is walked (<a href="{{ src(mt, 221, 232) }}">path_value</a>, <a href="{{ src(mt, 448, 514) }}">walk</a>).</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>File contents</td><td>read</td><td>Each file's blob is streamed from the store to stdout (<a href="{{ src(cf, 208, 261) }}">materialize_tree_value</a>).</td><td><a href="{{ url_for('jj', slug='backends') }}">backends</a></td></tr>
+      <tr><td>Conflicts</td><td>read</td><td>A conflict of files is merged and printed with markers; any other conflict is described (<a href="{{ src(cf, 451, 474) }}">materialize_merge_result</a>).</td><td><a href="{{ url_for('jj', slug='conflicts') }}">conflicts</a></td></tr>
+      <tr><td>Filesets and matchers</td><td>read</td><td>The paths become a <code>FilesetExpression</code>, and on the slow path a <code>Matcher</code>.</td><td><a href="{{ src('docs/filesets.md') }}">upstream docs</a></td></tr>
+      <tr><td>Revset engine</td><td>read</td><td>Resolves <code>-r</code> to one commit (<a href="{{ src(cli, 1830, 1841) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='revsets') }}">revsets</a></td></tr>
+      <tr><td>Templates</td><td>read</td><td>Renders the header for each <code>TreeEntry</code>.</td><td><a href="{{ src('docs/templates.md') }}">upstream docs</a></td></tr>
+      <tr><td>Working copy</td><td>read, may snapshot</td><td>Snapshotted by the shared lifecycle, so <code>jj file show path</code> on <code>@</code> prints what is on disk, unless the file is ignored or too large.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="reads">5. What it reads, and snapshotting</h2>
+
+<ul>
+  <li><strong>No transaction, no operation of its own.</strong> The command only reads the repo it
+    loaded (<a href="{{ src(cmd, 83, 133) }}">source</a>).</li>
+  <li><strong>Snapshot:</strong> <code>workspace_helper</code> snapshots the working copy first
+    (<a href="{{ src(cli, 460, 464) }}">source</a>). If files changed on disk, that snapshot records
+    its own operation.</li>
+  <li><strong>Bytes as stored.</strong> A file is copied in 16 KiB chunks from the store's reader to
+    stdout, with no decoding or end-of-line conversion
+    (<a href="{{ src('core/src/file_util.rs', 301, 319) }}">copy_async_to_sync</a>). Files are
+    concatenated with nothing between them unless the template adds it.</li>
+  <li><strong><code>jj undo</code></strong> has nothing to revert, except the snapshot if one was taken.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<p>
+  <strong>Choosing a path.</strong> <code>get_single_path</code> returns a path only when the whole
+  expression is one <code>FilePath</code> or <code>PrefixPath</code> pattern
+  (<a href="{{ src(cmd, 136, 146) }}">source</a>, <a href="{{ src(fs, 271, 279) }}">the same split as as_path</a>).
+  On that fast path, the path's merged value decides
+  (<a href="{{ src(cmd, 102, 118) }}">source</a>):
+</p>
+
+<ol>
+  <li><strong>Absent</strong>: the command fails with <code>No such path</code>. Unlike the slow path,
+    there is no warning-and-continue.</li>
+  <li><strong>A directory</strong> (<code>is_tree</code>: every present term is a tree,
+    <a href="{{ src('core/src/backend.rs', 472, 480) }}">source</a>): nothing is printed yet, and the
+    slow path runs with the prefix matcher, which yields every file under it. A bare <code>.</code>
+    at the workspace root takes this route too, since the root path's value is the whole tree.</li>
+  <li><strong>Anything else</strong>, a file, symlink, submodule or conflict: one entry is printed,
+    and the command returns.</li>
+</ol>
+
+<p>
+  The slow path is the same walk as <code>jj file list</code>: depth-first, name order, directories
+  pruned by the matcher, and trees never yielded as entries
+  (<a href="{{ url_for('jj', slug='file-list') }}#algorithm">details</a>). Afterwards
+  <code>print_unmatched_explicit_paths</code> warns about each literal path that is absent from the
+  tree (<a href="{{ src(cli, 3382, 3413) }}">source</a>).
+</p>
+
+<p>
+  <strong>Printing an entry.</strong> <code>write_tree_entries</code> renders the template first, then
+  materializes the value and dispatches on it (<a href="{{ src(cmd, 156, 198) }}">source</a>,
+  <a href="{{ src(cf, 134, 149) }}">MaterializedTreeValue</a>):
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 310" role="img" aria-labelledby="fsh-alg-title fsh-alg-desc">
+    <title id="fsh-alg-title">How jj file show prints one entry</title>
+    <desc id="fsh-alg-desc">
+      For each entry, write_tree_entries formats the template to stdout, then calls
+      materialize_tree_value. A resolved file is copied byte for byte to stdout. A conflict made only of
+      files and absences is merged by materialize_merge_result and written with conflict markers in the
+      configured style. Any other conflict is written as a description of its terms. A symlink or Git
+      submodule gives the warning that the path exists but is not a file. A read the backend reports as
+      access denied gives a warning too. Absent values and trees are never passed in, and panic if they are.
+    </desc>
+    <defs>
+      <marker id="fsh-alg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(cmd, 156, 161) }}"><rect class="d-box" x="20" y="20" width="250" height="244" rx="6"></rect>
+      <text x="32" y="44">for each entry:</text>
+      <text x="32" y="68" font-size="11">1. template.format(entry)</text>
+      <text x="44" y="84" font-size="11" class="d-muted">→ stdout (empty by default)</text>
+      <text x="32" y="108" font-size="11">2. materialize_tree_value(</text>
+      <text x="44" y="124" font-size="11" class="d-muted">store, path, value,</text>
+      <text x="44" y="140" font-size="11" class="d-muted">tree.labels())</text>
+      <text x="32" y="164" font-size="11">3. match the result</text>
+      <text x="32" y="196" font-size="11" class="d-muted">stdout: contents</text>
+      <text x="32" y="212" font-size="11" class="d-muted">stderr: warnings</text>
+      <text x="32" y="236" font-size="11" class="d-muted">a warning doesn't stop</text>
+      <text x="32" y="252" font-size="11" class="d-muted">the others</text></a>
+
+      <a href="{{ src(cmd, 170, 172) }}"><rect class="d-box" x="330" y="20" width="410" height="34" rx="6"></rect>
+      <rect class="d-accent" fill="none" x="334" y="24" width="402" height="26" rx="4"></rect>
+      <text x="342" y="42" font-size="11">File → copy_async_to_sync(reader, stdout)</text></a>
+      <a href="{{ src(cmd, 173, 185) }}"><rect class="d-box" x="330" y="62" width="410" height="34" rx="6"></rect>
+      <text x="342" y="84" font-size="11">FileConflict → materialize_merge_result, ui.conflict-marker-style</text></a>
+      <a href="{{ src(cmd, 186, 189) }}"><rect class="d-box" x="330" y="104" width="410" height="34" rx="6"></rect>
+      <text x="342" y="126" font-size="11">OtherConflict → "Conflict: Removing … Adding …" (describe)</text></a>
+      <a href="{{ src(cmd, 190, 196) }}"><rect class="d-box" x="330" y="146" width="410" height="34" rx="6"></rect>
+      <text x="342" y="168" font-size="11">Symlink, GitSubmodule → Warning: … exists but is not a file.</text></a>
+      <a href="{{ src(cmd, 163, 169) }}"><rect class="d-box" x="330" y="188" width="410" height="34" rx="6"></rect>
+      <text x="342" y="210" font-size="11">AccessDenied → Warning: … exists but access is denied</text></a>
+      <a href="{{ src(cmd, 162, 162) }}"><rect class="d-box" x="330" y="230" width="410" height="34" rx="6"></rect>
+      <text x="342" y="252" font-size="11" class="d-muted">Absent, Tree → panic (filtered out before this point)</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="270" y1="142" x2="300" y2="142"></line>
+      <line x1="300" y1="37" x2="300" y2="247"></line>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#fsh-alg-arrow)">
+      <line x1="300" y1="37" x2="326" y2="37"></line>
+      <line x1="300" y1="79" x2="326" y2="79"></line>
+      <line x1="300" y1="121" x2="326" y2="121"></line>
+      <line x1="300" y1="163" x2="326" y2="163"></line>
+      <line x1="300" y1="205" x2="326" y2="205"></line>
+      <line x1="300" y1="247" x2="326" y2="247"></line>
+    </g>
+    <g font-size="11" class="d-muted">
+      <text x="20" y="292">Outlined: the common case. The header is written before the contents, so a symlink still gets its header line.</text>
+    </g>
+  </svg>
+</div>
+
+<p>
+  A conflict counts as a file conflict when every term is a file or absent; its contents are read
+  and simplified with their labels (<a href="{{ src(cf, 263, 287) }}">source</a>). The merge is
+  attempted again with the store's merge options, so a conflict that now resolves is printed as
+  plain text; otherwise the markers use the configured style, a marker length long enough not to
+  clash with the contents, and the files' own line endings (<a href="{{ src(cf, 451, 474) }}">source</a>).
+  These are the same markers jj writes into the working copy; the
+  <a href="{{ url_for('jj', slug='conflicts') }}">conflicts page</a> explains them.
+</p>
+
+<p>
+  <strong>Invariants:</strong> nothing is written anywhere but stdout and stderr. Files are printed in
+  depth-first name order. Contents come from the commit's tree, never directly from disk. A missing
+  single path fails before anything is printed; on the slow path the warning comes after all output.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Error: No such path: &lt;path&gt;</code> (exit 1)</td><td>The only argument is a literal path, and it is absent from the tree.</td><td><a href="{{ src(cmd, 105, 108) }}">show.rs</a></td></tr>
+      <tr><td><code>Warning: No matching entries for paths: &lt;paths&gt;</code></td><td>On the slow path, a literal path is absent. Everything else is still printed, and the command succeeds.</td><td><a href="{{ src(cli, 3401, 3410) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Warning: Path '&lt;path&gt;' exists but is not a file.</code></td><td>A matched entry is a symlink or a Git submodule. Its header is still printed.</td><td><a href="{{ src(cmd, 190, 196) }}">show.rs</a></td></tr>
+      <tr><td><code>Warning: Path '&lt;path&gt;' exists but access is denied: &lt;err&gt;</code></td><td>The backend refused to read the file.</td><td><a href="{{ src(cmd, 163, 169) }}">show.rs</a>, <a href="{{ src(cf, 208, 220) }}">conflicts.rs</a></td></tr>
+      <tr><td>Usage error (exit 2)</td><td>No path was given; <code>FILESETS</code> is required.</td><td><a href="{{ src(cmd, 71, 74) }}">show.rs</a></td></tr>
+      <tr><td><code>Revset `…` resolved to more than one revision</code> (or to none)</td><td><code>-r</code> isn't exactly one commit.</td><td><a href="{{ src('cli/src/revset_util.rs', 302, 331) }}">revset_util.rs</a></td></tr>
+      <tr><td>Fileset or template parse error</td><td>A path isn't a valid fileset or lies outside the workspace, or the template doesn't parse against <code>TreeEntry</code>.</td><td><a href="{{ src(cli, 1620, 1633) }}">cli_util.rs</a>, <a href="{{ src(cmd, 97, 99) }}">show.rs</a></td></tr>
+      <tr><td>Backend error</td><td>A tree or file can't be read for another reason. The command stops after what was already printed.</td><td><a href="{{ src(cmd, 157, 160) }}">show.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Example output</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 20, 134) }}">test_show</a>. <code>@-</code> has
+  <code>file1</code> containing <code>a</code>. <code>@</code> changes it to <code>b</code> and adds
+  <code>dir/file2</code> (<code>c</code>) and <code>file3</code> (<code>d</code>):
+</p>
+
+<pre><code>$ jj file show file1 -r @-
+a
+
+$ jj file show file1
+b
+
+$ jj file show dir
+c
+
+$ jj file show nonexistent
+Error: No such path: nonexistent</code></pre>
+
+<p>A header template, and several files through a directory and a glob:</p>
+
+<pre><code>$ jj file show -T '"--- " ++ path ++ "\n"' .
+--- dir/file2
+c
+--- file1
+b
+--- file3
+d
+
+$ jj file show 'file*'
+b
+d
+
+$ jj file show file1 non-existent
+b
+Warning: No matching entries for paths: non-existent</code></pre>
+
+<p>
+  A conflict. A new commit changes <code>file1</code> to <code>c</code> and is rebased onto the
+  commit where it is <code>a</code>, so the default <code>diff</code> style prints a diff and a
+  snapshot:
+</p>
+
+<pre><code>$ jj file show file1
+&lt;&lt;&lt;&lt;&lt;&lt;&lt; conflict 1 of 1
+%%%%%%% diff from: rlvkpnrz fc7b369e (parents of rebased revision)
+\\\\\\\        to: qpvuntsm eb7b8a1f (rebase destination)
+-b
++a
++++++++ kmkuslsw f74f80c5 (rebased revision)
+c
+&gt;&gt;&gt;&gt;&gt;&gt;&gt; conflict 1 of 1 ends</code></pre>
+
+<p>
+  A symlink gets its header but no contents, and a warning on stderr
+  (<a href="{{ src(t, 136, 163) }}">test_show_symlink</a>):
+</p>
+
+<pre><code>$ jj file show -T '"--- " ++ path ++ " [" ++ file_type ++ "]\n"' .
+--- dir/file2 [file]
+c
+--- file1 [file]
+a
+--- symlink1 [symlink]
+Warning: Path 'symlink1' exists but is not a file.</code></pre>
