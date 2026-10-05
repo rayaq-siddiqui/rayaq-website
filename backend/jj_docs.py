@@ -1070,6 +1070,16 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "config-get": {
+        "title": "How jj config get works",
+        "sources": [
+            "cli/src/commands/config/get.rs",
+            "lib/src/config.rs",
+            "lib/src/settings.rs",
+            "cli/src/config.rs",
+        ],
+        "ready": True,
+    },
     "git-colocation": {
         "title": "How jj git colocation works",
         "sources": [
