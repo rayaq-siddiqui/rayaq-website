@@ -218,7 +218,6 @@ HONORS = [
 ]
 
 CERTIFICATIONS = [
-    "Microsoft Certified: Azure AI Engineer Associate (2026)",
     "Google Cloud Generative AI Leader (2026)",
     "Deep Learning Specialization (2024)",
     "IBM DevOps and Software Engineering Professional Certificate (2024)",
