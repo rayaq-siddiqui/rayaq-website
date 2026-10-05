@@ -103,9 +103,8 @@ def test_resume_renders_experience_and_education():
     assert "BlackBerry Limited" in body
     assert "RBC" in body
     assert "Polar" in body
-    assert "RDH-SCHARF" in body
     assert "CloudMesh" in body
-    assert "NeuroTechX" in body
+    assert "Text Recognition Glasses" in body
 
 
 def test_resume_omits_phone_number():
@@ -132,7 +131,6 @@ def test_resume_renders_leadership():
     body = client.get("/resume").get_data(as_text=True)
 
     assert "Leadership" in body
-    assert "Wat.AI" in body
     assert "Kids Caring for Kids Cancer Drive" in body
 
 

@@ -146,19 +146,6 @@ EXPERIENCES = [
         ],
         "icon": {"type": "initials", "initials": "P", "bg": "#0EA5E9", "fg": "#ffffff"},
     },
-    {
-        "company": "RDH-SCHARF",
-        "location": "Alban, ON",
-        "role": "Mechanical Engineering Design Intern (Co-op)",
-        "stack": "SolidWorks, Mechanical Design, Quality Control",
-        "dates": "Jun. 2019 – Aug. 2020",
-        "bullets": [
-            "Designed mining equipment and heavy machinery in SolidWorks before starting university",
-            "Performed quality-control measurement work on manufactured parts",
-            "Created an alphabetized organization system for the company's technical drawings",
-        ],
-        "icon": {"type": "initials", "initials": "RS", "bg": "#B45309", "fg": "#ffffff"},
-    },
 ]
 
 PROJECTS = [
@@ -175,11 +162,11 @@ PROJECTS = [
         ],
     },
     {
-        "name": "Watolink Design Team, NeuroTechX",
-        "stack": "Python, BCI, Signal Analysis",
+        "name": "Text Recognition Glasses",
+        "stack": "Python, Computer Vision, OCR, NLP",
         "bullets": [
-            "<strong>Placed 1st internationally</strong> in the NeuroTechX competition for EEG-based "
-            "brain-computer-interface signal analysis",
+            "A wearable that reads text in front of the user, combining optical character recognition with "
+            "natural-language processing",
         ],
     },
     {
@@ -199,22 +186,15 @@ PROJECTS = [
         ],
     },
     {
-        "name": "No Place For Hate",
-        "stack": "JavaScript, NLP, Chrome Extension",
+        "name": "Semantic Segmentation for Self-Driving Cars",
+        "stack": "Python, Deep Learning, Computer Vision",
         "bullets": [
-            "A Chrome extension that uses AI to detect and block hate speech while browsing",
+            "Semantic segmentation of autonomous-driving imagery, classifying every pixel of each frame",
         ],
     },
 ]
 
 LEADERSHIP = [
-    {
-        "name": "Wat.AI",
-        "role": "Technical Project Manager",
-        "bullets": [
-            "Held project-management responsibility for ML projects in the University of Waterloo's AI club",
-        ],
-    },
     {
         "name": "Kids Caring for Kids Cancer Drive",
         "role": "Lead · Jul. 2018 – Jun. 2020",
