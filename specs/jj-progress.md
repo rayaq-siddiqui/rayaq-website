@@ -4,7 +4,7 @@ Running log for the daily jj architecture Routine. Read this first, update it la
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
 **Last updated:** 2026-10-05 (forty-fourth run): no upstream change since `4df5265`; built
-`diff`. `interdiff` is next.
+`diff` and `interdiff`. `status` is next.
 
 ## Upstream pin
 
@@ -26,8 +26,8 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 73 of 105: Tier A 65 of 65 (complete),
-      Tier B 8 of 27 (`file annotate`/`list`/`search`/`show`, `sparse list`, `log`, `show`, `diff`), Tier C 0 of 13. Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 74 of 105: Tier A 65 of 65 (complete),
+      Tier B 9 of 27 (`file annotate`/`list`/`search`/`show`, `sparse list`, `log`, `show`, `diff`, `interdiff`), Tier C 0 of 13. Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
       `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`, `absorb`, `duplicate`,
       `bookmark create`/`set`/`move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`,
       `parallelize`, `simplify-parents`, `arrange`, `converge`, `revert`, `diffedit`, `run`,
@@ -41,9 +41,9 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 ## Thirty-ninth to forty-fourth runs (2026-10-05)
 
 Pin unchanged (`4df5265`). Forty-fourth run: `2c09138`, `diff` (`--from`/`--to` vs. `-r`, the
-`roots..heads` gap check, merged roots' parents vs. merged heads, `-T` with an empty format list;
-a call-flow SVG and a `B::E` range SVG). Forty-third run: `44f5c36`, `show` (the shared diff-format flags and
-`diff_formats_for`, `parent_tree`'s empty-by-index shortcut and recursive merge for merge commits,
+`roots..heads` gap check, merged parents vs. merged heads, `-T`; flow and `B::E` range SVGs);
+`b4b1576`, `interdiff` (`rebase_to_dest_parent` onto `--to`'s parents, `JJ-COMMIT-DESCRIPTION`
+pseudo-file, no copy records). Forty-third run: `44f5c36`, `show` (format flags, `parent_tree` shortcut and merge,
 copy records; a call-flow SVG and a merge-parent-tree SVG). Forty-second run: `8401046`, `log`
 (flags and config, the `TopoGroupedGraphIterator` ordering, direct/indirect/missing edges,
 transitive-edge removal, elided nodes, `-n`/`--reversed`; a call-flow SVG and an elided-graph SVG).
@@ -110,7 +110,7 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
 2. Remaining topic pages: ~~`conflicts`~~, ~~`storage`~~, ~~`index`~~, ~~`revsets`~~, ~~`backends`~~.
    All topics done.
 3. **Next.** Tier B commands, in registry order: ~~`file annotate`~~, ~~`file list`~~, ~~`file search`~~, ~~`file show`~~,
-   ~~`sparse list`~~, ~~`log`~~, ~~`show`~~, ~~`diff`~~, `interdiff`, `status`, `evolog`, `root`, `operation diff`,
+   ~~`sparse list`~~, ~~`log`~~, ~~`show`~~, ~~`diff`~~, ~~`interdiff`~~, `status`, `evolog`, `root`, `operation diff`,
    `operation log`, `operation show`, `bookmark list`, `tag list`, `git root`, `workspace list`,
    `workspace root`, `config edit`/`gc`/`get`/`list`/`path`/`set`/`unset`.
 4. Tier C commands (`debug` and `bench` each as one shared page).
