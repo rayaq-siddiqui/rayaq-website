@@ -1,0 +1,303 @@
+{% set lg = "cli/src/commands/operation/log.rs" %}
+{% set om = "cli/src/commands/operation/mod.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set ow = "lib/src/op_walk.rs" %}
+{% set dw = "core/src/dag_walk_async.rs" %}
+{% set gr = "core/src/graph.rs" %}
+{% set ot = "cli/src/operation_templater.rs" %}
+{% set tpl = "cli/src/config/templates.toml" %}
+{% set t = "cli/tests/test_operations.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj operation log</code> works</h1>
+  <p class="tagline">
+    <code>jj operation log</code> (alias <code>jj op log</code>) prints the operation history: every
+    operation reachable from the current one, newest first, drawn as a graph of operations and their
+    parents.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj resolves the current operation, walks its ancestors lazily in reverse topological order
+  (ordered by end time where the history forks), and renders each operation with the
+  <code>templates.op_log</code> template beside a graph node. With <code>--op-diff</code> or a patch flag it
+  also prints, under each operation, what that operation changed compared to its parent, using the same
+  code as <a href="{{ url_for('jj', slug='operation-diff') }}">jj operation diff</a>.
+</p>
+
+<p>
+  The command is <a href="{{ src(lg, 107, 128) }}"><code>cmd_op_log</code></a>, and the work is in
+  <a href="{{ src(lg, 130, 297) }}"><code>do_op_log</code></a>. The help text: "Show the operation log",
+  noting that "Like other commands, <code>jj op log</code> snapshots the current working-copy changes and
+  reconciles divergent operations" (<a href="{{ src(lg, 47, 51) }}">source</a>). It is registered as
+  <code>Log(OperationLogArgs)</code> in the <code>operation</code> group
+  (<a href="{{ src(om, 54, 54) }}">source</a>, <a href="{{ src(om, 69, 69) }}">dispatch</a>).
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>-n</code>, <code>--limit</code> <code>N</code></td><td>"Limit number of operations to show". "Applied after operations are reordered topologically, but before being reversed" (<a href="{{ src(lg, 54, 59) }}">source</a>).</td></tr>
+      <tr><td><code>--reversed</code></td><td>"Show operations in the opposite order (older operations first)" (<a href="{{ src(lg, 61, 63) }}">source</a>).</td></tr>
+      <tr><td><code>-G</code>, <code>--no-graph</code></td><td>"Show a flat list of operations instead of a graph" (<a href="{{ src(lg, 65, 67) }}">source</a>).</td></tr>
+      <tr><td><code>-T</code>, <code>--template</code> <code>TEMPLATE</code></td><td>Render each operation with this template instead of <code>templates.op_log</code>; all zero-argument methods of the <code>Operation</code> type are keywords (<a href="{{ src(lg, 69, 82) }}">source</a>).</td></tr>
+      <tr><td><code>-d</code>, <code>--op-diff</code></td><td>"Show changes to the repository at each operation" (<a href="{{ src(lg, 84, 86) }}">source</a>).</td></tr>
+      <tr><td><code>-p</code>, <code>--patch</code></td><td>"Show patch of modifications to changes (implies --op-diff)", rebasing a previous version onto the new version's parents first if they differ (<a href="{{ src(lg, 88, 94) }}">source</a>).</td></tr>
+      <tr><td>Diff format flags (<code>--summary</code>, <code>--stat</code>, <code>--git</code>, …)</td><td>The shared <code>DiffFormatArgs</code> (<a href="{{ src(lg, 96, 97) }}">source</a>). Any format also turns the operation diff on (<a href="{{ src(lg, 166, 167) }}">source</a>); see <a href="{{ url_for('jj', slug='diff') }}#cli">jj diff</a>.</td></tr>
+      <tr><td><code>--show-changes-in</code> <code>REVSETS</code></td><td>"Show only changed revisions matching the given revset expression", defaulting to <code>revsets.op-diff-changes-in</code> (<a href="{{ src(lg, 99, 104) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p class="jj-source">
+  The global flags are on the <a href="{{ url_for('jj', slug='cli') }}#global-flags">CLI page</a>; two of them,
+  <code>--at-op</code> and <code>--ignore-working-copy</code>, change how this command loads (see
+  <a href="#reads">section 5</a>).
+</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Setting</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>templates.op_log</code></td><td><code>builtin_op_log_compact</code></td><td>Each operation's text (<a href="{{ src(tpl, 34, 34) }}">default</a>, <a href="{{ src(lg, 150, 156) }}">source</a>). The built-ins are <code>builtin_op_log_compact</code>, <code>_comfortable</code> (compact plus a blank line), <code>_oneline</code> and <code>_redacted</code> (<a href="{{ src(tpl, 265, 296) }}">source</a>).</td></tr>
+      <tr><td><code>templates.op_log_node</code></td><td><code>builtin_op_log_node</code>, or the ASCII variant when <code>ui.graph.style</code> starts with <code>ascii</code></td><td>The node symbol: <code>@</code> for the current operation, otherwise <code>○</code> (<code>o</code> in ASCII) (<a href="{{ src(tpl, 68, 74) }}">source</a>, <a href="{{ src(tpl, 617, 629) }}">source</a>, <a href="{{ src(lg, 157, 163) }}">source</a>).</td></tr>
+      <tr><td><code>templates.commit_summary</code></td><td></td><td>The commit lines of an operation diff, labelled <code>op_log</code> and <code>commit</code> (<a href="{{ src(lg, 168, 168) }}">source</a>, <a href="{{ src(lg, 192, 198) }}">source</a>).</td></tr>
+      <tr><td><code>revsets.op-diff-changes-in</code></td><td><code>mutable() | immutable_heads()</code></td><td>Which changed commits an operation diff lists (<a href="{{ src(lg, 169, 170) }}">source</a>); see <a href="{{ url_for('jj', slug='operation-diff') }}#elision">elision</a>.</td></tr>
+      <tr><td><code>ui.graph.style</code>, <code>ui.log-word-wrap</code>, <code>ui.pager</code></td><td></td><td>Graph style, wrapping text to the width left beside the graph, and the pager, which the command requests (<a href="{{ src(lg, 137, 139) }}">source</a>, <a href="{{ src(util, 3506, 3513) }}">source</a>, <a href="{{ src(lg, 235, 235) }}">source</a>). See <a href="{{ url_for('jj', slug='log') }}#configuration">jj log</a>.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The default text template, <code>builtin_op_log_compact</code>, labels the current operation
+  <code>current_operation</code> and prints the root operation as its short id and <code>root()</code>
+  (<a href="{{ src(tpl, 467, 469) }}">source</a>). Every other operation gets a first line of short id,
+  <code>user@host</code>, the workspace name with <code>@</code> (empty if the operation has none), and its
+  time range; then the first line of its description; then its attributes, such as <code>args:</code>, one
+  per line (<a href="{{ src(tpl, 438, 449) }}">source</a>). Snapshot operations use the same format
+  (<a href="{{ src(tpl, 465, 465) }}">source</a>). The <code>Operation</code> keywords are
+  <code>current_operation</code>, <code>description</code>, <code>id</code>, <code>attributes</code>,
+  <code>snapshot</code>, <code>workspace_name</code>, <code>time</code>, <code>user</code>, <code>root</code> and
+  <code>parents</code>, plus a deprecated <code>tags</code> (<a href="{{ src(ot, 512, 642) }}">source</a>).
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 524" role="img" aria-labelledby="ol-flow-title ol-flow-desc">
+    <title id="ol-flow-title">jj operation log: call flow</title>
+    <desc id="ol-flow-desc">
+      After the shared lifecycle, cmd_op_log checks whether the working copy is writable. If it is, it loads
+      the repo at the head operation and snapshots the working copy. If --at-op names another operation or
+      --ignore-working-copy is given, it loads only the workspace and resolves the operation without loading
+      the repo. do_op_log then parses the op_log and op_log_node templates and, with --op-diff or a diff
+      format, prepares the per-operation diff. walk_ancestors streams the operations newest first, take
+      applies --limit, and each operation is rendered either into the graph, optionally reversed with
+      reverse_graph, or as a flat list. The optional operation diff is printed under each operation.
+    </desc>
+    <defs>
+      <marker id="ol-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: parse args, load config (CLI page)</text></a>
+
+      <a href="{{ src(util, 779, 791) }}"><rect class="d-box" x="20" y="84" width="720" height="40" rx="6"></rect>
+      <text x="32" y="109">is_working_copy_writable: no --at-op (or --at-op=@) and no --ignore-working-copy</text></a>
+
+      <a href="{{ src(lg, 112, 116) }}"><rect class="d-box" x="20" y="148" width="350" height="50" rx="6"></rect>
+      <text x="32" y="169">yes: workspace_helper</text>
+      <text x="32" y="187" class="d-muted" font-size="11">load the repo at the head op, snapshot</text></a>
+      <a href="{{ src(lg, 117, 127) }}"><rect class="d-box" x="400" y="148" width="340" height="50" rx="6"></rect>
+      <text x="412" y="169">no: load_workspace, resolve_operation</text>
+      <text x="412" y="187" class="d-muted" font-size="11">the repo itself is never loaded</text></a>
+
+      <a href="{{ src(lg, 141, 164) }}"><rect class="d-box" x="20" y="222" width="720" height="50" rx="6"></rect>
+      <text x="32" y="243">parse templates.op_log (or -T) and templates.op_log_node</text>
+      <text x="32" y="261" class="d-muted" font-size="11">labelled op_log, operation (and node)</text></a>
+
+      <a href="{{ src(lg, 166, 233) }}"><rect class="d-box" x="20" y="296" width="720" height="50" rx="6"></rect>
+      <text x="32" y="317">--op-diff, -p or a diff format: build the per-operation show closure</text>
+      <text x="32" y="335" class="d-muted" font-size="11">merge the op's parents, load both repos, call show_op_diff</text></a>
+
+      <a href="{{ src(lg, 238, 239) }}"><rect class="d-box" x="20" y="370" width="720" height="50" rx="6"></rect>
+      <text x="32" y="391">walk_ancestors([current_op]).take(--limit)</text>
+      <text x="32" y="409" class="d-accent" font-size="11">a lazy stream: operations load only as they are printed</text></a>
+
+      <a href="{{ src(lg, 241, 279) }}"><rect class="d-box" x="20" y="444" width="350" height="60" rx="6"></rect>
+      <text x="32" y="467">Graph: one direct edge per parent</text>
+      <text x="32" y="487" class="d-muted" font-size="11">--reversed collects all, then reverse_graph</text></a>
+      <a href="{{ src(lg, 280, 294) }}"><rect class="d-box" x="400" y="444" width="340" height="60" rx="6"></rect>
+      <text x="412" y="467">--no-graph: a flat list</text>
+      <text x="412" y="487" class="d-muted" font-size="11">--reversed collects all, then reverses</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#ol-arrow)">
+      <line x1="380" y1="60" x2="380" y2="82"></line>
+      <line x1="195" y1="124" x2="195" y2="146"></line>
+      <line x1="570" y1="124" x2="570" y2="146"></line>
+      <line x1="195" y1="198" x2="195" y2="220"></line>
+      <line x1="570" y1="198" x2="570" y2="220"></line>
+      <line x1="380" y1="272" x2="380" y2="294"></line>
+      <line x1="380" y1="346" x2="380" y2="368"></line>
+      <line x1="195" y1="420" x2="195" y2="442"></line>
+      <line x1="570" y1="420" x2="570" y2="442"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Piece</th><th>Role here</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(util, 798, 830) }}"><code>CommandHelper::resolve_operation</code></a></td><td>With <code>--at-op</code>, resolves that expression; see <a href="{{ url_for('jj', slug='operations') }}#opsets">operation expressions</a>. Otherwise it resolves the op heads, merging several into a new "reconcile divergent operations" operation; see <a href="{{ url_for('jj', slug='operations') }}#concurrency">concurrency</a>.</td></tr>
+      <tr><td><a href="{{ src(ow, 262, 286) }}"><code>op_walk::walk_ancestors</code></a></td><td>Streams the operation and all its ancestors, each parent loaded from the op store when reached.</td></tr>
+      <tr><td><a href="{{ src(ow, 243, 260) }}"><code>OperationByEndTime</code></a></td><td>Orders operations by end time, then by the operation itself to stay consistent with equality.</td></tr>
+      <tr><td><a href="{{ src(dw, 135, 169) }}"><code>dag_walk_async::topo_order_reverse_lazy</code></a></td><td>The lazy reverse topological walk (see <a href="#walk">the walk</a>).</td></tr>
+      <tr><td><a href="{{ src(gr, 94, 118) }}"><code>graph::reverse_graph</code></a></td><td>For <code>--reversed</code> in graph mode: flips every edge and the node order.</td></tr>
+      <tr><td><a href="{{ src(util, 849, 878) }}"><code>merge_operations</code></a> and <a href="{{ url_for('jj', slug='operation-diff') }}"><code>show_op_diff</code></a></td><td>The operation diff under each operation, against the merge of its parents.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="reads">5. What it reads, and snapshotting</h2>
+
+<p>
+  Without <code>--at-op</code> (or with <code>--at-op=@</code>) and without <code>--ignore-working-copy</code>,
+  the command goes through <code>workspace_helper</code>: it loads the repo at the head operation, merging
+  divergent op heads into a new operation if there are several, and snapshots the working copy, which can
+  write a snapshot operation. That operation is then the current one and is listed first
+  (<a href="{{ src(lg, 112, 116) }}">source</a>, <a href="{{ src(util, 779, 791) }}">source</a>).
+</p>
+<p>
+  Otherwise it loads only the workspace and resolves the operation, without loading the repo at it,
+  "so that the operation history can be inspected even with a corrupted repo state. For example, you can
+  find the first bad operation id to be abandoned" (<a href="{{ src(lg, 117, 127) }}">source</a>). The help
+  text recommends <code>--at-op=@ --ignore-working-copy</code> "to inspect the current state without
+  mutation" (<a href="{{ src(lg, 49, 51) }}">source</a>). Op heads are still merged if
+  <code>--at-op</code> is absent (<a href="{{ src(util, 804, 828) }}">source</a>).
+</p>
+<p>
+  Beyond that it reads operation objects from the op store. Only with <code>--op-diff</code> or a diff
+  format does it read views, commit indexes, commits and, for patches, trees and file contents.
+</p>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="walk">The walk</h3>
+<p>
+  <code>walk_ancestors</code> wraps each operation in <code>OperationByEndTime</code> and calls
+  <code>topo_order_reverse_lazy</code>, whose neighbours are the operation's parents
+  (<a href="{{ src(ow, 262, 286) }}">source</a>). While at most one operation is pending, the walk is
+  linear: it emits that operation and queues its parents (<a href="{{ src(dw, 213, 222) }}">source</a>).
+  When several are pending, it pops operations by latest end time until the branches meet again in a single
+  operation, then sorts that piece topologically and emits it
+  (<a href="{{ src(dw, 224, 254) }}">source</a>, <a href="{{ src(dw, 332, 378) }}">source</a>). Upstream's
+  note: this "works so long as the operation history is mostly linear"
+  (<a href="{{ src(ow, 271, 272) }}">source</a>). Each operation is emitted once, and a cycle panics with
+  "graph has cycle" (<a href="{{ src(ow, 283, 283) }}">source</a>).
+</p>
+
+<h3 id="graph">The graph</h3>
+<p>
+  Each operation's edges are one direct edge per parent id; there are no indirect or missing edges as in
+  <a href="{{ url_for('jj', slug='log') }}#edges">jj log</a> (<a href="{{ src(lg, 244, 248) }}">source</a>).
+  The text is rendered into a buffer at the width left beside the graph, followed by the operation diff if
+  any, and then added as a node with the <code>op_log_node</code> symbol
+  (<a href="{{ src(lg, 259, 279) }}">source</a>). Without <code>--reversed</code>, operations are printed as
+  the stream yields them.
+</p>
+
+<h3 id="limit">--limit and --reversed</h3>
+<p>
+  <code>--limit</code> is a <code>take</code> on the stream, so it cuts the newest-first order
+  (<a href="{{ src(lg, 238, 239) }}">source</a>). <code>--reversed</code> must then collect every remaining
+  operation: in graph mode <code>reverse_graph</code> turns parent edges into child edges and reverses the
+  order; in flat mode the list is simply reversed (<a href="{{ src(lg, 249, 258) }}">source</a>,
+  <a href="{{ src(lg, 281, 285) }}">source</a>). So <code>-n 3 --reversed</code> shows the three newest
+  operations, oldest first.
+</p>
+
+<h3 id="op-diff">Operation diffs</h3>
+<p>
+  For each operation, jj loads its parents and merges them with <code>merge_operations</code>, passing no
+  <code>ui</code>, workspace name, description or arguments, then loads the repo at the merged parent and at
+  the operation (<a href="{{ src(lg, 175, 189) }}">source</a>). If the operation has more than one parent it
+  prints nothing, because the merged repo "may have newly rebased commits, which wouldn't exist in the
+  index" (<a href="{{ src(lg, 210, 214) }}">source</a>); that check comes after the merge. Otherwise it calls
+  <code>show_op_diff</code> with the graph style unless <code>--no-graph</code>
+  (<a href="{{ src(lg, 215, 228) }}">source</a>). In the tests the root operation shows no
+  changes (<a href="{{ src(t, 83, 107) }}">test</a>).
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Situation</th><th>Behaviour</th></tr></thead>
+    <tbody>
+      <tr><td>Several op heads, no <code>--at-op</code></td><td><code>Concurrent modification detected, resolving automatically.</code> on stderr; a "reconcile divergent operations" operation is written and listed first (<a href="{{ src(util, 807, 826) }}">source</a>, <a href="{{ src(t, 294, 313) }}">test</a>).</td></tr>
+      <tr><td><code>--at-op</code> that is not a valid operation</td><td>For example <code>Operation ID "foo" is not a valid hexadecimal prefix</code> (<a href="{{ src(ow, 91, 109) }}">source</a>, <a href="{{ src(t, 76, 81) }}">test</a>, with <code>jj log</code>).</td></tr>
+      <tr><td><code>-T</code> with no value</td><td>A clap error, with a hint listing the defined template aliases (<a href="{{ src(t, 182, 225) }}">test</a>).</td></tr>
+      <tr><td>A merge operation with <code>--op-diff</code></td><td>No diff is printed under it (<a href="{{ src(lg, 210, 214) }}">source</a>).</td></tr>
+      <tr><td>A cycle in the operation graph</td><td>A panic, "graph has cycle" (<a href="{{ src(ow, 283, 283) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Example output</h2>
+
+<p>
+  After <code>jj git init</code> and one <code>jj describe</code>, from upstream's test
+  (<a href="{{ src(t, 29, 46) }}">source</a>):
+</p>
+
+<pre><code>$ jj op log
+@  7749eb4df93f test-username@host.example.com default@ 2001-02-03 04:05:08.000 +07:00 - 2001-02-03 04:05:08.000 +07:00
+│  describe commit e8849ae12c709f2321908879bc724fdb2ab8a781
+│  args: jj describe -m 'description 0'
+○  f63ee16f9553 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
+│  add workspace 'default'
+○  000000000000 root()</code></pre>
+
+<p>
+  A forked history, after a second <code>describe</code> at <code>--at-op @-</code>, with a template that
+  prints each operation's parents (<a href="{{ src(t, 3131, 3160) }}">source</a>):
+</p>
+
+<pre><code>@    7f1c9ff8575c
+├─╮  P: 2 7749eb4df93f 3cb69b18c151
+○ │  7749eb4df93f
+│ │  P: 1 f63ee16f9553
+│ ○  3cb69b18c151
+├─╯  P: 1 f63ee16f9553
+○  f63ee16f9553
+│  P: 1 000000000000
+○  000000000000
+   P: 0</code></pre>
+
+<p>
+  With <code>--op-diff</code>, each operation is followed by its changes (<a href="{{ src(t, 83, 107) }}">source</a>):
+</p>
+
+<pre><code>@  7749eb4df93f test-username@host.example.com default@ 2001-02-03 04:05:08.000 +07:00 - 2001-02-03 04:05:08.000 +07:00
+│  describe commit e8849ae12c709f2321908879bc724fdb2ab8a781
+│  args: jj describe -m 'description 0'
+│
+│  Changed commits:
+│  ○  + qpvuntsm 3ae22e7f (empty) description 0
+│     - qpvuntsm/1 e8849ae1 (hidden) (empty) (no description set)
+│
+│  Changed working copy default@:
+│  + qpvuntsm 3ae22e7f (empty) description 0
+│  - qpvuntsm/1 e8849ae1 (hidden) (empty) (no description set)
+…</code></pre>
+
+<p class="jj-source">See also <a href="{{ url_for('jj', slug='operations') }}#operation">operations</a> for what an operation records, and <a href="{{ url_for('jj', slug='operation-diff') }}">jj operation diff</a>.</p>

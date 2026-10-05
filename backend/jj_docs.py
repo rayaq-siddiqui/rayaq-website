@@ -1794,6 +1794,17 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "operation-log": {
+        "title": "How jj operation log works",
+        "sources": [
+            "cli/src/commands/operation/log.rs",
+            "cli/src/cli_util.rs",
+            "lib/src/op_walk.rs",
+            "core/src/dag_walk_async.rs",
+            "cli/src/operation_templater.rs",
+        ],
+        "ready": True,
+    },
 }
 
 
