@@ -7,15 +7,21 @@ CONTACT = {
 HEADLINE = "Software Engineer @ Google · University of Waterloo SE Alum"
 LOCATION = "San Francisco, CA"
 
-SUMMARY = "I enjoy working on complex problems across software engineering and mathematics."
+SUMMARY = (
+    "ML systems engineer who has worked at every layer of the stack, from MLIR compilers to "
+    "Google-scale distributed systems. Today I build JJ, the next-generation version control system "
+    "on track to serve every engineer at Google. Before that: ML compiler work with 20x LLM inference "
+    "speedups, and production ML serving 9M users/year."
+)
 
 EDUCATION = {
     "school": "University of Waterloo",
     "location": "Waterloo, ON",
     "degree": "Bachelor of Engineering in Software Engineering, Specialization in AI",
     "dates": "Apr. 2025",
-    "details": "Algorithms, Data Structures, Operating Systems, Concurrency, Compilers, "
-    "Databases, Adv. C++, Computer Vision",
+    "details": "Graduated with Distinction. Coursework in Algorithms, Data Structures, Operating Systems, "
+    "Concurrency, Compilers, Databases, Adv. C++, Computer Vision. Member of the UW Data Science Club "
+    "and WATonomous.",
     "badge": {"initials": "UW", "bg": "#FFD100", "fg": "#000000"},
 }
 
@@ -28,12 +34,17 @@ EXPERIENCES = [
         "stack": "C++, Rust, TypeScript, VCS, Concurrency, Microservices, Software Design & Architecture",
         "dates": "Jul. 2025 – Present",
         "bullets": [
-            'Working on <a href="https://github.com/jj-vcs/jj" target="_blank" rel="noopener">JJ</a> – a modern '
-            "version control system to accelerate developer productivity for Google worldwide",
-            "Scaling distributed systems and enhancing APIs for JJ's version control operations in C++. Using concurrent operations, load balancers, various caching mechanisms, and rate limiting to deal with scale of requests",
-            "Contributing to JJ's open source project and internal CLI in Rust. Writing comprehensive tests to ensure reliability",
-            "Developing design documents and plans for new features to interact with various Google internal tooling",
-            "Utilizing agent orchestration and prompt engineering to streamline software development life cycle",
+            'Building <a href="https://github.com/jj-vcs/jj" target="_blank" rel="noopener"><strong>JJ</strong></a>, '
+            "on track to become the <strong>primary VCS for every engineer at Google</strong>; contributing to its "
+            "open-source project and internal Rust CLI",
+            "Scaling JJ's distributed C++ and Rust APIs to absorb Google-wide load from engineers and coding agents "
+            "alike, via concurrency, load balancing, caching, and rate limiting",
+            "Built <strong>agent-driven development workflows</strong> – automated code review agents, scheduled "
+            "agent jobs, and prompt-engineered orchestration pipelines – to accelerate the software development "
+            "life cycle",
+            "Maintaining <strong>high test coverage</strong> across JJ's Rust CLI and internal contributions, "
+            "prioritized by module criticality",
+            "Authoring design docs and technical plans for new JJ features across Google's internal developer tooling",
         ],
         "icon": {"type": "img", "src": "https://cdn.simpleicons.org/google", "bg": "#ffffff"},
     },
@@ -45,9 +56,11 @@ EXPERIENCES = [
         "stack": "Go, GCP, Concurrency, Distributed Computing, Databases, API, Microservices",
         "dates": "May 2024 – Aug. 2024",
         "bullets": [
-            "Working on Remote Build Execution – accelerating remote builds for clients like Chrome, Android & TensorFlow",
-            "Utilizing globally distributed Google Cloud Platform (GCP) projects, secure internal cloud infrastructure, sharded Spanner databases, and working with multiple internal API services, following a microservice architecture",
-            "Developing an instance monitoring system that ensures instances' migrations match the system's state",
+            "Built on <strong>Remote Build Execution</strong>, accelerating remote builds for clients including "
+            "Chrome, Android & TensorFlow",
+            "Operated across globally distributed GCP infrastructure and sharded Spanner databases under a "
+            "microservice architecture",
+            "Developed an instance-monitoring system that kept live migrations consistent with expected system state",
         ],
         "icon": {"type": "img", "src": "https://cdn.simpleicons.org/google", "bg": "#ffffff"},
     },
@@ -56,13 +69,15 @@ EXPERIENCES = [
         "url": "https://www.d-matrix.ai/",
         "location": "Toronto, ON",
         "role": "Machine Learning Compiler Engineer Intern",
-        "stack": "C++, PyTorch, LLVM, MLIR, Convolution",
+        "stack": "C++, PyTorch, LLVM, MLIR, torch-MLIR",
         "dates": "Jan. 2024 – Apr. 2024",
         "bullets": [
-            "Accelerated Generative AI (LLM, SD) model inferencing by 20x focusing on compiler-level architecture in C++",
-            "Implemented 2D Convolution, Average & Max Pooling, ResNet models, Stable Diffusion, LLaVa and Vision Transformers in the front-end compiler. First ever proof of life of convolution-like operations on our compiler",
-            "Developed operations & transformations for LLaMa2 on top of LLVM MLIR & torch-MLIR project architecture",
-            "Spearheaded integration of LLaMa3 Decoder and Full Model into our compiler achieving 17.5x speedup in runtime",
+            "<strong>Accelerated generative AI (LLM, diffusion) inference by 20x</strong> via systems-level "
+            "architecture work in C++ on the ML compiler stack",
+            "Implemented 2D convolution, pooling, ResNet, Stable Diffusion, LLaVA & Vision Transformer support in "
+            "the frontend compiler – the first working convolution ops on the platform",
+            "Built LLaMA 2 operations and transformations on top of the LLVM MLIR and torch-MLIR project architecture",
+            "Led integration of the LLaMA 3 decoder and full model, achieving a <strong>17.5x runtime speedup</strong>",
         ],
         "icon": {"type": "initials", "initials": "dM", "bg": "#7C3AED", "fg": "#ffffff"},
     },
@@ -71,12 +86,15 @@ EXPERIENCES = [
         "url": "https://www.ibm.com",
         "location": "Toronto, ON",
         "role": "Machine Learning Engineer Intern",
-        "stack": "Python, C++, PyTorch, CV, AWS SageMaker",
+        "stack": "Python, C++, PyTorch, Computer Vision, CUDA, AWS SageMaker",
         "dates": "May 2023 – Aug. 2023",
         "bullets": [
-            "Developed scalable ML software architecture to automate object detection tasks using Python and PyTorch",
-            "Implemented, pruned, & quantized Facebook Research's Faster R-CNN model for a facial analysis task, used by 9 million users/year, reduced manual verification hours by 75%, and saved $35 million USD costs annually",
-            "Trained model on a CUDA GPU and produced accuracy of 99%, F1-score of 0.99, and model size reduced by 78%",
+            "Built scalable ML software to automate object-detection tasks in Python and PyTorch",
+            "Pruned & quantized Facebook Research's Faster R-CNN for a facial-analysis model serving "
+            "<strong>9M users/year</strong>, cutting manual verification hours <strong>75%</strong> and saving "
+            "<strong>$35M</strong> annually",
+            "Trained on CUDA GPUs to <strong>99% accuracy</strong> and a <strong>0.99 F1-score</strong>, while "
+            "shrinking model size by <strong>78%</strong>",
         ],
         "icon": {"type": "initials", "initials": "IBM", "bg": "#052FAD", "fg": "#ffffff"},
     },
@@ -85,14 +103,16 @@ EXPERIENCES = [
         "url": "https://www.blackberry.com",
         "location": "Waterloo, ON",
         "role": "Machine Learning Engineer Intern",
-        "stack": "Python, TensorFlow, NLP, NoSQL, Docker, AWS S3, EC2",
+        "stack": "Python, TensorFlow, NLP, Elasticsearch, Docker, AWS S3, SageMaker, EC2",
         "dates": "Sept. 2022 – Dec. 2022",
         "bullets": [
-            "Developed a log anomaly detection platform combining NLP, data pipelines, and Elasticsearch using Python",
-            "Implemented NLP model and improved model accuracy from 60% to 91% and F1-score from 0.30 to 0.87",
-            "Productionized two anomaly detection models (Autoencoder + Isolation Forest AND Transformer "
-            'architecture based on <a href="https://arxiv.org/abs/1706.03762" target="_blank" rel="noopener">'
-            "Google's paper</a>) and retraining pipeline using TensorFlow, Docker, AWS S3, SageMaker & EC2",
+            "Built a log anomaly detection platform combining NLP, data pipelines, and Elasticsearch in Python",
+            "Raised NLP model accuracy from <strong>60% to 91%</strong> and F1-score from <strong>0.30 to 0.87</strong>",
+            "Productionized two anomaly detection models (Autoencoder + Isolation Forest; Transformer per "
+            '<a href="https://arxiv.org/abs/1706.03762" target="_blank" rel="noopener">Google\'s paper</a>) '
+            "with a retraining pipeline on TensorFlow, Docker, AWS S3, SageMaker & EC2, shipped through GitLab CI/CD",
+            "Made inference <strong>~382x faster</strong> and cut low-level memory use <strong>52%</strong> through "
+            "memory tracing, profiling, and multiprocessing",
         ],
         "icon": {"type": "img", "src": "https://cdn.simpleicons.org/blackberry/ffffff", "bg": "#000000"},
     },
@@ -104,14 +124,14 @@ EXPERIENCES = [
         "stack": "Python, Django, SQL, Exchangelib",
         "dates": "Jan. 2022 – Apr. 2022",
         "bullets": [
-            "Spearheaded a comprehensive dashboard with 7 data source system integrations using Python and Django",
-            "Improved productivity by saving 600 hours/month by developing an automated mailing response system",
+            "Built a Python/Django dashboard integrating <strong>7 data sources</strong> into a single operational view",
+            "Built an automated mailing-response system that saved an estimated <strong>600 hours/month</strong>",
             "Integrated a cloud database using Exchangelib, automated scripts, Django models & SQL queries",
         ],
         "icon": {"type": "initials", "initials": "RBC", "bg": "#005DAA", "fg": "#ffffff"},
     },
     {
-        "company": "Polar",
+        "company": "Polar (now Nova)",
         "location": "Toronto, ON",
         "role": "Software Engineer Intern",
         "stack": "Python, JavaScript/TypeScript, React, jQuery, Node.js, Selenium",
@@ -122,10 +142,23 @@ EXPERIENCES = [
             "test-driven, agile environment",
             "Transitioned the codebase from Sinon/Chai to Jest using the Jest-Extended library, resulting in 2x "
             "faster tests running independently in parallel across threads",
-            "Optimized two repositories by replacing libraries with manually implemented algorithms, increasing "
-            "runtime of numerous components by 2–8x",
+            "Replaced library implementations with hand-written algorithms across two repositories, speeding up "
+            "selected components by 2–8x",
         ],
         "icon": {"type": "initials", "initials": "P", "bg": "#0EA5E9", "fg": "#ffffff"},
+    },
+    {
+        "company": "RDH-SCHARF",
+        "location": "Alban, ON",
+        "role": "Mechanical Engineering Design Intern (Co-op)",
+        "stack": "SolidWorks, Mechanical Design, Quality Control",
+        "dates": "Jun. 2019 – Aug. 2020",
+        "bullets": [
+            "Designed mining equipment and heavy machinery in SolidWorks before starting university",
+            "Performed quality-control measurement work on manufactured parts",
+            "Created an alphabetized organization system for the company's technical drawings",
+        ],
+        "icon": {"type": "initials", "initials": "RS", "bg": "#B45309", "fg": "#ffffff"},
     },
 ]
 
@@ -142,6 +175,63 @@ PROJECTS = [
             "P2P architecture</a> to enable the connection of devices across large-scale distributed networks",
         ],
     },
+    {
+        "name": "Watolink Design Team, NeuroTechX",
+        "stack": "Python, BCI, Signal Analysis",
+        "bullets": [
+            "<strong>Placed 1st internationally</strong> in the NeuroTechX competition for EEG-based "
+            "brain-computer-interface signal analysis",
+        ],
+    },
+    {
+        "name": "PharmaHacks Multi-Disease Classification",
+        "stack": "Python, Deep Learning, Classification",
+        "bullets": [
+            "<strong>Winner</strong> at the Pfizer/McGill-sponsored PharmaHacks hackathon, classifying multiple "
+            "diseases from gastrointestinal data",
+        ],
+    },
+    {
+        "name": "UltraAnalysis",
+        "stack": "Python, Computer Vision, UNet, ENet",
+        "bullets": [
+            "Semantic segmentation and classification of ultrasound images with UNet and ENet to identify "
+            "malignant cell clusters",
+        ],
+    },
+    {
+        "name": "No Place For Hate",
+        "stack": "JavaScript, NLP, Chrome Extension",
+        "bullets": [
+            "A Chrome extension that uses AI to detect and block hate speech while browsing",
+        ],
+    },
+]
+
+LEADERSHIP = [
+    {
+        "name": "Wat.AI",
+        "role": "Technical Project Manager",
+        "bullets": [
+            "Held project-management responsibility for ML projects in the University of Waterloo's AI club",
+        ],
+    },
+    {
+        "name": "Kids Caring for Kids Cancer Drive",
+        "role": "Lead · Jul. 2018 – Jun. 2020",
+        "bullets": [
+            "Led a campaign that raised <strong>over $80,000</strong> across two years for pediatric cancer care "
+            "and research in Northern Ontario",
+        ],
+    },
+    {
+        "name": "Lockerby Students' Council",
+        "role": "Vice President & Treasurer · Sep. 2017 – Jun. 2020",
+        "bullets": [
+            "Held student-government leadership across three academic years, and organized a mental-health "
+            "conference for 200+ students transitioning into high school",
+        ],
+    },
 ]
 
 HONORS = [
@@ -150,30 +240,44 @@ HONORS = [
     "Most Outstanding Student Award",
     "Ontario Principals' Council Award",
     "15 Subject Awards (Highest Mark in Grade)",
+    "Cayley & Fermat Math Contest School Champion",
+    "Ontario Scholar",
+    "AP Scholar",
 ]
 
 CERTIFICATIONS = [
-    "Deep Neural Networks with PyTorch",
-    "Building Deep Learning Models with TensorFlow",
-    "Introduction to Deep Learning & Neural Networks with Keras",
-    "Introduction to Computer Vision and Image Processing",
-    "Machine Learning With Python",
+    "Microsoft Certified: Azure AI Engineer Associate (2026)",
+    "Google Cloud Generative AI Leader (2026)",
+    "Deep Learning Specialization (2024)",
+    "IBM DevOps and Software Engineering Professional Certificate (2024)",
+    "IBM AI Enterprise Workflow V1 (2023)",
+    "IBM AI Engineering Professional Certificate (2023)",
+    "Machine Learning Specialization (2022)",
 ]
 
 SKILLS = {
-    "Languages": ["Python", "C++", "Rust", "Go", "C", "JavaScript", "SQL", "Bash", "Java", "CUDA"],
-    "Frameworks": [
+    "Languages": ["Python", "C++", "Rust", "Go", "C", "JavaScript/TypeScript", "SQL", "Bash", "Java", "CUDA"],
+    "ML & Compilers": [
         "PyTorch",
         "TensorFlow",
-        "AWS",
-        "Docker",
+        "LLVM",
+        "MLIR",
+        "torch-MLIR",
+        "HuggingFace",
+        "LangChain",
         "NumPy",
         "Pandas",
-        "Django",
-        "Spark",
-        "LangChain",
-        "HuggingFace",
+    ],
+    "Infrastructure & Tools": [
+        "GCP",
+        "AWS",
+        "Docker",
         "Bazel",
+        "Spanner",
+        "Elasticsearch",
+        "Django",
         "FastAPI",
+        "Spark",
+        "Git",
     ],
 }

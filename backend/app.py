@@ -52,6 +52,7 @@ def resume():
         education=resume_data.EDUCATION,
         experiences=resume_data.EXPERIENCES,
         projects=resume_data.PROJECTS,
+        leadership=resume_data.LEADERSHIP,
         honors=resume_data.HONORS,
         certifications=resume_data.CERTIFICATIONS,
         skills=resume_data.SKILLS,

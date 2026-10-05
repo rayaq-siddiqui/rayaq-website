@@ -103,7 +103,9 @@ def test_resume_renders_experience_and_education():
     assert "BlackBerry Limited" in body
     assert "RBC" in body
     assert "Polar" in body
+    assert "RDH-SCHARF" in body
     assert "CloudMesh" in body
+    assert "NeuroTechX" in body
 
 
 def test_resume_omits_phone_number():
@@ -121,7 +123,26 @@ def test_resume_renders_summary_honors_and_certifications():
 
     assert "Software Engineer @ Google" in body
     assert "Governor General&#39;s Academic Medal" in body or "Governor General's Academic Medal" in body
-    assert "Deep Neural Networks with PyTorch" in body
+    assert "Deep Learning Specialization" in body
+
+
+def test_resume_renders_leadership():
+    client = app_module.app.test_client()
+
+    body = client.get("/resume").get_data(as_text=True)
+
+    assert "Leadership" in body
+    assert "Wat.AI" in body
+    assert "Kids Caring for Kids Cancer Drive" in body
+
+
+def test_resume_keeps_career_planning_private():
+    client = app_module.app.test_client()
+
+    body = client.get("/resume").get_data(as_text=True)
+
+    for private in ("L3", "L4", "promotion", "DeepMind", "Seeking"):
+        assert private not in body
 
 
 def test_weather_returns_200(monkeypatch):
