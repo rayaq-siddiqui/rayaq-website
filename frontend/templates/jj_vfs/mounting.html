@@ -1,0 +1,248 @@
+{% set main = "src/main.rs" %}
+{% set fuse = "src/fuse.rs" %}
+{% set vfs = "src/vfs.rs" %}
+{% set pmac = "src/path_mapper_all_commits.rs" %}
+{% set settings = "lib/src/settings.rs" %}
+{% set config = "lib/src/config.rs" %}
+{% set ws = "lib/src/workspace.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+{% set fuser = "https://docs.rs/crate/fuser/0.18.0/source/" %}
+<header class="jj-header">
+  <h1>Starting and mounting</h1>
+  <p class="tagline">
+    Everything <code>jjfsd</code> does before the first kernel request and after the last one lives in
+    one 81-line file: parse two arguments, load the repository once, hand the file system to
+    <code>fuser</code>, then wait for a signal.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: <code>jjfsd &lt;MOUNTPOINT&gt; &lt;WORKSPACE_ROOT&gt;</code> sets up logging, builds a
+  read-only mount configuration named <code>jjfs</code>, starts a tokio runtime, loads the workspace and
+  the repository at its current operation, and wraps it in the only path mapper there is. It mounts with
+  <code>fuser::spawn_mount</code>, which serves requests on a background thread, and blocks the main
+  thread until SIGINT, SIGTERM or SIGHUP. Returning from <code>main</code> drops the session handle, and
+  that drop is what unmounts. Every failure is a panic, and the repository is never reloaded: the mount
+  shows the repo as it was when it started.
+</p>
+
+<p>
+  This page covers <a href="{{ src(main) }}"><code>src/main.rs</code></a>, the crate's only binary. What
+  it builds is described in <a href="{{ url_for('jj_vfs', slug='namespace') }}">the namespace</a>,
+  <a href="{{ url_for('jj_vfs', slug='vfs-layer') }}">the virtual file layer</a> and
+  <a href="{{ url_for('jj_vfs', slug='fuse') }}">the FUSE adapter</a>.
+</p>
+
+<h2 id="sequence">The sequence</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Step</th><th>Call</th><th>On failure</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Logging</td><td><code>tracing_subscriber::fmt().with_env_filter(…).init()</code></td><td>Panics if a global subscriber is already set.</td><td><a href="{{ src(main, 12, 18) }}">L12</a></td></tr>
+      <tr><td>Arguments</td><td><code>std::env::args()</code></td><td>Prints usage, exits 1.</td><td><a href="{{ src(main, 20, 26) }}">L20</a></td></tr>
+      <tr><td>Mount options</td><td><code>fuser::Config::default()</code>, then <code>mount_options</code></td><td>Cannot fail.</td><td><a href="{{ src(main, 28, 32) }}">L28</a></td></tr>
+      <tr><td>Runtime</td><td><code>tokio::runtime::Runtime::new()</code>, <code>rt.enter()</code></td><td>Panics: "Failed to create tokio runtime".</td><td><a href="{{ src(main, 34, 35) }}">L34</a></td></tr>
+      <tr><td>Settings</td><td><code>UserSettings::from_config(StackedConfig::with_defaults())</code></td><td>Panics: "Failed to load user settings".</td><td><a href="{{ src(main, 37, 38) }}">L37</a></td></tr>
+      <tr><td>Workspace</td><td><code>Workspace::load(…)</code></td><td>Panics: "Failed to load workspace".</td><td><a href="{{ src(main, 40, 46) }}">L40</a></td></tr>
+      <tr><td>Repo at head</td><td><code>rt.block_on(repo_loader.load_at_head())</code></td><td>Panics: "Failed to load repo at head".</td><td><a href="{{ src(main, 48, 51) }}">L48</a></td></tr>
+      <tr><td>File system</td><td><code>AllCommitsPathMapper::new</code>, <code>PathMappedVfs::new</code></td><td>Cannot fail.</td><td><a href="{{ src(main, 53, 54) }}">L53</a></td></tr>
+      <tr><td>Mount</td><td><code>fuser::spawn_mount(JjFuse::new(…), mountpoint, &amp;config)</code></td><td>Panics: "Failed to mount filesystem".</td><td><a href="{{ src(main, 56, 62) }}">L56</a></td></tr>
+      <tr><td>Wait</td><td><code>rt.block_on(wait_for_shutdown())</code></td><td>Panics if a signal handler can't be installed.</td><td><a href="{{ src(main, 64, 64) }}">L64</a>, <a href="{{ src(main, 67, 81) }}">L67</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="arguments">Arguments</h2>
+<p>
+  The arguments are positional and read straight from <code>std::env::args()</code>; there is no
+  argument-parsing crate and no flags. With fewer than two, it prints
+  <code>Usage: &lt;program&gt; &lt;MOUNTPOINT&gt; &lt;WORKSPACE_ROOT&gt;</code> to stderr and exits with
+  status 1. Extra arguments are ignored. The mount point stays a <code>&amp;String</code>; the workspace
+  root becomes a <code>Path</code> (<a href="{{ src(main, 20, 26) }}">main.rs</a>). Neither is checked
+  here: a missing directory surfaces later as a workspace or mount panic.
+</p>
+
+<h2 id="tracing">Logging</h2>
+<p>
+  <code>tracing_subscriber</code>'s formatting subscriber writes to stdout. Its filter comes from the
+  <code>RUST_LOG</code> environment variable, which <code>EnvFilter::builder()</code> reads by default; the
+  default directive is <code>INFO</code>, and <code>from_env_lossy</code> skips directives it can't parse
+  instead of failing (<a href="{{ src(main, 12, 18) }}">main.rs</a>). The FUSE methods carry
+  <code>#[tracing::instrument(level = "debug", …)]</code> (for example
+  <a href="{{ src(fuse, 70, 71) }}">fuse.rs</a>), so <code>RUST_LOG=debug</code> logs every kernel request.
+  The two <code>println!</code> lines, "Mounting JjVfs at …" and "Received …, unmounting...", bypass
+  tracing.
+</p>
+
+<h2 id="mount-options">Mount configuration</h2>
+<p>
+  <code>fuser::Config</code> is <code>#[non_exhaustive]</code>, so it can't be written as a struct literal
+  outside fuser; <code>main</code> takes the <code>Default</code> and assigns one field
+  (<a href="{{ fuser }}src/mnt/mount_options.rs#8">mount_options.rs</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>mount_options</code></td><td><code>Vec&lt;MountOption&gt;</code></td><td>Set to <code>[RO, FSName("jjfs")]</code>; the default is empty.</td><td><a href="{{ src(main, 29, 32) }}">main.rs</a>, <a href="{{ fuser }}src/mnt/mount_options.rs#12">fuser</a></td></tr>
+      <tr><td><code>acl</code></td><td><code>SessionACL</code></td><td>Left at the default, <code>Owner</code>: only the user who mounted can use the mount, FUSE's normal mode. No <code>allow_other</code>.</td><td><a href="{{ fuser }}src/session.rs#59">session.rs</a></td></tr>
+      <tr><td><code>n_threads</code></td><td><code>Option&lt;usize&gt;</code></td><td>Left at <code>None</code>: one thread reads kernel requests. <code>JjFuse</code> spawns each request's work onto tokio, so this thread only dispatches.</td><td><a href="{{ fuser }}src/mnt/mount_options.rs#16">mount_options.rs</a>, <a href="{{ fuser }}src/session.rs#257">session.rs</a></td></tr>
+      <tr><td><code>clone_fd</code></td><td><code>bool</code></td><td>Left <code>false</code>; it only matters with more than one thread.</td><td><a href="{{ fuser }}src/mnt/mount_options.rs#20">mount_options.rs</a></td></tr>
+      <tr><td><code>MountOption::RO</code></td><td>kernel flag</td><td>The kernel mounts read-only, so writes fail with <code>EROFS</code> before reaching <code>jjfsd</code>, which implements no write methods anyway.</td><td><a href="{{ fuser }}src/mnt/mount_options.rs#54">mount_options.rs</a>, <a href="{{ fuser }}src/mnt/mount_options.rs#187">L187</a></td></tr>
+      <tr><td><code>MountOption::FSName("jjfs")</code></td><td>fusermount option</td><td>The source name in the mount table, in place of <code>/dev/fuse</code>; it's what <code>mount</code> and <code>df</code> show. Note it's <code>jjfs</code>, not the crate's name.</td><td><a href="{{ fuser }}src/mnt/mount_options.rs#29">mount_options.rs</a>, <a href="{{ fuser }}src/mnt/fuse_pure.rs#473">fuse_pure.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Not set, and so off: <code>AutoUnmount</code> (fusermount unmounts if the process dies),
+  <code>DefaultPermissions</code> (the kernel checks mode bits), <code>Subtype</code>, and every other
+  flag (<a href="{{ fuser }}src/mnt/mount_options.rs#27">the full list</a>). <code>JjFuse</code> also
+  asks for two capabilities in its <code>init</code> callback, <code>FUSE_PARALLEL_DIROPS</code> and
+  <code>FUSE_ASYNC_READ</code>, ignoring whether the kernel grants them
+  (<a href="{{ src(fuse, 71, 76) }}">fuse.rs</a>).
+</p>
+
+<h2 id="runtime">The tokio runtime</h2>
+<p>
+  <code>Runtime::new()</code> builds tokio's default multi-threaded runtime (the crate enables
+  <code>rt-multi-thread</code>, <code>signal</code>, <code>macros</code> and <code>time</code>).
+  <code>rt.enter()</code> makes it the current runtime for the main thread for as long as
+  <code>_guard</code> lives, which is all of <code>main</code>. The runtime is used three ways: to block on
+  loading the repo, to block on the signal wait, and, through the <code>Handle</code> cloned into
+  <code>JjFuse</code>, to run every FUSE request (<a href="{{ src(main, 34, 35) }}">main.rs</a>,
+  <a href="{{ src(fuse, 53, 67) }}">fuse.rs</a>; see
+  <a href="{{ url_for('jj_vfs', slug='fuse') }}#async-bridge">the async bridge</a>).
+</p>
+
+<h2 id="loading">Loading the repository</h2>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>StackedConfig::with_defaults</code></td><td><code>fn with_defaults() -&gt; Self</code></td><td>One layer: jj-lib's built-in <code>config/misc.toml</code>. No user config, repo config or environment is read, so <code>~/.config/jj</code> has no effect on the mount.</td><td><a href="{{ jj_lib(config, 663, 667) }}">config.rs</a>, <a href="{{ jj_lib(config, 910, 913) }}">L910</a></td></tr>
+      <tr><td><code>UserSettings::from_config</code></td><td><code>fn from_config(config: StackedConfig) -&gt; Result&lt;Self, ConfigGetError&gt;</code></td><td>Reads the user name, e-mail, operation host and user, and other settings from that config.</td><td><a href="{{ jj_lib(settings, 135, 138) }}">settings.rs</a></td></tr>
+      <tr><td><code>Workspace::load</code></td><td><code>fn load(&amp;UserSettings, &amp;Path, &amp;StoreFactories, &amp;WorkingCopyFactories) -&gt; Result&lt;Self, WorkspaceLoadError&gt;</code></td><td>Opens the <code>.jj</code> directory at the workspace root. The default factories are jj-lib's built-in backends (Git included, since jj-lib's default <code>git</code> feature is on) and the local working copy.</td><td><a href="{{ jj_lib(ws, 406, 415) }}">workspace.rs</a>, <a href="{{ jj_lib(ws, 630, 630) }}">L630</a>, <a href="{{ jj_lib(repo, 435, 445) }}">repo.rs</a></td></tr>
+      <tr><td><code>RepoLoader::load_at_head</code></td><td><code>async fn load_at_head(&amp;self) -&gt; Result&lt;Arc&lt;ReadonlyRepo&gt;, RepoLoaderError&gt;</code></td><td>Resolves the operation heads to one operation and loads the repo as of it.</td><td><a href="{{ jj_lib(repo, 765, 777) }}">repo.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  If the operation log has divergent heads, <code>load_at_head</code> merges them in a transaction and
+  writes the merged operation to the op store without publishing it as a new head
+  (<a href="{{ jj_lib(repo, 830, 842) }}">repo.rs</a>). That's the only way mounting can write to the
+  repository. <code>jjfsd</code> never snapshots the working copy, so files edited in a workspace but not
+  yet snapshotted by a <code>jj</code> command don't appear in its <code>@</code> commit.
+</p>
+<p>
+  The resulting <code>Arc&lt;ReadonlyRepo&gt;</code> goes into
+  <a href="{{ src(pmac, 24, 26) }}"><code>AllCommitsPathMapper::new</code></a>, the only
+  <code>PathMapper</code> implementation in the crate, and that into
+  <a href="{{ src(vfs, 29, 33) }}"><code>PathMappedVfs::new</code></a>. There is no option to choose another
+  mapper; changing the layout means changing this line (<a href="{{ src(main, 53, 54) }}">main.rs</a>).
+</p>
+
+<h2 id="spawn-mount">spawn_mount</h2>
+<p>
+  <code>spawn_mount</code> runs <code>Session::new</code> and then <code>Session::spawn</code>
+  (<a href="{{ fuser }}src/lib.rs#1068">lib.rs</a>). <code>Session::new</code> mounts
+  (<a href="{{ fuser }}src/session.rs#173">session.rs</a>). On Linux, without fuser's
+  <code>libfuse</code> features, which this crate doesn't enable, fuser uses its pure-Rust mount code
+  (<a href="{{ fuser }}build.rs#10">build.rs</a>): it tries the <code>mount</code> system call first and,
+  on <code>EPERM</code> (the usual case for a non-root user), runs the setuid <code>fusermount3</code> or
+  <code>fusermount</code> helper (<a href="{{ fuser }}src/mnt/fuse_pure.rs#106">fuse_pure.rs</a>,
+  <a href="{{ fuser }}src/mnt/fuse_pure.rs#493">L493</a>). <code>spawn</code> then starts a thread named
+  <code>fuser-bg</code> that runs the request loop, and returns a <code>BackgroundSession</code> holding
+  that thread's handle and the mount (<a href="{{ fuser }}src/session.rs#226">session.rs</a>,
+  <a href="{{ fuser }}src/session.rs#560">L560</a>). <code>main</code> keeps it in
+  <code>_session</code>; the underscore keeps it alive (a bare <code>_</code> would drop it at once).
+</p>
+
+<h2 id="diagram">Threads after mounting</h2>
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 300" role="img" aria-labelledby="mt-title mt-desc">
+    <title id="mt-title">jjfsd's threads once mounted</title>
+    <desc id="mt-desc">
+      The kernel sends requests through /dev/fuse to fuser's fuser-bg thread, which calls JjFuse. JjFuse
+      spawns each request onto the tokio runtime's worker threads, which call PathMappedVfs and
+      AllCommitsPathMapper over the ReadonlyRepo loaded once at start. The main thread is blocked in
+      wait_for_shutdown; when a signal arrives it returns from main, dropping the BackgroundSession, which
+      unmounts.
+    </desc>
+    <defs>
+      <marker id="mt-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ fuser }}src/mnt/fuse_pure.rs#106"><rect class="d-box" x="20" y="30" width="160" height="50" rx="6"></rect>
+      <text x="34" y="52">kernel · /dev/fuse</text>
+      <text x="34" y="70" class="d-muted" font-size="11">RO mount "jjfs"</text></a>
+
+      <a href="{{ fuser }}src/session.rs#226"><rect class="d-box" x="230" y="30" width="200" height="50" rx="6"></rect>
+      <text x="244" y="52">thread fuser-bg</text>
+      <text x="244" y="70" class="d-muted" font-size="11">reads requests, calls JjFuse</text></a>
+
+      <a href="{{ src(fuse, 53, 67) }}"><rect class="d-box" x="480" y="30" width="260" height="50" rx="6"></rect>
+      <text x="494" y="52">JjFuse</text>
+      <text x="494" y="70" class="d-muted" font-size="11">rt_handle.spawn per request</text></a>
+
+      <a href="{{ src(main, 34, 35) }}"><rect class="d-box" x="480" y="130" width="260" height="50" rx="6"></rect>
+      <text x="494" y="152">tokio worker threads</text>
+      <text x="494" y="170" class="d-muted" font-size="11">PathMappedVfs → AllCommitsPathMapper</text></a>
+
+      <a href="{{ jj_lib(repo, 765, 777) }}"><rect class="d-box" x="230" y="130" width="200" height="50" rx="6"></rect>
+      <text x="244" y="152">ReadonlyRepo</text>
+      <text x="244" y="170" class="d-muted" font-size="11">loaded once, at head</text></a>
+
+      <a href="{{ src(main, 64, 81) }}"><rect class="d-box" x="20" y="230" width="410" height="50" rx="6"></rect>
+      <text x="34" y="252">main thread · rt.block_on(wait_for_shutdown())</text>
+      <text x="34" y="270" class="d-muted" font-size="11">SIGINT / SIGTERM / SIGHUP → return → drop _session → unmount</text></a>
+
+      <line class="d-line" x1="180" y1="55" x2="228" y2="55" marker-end="url(#mt-arrow)"></line>
+      <line class="d-line" x1="430" y1="55" x2="478" y2="55" marker-end="url(#mt-arrow)"></line>
+      <line class="d-line" x1="610" y1="80" x2="610" y2="128" marker-end="url(#mt-arrow)"></line>
+      <line class="d-line" x1="480" y1="155" x2="432" y2="155" marker-end="url(#mt-arrow)"></line>
+      <line class="d-line" x1="100" y1="228" x2="100" y2="82" marker-end="url(#mt-arrow)" stroke-dasharray="4 3"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="shutdown">Signals and unmounting</h2>
+<p>
+  <code>wait_for_shutdown</code> installs tokio handlers for SIGINT, SIGTERM and SIGHUP and waits in
+  <code>tokio::select!</code> for the first, printing which one arrived
+  (<a href="{{ src(main, 67, 81) }}">main.rs</a>). It is <code>#[cfg(unix)]</code> with no other
+  definition, so the binary only builds on Unix. When it returns, so does <code>main</code>, and locals
+  drop in reverse order: <code>_session</code> first, while the runtime is still alive.
+</p>
+<p>
+  Dropping the <code>BackgroundSession</code> drops its <code>Mount</code>, whose <code>Drop</code>
+  unmounts (<a href="{{ fuser }}src/mnt/mod.rs#157">mod.rs</a>). The pure-Rust unmount skips a mount that
+  is already gone, calls <code>umount</code>, and on <code>EPERM</code> falls back to
+  <code>fusermount -u</code>; a failure is only logged as a warning
+  (<a href="{{ fuser }}src/mnt/fuse_pure.rs#80">fuse_pure.rs</a>). <code>main</code> doesn't call
+  <code>umount_and_join</code>, so the <code>fuser-bg</code> thread isn't joined; the process just exits.
+</p>
+<p>
+  Without <code>AutoUnmount</code>, nothing unmounts if the process dies without running destructors, as
+  with SIGKILL or any signal other than the three handled. The mount point is then left for the user to
+  clear with <code>fusermount -u</code>.
+</p>
+
+<h2 id="limitations">Limitations</h2>
+<ul>
+  <li>The repository is loaded once. New commits and operations after the mount starts never appear; see
+    <a href="{{ url_for('jj_vfs', slug='namespace') }}#snapshot">the namespace's snapshot</a>.</li>
+  <li>Only jj-lib's default config is used, so user and repo settings are ignored.</li>
+  <li>Every error is a panic with a fixed message; there are no exit codes beyond the usage error's 1.</li>
+  <li>The layout, mount options, thread count and access mode are all fixed in code; there are no flags.</li>
+  <li>Unix only, and no automatic unmount if the process is killed.</li>
+  <li><code>main</code> itself has no test. <code>test_vfs_mount</code> repeats its middle steps, mounting
+    with the same options (named <code>jjfs_test</code>) over a temporary repo and reading through the
+    mount, then unmounts by dropping the session; it needs FUSE on the machine running the tests
+    (<a href="{{ src("tests/vfs_integration.rs", 92, 167) }}">vfs_integration.rs</a>).</li>
+</ul>

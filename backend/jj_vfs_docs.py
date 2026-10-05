@@ -17,7 +17,7 @@ PAGES = [
         "title": "Starting and mounting",
         "summary": "What jjfsd does from main() to a live mount: arguments, tracing, mount options, the tokio runtime, loading the repo, and unmounting.",
         "sources": ["src/main.rs"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "fuse",
