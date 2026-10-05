@@ -1,0 +1,293 @@
+{% set d = "cli/src/commands/operation/diff.rs" %}
+{% set om = "cli/src/commands/operation/mod.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+{% set ev = "lib/src/evolution.rs" %}
+{% set refs = "lib/src/refs.rs" %}
+{% set ow = "lib/src/op_walk.rs" %}
+{% set du = "cli/src/diff_util.rs" %}
+{% set t = "cli/tests/test_operations.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj operation diff</code> works</h1>
+  <p class="tagline">
+    <code>jj operation diff</code> (alias <code>jj op diff</code>) compares the repository as recorded by two
+    operations: which commits appeared, were rewritten or disappeared, and which working-copy commits,
+    bookmarks and tags moved.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj loads the repository at a "from" operation and at a "to" operation, merges the from-side
+  commit index into an uncommitted transaction on the to-side so both sides' commits can be looked up,
+  and compares the two views. Commits are matched up through the predecessor records the operations
+  stored, falling back to change ids, and filtered by the <code>revsets.op-diff-changes-in</code>
+  revset. Working-copy commits, local bookmarks and tags, and remote bookmarks and tags are compared by
+  name. It never writes a new operation head.
+</p>
+
+<p>
+  The command is <a href="{{ src(d, 109, 200) }}"><code>cmd_op_diff</code></a>. The help text: "Compare
+  changes to the repository between two operations" (<a href="{{ src(d, 68, 68) }}">source</a>). It is
+  registered as <code>Diff(OperationDiffArgs)</code> in the <code>operation</code> group
+  (<a href="{{ src(om, 52, 52) }}">source</a>). The comparison itself is
+  <a href="{{ src(d, 267, 596) }}"><code>show_op_diff</code></a>, which <code>jj operation show</code> and
+  <code>jj operation log --op-diff</code> also call.
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>--operation</code>, <code>--op</code> <code>OP</code></td><td>"Show repository changes in this operation, compared to its parent". Defaults to <code>@</code>, the current operation. The from side is all of its parents (<a href="{{ src(d, 71, 74) }}">source</a>, <a href="{{ src(d, 123, 126) }}">source</a>).</td></tr>
+      <tr><td><code>-f</code>, <code>--from</code> <code>OP</code></td><td>The from operation. Conflicts with <code>--operation</code>; defaults to <code>@</code> when only <code>--to</code> is given (<a href="{{ src(d, 76, 79) }}">source</a>, <a href="{{ src(d, 120, 122) }}">source</a>).</td></tr>
+      <tr><td><code>-t</code>, <code>--to</code> <code>OP</code></td><td>The to operation, with the same rules (<a href="{{ src(d, 81, 84) }}">source</a>).</td></tr>
+      <tr><td><code>-G</code>, <code>--no-graph</code></td><td>List the changed commits flat instead of as a graph (<a href="{{ src(d, 86, 88) }}">source</a>).</td></tr>
+      <tr><td><code>-p</code>, <code>--patch</code></td><td>Show a patch for each changed commit. "If the previous version has different parents, it will be temporarily rebased to the parents of the new version" (<a href="{{ src(d, 90, 96) }}">source</a>).</td></tr>
+      <tr><td>Diff format flags (<code>--summary</code>, <code>--stat</code>, <code>--git</code>, …)</td><td>The shared <code>DiffFormatArgs</code> (<a href="{{ src(d, 98, 99) }}">source</a>); see <a href="{{ url_for('jj', slug='diff') }}#cli">jj diff</a>. Any of them turns diffs on, <code>-p</code> or not (<a href="{{ src(du, 324, 340) }}">source</a>).</td></tr>
+      <tr><td><code>--show-changes-in</code> <code>REVSETS</code></td><td>"Show only changed revisions matching the given revset expression", defaulting to <code>revsets.op-diff-changes-in</code> (<a href="{{ src(d, 101, 106) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p class="jj-source">The global flags are on the <a href="{{ url_for('jj', slug='cli') }}#global-flags">CLI page</a>.</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Setting</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>revsets.op-diff-changes-in</code></td><td>Which changed commits are listed; the rest are counted as elided. Default <code>mutable() | immutable_heads()</code> (<a href="{{ src("cli/src/config/revsets.toml", 18, 18) }}">source</a>, <a href="{{ src(d, 203, 237) }}">source</a>).</td></tr>
+      <tr><td><code>templates.op_summary</code></td><td>The "From operation" and "To operation" lines: short id, end time (or <code>root()</code>), first line of the description (<a href="{{ src("cli/src/config/templates.toml", 49, 58) }}">source</a>, <a href="{{ src(util, 2002, 2006) }}">source</a>).</td></tr>
+      <tr><td><code>templates.commit_summary</code></td><td>Each commit line, labelled <code>op_diff</code> and <code>commit</code> (<a href="{{ src(d, 160, 166) }}">source</a>).</td></tr>
+      <tr><td><code>ui.graph.style</code>, <code>ui.diff-formatter</code>, <code>ui.pager</code></td><td>Graph style, default diff format, and pager; the command requests the pager (<a href="{{ src(d, 127, 128) }}">source</a>, <a href="{{ src(d, 174, 174) }}">source</a>). See <a href="{{ url_for('jj', slug='log') }}#configuration">jj log</a>.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 524" role="img" aria-labelledby="od-flow-title od-flow-desc">
+    <title id="od-flow-title">jj operation diff: call flow</title>
+    <desc id="od-flow-desc">
+      After the shared lifecycle, cmd_op_diff loads the workspace and snapshots it, then resolves the
+      operations: with --from or --to, one from-op and one to-op, each defaulting to @; otherwise the to-op
+      is --operation or @ and the from-ops are its parents. merge_operations turns several from-ops into one
+      unpublished merged operation. Both repos are loaded, and the from-repo's index is merged into a
+      transaction started on the to-repo that is never committed. The revset filter is parsed, the header
+      lines printed, and show_op_diff prints changed commits, working copies, local bookmarks and tags, and
+      remote bookmarks and tags.
+    </desc>
+    <defs>
+      <marker id="od-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: parse args, load config (CLI page)</text></a>
+
+      <a href="{{ src(d, 114, 114) }}"><rect class="d-box" x="20" y="84" width="720" height="40" rx="6"></rect>
+      <text x="32" y="109">workspace_helper: load the repo at @, snapshot the working copy</text></a>
+
+      <a href="{{ src(d, 120, 122) }}"><rect class="d-box" x="20" y="148" width="350" height="50" rx="6"></rect>
+      <text x="32" y="169">--from / --to: one op each side</text>
+      <text x="32" y="187" class="d-muted" font-size="11">each defaults to @</text></a>
+      <a href="{{ src(d, 123, 126) }}"><rect class="d-box" x="400" y="148" width="340" height="50" rx="6"></rect>
+      <text x="412" y="169">to = --op or @; from = to.parents()</text>
+      <text x="412" y="187" class="d-muted" font-size="11">a merge operation has several parents</text></a>
+
+      <a href="{{ src(d, 130, 143) }}"><rect class="d-box" x="20" y="222" width="720" height="50" rx="6"></rect>
+      <text x="32" y="243">merge_operations(from_ops), then load_at both sides</text>
+      <text x="32" y="261" class="d-muted" font-size="11">several from-ops are merged into one unpublished operation</text></a>
+
+      <a href="{{ src(d, 145, 150) }}"><rect class="d-box" x="20" y="296" width="720" height="50" rx="6"></rect>
+      <text x="32" y="317">to_repo.start_transaction(); merge_index(&amp;from_repo)</text>
+      <text x="32" y="335" class="d-accent" font-size="11">both sides' commits are in one index; the transaction is never committed</text></a>
+
+      <a href="{{ src(d, 168, 184) }}"><rect class="d-box" x="20" y="370" width="720" height="50" rx="6"></rect>
+      <text x="32" y="391">parse the changes-in revset; print "From operation:" / "To operation:"</text>
+      <text x="32" y="409" class="d-muted" font-size="11">one From line per from-op</text></a>
+
+      <a href="{{ src(d, 315, 389) }}"><rect class="d-box" x="20" y="444" width="230" height="60" rx="6"></rect>
+      <text x="32" y="467">Changed commits</text>
+      <text x="32" y="487" class="d-muted" font-size="11">+ new, − old or abandoned</text></a>
+      <a href="{{ src(d, 391, 427) }}"><rect class="d-box" x="265" y="444" width="230" height="60" rx="6"></rect>
+      <text x="277" y="467">Changed working copy</text>
+      <text x="277" y="487" class="d-muted" font-size="11">per workspace name</text></a>
+      <a href="{{ src(d, 429, 593) }}"><rect class="d-box" x="510" y="444" width="230" height="60" rx="6"></rect>
+      <text x="522" y="467">Bookmarks and tags</text>
+      <text x="522" y="487" class="d-muted" font-size="11">local, then remote</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#od-arrow)">
+      <line x1="380" y1="60" x2="380" y2="82"></line>
+      <line x1="195" y1="124" x2="195" y2="146"></line>
+      <line x1="570" y1="124" x2="570" y2="146"></line>
+      <line x1="195" y1="198" x2="195" y2="220"></line>
+      <line x1="570" y1="198" x2="570" y2="220"></line>
+      <line x1="380" y1="272" x2="380" y2="294"></line>
+      <line x1="380" y1="346" x2="380" y2="368"></line>
+      <line x1="135" y1="420" x2="135" y2="442"></line>
+      <line x1="380" y1="420" x2="380" y2="442"></line>
+      <line x1="625" y1="420" x2="625" y2="442"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Piece</th><th>Role here</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(util, 1824, 1826) }}"><code>resolve_single_op</code></a></td><td>Resolves each operation argument against the current operation; see <a href="{{ url_for('jj', slug='operations') }}#opsets">operation expressions</a>.</td></tr>
+      <tr><td><a href="{{ src(repo, 869, 875) }}"><code>RepoLoader::merge_operations</code></a></td><td>No from-ops gives the root repo, one gives that op's repo. Several are merged in a transaction written as "merge N operations" and left unpublished (<a href="{{ src(repo, 919, 928) }}">source</a>). The CLI wrapper is passed no <code>ui</code>, so it prints nothing about rebased descendants (<a href="{{ src(util, 853, 879) }}">source</a>).</td></tr>
+      <tr><td><a href="{{ src(repo, 2059, 2061) }}"><code>MutableRepo::merge_index</code></a></td><td>Adds the from-side commits to the to-side index, so revsets over both sides evaluate in one repo.</td></tr>
+      <tr><td><a href="{{ src(ev, 203, 243) }}"><code>accumulate_predecessors</code></a></td><td>Collects the <a href="{{ url_for('jj', slug='commits') }}#predecessors">predecessor records</a> operations store, from the to-op back to the from-op, resolving chains of rewrites.</td></tr>
+      <tr><td><a href="{{ src(refs, 35, 41) }}"><code>diff_named_ref_targets</code></a>, <a href="{{ src(refs, 46, 52) }}"><code>diff_named_remote_refs</code></a>, <a href="{{ src(refs, 67, 78) }}"><code>diff_named_commit_ids</code></a></td><td>Walk two sorted name maps together and yield the names whose values differ; a missing side is <code>absent</code> or <code>None</code>.</td></tr>
+      <tr><td><a href="{{ src(util, 3438, 3447) }}"><code>default_ignored_remote_name</code></a></td><td>With the Git backend, the <code>git</code> pseudo-remote, whose refs are skipped.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="reads">5. What it reads, and snapshotting</h2>
+
+<p>
+  It goes through <code>workspace_helper</code>, so the working copy is snapshotted first unless
+  <code>--ignore-working-copy</code> is given (<a href="{{ src(d, 114, 114) }}">source</a>); the snapshot
+  is then the default to-operation. It reads the operation objects and views of both sides from the op
+  store, both commit indexes, and the commits it prints. With a diff format it also reads the trees and
+  file contents of those commits. Nothing is published: the transaction on the to-repo is dropped, and a
+  merged from-operation is written to the op store but not made an op head
+  (<a href="{{ src(d, 145, 150) }}">source</a>, <a href="{{ src(repo, 919, 928) }}">source</a>).
+</p>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="commits">Classifying commits</h3>
+<p>
+  <a href="{{ src(d, 753, 837) }}"><code>compute_operation_commits_diff</code></a> takes the visible heads
+  on each side. Newly hidden commits are <code>to_heads..from_heads</code>, newly visible ones
+  <code>from_heads..to_heads</code> (<a href="{{ src(d, 765, 766) }}">source</a>). Newly hidden commits in
+  the filter are grouped by change id, keeping one per change ("Just pick one if diverged"), and all of them
+  start out abandoned (<a href="{{ src(d, 783, 797) }}">source</a>). Each newly visible commit in the filter
+  gets its predecessors from the operations' records if there are any, otherwise from a hidden commit with
+  the same change id, otherwise none; those predecessors stop counting as abandoned
+  (<a href="{{ src(d, 799, 822) }}">source</a>). Whatever remains is shown as abandoned
+  (<a href="{{ src(d, 824, 830) }}">source</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Kind</th><th>Shown as</th></tr></thead>
+    <tbody>
+      <tr><td>New commit</td><td><code>+ commit</code></td></tr>
+      <tr><td>Rewritten commit</td><td><code>+ commit</code>, then <code>- predecessor</code> for each predecessor (a squash has several)</td></tr>
+      <tr><td>Abandoned commit</td><td><code>- commit</code></td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(d, 707, 731) }}"><code>ModifiedChange</code></a>, <a href="{{ src(d, 634, 652) }}"><code>write_modified_change_summary</code></a>.</p>
+
+<p>
+  Predecessors come from operations in one pass when the to-op's parents are exactly the from-ops;
+  otherwise jj walks back from the from-op to the common ancestor and forward again, and the result is
+  "lossy" if the two have no single common ancestor (<a href="{{ src(ev, 196, 221) }}">source</a>).
+</p>
+
+<h3 id="graph">The graph</h3>
+<p>
+  The changed commits are evaluated as a revset in the merged repo and drawn topologically. Edges to
+  commits that are not in the set are dropped "to keep the graph concise", and every node is
+  <code>○</code> (<a href="{{ src(d, 323, 368) }}">source</a>). With <code>--no-graph</code> they are
+  printed flat, in the revset's own order (<a href="{{ src(d, 369, 387) }}">source</a>).
+</p>
+
+<h3 id="elision">Elision</h3>
+<p>
+  The filter is resolved separately against each side's repo (<a href="{{ src(d, 241, 260) }}">source</a>).
+  Commits outside it are only counted, with <code>count_estimate</code>
+  (<a href="{{ src(d, 774, 781) }}">source</a>), and summarized as
+  <code>(Elided N newly added and M newly removed revisions)</code>, where a count is <code>N+</code> or
+  <code>some</code> when the estimate is not exact (<a href="{{ src(d, 598, 631) }}">source</a>).
+</p>
+
+<h3 id="patch">Patches</h3>
+<p>
+  For a new or rewritten commit, the patch is an
+  <a href="{{ url_for('jj', slug='interdiff') }}#shared">inter-diff</a> from its <em>first</em> predecessor
+  only, so a squash's diff stays readable; upstream marks this as "technically wrong". A new commit has no
+  predecessor and shows its whole patch. An abandoned commit shows its own patch, not a reverse one
+  (<a href="{{ src(d, 845, 881) }}">source</a>).
+</p>
+
+<h3 id="refs">Working copies, bookmarks and tags</h3>
+<p>
+  Each changed name prints <code>+</code> with the to-side target, then <code>-</code> with the from-side
+  target: a commit, <code>(absent)</code>, or, for a conflicted target, one <code>(added)</code> or
+  <code>(removed)</code> line per side of the conflict (<a href="{{ src(d, 655, 704) }}">source</a>).
+  Remote refs also show <code>tracked</code> or <code>untracked</code>; refs on the <code>git</code>
+  remote are skipped, since they "should typically be covered in local branches"
+  (<a href="{{ src(d, 505, 518) }}">source</a>). Sections with no changes are not printed.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Situation</th><th>Behaviour</th></tr></thead>
+    <tbody>
+      <tr><td><code>--op</code> with <code>--from</code> or <code>--to</code></td><td>Rejected by clap (<a href="{{ src(d, 76, 84) }}">source</a>).</td></tr>
+      <tr><td>An operation argument matches no operation, or several</td><td>For example <code>No operation ID matching "…"</code> or <code>The "…" expression resolved to more than one operation</code> (<a href="{{ src(ow, 65, 88) }}">source</a>).</td></tr>
+      <tr><td>Invalid filter revset</td><td><code>Invalid `--show-changes-in` expression: …</code>, or a config error <code>Invalid `revsets.op-diff-changes-in`</code> (<a href="{{ src(d, 220, 229) }}">source</a>).</td></tr>
+      <tr><td>The filter names something missing on one side</td><td>"Warning: Could not resolve revset expression for elision", with the hint <code>(Use --show-changes-in=all() to see all changes)</code>. The commits section is skipped; the other sections still print (<a href="{{ src(d, 297, 312) }}">source</a>, <a href="{{ src(t, 3655, 3673) }}">test</a>).</td></tr>
+      <tr><td>The same operation on both sides</td><td>Only the two header lines (<a href="{{ src(t, 1283, 1294) }}">test</a>).</td></tr>
+      <tr><td>The to-op is a merge operation</td><td>One "From operation" line per parent, compared against their merge (<a href="{{ src(d, 176, 180) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Example output</h2>
+
+<p>
+  After writing a file and running <code>jj new</code>, upstream's test diffs the snapshot operation with a
+  Git-format patch (<a href="{{ src(t, 1774, 1794) }}">source</a>):
+</p>
+
+<pre><code>$ jj op diff --op @- -p --git
+From operation: f63ee16f9553 (2001-02-03 08:05:07) add workspace 'default'
+  To operation: 494872ff8b1e (2001-02-03 08:05:08) snapshot working copy
+
+Changed commits:
+○  + qpvuntsm 6b57e33c (no description set)
+   - qpvuntsm/1 e8849ae1 (hidden) (empty) (no description set)
+   diff --git a/file b/file
+   new file mode 100644
+   index 0000000000..7898192261
+   --- /dev/null
+   +++ b/file
+   @@ -0,0 +1,1 @@
+   +a
+
+Changed working copy default@:
++ qpvuntsm 6b57e33c (no description set)
+- qpvuntsm/1 e8849ae1 (hidden) (empty) (no description set)</code></pre>
+
+<p>
+  Bookmark changes, from the same test file (<a href="{{ src(t, 1299, 1314) }}">source</a>):
+</p>
+
+<pre><code>Changed local bookmarks:
+bookmark-1:
++ pukowqtp 0cb7e07e bookmark-1 | Commit 1
+- (absent)
+
+Changed remote bookmarks:
+bookmark-1@origin:
++ tracked pukowqtp 0cb7e07e bookmark-1 | Commit 1
+- untracked pukowqtp 0cb7e07e bookmark-1 | Commit 1</code></pre>
+
+<p class="jj-source">See also <a href="{{ url_for('jj', slug='evolog') }}">jj evolog</a>, which follows predecessors for one change, and <a href="{{ url_for('jj', slug='operations') }}#operation">operations</a>.</p>

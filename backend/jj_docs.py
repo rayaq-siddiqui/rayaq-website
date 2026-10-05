@@ -1783,6 +1783,17 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "operation-diff": {
+        "title": "How jj operation diff works",
+        "sources": [
+            "cli/src/commands/operation/diff.rs",
+            "cli/src/cli_util.rs",
+            "lib/src/repo.rs",
+            "lib/src/evolution.rs",
+            "lib/src/refs.rs",
+        ],
+        "ready": True,
+    },
 }
 
 
