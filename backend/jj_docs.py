@@ -1827,6 +1827,17 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "tag-list": {
+        "title": "How jj tag list works",
+        "sources": [
+            "cli/src/commands/tag/list.rs",
+            "cli/src/commit_ref_list.rs",
+            "cli/src/commit_templater.rs",
+            "cli/src/commands/tag/mod.rs",
+            "cli/src/config/templates.toml",
+        ],
+        "ready": True,
+    },
 }
 
 
