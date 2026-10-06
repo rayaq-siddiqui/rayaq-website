@@ -1070,6 +1070,16 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "config-edit": {
+        "title": "How jj config edit works",
+        "sources": [
+            "cli/src/commands/config/edit.rs",
+            "cli/src/commands/config/mod.rs",
+            "cli/src/description_util.rs",
+            "lib/src/config.rs",
+        ],
+        "ready": True,
+    },
     "config-get": {
         "title": "How jj config get works",
         "sources": [
