@@ -973,6 +973,25 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "help": {
+        "title": "How jj help works",
+        "sources": [
+            "cli/src/commands/help.rs",
+            "cli/src/commands/mod.rs",
+            "cli/tests/test_help_command.rs",
+        ],
+        "ready": True,
+    },
+    "version": {
+        "title": "How jj version works",
+        "sources": [
+            "cli/src/commands/version.rs",
+            "cli/build.rs",
+            "cli/src/main.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
     "gerrit-upload": {
         "title": "How jj gerrit upload works",
         "sources": [
