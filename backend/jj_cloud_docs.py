@@ -72,7 +72,7 @@ PAGES = [
         "title": "Tests",
         "summary": "The test utilities, every integration test and what it asserts, and which tests are expected to fail.",
         "sources": ["testutils/", "cli/tests/", "server/tests/"],
-        "ready": False,
+        "ready": True,
     },
 ]
 

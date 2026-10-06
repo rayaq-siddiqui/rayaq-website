@@ -1,0 +1,159 @@
+{% set tu = "testutils/src/lib.rs" %}
+{% set build = "testutils/build.rs" %}
+{% set ti = "cli/tests/test_cloud_init.rs" %}
+{% set tf = "cli/tests/test_file_snapshot.rs" %}
+{% set tl = "cli/tests/test_log_command.rs" %}
+{% set to = "cli/tests/test_op_log_command.rs" %}
+{% set ts = "cli/tests/test_sqlite_store.rs" %}
+{% set tsv = "server/tests/test_server_startup.rs" %}
+{% set srv = "server/src/main.rs" %}
+<header class="jj-header">
+  <h1>Testing</h1>
+  <p class="tagline">
+    Every test is an end-to-end test: it starts a real <code>jj-cc-server</code> process, runs the real
+    <code>jj</code> binary against it in a temporary directory, and checks files or command output. There are
+    nine tests, and no unit tests anywhere in the workspace.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: the <code>testutils</code> crate builds the server binary, starts it on a random port and
+  initialises a workspace with <code>jj cc init</code>. The eight <code>cli</code> tests cover init,
+  <code>describe</code>, <code>log</code> and <code>op log</code>. The one <code>server</code> test calls the
+  health service. One test is marked <code>#[should_panic]</code> because the SQLite store doesn't exist, and
+  one passes without ever reaching a server.
+</p>
+
+<h2 id="harness">The <code>testutils</code> harness</h2>
+
+<h3 id="build-script">Building the server for the tests</h3>
+<p>
+  Integration tests in <code>cli</code> and <code>server</code> need the <code>jj-cc-server</code> binary, but
+  Cargo only builds binaries of the package under test. <code>testutils</code>, a dev-dependency of both,
+  solves this in its <a href="{{ src(build, 1, 55) }}">build script</a>:
+</p>
+<ol>
+  <li>It runs <code>cargo build -p jj-commit-cloud-server --bin jj-cc-server</code> with <code>CARGO_TARGET_DIR</code> set to a directory under its own <code>OUT_DIR</code> (<a href="{{ src(build, 15, 26) }}">L15–26</a>). The separate target directory avoids a deadlock on the outer build's lock.</li>
+  <li>It copies the binary into the outer profile directory, next to the test executables' <code>deps/</code> folder (<a href="{{ src(build, 36, 54) }}">L36–54</a>).</li>
+  <li>It reruns only when <code>server/src/</code> or <code>server/Cargo.toml</code> change (<a href="{{ src(build, 7, 8) }}">L7–8</a>).</li>
+</ol>
+
+<h3 id="spawn">Starting a server</h3>
+<p>
+  <a href="{{ src(tu, 39, 92) }}"><code>spawn_server_with_args</code></a> finds the binary two levels above the
+  running test executable and starts it with <code>--port=0</code>, so the OS picks a free port and tests can
+  run in parallel. It pipes stdout and discards stderr. It then reads stdout line by line until one contains
+  <code>listening on </code> (<a href="{{ src(tu, 23, 33) }}"><code>extract_listening_address</code></a>), which
+  the server's startup log line supplies (<a href="{{ src(srv, 91, 91) }}">main.rs L91</a>). It panics if
+  stdout closes first or if two seconds pass. The returned
+  <a href="{{ src(tu, 6, 21) }}"><code>ServerGuard</code></a> holds the child process and kills it on drop.
+</p>
+
+<h3 id="workspace">Creating a workspace</h3>
+<p>
+  <a href="{{ src(tu, 108, 130) }}"><code>TestWorkspace::init</code></a> starts a server, creates a temporary
+  directory, and runs <code>jj cc init --server &lt;url&gt; --create .</code> in it, asserting success. The
+  workspace owns both the server guard and the directory, so each test gets its own server and repository,
+  and both go away when the test ends. <a href="{{ src(tu, 164, 169) }}"><code>jj_cmd</code></a> returns an
+  <code>assert_cmd</code> command for the <code>jj</code> binary with its working directory set to the
+  workspace. <a href="{{ src(tu, 132, 154) }}"><code>init_sqlite</code></a> is the same, but starts the server
+  with <code>--store-type=sqlite</code>.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 230" role="img" aria-labelledby="tst-title tst-desc">
+    <title id="tst-title">How a test sets up a server and workspace</title>
+    <desc id="tst-desc">
+      The test calls TestWorkspace::init. That spawns jj-cc-server with --port=0 and reads its stdout until
+      the listening address appears. It then runs jj cc init in a temporary directory against that address.
+      The test then runs jj commands in the directory, which talk to the server over gRPC, and asserts on
+      their output or on files under .jj.
+    </desc>
+    <defs>
+      <marker id="tst-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(ti, 1, 86) }}"><rect class="d-box" x="20" y="90" width="130" height="44" rx="6"></rect>
+      <text x="85" y="116" text-anchor="middle">#[tokio::test]</text></a>
+      <a href="{{ src(tu, 108, 130) }}"><rect class="d-box" x="200" y="90" width="160" height="44" rx="6"></rect>
+      <text x="280" y="116" text-anchor="middle">TestWorkspace::init</text></a>
+      <a href="{{ src(tu, 39, 92) }}"><rect class="d-box" x="420" y="15" width="270" height="44" rx="6"></rect>
+      <text x="555" y="41" text-anchor="middle">jj-cc-server --port=0</text></a>
+      <a href="{{ src(tu, 164, 169) }}"><rect class="d-box" x="420" y="165" width="270" height="44" rx="6"></rect>
+      <text x="555" y="185" text-anchor="middle">jj cc init, then jj …</text>
+      <text x="555" y="200" text-anchor="middle" class="d-muted" font-size="11">in a tempdir</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#tst-arrow)">
+      <line x1="150" y1="112" x2="196" y2="112"></line>
+      <line x1="360" y1="100" x2="416" y2="45"></line>
+      <line x1="360" y1="124" x2="416" y2="180"></line>
+      <line x1="555" y1="165" x2="555" y2="63"></line>
+    </g>
+    <g font-size="11" class="d-muted">
+      <text x="388" y="66" text-anchor="end">spawn, read stdout</text>
+      <text x="380" y="172" text-anchor="end">assert_cmd</text>
+      <text x="565" y="116">gRPC</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="tests">The tests</h2>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Test</th><th>What it does</th><th>What it asserts</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(ti, 3, 37) }}"><code>test_cc_init_creates_local_workspace</code></a></td><td><code>init</code></td><td><code>.jj/repo/store/type</code> is <code>commit_cloud</code>; <code>config.toml</code> holds the server URL and a <code>repo_id</code> that parses as a UUID.</td></tr>
+      <tr><td><a href="{{ src(ti, 39, 69) }}"><code>test_cc_init_registers_repository</code></a></td><td><code>init</code>, then a raw <code>ReadCommit</code> for a made-up ID (all bytes 1)</td><td>The error message is "commit should have been present in cloud database". The server checks registration before looking the commit up (<a href="{{ src('server/src/backend.rs', 43, 52) }}">backend.rs L43–52</a>), so this message shows it knows the <code>repo_id</code>.</td></tr>
+      <tr><td><a href="{{ src(ti, 71, 86) }}"><code>test_cc_init_fails_on_invalid_server_addr</code></a></td><td><code>jj cc init</code> against an unresolvable host, into <code>/invalid_path_dest_dir</code></td><td>The command fails. See <a href="#weak-tests">below</a>.</td></tr>
+      <tr><td><a href="{{ src(tf, 3, 24) }}"><code>test_log_snapshots_working_copy</code></a></td><td>Write <code>hello.txt</code>, <code>describe -m "snapshot test"</code></td><td><code>log -r @ -T description</code> prints <code>snapshot test</code>. It doesn't check that the file reached the server.</td></tr>
+      <tr><td><a href="{{ src(tl, 1, 12) }}"><code>test_log_root_commit_exists</code></a></td><td><code>log -r root() -T commit_id</code></td><td>The output is the root commit's graph node and 40 zeros: the root commit ID is 20 zero bytes (<a href="{{ src('common/src/lib.rs', 9, 13) }}">common/src/lib.rs</a>).</td></tr>
+      <tr><td><a href="{{ src(to, 4, 16) }}"><code>test_cc_init_op_store_type_returns_commit_cloud</code></a></td><td><code>init</code></td><td><code>op_store/type</code> and <code>op_heads/type</code> are both <code>commit_cloud</code>.</td></tr>
+      <tr><td><a href="{{ src(to, 19, 45) }}"><code>test_op_log_succeeds_on_snapshot</code></a></td><td><code>op log</code>, write a file, <code>describe -m "description 0"</code></td><td><code>op log --no-graph -T description</code> prints <code>add workspace 'default'</code> followed by <code>root()</code>, with no separator: the init operation and the root operation, both read back from the server. After the describe, it checks <code>log</code>, not <code>op log</code>.</td></tr>
+      <tr><td><a href="{{ src(ts, 3, 28) }}"><code>test_sqlite_store_init_and_snapshot_succeeds</code></a></td><td><code>init_sqlite</code>, then the same steps as the snapshot test</td><td><code>#[should_panic]</code>. See <a href="#weak-tests">below</a>.</td></tr>
+      <tr><td><a href="{{ src(tsv, 4, 30) }}"><code>test_server_startup_succeeds</code></a></td><td>Start a server, call the gRPC health service for service <code>""</code></td><td>The status is <code>SERVING</code>.</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  That is nine test functions in six files. Nothing tests the server or the client stores directly: the
+  <code>lib</code>, <code>common</code> and <code>server</code> sources contain no <code>#[test]</code> functions.
+  Nothing exercises concurrent writers, the <code>NotFound</code> paths, <code>jj new</code>, rebases or any
+  operation with more than one parent.
+</p>
+
+<h2 id="weak-tests">Two tests that pass for other reasons</h2>
+<h3 id="invalid-server">The invalid-server test</h3>
+<p>
+  <code>test_cc_init_fails_on_invalid_server_addr</code> passes the destination
+  <code>/invalid_path_dest_dir</code>, a directory that doesn't exist under <code>/</code>. jj-lib's
+  <a href="{{ jj_lib('lib/src/workspace.rs', 122, 131) }}"><code>create_jj_dir</code></a> runs before any
+  backend code and fails because the parent directory is missing, so <code>jj cc init</code> exits with an
+  error before it tries to reach the server (<a href="#running">confirmed by hand</a>). The test would pass with a working server URL too. It doesn't
+  test what its name says.
+</p>
+<h3 id="sqlite-test">The SQLite test</h3>
+<p>
+  <code>test_sqlite_store_init_and_snapshot_succeeds</code> is marked <code>#[should_panic]</code>
+  (<a href="{{ src(ts, 4, 4) }}">L4</a>). <code>init_sqlite</code> starts the server with
+  <code>--store-type=sqlite</code>, which prints "SQLite storage backend is not yet implemented" to stderr and
+  exits (<a href="{{ src(srv, 73, 76) }}">main.rs L73–76</a>). The harness sees stdout close and panics
+  (<a href="{{ src(tu, 79, 79) }}">lib.rs L79</a>). That panic is what the test expects. The body after
+  <code>init_sqlite</code>, which describes the intended SQLite behaviour, never runs. See
+  <a href="{{ url_for('jj_cloud', slug='storage') }}">storage</a>.
+</p>
+
+<h2 id="running">Running them</h2>
+<p>
+  <code>cargo test --workspace</code> runs everything. The build needs <code>protoc</code> on the
+  <code>PATH</code>, because <code>common</code>'s <a href="{{ src('common/build.rs', 1, 5) }}">build script</a> compiles the
+  <code>.proto</code> files with <code>tonic-build</code> (see <a href="{{ url_for('jj_cloud', slug='protobufs') }}">protobufs</a>).
+</p>
+<p>
+  Run at the pinned commit on 2026-10-06 (Rust 1.97.0, Linux), all nine tests passed, including the
+  <code>should_panic</code> test. Running the invalid-server test's command by hand gives
+  <code>Path(PathError { path: "/invalid_path_dest_dir/.jj", … NotFound })</code>. Pointing the same command
+  at a directory that exists gives a DNS <code>ConnectError</code> from the backend initialiser instead, and
+  leaves no <code>.jj</code> behind.
+</p>
