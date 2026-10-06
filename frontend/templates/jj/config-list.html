@@ -1,0 +1,225 @@
+{% set cmd = "cli/src/commands/config/list.rs" %}
+{% set cmod = "cli/src/commands/config/mod.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set cfg = "cli/src/config.rs" %}
+{% set lcfg = "lib/src/config.rs" %}
+{% set tpl = "cli/src/config/templates.toml" %}
+{% set colors = "cli/src/config/colors.toml" %}
+{% set t = "cli/tests/test_config_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj config list</code> works</h1>
+  <p class="tagline">
+    <code>jj config list</code> prints config variables one per line as <code>name = value</code>. Each line
+    can be tagged with the layer and file it came from.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: the config is already loaded when the command runs. <code>config list</code> walks every layer from
+  the top down, flattening tables into dotted names and marking each value that a higher layer shadows. It
+  then filters by level, defaults and overridden values, and renders each survivor through a template.
+  It never loads the repo and never snapshots.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 78, 124) }}"><code>cmd_config_list</code></a>. Its help text: "List
+  variables set in config files, along with their values" (<a href="{{ src(cmd, 35, 35) }}">source</a>). It is
+  the <code>List</code> variant of <code>ConfigCommand</code>, with the visible alias <code>jj config l</code>
+  (<a href="{{ src(cmod, 191, 192) }}">source</a>, <a href="{{ src(cmod, 211, 211) }}">dispatch</a>).
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Argument</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>NAME</code> (optional)</td><td>A dotted name to list. A table name lists everything under it. With no name, the whole config is listed (<a href="{{ src(cmd, 39, 41) }}">source</a>, <a href="{{ src(cmd, 95, 95) }}">root</a>).</td></tr>
+      <tr><td><code>--user</code>, <code>--repo</code>, <code>--workspace</code></td><td>Keep only values from that layer. At most one can be given. The shared level group is required for other config commands; <code>list</code> makes it optional (<a href="{{ src(cmd, 37, 37) }}">source</a>, <a href="{{ src(cmod, 50, 64) }}">group</a>, <a href="{{ src(cmod, 67, 77) }}">mapping</a>).</td></tr>
+      <tr><td><code>--include-defaults</code></td><td>Also list jj's built-in defaults, which are hidden otherwise. Cannot be combined with a level flag (<a href="{{ src(cmd, 43, 45) }}">source</a>).</td></tr>
+      <tr><td><code>--include-overridden</code></td><td>Also list values that a higher layer shadows (<a href="{{ src(cmd, 47, 49) }}">source</a>).</td></tr>
+      <tr><td><code>-T</code>, <code>--template</code></td><td>Render each value with this template instead of <code>templates.config_list</code> (<a href="{{ src(cmd, 54, 75) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <code>--config NAME=VALUE</code> and <code>--config-file</code> add a command-line layer, which shows up in the
+  list as source <code>cli</code>. <code>-R</code> chooses whose repo and workspace config are included.
+</p>
+
+<p class="jj-source">The global flags are on the <a href="{{ url_for('jj', slug='cli') }}#global-flags">CLI page</a>.</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>templates.config_list</code></td><td>The default template, used when <code>-T</code> is not given (<a href="{{ src(cmd, 86, 89) }}">source</a>). Its default is <code>builtin_config_list</code> (<a href="{{ src(tpl, 16, 16) }}">source</a>).</td></tr>
+      <tr><td><code>builtin_config_list</code></td><td>Prints <code>format_config_item(self)</code> and a newline, labelled <code>overridden</code> when shadowed (<a href="{{ src(tpl, 84, 88) }}">source</a>). <code>format_config_item</code> prints <code>name = value</code>, and comments the line out with <code>#</code> when it is overridden (<a href="{{ src(tpl, 77, 82) }}">source</a>).</td></tr>
+      <tr><td><code>builtin_config_list_detailed</code></td><td>The same, followed by <code># &lt;source&gt; &lt;path&gt;</code> (<a href="{{ src(tpl, 90, 94) }}">source</a>).</td></tr>
+      <tr><td><code>colors."config_list …"</code></td><td>Names are green, values yellow, sources blue, paths magenta, and overridden lines bright black (<a href="{{ src(colors, 72, 80) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The template keywords are <code>name</code>, <code>value</code>, <code>source</code>, <code>path</code> and
+  <code>overridden</code> (<a href="{{ src(cmd, 132, 156) }}">source</a>). <code>value</code> is rendered in TOML
+  syntax with surrounding whitespace trimmed (<a href="{{ src(cmd, 138, 142) }}">source</a>). <code>self</code>
+  is the whole <code>AnnotatedValue</code>, so <code>json(self)</code> works too
+  (<a href="{{ src(t, 372, 391) }}">test</a>).
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 370" role="img" aria-labelledby="cl-flow-title cl-flow-desc">
+    <title id="cl-flow-title">jj config list: call flow</title>
+    <desc id="cl-flow-desc">
+      At startup the CLI loads and resolves the config layers. The command parses the template from -T or
+      templates.config_list, then calls resolved_config_values, which walks the layers from the top down,
+      flattening tables into dotted names and marking shadowed values as overridden. The list is then filtered by
+      level flag or by default layer, and by overridden. If anything is left, each value is rendered through the
+      template to stdout, via the pager. Otherwise a warning goes to stderr.
+    </desc>
+    <defs>
+      <marker id="cl-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(util, 4676, 4697) }}"><rect class="d-box" x="20" y="20" width="330" height="50" rx="6"></rect>
+      <text x="32" y="41">startup: load and resolve layers</text>
+      <text x="32" y="59" class="d-muted" font-size="11">default … user, repo, workspace … cli</text></a>
+
+      <a href="{{ src(cmd, 84, 93) }}"><rect class="d-box" x="410" y="20" width="330" height="50" rx="6"></rect>
+      <text x="422" y="41">parse template</text>
+      <text x="422" y="59" class="d-muted" font-size="11">-T, else templates.config_list</text></a>
+
+      <a href="{{ src(cfg, 152, 208) }}"><rect class="d-box" x="410" y="104" width="330" height="50" rx="6"></rect>
+      <text x="422" y="125">resolved_config_values(NAME)</text>
+      <text x="422" y="143" class="d-muted" font-size="11">flatten every layer; mark overridden</text></a>
+
+      <a href="{{ src(cmd, 100, 107) }}"><rect class="d-box" x="410" y="188" width="330" height="50" rx="6"></rect>
+      <text x="422" y="209">filter</text>
+      <text x="422" y="227" class="d-muted" font-size="11">level or defaults, then overridden</text></a>
+
+      <a href="{{ src(cmd, 115, 122) }}"><rect class="d-box" x="20" y="188" width="330" height="50" rx="6"></rect>
+      <text x="32" y="209">nothing left</text>
+      <text x="32" y="227" class="d-muted" font-size="11">warning on stderr, exit 0</text></a>
+
+      <a href="{{ src(cmd, 109, 114) }}"><rect class="d-box" x="410" y="290" width="330" height="50" rx="6"></rect>
+      <text x="422" y="311">render each value</text>
+      <text x="422" y="329" class="d-muted" font-size="11">pager, then stdout</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#cl-arrow)">
+      <line x1="350" y1="45" x2="408" y2="45"></line>
+      <line x1="575" y1="70" x2="575" y2="102"></line>
+      <line x1="575" y1="154" x2="575" y2="186"></line>
+      <line x1="410" y1="213" x2="352" y2="213"></line>
+      <line x1="575" y1="238" x2="575" y2="288"></line>
+    </g>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Piece</th><th>Role here</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(lcfg, 280, 299) }}"><code>ConfigSource</code></a></td><td>The layer kinds, from lowest to highest precedence. They print as <code>default</code>, <code>system</code>, <code>env</code>, <code>user</code>, <code>repo</code>, <code>workspace</code> and <code>cli</code>; both environment layers print as <code>env</code> (<a href="{{ src(lcfg, 301, 315) }}">source</a>).</td></tr>
+      <tr><td><a href="{{ src(cfg, 109, 125) }}"><code>AnnotatedValue</code></a></td><td>One listed value: dotted name, value, source, file path if any, and whether it is overridden. It is serializable, which is what <code>json(self)</code> prints.</td></tr>
+      <tr><td><a href="{{ src(cfg, 148, 208) }}"><code>resolved_config_values</code></a></td><td>Collects the values under a name from every layer, with override marks. It does not hide disabled <code>aliases</code> values (<a href="{{ src(cfg, 151, 151) }}">source</a>).</td></tr>
+      <tr><td><a href="{{ src(util, 400, 422) }}"><code>CommandHelper::parse_template</code></a></td><td>Parses the template with the user's template aliases, so <code>-T</code> can name <code>builtin_config_list_detailed</code>. Parse warnings go to stderr.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="reads">5. What it reads, and snapshotting</h2>
+
+<p>
+  It never snapshots and never loads the repo. Everything it reads was loaded before dispatch: the system and user
+  config files, then the repo and workspace config of the workspace containing the current directory
+  (<a href="{{ src(util, 4632, 4643) }}">source</a>), replaced by those of <code>-R</code>'s workspace if given
+  (<a href="{{ src(util, 4676, 4692) }}">source</a>). Repo config is read only if its file exists
+  (<a href="{{ src(cfg, 593, 600) }}">source</a>). It writes nothing.
+</p>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="collect">Collecting values</h3>
+<p>
+  <a href="{{ src(cfg, 152, 208) }}"><code>resolved_config_values</code></a> walks the layers from the highest
+  precedence down. In each layer it looks up the name. A layer without it is skipped. If a parent of the name is
+  not a table, the name is recorded as shadowing everything below (<a href="{{ src(cfg, 161, 169) }}">source</a>).
+  Tables are expanded depth first into their leaves, so <code>test-table.y.foo</code> is listed as its own line.
+  Inline tables are expanded too, because their fields can be overridden separately
+  (<a href="{{ src(cfg, 170, 181) }}">source</a>, <a href="{{ src(t, 97, 117) }}">test</a>). Arrays stay one value
+  (<a href="{{ src(t, 120, 132) }}">test</a>).
+</p>
+
+<h3 id="overridden">Marking overridden values</h3>
+<p>
+  The walk keeps the set of names already seen in upper layers. A leaf is overridden if that set holds its own name
+  or a name beneath it, or if a parent was already shadowed. A table is shadowed if an upper layer set its name to a
+  plain value (<a href="{{ src(cfg, 174, 191) }}">source</a>). At the end, the list is reversed, so lines come out
+  from the lowest layer to the highest (<a href="{{ src(cfg, 206, 207) }}">source</a>).
+</p>
+
+<h3 id="filter">Filtering</h3>
+<p>
+  With a level flag, only values from that layer are kept. Without one, defaults are dropped unless
+  <code>--include-defaults</code>. Then overridden values are dropped unless <code>--include-overridden</code>
+  (<a href="{{ src(cmd, 100, 107) }}">source</a>). The override marks are computed before filtering, as the
+  comment there explains (<a href="{{ src(cmd, 97, 99) }}">source</a>). So <code>--user</code> hides a user value
+  that the repo config overrides, unless <code>--include-overridden</code> is also given
+  (<a href="{{ src(t, 250, 265) }}">test</a>).
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Situation</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td>Name set nowhere</td><td><code>Warning: No matching config key for: &lt;name&gt;</code> on stderr, nothing on stdout, exit 0 (<a href="{{ src(t, 56, 64) }}">test</a>).</td></tr>
+      <tr><td>No name, nothing left after filtering</td><td><code>Warning: No config to list.</code>, exit 0 (<a href="{{ src(t, 66, 71) }}">test</a>).</td></tr>
+      <tr><td><code>--include-defaults</code> with <code>--user</code>, <code>--repo</code> or <code>--workspace</code></td><td>A clap usage error, since the flags conflict (<a href="{{ src(cmd, 44, 44) }}">source</a>).</td></tr>
+      <tr><td>Template fails to parse</td><td>The command fails before reading any values (<a href="{{ src(cmd, 90, 92) }}">source</a>).</td></tr>
+      <tr><td>Same key in several layers</td><td>Only the highest one is printed. With <code>--include-overridden</code>, lower ones are printed first, commented out (<a href="{{ src(t, 442, 456) }}">test</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Example output</h2>
+
+<p>
+  From upstream's test: the user config sets <code>test-key</code> and <code>test-layered-key</code>, the repo
+  config sets <code>test-layered-key</code> again, and the test environment sets a few values through environment
+  variables (<a href="{{ src(t, 300, 354) }}">source</a>):
+</p>
+
+<pre><code>$ jj config list -Tbuiltin_config_list_detailed --config test-cli-key=test-cli-val
+test-key = "test-val" # user $TEST_ENV/config/config.toml
+test-layered-key = "test-layered-val" # repo $TEST_ENV/home/.config/jj/repos/0757f5ec8418b4f0983d/config.toml
+user.name = "Test User" # env
+user.email = "test.user@example.com" # env
+debug.commit-timestamp = "2001-02-03T04:05:11+07:00" # env
+debug.randomness-seed = 5 # env
+debug.operation-timestamp = "2001-02-03T04:05:11+07:00" # env
+operation.hostname = "host.example.com" # env
+operation.username = "test-username" # env
+test-cli-key = "test-cli-val" # cli</code></pre>
+
+<p>
+  The user's <code>test-layered-key</code> is missing because the repo value overrides it. Another test shows
+  the overridden lines (<a href="{{ src(t, 442, 456) }}">source</a>):
+</p>
+
+<pre><code>$ jj config list merge-tools.vimdiff.program --include-overridden --config 'merge-tools.vimdiff.program="command-arg"'
+# merge-tools.vimdiff.program = "user"
+# merge-tools.vimdiff.program = "repo"
+merge-tools.vimdiff.program = "command-arg"</code></pre>

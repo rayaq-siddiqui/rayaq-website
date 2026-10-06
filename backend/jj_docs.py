@@ -1080,6 +1080,16 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "config-list": {
+        "title": "How jj config list works",
+        "sources": [
+            "cli/src/commands/config/list.rs",
+            "cli/src/config.rs",
+            "lib/src/config.rs",
+            "cli/src/config/templates.toml",
+        ],
+        "ready": True,
+    },
     "config-path": {
         "title": "How jj config path works",
         "sources": [
