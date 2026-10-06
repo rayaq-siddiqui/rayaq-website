@@ -3,8 +3,9 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-05 (forty-eighth run): no upstream change since `4df5265`; built
-`operation show`, `bookmark list` and `tag list`. `git root` is next.
+**Last updated:** 2026-10-06 (forty-ninth run): no upstream change since `4df5265`; built the
+last ten Tier B pages (`git root`, `workspace list`/`root`, `config *`). Tier B is complete; Tier C
+(`help`, `version`, `util *`, `debug`, `bench`) is next.
 
 ## Upstream pin
 
@@ -26,8 +27,11 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 82 of 105: Tier A 65 of 65 (complete),
-      Tier B 17 of 27 (`file annotate`/`list`/`search`/`show`, `sparse list`, `log`, `show`, `diff`, `interdiff`, `status`, `evolog`, `root`, `operation diff`/`log`/`show`, `bookmark list`, `tag list`), Tier C 0 of 13. Done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
+- [ ] Every §8A.1 command has a page that meets its tier's bar: 92 of 105: Tier A 65 of 65 (complete),
+      Tier B 27 of 27 (complete: `file annotate`/`list`/`search`/`show`, `sparse list`, `log`, `show`,
+      `diff`, `interdiff`, `status`, `evolog`, `root`, `operation diff`/`log`/`show`, `bookmark list`,
+      `tag list`, `git root`, `workspace list`/`root`, `config edit`/`gc`/`get`/`list`/`path`/`set`/
+      `unset`), Tier C 0 of 13. Tier A done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
       `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`, `absorb`, `duplicate`,
       `bookmark create`/`set`/`move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`,
       `parallelize`, `simplify-parents`, `arrange`, `converge`, `revert`, `diffedit`, `run`,
@@ -37,6 +41,14 @@ The contract is `specs/jj.md` (spec v2); this file records where the build actua
       `import`/`init`/`remote`, `sign`, `unsign`, `workspace add`/`forget`/`remove`/`rename`/`update-stale`, `gerrit upload`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
+
+## Forty-ninth run (2026-10-06)
+
+Pin unchanged (`4df5265`). `4dd632c` `git root`; `0b256b6` `workspace list`; `abf98d9` `workspace
+root`; `5698099` `config get`; `63fb0b3` `config path`; `36d4abc` `config list`; `6461548` `config
+set` (bare-string fallback, `ensure_table`); `22a2d7c` `config unset` (`WouldDeleteTable`, never
+creates a file); `0e51f48` `config edit` (create-first save, re-parse loop, restore on "n");
+`bb0eb21` `config gc` (metadata scan, default-no prompt, non-recursive delete). 108 URLs return 200.
 
 ## Thirty-ninth to forty-eighth runs (2026-10-05)
 
@@ -54,23 +66,12 @@ ordering, edge kinds, elided nodes; two SVGs). Forty-first: `98f13eb`, `file sea
 Thirty-ninth: `72c938f`, `file annotate`, plus a test that every ready Tier B page has all eight
 sections (§8A.3 item 5 is `reads`; see deviations).
 
-## Thirty-fourth to thirty-eighth runs (2026-10-04)
+## Twenty-seventh to thirty-eighth runs (2026-10-04)
 
-Pin unchanged (`4df5265`). Topic pages: `backends` `f862a0b`, `revsets` `7a715c9`, `index` `4c1e053` (template
-`jj/commit-index.html`, see deviations), `storage` `3b6b9ff`, `conflicts` `0f9c64e`.
-`44cd877`/`4fbf569` linked 16 "page planned" cells to `revsets`/`index` (their bodies cite "§6"
-for §8A.3 item 4). `c805986` added `.claude/settings.json` (`autoCompactWindow`), per the owner.
-
-## Twenty-seventh to thirty-third runs (2026-10-04)
-
-- `d4fc639`: maintenance `03db8d1..4df5265` (signature-only code changes; `docs/config.md` grew 6
-  lines, shifting config-doc ranges on 5 pages; fixed `git-push`: sign-on-push signs only *your* commits).
-- Pages: `diffedit` `d12cd80`, `run` `71e79fb`, `resolve` `0da010f`, `file chmod` `a199333`,
-  `file track`/`untrack` `c473761`, `sparse set`/`edit`/`reset` `81ce853`, `bisect run` `292581a`,
-  `op restore`/`revert`/`abandon`/`integrate` `30dcf98`, `bookmark advance` `5c2f4de`, `bookmark
-  delete`/`forget` `40fcace`, `bookmark rename`/`track`/`untrack` `b241000`, `tag *` `e4557a0`,
-  `git clone` `ca130e3`, `git export`/`import` `5b40048`, `git init` `f3b79f6`, `git remote` `77f4574`,
-  `git colocation` `b40cb83`, `sign`/`unsign` `56f3709`, `workspace *` `283ba7c`, `gerrit upload` `32f055e`.
+`d4fc639`: maintenance `03db8d1..4df5265` (shifted config-doc ranges on 5 pages; `git-push`: sign-on-
+push signs only *your* commits). Topics `backends` `f862a0b`, `revsets` `7a715c9`, `index` `4c1e053`,
+`storage` `3b6b9ff`, `conflicts` `0f9c64e`; `44cd877`/`4fbf569` linked "page planned" cells; `c805986`
+added `.claude/settings.json` per the owner. Tier A pages `d12cd80` through `32f055e` (`git log`).
 
 ## First to twenty-sixth runs (2026-10-02 to 2026-10-04)
 
@@ -107,11 +108,11 @@ existing block. On the fourth run it moved only the `undo` and `redo` source lin
    `-remote`~~, ~~`sign`~~, ~~`unsign`~~, ~~`workspace-*`~~, ~~`gerrit-upload`~~. Tier A complete.
 2. Remaining topic pages: ~~`conflicts`~~, ~~`storage`~~, ~~`index`~~, ~~`revsets`~~, ~~`backends`~~.
    All topics done.
-3. **Next.** Tier B commands, in registry order: ~~`file annotate`~~, ~~`file list`~~, ~~`file search`~~, ~~`file show`~~,
+3. Tier B commands, in registry order: ~~`file annotate`~~, ~~`file list`~~, ~~`file search`~~, ~~`file show`~~,
    ~~`sparse list`~~, ~~`log`~~, ~~`show`~~, ~~`diff`~~, ~~`interdiff`~~, ~~`status`~~, ~~`evolog`~~, ~~`root`~~, ~~`operation diff`~~,
-   ~~`operation log`~~, ~~`operation show`~~, ~~`bookmark list`~~, ~~`tag list`~~, `git root`, `workspace list`,
-   `workspace root`, `config edit`/`gc`/`get`/`list`/`path`/`set`/`unset`.
-4. Tier C commands (`debug` and `bench` each as one shared page).
+   ~~`operation log`~~, ~~`operation show`~~, ~~`bookmark list`~~, ~~`tag list`~~, ~~`git root`~~, ~~`workspace list`~~,
+   ~~`workspace root`~~, ~~`config edit`/`gc`/`get`/`list`/`path`/`set`/`unset`~~. Tier B complete.
+4. **Next.** Tier C commands (`debug` and `bench` each as one shared page).
 
 To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
 `"ready": True` and any extra `sources`.
@@ -137,6 +138,8 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
 
 ## Open gaps / questions for the owner
 
+- **This Routine fires hourly, not daily.** On 2026-10-05/06 roughly eighteen firings of this
+  "daily" Routine arrived about an hour apart in one session. Worth checking its schedule.
 - **`workspace_store/` location in spec §5.** The spec lists `workspace_store/` directly under `.jj/`,
   but `ReadonlyRepo::init` creates it at `.jj/repo/workspace_store/` (shared by all workspaces). The
   `storage` page describes the code; the spec may want updating.
