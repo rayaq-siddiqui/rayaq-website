@@ -3,8 +3,8 @@
 Running log for the daily jj-commit-cloud-poc architecture Routine. Read this first, update it last.
 The contract is `specs/jj-commit-cloud-poc.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-04 (third run). Upstream unchanged since the pin; built the
-`client-backend` page.
+**Last updated:** 2026-10-06 (fourth run). Upstream unchanged since the pin. Built the last five
+pages, so the queue is empty; future runs are maintenance only.
 
 ## Upstream pin
 
@@ -14,107 +14,119 @@ at the `v0.43.0` tag of `jj-vcs/jj`.
 
 ## §10 acceptance criteria
 
-- [x] `/jj-commit-cloud-poc` renders the §6 diagram and links to every page in §5 (boxes for
-      unbuilt pages link to pinned source until the page exists).
-- [ ] Every §5 page exists, meets its "Must cover" column, and is registered: `protobufs`,
-      `object-ids`, `client-backend` done; `client-op-store`, `server`, `storage`, `cli`, `testing`
-      to go.
-- [ ] `object-ids` meets all seven §8 items with at least two SVG diagrams (done, three SVGs);
-      `cli` has its sequence diagram (not built yet).
+- [x] `/jj-commit-cloud-poc` renders the §6 diagram and links to every page in §5.
+- [x] Every §5 page exists, meets its "Must cover" column, and is registered: all eight are
+      `ready: True`.
+- [x] `object-ids` meets all seven §8 items with at least two SVG diagrams (three); `cli` has its
+      sequence diagram of `jj cc init`'s local and gRPC writes.
 - [x] `protobufs` covers both `.proto` files, every RPC and every field.
 - [x] Every source link is pinned (`UPSTREAM.commit` or `v<jj_lib_version>`; tested).
-- [x] §7.5 tests exist and pass (138 tests in the suite, all sections).
+- [x] §7.5 tests exist and pass (143 tests in the suite, all sections).
 - [x] Homepage card links to `/jj-commit-cloud-poc`.
-- [x] Mobile at 390px: no horizontal page scroll on `/jj-commit-cloud-poc` and every ready page
-      (checked in headless Chromium this run).
-- [x] The daily Routine has run in maintenance mode (second and third runs: no relevant upstream
+- [x] Mobile at 390px: no horizontal page scroll on the index and every ready page (headless
+      Chromium, this run).
+- [x] The daily Routine has run in maintenance mode (runs two to four: no relevant upstream
       change).
+
+## Fourth run (2026-10-06)
+
+| Commit | What |
+|---|---|
+| `0961f99` | `client-op-store` page: op store and op heads store, loading, operation and view conversions, the root, the server's head update rule, concurrency; SVG |
+| `018cc4e` | `server` page: startup and arguments, registration, both services handler by handler, status codes; SVG |
+| `2aadf6b` | `storage` page: the `Store` trait, `MemoryStore` layout (SVG), locking, the op-heads rule table, SQLite declared but unimplemented |
+| `55fb695` | `cli` page: `CliRunner` additions, `jj cc init` step by step through jj-lib, sequence SVG, stock commands on commit-cloud stores |
+| `522c4ba` | `testing` page: `testutils` harness and build script, setup SVG, all nine tests, the two that pass for other reasons, cargo results |
+| `48ed847` | Fix: the index wrongly said the binary can't open ordinary repositories |
+
+Maintenance: upstream `HEAD` still at `4b1c77b`, so the pin stayed.
+
+This run installed `protoc` and ran `cargo test --workspace` at the pin (Rust 1.97.0): all nine
+tests pass, including the `should_panic` one. The invalid-server test's failure was reproduced by
+hand: it fails on the missing destination path, not on the server.
 
 ## Third run (2026-10-04)
 
 | Commit | What |
 |---|---|
-| `0ae8f60` | `client-backend` page: struct and fixed IDs, `init`/`load` and `config.toml`, registration, every `Backend` method and its RPC, commit and tree-entry conversions, `run_async`, error mapping, limitations; one call-path SVG |
-
-Maintenance: upstream `HEAD` still at `4b1c77b`, so the pin stayed. jj-lib claims were checked
-against `lib/src/backend.rs` at the `v0.43.0` tag.
+| `0ae8f60` | `client-backend` page; one call-path SVG |
 
 ## Second run (2026-10-03)
 
 | Commit | What |
 |---|---|
-| `d67c1dd` | `object-ids` page (§8): ID table, Git blob/tree/commit preimages, operation and view encodings, client agreement, worked example, `GitBackend` comparison, edge cases; three SVGs |
+| `d67c1dd` | `object-ids` page (§8); three SVGs |
 
-Maintenance: upstream `HEAD` still at `4b1c77b`, so the pin stayed.
-
-The worked example's IDs come from a scratch crate that makes the same `gix` 0.68.0 calls as
-`hash_utils.rs` (the server itself wasn't built, since `protoc` isn't available), and were
-checked with `git hash-object`. The `GitBackend` comparison ID used jj's reverse-hex
-`change-id` value in the same preimage. The operation and view collisions were found and
-checked with a byte-for-byte Python reimplementation of `hash_operation` and `hash_view`.
-Redo all of this if the pin moves and `hash_utils.rs` changes.
+The worked example's IDs come from a scratch crate making the same `gix` 0.68.0 calls as
+`hash_utils.rs`, checked with `git hash-object`. The operation and view collisions were found with
+a byte-for-byte Python reimplementation of `hash_operation` and `hash_view`. Redo both if the pin
+moves and `hash_utils.rs` changes.
 
 ## First run (2026-10-03)
 
 | Commit | What |
 |---|---|
-| `a0dd969` | Scaffold: `jj_cloud_docs.py` (pin, registry, `PROTO_ITEMS` with 60 entries, `source_url`, `jj_lib_url`), `/jj-commit-cloud-poc` + `/jj-commit-cloud-poc/<slug>`, `jj_cloud/` layout and index, `jj_cloud.css`, §7.5 tests, homepage card, `CLAUDE.md` |
-| `c6a34cf` | `protobufs` page: codegen and constants, both services RPC by RPC, all 43 messages field by field, what the wire loses |
+| `a0dd969` | Scaffold: registry, routes, layout, CSS, §7.5 tests, homepage card, `CLAUDE.md` |
+| `c6a34cf` | `protobufs` page (field tables generated by a scratch parser; regenerate the same way) |
 | `7204579` | §6 diagram, component tour, crate map, status and limitations on the index |
-
-The `protobufs` field tables were generated from the `.proto` files by a scratch script that
-parses every message and field with its line number, and fails if a field has no description.
-Regenerate the same way when the schemas change, so names, numbers and line links stay exact.
 
 ## Queue
 
-1. ~~Scaffold~~
-2. ~~`protobufs`~~
-3. ~~§6 architecture diagram on the index~~
-4. ~~`object-ids` (flagship, §8)~~
-5. ~~`client-backend`~~
-6. `client-op-store`
-7. `server`
-8. `storage`
-9. `cli` (needs a sequence diagram of a command's writes crossing the wire)
-10. `testing`
+Empty. All of: scaffold, `protobufs`, §6 diagram, `object-ids`, `client-backend`,
+`client-op-store`, `server`, `storage`, `cli`, `testing`.
+
+Maintenance per §9: each run, compare upstream `HEAD` with the pin. If it moved, diff the
+`sources` of each registry entry, update the affected pages, then bump `UPSTREAM`. If
+`hash_utils.rs` or `testutils` changed, redo the object-ids checks or the cargo run above.
 
 ## Deliberate deviations
 
 - **Diagram colours.** As on `/jj`, diagrams use the `--jj-*` variables from `jj.css` (the site
   is dark-only).
-- **Table column for services.** §7.2's field-table columns are used for every message. The
-  two service tables use RPC · Request · Response · Client caller · Server handler instead,
-  since RPCs have no field numbers or jj-lib types.
+- **Table column for services.** The two service tables use RPC · Request · Response · Client
+  caller · Server handler instead of §7.2's field columns.
 - **"Why that encoding avoids ambiguity" (§8 item 3).** It only partly does. The page explains
-  what the length prefixes prevent (field-boundary collisions), then shows, with verified
-  examples, the collisions they don't prevent, rather than claiming the encoding is unambiguous.
-- **`/jj/backends` link (§8 item 6).** That `/jj` page isn't built yet, so the link falls back to
-  `/jj` until it is marked ready (the templates now get `jj_ready_slugs`). The comparison itself
-  links jj-lib's `git_backend.rs` at `v0.43.0` directly.
+  what the length prefixes prevent, then shows verified collisions they don't prevent.
+- **`/jj` links.** `/jj` pages that aren't built yet (`backends`, `cli`, …) fall back to `/jj`
+  through `jj_ready_slugs` until they are marked ready.
 
 ## Open gaps / questions for the owner
 
-- **A new connection per object.** Every `Backend` call spawns a thread, builds a tokio runtime
-  and opens a new gRPC connection (`run_async` + `connect`), with `concurrency()` at 1 and no
-  timeouts. The `client-backend` page states this from the code. Its cost wasn't measured, since
-  the server isn't built here.
-- **Signatures and `write_commit`'s return value.** Signatures are sent but always read back as
-  `None`, and `write_commit` returns the commit as passed in, not as stored. Combined with the
-  narrow commit hash, two different commits can get one ID.
+Each is stated on the relevant page from the code.
 
-- **No authentication, and client-supplied commit IDs.** `WriteCommit` stores a commit under the
-  ID in the request when one is present, without checking it. The stock client always sends an
-  empty ID. The index and `object-ids` say so plainly; still to cover on the `server` page.
-- **Commit IDs ignore jj-only fields.** The commit hash covers only the first tree term, and leaves
-  out predecessors, conflict labels, signatures and sub-second time. Two different jj commits can
-  share an ID, and the memory store's insert silently replaces the first. jj's `GitBackend`
-  detects this and nudges the committer time instead.
-- **`change-id` header differs from `GitBackend`.** The cloud writes the change ID's bytes
-  reversed as plain hex, while jj writes them in order in its `z`–`k` alphabet. So no commit ID
-  matches what `GitBackend` would produce, though file and tree IDs do. Possibly unintended.
-- **Operation and view encodings aren't injective.** There are no counts and no presence flag for
-  `workspace_name`, and `commit_predecessors_set` isn't hashed. The page shows two verified
-  collisions; both need unusual inputs.
-- **`StoreFactories::empty()`.** The custom `jj` binary registers only the commit-cloud stores,
-  so it can't open ordinary repositories. The index states this from the code. It hasn't been run.
+- **Concurrent operations are lost silently.** If a head was already replaced, the server neither
+  removes nor adds; the client ignores the returned heads, and the command succeeds
+  (`client-op-store`). Reasoned from the code and a reimplementation of the rule; not reproduced
+  live, since it needs two commands to interleave.
+- **Views drop data.** Tags, Git refs and Git HEAD aren't on the wire; remote names containing `@`
+  don't round-trip.
+- **Operation metadata loses the timezone.** Timestamps come back with offset 0.
+- **Operation ID prefix resolution** works only for the root operation.
+- **`NotFound` isn't mapped to `ObjectNotFound`** in the clients, so jj sees a generic error.
+- **Health service.** Only `""` and `OpStoreService` are registered as serving; `BackendService`
+  isn't.
+- **`--sqlite-path` is unused**, and `--store-type=sqlite` exits at startup.
+- **Client-supplied commit IDs are trusted.** `WriteCommit` stores under the request's ID when one
+  is present. There's no authentication.
+- **Registrations are lost on restart** (memory store only), and a failed `cc init` can leave an
+  orphan registration.
+- **`jj cc init --create` is unused**; every init registers a new repository, so two workspaces
+  can't share one remote repository.
+- **`jj cc init` ignores the user's config** (`StackedConfig::with_defaults()`).
+- **`test_cc_init_fails_on_invalid_server_addr` passes regardless of the server**: its destination's
+  parent doesn't exist. Confirmed by hand.
+- **`test_sqlite_store_init_and_snapshot_succeeds` is `should_panic`**: it passes because the server
+  exits; its body never runs.
+- **A new connection per object.** Every client call spawns a thread, builds a runtime and opens a
+  connection, with no timeouts. Cost not measured.
+- **Signatures and `write_commit`'s return value.** Signatures are sent but read back as `None`;
+  `write_commit` returns the commit as passed, not as stored.
+- **Commit IDs ignore jj-only fields** (later tree terms, predecessors, conflict labels,
+  signatures, sub-second time). Two jj commits can share an ID, and the memory store's insert
+  silently replaces the first. `GitBackend` detects this; the cloud doesn't.
+- **`change-id` header differs from `GitBackend`** (reversed plain hex vs jj's `z`–`k` alphabet).
+  Possibly unintended.
+- **Operation and view encodings aren't injective.** Two verified collisions, both with unusual
+  inputs.
+- Resolved this run: the earlier note that the binary can't open ordinary repositories was wrong.
+  jj-cli merges the added factories into its defaults.
