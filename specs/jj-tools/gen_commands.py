@@ -14,7 +14,7 @@ CMD = os.path.join(ROOT, "cli/src/commands")
 CATEGORIES = [
     ("Creating and editing changes", ["new", "edit", "describe", "commit", "metaedit", "next", "prev"]),
     ("Moving and combining changes", ["rebase", "squash", "split", "absorb", "duplicate", "abandon", "parallelize", "simplify-parents", "arrange", "converge", "revert", "restore", "diffedit"]),
-    ("Content and conflicts", ["fix", "run", "resolve", "file annotate", "file chmod", "file list", "file search", "file show", "file track", "file untrack", "sparse edit", "sparse list", "sparse reset", "sparse set"]),
+    ("Content and conflicts", ["fix", "run", "resolve", "file annotate", "file chmod", "file delete", "file edit", "file list", "file search", "file show", "file track", "file untrack", "sparse edit", "sparse list", "sparse reset", "sparse set"]),
     ("Inspecting history", ["log", "show", "diff", "interdiff", "status", "evolog", "root", "bisect run"]),
     ("Operation log", ["undo", "redo", "operation abandon", "operation diff", "operation integrate", "operation log", "operation restore", "operation revert", "operation show"]),
     ("Bookmarks and tags", ["bookmark advance", "bookmark create", "bookmark delete", "bookmark forget", "bookmark list", "bookmark move", "bookmark rename", "bookmark set", "bookmark track", "bookmark untrack", "tag delete", "tag list", "tag set", "tag track", "tag untrack"]),

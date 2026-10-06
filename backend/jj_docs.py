@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "4df526513289fdee58eb7e8351c2ff87aac099ff",
-    "commit_date": "2026-10-04",
+    "commit": "320f7e6bde5f533afd0f029b3196398f8cd1cb31",
+    "commit_date": "2026-10-06",
     "version": "0.45.1",
-    "analyzed_on": "2026-10-04",
+    "analyzed_on": "2026-10-06",
 }
 
 TOPICS = [
@@ -338,7 +338,7 @@ COMMANDS = [
         "category": 'Moving and combining changes',
         "tier": 'A',
         "summary": 'Converge divergent changes',
-        "source": ('cli/src/commands/converge.rs', 94),
+        "source": ('cli/src/commands/converge.rs', 96),
     },
     {
         "command": 'revert',
@@ -352,14 +352,14 @@ COMMANDS = [
         "category": 'Moving and combining changes',
         "tier": 'A',
         "summary": 'Restore paths from another revision',
-        "source": ('cli/src/commands/restore.rs', 51),
+        "source": ('cli/src/commands/restore.rs', 52),
     },
     {
         "command": 'diffedit',
         "category": 'Moving and combining changes',
         "tier": 'A',
         "summary": 'Touch up the content changes in a revision with a diff editor',
-        "source": ('cli/src/commands/diffedit.rs', 49),
+        "source": ('cli/src/commands/diffedit.rs', 50),
     },
     {
         "command": 'fix',
@@ -395,6 +395,20 @@ COMMANDS = [
         "tier": 'A',
         "summary": 'Sets or removes the executable bit for paths in the repo',
         "source": ('cli/src/commands/file/chmod.rs', 46),
+    },
+    {
+        "command": 'file delete',
+        "category": 'Content and conflicts',
+        "tier": 'A',
+        "summary": 'Delete files from the given revision',
+        "source": ('cli/src/commands/file/delete.rs', 36),
+    },
+    {
+        "command": 'file edit',
+        "category": 'Content and conflicts',
+        "tier": 'A',
+        "summary": 'Edit the contents of a file in a revision',
+        "source": ('cli/src/commands/file/edit.rs', 55),
     },
     {
         "command": 'file list',
