@@ -973,6 +973,30 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "util-gc": {
+        "title": "How jj util gc works",
+        "sources": [
+            "cli/src/commands/util/gc.rs",
+            "lib/src/simple_op_store.rs",
+            "lib/src/git_backend.rs",
+        ],
+        "ready": True,
+    },
+    "util-snapshot": {
+        "title": "How jj util snapshot works",
+        "sources": [
+            "cli/src/commands/util/snapshot.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
+    "util-exec": {
+        "title": "How jj util exec works",
+        "sources": [
+            "cli/src/commands/util/exec.rs",
+        ],
+        "ready": True,
+    },
     "util-config-schema": {
         "title": "How jj util config-schema works",
         "sources": [
