@@ -973,6 +973,30 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "util-completion": {
+        "title": "How jj util completion works",
+        "sources": [
+            "cli/src/commands/util/completion.rs",
+            "cli/src/cli_util.rs",
+        ],
+        "ready": True,
+    },
+    "util-diff": {
+        "title": "How jj util diff works",
+        "sources": [
+            "cli/src/commands/util/diff.rs",
+            "cli/src/diff_util.rs",
+        ],
+        "ready": True,
+    },
+    "util-backend": {
+        "title": "How jj util backend works",
+        "sources": [
+            "cli/src/commands/util/backend/mod.rs",
+            "cli/src/commands/util/backend/name.rs",
+        ],
+        "ready": True,
+    },
     "util-gc": {
         "title": "How jj util gc works",
         "sources": [
