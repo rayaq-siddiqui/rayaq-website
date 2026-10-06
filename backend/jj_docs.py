@@ -973,6 +973,32 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "util-config-schema": {
+        "title": "How jj util config-schema works",
+        "sources": [
+            "cli/src/commands/util/config_schema.rs",
+            "cli/src/config.rs",
+            "cli/src/config-schema.json",
+        ],
+        "ready": True,
+    },
+    "util-install-man-pages": {
+        "title": "How jj util install-man-pages works",
+        "sources": [
+            "cli/src/commands/util/install_man_pages.rs",
+            "default.nix",
+        ],
+        "ready": True,
+    },
+    "util-markdown-help": {
+        "title": "How jj util markdown-help works",
+        "sources": [
+            "cli/src/commands/util/markdown_help.rs",
+            "cli/tests/test_generate_md_cli_help.rs",
+            "docs/cli-reference.md",
+        ],
+        "ready": True,
+    },
     "help": {
         "title": "How jj help works",
         "sources": [
