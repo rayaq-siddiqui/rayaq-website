@@ -973,6 +973,22 @@ COMMANDS = [
 ]
 
 COMMAND_PAGE_OVERRIDES = {
+    "debug": {
+        "title": "How jj debug works",
+        "sources": [
+            "cli/src/commands/debug/mod.rs",
+            "cli/tests/test_debug_command.rs",
+        ],
+        "ready": True,
+    },
+    "bench": {
+        "title": "How jj bench works",
+        "sources": [
+            "cli/src/commands/bench/mod.rs",
+            "cli/src/commands/bench/revset.rs",
+        ],
+        "ready": True,
+    },
     "util-completion": {
         "title": "How jj util completion works",
         "sources": [
