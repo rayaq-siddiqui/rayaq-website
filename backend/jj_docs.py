@@ -1110,6 +1110,15 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "config-unset": {
+        "title": "How jj config unset works",
+        "sources": [
+            "cli/src/commands/config/unset.rs",
+            "cli/src/commands/config/mod.rs",
+            "lib/src/config.rs",
+        ],
+        "ready": True,
+    },
     "git-colocation": {
         "title": "How jj git colocation works",
         "sources": [
