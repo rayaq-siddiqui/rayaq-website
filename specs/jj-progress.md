@@ -3,14 +3,14 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-06 (forty-ninth run): no upstream change since `4df5265`; built the
-last ten Tier B pages (`git root`, `workspace list`/`root`, `config *`). Tier B is complete; Tier C
-(`help`, `version`, `util *`, `debug`, `bench`) is next.
+**Last updated:** 2026-10-06 (fiftieth run): bumped the pin `4df5265..320f7e6`, which added
+`file delete` and `file edit`; built those two and all thirteen Tier C pages. **The build is
+complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@4df526513289fdee58eb7e8351c2ff87aac099ff` (committed 2026-10-04, version
-0.45.1), analyzed 2026-10-04. Held in `jj_docs.UPSTREAM`. Previous pin: `03db8d1`.
+`jj-vcs/jj@320f7e6bde5f533afd0f029b3196398f8cd1cb31` (committed 2026-10-06, version
+0.45.1), analyzed 2026-10-06. Held in `jj_docs.UPSTREAM`. Previous pin: `4df5265`.
 
 ## §10 acceptance criteria
 
@@ -22,49 +22,33 @@ last ten Tier B pages (`git root`, `workspace list`/`root`, `config *`). Tier B 
 - [x] The `fix` page meets all ten §8 items, with three SVG diagrams.
 - [x] The `protobufs` page covers all seven `.proto` files, every field.
 - [x] Every source link is pinned to `UPSTREAM.commit` (tested).
-- [x] §7.5 tests exist and pass (142 tests in the suite, including the other sections').
+- [x] §7.5 tests exist and pass (143 tests in the suite, including the other sections').
 - [x] Homepage card links to `/jj`.
 - [x] Mobile at 390px: no horizontal page scroll on `/jj` and every ready page
       (checked in headless Chromium).
 - [x] The `cli` lifecycle page exists.
-- [ ] Every §8A.1 command has a page that meets its tier's bar: 92 of 105: Tier A 65 of 65 (complete),
-      Tier B 27 of 27 (complete: `file annotate`/`list`/`search`/`show`, `sparse list`, `log`, `show`,
-      `diff`, `interdiff`, `status`, `evolog`, `root`, `operation diff`/`log`/`show`, `bookmark list`,
-      `tag list`, `git root`, `workspace list`/`root`, `config edit`/`gc`/`get`/`list`/`path`/`set`/
-      `unset`), Tier C 0 of 13. Tier A done: `fix`, `new`, `edit`, `describe`, `commit`, `squash`,
-      `rebase`, `abandon`, `undo`, `redo`, `restore`, `split`, `absorb`, `duplicate`,
-      `bookmark create`/`set`/`move`, `git fetch`, `git push`, `metaedit`, `next`, `prev`,
-      `parallelize`, `simplify-parents`, `arrange`, `converge`, `revert`, `diffedit`, `run`,
-      `resolve`, `file chmod`/`track`/`untrack`, `sparse edit`/`reset`/`set`, `bisect run`,
-      `op abandon`/`integrate`/`restore`/`revert`, `bookmark advance`/`delete`/`forget`/`rename`/
-      `track`/`untrack`, `tag delete`/`set`/`track`/`untrack`, `git clone`/`colocation`/`export`/
-      `import`/`init`/`remote`, `sign`, `unsign`, `workspace add`/`forget`/`remove`/`rename`/`update-stale`, `gerrit upload`.
+- [x] Every §8A.1 command has a page that meets its tier's bar: 107 of 107. Tier A 67 of 67 (the
+      spec's 65 plus `file delete`/`edit`), Tier B 27 of 27, Tier C 13 of 13 (`help`, `version`,
+      `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
+      `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped).
 
-## Forty-ninth run (2026-10-06)
+## Fiftieth run (2026-10-06)
 
-Pin unchanged (`4df5265`). `4dd632c` `git root`; `0b256b6` `workspace list`; `abf98d9` `workspace
-root`; `5698099` `config get`; `63fb0b3` `config path`; `36d4abc` `config list`; `6461548` `config
-set` (bare-string fallback, `ensure_table`); `22a2d7c` `config unset` (`WouldDeleteTable`, never
-creates a file); `0e51f48` `config edit` (create-first save, re-parse loop, restore on "n");
-`bb0eb21` `config gc` (metadata scan, default-no prompt, non-recursive delete). 108 URLs return 200.
+- `58584d3` maintenance `4df5265..320f7e6` (17 commits): re-pinned ranges on 49 pages; `converge`
+  gained the "No revisions were found to be divergent" messages; `diffedit`/`restore` now cite the
+  shared `rebase_or_reparent_descendants`; gix error migration checked, behaviour unchanged.
+- `39e7fb0` `file delete`; `8e737cf` `file edit` (both new upstream, Tier A).
+- `437a375` `help`, `version`, plus a test that every ready Tier C page has its sections.
+- `03bf8f4` `util config-schema`/`markdown-help`/`install-man-pages`; `eab649a` `util gc`/`snapshot`/
+  `exec`; `73d8546` `util completion`/`diff`/`backend`; `901d340` `debug`, `bench` (group pages).
+- 123 URLs return 200; 0px overflow at 390px on every new page.
 
-## Thirty-ninth to forty-eighth runs (2026-10-05)
+## Thirty-ninth to forty-ninth runs (2026-10-05 to 2026-10-06)
 
-Pin unchanged (`4df5265`). Forty-eighth run: `9d252e5`, `operation show`; `caef4a5`, `bookmark
-list` (grouping flags, sort, hints); `37d937f`, `tag list` (shares `collect_items`/`sort`; no
-hints, local-only unmatched warning). Forty-seventh: `a37cec4`, `operation log` (lazy end-time
-ancestor walk, `--limit` before `--reversed`, no op diff under merge operations).
-Forty-sixth: `c38a690`, `root`; `05206c7`, `operation diff`
-(merged from-ops, commit classification by predecessors and change ids, elision). Forty-fifth:
-`048ddfc`, `status`; `64544ef`, `evolog`. Forty-fourth: `2c09138`, `diff` (`--from`/`--to` vs.
-`-r`, merged parents, flow and range SVGs); `b4b1576`, `interdiff`. Forty-third: `44f5c36`,
-`show` (format flags, merge-parent tree SVG). Forty-second: `8401046`, `log` (topo-grouped
-ordering, edge kinds, elided nodes; two SVGs). Forty-first: `98f13eb`, `file search`;
-`1b18f74`, `file show`; `c338d03`, `sparse list`. Fortieth: `e3d0baa`, `file list`.
-Thirty-ninth: `72c938f`, `file annotate`, plus a test that every ready Tier B page has all eight
-sections (§8A.3 item 5 is `reads`; see deviations).
+Pin `4df5265`. Tier B: `72c938f` `file annotate` (plus the Tier B sections test) through `bb0eb21`
+`config gc`, ending with `git root`, `workspace list`/`root` and `config *` on the forty-ninth run.
 
 ## Twenty-seventh to thirty-eighth runs (2026-10-04)
 
@@ -93,26 +77,11 @@ doc comment and pins its source line. It exits non-zero if upstream has a comman
 to that table (category and tier per §8A.2), regenerate, and paste the output over the
 existing block. On the fourth run it moved only the `undo` and `redo` source lines.
 
-## Queue (build in this order, per spec §9)
+## Queue
 
-1. Tier A commands, alternating with the remaining topics (`trees`, `conflicts`,
-   `storage`, `index`, `revsets`, `backends`): ~~`new`~~, ~~`trees`~~, ~~`edit`~~, ~~`describe`~~, ~~`commit`~~,
-   ~~`squash`~~, ~~`rebase`~~, ~~`abandon`~~, ~~`undo`~~, then the rest of Tier A. Next, in this order:
-   ~~`redo`~~, ~~`restore`~~, ~~`split`~~, ~~`absorb`~~, ~~`duplicate`~~, ~~`bookmark-create`/`-set`/`-move`~~, ~~`git-fetch`~~,
-   ~~`git-push`~~, then the remaining Tier A commands in registry order: ~~`diffedit`~~, ~~`run`~~,
-   ~~`resolve`~~, ~~`file-chmod`~~, ~~`file-track`~~, ~~`file-untrack`~~, ~~`sparse-edit`~~,
-   ~~`sparse-reset`~~, ~~`sparse-set`~~, ~~`bisect-run`~~, ~~`operation-abandon`~~,
-   ~~`operation-integrate`~~, ~~`operation-restore`~~, ~~`operation-revert`~~, ~~`bookmark-advance`~~,
-   ~~`bookmark-delete`~~, ~~`bookmark-forget`~~, ~~`bookmark-rename`~~, ~~`bookmark-track`~~,
-   ~~`bookmark-untrack`~~, ~~`tag-*`~~, ~~`git-clone`/`-colocation`/`-export`/`-import`/`-init`/
-   `-remote`~~, ~~`sign`~~, ~~`unsign`~~, ~~`workspace-*`~~, ~~`gerrit-upload`~~. Tier A complete.
-2. Remaining topic pages: ~~`conflicts`~~, ~~`storage`~~, ~~`index`~~, ~~`revsets`~~, ~~`backends`~~.
-   All topics done.
-3. Tier B commands, in registry order: ~~`file annotate`~~, ~~`file list`~~, ~~`file search`~~, ~~`file show`~~,
-   ~~`sparse list`~~, ~~`log`~~, ~~`show`~~, ~~`diff`~~, ~~`interdiff`~~, ~~`status`~~, ~~`evolog`~~, ~~`root`~~, ~~`operation diff`~~,
-   ~~`operation log`~~, ~~`operation show`~~, ~~`bookmark list`~~, ~~`tag list`~~, ~~`git root`~~, ~~`workspace list`~~,
-   ~~`workspace root`~~, ~~`config edit`/`gc`/`get`/`list`/`path`/`set`/`unset`~~. Tier B complete.
-4. **Next.** Tier C commands (`debug` and `bench` each as one shared page).
+**Build complete; maintenance mode.** Tier A, the topics, Tier B and Tier C are all done. Each run:
+diff upstream against the pin, re-run `gen_commands.py`, and update affected pages (§9). A new
+upstream command gets a page at its tier before the run records progress.
 
 To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
 `"ready": True` and any extra `sources`.
@@ -125,8 +94,12 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
 - **Templates.** Page templates are fragments rendered into `jj/base.html` instead of
   extending it (§7.2), so `jj_docs.render` can build the on-page table of contents from
   the rendered headings.
+- **Size of the maintenance commit.** `58584d3` touched 51 files, over the 10-file guideline,
+  because one upstream bump shifted line ranges across 49 pages and the pin must move atomically.
+- **Tiers for new commands.** Spec §8A.1 predates `file delete` and `file edit`; both mutate the
+  working-copy commit, so they were built to Tier A.
 - **Nested subcommands.** `git colocation`, `git remote` and `util backend` each get one
-  page covering their own subcommands, and `debug`/`bench` are one page each (§8A.2 allows
+  page covering their own subcommands, and `debug`/`bench` are one group page each, while each `util` subcommand has its own page (§8A.2 allows
   shared pages for Tier C; the first three are a judgment call to keep slugs to two levels).
 
 - **Tier B section 5.** §8A.2 renames item 5 for read-only commands, so Tier B pages use
@@ -137,6 +110,11 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
   `index` topic uses `jj/commit-index.html`. Its URL is still `/jj/index`, as §5 names it.
 
 ## Open gaps / questions for the owner
+
+- **`jj util diff --tool`.** `show_diff_bytes` has a TODO and prints nothing for a tool format; the
+  page says so rather than describing tool output.
+- **`jj debug object` help.** The enum's doc comment, "Show information about an operation and its
+  view", covers commits, files, symlinks and trees too; the page quotes it as written.
 
 - **This Routine fires hourly, not daily.** On 2026-10-05/06 roughly eighteen firings of this
   "daily" Routine arrived about an hour apart in one session. Worth checking its schedule.
