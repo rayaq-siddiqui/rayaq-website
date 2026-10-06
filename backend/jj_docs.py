@@ -1511,6 +1511,18 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "file-edit": {
+        "title": "How jj file edit works",
+        "sources": [
+            "cli/src/commands/file/edit.rs",
+            "cli/src/cli_util.rs",
+            "cli/src/description_util.rs",
+            "lib/src/local_working_copy.rs",
+            "lib/src/repo.rs",
+            "cli/tests/test_file_edit_command.rs",
+        ],
+        "ready": True,
+    },
     "resolve": {
         "title": "How jj resolve works",
         "sources": [

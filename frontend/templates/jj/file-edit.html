@@ -1,0 +1,291 @@
+{% set cmd = "cli/src/commands/file/edit.rs" %}
+{% set fmod = "cli/src/commands/file/mod.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set dutil = "cli/src/description_util.rs" %}
+{% set lwc = "lib/src/local_working_copy.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+{% set t = "cli/tests/test_file_edit_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj file edit</code> works</h1>
+  <p class="tagline">
+    <code>jj file edit</code> opens one file from any mutable revision in your text editor, then saves the
+    result back into that revision and rebases its descendants. Your working copy is never used; the file is
+    checked out into a throwaway directory.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj resolves <code>-r</code> (default <code>@</code>), refuses it if it is immutable, and checks
+  the path is a file, absent, or a conflict of files. It builds a temporary working copy whose sparse
+  patterns contain only that path, checks the commit's tree out into it (conflicts become markers), and runs
+  the editor on the file. It then snapshots the temporary copy. If the tree is unchanged it prints
+  <code>Nothing changed.</code>; otherwise it rewrites the commit, rebases or reparents descendants, and
+  records <code>edit file &lt;path&gt; in commit &lt;id&gt;</code>.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 71, 185) }}"><code>cmd_file_edit</code></a>. Its help text: "Edit the
+  contents of a file in a revision. The file is opened with the contents from the given revision. After the
+  editor exits, the file is saved back to the revision and descendants are rebased on top of the updated
+  commit. If the file does not yet exist in the revision, a new file will be created. If the file is
+  conflicted, the conflict markers are materialized in the editor. Editing the conflict markers can resolve
+  the conflict." (<a href="{{ src(cmd, 44, 53) }}">source</a>). It is the <code>Edit</code> variant of
+  <code>FileCommand</code> (<a href="{{ src(fmod, 35, 35) }}">source</a>,
+  <a href="{{ src(fmod, 52, 52) }}">dispatch</a>).
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Argument</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>FILE</code> (positional)</td><td>path</td><td>required</td><td>The one file to edit. It is a plain path, not a fileset. Completion offers every file in the revision (<a href="{{ src(cmd, 65, 68) }}">source</a>).</td></tr>
+      <tr><td><code>-r</code>, <code>--revision REVSET</code></td><td>revset</td><td><code>@</code></td><td>The revision to edit the file in. It must be exactly one commit. Completion offers mutable revisions (<a href="{{ src(cmd, 56, 59) }}">source</a>).</td></tr>
+      <tr><td><code>--restore-descendants</code></td><td>bool</td><td>false</td><td>"Preserve the content (not the diff) when rebasing descendants" (<a href="{{ src(cmd, 61, 63) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 54, 69) }}"><code>FileEditArgs</code></a>. The global flags are on the <a href="{{ url_for('jj', slug='cli') }}#global-flags">CLI page</a>.</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>ui.editor</code></td><td><code>nano</code> (<code>Notepad</code> on Windows)</td><td>The editor that is run (<a href="{{ src(util, 1820, 1822) }}">source</a>, <a href="{{ src(dutil, 84, 88) }}">source</a>, <a href="{{ src('cli/src/config/unix.toml', 2, 2) }}">unix.toml</a>, <a href="{{ src('cli/src/config/windows.toml', 3, 3) }}">windows.toml</a>). The documented precedence is <code>$JJ_EDITOR</code> &gt; <code>ui.editor</code> &gt; <code>$VISUAL</code> &gt; <code>$EDITOR</code> (<a href="{{ src('docs/config.md', 1121, 1130) }}">docs</a>). If the command contains <code>$path</code> or <code>$line</code> they are substituted; otherwise the path is appended (<a href="{{ src(dutil, 91, 101) }}">source</a>).</td></tr>
+      <tr><td><code>ui.conflict-marker-style</code></td><td><code>diff</code></td><td>How a conflicted file is written out for editing, and how markers are parsed back (<a href="{{ src(cmd, 91, 91) }}">source</a>, <a href="{{ src('cli/src/config/misc.toml', 45, 45) }}">misc.toml</a>).</td></tr>
+      <tr><td><code>revset-aliases."immutable_heads()"</code></td><td>built-in</td><td>Decides whether the commit may be rewritten (<a href="{{ src(util, 2035, 2042) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The temporary copy ignores your working-copy settings: it uses no line-ending conversion, no fsmonitor, and
+  automatic executable-bit detection (<a href="{{ src(cmd, 119, 124) }}">source</a>).
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 494" role="img" aria-labelledby="fe-flow-title fe-flow-desc">
+    <title id="fe-flow-title">jj file edit: call flow</title>
+    <desc id="fe-flow-desc">
+      cmd_file_edit loads the workspace through the shared lifecycle, resolves -r (default @), checks it is
+      rewritable, parses the path and reads its value from the commit's tree, rejecting directories, symlinks,
+      submodules and non-file conflicts. It creates a temporary directory with a wc and a state subdirectory,
+      initializes a TreeState there whose sparse patterns are just the path, and checks the commit's tree out.
+      It runs the configured editor on the file; if the editor fails, the directory is kept and the command
+      errors. It snapshots the temporary copy. If the tree IDs are unchanged it prints "Nothing changed." and
+      returns with no transaction. Otherwise it starts a transaction, rewrites the commit with the new tree,
+      calls rebase_or_reparent_descendants, and tx.finish records "edit file" with the path and commit id.
+    </desc>
+    <defs>
+      <marker id="fe-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 77, 110) }}"><rect class="d-box" x="20" y="84" width="720" height="50" rx="6"></rect>
+      <text x="32" y="105">resolve_single_rev(-r); check_rewritable; parse_file_path; tree.path_value(path)</text>
+      <text x="32" y="123" class="d-muted" font-size="11">only a file, nothing, or a conflict of files may be edited</text></a>
+
+      <a href="{{ src(cmd, 112, 135) }}"><rect class="d-box" x="20" y="158" width="720" height="50" rx="6"></rect>
+      <text x="32" y="179">temp dir jj-file-edit-…/{wc,state}; TreeState::init; set_sparse_patterns([path]); check_out(tree)</text>
+      <text x="32" y="197" class="d-muted" font-size="11">only the one file is written; a conflict is written as markers</text></a>
+
+      <a href="{{ src(cmd, 137, 150) }}"><rect class="d-box" x="20" y="232" width="720" height="50" rx="6"></rect>
+      <text x="32" y="253">text_editor().edit_file(wc/&lt;path&gt;)</text>
+      <text x="32" y="271" class="d-muted" font-size="11">editor fails → keep the temp dir, error "Failed to edit file", no operation</text></a>
+
+      <a href="{{ src(cmd, 152, 161) }}"><rect class="d-box" x="20" y="306" width="720" height="40" rx="6"></rect>
+      <text x="32" y="331">tree_state.snapshot(…); new_tree = current_tree()</text></a>
+
+      <a href="{{ src(cmd, 163, 166) }}"><rect class="d-box" x="20" y="370" width="330" height="50" rx="6"></rect>
+      <text x="32" y="391">tree IDs unchanged?</text>
+      <text x="32" y="409" class="d-muted" font-size="11">yes → "Nothing changed.", no operation</text></a>
+
+      <a href="{{ src(cmd, 168, 174) }}"><rect class="d-box" x="410" y="370" width="330" height="50" rx="6"></rect>
+      <text x="422" y="391">rewrite_commit(commit).set_tree(new)</text>
+      <text x="422" y="409" class="d-muted" font-size="11">rebase_or_reparent_descendants</text></a>
+
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="410" y="440" width="330" height="40" rx="6"></rect>
+      <text x="575" y="464" text-anchor="middle">tx.finish: write the operation (CLI page)</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#fe-arrow)">
+      <line x1="380" y1="60" x2="380" y2="80"></line>
+      <line x1="380" y1="134" x2="380" y2="154"></line>
+      <line x1="380" y1="208" x2="380" y2="228"></line>
+      <line x1="380" y1="282" x2="380" y2="302"></line>
+      <line x1="185" y1="346" x2="185" y2="366"></line>
+      <line x1="350" y1="395" x2="406" y2="395"></line>
+      <line x1="575" y1="420" x2="575" y2="436"></line>
+    </g>
+    <text x="378" y="388" font-size="10.5" text-anchor="middle" class="d-muted">no</text>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Target commit</td><td>rewritten</td><td>A new commit with the new tree. Parents, change ID, description and author are kept (<a href="{{ src(cmd, 168, 173) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Temporary <code>TreeState</code></td><td>created, then discarded</td><td>A second, private working copy: <a href="{{ src(lwc, 1054, 1054) }}"><code>init</code></a>, <a href="{{ src(lwc, 2299, 2299) }}"><code>set_sparse_patterns</code></a>, <a href="{{ src(lwc, 2290, 2290) }}"><code>check_out</code></a>, <a href="{{ src(lwc, 1295, 1295) }}"><code>snapshot</code></a>, <a href="{{ src(lwc, 1038, 1038) }}"><code>current_tree</code></a>. The same machinery the real working copy uses.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+      <tr><td>Trees and files</td><td>read, written</td><td>The checkout reads the file's content; the snapshot writes the new file object and the trees above it.</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>Conflicts</td><td>materialized, then parsed</td><td>Written as markers in the configured style. On snapshot, markers that still parse keep the conflict; plain text resolves it.</td><td><a href="{{ url_for('jj', slug='conflicts') }}">conflicts</a></td></tr>
+      <tr><td>Descendants</td><td>rewritten</td><td>Rebased, or reparented with <code>--restore-descendants</code>, before <code>tx.finish</code>.</td><td><a href="{{ url_for('jj', slug='transactions') }}">transactions</a></td></tr>
+      <tr><td><code>View</code></td><td>write</td><td>Heads, bookmarks and <code>wc_commit_ids</code> follow the rewritten commits.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td>One operation, or none when the file is unchanged or the editor fails.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+      <tr><td>Real working copy</td><td>read, then maybe write</td><td>Snapshotted first by the shared lifecycle. Updated at the end only if <code>@</code>'s tree changed.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, started only after the editor has exited and the snapshot differs (<a href="{{ src(cmd, 163, 168) }}">source</a>). The editor runs outside any transaction.</li>
+  <li><strong>Operation description:</strong> <code>edit file &lt;path&gt; in commit &lt;full hex id&gt;</code>, using the repo-internal path and the commit's id before the rewrite (<a href="{{ src(cmd, 175, 183) }}">source</a>).</li>
+  <li><strong>Commits rewritten:</strong> the target, then its descendants through <a href="{{ src(util, 3415, 3440) }}"><code>rebase_or_reparent_descendants</code></a>, which prints <code>Rebased N descendant commits.</code> only when N is above zero, adding <code> (while preserving their content)</code> when reparenting.</li>
+  <li><strong>No change, or editor failure:</strong> no transaction and no operation; upstream's tests check the operation ID is unchanged in both cases (<a href="{{ src(t, 122, 132) }}">test</a>, <a href="{{ src(t, 172, 191) }}">test</a>).</li>
+  <li><strong><code>jj undo</code></strong> restores the previous view, bringing back the old content in the target and its descendants.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="validation">What can be edited</h3>
+<p>
+  The path's value in the commit's tree decides (<a href="{{ src(cmd, 87, 110) }}">source</a>). A regular file
+  or no value at all is fine; a missing path becomes a new file only if the editor saves it
+  (<a href="{{ src(t, 134, 161) }}">test</a>). A directory, symlink or Git submodule is refused. A conflict is
+  accepted only if every term is a file or absent, which <code>to_file_merge()</code> checks.
+</p>
+
+<h3 id="sparse">A one-file working copy</h3>
+<p>
+  Rather than writing a temporary file, the command creates a full <code>TreeState</code> in a temporary
+  directory, with <code>wc</code> as the working copy and <code>state</code> for its state files, and narrows
+  its sparse patterns to the single path before checking out the commit's tree
+  (<a href="{{ src(cmd, 112, 135) }}">source</a>). The file therefore sits at its real relative path, so an
+  editor can detect its type from its name (<a href="{{ src(t, 112, 120) }}">test</a>), and checkout and
+  snapshot handle the executable bit and conflict markers the same way the real working copy does; upstream
+  tests that an executable script stays executable (<a href="{{ src(t, 101, 110) }}">test</a>).
+</p>
+
+<h3 id="snapshot">Saving back</h3>
+<p>
+  After the editor exits, the temporary copy is snapshotted with no ignore rules, tracking everything and no
+  size limit (<a href="{{ src(cmd, 152, 161) }}">source</a>). Since only the one path is in the sparse
+  patterns, only that path can change. The new tree is compared with the commit's by tree IDs
+  (<a href="{{ src(cmd, 163, 166) }}">source</a>).
+</p>
+
+<h3 id="conflicts">Conflicted files</h3>
+<p>
+  The editor sees exactly what <a href="{{ url_for('jj', slug='file-show') }}">file show</a> prints for the
+  conflict (<a href="{{ src(t, 209, 224) }}">test</a>). Changing a side inside the markers keeps the file
+  conflicted with the new side, and the command reports <code>New conflicts appeared in 1 commits</code>
+  (<a href="{{ src(t, 226, 260) }}">test</a>). Replacing the markers with plain text resolves the conflict
+  (<a href="{{ src(t, 262, 277) }}">test</a>).
+</p>
+
+<h3 id="descendants">Descendants</h3>
+<p>
+  By default <a href="{{ src(repo, 1619, 1630) }}"><code>rebase_descendants</code></a> replays each descendant's
+  own diff, so a descendant that never touched the file picks up the edit. With
+  <code>--restore-descendants</code>, <a href="{{ src(repo, 1632, 1652) }}"><code>reparent_descendants</code></a>
+  keeps each descendant's tree, so it keeps the old content. <a href="{{ url_for('jj', slug='file-delete') }}#descendants">file delete</a>
+  uses the same pair.
+</p>
+
+<p>
+  <strong>Invariants:</strong> only one path in the target's tree can change, and never its identity or
+  metadata. Your real working copy is not used for editing. If the editor fails or the file is unchanged,
+  nothing is recorded.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Path is a directory: …</code></td><td>The path is a directory in the revision.</td><td><a href="{{ src(cmd, 94, 96) }}">edit.rs</a>, <a href="{{ src(t, 163, 170) }}">test</a></td></tr>
+      <tr><td><code>Path '…' is not a regular file</code></td><td>The path is a symlink or Git submodule.</td><td><a href="{{ src(cmd, 97, 101) }}">edit.rs</a></td></tr>
+      <tr><td><code>Path '…' has a non-file conflict and cannot be edited</code></td><td>A conflict with a term that is not a file, such as a file-versus-directory conflict.</td><td><a href="{{ src(cmd, 102, 109) }}">edit.rs</a></td></tr>
+      <tr><td><code>Failed to edit file</code>, then <code>Hint: Edited file is left in …</code></td><td>The editor could not be started or exited non-zero. The temporary directory is kept so the edit can be recovered.</td><td><a href="{{ src(cmd, 141, 150) }}">edit.rs</a>, <a href="{{ src(dutil, 51, 60) }}">description_util.rs</a>, <a href="{{ src('cli/src/command_error.rs', 512, 521) }}">command_error.rs</a>, <a href="{{ src(t, 172, 191) }}">test</a></td></tr>
+      <tr><td><code>Nothing changed.</code></td><td>The editor left the file as it was, or didn't create a new one.</td><td><a href="{{ src(cmd, 163, 166) }}">edit.rs</a>, <a href="{{ src(t, 122, 161) }}">test</a></td></tr>
+      <tr><td><code>Commit … is immutable</code></td><td>The commit is immutable.</td><td><a href="{{ src(util, 2044, 2073) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Revset `…` resolved to more than one revision</code> (or to none)</td><td><code>-r</code> isn't exactly one commit.</td><td><a href="{{ src('cli/src/revset_util.rs', 302, 331) }}">revset_util.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 20, 193) }}">test_file_edit</a>. <code>base</code> adds
+  <code>file</code> (containing <code>base</code>), <code>dir/file</code> and an executable
+  <code>script.sh</code>; <code>child</code>, the working-copy commit, only adds <code>other</code>. The editor
+  replaces <code>file</code>'s content with <code>modified</code>, with and without
+  <code>--restore-descendants</code>:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 210" role="img" aria-labelledby="fe-ex-title fe-ex-desc">
+    <title id="fe-ex-title">jj file edit -r=base file: before and after</title>
+    <desc id="fe-ex-desc">
+      Before: base has file containing "base", and child at @ adds other. After a plain edit, base is
+      rewritten with file containing "modified" and child is rebased, so its file says "modified" too. After an
+      edit with --restore-descendants, base is rewritten the same way, but child is reparented with its tree
+      unchanged, so its file still says "base".
+    </desc>
+    {% macro node(x, y, label, note="", hl=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 18 }}" y="{{ y + 4 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x + 18 }}" y="{{ y + 20 }}" font-size="10.5" class="{{ 'd-accent' if hl else 'd-muted' }}">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <g font-size="13">
+      <text x="30" y="22" class="d-muted">before</text>
+      <a href="{{ src(t, 44, 63) }}"><text x="280" y="22" class="d-muted">jj file edit -r=base file</text></a>
+      <a href="{{ src(t, 65, 83) }}"><text x="530" y="22" class="d-muted">… --restore-descendants</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="40" y1="151" x2="40" y2="79"></line>
+      <line x1="290" y1="151" x2="290" y2="79"></line>
+      <line x1="540" y1="151" x2="540" y2="79"></line>
+    </g>
+    <a href="{{ src(t, 27, 41) }}">
+      {{ node(40, 160, "base", "file: base") }}
+      {{ node(40, 70, "child  @", "+other") }}
+    </a>
+    <a href="{{ src(t, 46, 63) }}">
+      {{ node(290, 160, "base  6b6a8e3b", "file: modified", hl=True) }}
+      {{ node(290, 70, "child  d2c70bd0  @", "rebased: file: modified") }}
+    </a>
+    <a href="{{ src(t, 68, 83) }}">
+      {{ node(540, 160, "base  0f101435", "file: modified", hl=True) }}
+      {{ node(540, 70, "child  960b31ff  @", "reparented: file: base") }}
+    </a>
+  </svg>
+</div>
+
+<p>Upstream's snapshot for the plain edit (<a href="{{ src(t, 46, 54) }}">source</a>):</p>
+
+<pre><code>$ jj file edit -r=base file
+Rebased 1 descendant commits.
+Working copy  (@) now at: mzvwutvl d2c70bd0 child | child
+Parent commit (@-)      : rlvkpnrz 6b6a8e3b base | base
+Added 0 files, modified 1 files, removed 0 files</code></pre>
+
+<p>
+  With <code>--restore-descendants</code> the first line becomes <code>Rebased 1 descendant commits (while
+  preserving their content).</code> and there is no <code>Added … removed …</code> line, since
+  <code>@</code>'s tree is unchanged (<a href="{{ src(t, 68, 75) }}">source</a>).
+</p>
