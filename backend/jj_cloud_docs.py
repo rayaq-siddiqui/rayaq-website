@@ -32,7 +32,7 @@ PAGES = [
         "title": "The client OpStore and OpHeadsStore",
         "summary": "How operations, views and op heads are read and written over gRPC, whether op-head updates are atomic, and what is unimplemented.",
         "sources": ["lib/src/cc_op_store.rs", "lib/src/cc_op_heads_store.rs"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "cli",

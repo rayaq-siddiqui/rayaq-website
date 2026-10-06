@@ -1,0 +1,288 @@
+{% set ops = "lib/src/cc_op_store.rs" %}
+{% set heads = "lib/src/cc_op_heads_store.rs" %}
+{% set util = "lib/src/util.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+{% set common = "common/src/lib.rs" %}
+{% set srv = "server/src/op_store.rs" %}
+{% set mem = "server/src/store/memorystore.rs" %}
+{% macro jj_link(slug, label) %}<a href="{% if slug in jj_ready_slugs %}{{ url_for('jj', slug=slug) }}{% else %}{{ url_for('jj') }}{% endif %}">{{ label }}</a>{% endmacro %}
+<header class="jj-header">
+  <h1>The client OpStore and OpHeadsStore</h1>
+  <p class="tagline">
+    <code>CommitCloudOpStore</code> and <code>CommitCloudOpHeadsStore</code> put jj's operation log on the
+    server. Operations and views are converted to protobuf and stored under IDs the server computes. The
+    set of op heads lives on the server too, behind two RPCs and no lock.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: four <code>OpStore</code> methods map one-to-one onto <code>ReadView</code>,
+  <code>WriteView</code>, <code>ReadOperation</code> and <code>WriteOperation</code>, using the same
+  thread-per-call bridge as the <a href="{{ url_for('jj_cloud', slug='client-backend') }}">client Backend</a>.
+  Op-ID prefix lookup only knows the root operation, and <code>gc</code> does nothing. The op heads store
+  calls <code>GetOpHeads</code> and <code>UpdateOpHeads</code>, and its lock is a no-op. The views it
+  stores leave out tags, Git refs and Git HEAD. Operation times lose their time zone. And when two
+  clients publish on top of the same operation, the server keeps the first and silently drops the
+  second.
+</p>
+
+<p>
+  The modules are <a href="{{ src(ops) }}"><code>lib/src/cc_op_store.rs</code></a> and
+  <a href="{{ src(heads) }}"><code>lib/src/cc_op_heads_store.rs</code></a>. Both are registered under the
+  name <code>commit_cloud</code> by <a href="{{ src(repo, 23, 38) }}"><code>add_commit_cloud</code></a>, which
+  turns load errors into <code>BackendLoadError</code> and ignores the root-operation data jj passes in.
+  The messages are on <a href="{{ url_for('jj_cloud', slug='protobufs') }}">protobufs</a>, and the
+  operation and view hashes on <a href="{{ url_for('jj_cloud', slug='object-ids') }}">object-ids</a>.
+  jj's own model is on {{ jj_link('operations', '/jj/operations') }} and {{ jj_link('view', '/jj/view') }}.
+  Those pages describe the jj version <code>/jj</code> is pinned to. This project uses jj-lib
+  {{ upstream.jj_lib_version }}.
+</p>
+
+<h2 id="loading">Loading</h2>
+
+<p>
+  Neither store has an <code>init</code>. Both have only <code>load(store_path)</code>
+  (<a href="{{ src(ops, 238, 245) }}">op store</a>, <a href="{{ src(heads, 26, 32) }}">op heads store</a>),
+  which reads <code>server_url</code> and <code>repo_id</code> through
+  <a href="{{ src(util, 14, 31) }}"><code>CommitCloudConfig::load_from_store</code></a>. Their store paths
+  are <code>.jj/repo/op_store</code> and <code>.jj/repo/op_heads</code>, which have no
+  <code>config.toml</code>, so the loader falls back to <code>../store/config.toml</code>, the file the
+  backend's <code>init</code> wrote. All three stores therefore talk to the same server and repository.
+  No network call is made until the first read or write.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Value</th></tr></thead>
+    <tbody>
+      <tr><td><code>server_url</code></td><td><code>String</code></td><td>From the shared <code>config.toml</code>.</td></tr>
+      <tr><td><code>repo_id</code></td><td><code>String</code></td><td>Sent with every request.</td></tr>
+      <tr><td><code>root_operation_id</code> (op store only)</td><td><code>OperationId</code></td><td>16 zero bytes (<code>ROOT_OPERATION_ID_BYTES</code>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(ops, 226, 231) }}"><code>CommitCloudOpStore</code></a> · <a href="{{ src(heads, 12, 16) }}"><code>CommitCloudOpHeadsStore</code></a> · <a href="{{ src(common, 11, 16) }}">constants</a></p>
+
+<h2 id="op-store"><code>OpStore</code> methods</h2>
+
+<p>
+  Every method of jj-lib's <a href="{{ jj_lib('lib/src/op_store.rs', 463, 491) }}"><code>OpStore</code></a>
+  trait is implemented (<a href="{{ src(ops, 248, 358) }}">impl</a>). The four RPC methods each clone
+  the server URL and repo ID, convert their argument, and run
+  <code>OpStoreServiceClient::connect</code> plus the call inside
+  <a href="{{ src(util, 34, 50) }}"><code>run_async</code></a>: a new thread, a new tokio runtime and a new
+  connection per call, as described on <a href="{{ url_for('jj_cloud', slug='client-backend') }}#run-async">client-backend</a>.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Method</th><th>Behaviour</th><th>RPC</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td><code>"commit_cloud"</code></td><td>—</td><td><a href="{{ src(ops, 250, 252) }}">L250</a></td></tr>
+      <tr><td><code>root_operation_id</code></td><td>The 16 zero bytes. No call.</td><td>—</td><td><a href="{{ src(ops, 254, 256) }}">L254</a></td></tr>
+      <tr><td><code>read_view</code></td><td>Sends the view ID and converts the returned view. A response with no view is an error.</td><td><code>ReadView</code></td><td><a href="{{ src(ops, 258, 278) }}">L258</a></td></tr>
+      <tr><td><code>write_view</code></td><td>Converts the view and returns the server's view ID.</td><td><code>WriteView</code></td><td><a href="{{ src(ops, 280, 297) }}">L280</a></td></tr>
+      <tr><td><code>read_operation</code></td><td>Sends the operation ID and converts the returned operation. A response with no operation is an error.</td><td><code>ReadOperation</code></td><td><a href="{{ src(ops, 299, 319) }}">L299</a></td></tr>
+      <tr><td><code>write_operation</code></td><td>Converts the operation and returns the server's operation ID.</td><td><code>WriteOperation</code></td><td><a href="{{ src(ops, 321, 338) }}">L321</a></td></tr>
+      <tr><td><code>resolve_operation_id_prefix</code></td><td>No RPC exists for it. A prefix of the root ID is a <code>SingleMatch</code> on the root operation. Anything else is <code>NoMatch</code>. A TODO asks for a server RPC.</td><td>—</td><td><a href="{{ src(ops, 340, 353) }}">L340</a></td></tr>
+      <tr><td><code>gc</code></td><td>Does nothing.</td><td>—</td><td><a href="{{ src(ops, 355, 357) }}">L355</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The prefix gap reaches further than <code>jj op show</code>. jj-lib resolves any operation written as
+  hex, even a full ID, through <code>resolve_operation_id_prefix</code>
+  (<a href="{{ jj_lib('lib/src/op_walk.rs', 187, 208) }}"><code>resolve_single_op_from_store</code></a>).
+  So with these stores, an explicit operation ID other than the root's gives "no such operation", in any
+  command that accepts one. Symbolic forms such as <code>@</code> start from the op heads and don't
+  use it.
+</p>
+
+<h3 id="root">The root operation and root view</h3>
+<p>
+  The client never builds the root operation itself. It reads it from the server like any other. When
+  the store has nothing under the root ID, <a href="{{ src(srv, 49, 69) }}"><code>ReadOperation</code></a>
+  answers with a fixed operation: view ID of 16 zero bytes, no parents, description <code>"root()"</code>,
+  zero times, empty host and user names, and <code>commit_predecessors_set: true</code> with no entries.
+  <a href="{{ src(srv, 123, 134) }}"><code>ReadView</code></a> answers the zero view ID with a view whose only
+  head is the root commit. Any other unknown ID is a gRPC <code>NotFound</code>, as is any request for an
+  unregistered repo ID (<a href="{{ src('server/src/error_util.rs', 3, 14) }}"><code>ensure_repo_registered_error</code></a>).
+</p>
+
+<h2 id="conversions">Conversions</h2>
+
+<h3 id="operation-conversion">Operations</h3>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>jj-lib field</th><th>On the wire</th><th>Read back</th></tr></thead>
+    <tbody>
+      <tr><td><code>view_id</code>, <code>parents</code></td><td>Raw bytes.</td><td>Unchanged.</td></tr>
+      <tr><td><code>metadata.time.start</code>, <code>.end</code></td><td>Milliseconds only.</td><td><code>tz_offset</code> is always <code>0</code>, so the local time zone is lost.</td></tr>
+      <tr><td><code>description</code>, <code>hostname</code>, <code>username</code>, <code>is_snapshot</code></td><td>Copied.</td><td>Unchanged.</td></tr>
+      <tr><td><code>workspace_name</code></td><td>Optional string.</td><td>Unchanged, including <code>None</code>.</td></tr>
+      <tr><td><code>attributes</code></td><td>A map.</td><td>Collected back into a <code>BTreeMap</code>.</td></tr>
+      <tr><td><code>commit_predecessors</code></td><td>A list of <code>CommitPredecessors</code> entries plus <code>commit_predecessors_set</code>, so <code>None</code> and an empty map stay distinct.</td><td>Unchanged.</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(ops, 46, 84) }}"><code>operation_to_proto</code></a> · <a href="{{ src(ops, 86, 134) }}"><code>operation_from_proto</code></a> · jj-lib <a href="{{ jj_lib('lib/src/backend.rs', 101, 107) }}"><code>Timestamp</code></a></p>
+<p>
+  A missing <code>metadata</code> message reads back as all defaults. The operation ID is computed by the
+  server from the converted message (<a href="{{ src(srv, 78, 101) }}"><code>WriteOperation</code></a>), so
+  the dropped time zone isn't part of it.
+</p>
+
+<h3 id="view-conversion">Views</h3>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>jj-lib <code>View</code> field</th><th>On the wire</th><th>Read back</th></tr></thead>
+    <tbody>
+      <tr><td><code>head_ids</code></td><td>List of bytes.</td><td>A <code>HashSet</code>.</td></tr>
+      <tr><td><code>wc_commit_ids</code></td><td>Map from workspace name.</td><td>Unchanged.</td></tr>
+      <tr><td><code>local_bookmarks</code></td><td>Map of <code>RefTarget</code>s (removes and adds).</td><td>Rebuilt with <code>RefTarget::from_legacy_form</code>.</td></tr>
+      <tr><td><code>remote_views[r].bookmarks[b]</code></td><td>One flat map, keyed <code>"b@r"</code>, with the target and <code>is_tracked</code>.</td><td>Split at the <em>last</em> <code>@</code>. <code>Tracked</code> or <code>New</code>. A missing target becomes absent.</td></tr>
+      <tr><td><code>remote_views[r].tags</code></td><td>Not sent.</td><td>Empty.</td></tr>
+      <tr><td><code>local_tags</code>, <code>git_refs</code></td><td>Not sent.</td><td>Empty.</td></tr>
+      <tr><td><code>git_head</code></td><td>Not sent.</td><td>Absent.</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(ops, 18, 44) }}">ref target helpers</a> · <a href="{{ src(ops, 136, 172) }}"><code>view_to_proto</code></a> · <a href="{{ src(ops, 174, 224) }}"><code>view_from_proto</code></a> · jj-lib <a href="{{ jj_lib('lib/src/op_store.rs', 248, 264) }}"><code>View</code></a>, <a href="{{ jj_lib('lib/src/op_store.rs', 283, 290) }}"><code>RemoteView</code></a></p>
+
+<p>Three consequences follow from the code:</p>
+<ul>
+  <li>Tags, Git-tracking refs and Git HEAD written by any command are gone the next time the view is read.</li>
+  <li>A remote whose name contains <code>@</code> is split wrongly on read. Bookmark <code>main</code> on remote <code>a@b</code> is sent as <code>main@a@b</code> and comes back as bookmark <code>main@a</code> on remote <code>b</code>. An <code>@</code> in a bookmark name is fine, since the split is at the last <code>@</code>.</li>
+  <li>A remote with no bookmarks has no entries in the flat map, so it doesn't come back at all.</li>
+</ul>
+
+<h2 id="op-heads"><code>OpHeadsStore</code> methods</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Method</th><th>Behaviour</th><th>RPC</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td><code>"commit_cloud"</code></td><td>—</td><td><a href="{{ src(heads, 37, 39) }}">L37</a></td></tr>
+      <tr><td><code>get_op_heads</code></td><td>Returns the server's list. Errors become <code>OpHeadsStoreError::Read</code>.</td><td><code>GetOpHeads</code></td><td><a href="{{ src(heads, 71, 87) }}">L71</a></td></tr>
+      <tr><td><code>update_op_heads(old_ids, new_id)</code></td><td>Sends both and ignores the <code>current_op_head_ids</code> the server returns. Errors become <code>OpHeadsStoreError::Write</code>. A TODO asks for locking.</td><td><code>UpdateOpHeads</code></td><td><a href="{{ src(heads, 41, 69) }}">L41</a></td></tr>
+      <tr><td><code>lock</code></td><td>Returns <code>CommitCloudOpHeadsStoreNoLock</code>, an empty type. No call.</td><td>—</td><td><a href="{{ src(heads, 89, 91) }}">L89</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  jj-lib's <a href="{{ jj_lib('lib/src/op_heads_store.rs', 48, 72) }}"><code>OpHeadsStore</code></a> docs say the
+  lock "is not needed for correctness" and only stops two processes from merging the same divergent
+  heads. What correctness does rest on is <code>update_op_heads</code>: jj calls it when a transaction is
+  published, with the new operation's parents as <code>old_ids</code>
+  (<a href="{{ jj_lib('lib/src/transaction.rs', 222, 228) }}"><code>Transaction::publish</code></a>; see {{ jj_link('transactions', '/jj/transactions') }}).
+</p>
+
+<h3 id="server-update">What the server does with an update</h3>
+<p>
+  <a href="{{ src(srv, 165, 184) }}"><code>GetOpHeads</code></a> returns the stored heads, or just the root
+  operation if the repository has never had an update. <a href="{{ src(srv, 186, 204) }}"><code>UpdateOpHeads</code></a>
+  passes the request to the store. The in-memory engine
+  (<a href="{{ src(mem, 98, 132) }}"><code>MemoryStore::update_op_heads</code></a>) does the whole update
+  under one mutex, so each update is atomic on its own:
+</p>
+<ol>
+  <li>Start from the stored heads, or <code>[root]</code> if there are none.</li>
+  <li>If <code>old_ids</code> is empty, add <code>new_id</code> unless it's already there.</li>
+  <li>Otherwise remove every head in <code>old_ids</code>. Add <code>new_id</code> only if at least one head was removed.</li>
+  <li>Return the resulting heads.</li>
+</ol>
+<p>
+  A code comment says sibling heads are kept so that clients can later reconcile divergent heads.
+  Step 3 works against that. jj-lib's local
+  <a href="{{ jj_lib('lib/src/simple_op_heads_store.rs', 114, 135) }}"><code>SimpleOpHeadsStore</code></a> always adds
+  the new head first, then removes the old ones. So when two processes publish on the same parent, both
+  operations remain as heads and the next command merges them
+  (<a href="{{ jj_lib('lib/src/op_heads_store.rs', 85, 162) }}"><code>resolve_op_heads</code></a>).
+</p>
+
+<h3 id="concurrency">Concurrent operations</h3>
+<p>
+  With the commit-cloud stores, the second of two concurrent publishes is dropped, as the diagram
+  shows. Both clients start from head <code>H</code>. Client A publishes <code>A</code> and the heads
+  become <code>[A]</code>. Client B then publishes <code>B</code> with <code>old_ids = [H]</code>. No current
+  head matches, so nothing is removed and <code>B</code> isn't added. The server answers with
+  <code>[A]</code>, B's client ignores the answer, and B's command succeeds. B's operation and view stay
+  stored on the server, but nothing points to them, so the next command anywhere starts from
+  <code>A</code>. No divergence is reported. This follows from the code and was checked against a
+  reimplementation of the update rule. It hasn't been run against a live server, since the server isn't
+  built here.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 330" role="img" aria-labelledby="cos-title cos-desc">
+    <title id="cos-title">Two clients publishing on the same operation</title>
+    <desc id="cos-desc">
+      Client A and client B both load op head H. Client A writes operation A, then calls UpdateOpHeads with
+      old H and new A. The server's heads go from H to A. Client B writes operation B, then calls
+      UpdateOpHeads with old H and new B. H is no longer a head, so nothing is removed and B is not added.
+      The heads stay A, the server returns A, and client B ignores the response and reports success.
+      Operation B is stored but unreachable.
+    </desc>
+    <defs>
+      <marker id="cos-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(heads, 41, 69) }}"><rect class="d-box" x="20" y="20" width="160" height="40" rx="6"></rect>
+      <text x="100" y="45" text-anchor="middle">client A</text></a>
+      <a href="{{ src(mem, 98, 132) }}"><rect class="d-box" x="300" y="20" width="160" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">server op heads</text></a>
+      <a href="{{ src(heads, 41, 69) }}"><rect class="d-box" x="580" y="20" width="160" height="40" rx="6"></rect>
+      <text x="660" y="45" text-anchor="middle">client B</text></a>
+    </g>
+    <g class="d-line" stroke-width="1" stroke-dasharray="4 4">
+      <line x1="100" y1="60" x2="100" y2="320"></line>
+      <line x1="380" y1="60" x2="380" y2="320"></line>
+      <line x1="660" y1="60" x2="660" y2="320"></line>
+    </g>
+    <g font-size="11">
+      <a href="{{ src(srv, 165, 184) }}"><text x="390" y="86" class="d-muted">heads = [H]</text></a>
+      <a href="{{ src(srv, 186, 204) }}"><text x="240" y="126" text-anchor="middle">UpdateOpHeads(old [H], new A)</text></a>
+      <a href="{{ src(mem, 115, 129) }}"><text x="390" y="156" class="d-muted">H removed → heads = [A]</text></a>
+      <a href="{{ src(srv, 186, 204) }}"><text x="520" y="206" text-anchor="middle">UpdateOpHeads(old [H], new B)</text></a>
+      <a href="{{ src(mem, 115, 129) }}"><text x="390" y="236" class="d-muted">nothing removed → B not added</text></a>
+      <a href="{{ src(heads, 54, 64) }}"><text x="520" y="276" text-anchor="middle">returns [A], ignored; command succeeds</text></a>
+      <a href="{{ src(srv, 78, 101) }}"><text x="390" y="312" class="d-muted">operation B stored, unreachable</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#cos-arrow)">
+      <line x1="100" y1="134" x2="376" y2="134"></line>
+      <line x1="660" y1="214" x2="384" y2="214"></line>
+      <line x1="380" y1="284" x2="656" y2="284"></line>
+    </g>
+  </svg>
+</div>
+
+<p>
+  Concurrent operations from <em>one</em> client behave the same way: two <code>jj</code> processes on one
+  machine share these stores, and <code>lock</code> doesn't stop them either.
+</p>
+
+<h2 id="errors">Errors</h2>
+<p>
+  Every <code>OpStore</code> failure, including a gRPC <code>NotFound</code>, becomes
+  <code>OpStoreError::Other</code>. jj-lib's <code>ObjectNotFound</code>, <code>ReadObject</code> and
+  <code>WriteObject</code> variants are never produced
+  (<a href="{{ jj_lib('lib/src/op_store.rs', 438, 459) }}"><code>OpStoreError</code></a>). The op heads
+  store uses <code>OpHeadsStoreError::Read</code> for <code>get_op_heads</code>, and <code>Write</code> with the
+  new operation's ID for <code>update_op_heads</code>. It never returns <code>Lock</code>
+  (<a href="{{ jj_lib('lib/src/op_heads_store.rs', 33, 44) }}"><code>OpHeadsStoreError</code></a>).
+</p>
+
+<h2 id="limitations">What these stores don't do</h2>
+<ul>
+  <li>A concurrent publish on the same parent operation is lost without any error, and divergent operations never appear.</li>
+  <li><code>lock</code> takes no lock, and the update response is ignored.</li>
+  <li>Operation IDs given as hex, other than the root's, can't be resolved.</li>
+  <li><code>gc</code> does nothing, so unreachable operations and views stay on the server.</li>
+  <li>Views drop local tags, remote tags, Git refs and Git HEAD, and remote names containing <code>@</code> are split wrongly.</li>
+  <li>Operation times come back in UTC, with the time zone offset lost.</li>
+  <li>Each call opens a new thread, runtime and connection, with no timeouts or authentication.</li>
+</ul>
