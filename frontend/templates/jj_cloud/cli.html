@@ -1,0 +1,193 @@
+{% set main = "cli/src/main.rs" %}
+{% set init = "cli/src/commands/init.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+{% set be = "lib/src/cc_backend.rs" %}
+{% set util = "lib/src/util.rs" %}
+{% set heads = "lib/src/cc_op_heads_store.rs" %}
+{% macro jj_link(slug, label) %}<a href="{% if slug in jj_ready_slugs %}{{ url_for('jj', slug=slug) }}{% else %}{{ url_for('jj') }}{% endif %}">{{ label }}</a>{% endmacro %}
+<header class="jj-header">
+  <h1>The custom jj binary</h1>
+  <p class="tagline">
+    The <code>cli</code> crate builds a binary named <code>jj</code>. It is stock jj-cli 0.43.0 with two
+    additions: the commit-cloud store factories, and one subcommand, <code>jj cc init</code>, which
+    registers a repository on a server and creates a local workspace that points at it.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: <code>main.rs</code> is 47 lines. It hands <code>CliRunner</code> a set of store factories named
+  <code>commit_cloud</code> and a <code>cc</code> subcommand. <code>jj cc init</code> runs jj-lib's ordinary
+  workspace initialisation with the commit-cloud stores swapped in. After that, every other command is
+  jj-cli's own: it finds <code>commit_cloud</code> in the repo's <code>type</code> files and reads and writes
+  through gRPC without knowing it.
+</p>
+
+<h2 id="main"><code>main.rs</code></h2>
+<p>
+  <a href="{{ src(main, 41, 47) }}"><code>main</code></a> builds the runner in three calls:
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Call</th><th>What it adds</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>CliRunner::init()</code></td><td>Stock jj-cli, including its default store factories (local, Git, simple).</td><td><a href="{{ jj_lib('cli/src/cli_util.rs', 4184, 4184) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>.add_store_factories(create_store_factories())</code></td><td>A <code>StoreFactories::empty()</code> with only the commit-cloud backend, op store and op heads store, all named <code>commit_cloud</code>. jj-cli <em>merges</em> these into its defaults, so this binary still opens ordinary jj repositories.</td><td><a href="{{ src(main, 23, 27) }}">L23–27</a>, <a href="{{ src(repo, 9, 41) }}">repo.rs</a>, <a href="{{ jj_lib('cli/src/cli_util.rs', 4230, 4234) }}">merge</a></td></tr>
+      <tr><td><code>.add_subcommand(run_custom_command)</code></td><td>The <code>cc</code> command group, whose only member is <code>init</code>. The handler ignores the <code>Ui</code> and <code>CommandHelper</code> jj-cli passes it.</td><td><a href="{{ src(main, 9, 21) }}">L9–21</a>, <a href="{{ src(main, 29, 39) }}">L29–39</a></td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  The index store, submodule store and working copy are jj-lib's defaults. Only commits, trees, files,
+  operations, views and op heads live on the server.
+</p>
+
+<h2 id="cc-init"><code>jj cc init</code></h2>
+<p>Arguments (<a href="{{ src(init, 16, 31) }}"><code>CcInitArgs</code></a>):</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Argument</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>--server &lt;URL&gt;</code></td><td>required</td><td>The gRPC endpoint, for example <code>http://localhost:8080</code>. Stored in <code>config.toml</code>.</td></tr>
+      <tr><td><code>--create</code></td><td>off</td><td>Ignored: <code>let _ = args.create;</code> (<a href="{{ src(init, 34, 34) }}">L34</a>). A TODO asks for a server-side guard (<a href="{{ src(init, 22, 22) }}">L22</a>). Every init registers a new repository, flag or not.</td></tr>
+      <tr><td><code>[DESTINATION]</code></td><td><code>.</code></td><td>The workspace root. It must exist and must not already contain <code>.jj</code>.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="init-steps">Step by step</h3>
+<ol>
+  <li>
+    Build <code>UserSettings</code> from <code>StackedConfig::with_defaults()</code> and a <code>Signer</code> from
+    them (<a href="{{ src(init, 37, 42) }}">L37–42</a>). This is jj's built-in default config only. The user's
+    config files aren't read by this command, so the first operation and working-copy commit don't carry
+    the user's name or settings.
+  </li>
+  <li>
+    Define three initialiser closures (<a href="{{ src(init, 44, 67) }}">L44–67</a>). The backend one calls
+    <a href="{{ src(be, 34, 66) }}"><code>CommitCloudBackend::init</code></a>. The op store and op heads store ones
+    call their <code>load</code>, because they have nothing to create.
+  </li>
+  <li>
+    Call jj-lib's <a href="{{ jj_lib('lib/src/workspace.rs', 291, 342) }}"><code>Workspace::init_with_factories</code></a>
+    with those closures and the default index, submodule and working-copy factories
+    (<a href="{{ src(init, 69, 83) }}">L69–83</a>). From here jj-lib drives:
+    <ol>
+      <li>Create <code>.jj/</code> (<a href="{{ jj_lib('lib/src/workspace.rs', 122, 131) }}">create_jj_dir</a>). If it already exists, init fails with <code>DestinationExists</code>.</li>
+      <li><a href="{{ jj_lib('lib/src/repo.rs', 208, 296) }}"><code>ReadonlyRepo::init</code></a> creates <code>.jj/repo/store/</code> and runs the backend closure. It calls <code>RegisterRepository</code>, receives a new UUID, and writes <code>store/config.toml</code> with <code>server_url</code> and <code>repo_id</code>. jj-lib then writes <code>store/type</code> = <code>commit_cloud</code>.</li>
+      <li>It creates <code>op_store/</code> and <code>op_heads/</code>, runs their closures and writes their <code>type</code> files. Both find the config through the <code>../store/config.toml</code> fallback (<a href="{{ src(util, 14, 31) }}">util.rs</a>), which works only because the backend closure has already run. The op heads store ignores the root operation ID it is given, and nothing is written for it on the server. An empty repository already reports the root as its head.</li>
+      <li>It creates the local <code>index/</code> and <code>submodule_store/</code>, then loads the root operation and its view from the server.</li>
+      <li><a href="{{ jj_lib('lib/src/workspace.rs', 133, 162) }}"><code>init_working_copy</code></a> starts a transaction and checks out a new empty commit on top of the root. Committing the transaction writes the commit, the view and the operation "add workspace 'default'", then publishes it.</li>
+      <li>The local working-copy state is written under <code>.jj/working_copy/</code>, and the workspace is recorded.</li>
+    </ol>
+  </li>
+  <li>Print "Initialized remote Commit Cloud repository" (<a href="{{ src(init, 85, 85) }}">L85</a>).</li>
+</ol>
+<p>
+  Any error is turned into a <code>user_error</code>. If anything inside
+  <code>init_with_factories</code> fails, jj-lib deletes the new <code>.jj/</code>
+  (<a href="{{ jj_lib('lib/src/workspace.rs', 338, 341) }}">L338–341</a>). The repository it may already have
+  registered on the server stays registered, and nothing ever unregisters it.
+</p>
+
+<h3 id="init-wire">What crosses the wire</h3>
+<p>
+  The sequence below shows what <code>jj cc init</code> sends, in order. Every RPC opens its own connection
+  (see <a href="{{ url_for('jj_cloud', slug='client-backend') }}#run-async">client-backend</a>). It leaves
+  out the backend's commit reads.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 500" role="img" aria-labelledby="cli-title cli-desc">
+    <title id="cli-title">The writes jj cc init makes, locally and over gRPC</title>
+    <desc id="cli-desc">
+      Three lifelines: the local .jj directory, the jj process, and jj-cc-server. jj creates .jj/repo/store,
+      calls RegisterRepository and gets a repo ID back, then writes store/config.toml and store/type. It
+      creates op_store, op_heads, index and submodule_store with their type files. It reads the root
+      operation and root view from the server, then writes the working-copy commit with WriteCommit, the
+      view with WriteView and the operation with WriteOperation. Finally it calls UpdateOpHeads with old
+      heads [root] and the new operation, and writes the local working-copy state.
+    </desc>
+    <defs>
+      <marker id="cli-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ jj_lib('lib/src/repo.rs', 208, 296) }}"><rect class="d-box" x="20" y="10" width="180" height="36" rx="6"></rect>
+      <text x="110" y="33" text-anchor="middle">local .jj/</text></a>
+      <a href="{{ src(init, 33, 87) }}"><rect class="d-box" x="290" y="10" width="180" height="36" rx="6"></rect>
+      <text x="380" y="33" text-anchor="middle">jj cc init</text></a>
+      <a href="{{ url_for('jj_cloud', slug='server') }}"><rect class="d-box" x="560" y="10" width="180" height="36" rx="6"></rect>
+      <text x="650" y="33" text-anchor="middle">jj-cc-server</text></a>
+    </g>
+    <g class="d-line" stroke-width="1" stroke-dasharray="4 4">
+      <line x1="110" y1="46" x2="110" y2="490"></line>
+      <line x1="380" y1="46" x2="380" y2="490"></line>
+      <line x1="650" y1="46" x2="650" y2="490"></line>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#cli-arrow)">
+      <line x1="380" y1="75" x2="114" y2="75"></line>
+      <line x1="380" y1="115" x2="646" y2="115"></line>
+      <line x1="650" y1="140" x2="384" y2="140" stroke-dasharray="5 4"></line>
+      <line x1="380" y1="180" x2="114" y2="180"></line>
+      <line x1="380" y1="225" x2="114" y2="225"></line>
+      <line x1="380" y1="270" x2="646" y2="270"></line>
+      <line x1="380" y1="310" x2="646" y2="310"></line>
+      <line x1="380" y1="345" x2="646" y2="345"></line>
+      <line x1="380" y1="380" x2="646" y2="380"></line>
+      <line x1="380" y1="420" x2="646" y2="420"></line>
+      <line x1="380" y1="465" x2="114" y2="465"></line>
+    </g>
+    <g font-size="11">
+      <a href="{{ jj_lib('lib/src/repo.rs', 220, 221) }}"><text x="245" y="69" text-anchor="middle">mkdir .jj/repo/store</text></a>
+      <a href="{{ src(be, 43, 49) }}"><text x="515" y="109" text-anchor="middle">RegisterRepository</text></a>
+      <a href="{{ url_for('jj_cloud', slug='server') }}#registration"><text x="515" y="134" text-anchor="middle" class="d-muted">repo_id (UUID v4)</text></a>
+      <a href="{{ src(be, 51, 57) }}"><text x="245" y="174" text-anchor="middle">store/config.toml, store/type</text></a>
+      <a href="{{ jj_lib('lib/src/repo.rs', 229, 260) }}"><text x="245" y="203" text-anchor="middle">op_store/, op_heads/, index/,</text>
+      <text x="245" y="218" text-anchor="middle">submodule_store/ + type files</text></a>
+      <a href="{{ url_for('jj_cloud', slug='client-op-store') }}#root"><text x="515" y="264" text-anchor="middle">ReadOperation, ReadView (root)</text></a>
+      <a href="{{ jj_lib('lib/src/repo.rs', 1560, 1571) }}"><text x="515" y="304" text-anchor="middle">WriteCommit (working copy)</text></a>
+      <a href="{{ jj_lib('lib/src/transaction.rs', 144, 144) }}"><text x="515" y="339" text-anchor="middle">WriteView</text></a>
+      <a href="{{ jj_lib('lib/src/transaction.rs', 154, 157) }}"><text x="515" y="374" text-anchor="middle">WriteOperation</text></a>
+      <a href="{{ src(heads, 43, 69) }}"><text x="515" y="414" text-anchor="middle">UpdateOpHeads([root] → new op)</text></a>
+      <a href="{{ jj_lib('lib/src/workspace.rs', 150, 160) }}"><text x="245" y="459" text-anchor="middle">working_copy/ state</text></a>
+    </g>
+  </svg>
+</div>
+
+<p>
+  Commit, view and operation IDs are computed or accepted as described in
+  <a href="{{ url_for('jj_cloud', slug='object-ids') }}">object-ids</a>. The op-heads lock taken before
+  <code>UpdateOpHeads</code> is a no-op (<a href="{{ src(heads, 89, 91) }}">L89–91</a>).
+</p>
+
+<h2 id="stock-commands">Stock commands on commit-cloud stores</h2>
+<p>
+  Once the workspace exists, <code>jj describe</code>, <code>jj log</code>, <code>jj op log</code> and the rest
+  are jj-cli's code, unchanged (see {{ jj_link('cli', '/jj/cli') }}). Loading the workspace reads each
+  <code>type</code> file under <code>.jj/repo/</code> and looks the name up in the merged factories. For
+  <code>commit_cloud</code>, each factory's <code>load</code> reads <code>config.toml</code> and makes no
+  network call (<a href="{{ src(repo, 9, 41) }}">repo.rs</a>). From then on, every
+  <code>Backend</code>, <code>OpStore</code> and <code>OpHeadsStore</code> call jj-lib makes becomes an
+  RPC. The working copy and index stay local.
+</p>
+<p>
+  A command that changes the repository ends the same way init does: a transaction writes its new
+  objects, then the view (<a href="{{ jj_lib('lib/src/transaction.rs', 144, 144) }}"><code>write_view</code></a>),
+  then the operation (<a href="{{ jj_lib('lib/src/transaction.rs', 154, 157) }}"><code>write_operation</code></a>),
+  then publishes with <a href="{{ jj_lib('lib/src/transaction.rs', 221, 227) }}"><code>update_op_heads</code></a>.
+  So <code>WriteView</code>, <code>WriteOperation</code> and <code>UpdateOpHeads</code> close every write, in that
+  order. A snapshot of a changed file adds <code>WriteFile</code> and <code>WriteTree</code> before the
+  commit. The upstream tests exercise this with <code>describe</code>, <code>log</code> and <code>op log</code>
+  (see <a href="{{ url_for('jj_cloud', slug='testing') if 'testing' in ready_slugs else url_for('jj_cloud') }}">testing</a>).
+  Commands that need Git or other backends' features aren't covered by anything upstream.
+</p>
+
+<h2 id="limitations">What the binary doesn't do</h2>
+<ul>
+  <li><code>--create</code> does nothing, and there is no way to attach a second workspace to an existing remote repository: <code>cc init</code> always registers a new one.</li>
+  <li><code>cc init</code> uses jj's default config, not the user's.</li>
+  <li>A failed init can leave an orphan registration on the server.</li>
+  <li>Concurrent writers from two workspaces lose operations silently (<a href="{{ url_for('jj_cloud', slug='client-op-store') }}#concurrency">client-op-store</a>).</li>
+  <li>The binary is named <code>jj</code>, so installing it shadows a stock jj on the <code>PATH</code>.</li>
+</ul>

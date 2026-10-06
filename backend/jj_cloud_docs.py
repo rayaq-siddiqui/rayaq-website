@@ -39,7 +39,7 @@ PAGES = [
         "title": "The custom jj binary",
         "summary": "How the jj binary is customised with commit-cloud stores and a cc subcommand, what jj cc init does, and how stock commands run on top.",
         "sources": ["cli/src/", "cli/src/commands/", "lib/src/repo.rs"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "server",
