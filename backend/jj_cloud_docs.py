@@ -51,7 +51,7 @@ PAGES = [
             "server/src/op_store.rs",
             "server/src/error_util.rs",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "storage",
