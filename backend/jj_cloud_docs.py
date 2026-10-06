@@ -58,7 +58,7 @@ PAGES = [
         "title": "Server storage engines",
         "summary": "The server's Store trait, the in-memory engine, and which other engines are declared but not implemented.",
         "sources": ["server/src/store/"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "object-ids",

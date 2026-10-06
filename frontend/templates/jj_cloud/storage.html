@@ -1,0 +1,177 @@
+{% set store = "server/src/store/mod.rs" %}
+{% set mem = "server/src/store/memorystore.rs" %}
+{% set main = "server/src/main.rs" %}
+<header class="jj-header">
+  <h1>Server storage engines</h1>
+  <p class="tagline">
+    The server reaches its data only through the <code>Store</code> trait. At the pinned commit there is
+    one implementation, <code>MemoryStore</code>: seven mutex-guarded hash maps, kept for the life of the
+    process. A SQLite engine is declared on the command line and in a test, but it doesn't exist.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: fourteen async methods, a register/check pair plus a get/put pair for each object kind and
+  for op heads. <code>MemoryStore</code> keys every map by repo ID, then by object ID, and holds one
+  <code>std::sync::Mutex</code> per map, only for the duration of one call. Every single call is atomic,
+  but nothing spans two calls. Op-head updates are atomic on their own, and their rule drops a
+  concurrent publish (<a href="#op-heads">below</a>).
+</p>
+
+<p>
+  The engine is chosen in <a href="{{ src(main, 21, 26) }}"><code>StoreType</code></a>, and the services
+  share it as an <code>Arc&lt;dyn Store&gt;</code> (see <a href="{{ url_for('jj_cloud', slug='server') }}#startup">server</a>).
+</p>
+
+<h2 id="store-trait">The <code>Store</code> trait</h2>
+<p>
+  <a href="{{ src(store, 9, 37) }}"><code>Store</code></a> is an <code>async_trait</code> that is
+  <code>Send + Sync</code>. A comment says its methods are async so that later engines don't block server
+  threads. None of them return errors: reads return <code>Option</code> and writes return nothing. A
+  storage failure has no way to reach the client as a status.
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Method</th><th>Returns</th><th>Called by</th><th><code>MemoryStore</code></th></tr></thead>
+    <tbody>
+      <tr><td><code>is_repo_registered(repo_id)</code></td><td><code>bool</code></td><td>every RPC except registration</td><td><a href="{{ src(mem, 35, 37) }}">L35</a></td></tr>
+      <tr><td><code>register_repo(repo_id)</code></td><td>—</td><td><code>RegisterRepository</code></td><td><a href="{{ src(mem, 39, 41) }}">L39</a></td></tr>
+      <tr><td><code>get_commit</code> / <code>put_commit</code></td><td><code>Option&lt;Commit&gt;</code> / —</td><td><code>ReadCommit</code> / <code>WriteCommit</code></td><td><a href="{{ src(mem, 43, 51) }}">L43</a></td></tr>
+      <tr><td><code>get_tree</code> / <code>put_tree</code></td><td><code>Option&lt;Vec&lt;TreeEntry&gt;&gt;</code> / —</td><td><code>ReadTree</code> / <code>WriteTree</code></td><td><a href="{{ src(mem, 53, 61) }}">L53</a></td></tr>
+      <tr><td><code>get_file</code> / <code>put_file</code></td><td><code>Option&lt;Vec&lt;u8&gt;&gt;</code> / —</td><td><code>ReadFile</code> / <code>WriteFile</code></td><td><a href="{{ src(mem, 63, 71) }}">L63</a></td></tr>
+      <tr><td><code>get_operation</code> / <code>put_operation</code></td><td><code>Option&lt;Operation&gt;</code> / —</td><td><code>ReadOperation</code> / <code>WriteOperation</code></td><td><a href="{{ src(mem, 73, 81) }}">L73</a></td></tr>
+      <tr><td><code>get_view</code> / <code>put_view</code></td><td><code>Option&lt;View&gt;</code> / —</td><td><code>ReadView</code> / <code>WriteView</code></td><td><a href="{{ src(mem, 83, 91) }}">L83</a></td></tr>
+      <tr><td><code>get_op_heads(repo_id)</code></td><td><code>Option&lt;Vec&lt;OpId&gt;&gt;</code></td><td><code>GetOpHeads</code></td><td><a href="{{ src(mem, 93, 96) }}">L93</a></td></tr>
+      <tr><td><code>update_op_heads(repo_id, old_ids, new_id)</code></td><td>the resulting heads</td><td><code>UpdateOpHeads</code></td><td><a href="{{ src(mem, 98, 132) }}">L98</a></td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  The values are the generated protobuf types themselves (<code>Commit</code>, <code>TreeEntry</code>,
+  <code>Operation</code>, <code>View</code>), so the server stores exactly what was on the wire. The ID
+  types are aliases: <code>RepoId</code> is a <code>String</code>, and every object ID is a
+  <code>Vec&lt;u8&gt;</code> (<a href="{{ src(mem, 9, 14) }}">L9–14</a>).
+</p>
+
+<h2 id="memory-store"><code>MemoryStore</code></h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 300" role="img" aria-labelledby="ms-title ms-desc">
+    <title id="ms-title">The layout of MemoryStore</title>
+    <desc id="ms-desc">
+      MemoryStore has seven fields, each behind its own mutex. repos is a set of repo IDs. commits, trees,
+      files, ops and views each map a repo ID to a map from object ID to the stored object. op_heads maps
+      a repo ID to a list of operation IDs.
+    </desc>
+    <defs>
+      <marker id="ms-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ src(mem, 16, 25) }}"><rect class="d-box" x="20" y="128" width="130" height="44" rx="6"></rect>
+      <text x="85" y="154" text-anchor="middle">MemoryStore</text></a>
+      <a href="{{ src(mem, 18, 18) }}"><rect class="d-box" x="210" y="10" width="520" height="30" rx="6"></rect>
+      <text x="225" y="30">repos: Mutex&lt;HashSet&lt;RepoId&gt;&gt;</text></a>
+      <a href="{{ src(mem, 19, 19) }}"><rect class="d-box" x="210" y="50" width="520" height="30" rx="6"></rect>
+      <text x="225" y="70">commits: Mutex&lt;HashMap&lt;RepoId, HashMap&lt;CommitId, Commit&gt;&gt;&gt;</text></a>
+      <a href="{{ src(mem, 20, 20) }}"><rect class="d-box" x="210" y="90" width="520" height="30" rx="6"></rect>
+      <text x="225" y="110">trees: Mutex&lt;HashMap&lt;RepoId, HashMap&lt;TreeId, Vec&lt;TreeEntry&gt;&gt;&gt;&gt;</text></a>
+      <a href="{{ src(mem, 21, 21) }}"><rect class="d-box" x="210" y="130" width="520" height="30" rx="6"></rect>
+      <text x="225" y="150">files: Mutex&lt;HashMap&lt;RepoId, HashMap&lt;FileId, Vec&lt;u8&gt;&gt;&gt;&gt;</text></a>
+      <a href="{{ src(mem, 22, 22) }}"><rect class="d-box" x="210" y="170" width="520" height="30" rx="6"></rect>
+      <text x="225" y="190">ops: Mutex&lt;HashMap&lt;RepoId, HashMap&lt;OpId, Operation&gt;&gt;&gt;</text></a>
+      <a href="{{ src(mem, 23, 23) }}"><rect class="d-box" x="210" y="210" width="520" height="30" rx="6"></rect>
+      <text x="225" y="230">views: Mutex&lt;HashMap&lt;RepoId, HashMap&lt;ViewId, View&gt;&gt;&gt;</text></a>
+      <a href="{{ src(mem, 24, 24) }}"><rect class="d-box" x="210" y="250" width="520" height="30" rx="6"></rect>
+      <text x="225" y="270">op_heads: Mutex&lt;HashMap&lt;RepoId, Vec&lt;OpId&gt;&gt;&gt;</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#ms-arrow)">
+      <line x1="150" y1="140" x2="206" y2="25"></line>
+      <line x1="150" y1="143" x2="206" y2="65"></line>
+      <line x1="150" y1="146" x2="206" y2="105"></line>
+      <line x1="150" y1="150" x2="206" y2="145"></line>
+      <line x1="150" y1="154" x2="206" y2="185"></line>
+      <line x1="150" y1="157" x2="206" y2="225"></line>
+      <line x1="150" y1="160" x2="206" y2="265"></line>
+    </g>
+  </svg>
+</div>
+
+<h3 id="reads-writes">Reads and writes</h3>
+<p>
+  Every getter locks its map, looks up the repo and then the ID, and returns a clone. A whole file's
+  bytes or a whole tree's entries are copied on each read. Every putter locks its map, creates the
+  repo's inner map if it is missing, and inserts, replacing whatever was under that ID. Putters don't
+  check that the repo is registered; the services do that first. Nothing is ever removed.
+</p>
+
+<h3 id="locking">Locking</h3>
+<p>
+  The seven mutexes are <code>std::sync::Mutex</code>, not tokio's. Each method takes exactly one lock
+  and never holds it across an <code>.await</code>, so there is no lock ordering and no deadlock. A
+  contended lock blocks the tokio worker thread for the length of a hash-map operation and a clone. Every
+  lock is <code>lock().unwrap()</code>, so a panic while a lock is held poisons that map and every
+  later call to it panics.
+</p>
+<p>
+  Atomicity stops at one call. Writing an operation, writing its view and moving the op heads are three
+  calls on three maps, and other requests can run between them. That is harmless for objects, because
+  they are content-addressed and only added. Op heads are the one place where it matters.
+</p>
+
+<h2 id="op-heads">Op heads</h2>
+<p>
+  The heads for a repository are a <code>Vec</code>, not a set, and a repository that has never been
+  updated has no entry. <a href="{{ src(mem, 93, 96) }}"><code>get_op_heads</code></a> then returns
+  <code>None</code>, and the service substitutes the root operation.
+  <a href="{{ src(mem, 98, 132) }}"><code>update_op_heads</code></a> does all its work under the
+  <code>op_heads</code> lock, so two updates never interleave. Its comment says it preserves "concurrent
+  sibling heads" for client-side reconciliation. The rule:
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Heads before</th><th><code>old_ids</code></th><th><code>new_id</code></th><th>Heads after</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>none stored</td><td><code>[root]</code></td><td><code>A</code></td><td><code>[A]</code></td><td>The entry starts as <code>[root]</code>, root is removed, A is added.</td></tr>
+      <tr><td><code>[H]</code></td><td><code>[H]</code></td><td><code>A</code></td><td><code>[A]</code></td><td>The ordinary case.</td></tr>
+      <tr><td><code>[A]</code></td><td><code>[H]</code></td><td><code>B</code></td><td><code>[A]</code></td><td>Nothing removed, so B isn't added.</td></tr>
+      <tr><td><code>[A, C]</code></td><td><code>[A]</code></td><td><code>D</code></td><td><code>[C, D]</code></td><td>A is removed, the sibling C stays, D is added.</td></tr>
+      <tr><td><code>[A]</code></td><td>empty</td><td><code>B</code></td><td><code>[A, B]</code></td><td>Empty <code>old_ids</code> only adds.</td></tr>
+      <tr><td><code>[A]</code></td><td><code>[A]</code></td><td><code>A</code></td><td><code>[A]</code></td><td>Removed, then re-added.</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  The third row is the lost publish described on
+  <a href="{{ url_for('jj_cloud', slug='client-op-store') }}#concurrency">client-op-store</a>. A sibling head
+  survives only if it is already in the list, and nothing in this store ever puts two heads there: the
+  only way to add a head without removing one is an empty <code>old_ids</code>. jj-lib sends that when
+  resolving op heads finds a single head with no ancestors to prune
+  (<a href="{{ jj_lib('lib/src/op_heads_store.rs', 146, 151) }}"><code>op_heads_store.rs</code></a>), and the
+  head it names is already in the list. So the "sibling heads" the comment mentions don't arise from two
+  clients racing. The rows above follow from reading the code and from a reimplementation of the rule, not from
+  a running server.
+</p>
+
+<h2 id="sqlite">SQLite: declared, not implemented</h2>
+<p>
+  <code>--store-type sqlite</code> and <code>--sqlite-path</code> exist
+  (<a href="{{ src(main, 21, 46) }}">main.rs L21–46</a>), but choosing SQLite prints "SQLite storage backend
+  is not yet implemented" and exits with status 1 (<a href="{{ src(main, 73, 76) }}">L73–76</a>). There is no
+  SQLite module under <code>server/src/store/</code>, and the server crate has no SQLite dependency
+  (<a href="{{ src('server/Cargo.toml') }}"><code>Cargo.toml</code></a>). The test harness can start a server
+  this way (<a href="{{ src('testutils/src/lib.rs', 94, 97) }}"><code>spawn_sqlite_server</code></a>), and
+  <a href="{{ src('cli/tests/test_sqlite_store.rs', 3, 28) }}"><code>test_sqlite_store_init_and_snapshot_succeeds</code></a>
+  is marked <code>#[should_panic]</code>, so it passes because the engine is missing.
+</p>
+
+<h2 id="limitations">What storage doesn't do</h2>
+<ul>
+  <li>Nothing persists: a restart loses every repository and object.</li>
+  <li>Memory grows without bound. There is no deletion, eviction or garbage collection.</li>
+  <li>Reads clone whole objects, including whole files.</li>
+  <li>Calls have no errors to report, and a poisoned lock panics instead.</li>
+  <li>No multi-call transactions.</li>
+  <li>The op-head rule drops concurrent publishes instead of keeping divergent heads.</li>
+</ul>
