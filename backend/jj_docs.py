@@ -1080,6 +1080,15 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "config-gc": {
+        "title": "How jj config gc works",
+        "sources": [
+            "cli/src/commands/config/gc.rs",
+            "cli/src/config.rs",
+            "lib/src/secure_config.rs",
+        ],
+        "ready": True,
+    },
     "config-get": {
         "title": "How jj config get works",
         "sources": [
