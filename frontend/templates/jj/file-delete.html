@@ -1,0 +1,252 @@
+{% set cmd = "cli/src/commands/file/delete.rs" %}
+{% set fmod = "cli/src/commands/file/mod.rs" %}
+{% set util = "cli/src/cli_util.rs" %}
+{% set mtb = "lib/src/merged_tree_builder.rs" %}
+{% set repo = "lib/src/repo.rs" %}
+{% set t = "cli/tests/test_file_delete_command.rs" %}
+<header class="jj-header">
+  <h1>How <code>jj file delete</code> works</h1>
+  <p class="tagline">
+    <code>jj file delete</code> removes the files matched by some filesets from one revision, and rebases
+    its descendants on top. It never touches the working copy directly; the files go away on disk only
+    because <code>@</code> changes.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: jj resolves <code>-r</code> (default <code>@</code>) and refuses it if it is immutable. It
+  takes every entry of the commit's tree that the filesets match, conflicted or not, and sets it to
+  absent in a tree builder. If the new tree equals the old one, it prints <code>Nothing changed.</code>
+  and records nothing. Otherwise it rewrites the commit with the new tree, rebases descendants (or, with
+  <code>--restore-descendants</code>, reparents them so their content stays), and records
+  <code>delete paths in commit &lt;id&gt;</code>.
+</p>
+
+<p>
+  The command is <a href="{{ src(cmd, 52, 90) }}"><code>cmd_file_delete</code></a>. Its help text: "Delete
+  files from the given revision. Removes all files matched by the given filesets from the specified
+  revision. Descendants are rebased on top of the rewritten commit." (<a href="{{ src(cmd, 31, 34) }}">source</a>).
+  It is the <code>Delete</code> variant of <code>FileCommand</code>
+  (<a href="{{ src(fmod, 34, 34) }}">source</a>, <a href="{{ src(fmod, 51, 51) }}">dispatch</a>).
+</p>
+
+<h2 id="cli">1. Command-line surface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Argument</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>FILESETS</code> (positional)</td><td>filesets</td><td>required</td><td>Files or directories to delete. At least one is needed. Completion offers every file in the revision (<a href="{{ src(cmd, 46, 49) }}">source</a>).</td></tr>
+      <tr><td><code>-r</code>, <code>--revision REVSET</code></td><td>revset</td><td><code>@</code></td><td>The revision to delete the files in. It must be exactly one commit. Completion offers mutable revisions (<a href="{{ src(cmd, 37, 40) }}">source</a>).</td></tr>
+      <tr><td><code>--restore-descendants</code></td><td>bool</td><td>false</td><td>"Preserve the content (not the diff) when rebasing descendants" (<a href="{{ src(cmd, 42, 44) }}">source</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="jj-source"><a href="{{ src(cmd, 35, 50) }}"><code>FileDeleteArgs</code></a>. The global flags are on the <a href="{{ url_for('jj', slug='cli') }}#global-flags">CLI page</a>.</p>
+
+<h2 id="configuration">2. Configuration</h2>
+
+<p>
+  The command reads no keys of its own. <code>revset-aliases."immutable_heads()"</code> decides whether
+  the commit may be rewritten (<a href="{{ src(util, 2035, 2042) }}">source</a>), and the usual
+  fileset and revset settings shape how the arguments are parsed. Snapshotting the working copy first,
+  and updating it afterwards, follow the working-copy settings described on the
+  <a href="{{ url_for('jj', slug='working-copy') }}">working-copy page</a>.
+</p>
+
+<h2 id="flow">3. End-to-end flow</h2>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 420" role="img" aria-labelledby="fd-flow-title fd-flow-desc">
+    <title id="fd-flow-title">jj file delete: call flow</title>
+    <desc id="fd-flow-desc">
+      cmd_file_delete loads the workspace through the shared lifecycle, resolves -r (default @), checks it is
+      rewritable, parses the paths and warns about explicit ones that match nothing. It starts a
+      MergedTreeBuilder from the commit's tree and sets every matching entry to absent, then writes the new
+      tree. If the tree IDs are unchanged it prints "Nothing changed." and returns with no transaction.
+      Otherwise it starts a transaction, rewrites the commit with the new tree, calls
+      rebase_or_reparent_descendants, which rebases descendants or, with --restore-descendants, reparents
+      them, and tx.finish records "delete paths in commit" and the commit's id.
+    </desc>
+    <defs>
+      <marker id="fd-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g font-size="12">
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="20" width="720" height="40" rx="6"></rect>
+      <text x="380" y="45" text-anchor="middle">Shared lifecycle: load workspace and repo, snapshot the working copy (CLI page)</text></a>
+
+      <a href="{{ src(cmd, 59, 67) }}"><rect class="d-box" x="20" y="84" width="720" height="50" rx="6"></rect>
+      <text x="32" y="105">resolve_single_rev(-r); check_rewritable; parse_file_patterns; to_matcher</text>
+      <text x="32" y="123" class="d-muted" font-size="11">print_unmatched_explicit_paths: "No matching entries for paths: …"</text></a>
+
+      <a href="{{ src(cmd, 69, 73) }}"><rect class="d-box" x="20" y="158" width="720" height="50" rx="6"></rect>
+      <text x="32" y="179">MergedTreeBuilder::new(commit.tree()); for each entries_matching → set_or_remove(path, absent)</text>
+      <text x="32" y="197" class="d-muted" font-size="11">write_tree()</text></a>
+
+      <a href="{{ src(cmd, 75, 78) }}"><rect class="d-box" x="20" y="232" width="330" height="50" rx="6"></rect>
+      <text x="32" y="253">tree IDs unchanged?</text>
+      <text x="32" y="271" class="d-muted" font-size="11">yes → "Nothing changed.", no operation</text></a>
+
+      <a href="{{ src(cmd, 80, 85) }}"><rect class="d-box" x="410" y="232" width="330" height="50" rx="6"></rect>
+      <text x="422" y="253">start_transaction</text>
+      <text x="422" y="271" class="d-muted" font-size="11">rewrite_commit(commit).set_tree(new).write()</text></a>
+
+      <a href="{{ src(util, 3415, 3440) }}"><rect class="d-box" x="410" y="306" width="330" height="50" rx="6"></rect>
+      <text x="422" y="327">rebase_or_reparent_descendants</text>
+      <text x="422" y="345" class="d-muted" font-size="11">rebase, or reparent with --restore-descendants</text></a>
+
+      <a href="{{ url_for('jj', slug='cli') }}"><rect class="d-box" x="20" y="370" width="720" height="36" rx="6"></rect>
+      <text x="380" y="393" text-anchor="middle">tx.finish(ui, "delete paths in commit &lt;id&gt;"): write the operation, update the working copy (CLI page)</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5" marker-end="url(#fd-arrow)">
+      <line x1="380" y1="60" x2="380" y2="80"></line>
+      <line x1="380" y1="134" x2="380" y2="154"></line>
+      <line x1="185" y1="208" x2="185" y2="228"></line>
+      <line x1="350" y1="257" x2="406" y2="257"></line>
+      <line x1="575" y1="282" x2="575" y2="302"></line>
+      <line x1="575" y1="356" x2="575" y2="366"></line>
+    </g>
+    <text x="378" y="250" font-size="10.5" text-anchor="middle" class="d-muted">no</text>
+  </svg>
+</div>
+
+<h2 id="touchpoints">4. Core architecture touchpoints</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Structure</th><th>Read / write</th><th>How</th><th>Explained on</th></tr></thead>
+    <tbody>
+      <tr><td>Target commit</td><td>rewritten</td><td>A new commit with the new tree. Parents, change ID, description and author are kept (<a href="{{ src(cmd, 81, 85) }}">source</a>).</td><td><a href="{{ url_for('jj', slug='commits') }}">commits</a></td></tr>
+      <tr><td>Trees</td><td>read, written</td><td>The commit's <code>MergedTree</code> is read; <a href="{{ src(mtb, 31, 81) }}"><code>MergedTreeBuilder</code></a> writes new tree objects along each removed path. No file content is written.</td><td><a href="{{ url_for('jj', slug='trees') }}">trees</a></td></tr>
+      <tr><td>Conflicts</td><td>removed</td><td>A conflicted entry is replaced by a resolved absent value, so the conflict goes away with the file.</td><td><a href="{{ url_for('jj', slug='conflicts') }}">conflicts</a></td></tr>
+      <tr><td>Descendants</td><td>rewritten</td><td>Rebased, or reparented with <code>--restore-descendants</code>, before <code>tx.finish</code>.</td><td><a href="{{ url_for('jj', slug='transactions') }}">transactions</a></td></tr>
+      <tr><td><code>View</code></td><td>write</td><td>Heads, bookmarks and <code>wc_commit_ids</code> follow the rewritten commits.</td><td><a href="{{ url_for('jj', slug='view') }}">view</a></td></tr>
+      <tr><td>Operation</td><td>write</td><td>One operation, or none when nothing matched.</td><td><a href="{{ url_for('jj', slug='operations') }}">operations</a></td></tr>
+      <tr><td>Working copy</td><td>read, then maybe write</td><td>Snapshotted first. If <code>@</code>'s tree changed, the deleted files are removed from disk.</td><td><a href="{{ url_for('jj', slug='working-copy') }}">working-copy</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="transaction">5. Transaction and operation</h2>
+
+<ul>
+  <li><strong>Transaction:</strong> one, started only after the new tree is written and found to differ (<a href="{{ src(cmd, 75, 80) }}">source</a>).</li>
+  <li><strong>Operation description:</strong> <code>delete paths in commit &lt;full hex id&gt;</code>, using the commit's id before the rewrite (<a href="{{ src(cmd, 87, 88) }}">source</a>).</li>
+  <li><strong>Commits rewritten:</strong> the target, then its descendants through <a href="{{ src(util, 3415, 3440) }}"><code>rebase_or_reparent_descendants</code></a>, which prints <code>Rebased N descendant commits.</code> only when N is above zero, adding <code> (while preserving their content)</code> when reparenting.</li>
+  <li><strong>Nothing matched:</strong> no transaction and no operation; upstream's test checks the operation ID is unchanged (<a href="{{ src(t, 135, 145) }}">test</a>).</li>
+  <li><strong><code>jj undo</code></strong> restores the previous view, bringing the files back in the target and its descendants.</li>
+</ul>
+
+<h2 id="algorithm">6. Algorithm and invariants</h2>
+
+<h3 id="matching">What gets deleted</h3>
+<p>
+  <code>tree.entries_matching(matcher)</code> yields every file entry the filesets match, so a directory
+  path deletes everything under it and a pattern such as <code>glob:*.txt</code> deletes every match
+  (<a href="{{ src(cmd, 70, 72) }}">source</a>, <a href="{{ src(t, 98, 112) }}">test</a>). Unlike
+  <a href="{{ url_for('jj', slug='file-chmod') }}">file chmod</a>, it doesn't look at the value: files,
+  symlinks, submodules and conflicts are all set to <code>Merge::absent()</code>, which the builder
+  documents as the way to remove a value (<a href="{{ src(mtb, 51, 57) }}">source</a>).
+</p>
+
+<h3 id="conflicts">Conflicted files</h3>
+<p>
+  A conflicted entry is overridden by a resolved, absent value, so the file and its conflict disappear
+  together. In upstream's test, deleting the conflicted <code>file</code> from a merge leaves
+  <code>jj debug tree</code> empty (<a href="{{ src(t, 148, 171) }}">test</a>).
+</p>
+
+<h3 id="descendants">Descendants</h3>
+<p>
+  By default <a href="{{ src(repo, 1619, 1630) }}"><code>rebase_descendants</code></a> replays each
+  descendant's own diff on the rewritten commit, so a descendant that didn't touch a deleted file loses it
+  too. With <code>--restore-descendants</code>,
+  <a href="{{ src(repo, 1632, 1652) }}"><code>reparent_descendants</code></a> keeps each descendant's
+  tree as it was; its diff now re-adds the file. <a href="{{ url_for('jj', slug='restore') }}#descendants">restore</a>
+  uses the same pair.
+</p>
+
+<p>
+  <strong>Invariants:</strong> only the target's tree changes, never its identity or metadata. Paths
+  outside the filesets are untouched. If nothing matched, nothing is recorded.
+</p>
+
+<h2 id="errors">7. Errors and edge cases</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Message</th><th>When</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Warning: No matching entries for paths: …</code></td><td>An explicit path isn't in the commit. Matched paths are still deleted.</td><td><a href="{{ src(cmd, 67, 67) }}">delete.rs</a>, <a href="{{ src(util, 3380, 3413) }}">cli_util.rs</a>, <a href="{{ src(t, 114, 133) }}">test</a></td></tr>
+      <tr><td><code>Nothing changed.</code></td><td>No path matched, so the tree is unchanged.</td><td><a href="{{ src(cmd, 75, 78) }}">delete.rs</a>, <a href="{{ src(t, 135, 145) }}">test</a></td></tr>
+      <tr><td><code>Commit … is immutable</code></td><td>The commit is immutable.</td><td><a href="{{ src(util, 2044, 2073) }}">cli_util.rs</a></td></tr>
+      <tr><td><code>Revset `…` resolved to more than one revision</code> (or to none)</td><td><code>-r</code> isn't exactly one commit.</td><td><a href="{{ src('cli/src/revset_util.rs', 302, 331) }}">revset_util.rs</a></td></tr>
+      <tr><td>clap: missing <code>&lt;FILESETS&gt;</code></td><td>No paths given.</td><td><a href="{{ src(cmd, 47, 47) }}">delete.rs</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="example">8. Worked example</h2>
+
+<p>
+  From upstream's <a href="{{ src(t, 18, 96) }}">test_file_delete</a>. <code>base</code> adds
+  <code>file</code>, <code>dir/a</code>, <code>dir/b</code>, <code>notes.txt</code>,
+  <code>data.txt</code> and <code>keep</code>; <code>child</code>, the working-copy commit, only adds
+  <code>other</code>. Then <code>jj file delete -r=base file</code> is run with and without
+  <code>--restore-descendants</code>:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 210" role="img" aria-labelledby="fd-ex-title fd-ex-desc">
+    <title id="fd-ex-title">jj file delete -r=base file: before and after</title>
+    <desc id="fd-ex-desc">
+      Before: base adds file and five other files, and child at @ adds other. After a plain delete, base is
+      rewritten without file and child is rebased; it doesn't contain file either. After a delete with
+      --restore-descendants, base is rewritten the same way, but child is reparented with its tree unchanged,
+      so it still contains file and its diff now adds it.
+    </desc>
+    {% macro node(x, y, label, note="", hl=False) -%}
+      <circle cx="{{ x }}" cy="{{ y }}" r="9" class="{{ 'd-accent' if hl else 'd-line' }}" style="fill: var(--jj-surface-2)" stroke-width="2"></circle>
+      <text x="{{ x + 18 }}" y="{{ y + 4 }}" font-size="12">{{ label }}</text>
+      {% if note %}<text x="{{ x + 18 }}" y="{{ y + 20 }}" font-size="10.5" class="{{ 'd-accent' if hl else 'd-muted' }}">{{ note }}</text>{% endif %}
+    {%- endmacro %}
+    <g font-size="13">
+      <text x="30" y="22" class="d-muted">before</text>
+      <a href="{{ src(t, 41, 67) }}"><text x="280" y="22" class="d-muted">jj file delete -r=base file</text></a>
+      <a href="{{ src(t, 69, 96) }}"><text x="530" y="22" class="d-muted">… --restore-descendants</text></a>
+    </g>
+    <g class="d-line" stroke-width="1.5">
+      <line x1="40" y1="151" x2="40" y2="79"></line>
+      <line x1="290" y1="151" x2="290" y2="79"></line>
+      <line x1="540" y1="151" x2="540" y2="79"></line>
+    </g>
+    <a href="{{ src(t, 24, 38) }}">
+      {{ node(40, 160, "base", "+file, dir/, *.txt, keep") }}
+      {{ node(40, 70, "child  @", "+other") }}
+    </a>
+    <a href="{{ src(t, 42, 67) }}">
+      {{ node(290, 160, "base  0f03ba3b", "file deleted", hl=True) }}
+      {{ node(290, 70, "child  69c03f6b  @", "rebased: +other, no file") }}
+    </a>
+    <a href="{{ src(t, 71, 96) }}">
+      {{ node(540, 160, "base  53605aea", "file deleted", hl=True) }}
+      {{ node(540, 70, "child  178385e9  @", "reparented: +other, +file") }}
+    </a>
+  </svg>
+</div>
+
+<p>Upstream's snapshot for the plain delete (<a href="{{ src(t, 42, 50) }}">source</a>):</p>
+
+<pre><code>$ jj file delete -r=base file
+Rebased 1 descendant commits.
+Working copy  (@) now at: zsuskuln 69c03f6b child | child
+Parent commit (@-)      : rlvkpnrz 0f03ba3b base | base
+Added 0 files, modified 0 files, removed 1 files</code></pre>
+
+<p>
+  With <code>--restore-descendants</code> the first line becomes <code>Rebased 1 descendant commits (while
+  preserving their content).</code> and there is no <code>Added … removed …</code> line, since
+  <code>@</code>'s tree is unchanged (<a href="{{ src(t, 71, 78) }}">source</a>).
+</p>

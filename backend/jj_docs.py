@@ -1500,6 +1500,17 @@ COMMAND_PAGE_OVERRIDES = {
         ],
         "ready": True,
     },
+    "file-delete": {
+        "title": "How jj file delete works",
+        "sources": [
+            "cli/src/commands/file/delete.rs",
+            "cli/src/cli_util.rs",
+            "lib/src/merged_tree_builder.rs",
+            "lib/src/repo.rs",
+            "cli/tests/test_file_delete_command.rs",
+        ],
+        "ready": True,
+    },
     "resolve": {
         "title": "How jj resolve works",
         "sources": [
