@@ -3,29 +3,42 @@
 Running log for the daily jj-dojo architecture Routine. Read this first, update it last.
 The contract is `specs/jj-dojo.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-05 (fourth run). Upstream unchanged since the pin; built the
-`merge-conflicts` page.
+**Last updated:** 2026-10-07 (fifth run). Bumped the pin to `67c5c1f` and built the
+`graph-webview` page.
 
 ## Upstream pin
 
-`jj-vcs/jj-dojo@978c25dc6a7a84902d6012b05a4e513469eeddfe` (committed 2026-09-30, version
-0.0.1), analyzed 2026-10-03. Held in `jj_dojo_docs.UPSTREAM`.
+`jj-vcs/jj-dojo@67c5c1f1223f1f077e86511a30d6979b52863501` (committed 2026-10-06), analyzed
+2026-10-07. Held in `jj_dojo_docs.UPSTREAM`.
 
 ## §10 acceptance criteria
 
 - [x] `/jj-dojo` renders the §6 diagram and links to every page in §5 (boxes for unbuilt pages
       link to pinned source until the page exists).
 - [ ] Every §5 page exists, meets its "Must cover" column, and is registered: `graph-layout`,
-      `graph-protocol`, `activation`, `merge-conflicts` done; 6 to go.
+      `graph-protocol`, `activation`, `merge-conflicts`, `graph-webview` done; 4 to go.
 - [x] `graph-layout` meets all eight §8 items with at least two SVG diagrams (two deviations below).
 - [x] Planned components are visibly marked as planned everywhere they appear.
 - [x] Every source link is pinned to `UPSTREAM.commit` (tested).
-- [x] §7.5 tests exist and pass (142 tests in the suite, all sections).
+- [x] §7.5 tests exist and pass (144 tests in the suite, all sections).
 - [x] Homepage card links to `/jj-dojo`.
 - [x] Mobile at 390px: no horizontal page scroll on `/jj-dojo` and every ready page (checked in
       headless Chromium this run).
-- [x] The daily Routine has run in maintenance mode (second to fourth runs: no relevant upstream
-      change).
+- [x] The daily Routine has run in maintenance mode (second to fourth runs: no upstream change;
+      fifth run: pin bumped).
+
+## Fifth run (2026-10-07)
+
+| Commit | What |
+|---|---|
+| `d27aaa7` | Pin bump `978c25d` → `67c5c1f`: `activation` gains the `@parcel/watcher` dependency row; index gains repository-map rows for `src/client/` and `src/file_system_watcher/` and mentions them as unwired pieces of the planned layers |
+| `311c9a3` | `graph-webview` page: page and app shell, graphs and rows, display ID, chips, top bar, callouts, focus-mode text, search, drag and drop (targets, state, command table, hints), context menus, resize controller, untrusted text, theme colours, helpers and tests; component-tree and drag-and-drop SVGs; required-sections test |
+
+Maintenance: upstream moved by commits adding `src/client/subprocess_util.ts`,
+`src/file_system_watcher/` (interface plus a `@parcel/watcher` implementation) and the
+dependency. None of it is wired into activation, so no existing page's claims changed beyond
+the rows above. Mobile check (390 px, headless Chromium): no page overflow on `/jj-dojo` or
+`graph-webview`.
 
 ## Fourth run (2026-10-05)
 
@@ -78,11 +91,12 @@ moves and `preprocess.ts` changes.
 4. ~~`graph-protocol`~~
 5. ~~`activation`~~
 6. ~~`merge-conflicts`~~
-7. `graph-webview`
+7. ~~`graph-webview`~~
 8. `icon-theme`
 9. `build-and-test`
 10. `utils`
-11. `roadmap`
+11. `roadmap`, which also covers `src/client/` and `src/file_system_watcher/` (deliberate addition,
+    see below)
 
 ## Deliberate deviations
 
@@ -92,6 +106,15 @@ moves and `preprocess.ts` changes.
   says so in its "Lanes and edges" section and uses a four-parent merge as the example.
 - **"How ranges are merged" (§8 item 5).** `RangeManager` never merges ranges. It only
   appends and checks for collisions. The page describes that instead.
+- **New modules go on `roadmap`, not new pages.** `src/client/` (one `execFile` helper) and
+  `src/file_system_watcher/` (`FileSystemWatcher` interface, `LocalFileSystemWatcher` over
+  `@parcel/watcher`, its test) arrived with `67c5c1f` and are the first code of the planned client
+  and API layers. Proposal, recorded as a deliberate addition: `roadmap` must also cover what each
+  module does today, that neither is wired into activation, and its tests; sources
+  `src/client/*`, `src/file_system_watcher/*`. They get their own pages only once they are wired in.
+- **`graph-webview` defers tiles, glyphs and lines to `graph-layout`.** Those components are
+  already documented under `graph-layout#components` and `#line-geometry`; the webview page links
+  there instead of repeating them.
 - **Diagram colours.** As on `/jj`, the site is dark-only, so diagrams use the `--jj-*`
   variables from `jj.css`.
 
@@ -101,11 +124,11 @@ moves and `preprocess.ts` changes.
   no `build` field and the `vsix` target packages it unchanged. So outside the test, which injects
   one, the line reads `Extension version: undefined`. The page states this as following from the
   code. It wasn't observed in a running VS Code.
-- **Error helpers unused (`activation`).** `logError`, `logAndShowUserError`,
-  `logAndShowInternalError` and the error-callback/feedback hooks have no callers outside
-  `src/logging/` at this pin. Also, `logAndShowInternalError` marks an error as shown even when no
-  feedback provider is registered. Revisit when features start reporting errors.
-
+- **Error helpers barely used (`activation`).** Until `67c5c1f` the error helpers had no callers
+  outside `src/logging/`. Now `LocalFileSystemWatcher` calls them, but that class is itself not
+  wired in, so nothing running reports errors yet. Also, `logAndShowInternalError` marks an
+  error as shown even when no feedback provider is registered. Revisit when features start
+  reporting errors.
 - **RPC edge cases (`graph-protocol`).** Two behaviours in the vendored RPC layer are stated on
   the page as the code shows them: a handshake timeout is an unhandled rejection that leaves
   every later call blocked, and a failed call rejects with a plain `{message, name, stack}`
@@ -127,3 +150,17 @@ moves and `preprocess.ts` changes.
   only `overviewRulerColor`/`overviewRulerLane`. The page uses the accurate term and notes it.
 - **The graph has no real data yet.** `createFakeWebviewState` sends one hard-coded commit.
   The pages say so plainly. Revisit once the subprocess client lands upstream.
+- **Context-menu items are defined nowhere in the repo (`graph-webview`).** Rows, chips and top-bar
+  split buttons send contexts with origins such as `commitRow` and `commitRowMultiSelected`, but
+  `package.json` has no `webview/context` menu contribution at this pin and nothing else reads those
+  origins. The page explains the mechanism and does not claim which items appear.
+- **Top-bar context JSON (`graph-webview`).** The split-button context is built by string
+  interpolation, not `JSON.stringify`, so an origin or command ID containing a quote would produce
+  invalid JSON. Both come from the extension. The page states this.
+- **Unbound context-menu callback (`graph-webview`).** `jj-commit-row` passes its private
+  `openContextMenu` to the right side unbound. It works because the right side has the same
+  `extensionApi`, `state` and `node` properties. Not on the page; worth an upstream fix.
+- **No CSP in the webview HTML.** `getHtmlForWebview` sets no Content-Security-Policy meta tag. The
+  page states the fact without judging it.
+- **`@parcel/watcher` loose ends.** The `vsix` target has a TODO about packaging the native module,
+  and `LocalFileSystemWatcher` subscribes without an ignore list. Cover on `roadmap`.
