@@ -3,8 +3,8 @@
 Running log for the daily jj-commit-cloud-poc architecture Routine. Read this first, update it last.
 The contract is `specs/jj-commit-cloud-poc.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-06 (fourth run). Upstream unchanged since the pin. Built the last five
-pages, so the queue is empty; future runs are maintenance only.
+**Last updated:** 2026-10-07 (fifth run). Upstream unchanged since the pin; maintenance only, no
+page changes. The build is complete.
 
 ## Upstream pin
 
@@ -21,12 +21,17 @@ at the `v0.43.0` tag of `jj-vcs/jj`.
       sequence diagram of `jj cc init`'s local and gRPC writes.
 - [x] `protobufs` covers both `.proto` files, every RPC and every field.
 - [x] Every source link is pinned (`UPSTREAM.commit` or `v<jj_lib_version>`; tested).
-- [x] §7.5 tests exist and pass (143 tests in the suite, all sections).
+- [x] §7.5 tests exist and pass (144 tests in the suite, all sections).
 - [x] Homepage card links to `/jj-commit-cloud-poc`.
 - [x] Mobile at 390px: no horizontal page scroll on the index and every ready page (headless
-      Chromium, this run).
-- [x] The daily Routine has run in maintenance mode (runs two to four: no relevant upstream
+      Chromium, fourth run; no page changed since).
+- [x] The daily Routine has run in maintenance mode (runs two to five: no upstream
       change).
+
+## Fifth run (2026-10-07)
+
+Maintenance only: upstream `HEAD` still at `4b1c77b`, so the pin and every page stayed. Only this
+file changed.
 
 ## Fourth run (2026-10-06)
 
