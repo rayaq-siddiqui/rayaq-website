@@ -39,7 +39,7 @@ PAGES = [
         "title": "The graph webview UI",
         "summary": "The component tree of the commit graph webview, from the app shell down to rows, chips, search and drag and drop.",
         "sources": ["src/ui/commit_graph/components/", "src/ui/commit_graph/utils/"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "merge-conflicts",

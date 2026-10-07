@@ -147,3 +147,17 @@ def test_graph_layout_covers_every_required_section_with_diagrams():
         assert f'<h2 id="{anchor}">' in body, anchor
     assert body.count('<svg viewBox') >= 2
     assert "preprocess_test.ts" in body
+
+
+def test_graph_webview_covers_every_required_section_with_diagrams():
+    if jj_dojo_docs.find_page("graph-webview") is None:
+        return
+    client = app_module.app.test_client()
+
+    body = client.get("/jj-dojo/graph-webview").get_data(as_text=True)
+
+    for anchor in ["shell", "rows", "top-bar", "search", "drag-and-drop", "context-menus", "resize", "safe-html", "styles"]:
+        assert f'<h2 id="{anchor}">' in body, anchor
+    assert body.count('<svg viewBox') >= 2
+    for name in ["search_box_state", "search_highlighter", "safeHTML", "JjResizeController", "isNoopInsert"]:
+        assert name in body, name
