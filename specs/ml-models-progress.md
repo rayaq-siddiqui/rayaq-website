@@ -4,10 +4,11 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (seventh run). Spec v2 widens the section from model architectures
+**Last updated:** 2026-10-08 (eighth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
 format. Ready pages: `transformer`, `tensors-and-shapes`, `vectors-and-dot-products`,
-`matrix-multiplication`, `derivatives-and-gradients`. The next run builds `chain-rule`.
+`matrix-multiplication`, `derivatives-and-gradients`, `chain-rule`. The next run builds
+`probability-and-distributions`.
 
 ## Pins
 
@@ -161,6 +162,11 @@ The paths below are relative to `torch/nn/modules/` unless they give a fuller pa
   `register_hook` starts at 655.
 - `torch/autograd/functional.py`: `jacobian` 587-853; `hessian` starts at 856.
 - `torch/autograd/grad_mode.py`: `no_grad` 22-86; `enable_grad` starts at 89.
+- `torch/autograd/function.py`: `FunctionCtx.save_for_backward` 41-100, `backward` 473-505
+  (ends with `vjp = backward`), `jvp` 531-553, `Function` 555-655 (docstring has the `Exp`
+  example).
+- `torch/autograd/functional.py`: `vjp` 271-363, `jvp` 366-476.
+- `torch/autograd/forward_ad.py`: `make_dual` 77-138; `dual_level` starts at 185.
 
 ### scikit-learn 1.9.1 (start lines; check the end before linking a range)
 
@@ -277,14 +283,22 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 | `ml-models: build the derivatives-and-gradients page` | The page, `ready`, queue ✓. Links to `chain-rule` and `optimizers` stay plain text until those pages are ready, since the link test rejects 404s |
 | `docs: record the derivatives-and-gradients run` | This table and the verified autograd ranges above |
 
+## Eighth run (2026-10-08) — fifth page of the 5-minute loop
+
+| Commit | What |
+|---|---|
+| `ml-models: add tested chain-rule and backprop helpers` | `scalar_chain`, `relu`, `two_layer_pass` (every forward value and gradient of a Linear-ReLU-Linear network), `two_layer_loss` for the finite-difference tests, `mode_costs`, and three worked-example constants |
+| `ml-models: build the chain-rule page` | The page, `ready`, queue ✓; the derivatives page's chain-rule mentions become links |
+| `docs: record the chain-rule run` | This table and the verified `function.py`, `functional.py` and `forward_ad.py` ranges above |
+
 ## Queue
 
 1. `tensors-and-shapes` ✓
 2. `vectors-and-dot-products` ✓
 3. `matrix-multiplication` ✓
 4. `derivatives-and-gradients` ✓
-5. `chain-rule` ← next
-6. `probability-and-distributions`
+5. `chain-rule` ✓
+6. `probability-and-distributions` ← next
 7. `expectation-and-variance`
 8. `entropy-and-kl`
 9. `loss-functions`
