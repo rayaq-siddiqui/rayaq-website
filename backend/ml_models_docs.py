@@ -1541,6 +1541,19 @@ BOUNDARY_EXAMPLE = {
 
 SOFTMAX_EXAMPLE = {"classes": ["cat", "dog", "bird"], "logits": [2.0, 1.0, -1.0], "target": 0}
 
+XOR_EXAMPLE = {
+    "inputs": [[0, 0], [0, 1], [1, 0], [1, 1]],
+    "targets": [0, 1, 1, 0],
+    "w1": [[1, 1], [1, 1]],
+    "b1": [0, -1],
+    "w2": [[1, -2]],
+    "b2": [0],
+}
+
+APPROXIMATION_EXAMPLE = {"start": 0.0, "stop": 2 * math.pi, "units": [3, 8], "samples": 400}
+
+MLP_EXAMPLE = {"sizes": [784, 256, 128, 10]}
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -2390,6 +2403,72 @@ def boundary_fits(example):
     return {"fits": fits, "unpenalized": growth}
 
 
+def mlp_forward(x, layers):
+    trace = []
+    h = list(x)
+    for index, (weight, bias) in enumerate(layers):
+        z = [dot_product(row, h) + b for row, b in zip(weight, bias)]
+        h = z if index == len(layers) - 1 else relu(z)
+        trace.append({"z": z, "h": h})
+    return trace
+
+
+def collapse_linear(layers):
+    weight, bias = layers[0]
+    for next_weight, next_bias in layers[1:]:
+        bias = [dot_product(row, bias) + b for row, b in zip(next_weight, next_bias)]
+        weight = matmul(next_weight, weight)
+    return weight, bias
+
+
+def xor_network(example):
+    layers = [(example["w1"], example["b1"]), (example["w2"], example["b2"])]
+    rows = []
+    for x, t in zip(example["inputs"], example["targets"]):
+        hidden, output = mlp_forward(x, layers)
+        rows.append({"x": x, "target": t, "z": hidden["z"], "h": hidden["h"], "y": output["h"][0]})
+    weight, bias = collapse_linear(layers)
+    linear = [dot_product(weight[0], x) + bias[0] for x in example["inputs"]]
+    fit = normal_equations(example["inputs"], example["targets"])["solution"]
+    best = [dot_product(fit[:-1], x) + fit[-1] for x in example["inputs"]]
+    return {
+        "rows": rows,
+        "collapsed": {"weight": weight[0], "bias": bias[0], "outputs": linear},
+        "best_linear": {"weight": fit[:-1], "bias": fit[-1], "outputs": best},
+    }
+
+
+def relu_interpolant(f, start, stop, units):
+    knots = [start + (stop - start) * i / units for i in range(units + 1)]
+    values = [f(k) for k in knots]
+    slopes = [(values[i + 1] - values[i]) / (knots[i + 1] - knots[i]) for i in range(units)]
+    coefficients = [slopes[0]] + [slopes[i] - slopes[i - 1] for i in range(1, units)]
+    return {"knots": knots, "values": values, "bias": values[0], "coefficients": coefficients}
+
+
+def evaluate_interpolant(net, x):
+    return net["bias"] + sum(c * max(0.0, x - k) for c, k in zip(net["coefficients"], net["knots"]))
+
+
+def approximation_fits(example):
+    start, stop, samples = example["start"], example["stop"], example["samples"]
+    xs = [start + (stop - start) * i / samples for i in range(samples + 1)]
+    fits = []
+    for units in example["units"]:
+        net = relu_interpolant(math.sin, start, stop, units)
+        errors = [abs(evaluate_interpolant(net, x) - math.sin(x)) for x in xs]
+        fits.append({**net, "units": units, "params": 3 * units + 1, "max_error": max(errors)})
+    return fits
+
+
+def mlp_param_count(sizes):
+    layers = [
+        {"in": a, "out": b, "weights": a * b, "biases": b, "total": a * b + b}
+        for a, b in zip(sizes, sizes[1:])
+    ]
+    return {"layers": layers, "total": sum(layer["total"] for layer in layers)}
+
+
 def similarity_ranking(example):
     query = example["query"]
     rows = [
@@ -2548,6 +2627,13 @@ def render(slug, render_template):
         "sigmoid": sigmoid,
         "logistic_fit_1d": logistic_fit_1d,
         "boundary_fits": boundary_fits,
+        "xor_example": XOR_EXAMPLE,
+        "approximation_example": APPROXIMATION_EXAMPLE,
+        "mlp_example": MLP_EXAMPLE,
+        "xor_network": xor_network,
+        "approximation_fits": approximation_fits,
+        "evaluate_interpolant": evaluate_interpolant,
+        "mlp_param_count": mlp_param_count,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

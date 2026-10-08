@@ -985,3 +985,36 @@ def test_boundary_fits_shrink_with_smaller_c_and_diverge_without_penalty():
     growth = result["unpenalized"]
     assert all(b["norm"] > a["norm"] for a, b in zip(growth, growth[1:]))
     assert growth[-1]["loss"] < 1e-3
+
+
+def test_xor_network_solves_xor_and_no_linear_model_can():
+    result = ml_models_docs.xor_network(ml_models_docs.XOR_EXAMPLE)
+    assert [row["y"] for row in result["rows"]] == ml_models_docs.XOR_EXAMPLE["targets"]
+    assert result["collapsed"]["outputs"] == [2, 1, 1, 0]
+    assert result["best_linear"]["outputs"] == pytest.approx([0.5] * 4)
+
+
+def test_collapse_linear_matches_stacked_linear_layers():
+    layers = [([[1, 2], [3, 4]], [1, -1]), ([[2, 0], [1, 1]], [0, 5]), ([[1, -1]], [2])]
+    weight, bias = ml_models_docs.collapse_linear(layers)
+    for x in ([1, 0], [0, 1], [2, -3]):
+        h = x
+        for w, b in layers:
+            h = [ml_models_docs.dot_product(row, h) + c for row, c in zip(w, b)]
+        assert [ml_models_docs.dot_product(row, x) + c for row, c in zip(weight, bias)] == h
+
+
+def test_relu_interpolant_hits_its_knots_and_improves_with_units():
+    fits = ml_models_docs.approximation_fits(ml_models_docs.APPROXIMATION_EXAMPLE)
+    for fit in fits:
+        for k, v in zip(fit["knots"], fit["values"]):
+            assert ml_models_docs.evaluate_interpolant(fit, k) == pytest.approx(v, abs=1e-12)
+    assert fits[0]["max_error"] > 0.4 > 0.1 > fits[1]["max_error"]
+    assert [fit["params"] for fit in fits] == [10, 25]
+
+
+def test_mlp_param_count():
+    counts = ml_models_docs.mlp_param_count([784, 256, 128, 10])
+    assert [layer["total"] for layer in counts["layers"]] == [200960, 32896, 1290]
+    assert counts["total"] == 235146
+    assert ml_models_docs.mlp_param_count([512, 2048, 512])["total"] == 2099712
