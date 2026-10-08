@@ -73,8 +73,13 @@ PAGES = [
         "slug": "roadmap",
         "title": "Externalization plan",
         "summary": "The planned UI, API and client layers from the upstream design notes, and what has landed so far.",
-        "sources": ["docs/intro.md", "docs/resources/architecture.svg"],
-        "ready": False,
+        "sources": [
+            "docs/intro.md",
+            "docs/resources/architecture.svg",
+            "src/client/",
+            "src/file_system_watcher/",
+        ],
+        "ready": True,
     },
     {
         "slug": "utils",

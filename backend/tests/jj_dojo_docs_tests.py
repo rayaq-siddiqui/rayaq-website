@@ -198,3 +198,18 @@ def test_build_and_test_covers_bazel_tests_and_ci():
         assert f'<h2 id="{anchor}">' in body, anchor
     for name in ["//:extension", "//:vsix", "jasmine_test", "installVscode", "addlicense"]:
         assert name in body, name
+
+
+def test_roadmap_marks_planned_layers_and_landed_pieces():
+    if jj_dojo_docs.find_page("roadmap") is None:
+        return
+    client = app_module.app.test_client()
+
+    body = client.get("/jj-dojo/roadmap").get_data(as_text=True)
+
+    for anchor in ["layers", "milestones", "subprocess-client", "file-system-watcher", "design", "gaps"]:
+        assert f'<h2 id="{anchor}">' in body, anchor
+    for name in ["ActionsQueue", "LocalFileSystemWatcher", "--no-integrate-operation", "--ignore-working-copy"]:
+        assert name in body, name
+    assert "dojo-planned-badge" in body
+    assert "d-planned" in body
