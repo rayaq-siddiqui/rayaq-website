@@ -1699,3 +1699,54 @@ def test_random_split_flatters_a_time_series_forecast():
 def test_accuracy_standard_error_shrinks_with_the_test_set():
     assert ml_models_docs.accuracy_standard_error(0.8, 100) == pytest.approx(0.04)
     assert ml_models_docs.accuracy_standard_error(0.8, 400) == pytest.approx(0.02)
+
+
+def test_standardized_columns_have_zero_mean_and_unit_spread():
+    for column in (ml_models_docs.PREPROCESS_AGE, ml_models_docs.PREPROCESS_INCOME):
+        mean, std = ml_models_docs.column_mean_std(column)
+        scaled = ml_models_docs.standardize_with(column, mean, std)
+        assert sum(scaled) == pytest.approx(0, abs=1e-9)
+        assert ml_models_docs.column_mean_std(scaled)[1] == pytest.approx(1)
+    assert ml_models_docs.column_mean_std(ml_models_docs.PREPROCESS_AGE) == pytest.approx((43.0, 13.2212), abs=1e-4)
+
+
+def test_min_max_scale_maps_the_range_onto_zero_one():
+    scaled = ml_models_docs.min_max_scale(ml_models_docs.PREPROCESS_INCOME, 30000, 250000)
+    assert scaled[0] == 0 and scaled[-1] == 1
+    assert scaled[1] == pytest.approx(0.1)
+
+
+def test_raw_distance_ignores_age_until_features_are_scaled():
+    age, income = ml_models_docs.PREPROCESS_AGE, ml_models_docs.PREPROCESS_INCOME
+    rows = list(zip(age, income))
+    a, b, c = rows[1], rows[2], rows[0]
+    assert ml_models_docs.pair_distance(a, b) == pytest.approx(9000.008, abs=1e-3)
+    assert ml_models_docs.pair_distance(a, c) == pytest.approx(22000.004, abs=1e-3)
+    am, asd = ml_models_docs.column_mean_std(age)
+    im, isd = ml_models_docs.column_mean_std(income)
+    scaled = list(zip(ml_models_docs.standardize_with(age, am, asd), ml_models_docs.standardize_with(income, im, isd)))
+    assert ml_models_docs.pair_distance(scaled[1], scaled[2]) == pytest.approx(0.9147, abs=1e-4)
+    assert ml_models_docs.pair_distance(scaled[1], scaled[0]) == pytest.approx(1.0219, abs=1e-4)
+
+
+def test_fit_statistics_from_train_rows_shift_the_test_value():
+    train = ml_models_docs.PREPROCESS_AGE[:4]
+    mean, std = ml_models_docs.column_mean_std(train)
+    assert (mean, std) == pytest.approx((38.75, 11.3220), abs=1e-4)
+    assert ml_models_docs.standardize_with([60], mean, std)[0] == pytest.approx(1.8769, abs=1e-4)
+
+
+def test_log_transform_pulls_the_mean_toward_the_median():
+    income = ml_models_docs.PREPROCESS_INCOME
+    logs = [math.log10(v) for v in income]
+    assert sum(income) / 5 == 96600 and ml_models_docs.median(income) == 61000
+    assert sum(logs) / 5 == pytest.approx(4.8661, abs=1e-4)
+    assert ml_models_docs.median(logs) == pytest.approx(4.7853, abs=1e-4)
+    assert ml_models_docs.median([1, 2, 3, 4]) == 2.5
+
+
+def test_encoders_order_categories_alphabetically():
+    categories, rows = ml_models_docs.one_hot_encode(ml_models_docs.PREPROCESS_COLORS)
+    assert categories == ["blue", "green", "red"]
+    assert rows[0] == [0, 0, 1] and rows[1] == [0, 1, 0]
+    assert ml_models_docs.ordinal_encode(ml_models_docs.PREPROCESS_COLORS) == [2, 1, 0, 1, 2]

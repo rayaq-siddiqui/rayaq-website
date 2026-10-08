@@ -3666,6 +3666,44 @@ def accuracy_standard_error(accuracy, count):
     return math.sqrt(accuracy * (1 - accuracy) / count)
 
 
+PREPROCESS_AGE = [22, 35, 47, 51, 60]
+PREPROCESS_INCOME = [30000, 52000, 61000, 90000, 250000]
+PREPROCESS_COLORS = ["red", "green", "blue", "green", "red"]
+
+
+def column_mean_std(values):
+    mean = sum(values) / len(values)
+    return mean, math.sqrt(sum((v - mean) ** 2 for v in values) / len(values))
+
+
+def standardize_with(values, mean, std):
+    return [(v - mean) / std for v in values]
+
+
+def min_max_scale(values, low, high):
+    return [(v - low) / (high - low) for v in values]
+
+
+def median(values):
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def one_hot_encode(values):
+    categories = sorted(set(values))
+    return categories, [[1 if v == c else 0 for c in categories] for v in values]
+
+
+def ordinal_encode(values):
+    categories = sorted(set(values))
+    return [categories.index(v) for v in values]
+
+
+def pair_distance(a, b):
+    return math.dist(a, b)
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -3860,6 +3898,16 @@ def render(slug, render_template):
         "leaked_group_records": leaked_group_records,
         "nearest_in_time_mse": nearest_in_time_mse,
         "accuracy_standard_error": accuracy_standard_error,
+        "preprocess_age": PREPROCESS_AGE,
+        "preprocess_income": PREPROCESS_INCOME,
+        "preprocess_colors": PREPROCESS_COLORS,
+        "column_mean_std": column_mean_std,
+        "standardize_with": standardize_with,
+        "min_max_scale": min_max_scale,
+        "median": median,
+        "one_hot_encode": one_hot_encode,
+        "ordinal_encode": ordinal_encode,
+        "pair_distance": pair_distance,
         "kmeans_run": kmeans_run,
         "nearest_labeled": nearest_labeled,
         "cluster_then_label": cluster_then_label,
