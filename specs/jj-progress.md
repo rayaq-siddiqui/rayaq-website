@@ -3,14 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-06 (fiftieth run): bumped the pin `4df5265..320f7e6`, which added
-`file delete` and `file edit`; built those two and all thirteen Tier C pages. **The build is
-complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
+**Last updated:** 2026-10-08 (fifty-first run): bumped the pin `320f7e6..3935c0f` (0.46.0). **The
+build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@320f7e6bde5f533afd0f029b3196398f8cd1cb31` (committed 2026-10-06, version
-0.45.1), analyzed 2026-10-06. Held in `jj_docs.UPSTREAM`. Previous pin: `4df5265`.
+`jj-vcs/jj@3935c0fcaecebfed6d84dfa501169363112299ce` (committed 2026-10-07, version
+0.46.0), analyzed 2026-10-08. Held in `jj_docs.UPSTREAM`. Previous pin: `320f7e6`.
 
 ## §10 acceptance criteria
 
@@ -32,7 +31,17 @@ complete: every §8A.1 command and every §5 topic has a page.** Later runs are 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped).
+      run: pin bumped; fiftieth and fifty-first runs: pin bumped).
+
+## Fifty-first run (2026-10-08)
+
+- `d7ebdbf` maintenance `320f7e6..3935c0f` (5 commits, release 0.46.0). The revset/fileset parsers,
+  their grammars and `dsl_util.rs` moved from `lib/src/` to the new `jj-dsl` crate (`dsl/src/`); the
+  `revsets` page links there and says so. `git init`'s help text was rewritten, so its ranges were
+  remapped and the flag table re-checked. Shifted ranges re-pinned on 3 more pages.
+- This bump was held from 2026-10-07 to 2026-10-08 by a permission denial, until the owner allowed the
+  agent to push to `main`; the pin went past the then-tip `d91f81a` to the current tip.
+- 123 URLs return 200; 0px overflow at 390px on `/jj`, `revsets`, `git-init`, `git-clone`.
 
 ## Fiftieth run (2026-10-06)
 
@@ -121,6 +130,9 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
 - **`workspace_store/` location in spec §5.** The spec lists `workspace_store/` directly under `.jj/`,
   but `ReadonlyRepo::init` creates it at `.jj/repo/workspace_store/` (shared by all workspaces). The
   `storage` page describes the code; the spec may want updating.
+- **`jj git init --git-repo` help text.** As of 0.46.0 it says the option "is mutually exclusive
+  with `--collate`" (meant `--colocate`) and spells "Jujutsa". The page describes the clap
+  `conflicts_with_all` list instead of quoting it.
 - **`jj gerrit upload` help text vs code.** `--remote` says it "can be a full SSH URL", but only
   configured remote names work; `--merged` is parsed but never sent. The page describes the code.
 - **`jj git remote` doc string.** `RemoteCommand`'s doc comment says "The Git repo will be a bare git
