@@ -1354,3 +1354,95 @@ def test_residual_demo_pre_norm_grows_and_post_norm_stays_fixed():
     assert len(demo["pre"]) == len(demo["post"]) == 7
     assert demo["pre"][-1] > 2 * demo["pre"][0]
     assert all(abs(v - demo["post"][1]) < 1e-3 for v in demo["post"][1:])
+
+
+def test_lr_schedule_warms_up_then_follows_a_cosine_to_the_floor():
+    schedule = ml_models_docs.lr_schedule(0.2, 2, 8, 0.02)
+    assert schedule[:3] == pytest.approx([0.1, 0.2, 0.2])
+    assert all(a >= b for a, b in zip(schedule[2:], schedule[3:]))
+    assert schedule[-1] > 0.02
+    assert ml_models_docs.lr_at(8, 0.2, 2, 8, 0.02) == pytest.approx(0.02)
+
+
+def test_linear_warmup_matches_the_linear_lr_recursion():
+    warmup, start = 5, 1 / 5
+    lr, expected = start, [start]
+    for epoch in range(1, warmup):
+        lr *= 1.0 + (1.0 - start) / ((warmup - 1) * start + (epoch - 1) * (1.0 - start))
+        expected.append(lr)
+    assert ml_models_docs.lr_schedule(1.0, warmup, warmup + 1)[:warmup] == pytest.approx(expected)
+
+
+def test_smoothed_cross_entropy_blends_the_loss_with_a_uniform_target():
+    logits = [2.0, 1.0, -1.0]
+    plain = ml_models_docs.logits_cross_entropy(logits, 0)["loss"]
+    assert ml_models_docs.smoothed_cross_entropy(logits, 0, 0.0) == pytest.approx(plain)
+    uniform = -sum(ml_models_docs.categorical_from_logits(logits)["log_probs"]) / 3
+    assert ml_models_docs.smoothed_cross_entropy(logits, 0, 1.0) == pytest.approx(uniform)
+
+
+def test_masked_mean_loss_divides_by_the_kept_targets_only():
+    rows = [[0.0, 0.0, 0.0, 0.0]] * 3
+    result = ml_models_docs.masked_mean_loss(rows, [1, -100, 2])
+    assert result["count"] == 2
+    assert result["loss"] == pytest.approx(math.log(4))
+    assert math.isnan(ml_models_docs.masked_mean_loss(rows, [-100] * 3)["loss"])
+
+
+def test_bigram_gradient_matches_finite_differences():
+    weights = [[0.1 * (i - j) for j in range(4)] for i in range(4)]
+    inputs, targets = [0, 1, 2, 3], [1, 2, -100, 0]
+    grad = ml_models_docs.bigram_gradient(weights, inputs, targets)
+    base = ml_models_docs.masked_mean_loss([weights[x] for x in inputs], targets)["loss"]
+    for i, j in [(0, 1), (1, 0), (2, 2), (3, 3)]:
+        bumped = [list(row) for row in weights]
+        bumped[i][j] += 1e-6
+        loss = ml_models_docs.masked_mean_loss([bumped[x] for x in inputs], targets)["loss"]
+        assert (loss - base) / 1e-6 == pytest.approx(grad[i][j], abs=1e-4)
+    assert grad[2] == [0.0] * 4
+
+
+def test_clip_by_global_norm_only_shrinks():
+    clipped = ml_models_docs.clip_by_global_norm([3.0, 4.0], 1.0)
+    assert clipped["total_norm"] == pytest.approx(5.0)
+    assert clipped["clipped"] and math.hypot(*clipped["grads"]) == pytest.approx(1.0, rel=1e-5)
+    untouched = ml_models_docs.clip_by_global_norm([0.3, 0.4], 1.0)
+    assert untouched["coef"] == 1.0 and untouched["grads"] == [0.3, 0.4]
+
+
+def test_training_run_starts_at_log_vocab_and_loss_falls():
+    run = ml_models_docs.training_run(ml_models_docs.TRAINING_EXAMPLE)
+    losses = [row["loss"] for row in run["rows"]]
+    assert losses[0] == pytest.approx(math.log(4))
+    assert all(a > b for a, b in zip(losses, losses[1:]))
+    assert run["rows"][0]["clipped"] and not run["rows"][1]["clipped"]
+    assert all(row["count"] == 5 for row in run["rows"])
+
+
+def test_accumulation_needs_token_weights_when_batches_have_padding():
+    weights = [[0.0] * 4 for _ in range(4)]
+    result = ml_models_docs.accumulation_check(weights, [([0, 1, 2], [1, 2, 3]), ([3, 1], [-100, 2])])
+    assert result["exact"] == pytest.approx(result["full"])
+    assert max(abs(a - b) for a, b in zip(result["naive"], result["full"])) > 0.01
+
+
+def test_float16_underflow_is_rescued_by_loss_scaling():
+    plain = ml_models_docs.scaled_gradient_roundtrip(1e-8, 2.0**16)
+    assert plain["plain"] == 0.0
+    assert plain["scaled"] > 0
+    assert plain["recovered"] == pytest.approx(1e-8, rel=1e-3)
+    assert ml_models_docs.to_float16(1e6) == math.inf
+
+
+def test_grad_scaler_backs_off_on_overflow_and_grows_after_the_interval():
+    example = ml_models_docs.SCALER_EXAMPLE
+    rows = ml_models_docs.grad_scaler_trace(example["scale"], example["growth_interval"], example["overflows"])
+    assert [row["scale"] for row in rows][:4] == [65536.0, 65536.0, 65536.0, 131072.0]
+    assert rows[3]["overflow"] and rows[3]["next_scale"] == 65536.0
+    assert rows[-1]["next_scale"] == 131072.0
+
+
+def test_training_memory_is_sixteen_bytes_per_parameter_for_adam():
+    rows = ml_models_docs.training_memory(7e9)
+    assert rows[-1]["bytes_per_param"] == 16
+    assert rows[-1]["gigabytes"] == pytest.approx(112.0)

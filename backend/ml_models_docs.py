@@ -2,6 +2,7 @@ import itertools
 import math
 import random
 import re
+import struct
 
 PINS = {
     "pytorch": {
@@ -3105,6 +3106,139 @@ def similarity_ranking(example):
     }
 
 
+TRAINING_EXAMPLE = {
+    "vocab": ["a", "b", "c", "d"],
+    "inputs": [0, 1, 2, 3, 1, 2],
+    "targets": [1, 2, 3, -100, 2, 3],
+    "ignore_index": -100,
+    "lr": 0.2,
+    "warmup": 2,
+    "steps": 8,
+    "min_lr": 0.02,
+    "max_norm": 0.5,
+    "weight_decay": 0.01,
+}
+
+SCALER_EXAMPLE = {"gradient": 1e-8, "scale": 2.0**16, "growth_interval": 3, "overflows": [False, False, False, True, False, False, False, False]}
+
+
+def lr_at(step, base_lr, warmup, total, min_lr=0.0):
+    if step < warmup:
+        return base_lr * (step + 1) / warmup
+    progress = (step - warmup) / (total - warmup)
+    return min_lr + (base_lr - min_lr) * (1 + math.cos(math.pi * progress)) / 2
+
+
+def lr_schedule(base_lr, warmup, total, min_lr=0.0):
+    return [lr_at(step, base_lr, warmup, total, min_lr) for step in range(total)]
+
+
+def smoothed_cross_entropy(logits, target, epsilon):
+    log_probs = categorical_from_logits(logits)["log_probs"]
+    nll = -log_probs[target]
+    uniform = -sum(log_probs) / len(log_probs)
+    return (1 - epsilon) * nll + epsilon * uniform
+
+
+def masked_mean_loss(logit_rows, targets, ignore_index=-100):
+    kept = [(row, t) for row, t in zip(logit_rows, targets) if t != ignore_index]
+    losses = [logits_cross_entropy(row, t)["loss"] for row, t in kept]
+    return {"losses": losses, "count": len(kept), "loss": sum(losses) / len(kept) if kept else math.nan}
+
+
+def bigram_gradient(weights, inputs, targets, ignore_index=-100):
+    count = sum(1 for t in targets if t != ignore_index)
+    grad = [[0.0] * len(row) for row in weights]
+    for x, t in zip(inputs, targets):
+        if t == ignore_index:
+            continue
+        for j, g in enumerate(logits_cross_entropy(weights[x], t)["gradient"]):
+            grad[x][j] += g / count
+    return grad
+
+
+def clip_by_global_norm(grads, max_norm):
+    total = math.sqrt(sum(g * g for g in grads))
+    coef = min(max_norm / (total + 1e-6), 1.0)
+    return {"total_norm": total, "coef": coef, "grads": [g * coef for g in grads], "clipped": coef < 1.0}
+
+
+def training_run(example):
+    vocab = len(example["vocab"])
+    flat = [0.0] * (vocab * vocab)
+    state, rows = {}, []
+    for step in range(example["steps"]):
+        weights = [flat[i * vocab:(i + 1) * vocab] for i in range(vocab)]
+        loss = masked_mean_loss([weights[x] for x in example["inputs"]], example["targets"], example["ignore_index"])
+        grad = bigram_gradient(weights, example["inputs"], example["targets"], example["ignore_index"])
+        clip = clip_by_global_norm([g for row in grad for g in row], example["max_norm"])
+        lr = lr_at(step, example["lr"], example["warmup"], example["steps"], example["min_lr"])
+        flat = optimizer_step("adamw", flat, clip["grads"], state, {"lr": lr, "weight_decay": example["weight_decay"]})
+        rows.append({"step": step + 1, "loss": loss["loss"], "count": loss["count"], "grad_norm": clip["total_norm"], "coef": clip["coef"], "clipped": clip["clipped"], "lr": lr})
+    final = [flat[i * vocab:(i + 1) * vocab] for i in range(vocab)]
+    return {"rows": rows, "weights": final}
+
+
+def accumulation_check(weights, micro_batches, ignore_index=-100):
+    full_inputs = [x for inputs, _ in micro_batches for x in inputs]
+    full_targets = [t for _, targets in micro_batches for t in targets]
+    full = bigram_gradient(weights, full_inputs, full_targets, ignore_index)
+    naive = [[0.0] * len(row) for row in weights]
+    exact = [[0.0] * len(row) for row in weights]
+    total = sum(1 for t in full_targets if t != ignore_index)
+    for inputs, targets in micro_batches:
+        kept = sum(1 for t in targets if t != ignore_index)
+        grad = bigram_gradient(weights, inputs, targets, ignore_index)
+        for i, row in enumerate(grad):
+            for j, g in enumerate(row):
+                naive[i][j] += g / len(micro_batches)
+                exact[i][j] += g * kept / total
+    flatten = lambda m: [v for row in m for v in row]
+    return {"full": flatten(full), "naive": flatten(naive), "exact": flatten(exact)}
+
+
+def to_float16(value):
+    try:
+        return struct.unpack("<e", struct.pack("<e", value))[0]
+    except OverflowError:
+        return math.inf
+
+
+def scaled_gradient_roundtrip(gradient, scale):
+    plain = to_float16(gradient)
+    scaled = to_float16(gradient * scale)
+    return {"plain": plain, "scaled": scaled, "recovered": scaled / scale}
+
+
+def grad_scaler_trace(scale, growth_interval, overflows, growth_factor=2.0, backoff_factor=0.5):
+    rows, good = [], 0
+    for step, overflow in enumerate(overflows, start=1):
+        used = scale
+        if overflow:
+            scale *= backoff_factor
+            good = 0
+        else:
+            good += 1
+            if good == growth_interval:
+                scale *= growth_factor
+                good = 0
+        rows.append({"step": step, "scale": used, "overflow": overflow, "next_scale": scale})
+    return rows
+
+
+def training_memory(parameters, weight_bytes=4):
+    rows = [
+        ("Weights", weight_bytes),
+        ("Gradients", weight_bytes),
+        ("Adam exp_avg", 4),
+        ("Adam exp_avg_sq", 4),
+    ]
+    out = [{"name": name, "bytes_per_param": b, "gigabytes": b * parameters / 1e9} for name, b in rows]
+    total = sum(b for _, b in rows)
+    out.append({"name": "Total, before activations", "bytes_per_param": total, "gigabytes": total * parameters / 1e9})
+    return out
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -3298,6 +3432,19 @@ def render(slug, render_template):
         "train_skipgram": train_skipgram,
         "nearest_words": nearest_words,
         "tied_parameter_counts": tied_parameter_counts,
+        "training_example": TRAINING_EXAMPLE,
+        "scaler_example": SCALER_EXAMPLE,
+        "lr_at": lr_at,
+        "lr_schedule": lr_schedule,
+        "smoothed_cross_entropy": smoothed_cross_entropy,
+        "masked_mean_loss": masked_mean_loss,
+        "bigram_gradient": bigram_gradient,
+        "clip_by_global_norm": clip_by_global_norm,
+        "training_run": training_run,
+        "accumulation_check": accumulation_check,
+        "scaled_gradient_roundtrip": scaled_gradient_roundtrip,
+        "grad_scaler_trace": grad_scaler_trace,
+        "training_memory": training_memory,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
