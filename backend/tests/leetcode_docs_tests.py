@@ -282,3 +282,27 @@ def test_hash_helpers_match_the_page():
     assert "up to 15 pairs" in body
     assert "18 set lookups for 9 distinct numbers" in body
     assert "one chain of 4 keys" in body
+
+
+def test_counting_helpers_match_the_page():
+    anagram = leetcode_docs.letter_count_rows("listen", "silent")
+    assert anagram["anagram"] and len(anagram["rows"]) == 6
+    rows = leetcode_docs.letter_count_rows("rat", "car")
+    assert not rows["anagram"]
+    assert [r["letter"] for r in rows["rows"] if not r["equal"]] == ["c", "t"]
+    vote = leetcode_docs.majority_vote_trace([2, 2, 1, 1, 1, 2, 2])
+    assert [(s["candidate"], s["count"]) for s in vote["steps"]] == [
+        (2, 1), (2, 2), (2, 1), (2, 0), (1, 1), (1, 0), (2, 1)]
+    assert vote["candidate"] == 2 and vote["occurrences"] == 4 and vote["is_majority"]
+    assert not leetcode_docs.majority_vote_trace([1, 2, 3])["is_majority"]
+    freq = leetcode_docs.frequency_buckets([4, 1, 2, 1, 4, 3, 4, 2, 4, 1, 5], 2)
+    assert freq["counts"] == {4: 4, 1: 3, 2: 2, 3: 1, 5: 1}
+    assert freq["buckets"][1:5] == [[3, 5], [2], [1], [4]] and freq["top"] == [4, 1]
+    assert leetcode_docs.anagram_groups(["eat", "tea", "tan", "ate", "nat", "bat"]) == {
+        "aet": ["eat", "tea", "ate"], "ant": ["tan", "nat"], "abt": ["bat"]}
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/counting-and-bucketing").get_data(as_text=True))
+    assert "they are anagrams" in body
+    assert "differ for 2 of 4 letters" in body
+    assert "counts 4 occurrences in 7 elements, a majority" in body
+    assert "<code>aet</code></td><td>eat, tea, ate</td>" in body
+    assert "4 and 1. The scan stops" in body

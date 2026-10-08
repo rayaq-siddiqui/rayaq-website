@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -3513,6 +3513,58 @@ def consecutive_runs(nums):
     return {"runs": runs, "best": max((run["length"] for run in runs), default=0),
             "lookups": lookups, "unique": len(members)}
 
+
+def letter_count_rows(first, second):
+    """Per-letter counts of two words and whether each letter matches (the anagram test)."""
+    first_counts, second_counts = {}, {}
+    for letter in first:
+        first_counts[letter] = first_counts.get(letter, 0) + 1
+    for letter in second:
+        second_counts[letter] = second_counts.get(letter, 0) + 1
+    rows = [{"letter": letter, "first": first_counts.get(letter, 0), "second": second_counts.get(letter, 0)}
+            for letter in sorted(set(first) | set(second))]
+    for row in rows:
+        row["equal"] = row["first"] == row["second"]
+    return {"rows": rows, "anagram": all(row["equal"] for row in rows)}
+
+
+def majority_vote_trace(nums):
+    """Boyer-Moore voting: the candidate and counter after each element, then a verifying count."""
+    candidate, count = None, 0
+    steps = []
+    for value in nums:
+        if count == 0:
+            candidate = value
+        count += 1 if value == candidate else -1
+        steps.append({"value": value, "candidate": candidate, "count": count})
+    occurrences = sum(1 for value in nums if value == candidate)
+    return {"steps": steps, "candidate": candidate, "occurrences": occurrences,
+            "is_majority": occurrences * 2 > len(nums)}
+
+
+def frequency_buckets(nums, k):
+    """Bucket sort by frequency: counts, the bucket of values for each count, and the top k."""
+    counts = {}
+    for value in nums:
+        counts[value] = counts.get(value, 0) + 1
+    buckets = [[] for _ in range(len(nums) + 1)]
+    for value, count in counts.items():
+        buckets[count].append(value)
+    top = []
+    for count in range(len(nums), 0, -1):
+        for value in buckets[count]:
+            if len(top) < k:
+                top.append(value)
+    return {"counts": counts, "buckets": buckets, "top": top}
+
+
+def anagram_groups(words):
+    """Group words by their sorted letters, in first-seen order of the key."""
+    groups = {}
+    for word in words:
+        groups.setdefault("".join(sorted(word)), []).append(word)
+    return groups
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -3636,6 +3688,10 @@ def render(slug, render_template):
         "two_sum_trace": two_sum_trace,
         "bucket_layout": bucket_layout,
         "consecutive_runs": consecutive_runs,
+        "letter_count_rows": letter_count_rows,
+        "majority_vote_trace": majority_vote_trace,
+        "frequency_buckets": frequency_buckets,
+        "anagram_groups": anagram_groups,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,
