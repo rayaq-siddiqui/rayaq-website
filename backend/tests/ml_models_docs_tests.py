@@ -168,3 +168,16 @@ def test_torch_is_never_a_server_dependency():
         with open(os.path.join(ROOT, "backend", name)) as handle:
             lines = [line.split("#")[0].strip().lower() for line in handle]
         assert not any(re.match(r"torch\b", line) for line in lines), name
+
+
+def test_upcoming_model_slugs_are_registered_pages():
+    slugs = {page["slug"] for page in ml_models_docs.PAGES}
+
+    for tier in ml_models_docs.UPCOMING_MODELS:
+        for model in tier["models"]:
+            assert model["name"].strip() and model["idea"].strip() and model["paper"].strip()
+            if model.get("slug"):
+                assert model["slug"] in slugs, model["name"]
+            if model.get("url"):
+                assert model["url"].startswith("https://arxiv.org/abs/"), model["name"]
+

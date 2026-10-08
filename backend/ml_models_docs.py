@@ -138,6 +138,73 @@ PAGES = [
     },
 ]
 
+
+def _arxiv(paper_id):
+    return f"https://arxiv.org/abs/{paper_id}"
+
+
+UPCOMING_MODELS = [
+    {
+        "tier": "Classic machine learning",
+        "blurb": "Small, fast, interpretable. Still the right first answer for most tabular data.",
+        "models": [
+            {"name": "Linear regression", "year": "1805", "idea": "Fit y = Xw + b by least squares; the closed form and gradient descent agree.", "paper": "Legendre, 1805 (least squares)", "url": None},
+            {"name": "Logistic regression", "year": "1958", "idea": "A linear score through a sigmoid, trained with cross-entropy: a one-layer neural network.", "paper": "Cox, The Regression Analysis of Binary Sequences, 1958", "url": None},
+            {"name": "Naive Bayes", "year": "1960s", "idea": "Bayes' rule with features assumed independent given the class; a strong text baseline.", "paper": "Maron, Automatic Indexing, 1961", "url": None},
+            {"name": "k-nearest neighbours", "year": "1967", "idea": "Predict from the k closest training points; no training, all cost at query time.", "paper": "Cover and Hart, Nearest Neighbor Pattern Classification, 1967", "url": None},
+            {"name": "k-means and PCA", "year": "1901/1982", "idea": "Unsupervised workhorses: cluster by nearest centroid; project onto directions of most variance.", "paper": "Lloyd, Least Squares Quantization in PCM, 1982; Pearson, 1901", "url": None},
+            {"name": "Support vector machines", "year": "1995", "idea": "The maximum-margin separator, with kernels for non-linear boundaries.", "paper": "Cortes and Vapnik, Support-Vector Networks, 1995", "url": None},
+            {"name": "Decision trees and random forests", "year": "1984/2001", "idea": "Recursive splits on features; average many decorrelated trees to cut variance.", "paper": "Breiman, Random Forests, 2001", "url": None},
+            {"name": "Gradient-boosted trees (XGBoost, LightGBM)", "year": "2016", "idea": "Add trees one at a time, each fitting the previous ensemble's gradient. Still state of the art on tabular data.", "paper": "Chen and Guestrin, XGBoost, 2016", "url": _arxiv("1603.02754")},
+        ],
+    },
+    {
+        "tier": "Deep learning foundations",
+        "blurb": "The building blocks every modern model is assembled from.",
+        "models": [
+            {"name": "Multilayer perceptron", "year": "1986", "idea": "Stacked linear layers with non-linearities, trained by backpropagation.", "paper": "Rumelhart, Hinton and Williams, Learning Representations by Back-Propagating Errors, 1986", "url": None},
+            {"name": "CNNs: LeNet, AlexNet, ResNet", "year": "1998-2015", "idea": "Convolutions share weights across space; residual connections make very deep networks trainable.", "paper": "He et al., Deep Residual Learning for Image Recognition, 2015", "url": _arxiv("1512.03385")},
+            {"name": "RNN, LSTM and GRU", "year": "1997/2014", "idea": "Read a sequence one step at a time, carrying a hidden state; gates fix vanishing gradients.", "paper": "Hochreiter and Schmidhuber, Long Short-Term Memory, 1997", "url": None},
+            {"name": "word2vec", "year": "2013", "idea": "Learn word vectors by predicting neighbours; the ancestor of every embedding table.", "paper": "Mikolov et al., Efficient Estimation of Word Representations in Vector Space, 2013", "url": _arxiv("1301.3781")},
+            {"name": "Seq2seq with attention", "year": "2014", "idea": "An encoder RNN, a decoder RNN, and attention over the encoder states: the Transformer's direct ancestor.", "paper": "Bahdanau, Cho and Bengio, Neural Machine Translation by Jointly Learning to Align and Translate, 2014", "url": _arxiv("1409.0473")},
+            {"name": "Autoencoders and VAEs", "year": "2013", "idea": "Compress to a latent code and reconstruct; the VAE makes the latent space a distribution you can sample.", "paper": "Kingma and Welling, Auto-Encoding Variational Bayes, 2013", "url": _arxiv("1312.6114")},
+            {"name": "GANs", "year": "2014", "idea": "A generator and a discriminator trained against each other.", "paper": "Goodfellow et al., Generative Adversarial Networks, 2014", "url": _arxiv("1406.2661")},
+            {"name": "U-Net", "year": "2015", "idea": "A convolutional encoder-decoder with skip connections at every resolution; later the backbone of diffusion.", "paper": "Ronneberger, Fischer and Brox, U-Net, 2015", "url": _arxiv("1505.04597"), "slug": "diffusion-unet"},
+        ],
+    },
+    {
+        "tier": "The transformer era",
+        "blurb": "Attention replaces recurrence, and scale becomes the main lever.",
+        "models": [
+            {"name": "Transformer", "year": "2017", "idea": "Encoder-decoder built only from attention and feed-forward blocks.", "paper": "Vaswani et al., Attention Is All You Need, 2017", "url": _arxiv("1706.03762"), "slug": "transformer"},
+            {"name": "BERT", "year": "2018", "idea": "Encoder-only, bidirectional, pre-trained by filling in masked tokens.", "paper": "Devlin et al., BERT, 2018", "url": _arxiv("1810.04805"), "slug": "encoder-only"},
+            {"name": "GPT-2 and GPT-3", "year": "2019/2020", "idea": "Decoder-only next-token prediction; at scale it learns tasks from the prompt alone.", "paper": "Brown et al., Language Models are Few-Shot Learners, 2020", "url": _arxiv("2005.14165"), "slug": "decoder-only-llm"},
+            {"name": "T5", "year": "2019", "idea": "Every NLP task cast as text-to-text on one encoder-decoder.", "paper": "Raffel et al., Exploring the Limits of Transfer Learning with a Unified Text-to-Text Transformer, 2019", "url": _arxiv("1910.10683")},
+            {"name": "Vision Transformer (ViT)", "year": "2020", "idea": "An image is a sequence of 16x16 patches fed to a plain encoder.", "paper": "Dosovitskiy et al., An Image is Worth 16x16 Words, 2020", "url": _arxiv("2010.11929"), "slug": "vision-transformer"},
+            {"name": "DDPM and latent diffusion", "year": "2020/2021", "idea": "Generate by learning to undo noise step by step; do it in a VAE's latent space to make it cheap.", "paper": "Rombach et al., High-Resolution Image Synthesis with Latent Diffusion Models, 2021", "url": _arxiv("2112.10752"), "slug": "diffusion-unet"},
+            {"name": "CLIP", "year": "2021", "idea": "An image encoder and a text encoder trained so matching pairs have similar embeddings.", "paper": "Radford et al., Learning Transferable Visual Models From Natural Language Supervision, 2021", "url": _arxiv("2103.00020")},
+            {"name": "Chinchilla scaling", "year": "2022", "idea": "For a fixed compute budget, grow parameters and training tokens together (about 20 tokens per parameter).", "paper": "Hoffmann et al., Training Compute-Optimal Large Language Models, 2022", "url": _arxiv("2203.15556")},
+            {"name": "InstructGPT (RLHF)", "year": "2022", "idea": "Fine-tune on demonstrations, then on human preference rankings through a reward model.", "paper": "Ouyang et al., Training Language Models to Follow Instructions with Human Feedback, 2022", "url": _arxiv("2203.02155")},
+            {"name": "Whisper", "year": "2022", "idea": "An encoder-decoder transformer over log-Mel spectrograms, trained on 680,000 hours of audio.", "paper": "Radford et al., Robust Speech Recognition via Large-Scale Weak Supervision, 2022", "url": _arxiv("2212.04356")},
+        ],
+    },
+    {
+        "tier": "Current state of the art",
+        "blurb": "Open-weight models with published architectures. Closed frontier models don't publish theirs, so these pages don't guess at them.",
+        "models": [
+            {"name": "Llama 3", "year": "2024", "idea": "The reference dense decoder: RMSNorm, SwiGLU, rotary positions, grouped-query attention.", "paper": "Llama Team, The Llama 3 Herd of Models, 2024", "url": _arxiv("2407.21783"), "slug": "decoder-only-llm"},
+            {"name": "Mixtral 8x7B", "year": "2024", "idea": "Sparse mixture of experts: each token goes to 2 of 8 feed-forward experts.", "paper": "Jiang et al., Mixtral of Experts, 2024", "url": _arxiv("2401.04088"), "slug": "mixture-of-experts"},
+            {"name": "DeepSeek-V3", "year": "2024", "idea": "671B total, 37B active parameters per token; multi-head latent attention shrinks the KV cache.", "paper": "DeepSeek-AI, DeepSeek-V3 Technical Report, 2024", "url": _arxiv("2412.19437"), "slug": "mixture-of-experts"},
+            {"name": "DeepSeek-R1", "year": "2025", "idea": "Reasoning learned with large-scale reinforcement learning on verifiable rewards.", "paper": "DeepSeek-AI, DeepSeek-R1, 2025", "url": _arxiv("2501.12948")},
+            {"name": "Qwen3", "year": "2025", "idea": "Dense and MoE models with switchable thinking and non-thinking modes.", "paper": "Qwen Team, Qwen3 Technical Report, 2025", "url": _arxiv("2505.09388")},
+            {"name": "Gemma 3", "year": "2025", "idea": "Interleaves local sliding-window and global attention layers to keep long-context memory small.", "paper": "Gemma Team, Gemma 3 Technical Report, 2025", "url": _arxiv("2503.19786")},
+            {"name": "Diffusion transformers (DiT, SD3)", "year": "2022/2024", "idea": "Replace the U-Net with a transformer over latent patches; SD3 trains it with rectified flow.", "paper": "Esser et al., Scaling Rectified Flow Transformers for High-Resolution Image Synthesis, 2024", "url": _arxiv("2403.03206")},
+            {"name": "Segment Anything (SAM)", "year": "2023", "idea": "A promptable segmentation model: ViT image encoder, prompt encoder, light mask decoder.", "paper": "Kirillov et al., Segment Anything, 2023", "url": _arxiv("2304.02643")},
+            {"name": "Mamba", "year": "2023", "idea": "A selective state-space model: linear-time sequence mixing, the main alternative to attention.", "paper": "Gu and Dao, Mamba, 2023", "url": _arxiv("2312.00752")},
+        ],
+    },
+]
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -196,6 +263,7 @@ def render(slug, render_template):
         "src": source_url,
         "previous_page": previous,
         "next_page": following,
+        "upcoming": UPCOMING_MODELS,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
