@@ -826,3 +826,61 @@ def test_mutual_information_is_zero_only_for_independent_variables():
     assert result["h_xy"] <= result["h_x"] + result["h_y"]
     independent = ml_models_docs.mutual_information({"counts": [[2, 6], [3, 9]]})
     assert independent["mutual"] == pytest.approx(0, abs=1e-12)
+
+
+def test_huber_is_quadratic_inside_delta_and_linear_outside():
+    assert ml_models_docs.huber(0.5) == pytest.approx(0.125)
+    assert ml_models_docs.huber(1.0) == pytest.approx(0.5)
+    assert ml_models_docs.huber(-3.0) == pytest.approx(2.5)
+    assert ml_models_docs.huber(3.0, delta=2.0) == pytest.approx(4.0)
+    losses = ml_models_docs.regression_losses(-3.0, delta=2.0)
+    assert losses == {"mse": 9.0, "mae": 3.0, "huber": pytest.approx(4.0)}
+
+
+def test_fitting_a_constant_gives_the_mean_median_and_a_robust_middle():
+    example = ml_models_docs.CONSTANT_FIT_EXAMPLE
+    fit = ml_models_docs.fit_constant(example["targets"], example["delta"])
+    assert fit["mse"] == pytest.approx(sum(example["targets"]) / len(example["targets"]))
+    assert fit["mae"] == pytest.approx(3.1)
+    assert fit["huber"] == pytest.approx(3.26)
+    assert fit["mae"] < fit["huber"] < fit["mse"]
+    slope = sum(max(-2.0, min(2.0, fit["huber"] - y)) for y in example["targets"])
+    assert slope == pytest.approx(0, abs=1e-9)
+
+
+def test_bce_with_logits_is_stable_and_matches_the_naive_formula():
+    for logit in [-3.0, 0.0, 2.0]:
+        p = 1 / (1 + math.exp(-logit))
+        for target in [0, 1]:
+            naive = -(target * math.log(p) + (1 - target) * math.log(1 - p))
+            assert ml_models_docs.bce_with_logits(logit, target) == pytest.approx(naive)
+    assert ml_models_docs.bce_with_logits(-1000.0, 1) == pytest.approx(1000.0)
+    assert ml_models_docs.bce_with_logits(1000.0, 1) == pytest.approx(0.0)
+
+
+def test_margin_losses_bound_the_zero_one_loss():
+    for margin in [-2.0, -0.5, 0.0, 0.5, 1.0, 2.0]:
+        losses = ml_models_docs.margin_losses(margin)
+        assert losses["hinge"] >= losses["zero_one"]
+        assert losses["logistic"] / math.log(2) >= losses["zero_one"]
+    assert ml_models_docs.margin_losses(1.5)["hinge"] == 0
+
+
+def test_triplet_and_info_nce_losses():
+    result = ml_models_docs.triplet_loss(ml_models_docs.TRIPLET_EXAMPLE)
+    assert result["d_ap"] == pytest.approx(1.0)
+    assert result["d_an"] == pytest.approx(math.sqrt(3.25))
+    assert result["loss"] == pytest.approx(2 - math.sqrt(3.25))
+    example = ml_models_docs.INFONCE_EXAMPLE
+    warm = ml_models_docs.info_nce(example["similarities"], 1.0)
+    cold = ml_models_docs.info_nce(example["similarities"], 0.1)
+    assert cold["loss"] < warm["loss"]
+    assert cold["loss"] == pytest.approx(math.log(1 + math.exp(-6) + math.exp(-8)))
+
+
+def test_reduction_skips_ignored_targets_in_the_mean():
+    result = ml_models_docs.reduce_losses(ml_models_docs.REDUCTION_EXAMPLE)
+    assert result["none"] == [0.5, 1.2, 0.0, 2.0]
+    assert result["sum"] == pytest.approx(3.7)
+    assert result["count"] == 3
+    assert result["mean"] == pytest.approx(3.7 / 3)

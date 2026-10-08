@@ -1505,6 +1505,14 @@ ASYMMETRY_EXAMPLE = {"p": [0.9, 0.1], "q": [0.5, 0.5]}
 
 PERPLEXITY_EXAMPLE = {"tokens": ["the", "cat", "sat", "down"], "probs": [0.4, 0.05, 0.2, 0.5]}
 
+CONSTANT_FIT_EXAMPLE = {"targets": [2.0, 2.5, 3.0, 3.2, 3.6, 12.0], "delta": 2.0}
+
+TRIPLET_EXAMPLE = {"anchor": [0.0, 0.0], "positive": [1.0, 0.0], "negative": [1.5, 1.0], "margin": 1.0}
+
+INFONCE_EXAMPLE = {"labels": ["matching caption", "related caption", "unrelated caption"], "similarities": [0.9, 0.3, 0.1], "temperatures": [1.0, 0.1]}
+
+REDUCTION_EXAMPLE = {"losses": [0.5, 1.2, 0.3, 2.0], "targets": [4, 7, -100, 2], "ignore_index": -100}
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -2071,6 +2079,61 @@ def mutual_information(example, base=2):
     return {"h_x": h_x, "h_y": h_y, "h_xy": h_xy, "mutual": h_x + h_y - h_xy}
 
 
+def huber(residual, delta=1.0):
+    size = abs(residual)
+    return 0.5 * residual * residual if size <= delta else delta * (size - 0.5 * delta)
+
+
+def regression_losses(residual, delta=1.0):
+    return {"mse": residual * residual, "mae": abs(residual), "huber": huber(residual, delta)}
+
+
+def fit_constant(targets, delta=1.0):
+    ordered = sorted(targets)
+    middle = len(ordered) // 2
+    median = ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+
+    def slope(c):
+        return sum(max(-delta, min(delta, c - y)) for y in targets)
+
+    low, high = ordered[0], ordered[-1]
+    for _ in range(100):
+        mid = (low + high) / 2
+        if slope(mid) < 0:
+            low = mid
+        else:
+            high = mid
+    return {"mse": sum(targets) / len(targets), "mae": median, "huber": (low + high) / 2}
+
+
+def bce_with_logits(logit, target):
+    return max(logit, 0) - logit * target + math.log1p(math.exp(-abs(logit)))
+
+
+def margin_losses(margin):
+    return {
+        "zero_one": 1.0 if margin <= 0 else 0.0,
+        "hinge": max(0.0, 1 - margin),
+        "logistic": math.log1p(math.exp(-margin)),
+    }
+
+
+def triplet_loss(example):
+    d_ap = math.dist(example["anchor"], example["positive"])
+    d_an = math.dist(example["anchor"], example["negative"])
+    return {"d_ap": d_ap, "d_an": d_an, "loss": max(d_ap - d_an + example["margin"], 0.0)}
+
+
+def info_nce(similarities, temperature, target=0):
+    return logits_cross_entropy([s / temperature for s in similarities], target)
+
+
+def reduce_losses(example):
+    kept = [loss for loss, target in zip(example["losses"], example["targets"]) if target != example["ignore_index"]]
+    none = [0.0 if target == example["ignore_index"] else loss for loss, target in zip(example["losses"], example["targets"])]
+    return {"none": none, "sum": sum(kept), "mean": sum(kept) / len(kept), "count": len(kept)}
+
+
 def similarity_ranking(example):
     query = example["query"]
     rows = [
@@ -2201,6 +2264,18 @@ def render(slug, render_template):
         "perplexity": perplexity,
         "mutual_information": mutual_information,
         "exp": math.exp,
+        "constant_fit_example": CONSTANT_FIT_EXAMPLE,
+        "triplet_example": TRIPLET_EXAMPLE,
+        "infonce_example": INFONCE_EXAMPLE,
+        "reduction_example": REDUCTION_EXAMPLE,
+        "huber": huber,
+        "regression_losses": regression_losses,
+        "fit_constant": fit_constant,
+        "bce_with_logits": bce_with_logits,
+        "margin_losses": margin_losses,
+        "triplet_loss": triplet_loss,
+        "info_nce": info_nce,
+        "reduce_losses": reduce_losses,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
