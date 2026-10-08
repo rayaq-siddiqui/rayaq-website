@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-08 (eighteenth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: `transformer` and queue items 1-15, the last being `embeddings`.
-The next run builds `attention`.
+format. Ready pages: `transformer` and queue items 1-16, the last being `attention`.
+The next run builds `layernorm-and-residuals`.
 
 ## Pins
 
@@ -117,6 +117,12 @@ The paths below are relative to `torch/nn/modules/` unless they give a fuller pa
   - `LayerNorm` 105-236, with `__init__` from 188 and its params up to 216.
   - `GroupNorm` starts at 239.
   - `RMSNorm` 343-436.
+- Attention ranges verified at the pin:
+  - `activation.py`: `MultiheadAttention` 1090-1573, `__init__` 1163-1231, `_reset_parameters` 1233-1247, `forward` 1256-1523 (fast-path checks 1327-1395), `merge_masks` 1525-1573.
+  - `functional.py`: `_in_projection_packed` 6217-6292, `_canonical_mask` 6612-6638, `multi_head_attention_forward` 6664-7120 (head reshape 6974-6991, need_weights branch 7050-7086, SDPA branch 7087-7120).
+  - `torch/nn/attention/__init__.py`: `SDPBackend` doc 40-56, `sdpa_kernel` 114-166.
+  - `bias.py`: `CausalVariant` 33-84, `CausalBias` 86-306, `causal_upper_left`/`causal_lower_right` 308-376.
+  - `flex_attention.py`: `BlockMask` 855-1694, `or_masks`/`and_masks` 1759-1785, `create_block_mask` 1967-2088, `flex_attention` 2365-2640.
 - `sparse.py`: `Embedding` 14-264, weight 164-168.
 - `linear.py`: `Linear` 53-147, weight and bias 104-114.
 - `dropout.py`: `Dropout` 35-73.
@@ -402,6 +408,8 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 |---|---|
 | `ml-models: add tested embedding helpers` | `embedding_lookup`, `one_hot_rows`, `embedding_gradient`, `skipgram_pairs`, `train_skipgram` (seed 0, pure Python), `nearest_words`, `tied_parameter_counts` |
 | `ml-models: build the embeddings page` | The page, `ready`, queue ✓ |
+| `ml-models: add tested attention helpers` | `scaled_attention`, `multihead_attention`, mask helpers, GQA and cache helpers |
+| `ml-models: build the attention page` | The page, `ready`, queue ✓ |
 
 ## Queue
 
@@ -420,8 +428,8 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 13. `backpropagation` ✓
 14. `optimizers` ✓
 15. `embeddings` ✓
-16. `attention` ← next
-17. `layernorm-and-residuals`
+16. `attention` ✓
+17. `layernorm-and-residuals` ← next
 18. `transformer` ✓ (v1 format; retrofit it to §6 here, keeping its interactive pieces)
 19. `training-loop`
 20. `decoder-only-llm`

@@ -1,0 +1,672 @@
+{% set ex = multihead_example %}
+{% set tokens = ex.tokens %}
+{% set count = tokens|length %}
+{% set heads = ex.heads %}
+{% set base = multihead_attention(ex) %}
+{% set pad_bias = key_padding_additive(ex.padding, count) %}
+{% set causal_bias = allowed_to_additive(causal_allowed_mask(count, count)) %}
+{% set padded = multihead_attention(ex, pad_bias) %}
+{% set both = multihead_attention(ex, add_masks(pad_bias, causal_bias)) %}
+{% set small = scaled_attention(attention_example.queries, attention_example["keys"], attention_example["values"]) %}
+{% set params = multihead_param_count(512) %}
+{% set kv_full = kv_cache_bytes_per_token(32, 32, 128, 2) %}
+{% set kv_gqa = kv_cache_bytes_per_token(32, 8, 128, 2) %}
+{% macro n(x) -%}{% if x == x|round %}{{ "%g"|format(x) }}{% else %}{{ "%.2f"|format(x) }}{% endif %}{%- endmacro %}
+{% macro vec(v) -%}[{% for x in v %}{{ n(x) }}{% if not loop.last %}, {% endif %}{% endfor %}]{%- endmacro %}
+{% macro bias_cell(v) -%}{% if v < -1e300 %}−∞{% else %}0{% endif %}{%- endmacro %}
+{% macro heat(matrix, x0, y0, title) %}
+  <text x="{{ x0 }}" y="{{ y0 - 20 }}" font-size="12" class="d-muted">{{ title }}</text>
+  {% for name in tokens %}
+    <text x="{{ x0 + 22 + loop.index0 * 44 }}" y="{{ y0 - 6 }}" font-size="10" text-anchor="middle" class="d-muted">{{ name }}</text>
+    <text x="{{ x0 - 6 }}" y="{{ y0 + 24 + loop.index0 * 36 }}" font-size="10" text-anchor="end" class="d-muted">{{ name }}</text>
+  {% endfor %}
+  {% for row in matrix %}
+    {% set r = loop.index0 %}
+    {% for w in row %}
+      <rect x="{{ x0 + loop.index0 * 44 }}" y="{{ y0 + r * 36 }}" width="42" height="34" rx="3" class="d-box"></rect>
+      <rect x="{{ x0 + loop.index0 * 44 }}" y="{{ y0 + r * 36 }}" width="42" height="34" rx="3" style="fill: var(--jj-accent); fill-opacity: {{ w }}; stroke: none"></rect>
+      <text x="{{ x0 + 21 + loop.index0 * 44 }}" y="{{ y0 + 22 + r * 36 }}" font-size="12" text-anchor="middle">{{ "%.2f"|format(w) }}</text>
+    {% endfor %}
+  {% endfor %}
+{% endmacro %}
+{% macro mask_grid(bias, x0, y0, title) %}
+  <text x="{{ x0 }}" y="{{ y0 - 20 }}" font-size="12" class="d-muted">{{ title }}</text>
+  {% for name in tokens %}
+    <text x="{{ x0 + 18 + loop.index0 * 36 }}" y="{{ y0 - 6 }}" font-size="10" text-anchor="middle" class="d-muted">{{ name }}</text>
+  {% endfor %}
+  {% for row in bias %}
+    {% set r = loop.index0 %}
+    {% for v in row %}
+      <rect x="{{ x0 + loop.index0 * 36 }}" y="{{ y0 + r * 30 }}" width="34" height="28" rx="3" class="d-box" {% if v < -1e300 %}style="fill: var(--jj-muted); fill-opacity: 0.25"{% else %}style="fill: var(--jj-green); fill-opacity: 0.3"{% endif %}></rect>
+      <text x="{{ x0 + 17 + loop.index0 * 36 }}" y="{{ y0 + 19 + r * 30 }}" font-size="11" text-anchor="middle">{{ bias_cell(v) }}</text>
+    {% endfor %}
+  {% endfor %}
+{% endmacro %}
+<header class="jj-header">
+  <h1>Attention</h1>
+  <p class="tagline">
+    Attention lets every position in a sequence read from every other position, weighting each by
+    how well it matches. It is three matrix products and a softmax. This page works one tiny
+    example by hand (queries, keys, values, scores, weights, outputs), splits it into
+    {{ heads }} heads, applies padding and causal masks, and then reads the same ideas out of
+    PyTorch {{ upstream.tag }}: <code>nn.MultiheadAttention</code>,
+    <code>F.scaled_dot_product_attention</code> and FlexAttention.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A language model has to decide what "it" refers to in "The cat sat because it was tired", and a
+  translation model has to decide which source word to look at while producing each target word.
+  The answer depends on the whole sentence, and the distance between the words varies. Earlier
+  designs squeezed a sentence through a recurrent state one step at a time (see the recurrent
+  networks that came before), so information from the start had to survive every step. Convolutions
+  see only a fixed window.
+</p>
+<p>
+  What we want is a layer where each position can look directly at any other position, decide how
+  much each matters for the current job, and take a weighted blend of what it finds, with the
+  weights computed from the content rather than fixed by position. That layer is attention.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Think of a library lookup. Each position writes a <strong>query</strong> ("what am I looking
+  for?"), a <strong>key</strong> ("what do I contain, for the purpose of being found?") and a
+  <strong>value</strong> ("what will I hand over if you pick me?"). To compute the output at
+  position i, take its query, compare it with every key by dot product (a big dot product means a
+  good match, see <a href="/ml-models/vectors-and-dot-products">vectors and dot products</a>),
+  turn the scores into weights that sum to 1 with a softmax, and return the weighted average of the
+  values. A position whose key matches strongly contributes most of its value.
+</p>
+<p>
+  Nothing here is fixed in advance: the queries, keys and values are produced from the input by
+  learned matrices, so training decides what counts as a match. <em>Multi-head</em> attention runs
+  several such lookups in parallel, each in its own smaller subspace, because one blended average
+  can express only one kind of relationship at a time (who is the subject, which noun does this
+  pronoun point to, what came just before).
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 220" role="img" aria-labelledby="att-heads-title att-heads-desc">
+    <title id="att-heads-title">Attention weights of two heads on the same four tokens</title>
+    <desc id="att-heads-desc">
+      Two four-by-four grids of attention weights, one per head, for the tokens
+      {{ tokens|join(", ") }}. Each row is a query position and sums to 1. In head 0 the token
+      "the" gives {{ "%.2f"|format(base.heads[0].weights[0][0]) }} to itself, while in head 1 it
+      gives {{ "%.2f"|format(base.heads[1].weights[0][0]) }} to itself and
+      {{ "%.2f"|format(base.heads[1].weights[0][2]) }} to "sat". The padding column still receives
+      weight because no mask has been applied yet.
+    </desc>
+    {{ heat(base.heads[0].weights, 56, 52, "head 0 weights, no mask (rows: queries, columns: keys)") }}
+    {{ heat(base.heads[1].weights, 372, 52, "head 1 weights, no mask") }}
+    <text x="56" y="210" font-size="11" class="d-muted">darker = larger weight; every row sums to 1</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  The same four tokens, two heads, two different patterns. Both heads still put weight on the last
+  column, which is padding. Masks (below) remove that.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="qkv">Queries, keys and values</h3>
+<p>
+  Let X be the input, shape [L, E]: L positions, each an E-dimensional vector (the output of an
+  <a href="/ml-models/embeddings">embedding</a> layer, or of the previous layer). Three learned
+  matrices turn it into queries, keys and values:
+</p>
+<p class="ml-formula">Q = X W<sub>Q</sub><sup>T</sup> &nbsp; K = X W<sub>K</sub><sup>T</sup> &nbsp; V = X W<sub>V</sub><sup>T</sup> &nbsp;&nbsp; shapes: [L, E] @ [E, E] → [L, E]</p>
+<p>
+  The transpose is there because PyTorch stores a linear layer's weight as [out, in] and computes
+  <code>x @ weight.T</code>. For <em>self</em>-attention all three come from the same X. For
+  <em>cross</em>-attention the queries come from one sequence and the keys and values from another
+  (below). Queries and keys must share a width (they get dotted); values may differ.
+</p>
+
+<h3 id="scaled-dot-product">Scaled dot-product attention</h3>
+<p class="ml-formula">Attention(Q, K, V) = softmax( Q K<sup>T</sup> / √d<sub>k</sub> + M ) V &nbsp;&nbsp; shapes: [L, d<sub>k</sub>] @ [d<sub>k</sub>, S] → [L, S]; [L, S] @ [S, d<sub>v</sub>] → [L, d<sub>v</sub>]</p>
+<ol>
+  <li><strong>Scores.</strong> Q K<sup>T</sup> is an [L, S] matrix: entry (i, j) is the dot product of query i with key j.</li>
+  <li><strong>Scale.</strong> Divide by √d<sub>k</sub>. A dot product of two d<sub>k</sub>-vectors with independent unit-variance entries has variance d<sub>k</sub>, so without scaling the scores grow with the width, the softmax saturates toward a one-hot row, and its gradient (which is tiny where the softmax is saturated) stalls training. Dividing by √d<sub>k</sub> brings the variance back to 1.</li>
+  <li><strong>Mask.</strong> Add M: 0 where attention is allowed and −∞ where it is not, so the softmax gives those positions exactly zero weight.</li>
+  <li><strong>Softmax</strong> along the key axis (each row). Row i becomes a probability distribution over the S positions.</li>
+  <li><strong>Mix.</strong> Multiply by V: output row i is the weights-weighted average of the value rows.</li>
+</ol>
+<p>
+  The score matrix is L × S, so memory and compute grow with the square of the sequence length;
+  that cost drives most of the engineering at the end of this page.
+</p>
+
+<h3 id="multi-head">Multi-head attention</h3>
+<p>
+  With E = {{ ex.embed_dim }} and h = {{ heads }} heads, each head works in d<sub>k</sub> = E / h = {{ ex.embed_dim // heads }}
+  dimensions. The layer projects once to full width and then <em>reshapes</em> so that each head
+  sees its own slice of columns:
+</p>
+<p class="ml-formula">[N, L, E] → view [N, L, h, E/h] → transpose [N, h, L, E/h] &nbsp; attend per head &nbsp; → [N, L, h·E/h] → @ W<sub>O</sub><sup>T</sup> → [N, L, E]</p>
+<p>
+  The head split costs nothing: it is a view of the same memory. The heads attend independently
+  (the head dimension acts as a batch dimension), their outputs are concatenated back to width E,
+  and a final linear layer W<sub>O</sub> mixes the heads. Total compute is about the same as one
+  head at full width, but the model gets h different weight patterns. In
+  <code>F.multi_head_attention_forward</code> the code spells the split out as
+  <code>q.view(tgt_len, bsz * num_heads, head_dim).transpose(0, 1)</code> and, on the way out,
+  <code>attn_output.permute(2, 0, 1, 3).reshape(bsz * tgt_len, embed_dim)</code>, followed by the
+  output projection.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 190" role="img" aria-labelledby="att-split-title att-split-desc">
+    <title id="att-split-title">Splitting a projection into heads and merging it back</title>
+    <desc id="att-split-desc">
+      A four-column projection output is split into {{ heads }} groups of {{ ex.embed_dim // heads }} columns,
+      one per head. Each head runs its own softmax(QKt) V and produces a width-{{ ex.embed_dim // heads }} output; the
+      outputs are concatenated back to width {{ ex.embed_dim }} and multiplied by the output projection.
+    </desc>
+    <text x="20" y="20" font-size="12" class="d-muted">Q, K or V: [L, E] = [{{ count }}, {{ ex.embed_dim }}]</text>
+    {% for c in range(ex.embed_dim) %}
+      <rect x="{{ 20 + c * 30 }}" y="32" width="28" height="100" rx="3" class="d-box" style="fill: {{ 'var(--jj-green)' if c < ex.embed_dim // heads else 'var(--jj-amber)' }}; fill-opacity: 0.3"></rect>
+      <text x="{{ 34 + c * 30 }}" y="86" font-size="11" text-anchor="middle">{{ c }}</text>
+    {% endfor %}
+    <path d="M140,60 C190,60 190,40 240,40" class="d-line"></path>
+    <path d="M140,100 C190,100 190,130 240,130" class="d-line"></path>
+    <rect x="240" y="26" width="150" height="38" rx="6" class="d-box"></rect>
+    <text x="315" y="42" font-size="12" text-anchor="middle">head 0: columns 0..{{ ex.embed_dim // heads - 1 }}</text>
+    <text x="315" y="57" font-size="11" text-anchor="middle" class="d-muted">softmax(QKᵀ/√{{ ex.embed_dim // heads }}) V</text>
+    <rect x="240" y="116" width="150" height="38" rx="6" class="d-box"></rect>
+    <text x="315" y="132" font-size="12" text-anchor="middle">head 1: columns {{ ex.embed_dim // heads }}..{{ ex.embed_dim - 1 }}</text>
+    <text x="315" y="147" font-size="11" text-anchor="middle" class="d-muted">softmax(QKᵀ/√{{ ex.embed_dim // heads }}) V</text>
+    <path d="M390,45 C430,45 430,70 470,70" class="d-line"></path>
+    <path d="M390,135 C430,135 430,110 470,110" class="d-line"></path>
+    <rect x="470" y="50" width="70" height="80" rx="6" class="d-box"></rect>
+    <text x="505" y="86" font-size="12" text-anchor="middle">concat</text>
+    <text x="505" y="102" font-size="11" text-anchor="middle" class="d-muted">[L, E]</text>
+    <path d="M540,90 L575,90" class="d-line"></path>
+    <rect x="575" y="60" width="85" height="60" rx="6" class="d-box d-accent"></rect>
+    <text x="617" y="86" font-size="12" text-anchor="middle">W<tspan dy="4" font-size="9">O</tspan></text>
+    <text x="617" y="104" font-size="11" text-anchor="middle" class="d-muted">out_proj</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Green and amber are the two heads' column slices. Heads never see each other's columns until the
+  concatenation, and the output projection is the only place they interact.
+</p>
+
+<h3 id="masks">Masks: padding, causal, boolean and additive</h3>
+<p>
+  The mask M in the formula says which key positions a query may use. Two situations need it.
+  <strong>Padding:</strong> sequences in a batch have different lengths and are padded to the
+  longest; padded positions must be ignored. <strong>Causal:</strong> when a model predicts the
+  next token, position i must not see positions after i, or training would simply copy the answer.
+  A causal mask is a lower-triangular pattern; a padding mask blocks whole columns.
+</p>
+<p>
+  A mask can be given two ways. An <strong>additive</strong> (float) mask is added to the scores:
+  0 means allowed, −∞ means blocked (finite negative values act as a soft penalty, which is how
+  relative-position biases such as ALiBi work). A <strong>boolean</strong> mask is converted to the
+  additive form before use. The trap is the <em>direction</em> of <code>True</code>, which differs
+  between the two main APIs:
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>API</th><th>Argument</th><th><code>True</code> means</th></tr></thead>
+    <tbody>
+      <tr><td><code>F.scaled_dot_product_attention</code></td><td><code>attn_mask</code> (bool)</td><td>this position <strong>takes part</strong> in attention (allowed)</td></tr>
+      <tr><td><code>nn.MultiheadAttention</code></td><td><code>attn_mask</code> (bool)</td><td>this position is <strong>not allowed</strong> to be attended to (masked out)</td></tr>
+      <tr><td><code>nn.MultiheadAttention</code></td><td><code>key_padding_mask</code> (bool), shape [N, S]</td><td>this key is <strong>padding</strong> and is ignored (masked out)</td></tr>
+      <tr><td>either, float mask</td><td><code>attn_mask</code> (float)</td><td>no meaning: the value is added to the score</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  PyTorch's own docstring warns about exactly this and tells you to invert a boolean mask
+  (<code>~mask</code>) when moving from <code>MultiheadAttention</code> to
+  <code>scaled_dot_product_attention</code>. Inside <code>MultiheadAttention</code>,
+  <code>_canonical_mask</code> performs the conversion
+  (<code>torch.zeros_like(mask, dtype=...).masked_fill_(mask, float("-inf"))</code>), so a boolean
+  <code>True</code> becomes −∞. A <code>key_padding_mask</code> of shape [N, S] is reshaped to
+  [N·h, 1, S] and added to <code>attn_mask</code>, so the two combine by addition.
+</p>
+<p>
+  Two details matter in practice. If a <em>whole row</em> is masked (a padded query position that is
+  also not allowed to see anything), softmax has no allowed entry and the result is NaN;
+  implementations avoid this by keeping at least one allowed entry per row or by zeroing such rows
+  afterwards. And <code>is_causal=True</code> is a hint that lets fused kernels skip building the
+  mask; for a non-square [L, S] mask it means the <em>upper-left</em> aligned triangle, which differs
+  from the <em>lower-right</em> alignment you want when a cache supplies S &gt; L keys (see
+  <code>CausalBias</code> below).
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 210" role="img" aria-labelledby="att-masks-title att-masks-desc">
+    <title id="att-masks-title">Padding, causal and combined additive masks</title>
+    <desc id="att-masks-desc">
+      Three four-by-four additive masks over the tokens {{ tokens|join(", ") }}. The padding mask
+      blocks the last column with minus infinity. The causal mask blocks every column to the right
+      of the diagonal. The combined mask is their sum and blocks both. Allowed cells hold 0.
+    </desc>
+    {{ mask_grid(pad_bias, 20, 50, "padding (last key is pad)") }}
+    <text x="176" y="106" font-size="16" class="d-muted">+</text>
+    {{ mask_grid(causal_bias, 200, 50, "causal (lower triangle)") }}
+    <text x="356" y="106" font-size="16" class="d-muted">=</text>
+    {{ mask_grid(add_masks(pad_bias, causal_bias), 380, 50, "combined M") }}
+    <text x="540" y="70" font-size="11" class="d-muted">green 0 = allowed</text>
+    <text x="540" y="88" font-size="11" class="d-muted">grey −∞ = blocked</text>
+    <text x="540" y="112" font-size="11" class="d-muted">rows: queries, columns: keys</text>
+    <text x="20" y="200" font-size="11" class="d-muted">added to QKᵀ/√d before the softmax</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Masks are added to the scores, so they stack by addition: −∞ plus anything is −∞, and two 0s stay 0.
+</p>
+
+<h3 id="cross-attention">Cross-attention</h3>
+<p>
+  When Q comes from one sequence (length L) and K, V from another (length S), the score matrix is
+  [L, S] and the same formula applies. An encoder–decoder translation model uses this in every
+  decoder layer: queries are the target tokens produced so far, keys and values are the encoder's
+  output for the source sentence, so each target word picks the source words it needs. The
+  projection code reflects it: in <code>_in_projection_packed</code> the "encoder–decoder" branch
+  (keys and values are the same tensor but the query is not) splits the packed weight into W<sub>Q</sub>
+  and a stacked W<sub>KV</sub> and projects the source once. A padding mask in this setting is over
+  the <em>source</em> (S) axis.
+</p>
+
+<h3 id="gqa">Grouped-query attention</h3>
+<p>
+  In ordinary multi-head attention every head has its own K and V. In <strong>grouped-query
+  attention</strong> (GQA) there are H<sub>q</sub> query heads but only H<sub>kv</sub> key/value heads, and
+  each K/V head serves a group of H<sub>q</sub> / H<sub>kv</sub> query heads. H<sub>kv</sub> = H<sub>q</sub> is ordinary
+  multi-head attention; H<sub>kv</sub> = 1 is multi-query attention. The saving is memory during
+  generation: the keys and values of all past tokens are cached, and the cache is proportional to
+  H<sub>kv</sub>. For a model shaped like the example in PyTorch's docstring (32 query heads, 8 key/value
+  heads, head width 128), with 32 layers and 2-byte values, the cache costs
+  {{ "{:,}".format(kv_gqa) }} bytes per token against {{ "{:,}".format(kv_full) }} with 32 key/value heads, a
+  {{ kv_full // kv_gqa }}× saving. <code>F.scaled_dot_product_attention(..., enable_gqa=True)</code>
+  accepts K and V with fewer heads; its reference code does
+  <code>key.repeat_interleave(query.size(-3) // key.size(-3), -3)</code>, so with 8 query heads over 2 K/V heads, query heads 0 to 7 use K/V heads
+  {{ gqa_groups(8, 2)|join(", ") }}, and each K/V head is shared by four query heads.  It requires H<sub>q</sub> divisible by H<sub>kv</sub>.
+</p>
+
+<h3 id="module">nn.MultiheadAttention in PyTorch</h3>
+<p>
+  The module holds one packed parameter <code>in_proj_weight</code> of shape [3E, E] (rows 0..E−1
+  are W<sub>Q</sub>, the next E are W<sub>K</sub>, the last E are W<sub>V</sub>), an <code>in_proj_bias</code> of length
+  3E, and an <code>out_proj</code> linear layer [E, E]. Packing lets self-attention compute Q, K and V
+  with one matrix multiplication and then split. If the key and value widths <code>kdim</code>
+  and <code>vdim</code> differ from E, it stores three separate matrices instead
+  (<code>q_proj_weight</code>, <code>k_proj_weight</code>, <code>v_proj_weight</code>) and
+  <code>in_proj_weight</code> is <code>None</code>. All of them start from Xavier-uniform
+  initialisation with zero biases. The parameter count is 4E² + 4E; for E = 512 that is
+  {{ "{:,}".format(params.total) }}.
+</p>
+<p>
+  Two code paths follow from the arguments. With <code>need_weights=True</code> (the default) the
+  forward pass computes the scaled scores with <code>baddbmm</code>, a softmax, dropout and a
+  <code>bmm</code> explicitly, because it must return the weights (averaged over heads unless
+  <code>average_attn_weights=False</code>). With <code>need_weights=False</code> it calls
+  <code>F.scaled_dot_product_attention</code> and returns <code>None</code> for the weights,
+  which allows fused kernels. Separately, when the module is in eval mode, without gradients, with
+  self-attention on batched <code>batch_first=True</code> input, an even number of heads and a few
+  other conditions, <code>forward</code> takes a <em>fast path</em> to a fused inference kernel
+  (and supports nested tensors for padding). The code records the first failing condition in
+  <code>why_not_fast_path</code>; every condition must hold, so for example training mode or
+  <code>requires_grad</code> inputs always use the ordinary path.
+</p>
+
+<h3 id="sdpa">F.scaled_dot_product_attention and its backends</h3>
+<p>
+  <code>F.scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.0,
+  is_causal=False, scale=None, enable_gqa=False)</code> is the primitive. Its docstring gives the
+  mathematical reference (the "Efficient implementation equivalent to the following" block) and the
+  function dispatches to one of several kernels that compute the same thing:
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th><code>SDPBackend</code></th><th>What it is</th></tr></thead>
+    <tbody>
+      <tr><td><code>FLASH_ATTENTION</code></td><td>FlashAttention-2: tiles Q, K, V and fuses the softmax with the matmuls so the L × S matrix is never written to GPU memory.</td></tr>
+      <tr><td><code>EFFICIENT_ATTENTION</code></td><td>Memory-efficient attention (xformers lineage); more flexible about masks and shapes than flash.</td></tr>
+      <tr><td><code>CUDNN_ATTENTION</code></td><td>NVIDIA cuDNN's fused attention kernel.</td></tr>
+      <tr><td><code>MATH</code></td><td>The plain C++ implementation matching the reference code; works on every device and supports <code>float64</code>.</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  By default PyTorch picks the best backend whose input constraints are met (dtype, head width,
+  mask type, device). To force or exclude backends, use the context manager
+  <code>with sdpa_kernel(SDPBackend.FLASH_ATTENTION): ...</code> (or a list, with
+  <code>set_priority=True</code> to order them); it restores the previous state on exit. The fused
+  kernels give slightly different floating-point results from each other, and
+  <code>dropout_p</code> is applied whenever it is above 0, so a module should pass
+  <code>dropout_p=self.p if self.training else 0.0</code>.
+</p>
+
+<h3 id="flex">CausalBias and FlexAttention</h3>
+<p>
+  <code>torch.nn.attention.bias</code> provides <code>causal_upper_left(L, S)</code> and
+  <code>causal_lower_right(L, S)</code>, mask objects that fused kernels recognise without
+  materialising the matrix. For L = 3 and S = 4 the allowed pattern is
+  {% for row in causal_allowed_mask(3, 4, "upper_left") %}{% if loop.first %}[{% endif %}{{ row|map("int")|join("") }}{% if not loop.last %}, {% endif %}{% endfor %}]
+  for upper-left and
+  {% for row in causal_allowed_mask(3, 4, "lower_right") %}{% if loop.first %}[{% endif %}{{ row|map("int")|join("") }}{% if not loop.last %}, {% endif %}{% endfor %}]
+  for lower-right, where the lower-right form is what you want when the query is the last L
+  positions of a sequence whose cache has S entries. The two coincide when L = S.
+</p>
+<p>
+  <strong>FlexAttention</strong> (<code>torch.nn.attention.flex_attention</code>, a prototype
+  feature) generalises the idea. Instead of a mask tensor you write small Python functions and a
+  compiler fuses them into the attention kernel:
+</p>
+<ul>
+  <li><code>score_mod(score, b, h, q_idx, kv_idx)</code> returns a modified score for one (query, key) pair, enough for relative-position biases, soft-capping or ALiBi.</li>
+  <li><code>mask_mod(b, h, q_idx, kv_idx)</code> returns a boolean, <code>True</code> meaning the pair <em>is</em> allowed (the SDPA direction). <code>create_block_mask(mask_mod, B, H, Q_LEN, KV_LEN)</code> evaluates it per block and produces a <code>BlockMask</code>, so blocks that are entirely masked (causal upper triangle, sliding-window outside, other documents in a packed batch) are skipped, not computed and discarded. <code>and_masks</code> and <code>or_masks</code> combine them.</li>
+</ul>
+<p>
+  The call is <code>flex_attention(query, key, value, score_mod=None, block_mask=None, scale=None,
+  enable_gqa=False)</code> on 4-D tensors [B, H, L, E], and it needs <code>torch.compile</code> to be
+  fast.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>nn.MultiheadAttention</code></td>
+        <td><code>embed_dim</code>, <code>num_heads</code>, <code>dropout=0.0</code>, <code>bias=True</code>, <code>add_bias_kv=False</code>, <code>add_zero_attn=False</code>, <code>kdim=None</code>, <code>vdim=None</code>, <code>batch_first=False</code></td>
+        <td>The reference multi-head layer from the original paper. Requires <code>embed_dim % num_heads == 0</code>; head width is <code>embed_dim // num_heads</code>.</td>
+        <td><a href="{{ src('torch/nn/modules/activation.py', 1090, 1573) }}"><code>activation.py</code></a>, <a href="{{ src('torch/nn/modules/activation.py', 1163, 1231) }}"><code>__init__</code></a></td>
+      </tr>
+      <tr>
+        <td><code>in_proj_weight</code></td>
+        <td>[3·E, E] (or separate <code>q/k/v_proj_weight</code> when <code>kdim</code>/<code>vdim</code> differ)</td>
+        <td>Packed Q, K, V projection; bias <code>in_proj_bias</code> has length 3·E.</td>
+        <td><a href="{{ src('torch/nn/modules/activation.py', 1233, 1247) }}"><code>_reset_parameters</code></a></td>
+      </tr>
+      <tr>
+        <td><code>out_proj</code></td>
+        <td>[E, E]</td>
+        <td>Linear layer applied to the concatenated heads (W<sub>O</sub>).</td>
+        <td><a href="{{ src('torch/nn/modules/activation.py', 1163, 1231) }}"><code>__init__</code></a></td>
+      </tr>
+      <tr>
+        <td><code>forward</code></td>
+        <td>query [N, L, E], key and value [N, S, E] with <code>batch_first=True</code>; returns (output [N, L, E], weights [N, L, S] or <code>None</code>)</td>
+        <td>Decides fast path or general path; handles <code>key_padding_mask</code>, <code>attn_mask</code>, <code>need_weights</code>, <code>is_causal</code>.</td>
+        <td><a href="{{ src('torch/nn/modules/activation.py', 1256, 1523) }}"><code>forward</code></a>, <a href="{{ src('torch/nn/modules/activation.py', 1327, 1395) }}">fast-path checks</a></td>
+      </tr>
+      <tr>
+        <td><code>merge_masks</code></td>
+        <td>attn_mask [L, S], key_padding_mask [N, S] → [N, h, L, S]</td>
+        <td>Combines the two masks for the fast path.</td>
+        <td><a href="{{ src('torch/nn/modules/activation.py', 1525, 1573) }}"><code>merge_masks</code></a></td>
+      </tr>
+      <tr>
+        <td><code>F.multi_head_attention_forward</code></td>
+        <td>all projection weights, masks, <code>need_weights</code>, <code>average_attn_weights</code></td>
+        <td>The functional body: projection, head split, mask merge, attention, merge, output projection.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 6664, 7120) }}"><code>functional.py</code></a>, <a href="{{ src('torch/nn/functional.py', 6974, 6991) }}">head split</a>, <a href="{{ src('torch/nn/functional.py', 7050, 7120) }}">attention</a></td>
+      </tr>
+      <tr>
+        <td><code>_in_projection_packed</code></td>
+        <td>w [3E, E] → three [.., E] tensors</td>
+        <td>Packed projection with separate branches for self-attention and encoder–decoder attention.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 6217, 6292) }}"><code>functional.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_canonical_mask</code></td>
+        <td>bool or float mask → float mask</td>
+        <td>Turns <code>True</code> into −∞ and keeps float masks as they are.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 6612, 6638) }}"><code>functional.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>F.scaled_dot_product_attention</code></td>
+        <td>q [N, .., Hq, L, E], k [N, .., H, S, E], v [N, .., H, S, Ev]</td>
+        <td>The primitive; docstring holds the reference implementation, mask semantics and GQA constraints.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 6367, 6540) }}"><code>functional.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>sdpa_kernel</code>, <code>SDPBackend</code></td>
+        <td>backend or list, <code>set_priority</code></td>
+        <td>Context manager that enables only the listed backends.</td>
+        <td><a href="{{ src('torch/nn/attention/__init__.py', 114, 166) }}"><code>__init__.py</code></a>, <a href="{{ src('torch/nn/attention/__init__.py', 40, 56) }}">backends</a></td>
+      </tr>
+      <tr>
+        <td><code>causal_upper_left</code>, <code>causal_lower_right</code></td>
+        <td>(L, S) → <code>CausalBias</code></td>
+        <td>Causal mask objects that kernels recognise without a dense tensor.</td>
+        <td><a href="{{ src('torch/nn/attention/bias.py', 33, 84) }}"><code>CausalVariant</code></a>, <a href="{{ src('torch/nn/attention/bias.py', 308, 376) }}"><code>bias.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>flex_attention</code></td>
+        <td>q [B, Hq, L, E], k [B, Hkv, S, E], v [B, Hkv, S, Ev]; <code>score_mod</code>, <code>block_mask</code></td>
+        <td>Attention with user-defined score modification and block-sparse masking, compiled into one kernel.</td>
+        <td><a href="{{ src('torch/nn/attention/flex_attention.py', 2365, 2640) }}"><code>flex_attention.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>create_block_mask</code>, <code>BlockMask</code></td>
+        <td>(mask_mod, B, H, Q_LEN, KV_LEN, BLOCK_SIZE)</td>
+        <td>Evaluates a mask function per block; empty blocks are skipped by the kernel.</td>
+        <td><a href="{{ src('torch/nn/attention/flex_attention.py', 1967, 2088) }}"><code>create_block_mask</code></a>, <a href="{{ src('torch/nn/attention/flex_attention.py', 855, 1694) }}"><code>BlockMask</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>Single head first.</strong> Four tokens
+    {% for t in attention_example.tokens %}<code>{{ t }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+    with query and key width 2. For the third token ("sat") the query is
+    {{ vec(attention_example.queries[2]) }}; its scores against the four keys
+    ({% for k in attention_example["keys"] %}{{ vec(k) }}{% if not loop.last %}, {% endif %}{% endfor %}) are the dot
+    products {{ vec([attention_example.queries[2][0]*attention_example["keys"][0][0] + attention_example.queries[2][1]*attention_example["keys"][0][1], attention_example.queries[2][0]*attention_example["keys"][1][0] + attention_example.queries[2][1]*attention_example["keys"][1][1], attention_example.queries[2][0]*attention_example["keys"][2][0] + attention_example.queries[2][1]*attention_example["keys"][2][1], attention_example.queries[2][0]*attention_example["keys"][3][0] + attention_example.queries[2][1]*attention_example["keys"][3][1]]) }},
+    divided by √2 to give {{ vec(small.scores[2]|map("round", 2)|list) }}; the softmax of that row is
+    {{ vec(small.weights[2]|map("round", 2)|list) }}; and with values
+    {% for v in attention_example["values"] %}{{ vec(v) }}{% if not loop.last %}, {% endif %}{% endfor %}
+    the output is {{ vec(small.outputs[2]|map("round", 2)|list) }}.
+  </p>
+  <p>
+    <strong>Now with two heads.</strong> Take E = {{ ex.embed_dim }}, h = {{ heads }}, and the
+    input rows X below. The packed weight W<sub>in</sub> has {{ ex.in_proj_weight|length }} rows (3E); its first four rows
+    are the identity (so Q = X), rows 5 to 8 give K, and rows 9 to 12 give V. The output projection is the identity so the
+    merge is visible.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>token</th><th>X</th><th>Q = X W<sub>Q</sub><sup>T</sup></th><th>K</th><th>V</th></tr></thead>
+      <tbody>
+        {% for t in tokens %}
+        <tr><td><code>{{ t }}</code></td><td>{{ vec(ex.x[loop.index0]) }}</td><td>{{ vec(base.q[loop.index0]) }}</td><td>{{ vec(base.k[loop.index0]) }}</td><td>{{ vec(base.v[loop.index0]) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Splitting each row into two halves gives head 0 columns 0 to 1 and head 1 columns 2 to 3.
+    For the query "{{ tokens[2] }}" the head-0 scores against the four head-0 keys are
+    {{ vec(base.heads[0].scores[2]|map("round", 2)|list) }} (already divided by √{{ ex.embed_dim // heads }}), the weights
+    {{ vec(base.heads[0].weights[2]|map("round", 2)|list) }}, and the head-0 output
+    {{ vec(base.heads[0].outputs[2]|map("round", 2)|list) }}. Head 1 gives weights
+    {{ vec(base.heads[1].weights[2]|map("round", 2)|list) }} and output
+    {{ vec(base.heads[1].outputs[2]|map("round", 2)|list) }}. Concatenated: {{ vec(base.merged[2]|map("round", 2)|list) }};
+    the identity output projection leaves it unchanged.
+  </p>
+  <p>
+    <strong>Masks change the answer.</strong> Without a mask the padding token (zeros) still receives
+    weight {{ "%.2f"|format(base.heads[0].weights[2][3]) }} in head 0. Row "sat" of the final output,
+    for the three cases:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>mask</th><th>head-0 weights for "sat"</th><th>merged output for "sat"</th></tr></thead>
+      <tbody>
+        <tr><td>none</td><td>{{ vec(base.heads[0].weights[2]|map("round", 2)|list) }}</td><td>{{ vec(base.output[2]|map("round", 2)|list) }}</td></tr>
+        <tr><td>padding</td><td>{{ vec(padded.heads[0].weights[2]|map("round", 2)|list) }}</td><td>{{ vec(padded.output[2]|map("round", 2)|list) }}</td></tr>
+        <tr><td>padding + causal</td><td>{{ vec(both.heads[0].weights[2]|map("round", 2)|list) }}</td><td>{{ vec(both.output[2]|map("round", 2)|list) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The causal mask changes nothing for the last real token ("sat" already sees everything before it)
+    but changes the earlier ones: "the" puts all of its weight on itself
+    ({{ vec(both.heads[0].weights[0]|map("round", 2)|list) }}), and "cat" splits between "the" and itself
+    ({{ vec(both.heads[0].weights[1]|map("round", 2)|list) }}). Averaged over heads, as
+    <code>MultiheadAttention</code> returns the weights by default, the "cat" row is
+    {{ vec(both.average_weights[1]|map("round", 2)|list) }}.
+    All numbers come from <code>multihead_attention</code> in <code>ml_models_docs.py</code> (stdlib only).
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+N, L, E, H = 1, 4, 4, 2
+x = torch.randn(N, L, E)
+
+# the reference formula, one head
+def attention(q, k, v, mask=None):                    # q: [.., L, d], k, v: [.., S, d]
+    scores = q @ k.transpose(-2, -1) / math.sqrt(q.size(-1))   # [.., L, S]
+    if mask is not None:
+        scores = scores + mask                        # additive: 0 allowed, -inf blocked
+    return torch.softmax(scores, dim=-1) @ v
+
+# the module: packed projection, heads, output projection
+mha = nn.MultiheadAttention(E, H, batch_first=True)
+mha.in_proj_weight.shape                              # [12, 4]: W_Q, W_K, W_V stacked
+out, weights = mha(x, x, x)                           # out [1, 4, 4], weights [1, 4, 4] (mean over heads)
+out, per_head = mha(x, x, x, average_attn_weights=False)   # weights [1, 2, 4, 4]
+
+# masks, with the two opposite boolean conventions
+padding = torch.tensor([[False, False, False, True]])         # MHA: True = ignore this key
+causal_blocked = torch.triu(torch.ones(L, L, dtype=torch.bool), diagonal=1)   # MHA: True = not allowed
+out, _ = mha(x, x, x, key_padding_mask=padding, attn_mask=causal_blocked)
+
+q = k = v = x.view(N, L, H, E // H).transpose(1, 2)           # [N, H, L, E/H]
+allowed = ~causal_blocked                                     # SDPA: True = allowed
+y = F.scaled_dot_product_attention(q, k, v, attn_mask=allowed)             # [N, H, L, E/H]
+y = F.scaled_dot_product_attention(q, k, v, is_causal=True)                # same causal mask, no tensor
+y = y.transpose(1, 2).reshape(N, L, E)                                     # merge heads
+
+# grouped-query attention: 8 query heads share 2 key/value heads
+q = torch.randn(1, 8, L, 16)
+k = v = torch.randn(1, 2, L, 16)
+F.scaled_dot_product_attention(q, k, v, enable_gqa=True)
+
+# choose a backend explicitly
+from torch.nn.attention import SDPBackend, sdpa_kernel
+with sdpa_kernel(SDPBackend.MATH):
+    F.scaled_dot_product_attention(q, k, v, enable_gqa=True)</code></pre>
+
+<p>The same computation in plain Python, with the projection, head split and mask spelled out:</p>
+
+<pre><code>import math
+
+def softmax(row):
+    top = max(row)
+    exps = [math.exp(s - top) for s in row]
+    return [e / sum(exps) for e in exps]
+
+def attend(Q, K, V, bias=None):                       # Q [L, d], K [S, d], V [S, dv]
+    out = []
+    for i, q in enumerate(Q):
+        scores = [sum(a * b for a, b in zip(q, k)) / math.sqrt(len(q))
+                  + (bias[i][j] if bias else 0.0) for j, k in enumerate(K)]
+        w = softmax(scores)
+        out.append([sum(w[j] * V[j][c] for j in range(len(V))) for c in range(len(V[0]))])
+    return out
+
+def multihead(X, W_in, W_out, heads, bias=None):      # W_in [3E, E], W_out [E, E]
+    E = len(X[0])
+    proj = lambda W: [[sum(a * b for a, b in zip(x, row)) for row in W] for x in X]
+    Q, K, V = proj(W_in[:E]), proj(W_in[E:2 * E]), proj(W_in[2 * E:])
+    d = E // heads
+    cols = lambda M, h: [row[h * d:(h + 1) * d] for row in M]
+    merged = [sum(rows, []) for rows in zip(*[attend(cols(Q, h), cols(K, h), cols(V, h), bias)
+                                              for h in range(heads)])]
+    return [[sum(a * b for a, b in zip(m, row)) for row in W_out] for m in merged]</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Quadratic cost.</strong> The score matrix has L × S entries per head. Doubling the
+    context quadruples the work and, in a naive implementation, the memory for the scores. Fused
+    kernels (flash, memory-efficient) remove the memory term by never storing the matrix, but the
+    arithmetic is still quadratic. Sliding-window masks, block-sparse patterns (FlexAttention) and
+    linear-time alternatives such as state-space models exist to bend this.
+  </li>
+  <li>
+    <strong>No built-in order.</strong> Attention treats its input as a set: shuffle the rows and
+    the outputs shuffle the same way. Order enters only through positional information added to the
+    embeddings, or through a causal mask.
+  </li>
+  <li>
+    <strong>Heads versus width.</strong> More heads give more distinct patterns but each has fewer
+    dimensions, so very narrow heads (below about 32 to 64) get less expressive. GQA and multi-query
+    trade a little quality for much less cache memory at inference.
+  </li>
+  <li>
+    <strong>Generation cache.</strong> At inference, keys and values of earlier tokens do not
+    change, so they are cached instead of recomputed; the cache grows linearly with context and
+    dominates memory for long sequences. The cache is why decoding speed is memory-bound.
+  </li>
+  <li>
+    <strong>Pitfalls.</strong> Reversing the boolean mask direction between
+    <code>MultiheadAttention</code> and SDPA silently attends to padding and masks the real tokens.
+    Fully masked rows produce NaN. <code>dropout_p</code> in SDPA applies even in eval mode unless you
+    pass 0. <code>need_weights=True</code> forces the slower explicit path, so request weights only
+    when you need them. <code>is_causal=True</code> with a non-square mask is upper-left aligned.
+    The head count must divide the embedding width.
+  </li>
+  <li>
+    <strong>When not to use it.</strong> For short, fixed-size inputs (small images, tabular rows)
+    a convolution or plain linear layer is cheaper and often as good; attention pays off when
+    long-range, content-dependent mixing matters.
+  </li>
+</ul>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="ml-quiz">
+  <summary>Why divide the scores by √d<sub>k</sub> and not by d<sub>k</sub>?</summary>
+  <p>The dot product of two independent unit-variance vectors of width d<sub>k</sub> has variance d<sub>k</sub>, so its standard deviation is √d<sub>k</sub>. Dividing by the standard deviation restores unit scale; dividing by d<sub>k</sub> would shrink the scores too much and flatten the softmax.</p>
+</details>
+<details class="ml-quiz">
+  <summary>You pass the boolean mask <code>tril(ones(L, L))</code> (True on and below the diagonal) as <code>attn_mask</code> to <code>nn.MultiheadAttention</code>. What happens?</summary>
+  <p>It silently builds the wrong mask: in <code>MultiheadAttention</code>, <code>True</code> means "not allowed", so the lower triangle (each token and its past) is blocked and the first row is left with only the future. Use <code>triu(..., diagonal=1)</code> there; <code>tril</code> is the right mask for <code>scaled_dot_product_attention</code>, where <code>True</code> means allowed.</p>
+</details>
+<details class="ml-quiz">
+  <summary>How many parameters does <code>nn.MultiheadAttention(embed_dim=512, num_heads=8)</code> have, and does the number of heads change it?</summary>
+  <p>{{ "{:,}".format(params.total) }}: 3·512² for the packed input projection, 512² for the output projection, plus 3·512 + 512 biases. The head count does not change it; it only changes how the same E columns are grouped.</p>
+</details>
+<details class="ml-quiz">
+  <summary>A decoder layer has 12 target tokens and the encoder produced 20 source tokens. What shape is the cross-attention weight matrix per head, and which sequence does a padding mask cover?</summary>
+  <p>[12, 20] (L × S). The padding mask has one entry per <em>source</em> position (shape [N, 20]) because the weights are normalised over source positions.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Vaswani et al. <em>Attention Is All You Need.</em> NeurIPS, 2017 (<a href="https://arxiv.org/abs/1706.03762">arXiv 1706.03762</a>).</li>
+  <li>Bahdanau, Cho and Bengio. <em>Neural Machine Translation by Jointly Learning to Align and Translate.</em> ICLR, 2015 (<a href="https://arxiv.org/abs/1409.0473">arXiv 1409.0473</a>; the first attention mechanism).</li>
+  <li>Shazeer. <em>Fast Transformer Decoding: One Write-Head is All You Need.</em> 2019 (<a href="https://arxiv.org/abs/1911.02150">arXiv 1911.02150</a>; multi-query attention).</li>
+  <li>Ainslie et al. <em>GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints.</em> EMNLP, 2023 (<a href="https://arxiv.org/abs/2305.13245">arXiv 2305.13245</a>).</li>
+  <li>Dao et al. <em>FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness.</em> NeurIPS, 2022 (<a href="https://arxiv.org/abs/2205.14135">arXiv 2205.14135</a>); Dao. <em>FlashAttention-2.</em> 2023 (<a href="https://arxiv.org/abs/2307.08691">arXiv 2307.08691</a>).</li>
+  <li>Dong et al. <em>Flex Attention: A Programming Model for Generating Optimized Attention Kernels.</em> 2024 (<a href="https://arxiv.org/abs/2412.05496">arXiv 2412.05496</a>).</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/nn/modules/activation.py', 1090, 1573) }}"><code>MultiheadAttention</code></a>, <a href="{{ src('torch/nn/functional.py', 6367, 6540) }}"><code>scaled_dot_product_attention</code></a>, <a href="{{ src('torch/nn/attention/bias.py', 33, 376) }}"><code>torch/nn/attention/bias.py</code></a> and <a href="{{ src('torch/nn/attention/flex_attention.py', 2365, 2640) }}"><code>flex_attention</code></a>.</li>
+</ul>
