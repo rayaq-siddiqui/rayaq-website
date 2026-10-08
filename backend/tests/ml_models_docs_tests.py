@@ -116,6 +116,31 @@ def test_registry_matches_the_spec_inventory():
     assert [(page["slug"], page["level"]) for page in ml_models_docs.PAGES] == rows
 
 
+def test_learning_path_matches_the_spec():
+    slugs = {page["slug"] for page in ml_models_docs.PAGES}
+    with open(os.path.join(ROOT, "specs", "ml-models.md")) as handle:
+        spec = handle.read()
+    section = spec[spec.index("### 4.3"):spec.index("## 5.")]
+    rows = re.findall(r"^\| (\d) \| [^|]+ \| ([^|]+) \|$", section, re.M)
+
+    assert len(rows) == len(ml_models_docs.LEARNING_PATH) == 7
+    for (number, cell), step in zip(rows, ml_models_docs.LEARNING_PATH):
+        assert re.findall(r"`([a-z-]+)`", cell) == step["slugs"], number
+        assert step["title"].strip()
+        assert set(step["slugs"]) <= slugs
+
+
+def test_connections_list_prerequisites_and_what_follows():
+    result = ml_models_docs.connections("chain-rule")
+
+    assert [page["slug"] for page in result["prerequisites"]] == [
+        "derivatives-and-gradients",
+        "matrix-multiplication",
+    ]
+    assert "backpropagation" in [page["slug"] for page in result["leads_to"]]
+    assert ml_models_docs.connections("tensors-and-shapes")["prerequisites"] == []
+
+
 def test_every_ready_page_has_a_template():
     for page in ml_models_docs.ready_pages():
         assert os.path.isfile(os.path.join(TEMPLATES_DIR, f"{page['slug']}.html")), page["slug"]

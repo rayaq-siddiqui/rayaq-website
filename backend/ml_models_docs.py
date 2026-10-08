@@ -1347,6 +1347,16 @@ PAGES = [
 
 LEVELS = ["intro", "core", "advanced"]
 
+LEARNING_PATH = [
+    {"title": "Tensor shapes and matrix multiplication", "slugs": ["tensors-and-shapes", "matrix-multiplication"]},
+    {"title": "Backpropagation and optimization", "slugs": ["derivatives-and-gradients", "chain-rule", "backpropagation", "optimizers"]},
+    {"title": "Embeddings and attention", "slugs": ["embeddings", "attention"]},
+    {"title": "The full Transformer block", "slugs": ["layernorm-and-residuals", "transformer"]},
+    {"title": "Training versus inference", "slugs": ["training-loop", "decoder-only-llm", "decoding", "kv-cache"]},
+    {"title": "Evaluation and data leakage", "slugs": ["data-splits", "data-leakage", "classification-metrics", "cross-validation"]},
+    {"title": "Classical baselines", "slugs": ["linear-regression", "logistic-regression", "gradient-boosting"]},
+]
+
 
 def _arxiv(paper_id):
     return f"https://arxiv.org/abs/{paper_id}"
@@ -1464,6 +1474,23 @@ def pages_by_area():
     ]
 
 
+def connections(slug):
+    by_slug = {page["slug"]: page for page in PAGES}
+    page = by_slug[slug]
+    return {
+        "prerequisites": [by_slug[prerequisite] for prerequisite in page["prerequisites"]],
+        "leads_to": [entry for entry in PAGES if slug in entry["prerequisites"]],
+    }
+
+
+def learning_path():
+    by_slug = {page["slug"]: page for page in PAGES}
+    return [
+        {"title": step["title"], "pages": [by_slug[slug] for slug in step["slugs"]]}
+        for step in LEARNING_PATH
+    ]
+
+
 def find_area(slug):
     return next((area for area in AREAS if area["slug"] == slug), None)
 
@@ -1550,6 +1577,8 @@ def render(slug, render_template):
         "areas": AREAS,
         "pages_by_area": pages_by_area(),
         "area": find_area(page["area"]) if page else None,
+        "connections": connections(page["slug"]) if page else None,
+        "learning_path": learning_path(),
         "ready_slugs": {entry["slug"] for entry in ready_pages()},
         "upstream": UPSTREAM,
         "pins": PINS,
