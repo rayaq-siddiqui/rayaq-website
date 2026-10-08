@@ -235,9 +235,37 @@ def test_pages_show_the_pinned_release_and_license():
 
     for url in all_urls():
         body = client.get(url).get_data(as_text=True)
-        assert ml_models_docs.UPSTREAM["tag"] in body
-        assert ml_models_docs.UPSTREAM["commit"][:12] in body
-        assert "BSD-3-Clause" in body
+        for key, pin in ml_models_docs.PINS.items():
+            assert f"{pin['name']} {pin['tag']}" in body, (url, key)
+            assert pin["commit"][:12] in body, (url, key)
+            assert ml_models_docs.pinned_url(key, pin["license_path"]) in body, (url, key)
+            assert pin["license"] in body, (url, key)
+
+
+def test_nav_groups_every_page_under_its_area():
+    client = app_module.app.test_client()
+
+    for url in all_urls():
+        body = client.get(url).get_data(as_text=True)
+        nav = body[body.index('<nav class="jj-nav"'):body.index("</nav>")]
+        positions = [nav.index(f"<summary>{escape(area['title'])}</summary>") for area in ml_models_docs.AREAS]
+        assert positions == sorted(positions), url
+        for page in ml_models_docs.PAGES:
+            title = str(escape(page["title"]))
+            area_index = [area["slug"] for area in ml_models_docs.AREAS].index(page["area"])
+            following = positions[area_index + 1] if area_index + 1 < len(positions) else len(nav)
+            assert positions[area_index] < nav.index(f">{title}</", positions[area_index]) < following, (url, page["slug"])
+
+
+def test_a_page_shows_its_area_and_level_and_opens_its_nav_group():
+    client = app_module.app.test_client()
+
+    for page in ml_models_docs.ready_pages():
+        body = client.get(f"/ml-models/{page['slug']}").get_data(as_text=True)
+        area = ml_models_docs.find_area(page["area"])
+        assert f'href="/ml-models#area-{area["slug"]}">{escape(area["title"])}</a>' in body
+        assert f'<span class="jj-badge">{page["level"]}</span>' in body
+        assert f'<details class="jj-nav-group" open>\n          <summary>{escape(area["title"])}</summary>' in body
 
 
 def test_ready_topic_pages_have_diagrams_tables_and_a_snippet():
