@@ -178,7 +178,7 @@ PAGES = [
             "pytorch:torch/autograd/function.py",
             "pytorch:torch/autograd/__init__.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "probability-and-distributions",

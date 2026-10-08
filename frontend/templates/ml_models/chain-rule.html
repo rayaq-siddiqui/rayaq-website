@@ -1,0 +1,451 @@
+{% set chain = scalar_chain(chain_example) %}
+{% set ex = two_layer_example %}
+{% set net = two_layer_pass(ex) %}
+{% set costs = mode_costs(mode_cost_example.widths) %}
+{% macro num(x) -%}{{ "%g"|format(x) }}{%- endmacro %}
+{% macro vec(v) -%}[{% for x in v %}{{ num(x) }}{% if not loop.last %}, {% endif %}{% endfor %}]{%- endmacro %}
+{% macro mat(m) -%}[{% for row in m %}{{ vec(row) }}{% if not loop.last %}, {% endif %}{% endfor %}]{%- endmacro %}
+{% macro big(n) -%}{{ "{:,}".format(n) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>The chain rule</h1>
+  <p class="tagline">
+    A neural network is a long composition of simple functions, and the chain rule is how
+    you differentiate a composition: multiply the local derivatives along the way. This page
+    builds it from one variable to Jacobians, shows why running it backwards (reverse mode)
+    is what makes training a billion-parameter model affordable, and differentiates a
+    two-layer network by hand, checked against PyTorch's autograd at {{ upstream.tag }}.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  The <a href="{{ url_for('ml_models', slug='derivatives-and-gradients') }}">previous page</a>
+  differentiated functions you could write in one line. A network's loss is nothing like
+  that. It is <em>loss(softmax(linear(relu(linear(x)))))</em>, dozens or hundreds of layers
+  deep, with every weight buried somewhere in the middle. Writing out ∂loss/∂w for each
+  weight as one formula is hopeless, and estimating it with finite differences would take a
+  forward pass per weight.
+</p>
+<p>
+  We need a rule that builds the derivative of a composition out of the derivatives of its
+  parts, and a way to apply it that costs about as much as computing the loss once.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Rates of change multiply. If u changes 3 times as fast as x, and f changes 8 times as fast
+  as u, then f changes 3 × 8 = 24 times as fast as x. A chain of functions is a chain of
+  gears, and the overall ratio is the product of the ratios.
+</p>
+<p>
+  The order you multiply in doesn't change the answer, but it changes the work. Starting
+  from the loss and walking back toward the inputs, you carry a single vector, "how much
+  does the loss care about this value", and every layer updates it with one cheap product.
+  That backward walk is <strong>reverse mode</strong>, and backpropagation is reverse mode
+  applied to a network.
+</p>
+
+<div class="jj-diagram">
+  {% set y1 = 70 %}{% set y2 = 150 %}
+  <svg viewBox="0 0 680 210" role="img" aria-labelledby="cr-scalar-title cr-scalar-desc">
+    <title id="cr-scalar-title">The chain rule on f(x) = (3x + 1)²</title>
+    <desc id="cr-scalar-desc">
+      A computation graph with three value nodes, x, u and f, joined by two operations,
+      u = 3x + 1 and f = u squared. The forward pass, left to right, carries the values 1, 4
+      and 16. The backward pass, right to left, carries the derivatives of f: 1 at f, 8 at u
+      after multiplying by the local derivative 2u, and 24 at x after multiplying by the local
+      derivative 3.
+    </desc>
+    <defs>
+      <marker id="cr-fwd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--jj-green)"></path>
+      </marker>
+      <marker id="cr-bwd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--jj-amber)"></path>
+      </marker>
+    </defs>
+    {% set nodes = [(70, "x", chain.x, chain.df_dx), (340, "u", chain.u, chain.df_du), (610, "f", chain.f, 1)] %}
+    {% for cx, name, value, grad in nodes %}
+      <circle cx="{{ cx }}" cy="{{ (y1 + y2) / 2 }}" r="28" class="d-box"></circle>
+      <text x="{{ cx }}" y="{{ (y1 + y2) / 2 + 5 }}" font-size="16" text-anchor="middle">{{ name }}</text>
+      <text x="{{ cx }}" y="{{ y1 - 22 }}" font-size="13" text-anchor="middle" style="fill: var(--jj-green)">{{ name }} = {{ num(value) }}</text>
+      <text x="{{ cx }}" y="{{ y2 + 40 }}" font-size="13" text-anchor="middle" style="fill: var(--jj-amber)">∂f/∂{{ name }} = {{ num(grad) }}</text>
+    {% endfor %}
+    <line x1="104" y1="{{ y1 + 22 }}" x2="304" y2="{{ y1 + 22 }}" stroke="var(--jj-green)" stroke-width="2" marker-end="url(#cr-fwd)"></line>
+    <line x1="374" y1="{{ y1 + 22 }}" x2="574" y2="{{ y1 + 22 }}" stroke="var(--jj-green)" stroke-width="2" marker-end="url(#cr-fwd)"></line>
+    <line x1="304" y1="{{ y2 - 22 }}" x2="104" y2="{{ y2 - 22 }}" stroke="var(--jj-amber)" stroke-width="2" marker-end="url(#cr-bwd)"></line>
+    <line x1="574" y1="{{ y2 - 22 }}" x2="374" y2="{{ y2 - 22 }}" stroke="var(--jj-amber)" stroke-width="2" marker-end="url(#cr-bwd)"></line>
+    <text x="204" y="{{ y1 + 12 }}" font-size="12" text-anchor="middle">u = 3x + 1</text>
+    <text x="474" y="{{ y1 + 12 }}" font-size="12" text-anchor="middle">f = u²</text>
+    <text x="204" y="{{ y2 - 30 }}" font-size="12" text-anchor="middle" class="d-muted">× du/dx = {{ chain.du_dx }}</text>
+    <text x="474" y="{{ y2 - 30 }}" font-size="12" text-anchor="middle" class="d-muted">× df/du = 2u = {{ chain.df_du }}</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Forward (green) computes values; backward (amber) starts from ∂f/∂f = 1 and multiplies by
+  each operation's local derivative on the way back. Each local derivative only needs values
+  the forward pass already computed.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="scalar-chain-rule">The scalar chain rule</h3>
+
+<p class="ml-formula">f(x) = g(h(x)) &nbsp;⇒&nbsp; f′(x) = g′(h(x)) · h′(x), &nbsp; or &nbsp; df/dx = df/du · du/dx</p>
+
+<p>
+  For f(x) = (3x + 1)², let u = 3x + 1. Then du/dx = 3 and df/du = 2u, so
+  df/dx = 2(3x + 1) · 3. At x = {{ chain.x }}, u = {{ chain.u }} and
+  df/dx = {{ chain.df_du }} · {{ chain.du_dx }} = {{ chain.df_dx }}. Expanding
+  (3x + 1)² = 9x² + 6x + 1 and differentiating directly gives 18x + 6 = 24 too; the chain rule
+  just never needs the expansion.
+</p>
+<p>
+  When a value feeds into several places, its derivative is the <strong>sum</strong> over
+  the paths: if f depends on x through both u and v, then
+  df/dx = ∂f/∂u · du/dx + ∂f/∂v · dv/dx. This is why <code>.grad</code> accumulates:
+  autograd adds up the contribution of each use.
+</p>
+
+<h3 id="vector-jacobian-form">The vector form: multiplying Jacobians</h3>
+
+<p>
+  For vector-valued steps the derivatives are
+  <a href="{{ url_for('ml_models', slug='derivatives-and-gradients') }}#jacobian">Jacobians</a>
+  and the chain rule becomes
+  <a href="{{ url_for('ml_models', slug='matrix-multiplication') }}">matrix multiplication</a>.
+  If x → u = h(x) → y = g(u), then
+</p>
+<p class="ml-formula">J<sub>y←x</sub> = J<sub>y←u</sub> · J<sub>u←x</sub> &nbsp;&nbsp; [m, n] = [m, k] · [k, n]</p>
+<p>
+  A network with L layers has L Jacobians to multiply. When the final output is a scalar
+  loss, its Jacobian is a row vector, the gradient, and
+</p>
+<p class="ml-formula">∇<sub>x</sub>L = ∇<sub>y</sub>L · J<sub>L</sub> · J<sub>L−1</sub> ⋯ J<sub>1</sub></p>
+
+<h3 id="forward-and-reverse-mode">Forward mode versus reverse mode</h3>
+
+<p>
+  Matrix products are associative, so that chain can be evaluated from either end.
+</p>
+<ul>
+  <li>
+    <strong>Forward mode</strong> goes right to left in the formula, in the same order as
+    the computation: push a tangent vector v through as J₁v, then J₂(J₁v), and so on. Each
+    pass is a <em>Jacobian-vector product</em> (JVP) and gives the derivative of every
+    output along one input direction. A full gradient needs one pass per input.
+  </li>
+  <li>
+    <strong>Reverse mode</strong> starts from the output and goes backwards: ∇<sub>y</sub>L · J<sub>L</sub>,
+    then that times J<sub>L−1</sub>, and so on. Each pass is a <em>vector-Jacobian
+    product</em> (VJP) and gives the derivative of one output with respect to every input.
+    A full gradient needs one pass per output.
+  </li>
+</ul>
+<p>
+  Training has millions of inputs (the parameters) and one output (the loss), so reverse
+  mode wins by a factor of the parameter count. The price is memory: the backward pass
+  needs the forward pass's intermediate values, so they are all kept until
+  <code>backward</code> runs.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 220" role="img" aria-labelledby="cr-modes-title cr-modes-desc">
+    <title id="cr-modes-title">Forward mode and reverse mode on a 1000-1000-1000-1 network</title>
+    <desc id="cr-modes-desc">
+      Two horizontal bars compare the multiply-adds needed for a full gradient of a network
+      with 1000 inputs, two hidden layers of 1000, and one output. Forward mode needs 1000
+      passes of about two million multiply-adds each, roughly two billion in total. Reverse
+      mode needs one pass, about two million. The reverse bar is a thin sliver beside the
+      forward bar.
+    </desc>
+    <text x="20" y="40" font-size="13">Full gradient of a {{ mode_cost_example.widths|join("–") }} network (multiply-adds)</text>
+    <rect x="160" y="62" width="480" height="34" style="fill: var(--jj-amber)" opacity="0.85"></rect>
+    <text x="150" y="84" font-size="13" text-anchor="end">forward mode</text>
+    <text x="400" y="84" font-size="13" text-anchor="middle">{{ costs.inputs }} passes · {{ big(costs.forward) }}</text>
+    {% set reverse_width = [480 * costs.reverse / costs.forward, 2]|max %}
+    <rect x="160" y="116" width="{{ reverse_width }}" height="34" style="fill: var(--jj-green)"></rect>
+    <text x="150" y="138" font-size="13" text-anchor="end">reverse mode</text>
+    <text x="{{ 160 + reverse_width + 10 }}" y="138" font-size="13">{{ costs.outputs }} pass · {{ big(costs.reverse) }}</text>
+    <text x="20" y="190" font-size="12" class="d-muted">one pass ≈ {{ big(costs.per_pass) }} multiply-adds, about one forward evaluation; the ratio is inputs ÷ outputs = {{ costs.inputs // costs.outputs }}×</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Forward mode pays once per input, reverse mode once per output. With one loss and a
+  billion parameters the gap is a billion to one, which is why every training framework
+  is built on reverse mode.
+</p>
+
+<h3 id="local-gradients">Local gradients per operation</h3>
+
+<p>
+  Reverse mode never forms a Jacobian. Each operation only needs a rule that turns the
+  gradient of its output into gradients of its inputs. For the operations in a two-layer
+  network, with ḡ meaning ∂L/∂(that value):
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Operation</th><th>Forward</th><th>Backward (given ȳ)</th></tr></thead>
+    <tbody>
+      <tr><td>Linear</td><td>y = Wx + b</td><td>W̄ = ȳ xᵀ, &nbsp; b̄ = ȳ, &nbsp; x̄ = Wᵀ ȳ</td></tr>
+      <tr><td>ReLU</td><td>y = max(0, z)</td><td>z̄ = ȳ where z &gt; 0, else 0</td></tr>
+      <tr><td>Dot product</td><td>y = w · h + b</td><td>w̄ = ȳ h, &nbsp; h̄ = ȳ w, &nbsp; b̄ = ȳ</td></tr>
+      <tr><td>Squared error</td><td>L = ½(y − t)²</td><td>ȳ = y − t</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  Notice the transpose in x̄ = Wᵀȳ. Multiplying by a Jacobian's transpose is exactly a VJP,
+  and for a linear layer the Jacobian is W itself.
+</p>
+
+<h3 id="autograd-function">How PyTorch packages a local rule</h3>
+
+<p>
+  Every differentiable operation in PyTorch pairs a forward with a backward, the VJP rule.
+  You can write your own by subclassing
+  <a href="{{ src('torch/autograd/function.py', 555, 655) }}"><code>torch.autograd.Function</code></a>:
+  <code>forward</code> computes the output and stashes what backward needs with
+  <a href="{{ src('torch/autograd/function.py', 41, 100) }}"><code>ctx.save_for_backward</code></a>;
+  <a href="{{ src('torch/autograd/function.py', 473, 505) }}"><code>backward</code></a>
+  receives the output's gradient and returns one gradient per input. The source notes that
+  <code>vjp = backward</code>: they are the same thing. An optional
+  <a href="{{ src('torch/autograd/function.py', 531, 553) }}"><code>jvp</code></a> supplies
+  the forward-mode rule. Calling <code>loss.backward()</code> runs
+  <a href="{{ src('torch/autograd/__init__.py', 255, 403) }}"><code>torch.autograd.backward</code></a>,
+  which walks the recorded graph from the loss back to the leaves, calling each node's VJP.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Term</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Chain rule</td>
+        <td>df/dx = df/du · du/dx</td>
+        <td>The derivative of a composition is the product of local derivatives.</td>
+        <td>—</td>
+      </tr>
+      <tr>
+        <td>Upstream gradient ȳ</td>
+        <td>same shape as y</td>
+        <td>∂L/∂y, arriving at an operation during the backward pass.</td>
+        <td>—</td>
+      </tr>
+      <tr>
+        <td>VJP</td>
+        <td>v: <code>[outputs]</code> → <code>[inputs]</code></td>
+        <td>vᵀJ without building J; one reverse-mode step.</td>
+        <td><a href="{{ src('torch/autograd/functional.py', 271, 363) }}"><code>autograd.functional.vjp</code></a></td>
+      </tr>
+      <tr>
+        <td>JVP</td>
+        <td>v: <code>[inputs]</code> → <code>[outputs]</code></td>
+        <td>Jv without building J; one forward-mode step.</td>
+        <td><a href="{{ src('torch/autograd/functional.py', 366, 476) }}"><code>autograd.functional.jvp</code></a>, <a href="{{ src('torch/autograd/forward_ad.py', 77, 138) }}"><code>forward_ad.make_dual</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Function</code></td>
+        <td>static <code>forward(ctx, …)</code>, <code>backward(ctx, *grads)</code></td>
+        <td>A differentiable operation with a hand-written VJP; call it through <code>.apply</code>.</td>
+        <td><a href="{{ src('torch/autograd/function.py', 555, 655) }}"><code>autograd.Function</code></a></td>
+      </tr>
+      <tr>
+        <td><code>ctx.save_for_backward</code></td>
+        <td>tensors</td>
+        <td>Keep forward values the VJP will need; read back as <code>ctx.saved_tensors</code>.</td>
+        <td><a href="{{ src('torch/autograd/function.py', 41, 100) }}"><code>FunctionCtx.save_for_backward</code></a></td>
+      </tr>
+      <tr>
+        <td><code>torch.autograd.backward</code></td>
+        <td><code>tensors</code>, <code>grad_tensors</code></td>
+        <td>Run reverse mode from the given outputs and accumulate into leaves' <code>.grad</code>.</td>
+        <td><a href="{{ src('torch/autograd/__init__.py', 255, 403) }}"><code>autograd.backward</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>A two-layer network, by hand.</strong> Input x = {{ vec(ex.x) }}, first layer
+    W₁ = {{ mat(ex.w1) }} with bias b₁ = {{ vec(ex.b1) }}, ReLU, then an output
+    y = w₂ · h + b₂ with w₂ = {{ vec(ex.w2) }}, b₂ = {{ ex.b2 }}, and loss L = ½(y − t)² with
+    target t = {{ ex.target }}.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Forward</th><th>Value</th><th>Backward</th><th>Value</th></tr></thead>
+      <tbody>
+        <tr><td>z₁ = W₁x + b₁</td><td>{{ vec(net.z1) }}</td><td>ȳ = y − t</td><td>{{ num(net.dy) }}</td></tr>
+        <tr><td>h = ReLU(z₁)</td><td>{{ vec(net.h) }}</td><td>w̄₂ = ȳ h, &nbsp; b̄₂ = ȳ</td><td>{{ vec(net.dw2) }}, {{ num(net.db2) }}</td></tr>
+        <tr><td>y = w₂ · h + b₂</td><td>{{ num(net.y) }}</td><td>h̄ = ȳ w₂</td><td>{{ vec(net.dh) }}</td></tr>
+        <tr><td>L = ½(y − t)²</td><td>{{ num(net.loss) }}</td><td>z̄₁ = h̄ where z₁ &gt; 0</td><td>{{ vec(net.dz1) }}</td></tr>
+        <tr><td></td><td></td><td>W̄₁ = z̄₁ xᵀ, &nbsp; b̄₁ = z̄₁</td><td>{{ mat(net.dw1) }}, {{ vec(net.db1) }}</td></tr>
+        <tr><td></td><td></td><td>x̄ = W₁ᵀ z̄₁</td><td>{{ vec(net.dx) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Read the backward column top to bottom. The output is {{ num(net.dy) }} too high, so
+    ȳ = {{ num(net.dy) }}. The output weight w̄₂ = ȳ h says to shrink the weight on the hidden
+    unit that fired ({{ num(net.h[0]) }}) and leave the one that didn't alone. The hidden
+    unit with z₁ = {{ num(net.z1[1]) }} was switched off by ReLU, so the gradient through it
+    is 0, and so is the whole second row of W̄₁: <strong>a dead ReLU passes no gradient</strong>.
+  </p>
+
+  <div class="jj-diagram">
+    {% set yv = 60 %}{% set yg = 168 %}
+    <svg viewBox="0 0 680 230" role="img" aria-labelledby="cr-net-title cr-net-desc">
+      <title id="cr-net-title">Forward values and backward gradients through the two-layer network</title>
+      <desc id="cr-net-desc">
+        Five stages from left to right: x, z1, h, y and L. Above each, in green, its forward
+        value: x is [2, 1], z1 is [2, −1], h is [2, 0], y is 4 and L is 0.5. Below each, in
+        amber, the gradient of L with respect to it: 1 at L, 1 at y, [2, 3] at h, [2, 0] at z1
+        and [2, −2] at x. The ReLU between z1 and h is highlighted where it zeroes the second
+        component of the gradient.
+      </desc>
+      <defs>
+        <marker id="cr-net-fwd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--jj-green)"></path>
+        </marker>
+        <marker id="cr-net-bwd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--jj-amber)"></path>
+        </marker>
+      </defs>
+      {% set stages = [
+        (60, "x", vec(ex.x), vec(net.dx)),
+        (205, "z₁", vec(net.z1), vec(net.dz1)),
+        (350, "h", vec(net.h), vec(net.dh)),
+        (495, "y", num(net.y), num(net.dy)),
+        (625, "L", num(net.loss), "1"),
+      ] %}
+      {% set ops = ["W₁x + b₁", "ReLU", "w₂ · h + b₂", "½(y − t)²"] %}
+      {% for cx, name, value, grad in stages %}
+        <rect x="{{ cx - 40 }}" y="{{ (yv + yg) / 2 - 22 }}" width="80" height="44" rx="6" class="d-box"></rect>
+        <text x="{{ cx }}" y="{{ (yv + yg) / 2 + 5 }}" font-size="15" text-anchor="middle">{{ name }}</text>
+        <text x="{{ cx }}" y="{{ yv }}" font-size="12" text-anchor="middle" style="fill: var(--jj-green)">{{ value }}</text>
+        <text x="{{ cx }}" y="{{ yg + 26 }}" font-size="12" text-anchor="middle" style="fill: var(--jj-amber)">{{ grad }}</text>
+        {% if not loop.last %}
+          {% set nx = stages[loop.index][0] %}
+          <line x1="{{ cx + 42 }}" y1="{{ (yv + yg) / 2 - 10 }}" x2="{{ nx - 42 }}" y2="{{ (yv + yg) / 2 - 10 }}" stroke="var(--jj-green)" stroke-width="1.5" marker-end="url(#cr-net-fwd)"></line>
+          <line x1="{{ nx - 42 }}" y1="{{ (yv + yg) / 2 + 10 }}" x2="{{ cx + 42 }}" y2="{{ (yv + yg) / 2 + 10 }}" stroke="var(--jj-amber)" stroke-width="1.5" marker-end="url(#cr-net-bwd)"></line>
+          <text x="{{ (cx + nx) / 2 }}" y="{{ (yv + yg) / 2 - 30 }}" font-size="11" text-anchor="middle" class="d-muted">{{ ops[loop.index0] }}</text>
+        {% endif %}
+      {% endfor %}
+      <text x="277" y="{{ yg + 50 }}" font-size="11" text-anchor="middle" style="fill: var(--jj-amber)">ReLU zeroes the gradient where z₁ ≤ 0</text>
+      <text x="20" y="22" font-size="12" style="fill: var(--jj-green)">forward values</text>
+      <text x="660" y="22" font-size="12" text-anchor="end" style="fill: var(--jj-amber)">backward: ∂L/∂(·)</text>
+    </svg>
+  </div>
+
+  <p>
+    <strong>Check it.</strong> Nudge W₁[0][0] from 1 to 1.001. Then z₁[0] becomes 2.002,
+    y becomes 4.004 and L becomes ½(1.004)² ≈ 0.504, a change of about 0.004, which is
+    0.001 × W̄₁[0][0] = 0.001 × {{ num(net.dw1[0][0]) }}. The tests behind this page check
+    every gradient in the table this way, by finite differences.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>The same network in PyTorch; autograd reproduces every number in the table:</p>
+
+<pre><code class="language-python">import torch
+
+x  = torch.tensor([2.0, 1.0], requires_grad=True)
+W1 = torch.tensor([[1.0, -1.0], [-1.0, 1.0]], requires_grad=True)
+b1 = torch.tensor([1.0, 0.0], requires_grad=True)
+w2 = torch.tensor([2.0, 3.0], requires_grad=True)
+b2 = torch.tensor(0.0, requires_grad=True)
+
+h = torch.relu(W1 @ x + b1)        # [2, 0]
+y = w2 @ h + b2                    # 4
+loss = 0.5 * (y - 3.0) ** 2        # 0.5
+loss.backward()
+
+W1.grad   # tensor([[4., 2.], [0., 0.]])
+w2.grad   # tensor([2., 0.])
+x.grad    # tensor([ 2., -2.])</code></pre>
+
+<p>A custom operation with a hand-written VJP, the way PyTorch's own operations are built:</p>
+
+<pre><code class="language-python">class Square(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, u):
+        ctx.save_for_backward(u)
+        return u * u
+
+    @staticmethod
+    def backward(ctx, grad_output):    # grad_output = ∂L/∂(u²)
+        (u,) = ctx.saved_tensors
+        return grad_output * 2 * u     # ∂L/∂u, by the chain rule
+
+x = torch.tensor(1.0, requires_grad=True)
+Square.apply(3 * x + 1).backward()
+x.grad                                  # tensor(24.)
+torch.autograd.gradcheck(Square.apply, torch.randn(3, dtype=torch.double, requires_grad=True))</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Reverse mode trades memory for speed.</strong> One backward pass costs about
+    two forward passes, but every intermediate the VJPs need stays in memory until it runs.
+    Activation memory often limits batch size more than the weights do. Gradient
+    checkpointing recomputes some activations during backward to save memory.
+  </li>
+  <li>
+    <strong>Forward mode still has uses.</strong> With few inputs and many outputs, such as
+    the sensitivity of a whole output to one hyperparameter, or Jacobian-vector products
+    inside second-order methods, forward mode is cheaper and needs no stored graph.
+  </li>
+  <li>
+    <strong>Long products shrink or blow up.</strong> A gradient that passes through 100
+    layers is a product of 100 Jacobians. If their typical scale is below 1 it vanishes;
+    above 1 it explodes. Initialization, normalization and residual connections exist
+    largely to keep that product near 1; the backpropagation page covers it.
+  </li>
+  <li>
+    <strong>Hand-written backward functions are a bug source.</strong> A wrong VJP trains
+    silently worse instead of crashing. Always check a custom <code>backward</code> with
+    <code>gradcheck</code>, which compares it to finite differences in double precision.
+  </li>
+</ul>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="ml-quiz">
+  <summary>What is d/dx of e<sup>2x</sup> at x = 0?</summary>
+  <p>Let u = 2x. d(eᵘ)/du = eᵘ and du/dx = 2, so the derivative is 2e<sup>2x</sup>, which is 2 at x = 0.</p>
+</details>
+<details class="ml-quiz">
+  <summary>A function maps 10 inputs to 10,000 outputs. Forward or reverse mode for the full Jacobian?</summary>
+  <p>Forward mode: it needs one pass per input (10), against one per output (10,000) for reverse mode.</p>
+</details>
+<details class="ml-quiz">
+  <summary>In the worked example, why is the second row of W̄₁ all zeros?</summary>
+  <p>The second hidden unit had z₁ = −1, so ReLU output 0 and its local derivative is 0. Nothing upstream of it receives gradient through that unit, so its weights don't move this step.</p>
+</details>
+<details class="ml-quiz">
+  <summary>For y = Wx with W of shape [3, 5], what shape is x̄, and how is it computed?</summary>
+  <p>x̄ has x's shape, [5]. It is Wᵀȳ: a [5, 3] matrix times the [3] upstream gradient.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Goodfellow, Bengio and Courville. <em>Deep Learning</em>, section 6.5 (back-propagation and other differentiation algorithms). MIT Press, 2016.</li>
+  <li>Rumelhart, Hinton and Williams. <em>Learning representations by back-propagating errors.</em> Nature 323, 1986.</li>
+  <li>Baydin et al. <em>Automatic Differentiation in Machine Learning: a Survey.</em> JMLR 2018. <a href="https://arxiv.org/abs/1502.05767">arXiv:1502.05767</a></li>
+  <li>Griewank and Walther. <em>Evaluating Derivatives: Principles and Techniques of Algorithmic Differentiation</em>, 2nd ed. SIAM, 2008.</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/autograd/function.py', 555, 655) }}"><code>torch.autograd.Function</code></a> and <a href="{{ src('torch/autograd/__init__.py', 255, 403) }}"><code>torch.autograd.backward</code></a>.</li>
+</ul>
