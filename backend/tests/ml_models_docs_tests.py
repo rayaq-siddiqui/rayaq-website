@@ -727,3 +727,55 @@ def test_joint_table_marginals_conditionals_and_independence():
     assert table["given_column"][0][0] == pytest.approx(24 / 31)
     assert table["independent"] is False
     assert ml_models_docs.joint_table({"counts": [[6, 4], [12, 8]]})["independent"] is True
+
+
+def test_die_expectation_and_variance():
+    values = ml_models_docs.DIE_EXAMPLE["values"]
+    probs = [1 / 6] * 6
+    assert ml_models_docs.expectation(values, probs) == pytest.approx(3.5)
+    assert ml_models_docs.variance(values, probs) == pytest.approx(35 / 12)
+    doubled = [2 * v + 3 for v in values]
+    assert ml_models_docs.expectation(doubled, probs) == pytest.approx(10)
+    assert ml_models_docs.variance(doubled, probs) == pytest.approx(4 * 35 / 12)
+
+
+def test_covariance_and_correlation():
+    result = ml_models_docs.covariance(ml_models_docs.COVARIANCE_EXAMPLE["pairs"])
+    assert result["cov"] == pytest.approx(15)
+    assert result["var_x"] == pytest.approx(2)
+    assert result["corr"] == pytest.approx(15 / math.sqrt(2 * 118.8))
+    assert ml_models_docs.covariance([(-2, 4), (-1, 1), (0, 0), (1, 1), (2, 4)])["cov"] == pytest.approx(0)
+
+
+def test_running_means_converge_within_the_standard_error():
+    example = ml_models_docs.DIE_EXAMPLE
+    rolls = ml_models_docs.die_rolls(example["checkpoints"][-1], example["seed"])
+    assert set(rolls) == set(example["values"])
+    assert ml_models_docs.die_rolls(10, example["seed"]) == rolls[:10]
+    rows = ml_models_docs.running_means(rolls, example["values"], example["checkpoints"])
+    assert [row["n"] for row in rows] == example["checkpoints"]
+    assert all(abs(row["error"]) < row["standard_error"] for row in rows)
+    assert rows[-1]["standard_error"] == pytest.approx(math.sqrt(35 / 12) / 100)
+
+
+def test_sum_pmf_spreads_into_a_bell():
+    two = ml_models_docs.sum_pmf([1, 2, 3, 4, 5, 6], 2)
+    assert two[7] == pytest.approx(6 / 36)
+    assert sum(two.values()) == pytest.approx(1)
+    five = ml_models_docs.sum_pmf([1, 2, 3, 4, 5, 6], 5)
+    assert min(five) == 5 and max(five) == 30
+    assert ml_models_docs.expectation(list(five), list(five.values())) == pytest.approx(17.5)
+    assert ml_models_docs.variance(list(five), list(five.values())) == pytest.approx(5 * 35 / 12)
+
+
+def test_minibatch_gradients_are_unbiased_and_shrink_with_batch_size():
+    example = ml_models_docs.MINIBATCH_EXAMPLE
+    result = ml_models_docs.minibatch_gradients(example)
+    assert result["full"] == pytest.approx(-31)
+    n = len(example["x"])
+    single = result["sizes"][0]["variance"]
+    for size in result["sizes"]:
+        b = size["batch_size"]
+        assert size["count"] == math.comb(n, b)
+        assert size["mean"] == pytest.approx(result["full"])
+        assert size["variance"] == pytest.approx(single / b * (n - b) / (n - 1))

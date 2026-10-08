@@ -1,4 +1,6 @@
+import itertools
 import math
+import random
 import re
 
 PINS = {
@@ -1487,6 +1489,12 @@ JOINT_EXAMPLE = {
     "counts": [[24, 6], [7, 63]],
 }
 
+DIE_EXAMPLE = {"values": [1, 2, 3, 4, 5, 6], "seed": 13, "checkpoints": [10, 100, 1000, 10000]}
+
+COVARIANCE_EXAMPLE = {"pairs": [(1, 52), (2, 60), (3, 61), (4, 75), (5, 82)], "labels": ["hours studied", "score"]}
+
+MINIBATCH_EXAMPLE = {"w": 1.0, "x": [1, 2, 3, 4, 5, 6], "y": [2, 3, 7, 8, 9, 13], "batch_sizes": [1, 2, 3, 6]}
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -1933,6 +1941,80 @@ def joint_table(example):
     }
 
 
+def expectation(values, probs):
+    return sum(v * p for v, p in zip(values, probs))
+
+
+def variance(values, probs):
+    mean = expectation(values, probs)
+    return sum(p * (v - mean) ** 2 for v, p in zip(values, probs))
+
+
+def covariance(pairs):
+    n = len(pairs)
+    mean_x = sum(x for x, _ in pairs) / n
+    mean_y = sum(y for _, y in pairs) / n
+    cov = sum((x - mean_x) * (y - mean_y) for x, y in pairs) / n
+    var_x = sum((x - mean_x) ** 2 for x, _ in pairs) / n
+    var_y = sum((y - mean_y) ** 2 for _, y in pairs) / n
+    return {
+        "mean_x": mean_x,
+        "mean_y": mean_y,
+        "cov": cov,
+        "var_x": var_x,
+        "var_y": var_y,
+        "corr": cov / math.sqrt(var_x * var_y),
+    }
+
+
+def die_rolls(n, seed):
+    rng = random.Random(seed)
+    return [1 + int(rng.random() * 6) for _ in range(n)]
+
+
+def running_means(samples, values, checkpoints):
+    probs = [1 / len(values)] * len(values)
+    mu = expectation(values, probs)
+    sigma = math.sqrt(variance(values, probs))
+    rows = []
+    for n in checkpoints:
+        mean = sum(samples[:n]) / n
+        rows.append({"n": n, "mean": mean, "error": mean - mu, "standard_error": sigma / math.sqrt(n)})
+    return rows
+
+
+def sum_pmf(values, n):
+    pmf = {0: 1.0}
+    for _ in range(n):
+        step = {}
+        for total, p in pmf.items():
+            for v in values:
+                step[total + v] = step.get(total + v, 0.0) + p / len(values)
+        pmf = step
+    return dict(sorted(pmf.items()))
+
+
+def minibatch_gradients(example):
+    w, xs, ys = example["w"], example["x"], example["y"]
+    per_example = [2 * x * (w * x - y) for x, y in zip(xs, ys)]
+    full = sum(per_example) / len(per_example)
+    sizes = []
+    for b in example["batch_sizes"]:
+        grads = [sum(batch) / b for batch in itertools.combinations(per_example, b)]
+        mean = sum(grads) / len(grads)
+        sizes.append(
+            {
+                "batch_size": b,
+                "count": len(grads),
+                "mean": mean,
+                "variance": sum((g - mean) ** 2 for g in grads) / len(grads),
+                "lowest": min(grads),
+                "highest": max(grads),
+            }
+        )
+    return {"per_example": per_example, "full": full, "sizes": sizes}
+
+
 def similarity_ranking(example):
     query = example["query"]
     rows = [
@@ -2040,6 +2122,17 @@ def render(slug, render_template):
         "normal_band": normal_band,
         "joint_example": JOINT_EXAMPLE,
         "joint_table": joint_table,
+        "die_example": DIE_EXAMPLE,
+        "covariance_example": COVARIANCE_EXAMPLE,
+        "minibatch_example": MINIBATCH_EXAMPLE,
+        "expectation": expectation,
+        "variance": variance,
+        "covariance": covariance,
+        "die_rolls": die_rolls,
+        "running_means": running_means,
+        "sum_pmf": sum_pmf,
+        "minibatch_gradients": minibatch_gradients,
+        "sqrt": math.sqrt,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
