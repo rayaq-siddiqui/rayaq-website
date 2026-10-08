@@ -1,0 +1,831 @@
+{% macro box(x, y, w, h, title, sub, url, cls="d-box") -%}
+  <a href="{{ url }}">
+    <rect x="{{ x }}" y="{{ y }}" width="{{ w }}" height="{{ h }}" rx="7" class="{{ cls }}"></rect>
+    <text x="{{ x + w / 2 }}" y="{{ y + (h / 2 if not sub else h / 2 - 7) }}" text-anchor="middle" dominant-baseline="middle" font-size="13">{{ title }}</text>
+    {% if sub %}<text x="{{ x + w / 2 }}" y="{{ y + h / 2 + 9 }}" text-anchor="middle" dominant-baseline="middle" font-size="10" class="d-muted">{{ sub }}</text>{% endif %}
+  </a>
+{%- endmacro %}
+{% macro pct(value) -%}{{ "%.2f"|format(value) }}{%- endmacro %}
+{% set full = attention_weights(attention_example) %}
+{% set causal = attention_weights(attention_example, causal=True) %}
+{% set defaults = param_count(512, 6, 6, 2048) %}
+<header class="jj-header">
+  <h1>The Transformer</h1>
+  <p class="tagline">
+    The 2017 model behind almost every large model since. It reads a whole sentence at once,
+    lets every word look at every other word (<em>attention</em>), and stacks that idea six
+    times. An <strong>encoder</strong> turns the input into a grid of context-aware vectors; a
+    <strong>decoder</strong> writes the output one token at a time, reading that grid as it
+    goes. This page walks through every block, with the shapes, the parameter counts, the
+    numbers worked by hand, and the exact lines of <code>nn.Transformer</code> in PyTorch
+    {{ upstream.tag }} that implement it.
+  </p>
+</header>
+
+<p class="jj-note">
+  <strong>The whole idea in one sentence:</strong> turn tokens into vectors, then repeat
+  <em>"let every position gather information from the others, then think about it on its
+  own"</em>, with a shortcut around each step so nothing gets lost. Everything else on this
+  page is detail on that sentence.
+</p>
+
+<h2 id="big-picture">The big picture</h2>
+
+<p>
+  Click any block to jump to its section. Solid boxes are what
+  <a href="{{ src('torch/nn/modules/transformer.py', 58, 317) }}"><code>nn.Transformer</code></a>
+  builds; dashed boxes are the parts you add yourself, because PyTorch's module starts at
+  vectors and stops at vectors. The paper's base model uses exactly these defaults:
+  <code>d_model=512</code>, 8 heads, 6 encoder and 6 decoder layers, a 2048-wide feed-forward
+  block and dropout 0.1
+  (<a href="{{ src('torch/nn/modules/transformer.py', 102, 119) }}">constructor defaults</a>).
+</p>
+
+<div class="jj-diagram ml-arch">
+  <svg viewBox="0 0 760 612" role="img" aria-labelledby="tf-arch-title tf-arch-desc">
+    <title id="tf-arch-title">The encoder-decoder Transformer, block by block</title>
+    <desc id="tf-arch-desc">
+      Left column, the encoder: source tokens are embedded and given positions, then pass
+      through six identical layers, each a self-attention sublayer followed by add-and-norm and
+      a feed-forward sublayer followed by add-and-norm, and finally a LayerNorm. Its output,
+      the memory, feeds the cross-attention sublayer of every decoder layer. Right column, the
+      decoder: target tokens shifted right are embedded and given positions, then pass through
+      six layers of masked self-attention, cross-attention over the memory, and feed-forward,
+      each followed by add-and-norm, then a final LayerNorm, a linear layer to vocabulary size
+      and a softmax giving next-token probabilities. Curved residual arrows skip around every
+      sublayer. Embeddings, the linear head and softmax are not part of nn.Transformer.
+    </desc>
+    <defs>
+      <marker id="tf-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+      <marker id="tf-arrow-res" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-accent"></path>
+      </marker>
+    </defs>
+
+    <rect x="50" y="248" width="290" height="222" rx="10" class="d-box ml-dashed" fill="none"></rect>
+    <rect x="420" y="184" width="290" height="286" rx="10" class="d-box ml-dashed" fill="none"></rect>
+
+    <g class="d-line" stroke-width="1.5" marker-end="url(#tf-arrow)">
+      <path d="M195 560 V542"></path>
+      <path d="M195 506 V452"></path>
+      <path d="M195 410 V402"></path>
+      <path d="M195 376 V362"></path>
+      <path d="M195 320 V312"></path>
+      <path d="M195 286 V230"></path>
+      <path d="M565 560 V542"></path>
+      <path d="M565 506 V452"></path>
+      <path d="M565 410 V402"></path>
+      <path d="M565 376 V362"></path>
+      <path d="M565 320 V312"></path>
+      <path d="M565 286 V272"></path>
+      <path d="M565 230 V222"></path>
+      <path d="M565 196 V166"></path>
+      <path d="M565 136 V114"></path>
+      <path d="M565 84 V62"></path>
+    </g>
+    <path d="M195 200 V176 H400 V340 H448" class="d-line" stroke-width="2" fill="none" marker-end="url(#tf-arrow)"></path>
+    <g class="ml-residual" stroke-width="1.4" marker-end="url(#tf-arrow-res)">
+      <path d="M195 462 H64 V388 H78"></path>
+      <path d="M195 368 H64 V298 H78"></path>
+      <path d="M565 462 H434 V388 H448"></path>
+      <path d="M565 368 H434 V298 H448"></path>
+      <path d="M565 278 H434 V208 H448"></path>
+    </g>
+
+    <text x="56" y="240" font-size="11" class="d-muted ml-label">ENCODER LAYER × 6</text>
+    <text x="426" y="178" font-size="11" class="d-muted ml-label">DECODER LAYER × 6</text>
+    <text x="300" y="170" font-size="11" text-anchor="middle" class="d-muted ml-label">memory</text>
+    <text x="565" y="20" font-size="11" text-anchor="middle" class="d-muted">next-token probabilities</text>
+
+    {{ box(80, 560, 230, 36, "Source tokens", "", "#embeddings", "d-box ml-tensor") }}
+    {{ box(80, 506, 230, 36, "Embedding + positions", "", "#embeddings", "d-box ml-dashed") }}
+    {{ box(80, 410, 230, 40, "Self-attention", "8 heads, sees every token", "#attention", "d-box ml-op") }}
+    {{ box(80, 376, 230, 24, "Add & LayerNorm", "", "#residuals", "d-box") }}
+    {{ box(80, 320, 230, 40, "Feed-forward", "512 → 2048 → 512", "#feed-forward", "d-box ml-op") }}
+    {{ box(80, 286, 230, 24, "Add & LayerNorm", "", "#residuals", "d-box") }}
+    {{ box(80, 200, 230, 28, "Final LayerNorm", "", "#encoder", "d-box") }}
+
+    {{ box(450, 560, 230, 36, "Target tokens, shifted right", "", "#training-vs-inference", "d-box ml-tensor") }}
+    {{ box(450, 506, 230, 36, "Embedding + positions", "", "#embeddings", "d-box ml-dashed") }}
+    {{ box(450, 410, 230, 40, "Masked self-attention", "can't see the future", "#masks", "d-box ml-op") }}
+    {{ box(450, 376, 230, 24, "Add & LayerNorm", "", "#residuals", "d-box") }}
+    {{ box(450, 320, 230, 40, "Cross-attention", "queries here, keys/values from memory", "#decoder", "d-box ml-op") }}
+    {{ box(450, 286, 230, 24, "Add & LayerNorm", "", "#residuals", "d-box") }}
+    {{ box(450, 230, 230, 40, "Feed-forward", "512 → 2048 → 512", "#feed-forward", "d-box ml-op") }}
+    {{ box(450, 196, 230, 24, "Add & LayerNorm", "", "#residuals", "d-box") }}
+    {{ box(450, 136, 230, 28, "Final LayerNorm", "", "#decoder", "d-box") }}
+    {{ box(450, 84, 230, 28, "Linear to vocabulary", "", "#output-head", "d-box ml-dashed") }}
+    {{ box(450, 34, 230, 26, "Softmax", "", "#output-head", "d-box ml-dashed") }}
+  </svg>
+</div>
+
+<p class="ml-legend">
+  <span class="ml-key ml-key-op">Mixing and thinking</span>
+  <span class="ml-key ml-key-tensor">Tokens in</span>
+  <span class="ml-key ml-key-res">Residual shortcut</span>
+  <span class="ml-key ml-key-dashed">You add this</span>
+</p>
+
+<h2 id="follow-a-sentence">Follow one sentence through it</h2>
+
+<p>
+  Translating <em>"the cat sat down"</em> into French, with a batch of one and the base
+  sizes. Drag the slider (or read straight down with JavaScript off). Shapes are written
+  batch-first, which is what you get with <code>batch_first=True</code>.
+</p>
+
+<figure class="ml-steps" data-ml-steps="Step through the forward pass">
+  <div data-ml-step="1 · Tokenize">
+    <p><strong>Tokenize.</strong> A tokenizer maps text to integer IDs from a fixed vocabulary
+    (the paper used about 37,000 shared byte-pair tokens for English-German).
+    <code>"the cat sat down"</code> becomes 4 IDs. Shape: <code>[1, 4]</code>.</p>
+  </div>
+  <div data-ml-step="2 · Embed">
+    <p><strong>Embed and add positions.</strong> Each ID picks a row of a
+    <code>[vocab, 512]</code> table; the paper multiplies by √512 ≈ 22.6 and adds a sinusoidal
+    position vector so the model knows word order. Shape: <code>[1, 4, 512]</code>.</p>
+  </div>
+  <div data-ml-step="3 · Encode">
+    <p><strong>Encode.</strong> Six encoder layers each run self-attention (every word looks
+    at all 4 words) and a feed-forward block. The shape never changes:
+    <code>[1, 4, 512]</code> in, <code>[1, 4, 512]</code> out. The result is the
+    <em>memory</em>: one context-aware vector per source word.</p>
+  </div>
+  <div data-ml-step="4 · Start decoding">
+    <p><strong>Start decoding.</strong> The decoder gets the output so far, starting with only
+    a begin-of-sequence token: <code>[1, 1]</code> IDs, embedded to <code>[1, 1, 512]</code>.</p>
+  </div>
+  <div data-ml-step="5 · Decode">
+    <p><strong>Decode.</strong> Six decoder layers: masked self-attention over the French so
+    far, cross-attention into the 4 memory vectors, feed-forward. Output
+    <code>[1, 1, 512]</code>.</p>
+  </div>
+  <div data-ml-step="6 · Predict">
+    <p><strong>Predict.</strong> A linear layer turns the last vector into one score per
+    vocabulary entry, <code>[1, 1, vocab]</code>; softmax makes them probabilities; we pick
+    <em>"le"</em>.</p>
+  </div>
+  <div data-ml-step="7 · Repeat">
+    <p><strong>Repeat.</strong> Append <em>"le"</em> and decode again with
+    <code>[1, 2]</code> IDs, then <code>[1, 3]</code>… until an end-of-sequence token. The
+    encoder ran once; only the decoder loops. That is <em>autoregressive</em> generation.</p>
+  </div>
+</figure>
+
+<h2 id="embeddings">Embeddings and positions</h2>
+
+<p>
+  An embedding is just a learnable lookup table: <code>weight[token_id]</code>. Attention, the
+  next step, treats its input as an unordered set: swap two words and every output swaps with
+  them, nothing else changes. So the model must be <em>told</em> the order. The paper adds a
+  fixed pattern of sines and cosines of different frequencies to each position:
+</p>
+
+<p class="ml-formula">
+  PE(pos, 2i) = sin(pos / 10000<sup>2i/d</sup>) &nbsp;&nbsp; PE(pos, 2i+1) = cos(pos / 10000<sup>2i/d</sup>)
+</p>
+
+<p>
+  Low dimensions wiggle fast, high dimensions slowly, like the hands of a clock, so every
+  position gets a unique fingerprint and nearby positions get similar ones. The paper found
+  learned position embeddings worked about as well. Modern LLMs mostly use rotary embeddings
+  (RoPE) instead; the <em>Positional encoding</em> page covers all three.
+  <code>nn.Transformer</code> includes neither the embedding nor any positional encoding.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Token embedding</td>
+        <td>weight <code>[vocab, d_model]</code>; out <code>[batch, seq, d_model]</code></td>
+        <td>Row <em>i</em> is the learned vector for token <em>i</em>. The forward pass is a plain index lookup through <code>F.embedding</code>.</td>
+        <td><a href="{{ src('torch/nn/modules/sparse.py', 164, 168) }}"><code>Embedding.weight</code></a>, <a href="{{ src('torch/nn/modules/sparse.py', 188, 197) }}"><code>forward</code></a></td>
+      </tr>
+      <tr>
+        <td>Scale by √d_model</td>
+        <td>no parameters</td>
+        <td>The paper multiplies embeddings by √d_model before adding positions (section 3.4), so the two are of comparable size. You do this yourself.</td>
+        <td>paper, §3.4</td>
+      </tr>
+      <tr>
+        <td>Sinusoidal positions</td>
+        <td><code>[seq, d_model]</code>, fixed, 0 parameters</td>
+        <td>Added (not concatenated) to the embeddings. Not in PyTorch; the snippet below builds it.</td>
+        <td>paper, §3.5</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="attention">Attention, by hand</h2>
+
+<p>
+  Attention answers one question for every position: <em>"which other positions should I
+  read from, and how much?"</em> Each position makes three vectors from its own embedding
+  with three learned matrices:
+</p>
+
+<ul>
+  <li><strong>Query</strong> <code>q</code>: what am I looking for?</li>
+  <li><strong>Key</strong> <code>k</code>: what do I contain, as an address?</li>
+  <li><strong>Value</strong> <code>v</code>: what do I hand over if you pick me?</li>
+</ul>
+
+<p>
+  Score every query against every key with a dot product, divide by √d<sub>k</sub> so the
+  numbers don't grow with the width, softmax each row into weights that sum to 1, and take
+  that weighted average of the values:
+</p>
+
+<p class="ml-formula">Attention(Q, K, V) = softmax(Q·Kᵀ / √d<sub>k</sub>) · V</p>
+
+<p>
+  That's the whole mechanism. PyTorch's reference version of it (the docstring of
+  <code>F.scaled_dot_product_attention</code>) is
+  <a href="{{ src('torch/nn/functional.py', 6376, 6403) }}">a dozen lines</a>: a
+  <code>1/√d</code> scale factor, an optional <code>-inf</code> mask, <code>q @ kᵀ</code>,
+  softmax, then <code>@ value</code>.
+</p>
+
+<div class="ml-worked" id="worked-attention">
+  <h3 id="worked-example">Worked example: four tokens, two dimensions</h3>
+  <p>
+    Real models use d<sub>k</sub> = 64; here d<sub>k</sub> = 2 so you can check it with a
+    pencil. The query, key and value rows below are picked by hand, standing in for what the
+    learned projections would produce:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Token</th><th>q</th><th>k</th><th>v</th></tr></thead>
+      <tbody>
+        {% for token in attention_example.tokens %}
+          <tr>
+            <td><strong>{{ token }}</strong></td>
+            <td><code>{{ attention_example.queries[loop.index0] }}</code></td>
+            <td><code>{{ attention_example['keys'][loop.index0] }}</code></td>
+            <td><code>{{ attention_example['values'][loop.index0] }}</code></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Take <strong>sat</strong>, with q = [2, 0]. Its dot products with the four keys are
+    0, 4, 2 and 0. Divide by √2: <code>[0.00, 2.83, 1.41, 0.00]</code>. Softmax:
+    e<sup>2.83</sup> ≈ 16.9 dominates, giving weights
+    <code>[{{ full.weights[2]|map('round', 2)|join(', ') }}]</code>.
+    So <em>sat</em> reads 73% from <em>cat</em>: in this toy, the verb found its subject.
+    Its output is the weighted average of the values,
+    <code>[{{ full.outputs[2]|map('round', 2)|join(', ') }}]</code>.
+  </p>
+</div>
+
+<div class="ml-attention" data-ml-attention
+     data-tokens='{{ attention_example.tokens|tojson }}'
+     data-queries='{{ attention_example.queries|tojson }}'
+     data-keys='{{ attention_example['keys']|tojson }}'
+     data-values='{{ attention_example['values']|tojson }}'>
+  <div data-ml-attention-static>
+    {% for title, result in [("Every token sees every token (encoder)", full), ("Causal mask: no peeking ahead (decoder)", causal)] %}
+      <p class="ml-caption">{{ title }}. Rows are queries, columns are keys; each row sums to 1.</p>
+      <div class="jj-table-wrap">
+        <table class="ml-heatmap">
+          <thead><tr><th></th>{% for token in attention_example.tokens %}<th>{{ token }}</th>{% endfor %}</tr></thead>
+          <tbody>
+            {% for row in result.weights %}
+              <tr>
+                <th>{{ attention_example.tokens[loop.index0] }}</th>
+                {% for weight in row %}
+                  <td style="background: rgba(77, 163, 255, {{ '%.2f'|format(weight * 0.85) }})">{% if weight == 0 %}—{% else %}{{ pct(weight) }}{% endif %}</td>
+                {% endfor %}
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endfor %}
+  </div>
+</div>
+
+<p>
+  With JavaScript on, the table above is live: toggle the causal mask, turn off the √d
+  scaling, or sharpen and flatten the softmax with a temperature, and watch each row
+  re-weight. Try a temperature of 0.2: every row collapses onto its single best key, which is
+  why the scale factor matters. Without it, dot products in 64 dimensions get large, softmax
+  saturates, and gradients vanish (paper, §3.2.1).
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 760 300" role="img" aria-labelledby="tf-qkv-title tf-qkv-desc">
+    <title id="tf-qkv-title">Scaled dot-product attention as a data flow</title>
+    <desc id="tf-qkv-desc">
+      The input x of shape seq by d_model is multiplied by three weight matrices to give Q, K
+      and V. Q times K transposed gives a seq by seq score matrix, which is divided by the
+      square root of d_k, optionally masked with minus infinity, and softmaxed row by row into
+      attention weights. The weights times V give the output, seq by d_k.
+    </desc>
+    <defs>
+      <marker id="tf-arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <g class="d-line" stroke-width="1.5" fill="none" marker-end="url(#tf-arrow2)">
+      <path d="M110 150 H140 V60 H168"></path>
+      <path d="M110 150 H168"></path>
+      <path d="M110 150 H140 V240 H168"></path>
+      <path d="M268 60 H310 V120 H338"></path>
+      <path d="M268 150 H300 V130 H338"></path>
+      <path d="M438 125 H466"></path>
+      <path d="M566 125 H594"></path>
+      <path d="M644 155 V200 H616"></path>
+      <path d="M268 240 H516"></path>
+      <path d="M566 225 V240"></path>
+    </g>
+    <rect x="10" y="125" width="100" height="50" rx="7" class="d-box ml-tensor"></rect>
+    <text x="60" y="144" text-anchor="middle" font-size="13">x</text>
+    <text x="60" y="162" text-anchor="middle" font-size="10" class="d-muted">[seq, d_model]</text>
+
+    <rect x="168" y="35" width="100" height="50" rx="7" class="d-box ml-weight"></rect>
+    <text x="218" y="55" text-anchor="middle" font-size="13">Q = x·W<tspan baseline-shift="sub" font-size="9">Q</tspan></text>
+    <text x="218" y="73" text-anchor="middle" font-size="10" class="d-muted">[seq, d_k]</text>
+    <rect x="168" y="125" width="100" height="50" rx="7" class="d-box ml-weight"></rect>
+    <text x="218" y="145" text-anchor="middle" font-size="13">K = x·W<tspan baseline-shift="sub" font-size="9">K</tspan></text>
+    <text x="218" y="163" text-anchor="middle" font-size="10" class="d-muted">[seq, d_k]</text>
+    <rect x="168" y="215" width="100" height="50" rx="7" class="d-box ml-weight"></rect>
+    <text x="218" y="235" text-anchor="middle" font-size="13">V = x·W<tspan baseline-shift="sub" font-size="9">V</tspan></text>
+    <text x="218" y="253" text-anchor="middle" font-size="10" class="d-muted">[seq, d_k]</text>
+
+    <rect x="338" y="100" width="100" height="50" rx="7" class="d-box ml-op"></rect>
+    <text x="388" y="120" text-anchor="middle" font-size="13">Q·Kᵀ / √d<tspan baseline-shift="sub" font-size="9">k</tspan></text>
+    <text x="388" y="138" text-anchor="middle" font-size="10" class="d-muted">[seq, seq] scores</text>
+    <rect x="466" y="100" width="100" height="50" rx="7" class="d-box ml-op"></rect>
+    <text x="516" y="120" text-anchor="middle" font-size="13">+ mask</text>
+    <text x="516" y="138" text-anchor="middle" font-size="10" class="d-muted">−∞ where blocked</text>
+    <rect x="594" y="100" width="100" height="55" rx="7" class="d-box ml-op"></rect>
+    <text x="644" y="120" text-anchor="middle" font-size="13">softmax</text>
+    <text x="644" y="138" text-anchor="middle" font-size="10" class="d-muted">each row sums to 1</text>
+
+    <rect x="516" y="175" width="100" height="50" rx="7" class="d-box ml-op"></rect>
+    <text x="566" y="195" text-anchor="middle" font-size="13">weights · V</text>
+    <text x="566" y="213" text-anchor="middle" font-size="10" class="d-muted">weighted average</text>
+    <rect x="516" y="240" width="100" height="50" rx="7" class="d-box ml-tensor"></rect>
+    <text x="566" y="260" text-anchor="middle" font-size="13">output</text>
+    <text x="566" y="278" text-anchor="middle" font-size="10" class="d-muted">[seq, d_k]</text>
+  </svg>
+</div>
+
+<h3 id="multi-head">Multi-head attention</h3>
+
+<p>
+  One attention pattern per layer is limiting: a word might need its subject <em>and</em> the
+  word right before it. So the layer runs <strong>8 attentions in parallel</strong>, each on
+  its own 64-wide slice (512 / 8), then concatenates the 8 outputs back to 512 and mixes
+  them with one more matrix. Total cost is about the same as one 512-wide head; you just get 8
+  different patterns. PyTorch asserts that the width divides evenly
+  (<a href="{{ src('torch/nn/modules/activation.py', 1192, 1194) }}"><code>head_dim = embed_dim // num_heads</code></a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>in_proj_weight</code></td>
+        <td><code>[3·512, 512]</code> + bias <code>[1536]</code>: 787,968</td>
+        <td>W<sub>Q</sub>, W<sub>K</sub>, W<sub>V</sub> stacked in one matrix, split again with <code>chunk(3)</code> when query, key and value are the same tensor.</td>
+        <td><a href="{{ src('torch/nn/modules/activation.py', 1207, 1218) }}"><code>MultiheadAttention.__init__</code></a>, <a href="{{ src('torch/nn/functional.py', 6217, 6292) }}"><code>_in_projection_packed</code></a></td>
+      </tr>
+      <tr>
+        <td>Split into heads</td>
+        <td><code>[seq, batch, 512]</code> → <code>[batch·8, seq, 64]</code></td>
+        <td>A reshape, not a copy of weights: each head gets its own 64 columns.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 6974) }}"><code>multi_head_attention_forward</code></a></td>
+      </tr>
+      <tr>
+        <td>Per-head attention</td>
+        <td>scores <code>[batch·8, seq, seq]</code></td>
+        <td>The formula above, run on all heads at once by the fused kernel.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 7104, 7120) }}">SDPA path</a>; <a href="{{ src('torch/nn/functional.py', 7050, 7074) }}">manual path</a> when weights are returned</td>
+      </tr>
+      <tr>
+        <td><code>out_proj</code></td>
+        <td><code>Linear(512, 512)</code>: 262,656</td>
+        <td>W<sub>O</sub>: mixes the 8 concatenated head outputs back into one vector.</td>
+        <td><a href="{{ src('torch/nn/modules/activation.py', 1219, 1221) }}"><code>out_proj</code></a></td>
+      </tr>
+      <tr>
+        <td>Whole module</td>
+        <td>4·d² + 4·d = 1,050,624</td>
+        <td>Independent of the number of heads.</td>
+        <td><a href="{{ src('torch/nn/modules/activation.py', 1090, 1573) }}"><code>nn.MultiheadAttention</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="feed-forward">The feed-forward block</h2>
+
+<p>
+  Attention moves information <em>between</em> positions. The feed-forward block then works on
+  each position <em>alone</em>: widen to 2048, apply ReLU, narrow back to 512. Same weights at
+  every position. It holds two thirds of each encoder layer's parameters and is where much
+  of a model's stored knowledge is thought to live. In PyTorch it is
+  <a href="{{ src('torch/nn/modules/transformer.py', 980, 982) }}"><code>linear2(dropout(activation(linear1(x))))</code></a>;
+  <code>activation</code> is ReLU by default, or GELU if you pass <code>"gelu"</code>
+  (<a href="{{ src('torch/nn/modules/transformer.py', 1204, 1210) }}"><code>_get_activation_fn</code></a>).
+  Modern LLMs use a gated variant, SwiGLU.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>linear1</code></td>
+        <td><code>Linear(512, 2048)</code>: 1,050,624</td>
+        <td>Expand to 4× width so the non-linearity has room to work.</td>
+        <td><a href="{{ src('torch/nn/modules/transformer.py', 761, 778) }}"><code>TransformerEncoderLayer.__init__</code></a></td>
+      </tr>
+      <tr>
+        <td>activation</td>
+        <td>ReLU, 0 parameters</td>
+        <td><code>max(0, x)</code>, element-wise.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 1766) }}"><code>F.relu</code></a>, <a href="{{ src('torch/nn/modules/activation.py', 778, 823) }}"><code>GELU</code></a></td>
+      </tr>
+      <tr>
+        <td><code>linear2</code></td>
+        <td><code>Linear(2048, 512)</code>: 1,049,088</td>
+        <td>Project back to the residual width.</td>
+        <td><a href="{{ src('torch/nn/modules/linear.py', 104, 114) }}"><code>Linear.weight</code>, <code>bias</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="residuals">Residuals and LayerNorm</h2>
+
+<p>
+  Every sublayer is wrapped the same way: keep a copy of the input, add the sublayer's output
+  to it (the <strong>residual</strong>, from ResNet), and normalize. The residual means each
+  layer only learns a small <em>edit</em> to a running vector, the <em>residual stream</em>,
+  and gradients get a straight path back to the first layer. LayerNorm rescales each
+  position's 512 numbers to mean 0 and variance 1, then applies a learned scale and shift.
+</p>
+
+<p>
+  Where the norm goes turned out to matter. The paper normalizes <em>after</em> the add
+  (post-norm, PyTorch's default). Almost every model since normalizes <em>before</em> the
+  sublayer (pre-norm), which trains stably without a careful warmup. PyTorch supports both
+  with <code>norm_first</code>, in
+  <a href="{{ src('torch/nn/modules/transformer.py', 944, 956) }}">twelve lines</a> that cite
+  the pre-norm paper:
+</p>
+
+<figure class="ml-steps" data-ml-steps="Compare post-norm and pre-norm">
+  <div data-ml-step="Post-norm (paper, default)">
+    <div class="jj-diagram">
+      <svg viewBox="0 0 640 150" role="img" aria-labelledby="tf-post-title tf-post-desc">
+        <title id="tf-post-title">Post-norm sublayer</title>
+        <desc id="tf-post-desc">x goes through the sublayer, the result is added to x, and the sum is passed through LayerNorm. The norm sits on the residual path, so every layer's output is renormalized.</desc>
+        <g class="d-line" stroke-width="1.5" fill="none"><path d="M90 90 H170"></path><path d="M290 90 H360"></path><path d="M400 90 H460"></path><path d="M580 90 H620"></path></g>
+        <path d="M120 90 V40 H380 V70" class="ml-residual" stroke-width="1.5"></path>
+        <rect x="10" y="70" width="80" height="40" rx="7" class="d-box ml-tensor"></rect><text x="50" y="94" text-anchor="middle" font-size="13">x</text>
+        <rect x="170" y="70" width="120" height="40" rx="7" class="d-box ml-op"></rect><text x="230" y="94" text-anchor="middle" font-size="13">sublayer</text>
+        <circle cx="380" cy="90" r="20" class="d-box"></circle><text x="380" y="95" text-anchor="middle" font-size="16">+</text>
+        <rect x="460" y="70" width="120" height="40" rx="7" class="d-box ml-box-key"></rect><text x="520" y="94" text-anchor="middle" font-size="13">LayerNorm</text>
+        <text x="320" y="140" text-anchor="middle" font-size="11" class="d-muted">x = norm(x + sublayer(x))</text>
+      </svg>
+    </div>
+  </div>
+  <div data-ml-step="Pre-norm (norm_first=True)">
+    <div class="jj-diagram">
+      <svg viewBox="0 0 640 150" role="img" aria-labelledby="tf-pre-title tf-pre-desc">
+        <title id="tf-pre-title">Pre-norm sublayer</title>
+        <desc id="tf-pre-desc">x is normalized, passed through the sublayer, and the result is added back to the untouched x. The residual path has no norm on it, so the stream flows straight from the first layer to the last.</desc>
+        <g class="d-line" stroke-width="1.5" fill="none"><path d="M90 90 H150"></path><path d="M270 90 H310"></path><path d="M430 90 H500"></path><path d="M540 90 H620"></path></g>
+        <path d="M120 90 V40 H520 V70" class="ml-residual" stroke-width="1.5"></path>
+        <rect x="10" y="70" width="80" height="40" rx="7" class="d-box ml-tensor"></rect><text x="50" y="94" text-anchor="middle" font-size="13">x</text>
+        <rect x="150" y="70" width="120" height="40" rx="7" class="d-box ml-box-key"></rect><text x="210" y="94" text-anchor="middle" font-size="13">LayerNorm</text>
+        <rect x="310" y="70" width="120" height="40" rx="7" class="d-box ml-op"></rect><text x="370" y="94" text-anchor="middle" font-size="13">sublayer</text>
+        <circle cx="520" cy="90" r="20" class="d-box"></circle><text x="520" y="95" text-anchor="middle" font-size="16">+</text>
+        <text x="320" y="140" text-anchor="middle" font-size="11" class="d-muted">x = x + sublayer(norm(x)); add one final norm after the last layer</text>
+      </svg>
+    </div>
+  </div>
+</figure>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>LayerNorm</td>
+        <td>weight + bias <code>[512]</code>: 1,024; eps 1e-5</td>
+        <td><code>(x − mean) / √(var + eps) · weight + bias</code> over the last dimension.</td>
+        <td><a href="{{ src('torch/nn/modules/normalization.py', 105, 236) }}"><code>nn.LayerNorm</code></a></td>
+      </tr>
+      <tr>
+        <td>Dropout on each sublayer</td>
+        <td>p = 0.1, 0 parameters</td>
+        <td>Applied to the sublayer output before the add (<code>dropout1</code>, <code>dropout2</code>).</td>
+        <td><a href="{{ src('torch/nn/modules/transformer.py', 961, 982) }}"><code>_sa_block</code>, <code>_ff_block</code></a></td>
+      </tr>
+      <tr>
+        <td><code>norm_first</code></td>
+        <td>bool, default <code>False</code></td>
+        <td>Switches the layer between post-norm and pre-norm.</td>
+        <td><a href="{{ src('torch/nn/modules/transformer.py', 944, 956) }}">encoder</a>, <a href="{{ src('torch/nn/modules/transformer.py', 1125, 1150) }}">decoder</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="encoder">The encoder stack</h2>
+
+<p>
+  An encoder layer is self-attention then feed-forward, each wrapped as above.
+  <code>TransformerEncoder</code> deep-copies one layer N times
+  (<a href="{{ src('torch/nn/modules/transformer.py', 1199, 1201) }}"><code>_get_clones</code></a>,
+  so the copies start identical and train apart), runs them in a
+  <a href="{{ src('torch/nn/modules/transformer.py', 541, 555) }}">plain loop</a>, and applies
+  the optional final norm. At inference time, under the right conditions, the layer skips the
+  Python code entirely and calls one fused kernel
+  (<a href="{{ src('torch/nn/modules/transformer.py', 917, 942) }}"><code>torch._transformer_encoder_layer_fwd</code></a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>TransformerEncoderLayer</code></td>
+        <td>{{ "{:,}".format(defaults.encoder_layer) }} parameters</td>
+        <td>self_attn, linear1, linear2, norm1, norm2, three dropouts.</td>
+        <td><a href="{{ src('torch/nn/modules/transformer.py', 663, 982) }}">class</a>, <a href="{{ src('torch/nn/modules/transformer.py', 761, 778) }}">submodules</a></td>
+      </tr>
+      <tr>
+        <td><code>TransformerEncoder</code></td>
+        <td>6 layers + final norm: {{ "{:,}".format(defaults.encoder) }}</td>
+        <td><code>[batch, src_len, 512]</code> in and out: the memory.</td>
+        <td><a href="{{ src('torch/nn/modules/transformer.py', 320, 555) }}">class</a></td>
+      </tr>
+      <tr>
+        <td><code>src_key_padding_mask</code></td>
+        <td>bool <code>[batch, src_len]</code></td>
+        <td><code>True</code> marks padding tokens so nothing attends to them.</td>
+        <td><a href="{{ src('torch/nn/modules/transformer.py', 181, 194) }}"><code>Transformer.forward</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="decoder">The decoder stack</h2>
+
+<p>
+  A decoder layer has three sublayers. <strong>Masked self-attention</strong> lets each
+  output position read the earlier outputs only. <strong>Cross-attention</strong> is the
+  bridge: its queries come from the decoder, but its keys and values come from the encoder's
+  memory, so each French word can look up the English words it needs
+  (<a href="{{ src('torch/nn/modules/transformer.py', 1174, 1191) }}"><code>_mha_block</code></a>
+  calls <code>multihead_attn(x, mem, mem)</code>). Then the usual feed-forward.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>self_attn</code></td>
+        <td>MHA, 1,050,624</td>
+        <td>Over the target so far, with the causal <code>tgt_mask</code>.</td>
+        <td><a href="{{ src('torch/nn/modules/transformer.py', 1155, 1171) }}"><code>_sa_block</code></a></td>
+      </tr>
+      <tr>
+        <td><code>multihead_attn</code></td>
+        <td>MHA, 1,050,624; scores <code>[tgt_len, src_len]</code></td>
+        <td>Cross-attention: query = decoder state, key = value = memory.</td>
+        <td><a href="{{ src('torch/nn/modules/transformer.py', 1046, 1061) }}"><code>__init__</code></a>, <a href="{{ src('torch/nn/modules/transformer.py', 1174, 1191) }}"><code>_mha_block</code></a></td>
+      </tr>
+      <tr>
+        <td><code>linear1</code>, <code>linear2</code>, <code>norm1-3</code></td>
+        <td>2,099,712 + 3,072</td>
+        <td>The feed-forward block and one norm per sublayer.</td>
+        <td><a href="{{ src('torch/nn/modules/transformer.py', 1063, 1070) }}"><code>__init__</code></a></td>
+      </tr>
+      <tr>
+        <td><code>TransformerDecoder</code></td>
+        <td>6 layers + final norm: {{ "{:,}".format(defaults.decoder) }}</td>
+        <td>Every layer reads the same memory.</td>
+        <td><a href="{{ src('torch/nn/modules/transformer.py', 558, 660) }}">class</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="masks">Masks: who may look at whom</h2>
+
+<p>
+  A mask is added to the scores before softmax. <code>-inf</code> becomes a weight of exactly
+  0, so a blocked key contributes nothing. The decoder needs a <strong>causal</strong> mask
+  during training: it sees the whole French sentence at once, and without the mask position 2
+  would simply copy the answer from position 3.
+  <a href="{{ src('torch/nn/modules/transformer.py', 302, 311) }}"><code>Transformer.generate_square_subsequent_mask(n)</code></a>
+  builds it as <code>torch.triu(torch.full((n, n), -inf), diagonal=1)</code>
+  (<a href="{{ src('torch/nn/modules/transformer.py', 29, 41) }}">source</a>):
+</p>
+
+<pre><code>tensor([[0., -inf, -inf, -inf],
+        [0.,   0., -inf, -inf],
+        [0.,   0.,   0., -inf],
+        [0.,   0.,   0.,   0.]])</code></pre>
+
+<p>
+  Watch out for the boolean form: in PyTorch a <strong><code>True</code> means
+  blocked</strong> (<a href="{{ src('torch/nn/modules/activation.py', 1294, 1300) }}">docs</a>;
+  converted to <code>-inf</code> by <a href="{{ src('torch/nn/functional.py', 6612, 6638) }}"><code>_canonical_mask</code></a>).
+  That's the opposite of <code>F.scaled_dot_product_attention</code>'s <code>attn_mask</code>,
+  where <code>True</code> means "may attend". Padding masks
+  (<code>*_key_padding_mask</code>) work the same way, one row per batch item.
+</p>
+
+<h2 id="output-head">The output head</h2>
+
+<p>
+  The decoder's final vectors become predictions with one <code>Linear(512, vocab)</code> and a
+  softmax. The paper shares one matrix between the source embedding, target embedding and this
+  output layer (weight tying), which saves parameters and helps. None of it is inside
+  <code>nn.Transformer</code>: its <code>forward</code>
+  <a href="{{ src('torch/nn/modules/transformer.py', 283, 299) }}">returns the decoder output</a>,
+  <code>[batch, tgt_len, d_model]</code>. You add the head, and train with cross-entropy on
+  the logits (softmax is folded into the loss).
+</p>
+
+<h2 id="parameter-count">Counting parameters</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-params">Worked example: why <code>nn.Transformer()</code> has {{ "{:,}".format(defaults.total) }} parameters</h3>
+  <p>With d = 512 and ff = 2048:</p>
+  <ul>
+    <li>Multi-head attention: 4·d² + 4·d = 1,048,576 + 2,048 = <strong>{{ "{:,}".format(defaults.attention) }}</strong></li>
+    <li>Feed-forward: 2·d·ff + ff + d = 2,097,152 + 2,048 + 512 = <strong>{{ "{:,}".format(defaults.feed_forward) }}</strong></li>
+    <li>LayerNorm: 2·d = <strong>{{ "{:,}".format(defaults.layer_norm) }}</strong></li>
+    <li>Encoder layer: 1 attention + 1 FFN + 2 norms = <strong>{{ "{:,}".format(defaults.encoder_layer) }}</strong></li>
+    <li>Decoder layer: 2 attentions + 1 FFN + 3 norms = <strong>{{ "{:,}".format(defaults.decoder_layer) }}</strong></li>
+    <li>Encoder: 6 layers + final norm = {{ "{:,}".format(defaults.encoder) }}; decoder: 6 layers + final norm = {{ "{:,}".format(defaults.decoder) }}</li>
+    <li>Total: <strong>{{ "{:,}".format(defaults.total) }}</strong>, about 44M.</li>
+  </ul>
+  <p>
+    The paper reports about 65M for its base model. The difference is the embeddings: a shared
+    vocabulary of about 37,000 tokens × 512 adds about 19M, and with weight tying that one
+    matrix also serves as the output layer. Notice that attention is only a third of each
+    encoder layer; the feed-forward block is two thirds.
+  </p>
+</div>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Configuration</th><th>d_model · heads · layers · ff</th><th>Per encoder layer</th><th>nn.Transformer total</th></tr></thead>
+    <tbody>
+      {% for preset in presets %}
+        {% set count = param_count(preset.d_model, preset.encoder_layers, preset.decoder_layers, preset.dim_feedforward) %}
+        <tr>
+          <td>{{ preset.name }}</td>
+          <td>{{ preset.d_model }} · {{ preset.nhead }} · {{ preset.encoder_layers }}+{{ preset.decoder_layers }} · {{ preset.dim_feedforward }}</td>
+          <td>{{ "{:,}".format(count.encoder_layer) }}</td>
+          <td>{{ "{:,}".format(count.total) }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="ml-calc" data-ml-params hidden></div>
+
+<h2 id="cost">What it costs</h2>
+
+<p>
+  Attention compares every position with every other, so its score matrix is
+  <code>seq × seq</code> per head: doubling the context quadruples that work and memory, the
+  O(n²·d) term. The feed-forward block is O(n·d²): linear in length. For short sequences the
+  feed-forward block dominates; for long ones attention does. That trade-off is why the paper
+  could drop recurrence (every position is computed in parallel, with a path of length 1
+  between any two words), and why long-context models fight so hard over attention.
+  Optimizing it without changing the math is what fused kernels such as FlashAttention do,
+  and what <code>F.scaled_dot_product_attention</code> dispatches to.
+</p>
+
+<h2 id="training-vs-inference">Training versus inference</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th></th><th>Training</th><th>Inference (generation)</th></tr></thead>
+    <tbody>
+      <tr><td>Decoder input</td><td>The whole correct target, shifted right by one ("teacher forcing")</td><td>Its own previous outputs, one new token per step</td></tr>
+      <tr><td>Passes per sentence</td><td>One: all positions predicted in parallel</td><td>One decoder pass per output token; the encoder runs once</td></tr>
+      <tr><td>Causal mask</td><td>Essential: stops position <em>i</em> reading the answer at <em>i</em>+1</td><td>Still applied; caching past keys and values (the KV cache) avoids recomputing them</td></tr>
+      <tr><td>Dropout</td><td>On (p = 0.1)</td><td>Off: call <code>model.eval()</code></td></tr>
+      <tr><td>Paper recipe</td><td>Adam (β₂ = 0.98), 4,000 warmup steps then inverse-sqrt decay, label smoothing 0.1</td><td>Beam search, beam size 4</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="pytorch">In PyTorch</h2>
+
+<p>The library version, with the pieces <code>nn.Transformer</code> leaves out:</p>
+
+<pre><code class="language-python">import math
+import torch
+from torch import nn
+
+def sinusoidal(n, d):
+    pos = torch.arange(n).unsqueeze(1)
+    angle = pos / 10000 ** (torch.arange(0, d, 2) / d)
+    pe = torch.zeros(n, d)
+    pe[:, 0::2], pe[:, 1::2] = angle.sin(), angle.cos()
+    return pe
+
+d_model, vocab = 512, 37000
+embed = nn.Embedding(vocab, d_model)
+model = nn.Transformer(d_model=d_model, nhead=8, batch_first=True)
+head = nn.Linear(d_model, vocab, bias=False)
+head.weight = embed.weight                      # weight tying
+
+def encode(ids):                                # [batch, seq] -> [batch, seq, d_model]
+    return embed(ids) * math.sqrt(d_model) + sinusoidal(ids.size(1), d_model)
+
+src = torch.randint(vocab, (2, 10))
+tgt = torch.randint(vocab, (2, 7))
+mask = nn.Transformer.generate_square_subsequent_mask(7)
+out = model(encode(src), encode(tgt), tgt_mask=mask, tgt_is_causal=True)
+logits = head(out)                              # [2, 7, vocab]</code></pre>
+
+<p>And attention plus one encoder layer from scratch, matching PyTorch's post-norm layer parameter for parameter:</p>
+
+<pre><code class="language-python">def attention(q, k, v, causal=False):
+    scores = q @ k.transpose(-2, -1) / math.sqrt(q.size(-1))
+    if causal:
+        n = scores.size(-1)
+        blocked = torch.ones(n, n, dtype=torch.bool).triu(1)
+        scores = scores.masked_fill(blocked, float("-inf"))
+    return scores.softmax(dim=-1) @ v
+
+class EncoderLayer(nn.Module):
+    def __init__(self, d=512, heads=8, ff=2048, p=0.1):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(d, heads, dropout=p, batch_first=True)
+        self.ff = nn.Sequential(nn.Linear(d, ff), nn.ReLU(), nn.Dropout(p), nn.Linear(ff, d))
+        self.norm1, self.norm2 = nn.LayerNorm(d), nn.LayerNorm(d)
+        self.drop1, self.drop2 = nn.Dropout(p), nn.Dropout(p)
+
+    def forward(self, x, mask=None):
+        a, _ = self.attn(x, x, x, attn_mask=mask, need_weights=False)
+        x = self.norm1(x + self.drop1(a))
+        return self.norm2(x + self.drop2(self.ff(x)))
+
+sum(p.numel() for p in EncoderLayer().parameters())   # {{ "{:,}".format(defaults.encoder_layer) }}</code></pre>
+
+<h2 id="pitfalls">Pitfalls</h2>
+
+<ul>
+  <li><strong><code>batch_first</code> defaults to <code>False</code>.</strong> Without it, PyTorch reads <code>[seq, batch, d]</code>; a <code>[batch, seq, d]</code> tensor runs without error and silently attends across the batch (<a href="{{ src('torch/nn/modules/transformer.py', 102, 119) }}">defaults</a>).</li>
+  <li><strong>Boolean masks are inverted between APIs.</strong> <code>True</code> blocks in <code>nn.MultiheadAttention</code> and <code>nn.Transformer</code>, but allows in <code>F.scaled_dot_product_attention</code>.</li>
+  <li><strong>No positions, no order.</strong> Forget the positional encoding and the encoder treats the input as a bag of words.</li>
+  <li><strong><code>need_weights=True</code> is the default</strong> for <code>nn.MultiheadAttention</code>, which takes the slower path and averages weights over heads (<a href="{{ src('torch/nn/modules/activation.py', 1256, 1264) }}">signature</a>). Pass <code>need_weights=False</code> when you only need the output; the transformer layers already do.</li>
+  <li><strong>Post-norm needs warmup.</strong> With the default <code>norm_first=False</code>, a large learning rate early on diverges; use warmup or <code>norm_first=True</code>.</li>
+  <li><strong>Don't forget <code>model.eval()</code></strong> at inference, or dropout stays on.</li>
+</ul>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="ml-quiz">
+  <summary>Why divide the scores by √d<sub>k</sub>?</summary>
+  <p>If q and k have unit-variance entries, their dot product has variance d<sub>k</sub>. Dividing by √d<sub>k</sub> brings it back to 1, so softmax doesn't saturate into a one-hot with near-zero gradients.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Does adding more heads add parameters?</summary>
+  <p>No. The heads split <code>d_model</code> between them; <code>nn.MultiheadAttention</code> has 4·d² + 4·d parameters for any number of heads that divides d.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Which sublayer lets the decoder see the source sentence?</summary>
+  <p>Cross-attention (<code>multihead_attn</code>): queries from the decoder, keys and values from the encoder's memory.</p>
+</details>
+<details class="ml-quiz">
+  <summary>If you drop the encoder and the cross-attention, what do you get?</summary>
+  <p>A decoder-only model: masked self-attention plus feed-forward, trained to predict the next token. That's GPT, and the next family of pages.</p>
+</details>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Vaswani, Shazeer, Parmar, Uszkoreit, Jones, Gomez, Kaiser and Polosukhin. <em>Attention Is All You Need.</em> 2017. <a href="https://arxiv.org/abs/1706.03762">arXiv:1706.03762</a></li>
+  <li>Ba, Kiros and Hinton. <em>Layer Normalization.</em> 2016. <a href="https://arxiv.org/abs/1607.06450">arXiv:1607.06450</a></li>
+  <li>He, Zhang, Ren and Sun. <em>Deep Residual Learning for Image Recognition.</em> 2015. <a href="https://arxiv.org/abs/1512.03385">arXiv:1512.03385</a></li>
+  <li>Xiong et al. <em>On Layer Normalization in the Transformer Architecture.</em> 2020. <a href="https://arxiv.org/abs/2002.04745">arXiv:2002.04745</a></li>
+  <li>Press and Wolf. <em>Using the Output Embedding to Improve Language Models.</em> 2016. <a href="https://arxiv.org/abs/1608.05859">arXiv:1608.05859</a></li>
+  <li>Bahdanau, Cho and Bengio. <em>Neural Machine Translation by Jointly Learning to Align and Translate.</em> 2014. <a href="https://arxiv.org/abs/1409.0473">arXiv:1409.0473</a></li>
+  <li>Dao, Fu, Ermon, Rudra and Ré. <em>FlashAttention.</em> 2022. <a href="https://arxiv.org/abs/2205.14135">arXiv:2205.14135</a></li>
+</ul>

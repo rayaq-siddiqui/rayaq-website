@@ -21,7 +21,7 @@ PAGES = [
             "torch/nn/modules/sparse.py",
             "torch/nn/modules/linear.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "attention",

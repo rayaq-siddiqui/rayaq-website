@@ -228,3 +228,14 @@ def test_param_count_matches_nn_transformer_defaults():
     assert count["decoder_layer"] == 4_204_032
     assert count["total"] == 44_140_544
 
+def test_transformer_page_has_its_interactive_pieces_and_fallbacks():
+    client = app_module.app.test_client()
+
+    body = client.get("/ml-models/transformer").get_data(as_text=True)
+
+    assert "data-ml-attention" in body
+    assert "data-ml-attention-static" in body
+    assert "data-ml-params" in body
+    assert "44,140,544" in body
+    assert 'id="references"' in body
+    assert "arxiv.org/abs/1706.03762" in body
