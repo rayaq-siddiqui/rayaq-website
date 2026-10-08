@@ -30,8 +30,9 @@ backend/            Flask app (Python) — all server-side logic
                      system, plus a jj-lib link helper and the FUSE op list (see "jj-vfs-poc" below)
   jj_cloud_docs.py  The /jj-commit-cloud-poc section: the same shape for the commit cloud,
                      with the protobuf item list (see "jj-commit-cloud-poc" below)
-  ml_models_docs.py The /ml-models section: PyTorch release pin, page registry, pinned
-                     source-link helper, and page rendering (see "ml-models" below)
+  ml_models_docs.py The /ml-models section: PyTorch/scikit-learn/XGBoost release pins, areas,
+                     page registry, learning path, pinned source-link helpers, and page
+                     rendering (see "ml-models" below)
   requirements.txt       Runtime deps
   requirements-dev.txt   Runtime + pytest, for local dev / CI
   pytest.ini         Configures pytest to discover *_tests.py (not the pytest default
@@ -49,8 +50,9 @@ backend/            Flask app (Python) — all server-side logic
     jj_dojo_docs_tests.py Same checks for /jj-dojo
     jj_vfs_docs_tests.py  Same checks for /jj-vfs-poc, plus jj-lib link pinning
     jj_cloud_docs_tests.py Same checks for /jj-commit-cloud-poc
-    ml_models_docs_tests.py Same checks for /ml-models, plus per-page diagram/table/snippet
-                     rules and that torch never becomes a server dependency
+    ml_models_docs_tests.py Same checks for /ml-models, plus the spec inventory, learning
+                     path, page format, build-queue order, and that no ML package
+                     becomes a server dependency
 
 specs/
   jj.md               The rayaq.ca/jj product & technical spec — the contract the
@@ -104,7 +106,7 @@ vmrun.sh            Convenience wrapper: `./vmrun.sh '<command>'` runs a single 
 | `/jj-vfs-poc/<slug>` | One deep-dive page per topic in `jj_vfs_docs.PAGES` that is marked ready; 404 otherwise |
 | `/jj-commit-cloud-poc` | jj-commit-cloud-poc (gRPC commit cloud) architecture reference: overview and page index |
 | `/jj-commit-cloud-poc/<slug>` | One deep-dive page per topic in `jj_cloud_docs.PAGES` that is marked ready; 404 otherwise |
-| `/ml-models` | Large ML model architecture reference (PyTorch-linked): model-family map, vocabulary, page index |
+| `/ml-models` | Machine learning reference (math to systems, beginner to expert): learning path, area map, vocabulary, pages by area |
 | `/ml-models/<slug>` | One deep-dive page per topic in `ml_models_docs.PAGES` that is marked ready; 404 otherwise |
 | `/health` | Returns `{"status": "ok"}`, 200. Used to verify a deploy actually succeeded. |
 
@@ -217,15 +219,20 @@ Each call is one command over SSH — deliberately kept to single, auditable com
   `common/proto/*.proto`. A daily Routine ("rayaq.ca/jj-commit-cloud-poc — architecture
   reference agent") builds and maintains it.
 - **ml-models** (`ml_models_docs.py` + `templates/ml_models/` + `ml_models.css`/`ml_models.js`):
-  a static reference to large ML model architecture (Transformer, attention, GPT/BERT/ViT,
-  MoE, diffusion U-Net, training) at `/ml-models`. Read `specs/ml-models.md` first and
-  `specs/ml-models-progress.md` for status. Every code link goes through
-  `ml_models_docs.source_url`, pinned to the commit of one stable PyTorch release tag
-  (`ml_models_docs.UPSTREAM`); links are PyTorch-only. Diagrams are inline SVG; `ml_models.js`
+  a static reference for learning or refreshing anything in machine learning, at `/ml-models`:
+  12 areas (math foundations through classical ML, neural networks, architectures, generative
+  models, language models, retrieval, training systems, inference and specialized learning),
+  93 registered pages with levels and prerequisites, and a seven-step learning path. Read
+  `specs/ml-models.md` first and `specs/ml-models-progress.md` for status and the build queue.
+  Every page follows the spec's §6 format (problem, intuition, mechanics, worked example,
+  implementation, tradeoffs, connections, references). Every code link goes through
+  `ml_models_docs.pinned_url` (or its `source_url`/`sklearn_url`/`xgboost_url` shorthands),
+  pinned to the commit of one stable release per library in `ml_models_docs.PINS`; ideas no
+  library implements cite their papers. Diagrams are inline SVG; `ml_models.js`
   is optional progressive enhancement and every page reads fully without it. Torch-computed
   figures come from offline scripts in `tools/ml_models/` with output committed under
-  `frontend/static/ml_models/` — never add `torch` to the requirements files or run it in CI or
-  at request time. A daily Routine ("rayaq.ca/ml-models — architecture reference agent")
+  `frontend/static/ml_models/` — never add `torch` (or scikit-learn, XGBoost or any other ML
+  package) to the requirements files or run it in CI or at request time. A daily Routine ("rayaq.ca/ml-models — architecture reference agent")
   builds and maintains it.
 - Phone number is intentionally omitted from the public resume page (privacy choice, since the repo is public). Don't add it back without checking with the site owner first.
 

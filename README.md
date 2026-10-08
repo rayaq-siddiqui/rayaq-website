@@ -12,7 +12,7 @@ Personal website, live at [rayaq.ca](https://rayaq.ca). Flask backend, server-re
 - `/jj-dojo`: the same kind of reference for [Jujutsu Dojo](https://github.com/jj-vcs/jj-dojo), Google's VS Code extension for jj, starting with its commit graph layout (`/jj-dojo/graph-layout`)
 - `/jj-vfs-poc`: the same for [jj-vfs-poc](https://github.com/jj-vcs/jj-vfs-poc), a read-only FUSE file system over a jj repository, starting with its namespace (`/jj-vfs-poc/namespace`)
 - `/jj-commit-cloud-poc`: the same for [jj-commit-cloud-poc](https://github.com/jj-vcs/jj-commit-cloud-poc), a gRPC commit cloud for jj, starting with its protobuf schemas (`/jj-commit-cloud-poc/protobufs`)
-- `/ml-models`: a reference to how large ML models are built, with a model-family map and a tiered list of models every ML engineer should know, from linear regression to current frontier models. Every code link is pinned to a PyTorch release.
+- `/ml-models`: a reference for learning or refreshing anything in machine learning, from the math through classical models, neural networks, Transformers and language models to the systems that train and serve them. It has a seven-step learning path for beginners, 93 planned pages in 12 areas, each marked intro, core or advanced, and a tiered list of notable models. Every code link is pinned to one release of PyTorch, scikit-learn or XGBoost.
 - `/ml-models/<page>`: deep-dive pages, starting with an interactive walk through the Transformer (`/ml-models/transformer`): a clickable architecture diagram, a live attention table and a parameter calculator. Planned pages show on `/ml-models` until they are ready.
 - `/resume`: resume
 - `/health`: health check endpoint
@@ -34,7 +34,7 @@ Several scheduled Claude Code routines push straight to `main`, which deploys th
 | rayaq.ca/jj-dojo architecture reference agent | Weekly (Thursday) | The same maintenance for `/jj-dojo`, tracked in [`specs/jj-dojo-progress.md`](specs/jj-dojo-progress.md) |
 | rayaq.ca/jj-vfs-poc architecture reference agent | Weekly (Monday) | The same for `/jj-vfs-poc`, tracked in [`specs/jj-vfs-poc-progress.md`](specs/jj-vfs-poc-progress.md) |
 | rayaq.ca/jj-commit-cloud-poc architecture reference agent | Weekly (Wednesday) | The same for `/jj-commit-cloud-poc`, tracked in [`specs/jj-commit-cloud-poc-progress.md`](specs/jj-commit-cloud-poc-progress.md) |
-| rayaq.ca/ml-models build run | Daily | Builds the next `/ml-models` page from the queue in [`specs/ml-models-progress.md`](specs/ml-models-progress.md), then keeps pages in step with new PyTorch releases |
+| rayaq.ca/ml-models build run | Daily | Builds the next `/ml-models` page from the queue in [`specs/ml-models-progress.md`](specs/ml-models-progress.md), then keeps pages in step with new PyTorch, scikit-learn and XGBoost releases |
 | Weekly server cost optimization | Weekly (Sunday) | Looks for measurable savings in the application code and logs each run in [`docs/COST_OPTIMIZATION.md`](docs/COST_OPTIMIZATION.md) |
 | Sync Assembly showcase | Every 6 hours | Copies the latest project digest from Assembly into `backend/showcase.json` |
 
