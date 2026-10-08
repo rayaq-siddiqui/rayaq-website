@@ -1,10 +1,10 @@
 # rayaq.ca/jj-dojo — build progress
 
-Running log for the daily jj-dojo architecture Routine. Read this first, update it last.
+Running log for the weekly jj-dojo maintenance Routine. Read this first, update it last.
 The contract is `specs/jj-dojo.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-07 (fifth run). Bumped the pin to `67c5c1f` and built the
-`graph-webview` page.
+**Last updated:** 2026-10-08 (sixth run). **The build is complete:** all nine §5 pages are
+ready and every §10 criterion is met. From here the Routine runs weekly in maintenance mode only.
 
 ## Upstream pin
 
@@ -15,17 +15,32 @@ The contract is `specs/jj-dojo.md` (spec v1); this file records where the build 
 
 - [x] `/jj-dojo` renders the §6 diagram and links to every page in §5 (boxes for unbuilt pages
       link to pinned source until the page exists).
-- [ ] Every §5 page exists, meets its "Must cover" column, and is registered: `graph-layout`,
-      `graph-protocol`, `activation`, `merge-conflicts`, `graph-webview` done; 4 to go.
+- [x] Every §5 page exists, meets its "Must cover" column, and is registered: all nine pages
+      are ready.
 - [x] `graph-layout` meets all eight §8 items with at least two SVG diagrams (two deviations below).
 - [x] Planned components are visibly marked as planned everywhere they appear.
 - [x] Every source link is pinned to `UPSTREAM.commit` (tested).
-- [x] §7.5 tests exist and pass (144 tests in the suite, all sections).
+- [x] §7.5 tests exist and pass (148 tests in the suite, all sections).
 - [x] Homepage card links to `/jj-dojo`.
 - [x] Mobile at 390px: no horizontal page scroll on `/jj-dojo` and every ready page (checked in
       headless Chromium this run).
-- [x] The daily Routine has run in maintenance mode (second to fourth runs: no upstream change;
-      fifth run: pin bumped).
+- [x] The Routine has run in maintenance mode (second to fourth runs: no upstream change;
+      fifth run: pin bumped; sixth run: no upstream change). It now runs weekly.
+
+## Sixth run (2026-10-08): build complete
+
+| Commit | What |
+|---|---|
+| `a955a9c` | `icon-theme` page: finding the theme, parsing, the `IconTheme` model, icon resolution order, `FileIcon` and the webview URIs, caching, tests |
+| `5919dd5` | `utils` page: `HashMap`/`HashSet` and why they exist, `check`, `dispose`, `time` |
+| `fa0c1b6` | `build-and-test` page: `MODULE.bazel`, root targets, the `deps` scheme, the in-repo Bazel rules, the pinned `jj`, the Jasmine helpers and fake VS Code API, CI, the enum generator. Also fixed a wrong claim on `utils` (the `ts_library` macro drops `*_test.ts`) and linked `icon-theme`'s tests to the new page |
+| `a7e00b3` | `roadmap` page: the three layers with a status SVG, milestones, `src/client/` and `src/file_system_watcher/` (the deliberate addition), design considerations including the read-only jj flags |
+
+Maintenance: upstream `HEAD` still at `67c5c1f`, so the pin stayed. Mobile check (390 px,
+headless Chromium): no page overflow on any of the four new pages.
+
+Scheduling: the owner moved this Routine from daily to weekly and from building to
+maintenance only.
 
 ## Fifth run (2026-10-07)
 
@@ -92,11 +107,16 @@ moves and `preprocess.ts` changes.
 5. ~~`activation`~~
 6. ~~`merge-conflicts`~~
 7. ~~`graph-webview`~~
-8. `icon-theme`
-9. `build-and-test`
-10. `utils`
-11. `roadmap`, which also covers `src/client/` and `src/file_system_watcher/` (deliberate addition,
-    see below)
+8. ~~`icon-theme`~~
+9. ~~`build-and-test`~~
+10. ~~`utils`~~
+11. ~~`roadmap`, which also covers `src/client/` and `src/file_system_watcher/` (deliberate addition,
+    see below)~~
+
+The build queue is empty. Weekly maintenance: diff upstream against the pin, update affected
+pages, refresh `PROTOCOL_TYPES`, and move items from planned to implemented on `roadmap`, the
+index's implemented-vs-planned table and the §6 diagram as they land. When a new module is wired
+into activation, propose a page for it here first.
 
 ## Deliberate deviations
 
@@ -163,4 +183,7 @@ moves and `preprocess.ts` changes.
 - **No CSP in the webview HTML.** `getHtmlForWebview` sets no Content-Security-Policy meta tag. The
   page states the fact without judging it.
 - **`@parcel/watcher` loose ends.** The `vsix` target has a TODO about packaging the native module,
-  and `LocalFileSystemWatcher` subscribes without an ignore list. Cover on `roadmap`.
+  and `LocalFileSystemWatcher` subscribes without an ignore list. Both are now on `roadmap#gaps`.
+- **`//:test` does not exist (`build-and-test`).** The spec's "Must cover" names a `//:test`
+  target. There is none at this pin: `npm test` runs `bazel test //...` over ten `:tests` targets.
+  The page describes what exists.
