@@ -10,6 +10,18 @@ import ml_models_docs
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 TEMPLATES_DIR = os.path.join(ROOT, "frontend", "templates", "ml_models")
 TABLE_HEADER = "<th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th>"
+TERM_TABLE_HEADER = "<th>Term</th><th>Shape/Params</th><th>Meaning</th><th>Source</th>"
+FORMAT_SECTIONS = [
+    "problem",
+    "intuition",
+    "mechanics",
+    "worked-example",
+    "implementation",
+    "tradeoffs",
+    "connections",
+    "references",
+]
+FORMAT_EXEMPT = {"transformer"}
 
 
 def all_urls():
@@ -313,8 +325,37 @@ def test_ready_topic_pages_have_diagrams_tables_and_a_snippet():
         for svg in svgs:
             assert 'role="img"' in svg, url
             assert "<title" in svg and "<desc" in svg, url
-        assert TABLE_HEADER in body, url
+        assert TABLE_HEADER in body or TERM_TABLE_HEADER in body, url
         assert "<pre><code" in body, url
+
+
+def test_ready_pages_follow_the_page_format():
+    client = app_module.app.test_client()
+
+    for page in ml_models_docs.ready_pages():
+        if page["slug"] in FORMAT_EXEMPT:
+            continue
+        body = client.get(f"/ml-models/{page['slug']}").get_data(as_text=True)
+        ids = re.findall(r'<h2 id="([^"]+)"', body)
+        assert [section for section in ids if section in FORMAT_SECTIONS] == FORMAT_SECTIONS, page["slug"]
+        assert 'class="ml-connections"' in body, page["slug"]
+
+
+def test_connections_partial_links_ready_pages_and_marks_the_rest(monkeypatch):
+    pages = [dict(page) for page in ml_models_docs.PAGES]
+    by_slug = {page["slug"]: page for page in pages}
+    by_slug["attention"]["ready"] = True
+    by_slug["embeddings"]["ready"] = False
+    monkeypatch.setattr(ml_models_docs, "PAGES", pages)
+
+    with app_module.app.test_request_context():
+        html = app_module.app.jinja_env.get_template("ml_models/_connections.html").render(
+            connections=ml_models_docs.connections("attention")
+        )
+
+    assert '<span class="jj-nav-pending">Embeddings</span>' in html
+    assert '<a href="/ml-models/transformer">The Transformer</a>' in html
+    assert 'id="connections-before"' in html and 'id="connections-after"' in html
 
 
 def test_pages_load_nothing_from_other_origins():
