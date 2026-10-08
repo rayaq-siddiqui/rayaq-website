@@ -1,4 +1,19 @@
+import re
+
 import app as app_module
+import resume_data
+
+PHONE_NUMBER = re.compile(r"\(?\b\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b")
+
+PROJECT_LINKS = [
+    "/leetcode",
+    "/ml-models",
+    "/jj",
+    "/jj-dojo",
+    "/jj-vfs-poc",
+    "/jj-commit-cloud-poc",
+    "/weather",
+]
 
 
 def fake_city():
@@ -68,7 +83,9 @@ def test_resume_omits_phone_number():
 
     body = client.get("/resume").get_data(as_text=True)
 
-    assert "306" not in body
+    assert "306" not in re.sub(r"\?v=\d+", "", body)
+    assert "tel:" not in body
+    assert not PHONE_NUMBER.search(body)
 
 
 def test_resume_renders_summary_honors_and_certifications():
@@ -250,13 +267,6 @@ def test_ml_models_returns_200():
     assert "ML model architectures" in response.get_data(as_text=True)
 
 
-def test_home_links_to_ml_models_between_jj_and_jj_dojo():
-    client = app_module.app.test_client()
-
-    body = client.get("/").get_data(as_text=True)
-
-    assert body.index('href="/jj"') < body.index('href="/ml-models"') < body.index('href="/jj-dojo"')
-
 
 def test_leetcode_returns_200():
     client = app_module.app.test_client()
@@ -273,9 +283,83 @@ def test_leetcode_unknown_page_returns_404():
     assert client.get("/leetcode/not-a-page").status_code == 404
 
 
-def test_home_links_to_leetcode_between_ml_models_and_jj_dojo():
+def projects_section(body):
+    return body[body.index('id="projects"'):]
+
+
+def test_home_has_about_then_projects_sections():
     client = app_module.app.test_client()
 
     body = client.get("/").get_data(as_text=True)
 
-    assert body.index('href="/ml-models"') < body.index('href="/leetcode"') < body.index('href="/jj-dojo"')
+    assert body.count("<h1") == 1
+    assert "About me</h2>" in body
+    assert "Fun projects</h2>" in body
+    assert body.index('id="about"') < body.index('id="projects"')
+
+
+def test_home_links_every_project_section_in_order():
+    client = app_module.app.test_client()
+
+    projects = projects_section(client.get("/").get_data(as_text=True))
+
+    positions = [projects.index(f'href="{link}"') for link in PROJECT_LINKS]
+    assert positions == sorted(positions)
+
+
+def test_home_project_links_all_resolve():
+    client = app_module.app.test_client()
+
+    for link in PROJECT_LINKS:
+        if link == "/weather":
+            continue
+        assert client.get(link).status_code == 200, link
+
+
+def test_home_renders_resume_from_resume_data():
+    client = app_module.app.test_client()
+
+    body = client.get("/").get_data(as_text=True)
+
+    assert resume_data.HEADLINE in body
+    assert resume_data.SUMMARY.replace("'", "&#39;") in body
+    assert resume_data.EDUCATION["school"] in body
+    for job in resume_data.EXPERIENCES:
+        assert job["role"] in body
+    for project in resume_data.PROJECTS:
+        assert project["name"] in body
+    for skill in resume_data.SKILLS["Languages"]:
+        assert skill in body
+    assert body.index('id="about"') < body.index("Experience</h3>") < body.index('id="projects"')
+
+
+def test_home_drops_the_coming_soon_card():
+    client = app_module.app.test_client()
+
+    body = client.get("/").get_data(as_text=True)
+
+    assert "Coming soon" not in body
+    assert "feature-card" not in body
+
+
+def test_home_omits_phone_number():
+    client = app_module.app.test_client()
+
+    body = client.get("/").get_data(as_text=True)
+
+    assert "306" not in re.sub(r"\?v=\d+", "", body)
+    assert "tel:" not in body
+    assert not PHONE_NUMBER.search(body)
+
+
+def test_resume_and_home_share_the_resume_markup():
+    client = app_module.app.test_client()
+
+    home = client.get("/").get_data(as_text=True)
+    resume = client.get("/resume").get_data(as_text=True)
+
+    for page in (home, resume):
+        assert "Kids Caring for Kids Cancer Drive" in page
+        assert "Deep Learning Specialization" in page
+    assert "Experience</h2>" in resume
+    assert "Experience</h3>" in home
