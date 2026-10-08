@@ -1,0 +1,371 @@
+{% set degrees = [1, 3, 5, 9] %}
+{% set rows = generalization_rows(degrees) %}
+{% set xs = generalization_x %}
+{% set ys = generalization_targets() %}
+{% set w1 = polynomial_fit(xs, ys, 1) %}
+{% set w3 = polynomial_fit(xs, ys, 3) %}
+{% set w9 = polynomial_fit(xs, ys, 9) %}
+{% macro f3(x) -%}{{ "%.3f"|format(x) }}{%- endmacro %}
+{% macro sci(x) -%}{% if x < 0.0005 %}≈ 0{% elif x >= 1000 %}{{ "{:,.0f}".format(x) }}{% else %}{{ "%.3f"|format(x) if x < 10 else "%.1f"|format(x) }}{% endif %}{%- endmacro %}
+<header class="jj-header">
+  <h1>Generalization</h1>
+  <p class="tagline">
+    A model is only useful if it works on data it has never seen. Generalization is the gap between how
+    well a model does on the examples it was trained on and how well it does on new ones. This page
+    defines that gap, fits polynomials of growing size to ten noisy points so you can watch it open, and
+    shows the other way a model fails: when the new data stops looking like the old.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Training minimizes a loss on a finite set of examples. But nobody wants the answer to "how well do you
+  know these ten examples?" They want to know how the model will do tomorrow, on inputs it has not
+  met. A model can score perfectly on its training set by memorizing it and still be useless, so the
+  training score alone says almost nothing about what you care about.
+</p>
+<p>
+  Every practical choice in machine learning is, underneath, a bet about this gap: how big a model, how
+  much data, when to stop training, how to measure success honestly. If you cannot tell memorizing from
+  learning, you cannot tell a good model from a lucky one.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  A student who memorizes last year's exam gets a perfect score on last year's exam and learns nothing
+  about the subject. A student who understands the material may miss a couple of old questions but does well
+  on a new paper. The old exam is the training set; the new paper is the world. We measure
+  understanding by setting some questions aside and never practising on them.
+</p>
+<p>
+  Two things make a new paper harder than the old one. If the student has too much freedom to bend an answer
+  around every quirk of the practice questions, they fit noise. And if the new paper covers a different
+  syllabus than the practice set, even a student who understood everything may fail. These are the two
+  halves of this page: <em>capacity</em> and <em>distribution shift</em>.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 230" role="img" aria-labelledby="gen-gap-title gen-gap-desc">
+    <title id="gen-gap-title">The training sample and the world it came from</title>
+    <desc id="gen-gap-desc">
+      A large rounded region labelled the data-generating distribution. A small set of dots inside it is
+      labelled the training sample, and another small set of dots inside it is labelled the test sample.
+      A dashed arrow from the training sample to the whole region is labelled generalization. A separate
+      dashed region outside it is labelled shifted data.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <rect x="30" y="20" width="420" height="170" rx="40" class="d-box ml-tensor"></rect>
+      <text x="240" y="44" font-weight="bold">the world: data-generating distribution P</text>
+      <g class="d-line" fill="none" stroke-width="1.5">
+        <circle cx="110" cy="100" r="5"></circle><circle cx="140" cy="130" r="5"></circle>
+        <circle cx="175" cy="95" r="5"></circle><circle cx="205" cy="125" r="5"></circle>
+        <circle cx="160" cy="160" r="5"></circle>
+      </g>
+      <text x="150" y="182" class="d-muted">training sample</text>
+      <g class="d-line" fill="none" stroke-width="1.5">
+        <rect x="300" y="95" width="9" height="9"></rect><rect x="340" y="130" width="9" height="9"></rect>
+        <rect x="375" y="100" width="9" height="9"></rect>
+      </g>
+      <text x="340" y="165" class="d-muted">held-out test sample</text>
+      <rect x="500" y="40" width="170" height="130" rx="30" class="d-box ml-dashed"></rect>
+      <text x="585" y="100" font-weight="bold">shifted data</text>
+      <text x="585" y="120" class="d-muted">a different P'</text>
+      <text x="240" y="212" class="d-muted">Test error estimates the error over the whole world only if the test sample comes from the same P.</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Generalization means doing well across P, not just on the dots you trained on. A shifted P' is a different world.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="risk">True risk and empirical risk</h3>
+<p>
+  Suppose examples (x, y) are drawn from some unknown distribution P, and a loss ℓ scores a prediction
+  f(x) against y (see <a href="/ml-models/loss-functions">loss functions</a>). The quantity we want to
+  be small is the <strong>true risk</strong>, the expected loss over P:
+</p>
+<p class="ml-eq">R(f) = E<sub>(x,y)∼P</sub> [ ℓ(f(x), y) ]</p>
+<p>
+  We can't compute it, because we don't know P. What we can compute is the <strong>empirical
+  risk</strong>, the average loss over the n training examples:
+</p>
+<p class="ml-eq">R̂(f) = (1 / n) Σ<sub>i</sub> ℓ(f(x<sub>i</sub>), y<sub>i</sub>)</p>
+<p>
+  Training is <em>empirical risk minimization</em>: pick the f in some family that makes R̂ small. The
+  <strong>generalization gap</strong> is R(f) − R̂(f). For a fixed f chosen without looking at the data, R̂ is an
+  unbiased estimate of R and the gap averages to zero. But the f we actually use was <em>chosen because</em> it had a
+  small R̂, so its training loss is optimistically biased and the gap is typically positive.
+</p>
+
+<h3 id="iid">The i.i.d. assumption</h3>
+<p>
+  The argument above leans on one assumption: the examples are <strong>independent and identically
+  distributed</strong>. Identically means training and future data come from the same P. Independent
+  means one example tells you nothing extra about another. When this holds, a held-out set is a fair
+  stand-in for the future, and its average loss is an unbiased estimate of R(f), with a standard error that
+  shrinks like 1/√m for m test examples. When it fails (duplicated rows, several records per patient,
+  data ordered by time), the held-out number is too good, which is the subject of
+  data splits and later of data leakage.
+</p>
+
+<h3 id="capacity">Capacity</h3>
+<p>
+  <strong>Capacity</strong> is how rich a family of functions the model can represent: the degree of a
+  polynomial, the depth of a tree, the number of parameters in a network. More capacity lets the model fit more
+  patterns, including accidental ones. Three regimes follow:
+</p>
+<ul>
+  <li><strong>Too little capacity</strong> (underfitting): the family can't express the real pattern, so
+    both training and held-out error stay high.</li>
+  <li><strong>Enough</strong>: training error is low and held-out error is close to it.</li>
+  <li><strong>Too much</strong> (overfitting): training error keeps falling, often to zero, while held-out
+    error rises, because the extra freedom is spent on noise in the sample.</li>
+</ul>
+<p>
+  Classical theory formalizes this with capacity measures such as VC dimension, which bound the gap in terms of
+  capacity divided by the number of examples. The worked example below shows the shape without any theory.
+</p>
+
+<h3 id="double-descent">Double descent</h3>
+<p>
+  The picture above, held-out error falling and then rising as capacity grows, is not the whole story for modern
+  models. Belkin and co-authors (2019) and Nakkiran and co-authors (2019) report that when capacity grows past the
+  point where the model can exactly fit the training data (the <em>interpolation threshold</em>), held-out error can
+  fall <em>again</em>, giving a second descent. It is observed for neural networks, random features and some
+  linear models, and the exact behaviour depends on how the fit is chosen among the many that interpolate. This page
+  does not compute it; see the references. The practical lesson is narrower than "bigger is always safe":
+  a peak near the threshold is real, and which side of it you are on matters.
+</p>
+
+<h3 id="shift">Distribution shift</h3>
+<p>
+  If the data a model meets in use comes from P' ≠ P, then held-out error measured on P says little about it. Common cases:
+  <em>covariate shift</em> (inputs change, the relation from x to y does not), <em>label shift</em> (class
+  frequencies change) and <em>concept drift</em> (the relation itself changes over time). A flexible model is
+  especially fragile outside the region its training inputs covered, because nothing constrained it there. Monitoring for this after
+  deployment is its own topic.
+</p>
+
+<h3 id="estimating">Estimating the gap in scikit-learn</h3>
+<p>
+  The tools all do the same thing: keep some data out of fitting and score on it.
+  <code>train_test_split</code> makes one split. <code>cross_val_score</code> repeats the idea over several splits.
+  <code>learning_curve</code> scores at growing training sizes and <code>validation_curve</code> scores while
+  one hyperparameter, such as capacity, changes. Both return training and validation scores so you can read the gap directly.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 250" role="img" aria-labelledby="gen-fit-title gen-fit-desc">
+    <title id="gen-fit-title">Polynomial fits of degree 1, 3 and 9 to ten noisy points</title>
+    <desc id="gen-fit-desc">
+      Ten training points scatter around a sine wave on the interval from zero to one. The degree-1 fit is a
+      nearly flat line that misses the wave. The degree-3 fit follows the wave smoothly. The degree-9 fit passes
+      exactly through every point and swings between them.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      <path d="M40 20 V230 H500" class="d-line" fill="none" stroke-width="1"></path>
+      <path d="M40 125 H500" class="d-line ml-dashed" fill="none" stroke-width="1"></path>
+      <polyline fill="none" class="d-line" stroke-width="1" opacity="0.5"
+        points="{% for i in range(0, 51) %}{{ 40 + i * 9.2 }},{{ 125 - generalization_truth(i / 50) * 70 }} {% endfor %}"></polyline>
+      <polyline fill="none" class="d-line" stroke-width="2"
+        points="{% for i in range(0, 51) %}{{ 40 + i * 9.2 }},{{ 125 - ([[polynomial_predict(w1, i / 50), 1.5]|min, -1.5]|max) * 70 }} {% endfor %}"></polyline>
+      <polyline fill="none" class="d-line" stroke-width="2"
+        points="{% for i in range(0, 51) %}{{ 40 + i * 9.2 }},{{ 125 - ([[polynomial_predict(w3, i / 50), 1.5]|min, -1.5]|max) * 70 }} {% endfor %}"></polyline>
+      <polyline fill="none" class="d-line ml-dashed" stroke-width="2"
+        points="{% for i in range(0, 51) %}{{ 40 + i * 9.2 }},{{ 125 - ([[polynomial_predict(w9, i / 50), 1.5]|min, -1.5]|max) * 70 }} {% endfor %}"></polyline>
+      {% for x in xs %}
+        <circle cx="{{ 40 + x * 460 }}" cy="{{ 125 - ys[loop.index0] * 70 }}" r="5" class="d-box ml-op"></circle>
+      {% endfor %}
+      <text x="270" y="246" class="d-muted">x (0 to 1)</text>
+      <text x="600" y="60" text-anchor="start">solid, nearly flat: degree 1</text>
+      <text x="600" y="90" text-anchor="start">solid, smooth: degree 3</text>
+      <text x="600" y="120" text-anchor="start">dashed, wiggly: degree 9</text>
+      <text x="600" y="150" text-anchor="start" class="d-muted">faint: the true curve</text>
+      <text x="600" y="180" text-anchor="start" class="d-muted">dots: training points</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Same ten points, three model sizes. The degree-9 curve (10 parameters for 10 points) hits every dot, so its training error is zero.</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>train_test_split</code></td>
+        <td>arrays of equal length; <code>test_size</code>, <code>train_size</code>, <code>shuffle=True</code>, <code>stratify</code>, <code>random_state</code></td>
+        <td>One random split into train and test parts, returned interleaved: <code>X_train, X_test, y_train, y_test</code>.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_split.py', 2797, 2976) }}"><code>_split.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>ShuffleSplit</code></td>
+        <td><code>n_splits</code>, <code>test_size</code>, <code>random_state</code></td>
+        <td>Repeated random splits; what <code>train_test_split</code> uses for one shuffled split.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_split.py', 1982, 2086) }}"><code>_split.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>KFold</code></td>
+        <td><code>n_splits</code>, <code>shuffle</code>, <code>random_state</code></td>
+        <td>Each example is held out exactly once across the folds.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_split.py', 437, 532) }}"><code>_split.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>cross_val_score</code></td>
+        <td>estimator, <code>X</code>, <code>y</code>, <code>cv</code>, <code>scoring</code> → array of <code>cv</code> scores</td>
+        <td>Fit and score on each fold; the spread of the scores shows how noisy the estimate is.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_validation.py', 512, 669) }}"><code>_validation.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>learning_curve</code></td>
+        <td><code>train_sizes</code>, <code>cv</code> → sizes, train scores, validation scores</td>
+        <td>Score versus amount of training data: does more data close the gap?</td>
+        <td><a href="{{ skl('sklearn/model_selection/_validation.py', 1776, 2113) }}"><code>_validation.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>validation_curve</code></td>
+        <td><code>param_name</code>, <code>param_range</code>, <code>cv</code> → train and validation scores</td>
+        <td>Score versus one hyperparameter, such as capacity: the tool for finding where overfitting starts.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_validation.py', 2283, 2516) }}"><code>_validation.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-fit">Fitting ten points with growing capacity</h3>
+  <p>
+    The true curve is y = sin(2πx). We take ten evenly spaced inputs x = 0, 1/9, …, 1 and add a fixed pattern of
+    noise between −0.35 and +0.35, giving training targets
+    {% for y in ys %}{{ "%.2f"|format(y) }}{{ ", " if not loop.last }}{% endfor %}.
+    A polynomial of degree d has d + 1 parameters, fit by least squares. <em>Held-out</em> error is the mean squared
+    error against the true curve on 50 evenly spaced inputs in [0, 1]. This is the error that remains after noise is removed, so it
+    measures how well the fit recovered the pattern.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Degree</th><th>Parameters</th><th>Training MSE</th><th>Held-out MSE</th><th>Gap</th></tr></thead>
+      <tbody>
+        {% for r in rows %}
+        <tr><td>{{ r.degree }}</td><td>{{ r.params }}</td><td>{{ sci(r.train_mse) }}</td><td>{{ sci(r.heldout_mse) }}</td><td>{{ "%+.3f"|format(r.heldout_mse - r.train_mse) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Degree 1 is too stiff: both errors are large ({{ f3(rows[0].train_mse) }} and {{ f3(rows[0].heldout_mse) }}). Degree 3
+    captures the wave: training error drops to {{ f3(rows[1].train_mse) }} and held-out error to {{ f3(rows[1].heldout_mse) }}.
+    Degree 5 is the best of the four on held-out data at {{ f3(rows[2].heldout_mse) }}. Degree 9 reaches a training error
+    of essentially zero, because 10 parameters can pass through 10 points, yet its held-out error is
+    {{ f3(rows[3].heldout_mse) }}, about {{ (rows[3].heldout_mse / rows[2].heldout_mse)|round|int }} times worse than degree 5. Training
+    error fell at every step; held-out error did not. Choosing the degree by training error would pick the worst model on new data.
+  </p>
+  <p>
+    Notice the sign of the gap column. Held-out error here is measured against the noiseless curve, so it is
+    below training error for the smaller models, since the training targets contain noise that nothing could predict. This is a quirk of
+    the setup, not a rule: with noisy test targets, held-out error would exceed it by the noise variance.
+    What matters is that the <em>trend</em> separates after degree 5.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-shift">The same fit on shifted inputs</h3>
+  <p>
+    Now evaluate the same fitted models at 11 inputs between 1.0 and 1.5, outside the range [0, 1] they were trained on,
+    against the true curve. The training and test inputs no longer share a distribution.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Degree</th><th>Held-out MSE in [0, 1]</th><th>MSE in [1.0, 1.5]</th></tr></thead>
+      <tbody>
+        {% for r in rows %}
+        <tr><td>{{ r.degree }}</td><td>{{ sci(r.heldout_mse) }}</td><td>{{ sci(r.shifted_mse) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The cubic that looked excellent at {{ f3(rows[1].heldout_mse) }} is off by {{ sci(rows[1].shifted_mse) }} out there, and degree 9 by
+    {{ sci(rows[3].shifted_mse) }}. High-degree polynomials are unconstrained beyond the data, so they diverge. Nothing in the training error
+    or in an in-distribution test could have warned you. The only defence is to test on data resembling what the model will actually face.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import numpy as np
+from sklearn.model_selection import train_test_split, validation_curve
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.linear_model import LinearRegression
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.25, random_state=0
+)
+
+model = make_pipeline(PolynomialFeatures(), LinearRegression())
+degrees = np.arange(1, 10)
+train_scores, val_scores = validation_curve(
+    model, X_train, y_train,
+    param_name="polynomialfeatures__degree", param_range=degrees, cv=5,
+    scoring="neg_mean_squared_error",
+)
+# train_scores, val_scores: [len(degrees), 5]. Average over axis 1.
+# Training error keeps falling; validation error turns up past the best degree.
+best = degrees[val_scores.mean(axis=1).argmax()]
+
+final = model.set_params(polynomialfeatures__degree=best).fit(X_train, y_train)
+final.score(X_test, y_test)   # touch the test set once, at the very end</code></pre>
+
+<p>
+  The test set is used a single time, after every choice has been made. Choose the degree on the validation scores, not on the
+  test split, or the test score becomes another training signal and stops being an honest estimate.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Hold out more or fewer.</strong> A bigger test set gives a steadier estimate but leaves less to train on. With few examples,
+    cross-validation reuses data at the price of fitting the model several times.</li>
+  <li><strong>The held-out estimate is noisy.</strong> With m test examples its standard error is about σ/√m. Two models within that margin
+    are not distinguishable, and picking the best of many models on one split quietly overfits the split.</li>
+  <li><strong>More capacity, more data, or more constraint.</strong> A gap that shrinks as you add data (visible in a learning curve) says collect more;
+    a gap that doesn't says simplify the model or add regularization.</li>
+  <li><strong>I.i.d. is an assumption, not a fact.</strong> Time series, repeated measurements and data scraped from the web break it, and the
+    reported test score is then optimistic in ways that are hard to see.</li>
+  <li><strong>Interpolating is not always bad.</strong> Large neural networks routinely reach zero training error and still generalize,
+    which the classical picture alone does not explain. Treat "zero training error means overfit" as a rule of thumb for small
+    models, not a law.</li>
+</ul>
+
+<h3 id="check-yourself">Check yourself</h3>
+<details class="ml-quiz">
+  <summary>Why is a model's training loss usually lower than its true risk?</summary>
+  <p>Because the model was selected, and its parameters tuned, to make the training loss small. The same examples were used to choose and to score it, so the score is biased downward.</p>
+</details>
+<details class="ml-quiz">
+  <summary>In the worked example, why is it wrong to pick the degree with the lowest training error?</summary>
+  <p>Training error falls with every added parameter and reaches zero at degree 9, where held-out error is about thirty times worse than at degree 5. Capacity must be chosen on data the fit never saw.</p>
+</details>
+<details class="ml-quiz">
+  <summary>You tune a hyperparameter on the test set until the score looks good. What have you lost?</summary>
+  <p>The test set's independence. The reported score now reflects choices made to fit it, so it no longer estimates performance on fresh data. A separate validation set exists to absorb that tuning.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Hastie, Tibshirani and Friedman. <em>The Elements of Statistical Learning</em>, 2nd ed., chapter 7, "Model Assessment and Selection". Springer, 2009.</li>
+  <li>Vapnik. <em>The Nature of Statistical Learning Theory.</em> Springer, 1995, for empirical risk minimization and VC dimension.</li>
+  <li>Belkin, Hsu, Ma and Mandal. <em>Reconciling modern machine-learning practice and the classical bias–variance trade-off.</em> PNAS, 2019 (<a href="https://arxiv.org/abs/1812.11118">arXiv 1812.11118</a>).</li>
+  <li>Nakkiran et al. <em>Deep Double Descent: Where Bigger Models and More Data Hurt.</em> ICLR 2020 (<a href="https://arxiv.org/abs/1912.02292">arXiv 1912.02292</a>).</li>
+  <li>Quiñonero-Candela, Sugiyama, Schwaighofer and Lawrence (eds.). <em>Dataset Shift in Machine Learning.</em> MIT Press, 2009.</li>
+  <li>scikit-learn {{ pins.sklearn.version }}: <a href="{{ skl('sklearn/model_selection/_split.py', 2797, 2976) }}"><code>train_test_split</code></a>, <a href="{{ skl('sklearn/model_selection/_validation.py', 1776, 2113) }}"><code>learning_curve</code></a>, <a href="{{ skl('sklearn/model_selection/_validation.py', 2283, 2516) }}"><code>validation_curve</code></a>.</li>
+</ul>
