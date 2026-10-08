@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-08 (fifty-first run): bumped the pin `320f7e6..3935c0f` (0.46.0). **The
+**Last updated:** 2026-10-08 (fifty-second run): bumped the pin `3935c0f..26bcd69` (0.46.0). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@3935c0fcaecebfed6d84dfa501169363112299ce` (committed 2026-10-07, version
-0.46.0), analyzed 2026-10-08. Held in `jj_docs.UPSTREAM`. Previous pin: `320f7e6`.
+`jj-vcs/jj@26bcd6972e5d04a824f501b98e91e02ee423f201` (committed 2026-10-08, version
+0.46.0), analyzed 2026-10-08. Held in `jj_docs.UPSTREAM`. Previous pin: `3935c0f`.
 
 ## §10 acceptance criteria
 
@@ -31,7 +31,13 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth and fifty-first runs: pin bumped).
+      run: pin bumped; fiftieth to fifty-second runs: pin bumped).
+
+## Fifty-second run (2026-10-08)
+
+- `7eafa56` pin-only maintenance `3935c0f..26bcd69` (1 commit: unused `pest`/`pest_derive` dropped from
+  `lib/Cargo.toml`). No page cites that file; the `revsets` grammar links already point at
+  `dsl/src/`. Command registry regenerated: unchanged (107 commands).
 
 ## Fifty-first run (2026-10-08)
 
