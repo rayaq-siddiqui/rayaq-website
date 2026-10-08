@@ -388,8 +388,11 @@ has a complete route early. It then covers every area breadth-first.
 3. **Breadth.** One page per area, round-robin in §4.1 area order, taking each area's next
    unbuilt page in its table order, until every page is built.
 
-The progress file holds the expanded queue. The Routine may swap two adjacent queue items
-to satisfy a prerequisite and must log the swap.
+The progress file holds the expanded queue. Expanding it applies one more rule: before a
+page, insert any of its prerequisites that aren't already queued, depth-first, so no page
+is ever built before a page it assumes. A test checks the queue lists every page once, in
+an order that respects prerequisites. The Routine may swap two adjacent queue items to
+satisfy a prerequisite and must log the swap.
 
 **New pages.** The Routine may propose an addition, such as a page for a new method or a
 new PyTorch API. It goes in the progress file as a queue row with a slug, title, area,

@@ -444,3 +444,18 @@ def test_transformer_page_has_its_interactive_pieces_and_fallbacks():
     assert "44,140,544" in body
     assert 'id="references"' in body
     assert "arxiv.org/abs/1706.03762" in body
+
+
+def test_progress_queue_lists_every_page_after_its_prerequisites():
+    with open(os.path.join(ROOT, "specs", "ml-models-progress.md")) as handle:
+        progress = handle.read()
+    queue_section = progress[progress.index("## Queue"):]
+    queue = re.findall(r"^\d+\. `([a-z-]+)`", queue_section, re.M)
+
+    assert sorted(queue) == sorted(page["slug"] for page in ml_models_docs.PAGES)
+    position = {slug: index for index, slug in enumerate(queue)}
+    for page in ml_models_docs.PAGES:
+        for prerequisite in page["prerequisites"]:
+            assert position[prerequisite] < position[page["slug"]], (page["slug"], prerequisite)
+    for page in ml_models_docs.ready_pages():
+        assert re.search(rf"^\d+\. `{page['slug']}` ✓", queue_section, re.M), page["slug"]
