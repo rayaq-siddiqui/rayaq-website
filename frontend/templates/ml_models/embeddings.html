@@ -1,0 +1,425 @@
+{% set ex = embedding_example %}
+{% set vocab = ex.vocab %}
+{% set table = ex.table %}
+{% set rows = embedding_lookup(table, ex.batch[1]) %}
+{% set w2v = word2vec_example %}
+{% set trained = train_skipgram(w2v) %}
+{% set vecs = trained.vectors %}
+{% set tie = tied_parameter_counts(50257, 768, 85842432) %}
+{% macro n(x) -%}{% if x == x|round %}{{ "%g"|format(x) }}{% else %}{{ "%.3g"|format(x) }}{% endif %}{%- endmacro %}
+{% macro vec(v) -%}[{% for x in v %}{{ n(x) }}{% if not loop.last %}, {% endif %}{% endfor %}]{%- endmacro %}
+<header class="jj-header">
+  <h1>Embeddings</h1>
+  <p class="tagline">
+    A neural network can only do arithmetic, so every word, token, user or product has to become a
+    list of numbers first. An embedding is that list: one learned row of a table, found by index.
+    This page shows the table as a lookup and as a one-hot matrix product (they're the same
+    thing), trains a tiny word2vec by gradient descent so you can watch meaning turn into geometry,
+    and reads <code>nn.Embedding</code> out of PyTorch {{ upstream.tag }}.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Text arrives as symbols: "cat", "dog", "car". Symbols have no arithmetic. You can't add "cat" to
+  "dog", and the number you'd get by assigning each word an ID (cat = 17, dog = 18, car = 19) is
+  worse than useless, because it claims that cat and dog are close and that car is just one step
+  further, for no reason except alphabetical luck. A model fed raw IDs would try to learn from that
+  false geometry.
+</p>
+<p>
+  The alternative that avoids false geometry, giving each word its own on/off switch (a "one-hot"
+  vector with {{ vocab|length }} slots for this page's tiny vocabulary, 50,257 for GPT-2), treats every pair of words as
+  equally unrelated and wastes huge amounts of memory on zeros. What we want instead is a short
+  dense vector for each symbol in which <em>similar symbols get similar vectors</em>, and we want
+  the model to find those vectors itself.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Think of a spreadsheet with one row per word and a handful of columns. Looking a word up means
+  reading its row. That's the whole mechanism. The rows start out random, and training nudges
+  them: every time a word's row helps the model make a better prediction, the row moves a little in
+  the direction that helped. Words that appear in the same kinds of sentences get nudged in the same
+  directions, so their rows drift together.
+</p>
+<p>
+  Linguists put it as "you shall know a word by the company it keeps". "Cat" and "dog" are both
+  followed by "eats" and "chases", so after training their rows are close. "Car" is followed by
+  "drives" and "needs", so its row lands elsewhere. Nobody wrote down that cats and dogs are
+  animals; the geometry fell out of the statistics.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 260" role="img" aria-labelledby="emb-lookup-title emb-lookup-desc">
+    <title id="emb-lookup-title">An embedding layer is a table lookup</title>
+    <desc id="emb-lookup-desc">
+      A sentence of {{ ex.batch[1]|length }} positions with token ids {{ ex.batch[1]|join(", ") }}
+      is turned into a {{ ex.batch[1]|length }} by {{ table[0]|length }} matrix by copying row
+      {{ ex.batch[1][0] }} ({{ vocab[ex.batch[1][0]] }}) of a {{ table|length }} by {{ table[0]|length }}
+      table, then row {{ ex.batch[1][1] }} ({{ vocab[ex.batch[1][1]] }}), and so on. The last three
+      positions are padding and copy the all-zero row {{ ex.padding_idx }}.
+    </desc>
+    <text x="20" y="22" font-size="12" class="d-muted">token ids</text>
+    {% for i in ex.batch[1] %}
+      <rect x="{{ 20 + loop.index0 * 36 }}" y="30" width="32" height="28" rx="4" class="d-box"></rect>
+      <text x="{{ 36 + loop.index0 * 36 }}" y="49" font-size="13" text-anchor="middle">{{ i }}</text>
+    {% endfor %}
+    <text x="300" y="22" font-size="12" class="d-muted">weight: [{{ table|length }}, {{ table[0]|length }}] (num_embeddings, embedding_dim)</text>
+    {% for row in table %}
+      {% set hot = loop.index0 in ex.batch[1] %}
+      <rect x="300" y="{{ 30 + loop.index0 * 32 }}" width="230" height="28" rx="4" class="d-box" {% if hot %}style="stroke: var(--jj-accent)"{% endif %}></rect>
+      <text x="310" y="{{ 49 + loop.index0 * 32 }}" font-size="12" class="d-muted">{{ loop.index0 }} {{ vocab[loop.index0] }}</text>
+      <text x="520" y="{{ 49 + loop.index0 * 32 }}" font-size="12" text-anchor="end">{{ vec(row) }}</text>
+    {% endfor %}
+    {% for i in ex.batch[1][:4] %}
+      <path d="M{{ 36 + loop.index0 * 36 }},58 C{{ 36 + loop.index0 * 36 }},120 260,{{ 44 + i * 32 }} 300,{{ 44 + i * 32 }}" class="d-line" opacity="0.6"></path>
+    {% endfor %}
+    <text x="20" y="100" font-size="11" class="d-muted">padding ids all copy row 0</text>
+    <text x="560" y="49" font-size="12" class="d-muted">out: [{{ ex.batch[1]|length }}, {{ table[0]|length }}]</text>
+    <text x="560" y="66" font-size="11" class="d-muted">one row per id</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Highlighted rows are the ones this sentence reads. Nothing is computed: each output row is a copy
+  of a table row, so the layer costs memory and index arithmetic, not multiplications.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="lookup">Lookup equals one-hot times matrix</h3>
+<p>
+  Let E be the embedding matrix with V rows (the vocabulary) and d columns (the embedding
+  dimension). For a token with index i, its one-hot vector e<sub>i</sub> has a single 1 in position
+  i, and
+</p>
+<p class="ml-formula">embed(i) = e<sub>i</sub><sup>T</sup> E = E[i, :] &nbsp;&nbsp; shapes: [1, V] @ [V, d] → [1, d]</p>
+<p>
+  The matrix product with a one-hot row just picks out row i, so a linear layer without a bias fed
+  one-hot inputs <em>is</em> an embedding layer, and <code>nn.Embedding</code> is that layer without
+  the wasted multiplications by zero. For a batch of index tensors of any shape (*), the output is
+  (*, d). A batch of {{ ex.batch|length }} sentences of {{ ex.batch[0]|length }} tokens becomes a
+  [{{ ex.batch|length }}, {{ ex.batch[0]|length }}, {{ table[0]|length }}] tensor.
+</p>
+
+<h3 id="learning">What the gradient does</h3>
+<p>
+  Because the forward pass copies rows, the backward pass adds into rows. If upstream gradient
+  G<sub>t</sub> (shape [d]) arrives at the output for position t whose token is i<sub>t</sub>, then
+</p>
+<p class="ml-formula">∂L/∂E[j, :] = Σ<sub>t : i<sub>t</sub> = j</sub> G<sub>t</sub></p>
+<p>
+  Rows of tokens that do not appear in the batch get zero gradient, and a token appearing three
+  times gets the sum of three gradients. That's why the gradient of a 50,000-row table is mostly
+  zeros, why <code>sparse=True</code> exists (the gradient is stored as just the touched rows, but
+  only some optimizers accept it), and why <code>scale_grad_by_freq=True</code> divides each row's
+  gradient by how often its token occurs in the mini-batch, so that frequent words don't get most
+  of the movement. <code>padding_idx</code> blocks the gradient for one row, which is how padding
+  tokens stay at the all-zero vector they're initialized to.
+</p>
+
+<h3 id="word2vec">Learning geometry: word2vec</h3>
+<p>
+  Nothing above says <em>why</em> similar words end up close. That comes from the training task.
+  The skip-gram model of word2vec (Mikolov et al., 2013) gives every word two vectors, v<sub>w</sub> as a
+  center word and u<sub>w</sub> as a context word, and trains them so that a center word predicts
+  the words within a window around it:
+</p>
+<p class="ml-formula">p(o | c) = exp(u<sub>o</sub> · v<sub>c</sub>) / Σ<sub>w</sub> exp(u<sub>w</sub> · v<sub>c</sub>), &nbsp; L = −Σ<sub>(c,o)</sub> log p(o | c)</p>
+<p>
+  This is softmax regression (see <a href="/ml-models/logistic-regression">logistic regression</a>
+  and <a href="/ml-models/loss-functions">loss functions</a>) where the "features" are the learned
+  vector v<sub>c</sub>. The gradient on v<sub>c</sub> is Σ<sub>w</sub> (p(w|c) − 1[w = o]) u<sub>w</sub>, and the gradient on each u<sub>w</sub> is
+  (p(w|c) − 1[w = o]) v<sub>c</sub>. Two words that are followed by the same neighbours receive nearly
+  the same pushes, so their vectors converge. In practice the full softmax over a vocabulary of a
+  million words is too slow, and the paper replaces it with hierarchical softmax or negative
+  sampling (the follow-up paper), which updates only a few sampled wrong answers per step. The
+  objective is the same idea.
+</p>
+
+<div class="jj-diagram">
+  {% set xs = vecs.values()|map("first")|list %}
+  {% set ys = vecs.values()|map("last")|list %}
+  {% set x0 = xs|min %}{% set x1 = xs|max %}{% set y0 = ys|min %}{% set y1 = ys|max %}
+  {% macro px(x) -%}{{ 50 + (x - x0) / (x1 - x0) * 560 }}{%- endmacro %}
+  {% macro py(y) -%}{{ 215 - (y - y0) / (y1 - y0) * 190 }}{%- endmacro %}
+  {% set animals = ["cat", "dog", "mouse"] %}
+  {% set things = ["car", "truck", "bus", "road", "fuel"] %}
+  {% set food = ["fish", "meat", "cheese", "milk", "water"] %}
+  <svg viewBox="0 0 680 250" role="img" aria-labelledby="emb-w2v-title emb-w2v-desc">
+    <title id="emb-w2v-title">Two-dimensional skip-gram embeddings after training</title>
+    <desc id="emb-w2v-desc">
+      The {{ trained.vocab|length }} words of a {{ w2v.corpus|length }}-sentence corpus, plotted at their
+      learned two-dimensional vectors after {{ w2v.epochs }} epochs of skip-gram training with seed
+      {{ w2v.seed }}. cat, dog and mouse sit together, with cosine similarity
+      {{ "%.2f"|format(cosine_similarity(vecs.cat, vecs.dog)) }} between cat and dog. car, truck, bus,
+      road and fuel form a second group, and cat and car point in opposite directions with cosine
+      {{ "%.2f"|format(cosine_similarity(vecs.cat, vecs.car)) }}.
+    </desc>
+    {% set placed = namespace(spots=[]) %}
+    {% for word, v in vecs.items() %}
+      {% set label = namespace(y=py(v[1])|float + 4) %}
+      {% for spot in placed.spots if (spot[0] - px(v[0])|float)|abs < 40 and (spot[1] - label.y)|abs < 11 %}{% set label.y = spot[1] + 11 %}{% endfor %}
+      {% set placed.spots = placed.spots + [[px(v[0])|float, label.y]] %}
+      {% set color = "var(--jj-green)" if word in animals else ("var(--jj-amber)" if word in things else ("var(--jj-violet)" if word in food else "var(--jj-muted)")) %}
+      <circle cx="{{ px(v[0]) }}" cy="{{ py(v[1]) }}" r="4" style="fill: {{ color }}"></circle>
+      <text x="{{ px(v[0])|float + 7 }}" y="{{ label.y }}" font-size="11" style="fill: {{ color }}">{{ word }}</text>
+    {% endfor %}
+    <text x="50" y="242" font-size="11" class="d-muted">green: animals · amber: vehicles and their company · violet: food and drink · grey: verbs</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Each point is the learned center vector of one word, in two dimensions, after training on
+  {{ trained.pairs }} (center, context) pairs from {{ w2v.corpus|length }} three-word sentences.
+  Real embeddings use 100 to 12,288 dimensions, so they can keep many such groupings apart at once.
+</p>
+
+<h3 id="static-contextual">Static versus contextual</h3>
+<p>
+  An embedding table gives <em>one</em> vector per word, whatever sentence it's in, so "bank" gets
+  the same row in "river bank" and "bank loan". These are <strong>static</strong> embeddings
+  (word2vec, GloVe, fastText). Modern language models use the table only as the first layer:
+  <a href="/ml-models/transformer">transformer</a> layers then mix each token's vector with its
+  neighbours', so the vector at the top of the stack is <strong>contextual</strong>: it depends on
+  the whole sentence (ELMo, BERT, GPT). A sentence-embedding model pools those contextual vectors
+  into one vector per sentence or document, which is what retrieval systems search.
+</p>
+
+<h3 id="tying">Scaling and weight tying</h3>
+<p>
+  Two details from the original Transformer: the embedding output is multiplied by √d<sub>model</sub>, so its
+  scale is comparable to the added position signal, and the input table is shared with the final
+  output projection (pre-softmax linear layer). Sharing works because the output layer computes a
+  dot product between the final hidden vector and one vector per word, which is the same shape as
+  the input table (Press and Wolf, 2017). For GPT-2 small (V = 50,257, d = 768) the table has
+  {{ "{:,}".format(tie.table) }} parameters, so tying saves {{ "{:,}".format(tie.saved) }} of an
+  untied {{ "{:,}".format(tie.untied_total) }}, leaving {{ "{:,}".format(tie.tied_total) }}.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>nn.Embedding</code></td>
+        <td><code>num_embeddings</code>, <code>embedding_dim</code>, <code>padding_idx=None</code>, <code>max_norm=None</code>, <code>norm_type=2.0</code>, <code>scale_grad_by_freq=False</code>, <code>sparse=False</code></td>
+        <td>A lookup table module; input integer tensor of any shape (*), output (*, embedding_dim).</td>
+        <td><a href="{{ src('torch/nn/modules/sparse.py', 14, 264) }}"><code>sparse.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>weight</code></td>
+        <td>[num_embeddings, embedding_dim]</td>
+        <td>The learned table, a <code>Parameter</code> initialized from N(0, 1), then the padding row zeroed.</td>
+        <td><a href="{{ src('torch/nn/modules/sparse.py', 134, 177) }}"><code>__init__</code></a>, <a href="{{ src('torch/nn/modules/sparse.py', 179, 181) }}"><code>reset_parameters</code></a></td>
+      </tr>
+      <tr>
+        <td><code>forward</code></td>
+        <td>input (*) → output (*, d)</td>
+        <td>Calls <code>F.embedding</code> with the stored settings.</td>
+        <td><a href="{{ src('torch/nn/modules/sparse.py', 188, 197) }}"><code>sparse.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>F.embedding</code></td>
+        <td>(input, weight, padding_idx, max_norm, norm_type, scale_grad_by_freq, sparse)</td>
+        <td>Normalizes a negative <code>padding_idx</code>, optionally renormalizes rows in place, then calls <code>torch.embedding</code>.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 2509, 2621) }}"><code>functional.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>from_pretrained</code></td>
+        <td>a 2-D float tensor, <code>freeze=True</code></td>
+        <td>Builds an <code>Embedding</code> from existing vectors (for example word2vec or GloVe), frozen by default.</td>
+        <td><a href="{{ src('torch/nn/modules/sparse.py', 213, 264) }}"><code>sparse.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.Linear</code> (tied head)</td>
+        <td>[V, d] weight when <code>out_features=V</code></td>
+        <td>The output projection; assigning <code>head.weight = emb.weight</code> shares the table.</td>
+        <td><a href="{{ src('torch/nn/modules/linear.py', 53, 147) }}"><code>linear.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>A lookup with padding.</strong> The vocabulary is
+    {% for w in vocab %}<code>{{ w }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+    (ids 0 to {{ vocab|length - 1 }}), the table has d = {{ table[0]|length }}, and the sentence
+    "the cat sat" is padded to {{ ex.batch[1]|length }} tokens, so the ids are
+    {{ vec(ex.batch[1]) }}.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>position</th><th>id</th><th>token</th><th>output row E[id]</th></tr></thead>
+      <tbody>
+        {% for i in ex.batch[1] %}
+        <tr><td>{{ loop.index0 }}</td><td>{{ i }}</td><td><code>{{ vocab[i] }}</code></td><td>{{ vec(rows[loop.index0]) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The same output comes from multiplying a [{{ ex.batch[1]|length }}, {{ vocab|length }}] one-hot matrix by the
+    [{{ vocab|length }}, {{ table[0]|length }}] table: each one-hot row has a single 1, so each output row is one table row.
+    {% set grad = embedding_gradient(vocab|length, table[0]|length, [ex.batch[1]], [[[1, 1, 1]] * (ex.batch[1]|length)], ex.padding_idx) %}
+    If every output position receives the gradient [1, 1, 1], the three padding positions contribute
+    nothing because of <code>padding_idx=0</code>, and the rows of "the", "cat" and "sat" each receive
+    {{ vec(grad[1]) }}. Row {{ ex.padding_idx }} stays {{ vec(grad[0]) }}.
+  </p>
+  <p>
+    <strong>Learning the geometry.</strong> Skip-gram with a full softmax, window {{ w2v.window }}, dimension
+    {{ w2v.dim }}, learning rate {{ w2v.lr }} and {{ w2v.epochs }} epochs over {{ trained.pairs }} pairs. The
+    average loss per pair falls from {{ "%.2f"|format(trained.losses[0]) }} (a uniform guess over
+    {{ trained.vocab|length }} words costs ln {{ trained.vocab|length }} = {{ "%.2f"|format(trained.uniform_loss) }})
+    to {{ "%.2f"|format(trained.losses[-1]) }}; it can't reach zero, because "cat" is followed by several
+    different words.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>query</th><th>nearest by cosine similarity</th></tr></thead>
+      <tbody>
+        {% for q in ["cat", "car", "fish"] %}
+        <tr><td><code>{{ q }}</code></td><td>{% for w, s in nearest_words(vecs, q, 3) %}<code>{{ w }}</code> {{ "%.2f"|format(s) }}{% if not loop.last %}, {% endif %}{% endfor %}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The numbers are computed by <code>train_skipgram</code> in <code>ml_models_docs.py</code> (stdlib only,
+    seed {{ w2v.seed }}). With two dimensions and a thirteen-sentence corpus the exact neighbours
+    depend on the seed; the grouping of cat, dog and mouse against car, truck and bus does not.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+import torch.nn as nn
+
+emb = nn.Embedding(num_embeddings=6, embedding_dim=3, padding_idx=0)
+emb.weight[0]                         # tensor([0., 0., 0.]), zeroed at construction
+ids = torch.tensor([[1, 2, 3, 0, 0, 0]])
+out = emb(ids)                        # shape [1, 6, 3]
+
+# the same thing as a matrix product with one-hot rows
+onehot = torch.nn.functional.one_hot(ids, num_classes=6).float()   # [1, 6, 6]
+torch.allclose(onehot @ emb.weight, out)                           # True
+
+out.sum().backward()
+emb.weight.grad[0]                    # zeros: padding_idx gets no gradient
+emb.weight.grad[1]                    # tensor([1., 1., 1.])
+
+# weight tying for a language model head
+head = nn.Linear(3, 6, bias=False)    # weight shape [6, 3], same as the table
+head.weight = emb.weight              # one Parameter, used twice
+
+# start from existing vectors, frozen by default
+pretrained = nn.Embedding.from_pretrained(torch.randn(6, 3), freeze=True)</code></pre>
+
+<p>Skip-gram with a full softmax, in plain Python:</p>
+
+<pre><code>import math, random
+
+def skipgram(sentences, dim=2, window=2, lr=0.05, epochs=300, seed=0):
+    vocab = sorted({w for s in sentences for w in s})
+    ix = {w: i for i, w in enumerate(vocab)}
+    rng = random.Random(seed)
+    V = [[rng.gauss(0, 0.5) for _ in range(dim)] for _ in vocab]   # center vectors
+    U = [[rng.gauss(0, 0.5) for _ in range(dim)] for _ in vocab]   # context vectors
+    pairs = [(ix[s[i]], ix[s[j]]) for s in sentences for i in range(len(s))
+             for j in range(max(0, i - window), min(len(s), i + window + 1)) if j != i]
+    for _ in range(epochs):
+        for c, o in pairs:
+            logits = [sum(a * b for a, b in zip(V[c], u)) for u in U]
+            top = max(logits)
+            exps = [math.exp(x - top) for x in logits]
+            probs = [e / sum(exps) for e in exps]
+            grad_v = [0.0] * dim
+            for k, u in enumerate(U):
+                g = probs[k] - (k == o)
+                for d in range(dim):
+                    grad_v[d] += g * u[d]
+                    u[d] -= lr * g * V[c][d]
+            for d in range(dim):
+                V[c][d] -= lr * grad_v[d]
+    return dict(zip(vocab, V))</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Memory is the cost.</strong> V × d parameters, plus the optimizer state for each. A
+    50,257 × 768 float32 table is {{ "%.0f"|format(tie.table * 4 / 1e6) }} MB, and Adam keeps two more copies. Recommendation
+    models with hundreds of millions of IDs spend most of their memory here, which is why they shard
+    tables and use <code>sparse=True</code> gradients with optimizers that support them.
+  </li>
+  <li>
+    <strong>Out-of-vocabulary words.</strong> A word-level table has no row for an unseen word.
+    Subword tokenization (BPE and relatives) fixes this by
+    making the vocabulary pieces of words; fastText instead sums character n-gram vectors.
+  </li>
+  <li>
+    <strong>Dimension.</strong> Too small and distinct meanings collide; too large and rarely seen
+    rows stay close to their random start. Typical sizes run from 64 for small models to over
+    10,000 for the largest language models.
+  </li>
+  <li>
+    <strong>Static versus contextual.</strong> Static vectors are cheap, interpretable and reusable
+    across tasks, but conflate senses of a word. Contextual vectors resolve that at the cost of a
+    full forward pass of a large network.
+  </li>
+  <li>
+    <strong>Weight tying</strong> saves a whole table and often helps perplexity in small models,
+    but ties the input and output geometries together, which large models sometimes prefer to keep
+    separate.
+  </li>
+  <li>
+    <strong>Pitfalls.</strong> Indices must be in [0, V): an out-of-range ID raises an error on CPU
+    and can silently misbehave or crash on GPU. Learned geometry also reproduces the biases in the
+    training text; "nearest neighbour" is not "true meaning".
+  </li>
+  <li>
+    <strong>Compared with one-hot.</strong> One-hot is exact and needs no training but has V
+    dimensions and no similarity structure; an embedding is a learned low-rank factorization of that
+    input layer.
+  </li>
+</ul>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="ml-quiz">
+  <summary>Why is <code>nn.Embedding(V, d)</code> equivalent to a bias-free <code>nn.Linear(V, d)</code> on one-hot inputs, and why is it still the better choice?</summary>
+  <p>Multiplying a one-hot row by the weight matrix selects one row, so the results match (up to the transposed weight layout of <code>Linear</code>). The lookup skips V − 1 multiplications by zero and never builds the V-wide input.</p>
+</details>
+<details class="ml-quiz">
+  <summary>A batch of {{ ex.batch[0]|length }} ids contains token 1 twice and token 2 once. What is the gradient of row 1 if every output position receives gradient g?</summary>
+  <p>2g, because gradients add into the rows they were read from. With <code>scale_grad_by_freq=True</code> it becomes g.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Two words never appear together in the corpus but always share neighbours. Will skip-gram embed them close together?</summary>
+  <p>Yes. Skip-gram never pairs them directly; it only pushes each toward the same context vectors, which pulls the two center vectors together. That is the "company it keeps" idea.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why can the input table and the output projection share weights?</summary>
+  <p>Both have shape [V, d]: the input reads row i for token i; the output computes a dot product of the hidden vector with every row to get V logits. Sharing makes "the vector that represents a word" and "the vector that predicts a word" the same.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Mikolov, Chen, Corrado and Dean. <em>Efficient Estimation of Word Representations in Vector Space.</em> 2013 (<a href="https://arxiv.org/abs/1301.3781">arXiv 1301.3781</a>).</li>
+  <li>Mikolov, Sutskever, Chen, Corrado and Dean. <em>Distributed Representations of Words and Phrases and their Compositionality.</em> NeurIPS, 2013 (<a href="https://arxiv.org/abs/1310.4546">arXiv 1310.4546</a>; negative sampling).</li>
+  <li>Pennington, Socher and Manning. <em>GloVe: Global Vectors for Word Representation.</em> EMNLP, 2014.</li>
+  <li>Press and Wolf. <em>Using the Output Embedding to Improve Language Models.</em> EACL, 2017 (<a href="https://arxiv.org/abs/1608.05859">arXiv 1608.05859</a>).</li>
+  <li>Peters et al. <em>Deep Contextualized Word Representations.</em> NAACL, 2018 (<a href="https://arxiv.org/abs/1802.05365">arXiv 1802.05365</a>; ELMo).</li>
+  <li>Devlin, Chang, Lee and Toutanova. <em>BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding.</em> 2018 (<a href="https://arxiv.org/abs/1810.04805">arXiv 1810.04805</a>).</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/nn/modules/sparse.py', 14, 264) }}"><code>torch/nn/modules/sparse.py</code></a> and <a href="{{ src('torch/nn/functional.py', 2509, 2621) }}"><code>F.embedding</code></a>.</li>
+</ul>
