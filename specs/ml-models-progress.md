@@ -4,7 +4,7 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (tenth run). Spec v2 widens the section from model architectures
+**Last updated:** 2026-10-08 (eleventh run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
 format. Ready pages: `transformer`, `tensors-and-shapes`, `vectors-and-dot-products`,
 `matrix-multiplication`, `derivatives-and-gradients`, `chain-rule`. The next run builds
@@ -172,6 +172,10 @@ The paths below are relative to `torch/nn/modules/` unless they give a fuller pa
 - `torch/distributions/bernoulli.py`: `Bernoulli` with docstring 20-40; `__init__` starts at 47; `sample` 116-119; `log_prob` 121-125; `entropy` 127-130.
 - `torch/distributions/normal.py` properties: `mean` 39-41, `mode` 43-45, `stddev` 47-49, `variance` 51-53 (each `@property` on the line before).
 - `torch/random.py`: `set_rng_state` 27-36; `get_rng_state` 39-46; `manual_seed` 49-59; `_manual_seed_impl` 62-86; `seed` starts at 89; `initial_seed` 144-150; `fork_rng` 156-239 (decorator at 156, def at 157).
+- `torch/distributions/kl.py`: `register_kl` starts at 51; `kl_divergence` 165-193; `_kl_bernoulli_bernoulli` 203-216; `_kl_categorical_categorical` 247-252; `_kl_normal_normal` 467-471 (each with its `@register_kl` decorator on the first line).
+- `torch/distributions/categorical.py`: `entropy` 159-163.
+- `torch/nn/functional.py`: `kl_div` 3401-3475; `cross_entropy` 3478-3569.
+- `torch/nn/modules/loss.py`: `KLDivLoss` 464-564; `CrossEntropyLoss` 1200-1407 (`forward` 1398-1407).
 
 ### scikit-learn 1.9.1 (start lines; check the end before linking a range)
 
@@ -311,6 +315,14 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 | `ml-models: add tested expectation and sampling helpers` | `expectation`, `variance`, `covariance`, `die_rolls` (seeded), `running_means`, `sum_pmf`, `minibatch_gradients` (every batch via `itertools.combinations`), and the die, covariance and minibatch example constants |
 | `ml-models: build the expectation-and-variance page` | The page, `ready`, queue ✓; `sqrt` and `log10` exposed to templates; per-batch gradients kept for the dot-strip figure |
 | `docs: record the expectation-and-variance run` | This table and the verified `torch/random.py` and `Normal` property ranges above |
+
+## Eleventh run (2026-10-08) — eighth page of the 5-minute loop
+
+| Commit | What |
+|---|---|
+| `ml-models: add tested entropy and divergence helpers` | `information_content`, `entropy`, `cross_entropy`, `kl_divergence` (bits by default, infinite where q has no mass), `logits_cross_entropy` (log-softmax loss and softmax-minus-one-hot gradient), `perplexity`, `mutual_information`, and the weather, asymmetry and perplexity example constants |
+| `ml-models: build the entropy-and-kl page` | The page, `ready`, queue ✓; `math.exp` exposed to templates |
+| `docs: record the entropy-and-kl run` | This table and the verified `kl.py`, `Categorical.entropy`, `functional.py` and `loss.py` ranges above |
 
 ## Queue
 
