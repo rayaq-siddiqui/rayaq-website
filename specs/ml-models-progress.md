@@ -4,8 +4,8 @@ This is the running log for the daily ml-models architecture Routine. Read it fi
 The contract is `specs/ml-models.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (first run, bootstrap). This run wrote the spec, set the pin and built
-the section scaffold. No topic page is ready yet. The next run builds `transformer`.
+**Last updated:** 2026-10-08 (second run). `transformer` is ready, and the index lists upcoming
+models. The next run builds `attention`.
 
 ## Upstream pin
 
@@ -22,12 +22,13 @@ To verify a line range, use a sparse, shallow clone at the tag. Clone with
 
 - [x] `/ml-models` renders the model-family map. Each box links to its page once ready and to
       pinned source until then.
-- [ ] Every §5 page exists, meets its "Must cover" column and §6, and is registered (0 of 10 ready).
+- [ ] Every §5 page exists, meets its "Must cover" column and §6, and is registered (1 of 10 ready: `transformer`).
 - [x] Every PyTorch link is pinned to `UPSTREAM.commit` (tested).
 - [x] §7.5 tests exist and pass.
-- [x] No `torch` in requirements (tested). There is no offline data yet, so there is no
-      script or seed to record.
-- [x] Mobile at 390px: no horizontal page scroll on `/ml-models` (checked in headless Chromium).
+- [x] No `torch` in requirements (tested). There is no offline data yet. The transformer
+      page's numbers are computed in pure Python in `ml_models_docs.py` and tested.
+- [x] Mobile at 390px: no horizontal page scroll on `/ml-models` or `/ml-models/transformer`
+      (checked in headless Chromium).
 - [ ] The Routine has run at least once in maintenance mode.
 
 ## Decisions
@@ -43,15 +44,28 @@ To verify a line range, use a sparse, shallow clone at the tag. Clone with
 - **`ml_models.js` is progressive enhancement only.** A figure marked `data-ml-steps`, with
   `data-ml-step` panels, becomes a one-at-a-time slider. Without JS, all panels stay visible.
 
+- **Upcoming models list.** At the owner's request (2026-10-08), the index has an "Upcoming
+  models" section: `UPCOMING_MODELS` in `ml_models_docs.py`, in four tiers from classic ML
+  (linear regression, trees, gradient boosting) through deep learning foundations and the
+  transformer era to the current state of the art. Each entry cites its paper, links it on arXiv
+  when one exists, and shows "Page planned" when it maps to a queued slug (tested).
+- **Interactive transformer page.** At the owner's request, the page is interactive like the
+  `/jj` architecture page: a clickable diagram, steppers, a live attention table (causal mask,
+  scaling, temperature) and a parameter calculator. Each one has a static fallback, so the page
+  reads in full without JS. The worked numbers come from `attention_weights` and
+  `transformer_param_count` in `ml_models_docs.py`, not from torch.
+
 ## Offline data (`tools/ml_models/` → `frontend/static/ml_models/`)
 
-None yet. Record each script here as script · output · seed · torch version used.
+None yet. The transformer page needs none (see above). Record each script here as script · output · seed · torch version used.
 
 ## Verified line ranges at the pin (for upcoming pages)
 
 The paths below are relative to `torch/nn/modules/` unless they give a fuller path.
 
 - `transformer.py`
+  - Used by the transformer page as well: `TransformerEncoder.forward` layer loop 541-555,
+    encoder-layer fast path 917-942, `TransformerDecoderLayer.__init__` 1046-1061.
   - `Transformer` 58-317. Constructor defaults 102-119: d_model 512, nhead 8, 6+6 layers,
     dim_feedforward 2048, dropout 0.1, relu, eps 1e-5, `batch_first=False`, `norm_first=False`.
   - `TransformerEncoder` 320-555.
@@ -65,6 +79,7 @@ The paths below are relative to `torch/nn/modules/` unless they give a fuller pa
 - `torch/nn/functional.py`
   - `scaled_dot_product_attention` docstring 6367-6540.
   - `multi_head_attention_forward` 6664-7120.
+  - The head reshape in `multi_head_attention_forward` is at 6974; `relu` is at 1766.
   - Start lines only: `embedding` 2509, `layer_norm` 2972, `rms_norm` 2998, `cross_entropy` 3478.
 - `normalization.py`
   - `LayerNorm` 105-236, with `__init__` from 188 and its params up to 216.
@@ -102,10 +117,23 @@ The paths below are relative to `torch/nn/modules/` unless they give a fuller pa
 |---|---|
 | see `git log -- specs/ml-models.md` | Spec v1, pin, scaffold (`ml_models_docs.py`, routes, base/index templates, CSS, JS, tests, AGENTS.md entry, this file) |
 
+## Second run (2026-10-08) — transformer and upcoming models
+
+| Commit | What |
+|---|---|
+| `ml-models: add the upcoming models list data` | `UPCOMING_MODELS` with tests |
+| `ml-models: list upcoming models on the index` | The tiered grid on `/ml-models` |
+| `ml-models: compute the transformer page's worked numbers` | `attention_weights`, `transformer_param_count`, presets |
+| `ml-models: add an interactive attention table` | The attention playground in `ml_models.js` |
+| `ml-models: add a parameter calculator` | The calculator in `ml_models.js` |
+| `ml-models: add the transformer page` | `transformer.html`, ready flag, CSS, test |
+
+The README was refreshed in a separate `docs:` commit in the same run.
+
 ## Queue
 
-1. `transformer` ← next
-2. `attention`
+1. `transformer` ✓
+2. `attention` ← next
 3. `positional-encoding`
 4. `layernorm-and-residuals`
 5. `decoder-only-llm`
