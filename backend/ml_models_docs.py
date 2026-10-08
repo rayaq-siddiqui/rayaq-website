@@ -1454,6 +1454,12 @@ LINEAR_EXAMPLE = {
 
 INVERSE_EXAMPLE = [[2, 1], [1, 1]]
 
+SLOPE_EXAMPLE = {"x": 3, "steps": [1, 0.1, 0.01, 0.001]}
+
+BOWL_EXAMPLE = {"scale": [1, 3], "start": [3, 2], "lr": 0.1, "steps": 6, "unstable_lr": 0.4}
+
+JACOBIAN_EXAMPLE = {"point": [2, 3]}
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -1700,6 +1706,93 @@ def inverse_2x2(matrix):
     return [[d / determinant, -b / determinant], [-c / determinant, a / determinant]]
 
 
+def square(x):
+    return x * x
+
+
+def difference_quotient(f, x, h):
+    return (f(x + h) - f(x)) / h
+
+
+def slope_table(example):
+    x = example["x"]
+    exact = 2 * x
+    rows = []
+    for h in example["steps"]:
+        secant = difference_quotient(square, x, h)
+        rows.append({"h": h, "secant": secant, "error": secant - exact})
+    return {"x": x, "value": square(x), "exact": exact, "rows": rows}
+
+
+def numerical_gradient(f, point, h=1e-6):
+    gradient = []
+    for i in range(len(point)):
+        up = list(point)
+        down = list(point)
+        up[i] += h
+        down[i] -= h
+        gradient.append((f(up) - f(down)) / (2 * h))
+    return gradient
+
+
+def numerical_jacobian(f, point, h=1e-6):
+    columns = []
+    for i in range(len(point)):
+        up = list(point)
+        down = list(point)
+        up[i] += h
+        down[i] -= h
+        columns.append([(a - b) / (2 * h) for a, b in zip(f(up), f(down))])
+    return [list(row) for row in zip(*columns)]
+
+
+def jacobian_example_function(point):
+    x, y = point
+    return [x * y, x + y * y]
+
+
+def jacobian_example_exact(point):
+    x, y = point
+    return [[y, x], [1, 2 * y]]
+
+
+def bowl(point, scale):
+    return sum(s * x * x for s, x in zip(scale, point))
+
+
+def bowl_gradient(point, scale):
+    return [2 * s * x for s, x in zip(scale, point)]
+
+
+def gradient_descent(gradient, start, lr, steps):
+    points = [list(start)]
+    for _ in range(steps):
+        current = points[-1]
+        points.append([x - lr * g for x, g in zip(current, gradient(current))])
+    return points
+
+
+def bowl_descent(example, lr=None):
+    scale = example["scale"]
+    rate = example["lr"] if lr is None else lr
+    points = gradient_descent(lambda p: bowl_gradient(p, scale), example["start"], rate, example["steps"])
+    return [
+        {"step": i, "point": point, "value": bowl(point, scale), "gradient": bowl_gradient(point, scale)}
+        for i, point in enumerate(points)
+    ]
+
+
+def bowl_contours(scale, levels):
+    return [
+        {"level": level, "radii": [math.sqrt(level / s) for s in scale]}
+        for level in levels
+    ]
+
+
+def stable_learning_rate(scale):
+    return 1 / max(scale)
+
+
 def similarity_ranking(example):
     query = example["query"]
     rows = [
@@ -1777,6 +1870,18 @@ def render(slug, render_template):
         "matmul_flops": matmul_flops,
         "linear_layer": linear_layer,
         "inverse_2x2": inverse_2x2,
+        "slope_example": SLOPE_EXAMPLE,
+        "slope_table": slope_table,
+        "bowl_example": BOWL_EXAMPLE,
+        "bowl": bowl,
+        "bowl_gradient": bowl_gradient,
+        "bowl_descent": bowl_descent,
+        "bowl_contours": bowl_contours,
+        "stable_learning_rate": stable_learning_rate,
+        "jacobian_example": JACOBIAN_EXAMPLE,
+        "jacobian_example_function": jacobian_example_function,
+        "jacobian_example_exact": jacobian_example_exact,
+        "numerical_jacobian": numerical_jacobian,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

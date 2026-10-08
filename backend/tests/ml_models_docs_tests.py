@@ -579,3 +579,55 @@ def test_inverse_2x2_undoes_the_matrix():
     assert ml_models_docs.matmul(matrix, inverse) == ml_models_docs.identity(2)
     with pytest.raises(ValueError, match="singular"):
         ml_models_docs.inverse_2x2([[1, 2], [2, 4]])
+
+
+def test_slope_table_secants_approach_the_derivative():
+    table = ml_models_docs.slope_table(ml_models_docs.SLOPE_EXAMPLE)
+    assert table["exact"] == 6
+    errors = [row["error"] for row in table["rows"]]
+    assert errors == pytest.approx(ml_models_docs.SLOPE_EXAMPLE["steps"], rel=1e-6)
+    assert errors == sorted(errors, reverse=True)
+
+
+def test_numerical_gradient_matches_the_bowl_gradient():
+    scale = ml_models_docs.BOWL_EXAMPLE["scale"]
+    point = [3, 2]
+    numeric = ml_models_docs.numerical_gradient(lambda p: ml_models_docs.bowl(p, scale), point)
+    assert numeric == pytest.approx(ml_models_docs.bowl_gradient(point, scale), rel=1e-6)
+    assert ml_models_docs.bowl_gradient(point, scale) == [6, 12]
+
+
+def test_numerical_jacobian_matches_the_exact_jacobian():
+    point = ml_models_docs.JACOBIAN_EXAMPLE["point"]
+    exact = ml_models_docs.jacobian_example_exact(point)
+    numeric = ml_models_docs.numerical_jacobian(ml_models_docs.jacobian_example_function, point)
+    assert exact == [[3, 2], [1, 6]]
+    for row, expected in zip(numeric, exact):
+        assert row == pytest.approx(expected, rel=1e-6)
+
+
+def test_bowl_descent_shrinks_each_coordinate_by_a_constant_factor():
+    steps = ml_models_docs.bowl_descent(ml_models_docs.BOWL_EXAMPLE)
+    assert len(steps) == ml_models_docs.BOWL_EXAMPLE["steps"] + 1
+    assert steps[0]["value"] == 21
+    assert steps[1]["point"] == pytest.approx([2.4, 0.8])
+    assert steps[2]["point"] == pytest.approx([1.92, 0.32])
+    values = [step["value"] for step in steps]
+    assert values == sorted(values, reverse=True)
+
+
+def test_bowl_descent_diverges_above_the_stable_learning_rate():
+    example = ml_models_docs.BOWL_EXAMPLE
+    assert ml_models_docs.stable_learning_rate(example["scale"]) == pytest.approx(1 / 3)
+    steps = ml_models_docs.bowl_descent(example, lr=example["unstable_lr"])
+    assert steps[1]["point"] == pytest.approx([0.6, -2.8])
+    values = [step["value"] for step in steps]
+    assert values[1:] == sorted(values[1:])
+
+
+def test_bowl_contours_are_ellipses_through_equal_values():
+    scale = ml_models_docs.BOWL_EXAMPLE["scale"]
+    for contour in ml_models_docs.bowl_contours(scale, [1, 4, 9]):
+        rx, ry = contour["radii"]
+        assert ml_models_docs.bowl([rx, 0], scale) == pytest.approx(contour["level"])
+        assert ml_models_docs.bowl([0, ry], scale) == pytest.approx(contour["level"])
