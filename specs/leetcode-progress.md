@@ -4,9 +4,9 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (scaffolding). The section, registry (58 pages in 20 areas),
-index page, tests and Routine exist. No content pages are ready and `PROBLEMS` is empty.
-**The 2026-10-08 research run was blocked by network access (see Known gaps); the next run retries the research run** (spec §8 step 3): populate `PROBLEMS` for all four lists.
+**Last updated:** 2026-10-08 (research run). `PROBLEMS` holds all 297 problems across the
+four lists (75 / 169 / 150 / 250), each with a home page and an original insight. No content
+pages are ready yet. **The next run is a build run** starting at `complexity-analysis`.
 
 ## The Routine
 
@@ -16,16 +16,26 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 
 ## Research
 
-- [ ] Blind 75 in `PROBLEMS` (75 problems), sources recorded below
-- [ ] Grind 169 in `PROBLEMS` (169 problems), sources recorded below
-- [ ] NeetCode 150 in `PROBLEMS` (150 problems), sources recorded below
-- [ ] NeetCode 250 in `PROBLEMS` (250 problems), sources recorded below
-- [ ] Every problem has a `home` page and a one-line original `insight`
+- [x] Blind 75 in `PROBLEMS` (75 problems), sources recorded below
+- [x] Grind 169 in `PROBLEMS` (169 problems), sources recorded below
+- [x] NeetCode 150 in `PROBLEMS` (150 problems), sources recorded below
+- [x] NeetCode 250 in `PROBLEMS` (250 problems), sources recorded below
+- [x] Every problem has a `home` page and a one-line original `insight`
 
 ### Sources
 
 | List | Source URL | Accessed | Size |
 |---|---|---|---|
+| Blind 75 | https://github.com/neetcode-gh/leetcode/blob/main/.problemSiteData.json (`blind75` flag) | 2026-10-08 | 75 |
+| Blind 75 | https://github.com/wislertt/leetcode-py (`.claude/.dev/problem_lists/blind_75.py`) | 2026-10-08 | 75 |
+| Blind 75 | https://github.com/open-minded13/leetcode-blind-75-solutions (README; cross-check only) | 2026-10-08 | 68 |
+| Grind 169 | https://github.com/wislertt/leetcode-py (`.claude/.dev/problem_lists/grind.py`) | 2026-10-08 | 169 |
+| Grind 169 | https://github.com/open-minded13/leetcode-grind-169-solutions (README, Parts 1–16) | 2026-10-08 | 169 |
+| NeetCode 150 | https://github.com/neetcode-gh/leetcode/blob/main/.problemSiteData.json (`neetcode150` flag) | 2026-10-08 | 150 |
+| NeetCode 150 | https://github.com/wislertt/leetcode-py (`.claude/.dev/problem_lists/neetcode_150.py`) | 2026-10-08 | 150 |
+| NeetCode 250 | https://github.com/wislertt/leetcode-py (`.claude/.dev/problem_lists/neetcode_250.py`) | 2026-10-08 | 250 |
+| NeetCode 250 | https://github.com/ascherj/neetcode-250-guide (`neetcode_250_complete.json`) | 2026-10-08 | 250 |
+| Titles, slugs, difficulty | https://github.com/wislertt/leetcode-py (per-problem JSON `problem_title`), cross-checked with the sources above | 2026-10-08 | 297 |
 
 ## Coverage
 
@@ -111,17 +121,22 @@ build once research is done.
 - **Three pages per build run (2026-10-08, owner).** A build run does not stop until it has
   built three queue items (or emptied the queue), pushing after each one. (Briefly five,
   then lowered to three the same day.)
+- **Research reconciliation (2026-10-08).** The list sites (leetcode.com, neetcode.io,
+  techinterviewhandbook.org) are blocked by the network policy, so every list comes from two
+  independent GitHub-hosted sources that agree exactly (see Sources). Blind 75 follows
+  NeetCode's version (39 Combination Sum); open-minded13's README omits the seven premium
+  problems and uses 377 Combination Sum IV instead, and was used only as a cross-check.
+  Grind 169 excludes the "Additional Exercises" beyond Part 16. Union: 297 problems.
+  Edit Distance (72) is Medium (two sources against one); 242 Valid Anagram is Easy; title
+  casing follows LeetCode's (e.g. "Remove Duplicates from Sorted Array").
+- **Homes (2026-10-08).** Every problem has one home; no pages were added, split or merged.
+  Seven pages own no problems by design and teach through `patterns` and prose instead:
+  `complexity-analysis`, `dp-fundamentals`, `interview-approach`, `segment-trees`,
+  `fenwick-trees`, `string-matching`, `bitmask-dp`.
 
 ## Known gaps and questions for the owner
 
-- **Research run blocked (2026-10-08).** The egress proxy returns 403/blocked for
-  techinterviewhandbook.org, neetcode.io and leetcode.com, and the Tech Interview Handbook
-  repo's Grind data file could not be located on raw.githubusercontent.com. Only
-  `neetcode-gh/leetcode/.problemSiteData.json` is reachable; it flags 150 NeetCode 150 and 75
-  Blind 75 problems (450 entries total, with difficulty and pattern) but is a single source and
-  has no Grind 169 or NeetCode 250 data. `PROBLEMS` was left empty rather than filled from memory. Owner: allow
-  those hosts in the environment's network policy, or point the Routine at a reachable second
-  source for each list (and for Grind 169).
+- None open.
 
 ## Run log
 
@@ -134,3 +149,10 @@ this file, the phone check, and the Routine.
 
 Found only one reachable source (NeetCode's `.problemSiteData.json`: Blind 75 = 75, NeetCode 150 = 150).
 No second source for any list and no Grind 169 source. Changed nothing in `PROBLEMS`.
+
+### 2026-10-08 — research run
+
+Populated `PROBLEMS` from GitHub-hosted sources (two per list, reconciled; see Sources and
+Decisions): Blind 75 = 75, Grind 169 = 169, NeetCode 150 = 150, NeetCode 250 = 250, 297
+problems in all, each with a home page, related patterns and an original one-sentence insight.
+No content pages built. Coverage is 0 for every list until pages ship.
