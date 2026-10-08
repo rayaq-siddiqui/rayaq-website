@@ -521,3 +521,61 @@ def test_similarity_ranking_shows_dot_product_rewards_length():
     assert ranking["by_dot"] == ["d1", "d4", "d2", "d3"]
     assert ranking["by_cosine"] == ["d1", "d2", "d4", "d3"]
     assert ranking["by_distance"][0] == "d2"
+
+
+def test_matmul_is_rows_dotted_with_columns():
+    example = ml_models_docs.MATMUL_EXAMPLE
+    assert ml_models_docs.matmul(example["a"], example["b"]) == [[58, 64], [139, 154]]
+    assert ml_models_docs.matmul([[1, 2], [3, 4]], ml_models_docs.identity(2)) == [[1, 2], [3, 4]]
+
+
+def test_matmul_rejects_mismatched_inner_sizes():
+    with pytest.raises(ValueError, match="inner sizes differ"):
+        ml_models_docs.matmul([[1, 2, 3]], [[1, 2, 3]])
+
+
+def test_transpose_of_a_product_reverses_the_order():
+    a, b = ml_models_docs.MATMUL_EXAMPLE["a"], ml_models_docs.MATMUL_EXAMPLE["b"]
+    t = ml_models_docs.transpose
+    assert t(ml_models_docs.matmul(a, b)) == ml_models_docs.matmul(t(b), t(a))
+
+
+@pytest.mark.parametrize(
+    "first, second, expected",
+    [
+        ((3,), (3,), ()),
+        ((2, 3), (3, 4), (2, 4)),
+        ((3,), (3, 4), (4,)),
+        ((2, 3), (3,), (2,)),
+        ((10, 2, 3), (3, 4), (10, 2, 4)),
+        ((5, 1, 2, 3), (7, 3, 4), (5, 7, 2, 4)),
+        ((10, 3), (8, 3, 4), (8, 10, 4)),
+    ],
+)
+def test_matmul_shape_follows_torch_matmul_rules(first, second, expected):
+    assert ml_models_docs.matmul_shape(first, second) == expected
+
+
+@pytest.mark.parametrize("first, second", [((3,), (4,)), ((2, 3), (4, 5)), ((2, 2, 3), (3, 3, 4))])
+def test_matmul_shape_rejects_incompatible_shapes(first, second):
+    with pytest.raises(ValueError):
+        ml_models_docs.matmul_shape(first, second)
+
+
+def test_matmul_flops_count_a_multiply_and_an_add_per_term():
+    assert ml_models_docs.matmul_flops(2, 3, 2) == 24
+    assert ml_models_docs.matmul_flops(2048, 4096, 4096) == 68_719_476_736
+
+
+def test_linear_layer_multiplies_by_the_transposed_weight_and_adds_bias():
+    example = ml_models_docs.LINEAR_EXAMPLE
+    assert ml_models_docs.linear_layer(example["x"], example["weight"], example["bias"]) == [[-2, 4], [-2, 8.5]]
+
+
+def test_inverse_2x2_undoes_the_matrix():
+    matrix = ml_models_docs.INVERSE_EXAMPLE
+    inverse = ml_models_docs.inverse_2x2(matrix)
+    assert inverse == [[1, -1], [-1, 2]]
+    assert ml_models_docs.matmul(matrix, inverse) == ml_models_docs.identity(2)
+    with pytest.raises(ValueError, match="singular"):
+        ml_models_docs.inverse_2x2([[1, 2], [2, 4]])

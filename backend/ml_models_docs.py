@@ -1444,6 +1444,16 @@ SIMILARITY_EXAMPLE = {
 
 PROJECTION_EXAMPLE = {"onto": [3, 1], "vector": [2, 2]}
 
+MATMUL_EXAMPLE = {"a": [[1, 2, 3], [4, 5, 6]], "b": [[7, 8], [9, 10], [11, 12]]}
+
+LINEAR_EXAMPLE = {
+    "x": [[1, 2, 3], [4, 5, 6]],
+    "weight": [[1, 0, -1], [0.5, 0.5, 0.5]],
+    "bias": [0, 1],
+}
+
+INVERSE_EXAMPLE = [[2, 1], [1, 1]]
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -1637,6 +1647,59 @@ def projection(vector, onto):
     return {"scale": scale, "along": along, "residual": [a - b for a, b in zip(vector, along)]}
 
 
+def transpose(matrix):
+    return [list(column) for column in zip(*matrix)]
+
+
+def identity(size):
+    return [[1 if row == column else 0 for column in range(size)] for row in range(size)]
+
+
+def matmul(a, b):
+    if len(a[0]) != len(b):
+        raise ValueError(f"inner sizes differ: [{len(a)}, {len(a[0])}] @ [{len(b)}, {len(b[0])}]")
+    return [[dot_product(row, column) for column in transpose(b)] for row in a]
+
+
+def matmul_shape(first, second):
+    first, second = tuple(first), tuple(second)
+    if not first or not second:
+        raise ValueError("matmul needs at least one dimension on each side")
+    if len(first) == 1 and len(second) == 1:
+        if first != second:
+            raise ValueError(f"vector lengths differ: {first[0]} and {second[0]}")
+        return ()
+    left = (1,) + first if len(first) == 1 else first
+    right = second + (1,) if len(second) == 1 else second
+    if left[-1] != right[-2]:
+        raise ValueError(f"inner sizes differ: {left[-1]} and {right[-2]}")
+    shape = broadcast_shape(left[:-2], right[:-2]) + (left[-2], right[-1])
+    if len(first) == 1:
+        shape = shape[:-2] + shape[-1:]
+    if len(second) == 1:
+        shape = shape[:-1]
+    return shape
+
+
+def matmul_flops(m, k, n, batch=1):
+    return 2 * batch * m * k * n
+
+
+def linear_layer(x, weight, bias=None):
+    out = matmul(x, transpose(weight))
+    if bias is None:
+        return out
+    return [[value + b for value, b in zip(row, bias)] for row in out]
+
+
+def inverse_2x2(matrix):
+    (a, b), (c, d) = matrix
+    determinant = a * d - b * c
+    if determinant == 0:
+        raise ValueError("matrix is singular")
+    return [[d / determinant, -b / determinant], [-c / determinant, a / determinant]]
+
+
 def similarity_ranking(example):
     query = example["query"]
     rows = [
@@ -1704,6 +1767,16 @@ def render(slug, render_template):
         "similarity_example": SIMILARITY_EXAMPLE,
         "projection_example": PROJECTION_EXAMPLE,
         "similarity_ranking": similarity_ranking,
+        "matmul_example": MATMUL_EXAMPLE,
+        "linear_example": LINEAR_EXAMPLE,
+        "inverse_example": INVERSE_EXAMPLE,
+        "transpose": transpose,
+        "identity": identity,
+        "matmul": matmul,
+        "matmul_shape": matmul_shape,
+        "matmul_flops": matmul_flops,
+        "linear_layer": linear_layer,
+        "inverse_2x2": inverse_2x2,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
