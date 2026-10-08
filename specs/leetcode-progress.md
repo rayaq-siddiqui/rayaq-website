@@ -6,7 +6,7 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-08 (scaffolding). The section, registry (58 pages in 20 areas),
 index page, tests and Routine exist. No content pages are ready and `PROBLEMS` is empty.
-**The next run is the research run** (spec §8 step 3): populate `PROBLEMS` for all three lists.
+**The 2026-10-08 research run was blocked by network access (see Known gaps); the next run retries the research run** (spec §8 step 3): populate `PROBLEMS` for all three lists.
 
 ## The Routine
 
@@ -106,7 +106,14 @@ build once research is done.
 
 ## Known gaps and questions for the owner
 
-None yet.
+- **Research run blocked (2026-10-08).** The egress proxy returns 403/blocked for
+  techinterviewhandbook.org, neetcode.io and leetcode.com, and the Tech Interview Handbook
+  repo's Grind data file could not be located on raw.githubusercontent.com. Only
+  `neetcode-gh/leetcode/.problemSiteData.json` is reachable; it flags 150 NeetCode 150 and 75
+  Blind 75 problems (450 entries total, with difficulty and pattern) but is a single source and
+  has no Grind 169 data. `PROBLEMS` was left empty rather than filled from memory. Owner: allow
+  those hosts in the environment's network policy, or point the Routine at a reachable second
+  source for each list (and for Grind 169).
 
 ## Run log
 
@@ -114,3 +121,8 @@ None yet.
 
 Set up `/leetcode`: `leetcode_docs.py` registry, index template, styles, route, tests, spec,
 this file, the phone check, and the Routine.
+
+### 2026-10-08 — research run (blocked)
+
+Found only one reachable source (NeetCode's `.problemSiteData.json`: Blind 75 = 75, NeetCode 150 = 150).
+No second source for any list and no Grind 169 source. Changed nothing in `PROBLEMS`.
