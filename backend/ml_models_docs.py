@@ -1513,6 +1513,16 @@ INFONCE_EXAMPLE = {"labels": ["matching caption", "related caption", "unrelated 
 
 REDUCTION_EXAMPLE = {"losses": [0.5, 1.2, 0.3, 2.0], "targets": [4, 7, -100, 2], "ignore_index": -100}
 
+LINE_DESCENT_EXAMPLE = {"raw_lr": 0.04, "raw_steps": 300, "centered_lr": 0.2, "centered_steps": 20, "marks": [1, 10, 100, 300]}
+
+REGULARIZATION_EXAMPLE = {
+    "features": ["hours studied", "practice tests taken", "hours of sleep"],
+    "x": [[1, 2, 7], [2, 1, 6], [3, 4, 5], [4, 3, 6], [5, 6, 9], [6, 5, 9], [7, 8, 4], [8, 7, 7]],
+    "y": [49, 49, 59, 61, 71, 76, 83, 85],
+    "ridge_alphas": [2 * i for i in range(41)],
+    "lasso_alphas": [0.25 * i for i in range(57)],
+}
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -2134,6 +2144,144 @@ def reduce_losses(example):
     return {"none": none, "sum": sum(kept), "mean": sum(kept) / len(kept), "count": len(kept)}
 
 
+def least_squares_line(pairs):
+    stats = covariance(pairs)
+    slope = stats["cov"] / stats["var_x"]
+    intercept = stats["mean_y"] - slope * stats["mean_x"]
+    fitted = [intercept + slope * x for x, _ in pairs]
+    residuals = [y - f for (_, y), f in zip(pairs, fitted)]
+    sse = sum(r * r for r in residuals)
+    sst = sum((y - stats["mean_y"]) ** 2 for _, y in pairs)
+    return {
+        "slope": slope,
+        "intercept": intercept,
+        "fitted": fitted,
+        "residuals": residuals,
+        "sse": sse,
+        "mse": sse / len(pairs),
+        "sst": sst,
+        "r2": 1 - sse / sst,
+    }
+
+
+def solve_linear(a, b):
+    size = len(a)
+    rows = [list(row) + [value] for row, value in zip(a, b)]
+    for col in range(size):
+        pivot = max(range(col, size), key=lambda r: abs(rows[r][col]))
+        rows[col], rows[pivot] = rows[pivot], rows[col]
+        for r in range(size):
+            if r != col:
+                factor = rows[r][col] / rows[col][col]
+                rows[r] = [x - factor * y for x, y in zip(rows[r], rows[col])]
+    return [rows[i][size] / rows[i][i] for i in range(size)]
+
+
+def normal_equations(x, y):
+    design = [list(row) + [1] for row in x]
+    gram = matmul(transpose(design), design)
+    moment = [sum(row[j] * t for row, t in zip(design, y)) for j in range(len(design[0]))]
+    return {"gram": gram, "moment": moment, "solution": solve_linear(gram, moment)}
+
+
+def standardize(x):
+    n = len(x)
+    means = [sum(col) / n for col in zip(*x)]
+    stds = [math.sqrt(sum((v - m) ** 2 for v in col) / n) for col, m in zip(zip(*x), means)]
+    return {
+        "z": [[(v - m) / s for v, m, s in zip(row, means, stds)] for row in x],
+        "means": means,
+        "stds": stds,
+    }
+
+
+def ridge_coefficients(z, y, alpha):
+    gram = matmul(transpose(z), z)
+    for j in range(len(gram)):
+        gram[j][j] += alpha
+    moment = [sum(row[j] * t for row, t in zip(z, y)) for j in range(len(z[0]))]
+    return solve_linear(gram, moment)
+
+
+def soft_threshold(value, threshold):
+    return math.copysign(max(abs(value) - threshold, 0.0), value)
+
+
+def lasso_coefficients(z, y, alpha, sweeps=500):
+    n, p = len(z), len(z[0])
+    norms = [sum(row[j] ** 2 for row in z) / n for j in range(p)]
+    weights = [0.0] * p
+    residual = list(y)
+    for _ in range(sweeps):
+        for j in range(p):
+            rho = sum(row[j] * r for row, r in zip(z, residual)) / n + norms[j] * weights[j]
+            new = soft_threshold(rho, alpha) / norms[j]
+            residual = [r - row[j] * (new - weights[j]) for row, r in zip(z, residual)]
+            weights[j] = new
+    return weights
+
+
+def regularization_paths(example):
+    scaled = standardize(example["x"])
+    z = scaled["z"]
+    mean_y = sum(example["y"]) / len(example["y"])
+    centered = [t - mean_y for t in example["y"]]
+    n = len(z)
+    corr = [[sum(row[i] * row[j] for row in z) / n for j in range(len(z[0]))] for i in range(len(z[0]))]
+    return {
+        "corr": corr,
+        "mean_y": mean_y,
+        "ols": ridge_coefficients(z, centered, 0.0),
+        "ridge": [{"alpha": a, "coef": ridge_coefficients(z, centered, a)} for a in example["ridge_alphas"]],
+        "lasso": [{"alpha": a, "coef": lasso_coefficients(z, centered, a)} for a in example["lasso_alphas"]],
+    }
+
+
+def mse_hessian(pairs, centered=False):
+    n = len(pairs)
+    mean_x = sum(x for x, _ in pairs) / n
+    xs = [x - mean_x if centered else x for x, _ in pairs]
+    return [
+        [2 * sum(x * x for x in xs) / n, 2 * sum(xs) / n],
+        [2 * sum(xs) / n, 2.0],
+    ]
+
+
+def line_descent(pairs, lr, steps, centered=False):
+    n = len(pairs)
+    mean_x = sum(x for x, _ in pairs) / n
+    data = [(x - mean_x if centered else x, y) for x, y in pairs]
+
+    def gradient(point):
+        w, b = point
+        errors = [(w * x + b - y, x) for x, y in data]
+        return [2 * sum(e * x for e, x in errors) / n, 2 * sum(e for e, _ in errors) / n]
+
+    return gradient_descent(gradient, [0.0, 0.0], lr, steps)
+
+
+def symmetric_eigen_2x2(matrix):
+    (a, b), (_, d) = matrix
+    mid, spread = (a + d) / 2, math.hypot((a - d) / 2, b)
+    angle = 0.5 * math.atan2(2 * b, a - d)
+    return {
+        "values": [mid + spread, mid - spread],
+        "vectors": [[math.cos(angle), math.sin(angle)], [-math.sin(angle), math.cos(angle)]],
+    }
+
+
+def quadratic_ellipse(matrix, center, excess, count=72):
+    eigen = symmetric_eigen_2x2(matrix)
+    radii = [math.sqrt(2 * excess / value) for value in eigen["values"]]
+    (u1, u2), (v1, v2) = eigen["vectors"]
+    points = []
+    for k in range(count + 1):
+        t = 2 * math.pi * k / count
+        a, b = radii[0] * math.cos(t), radii[1] * math.sin(t)
+        points.append([center[0] + a * u1 + b * v1, center[1] + a * u2 + b * v2])
+    return points
+
+
 def similarity_ranking(example):
     query = example["query"]
     rows = [
@@ -2276,6 +2424,15 @@ def render(slug, render_template):
         "triplet_loss": triplet_loss,
         "info_nce": info_nce,
         "reduce_losses": reduce_losses,
+        "line_descent_example": LINE_DESCENT_EXAMPLE,
+        "regularization_example": REGULARIZATION_EXAMPLE,
+        "least_squares_line": least_squares_line,
+        "normal_equations": normal_equations,
+        "regularization_paths": regularization_paths,
+        "mse_hessian": mse_hessian,
+        "line_descent": line_descent,
+        "symmetric_eigen_2x2": symmetric_eigen_2x2,
+        "quadratic_ellipse": quadratic_ellipse,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

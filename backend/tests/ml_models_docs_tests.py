@@ -884,3 +884,66 @@ def test_reduction_skips_ignored_targets_in_the_mean():
     assert result["sum"] == pytest.approx(3.7)
     assert result["count"] == 3
     assert result["mean"] == pytest.approx(3.7 / 3)
+
+
+def test_least_squares_line_matches_the_normal_equations():
+    pairs = ml_models_docs.COVARIANCE_EXAMPLE["pairs"]
+    line = ml_models_docs.least_squares_line(pairs)
+    assert line["slope"] == pytest.approx(7.5)
+    assert line["intercept"] == pytest.approx(43.5)
+    assert line["residuals"] == pytest.approx([1, 1.5, -5, 1.5, 1])
+    assert sum(line["residuals"]) == pytest.approx(0)
+    assert line["sse"] == pytest.approx(31.5)
+    assert line["r2"] == pytest.approx(1 - 31.5 / 594)
+    normal = ml_models_docs.normal_equations([[x] for x, _ in pairs], [y for _, y in pairs])
+    assert normal["gram"] == [[55, 15], [15, 5]]
+    assert normal["moment"] == [1065, 330]
+    assert normal["solution"] == pytest.approx([7.5, 43.5])
+
+
+def test_solve_linear_pivots_past_a_zero():
+    assert ml_models_docs.solve_linear([[0, 1], [2, 0]], [3, 4]) == pytest.approx([2, 3])
+
+
+def test_line_descent_is_slow_on_raw_features_and_fast_when_centered():
+    pairs = ml_models_docs.COVARIANCE_EXAMPLE["pairs"]
+    example = ml_models_docs.LINE_DESCENT_EXAMPLE
+    raw = ml_models_docs.line_descent(pairs, example["raw_lr"], example["raw_steps"])
+    assert raw[1] == pytest.approx([17.04, 5.28])
+    assert raw[100][0] == pytest.approx(10.23, abs=0.01)
+    assert abs(raw[-1][1] - 43.5) > 0.5
+    centered = ml_models_docs.line_descent(pairs, example["centered_lr"], example["centered_steps"], centered=True)
+    assert centered[-1] == pytest.approx([7.5, 66.0], abs=0.01)
+    eigen = ml_models_docs.symmetric_eigen_2x2(ml_models_docs.mse_hessian(pairs))
+    assert eigen["values"][0] / eigen["values"][1] == pytest.approx(70, abs=0.1)
+    assert ml_models_docs.mse_hessian(pairs, centered=True) == [[4, 0], [0, 2]]
+
+
+def test_quadratic_ellipse_points_sit_on_the_level_set():
+    matrix = ml_models_docs.mse_hessian(ml_models_docs.COVARIANCE_EXAMPLE["pairs"])
+    for w, b in ml_models_docs.quadratic_ellipse(matrix, [7.5, 43.5], 5.0, count=12):
+        dw, db = w - 7.5, b - 43.5
+        excess = 0.5 * (matrix[0][0] * dw * dw + 2 * matrix[0][1] * dw * db + matrix[1][1] * db * db)
+        assert excess == pytest.approx(5.0)
+
+
+def test_ridge_shares_weight_and_lasso_drops_features():
+    paths = ml_models_docs.regularization_paths(ml_models_docs.REGULARIZATION_EXAMPLE)
+    assert paths["corr"][0][1] == pytest.approx(19 / 21)
+    assert paths["ols"] == pytest.approx([9.04, 4.51, 0.60], abs=0.01)
+    ridge = {entry["alpha"]: entry["coef"] for entry in paths["ridge"]}
+    assert ridge[0] == pytest.approx(paths["ols"])
+    assert ridge[2][1] > ridge[0][1]
+    assert ridge[80][0] / ridge[80][1] == pytest.approx(1.05, abs=0.01)
+    assert all(abs(v) > 0 for v in ridge[80])
+    lasso = {entry["alpha"]: entry["coef"] for entry in paths["lasso"]}
+    assert lasso[0] == pytest.approx(paths["ols"], abs=1e-6)
+    assert lasso[1.0] == pytest.approx([8.84, 3.69, 0.0], abs=0.01)
+    first_zero = [min(a for a, coef in lasso.items() if coef[j] == 0) for j in range(3)]
+    assert first_zero == [13.25, 8.25, 0.75]
+
+
+def test_soft_threshold():
+    assert ml_models_docs.soft_threshold(3.0, 1.0) == 2.0
+    assert ml_models_docs.soft_threshold(-3.0, 1.0) == -2.0
+    assert ml_models_docs.soft_threshold(0.5, 1.0) == 0.0
