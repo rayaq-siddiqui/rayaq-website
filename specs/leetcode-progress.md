@@ -52,8 +52,8 @@ build once research is done.
 1. `complexity-analysis` ✓
 2. `python-toolkit` ✓
 3. `recursion` ✓
-4. `hash-maps-and-sets` ← next
-5. `counting-and-bucketing`
+4. `hash-maps-and-sets` ✓
+5. `counting-and-bucketing` ← next
 6. `prefix-sums`
 7. `in-place-array-tricks`
 8. `two-pointers`

@@ -261,3 +261,24 @@ def test_recursion_helpers_match_the_page():
     assert "<td class=\"num\">1024</td>" in body
     assert "found with 5 calls and a stack at most 5 frames deep" in body
     assert "15 calls naive, 9 with memoization" in body
+
+
+def test_hash_helpers_match_the_page():
+    trace = leetcode_docs.two_sum_trace([11, 3, 15, 8, 2, 7], 9)
+    assert trace["pair"] == (4, 5)
+    assert [s["need"] for s in trace["steps"]] == [-2, 6, -6, 1, 7, 2]
+    assert [s["hit"] for s in trace["steps"]] == [False] * 5 + [True]
+    assert trace["steps"][3]["seen"] == {11: 0, 3: 1, 15: 2}
+    assert leetcode_docs.two_sum_trace([1, 2], 10)["pair"] is None
+    assert leetcode_docs.two_sum_trace([3, 3], 6)["pair"] == (0, 1)
+    buckets = leetcode_docs.bucket_layout([15, 22, 8, 31, 7, 14, 29, 15], 7)
+    assert buckets == [[7, 14], [15, 22, 8, 29], [], [31], [], [], []]
+    runs = leetcode_docs.consecutive_runs([100, 4, 200, 1, 3, 2, 101, 5, 102])
+    assert runs["runs"] == [{"start": 1, "length": 5}, {"start": 100, "length": 3}, {"start": 200, "length": 1}]
+    assert (runs["best"], runs["lookups"], runs["unique"]) == (5, 18, 9)
+    assert leetcode_docs.consecutive_runs([])["best"] == 0
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/hash-maps-and-sets").get_data(as_text=True))
+    assert "returns indices 4 and 5, after 6 lookups" in body
+    assert "up to 15 pairs" in body
+    assert "18 set lookups for 9 distinct numbers" in body
+    assert "one chain of 4 keys" in body

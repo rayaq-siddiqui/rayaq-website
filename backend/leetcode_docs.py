@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -3470,6 +3470,49 @@ def fast_power_trace(base, exponent):
     value = power(exponent, 0)
     return {"events": events, "value": value, "max_depth": max(e["depth"] for e in events) + 1}
 
+
+def two_sum_trace(nums, target):
+    """One pass of the complement-map Two Sum: the map as it was when each number was examined."""
+    seen = {}
+    steps = []
+    for index, value in enumerate(nums):
+        need = target - value
+        steps.append({"index": index, "value": value, "need": need,
+                      "hit": need in seen, "seen": dict(seen)})
+        if need in seen:
+            return {"steps": steps, "pair": (seen[need], index)}
+        seen[value] = index
+    return {"steps": steps, "pair": None}
+
+
+def bucket_layout(keys, bucket_count):
+    """Separate chaining: which keys land in which bucket of a fixed-size table (key mod count)."""
+    buckets = [[] for _ in range(bucket_count)]
+    for key in keys:
+        if key not in buckets[key % bucket_count]:
+            buckets[key % bucket_count].append(key)
+    return buckets
+
+
+def consecutive_runs(nums):
+    """Longest Consecutive Sequence via a set: the runs walked, the best length and set lookups made."""
+    members = set(nums)
+    runs = []
+    lookups = 0
+    for number in sorted(members):
+        lookups += 1
+        if number - 1 in members:
+            continue
+        length = 1
+        while True:
+            lookups += 1
+            if number + length not in members:
+                break
+            length += 1
+        runs.append({"start": number, "length": length})
+    return {"runs": runs, "best": max((run["length"] for run in runs), default=0),
+            "lookups": lookups, "unique": len(members)}
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -3590,6 +3633,9 @@ def render(slug, render_template):
         "fib_call_tree": fib_call_tree,
         "fib_call_counts": fib_call_counts,
         "fast_power_trace": fast_power_trace,
+        "two_sum_trace": two_sum_trace,
+        "bucket_layout": bucket_layout,
+        "consecutive_runs": consecutive_runs,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,
