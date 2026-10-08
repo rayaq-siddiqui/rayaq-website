@@ -663,7 +663,7 @@ PAGES = [
             "pytorch:torch/optim/adamw.py",
             "pytorch:torch/optim/optimizer.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "learning-rate-schedules",
