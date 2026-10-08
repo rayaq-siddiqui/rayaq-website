@@ -125,7 +125,7 @@ PAGES = [
             "pytorch:torch/_torch_docs.py",
             "pytorch:torch/nn/modules/distance.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "matrix-multiplication",

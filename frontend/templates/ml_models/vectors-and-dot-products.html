@@ -1,0 +1,403 @@
+{% set q = similarity_example.query %}
+{% set ranking = similarity_ranking(similarity_example) %}
+{% set proj = projection(projection_example.vector, projection_example.onto) %}
+{% set a = projection_example.onto %}
+{% set b = projection_example.vector %}
+{% macro vec(v) -%}[{% for x in v %}{{ "%g"|format(x) }}{% if not loop.last %}, {% endif %}{% endfor %}]{%- endmacro %}
+{% macro num(x) -%}{{ "%.3f"|format(x) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Vectors and dot products</h1>
+  <p class="tagline">
+    A vector is a list of numbers you can read as an arrow. The dot product turns two arrows
+    into one number that says how much they point the same way. That single operation is the
+    score inside attention, the ranking inside search and recommendation, and every output of
+    a linear layer. This page builds it from the geometry up, with every number worked and
+    every PyTorch function linked at {{ upstream.tag }}.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Models represent words, images, users and products as vectors of numbers called
+  <em>embeddings</em>. Once everything is a vector, the questions a model asks become
+  geometric: <em>is this document about the same thing as this query?</em> <em>Which
+  earlier word should this word pay attention to?</em> <em>How much of this input points
+  in the direction a neuron is looking for?</em>
+</p>
+<p>
+  We need a cheap, differentiable way to compare two vectors, one that a GPU can do billions
+  of times a second. The dot product is that tool, and knowing exactly what it measures
+  (and what it doesn't) explains choices like scaling attention scores or normalizing
+  embeddings before search.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Read a vector <code>[x, y]</code> as an arrow from the origin to the point (x, y). It has a
+  <strong>direction</strong> and a <strong>length</strong>. The dot product of two arrows is
+  large and positive when they point the same way, zero when they are at right angles, and
+  negative when they point apart. It also grows with the lengths of both arrows, which is
+  the detail that matters most in practice.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 290" role="img" aria-labelledby="vd-plane-title vd-plane-desc">
+    <title id="vd-plane-title">A query vector and four document vectors in the plane</title>
+    <desc id="vd-plane-desc">
+      A 2-D grid with the origin left of center. The query q = [1, 2] is drawn as a blue
+      arrow. Four documents are green arrows: d1 = [2, 4] points exactly along q but is twice
+      as long; d2 = [2, 1] is 37 degrees away; d3 = [-2, 1] is at a right angle to q; d4 =
+      [6, 0] is long and 63 degrees away. A table beside the figure lists each one's dot
+      product and cosine with q.
+    </desc>
+    <defs>
+      <marker id="vd-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="12" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% set ox = 170 %}{% set oy = 245 %}{% set u = 45 %}
+    {% for gx in range(-3, 8) %}<line x1="{{ ox + gx * u }}" y1="{{ oy + 10 }}" x2="{{ ox + gx * u }}" y2="{{ oy - 5 * u }}" class="d-line" stroke-width="{{ 1.2 if gx == 0 else 0.3 }}"></line>{% endfor %}
+    {% for gy in range(0, 6) %}<line x1="{{ ox - 3 * u }}" y1="{{ oy - gy * u }}" x2="{{ ox + 7 * u }}" y2="{{ oy - gy * u }}" class="d-line" stroke-width="{{ 1.2 if gy == 0 else 0.3 }}"></line>{% endfor %}
+    {% for row in ranking.rows %}
+      <line x1="{{ ox }}" y1="{{ oy }}" x2="{{ ox + row.vector[0] * u }}" y2="{{ oy - row.vector[1] * u }}" stroke="var(--jj-green)" stroke-width="2.5" marker-end="url(#vd-arrow)"></line>
+      <text x="{{ ox + row.vector[0] * u + (8 if row.vector[0] >= 0 else -26) }}" y="{{ oy - row.vector[1] * u - 6 }}" font-size="13" class="ml-label">{{ row.name }} {{ vec(row.vector) }}</text>
+    {% endfor %}
+    <line x1="{{ ox }}" y1="{{ oy }}" x2="{{ ox + q[0] * u }}" y2="{{ oy - q[1] * u }}" stroke="var(--jj-accent)" stroke-width="4" marker-end="url(#vd-arrow)"></line>
+    <text x="{{ ox + q[0] * u + 8 }}" y="{{ oy - q[1] * u + 14 }}" font-size="14" font-weight="600" class="ml-label">q {{ vec(q) }}</text>
+
+    <text x="520" y="40" font-size="12" class="d-muted">doc</text>
+    <text x="580" y="40" font-size="12" class="d-muted" text-anchor="end">q·d</text>
+    <text x="650" y="40" font-size="12" class="d-muted" text-anchor="end">cos</text>
+    {% for row in ranking.rows %}
+      <text x="520" y="{{ 66 + loop.index0 * 24 }}" font-size="13">{{ row.name }}</text>
+      <text x="580" y="{{ 66 + loop.index0 * 24 }}" font-size="13" text-anchor="end">{{ row.dot }}</text>
+      <text x="650" y="{{ 66 + loop.index0 * 24 }}" font-size="13" text-anchor="end">{{ "%.2f"|format(row.cosine) }}</text>
+    {% endfor %}
+  </svg>
+</div>
+<p class="ml-caption">
+  d1 and q point the same way, so their cosine is 1. d4 is far off-direction but long, so its
+  dot product ({{ ranking.rows[3].dot }}) beats d2's ({{ ranking.rows[1].dot }}) even though d2 is
+  the closer match in direction.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="vectors">Vectors as points and directions</h3>
+
+<p>
+  A vector <strong>v</strong> in ℝ<sup>n</sup> is n numbers. In PyTorch it is a rank-1 tensor
+  of shape <code>[n]</code>, and a batch of them is <code>[batch, n]</code> (see
+  <a href="{{ url_for('ml_models', slug='tensors-and-shapes') }}">Tensors, shapes and
+  broadcasting</a>). Adding vectors adds arrows tip to tail; multiplying by a scalar
+  stretches an arrow without turning it. Embedding sizes are 64 to several thousand, but
+  every idea on this page is the same in 2-D.
+</p>
+
+<h3 id="norms">Norms: the length of a vector</h3>
+
+<p class="ml-formula">‖v‖<sub>p</sub> = (Σ<sub>i</sub> |v<sub>i</sub>|<sup>p</sup>)<sup>1/p</sup></p>
+
+<p>
+  The L2 norm (p = 2) is ordinary length: ‖[3, 4]‖<sub>2</sub> = {{ "%g"|format(vector_norm([3, 4])) }}.
+  The L1 norm sums absolute values (‖[3, −4]‖<sub>1</sub> = {{ "%g"|format(vector_norm([3, -4], 1)) }}),
+  and the L∞ norm takes the largest (‖[3, −4]‖<sub>∞</sub> = {{ [3, -4]|map("abs")|max }}).
+  L2 shows up in distances and weight decay, L1 in sparsity penalties, L∞ in gradient
+  clipping by value and adversarial bounds
+  (<a href="{{ pinned('pytorch', 'torch/linalg/__init__.py', 1491, 1568) }}"><code>torch.linalg.vector_norm</code></a>).
+  Dividing a vector by its L2 norm gives a <strong>unit vector</strong>: same direction,
+  length 1.
+</p>
+
+<h3 id="dot-product">The dot product</h3>
+
+<p class="ml-formula">u · v = Σ<sub>i</sub> u<sub>i</sub> v<sub>i</sub> = ‖u‖ ‖v‖ cos θ</p>
+
+<p>
+  The first form is how it is computed: multiply matching entries and add. The second is
+  what it means: lengths times the cosine of the angle θ between them. The two agree in
+  any number of dimensions, which is why "similar direction" makes sense for 4096-wide
+  embeddings. <code>torch.dot</code> takes exactly two 1-D tensors of the same length and,
+  unlike NumPy's <code>dot</code>, nothing else
+  (<a href="{{ src('torch/_torch_docs.py', 4134, 4162) }}"><code>torch.dot</code></a>); its
+  docstring's own example is [2, 3] · [2, 1] = {{ dot_product([2, 3], [2, 1]) }}. For
+  complex vectors <code>torch.vdot</code> conjugates the first argument
+  (<a href="{{ src('torch/_torch_docs.py', 4164, 4211) }}"><code>vdot</code></a>), and
+  <code>torch.inner</code> generalizes to the last axis of any two tensors
+  (<a href="{{ src('torch/_torch_docs.py', 5093, 5152) }}"><code>inner</code></a>).
+</p>
+
+<h3 id="projection">Projection</h3>
+
+<p>
+  The dot product with a <em>unit</em> vector is the length of the shadow one vector casts
+  on the other's line. Dividing by ‖a‖² instead of ‖a‖ gives the shadow as a vector:
+</p>
+<p class="ml-formula">proj<sub>a</sub>(b) = (a · b / a · a) a</p>
+<p>
+  What's left over, b − proj<sub>a</sub>(b), is orthogonal to a. That split is how
+  Gram–Schmidt builds orthogonal bases and how least squares finds the closest point on a
+  line, which the <em>Linear regression</em> page uses.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 250" role="img" aria-labelledby="vd-proj-title vd-proj-desc">
+    <title id="vd-proj-title">Projecting b = [2, 2] onto a = [3, 1]</title>
+    <desc id="vd-proj-desc">
+      The vector a = [3, 1] in blue and b = [2, 2] in green, from a shared origin. A dashed
+      line drops from the tip of b to a's line, meeting it at a right angle at [2.4, 0.8],
+      the projection, drawn in amber along a. The dashed segment from [2.4, 0.8] to [2, 2] is
+      the residual [-0.4, 1.2], orthogonal to a. The scale factor is a·b / a·a = 8 / 10 = 0.8.
+    </desc>
+    <defs>
+      <marker id="vd-arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="12" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% set ox = 60 %}{% set oy = 220 %}{% set u = 85 %}
+    {% set px = ox + proj.along[0] * u %}{% set py = oy - proj.along[1] * u %}
+    <line x1="{{ ox }}" y1="{{ oy }}" x2="{{ ox + 4 * u }}" y2="{{ oy }}" class="d-line" stroke-width="0.6"></line>
+    <line x1="{{ ox }}" y1="{{ oy }}" x2="{{ ox }}" y2="{{ oy - 2.4 * u }}" class="d-line" stroke-width="0.6"></line>
+    <line x1="{{ ox }}" y1="{{ oy }}" x2="{{ ox + a[0] * u }}" y2="{{ oy - a[1] * u }}" stroke="var(--jj-accent)" stroke-width="3" marker-end="url(#vd-arrow2)"></line>
+    <line x1="{{ ox }}" y1="{{ oy }}" x2="{{ px }}" y2="{{ py }}" stroke="var(--jj-amber)" stroke-width="6" opacity="0.7"></line>
+    <line x1="{{ ox }}" y1="{{ oy }}" x2="{{ ox + b[0] * u }}" y2="{{ oy - b[1] * u }}" stroke="var(--jj-green)" stroke-width="3" marker-end="url(#vd-arrow2)"></line>
+    <line x1="{{ ox + b[0] * u }}" y1="{{ oy - b[1] * u }}" x2="{{ px }}" y2="{{ py }}" class="d-line ml-dashed" stroke-width="1.5"></line>
+    <text x="{{ ox + a[0] * u + 8 }}" y="{{ oy - a[1] * u + 4 }}" font-size="14" class="ml-label">a {{ vec(a) }}</text>
+    <text x="{{ ox + b[0] * u - 30 }}" y="{{ oy - b[1] * u - 10 }}" font-size="14" class="ml-label">b {{ vec(b) }}</text>
+    <text x="{{ px + 10 }}" y="{{ py + 22 }}" font-size="13" class="ml-label">proj = {{ vec(proj.along) }}</text>
+    <text x="{{ px + 2 }}" y="{{ py - 50 }}" font-size="12" class="d-muted ml-label">residual {{ vec(proj.residual) }}</text>
+    <text x="440" y="70" font-size="13">a · b = {{ dot_product(a, b) }}</text>
+    <text x="440" y="94" font-size="13">a · a = {{ dot_product(a, a) }}</text>
+    <text x="440" y="118" font-size="13">scale = {{ "%g"|format(proj.scale) }}</text>
+    <text x="440" y="142" font-size="13">residual · a = {{ "%g"|format(dot_product(proj.residual, a)|round(12)|abs) }}</text>
+  </svg>
+</div>
+
+<h3 id="cosine-similarity">Cosine similarity and orthogonality</h3>
+
+<p>
+  Divide the dot product by both lengths and only the angle is left:
+</p>
+<p class="ml-formula">cos(u, v) = u · v / (‖u‖ ‖v‖) ∈ [−1, 1]</p>
+<p>
+  1 means same direction, 0 means <strong>orthogonal</strong> (at right angles, sharing no
+  direction), −1 means opposite. In high dimensions random vectors are nearly orthogonal,
+  so a cosine of 0.3 between two embeddings can already be a strong signal.
+  <code>F.cosine_similarity</code> clamps each norm separately to at least
+  <code>eps</code> = 1e-8 before dividing, so a zero vector gives 0 instead of NaN
+  (<a href="{{ pinned('pytorch', 'torch/nn/functional.py', 5895, 5924) }}"><code>F.cosine_similarity</code></a>);
+  the module wrapper only stores <code>dim</code> and <code>eps</code> and calls it
+  (<a href="{{ src('torch/nn/modules/distance.py', 64, 100) }}"><code>nn.CosineSimilarity</code></a>).
+  Note that the module's docstring writes the clamp around the product of the norms, while
+  the function it calls clamps each norm; the function is what runs.
+</p>
+
+<h3 id="why-it-is-everywhere">Why attention and retrieval are dot products</h3>
+
+<ul>
+  <li>
+    <strong>A neuron is a dot product.</strong> A linear layer's output j is
+    w<sub>j</sub> · x + b<sub>j</sub>: how much the input points along the weight row the
+    neuron has learned. A whole layer is many dot products at once, which is matrix
+    multiplication, the next page.
+  </li>
+  <li>
+    <strong>Attention scores are dot products.</strong> Each query is dotted with every key,
+    the scores are scaled by 1/√d<sub>k</sub> and softmaxed. The scaling exists precisely
+    because dot products grow with dimension (see
+    <a href="{{ url_for('ml_models', slug='transformer') }}#attention">The Transformer</a>).
+  </li>
+  <li>
+    <strong>Retrieval is a dot product.</strong> Encode the query and every document, then
+    return the documents with the highest q · d. Normalize everything first and that is
+    cosine similarity; vector indexes exist to find the top scores without computing all of
+    them.
+  </li>
+</ul>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Term</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Dot product</td>
+        <td><code>[n]</code>, <code>[n]</code> → scalar</td>
+        <td>Sum of elementwise products; ‖u‖‖v‖cos θ.</td>
+        <td><a href="{{ src('torch/_torch_docs.py', 4134, 4162) }}"><code>torch.dot</code></a></td>
+      </tr>
+      <tr>
+        <td>Inner product</td>
+        <td><code>[…, n]</code>, <code>[…, n]</code> → outer shapes joined</td>
+        <td>Dot product over the last axis of each input.</td>
+        <td><a href="{{ src('torch/_torch_docs.py', 5093, 5152) }}"><code>torch.inner</code></a></td>
+      </tr>
+      <tr>
+        <td>Outer product</td>
+        <td><code>[m]</code>, <code>[n]</code> → <code>[m, n]</code></td>
+        <td>Every pair's product; the opposite of collapsing to a scalar.</td>
+        <td><a href="{{ src('torch/_torch_docs.py', 5154, 5182) }}"><code>torch.outer</code></a></td>
+      </tr>
+      <tr>
+        <td>Vector norm</td>
+        <td><code>ord</code> (default 2), <code>dim</code></td>
+        <td>Length of a vector, or of each vector along <code>dim</code>.</td>
+        <td><a href="{{ pinned('pytorch', 'torch/linalg/__init__.py', 1491, 1568) }}"><code>linalg.vector_norm</code></a></td>
+      </tr>
+      <tr>
+        <td>Cosine similarity</td>
+        <td><code>dim=1</code>, <code>eps=1e-8</code>; drops <code>dim</code></td>
+        <td>Dot product of the two directions; ignores length.</td>
+        <td><a href="{{ pinned('pytorch', 'torch/nn/functional.py', 5895, 5924) }}"><code>F.cosine_similarity</code></a>, <a href="{{ src('torch/nn/modules/distance.py', 64, 100) }}"><code>nn.CosineSimilarity</code></a></td>
+      </tr>
+      <tr>
+        <td>Pairwise distance</td>
+        <td><code>p=2</code>, <code>eps=1e-6</code></td>
+        <td>‖x<sub>1</sub> − x<sub>2</sub> + eps‖<sub>p</sub> row by row.</td>
+        <td><a href="{{ src('torch/nn/modules/distance.py', 10, 61) }}"><code>nn.PairwiseDistance</code></a></td>
+      </tr>
+      <tr>
+        <td>All-pairs distance</td>
+        <td><code>[P, M]</code>, <code>[R, M]</code> → <code>[P, R]</code></td>
+        <td>Distance between every row of one set and every row of the other.</td>
+        <td><a href="{{ src('torch/functional.py', 1483) }}"><code>torch.cdist</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>Ranking four documents for one query.</strong> The query is q = {{ vec(q) }}, with
+    ‖q‖ = √{{ dot_product(q, q) }} ≈ {{ num(vector_norm(q)) }}. For d2 = [2, 1]: q · d2 =
+    1·2 + 2·1 = {{ ranking.rows[1].dot }}, ‖d2‖ ≈ {{ num(ranking.rows[1].norm) }}, so
+    cos = {{ ranking.rows[1].dot }} / ({{ num(vector_norm(q)) }} · {{ num(ranking.rows[1].norm) }})
+    = {{ num(ranking.rows[1].cosine) }}, an angle of {{ "%.1f"|format(angle_degrees(q, ranking.rows[1].vector)) }}°.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Doc</th><th>Vector</th><th>q · d</th><th>‖d‖</th><th>cos</th><th>‖q − d‖</th></tr></thead>
+      <tbody>
+        {% for row in ranking.rows %}
+        <tr>
+          <td>{{ row.name }}</td>
+          <td><code>{{ vec(row.vector) }}</code></td>
+          <td>{{ row.dot }}</td>
+          <td>{{ num(row.norm) }}</td>
+          <td>{{ num(row.cosine) }}</td>
+          <td>{{ num(row.distance) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>The three scores rank the documents differently:</p>
+  <ul>
+    <li>by dot product: {{ ranking.by_dot|join(" > ") }}. Long vectors win.</li>
+    <li>by cosine: {{ ranking.by_cosine|join(" > ") }}. Only direction counts.</li>
+    <li>by distance (smaller is better): {{ ranking.by_distance|join(" < ") }}. Being near the query's <em>point</em> counts, so d1, twice as long as q, loses to d2.</li>
+  </ul>
+  <p>
+    d3 = [−2, 1] scores 0 on both dot and cosine: 1·(−2) + 2·1 = 0, so it is orthogonal to
+    the query. If all four vectors had length 1, the dot and cosine rankings would be
+    identical, and distance would agree too, since ‖q − d‖² = 2 − 2 q·d for unit vectors.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code class="language-python">import torch
+import torch.nn.functional as F
+
+q = torch.tensor([1., 2.])
+docs = torch.tensor([[2., 4.], [2., 1.], [-2., 1.], [6., 0.]])
+
+torch.dot(q, docs[1])                       # tensor(4.)
+docs @ q                                    # tensor([{{ ranking.rows|map(attribute="dot")|join(".,  ") }}.]): all four at once
+torch.linalg.vector_norm(docs, dim=1)       # lengths of each row
+F.cosine_similarity(q.unsqueeze(0), docs)   # q broadcasts against every row
+torch.cdist(q.unsqueeze(0), docs)           # [1, 4] distances
+
+unit = F.normalize(docs, dim=1)             # divide each row by its L2 norm
+(unit @ F.normalize(q, dim=0)).topk(2)      # cosine top-2: the core of vector search
+
+a, b = torch.tensor([3., 1.]), torch.tensor([2., 2.])
+along = (a @ b) / (a @ a) * a               # tensor([2.4000, 0.8000])
+(b - along) @ a                             # tensor(0.): the residual is orthogonal</code></pre>
+
+<p>From scratch, in plain Python:</p>
+
+<pre><code class="language-python">def dot(u, v):
+    return sum(a * b for a, b in zip(u, v))
+
+def norm(v):
+    return dot(v, v) ** 0.5
+
+def cosine(u, v, eps=1e-8):
+    return dot(u, v) / (max(norm(u), eps) * max(norm(v), eps))</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Dot product versus cosine.</strong> The raw dot product lets length carry
+    meaning: a recommender may want popular items, whose embeddings grow long, to score
+    higher. Cosine removes length, which is fairer across documents of different sizes but
+    throws that signal away. Many retrieval models train with normalized embeddings so the
+    two coincide.
+  </li>
+  <li>
+    <strong>Cosine versus Euclidean distance.</strong> For unit vectors they rank
+    identically. For raw vectors, distance treats "near the same point" as similar, which
+    suits clustering in a space where magnitude means something.
+  </li>
+  <li>
+    <strong>Scale grows with dimension.</strong> The dot product of two random vectors with
+    unit-variance entries has variance n. Attention divides by √d<sub>k</sub> to undo
+    this; forget it and softmax saturates.
+  </li>
+  <li>
+    <strong>Precision.</strong> In <code>float16</code>, a long dot product can overflow or
+    lose small terms. PyTorch kernels accumulate in higher precision, but hand-written
+    loops in low precision may not.
+  </li>
+  <li>
+    <strong>The eps clamp.</strong> It prevents NaN for zero vectors but means a tiny,
+    nearly-zero vector gets a meaningless cosine. Filter degenerate embeddings before search.
+  </li>
+</ul>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="ml-quiz">
+  <summary>What is the cosine similarity of [1, 0] and [0, 3]?</summary>
+  <p>{{ "%g"|format(cosine_similarity([1, 0], [0, 3])) }}. The dot product is 0, so they are orthogonal ({{ "%g"|format(angle_degrees([1, 0], [0, 3])) }}°); length doesn't matter.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Doubling a document vector changes which scores?</summary>
+  <p>Its dot product with the query doubles; its cosine is unchanged; its distance to the query changes in a way that depends on where it was.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does attention divide q · k by √d<sub>k</sub>?</summary>
+  <p>With unit-variance entries, q · k has variance d<sub>k</sub>. Dividing by √d<sub>k</sub> brings the standard deviation back to 1, keeping softmax away from a near one-hot output with tiny gradients.</p>
+</details>
+<details class="ml-quiz">
+  <summary>What does <code>docs @ q</code> compute, and what shape is it?</summary>
+  <p>The dot product of q with each row of <code>docs</code>: shape <code>[4]</code>. That is a matrix–vector product, the bridge to the next page.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Strang. <em>Introduction to Linear Algebra</em>, 6th ed., chapter 1 (vectors, lengths and dot products). Wellesley-Cambridge Press, 2023.</li>
+  <li>Vaswani et al. <em>Attention Is All You Need.</em> 2017, §3.2.1 on scaled dot-product attention. <a href="https://arxiv.org/abs/1706.03762">arXiv:1706.03762</a></li>
+  <li>Karpukhin et al. <em>Dense Passage Retrieval for Open-Domain Question Answering.</em> 2020. <a href="https://arxiv.org/abs/2004.04906">arXiv:2004.04906</a>. Retrieval as a dot product between query and passage encoders.</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ pinned('pytorch', 'torch/nn/functional.py', 5895, 5924) }}"><code>F.cosine_similarity</code></a> and <a href="{{ src('torch/nn/modules/distance.py', 1, 100) }}"><code>torch/nn/modules/distance.py</code></a>.</li>
+</ul>

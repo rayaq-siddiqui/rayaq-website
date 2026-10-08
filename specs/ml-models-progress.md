@@ -231,8 +231,8 @@ The daily Routine was created at the end of this run.
 ## Queue
 
 1. `tensors-and-shapes` ✓
-2. `vectors-and-dot-products` ← next
-3. `matrix-multiplication`
+2. `vectors-and-dot-products` ✓
+3. `matrix-multiplication` ← next
 4. `derivatives-and-gradients`
 5. `chain-rule`
 6. `probability-and-distributions`
