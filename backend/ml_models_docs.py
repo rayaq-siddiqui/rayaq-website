@@ -1473,6 +1473,22 @@ TWO_LAYER_EXAMPLE = {
 
 MODE_COST_EXAMPLE = {"widths": [1000, 1000, 1000, 1]}
 
+BERNOULLI_EXAMPLE = {"p": 0.3}
+
+CATEGORICAL_EXAMPLE = {
+    "labels": ["cat", "dog", "bird"],
+    "logits": [2.0, 1.0, 0.0],
+    "uniforms": [0.10, 0.50, 0.70, 0.95],
+}
+
+NORMAL_EXAMPLE = {"loc": 0.0, "scale": 1.0, "points": [0.0, 1.0, 2.0], "noise": [-1.0, 0.5, 2.0]}
+
+JOINT_EXAMPLE = {
+    "rows": ["rain", "sun"],
+    "columns": ["umbrella", "no umbrella"],
+    "counts": [[24, 6], [7, 63]],
+}
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -1859,6 +1875,66 @@ def mode_costs(widths):
     }
 
 
+def bernoulli_pmf(k, p):
+    return p if k == 1 else 1 - p
+
+
+def categorical_from_logits(logits):
+    top = max(logits)
+    log_norm = top + math.log(sum(math.exp(v - top) for v in logits))
+    log_probs = [v - log_norm for v in logits]
+    return {"log_probs": log_probs, "probs": [math.exp(v) for v in log_probs]}
+
+
+def inverse_cdf_sample(probs, u):
+    total = 0.0
+    for index, p in enumerate(probs):
+        total += p
+        if u < total:
+            return index
+    return len(probs) - 1
+
+
+def normal_log_prob(x, loc, scale):
+    return -((x - loc) ** 2) / (2 * scale**2) - math.log(scale) - math.log(math.sqrt(2 * math.pi))
+
+
+def normal_pdf(x, loc, scale):
+    return math.exp(normal_log_prob(x, loc, scale))
+
+
+def normal_cdf(x, loc, scale):
+    return 0.5 * (1 + math.erf((x - loc) / (scale * math.sqrt(2))))
+
+
+def normal_band(k):
+    return normal_cdf(k, 0.0, 1.0) - normal_cdf(-k, 0.0, 1.0)
+
+
+def joint_table(example):
+    counts = example["counts"]
+    total = sum(sum(row) for row in counts)
+    joint = [[c / total for c in row] for row in counts]
+    row_marginal = [sum(row) for row in joint]
+    column_marginal = [sum(column) for column in transpose(joint)]
+    given_row = [[v / m for v in row] for row, m in zip(joint, row_marginal)]
+    given_column = [[v / m for v, m in zip(row, column_marginal)] for row in joint]
+    product = [[r * c for c in column_marginal] for r in row_marginal]
+    independent = all(
+        math.isclose(j, q) for joint_row, product_row in zip(joint, product) for j, q in zip(joint_row, product_row)
+    )
+    return {
+        "total": total,
+        "joint": joint,
+        "row_marginal": row_marginal,
+        "column_marginal": column_marginal,
+        "given_row": given_row,
+        "given_column": given_column,
+        "product": product,
+        "independent": independent,
+    }
+
+
 def similarity_ranking(example):
     query = example["query"]
     rows = [
@@ -1954,6 +2030,18 @@ def render(slug, render_template):
         "two_layer_pass": two_layer_pass,
         "mode_cost_example": MODE_COST_EXAMPLE,
         "mode_costs": mode_costs,
+        "bernoulli_example": BERNOULLI_EXAMPLE,
+        "bernoulli_pmf": bernoulli_pmf,
+        "categorical_example": CATEGORICAL_EXAMPLE,
+        "categorical_from_logits": categorical_from_logits,
+        "inverse_cdf_sample": inverse_cdf_sample,
+        "normal_example": NORMAL_EXAMPLE,
+        "normal_log_prob": normal_log_prob,
+        "normal_pdf": normal_pdf,
+        "normal_cdf": normal_cdf,
+        "normal_band": normal_band,
+        "joint_example": JOINT_EXAMPLE,
+        "joint_table": joint_table,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

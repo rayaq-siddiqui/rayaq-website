@@ -682,3 +682,48 @@ def test_reverse_mode_costs_one_pass_per_output():
     assert costs["per_pass"] == 2_001_000
     assert costs["reverse"] == costs["per_pass"]
     assert costs["forward"] == 1000 * costs["per_pass"]
+
+
+def test_bernoulli_pmf_sums_to_one():
+    p = ml_models_docs.BERNOULLI_EXAMPLE["p"]
+    assert ml_models_docs.bernoulli_pmf(1, p) == p
+    assert ml_models_docs.bernoulli_pmf(0, p) + ml_models_docs.bernoulli_pmf(1, p) == pytest.approx(1)
+
+
+def test_categorical_from_logits_is_a_stable_softmax():
+    result = ml_models_docs.categorical_from_logits(ml_models_docs.CATEGORICAL_EXAMPLE["logits"])
+    assert sum(result["probs"]) == pytest.approx(1)
+    assert result["probs"] == pytest.approx([0.6652, 0.2447, 0.0900], abs=1e-4)
+    shifted = ml_models_docs.categorical_from_logits([v + 1000 for v in ml_models_docs.CATEGORICAL_EXAMPLE["logits"]])
+    assert shifted["probs"] == pytest.approx(result["probs"])
+
+
+def test_inverse_cdf_sampling_follows_the_cumulative_sums():
+    example = ml_models_docs.CATEGORICAL_EXAMPLE
+    probs = ml_models_docs.categorical_from_logits(example["logits"])["probs"]
+    samples = [ml_models_docs.inverse_cdf_sample(probs, u) for u in example["uniforms"]]
+    assert samples == [0, 0, 1, 2]
+    grid = [(i + 0.5) / 1000 for i in range(1000)]
+    counts = [0, 0, 0]
+    for u in grid:
+        counts[ml_models_docs.inverse_cdf_sample(probs, u)] += 1
+    assert [c / 1000 for c in counts] == pytest.approx(probs, abs=1e-3)
+
+
+def test_normal_density_matches_the_closed_form():
+    assert ml_models_docs.normal_pdf(0, 0, 1) == pytest.approx(0.398942, abs=1e-6)
+    assert ml_models_docs.normal_log_prob(2, 0, 1) == pytest.approx(-2.918939, abs=1e-6)
+    assert ml_models_docs.normal_pdf(3, 1, 2) == pytest.approx(ml_models_docs.normal_pdf(1, 0, 1) / 2)
+    assert ml_models_docs.normal_cdf(0, 0, 1) == 0.5
+    assert [ml_models_docs.normal_band(k) for k in (1, 2, 3)] == pytest.approx([0.6827, 0.9545, 0.9973], abs=1e-4)
+
+
+def test_joint_table_marginals_conditionals_and_independence():
+    table = ml_models_docs.joint_table(ml_models_docs.JOINT_EXAMPLE)
+    assert table["total"] == 100
+    assert table["row_marginal"] == pytest.approx([0.3, 0.7])
+    assert table["column_marginal"] == pytest.approx([0.31, 0.69])
+    assert table["given_row"][0] == pytest.approx([0.8, 0.2])
+    assert table["given_column"][0][0] == pytest.approx(24 / 31)
+    assert table["independent"] is False
+    assert ml_models_docs.joint_table({"counts": [[6, 4], [12, 8]]})["independent"] is True
