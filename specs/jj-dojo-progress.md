@@ -3,13 +3,13 @@
 Running log for the weekly jj-dojo maintenance Routine. Read this first, update it last.
 The contract is `specs/jj-dojo.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-08 (sixth run). **The build is complete:** all nine §5 pages are
+**Last updated:** 2026-10-08 (seventh run, first weekly maintenance run). **The build is complete:** all nine §5 pages are
 ready and every §10 criterion is met. From here the Routine runs weekly in maintenance mode only.
 
 ## Upstream pin
 
 `jj-vcs/jj-dojo@67c5c1f1223f1f077e86511a30d6979b52863501` (committed 2026-10-06), analyzed
-2026-10-07. Held in `jj_dojo_docs.UPSTREAM`.
+2026-10-07, re-checked 2026-10-08. Held in `jj_dojo_docs.UPSTREAM`.
 
 ## §10 acceptance criteria
 
@@ -25,7 +25,13 @@ ready and every §10 criterion is met. From here the Routine runs weekly in main
 - [x] Mobile at 390px: no horizontal page scroll on `/jj-dojo` and every ready page (checked in
       headless Chromium this run).
 - [x] The Routine has run in maintenance mode (second to fourth runs: no upstream change;
-      fifth run: pin bumped; sixth run: no upstream change). It now runs weekly.
+      fifth run: pin bumped; sixth and seventh runs: no upstream change). It now runs weekly.
+
+## Seventh run (2026-10-08): maintenance
+
+Upstream `HEAD` is still `67c5c1f` (committed 2026-10-06, `package.json` version 0.0.1), so no
+source set changed and the pin stayed. Nothing moved from planned to implemented. Suite green
+(319 tests across all sections); no page content changed.
 
 ## Sixth run (2026-10-08): build complete
 
