@@ -219,6 +219,41 @@ def test_index_lists_every_page():
         assert f'href="/ml-models/{page["slug"]}"' in body
 
 
+def test_index_groups_every_page_by_area_with_its_level():
+    client = app_module.app.test_client()
+
+    body = client.get("/ml-models").get_data(as_text=True)
+
+    positions = [body.index(f'<h3 id="area-{area["slug"]}">{escape(area["title"])}</h3>') for area in ml_models_docs.AREAS]
+    assert positions == sorted(positions)
+    for group in ml_models_docs.pages_by_area():
+        start = body.index(f'id="area-{group["area"]["slug"]}"')
+        end = body.index("</section>", start)
+        section = body[start:end]
+        for page in group["pages"]:
+            title = str(escape(page["title"]))
+            assert title in section, page["slug"]
+            after = section[section.index(title):]
+            assert f'<span class="jj-badge">{page["level"]}</span>' in after.split("</li>")[0], page["slug"]
+
+
+def test_index_shows_the_learning_path_in_order():
+    client = app_module.app.test_client()
+
+    body = client.get("/ml-models").get_data(as_text=True)
+    path = body[body.index('<h2 id="learning-path">'):body.index('<h2 id="map">')]
+
+    cursor = 0
+    for step in ml_models_docs.learning_path():
+        cursor = path.index(str(escape(step["title"])), cursor)
+        for page in step["pages"]:
+            if page["ready"]:
+                marker = f'<a href="/ml-models/{page["slug"]}">{escape(page["title"])}</a>'
+            else:
+                marker = f'<span class="jj-nav-pending">{escape(page["title"])}</span>'
+            cursor = path.index(marker, cursor)
+
+
 def test_index_has_the_map_diagram_and_vocabulary_table():
     client = app_module.app.test_client()
 
