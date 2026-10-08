@@ -128,3 +128,35 @@
     render();
   });
 })();
+
+// A parameter calculator for nn.Transformer, using the same formulas as the worked example.
+(function () {
+  document.querySelectorAll("[data-ml-params]").forEach(function (root) {
+    root.hidden = false;
+    var fields = [
+      ["d_model", 512, 8, 8192], ["nhead", 8, 1, 128], ["encoder layers", 6, 0, 96],
+      ["decoder layers", 6, 0, 96], ["dim_feedforward", 2048, 8, 65536]
+    ];
+    root.innerHTML = '<p class="ml-caption">Try your own sizes:</p><div class="ml-calc-fields">' + fields.map(function (f, i) {
+      return '<label>' + f[0] + ' <input type="number" inputmode="numeric" value="' + f[1] + '" min="' + f[2] + '" max="' + f[3] + '" data-i="' + i + '"></label>';
+    }).join("") + '</div><p class="ml-calc-result" aria-live="polite"></p>';
+    var result = root.querySelector(".ml-calc-result");
+
+    function update() {
+      var v = Array.prototype.map.call(root.querySelectorAll("input"), function (input) { return Number(input.value) || 0; });
+      var d = v[0], heads = v[1], enc = v[2], dec = v[3], ff = v[4];
+      if (heads < 1 || d % heads !== 0) {
+        result.textContent = "d_model must be divisible by nhead (PyTorch asserts this).";
+        return;
+      }
+      var attn = 4 * d * d + 4 * d, ffn = 2 * d * ff + ff + d, norm = 2 * d;
+      var encLayer = attn + ffn + 2 * norm, decLayer = 2 * attn + ffn + 3 * norm;
+      var total = enc * encLayer + norm + dec * decLayer + norm;
+      result.innerHTML = "Encoder layer <strong>" + encLayer.toLocaleString("en-US") + "</strong> · decoder layer <strong>" +
+        decLayer.toLocaleString("en-US") + "</strong> · total <strong>" + total.toLocaleString("en-US") +
+        "</strong> (≈" + (total / 1e6).toFixed(1) + "M, head dim " + d / heads + ")";
+    }
+    root.addEventListener("input", update);
+    update();
+  });
+})();
