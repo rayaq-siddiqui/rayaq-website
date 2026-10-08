@@ -57,8 +57,63 @@ def test_every_page_has_a_unique_slug_summary_and_sources():
         assert page["title"].strip()
         assert page["summary"].strip()
         assert page["sources"]
-        for path in page["sources"]:
-            assert path.startswith("torch/"), path
+        for source in page["sources"]:
+            key, _, path = source.partition(":")
+            assert key in ml_models_docs.PINS, source
+            assert path and not path.startswith("/"), source
+
+
+def test_every_area_is_unique_and_has_pages():
+    area_slugs = [area["slug"] for area in ml_models_docs.AREAS]
+    assert len(area_slugs) == len(set(area_slugs)) == 12
+    for area in ml_models_docs.AREAS:
+        assert area["title"].strip() and area["summary"].strip()
+        assert any(page["area"] == area["slug"] for page in ml_models_docs.PAGES), area["slug"]
+
+
+def test_every_page_has_a_known_area_and_level():
+    area_slugs = [area["slug"] for area in ml_models_docs.AREAS]
+    for page in ml_models_docs.PAGES:
+        assert page["area"] in area_slugs, page["slug"]
+        assert page["level"] in ml_models_docs.LEVELS, page["slug"]
+
+
+def test_pages_are_grouped_by_area_in_area_order():
+    order = [area["slug"] for area in ml_models_docs.AREAS]
+    positions = [order.index(page["area"]) for page in ml_models_docs.PAGES]
+    assert positions == sorted(positions)
+    grouped = ml_models_docs.pages_by_area()
+    assert [group["area"]["slug"] for group in grouped] == order
+    assert [page for group in grouped for page in group["pages"]] == ml_models_docs.PAGES
+
+
+def test_prerequisites_are_real_pages_without_cycles():
+    by_slug = {page["slug"]: page for page in ml_models_docs.PAGES}
+    for page in ml_models_docs.PAGES:
+        for prerequisite in page["prerequisites"]:
+            assert prerequisite in by_slug, (page["slug"], prerequisite)
+            assert prerequisite != page["slug"]
+
+    state = {}
+
+    def visit(slug, trail):
+        if state.get(slug) == "done":
+            return
+        assert state.get(slug) != "visiting", " -> ".join(trail + [slug])
+        state[slug] = "visiting"
+        for prerequisite in by_slug[slug]["prerequisites"]:
+            visit(prerequisite, trail + [slug])
+        state[slug] = "done"
+
+    for slug in by_slug:
+        visit(slug, [])
+
+
+def test_registry_matches_the_spec_inventory():
+    with open(os.path.join(ROOT, "specs", "ml-models.md")) as handle:
+        spec = handle.read()
+    rows = re.findall(r"^\| `([a-z-]+)` \| [^|]+ \| (intro|core|advanced) \|", spec, re.M)
+    assert [(page["slug"], page["level"]) for page in ml_models_docs.PAGES] == rows
 
 
 def test_every_ready_page_has_a_template():
@@ -77,8 +132,8 @@ def test_source_url_is_pinned():
 
 def test_find_page_only_returns_ready_pages(monkeypatch):
     pages = [
-        {"slug": "a", "title": "A", "summary": "a", "sources": ["torch/x"], "ready": True},
-        {"slug": "b", "title": "B", "summary": "b", "sources": ["torch/x"], "ready": False},
+        {"slug": "a", "title": "A", "summary": "a", "sources": ["pytorch:torch/x"], "ready": True},
+        {"slug": "b", "title": "B", "summary": "b", "sources": ["pytorch:torch/x"], "ready": False},
     ]
     monkeypatch.setattr(ml_models_docs, "PAGES", pages)
 
