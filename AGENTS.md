@@ -33,6 +33,9 @@ backend/            Flask app (Python) — all server-side logic
   ml_models_docs.py The /ml-models section: PyTorch/scikit-learn/XGBoost release pins, areas,
                      page registry, learning path, pinned source-link helpers, and page
                      rendering (see "ml-models" below)
+  leetcode_docs.py  The /leetcode section: problem lists, areas, page registry, learning path,
+                     the PROBLEMS table (every Blind 75 / Grind 169 / NeetCode 150 problem and
+                     its home page), coverage, and page rendering (see "leetcode" below)
   requirements.txt       Runtime deps
   requirements-dev.txt   Runtime + pytest, for local dev / CI
   pytest.ini         Configures pytest to discover *_tests.py (not the pytest default
@@ -53,6 +56,8 @@ backend/            Flask app (Python) — all server-side logic
     ml_models_docs_tests.py Same checks for /ml-models, plus the spec inventory, learning
                      path, page format, build-queue order, and that no ML package
                      becomes a server dependency
+    leetcode_docs_tests.py Same checks for /leetcode, plus the PROBLEMS table, list sizes,
+                     build-queue order and marks, and the page format
 
 specs/
   jj.md               The rayaq.ca/jj product & technical spec — the contract the
@@ -63,16 +68,17 @@ specs/
   jj-commit-cloud-poc.md / jj-commit-cloud-poc-progress.md   The same pair for
                       /jj-commit-cloud-poc.
   ml-models.md / ml-models-progress.md   The same pair for /ml-models.
+  leetcode.md / leetcode-progress.md   The same pair for /leetcode.
 
 frontend/
   templates/         Jinja2 templates. One per route: home.html, weather.html,
                      resume.html, assembly.html; jj/ holds the /jj layout
                      (base.html), index.html, and one fragment per /jj/<slug> page;
                      jj_dojo/, jj_vfs/ and jj_cloud/ are the same for /jj-dojo,
-                     /jj-vfs-poc and /jj-commit-cloud-poc; ml_models/ is the same
-                     for /ml-models
+                     /jj-vfs-poc and /jj-commit-cloud-poc; ml_models/ and leetcode/
+                     are the same for /ml-models and /leetcode
   static/            style.css (shared/global), resume.css, assembly.css, jj.css, jj_dojo.css,
-                     jj_vfs.css, jj_cloud.css, ml_models.css,
+                     jj_vfs.css, jj_cloud.css, ml_models.css, leetcode.css,
                      ml_models.js (optional step-through for /ml-models figures),
                      script.js (weather chart only)
 
@@ -108,6 +114,8 @@ vmrun.sh            Convenience wrapper: `./vmrun.sh '<command>'` runs a single 
 | `/jj-commit-cloud-poc/<slug>` | One deep-dive page per topic in `jj_cloud_docs.PAGES` that is marked ready; 404 otherwise |
 | `/ml-models` | Machine learning reference (math to systems, beginner to expert): learning path, area map, vocabulary, pages by area |
 | `/ml-models/<slug>` | One deep-dive page per topic in `ml_models_docs.PAGES` that is marked ready; 404 otherwise |
+| `/leetcode` | LeetCode interview patterns reference: list coverage, learning path, pages by NeetCode roadmap topic |
+| `/leetcode/<slug>` | One pattern page per topic in `leetcode_docs.PAGES` that is marked ready; 404 otherwise |
 | `/health` | Returns `{"status": "ok"}`, 200. Used to verify a deploy actually succeeded. |
 
 ## Local development
@@ -236,6 +244,20 @@ Each call is one command over SSH — deliberately kept to single, auditable com
   ("rayaq.ca/ml-models — architecture reference agent", 03:38 Vancouver, fresh session per run)
   builds the next queued page and maintains the pins; before pushing it runs
   `tools/ml_models/check_mobile.js` for the 390px overflow check.
+- **leetcode** (`leetcode_docs.py` + `templates/leetcode/` + `leetcode.css`): a static
+  reference to every algorithmic pattern behind coding interviews, at `/leetcode`: 20 areas in
+  NeetCode roadmap order (plus Foundations first and Beyond the interview last), 58 registered
+  pattern pages with levels and prerequisites, and a seven-step learning path. Read
+  `specs/leetcode.md` first and `specs/leetcode-progress.md` for status and the build queue.
+  Coverage is measured against Blind 75, Grind 169 and NeetCode 150: `PROBLEMS` gives every
+  problem on those lists exactly one home page, and the tests require each list to be either
+  empty (before the research run) or exactly its size. Pages teach patterns, never problems:
+  link to `leetcode.com/problems/<slug>/` and never copy LeetCode statements or NeetCode
+  explanations or code (spec §3.2). Worked-example values come from stdlib helpers in
+  `leetcode_docs.py`; never add a package for this section. A Routine
+  ("rayaq.ca/leetcode — pattern reference agent", every 5 hours, fresh session per run)
+  researches the lists, then builds the next queued page; before pushing it runs
+  `tools/leetcode/check_mobile.js` for the 390px overflow check.
 - Phone number is intentionally omitted from the public resume page (privacy choice, since the repo is public). Don't add it back without checking with the site owner first.
 
 ## Conventions
