@@ -133,6 +133,7 @@ def test_coverage_counts_only_ready_homes(monkeypatch):
     assert (by_list["blind-75"]["known"], by_list["blind-75"]["covered"]) == (2, 1)
     assert (by_list["neetcode-150"]["known"], by_list["neetcode-150"]["covered"]) == (1, 1)
     assert by_list["grind-169"]["covered"] == 0
+    assert by_list["neetcode-250"]["known"] == 0
 
 
 def test_index_renders_every_area_and_page():

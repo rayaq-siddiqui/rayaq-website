@@ -4,6 +4,7 @@ LISTS = [
     {"slug": "blind-75", "title": "Blind 75", "size": 75},
     {"slug": "grind-169", "title": "Grind 169", "size": 169},
     {"slug": "neetcode-150", "title": "NeetCode 150", "size": 150},
+    {"slug": "neetcode-250", "title": "NeetCode 250", "size": 250},
 ]
 
 AREAS = [

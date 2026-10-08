@@ -6,12 +6,12 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-08 (scaffolding). The section, registry (58 pages in 20 areas),
 index page, tests and Routine exist. No content pages are ready and `PROBLEMS` is empty.
-**The 2026-10-08 research run was blocked by network access (see Known gaps); the next run retries the research run** (spec §8 step 3): populate `PROBLEMS` for all three lists.
+**The 2026-10-08 research run was blocked by network access (see Known gaps); the next run retries the research run** (spec §8 step 3): populate `PROBLEMS` for all four lists.
 
 ## The Routine
 
-"rayaq.ca/leetcode — pattern reference agent" runs every 5 hours in a fresh session (spec §8)
-and pushes straight to `main`. The phone check before each push is
+"rayaq.ca/leetcode — pattern reference agent" runs every 5 hours in a fresh session (spec §8),
+weekly once the build is complete, and pushes straight to `main`. The phone check before each push is
 `NODE_PATH=$(npm root -g) node tools/leetcode/check_mobile.js / /leetcode <ready pages>`.
 
 ## Research
@@ -19,6 +19,7 @@ and pushes straight to `main`. The phone check before each push is
 - [ ] Blind 75 in `PROBLEMS` (75 problems), sources recorded below
 - [ ] Grind 169 in `PROBLEMS` (169 problems), sources recorded below
 - [ ] NeetCode 150 in `PROBLEMS` (150 problems), sources recorded below
+- [ ] NeetCode 250 in `PROBLEMS` (250 problems), sources recorded below
 - [ ] Every problem has a `home` page and a one-line original `insight`
 
 ### Sources
@@ -33,6 +34,7 @@ and pushes straight to `main`. The phone check before each push is
 | Blind 75 | 0 | 75 |
 | Grind 169 | 0 | 169 |
 | NeetCode 150 | 0 | 150 |
+| NeetCode 250 | 0 | 250 |
 
 ## Queue
 
@@ -103,6 +105,9 @@ build once research is done.
 - **Scaffolding (2026-10-08).** The registry follows the NeetCode roadmap's 18 topics, plus
   *Foundations* and *Beyond the interview*. Pages teach patterns, not problems; each problem
   has exactly one home page. The section reuses `jj.css` for layout, like `/ml-models`.
+- **Owner answers (2026-10-08).** Coverage adds **NeetCode 250** as a fourth list (spec v1
+  updated with the owner's approval). Page code stays Python only. Once an audit run finds no
+  gaps, the Routine moves itself to weekly audits. Notifications stay push.
 
 ## Known gaps and questions for the owner
 
@@ -111,7 +116,7 @@ build once research is done.
   repo's Grind data file could not be located on raw.githubusercontent.com. Only
   `neetcode-gh/leetcode/.problemSiteData.json` is reachable; it flags 150 NeetCode 150 and 75
   Blind 75 problems (450 entries total, with difficulty and pattern) but is a single source and
-  has no Grind 169 data. `PROBLEMS` was left empty rather than filled from memory. Owner: allow
+  has no Grind 169 or NeetCode 250 data. `PROBLEMS` was left empty rather than filled from memory. Owner: allow
   those hosts in the environment's network policy, or point the Routine at a reachable second
   source for each list (and for Grind 169).
 

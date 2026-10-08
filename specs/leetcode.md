@@ -15,7 +15,7 @@ every algorithmic concept needed to solve the problems an interview asks, the wa
   before an onsite. Every page starts in plain language and goes all the way to the template
   and its proof.
 - **Coverage target:** every problem on **Blind 75**, **Grind 169** (the full Grind list behind
-  Grind 75) and **NeetCode 150** has exactly one *home* page, the page whose pattern is its key
+  Grind 75), **NeetCode 150** and **NeetCode 250** has exactly one *home* page, the page whose pattern is its key
   idea, and that page is ready.
 - **What a page teaches:** a pattern, not a problem. Problems are evidence and practice.
 
@@ -83,7 +83,7 @@ section, and keeps the queue and the tests consistent.
 
 ### 5.1 Problems
 
-`leetcode_docs.PROBLEMS` is one entry per problem on any of the three lists:
+`leetcode_docs.PROBLEMS` is one entry per problem on any of the four lists:
 
 | Field | Meaning |
 |---|---|
@@ -91,12 +91,12 @@ section, and keeps the queue and the tests consistent.
 | `title` | LeetCode title |
 | `slug` | the `leetcode.com/problems/<slug>/` slug |
 | `difficulty` | `Easy`, `Medium` or `Hard` |
-| `lists` | the subset of `blind-75`, `grind-169`, `neetcode-150` it is on |
+| `lists` | the subset of `blind-75`, `grind-169`, `neetcode-150`, `neetcode-250` it is on |
 | `home` | the one page slug where it is taught |
 | `patterns` | other page slugs it also uses (may be empty) |
 | `insight` | one original sentence: the key insight, without giving away code |
 
-The first Routine run is the research run (§8): it populates `PROBLEMS` for all three lists at
+The first Routine run is the research run (§8): it populates `PROBLEMS` for every list at
 once, from at least two independent public sources per list, recording each source URL, its
 access date and the list's size in the progress file. The test suite then requires each list to
 have exactly its stated size.
@@ -163,19 +163,21 @@ has `"ready": True`, and 404s otherwise. Both go through `rendered_pages.get`.
 
 ## 8. The Routine
 
-"rayaq.ca/leetcode — pattern reference agent" runs every 5 hours in a fresh session and pushes
-straight to `main`. Each run:
+"rayaq.ca/leetcode — pattern reference agent" runs every 5 hours in a fresh session until the build is
+complete, then weekly, and pushes straight to `main`. Each run:
 
 1. Gets a clean, current checkout of `main` and confirms the suite is green.
 2. Reads `AGENTS.md`, this spec and the progress file.
-3. **Research run** (while `PROBLEMS` is empty): researches the three lists and the NeetCode
+3. **Research run** (while any list has no problems in `PROBLEMS`): researches every list
+   still missing and the NeetCode
    roadmap, populates `PROBLEMS` with a home for every problem, adjusts `PAGES` if a problem has
    no natural home (§5), and records sources in the progress file. No content pages that run.
 4. **Build run**: builds the queue item marked `← next` completely to §6, flips it ready, and
    may build the next one too if time allows, to the same bar.
 5. **Audit run** (queue empty): fixes one gap per run: a list problem without a ready home, a
-   broken cross-link, or a page short of §6. With no gaps left, it records "complete" and
-   changes nothing.
+   broken cross-link, or a page short of §6. With no gaps left, it records "complete", changes no
+   content, and moves its own schedule to weekly audits (`update_trigger` on its trigger; if it
+   cannot, it notes that for the owner in the progress file).
 6. Updates the progress file: last-updated line, queue, coverage per list, decisions, gaps and
    a run log entry.
 7. Before pushing: pytest green, the app serves every ready page with 200, and
@@ -184,9 +186,9 @@ straight to `main`. Each run:
 
 ## 9. Acceptance criteria
 
-- [ ] `PROBLEMS` holds all of Blind 75, Grind 169 and NeetCode 150, each with a home page.
+- [ ] `PROBLEMS` holds all of Blind 75, Grind 169, NeetCode 150 and NeetCode 250, each with a home page.
 - [ ] Every page in the queue is ready and meets §6.
-- [ ] Every list problem's home page is ready (coverage 100% on all three lists).
+- [ ] Every list problem's home page is ready (coverage 100% on all four lists).
 - [ ] §7.3 tests exist and pass.
 - [ ] No horizontal scroll at 390px on `/`, `/leetcode` and every ready page.
-- [ ] The Routine has run at least once in audit mode and recorded "complete".
+- [ ] The Routine has run at least once in audit mode and recorded "complete", and now runs weekly.

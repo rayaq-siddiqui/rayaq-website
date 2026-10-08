@@ -29,7 +29,7 @@ backend/            Flask app (Python) — all server-side logic
                      page registry, learning path, pinned source-link helpers, and page
                      rendering (see "ml-models" below)
   leetcode_docs.py  The /leetcode section: problem lists, areas, page registry, learning path,
-                     the PROBLEMS table (every Blind 75 / Grind 169 / NeetCode 150 problem and
+                     the PROBLEMS table (every Blind 75 / Grind 169 / NeetCode 150 / NeetCode 250 problem and
                      its home page), coverage, and page rendering (see "leetcode" below)
   requirements.txt       Runtime deps
   requirements-dev.txt   Runtime + pytest, for local dev / CI
@@ -239,13 +239,13 @@ Each call is one command over SSH — deliberately kept to single, auditable com
   NeetCode roadmap order (plus Foundations first and Beyond the interview last), 58 registered
   pattern pages with levels and prerequisites, and a seven-step learning path. Read
   `specs/leetcode.md` first and `specs/leetcode-progress.md` for status and the build queue.
-  Coverage is measured against Blind 75, Grind 169 and NeetCode 150: `PROBLEMS` gives every
+  Coverage is measured against Blind 75, Grind 169, NeetCode 150 and NeetCode 250: `PROBLEMS` gives every
   problem on those lists exactly one home page, and the tests require each list to be either
   empty (before the research run) or exactly its size. Pages teach patterns, never problems:
   link to `leetcode.com/problems/<slug>/` and never copy LeetCode statements or NeetCode
   explanations or code (spec §3.2). Worked-example values come from stdlib helpers in
   `leetcode_docs.py`; never add a package for this section. A Routine
-  ("rayaq.ca/leetcode — pattern reference agent", every 5 hours, fresh session per run)
+  ("rayaq.ca/leetcode — pattern reference agent", every 5 hours, fresh session per run, weekly audits once complete)
   researches the lists, then builds the next queued page; before pushing it runs
   `tools/leetcode/check_mobile.js` for the 390px overflow check.
 - Phone number is intentionally omitted from the public resume and homepage (privacy choice, since the repo is public). Don't add it back without checking with the site owner first.
