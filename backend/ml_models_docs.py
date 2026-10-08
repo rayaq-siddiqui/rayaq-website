@@ -693,7 +693,7 @@ PAGES = [
             "pytorch:torch/amp/grad_scaler.py",
             "pytorch:torch/nn/utils/clip_grad.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "cnns",

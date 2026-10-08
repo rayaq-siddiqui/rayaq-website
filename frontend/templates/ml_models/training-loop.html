@@ -1,0 +1,629 @@
+{% set ex = training_example %}
+{% set run = training_run(ex) %}
+{% set rows = run.rows %}
+{% set vocab = ex.vocab %}
+{% set sc = scaler_example %}
+{% set trip = scaled_gradient_roundtrip(sc.gradient, sc.scale) %}
+{% set trace = grad_scaler_trace(sc.scale, sc.growth_interval, sc.overflows) %}
+{% set memory = training_memory(7e9) %}
+{% set soft = softmax_example %}
+{% set plain_ce = logits_cross_entropy(soft.logits, soft.target) %}
+{% set smooth_ce = smoothed_cross_entropy(soft.logits, soft.target, 0.1) %}
+{% set micro = [([0, 1, 2], [1, 2, 3]), ([3, 1], [-100, 2])] %}
+{% set zero_w = [[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]] %}
+{% set acc = accumulation_check(zero_w, micro) %}
+{% set acc_gap = [] %}{% set exact_gap = [] %}
+{% for a, b, c in zip(acc.full, acc.naive, acc.exact) %}{% set _ = acc_gap.append((a - b)|abs) %}{% set _ = exact_gap.append((a - c)|abs) %}{% endfor %}
+{% set long_lr = lr_schedule(3e-4, 100, 1000, 3e-5) %}
+{% macro n(x) -%}{% if x == x|round %}{{ "%g"|format(x) }}{% else %}{{ "%.4g"|format(x) }}{% endif %}{%- endmacro %}
+{% macro box(x, y, w, h, title, sub, cls="d-box") -%}
+  <rect x="{{ x }}" y="{{ y }}" width="{{ w }}" height="{{ h }}" rx="7" class="{{ cls }}"></rect>
+  <text x="{{ x + w / 2 }}" y="{{ y + (h / 2 if not sub else h / 2 - 7) }}" text-anchor="middle" dominant-baseline="middle" font-size="12">{{ title }}</text>
+  {% if sub %}<text x="{{ x + w / 2 }}" y="{{ y + h / 2 + 9 }}" text-anchor="middle" dominant-baseline="middle" font-size="10" class="d-muted">{{ sub }}</text>{% endif %}
+{%- endmacro %}
+<header class="jj-header">
+  <h1>The training loop</h1>
+  <p class="tagline">
+    Every model is trained by the same short loop: take a batch, compute the loss, work out the
+    gradients, tidy them, nudge the weights, move the learning rate, repeat. This page walks
+    through each line of that loop with real numbers (an eight-step run on a tiny next-letter
+    model), explains label smoothing, <code>ignore_index</code>, gradient clipping, warmup and
+    cosine decay, mixed precision and the memory bill, and points at the PyTorch
+    {{ upstream.tag }} code behind each call.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A model starts out knowing nothing: its weights are random (or, in our example, all zero). We
+  want to turn it into one that predicts well, using a large pile of examples. No formula does that
+  in one go. We need a procedure that makes the model a little better, many thousands of times in
+  a row, without breaking along the way.
+</p>
+<p>
+  That procedure has to answer several practical questions. How do we score a prediction with one
+  number? How do we use that score to change the weights? How big should each change be, and
+  should that size stay fixed? What if one unlucky batch produces an enormous gradient? What if the
+  numbers get too small for the chip's low-precision format? The training loop is the answer to
+  all of them, and nearly every deep learning project, from a classroom classifier to a
+  frontier language model, runs the same loop with different settings.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Think of learning to throw darts. Throw a few, see how far off you are (the <em>loss</em>), work
+  out which way to adjust your arm (the <em>gradient</em>), and adjust a bit (the <em>optimizer
+  step</em>). You adjust a lot at first when you are far off and less as you improve (the
+  <em>learning-rate schedule</em>). If one throw goes wildly wrong, you do not rebuild your whole
+  stance because of it (<em>gradient clipping</em>). Each of those habits is one line in the loop.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 250" role="img" aria-labelledby="tl-loop-title tl-loop-desc">
+    <title id="tl-loop-title">One iteration of the training loop</title>
+    <desc id="tl-loop-desc">
+      Seven boxes in a row show one training step. A batch goes into the model, which produces
+      logits. The loss function turns logits and targets into one number. The backward pass fills
+      each parameter's gradient. Gradient clipping rescales the gradients if their total norm is
+      too large. The optimizer updates the weights. The scheduler sets the next learning rate.
+      An arrow returns from the end to the start for the next batch, and zero_grad clears the
+      gradients before it.
+    </desc>
+    {{ box(10, 30, 86, 60, "batch", "x, y") }}
+    {{ box(106, 30, 86, 60, "forward", "model(x)", "d-box ml-op") }}
+    {{ box(202, 30, 86, 60, "loss", "loss_fn(...)", "d-box ml-op") }}
+    {{ box(298, 30, 86, 60, "backward", "loss.backward()", "d-box ml-op") }}
+    {{ box(394, 30, 86, 60, "clip", "clip_grad_norm_", "d-box ml-dashed") }}
+    {{ box(490, 30, 86, 60, "step", "opt.step()", "d-box ml-op") }}
+    {{ box(586, 30, 104, 60, "schedule", "sched.step()", "d-box ml-dashed") }}
+    <g class="d-line" fill="none" stroke-width="1.5">
+      <path d="M96 60 H106"></path><path d="M192 60 H202"></path><path d="M288 60 H298"></path>
+      <path d="M384 60 H394"></path><path d="M480 60 H490"></path><path d="M576 60 H586"></path>
+      <path d="M638 90 V150 H53 V96"></path>
+    </g>
+    <text x="345" y="170" text-anchor="middle" font-size="12">next batch, after <tspan font-family="monospace">opt.zero_grad()</tspan></text>
+    <text x="149" y="116" text-anchor="middle" font-size="10" class="d-muted">logits [N, C]</text>
+    <text x="245" y="116" text-anchor="middle" font-size="10" class="d-muted">one scalar</text>
+    <text x="341" y="116" text-anchor="middle" font-size="10" class="d-muted">p.grad filled</text>
+    <text x="437" y="116" text-anchor="middle" font-size="10" class="d-muted">optional</text>
+    <text x="533" y="116" text-anchor="middle" font-size="10" class="d-muted">weights change</text>
+    <text x="638" y="116" text-anchor="middle" font-size="10" class="d-muted">new learning rate</text>
+    <text x="350" y="215" text-anchor="middle" font-size="11" class="d-muted">dashed boxes are optional; most real runs use all seven</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  The order matters in two places: clip after <code>backward()</code> and before
+  <code>step()</code>, and call the scheduler after the optimizer.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="loss">The loss: cross-entropy over logits</h3>
+
+<p>
+  A language or classification model ends in a vector of <em>logits</em>, one raw score per class.
+  Cross-entropy turns the logits z into probabilities with softmax and scores the correct class
+  y: ℓ = −log softmax(z)<sub>y</sub> = −z<sub>y</sub> + log Σ<sub>c</sub> exp(z<sub>c</sub>). Its
+  gradient with respect to the logits is the beautifully simple p − onehot(y): the predicted
+  probabilities minus the answer (derived on the
+  <a href="/ml-models/loss-functions">loss functions</a> page, with the same numbers for the
+  {{ soft.classes|join(", ") }} example). PyTorch's
+  <a href="{{ src('torch/nn/modules/loss.py', 1200, 1409) }}"><code>CrossEntropyLoss</code></a>
+  takes logits of shape <code>[N, C]</code> (or <code>[N, C, d₁, …]</code>) and integer targets of
+  shape <code>[N]</code>, and calls <code>F.cross_entropy</code>
+  (<a href="{{ src('torch/nn/modules/loss.py', 1398, 1407) }}">lines 1398-1407</a>).
+</p>
+<p>Two arguments matter for language models:</p>
+<ul>
+  <li>
+    <strong><code>ignore_index</code></strong> (default <code>-100</code>): any position whose
+    target equals it contributes nothing to the loss and nothing to the gradient, and
+    <code>reduction="mean"</code> divides by the number of positions that were <em>not</em>
+    ignored. This is how padding and masked prompt tokens are skipped. If every target is
+    ignored the mean is 0/0, which is NaN.
+  </li>
+  <li>
+    <strong><code>label_smoothing</code></strong> (default 0.0): the target becomes a mixture of
+    the true class and a uniform distribution (the idea comes from
+    <em>Rethinking the Inception Architecture</em>, cited in the docstring at
+    <a href="{{ src('torch/nn/modules/loss.py', 1293, 1296) }}">lines 1293-1296</a>). With
+    smoothing ε the loss is (1 − ε)·(−log p<sub>y</sub>) + ε·(mean over classes of −log p<sub>c</sub>).
+    It stops the model chasing probability 1.0 for the label.
+  </li>
+</ul>
+
+<h3 id="backward">Backward and the gradient buffer</h3>
+
+<p>
+  <code>loss.backward()</code> runs <a href="/ml-models/backpropagation">backpropagation</a> and
+  <em>adds</em> each parameter's gradient into its <code>.grad</code> attribute. Adding, not
+  overwriting, is why the loop calls
+  <a href="{{ src('torch/optim/optimizer.py', 1048, 1111) }}"><code>optimizer.zero_grad()</code></a>
+  every iteration (by default it sets the gradients to <code>None</code>,
+  <code>set_to_none=True</code>). It is also what makes gradient accumulation possible: call
+  <code>backward()</code> on several micro-batches before one <code>step()</code>.
+</p>
+
+<h3 id="clipping">Gradient clipping</h3>
+
+<p>
+  Occasionally a batch produces a gradient hundreds of times larger than usual, and one step of that
+  size can wreck the weights. <code>clip_grad_norm_(parameters, max_norm)</code> looks at all
+  gradients as one long vector, computes its length
+  (<a href="{{ src('torch/nn/utils/clip_grad.py', 49, 117) }}"><code>_get_total_norm</code></a>),
+  and multiplies every gradient by min(max_norm / (total_norm + 10⁻⁶), 1)
+  (<a href="{{ src('torch/nn/utils/clip_grad.py', 164, 168) }}">lines 164-168</a>). The
+  direction is preserved; only the length is capped. Gradients that are already short are left
+  alone, because the factor is clamped to 1. The function modifies <code>.grad</code> in place and
+  returns the <em>pre-clip</em> total norm, which is worth logging: a spike in it is an early
+  warning.
+</p>
+
+<h3 id="optimizer-step">The optimizer step</h3>
+
+<p>
+  <code>optimizer.step()</code> reads each <code>.grad</code> and updates the weights. For
+  language models the usual choice is
+  <a href="{{ src('torch/optim/adamw.py', 19, 128) }}"><code>AdamW</code></a> with decoupled
+  weight decay, default <code>weight_decay=1e-2</code>; its update rule, state and the
+  decay-versus-L2 difference are on the <a href="/ml-models/optimizers">optimizers</a> page. The
+  numbers on this page use that page's <code>optimizer_step</code> helper.
+</p>
+
+<h3 id="schedule">The learning-rate schedule</h3>
+
+<p>
+  A constant learning rate is rarely best. Early on, Adam's running averages are noisy and a large
+  rate can throw the model somewhere bad, so the rate <em>warms up</em> linearly from near zero.
+  Later, a smaller rate lets the weights settle, so the rate <em>decays</em>, most often along a
+  half cosine down to a floor:
+</p>
+<p class="ml-formula">
+  η<sub>t</sub> = η<sub>min</sub> + ½(η<sub>max</sub> − η<sub>min</sub>)(1 + cos(π·t′/T))
+</p>
+<p>
+  where t′ counts steps since warmup ended and T is the number of decay steps. In PyTorch this is
+  built from two schedulers chained with
+  <a href="{{ src('torch/optim/lr_scheduler.py', 1082, 1236) }}"><code>SequentialLR</code></a>:
+  <a href="{{ src('torch/optim/lr_scheduler.py', 877, 1006) }}"><code>LinearLR</code></a> for the
+  warmup and
+  <a href="{{ src('torch/optim/lr_scheduler.py', 1338, 1477) }}"><code>CosineAnnealingLR</code></a>
+  for the decay. At the milestone, <code>SequentialLR.step</code> restarts the next scheduler at
+  its own epoch 0
+  (<a href="{{ src('torch/optim/lr_scheduler.py', 1186, 1197) }}">lines 1186-1197</a>), and
+  the cosine's closed form is the formula above
+  (<a href="{{ src('torch/optim/lr_scheduler.py', 1456, 1461) }}">lines 1456-1461</a>). The
+  constructor of every scheduler overwrites the optimizer's <code>lr</code>, so build the
+  scheduler once, after the optimizer, and call <code>scheduler.step()</code> once per
+  optimizer step.
+</p>
+
+<div class="jj-diagram">
+  {% macro sx(i) -%}{{ 50 + i * 0.6 }}{%- endmacro %}
+  {% macro sy(v) -%}{{ 190 - v / 3e-4 * 150 }}{%- endmacro %}
+  <svg viewBox="0 0 680 250" role="img" aria-labelledby="tl-lr-title tl-lr-desc">
+    <title id="tl-lr-title">Learning rate against step: warmup, then cosine decay</title>
+    <desc id="tl-lr-desc">
+      A typical large-model schedule over 1,000 steps with a peak learning rate of 3 × 10⁻⁴, 100
+      warmup steps and a floor of 3 × 10⁻⁵. The rate climbs in a straight line from
+      {{ "%.0e"|format(long_lr[0]) }} to {{ "%.0e"|format(long_lr[99]) }} over the first 100 steps, then falls along a
+      half cosine, slowly at first, fastest in the middle, and slowly again, ending at
+      {{ "%.1e"|format(long_lr[-1]) }}.
+    </desc>
+    <line x1="50" y1="190" x2="660" y2="190" class="d-line"></line>
+    <line x1="50" y1="30" x2="50" y2="190" class="d-line"></line>
+    <path d="M{% for v in long_lr %}{% if not loop.first %} L{% endif %}{{ sx(loop.index0) }},{{ sy(v) }}{% endfor %}" fill="none" stroke="var(--jj-green)" stroke-width="2.2"></path>
+    <line x1="{{ sx(100) }}" y1="30" x2="{{ sx(100) }}" y2="190" class="d-line" stroke-dasharray="4 4"></line>
+    <text x="{{ sx(100) }}" y="22" font-size="11" text-anchor="middle" class="d-muted">warmup ends, step 100</text>
+    <text x="44" y="{{ sy(3e-4)|float + 4 }}" font-size="11" text-anchor="end" class="d-muted">3e-4</text>
+    <text x="44" y="{{ sy(3e-5)|float + 4 }}" font-size="11" text-anchor="end" class="d-muted">3e-5</text>
+    <text x="50" y="210" font-size="11" text-anchor="middle" class="d-muted">0</text>
+    <text x="{{ sx(1000) }}" y="210" font-size="11" text-anchor="middle" class="d-muted">1000</text>
+    <text x="355" y="236" font-size="12" text-anchor="middle">optimizer step</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  The peak and floor are typical for a small language model, not prescriptions. Many recipes set
+  the floor at 10% of the peak.
+</p>
+
+<h3 id="mixed-precision">Mixed precision</h3>
+
+<p>
+  Modern GPUs run matrix multiplications much faster in 16-bit numbers. Mixed precision keeps the
+  weights in 32-bit but runs the heavy operations in 16-bit.
+  <a href="{{ src('torch/amp/autocast_mode.py', 52, 383) }}"><code>torch.autocast</code></a>
+  (<code>device_type</code>, <code>dtype=None</code>, <code>enabled=True</code>, constructor at
+  <a href="{{ src('torch/amp/autocast_mode.py', 222, 228) }}">lines 222-228</a>) is a context
+  manager: inside it, eligible operations run in the lower precision. The docstring warns against
+  also calling <code>.half()</code> or <code>.bfloat16()</code> on the model or inputs
+  (<a href="{{ src('torch/amp/autocast_mode.py', 62, 62) }}">line 62</a>).
+</p>
+<p>
+  The float16 format has a catch: its smallest positive numbers are tiny but not tiny enough, so
+  small gradients silently become exactly 0 (underflow). The fix is <em>loss scaling</em>:
+  multiply the loss by a large constant before <code>backward()</code>, so every gradient is that
+  many times bigger, and divide it out again before the update. PyTorch's
+  <a href="{{ src('torch/amp/grad_scaler.py', 53, 714) }}"><code>GradScaler</code></a> automates
+  it, starting at <code>init_scale=2**16</code>
+  (<a href="{{ src('torch/amp/grad_scaler.py', 121, 129) }}">lines 121-129</a>):
+</p>
+<ul>
+  <li><code>scaler.scale(loss)</code> multiplies the loss by the current scale
+    (<a href="{{ src('torch/amp/grad_scaler.py', 193, 200) }}">line 193</a>).</li>
+  <li><code>scaler.unscale_(optimizer)</code> divides the gradients back down, and is the call to
+    make before clipping so the clip threshold applies to real-size gradients
+    (<a href="{{ src('torch/amp/grad_scaler.py', 302, 374) }}">lines 302-374</a>).</li>
+  <li><code>scaler.step(optimizer)</code> unscales if needed, and <em>skips</em> the update if any
+    gradient is infinite or NaN
+    (<a href="{{ src('torch/amp/grad_scaler.py', 375, 483) }}">lines 375-483</a>).</li>
+  <li><code>scaler.update()</code> multiplies the scale by <code>backoff_factor=0.5</code> after
+    a skipped step, and by <code>growth_factor=2.0</code> after <code>growth_interval=2000</code>
+    consecutive good steps
+    (<a href="{{ src('torch/amp/grad_scaler.py', 484, 560) }}">lines 484-560</a>).</li>
+</ul>
+
+<h3 id="modes">Train mode, eval mode and teacher forcing</h3>
+
+<p>
+  <code>model.train()</code> and <code>model.eval()</code> flip a flag on every submodule
+  (<a href="{{ src('torch/nn/modules/module.py', 2894, 2915) }}"><code>train</code></a>,
+  <a href="{{ src('torch/nn/modules/module.py', 2916, 2935) }}"><code>eval</code></a>). It changes
+  how Dropout and BatchNorm behave (see
+  <a href="/ml-models/layernorm-and-residuals">normalization</a>) and does nothing else; it does
+  not turn gradient tracking off. For that, wrap evaluation in <code>torch.no_grad()</code>.
+</p>
+<p>
+  Sequence models are trained with <em>teacher forcing</em>: at every position the model is given
+  the true previous tokens, not its own earlier guesses, and asked for the next one. That lets all
+  positions be scored in one parallel pass. At generation time there is no truth to feed in, so
+  the model consumes its own output one token at a time, which is why training and inference
+  differ (see the <a href="/ml-models/transformer#training-vs-inference">transformer page</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>nn.CrossEntropyLoss</code></td>
+        <td>input <code>[N, C]</code>, target <code>[N]</code>; <code>ignore_index=-100</code>, <code>reduction="mean"</code>, <code>label_smoothing=0.0</code></td>
+        <td>Softmax cross-entropy on logits; ignored targets are dropped from the mean.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 1385, 1407) }}"><code>loss.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Module.zero_grad</code> / <code>Optimizer.zero_grad</code></td>
+        <td><code>set_to_none=True</code></td>
+        <td>Clears the accumulated <code>.grad</code> buffers.</td>
+        <td><a href="{{ src('torch/optim/optimizer.py', 1048, 1111) }}"><code>optimizer.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>clip_grad_norm_</code></td>
+        <td><code>max_norm</code>, <code>norm_type=2.0</code>, <code>error_if_nonfinite=False</code>, <code>foreach=None</code></td>
+        <td>Scales all gradients so their global norm is at most <code>max_norm</code>; returns the norm before clipping.</td>
+        <td><a href="{{ src('torch/nn/utils/clip_grad.py', 185, 238) }}"><code>clip_grad.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>AdamW</code></td>
+        <td><code>lr=1e-3</code>, <code>betas=(0.9, 0.999)</code>, <code>weight_decay=1e-2</code></td>
+        <td>Adam with decoupled weight decay.</td>
+        <td><a href="{{ src('torch/optim/adamw.py', 19, 128) }}"><code>adamw.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>LinearLR</code>, <code>CosineAnnealingLR</code>, <code>SequentialLR</code></td>
+        <td><code>start_factor</code>, <code>total_iters</code>; <code>T_max</code>, <code>eta_min</code>; <code>milestones</code></td>
+        <td>Warmup, cosine decay, and the switch between them.</td>
+        <td><a href="{{ src('torch/optim/lr_scheduler.py', 877, 1006) }}"><code>lr_scheduler.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>torch.autocast</code></td>
+        <td><code>device_type</code>, <code>dtype=None</code>, <code>enabled=True</code></td>
+        <td>Runs eligible operations in lower precision inside a <code>with</code> block.</td>
+        <td><a href="{{ src('torch/amp/autocast_mode.py', 52, 383) }}"><code>autocast_mode.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>GradScaler</code></td>
+        <td><code>init_scale=2**16</code>, <code>growth_factor=2.0</code>, <code>backoff_factor=0.5</code>, <code>growth_interval=2000</code></td>
+        <td>Loss scaling with skip-on-overflow and automatic scale adjustment.</td>
+        <td><a href="{{ src('torch/amp/grad_scaler.py', 53, 714) }}"><code>grad_scaler.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Module.train</code> / <code>Module.eval</code></td>
+        <td><code>mode=True</code></td>
+        <td>Sets the training flag on a module and all its children.</td>
+        <td><a href="{{ src('torch/nn/modules/module.py', 2894, 2935) }}"><code>module.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-run">Eight steps on a tiny next-letter model</h3>
+  <p>
+    The model is as small as a language model can be: a table of logits with one row per current
+    letter. Reading the row for the letter we are on gives the scores for the next one, so there are
+    {{ vocab|length }} × {{ vocab|length }} = {{ vocab|length * vocab|length }} weights, all starting at 0. The
+    vocabulary is {{ vocab|join(", ") }}. The batch has {{ ex.inputs|length }} positions, with
+    inputs {{ ex.inputs|map("string")|join(", ") }} and targets
+    {% for t in ex.targets %}{{ t }}{% if not loop.last %}, {% endif %}{% endfor %}. The fourth target is
+    <code>{{ ex.ignore_index }}</code>, so that position is ignored.
+  </p>
+  <p>
+    <strong>Step 1 by hand.</strong> With every weight 0, every row of logits is [0, 0, 0, 0], so the
+    softmax is uniform (probability 0.25 each) and every position has loss −log 0.25 = {{ n(rows[0].loss) }}.
+    The mean is over the {{ rows[0].count }} kept positions, not 6, so the loss is
+    {{ n(rows[0].loss) }} = ln 4. Each kept row's gradient is p − onehot = [0.25, 0.25, 0.25, 0.25]
+    with 0.25 − 1 = −0.75 at the target, divided by {{ rows[0].count }}. Stacked over the table
+    that gradient has length {{ n(rows[0].grad_norm) }}, which is more than our limit
+    <code>max_norm = {{ ex.max_norm }}</code>, so every gradient is multiplied by
+    {{ n(rows[0].coef) }} (= {{ ex.max_norm }} / ({{ n(rows[0].grad_norm) }} + 10⁻⁶)). The schedule is in
+    warmup, so the learning rate is {{ n(rows[0].lr) }} (= {{ ex.lr }} × 1/{{ ex.warmup }}).
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Step</th><th>Learning rate</th><th>Loss</th><th>Gradient norm</th><th>Clip factor</th><th>Clipped?</th></tr></thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td>{{ r.step }}</td>
+          <td>{{ "%.4f"|format(r.lr) }}</td>
+          <td>{{ "%.4f"|format(r.loss) }}</td>
+          <td>{{ "%.4f"|format(r.grad_norm) }}</td>
+          <td>{{ "%.4f"|format(r.coef) }}</td>
+          <td>{{ "yes" if r.clipped else "no" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The run uses AdamW with weight decay {{ ex.weight_decay }}, peak learning rate {{ ex.lr }},
+    {{ ex.warmup }} warmup steps, a cosine down toward {{ ex.min_lr }} over {{ ex.steps }} steps, and
+    clipping at {{ ex.max_norm }}. Only step 1 was clipped. Warmup makes the first two steps
+    gentle, the loss falls every step from {{ n(rows[0].loss) }} to {{ n(rows[-1].loss) }}, and the
+    gradient shrinks as the model gets its answers right, so later clipping never fires. The final
+    learning rate ({{ "%.4f"|format(rows[-1].lr) }}) has not quite reached the floor: the cosine
+    reaches {{ ex.min_lr }} one step after the last.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  {% macro bx(i) -%}{{ 70 + i * 70 }}{%- endmacro %}
+  {% macro by(v) -%}{{ 190 - v / 1.4 * 150 }}{%- endmacro %}
+  <svg viewBox="0 0 680 250" role="img" aria-labelledby="tl-run-title tl-run-desc">
+    <title id="tl-run-title">Loss and gradient norm over the eight steps</title>
+    <desc id="tl-run-desc">
+      Two lines over eight training steps. The loss (green) starts at {{ "%.2f"|format(rows[0].loss) }}, which is
+      ln 4, and falls at every step to {{ "%.2f"|format(rows[-1].loss) }}. The gradient norm (amber) starts at
+      {{ "%.2f"|format(rows[0].grad_norm) }} and falls to {{ "%.2f"|format(rows[-1].grad_norm) }}. A dashed line marks the
+      clipping threshold of {{ ex.max_norm }}, which only the first step crosses.
+    </desc>
+    <line x1="50" y1="190" x2="660" y2="190" class="d-line"></line>
+    <line x1="50" y1="30" x2="50" y2="190" class="d-line"></line>
+    <line x1="50" y1="{{ by(ex.max_norm) }}" x2="660" y2="{{ by(ex.max_norm) }}" class="d-line" stroke-dasharray="4 4"></line>
+    <text x="656" y="{{ by(ex.max_norm)|float - 5 }}" font-size="11" text-anchor="end" class="d-muted">max_norm {{ ex.max_norm }}</text>
+    <path d="M{% for r in rows %}{% if not loop.first %} L{% endif %}{{ bx(loop.index0) }},{{ by(r.loss) }}{% endfor %}" fill="none" stroke="var(--jj-green)" stroke-width="2.2"></path>
+    <path d="M{% for r in rows %}{% if not loop.first %} L{% endif %}{{ bx(loop.index0) }},{{ by(r.grad_norm) }}{% endfor %}" fill="none" stroke="var(--jj-amber)" stroke-width="2.2"></path>
+    {% for r in rows %}
+      <circle cx="{{ bx(loop.index0) }}" cy="{{ by(r.loss) }}" r="3" style="fill: var(--jj-green)"></circle>
+      <circle cx="{{ bx(loop.index0) }}" cy="{{ by(r.grad_norm) }}" r="3" style="fill: var(--jj-amber)"></circle>
+      <text x="{{ bx(loop.index0) }}" y="210" font-size="11" text-anchor="middle" class="d-muted">{{ r.step }}</text>
+    {% endfor %}
+    <text x="{{ bx(0)|float + 8 }}" y="{{ by(rows[0].loss)|float - 8 }}" font-size="12" style="fill: var(--jj-green)">loss</text>
+    <text x="{{ bx(0)|float + 8 }}" y="{{ by(rows[0].grad_norm)|float + 18 }}" font-size="12" style="fill: var(--jj-amber)">gradient norm (before clipping)</text>
+    <text x="355" y="236" font-size="12" text-anchor="middle">training step</text>
+  </svg>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-smoothing">Label smoothing and the ignored position</h3>
+  <p>
+    For logits {{ soft.logits|list }} and correct class {{ soft.classes[soft.target] }}, the plain
+    cross-entropy is {{ "%.4f"|format(plain_ce.loss) }}. With <code>label_smoothing=0.1</code> it is
+    0.9 × {{ "%.4f"|format(plain_ce.loss) }} + 0.1 × (the average −log p over all three classes) =
+    {{ "%.4f"|format(smooth_ce) }}. It is larger, and it can never reach 0: the smoothed target
+    asks for a little probability on the wrong classes too.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-accumulation">Accumulating over two micro-batches</h3>
+  <p>
+    Take two micro-batches of the same tiny model (inputs 0, 1, 2 with targets 1, 2, 3, and inputs 3, 1 with targets ignored, 2): one with {{ micro[0][0]|length }} kept
+    targets and the other with 1 kept target. Averaging the two micro-batch
+    gradients with equal weights, which is what dividing every micro-batch loss by 2 does, differs
+    from the full-batch gradient by up to {{ "%.3f"|format(acc_gap|max) }} in an entry, because the
+    smaller micro-batch gets too much say. Weighting each micro-batch by its share of kept targets
+    reproduces the full-batch gradient exactly (largest difference {{ "%.0e"|format(exact_gap|max) }}).
+    The rule: normalize by the total number of kept tokens, not by the number of micro-batches.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-scaler">Loss scaling rescues a small gradient</h3>
+  <p>
+    A gradient of {{ "%.0e"|format(sc.gradient) }} is below float16's smallest positive number, so
+    stored in float16 it becomes {{ trip.plain }}. Multiplied by the scale {{ sc.scale|int }} (2¹⁶)
+    first, it is {{ "%.3e"|format(trip.scaled) }}, which float16 can hold; dividing by the scale
+    afterwards recovers {{ "%.3e"|format(trip.recovered) }}, within the format's rounding of the
+    original. Now watch the scale itself over eight steps, using <code>growth_interval=3</code> so the
+    pattern fits on the page (the default is 2000):
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Step</th><th>Scale used</th><th>Gradients overflowed?</th><th>Scale for the next step</th></tr></thead>
+      <tbody>
+        {% for t in trace %}
+        <tr>
+          <td>{{ t.step }}</td>
+          <td>{{ t.scale|int }}</td>
+          <td>{{ "yes, step skipped" if t.overflow else "no" }}</td>
+          <td>{{ t.next_scale|int }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    After three good steps the scale doubles. At step 4 the doubled scale makes some gradient
+    overflow to infinity, so the optimizer update is skipped, the scale is halved, and the count of
+    good steps restarts. The scaler hovers just under the largest scale that does not overflow.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-memory">What training a 7-billion-parameter model holds in memory</h3>
+  <p>For AdamW with 32-bit weights, before counting activations (which depend on batch size and sequence length):</p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Item</th><th>Bytes per parameter</th><th>At 7 billion</th></tr></thead>
+      <tbody>
+        {% for m in memory %}
+        <tr><td>{{ m.name }}</td><td>{{ m.bytes_per_param }}</td><td>{{ "%.0f"|format(m.gigabytes) }} GB</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    That is {{ "%.0f"|format(memory[-1].gigabytes) }} GB, more than one accelerator holds. This is why large runs
+    shard these tensors across devices (see the optimizers page's memory table for the per-optimizer
+    numbers).
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import math
+import torch
+from torch import nn
+from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
+
+model = MyModel().cuda()
+loss_fn = nn.CrossEntropyLoss(ignore_index=-100, label_smoothing=0.0)
+opt = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.1)
+
+warmup, total = 100, 1000
+sched = SequentialLR(
+    opt,
+    [LinearLR(opt, start_factor=1 / warmup, total_iters=warmup - 1),
+     CosineAnnealingLR(opt, T_max=total - warmup, eta_min=3e-5)],
+    milestones=[warmup],
+)
+scaler = torch.amp.GradScaler("cuda")          # float16 only
+
+model.train()
+for x, y in loader:                            # x: [B, T] token ids, y: [B, T]
+    opt.zero_grad(set_to_none=True)
+    with torch.autocast("cuda", dtype=torch.float16):
+        logits = model(x)                      # [B, T, V]
+        loss = loss_fn(logits.flatten(0, 1), y.flatten())
+    scaler.scale(loss).backward()
+    scaler.unscale_(opt)                       # gradients are real-size again
+    norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+    scaler.step(opt)                           # skipped if a gradient is inf/NaN
+    scaler.update()
+    sched.step()
+
+model.eval()
+with torch.no_grad():
+    val_loss = loss_fn(model(xv).flatten(0, 1), yv.flatten())</code></pre>
+
+<p>
+  With bfloat16 there is no <code>GradScaler</code>: its exponent range matches float32's, so
+  gradients do not underflow the way float16 ones do. Pass <code>dtype=torch.bfloat16</code> to
+  <code>autocast</code> and drop the scaler lines. The same loop in plain Python, as used for the
+  numbers on this page:
+</p>
+
+<pre><code>import math
+
+def clip(grads, max_norm):
+    total = math.sqrt(sum(g * g for g in grads))
+    coef = min(max_norm / (total + 1e-6), 1.0)
+    return [g * coef for g in grads], total
+
+def lr_at(step, peak, warmup, total, floor):
+    if step &lt; warmup:
+        return peak * (step + 1) / warmup
+    t = (step - warmup) / (total - warmup)
+    return floor + (peak - floor) * (1 + math.cos(math.pi * t)) / 2
+
+# per step: loss -> gradients -> clip -> AdamW update with lr_at(step, ...)</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Clipping threshold.</strong> A threshold of 1.0 is a common default. Set too low it
+    turns every step into a fixed-length step and slows learning; set too high it never
+    fires. Log the pre-clip norm and choose a value just above its typical size.
+  </li>
+  <li>
+    <strong>Warmup length.</strong> Too short and early steps can diverge, especially with Adam,
+    whose second-moment estimate is poor in the first iterations
+    (see Liu et al., <em>On the Variance of the Adaptive Learning Rate and Beyond</em>). A few
+    hundred to a few thousand steps is typical for language models; large-batch
+    training also warms up (Goyal et al.).
+  </li>
+  <li>
+    <strong>Decay shape.</strong> Cosine to a floor is a popular default, but linear decay and
+    constant-then-decay schedules work too. Cosine needs the total number of steps in advance, which
+    makes extending a run awkward.
+  </li>
+  <li>
+    <strong>Label smoothing.</strong> It can improve calibration and generalization on classification,
+    but it flattens the model's confidence, which hurts if you later rely on exact probabilities.
+  </li>
+  <li>
+    <strong>float16, bfloat16 or float32.</strong> float16 is precise but narrow and needs the scaler;
+    bfloat16 is coarse but wide and needs none; float32 is the safe, slow baseline.
+  </li>
+  <li>
+    <strong>Pitfalls.</strong> Forgetting <code>zero_grad()</code> accumulates gradients across steps.
+    Calling <code>scheduler.step()</code> before <code>optimizer.step()</code> skips the first
+    learning rate and warns. Clipping before <code>unscale_</code> clips scaled gradients against an
+    unscaled threshold. Forgetting <code>model.eval()</code> leaves dropout on during validation.
+    Averaging losses over micro-batches with unequal numbers of kept tokens biases the gradient.
+  </li>
+</ul>
+
+<h3 id="check-yourself">Check yourself</h3>
+
+<details class="ml-quiz">
+  <summary>Why is the first loss in a classifier with C classes and zero or tiny initial weights about ln C?</summary>
+  <p>The logits are nearly equal, so softmax is uniform and the correct class gets probability 1/C; −ln(1/C) = ln C. Here ln 4 = {{ n(rows[0].loss) }}. A first loss far from ln C is a bug hint.</p>
+</details>
+<details class="ml-quiz">
+  <summary>If a batch has 3 kept targets and its loss is the mean over 6 positions, what is wrong?</summary>
+  <p>The ignored positions are being counted in the denominator, shrinking the loss and gradient by half. <code>CrossEntropyLoss</code> divides by the kept count.</p>
+</details>
+<details class="ml-quiz">
+  <summary>The gradient norm is 4.0 and <code>max_norm</code> is 1.0. What is each gradient multiplied by, and what is the norm afterwards?</summary>
+  <p>About 0.25 (1 / (4 + 10⁻⁶)); the norm afterwards is about 1.0. The direction is unchanged.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why must <code>scaler.update()</code> come after <code>scaler.step(optimizer)</code>?</summary>
+  <p><code>step</code> is what discovers that a gradient overflowed and skips the update; <code>update</code> uses that finding to back the scale off or grow it. The docstring says to call it at the end of the iteration.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Kingma and Ba. <em>Adam: A Method for Stochastic Optimization.</em> ICLR, 2015 (<a href="https://arxiv.org/abs/1412.6980">arXiv 1412.6980</a>).</li>
+  <li>Loshchilov and Hutter. <em>Decoupled Weight Decay Regularization.</em> ICLR, 2019 (<a href="https://arxiv.org/abs/1711.05101">arXiv 1711.05101</a>).</li>
+  <li>Loshchilov and Hutter. <em>SGDR: Stochastic Gradient Descent with Warm Restarts.</em> ICLR, 2017 (<a href="https://arxiv.org/abs/1608.03983">arXiv 1608.03983</a>; the cosine schedule).</li>
+  <li>Goyal et al. <em>Accurate, Large Minibatch SGD: Training ImageNet in 1 Hour.</em> 2017 (<a href="https://arxiv.org/abs/1706.02677">arXiv 1706.02677</a>; linear warmup).</li>
+  <li>Liu et al. <em>On the Variance of the Adaptive Learning Rate and Beyond.</em> ICLR, 2020 (<a href="https://arxiv.org/abs/1908.03265">arXiv 1908.03265</a>).</li>
+  <li>Pascanu, Mikolov and Bengio. <em>On the Difficulty of Training Recurrent Neural Networks.</em> ICML, 2013 (<a href="https://arxiv.org/abs/1211.5063">arXiv 1211.5063</a>; gradient norm clipping).</li>
+  <li>Szegedy et al. <em>Rethinking the Inception Architecture for Computer Vision.</em> CVPR, 2016 (<a href="https://arxiv.org/abs/1512.00567">arXiv 1512.00567</a>; label smoothing).</li>
+  <li>Micikevicius et al. <em>Mixed Precision Training.</em> ICLR, 2018 (<a href="https://arxiv.org/abs/1710.03740">arXiv 1710.03740</a>; loss scaling).</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/nn/modules/loss.py', 1200, 1409) }}"><code>loss.py</code></a>, <a href="{{ src('torch/optim/adamw.py', 19, 128) }}"><code>adamw.py</code></a>, <a href="{{ src('torch/optim/lr_scheduler.py', 95, 315) }}"><code>lr_scheduler.py</code></a>, <a href="{{ src('torch/amp/autocast_mode.py', 52, 383) }}"><code>autocast_mode.py</code></a>, <a href="{{ src('torch/amp/grad_scaler.py', 53, 714) }}"><code>grad_scaler.py</code></a>, <a href="{{ src('torch/nn/utils/clip_grad.py', 49, 238) }}"><code>clip_grad.py</code></a>.</li>
+</ul>

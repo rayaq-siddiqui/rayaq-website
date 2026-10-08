@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (eighteenth run). Spec v2 widens the section from model architectures
+**Last updated:** 2026-10-08 (nineteenth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: `transformer` and queue items 1-17, the last being `layernorm-and-residuals`.
-The next run retrofits `transformer` to the §6 format (queue item 18).
+format. Ready pages: queue items 1-19, the last being `training-loop`. The next run builds
+`decoder-only-llm` (queue item 20).
 
 ## Pins
 
@@ -438,8 +438,8 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 16. `attention` ✓
 17. `layernorm-and-residuals` ✓
 18. `transformer` ✓
-19. `training-loop` ← next
-20. `decoder-only-llm`
+19. `training-loop` ✓
+20. `decoder-only-llm` ← next
 21. `decoding`
 22. `kv-cache`
 23. `learning-paradigms`
