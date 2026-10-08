@@ -1,13 +1,40 @@
 import math
 import re
 
-UPSTREAM = {
-    "repo": "https://github.com/pytorch/pytorch",
-    "tag": "v2.14.1",
-    "commit": "5c4886908584029761b579af026dcfb627c84070",
-    "commit_date": "2026-09-29",
-    "analyzed_on": "2026-10-08",
+PINS = {
+    "pytorch": {
+        "name": "PyTorch",
+        "repo": "https://github.com/pytorch/pytorch",
+        "tag": "v2.14.1",
+        "commit": "5c4886908584029761b579af026dcfb627c84070",
+        "commit_date": "2026-09-29",
+        "analyzed_on": "2026-10-08",
+        "license": "BSD-3-Clause",
+        "license_path": "LICENSE",
+    },
+    "sklearn": {
+        "name": "scikit-learn",
+        "repo": "https://github.com/scikit-learn/scikit-learn",
+        "tag": "1.9.1",
+        "commit": "866c0f51e7560ef0303cbcc5f159df5382ea9e3f",
+        "commit_date": "2026-09-10",
+        "analyzed_on": "2026-10-08",
+        "license": "BSD-3-Clause",
+        "license_path": "COPYING",
+    },
+    "xgboost": {
+        "name": "XGBoost",
+        "repo": "https://github.com/dmlc/xgboost",
+        "tag": "v3.4.2",
+        "commit": "fdf0888bedddbd444d72994d845c59b3ca182c5b",
+        "commit_date": "2026-09-15",
+        "analyzed_on": "2026-10-08",
+        "license": "Apache-2.0",
+        "license_path": "LICENSE",
+    },
 }
+
+UPSTREAM = PINS["pytorch"]
 
 PAGES = [
     {
@@ -223,13 +250,26 @@ _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
 
-def source_url(path, start=None, end=None):
-    url = f"{UPSTREAM['repo']}/blob/{UPSTREAM['commit']}/{path}"
+def pinned_url(key, path, start=None, end=None):
+    pin = PINS[key]
+    url = f"{pin['repo']}/blob/{pin['commit']}/{path}"
     if start is None:
         return url
     if end is None or end == start:
         return f"{url}#L{start}"
     return f"{url}#L{start}-L{end}"
+
+
+def source_url(path, start=None, end=None):
+    return pinned_url("pytorch", path, start, end)
+
+
+def sklearn_url(path, start=None, end=None):
+    return pinned_url("sklearn", path, start, end)
+
+
+def xgboost_url(path, start=None, end=None):
+    return pinned_url("xgboost", path, start, end)
 
 
 def ready_pages():
@@ -317,7 +357,11 @@ def render(slug, render_template):
         "pages": PAGES,
         "ready_slugs": {entry["slug"] for entry in ready_pages()},
         "upstream": UPSTREAM,
+        "pins": PINS,
         "src": source_url,
+        "skl": sklearn_url,
+        "xgb": xgboost_url,
+        "pinned": pinned_url,
         "previous_page": previous,
         "next_page": following,
         "upcoming": UPCOMING_MODELS,

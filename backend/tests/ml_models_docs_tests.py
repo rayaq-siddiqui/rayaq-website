@@ -20,13 +20,33 @@ def topic_urls():
     return [f"/ml-models/{page['slug']}" for page in ml_models_docs.ready_pages()]
 
 
-def test_pin_is_well_formed():
-    assert ml_models_docs.UPSTREAM["repo"] == "https://github.com/pytorch/pytorch"
-    assert re.fullmatch(r"v\d+\.\d+\.\d+", ml_models_docs.UPSTREAM["tag"])
-    assert re.fullmatch(r"[0-9a-f]{40}", ml_models_docs.UPSTREAM["commit"])
-    commit_date = date.fromisoformat(ml_models_docs.UPSTREAM["commit_date"])
-    analyzed_on = date.fromisoformat(ml_models_docs.UPSTREAM["analyzed_on"])
-    assert commit_date <= analyzed_on
+def test_pins_are_well_formed():
+    repos = {
+        "pytorch": "https://github.com/pytorch/pytorch",
+        "sklearn": "https://github.com/scikit-learn/scikit-learn",
+        "xgboost": "https://github.com/dmlc/xgboost",
+    }
+    assert set(ml_models_docs.PINS) == set(repos)
+    for key, pin in ml_models_docs.PINS.items():
+        assert pin["repo"] == repos[key]
+        assert pin["name"].strip()
+        assert re.fullmatch(r"v?\d+\.\d+\.\d+", pin["tag"]), key
+        assert re.fullmatch(r"[0-9a-f]{40}", pin["commit"]), key
+        assert date.fromisoformat(pin["commit_date"]) <= date.fromisoformat(pin["analyzed_on"])
+        assert pin["license"] in {"BSD-3-Clause", "Apache-2.0"}
+        assert pin["license_path"]
+    assert ml_models_docs.UPSTREAM is ml_models_docs.PINS["pytorch"]
+
+
+def test_pinned_url_uses_each_pins_commit():
+    for key, pin in ml_models_docs.PINS.items():
+        base = f"{pin['repo']}/blob/{pin['commit']}/a/b.py"
+        assert ml_models_docs.pinned_url(key, "a/b.py") == base
+        assert ml_models_docs.pinned_url(key, "a/b.py", 7) == f"{base}#L7"
+        assert ml_models_docs.pinned_url(key, "a/b.py", 7, 7) == f"{base}#L7"
+        assert ml_models_docs.pinned_url(key, "a/b.py", 7, 12) == f"{base}#L7-L12"
+    assert ml_models_docs.sklearn_url("x.py") == ml_models_docs.pinned_url("sklearn", "x.py")
+    assert ml_models_docs.xgboost_url("x.cc") == ml_models_docs.pinned_url("xgboost", "x.cc")
 
 
 def test_every_page_has_a_unique_slug_summary_and_sources():
@@ -88,14 +108,15 @@ def test_unknown_and_unready_slugs_return_404():
 
 def test_every_upstream_link_is_pinned_to_the_analyzed_commit():
     client = app_module.app.test_client()
-    sha = ml_models_docs.UPSTREAM["commit"]
 
     for url in all_urls():
         body = client.get(url).get_data(as_text=True)
         assert "/blob/main" not in body, url
         assert "/tree/main" not in body, url
-        for link in re.findall(r'href="(https://github\.com/pytorch/pytorch/(?:blob|tree)/[^"]*)"', body):
-            assert re.search(rf"/(?:blob|tree)/{sha}(?:/|$)", link), (url, link)
+        for pin in ml_models_docs.PINS.values():
+            pattern = rf'href="({re.escape(pin["repo"])}/(?:blob|tree)/[^"]*)"'
+            for link in re.findall(pattern, body):
+                assert re.search(rf"/(?:blob|tree)/{pin['commit']}(?:/|$)", link), (url, link)
 
 
 def test_every_internal_link_resolves():
