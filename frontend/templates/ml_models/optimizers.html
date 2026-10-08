@@ -1,0 +1,614 @@
+{% set bowl = optimizer_bowl %}
+{% set race = optimizer_race(bowl) %}
+{% set ax = adam_example %}
+{% set trace = adam_trace(ax) %}
+{% set wd = weight_decay_example %}
+{% set decay = weight_decay_paths(wd) %}
+{% set memory = optimizer_memory(7e9) %}
+{% macro n(x) -%}{% if x == x|round %}{{ "%g"|format(x) }}{% else %}{{ "%.4g"|format(x) }}{% endif %}{%- endmacro %}
+{% macro vec(v) -%}[{% for x in v %}{{ n(x) }}{% if not loop.last %}, {% endif %}{% endfor %}]{%- endmacro %}
+{% macro sci(x) -%}{{ "%.1e"|format(x) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Optimizers: SGD to AdamW</h1>
+  <p class="tagline">
+    Backpropagation gives the gradient; the optimizer decides what to do with it. This page builds
+    up from plain stochastic gradient descent through momentum, Nesterov and RMSProp to Adam and
+    AdamW, races them on the same narrow valley, works one Adam step through by hand, shows why
+    decoupled weight decay is not the same as L2 regularization, and reads the update rules out of
+    <code>torch.optim</code> at {{ upstream.tag }}.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Gradient descent says: move every parameter a small step against its gradient,
+  θ ← θ − η∇L(θ). Two things make that harder than it sounds. First, the true gradient is an
+  average over the whole training set, and computing it for every step would be far too slow, so
+  every step uses a noisy estimate from a small batch. Second, the loss surface is badly shaped. In
+  some directions it is steep, in others nearly flat, and one learning rate η has to serve all of
+  them: small enough not to blow up in the steep directions, which makes it crawl in the flat ones.
+</p>
+<p>
+  An optimizer is a rule for turning the stream of noisy gradients into steps that make fast,
+  stable progress anyway. The rules on this page differ in what they remember between steps, and
+  that memory (the optimizer's <em>state</em>) costs real memory: for Adam, two extra numbers per
+  parameter.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Picture a long, narrow valley: gentle along its floor, steep across it. Plain gradient descent
+  points mostly across the valley, because that's where the slope is, so it bounces from wall to
+  wall and creeps along the floor. Raise the learning rate to creep faster and the bouncing grows
+  until it diverges.
+</p>
+<ul>
+  <li>
+    <strong>Momentum</strong> keeps a running sum of past gradients, like a heavy ball. The
+    across-the-valley components alternate in sign and cancel; the along-the-floor components
+    agree and add up, so the ball builds speed where it should.
+  </li>
+  <li>
+    <strong>RMSProp</strong> divides each parameter's gradient by a running average of its own
+    size. The steep direction, with big gradients, gets a small step; the flat direction gets a big
+    one. Every parameter gets its own effective learning rate.
+  </li>
+  <li>
+    <strong>Adam</strong> does both: a running average of the gradient (momentum) divided by a
+    running average of its square (RMSProp), plus a correction for the averages starting at zero.
+    Its steps are about η in size whatever the gradient's scale.
+  </li>
+  <li>
+    <strong>AdamW</strong> is Adam with weight decay applied directly to the weights rather than
+    folded into the gradient, where Adam's division would distort it.
+  </li>
+</ul>
+
+<div class="jj-diagram">
+  {% macro px(x) -%}{{ 40 + (x + 4.5) * 110 }}{%- endmacro %}
+  {% macro py(y) -%}{{ 120 - y * 90 }}{%- endmacro %}
+  {% set colors = {"sgd": "var(--jj-amber)", "momentum": "var(--jj-violet)", "adam": "var(--jj-green)"} %}
+  <svg viewBox="0 0 680 270" role="img" aria-labelledby="opt-race-title opt-race-desc">
+    <title id="opt-race-title">Three optimizers on a narrow quadratic valley</title>
+    <desc id="opt-race-desc">
+      Contours of the loss L = ½({{ n(bowl.curvatures[0]) }}x² + {{ n(bowl.curvatures[1]) }}y²), a valley
+      {{ n(bowl.curvatures[1] / bowl.curvatures[0]) }} times steeper across (y) than along (x), and the
+      first {{ bowl.steps }} steps of three optimizers from ({{ n(bowl.start[0]) }}, {{ n(bowl.start[1]) }}),
+      where the loss is {{ n(race[0].losses[0]) }}.
+      {% for r in race if r.plot %}{{ r.label }} ends at ({{ n(r.path[-1][0]) }}, {{ n(r.path[-1][1]) }}) with loss {{ n(r.final) }}. {% endfor %}
+      Plain SGD zigzags across the valley and is still far from the minimum; momentum zigzags less
+      and arrives; Adam heads diagonally at a near-constant speed and then circles the minimum.
+    </desc>
+    <defs><clipPath id="opt-race-clip"><rect x="40" y="10" width="630" height="220"></rect></clipPath></defs>
+    <g clip-path="url(#opt-race-clip)">
+      {% for excess in [0.5, 2, 4.5, 8, 12.5] %}
+        <path d="M{% for p in quadratic_ellipse([[bowl.curvatures[0], 0], [0, bowl.curvatures[1]]], [0, 0], excess) %}{% if not loop.first %} L{% endif %}{{ px(p[0]) }},{{ py(p[1]) }}{% endfor %}" fill="none" class="d-line" opacity="0.25"></path>
+      {% endfor %}
+    </g>
+    <circle cx="{{ px(0) }}" cy="{{ py(0) }}" r="4" class="d-muted"></circle>
+    <text x="{{ px(0) }}" y="{{ py(-1.15) }}" font-size="11" text-anchor="middle" class="d-muted">minimum</text>
+    {% for r in race if r.plot %}
+      {% set color = colors[r.kind] %}
+      <path d="M{% for p in r.path %}{% if not loop.first %} L{% endif %}{{ px(p[0]) }},{{ py(p[1]) }}{% endfor %}" fill="none" stroke="{{ color }}" stroke-width="1.8"></path>
+      {% for p in r.path %}
+        <circle cx="{{ px(p[0]) }}" cy="{{ py(p[1]) }}" r="2.2" style="fill: {{ color }}"></circle>
+      {% endfor %}
+      <text x="{{ 60 + 205 * loop.index0 }}" y="252" font-size="12" style="fill: {{ color }}">{{ r.label }}: loss {{ n(r.final) }}</text>
+    {% endfor %}
+    <text x="{{ px(-4) }}" y="{{ py(1)|float - 8 }}" font-size="11" class="d-muted">start, loss {{ n(race[0].losses[0]) }}</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Each dot is one step. The y direction is {{ n(bowl.curvatures[1]) }}× steeper, so SGD's learning
+  rate is capped by it and the x direction barely moves. Momentum and Adam both fix that, in
+  different ways. Adam's steps are all about η = 0.3 long, which is too big for the last stretch, so
+  it overshoots and circles the minimum instead of settling.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="sgd">SGD and minibatches</h3>
+
+<p>
+  The training loss is an average over N examples, L(θ) = (1/N) Σ ℓ<sub>i</sub>(θ). Stochastic
+  gradient descent replaces its gradient with the average over a random <strong>minibatch</strong>
+  B of B examples:
+</p>
+<p class="ml-formula">g = (1/B) Σ<sub>i∈B</sub> ∇ℓ<sub>i</sub>(θ), &nbsp; θ ← θ − η g</p>
+<p>
+  g is an unbiased estimate of the full gradient: right on average, with noise whose standard
+  deviation falls like 1/√B. Quadrupling the batch halves the noise but costs four times the
+  compute per step, which is why moderate batches win on total compute. The noise isn't purely
+  harmful either; it helps escape saddle points and is thought to favour flatter minima that
+  generalize better. Batch size and learning rate interact: bigger batches allow bigger η, roughly
+  in proportion for SGD, up to a limit.
+</p>
+<p>
+  On a quadratic, the step along a direction with curvature a multiplies the error by (1 − ηa). That
+  is stable only while |1 − ηa| &lt; 1, that is η &lt; 2/a, so the <em>steepest</em> direction sets
+  the largest usable learning rate, and the <em>flattest</em> direction then sets how slowly
+  everything converges. In the valley above, a = {{ n(bowl.curvatures[1]) }} across it caps η at
+  {{ n(2 / bowl.curvatures[1]) }}; at η = {{ n(race[0].hyper.lr) }} the x error shrinks by only
+  {{ n(1 - race[0].hyper.lr * bowl.curvatures[0]) }} per step. The ratio of the largest curvature to
+  the smallest, the <strong>condition number</strong>, is the core difficulty every rule below
+  attacks.
+</p>
+
+<h3 id="momentum">Momentum and Nesterov</h3>
+
+<p>
+  Momentum keeps a velocity buffer b and steps along it:
+</p>
+<p class="ml-formula">b ← μb + g, &nbsp; θ ← θ − η b</p>
+<p>
+  With μ = 0.9, a gradient that keeps the same sign is added up to an effective 1/(1 − μ) = 10 times;
+  one that alternates mostly cancels. That is exactly the valley's problem: the floor direction is
+  consistent, the wall-to-wall direction alternates. PyTorch's <code>SGD</code> stores b as
+  <code>momentum_buffer</code>, initializes it to the first gradient, and (with the default
+  <code>dampening=0</code>) uses exactly this form; some texts write b ← μb + (1 − μ)g instead,
+  which only rescales η.
+</p>
+<p>
+  <strong>Nesterov momentum</strong> steps along g + μb instead of b: it applies the momentum
+  "look-ahead" to the current gradient as well, which reacts sooner when the velocity starts
+  carrying the parameters uphill. It is a small change with a better worst-case theory for convex
+  problems. Note what it does to the step on the fresh gradient: η(1 + μ) instead of η, so it needs
+  a smaller learning rate. In the race, Nesterov at η = 0.03 diverges, while at η = 0.02 it reaches
+  {{ n(race[3].final) }}.
+</p>
+
+<h3 id="rmsprop">RMSProp</h3>
+
+<p>
+  RMSProp keeps a running average of each parameter's squared gradient and divides by its root:
+</p>
+<p class="ml-formula">s ← αs + (1 − α)g², &nbsp; θ ← θ − η g / (√s + ε)</p>
+<p>
+  Everything is element-wise, so each parameter gets its own scale. If a parameter's gradients are
+  consistently around size 50, √s ≈ 50 and the step is about η; if they're around 1, the step is
+  also about η. That flattens the valley's condition number for any problem whose steep directions
+  line up with the parameter axes. PyTorch's <code>RMSprop</code> defaults to α = 0.99, ε = 10<sup>−8</sup>
+  and stores s as <code>square_avg</code>. Its ancestor AdaGrad summed g² over all time instead of
+  averaging, so its steps shrank forever; the moving average is what lets RMSProp keep learning.
+</p>
+
+<h3 id="adam">Adam: moment estimates and bias correction</h3>
+
+<p>
+  Adam keeps both averages, called the first and second moment estimates:
+</p>
+<p class="ml-formula">m ← β<sub>1</sub>m + (1 − β<sub>1</sub>)g, &nbsp; v ← β<sub>2</sub>v + (1 − β<sub>2</sub>)g²</p>
+<p class="ml-formula">m̂ = m / (1 − β<sub>1</sub><sup>t</sup>), &nbsp; v̂ = v / (1 − β<sub>2</sub><sup>t</sup>), &nbsp; θ ← θ − η m̂ / (√v̂ + ε)</p>
+<p>
+  with defaults η = 10<sup>−3</sup>, β<sub>1</sub> = 0.9, β<sub>2</sub> = 0.999, ε = 10<sup>−8</sup>. m
+  is momentum and v is RMSProp's average, so the step m̂/√v̂ is roughly "the gradient's sign, smoothed",
+  and its size is at most about η per parameter.
+</p>
+<p>
+  The hats are the <strong>bias correction</strong>. Both averages start at 0, so early on they are
+  too small: after one step m = (1 − β<sub>1</sub>)g = 0.1g and v = 0.001g². Dividing by
+  1 − β<sup>t</sup> rescales them to unbiased estimates of the gradient's mean and mean square. Without
+  the correction, the first step would be η · 0.1g / √(0.001g²) = {{ n(uncorrected_step_ratio(ax.betas, 1)) }}η, and
+  because v's average is much slower than m's, the overshoot gets <em>worse</em> before it gets
+  better, peaking near t = 12.
+</p>
+
+<div class="jj-diagram">
+  {% macro rx(t) -%}{{ 70 + log10(t) * 165 }}{%- endmacro %}
+  {% macro ry(r) -%}{{ 225 - (r - 1) * 32 }}{%- endmacro %}
+  {% set ts = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50, 70, 100, 150, 200, 300, 500, 700, 1000, 1500, 2000, 3000] %}
+  {% set peak = ts|map("int")|list %}
+  <svg viewBox="0 0 680 270" role="img" aria-labelledby="opt-bias-title opt-bias-desc">
+    <title id="opt-bias-title">How much larger Adam's step would be without bias correction</title>
+    <desc id="opt-bias-desc">
+      The ratio of the uncorrected Adam step to the corrected one, (1 − β1^t) / √(1 − β2^t), with
+      β1 = {{ ax.betas[0] }} and β2 = {{ ax.betas[1] }}, for steps t from 1 to 3000 on a logarithmic axis.
+      It starts at {{ n(uncorrected_step_ratio(ax.betas, 1)) }} at t = 1, rises to
+      {{ n(uncorrected_step_ratio(ax.betas, 12)) }} at t = 12, then falls: {{ n(uncorrected_step_ratio(ax.betas, 100)) }}
+      at t = 100, {{ n(uncorrected_step_ratio(ax.betas, 1000)) }} at t = 1000 and
+      {{ n(uncorrected_step_ratio(ax.betas, 3000)) }} at t = 3000, approaching 1, the corrected step.
+    </desc>
+    {% for r in [1, 2, 3, 4, 5, 6, 7] %}
+      <line x1="{{ rx(1) }}" y1="{{ ry(r) }}" x2="{{ rx(3000) }}" y2="{{ ry(r) }}" class="d-line" opacity="{{ 0.6 if r == 1 else 0.15 }}"></line>
+      <text x="{{ rx(1)|float - 8 }}" y="{{ ry(r)|float + 4 }}" font-size="11" text-anchor="end">{{ r }}×</text>
+    {% endfor %}
+    {% for t in [1, 10, 100, 1000] %}
+      <text x="{{ rx(t) }}" y="{{ ry(1)|float + 18 }}" font-size="11" text-anchor="middle">{{ t }}</text>
+    {% endfor %}
+    <path d="M{% for t in ts %}{% if not loop.first %} L{% endif %}{{ rx(t) }},{{ ry(uncorrected_step_ratio(ax.betas, t)) }}{% endfor %}" fill="none" stroke="var(--jj-red)" stroke-width="2"></path>
+    {% for t in [1, 12, 100, 1000] %}
+      <circle cx="{{ rx(t) }}" cy="{{ ry(uncorrected_step_ratio(ax.betas, t)) }}" r="3.5" style="fill: var(--jj-red)"></circle>
+      <text x="{{ rx(t)|float + 7 }}" y="{{ ry(uncorrected_step_ratio(ax.betas, t))|float - 7 }}" font-size="11">{{ "%.2f"|format(uncorrected_step_ratio(ax.betas, t)) }}×</text>
+    {% endfor %}
+    <text x="{{ rx(60) }}" y="{{ ry(1)|float - 8 }}" font-size="12" style="fill: var(--jj-green)">with bias correction: 1× from the first step</text>
+    <text x="{{ rx(55) }}" y="266" font-size="11" text-anchor="middle" class="d-muted">step t (log scale); vertical: uncorrected step ÷ corrected step, constant gradient</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  For a constant gradient, the corrected step is exactly η from step 1. The uncorrected step starts
+  {{ "%.2f"|format(uncorrected_step_ratio(ax.betas, 1)) }}× too large, reaches
+  {{ "%.2f"|format(uncorrected_step_ratio(ax.betas, 12)) }}× at t = 12, and is still
+  {{ "%.2f"|format(uncorrected_step_ratio(ax.betas, 1000)) }}× at t = 1000. Early steps are exactly
+  when the parameters are worst, which is why learning-rate warmup is often used on top.
+</p>
+
+<p>
+  Because the step is normalized, Adam is far less sensitive to the gradient's scale than SGD, and
+  one learning rate works across layers whose gradients differ by orders of magnitude. That,
+  plus robustness to noisy and sparse gradients, is why it became the default for transformers.
+  It is not a free win: on some problems, especially image classification with well-tuned
+  schedules, SGD with momentum still generalizes slightly better.
+</p>
+
+<h3 id="adamw">AdamW: decoupled weight decay</h3>
+
+<p>
+  Weight decay shrinks every weight toward zero each step. For SGD, adding an L2 penalty (λ/2)‖θ‖² to
+  the loss does exactly that: the gradient gains a term λθ, and the step −η(g + λθ) is the usual step
+  plus θ ← (1 − ηλ)θ. The two ideas coincide, and <code>SGD(weight_decay=λ)</code> implements decay
+  by adding λθ to the gradient.
+</p>
+<p>
+  Adam breaks the equivalence. <code>Adam(weight_decay=λ)</code> also adds λθ to the gradient, and
+  then divides by √v̂. A weight whose gradients are large gets its decay divided down to almost
+  nothing; a weight with tiny gradients gets its decay amplified. Loshchilov and Hutter's AdamW
+  <em>decouples</em> the two: it shrinks the weight directly, θ ← (1 − ηλ)θ, and then takes an
+  ordinary Adam step on the unmodified gradient. In PyTorch that is the single line
+  <code>param.mul_(1 - lr * weight_decay)</code>, and <code>AdamW</code> is <code>Adam</code> with
+  <code>decoupled_weight_decay=True</code> and a default λ of 10<sup>−2</sup> instead of 0.
+</p>
+
+<div class="jj-diagram">
+  {% macro hx(s) -%}{{ 70 + s * 0.57 }}{%- endmacro %}
+  {% macro hy(v) -%}{{ 225 - v * 200 }}{%- endmacro %}
+  {% set styles = {("adam", 1.0): ("var(--jj-amber)", ""), ("adam", 0.01): ("var(--jj-red)", ""), ("adamw", 1.0): ("var(--jj-green)", ""), ("adamw", 0.01): ("var(--jj-violet)", "6 4")} %}
+  <svg viewBox="0 0 680 270" role="img" aria-labelledby="opt-decay-title opt-decay-desc">
+    <title id="opt-decay-title">The same weight decay under Adam with L2 and under AdamW</title>
+    <desc id="opt-decay-desc">
+      One weight starting at 1, trained for {{ wd.steps }} steps with learning rate {{ wd.lr }} and
+      weight decay {{ wd.weight_decay }}, on gradients that alternate between plus and minus a scale,
+      so the gradient itself pulls the weight nowhere and only decay moves it.
+      {% for c in decay %}{{ "AdamW" if c.kind == "adamw" else "Adam with L2" }}, gradient scale {{ n(c.scale) }}: {{ n(c["values"][200]) }} after 200 steps and {{ n(c["values"][-1]) }} after {{ wd.steps }}. {% endfor %}
+      AdamW decays the weight at the same rate whatever the gradient scale; Adam with L2 decays it
+      about as fast when the gradient is large, and far faster when the gradient is small.
+    </desc>
+    {% for v in [0, 0.25, 0.5, 0.75, 1] %}
+      <line x1="{{ hx(0) }}" y1="{{ hy(v) }}" x2="{{ hx(1000) }}" y2="{{ hy(v) }}" class="d-line" opacity="0.15"></line>
+      <text x="{{ hx(0)|float - 8 }}" y="{{ hy(v)|float + 4 }}" font-size="11" text-anchor="end">{{ v }}</text>
+    {% endfor %}
+    {% for s in [0, 250, 500, 750, 1000] %}
+      <text x="{{ hx(s) }}" y="{{ hy(0)|float + 18 }}" font-size="11" text-anchor="middle">{{ s }}</text>
+    {% endfor %}
+    {% for c in decay %}
+      {% set style = styles[(c.kind, c.scale)] %}
+      <path d="M{% for v in c["values"][::5] %}{% if not loop.first %} L{% endif %}{{ hx(5 * loop.index0) }},{{ hy(v) }}{% endfor %}" fill="none" stroke="{{ style[0] }}" stroke-width="2" stroke-dasharray="{{ style[1] or 'none' }}"></path>
+    {% endfor %}
+    <text x="{{ hx(110) }}" y="{{ hy(0.12) }}" font-size="12" style="fill: var(--jj-red)">Adam + L2, gradients ±{{ n(wd.scales[1]) }}</text>
+    <text x="{{ hx(560) }}" y="{{ hy(0.68) }}" font-size="12" style="fill: var(--jj-green)">AdamW, gradients ±{{ n(wd.scales[0]) }} or ±{{ n(wd.scales[1]) }}</text>
+    <text x="{{ hx(420) }}" y="{{ hy(0.40) }}" font-size="12" style="fill: var(--jj-amber)">Adam + L2, gradients ±{{ n(wd.scales[0]) }}</text>
+    <text x="{{ hx(500) }}" y="266" font-size="11" text-anchor="middle" class="d-muted">step; vertical: the weight's value</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  With L2 inside Adam, the decay term λθ is divided by the gradient's running size. When the
+  gradients are ±{{ n(wd.scales[1]) }}, that division makes the decay act about 100 times harder and the
+  weight is gone ({{ n(decay[1]["values"][100]) }} after 100 steps). AdamW's two curves lie on top of
+  each other: {{ n(decay[2]["values"][-1]) }} after {{ wd.steps }} steps either way, matching
+  (1 − ηλ)<sup>{{ wd.steps }}</sup> = {{ n((1 - wd.lr * wd.weight_decay) ** wd.steps) }}.
+</p>
+
+<h3 id="state-memory">Optimizer state memory</h3>
+
+<p>
+  Every bit of memory an optimizer keeps is per parameter. For a model with 7 billion parameters in
+  float32:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Optimizer</th><th>State tensors per parameter</th><th>PyTorch state keys</th><th>Extra bytes per parameter</th><th>Extra memory at 7B</th></tr></thead>
+    <tbody>
+      {% for row in memory %}
+      <tr><td>{{ row.name }}</td><td>{{ row.tensors }}</td><td>{% if row.tensors %}<code>{{ row.state }}</code>{% else %}{{ row.state }}{% endif %}</td><td>{{ row.bytes_per_param }}</td><td>{{ "%g"|format(row.gigabytes) }} GB</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The weights themselves are another 28 GB and the gradients another 28 GB, so Adam training needs
+  16 bytes per parameter, 112 GB at 7B, before a single activation is stored. Mixed-precision
+  training usually keeps the same total: bfloat16 weights and gradients (4 bytes) plus a float32
+  master copy and Adam's two moments (12 bytes). This is why optimizer state is the first thing
+  sharded across GPUs in large-model training (ZeRO and FSDP), and why memory-lean variants exist:
+  Adafactor factorizes v into row and column averages, and 8-bit Adam quantizes both moments.
+  PyTorch also keeps a tiny <code>step</code> counter per parameter.
+</p>
+
+<h3 id="in-pytorch">In PyTorch</h3>
+
+<p>
+  Every optimizer subclasses <code>torch.optim.Optimizer</code>. It is built from an iterable of
+  parameters (or of <em>parameter groups</em>, dicts that each carry their own <code>lr</code>,
+  <code>weight_decay</code> and so on), keeps <code>self.param_groups</code> and a
+  <code>self.state</code> dict keyed by parameter, and exposes three calls a training loop uses:
+</p>
+<ul>
+  <li><code>zero_grad()</code> clears every parameter's <code>.grad</code>, by default by setting it to <code>None</code>, because backward accumulates;</li>
+  <li><code>step()</code> reads each <code>.grad</code>, updates the state and changes the parameters in place, under <code>torch.no_grad()</code>;</li>
+  <li><code>state_dict()</code> / <code>load_state_dict()</code> save and restore the state, so a resumed run continues with the same moments rather than restarting Adam's warm-up.</li>
+</ul>
+<p>
+  <code>Adam.step</code> gathers the tensors of each group and calls a functional <code>adam</code>,
+  which dispatches to one of three implementations: <code>_single_tensor_adam</code>, a plain loop
+  over parameters that is easiest to read; a <code>foreach</code> version that batches the same
+  operations over lists of tensors; and a <code>fused</code> kernel that does the whole update in
+  one GPU launch. The default on GPU is foreach. They compute the same update.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Term</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>torch.optim.SGD</code></td>
+        <td><code>lr=1e-3</code>, <code>momentum=0</code>, <code>dampening=0</code>, <code>weight_decay=0</code>, <code>nesterov=False</code></td>
+        <td>SGD, with optional momentum, Nesterov and L2-style decay.</td>
+        <td><a href="{{ src('torch/optim/sgd.py', 28, 105) }}"><code>sgd.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_single_tensor_sgd</code></td>
+        <td>per parameter: <code>momentum_buffer</code></td>
+        <td>Adds λθ to the gradient, updates the buffer, applies Nesterov, then steps.</td>
+        <td><a href="{{ src('torch/optim/sgd.py', 322, 380) }}"><code>sgd.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>torch.optim.RMSprop</code></td>
+        <td><code>lr=1e-2</code>, <code>alpha=0.99</code>, <code>eps=1e-8</code>, <code>centered=False</code></td>
+        <td>Divides by the root of a running mean square, <code>square_avg</code>.</td>
+        <td><a href="{{ src('torch/optim/rmsprop.py', 265, 341) }}"><code>rmsprop.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>torch.optim.Adam</code></td>
+        <td><code>lr=1e-3</code>, <code>betas=(0.9, 0.999)</code>, <code>eps=1e-8</code>, <code>weight_decay=0</code></td>
+        <td>Adam; state <code>exp_avg</code> (m), <code>exp_avg_sq</code> (v) and <code>step</code>.</td>
+        <td><a href="{{ src('torch/optim/adam.py', 34, 138) }}"><code>adam.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_single_tensor_adam</code></td>
+        <td>per parameter: m, v, t</td>
+        <td>Decay, the two moment updates, bias correction and <code>addcdiv_</code>.</td>
+        <td><a href="{{ src('torch/optim/adam.py', 347, 552) }}"><code>adam.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>torch.optim.AdamW</code></td>
+        <td><code>weight_decay=1e-2</code></td>
+        <td>Adam with <code>decoupled_weight_decay=True</code>.</td>
+        <td><a href="{{ src('torch/optim/adamw.py', 19, 47) }}"><code>adamw.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Optimizer.zero_grad</code></td>
+        <td><code>set_to_none=True</code></td>
+        <td>Clears <code>.grad</code> on every parameter in every group.</td>
+        <td><a href="{{ src('torch/optim/optimizer.py', 1048, 1110) }}"><code>optimizer.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Optimizer.step</code></td>
+        <td><code>closure=None</code></td>
+        <td>One update; each subclass overrides it.</td>
+        <td><a href="{{ src('torch/optim/optimizer.py', 1117, 1124) }}"><code>optimizer.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Optimizer.state_dict</code></td>
+        <td><code>{"state", "param_groups"}</code></td>
+        <td>The optimizer's state for checkpointing, with parameters replaced by indices.</td>
+        <td><a href="{{ src('torch/optim/optimizer.py', 700, 791) }}"><code>optimizer.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Optimizer.add_param_group</code></td>
+        <td>a dict with <code>"params"</code></td>
+        <td>Adds parameters with their own settings, e.g. unfrozen layers mid-training.</td>
+        <td><a href="{{ src('torch/optim/optimizer.py', 1127, 1180) }}"><code>optimizer.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>Three Adam steps, every number.</strong> Two parameters start at θ = {{ vec(ax.start) }}.
+    η = {{ ax.lr }}, β<sub>1</sub> = {{ ax.betas[0] }}, β<sub>2</sub> = {{ ax.betas[1] }}, ε = {{ sci(ax.eps) }}.
+    The gradients are deliberately mismatched: the second parameter's are about 200 times the first's.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>t</th><th>g</th><th>m</th><th>v</th><th>m̂</th><th>v̂</th><th>step −η m̂/(√v̂ + ε)</th><th>θ after</th></tr></thead>
+      <tbody>
+        {% for row in trace %}
+        <tr><td>{{ row.t }}</td><td>{{ vec(row.grads) }}</td><td>{{ vec(row.m) }}</td><td>{{ vec(row.v) }}</td><td>{{ vec(row.m_hat) }}</td><td>{{ vec(row.v_hat) }}</td><td>{{ vec(row.update) }}</td><td>{{ vec(row.params) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Step 1: m = 0.1g = {{ vec(trace[0].m) }} and v = 0.001g² = {{ vec(trace[0].v) }}. Bias correction
+    divides by 1 − 0.9 = 0.1 and 1 − 0.999 = 0.001, so m̂ = g and v̂ = g² exactly, and the step is
+    −η g/|g| = −η·sign(g) = {{ vec(trace[0].update) }}. Both parameters move by η, though one gradient
+    is 200 times the other.
+  </p>
+  <p>
+    Step 2: m = 0.9 · {{ n(trace[0].m[1]) }} + 0.1 · {{ n(trace[1].grads[1]) }} = {{ n(trace[1].m[1]) }} for the
+    second parameter, and the corrections are 1 − 0.9² = 0.19 and 1 − 0.999² = 0.001999, giving
+    m̂ = {{ n(trace[1].m_hat[1]) }} and v̂ = {{ n(trace[1].v_hat[1]) }}. The step is
+    −{{ ax.lr }} × {{ n(trace[1].m_hat[1]) }} / √{{ n(trace[1].v_hat[1]) }} = {{ n(trace[1].update[1]) }}:
+    a little under η, because the gradients disagree a little about their size. After three steps
+    θ = {{ vec(trace[2].params) }}; plain SGD with the same η would have moved the second parameter by
+    {{ n(ax.lr * (4 + 3 + 5)) }} and the first by only {{ n(ax.lr * 0.06) }}.
+  </p>
+</div>
+
+<h3 id="race-results">The race in numbers</h3>
+
+<p>
+  All six runs on the valley above, for {{ bowl.steps }} steps from loss {{ n(race[0].losses[0]) }}:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Optimizer</th><th>Loss after {{ bowl.steps }} steps</th><th>Note</th></tr></thead>
+    <tbody>
+      {% for r in race %}
+      <tr>
+        <td>{{ r.label }}</td>
+        <td>{% if r.diverged %}{{ "%.0f"|format(r.final) }}, diverged{% else %}{{ n(r.final) }}{% endif %}</td>
+        <td>{% if r.kind == "sgd" and r.diverged %}just past η = 2/{{ n(bowl.curvatures[1]) }} = {{ n(2 / bowl.curvatures[1]) }}: the steep direction explodes
+        {% elif r.kind == "sgd" %}the largest η that converges smoothly; x crawls
+        {% elif r.kind == "momentum" %}consistent x gradients add up; the y oscillation cancels
+        {% elif r.kind == "nesterov" %}needs a smaller η: η = 0.03 diverges
+        {% elif r.kind == "rmsprop" %}per-axis scaling, no momentum; steps of about η each
+        {% else %}near-constant step size; circles the minimum at the end{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+
+theta = torch.tensor([0.5, -0.3], requires_grad=True)
+opt = torch.optim.Adam([theta], lr=1e-3, betas=(0.9, 0.999), eps=1e-8)
+for g in ([0.02, -4.0], [0.01, -3.0], [0.03, -5.0]):
+    opt.zero_grad()
+    theta.grad = torch.tensor(g)        # stand-in for loss.backward()
+    opt.step()
+theta                                   # tensor([ 0.4971, -0.2970])
+opt.state[theta].keys()                 # step, exp_avg, exp_avg_sq
+
+# the usual setup: AdamW, with no decay on biases and normalization weights
+decay = [p for n, p in model.named_parameters() if p.ndim >= 2]
+no_decay = [p for n, p in model.named_parameters() if p.ndim &lt; 2]
+opt = torch.optim.AdamW([
+    {"params": decay, "weight_decay": 0.1},
+    {"params": no_decay, "weight_decay": 0.0},
+], lr=3e-4, betas=(0.9, 0.95))
+
+for x, y in loader:
+    opt.zero_grad()
+    loss = loss_fn(model(x), y)
+    loss.backward()
+    opt.step()
+
+torch.save(opt.state_dict(), "opt.pt")  # m and v are part of the training state</code></pre>
+
+<p>Every rule on this page, in plain Python:</p>
+
+<pre><code>import math
+
+def step(kind, params, grads, state, lr, mu=0.9, alpha=0.99,
+         betas=(0.9, 0.999), eps=1e-8, wd=0.0):
+    t = state["t"] = state.get("t", 0) + 1
+    if kind == "adamw":
+        params = [p * (1 - lr * wd) for p in params]
+    else:
+        grads = [g + wd * p for g, p in zip(grads, params)]
+    if kind == "sgd":
+        return [p - lr * g for p, g in zip(params, grads)]
+    if kind in ("momentum", "nesterov"):
+        buf = state["buf"] = grads if t == 1 else [mu * b + g for b, g in zip(state["buf"], grads)]
+        d = buf if kind == "momentum" else [g + mu * b for g, b in zip(grads, buf)]
+        return [p - lr * x for p, x in zip(params, d)]
+    if kind == "rmsprop":
+        s = state["s"] = [alpha * s + (1 - alpha) * g * g
+                          for s, g in zip(state.get("s", [0.0] * len(grads)), grads)]
+        return [p - lr * g / (math.sqrt(v) + eps) for p, g, v in zip(params, grads, s)]
+    b1, b2 = betas
+    m = state["m"] = [b1 * m + (1 - b1) * g for m, g in zip(state.get("m", [0.0] * len(grads)), grads)]
+    v = state["v"] = [b2 * v + (1 - b2) * g * g for v, g in zip(state.get("v", [0.0] * len(grads)), grads)]
+    return [p - lr * (mi / (1 - b1**t)) / (math.sqrt(vi / (1 - b2**t)) + eps)
+            for p, mi, vi in zip(params, m, v)]
+
+theta, state = [0.5, -0.3], {}
+for g in ([0.02, -4.0], [0.01, -3.0], [0.03, -5.0]):
+    theta = step("adam", theta, g, state, lr=1e-3)
+theta                                   # [0.497125..., -0.297029...]</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Adaptive versus plain.</strong> Adam and AdamW need little tuning and handle badly scaled
+    and sparse gradients; they're the default for transformers. SGD with momentum uses half the
+    state memory and, with a carefully tuned schedule, often generalizes a little better on vision
+    tasks.
+  </li>
+  <li>
+    <strong>Memory.</strong> Adam doubles the parameter memory again, 8 extra bytes per float32
+    parameter; at billions of parameters that drives sharding, 8-bit states or factored variants
+    like Adafactor.
+  </li>
+  <li>
+    <strong>Hyperparameters still matter.</strong> The learning rate dominates everything else. For
+    large models β<sub>2</sub> = 0.95 is common, because 0.999 averages over about a thousand steps
+    and reacts too slowly when gradients spike; ε matters in low precision, where 10<sup>−8</sup>
+    underflows in float16.
+  </li>
+  <li>
+    <strong>L2 or decoupled decay.</strong> With SGD they're the same. With Adam use AdamW, whose
+    decay strength doesn't depend on the gradient scale, and usually exclude biases and
+    normalization weights from decay.
+  </li>
+  <li>
+    <strong>Implementation.</strong> <code>foreach</code> and <code>fused</code> versions compute the
+    same update with far fewer kernel launches; the single-tensor loop exists for clarity and for
+    unusual tensor types.
+  </li>
+</ul>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="ml-quiz">
+  <summary>On a quadratic with curvatures 1 and 50, what's the largest learning rate plain gradient descent can use?</summary>
+  <p>Just under 2/50 = 0.04. The steep direction diverges above it, and at that rate the flat direction shrinks its error by only 4% per step.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Adam's first step for a parameter with gradient g = −4, and one with g = 0.02, both at η = 10<sup>−3</sup>?</summary>
+  <p>+0.001 and −0.001. With bias correction m̂ = g and v̂ = g², so the step is −η·sign(g): the size of the gradient doesn't matter at all on step 1.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Without bias correction, would Adam's first steps be too large or too small, and by roughly how much?</summary>
+  <p>Too large: m is 0.1g but √v is only √0.001·|g| ≈ 0.032|g|, so the step is about 3.2η at t = 1, and the gap grows to about 6.6η around t = 12 before shrinking.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why is <code>Adam(weight_decay=0.01)</code> not the same as <code>AdamW(weight_decay=0.01)</code>?</summary>
+  <p>Adam adds λθ to the gradient and then divides by √v̂, so the decay is scaled down for weights with large gradients and up for ones with small gradients. AdamW multiplies the weight by (1 − ηλ) directly, the same for every weight.</p>
+</details>
+<details class="ml-quiz">
+  <summary>You resume training from a checkpoint that saved the model but not the optimizer. What changes?</summary>
+  <p>Adam's m, v and step count restart at zero, so the bias correction starts over and the first steps behave like the start of training, often causing a loss spike. Save <code>opt.state_dict()</code> too.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Robbins and Monro. <em>A Stochastic Approximation Method.</em> Annals of Mathematical Statistics, 1951.</li>
+  <li>Polyak. <em>Some Methods of Speeding Up the Convergence of Iteration Methods.</em> USSR Computational Mathematics and Mathematical Physics, 1964 (momentum).</li>
+  <li>Nesterov. <em>A Method for Solving the Convex Programming Problem with Convergence Rate O(1/k²).</em> Soviet Mathematics Doklady, 1983.</li>
+  <li>Duchi, Hazan and Singer. <em>Adaptive Subgradient Methods for Online Learning and Stochastic Optimization.</em> JMLR, 2011 (AdaGrad).</li>
+  <li>Tieleman and Hinton. <em>Lecture 6.5, RMSProp.</em> Coursera: Neural Networks for Machine Learning, 2012.</li>
+  <li>Sutskever, Martens, Dahl and Hinton. <em>On the Importance of Initialization and Momentum in Deep Learning.</em> ICML, 2013.</li>
+  <li>Kingma and Ba. <em>Adam: A Method for Stochastic Optimization.</em> ICLR, 2015 (<a href="https://arxiv.org/abs/1412.6980">arXiv 1412.6980</a>).</li>
+  <li>Loshchilov and Hutter. <em>Decoupled Weight Decay Regularization.</em> ICLR, 2019 (<a href="https://arxiv.org/abs/1711.05101">arXiv 1711.05101</a>).</li>
+  <li>Reddi, Kale and Kumar. <em>On the Convergence of Adam and Beyond.</em> ICLR, 2018 (<a href="https://arxiv.org/abs/1904.09237">arXiv 1904.09237</a>; AMSGrad).</li>
+  <li>Rajbhandari, Rasley, Ruwase and He. <em>ZeRO: Memory Optimizations Toward Training Trillion Parameter Models.</em> SC, 2020 (<a href="https://arxiv.org/abs/1910.02054">arXiv 1910.02054</a>).</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/optim/sgd.py', 322, 380) }}"><code>torch/optim/sgd.py</code></a>, <a href="{{ src('torch/optim/adam.py', 347, 552) }}"><code>torch/optim/adam.py</code></a>, <a href="{{ src('torch/optim/adamw.py', 19, 47) }}"><code>torch/optim/adamw.py</code></a> and <a href="{{ src('torch/optim/optimizer.py', 358, 1180) }}"><code>torch/optim/optimizer.py</code></a>.</li>
+</ul>
