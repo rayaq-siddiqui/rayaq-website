@@ -535,12 +535,13 @@ the queue has unbuilt pages. Each build run:
 2. **Clones the pinned upstreams.** It makes shallow, sparse clones of each pin at its tag,
    in a scratch directory, and checks out only the paths the next page needs. It verifies
    every path and line range against those clones before linking.
-3. **Builds.** It builds the next five queued pages, each completely, to §6, in §5.13
-   order (fewer only when the queue runs out). The owner set five per run on 2026-10-08:
-   the run does not stop until five pages are ready and pushed. For each page it adds any
+3. **Builds.** It builds the next three queued pages, each completely, to §6, in §5.13
+   order (fewer only when the queue runs out). The owner set three per run on 2026-10-08
+   (down from five): the run does not stop until three pages are ready and pushed. For
+   each page it adds any
    pure-Python worked-example helper, with tests, marks the page `"ready": True`, and
    pushes it before starting the next, so an interrupted run keeps what it finished. It
-   never pushes a half-built page as ready to reach five.
+   never pushes a half-built page as ready to reach three.
 4. **Maintains.** It does this every run, after building, and as the whole run once the
    queue is empty:
    - It checks each pin for a newer stable release.
