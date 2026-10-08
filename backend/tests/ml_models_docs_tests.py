@@ -947,3 +947,41 @@ def test_soft_threshold():
     assert ml_models_docs.soft_threshold(3.0, 1.0) == 2.0
     assert ml_models_docs.soft_threshold(-3.0, 1.0) == -2.0
     assert ml_models_docs.soft_threshold(0.5, 1.0) == 0.0
+
+
+def test_sigmoid_is_stable_and_symmetric():
+    assert ml_models_docs.sigmoid(0) == 0.5
+    assert ml_models_docs.sigmoid(-1000) == 0.0
+    assert ml_models_docs.sigmoid(1000) == 1.0
+    for z in [-3.0, -0.5, 2.0]:
+        assert ml_models_docs.sigmoid(z) + ml_models_docs.sigmoid(-z) == pytest.approx(1.0)
+
+
+def test_logistic_newton_reaches_the_stationary_point():
+    fit = ml_models_docs.logistic_fit_1d(ml_models_docs.LOGISTIC_EXAMPLE)
+    assert fit["w"] == pytest.approx(1.4245, abs=1e-4)
+    assert fit["boundary"] == pytest.approx(3.25)
+    assert fit["newton"][-1]["grad_norm"] < 1e-9
+    assert fit["newton"][0]["loss"] == pytest.approx(math.log(2))
+    assert fit["newton_excess"][4] < 1e-7 < fit["newton_excess"][3]
+    passed = ml_models_docs.LOGISTIC_EXAMPLE["passed"]
+    assert sum(fit["probs"]) == pytest.approx(sum(passed))
+    assert fit["descent_excess"][2000] < 1e-7 < fit["descent_excess"][500]
+    assert fit["descent_final"] == pytest.approx([fit["w"], fit["b"]], abs=0.01)
+
+
+def test_logistic_objective_matches_the_bce_loss():
+    rows, y = [[1.0], [2.0]], [0, 1]
+    expected = ml_models_docs.bce_with_logits(0.5 - 1, 0) + ml_models_docs.bce_with_logits(1.0 - 1, 1)
+    assert ml_models_docs.logistic_objective(rows, y, [0.5, -1]) == pytest.approx(expected)
+    assert ml_models_docs.logistic_objective(rows, y, [0.5, -1], c=2) == pytest.approx(expected + 0.25 / 4)
+
+
+def test_boundary_fits_shrink_with_smaller_c_and_diverge_without_penalty():
+    result = ml_models_docs.boundary_fits(ml_models_docs.BOUNDARY_EXAMPLE)
+    norms = [fit["norm"] for fit in result["fits"]]
+    assert norms == sorted(norms)
+    assert norms[0] < 0.5 < 5 < norms[2]
+    growth = result["unpenalized"]
+    assert all(b["norm"] > a["norm"] for a, b in zip(growth, growth[1:]))
+    assert growth[-1]["loss"] < 1e-3

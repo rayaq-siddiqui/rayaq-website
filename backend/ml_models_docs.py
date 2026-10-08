@@ -1523,6 +1523,24 @@ REGULARIZATION_EXAMPLE = {
     "lasso_alphas": [0.25 * i for i in range(57)],
 }
 
+LOGISTIC_EXAMPLE = {
+    "hours": [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0],
+    "passed": [0, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1, 1],
+    "newton_steps": 6,
+    "gd_lr": 0.3,
+    "gd_steps": 2000,
+    "gd_marks": [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000],
+}
+
+BOUNDARY_EXAMPLE = {
+    "rows": [[1, 2], [2, 1], [2, 3], [3, 1.5], [1.5, 4], [3, 3.5], [4, 5], [5, 4], [5, 6], [3.5, 5.5], [6, 5], [4.5, 2.5]],
+    "labels": [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0],
+    "cs": [0.05, 1.0, 100.0],
+    "unpenalized_steps": 12,
+}
+
+SOFTMAX_EXAMPLE = {"classes": ["cat", "dog", "bird"], "logits": [2.0, 1.0, -1.0], "target": 0}
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -2282,6 +2300,96 @@ def quadratic_ellipse(matrix, center, excess, count=72):
     return points
 
 
+def sigmoid(z):
+    if z >= 0:
+        return 1 / (1 + math.exp(-z))
+    e = math.exp(z)
+    return e / (1 + e)
+
+
+def _with_intercept(rows):
+    return [list(row) + [1.0] for row in rows]
+
+
+def logistic_objective(rows, y, params, c=None):
+    logits = [sum(a * b for a, b in zip(row, params)) for row in _with_intercept(rows)]
+    total = sum(bce_with_logits(z, t) for z, t in zip(logits, y))
+    if c is not None:
+        total += sum(w * w for w in params[:-1]) / (2 * c)
+    return total
+
+
+def logistic_newton(rows, y, c=None, iterations=8):
+    design = _with_intercept(rows)
+    size = len(design[0])
+    params = [0.0] * size
+    history = []
+    for step in range(iterations + 1):
+        probs = [sigmoid(sum(a * b for a, b in zip(row, params))) for row in design]
+        grad = [sum((p - t) * row[j] for p, t, row in zip(probs, y, design)) for j in range(size)]
+        hess = [
+            [sum(p * (1 - p) * row[j] * row[k] for p, row in zip(probs, design)) for k in range(size)]
+            for j in range(size)
+        ]
+        if c is not None:
+            for j in range(size - 1):
+                grad[j] += params[j] / c
+                hess[j][j] += 1 / c
+        history.append({
+            "params": list(params),
+            "loss": logistic_objective(rows, y, params, c) / len(y),
+            "grad_norm": math.sqrt(sum(g * g for g in grad)),
+        })
+        if step < iterations:
+            params = [w - s for w, s in zip(params, solve_linear(hess, grad))]
+    return history
+
+
+def logistic_descent(rows, y, lr, steps):
+    design = _with_intercept(rows)
+    n = len(y)
+    params = [0.0] * len(design[0])
+    history = []
+    for step in range(steps + 1):
+        history.append({"params": list(params), "loss": logistic_objective(rows, y, params) / n})
+        if step < steps:
+            errors = [sigmoid(sum(a * b for a, b in zip(row, params))) - t for row, t in zip(design, y)]
+            grad = [sum(e * row[j] for e, row in zip(errors, design)) / n for j in range(len(params))]
+            params = [w - lr * g for w, g in zip(params, grad)]
+    return history
+
+
+def logistic_fit_1d(example):
+    rows = [[h] for h in example["hours"]]
+    newton = logistic_newton(rows, example["passed"], iterations=example["newton_steps"])
+    w, b = newton[-1]["params"]
+    best = newton[-1]["loss"]
+    descent = logistic_descent(rows, example["passed"], example["gd_lr"], example["gd_steps"])
+    return {
+        "w": w,
+        "b": b,
+        "boundary": -b / w,
+        "odds_ratio": math.exp(w),
+        "loss": best,
+        "probs": [sigmoid(w * h + b) for h in example["hours"]],
+        "newton": newton,
+        "newton_excess": [e["loss"] - best for e in newton],
+        "descent_excess": {s: descent[s]["loss"] - best for s in example["gd_marks"]},
+        "descent_final": descent[-1]["params"],
+    }
+
+
+def boundary_fits(example):
+    fits = []
+    for c in example["cs"]:
+        params = logistic_newton(example["rows"], example["labels"], c, 20)[-1]["params"]
+        probs = [sigmoid(params[0] * a + params[1] * b + params[2]) for a, b in example["rows"]]
+        fits.append({"c": c, "params": params, "norm": math.hypot(params[0], params[1]), "probs": probs})
+    unpenalized = logistic_newton(example["rows"], example["labels"], None, example["unpenalized_steps"])
+    growth = [{"norm": math.hypot(*e["params"][:2]), "loss": e["loss"]} for e in unpenalized]
+    return {"fits": fits, "unpenalized": growth}
+
+
 def similarity_ranking(example):
     query = example["query"]
     rows = [
@@ -2434,6 +2542,12 @@ def render(slug, render_template):
         "symmetric_eigen_2x2": symmetric_eigen_2x2,
         "quadratic_ellipse": quadratic_ellipse,
         "zip": zip,
+        "logistic_example": LOGISTIC_EXAMPLE,
+        "boundary_example": BOUNDARY_EXAMPLE,
+        "softmax_example": SOFTMAX_EXAMPLE,
+        "sigmoid": sigmoid,
+        "logistic_fit_1d": logistic_fit_1d,
+        "boundary_fits": boundary_fits,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
