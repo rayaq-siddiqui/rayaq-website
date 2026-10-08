@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (nineteenth run). Spec v2 widens the section from model architectures
+**Last updated:** 2026-10-08 (twentieth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: queue items 1-20, the last being `decoder-only-llm`. The next run builds
-`decoding` (queue item 21).
+format. Ready pages: queue items 1-23, the last being `learning-paradigms`. The next run builds
+`generalization` (queue item 24).
 
 ## Pins
 
@@ -290,133 +290,16 @@ The README was refreshed in a separate `docs:` commit in the same run.
 
 The daily Routine was created at the end of this run.
 
-## Fourth run (2026-10-08) — first page of the 5-minute loop
+## Fourth to eighteenth runs (2026-10-08) — condensed
 
-| Commit | What |
-|---|---|
-| `ml-models: add tested shape, stride and broadcasting helpers` | `broadcast_steps`, `contiguous_strides`, `element_offset`, `is_contiguous`, `transpose_layout` |
-| `ml-models: build the tensors-and-shapes page` | The page, `ready`, queue ✓ |
-| `docs: record the tensors-and-shapes run` | This table and the verified ranges above |
-
-## Fifth run (2026-10-08) — second page of the 5-minute loop
-
-| Commit | What |
-|---|---|
-| `ml-models: add tested dot product, norm and cosine helpers` | `dot_product`, `vector_norm`, `cosine_similarity`, `angle_degrees`, `projection`, `similarity_ranking` and the two worked-example constants |
-| `ml-models: build the vectors-and-dot-products page` | The page, `ready`, queue ✓ |
-| `docs: record the vectors-and-dot-products run` | This table and the verified ranges above |
-
-Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, which raises
-`NameError` at render time. Compute such values in Python or with filters on lists instead.
-
-## Sixth run (2026-10-08) — third page of the 5-minute loop
-
-| Commit | What |
-|---|---|
-| `ml-models: add tested matmul, shape-rule and flop helpers` | `transpose`, `identity`, `matmul`, `matmul_shape` (torch.matmul's rank and broadcast rules), `matmul_flops`, `linear_layer`, `inverse_2x2` and three worked-example constants |
-| `ml-models: build the matrix-multiplication page` | The page, `ready`, queue ✓ |
-| `docs: record the matrix-multiplication run` | This table and the verified ranges above |
-
-## Seventh run (2026-10-08) — fourth page of the 5-minute loop
-
-| Commit | What |
-|---|---|
-| `ml-models: add tested slope, gradient and descent helpers` | `difference_quotient`, `slope_table`, `numerical_gradient`, `numerical_jacobian`, the bowl and its gradient, `gradient_descent`, `bowl_descent`, `bowl_contours`, `stable_learning_rate` and three worked-example constants |
-| `ml-models: build the derivatives-and-gradients page` | The page, `ready`, queue ✓. Links to `chain-rule` and `optimizers` stay plain text until those pages are ready, since the link test rejects 404s |
-| `docs: record the derivatives-and-gradients run` | This table and the verified autograd ranges above |
-
-## Eighth run (2026-10-08) — fifth page of the 5-minute loop
-
-| Commit | What |
-|---|---|
-| `ml-models: add tested chain-rule and backprop helpers` | `scalar_chain`, `relu`, `two_layer_pass` (every forward value and gradient of a Linear-ReLU-Linear network), `two_layer_loss` for the finite-difference tests, `mode_costs`, and three worked-example constants |
-| `ml-models: build the chain-rule page` | The page, `ready`, queue ✓; the derivatives page's chain-rule mentions become links |
-| `docs: record the chain-rule run` | This table and the verified `function.py`, `functional.py` and `forward_ad.py` ranges above |
-
-## Ninth run (2026-10-08) — sixth page of the 5-minute loop
-
-| Commit | What |
-|---|---|
-| `ml-models: add tested probability helpers` | `bernoulli_pmf`, `categorical_from_logits` (logsumexp-normalized, like `Categorical`), `inverse_cdf_sample`, `normal_log_prob`/`normal_pdf`/`normal_cdf`/`normal_band`, `joint_table`, and their example constants |
-| `ml-models: build the probability-and-distributions page` | The page, `ready`, queue ✓; `math.log` exposed to templates |
-| `docs: record the probability-and-distributions run` | This table and the verified `torch.distributions` ranges above |
-
-## Tenth run (2026-10-08) — seventh page of the 5-minute loop
-
-| Commit | What |
-|---|---|
-| `ml-models: add tested expectation and sampling helpers` | `expectation`, `variance`, `covariance`, `die_rolls` (seeded), `running_means`, `sum_pmf`, `minibatch_gradients` (every batch via `itertools.combinations`), and the die, covariance and minibatch example constants |
-| `ml-models: build the expectation-and-variance page` | The page, `ready`, queue ✓; `sqrt` and `log10` exposed to templates; per-batch gradients kept for the dot-strip figure |
-| `docs: record the expectation-and-variance run` | This table and the verified `torch/random.py` and `Normal` property ranges above |
-
-## Eleventh run (2026-10-08) — eighth page of the 5-minute loop
-
-| Commit | What |
-|---|---|
-| `ml-models: add tested entropy and divergence helpers` | `information_content`, `entropy`, `cross_entropy`, `kl_divergence` (bits by default, infinite where q has no mass), `logits_cross_entropy` (log-softmax loss and softmax-minus-one-hot gradient), `perplexity`, `mutual_information`, and the weather, asymmetry and perplexity example constants |
-| `ml-models: build the entropy-and-kl page` | The page, `ready`, queue ✓; `math.exp` exposed to templates |
-| `docs: record the entropy-and-kl run` | This table and the verified `kl.py`, `Categorical.entropy`, `functional.py` and `loss.py` ranges above |
-
-## Twelfth run (2026-10-08) — ninth page of the 5-minute loop
-
-| Commit | What |
-|---|---|
-| `ml-models: add tested loss-function helpers` | `huber`, `regression_losses`, `fit_constant` (mean, median, Huber by bisection), `bce_with_logits` (stable form), `margin_losses`, `triplet_loss`, `info_nce`, `reduce_losses`, and the outlier, triplet, InfoNCE and reduction example constants |
-| `ml-models: build the loss-functions page` | The page, `ready`, queue ✓ |
-| `docs: record the loss-functions run` | This table and the verified `loss.py` and `functional.py` loss ranges above |
-
-## Thirteenth run (2026-10-08) — tenth page of the 5-minute loop
-
-| Commit | What |
-|---|---|
-| `ml-models: add tested linear-regression helpers` | `least_squares_line`, `solve_linear`, `normal_equations`, `standardize`, `ridge_coefficients`, `soft_threshold`, `lasso_coefficients` (sklearn's objective), `regularization_paths`, `mse_hessian`, `line_descent`, `symmetric_eigen_2x2`, `quadratic_ellipse`, and the descent and three-feature regularization examples |
-| `ml-models: build the linear-regression page` | The page, `ready`, queue ✓; also `torch.linalg.lstsq` 1078-1200 and `nn.Linear` 53-147 in PyTorch |
-| `docs: record the linear-regression run` | This table and the verified scikit-learn linear-model ranges above |
-
-## Fourteenth run (2026-10-08) — eleventh page of the 5-minute loop
-
-| Commit | What |
-|---|---|
-| `ml-models: add tested logistic-regression helpers` | `sigmoid`, `logistic_objective` (sklearn's C-weighted objective, intercept unpenalized), `logistic_newton`, `logistic_descent`, `logistic_fit_1d`, `boundary_fits`, and the pass/fail, separable two-feature and softmax examples |
-| `ml-models: build the logistic-regression page` | The page, `ready`, queue ✓; also `BCEWithLogitsLoss` 719-846 and `CrossEntropyLoss` 1200-1409 in PyTorch |
-| `docs: record the logistic-regression run` | This table and the verified scikit-learn logistic ranges above |
-
-## Fifteenth run (2026-10-08) — twelfth page of the 5-minute loop
-
-| Commit | What |
-|---|---|
-| `ml-models: add tested neurons-and-layers helpers` | `mlp_forward`, `collapse_linear`, `xor_network`, `relu_interpolant`, `evaluate_interpolant`, `approximation_fits`, `mlp_param_count`, and the XOR, sin-approximation and MNIST-MLP examples |
-| `ml-models: build the neurons-and-layers page` | The page, `ready`, queue ✓; adds `sin` to the template context |
-| `docs: record the neurons-and-layers run` | This table and the verified `module.py`/`container.py` ranges above |
-
-## Sixteenth run (2026-10-08) — thirteenth page of the 5-minute loop
-
-| Commit | What |
-|---|---|
-| `ml-models: add tested backpropagation helpers` | `backprop_pass`, `backprop_example` (one SGD step), `relative_error`, `gradient_check`, `gradient_check_all`, `gradient_norms_by_depth`, and the 2-3-2 network, gradient-check and 30-layer depth examples |
-| `ml-models: build the backpropagation page` | The page, `ready`, queue ✓ |
-| `docs: record the backpropagation run` | This table and the verified autograd, gradcheck and clip_grad ranges above |
-
-## Seventeenth run (2026-10-08) — fourteenth page of the 5-minute loop
-
-| Commit | What |
-|---|---|
-| `ml-models: add tested optimizer helpers` | `optimizer_step`, `optimizer_race`, `adam_trace`, `uncorrected_step_ratio`, `weight_decay_paths`, `optimizer_memory`, and the bowl, Adam and weight-decay examples |
-| `ml-models: draft the optimizers page template` | The work-in-progress page, not yet routable |
-| `ml-models: build the optimizers page` | Template fixes, `ready`, queue ✓ |
-| `docs: record the optimizers run` | This table and the verified `torch/optim` ranges above |
-
-## Eighteenth run (2026-10-08) — fifteenth page onward
-
-| Commit | What |
-|---|---|
-| `ml-models: add tested embedding helpers` | `embedding_lookup`, `one_hot_rows`, `embedding_gradient`, `skipgram_pairs`, `train_skipgram` (seed 0, pure Python), `nearest_words`, `tied_parameter_counts` |
-| `ml-models: build the embeddings page` | The page, `ready`, queue ✓ |
-| `ml-models: add tested attention helpers` | `scaled_attention`, `multihead_attention`, mask helpers, GQA and cache helpers |
-| `ml-models: build the attention page` | The page, `ready`, queue ✓ |
-| `ml-models: add tested normalization helpers` | `layer_norm_row`, `rms_norm_row`, `batch_norm_columns`, `group_norm_row`, running statistics, residual blocks, `residual_demo` |
-| `ml-models: build the layernorm-and-residuals page` | The page, `ready`, queue ✓ |
-| `docs: record the maintain check` | All three pins checked on 2026-10-08: latest stable is still PyTorch v2.14.1, scikit-learn 1.9.1, XGBoost v3.4.2 (PyTorch has only 2.15.0 release candidates), so no pin moved |
+Each run followed the same pattern: a `ml-models: add tested <topic> helpers` commit (stdlib
+helpers plus their tests), a `ml-models: build the <slug> page` commit (page, `ready`, queue ✓),
+and a `docs:` commit for this file. Pages built, in order: `tensors-and-shapes`,
+`vectors-and-dot-products`, `matrix-multiplication`, `derivatives-and-gradients`, `chain-rule`,
+`probability-and-distributions`, `expectation-and-variance`, `entropy-and-kl`, `loss-functions`,
+`linear-regression`, `logistic-regression`, `neurons-and-layers`, `backpropagation`,
+`optimizers`, `embeddings`, `attention`, `layernorm-and-residuals`. Pins were re-checked on each
+run and none moved. Per-page commit lists were dropped to keep this file short; `git log` has them.
 
 ## Nineteenth run (2026-10-08) — transformer retrofit, training-loop, decoder-only-llm
 
@@ -432,6 +315,22 @@ Pins re-checked: PyTorch v2.14.1, scikit-learn 1.9.1, XGBoost v3.4.2 are still t
 Verified at PyTorch v2.14.1: `transformer.py` `TransformerEncoderLayer` 663-983 (`norm_first` branch 946-952), `TransformerEncoder` 320-556, `_generate_square_subsequent_mask` 29-42; `sparse.py` `Embedding` 14-266; `functional.py` `scaled_dot_product_attention` 6367-6406, `cross_entropy` 3478-3571.
 
 Gaps: bf16-needs-no-scaler is not verified beyond the autocast docstring; `SequentialLR` calls `_update_lr(0)` at a milestone rather than `step(0)`; the GPT-2 117M vs 124M naming is a paper claim not checkable in pinned source. The decoder-only page leaves `decoding` and `kv-cache` unlinked until those pages exist; link them when built.
+
+## Twentieth run (2026-10-08) — decoding, kv-cache, learning-paradigms
+
+| Commit | What |
+|---|---|
+| `ml-models: build the decoding page` | Helpers (`temperature_probs`, `top_k_filter`, `top_p_filter`, `repeat_penalty`, `constrained_probs`, `beam_search`, `speculative_step` and more) with tests, the page, `ready`, queue ✓ |
+| `ml-models: add kv-cache page` | `cached_decode`, `kv_cache_total_bytes`, `decode_attention_intensity`, `paged_allocation` with tests; the page, `ready`, queue ✓; links `decoding` and `kv-cache` from `decoder-only-llm` |
+| `ml-models: add learning-paradigms page` | `kmeans_run`, `nearest_labeled`, `cluster_then_label`, `prediction_accuracy`, `masked_pairs`, `bigram_next_token_loss` with tests; the page, `ready`, queue ✓ |
+
+Pins re-checked: PyTorch v2.14.1, scikit-learn 1.9.1, XGBoost v3.4.2; none moved.
+
+Verified at PyTorch v2.14.1: `distributions/categorical.py` 13-171 (init 13-82, `mode` 130-132, `sample` 144-149, `entropy` 159-163); `_torch_docs.py` `multinomial` 8088-8141, `topk` 11877-11921; `functional.py` `softmax` 2176-2216, `scaled_dot_product_attention` docstring 6367-6406 (`enable_gqa` repeat at 6395-6397, arg doc at 6501); `activation.py` `MultiheadAttention` 1090-1573 (no cache argument); `modules/loss.py` `NLLLoss` 136-274, `MSELoss` 567-632, `CrossEntropyLoss` 1200-1409.
+
+Verified at scikit-learn 1.9.1: `base.py` `BaseEstimator` 165-560, `ClassifierMixin` 561-630, `RegressorMixin` 631-718, `ClusterMixin` 719-772; `cluster/_kmeans.py` `KMeans.fit` 1432-1559.
+
+Gaps: arxiv.org was unreachable, so paper claims on the decoding page (nucleus, top-k, CTRL penalty, speculative sampling, constrained decoding) were not checked against the papers; the speculative expected-tokens formula is derived under an independence assumption and tested, not copied from the paper. The kv-cache page names no real model's configuration, since none could be verified. `kv-cache` mentions quantization as plain text until that page exists.
 
 ## Queue
 
