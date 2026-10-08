@@ -4,11 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (thirteenth run). Spec v2 widens the section from model architectures
+**Last updated:** 2026-10-08 (fourteenth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: `transformer`, `tensors-and-shapes`, `vectors-and-dot-products`,
-`matrix-multiplication`, `derivatives-and-gradients`, `chain-rule`. The next run builds
-`probability-and-distributions`.
+format. Ready pages: `transformer` and queue items 1-11, the last being `logistic-regression`.
+The next run builds `neurons-and-layers`.
 
 ## Pins
 
@@ -186,7 +185,15 @@ Paths are under `sklearn/`.
 - `linear_model/_base.py`: `LinearRegression` 519 (verified range 519-765; `fit` 654-760,
   dense `linalg.lstsq` branch 751-755, `positive`/sparse branches 707-750),
   `_preprocess_data` 113-220, `_set_intercept` 318-334.
-- `linear_model/_logistic.py`: `LogisticRegression` 974.
+- `linear_model/_logistic.py`: `LogisticRegression` 974 (verified range 974-1637; `C` docstring
+  1023-1029, `l1_ratio` 1031-1047, solver table 1096-1153, `fit` 1333-1572, `predict_proba`
+  1573-1604), `_check_solver` 81-103, `_logistic_regression_path` 219-720 (lbfgs branch 580-606,
+  `l2_reg_strength = 1 / (C * sw_sum)` at 580), `LogisticRegressionCV` 1638.
+- `linear_model/_base.py` (classifiers): `LinearClassifierMixin` 360, `decision_function` 366-397,
+  `predict` 398-428, `_predict_proba_lr` 429-452.
+- `linear_model/_linear_loss.py`: `LinearModelLoss` 47 (`loss` 231-290), `l2_penalty` 226-229,
+  `gradient_hessian` 454-710. `sklearn/_loss/` is not in the sparse clone; cite these instead.
+- `linear_model/_glm/_newton_solver.py`: `NewtonSolver` 22-451, `NewtonCholeskySolver` 452-637.
 - `linear_model/_ridge.py`: `Ridge` 1022 (verified range 1022-1287), `_solve_cholesky` 215-234,
   `_solve_svd` 299-309, `resolve_solver_for_numpy` 867-878.
 - `linear_model/_coordinate_descent.py`: `Lasso` 1329 (verified range 1329-1517), `ElasticNet` 884.
@@ -345,6 +352,14 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 | `ml-models: add tested linear-regression helpers` | `least_squares_line`, `solve_linear`, `normal_equations`, `standardize`, `ridge_coefficients`, `soft_threshold`, `lasso_coefficients` (sklearn's objective), `regularization_paths`, `mse_hessian`, `line_descent`, `symmetric_eigen_2x2`, `quadratic_ellipse`, and the descent and three-feature regularization examples |
 | `ml-models: build the linear-regression page` | The page, `ready`, queue ✓; also `torch.linalg.lstsq` 1078-1200 and `nn.Linear` 53-147 in PyTorch |
 | `docs: record the linear-regression run` | This table and the verified scikit-learn linear-model ranges above |
+
+## Fourteenth run (2026-10-08) — eleventh page of the 5-minute loop
+
+| Commit | What |
+|---|---|
+| `ml-models: add tested logistic-regression helpers` | `sigmoid`, `logistic_objective` (sklearn's C-weighted objective, intercept unpenalized), `logistic_newton`, `logistic_descent`, `logistic_fit_1d`, `boundary_fits`, and the pass/fail, separable two-feature and softmax examples |
+| `ml-models: build the logistic-regression page` | The page, `ready`, queue ✓; also `BCEWithLogitsLoss` 719-846 and `CrossEntropyLoss` 1200-1409 in PyTorch |
+| `docs: record the logistic-regression run` | This table and the verified scikit-learn logistic ranges above |
 
 ## Queue
 
