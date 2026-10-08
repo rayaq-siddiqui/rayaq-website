@@ -1,0 +1,433 @@
+{% set slopes = slope_table(slope_example) %}
+{% set scale = bowl_example.scale %}
+{% set descent = bowl_descent(bowl_example) %}
+{% set unstable = bowl_descent(bowl_example, bowl_example.unstable_lr) %}
+{% set jp = jacobian_example.point %}
+{% set jac = jacobian_example_exact(jp) %}
+{% set jac_num = numerical_jacobian(jacobian_example_function, jp) %}
+{% set lr = bowl_example.lr %}
+{% macro num(x) -%}{{ "%g"|format(x) }}{%- endmacro %}
+{% macro vec(v) -%}({% for x in v %}{{ num(x) }}{% if not loop.last %}, {% endif %}{% endfor %}){%- endmacro %}
+<header class="jj-header">
+  <h1>Derivatives and gradients</h1>
+  <p class="tagline">
+    Training a model means nudging its numbers so a loss goes down, and the gradient is what
+    says which way to nudge. This page builds it from the slope of a curve, through partial
+    derivatives, to the gradient of a function of many inputs and the Jacobian of a function
+    with many outputs. It then runs gradient descent by hand and shows how PyTorch's
+    <code>requires_grad</code> and <code>.grad</code> compute the same numbers, at
+    {{ upstream.tag }}.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A model's loss is a function of millions of parameters. We want the parameters that make
+  it small, but we can't try every combination, and we can't solve for the minimum with
+  algebra. What we can do is stand at the current parameters and ask: if I change each one a
+  little, how does the loss change? Answer that for every parameter at once and you know which
+  direction lowers the loss fastest. Take a small step that way and repeat.
+</p>
+<p>
+  That answer is the gradient, and "step against it and repeat" is gradient descent. Every
+  optimizer on this site, from plain SGD to AdamW, is a variation on that loop.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  For a function of one number, the derivative is the slope of its graph: how much the
+  output rises per unit the input moves, measured at a single point. Zoom far enough into
+  any smooth curve and it looks like a straight line, and the derivative is that line's
+  slope.
+</p>
+<p>
+  For a function of many numbers, picture a landscape whose height is the loss. At any spot
+  you can measure the slope in the east–west direction and the north–south direction
+  separately; those are partial derivatives. Put them together as a vector and it points
+  uphill, the steepest way up. Its length says how steep. To go down, walk the opposite way.
+</p>
+
+<div class="jj-diagram">
+  {% set sx = 68 %}{% set ox = 94 %}{% set oy = 240 %}{% set sy = 10.5 %}
+  <svg viewBox="0 0 680 270" role="img" aria-labelledby="dg-slope-title dg-slope-desc">
+    <title id="dg-slope-title">The derivative as the slope of a tangent line</title>
+    <desc id="dg-slope-desc">
+      The parabola f(x) = x squared, with the point (3, 9) marked. A solid tangent line touches
+      it there with slope 6. A dashed secant line through (3, 9) and (4, 16) has slope 7; as
+      the second point slides toward the first, the secant's slope approaches the tangent's.
+    </desc>
+    <line x1="{{ ox - 0.5 * sx }}" y1="{{ oy }}" x2="{{ ox + 4.5 * sx }}" y2="{{ oy }}" class="d-line"></line>
+    <line x1="{{ ox }}" y1="{{ oy + 10 }}" x2="{{ ox }}" y2="{{ oy - 21 * sy }}" class="d-line"></line>
+    {% for t in range(0, 5) %}
+      <text x="{{ ox + t * sx }}" y="{{ oy + 18 }}" font-size="11" text-anchor="middle" class="d-muted">{{ t }}</text>
+    {% endfor %}
+    <path d="M {% for i in range(-5, 45) %}{% set x = i / 10 %}{{ ox + x * sx }} {{ oy - x * x * sy }} {% if not loop.last %}L {% endif %}{% endfor %}" fill="none" stroke="var(--jj-accent)" stroke-width="2.5"></path>
+    {% set x0 = slopes.x %}
+    <line x1="{{ ox + 1.5 * sx }}" y1="{{ oy }}" x2="{{ ox + 4.5 * sx }}" y2="{{ oy - (9 + 6 * 1.5) * sy }}" stroke="var(--jj-green)" stroke-width="2"></line>
+    <line x1="{{ ox + 2 * sx }}" y1="{{ oy - 2 * sy }}" x2="{{ ox + 4.3 * sx }}" y2="{{ oy - (9 + 7 * 1.3) * sy }}" stroke="var(--jj-amber)" stroke-width="2" class="ml-dashed"></line>
+    <circle cx="{{ ox + x0 * sx }}" cy="{{ oy - slopes.value * sy }}" r="5" fill="var(--jj-green)"></circle>
+    <circle cx="{{ ox + 4 * sx }}" cy="{{ oy - 16 * sy }}" r="5" fill="var(--jj-amber)"></circle>
+    <text x="{{ ox + x0 * sx + 10 }}" y="{{ oy - slopes.value * sy + 18 }}" font-size="12">(3, 9)</text>
+    <text x="{{ ox + 4 * sx - 52 }}" y="{{ oy - 16 * sy + 4 }}" font-size="12">(4, 16)</text>
+    <text x="440" y="60" font-size="14">f(x) = x²</text>
+    <text x="440" y="90" font-size="13" fill="var(--jj-green)">tangent at 3: slope {{ slopes.exact }}</text>
+    <text x="440" y="114" font-size="13" fill="var(--jj-amber)">secant, h = 1: slope {{ num(slopes.rows[0].secant) }}</text>
+    {% for row in slopes.rows[1:] %}
+      <text x="440" y="{{ 140 + loop.index0 * 22 }}" font-size="12" class="d-muted">h = {{ num(row.h) }}: slope {{ "%.4f"|format(row.secant) }}</text>
+    {% endfor %}
+    <text x="440" y="222" font-size="12" class="d-muted">the secant → the tangent as h → 0</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  The derivative is the limit of "rise over run" as the run shrinks to zero. For x² the
+  secant's slope is exactly 6 + h, so the error shrinks in step with h.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="derivative">The derivative</h3>
+
+<p class="ml-formula">f′(x) = lim<sub>h→0</sub> (f(x + h) − f(x)) / h</p>
+
+<p>
+  A handful of rules cover almost everything: the derivative of xⁿ is n·xⁿ⁻¹, of eˣ is eˣ,
+  of ln x is 1/x, constants factor out, and the derivative of a sum is the sum of the
+  derivatives. So for f(x) = x², f′(x) = 2x and f′(3) = {{ slopes.exact }}, matching the
+  tangent above. Functions built from other functions need the
+  chain rule, the next page.
+</p>
+<p>
+  The sign says which way is downhill: if f′(x) &gt; 0, decreasing x decreases f. The size
+  says how sensitive f is. Where f′(x) = 0 the curve is flat: a minimum, a maximum or a
+  saddle.
+</p>
+
+<h3 id="partial-derivatives">Partial derivatives</h3>
+
+<p>
+  For a function of several inputs, a partial derivative ∂f/∂xᵢ varies one input and holds
+  the others fixed. Take the bowl used for the rest of this page,
+</p>
+<p class="ml-formula">f(x, y) = x² + 3y², &nbsp; ∂f/∂x = 2x, &nbsp; ∂f/∂y = 6y</p>
+<p>
+  At (3, 2): ∂f/∂x = 6 and ∂f/∂y = 12. The bowl is three times steeper in y, so the same
+  move in y changes the loss more.
+</p>
+
+<h3 id="gradient">The gradient</h3>
+
+<p class="ml-formula">∇f = (∂f/∂x₁, …, ∂f/∂xₙ), &nbsp; ∇f(3, 2) = {{ vec(bowl_gradient([3, 2], scale)) }}</p>
+
+<p>
+  The gradient has one entry per input, so it has the same shape as the parameters. Moving
+  a small step d changes f by about ∇f · d, a
+  <a href="{{ url_for('ml_models', slug='vectors-and-dot-products') }}#dot-product">dot product</a>.
+  Among all steps of the same length, that is largest when d points along ∇f
+  (cosine 1) and most negative when d points against it. So the gradient is the
+  direction of steepest ascent, −∇f the direction of steepest descent, and any step at right
+  angles to ∇f leaves f unchanged to first order: the gradient is perpendicular to the
+  contour lines.
+</p>
+
+<h3 id="gradient-descent">Gradient descent</h3>
+
+<p class="ml-formula">θ ← θ − η ∇f(θ)</p>
+
+<p>
+  η is the learning rate. On the bowl with η = {{ num(lr) }}, x moves by −{{ num(lr) }}·2x,
+  so it keeps {{ num(1 - 2 * scale[0] * lr) }} of its value each step, and y keeps
+  {{ num(1 - 2 * scale[1] * lr) }}. The steep direction converges faster, but it also sets
+  the speed limit: once η exceeds {{ "%.3f"|format(stable_learning_rate(scale)) }}, y's
+  factor 1 − 6η falls below −1 and every step overshoots further than the last.
+</p>
+
+<div class="jj-diagram">
+  {% set cx = 300 %}{% set cy = 150 %}{% set u = 40 %}
+  <svg viewBox="0 0 680 300" role="img" aria-labelledby="dg-bowl-title dg-bowl-desc">
+    <title id="dg-bowl-title">Gradient descent on the bowl x² + 3y²</title>
+    <desc id="dg-bowl-desc">
+      Elliptical contour lines of f(x, y) = x² + 3y² at levels 1, 4, 9 and 21, wider in x than
+      in y. Descent starts at (3, 2) on the level-21 contour. An amber arrow shows the
+      gradient (6, 12) pointing uphill, perpendicular to the contour. The blue path takes six
+      steps with learning rate 0.1, cutting quickly toward the x-axis and then crawling along
+      it toward the minimum at the origin.
+    </desc>
+    <defs>
+      <marker id="dg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--jj-amber)"></path>
+      </marker>
+    </defs>
+    <line x1="{{ cx - 5.5 * u }}" y1="{{ cy }}" x2="{{ cx + 5.5 * u }}" y2="{{ cy }}" class="d-line" stroke-width="0.75"></line>
+    <line x1="{{ cx }}" y1="{{ cy - 3.4 * u }}" x2="{{ cx }}" y2="{{ cy + 3.4 * u }}" class="d-line" stroke-width="0.75"></line>
+    {% for contour in bowl_contours(scale, [1, 4, 9, 21]) %}
+      <ellipse cx="{{ cx }}" cy="{{ cy }}" rx="{{ contour.radii[0] * u }}" ry="{{ contour.radii[1] * u }}" fill="none" class="d-line ml-dashed" stroke-width="1"></ellipse>
+      <text x="{{ cx + contour.radii[0] * u + 4 }}" y="{{ cy + 14 }}" font-size="11" class="d-muted">{{ contour.level }}</text>
+    {% endfor %}
+    <polyline points="{% for step in descent %}{{ cx + step.point[0] * u }},{{ cy - step.point[1] * u }} {% endfor %}" fill="none" stroke="var(--jj-accent)" stroke-width="2.5"></polyline>
+    {% for step in descent %}
+      <circle cx="{{ cx + step.point[0] * u }}" cy="{{ cy - step.point[1] * u }}" r="{{ 5 if loop.first else 3.5 }}" fill="var(--jj-accent)"></circle>
+    {% endfor %}
+    {% set g = descent[0].gradient %}
+    <line x1="{{ cx + 3 * u }}" y1="{{ cy - 2 * u }}" x2="{{ cx + 3 * u + g[0] * lr * u }}" y2="{{ cy - 2 * u - g[1] * lr * u }}" stroke="var(--jj-amber)" stroke-width="2.5" marker-end="url(#dg-arrow)"></line>
+    <text x="{{ cx + 3 * u + 30 }}" y="{{ cy - 2 * u - 40 }}" font-size="12" fill="var(--jj-amber)">∇f = {{ vec(g) }}</text>
+    <text x="{{ cx + 3 * u + 10 }}" y="{{ cy - 2 * u + 6 }}" font-size="12">start {{ vec(descent[0].point) }}</text>
+    <circle cx="{{ cx }}" cy="{{ cy }}" r="4" fill="var(--jj-green)"></circle>
+    <text x="{{ cx - 8 }}" y="{{ cy + 18 }}" font-size="11" text-anchor="end" style="fill: var(--jj-green)">minimum</text>
+    <text x="20" y="286" font-size="12" class="d-muted">η = {{ num(lr) }}: each step is −η∇f; f falls from {{ num(descent[0].value) }} to {{ "%.2f"|format(descent[-1].value) }} in {{ descent|length - 1 }} steps</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  The path drops quickly in the steep y direction, then spends most of its steps crawling
+  along the shallow x direction. Raise η to speed up x and y starts to overshoot. That unequal
+  curvature is what momentum and Adam, on the
+  optimizers page, are built to fix.
+</p>
+
+<h3 id="jacobian">The Jacobian</h3>
+
+<p>
+  A function with m outputs and n inputs has one gradient per output. Stacked as rows they
+  form the m × n Jacobian, J<sub>ij</sub> = ∂fᵢ/∂xⱼ, the best linear approximation of the
+  function near a point: f(x + d) ≈ f(x) + J d. For f(x, y) = (xy, x + y²),
+</p>
+<p class="ml-formula">J = [[y, x], [1, 2y]], &nbsp; J{{ vec(jp) }} = {{ jac }}</p>
+<p>
+  A loss is a scalar, so its Jacobian is a single row, the gradient. Inside the network the
+  Jacobians of layers are huge, a [4096, 4096] block for one linear layer on one token, and
+  autograd never builds them. It only multiplies a vector by them, which the
+  chain rule page explains.
+</p>
+
+<h3 id="autograd">How PyTorch exposes gradients</h3>
+
+<p>
+  Mark a tensor with <code>requires_grad=True</code> and PyTorch records every operation
+  on it. Calling <code>.backward()</code> on a scalar result fills the <code>.grad</code> of
+  each leaf tensor with ∂result/∂leaf
+  (<a href="{{ src('torch/_tensor.py', 566, 625) }}"><code>Tensor.backward</code></a>,
+  which calls <a href="{{ src('torch/autograd/__init__.py', 255, 403) }}"><code>torch.autograd.backward</code></a>).
+  Three details catch everyone:
+</p>
+<ul>
+  <li>
+    <code>.grad</code> <strong>accumulates</strong>. A second <code>backward</code> adds to
+    it, which is why training loops call <code>zero_grad</code>
+    (<a href="{{ src('torch/_tensor_docs.py', 6555, 6563) }}"><code>Tensor.grad</code></a>).
+  </li>
+  <li>
+    Only <strong>leaf</strong> tensors, the ones you created, get <code>.grad</code>;
+    intermediates need <code>retain_grad()</code>
+    (<a href="{{ src('torch/_tensor_docs.py', 6626, 6666) }}"><code>is_leaf</code></a>).
+  </li>
+  <li>
+    <code>backward</code> on a non-scalar needs a <code>gradient</code> argument, the vector
+    in a vector-Jacobian product. <code>torch.autograd.grad</code> returns gradients instead
+    of storing them (<a href="{{ src('torch/autograd/__init__.py', 434, 621) }}"><code>autograd.grad</code></a>),
+    and <code>torch.no_grad()</code> turns recording off for inference
+    (<a href="{{ src('torch/autograd/grad_mode.py', 22, 86) }}"><code>no_grad</code></a>).
+  </li>
+</ul>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Term</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Derivative f′(x)</td>
+        <td>scalar in, scalar out</td>
+        <td>Slope of f at x: output change per unit of input change.</td>
+        <td>—</td>
+      </tr>
+      <tr>
+        <td>Partial derivative ∂f/∂xᵢ</td>
+        <td>one input varied, the rest fixed</td>
+        <td>Slope along one coordinate axis.</td>
+        <td>—</td>
+      </tr>
+      <tr>
+        <td>Gradient ∇f</td>
+        <td>same shape as the inputs</td>
+        <td>All partials together; points in the direction of steepest ascent.</td>
+        <td><a href="{{ src('torch/_tensor_docs.py', 6555, 6563) }}"><code>Tensor.grad</code></a></td>
+      </tr>
+      <tr>
+        <td>Jacobian J</td>
+        <td><code>[outputs, inputs]</code></td>
+        <td>One gradient row per output; the local linear map.</td>
+        <td><a href="{{ src('torch/autograd/functional.py', 587, 853) }}"><code>autograd.functional.jacobian</code></a></td>
+      </tr>
+      <tr>
+        <td><code>requires_grad</code></td>
+        <td>bool on a tensor</td>
+        <td>Record operations on this tensor so gradients can flow to it.</td>
+        <td><a href="{{ src('torch/_tensor_docs.py', 6613, 6624) }}"><code>requires_grad</code></a>, <a href="{{ src('torch/_tensor_docs.py', 4125, 4161) }}"><code>requires_grad_</code></a></td>
+      </tr>
+      <tr>
+        <td><code>backward</code></td>
+        <td><code>gradient</code> for non-scalars, <code>retain_graph</code>, <code>create_graph</code></td>
+        <td>Accumulate ∂output/∂leaf into each leaf's <code>.grad</code>.</td>
+        <td><a href="{{ src('torch/_tensor.py', 566, 625) }}"><code>Tensor.backward</code></a></td>
+      </tr>
+      <tr>
+        <td><code>autograd.grad</code></td>
+        <td><code>outputs</code>, <code>inputs</code></td>
+        <td>Return the gradients instead of accumulating them.</td>
+        <td><a href="{{ src('torch/autograd/__init__.py', 434, 621) }}"><code>torch.autograd.grad</code></a></td>
+      </tr>
+      <tr>
+        <td>Learning rate η</td>
+        <td>positive scalar</td>
+        <td>Step size in θ ← θ − η∇f.</td>
+        <td>—</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>Gradient descent on f(x, y) = x² + 3y², from {{ vec(bowl_example.start) }}, with
+    η = {{ num(lr) }}.</strong> Each step computes the gradient (2x, 6y), multiplies it by η and
+    subtracts.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Step</th><th>(x, y)</th><th>f(x, y)</th><th>∇f = (2x, 6y)</th><th>Next = (x, y) − η∇f</th></tr></thead>
+      <tbody>
+        {% for step in descent %}
+        <tr>
+          <td>{{ step.step }}</td>
+          <td>{{ vec(step.point) }}</td>
+          <td>{{ "%.4g"|format(step.value) }}</td>
+          <td>{{ vec(step.gradient) }}</td>
+          <td>{% if not loop.last %}{{ vec(descent[loop.index].point) }}{% else %}…{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Step 1 by hand: ∇f(3, 2) = (2·3, 6·2) = (6, 12); η∇f = (0.6, 1.2); (3, 2) − (0.6, 1.2) =
+    (2.4, 0.8), and f drops from 21 to 2.4² + 3·0.8² = {{ num(descent[1].value) }}.
+  </p>
+  <p>
+    <strong>Too large a step.</strong> With η = {{ num(bowl_example.unstable_lr) }}, above the
+    {{ "%.3f"|format(stable_learning_rate(scale)) }} limit, y flips sign and grows by 1.4× each
+    step: f goes
+    {% for step in unstable[:5] %}{{ "%.4g"|format(step.value) }}{% if not loop.last %} → {% endif %}{% endfor %}.
+    This is what a loss that shoots to <code>nan</code> after a learning-rate change looks
+    like in miniature.
+  </p>
+  <p>
+    <strong>Checking a Jacobian numerically.</strong> For f(x, y) = (xy, x + y²) at
+    {{ vec(jp) }}, nudge each input by ±10⁻⁶ and divide the change in outputs by 2·10⁻⁶. The
+    rows come out as
+    {% for row in jac_num %}{{ vec(row|map("round", 4)|list) }}{% if not loop.last %} and {% endif %}{% endfor %},
+    matching the exact {{ jac }}. This central-difference check is how
+    <code>torch.autograd.gradcheck</code> tests hand-written backward functions.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code class="language-python">import torch
+
+theta = torch.tensor([3.0, 2.0], requires_grad=True)
+scale = torch.tensor([1.0, 3.0])
+lr = 0.1
+
+for step in range(6):
+    loss = (scale * theta ** 2).sum()   # x² + 3y²
+    loss.backward()                     # theta.grad = (2x, 6y)
+    with torch.no_grad():               # the update itself isn't recorded
+        theta -= lr * theta.grad
+    theta.grad = None                   # .grad accumulates; clear it
+    print(step, loss.item(), theta.tolist())
+# 0 21.0 [2.4, 0.8]   1 7.68 [1.92, 0.32]   ...
+
+from torch.autograd.functional import jacobian
+f = lambda p: torch.stack([p[0] * p[1], p[0] + p[1] ** 2])
+jacobian(f, torch.tensor([2.0, 3.0]))   # tensor([[3., 2.], [1., 6.]])</code></pre>
+
+<p>Without autograd, a numerical gradient by central differences:</p>
+
+<pre><code class="language-python">def numerical_gradient(f, point, h=1e-6):
+    grad = []
+    for i in range(len(point)):
+        up, down = list(point), list(point)
+        up[i] += h
+        down[i] -= h
+        grad.append((f(up) - f(down)) / (2 * h))
+    return grad
+
+numerical_gradient(lambda p: p[0] ** 2 + 3 * p[1] ** 2, [3, 2])   # ≈ [6.0, 12.0]</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Numerical versus automatic differentiation.</strong> Finite differences need
+    two function evaluations per parameter, so a million-parameter model would take two million
+    forward passes per gradient, and they lose precision as h shrinks. Autograd gets the exact
+    gradient for about the cost of one extra forward pass. Finite differences remain the
+    standard way to test autograd.
+  </li>
+  <li>
+    <strong>The learning rate.</strong> Too small and training crawls; too large and it
+    diverges. The safe size depends on the steepest curvature, which differs across
+    parameters and changes during training. That is why schedules and adaptive optimizers
+    exist.
+  </li>
+  <li>
+    <strong>Local information only.</strong> The gradient describes an infinitesimal
+    neighbourhood. On non-convex losses descent finds a nearby low point, not necessarily
+    the lowest. In large networks most such points turn out to be good enough, and saddle
+    points, where the gradient is also zero, are the more common nuisance.
+  </li>
+  <li>
+    <strong>Non-differentiable points.</strong> ReLU and absolute value have kinks.
+    Frameworks pick a subgradient there (PyTorch uses 0 for ReLU at 0), which works in
+    practice because exact ties are rare.
+  </li>
+  <li>
+    <strong>Memory.</strong> Recording the graph keeps intermediate values alive until
+    <code>backward</code>. Wrap inference in <code>torch.no_grad()</code> or
+    <code>torch.inference_mode()</code> to skip it.
+  </li>
+</ul>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="ml-quiz">
+  <summary>What is the gradient of f(x, y) = x² + 3y² at (1, −1), and which way does descent move?</summary>
+  <p>∇f = (2·1, 6·(−1)) = {{ vec(bowl_gradient([1, -1], scale)) }}. Descent moves along −∇f = (−2, 6): x decreases and y increases, both toward 0.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does a step perpendicular to the gradient leave the function (almost) unchanged?</summary>
+  <p>The first-order change is ∇f · d, and the dot product of perpendicular vectors is 0. That is also why the gradient is perpendicular to contour lines.</p>
+</details>
+<details class="ml-quiz">
+  <summary>You call <code>loss.backward()</code> twice without zeroing. What is in <code>.grad</code>?</summary>
+  <p>The sum of both gradients, twice the true gradient if nothing changed in between. (The second call also needs <code>retain_graph=True</code>, since the graph is freed after the first.)</p>
+</details>
+<details class="ml-quiz">
+  <summary>What shape is the Jacobian of <code>nn.Linear(3, 2)</code>'s output with respect to its input, for one example?</summary>
+  <p>[2, 3]: one row per output and one column per input. It equals the weight matrix W, since y = Wx + b.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Goodfellow, Bengio and Courville. <em>Deep Learning</em>, chapter 4.3 (gradient-based optimization). MIT Press, 2016.</li>
+  <li>Deisenroth, Faisal and Ong. <em>Mathematics for Machine Learning</em>, chapter 5 (vector calculus). Cambridge University Press, 2020.</li>
+  <li>Baydin et al. <em>Automatic Differentiation in Machine Learning: a Survey.</em> JMLR 2018. <a href="https://arxiv.org/abs/1502.05767">arXiv:1502.05767</a></li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/autograd/__init__.py', 255, 403) }}"><code>torch.autograd.backward</code></a> and <a href="{{ src('torch/_tensor.py', 566, 625) }}"><code>Tensor.backward</code></a>.</li>
+</ul>

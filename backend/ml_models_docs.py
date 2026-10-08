@@ -165,7 +165,7 @@ PAGES = [
             "pytorch:torch/autograd/__init__.py",
             "pytorch:torch/_tensor.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "chain-rule",
