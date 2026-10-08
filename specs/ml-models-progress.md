@@ -4,7 +4,7 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (twelfth run). Spec v2 widens the section from model architectures
+**Last updated:** 2026-10-08 (thirteenth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
 format. Ready pages: `transformer`, `tensors-and-shapes`, `vectors-and-dot-products`,
 `matrix-multiplication`, `derivatives-and-gradients`, `chain-rule`. The next run builds
@@ -183,10 +183,14 @@ The paths below are relative to `torch/nn/modules/` unless they give a fuller pa
 
 Paths are under `sklearn/`.
 
-- `linear_model/_base.py`: `LinearRegression` 519.
+- `linear_model/_base.py`: `LinearRegression` 519 (verified range 519-765; `fit` 654-760,
+  dense `linalg.lstsq` branch 751-755, `positive`/sparse branches 707-750),
+  `_preprocess_data` 113-220, `_set_intercept` 318-334.
 - `linear_model/_logistic.py`: `LogisticRegression` 974.
-- `linear_model/_ridge.py`: `Ridge` 1022.
-- `linear_model/_coordinate_descent.py`: `Lasso` 1329.
+- `linear_model/_ridge.py`: `Ridge` 1022 (verified range 1022-1287), `_solve_cholesky` 215-234,
+  `_solve_svd` 299-309, `resolve_solver_for_numpy` 867-878.
+- `linear_model/_coordinate_descent.py`: `Lasso` 1329 (verified range 1329-1517), `ElasticNet` 884.
+- `linear_model/_cd_fast.pyx`: `enet_coordinate_descent` 243; soft-threshold update 439-452.
 - `tree/_classes.py`: `DecisionTreeClassifier` 699, `DecisionTreeRegressor` 1097.
 - `ensemble/_forest.py`: `RandomForestClassifier` 1174.
 - `ensemble/_gb.py`: `GradientBoostingClassifier` 1145.
@@ -333,6 +337,14 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 | `ml-models: add tested loss-function helpers` | `huber`, `regression_losses`, `fit_constant` (mean, median, Huber by bisection), `bce_with_logits` (stable form), `margin_losses`, `triplet_loss`, `info_nce`, `reduce_losses`, and the outlier, triplet, InfoNCE and reduction example constants |
 | `ml-models: build the loss-functions page` | The page, `ready`, queue ✓ |
 | `docs: record the loss-functions run` | This table and the verified `loss.py` and `functional.py` loss ranges above |
+
+## Thirteenth run (2026-10-08) — tenth page of the 5-minute loop
+
+| Commit | What |
+|---|---|
+| `ml-models: add tested linear-regression helpers` | `least_squares_line`, `solve_linear`, `normal_equations`, `standardize`, `ridge_coefficients`, `soft_threshold`, `lasso_coefficients` (sklearn's objective), `regularization_paths`, `mse_hessian`, `line_descent`, `symmetric_eigen_2x2`, `quadratic_ellipse`, and the descent and three-feature regularization examples |
+| `ml-models: build the linear-regression page` | The page, `ready`, queue ✓; also `torch.linalg.lstsq` 1078-1200 and `nn.Linear` 53-147 in PyTorch |
+| `docs: record the linear-regression run` | This table and the verified scikit-learn linear-model ranges above |
 
 ## Queue
 
