@@ -1660,3 +1660,42 @@ def test_generalization_train_error_falls_while_heldout_error_turns_up():
 def test_generalization_shift_breaks_the_cubic_outside_the_training_range():
     rows = {row["degree"]: row for row in ml_models_docs.generalization_rows([3])}
     assert rows[3]["shifted_mse"] > 1000 * rows[3]["heldout_mse"]
+
+
+def test_stratified_allocation_keeps_class_proportions():
+    labels = ml_models_docs.SPLIT_LABELS
+    assert ml_models_docs.class_counts(labels, range(20)) == {0: 16, 1: 4}
+    assert ml_models_docs.stratified_allocation(labels, 0.25) == {0: 4, 1: 1}
+    assert sum(ml_models_docs.stratified_allocation(labels, 0.4).values()) == 8
+
+
+def test_an_unlucky_plain_split_can_leave_no_positives_in_test():
+    labels = ml_models_docs.SPLIT_LABELS
+    order = ml_models_docs.SPLIT_UNLUCKY_ORDER
+    assert sorted(order) == list(range(20))
+    assert ml_models_docs.class_counts(labels, order[:5]) == {0: 5}
+    assert ml_models_docs.chance_test_misses_class(labels, 5, 1) == pytest.approx(4368 / 15504)
+
+
+def test_record_level_split_leaks_every_group_but_a_group_split_leaks_none():
+    groups = ml_models_docs.SPLIT_GROUPS
+    order = ml_models_docs.SPLIT_GROUP_ORDER
+    assert sorted(order) == list(range(18))
+    assert ml_models_docs.leaked_group_records(groups, order[:6]) == 6
+    whole_groups = [i for i, g in enumerate(groups) if g in (4, 5)]
+    assert ml_models_docs.leaked_group_records(groups, whole_groups) == 0
+
+
+def test_random_split_flatters_a_time_series_forecast():
+    series = ml_models_docs.SPLIT_SERIES
+    random_test = ml_models_docs.SPLIT_RANDOM_TEST_MONTHS
+    random_train = [t for t in range(12) if t not in random_test]
+    random_mse = ml_models_docs.nearest_in_time_mse(series, random_train, random_test)
+    forward_mse = ml_models_docs.nearest_in_time_mse(series, list(range(9)), [9, 10, 11])
+    assert random_mse == pytest.approx(4.2175)
+    assert forward_mse == pytest.approx(17.2867, abs=1e-3)
+
+
+def test_accuracy_standard_error_shrinks_with_the_test_set():
+    assert ml_models_docs.accuracy_standard_error(0.8, 100) == pytest.approx(0.04)
+    assert ml_models_docs.accuracy_standard_error(0.8, 400) == pytest.approx(0.02)

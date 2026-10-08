@@ -3618,6 +3618,54 @@ def generalization_rows(degrees):
     return rows
 
 
+SPLIT_LABELS = [1 if i in (3, 9, 14, 18) else 0 for i in range(20)]
+SPLIT_UNLUCKY_ORDER = [0, 1, 2, 4, 5, 6, 7, 8, 10, 11, 12, 13, 15, 16, 17, 19, 3, 9, 14, 18]
+SPLIT_GROUPS = [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5]
+SPLIT_GROUP_ORDER = [0, 4, 7, 10, 13, 16, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17]
+SPLIT_SERIES = [10.4, 12.1, 13.8, 16.2, 18.1, 19.7, 22.3, 23.8, 26.2, 28.1, 29.7, 32.2]
+SPLIT_RANDOM_TEST_MONTHS = [1, 4, 6, 9]
+
+
+def class_counts(labels, indices):
+    counts = {}
+    for i in indices:
+        counts[labels[i]] = counts.get(labels[i], 0) + 1
+    return counts
+
+
+def stratified_allocation(labels, test_size):
+    totals = class_counts(labels, range(len(labels)))
+    exact = {c: n * test_size for c, n in totals.items()}
+    allocation = {c: int(v) for c, v in exact.items()}
+    missing = round(len(labels) * test_size) - sum(allocation.values())
+    for c in sorted(exact, key=lambda c: exact[c] - allocation[c], reverse=True)[:missing]:
+        allocation[c] += 1
+    return allocation
+
+
+def chance_test_misses_class(labels, test_count, label):
+    others = sum(1 for y in labels if y != label)
+    return math.comb(others, test_count) / math.comb(len(labels), test_count)
+
+
+def leaked_group_records(groups, test_indices):
+    test = set(test_indices)
+    train_groups = {g for i, g in enumerate(groups) if i not in test}
+    return sum(1 for i in test if groups[i] in train_groups)
+
+
+def nearest_in_time_mse(series, train_indices, test_indices):
+    errors = []
+    for t in test_indices:
+        nearest = min(train_indices, key=lambda u: (abs(u - t), u))
+        errors.append((series[nearest] - series[t]) ** 2)
+    return sum(errors) / len(errors)
+
+
+def accuracy_standard_error(accuracy, count):
+    return math.sqrt(accuracy * (1 - accuracy) / count)
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -3800,6 +3848,18 @@ def render(slug, render_template):
         "generalization_truth": generalization_truth,
         "polynomial_fit": polynomial_fit,
         "polynomial_predict": polynomial_predict,
+        "split_labels": SPLIT_LABELS,
+        "split_unlucky_order": SPLIT_UNLUCKY_ORDER,
+        "split_groups": SPLIT_GROUPS,
+        "split_group_order": SPLIT_GROUP_ORDER,
+        "split_series": SPLIT_SERIES,
+        "split_random_test_months": SPLIT_RANDOM_TEST_MONTHS,
+        "class_counts": class_counts,
+        "stratified_allocation": stratified_allocation,
+        "chance_test_misses_class": chance_test_misses_class,
+        "leaked_group_records": leaked_group_records,
+        "nearest_in_time_mse": nearest_in_time_mse,
+        "accuracy_standard_error": accuracy_standard_error,
         "kmeans_run": kmeans_run,
         "nearest_labeled": nearest_labeled,
         "cluster_then_label": cluster_then_label,
