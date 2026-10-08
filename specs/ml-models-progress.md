@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (fifth run). Spec v2 widens the section from model architectures
+**Last updated:** 2026-10-08 (sixth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: `transformer`, `tensors-and-shapes`, `vectors-and-dot-products`. The next
-run builds `matrix-multiplication`.
+format. Ready pages: `transformer`, `tensors-and-shapes`, `vectors-and-dot-products`,
+`matrix-multiplication`. The next run builds `derivatives-and-gradients`.
 
 ## Pins
 
@@ -145,6 +145,13 @@ The paths below are relative to `torch/nn/modules/` unless they give a fuller pa
   9833-9863, `squeeze` 11063-11111, `transpose` 11942-11990, `unsqueeze` 12475-12504, `dot`
   4134-4162, `vdot` 4164-4211, `inner` 5093-5152, `outer` 5154-5182. Start
   lines of the `torch.X,` entry: `cat` 2532, `matmul` 7909, `tensor` 9583, `zeros` 12618.
+  Matrix ops: `matmul` 7908-7990, `mm` 7831-7887, `bmm` 1706-1762, `addmm` 592-665, `baddbmm`
+  1512-1581, `eye` 4380-4408, `inverse` 5606-5613 (an alias of `linalg.inv`), `t` 11507-11544.
+- `torch/linalg/__init__.py`: `inv` 214-292.
+- `torch/nn/functional.py`: `linear` 2382-2403 (docstring "y = xA^T + b").
+- `torch/nn/modules/linear.py`: `Linear` 53-147; `__init__` 96, `weight`/`bias` 104-114,
+  `reset_parameters` 117-128 (kaiming_uniform with a=√5, bias bound 1/√fan_in), `forward`
+  130-134 (calls `F.linear`).
 - `torch/_tensor_docs.py` (each range from `add_docstr_all(` to `)`): `contiguous` 1131-1144,
   `is_contiguous` 2702-2714, `stride` 4963-4989, `view` 6041-6180, `expand` 6198-6249.
 
@@ -246,6 +253,14 @@ The daily Routine was created at the end of this run.
 
 Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, which raises
 `NameError` at render time. Compute such values in Python or with filters on lists instead.
+
+## Sixth run (2026-10-08) — third page of the 5-minute loop
+
+| Commit | What |
+|---|---|
+| `ml-models: add tested matmul, shape-rule and flop helpers` | `transpose`, `identity`, `matmul`, `matmul_shape` (torch.matmul's rank and broadcast rules), `matmul_flops`, `linear_layer`, `inverse_2x2` and three worked-example constants |
+| `ml-models: build the matrix-multiplication page` | The page, `ready`, queue ✓ |
+| `docs: record the matrix-multiplication run` | This table and the verified ranges above |
 
 ## Queue
 
