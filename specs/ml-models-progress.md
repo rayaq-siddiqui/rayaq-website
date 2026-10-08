@@ -386,8 +386,8 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 10. `linear-regression` ✓
 11. `logistic-regression` ✓
 12. `neurons-and-layers` ✓
-13. `backpropagation` ← next
-14. `optimizers`
+13. `backpropagation` ✓
+14. `optimizers` ← next
 15. `embeddings`
 16. `attention`
 17. `layernorm-and-residuals`

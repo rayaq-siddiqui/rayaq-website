@@ -606,7 +606,7 @@ PAGES = [
             "pytorch:torch/autograd/__init__.py",
             "pytorch:torch/autograd/function.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "computation-graphs",

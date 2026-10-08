@@ -1,0 +1,583 @@
+{% set ex = backprop_example %}
+{% set run = run_backprop(ex) %}
+{% set net = run.before %}
+{% set after = run.after %}
+{% set check = gradient_check(ex, gradient_check_example) %}
+{% set all_checks = gradient_check_all(ex) %}
+{% set curves = gradient_norms_by_depth(depth_example) %}
+{% macro n(x) -%}{% if x == x|round %}{{ "%g"|format(x) }}{% else %}{{ "%.3f"|format(x) }}{% endif %}{%- endmacro %}
+{% macro vec(v) -%}[{% for x in v %}{{ n(x) }}{% if not loop.last %}, {% endif %}{% endfor %}]{%- endmacro %}
+{% macro mat(m) -%}[{% for row in m %}{{ vec(row) }}{% if not loop.last %}, {% endif %}{% endfor %}]{%- endmacro %}
+{% macro sci(x) -%}{{ "%.1e"|format(x) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Backpropagation</h1>
+  <p class="tagline">
+    Backpropagation is the chain rule run backwards through a network, reusing every
+    intermediate value the forward pass computed. This page trains a small network for one step
+    with every number shown, catalogues the local gradient of each common operation, explains
+    why gradients vanish or explode in deep networks, and shows how to check a backward pass with
+    finite differences, the way <code>torch.autograd.gradcheck</code> does at {{ upstream.tag }}.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Training needs ∂L/∂θ for every parameter θ, at every step. A modern network has millions or
+  billions of parameters. Estimating each derivative by nudging that parameter and re-running the
+  network would cost one forward pass per parameter: a billion forward passes for one step.
+</p>
+<p>
+  Backpropagation gets <em>all</em> of them for the price of about one extra forward pass. The
+  <a href="{{ url_for('ml_models', slug='chain-rule') }}">chain rule</a> page showed why: reverse
+  mode differentiation sends one gradient backwards from the scalar loss, and each operation
+  turns the gradient of its output into the gradients of its inputs. This page is about doing that
+  for a real network: with a batch, a softmax output and a parameter update; with dozens of layers,
+  where the backward product can shrink to nothing or blow up; and with a way to know your
+  gradients are right.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  The forward pass computes the network's prediction and the loss, layer by layer, and keeps the
+  intermediate values. The backward pass walks the same layers in reverse. At each step it holds
+  one quantity, the gradient of the loss with respect to that layer's output, which says "if this
+  value went up a little, the loss would change by this much". Each layer uses its saved inputs
+  to turn that into two things: the gradient for its own parameters (which the optimizer uses) and
+  the gradient for its input (which it hands to the layer below).
+</p>
+<p>
+  Credit assignment is the point. The output layer knows directly how wrong it was. A hidden unit
+  deep in the network only learns how much it contributed through the weights that connect it to
+  the output, and a ReLU unit that was switched off contributed nothing, so it gets no gradient.
+</p>
+
+<div class="jj-diagram">
+  {% set xs = [95, 175] %}
+  {% set hs = [42, 124, 206] %}
+  {% set ls = [95, 175] %}
+  <svg viewBox="0 0 680 270" role="img" aria-labelledby="bp-graph-title bp-graph-desc">
+    <title id="bp-graph-title">Forward values and backward gradients in a 2-3-2 network</title>
+    <desc id="bp-graph-desc">
+      A network with 2 inputs, 3 hidden ReLU units and 2 output logits feeding a softmax
+      cross-entropy loss. Inputs are {{ vec(ex.x) }}. Hidden pre-activations z are
+      {{ vec(net.z1) }} and after ReLU h is {{ vec(net.h) }}. The logits are {{ vec(net.logits) }},
+      the softmax probabilities {{ vec(net.probs) }}, and with target class {{ ex.target }} the loss is
+      {{ n(net.loss) }}. Going backwards, the gradient at the logits is
+      {{ vec(net.dlogits) }} (probabilities minus the one-hot target), and at the hidden
+      pre-activations it is {{ vec(net.dz1) }}. The third hidden unit has z = −1, so ReLU switched it
+      off and its gradient is 0.
+    </desc>
+    {% for yx in xs %}{% for yh in hs %}
+      <line x1="85" y1="{{ yx }}" x2="187" y2="{{ yh }}" class="d-line" opacity="0.5"></line>
+    {% endfor %}{% endfor %}
+    {% for yh in hs %}{% set dead = loop.last %}{% for yl in ls %}
+      <line x1="283" y1="{{ yh }}" x2="382" y2="{{ yl }}" class="d-line" opacity="{{ 0.15 if dead else 0.5 }}"></line>
+    {% endfor %}{% endfor %}
+    {% for yl in ls %}
+      <line x1="478" y1="{{ yl }}" x2="565" y2="135" class="d-line" opacity="0.5"></line>
+    {% endfor %}
+
+    {% for yx in xs %}
+      <rect x="25" y="{{ yx - 15 }}" width="60" height="30" rx="6" class="d-box"></rect>
+      <text x="55" y="{{ yx + 5 }}" font-size="12" text-anchor="middle" style="fill: var(--jj-green)">x{{ loop.index }} = {{ n(ex.x[loop.index0]) }}</text>
+    {% endfor %}
+    {% for yh in hs %}
+      {% set i = loop.index0 %}
+      <rect x="187" y="{{ yh - 15 }}" width="96" height="30" rx="6" class="d-box {{ 'ml-dashed' if net.z1[i] <= 0 }}" {% if net.z1[i] <= 0 %}style="stroke: var(--jj-red)"{% endif %}></rect>
+      <text x="235" y="{{ yh + 5 }}" font-size="12" text-anchor="middle" style="fill: var(--jj-green)">z {{ n(net.z1[i]) }} → h {{ n(net.h[i]) }}</text>
+      <text x="235" y="{{ yh + 30 }}" font-size="11" text-anchor="middle" style="fill: {{ 'var(--jj-red)' if net.z1[i] <= 0 else 'var(--jj-amber)' }}">z̄ = {{ n(net.dz1[i]) }}{{ " (dead)" if net.z1[i] <= 0 }}</text>
+    {% endfor %}
+    {% for yl in ls %}
+      {% set k = loop.index0 %}
+      <rect x="382" y="{{ yl - 15 }}" width="96" height="30" rx="6" class="d-box"></rect>
+      <text x="430" y="{{ yl + 5 }}" font-size="12" text-anchor="middle" style="fill: var(--jj-green)">s {{ n(net.logits[k]) }}, p {{ n(net.probs[k]) }}</text>
+      <text x="430" y="{{ yl + 30 }}" font-size="11" text-anchor="middle" style="fill: var(--jj-amber)">s̄ = {{ n(net.dlogits[k]) }}</text>
+    {% endfor %}
+    <rect x="565" y="120" width="90" height="30" rx="6" class="d-box"></rect>
+    <text x="610" y="140" font-size="12" text-anchor="middle" style="fill: var(--jj-green)">L = {{ n(net.loss) }}</text>
+    <text x="610" y="165" font-size="11" text-anchor="middle" style="fill: var(--jj-amber)">L̄ = 1</text>
+    <text x="610" y="190" font-size="11" text-anchor="middle" class="d-muted">target class {{ ex.target }}</text>
+
+    <text x="235" y="262" font-size="11" text-anchor="middle" class="d-muted">hidden: Linear(2, 3) + ReLU</text>
+    <text x="430" y="262" font-size="11" text-anchor="middle" class="d-muted">logits: Linear(3, 2)</text>
+    <text x="20" y="20" font-size="12" style="fill: var(--jj-green)">forward value</text>
+    <text x="660" y="20" font-size="12" text-anchor="end" style="fill: var(--jj-amber)">backward: ∂L/∂(·)</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Forward values in green, the gradient of the loss with respect to each value in amber. The
+  dashed hidden unit had a negative input, so ReLU blocked it in both directions: its output was 0
+  and its gradient is 0, and the faint weights leaving it get no update.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="algorithm">The algorithm</h3>
+
+<p>
+  Write the network as a chain of operations v<sub>1</sub> = f<sub>1</sub>(x),
+  v<sub>2</sub> = f<sub>2</sub>(v<sub>1</sub>), …, L = f<sub>K</sub>(v<sub>K−1</sub>), each with
+  its own parameters. Write v̄ for ∂L/∂v, a tensor with the same shape as v.
+</p>
+<ol>
+  <li><strong>Forward.</strong> Compute each v<sub>k</sub> in order, saving whatever each
+    operation's backward rule will need (usually its inputs).</li>
+  <li><strong>Seed.</strong> Set L̄ = 1.</li>
+  <li><strong>Backward.</strong> For k = K down to 1, apply f<sub>k</sub>'s local rule:
+    from v̄<sub>k</sub> and the saved values, compute v̄<sub>k−1</sub> and the gradient of
+    f<sub>k</sub>'s parameters.</li>
+  <li><strong>Accumulate.</strong> If a value feeds several operations (a residual connection, a
+    shared weight, an embedding used twice), its gradient is the <em>sum</em> of the gradients
+    arriving from each use.</li>
+</ol>
+<p>
+  On a general graph, "in reverse" means reverse topological order: a node's backward rule runs
+  only after every operation that used its output has sent its gradient back. That is the whole
+  algorithm. Everything else is the catalogue of local rules and engineering.
+</p>
+
+<h3 id="batched">With a batch</h3>
+
+<p>
+  Real training uses a batch of N examples at once. For a linear layer Y = XWᵀ + b with X of shape
+  (N, d<sub>in</sub>) and W of shape (d<sub>out</sub>, d<sub>in</sub>), the rules become matrix
+  products:
+</p>
+<p class="ml-formula">X̄ = Ȳ W, &nbsp;&nbsp; W̄ = Ȳᵀ X, &nbsp;&nbsp; b̄ = Σ<sub>rows</sub> Ȳ</p>
+<p>
+  Check the shapes and you can rederive them: W̄ must be (d<sub>out</sub>, d<sub>in</sub>), and
+  Ȳᵀ X is the only product of the available tensors with that shape. The product Ȳᵀ X sums over the
+  batch dimension, so a parameter's gradient adds up every example's contribution, and the bias,
+  broadcast across rows in the forward pass, gets a sum over rows in the backward pass. If the
+  loss is a mean over the batch (PyTorch's default <code>reduction="mean"</code>), Ȳ already
+  carries the 1/N.
+</p>
+
+<h3 id="local-gradients">Local gradients per operation</h3>
+
+<p>
+  Every operation needs a backward rule, a vector-Jacobian product that never builds the
+  Jacobian. These cover most of a standard network (⊙ is element-wise multiplication):
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Operation</th><th>Forward</th><th>Backward (given ȳ)</th><th>Saves</th></tr></thead>
+    <tbody>
+      <tr><td>Add</td><td>y = a + b</td><td>ā = ȳ, &nbsp; b̄ = ȳ</td><td>nothing</td></tr>
+      <tr><td>Multiply</td><td>y = a ⊙ b</td><td>ā = ȳ ⊙ b, &nbsp; b̄ = ȳ ⊙ a</td><td>a, b</td></tr>
+      <tr><td>Broadcast</td><td>y = b, copied over rows</td><td>b̄ = sum of ȳ over the copied axis</td><td>shape</td></tr>
+      <tr><td>Linear</td><td>Y = XWᵀ + b</td><td>X̄ = ȲW, &nbsp; W̄ = ȲᵀX, &nbsp; b̄ = Σ<sub>rows</sub>Ȳ</td><td>X, W</td></tr>
+      <tr><td>ReLU</td><td>y = max(0, z)</td><td>z̄ = ȳ ⊙ [z &gt; 0]</td><td>z (or a mask)</td></tr>
+      <tr><td>Sigmoid</td><td>y = σ(z)</td><td>z̄ = ȳ ⊙ y(1 − y)</td><td>y</td></tr>
+      <tr><td>Tanh</td><td>y = tanh z</td><td>z̄ = ȳ ⊙ (1 − y²)</td><td>y</td></tr>
+      <tr><td>Softmax + cross-entropy</td><td>L = −log softmax(s)<sub>t</sub></td><td>s̄ = softmax(s) − onehot(t)</td><td>probabilities</td></tr>
+      <tr><td>Mean</td><td>L = (1/N) Σ ℓ<sub>i</sub></td><td>ℓ̄<sub>i</sub> = 1/N</td><td>N</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  Two patterns are worth remembering. Add copies its gradient to both inputs unchanged, which is
+  why residual connections are such good gradient highways. And the fused softmax-plus-cross-entropy
+  rule, "probabilities minus target", is both simpler and more numerically stable than chaining
+  the two separate rules, which is why PyTorch's <code>cross_entropy</code> takes logits (see
+  <a href="{{ url_for('ml_models', slug='loss-functions') }}">loss functions</a>).
+</p>
+
+<h3 id="cost">Time and memory</h3>
+
+<p>
+  The backward pass of a linear layer does two matrix multiplies (X̄ and W̄) for the forward pass's
+  one, so a training step costs about three forward passes: the standard estimate is 6 floating-point
+  operations per parameter per training token, against 2 for inference alone.
+</p>
+<p>
+  Memory is the harder constraint. Every value a backward rule needs must stay alive from the
+  moment the forward pass creates it until the backward pass consumes it, so activation memory
+  grows with depth × batch size × width. That is why inference (inside <code>torch.no_grad()</code>,
+  which records nothing) fits much larger batches than training, and why large models use
+  <strong>activation checkpointing</strong>: save only some layers' inputs and recompute the rest
+  during the backward pass, trading about one extra forward pass for a large cut in memory.
+</p>
+
+<h3 id="vanishing-exploding">Vanishing and exploding gradients</h3>
+
+<p>
+  Going down through layer ℓ multiplies the gradient by that layer's transposed Jacobian:
+  h̄<sub>ℓ−1</sub> = W<sub>ℓ</sub>ᵀ (h̄<sub>ℓ</sub> ⊙ φ′(z<sub>ℓ</sub>)). After L layers the gradient at
+  the input is a product of L such factors. If each factor shrinks vectors by a typical ratio r,
+  the gradient scales like r<sup>L</sup>: with r = 0.7 and 30 layers that is 2 × 10<sup>−5</sup>; with
+  r = 1.4 it is 2 × 10<sup>4</sup>. Early layers then learn nothing (vanishing), or updates are so
+  large that training diverges and the loss turns into <code>nan</code> (exploding).
+</p>
+<p>
+  Two things set r. The weight scale: a matrix with entries of variance σ²/n scales a vector's
+  length by about σ. And the activation's slope: ReLU passes about half the units with slope 1,
+  so it halves the squared length, which the factor √2 in He initialization exactly compensates.
+  The sigmoid's slope is at most ¼, so a sigmoid network shrinks the gradient by at least 4 per layer
+  whatever the weights; this is why deep networks moved from sigmoid and tanh to ReLU.
+</p>
+
+<div class="jj-diagram">
+  {% macro dx(l) -%}{{ 80 + 18 * l }}{%- endmacro %}
+  {% macro dy(v) -%}{{ 30 - 8 * (v - 5) }}{%- endmacro %}
+  {% set colors = ["var(--jj-amber)", "var(--jj-green)", "var(--jj-red)", "var(--jj-violet)"] %}
+  <svg viewBox="0 0 680 270" role="img" aria-labelledby="bp-depth-title bp-depth-desc">
+    <title id="bp-depth-title">Gradient size at each layer of a 30-layer network, on a log scale</title>
+    <desc id="bp-depth-desc">
+      The size of the gradient at each layer of a {{ depth_example.depth }}-layer network of width
+      {{ depth_example.width }}, relative to the gradient arriving at the top layer, drawn on a
+      logarithmic axis from 10 to the minus 20 up to 10 to the 5. All four networks share the same
+      random weights, only rescaled.
+      {% for c in curves %}{{ c.label }}: at the input the gradient is {{ sci(c.norms[0]) }} times its size at the top. {% endfor %}
+    </desc>
+    {% for t in [-20, -15, -10, -5, 0, 5] %}
+      <line x1="{{ dx(0) }}" y1="{{ dy(t) }}" x2="{{ dx(30) }}" y2="{{ dy(t) }}" class="d-line" opacity="{{ 0.6 if t == 0 else 0.15 }}"></line>
+      <text x="{{ dx(0)|float - 8 }}" y="{{ dy(t)|float + 4 }}" font-size="11" text-anchor="end">10<tspan dy="-5" font-size="9">{{ t }}</tspan></text>
+    {% endfor %}
+    {% for l in [0, 10, 20, 30] %}
+      <text x="{{ dx(l) }}" y="{{ dy(-20)|float + 18 }}" font-size="11" text-anchor="middle">{{ l }}</text>
+    {% endfor %}
+    {% for c in curves %}
+      {% set color = colors[loop.index0] %}
+      <path d="M{% for v in c.norms %}{% if not loop.first %} L{% endif %}{{ dx(loop.index0) }},{{ dy(log10(v)) }}{% endfor %}" fill="none" stroke="{{ color }}" stroke-width="2"></path>
+      {% set at = [(1, -6.8), (1, 1.3), (1, 5.8), (9, -17.5)][loop.index0] %}
+      <text x="{{ dx(at[0]) }}" y="{{ dy(at[1]) }}" font-size="12" style="fill: {{ color }}">{{ c.label }}</text>
+    {% endfor %}
+    <text x="{{ dx(15) }}" y="266" font-size="11" text-anchor="middle" class="d-muted">layer (the backward pass runs from layer 30, right, to the input, left)</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Same weights, four scalings. Only He initialization with ReLU keeps the gradient near 1 all the way
+  down ({{ sci(curves[1].norms[0]) }} at the input). Scale the weights by 0.7 or 1.4 and the gradient
+  shrinks to {{ sci(curves[0].norms[0]) }} or grows to {{ sci(curves[2].norms[0]) }}; the sigmoid network
+  is at {{ sci(curves[3].norms[0]) }}.
+</p>
+
+<p>
+  The fixes are now standard, and most of them get their own page: careful
+  <strong>initialization</strong> (Xavier/Glorot for tanh, He/Kaiming for ReLU) so that r ≈ 1 at the
+  start; <strong>ReLU-family activations</strong>, which don't saturate for positive inputs;
+  <strong>normalization layers</strong>, which reset each layer's scale; <strong>residual
+  connections</strong>, which make each layer compute x + f(x) so its Jacobian is I + ∂f/∂x and the
+  gradient always has a path that isn't multiplied down; and <strong>gradient clipping</strong>
+  (<code>clip_grad_norm_</code>), which rescales the whole gradient when its norm exceeds a limit, as
+  a guard against the occasional explosive step. Recurrent networks, which apply the same matrix at
+  every time step, suffer the worst version of this, which is what the LSTM was invented to fix.
+</p>
+
+<h3 id="gradient-checking">Gradient checking</h3>
+
+<p>
+  A wrong backward rule doesn't crash: the network still trains, just badly, and the bug can hide
+  for weeks. The test is to compare each analytic gradient with a finite difference. The forward
+  difference (L(θ + h) − L(θ))/h has error proportional to h; the central difference
+</p>
+<p class="ml-formula">∂L/∂θ ≈ (L(θ + h) − L(θ − h)) / 2h</p>
+<p>
+  has error proportional to h², because the second-order terms cancel. But h can't go to zero:
+  each loss is only accurate to about 10<sup>−16</sup> of its size in float64, so the rounding error
+  of the difference grows like 10<sup>−16</sup>/h. The best h balances the two, and the result is a
+  V shape. Compare with the <strong>relative error</strong> |a − n| / max(|a|, |n|), not the absolute
+  one, so that large and small gradients are judged alike; in float64, a relative error below about
+  10<sup>−7</sup> means the backward pass is right, and one near 10<sup>−2</sup> means a bug.
+</p>
+
+<div class="jj-diagram">
+  {% macro gx(e) -%}{{ 600 + 45 * e }}{%- endmacro %}
+  {% macro gy(e) -%}{{ 25 - 17 * (e + 1) }}{%- endmacro %}
+  <svg viewBox="0 0 680 270" role="img" aria-labelledby="bp-check-title bp-check-desc">
+    <title id="bp-check-title">Finite-difference error against step size, on log-log axes</title>
+    <desc id="bp-check-desc">
+      The relative error between backpropagation's gradient for the first weight of the network
+      above, {{ n(check.exact) }}, and two finite-difference estimates, for step sizes h from 10 to the
+      minus 12 up to 10 to the minus 1. From the right, the forward difference's error falls in
+      proportion to h and the central difference's error in proportion to h squared, until rounding
+      error takes over and both rise again as h shrinks further. The central difference is best at
+      h = {{ "%g"|format((check.rows|sort(attribute="central_error"))[0].h) }}, with relative error
+      {{ sci((check.rows|sort(attribute="central_error"))[0].central_error) }}.
+    </desc>
+    {% for t in [-12, -10, -8, -6, -4, -2] %}
+      <line x1="{{ gx(-12) }}" y1="{{ gy(t) }}" x2="{{ gx(-1) }}" y2="{{ gy(t) }}" class="d-line" opacity="0.15"></line>
+      <text x="{{ gx(-12)|float - 8 }}" y="{{ gy(t)|float + 4 }}" font-size="11" text-anchor="end">10<tspan dy="-5" font-size="9">{{ t }}</tspan></text>
+    {% endfor %}
+    {% for t in [-10, -8, -6, -4, -2] %}
+      <text x="{{ gx(t) }}" y="{{ gy(-12)|float + 18 }}" font-size="11" text-anchor="middle">10<tspan dy="-5" font-size="9">{{ t }}</tspan></text>
+    {% endfor %}
+    {% for key, color in [("forward_error", "var(--jj-amber)"), ("central_error", "var(--jj-violet)")] %}
+      <path d="M{% for row in check.rows %}{% if not loop.first %} L{% endif %}{{ gx(log10(row.h)) }},{{ gy(log10([row[key], 1e-12]|max)) }}{% endfor %}" fill="none" stroke="{{ color }}" stroke-width="2"></path>
+      {% for row in check.rows %}
+        <circle cx="{{ gx(log10(row.h)) }}" cy="{{ gy(log10([row[key], 1e-12]|max)) }}" r="3" style="fill: {{ color }}"></circle>
+      {% endfor %}
+    {% endfor %}
+    <text x="{{ gx(-1.2) }}" y="{{ gy(-1.3) }}" font-size="12" text-anchor="end" style="fill: var(--jj-amber)">forward difference, error ∝ h</text>
+    <text x="{{ gx(-4.3) }}" y="{{ gy(-11) }}" font-size="12" text-anchor="start" style="fill: var(--jj-violet)">central difference, error ∝ h²</text>
+    <text x="{{ gx(-11.6) }}" y="{{ gy(-2.6) }}" font-size="12" style="fill: var(--jj-red)">rounding error ∝ 1/h</text>
+    <text x="{{ gx(-6.5) }}" y="266" font-size="11" text-anchor="middle" class="d-muted">step size h (float64); vertical: relative error against backprop</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Too large an h measures curvature, too small an h measures rounding. Central differences reach
+  about 10<sup>−11</sup> here at h around 10<sup>−5</sup>; in float32, rounding is 10<sup>9</sup> times
+  worse, which is why gradient checks run in float64.
+</p>
+
+<p>
+  Two cautions. Kinks: if a ReLU input sits within h of zero, the two evaluations straddle the
+  kink and the check fails even for a correct backward pass, so check at points away from kinks or
+  ignore isolated failures. And cost: one check needs two forward passes per parameter, so check a
+  tiny network, or a random sample of parameters, never a full model. PyTorch's
+  <code>torch.autograd.gradcheck</code> does exactly this, perturbing each input entry by
+  <code>eps=1e-6</code> with central differences, requiring float64 inputs, and comparing the numerical
+  and analytic Jacobians with <code>atol=1e-5</code> and <code>rtol=1e-3</code>.
+</p>
+
+<h3 id="in-pytorch">In PyTorch</h3>
+
+<p>
+  PyTorch builds the graph while the forward pass runs: every operation on a tensor that requires
+  grad records a node holding its backward rule and saved tensors (the
+  <a href="{{ url_for('ml_models', slug='chain-rule') }}">chain rule</a> page shows an
+  <code>autograd.Function</code> written by hand). <code>loss.backward()</code> calls
+  <code>torch.autograd.backward</code>, which hands the graph to the C++ engine. The engine runs the
+  nodes in dependency order and, at each leaf tensor (a parameter), <em>adds</em> the result into
+  <code>.grad</code>. Adding rather than overwriting is what makes shared weights and gradient
+  accumulation work, and it's why every training loop calls <code>optimizer.zero_grad()</code> (or
+  <code>model.zero_grad()</code>) before the next backward pass. After backward, the graph's saved
+  tensors are freed; calling backward through it a second time needs
+  <code>retain_graph=True</code>.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Term</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>Tensor.backward</code></td>
+        <td>scalar loss; <code>retain_graph</code></td>
+        <td>Starts the backward pass from this tensor with seed 1.</td>
+        <td><a href="{{ src('torch/_tensor.py', 566, 625) }}"><code>_tensor.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>torch.autograd.backward</code></td>
+        <td>tensors, <code>grad_tensors</code></td>
+        <td>Accumulates gradients of the given outputs into every leaf's <code>.grad</code>.</td>
+        <td><a href="{{ src('torch/autograd/__init__.py', 255, 403) }}"><code>autograd/__init__.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>torch.autograd.grad</code></td>
+        <td>outputs, inputs</td>
+        <td>Returns the gradients instead of accumulating them into <code>.grad</code>.</td>
+        <td><a href="{{ src('torch/autograd/__init__.py', 434, 621) }}"><code>autograd/__init__.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_engine_run_backward</code></td>
+        <td>outputs, gradients</td>
+        <td>The handoff from Python to the C++ engine that walks the graph.</td>
+        <td><a href="{{ src('torch/autograd/graph.py', 1059, 1083) }}"><code>autograd/graph.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Function.backward</code></td>
+        <td><code>ctx</code>, one gradient per output</td>
+        <td>A local backward rule (a vector-Jacobian product), as a custom op defines it.</td>
+        <td><a href="{{ src('torch/autograd/function.py', 473, 505) }}"><code>function.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>ctx.save_for_backward</code></td>
+        <td>tensors</td>
+        <td>Keeps forward values alive for the backward rule; this is the activation memory.</td>
+        <td><a href="{{ src('torch/autograd/function.py', 41, 100) }}"><code>function.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>torch.autograd.gradcheck</code></td>
+        <td><code>eps=1e-6</code>, <code>atol=1e-5</code>, <code>rtol=1e-3</code></td>
+        <td>Compares analytic and central-difference Jacobians, in float64.</td>
+        <td><a href="{{ src('torch/autograd/gradcheck.py', 1999, 2105) }}"><code>gradcheck.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>clip_grad_norm_</code></td>
+        <td><code>max_norm</code>, <code>norm_type=2</code></td>
+        <td>Rescales all gradients together if their total norm exceeds <code>max_norm</code>.</td>
+        <td><a href="{{ src('torch/nn/utils/clip_grad.py', 185, 232) }}"><code>clip_grad.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Module.zero_grad</code></td>
+        <td><code>set_to_none=True</code></td>
+        <td>Clears accumulated <code>.grad</code> before the next backward pass.</td>
+        <td><a href="{{ src('torch/nn/modules/module.py', 2957, 2985) }}"><code>module.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>One training step, every number.</strong> Input x = {{ vec(ex.x) }}, target class
+    t = {{ ex.target }}. First layer W<sub>1</sub> = {{ mat(ex.w1) }}, b<sub>1</sub> = {{ vec(ex.b1) }},
+    then ReLU; output layer W<sub>2</sub> = {{ mat(ex.w2) }}, b<sub>2</sub> = {{ vec(ex.b2) }}; loss
+    L = −log softmax(s)<sub>t</sub>.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Forward</th><th>Value</th><th>Backward</th><th>Value</th></tr></thead>
+      <tbody>
+        <tr><td>z = W<sub>1</sub>x + b<sub>1</sub></td><td>{{ vec(net.z1) }}</td><td>s̄ = p − onehot(t)</td><td>{{ vec(net.dlogits) }}</td></tr>
+        <tr><td>h = ReLU(z)</td><td>{{ vec(net.h) }}</td><td>W̄<sub>2</sub> = s̄ hᵀ, &nbsp; b̄<sub>2</sub> = s̄</td><td>{{ mat(net.dw2) }}</td></tr>
+        <tr><td>s = W<sub>2</sub>h + b<sub>2</sub></td><td>{{ vec(net.logits) }}</td><td>h̄ = W<sub>2</sub>ᵀ s̄</td><td>{{ vec(net.dh) }}</td></tr>
+        <tr><td>p = softmax(s)</td><td>{{ vec(net.probs) }}</td><td>z̄ = h̄ ⊙ [z &gt; 0]</td><td>{{ vec(net.dz1) }}</td></tr>
+        <tr><td>L = −log p<sub>t</sub></td><td>{{ n(net.loss) }}</td><td>W̄<sub>1</sub> = z̄ xᵀ, &nbsp; b̄<sub>1</sub> = z̄</td><td>{{ mat(net.dw1) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The network gives the right class only {{ n(net.probs[0]) }} probability, so s̄ pushes the
+    correct logit up (negative gradient) and the wrong one down. h̄ = W<sub>2</sub>ᵀ s̄ is each hidden
+    unit's share of the blame: unit 2 feeds the wrong logit with weight 1 and the right one with −1,
+    so it gets the largest gradient, {{ n(net.dh[1]) }}. Unit 3 would have gotten {{ n(net.dh[2]) }}, but
+    its z = {{ n(net.z1[2]) }} was negative, ReLU zeroed it, and the third rows of W̄<sub>1</sub> and
+    b̄<sub>1</sub> are 0.
+  </p>
+  <p>
+    Now take a gradient-descent step with learning rate {{ ex.lr }}: θ ← θ − {{ ex.lr }} θ̄. The first
+    layer becomes W<sub>1</sub> = {{ mat(run.updated.w1) }}, and running the forward pass again gives
+    z = {{ vec(after.z1) }}, logits {{ vec(after.logits) }}, p = {{ vec(after.probs) }} and loss
+    {{ n(after.loss) }}, down from {{ n(net.loss) }}. Unit 3 is still off, so its weights didn't move.
+  </p>
+  <p>
+    <strong>Checking it.</strong> Nudge every one of the {{ all_checks|length }} parameters by
+    ±10<sup>−6</sup> and compare the central difference with the table: the largest relative error is
+    {{ sci(all_checks|map(attribute="error")|max) }}.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+from torch import nn
+import torch.nn.functional as F
+
+model = nn.Sequential(nn.Linear(2, 3), nn.ReLU(), nn.Linear(3, 2))
+with torch.no_grad():
+    model[0].weight.copy_(torch.tensor([[1., 0.], [-1., 1.], [0.5, -1.]]))
+    model[0].bias.copy_(torch.tensor([0., 0., 0.5]))
+    model[2].weight.copy_(torch.tensor([[1., -1., 2.], [0., 1., 1.]]))
+    model[2].bias.zero_()
+
+x, t = torch.tensor([[1., 2.]]), torch.tensor([0])
+loss = F.cross_entropy(model(x), t)       # 1.3133
+loss.backward()                           # fills .grad on all four parameters
+model[0].weight.grad                      # [[-0.731, -1.462], [1.462, 2.924], [0, 0]]
+
+with torch.no_grad():                     # one SGD step, lr = 0.1
+    for p in model.parameters():
+        p -= 0.1 * p.grad
+model.zero_grad()                         # .grad accumulates; clear it
+F.cross_entropy(model(x), t)              # 0.1894
+
+# gradient checking a small function in float64
+def f(w):
+    return F.cross_entropy(torch.relu(x.double() @ w.T) @ model[2].weight.double().T, t)
+w = model[0].weight.detach().double().requires_grad_()
+torch.autograd.gradcheck(f, (w,))         # True</code></pre>
+
+<p>The backward pass by hand, for a batch, in plain Python:</p>
+
+<pre><code>import math
+
+def matmul(a, b):
+    return [[sum(x * y for x, y in zip(row, col)) for col in zip(*b)] for row in a]
+
+def transpose(m):
+    return [list(col) for col in zip(*m)]
+
+def forward_backward(X, T, W1, b1, W2, b2):
+    N = len(X)
+    Z = [[z + b for z, b in zip(row, b1)] for row in matmul(X, transpose(W1))]
+    H = [[max(0.0, z) for z in row] for row in Z]
+    S = [[s + b for s, b in zip(row, b2)] for row in matmul(H, transpose(W2))]
+    P = [[math.exp(s) / sum(math.exp(v) for v in row) for s in row] for row in S]
+    loss = -sum(math.log(P[i][T[i]]) for i in range(N)) / N
+    dS = [[(p - (k == T[i])) / N for k, p in enumerate(P[i])] for i in range(N)]
+    dW2, db2 = matmul(transpose(dS), H), [sum(c) for c in zip(*dS)]
+    dH = matmul(dS, W2)
+    dZ = [[g if z > 0 else 0.0 for g, z in zip(gr, zr)] for gr, zr in zip(dH, Z)]
+    dW1, db1 = matmul(transpose(dZ), X), [sum(c) for c in zip(*dZ)]
+    return loss, (dW1, db1, dW2, db2)
+
+forward_backward([[1, 2]], [0], [[1, 0], [-1, 1], [0.5, -1]], [0, 0, 0.5],
+                 [[1, -1, 2], [0, 1, 1]], [0, 0])[0]       # 1.3133</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Reverse mode versus finite differences.</strong> Backprop gives every gradient for about
+    three forward passes, exactly up to rounding; finite differences cost two forward passes per
+    parameter and are only approximate. Finite differences are a test, never a training method.
+  </li>
+  <li>
+    <strong>Compute versus memory.</strong> Saving every activation is fastest; activation
+    checkpointing recomputes them to save memory. Large-model training almost always checkpoints,
+    paying roughly a third more compute.
+  </li>
+  <li>
+    <strong>Fused versus composed rules.</strong> Writing softmax and cross-entropy as one operation
+    gives a simpler, more stable gradient than chaining their rules; the same is true of
+    log-sum-exp, attention and normalization layers, which is why frameworks ship fused kernels.
+  </li>
+  <li>
+    <strong>Depth costs gradient health.</strong> Each layer multiplies the gradient by another
+    Jacobian. Depth is only usable with the right initialization, activations, normalization and
+    residual connections, and gradient clipping as a last guard.
+  </li>
+  <li>
+    <strong>Biological plausibility.</strong> Backprop needs the exact transposed weights on the
+    way back and a global error signal, which real neurons don't obviously have. That matters for
+    neuroscience, not for engineering: no alternative training rule matches it at scale.
+  </li>
+</ul>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="ml-quiz">
+  <summary>A weight matrix is used twice in the forward pass (for example tied input and output embeddings). What is its gradient?</summary>
+  <p>The sum of the gradients from both uses. PyTorch does this automatically by accumulating into <code>.grad</code>.</p>
+</details>
+<details class="ml-quiz">
+  <summary>For Y = XWᵀ with X of shape (32, 100) and W of shape (10, 100), what are the shapes of Ȳ and W̄, and what is W̄?</summary>
+  <p>Ȳ is (32, 10), like Y. W̄ = ȲᵀX is (10, 32) × (32, 100) = (10, 100), like W; the product sums over the 32 examples.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Your training loop forgets <code>optimizer.zero_grad()</code>. What happens?</summary>
+  <p>Each <code>backward()</code> adds to the previous gradients, so step k uses the sum of all k gradients so far. Updates grow and point in a stale direction, and training usually diverges.</p>
+</details>
+<details class="ml-quiz">
+  <summary>A gradient check gives relative error 10<sup>−2</sup> for every weight in one layer and 10<sup>−9</sup> everywhere else. What's likely wrong?</summary>
+  <p>That layer's backward rule: a missing term, a missing transpose, or a missing 1/N. Uniformly large errors in one place are a bug; a few scattered failures near ReLU kinks are not.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does a 50-layer sigmoid network barely train its first layers, even with good initialization?</summary>
+  <p>The sigmoid's slope is at most ¼, so each layer shrinks the gradient by at least 4 on top of the weights' effect: after 50 layers that is a factor of 4<sup>50</sup> ≈ 10<sup>30</sup>.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Linnainmaa. <em>The Representation of the Cumulative Rounding Error of an Algorithm as a Taylor Expansion of the Local Rounding Errors.</em> Master's thesis, University of Helsinki, 1970 (reverse-mode differentiation).</li>
+  <li>Werbos. <em>Beyond Regression: New Tools for Prediction and Analysis in the Behavioral Sciences.</em> PhD thesis, Harvard, 1974.</li>
+  <li>Rumelhart, Hinton and Williams. <em>Learning Representations by Back-Propagating Errors.</em> Nature, 1986.</li>
+  <li>Hochreiter. <em>Untersuchungen zu dynamischen neuronalen Netzen.</em> Diploma thesis, TU Munich, 1991; Bengio, Simard and Frasconi. <em>Learning Long-Term Dependencies with Gradient Descent is Difficult.</em> IEEE Transactions on Neural Networks, 1994 (vanishing gradients).</li>
+  <li>Glorot and Bengio. <em>Understanding the Difficulty of Training Deep Feedforward Neural Networks.</em> AISTATS, 2010.</li>
+  <li>He, Zhang, Ren and Sun. <em>Delving Deep into Rectifiers.</em> ICCV, 2015 (<a href="https://arxiv.org/abs/1502.01852">arXiv 1502.01852</a>).</li>
+  <li>Pascanu, Mikolov and Bengio. <em>On the Difficulty of Training Recurrent Neural Networks.</em> ICML, 2013 (<a href="https://arxiv.org/abs/1211.5063">arXiv 1211.5063</a>; gradient clipping).</li>
+  <li>Chen, Xu, Zhang and Guestrin. <em>Training Deep Nets with Sublinear Memory Cost.</em> 2016 (<a href="https://arxiv.org/abs/1604.06174">arXiv 1604.06174</a>; activation checkpointing).</li>
+  <li>Baydin, Pearlmutter, Radul and Siskind. <em>Automatic Differentiation in Machine Learning: a Survey.</em> JMLR, 2018 (<a href="https://arxiv.org/abs/1502.05767">arXiv 1502.05767</a>).</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/autograd/__init__.py', 255, 403) }}"><code>torch/autograd/__init__.py</code></a>, <a href="{{ src('torch/autograd/function.py', 555, 655) }}"><code>torch/autograd/function.py</code></a> and <a href="{{ src('torch/autograd/gradcheck.py', 1999, 2105) }}"><code>torch/autograd/gradcheck.py</code></a>.</li>
+</ul>
