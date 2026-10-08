@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (fifteenth run). Spec v2 widens the section from model architectures
+**Last updated:** 2026-10-08 (sixteenth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: `transformer` and queue items 1-12, the last being `neurons-and-layers`.
-The next run builds `neurons-and-layers`.
+format. Ready pages: `transformer` and queue items 1-13, the last being `backpropagation`.
+The next run builds `optimizers`.
 
 ## Pins
 
@@ -180,6 +180,8 @@ The paths below are relative to `torch/nn/modules/` unless they give a fuller pa
 - `torch/nn/modules/module.py` (neurons-and-layers): `class Module` 407, `__init__` 482-525; `register_buffer` 528; `register_parameter` 592-641; `add_module` 642-669; `_wrapped_call_impl` 1779-1786; `_call_impl` 1787-1921 (no-hook fast path 1788-1794), `__call__` 1922; `__setattr__` 1976-2080; `state_dict` 2199; `parameters` 2670-2698; `named_parameters` 2699-2730; `train` 2894; `eval` 2916; `zero_grad` 2957.
 - `torch/nn/modules/container.py` (neurons-and-layers): `Sequential` 59-339 (`__init__` 115-122, `forward` 254-260); `ModuleList` 341-510; `ModuleDict` 511.
 - `torch/nn/modules/linear.py` (neurons-and-layers): `reset_parameters` 117-129, `forward` 130-135. `activation.py`: `ReLU` 104-152, `Sigmoid` 337, `Tanh` 407.
+- `torch/autograd/__init__.py` (backpropagation): `backward` 255-403, `grad` 434-621. `graph.py`: `_engine_run_backward` 1059-1083, the handoff to the C++ engine. `function.py`: `FunctionCtx.save_for_backward` 41-100, `_SingleLevelFunction.backward` 473-505, `Function` 555-655. `torch/_tensor.py`: `Tensor.backward` 566-625.
+- `torch/autograd/gradcheck.py`: `gradcheck` 1999-2105 (`eps=1e-6`, `atol=1e-5`, `rtol=1e-3`), `_compute_numerical_gradient` 358-394. `clip_grad.py`: `clip_grad_norm_` 185-232. `module.py`: `zero_grad` 2957-2985. `torch/utils/checkpoint.py`: `checkpoint` 423-619.
 
 ### scikit-learn 1.9.1 (start lines; check the end before linking a range)
 
@@ -371,6 +373,14 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 | `ml-models: add tested neurons-and-layers helpers` | `mlp_forward`, `collapse_linear`, `xor_network`, `relu_interpolant`, `evaluate_interpolant`, `approximation_fits`, `mlp_param_count`, and the XOR, sin-approximation and MNIST-MLP examples |
 | `ml-models: build the neurons-and-layers page` | The page, `ready`, queue ✓; adds `sin` to the template context |
 | `docs: record the neurons-and-layers run` | This table and the verified `module.py`/`container.py` ranges above |
+
+## Sixteenth run (2026-10-08) — thirteenth page of the 5-minute loop
+
+| Commit | What |
+|---|---|
+| `ml-models: add tested backpropagation helpers` | `backprop_pass`, `backprop_example` (one SGD step), `relative_error`, `gradient_check`, `gradient_check_all`, `gradient_norms_by_depth`, and the 2-3-2 network, gradient-check and 30-layer depth examples |
+| `ml-models: build the backpropagation page` | The page, `ready`, queue ✓ |
+| `docs: record the backpropagation run` | This table and the verified autograd, gradcheck and clip_grad ranges above |
 
 ## Queue
 
