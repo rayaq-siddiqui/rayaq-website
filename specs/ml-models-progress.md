@@ -4,7 +4,7 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (eighth run). Spec v2 widens the section from model architectures
+**Last updated:** 2026-10-08 (ninth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
 format. Ready pages: `transformer`, `tensors-and-shapes`, `vectors-and-dot-products`,
 `matrix-multiplication`, `derivatives-and-gradients`, `chain-rule`. The next run builds
@@ -167,6 +167,9 @@ The paths below are relative to `torch/nn/modules/` unless they give a fuller pa
   example).
 - `torch/autograd/functional.py`: `vjp` 271-363, `jvp` 366-476.
 - `torch/autograd/forward_ad.py`: `make_dual` 77-138; `dual_level` starts at 185.
+- `torch/distributions/normal.py`: `Normal` docstring 15-31; `__init__` 55-66; `sample` 77-80; `rsample` 82-85; `log_prob` 87-101; `cdf` 103-108; `icdf` 110-111; `entropy` starts at 113.
+- `torch/distributions/categorical.py`: `Categorical` with docstring 13-50; `__init__` 56-85; `sample` 144-149; `log_prob` 151-157; `entropy` 159-163.
+- `torch/distributions/bernoulli.py`: `Bernoulli` with docstring 20-40; `__init__` starts at 47; `sample` 116-119; `log_prob` 121-125; `entropy` 127-130.
 
 ### scikit-learn 1.9.1 (start lines; check the end before linking a range)
 
@@ -291,6 +294,14 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 | `ml-models: build the chain-rule page` | The page, `ready`, queue ✓; the derivatives page's chain-rule mentions become links |
 | `docs: record the chain-rule run` | This table and the verified `function.py`, `functional.py` and `forward_ad.py` ranges above |
 
+## Ninth run (2026-10-08) — sixth page of the 5-minute loop
+
+| Commit | What |
+|---|---|
+| `ml-models: add tested probability helpers` | `bernoulli_pmf`, `categorical_from_logits` (logsumexp-normalized, like `Categorical`), `inverse_cdf_sample`, `normal_log_prob`/`normal_pdf`/`normal_cdf`/`normal_band`, `joint_table`, and their example constants |
+| `ml-models: build the probability-and-distributions page` | The page, `ready`, queue ✓; `math.log` exposed to templates |
+| `docs: record the probability-and-distributions run` | This table and the verified `torch.distributions` ranges above |
+
 ## Queue
 
 1. `tensors-and-shapes` ✓
@@ -298,8 +309,8 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 3. `matrix-multiplication` ✓
 4. `derivatives-and-gradients` ✓
 5. `chain-rule` ✓
-6. `probability-and-distributions` ← next
-7. `expectation-and-variance`
+6. `probability-and-distributions` ✓
+7. `expectation-and-variance` ← next
 8. `entropy-and-kl`
 9. `loss-functions`
 10. `linear-regression`
