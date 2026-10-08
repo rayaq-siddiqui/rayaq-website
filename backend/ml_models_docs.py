@@ -456,7 +456,7 @@ PAGES = [
             "sklearn:sklearn/linear_model/_base.py",
             "sklearn:sklearn/linear_model/_ridge.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "logistic-regression",
@@ -2433,6 +2433,7 @@ def render(slug, render_template):
         "line_descent": line_descent,
         "symmetric_eigen_2x2": symmetric_eigen_2x2,
         "quadratic_ellipse": quadratic_ellipse,
+        "zip": zip,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

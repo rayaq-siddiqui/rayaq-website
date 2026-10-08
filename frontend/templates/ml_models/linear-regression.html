@@ -1,0 +1,644 @@
+{% set pairs = covariance_example.pairs %}
+{% set fit = least_squares_line(pairs) %}
+{% set normal = normal_equations(pairs|map("first")|batch(1)|list, pairs|map("last")|list) %}
+{% set gd = line_descent_example %}
+{% set raw = line_descent(pairs, gd.raw_lr, gd.raw_steps) %}
+{% set cen = line_descent(pairs, gd.centered_lr, gd.centered_steps, true) %}
+{% set h_raw = mse_hessian(pairs) %}
+{% set h_cen = mse_hessian(pairs, true) %}
+{% set eig = symmetric_eigen_2x2(h_raw) %}
+{% set reg = regularization_example %}
+{% set paths = regularization_paths(reg) %}
+{% macro f2(x) -%}{{ "%.2f"|format(x) }}{%- endmacro %}
+{% macro f3(x) -%}{{ "%.3f"|format(x) }}{%- endmacro %}
+{% macro num(x) -%}{{ "%g"|format(x) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Linear regression</h1>
+  <p class="tagline">
+    Fit a straight line (or a flat plane in many dimensions) by minimizing squared error. This
+    page derives the normal equations, solves the same problem by gradient descent and shows why
+    centering makes that fast, adds ridge and lasso penalties, reads residual plots and
+    coefficients, and follows scikit-learn's <code>LinearRegression</code>, <code>Ridge</code>
+    and <code>Lasso</code> through their solvers.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  You have examples with numeric features and a numeric target: hours studied and an exam
+  score, square footage and a sale price, ad spend and sign-ups. You want a rule that predicts
+  the target for new examples, and you want to read off how much each feature matters.
+</p>
+<p>
+  Linear regression is the simplest model that does both. It predicts with a weighted sum,
+  ŷ = w·x + b, so each weight says how much the prediction moves per unit of its feature. It
+  has a closed-form solution, so there is no learning rate to tune. And it is the baseline
+  every fancier model should beat: a neural network's last layer is a linear regression on
+  learned features, and many "deep" wins vanish once a linear model gets the same features.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Draw a line through a cloud of points. For each point, the vertical gap between the point and
+  the line is its <strong>residual</strong>, y − ŷ. Least squares picks the line that makes the
+  sum of squared residuals as small as possible. Squaring makes every gap count as positive,
+  punishes big misses hardest, and (as the
+  <a href="{{ url_for('ml_models', slug='loss-functions') }}">loss-functions</a> page shows)
+  is exactly what you get by assuming Gaussian noise around the line.
+</p>
+<p>
+  Two facts fall out of that choice. The best line always passes through the point of means
+  (x̄, ȳ). And its slope is the
+  <a href="{{ url_for('ml_models', slug='expectation-and-variance') }}">covariance</a> of x and
+  y divided by the variance of x: how much y moves with x, per unit of x's own spread.
+</p>
+
+<div class="jj-diagram">
+  {% macro px(x) -%}{{ 50 + 70 * (x - 0.5) }}{%- endmacro %}
+  {% macro py(y) -%}{{ 220 - 3.6 * (y - 40) }}{%- endmacro %}
+  {% macro qx(f) -%}{{ 470 + 5 * (f - 45) }}{%- endmacro %}
+  {% macro qy(r) -%}{{ 140 - 14 * r }}{%- endmacro %}
+  <svg viewBox="0 0 680 270" role="img" aria-labelledby="lr-fit-title lr-fit-desc">
+    <title id="lr-fit-title">The least-squares line through five students, and its residual plot</title>
+    <desc id="lr-fit-desc">
+      Left: exam score against hours studied for five students, at
+      {% for x, y in pairs %}({{ x }}, {{ y }}){{ ", " if not loop.last }}{% endfor %}. The
+      fitted line ŷ = {{ num(fit.slope) }}x + {{ num(fit.intercept) }} runs through them, with a
+      vertical segment from each point to the line showing its residual:
+      {{ fit.residuals|map("round", 2)|join(", ") }}. Right: the same residuals plotted against
+      the fitted values {{ fit.fitted|map("round", 1)|join(", ") }}, scattered around a
+      horizontal zero line with no trend; the third student sits 5 points below.
+    </desc>
+    <line x1="{{ px(0.5) }}" y1="{{ py(40) }}" x2="{{ px(5.5) }}" y2="{{ py(40) }}" class="d-line"></line>
+    <line x1="{{ px(0.5) }}" y1="{{ py(40) }}" x2="{{ px(0.5) }}" y2="{{ py(90) }}" class="d-line"></line>
+    <line x1="{{ px(0.5) }}" y1="{{ py(fit.intercept + fit.slope * 0.5) }}" x2="{{ px(5.5) }}" y2="{{ py(fit.intercept + fit.slope * 5.5) }}" stroke="var(--jj-accent)" stroke-width="2"></line>
+    {% for (x, y), f in zip(pairs, fit.fitted) %}
+      <line x1="{{ px(x) }}" y1="{{ py(y) }}" x2="{{ px(x) }}" y2="{{ py(f) }}" stroke="var(--jj-red)" stroke-width="2"></line>
+      <circle cx="{{ px(x) }}" cy="{{ py(y) }}" r="5" style="fill: var(--jj-amber)"></circle>
+      <text x="{{ px(x) }}" y="236" font-size="12" text-anchor="middle">{{ x }}</text>
+    {% endfor %}
+    {% for t in [40, 60, 80] %}
+      <text x="{{ px(0.5)|float - 6 }}" y="{{ py(t)|float + 4 }}" font-size="12" text-anchor="end">{{ t }}</text>
+    {% endfor %}
+    <circle cx="{{ px(3) }}" cy="{{ py(66) }}" r="4" fill="none" stroke="var(--jj-accent)" stroke-width="2"></circle>
+    <text x="{{ px(3)|float - 10 }}" y="{{ py(66)|float - 10 }}" font-size="12" text-anchor="end" style="fill: var(--jj-accent)">(x̄, ȳ) = (3, 66)</text>
+    <text x="{{ px(5.4) }}" y="{{ py(90) }}" font-size="12" text-anchor="end" style="fill: var(--jj-accent)">ŷ = {{ num(fit.slope) }}x + {{ num(fit.intercept) }}</text>
+    <text x="{{ px(3)|float + 8 }}" y="{{ py(63.5) }}" font-size="12" style="fill: var(--jj-red)">−5</text>
+    <text x="{{ px(3) }}" y="256" font-size="12" text-anchor="middle" class="d-muted">hours studied</text>
+    <text x="{{ px(0.5)|float + 4 }}" y="{{ py(90)|float - 8 }}" font-size="12" class="d-muted">score</text>
+
+    <line x1="{{ qx(45) }}" y1="{{ qy(0) }}" x2="{{ qx(85) }}" y2="{{ qy(0) }}" class="d-line ml-dashed"></line>
+    <line x1="{{ qx(45) }}" y1="{{ qy(-6) }}" x2="{{ qx(45) }}" y2="{{ qy(4) }}" class="d-line"></line>
+    {% for f, r in zip(fit.fitted, fit.residuals) %}
+      <line x1="{{ qx(f) }}" y1="{{ qy(0) }}" x2="{{ qx(f) }}" y2="{{ qy(r) }}" stroke="var(--jj-red)" stroke-width="2"></line>
+      <circle cx="{{ qx(f) }}" cy="{{ qy(r) }}" r="5" style="fill: var(--jj-amber)"></circle>
+    {% endfor %}
+    {% for t in [-5, 0, 3] %}
+      <text x="{{ qx(45)|float - 6 }}" y="{{ qy(t)|float + 4 }}" font-size="12" text-anchor="end">{{ t }}</text>
+    {% endfor %}
+    {% for t in [50, 65, 80] %}
+      <text x="{{ qx(t) }}" y="236" font-size="12" text-anchor="middle">{{ t }}</text>
+    {% endfor %}
+    <text x="{{ qx(65) }}" y="256" font-size="12" text-anchor="middle" class="d-muted">fitted value ŷ</text>
+    <text x="{{ qx(45)|float + 4 }}" y="{{ qy(4)|float - 8 }}" font-size="12" class="d-muted">residual y − ŷ</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Left: the fit and its residuals. Right: the residual plot. Residuals sum to zero and show no
+  pattern against the fitted values, which is what a well-specified linear model leaves behind.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="model-and-loss">The model and the loss</h3>
+
+<p>
+  Stack n examples with d features into a matrix X (n × d) and the targets into a vector y.
+  Append a column of ones to X so the intercept becomes one more weight; then the model is a
+  single <a href="{{ url_for('ml_models', slug='matrix-multiplication') }}">matrix-vector
+  product</a>:
+</p>
+<p class="ml-formula">ŷ = Xw &nbsp;&nbsp; L(w) = (1/n)‖y − Xw‖² = (1/n) Σ<sub>i</sub> (y<sub>i</sub> − x<sub>i</sub>·w)²</p>
+<p>
+  "Linear" means linear in the weights, not in the raw inputs. Columns of X can be x², log x,
+  one-hot categories or products of features; the solver doesn't care.
+</p>
+
+<h3 id="normal-equations">The normal equations, derived</h3>
+
+<p>
+  L is a quadratic bowl in w, so its minimum is where the
+  <a href="{{ url_for('ml_models', slug='derivatives-and-gradients') }}">gradient</a> is zero.
+  Expand ‖y − Xw‖² = yᵀy − 2wᵀXᵀy + wᵀXᵀXw and differentiate term by term:
+</p>
+<p class="ml-formula">∇L = (2/n)(XᵀXw − Xᵀy) = 0 &nbsp;⟹&nbsp; XᵀX w = Xᵀy</p>
+<p>
+  These are the <strong>normal equations</strong>: d equations in d unknowns. When the columns
+  of X are linearly independent, XᵀX is invertible and the solution is unique. The name is
+  geometric: rearranged, they say Xᵀ(y − Xw) = 0, so the residual vector is normal
+  (perpendicular) to every column of X. Two consequences you can check on any fit: with an
+  intercept column, the residuals sum to zero; and they are uncorrelated with every feature.
+</p>
+<p>
+  The Hessian, (2/n)XᵀX, is constant and positive semidefinite, so the loss is convex: there
+  are no local minima to get stuck in, only one bowl.
+</p>
+
+<h3 id="how-it-is-solved">How it is actually solved</h3>
+
+<p>
+  Writing w = (XᵀX)⁻¹Xᵀy is fine on paper and bad in floating point. Forming XᵀX squares the
+  condition number of X, so a problem that loses three digits of precision loses six. Real
+  solvers factor X itself: QR, or the SVD X = UΣVᵀ, which gives w = VΣ⁺Uᵀy and handles
+  rank-deficient X by zeroing tiny singular values (the minimum-norm solution).
+</p>
+<p>
+  scikit-learn's <code>LinearRegression.fit</code> does three things. First,
+  <a href="{{ skl('sklearn/linear_model/_base.py', 113, 220) }}"><code>_preprocess_data</code></a>
+  subtracts the column means from X and the mean from y, so the intercept drops out of the
+  problem. Then, for dense X, it calls
+  <a href="{{ skl('sklearn/linear_model/_base.py', 751, 755) }}"><code>scipy.linalg.lstsq</code></a>
+  on the centered data, an SVD-based least-squares solve (sparse X goes to the iterative
+  <code>lsqr</code> instead, and <code>positive=True</code> to non-negative least squares).
+  Finally
+  <a href="{{ skl('sklearn/linear_model/_base.py', 318, 334) }}"><code>_set_intercept</code></a>
+  recovers b = ȳ − x̄·w, the "line passes through the means" fact from above.
+</p>
+
+<h3 id="gradient-descent">Gradient descent on the same problem</h3>
+
+<p>
+  When d is huge or the data doesn't fit in memory, you skip the factorization and walk
+  downhill instead: w ← w − η∇L. Because the loss is a fixed quadratic, how fast that walk goes
+  is set entirely by the Hessian's eigenvalues. Gradient descent is stable only for
+  η &lt; 2/λ<sub>max</sub>, and with that step size the flat direction, with eigenvalue
+  λ<sub>min</sub>, shrinks by only about a factor (1 − 2λ<sub>min</sub>/λ<sub>max</sub>) per
+  step. The ratio λ<sub>max</sub>/λ<sub>min</sub>, the <strong>condition number</strong>, is
+  the number to watch.
+</p>
+<p>
+  For the five students with raw x, the Hessian over (w, b) is
+  [[{{ num(h_raw[0][0]) }}, {{ num(h_raw[0][1]) }}], [{{ num(h_raw[1][0]) }}, {{ num(h_raw[1][1]) }}]],
+  with eigenvalues {{ f2(eig["values"][0]) }} and {{ f3(eig["values"][1]) }}: a condition number
+  of {{ "%.0f"|format(eig["values"][0] / eig["values"][1]) }}. The bowl is a long, narrow valley
+  because slope and intercept trade off against each other: raise the slope and you must lower
+  the intercept to keep the line through the data. Center x first and the cross term vanishes:
+  the Hessian becomes diag({{ num(h_cen[0][0]) }}, {{ num(h_cen[1][1]) }}), condition number 2.
+  That is one reason <code>_preprocess_data</code> centers, and why you standardize features
+  before training anything by gradient descent.
+</p>
+
+<div class="jj-diagram">
+  {% macro ax(w) -%}{{ 45 + 14 * w }}{%- endmacro %}
+  {% macro ay(b) -%}{{ 222 - 3.8 * b }}{%- endmacro %}
+  {% macro cx(w) -%}{{ 385 + 14 * w }}{%- endmacro %}
+  {% macro cy(c) -%}{{ 222 - 2.8 * c }}{%- endmacro %}
+  <svg viewBox="0 0 680 270" role="img" aria-labelledby="lr-gd-title lr-gd-desc">
+    <title id="lr-gd-title">Gradient descent on the squared-error bowl, raw x versus centered x</title>
+    <desc id="lr-gd-desc">
+      Two contour plots of mean squared error over slope w and intercept. Left, raw x: the
+      contours are long thin ellipses tilted along a valley where slope and intercept trade off.
+      Gradient descent with learning rate {{ num(gd.raw_lr) }} from (0, 0) jumps to
+      ({{ raw[1]|map("round", 2)|join(", ") }}) in one step, then crawls down the valley: after
+      100 steps it is at ({{ raw[100]|map("round", 2)|join(", ") }}) and after
+      {{ gd.raw_steps }} steps at ({{ raw[gd.raw_steps]|map("round", 2)|join(", ") }}), still
+      short of the optimum (7.5, 43.5). Right, centered x: the contours are axis-aligned and
+      gradient descent with learning rate {{ num(gd.centered_lr) }} reaches the optimum
+      (7.5, 66) in about {{ gd.centered_steps }} steps.
+    </desc>
+    <defs>
+      <clipPath id="lr-gd-left"><rect x="{{ ax(-1) }}" y="{{ ay(54) }}" width="{{ 14 * 20 }}" height="{{ 3.8 * 58 }}"></rect></clipPath>
+      <clipPath id="lr-gd-right"><rect x="{{ cx(-1) }}" y="{{ cy(72) }}" width="{{ 14 * 20 }}" height="{{ 2.8 * 76 }}"></rect></clipPath>
+    </defs>
+    <g clip-path="url(#lr-gd-left)">
+      {% for level in [10, 60, 300, 1200, 4000] %}
+        {% set pts = quadratic_ellipse(h_raw, [fit.slope, fit.intercept], level) %}
+        <path d="M{% for w, b in pts %}{% if not loop.first %} L{% endif %}{{ ax(w) }},{{ ay(b) }}{% endfor %}" fill="none" class="d-line" opacity="0.6"></path>
+      {% endfor %}
+      <path d="M{% for w, b in raw %}{% if not loop.first %} L{% endif %}{{ ax(w) }},{{ ay(b) }}{% endfor %}" fill="none" stroke="var(--jj-red)" stroke-width="2"></path>
+    </g>
+    <g clip-path="url(#lr-gd-right)">
+      {% for level in [10, 60, 300, 1200, 4000] %}
+        {% set pts = quadratic_ellipse(h_cen, [fit.slope, 66], level) %}
+        <path d="M{% for w, c in pts %}{% if not loop.first %} L{% endif %}{{ cx(w) }},{{ cy(c) }}{% endfor %}" fill="none" class="d-line" opacity="0.6"></path>
+      {% endfor %}
+      <path d="M{% for w, c in cen %}{% if not loop.first %} L{% endif %}{{ cx(w) }},{{ cy(c) }}{% endfor %}" fill="none" stroke="var(--jj-green)" stroke-width="2"></path>
+    </g>
+    <rect x="{{ ax(-1) }}" y="{{ ay(54) }}" width="{{ 14 * 20 }}" height="{{ 3.8 * 58 }}" fill="none" class="d-line"></rect>
+    <rect x="{{ cx(-1) }}" y="{{ cy(72) }}" width="{{ 14 * 20 }}" height="{{ 2.8 * 76 }}" fill="none" class="d-line"></rect>
+    {% for step in gd.marks %}
+      <circle cx="{{ ax(raw[step][0]) }}" cy="{{ ay(raw[step][1]) }}" r="4" style="fill: var(--jj-red)"></circle>
+    {% endfor %}
+    <text x="{{ ax(raw[1][0])|float - 10 }}" y="{{ ay(raw[1][1])|float + 16 }}" font-size="12" text-anchor="end" style="fill: var(--jj-red)">step 1</text>
+    <text x="{{ ax(raw[100][0])|float + 8 }}" y="{{ ay(raw[100][1])|float + 4 }}" font-size="12" style="fill: var(--jj-red)">100</text>
+    <text x="{{ ax(raw[300][0])|float + 12 }}" y="{{ ay(raw[300][1])|float + 12 }}" font-size="12" style="fill: var(--jj-red)">300</text>
+    <circle cx="{{ ax(fit.slope) }}" cy="{{ ay(fit.intercept) }}" r="4" fill="none" stroke="var(--jj-accent)" stroke-width="2"></circle>
+    <text x="{{ ax(fit.slope)|float - 10 }}" y="{{ ay(fit.intercept)|float - 8 }}" font-size="12" text-anchor="end" style="fill: var(--jj-accent)">optimum</text>
+    <circle cx="{{ cx(0) }}" cy="{{ cy(0) }}" r="3" style="fill: var(--jj-green)"></circle>
+    {% for step in [1, 2, gd.centered_steps] %}
+      <circle cx="{{ cx(cen[step][0]) }}" cy="{{ cy(cen[step][1]) }}" r="4" style="fill: var(--jj-green)"></circle>
+    {% endfor %}
+    <circle cx="{{ cx(fit.slope) }}" cy="{{ cy(66) }}" r="7" fill="none" stroke="var(--jj-accent)" stroke-width="2"></circle>
+    <text x="{{ cx(cen[1][0])|float + 8 }}" y="{{ cy(cen[1][1])|float + 4 }}" font-size="12" style="fill: var(--jj-green)">step 1</text>
+    <text x="{{ cx(fit.slope)|float + 10 }}" y="{{ cy(66)|float + 4 }}" font-size="12" style="fill: var(--jj-green)">{{ gd.centered_steps }} steps</text>
+    <text x="{{ ax(9) }}" y="{{ ay(54)|float - 8 }}" font-size="12" text-anchor="middle">raw x: condition number {{ "%.0f"|format(eig["values"][0] / eig["values"][1]) }}, η = {{ num(gd.raw_lr) }}</text>
+    <text x="{{ cx(9) }}" y="{{ cy(72)|float - 8 }}" font-size="12" text-anchor="middle">centered x: condition number 2, η = {{ num(gd.centered_lr) }}</text>
+    {% for t in [0, 9, 18] %}
+      <text x="{{ ax(t) }}" y="{{ ay(-4)|float + 16 }}" font-size="12" text-anchor="middle">{{ t }}</text>
+      <text x="{{ cx(t) }}" y="{{ cy(-4)|float + 16 }}" font-size="12" text-anchor="middle">{{ t }}</text>
+    {% endfor %}
+    {% for t in [0, 25, 50] %}
+      <text x="{{ ax(-1)|float - 4 }}" y="{{ ay(t)|float + 4 }}" font-size="12" text-anchor="end">{{ t }}</text>
+    {% endfor %}
+    {% for t in [0, 35, 70] %}
+      <text x="{{ cx(-1)|float - 4 }}" y="{{ cy(t)|float + 4 }}" font-size="12" text-anchor="end">{{ t }}</text>
+    {% endfor %}
+    <text x="{{ ax(9) }}" y="264" font-size="12" text-anchor="middle" class="d-muted">slope w (vertical: intercept b)</text>
+    <text x="{{ cx(9) }}" y="264" font-size="12" text-anchor="middle" class="d-muted">slope w (vertical: intercept on centered x)</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Same data, same loss, same algorithm. With raw x the first step overshoots into the valley
+  and the next {{ gd.raw_steps - 1 }} creep along it; centering removes the slope-intercept
+  coupling and the path goes almost straight to the minimum.
+</p>
+
+<h3 id="ridge-and-lasso">Ridge and lasso</h3>
+
+<p>
+  Least squares trusts the data completely. With many features, few examples, or features that
+  move together, that trust is misplaced: tiny changes in the data swing the weights wildly,
+  and XᵀX can be singular. Regularization adds a penalty on the size of w.
+</p>
+<p>
+  <strong>Ridge</strong> (L2) adds α‖w‖². The normal equations become
+  (XᵀX + αI)w = Xᵀy, which is invertible for any α &gt; 0. In SVD terms, the component of the
+  solution along each singular direction is scaled by s/(s² + α) instead of 1/s: directions
+  with small singular values, the unstable ones, are shrunk the most. Ridge shrinks every
+  weight toward zero but never exactly to zero, and when two features are correlated it splits
+  the credit between them.
+</p>
+<p>
+  <strong>Lasso</strong> (L1) adds α‖w‖₁. There is no closed form, because |w| has a kink at
+  zero. Coordinate descent solves it: cycle through the weights, and for each one compute the
+  least-squares value ρ given all the others, then apply the <strong>soft threshold</strong>
+  w<sub>j</sub> = sign(ρ)·max(|ρ| − α, 0). Any weight whose correlation with the remaining
+  residual is below α is set to exactly zero, so lasso selects features.
+</p>
+<p>
+  Both have a probabilistic reading: ridge is the maximum a posteriori estimate under a
+  Gaussian prior on w, lasso under a Laplace prior. <strong>Elastic net</strong> mixes the two
+  penalties to get lasso's sparsity with ridge's stable handling of correlated groups.
+</p>
+<p>
+  Two scaling details bite in practice. The penalty treats all weights alike, so features must
+  be on comparable scales (standardize first, or the penalty mostly punishes whichever feature
+  has the smallest units). And scikit-learn's two objectives are scaled differently:
+  <code>Ridge</code> minimizes ‖y − Xw‖² + α‖w‖², while <code>Lasso</code> minimizes
+  (1/(2n))‖y − Xw‖² + α‖w‖₁, so the same α means very different things in each.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Term</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>LinearRegression</code></td>
+        <td><code>fit_intercept</code>, <code>positive</code>, <code>tol</code></td>
+        <td>Ordinary least squares; stores <code>coef_</code>, <code>intercept_</code>, <code>rank_</code>, <code>singular_</code>.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_base.py', 519, 765) }}"><code>_base.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_preprocess_data</code></td>
+        <td>X (n, d), y (n,) → centered copies, offsets</td>
+        <td>Subtracts column means so the intercept leaves the problem.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_base.py', 113, 220) }}"><code>_preprocess_data</code></a></td>
+      </tr>
+      <tr>
+        <td>dense solve</td>
+        <td><code>linalg.lstsq(X, y, cond=tol)</code></td>
+        <td>SVD-based least squares on the centered data; sparse input uses <code>lsqr</code>, <code>positive=True</code> uses <code>nnls</code>.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_base.py', 700, 760) }}"><code>LinearRegression.fit</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_set_intercept</code></td>
+        <td><code>X_offset</code>, <code>y_offset</code></td>
+        <td>b = ȳ − x̄·w: puts the intercept back.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_base.py', 318, 334) }}"><code>_set_intercept</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Ridge</code></td>
+        <td><code>alpha</code>, <code>solver</code></td>
+        <td>Minimizes ‖y − Xw‖² + α‖w‖².</td>
+        <td><a href="{{ skl('sklearn/linear_model/_ridge.py', 1022, 1287) }}"><code>_ridge.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>resolve_solver_for_numpy</code></td>
+        <td><code>positive</code>, <code>return_intercept</code>, <code>is_sparse</code></td>
+        <td><code>solver="auto"</code>: lbfgs if positive, sag to fit the intercept directly, cholesky for dense, sparse_cg for sparse.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_ridge.py', 867, 878) }}"><code>resolve_solver_for_numpy</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_solve_cholesky</code></td>
+        <td>A = XᵀX (d, d)</td>
+        <td>Adds α to the diagonal in place, then solves (XᵀX + αI)w = Xᵀy.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_ridge.py', 215, 234) }}"><code>_solve_cholesky</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_solve_svd</code></td>
+        <td>U, s, Vᵀ of X</td>
+        <td>Scales each singular direction by s/(s² + α).</td>
+        <td><a href="{{ skl('sklearn/linear_model/_ridge.py', 299, 309) }}"><code>_solve_svd</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Lasso</code></td>
+        <td><code>alpha</code>, <code>max_iter</code>, <code>tol</code></td>
+        <td>Minimizes (1/(2n))‖y − Xw‖² + α‖w‖₁; a special case of <code>ElasticNet</code>.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_coordinate_descent.py', 1329, 1517) }}"><code>_coordinate_descent.py</code></a></td>
+      </tr>
+      <tr>
+        <td>soft-threshold update</td>
+        <td><code>w[j]</code>, residual <code>R</code></td>
+        <td>The coordinate-descent step: shrink ρ by α (scaled by n inside the solver), clip at zero, update the residual.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_cd_fast.pyx', 439, 452) }}"><code>_cd_fast.pyx</code></a></td>
+      </tr>
+      <tr>
+        <td><code>torch.linalg.lstsq</code></td>
+        <td>A (m, n), B (m, k)</td>
+        <td>PyTorch's least-squares solve, batched and on GPU.</td>
+        <td><a href="{{ src('torch/linalg/__init__.py', 1078, 1200) }}"><code>linalg/__init__.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.Linear</code></td>
+        <td>weight (out, in), bias (out,)</td>
+        <td>The same model as a layer, for fitting by gradient descent.</td>
+        <td><a href="{{ src('torch/nn/modules/linear.py', 53, 147) }}"><code>linear.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>Five students, by hand.</strong> Hours studied x = {{ pairs|map("first")|join(", ") }}
+    and scores y = {{ pairs|map("last")|join(", ") }}. With a column of ones appended, the
+    normal equations are
+  </p>
+  <p class="ml-formula">
+    XᵀX = [[{{ normal.gram[0]|join(", ") }}], [{{ normal.gram[1]|join(", ") }}]] &nbsp;
+    Xᵀy = [{{ normal.moment|join(", ") }}]
+  </p>
+  <p>
+    The second row reads 15w + 5b = 330, so b = 66 − 3w: the line goes through (3, 66), the
+    means. Substituting into the first row, 55w + 15(66 − 3w) = 1065 gives 10w = 75, so
+    w = {{ num(normal.solution[0]) }} and b = {{ f2(normal.solution[1])|float }}. Each extra
+    hour is worth {{ num(fit.slope) }} points.
+  </p>
+  <ul>
+    <li>Fitted values: {{ fit.fitted|map("round", 1)|join(", ") }}.</li>
+    <li>Residuals: {{ fit.residuals|map("round", 2)|join(", ") }}. They sum to zero, as the intercept column demands.</li>
+    <li>SSE = {{ num(fit.sse) }}, so MSE = {{ num(fit.mse) }}. The total variation around the mean is SST = {{ num(fit.sst) }}.</li>
+    <li>R² = 1 − SSE/SST = {{ f3(fit.r2) }}: the line explains about {{ "%.0f"|format(100 * fit.r2) }}% of the variation in scores.</li>
+  </ul>
+  <p>
+    The residual plot shows no curve and no funnel; the one large residual (−5, the third
+    student) is the only thing worth a second look.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <p>
+    <strong>Three features, two of them twins.</strong> Eight students, with
+    {{ reg.features|join(", ") }} as features and the exam score as target. Hours studied and
+    practice tests have correlation {{ f3(paths.corr[0][1]) }}; sleep is nearly independent of
+    both ({{ f3(paths.corr[0][2]) }}). After standardizing each feature, ordinary least squares
+    gives coefficients {{ paths.ols|map("round", 2)|join(", ") }} (score points per standard
+    deviation).
+  </p>
+  <ul>
+    {% set r10 = (paths.ridge|selectattr("alpha", "equalto", 10)|first).coef %}
+    {% set r80 = (paths.ridge|selectattr("alpha", "equalto", 80)|first).coef %}
+    {% set l1 = (paths.lasso|selectattr("alpha", "equalto", 1.0)|first).coef %}
+    {% set l5 = (paths.lasso|selectattr("alpha", "equalto", 5.0)|first).coef %}
+    <li>Ridge with α = 10 gives {{ r10|map("round", 2)|join(", ") }}; with α = 80, {{ r80|map("round", 2)|join(", ") }}. The twins end up with nearly equal weight, and sleep shrinks but stays.</li>
+    <li>Lasso with α = 1 gives {{ l1|map("round", 2)|join(", ") }}: sleep is gone. With α = 5, {{ l5|map("round", 2)|join(", ") }}. Practice tests leave near α = 8 and hours studied near α = 13.2.</li>
+  </ul>
+</div>
+
+<div class="jj-diagram">
+  {% macro rx(a) -%}{{ 60 + 3.4 * a }}{%- endmacro %}
+  {% macro lx(a) -%}{{ 390 + 19.5 * a }}{%- endmacro %}
+  {% macro cy(c) -%}{{ 210 - 18 * c }}{%- endmacro %}
+  {% set colors = ["var(--jj-accent)", "var(--jj-amber)", "var(--jj-green)"] %}
+  <svg viewBox="0 0 680 270" role="img" aria-labelledby="lr-path-title lr-path-desc">
+    <title id="lr-path-title">Ridge and lasso coefficient paths as the penalty grows</title>
+    <desc id="lr-path-desc">
+      Standardized coefficients for hours studied, practice tests taken and hours of sleep as the
+      penalty α grows. Left, ridge from α 0 to 80: hours studied falls from
+      {{ f2(paths.ols[0]) }}, practice tests first rises to about 5.4 then falls, and the two
+      converge to nearly the same value; sleep shrinks smoothly from {{ f2(paths.ols[2]) }} and
+      never reaches zero. Right, lasso from α 0 to 14: sleep hits zero near α 0.6, practice tests
+      near 8 and hours studied near 13.2; each path is a straight line between
+      those events.
+    </desc>
+    <line x1="{{ rx(0) }}" y1="{{ cy(0) }}" x2="{{ rx(80) }}" y2="{{ cy(0) }}" class="d-line"></line>
+    <line x1="{{ rx(0) }}" y1="{{ cy(0) }}" x2="{{ rx(0) }}" y2="{{ cy(10) }}" class="d-line"></line>
+    <line x1="{{ lx(0) }}" y1="{{ cy(0) }}" x2="{{ lx(14) }}" y2="{{ cy(0) }}" class="d-line"></line>
+    <line x1="{{ lx(0) }}" y1="{{ cy(0) }}" x2="{{ lx(0) }}" y2="{{ cy(10) }}" class="d-line"></line>
+    {% for j in range(3) %}
+      <path d="M{% for e in paths.ridge %}{% if not loop.first %} L{% endif %}{{ rx(e.alpha) }},{{ cy(e.coef[j]) }}{% endfor %}" fill="none" stroke="{{ colors[j] }}" stroke-width="2"></path>
+      <path d="M{% for e in paths.lasso %}{% if not loop.first %} L{% endif %}{{ lx(e.alpha) }},{{ cy(e.coef[j]) }}{% endfor %}" fill="none" stroke="{{ colors[j] }}" stroke-width="2"></path>
+    {% endfor %}
+    {% for t in [0, 40, 80] %}
+      <text x="{{ rx(t) }}" y="{{ cy(0)|float + 18 }}" font-size="12" text-anchor="middle">{{ t }}</text>
+    {% endfor %}
+    {% for t in [0, 7, 14] %}
+      <text x="{{ lx(t) }}" y="{{ cy(0)|float + 18 }}" font-size="12" text-anchor="middle">{{ t }}</text>
+    {% endfor %}
+    {% for t in [0, 5, 10] %}
+      <text x="{{ rx(0)|float - 6 }}" y="{{ cy(t)|float + 4 }}" font-size="12" text-anchor="end">{{ t }}</text>
+      <text x="{{ lx(0)|float - 6 }}" y="{{ cy(t)|float + 4 }}" font-size="12" text-anchor="end">{{ t }}</text>
+    {% endfor %}
+    <text x="{{ rx(40) }}" y="{{ cy(10)|float - 4 }}" font-size="12" text-anchor="middle">ridge (L2)</text>
+    <text x="{{ lx(7) }}" y="{{ cy(10)|float - 4 }}" font-size="12" text-anchor="middle">lasso (L1)</text>
+    <text x="{{ rx(40) }}" y="{{ cy(0)|float + 36 }}" font-size="12" text-anchor="middle" class="d-muted">α</text>
+    <text x="{{ lx(7) }}" y="{{ cy(0)|float + 36 }}" font-size="12" text-anchor="middle" class="d-muted">α</text>
+    <text x="{{ rx(4) }}" y="{{ cy(8.4) }}" font-size="12" style="fill: var(--jj-accent)">hours studied</text>
+    <text x="{{ rx(9) }}" y="{{ cy(5.6) }}" font-size="12" style="fill: var(--jj-amber)">practice tests</text>
+    <text x="{{ rx(30) }}" y="{{ cy(0.4)|float - 4 }}" font-size="12" style="fill: var(--jj-green)">sleep</text>
+    <text x="{{ lx(8.5) }}" y="{{ cy(6) }}" font-size="12" style="fill: var(--jj-accent)">hours studied</text>
+    <text x="{{ lx(1.2) }}" y="{{ cy(2.6) }}" font-size="12" style="fill: var(--jj-amber)">practice tests</text>
+    <text x="{{ lx(0.9) }}" y="{{ cy(0)|float - 6 }}" font-size="12" style="fill: var(--jj-green)">sleep → 0</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Ridge bends every path smoothly toward zero and pulls the correlated pair together; lasso's
+  paths are piecewise straight and hit zero one feature at a time, weakest first.
+</p>
+
+<h3 id="interpreting-coefficients">Interpreting coefficients</h3>
+
+<p>
+  A coefficient is the change in prediction per unit change in its feature, <em>holding the
+  other features fixed</em>. Three cautions follow.
+</p>
+<ul>
+  <li>
+    <strong>Units.</strong> A raw coefficient's size depends on the feature's units, so compare
+    standardized coefficients (per standard deviation) when asking which feature matters more.
+    To turn hours studied's {{ f2(paths.ols[0]) }} per standard deviation back into points per
+    hour, divide by its standard deviation, about 2.29: roughly 3.95 points per hour.
+  </li>
+  <li>
+    <strong>Correlation.</strong> "Holding the others fixed" is a counterfactual the data may
+    never show. When two features rise together, the fit can trade weight between them at
+    almost no cost in error, so the split {{ f2(paths.ols[0]) }} versus {{ f2(paths.ols[1]) }}
+    above is fragile. Their sum is well determined; the individual values aren't.
+  </li>
+  <li>
+    <strong>Causation.</strong> A coefficient measures association conditional on the included
+    features. Leave out a confounder and the coefficient absorbs its effect.
+  </li>
+</ul>
+
+<h3 id="residual-plots">Reading residual plots</h3>
+
+<p>
+  Plot residuals against fitted values (or against each feature) after every fit. A
+  well-specified model leaves a structureless band around zero. A curve means a missing
+  nonlinear term: add x² or a spline. A funnel that widens with ŷ means the noise grows with
+  the prediction (heteroscedasticity): model log y, or use weights. A few points far outside
+  the band are outliers that squared error lets dominate: check them, or switch to a Huber
+  loss. A trend against time or row order means the examples aren't independent.
+</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+import torch.nn.functional as F
+
+x = torch.tensor([[1.0], [2.0], [3.0], [4.0], [5.0]])
+y = torch.tensor([[52.0], [60.0], [61.0], [75.0], [82.0]])
+
+# closed form: append a column of ones and solve least squares
+A = torch.cat([x, torch.ones_like(x)], dim=1)
+torch.linalg.lstsq(A, y).solution            # tensor([[ 7.5000], [43.5000]])
+
+# gradient descent: center x first so the bowl is round
+model = torch.nn.Linear(1, 1)
+opt = torch.optim.SGD(model.parameters(), lr=0.2)
+xc = x - x.mean()
+for _ in range(100):
+    opt.zero_grad()
+    loss = F.mse_loss(model(xc), y)
+    loss.backward()
+    opt.step()
+model.weight, model.bias                     # ≈ 7.5 and 66.0 (the intercept at x̄ = 3)</code></pre>
+
+<pre><code>from sklearn.linear_model import Lasso, LinearRegression, Ridge
+from sklearn.preprocessing import StandardScaler
+
+X = [[1, 2, 7], [2, 1, 6], [3, 4, 5], [4, 3, 6], [5, 6, 9], [6, 5, 9], [7, 8, 4], [8, 7, 7]]
+y = [49, 49, 59, 61, 71, 76, 83, 85]
+Z = StandardScaler().fit_transform(X)
+
+LinearRegression().fit(Z, y).coef_           # [9.04, 4.51, 0.60]
+Ridge(alpha=10).fit(Z, y).coef_              # [4.26, 3.93, 0.44]
+Lasso(alpha=1.0).fit(Z, y).coef_             # [8.84, 3.69, 0.  ]</code></pre>
+
+<p>The pieces in plain Python:</p>
+
+<pre><code>def fit_line(xs, ys):
+    n = len(xs)
+    mx, my = sum(xs) / n, sum(ys) / n
+    slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sum((x - mx) ** 2 for x in xs)
+    return slope, my - slope * mx
+
+def soft_threshold(rho, alpha):
+    return max(abs(rho) - alpha, 0.0) * (1 if rho &gt; 0 else -1)
+
+def lasso(Z, y, alpha, sweeps=500):
+    """Coordinate descent for (1/2n)||y - Zw||^2 + alpha*||w||_1; Z standardized, y centered."""
+    n, d = len(Z), len(Z[0])
+    w, r = [0.0] * d, list(y)
+    for _ in range(sweeps):
+        for j in range(d):
+            rho = sum(row[j] * ri for row, ri in zip(Z, r)) / n + w[j]
+            new = soft_threshold(rho, alpha)
+            r = [ri - row[j] * (new - w[j]) for row, ri in zip(Z, r)]
+            w[j] = new
+    return w
+
+fit_line([1, 2, 3, 4, 5], [52, 60, 61, 75, 82])   # (7.5, 43.5)</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Closed form versus iterative.</strong> A direct solve costs about nd² + d³ and needs
+    X in memory; it is exact and has no learning rate. Gradient descent costs nd per step and
+    streams data, so it wins when d is large or n doesn't fit, but its speed depends on
+    conditioning and you must pick a step size.
+  </li>
+  <li>
+    <strong>Ridge versus lasso.</strong> Ridge is stable, has a closed form, and keeps every
+    feature. Lasso gives sparse, readable models but picks one feature from a correlated group
+    somewhat arbitrarily and can be unstable across resamples. Elastic net sits between them.
+    Choose α by cross-validation (<code>RidgeCV</code>, <code>LassoCV</code>), never on the
+    training error, which always prefers α = 0.
+  </li>
+  <li>
+    <strong>Squared error's assumptions.</strong> Least squares is optimal when the noise is
+    Gaussian with constant variance. Heavy tails let outliers steer the fit; switch the loss to
+    Huber or absolute error.
+  </li>
+  <li>
+    <strong>Linearity.</strong> The model is linear in its features. Feature engineering
+    (polynomials, interactions, splines) buys flexibility but each added column costs variance;
+    past a point, trees or neural networks learn the features instead.
+  </li>
+  <li>
+    <strong>Extrapolation.</strong> A line keeps going. Predictions far outside the range of the
+    training features are guesses, however confident R² looks.
+  </li>
+</ul>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="ml-quiz">
+  <summary>Why do the residuals of a least-squares fit with an intercept always sum to zero?</summary>
+  <p>The normal equations say Xᵀ(y − Xw) = 0. The row for the column of ones reads Σ(y<sub>i</sub> − ŷ<sub>i</sub>) = 0.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Gradient descent on a linear regression is crawling. What is the first thing to try?</summary>
+  <p>Standardize the features. Centering removes the coupling between slope and intercept, and scaling evens out the eigenvalues of XᵀX, lowering the condition number that sets the convergence rate.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Two features are almost copies of each other. What do OLS, ridge and lasso do with them?</summary>
+  <p>OLS splits the weight between them unstably. Ridge gives them nearly equal shares. Lasso tends to keep one and zero the other.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why can ridge be solved for any α &gt; 0 even when XᵀX is singular?</summary>
+  <p>XᵀX is positive semidefinite, so its eigenvalues are ≥ 0. Adding αI raises each by α, making them all positive and the matrix invertible.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Hastie, Tibshirani and Friedman. <em>The Elements of Statistical Learning</em>, 2nd ed., chapter 3. Springer, 2009.</li>
+  <li>Hoerl and Kennard. <em>Ridge Regression: Biased Estimation for Nonorthogonal Problems.</em> Technometrics, 1970.</li>
+  <li>Tibshirani. <em>Regression Shrinkage and Selection via the Lasso.</em> Journal of the Royal Statistical Society B, 1996.</li>
+  <li>Friedman, Hastie and Tibshirani. <em>Regularization Paths for Generalized Linear Models via Coordinate Descent.</em> Journal of Statistical Software, 2010.</li>
+  <li>Zou and Hastie. <em>Regularization and Variable Selection via the Elastic Net.</em> Journal of the Royal Statistical Society B, 2005.</li>
+  <li>Trefethen and Bau. <em>Numerical Linear Algebra</em>, lectures 11 and 18 (least squares and its conditioning). SIAM, 1997.</li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/linear_model/_base.py', 519, 765) }}"><code>_base.py</code></a>, <a href="{{ skl('sklearn/linear_model/_ridge.py', 1022, 1287) }}"><code>_ridge.py</code></a>, <a href="{{ skl('sklearn/linear_model/_coordinate_descent.py', 1329, 1517) }}"><code>_coordinate_descent.py</code></a> and <a href="{{ skl('sklearn/linear_model/_cd_fast.pyx', 243, 452) }}"><code>_cd_fast.pyx</code></a>.</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/linalg/__init__.py', 1078, 1200) }}"><code>torch/linalg/__init__.py</code></a>.</li>
+</ul>
