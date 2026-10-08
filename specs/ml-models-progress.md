@@ -7,7 +7,7 @@ records where the build actually stands.
 **Last updated:** 2026-10-08 (nineteenth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
 format. Ready pages: queue items 1-20, the last being `decoder-only-llm`. The next run builds
-`decoder-only-llm` (queue item 20).
+`decoding` (queue item 21).
 
 ## Pins
 
