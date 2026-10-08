@@ -11,7 +11,6 @@ import ml_models_docs
 import rendered_pages
 import resume_data
 import static_assets
-from assembly import get_showcase
 from weather import get_weather_for_cities
 
 app = Flask(
@@ -59,11 +58,6 @@ def resume():
         certifications=resume_data.CERTIFICATIONS,
         skills=resume_data.SKILLS,
     )
-
-
-@app.route("/assembly-agents")
-def assembly_agents():
-    return render_template("assembly.html", showcase=get_showcase())
 
 
 @app.route("/jj", defaults={"slug": None})
