@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (sixth run). Spec v2 widens the section from model architectures
+**Last updated:** 2026-10-08 (seventh run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
 format. Ready pages: `transformer`, `tensors-and-shapes`, `vectors-and-dot-products`,
-`matrix-multiplication`. The next run builds `derivatives-and-gradients`.
+`matrix-multiplication`, `derivatives-and-gradients`. The next run builds `chain-rule`.
 
 ## Pins
 
@@ -262,13 +262,21 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 | `ml-models: build the matrix-multiplication page` | The page, `ready`, queue ✓ |
 | `docs: record the matrix-multiplication run` | This table and the verified ranges above |
 
+## Seventh run (2026-10-08) — fourth page of the 5-minute loop
+
+| Commit | What |
+|---|---|
+| `ml-models: add tested slope, gradient and descent helpers` | `difference_quotient`, `slope_table`, `numerical_gradient`, `numerical_jacobian`, the bowl and its gradient, `gradient_descent`, `bowl_descent`, `bowl_contours`, `stable_learning_rate` and three worked-example constants |
+| `ml-models: build the derivatives-and-gradients page` | The page, `ready`, queue ✓. Links to `chain-rule` and `optimizers` stay plain text until those pages are ready, since the link test rejects 404s |
+| `docs: record the derivatives-and-gradients run` | This table and the verified autograd ranges above |
+
 ## Queue
 
 1. `tensors-and-shapes` ✓
 2. `vectors-and-dot-products` ✓
 3. `matrix-multiplication` ✓
-4. `derivatives-and-gradients` ← next
-5. `chain-rule`
+4. `derivatives-and-gradients` ✓
+5. `chain-rule` ← next
 6. `probability-and-distributions`
 7. `expectation-and-variance`
 8. `entropy-and-kl`
