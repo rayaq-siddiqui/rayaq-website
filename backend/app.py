@@ -28,9 +28,25 @@ def version_static_urls(endpoint, values):
         static_assets.add_version(app.static_folder, values)
 
 
+def resume_context():
+    return dict(
+        contact=resume_data.CONTACT,
+        headline=resume_data.HEADLINE,
+        location=resume_data.LOCATION,
+        summary=resume_data.SUMMARY,
+        education=resume_data.EDUCATION,
+        experiences=resume_data.EXPERIENCES,
+        projects=resume_data.PROJECTS,
+        leadership=resume_data.LEADERSHIP,
+        honors=resume_data.HONORS,
+        certifications=resume_data.CERTIFICATIONS,
+        skills=resume_data.SKILLS,
+    )
+
+
 @app.route("/")
 def home():
-    return render_template("home.html")
+    return render_template("home.html", **resume_context())
 
 
 @app.route("/weather")
@@ -44,20 +60,7 @@ def weather():
 
 @app.route("/resume")
 def resume():
-    return render_template(
-        "resume.html",
-        contact=resume_data.CONTACT,
-        headline=resume_data.HEADLINE,
-        location=resume_data.LOCATION,
-        summary=resume_data.SUMMARY,
-        education=resume_data.EDUCATION,
-        experiences=resume_data.EXPERIENCES,
-        projects=resume_data.PROJECTS,
-        leadership=resume_data.LEADERSHIP,
-        honors=resume_data.HONORS,
-        certifications=resume_data.CERTIFICATIONS,
-        skills=resume_data.SKILLS,
-    )
+    return render_template("resume.html", **resume_context())
 
 
 @app.route("/jj", defaults={"slug": None})
