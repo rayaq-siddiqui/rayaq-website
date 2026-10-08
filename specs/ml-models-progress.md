@@ -4,7 +4,7 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (eleventh run). Spec v2 widens the section from model architectures
+**Last updated:** 2026-10-08 (twelfth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
 format. Ready pages: `transformer`, `tensors-and-shapes`, `vectors-and-dot-products`,
 `matrix-multiplication`, `derivatives-and-gradients`, `chain-rule`. The next run builds
@@ -176,6 +176,8 @@ The paths below are relative to `torch/nn/modules/` unless they give a fuller pa
 - `torch/distributions/categorical.py`: `entropy` 159-163.
 - `torch/nn/functional.py`: `kl_div` 3401-3475; `cross_entropy` 3478-3569.
 - `torch/nn/modules/loss.py`: `KLDivLoss` 464-564; `CrossEntropyLoss` 1200-1407 (`forward` 1398-1407).
+- `torch/nn/modules/loss.py` (loss-functions): `_Loss` 42-50; `L1Loss` 66-133; `NLLLoss` 136-266; `MSELoss` 567-630; `BCEWithLogitsLoss` 719-844; `HingeEmbeddingLoss` 847-922; `SmoothL1Loss` 988-1078; `HuberLoss` 1081-1150; `CosineEmbeddingLoss` 1671-1740; `MarginRankingLoss` 1743-1807; `MultiMarginLoss` 1810-1903; `TripletMarginLoss` 1906-2013.
+- `torch/nn/functional.py` (loss-functions): `nll_loss` 3180-3244; `binary_cross_entropy_with_logits` 3634-3701; `huber_loss` 4107-4192; `l1_loss` 4195-4268; `mse_loss` 4271-4346; `margin_ranking_loss` 4349-4397; `multi_margin_loss` 4635-4696; `triplet_margin_loss` 5977-6016.
 
 ### scikit-learn 1.9.1 (start lines; check the end before linking a range)
 
@@ -324,6 +326,14 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 | `ml-models: build the entropy-and-kl page` | The page, `ready`, queue ✓; `math.exp` exposed to templates |
 | `docs: record the entropy-and-kl run` | This table and the verified `kl.py`, `Categorical.entropy`, `functional.py` and `loss.py` ranges above |
 
+## Twelfth run (2026-10-08) — ninth page of the 5-minute loop
+
+| Commit | What |
+|---|---|
+| `ml-models: add tested loss-function helpers` | `huber`, `regression_losses`, `fit_constant` (mean, median, Huber by bisection), `bce_with_logits` (stable form), `margin_losses`, `triplet_loss`, `info_nce`, `reduce_losses`, and the outlier, triplet, InfoNCE and reduction example constants |
+| `ml-models: build the loss-functions page` | The page, `ready`, queue ✓ |
+| `docs: record the loss-functions run` | This table and the verified `loss.py` and `functional.py` loss ranges above |
+
 ## Queue
 
 1. `tensors-and-shapes` ✓
@@ -334,8 +344,8 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 6. `probability-and-distributions` ✓
 7. `expectation-and-variance` ✓
 8. `entropy-and-kl` ✓
-9. `loss-functions` ← next
-10. `linear-regression`
+9. `loss-functions` ✓
+10. `linear-regression` ← next
 11. `logistic-regression`
 12. `neurons-and-layers`
 13. `backpropagation`
