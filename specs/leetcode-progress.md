@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (build run). `fixed-size-window` is ready (9 of 58 pages). **The next run is a build run** continuing at `variable-size-window`.
+**Last updated:** 2026-10-08 (build run). `variable-size-window` is ready (10 of 58 pages). **The next run is a build run** continuing at `stack`.
 
 ## The Routine
 
@@ -58,8 +58,8 @@ build once research is done.
 7. `in-place-array-tricks` ✓
 8. `two-pointers` ✓
 9. `fixed-size-window` ✓
-10. `variable-size-window` ← next
-11. `stack`
+10. `variable-size-window` ✓
+11. `stack` ← next
 12. `monotonic-stack`
 13. `binary-search`
 14. `binary-search-on-answer`

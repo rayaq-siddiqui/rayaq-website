@@ -391,3 +391,22 @@ def test_fixed_window_helpers_match_the_page():
     assert "The best is 14, found with 6 constant-time updates instead of 18 additions." in body
     assert "The counter reaches zero at starts 0 and 6." in body
     assert "The repeat is found at index 3" in body
+
+
+def test_variable_window_helpers_match_the_page():
+    uniq = leetcode_docs.longest_unique_trace("abcbdace")
+    assert [s["left"] for s in uniq["steps"]] == [0, 0, 0, 2, 2, 2, 3, 3]
+    assert uniq["best"] == 5 and uniq["best_window"] == "bdace"
+    assert leetcode_docs.longest_unique_trace("") == {"steps": [], "best": 0, "best_window": ""}
+    assert leetcode_docs.longest_unique_trace("aaaa")["best"] == 1
+    sub = leetcode_docs.shortest_subarray_trace(11, [3, 1, 4, 1, 2, 9, 1, 6])
+    assert [s["length"] for s in sub["steps"]] == [5, 5, 4, 3, 2, 3]
+    assert sub["best"] == 2 and sub["span"] == (4, 5)
+    assert leetcode_docs.shortest_subarray_trace(100, [1, 2]) == {"steps": [], "best": 0, "span": None}
+    rep = leetcode_docs.replacement_window_trace("ABAABCBBA", 2)
+    assert [s["cost"] for s in rep["steps"]] == [0, 1, 1, 1, 2, 2, 2, 2, 2] and rep["best"] == 5
+    assert all(s["cost"] <= 2 for s in rep["steps"])
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/variable-size-window").get_data(as_text=True))
+    assert "The longest window is bdace, 5 letters" in body
+    assert "The shortest valid run is 2 long, at indices 4 to 5." in body
+    assert "The best window is 5 letters long." in body

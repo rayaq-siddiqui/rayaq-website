@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -3805,6 +3805,63 @@ def near_duplicate_trace(nums, k):
     return {"steps": steps, "found": None}
 
 
+def longest_unique_trace(text):
+    """Window with no repeated character: on a repeat the left edge jumps past the previous copy."""
+    last = {}
+    left = 0
+    best = 0
+    best_start = 0
+    steps = []
+    for right, ch in enumerate(text):
+        jumped = ch in last and last[ch] >= left
+        if jumped:
+            left = last[ch] + 1
+        last[ch] = right
+        if right - left + 1 > best:
+            best = right - left + 1
+            best_start = left
+        steps.append({"right": right, "char": ch, "left": left, "jumped": jumped,
+                      "window": text[left:right + 1], "best": best})
+    return {"steps": steps, "best": best, "best_window": text[best_start:best_start + best]}
+
+
+def shortest_subarray_trace(target, nums):
+    """Positive numbers: grow right until the sum reaches target, then shrink left while it still does."""
+    left = 0
+    total = 0
+    best = None
+    span = None
+    steps = []
+    for right, value in enumerate(nums):
+        total += value
+        while total >= target:
+            length = right - left + 1
+            if best is None or length < best:
+                best = length
+                span = (left, right)
+            steps.append({"left": left, "right": right, "sum": total, "length": length, "best": best})
+            total -= nums[left]
+            left += 1
+    return {"steps": steps, "best": best or 0, "span": span}
+
+
+def replacement_window_trace(text, k):
+    """A window is valid while its length minus its most common letter's count is at most k."""
+    counts = {}
+    left = 0
+    best = 0
+    steps = []
+    for right, ch in enumerate(text):
+        counts[ch] = counts.get(ch, 0) + 1
+        while (right - left + 1) - max(counts.values()) > k:
+            counts[text[left]] -= 1
+            left += 1
+        best = max(best, right - left + 1)
+        steps.append({"right": right, "window": text[left:right + 1], "top": max(counts.values()),
+                      "cost": (right - left + 1) - max(counts.values()), "best": best})
+    return {"steps": steps, "best": best}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -3948,6 +4005,9 @@ def render(slug, render_template):
         "window_sum_trace": window_sum_trace,
         "anagram_window_trace": anagram_window_trace,
         "near_duplicate_trace": near_duplicate_trace,
+        "longest_unique_trace": longest_unique_trace,
+        "shortest_subarray_trace": shortest_subarray_trace,
+        "replacement_window_trace": replacement_window_trace,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,
