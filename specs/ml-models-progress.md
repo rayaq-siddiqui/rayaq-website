@@ -491,7 +491,7 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 92. `state-space-models`
 93. `profiling`
 
-Build one page per run, top to bottom. Once the queue is empty, the Routine runs maintenance
+Build five pages per run, top to bottom, pushing each as it is finished. Once the queue is empty, the Routine runs maintenance
 only: for each pin it checks for a newer stable release (never an rc, beta or dev tag). When one
 exists, it diffs every file the ready pages link to between the pin and that tag, updates the
 affected line ranges and claims, and moves the pin.
