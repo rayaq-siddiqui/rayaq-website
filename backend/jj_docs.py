@@ -2,8 +2,8 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "3935c0fcaecebfed6d84dfa501169363112299ce",
-    "commit_date": "2026-10-07",
+    "commit": "26bcd6972e5d04a824f501b98e91e02ee423f201",
+    "commit_date": "2026-10-08",
     "version": "0.46.0",
     "analyzed_on": "2026-10-08",
 }
