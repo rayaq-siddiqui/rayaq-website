@@ -1,3 +1,5 @@
+import bisect
+import heapq
 import math
 import re
 
@@ -302,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis"}
+READY = {"complexity-analysis", "python-toolkit"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -3374,6 +3376,38 @@ def halving_steps(n):
         steps += 1
     return steps
 
+
+def heap_push_trace(values):
+    """The heap array after each heappush, plus the final pop order."""
+    heap, rows = [], []
+    for value in values:
+        heapq.heappush(heap, value)
+        rows.append({"pushed": value, "heap": list(heap), "smallest": heap[0]})
+    final = list(heap)
+    order = []
+    while heap:
+        order.append(heapq.heappop(heap))
+    return {"rows": rows, "final": final, "pop_order": order}
+
+
+def bisect_left_steps(items, target):
+    """Each probe of a hand-written bisect_left, ending at the insertion point."""
+    low, high, steps = 0, len(items), []
+    while low < high:
+        middle = (low + high) // 2
+        steps.append({"low": low, "high": high, "middle": middle, "value": items[middle]})
+        if items[middle] < target:
+            low = middle + 1
+        else:
+            high = middle
+    return {"steps": steps, "index": low, "matches_bisect": low == bisect.bisect_left(items, target)}
+
+
+def front_removal_moves(n):
+    """Element moves to empty a list of n items by repeated pop(0) versus a deque's popleft."""
+    list_moves = sum(n - 1 - removed for removed in range(n))
+    return {"list": list_moves, "deque": 0}
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -3488,6 +3522,9 @@ def render(slug, render_template):
         "doubling_append_costs": doubling_append_costs,
         "nested_pair_count": nested_pair_count,
         "halving_steps": halving_steps,
+        "heap_push_trace": heap_push_trace,
+        "bisect_left_steps": bisect_left_steps,
+        "front_removal_moves": front_removal_moves,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,

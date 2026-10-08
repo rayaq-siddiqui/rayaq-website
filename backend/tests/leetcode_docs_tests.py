@@ -121,7 +121,7 @@ def test_problem_url():
 
 
 def test_coverage_counts_only_ready_homes(monkeypatch):
-    pages = [dict(page) for page in leetcode_docs.PAGES]
+    pages = [{**page, "ready": False} for page in leetcode_docs.PAGES]
     pages[0]["ready"] = True
     problems = [
         {"number": 1, "home": pages[0]["slug"], "lists": ["blind-75", "neetcode-150"]},
@@ -219,3 +219,24 @@ def test_budget_table_is_monotone_and_within_budget():
 def test_growth_rows():
     row = leetcode_docs.growth_rows([8])[0]
     assert (row["log"], row["linear"], row["nlogn"], row["quadratic"], row["exponential"]) == (3, 8, 24, 64, 256)
+
+
+def test_toolkit_helpers_match_the_page():
+    trace = leetcode_docs.heap_push_trace([5, 3, 8, 1, 9, 2])
+    assert trace["final"] == [1, 3, 2, 5, 9, 8]
+    assert trace["pop_order"] == [1, 2, 3, 5, 8, 9]
+    assert [row["heap"] for row in trace["rows"]][:4] == [[5], [3, 5], [3, 5, 8], [1, 3, 8, 5]]
+    for index in range(1, len(trace["final"])):
+        assert trace["final"][(index - 1) // 2] <= trace["final"][index]
+    search = leetcode_docs.bisect_left_steps([1, 3, 5, 7, 9, 11, 13, 15], 11)
+    assert [(s["low"], s["high"], s["middle"], s["value"]) for s in search["steps"]] == [
+        (0, 8, 4, 9), (5, 8, 6, 13), (5, 6, 5, 11)]
+    assert search["index"] == 5 and search["matches_bisect"]
+    assert leetcode_docs.bisect_left_steps([1, 2], 5)["index"] == 2
+    assert leetcode_docs.bisect_left_steps([], 5)["steps"] == []
+    assert leetcode_docs.front_removal_moves(8) == {"list": 28, "deque": 0}
+    body = app_module.app.test_client().get("/leetcode/python-toolkit").get_data(as_text=True)
+    assert "[1, 3, 2, 5, 9, 8]" in body
+    assert "1, 2, 3, 5, 8, 9" in body
+    assert "index 5, reached in 3 probes" in re.sub(r"\s+", " ", body)
+    assert "moves 28 elements" in re.sub(r"\s+", " ", body)
