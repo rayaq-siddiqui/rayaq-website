@@ -1018,3 +1018,41 @@ def test_mlp_param_count():
     assert [layer["total"] for layer in counts["layers"]] == [200960, 32896, 1290]
     assert counts["total"] == 235146
     assert ml_models_docs.mlp_param_count([512, 2048, 512])["total"] == 2099712
+
+
+def test_backprop_pass_matches_finite_differences():
+    example = ml_models_docs.BACKPROP_EXAMPLE
+    net = ml_models_docs.backprop_example(example)["before"]
+    assert net["z1"] == [1, 1, -1] and net["h"] == [1, 1, 0] and net["logits"] == [0, 1]
+    assert net["loss"] == pytest.approx(math.log(1 + math.e))
+    assert net["dlogits"] == pytest.approx([-0.7311, 0.7311], abs=1e-4)
+    assert net["dz1"][2] == 0 and net["dw1"][2] == [0.0, 0.0]
+    checks = ml_models_docs.gradient_check_all(example)
+    assert len(checks) == 6 + 3 + 6 + 2
+    assert max(row["error"] for row in checks) < 1e-8
+
+
+def test_one_sgd_step_lowers_the_loss():
+    run = ml_models_docs.backprop_example(ml_models_docs.BACKPROP_EXAMPLE)
+    assert run["updated"]["w1"][0][1] == pytest.approx(0.1 * 1.4621, abs=1e-4)
+    assert run["after"]["loss"] < run["before"]["loss"] / 5
+    assert run["after"]["probs"][0] > 0.8
+
+
+def test_gradient_check_shows_truncation_and_roundoff():
+    check = ml_models_docs.gradient_check(ml_models_docs.BACKPROP_EXAMPLE, ml_models_docs.GRADIENT_CHECK_EXAMPLE)
+    rows = {round(-math.log10(row["h"])): row for row in check["rows"]}
+    assert rows[2]["forward_error"] == pytest.approx(10 * rows[3]["forward_error"], rel=0.05)
+    assert rows[2]["central_error"] == pytest.approx(100 * rows[3]["central_error"], rel=0.05)
+    best = min(check["rows"], key=lambda row: row["central_error"])
+    assert 1e-7 <= best["h"] <= 1e-4 and best["central_error"] < 1e-10
+    assert rows[12]["central_error"] > 1e3 * best["central_error"]
+
+
+def test_gradient_norms_vanish_or_explode_with_depth():
+    curves = {c["label"]: c["norms"] for c in ml_models_docs.gradient_norms_by_depth(ml_models_docs.DEPTH_EXAMPLE)}
+    assert all(len(norms) == 31 and norms[-1] == 1 for norms in curves.values())
+    assert curves["ReLU, gain 0.7"][0] < 1e-3
+    assert 0.3 < curves["ReLU, He init"][0] < 3
+    assert curves["ReLU, gain 1.4"][0] > 1e3
+    assert curves["sigmoid, Xavier init"][0] < 1e-15

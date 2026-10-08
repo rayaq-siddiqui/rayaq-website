@@ -1554,6 +1554,30 @@ APPROXIMATION_EXAMPLE = {"start": 0.0, "stop": 2 * math.pi, "units": [3, 8], "sa
 
 MLP_EXAMPLE = {"sizes": [784, 256, 128, 10]}
 
+BACKPROP_EXAMPLE = {
+    "x": [1, 2],
+    "w1": [[1, 0], [-1, 1], [0.5, -1]],
+    "b1": [0, 0, 0.5],
+    "w2": [[1, -1, 2], [0, 1, 1]],
+    "b2": [0, 0],
+    "target": 0,
+    "lr": 0.1,
+}
+
+GRADIENT_CHECK_EXAMPLE = {"parameter": ("w1", 0, 0), "steps": [10.0 ** -k for k in range(1, 13)]}
+
+DEPTH_EXAMPLE = {
+    "width": 32,
+    "depth": 30,
+    "seed": 7,
+    "cases": [
+        {"label": "ReLU, gain 0.7", "activation": "relu", "gain": 0.7},
+        {"label": "ReLU, He init", "activation": "relu", "gain": 1.0},
+        {"label": "ReLU, gain 1.4", "activation": "relu", "gain": 1.4},
+        {"label": "sigmoid, Xavier init", "activation": "sigmoid", "gain": 1.0},
+    ],
+}
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -2469,6 +2493,142 @@ def mlp_param_count(sizes):
     return {"layers": layers, "total": sum(layer["total"] for layer in layers)}
 
 
+def backprop_pass(x, w1, b1, w2, b2, target):
+    z1 = [dot_product(row, x) + b for row, b in zip(w1, b1)]
+    h = relu(z1)
+    logits = [dot_product(row, h) + b for row, b in zip(w2, b2)]
+    out = categorical_from_logits(logits)
+    probs = out["probs"]
+    dlogits = [p - (1 if k == target else 0) for k, p in enumerate(probs)]
+    dh = [dot_product(column, dlogits) for column in transpose(w2)]
+    dz1 = [g if z > 0 else 0 for g, z in zip(dh, z1)]
+    return {
+        "z1": z1,
+        "h": h,
+        "logits": logits,
+        "probs": probs,
+        "loss": -out["log_probs"][target],
+        "dlogits": dlogits,
+        "dw2": [[g * v + 0.0 for v in h] for g in dlogits],
+        "db2": dlogits,
+        "dh": dh,
+        "dz1": dz1,
+        "dw1": [[g * xi + 0.0 for xi in x] for g in dz1],
+        "db1": dz1,
+    }
+
+
+def _backprop_params(example):
+    return {name: example[name] for name in ("w1", "b1", "w2", "b2")}
+
+
+def _sgd_update(params, grads, lr):
+    def step(value, grad):
+        if isinstance(value, list):
+            return [step(v, g) for v, g in zip(value, grad)]
+        return value - lr * grad
+
+    return {name: step(params[name], grads["d" + name]) for name in params}
+
+
+def backprop_example(example):
+    params = _backprop_params(example)
+    before = backprop_pass(example["x"], **params, target=example["target"])
+    updated = _sgd_update(params, before, example["lr"])
+    after = backprop_pass(example["x"], **updated, target=example["target"])
+    return {"before": before, "updated": updated, "after": after}
+
+
+def _perturbed_loss(example, parameter, delta):
+    name, *index = parameter
+    params = {key: [list(row) if isinstance(row, list) else row for row in value]
+              for key, value in _backprop_params(example).items()}
+    if len(index) == 2:
+        params[name][index[0]][index[1]] += delta
+    else:
+        params[name][index[0]] += delta
+    return backprop_pass(example["x"], **params, target=example["target"])["loss"]
+
+
+def relative_error(exact, approximate):
+    scale = max(abs(exact), abs(approximate))
+    return 0.0 if scale == 0 else abs(exact - approximate) / scale
+
+
+def gradient_check(example, check):
+    parameter = check["parameter"]
+    name, *index = parameter
+    grads = backprop_pass(example["x"], **_backprop_params(example), target=example["target"])
+    exact = grads["d" + name]
+    for i in index:
+        exact = exact[i]
+    base = _perturbed_loss(example, parameter, 0.0)
+    rows = []
+    for h in check["steps"]:
+        up = _perturbed_loss(example, parameter, h)
+        down = _perturbed_loss(example, parameter, -h)
+        forward = (up - base) / h
+        central = (up - down) / (2 * h)
+        rows.append({
+            "h": h,
+            "forward": forward,
+            "central": central,
+            "forward_error": relative_error(exact, forward),
+            "central_error": relative_error(exact, central),
+        })
+    return {"exact": exact, "rows": rows}
+
+
+def gradient_check_all(example, h=1e-6):
+    grads = backprop_pass(example["x"], **_backprop_params(example), target=example["target"])
+    results = []
+    for name in ("w1", "b1", "w2", "b2"):
+        value = example[name]
+        indices = ([(i, j) for i in range(len(value)) for j in range(len(value[0]))]
+                   if isinstance(value[0], list) else [(i,) for i in range(len(value))])
+        for index in indices:
+            exact = grads["d" + name]
+            for i in index:
+                exact = exact[i]
+            parameter = (name, *index)
+            numeric = (_perturbed_loss(example, parameter, h) - _perturbed_loss(example, parameter, -h)) / (2 * h)
+            results.append({"parameter": parameter, "exact": exact, "numeric": numeric,
+                            "error": relative_error(exact, numeric) if abs(exact) > 1e-12 else abs(numeric)})
+    return results
+
+
+def gradient_norms_by_depth(example):
+    width, depth = example["width"], example["depth"]
+    rng = random.Random(example["seed"])
+    base = [[[rng.gauss(0, 1) / math.sqrt(width) for _ in range(width)] for _ in range(width)]
+            for _ in range(depth)]
+    x = [rng.gauss(0, 1) for _ in range(width)]
+    upstream = [rng.gauss(0, 1) for _ in range(width)]
+    activations = {
+        "relu": (lambda z: max(0.0, z), lambda z: 1.0 if z > 0 else 0.0, math.sqrt(2)),
+        "sigmoid": (sigmoid, lambda z: sigmoid(z) * (1 - sigmoid(z)), 1.0),
+    }
+    curves = []
+    for case in example["cases"]:
+        phi, dphi, init = activations[case["activation"]]
+        scale = case["gain"] * init
+        weights = [[[scale * w for w in row] for row in layer] for layer in base]
+        h, pre = x, []
+        for layer in weights:
+            z = [dot_product(row, h) for row in layer]
+            pre.append(z)
+            h = [phi(v) for v in z]
+        grad = upstream
+        norms = [vector_norm(grad)]
+        for layer, z in zip(reversed(weights), reversed(pre)):
+            dz = [g * dphi(v) for g, v in zip(grad, z)]
+            grad = [dot_product(column, dz) for column in transpose(layer)]
+            norms.append(vector_norm(grad))
+        top = norms[0]
+        curves.append({**case, "norms": [n / top for n in reversed(norms)]})
+    return curves
+
+
 def similarity_ranking(example):
     query = example["query"]
     rows = [
@@ -2635,6 +2795,13 @@ def render(slug, render_template):
         "approximation_fits": approximation_fits,
         "evaluate_interpolant": evaluate_interpolant,
         "mlp_param_count": mlp_param_count,
+        "backprop_example": BACKPROP_EXAMPLE,
+        "gradient_check_example": GRADIENT_CHECK_EXAMPLE,
+        "depth_example": DEPTH_EXAMPLE,
+        "run_backprop": backprop_example,
+        "gradient_check": gradient_check,
+        "gradient_check_all": gradient_check_all,
+        "gradient_norms_by_depth": gradient_norms_by_depth,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
