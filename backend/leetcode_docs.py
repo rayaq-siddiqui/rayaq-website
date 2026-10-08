@@ -1,3 +1,4 @@
+import math
 import re
 
 LISTS = [
@@ -300,6 +301,11 @@ PAGES = [
           "DP over subsets encoded as bits, for assignment and travelling-salesman-style problems.",
           ["dp-fundamentals", "bit-manipulation"]),
 ]
+
+READY = {"complexity-analysis"}
+
+for _entry in PAGES:
+    _entry["ready"] = _entry["slug"] in READY
 
 LEARNING_PATH = [
     {"title": "Foundations", "slugs": ["complexity-analysis", "python-toolkit", "recursion"]},
@@ -3284,6 +3290,90 @@ PROBLEMS = [
     },
 ]
 
+
+def growth_rows(sizes):
+    rows = []
+    for n in sizes:
+        rows.append({
+            "n": n,
+            "log": math.log2(n),
+            "linear": n,
+            "nlogn": n * math.log2(n),
+            "quadratic": n * n,
+            "exponential": 2 ** n,
+        })
+    return rows
+
+
+def max_input_size(growth, budget=10 ** 8):
+    """Largest n whose operation count stays within the budget."""
+    n = 1
+    while growth(n * 2) <= budget:
+        n *= 2
+    low, high = n, n * 2
+    while low + 1 < high:
+        middle = (low + high) // 2
+        if growth(middle) <= budget:
+            low = middle
+        else:
+            high = middle
+    return low
+
+
+def budget_table(budget=10 ** 8):
+    classes = [
+        ("O(n)", lambda n: n),
+        ("O(n log n)", lambda n: n * math.log2(n) if n > 1 else 1),
+        ("O(n²)", lambda n: n * n),
+        ("O(n³)", lambda n: n ** 3),
+        ("O(2ⁿ)", lambda n: 2.0 ** n if n < 1000 else float("inf")),
+    ]
+    return [{"name": name, "max_n": max_input_size(growth, budget)} for name, growth in classes]
+
+
+def doubling_append_costs(appends, initial_capacity=1):
+    """Cost of each append to a growable array that doubles when full.
+
+    Each append costs 1 to write the element, plus one per element copied when the
+    array first has to grow.
+    """
+    capacity, size, rows, total = initial_capacity, 0, [], 0
+    for index in range(1, appends + 1):
+        copies = 0
+        if size == capacity:
+            copies = size
+            capacity *= 2
+        size += 1
+        cost = 1 + copies
+        total += cost
+        rows.append({
+            "append": index,
+            "capacity": capacity,
+            "copies": copies,
+            "cost": cost,
+            "total": total,
+            "average": total / index,
+        })
+    return rows
+
+
+def nested_pair_count(n):
+    """Number of (i, j) pairs a double loop with j > i visits."""
+    count = 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            count += 1
+    return count
+
+
+def halving_steps(n):
+    """How many times n can be halved before reaching 1."""
+    steps = 0
+    while n > 1:
+        n //= 2
+        steps += 1
+    return steps
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -3323,6 +3413,13 @@ def learning_path():
 def problems_for(slug):
     return sorted(
         (problem for problem in PROBLEMS if problem["home"] == slug),
+        key=lambda problem: (["Easy", "Medium", "Hard"].index(problem["difficulty"]), problem["number"]),
+    )
+
+
+def problems_also_using(slug):
+    return sorted(
+        (problem for problem in PROBLEMS if slug in problem["patterns"]),
         key=lambda problem: (["Easy", "Medium", "Hard"].index(problem["difficulty"]), problem["number"]),
     )
 
@@ -3385,6 +3482,12 @@ def render(slug, render_template):
         "learning_path": learning_path(),
         "ready_slugs": {entry["slug"] for entry in ready_pages()},
         "problems": problems_for(page["slug"]) if page else [],
+        "also_using": problems_also_using(page["slug"]) if page else [],
+        "growth_rows": growth_rows,
+        "budget_table": budget_table,
+        "doubling_append_costs": doubling_append_costs,
+        "nested_pair_count": nested_pair_count,
+        "halving_steps": halving_steps,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,

@@ -191,3 +191,31 @@ def test_no_new_server_dependencies():
             text = handle.read().lower()
         for package in ("numpy", "networkx", "sortedcontainers", "leetcode"):
             assert package not in text, (name, package)
+
+
+def test_complexity_helpers_match_the_page():
+    rows = leetcode_docs.doubling_append_costs(9)
+    assert [row["cost"] for row in rows] == [1, 2, 3, 1, 5, 1, 1, 1, 9]
+    assert [row["capacity"] for row in rows] == [1, 2, 4, 4, 8, 8, 8, 8, 16]
+    assert rows[-1]["total"] == 24
+    body = app_module.app.test_client().get("/leetcode/complexity-analysis").get_data(as_text=True)
+    for row in rows:
+        assert f'<td class="num">{row["total"]}</td>' in body
+    assert f'{rows[-1]["average"]:.2f}' in body
+    for entry in leetcode_docs.budget_table():
+        assert f"{entry['max_n']:,}" in body
+    assert leetcode_docs.nested_pair_count(5) == 10
+    assert leetcode_docs.halving_steps(1024) == 10
+
+
+def test_budget_table_is_monotone_and_within_budget():
+    table = leetcode_docs.budget_table(10 ** 8)
+    sizes = [entry["max_n"] for entry in table]
+    assert sizes == sorted(sizes, reverse=True)
+    assert dict((e["name"], e["max_n"]) for e in table)["O(n²)"] == 10_000
+    assert leetcode_docs.max_input_size(lambda n: n * n, 100) == 10
+
+
+def test_growth_rows():
+    row = leetcode_docs.growth_rows([8])[0]
+    assert (row["log"], row["linear"], row["nlogn"], row["quadratic"], row["exponential"]) == (3, 8, 24, 64, 256)

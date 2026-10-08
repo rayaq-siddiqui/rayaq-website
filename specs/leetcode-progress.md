@@ -4,9 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (research run). `PROBLEMS` holds all 297 problems across the
-four lists (75 / 169 / 150 / 250), each with a home page and an original insight. No content
-pages are ready yet. **The next run is a build run** starting at `complexity-analysis`.
+**Last updated:** 2026-10-08 (build run). `complexity-analysis` is ready. **The next run is a build run** continuing at `python-toolkit`.
 
 ## The Routine
 
@@ -51,8 +49,8 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 Prerequisites come first (tested). `✓` marks ready pages; `← next` marks the next page to
 build once research is done.
 
-1. `complexity-analysis` ← next
-2. `python-toolkit`
+1. `complexity-analysis` ✓
+2. `python-toolkit` ← next
 3. `recursion`
 4. `hash-maps-and-sets`
 5. `counting-and-bucketing`
