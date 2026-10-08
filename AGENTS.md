@@ -64,14 +64,14 @@ specs/
 
 frontend/
   templates/         Jinja2 templates. One per route: home.html, weather.html,
-                     resume.html; _resume.html is the resume-sections partial that
-                     both home.html and resume.html include; jj/ holds the /jj layout
+                     resume.html; _resume.html holds the resume sections that
+                     resume.html includes; jj/ holds the /jj layout
                      (base.html), index.html, and one fragment per /jj/<slug> page;
                      jj_dojo/, jj_vfs/ and jj_cloud/ are the same for /jj-dojo,
                      /jj-vfs-poc and /jj-commit-cloud-poc; ml_models/ and leetcode/
                      are the same for /ml-models and /leetcode
   static/            style.css (shared/global, plus the light/dark `--site-*` tokens and
-                     homepage styles for pages with `<body class="site">`), resume.css, jj.css, jj_dojo.css,
+                     homepage and /weather styles for pages with `<body class="site">`), resume.css, jj.css, jj_dojo.css,
                      jj_vfs.css, jj_cloud.css, ml_models.css, leetcode.css,
                      ml_models.js (optional step-through for /ml-models figures),
                      script.js (weather chart only)
@@ -94,9 +94,9 @@ vmrun.sh            Convenience wrapper: `./vmrun.sh '<command>'` runs a single 
 
 | Route | Purpose |
 |---|---|
-| `/` | Homepage — "About me" (intro plus the full resume, from `resume_data.py`) then "Fun projects" (a grid linking every section) |
+| `/` | Homepage — name, headline and links (Resume first), a short "About me" intro, then "Fun projects" (a grid linking every section) |
 | `/weather` | Live weather dashboard for 4 fixed cities, click a card for an hourly chart |
-| `/resume` | Standalone resume page; the homepage renders the same resume and links here |
+| `/resume` | Resume page, linked from the top of the homepage |
 | `/jj` | jj architecture reference: overview, big diagram, index of deep-dive pages |
 | `/jj/<slug>` | One deep-dive page per topic in `jj_docs.PAGES` that is marked ready; 404 otherwise |
 | `/jj-dojo` | jj-dojo (VS Code extension) architecture reference: overview and page index |
@@ -172,8 +172,8 @@ Each call is one command over SSH — deliberately kept to single, auditable com
 
 - **Cost optimization**: a weekly Routine looks for measurable savings in the application code (not server config) and logs each run in `docs/COST_OPTIMIZATION.md`.
 - **Weather** (`weather.py`): Open-Meteo API, no API key required. Results are cached in-process per city for 1 hour (`_CACHE_TTL_SECONDS`) to avoid hammering the API — this is a lazy/on-demand cache (only refetches on a request after the TTL expires), not a background poller. Cities are hardcoded in `CITIES` — order matters, it's the display order on the page.
-- **Homepage** (`home.html`): the hero and "About me" intro come from `resume_data.py` (headline, location, contact, summary); the intro's other sentences are hand-written from resume facts. The resume renders below it through `_resume.html` with `heading_level=3`. "Fun projects" is a static list in the template — when a new section ships, add its card there and its path to `PROJECT_LINKS` in `tests/app_tests.py`. The owner approved showing the resume publicly; the phone number stays off.
-- **Resume** (`resume_data.py` + `_resume.html`, included by `resume.html` and `home.html`): all content lives in `resume_data.py` as plain data — edit that file, not the templates, to change resume content. Colors come from the `--site-*` tokens in `style.css`, so it works in light and dark mode. Company/project logos: `cdn.simpleicons.org` for brands that have an icon there (checked availability before using — not every brand does), fallback to a colored initials badge (`{"type": "initials", ...}`) otherwise. Bullets that need an inline link are pre-authored as HTML strings and rendered with Jinja's `| safe` filter — this is safe because the content is fully author-controlled, not user input; don't apply `| safe` to anything that isn't.
+- **Homepage** (`home.html`): the hero and "About me" intro come from `resume_data.py` (headline, location, contact, summary), plus one hand-written sentence from resume facts. The resume is linked from the hero, not inlined — the owner wants the homepage short. "Fun projects" is a static list in the template — when a new section ships, add its card there and its path to `PROJECT_LINKS` in `tests/app_tests.py`. The phone number stays off.
+- **Resume** (`resume_data.py` + `_resume.html`, included by `resume.html`): all content lives in `resume_data.py` as plain data — edit that file, not the templates, to change resume content. Colors come from the `--site-*` tokens in `style.css`, so it works in light and dark mode. Company/project logos: `cdn.simpleicons.org` for brands that have an icon there (checked availability before using — not every brand does), fallback to a colored initials badge (`{"type": "initials", ...}`) otherwise. Bullets that need an inline link are pre-authored as HTML strings and rendered with Jinja's `| safe` filter — this is safe because the content is fully author-controlled, not user input; don't apply `| safe` to anything that isn't.
 - **jj** (`jj_docs.py` + `templates/jj/` + `jj.css`): a static, source-linked reference to
   Jujutsu's internals at `/jj`. Read `specs/jj.md` before changing anything here, and
   `specs/jj-progress.md` for where the build stands.

@@ -4,8 +4,8 @@ Personal website, live at [rayaq.ca](https://rayaq.ca). Flask backend, server-re
 
 ## Pages
 
-- `/`: homepage: an "About me" section with the resume, then a grid of the fun projects below
-- `/weather`: live weather dashboard for four cities, with an hourly forecast chart
+- `/`: homepage: a link to the resume, a short "About me" intro, then a grid of the fun projects
+- `/weather`: live weather dashboard for four cities, with an hourly forecast chart; follows the light/dark setting like the homepage
 - `/jj`: a detailed, source-linked reference to the internal architecture of [Jujutsu (jj)](https://github.com/jj-vcs/jj), with an architecture diagram on the overview page
 - `/jj/<page>`: deep-dive pages, either architecture topics (e.g. `/jj/operations`, `/jj/protobufs`) or individual commands (e.g. `/jj/fix`). Pages still being written return 404 and show as "In progress" on `/jj`.
 - `/jj-dojo`: the same kind of reference for [Jujutsu Dojo](https://github.com/jj-vcs/jj-dojo), Google's VS Code extension for jj, starting with its commit graph layout (`/jj-dojo/graph-layout`)
@@ -15,7 +15,7 @@ Personal website, live at [rayaq.ca](https://rayaq.ca). Flask backend, server-re
 - `/ml-models/<page>`: deep-dive pages, starting with an interactive walk through the Transformer (`/ml-models/transformer`): a clickable architecture diagram, a live attention table and a parameter calculator. Planned pages show on `/ml-models` until they are ready.
 - `/leetcode`: every algorithmic pattern behind coding interviews, one page per pattern, organized by the [NeetCode roadmap](https://neetcode.io/roadmap) and measured against Blind 75, Grind 169 and NeetCode 150. Each page covers the signals that point to the pattern, why it works, a traced example, a Python template and the list problems it unlocks. 58 pages are planned in 20 topics; a progress meter on `/leetcode` shows how much of each list is covered.
 - `/leetcode/<page>`: pattern pages (e.g. `/leetcode/two-pointers`). Planned pages show on `/leetcode` until they are ready.
-- `/resume`: the same resume on its own page
+- `/resume`: the resume
 - `/health`: health check endpoint
 
 ## Stack

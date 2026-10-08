@@ -335,21 +335,17 @@ def test_home_project_links_all_resolve():
         assert client.get(link).status_code == 200, link
 
 
-def test_home_renders_resume_from_resume_data():
+def test_home_links_to_resume_at_the_top_without_inlining_it():
     client = app_module.app.test_client()
 
     body = client.get("/").get_data(as_text=True)
 
     assert resume_data.HEADLINE in body
     assert resume_data.SUMMARY.replace("'", "&#39;") in body
-    assert resume_data.EDUCATION["school"] in body
-    for job in resume_data.EXPERIENCES:
-        assert job["role"] in body
-    for project in resume_data.PROJECTS:
-        assert project["name"] in body
-    for skill in resume_data.SKILLS["Languages"]:
-        assert skill in body
-    assert body.index('id="about"') < body.index("Experience</h3>") < body.index('id="projects"')
+    assert body.index('href="/resume"') < body.index('id="about"')
+    assert "resume-section-title" not in body
+    assert "Kids Caring for Kids Cancer Drive" not in body
+    assert "Deep Learning Specialization" not in body
 
 
 def test_home_drops_the_coming_soon_card():
@@ -371,14 +367,11 @@ def test_home_omits_phone_number():
     assert not PHONE_NUMBER.search(body)
 
 
-def test_resume_and_home_share_the_resume_markup():
+def test_resume_page_renders_the_full_resume():
     client = app_module.app.test_client()
 
-    home = client.get("/").get_data(as_text=True)
-    resume = client.get("/resume").get_data(as_text=True)
+    body = client.get("/resume").get_data(as_text=True)
 
-    for page in (home, resume):
-        assert "Kids Caring for Kids Cancer Drive" in page
-        assert "Deep Learning Specialization" in page
-    assert "Experience</h2>" in resume
-    assert "Experience</h3>" in home
+    assert "Experience</h2>" in body
+    assert "Kids Caring for Kids Cancer Drive" in body
+    assert "Deep Learning Specialization" in body
