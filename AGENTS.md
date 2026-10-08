@@ -247,7 +247,7 @@ Each call is one command over SSH — deliberately kept to single, auditable com
   explanations or code (spec §3.2). Worked-example values come from stdlib helpers in
   `leetcode_docs.py`; never add a package for this section. A Routine
   ("rayaq.ca/leetcode — pattern reference agent", every 5 hours, fresh session per run, weekly audits once complete)
-  researches the lists, then builds five queued pages per run; before pushing it runs
+  researches the lists, then builds three queued pages per run; before pushing it runs
   `tools/leetcode/check_mobile.js` for the 390px overflow check.
 - Phone number is intentionally omitted from the public resume and homepage (privacy choice, since the repo is public). Don't add it back without checking with the site owner first.
 
