@@ -1446,3 +1446,54 @@ def test_training_memory_is_sixteen_bytes_per_parameter_for_adam():
     rows = ml_models_docs.training_memory(7e9)
     assert rows[-1]["bytes_per_param"] == 16
     assert rows[-1]["gigabytes"] == pytest.approx(112.0)
+
+
+def test_gpt2_small_parameter_count_matches_the_released_124m_model():
+    config = {k: v for k, v in ml_models_docs.GPT2_SMALL.items() if k != "heads"}
+    counts = ml_models_docs.decoder_param_count(**config)
+    assert counts["token_table"] == 38_597_376
+    assert counts["per_block"] == 7_087_872
+    assert counts["total"] == 124_439_808
+    untied = ml_models_docs.decoder_param_count(**config, tied=False)
+    assert untied["total"] == counts["total"] + counts["token_table"]
+
+
+def test_decoder_block_is_the_encoder_layer_count():
+    layer = ml_models_docs.transformer_param_count(768, 1, 0, 3072)["encoder_layer"]
+    assert ml_models_docs.decoder_param_count(50257, 1024, 768, 12)["per_block"] == layer
+
+
+def test_decoder_param_count_defaults_to_a_four_times_feed_forward():
+    explicit = ml_models_docs.decoder_param_count(100, 16, 8, 2, d_ff=32)
+    assert ml_models_docs.decoder_param_count(100, 16, 8, 2) == explicit
+
+
+def test_next_token_pairs_shift_by_one():
+    pairs = ml_models_docs.next_token_pairs([5, 6, 7, 8])
+    assert pairs == {"inputs": [5, 6, 7], "targets": [6, 7, 8]}
+
+
+def test_causal_outputs_ignore_later_tokens_but_bidirectional_ones_do_not():
+    check = ml_models_docs.causal_prefix_check(ml_models_docs.ATTENTION_EXAMPLE, 3)
+    assert check["causal_gap"] == pytest.approx(0.0, abs=1e-12)
+    assert check["bidirectional_gap"] > 0.1
+
+
+def test_sequence_nll_averages_next_token_losses_and_exponentiates():
+    uniform = [[0.0] * 4 for _ in range(4)]
+    result = ml_models_docs.sequence_nll(uniform, [0, 1, 2, 3])
+    assert result["mean"] == pytest.approx(math.log(4))
+    assert result["perplexity"] == pytest.approx(4.0)
+
+
+def test_greedy_generation_follows_the_trained_bigram_table():
+    run = ml_models_docs.training_run(ml_models_docs.TRAINING_EXAMPLE)
+    example = ml_models_docs.GENERATION_EXAMPLE
+    tokens = ml_models_docs.greedy_generate(run["weights"], example["start"], example["steps"])
+    assert tokens == [0, 1, 2, 3, 0, 1]
+
+
+def test_generation_positions_without_a_cache_grow_quadratically():
+    assert ml_models_docs.generation_positions(10, 20) == 390
+    assert ml_models_docs.generation_positions(10, 20, cached=True) == 29
+    assert ml_models_docs.generation_positions(3, 1) == ml_models_docs.generation_positions(3, 1, cached=True) + 1 - 1

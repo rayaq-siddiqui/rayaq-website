@@ -3239,6 +3239,72 @@ def training_memory(parameters, weight_bytes=4):
     return out
 
 
+GPT2_SMALL = {"vocab": 50257, "context": 1024, "d_model": 768, "layers": 12, "heads": 12}
+
+GENERATION_EXAMPLE = {"start": 0, "steps": 5}
+
+
+def decoder_param_count(vocab, context, d_model, layers, d_ff=None, tied=True):
+    d_ff = 4 * d_model if d_ff is None else d_ff
+    token_table = vocab * d_model
+    position_table = context * d_model
+    block = transformer_param_count(d_model, 1, 0, d_ff)
+    attention, feed_forward, layer_norm = block["attention"], block["feed_forward"], block["layer_norm"]
+    per_block = attention + feed_forward + 2 * layer_norm
+    blocks = layers * per_block
+    head = 0 if tied else vocab * d_model
+    return {
+        "token_table": token_table,
+        "position_table": position_table,
+        "attention": attention,
+        "feed_forward": feed_forward,
+        "layer_norm": layer_norm,
+        "per_block": per_block,
+        "blocks": blocks,
+        "final_norm": layer_norm,
+        "head": head,
+        "total": token_table + position_table + blocks + layer_norm + head,
+    }
+
+
+def next_token_pairs(tokens):
+    return {"inputs": tokens[:-1], "targets": tokens[1:]}
+
+
+def causal_prefix_check(example, keep):
+    full = attention_weights(example, causal=True)
+    cut = {key: value[:keep] for key, value in example.items() if key != "tokens"}
+    short = attention_weights(cut, causal=True)
+    bidirectional_full = attention_weights(example)
+    bidirectional_short = attention_weights(cut)
+    gap = lambda a, b: max(abs(x - y) for row_a, row_b in zip(a, b) for x, y in zip(row_a, row_b))
+    return {
+        "causal_gap": gap(full["outputs"][:keep], short["outputs"]),
+        "bidirectional_gap": gap(bidirectional_full["outputs"][:keep], bidirectional_short["outputs"]),
+    }
+
+
+def sequence_nll(weights, tokens):
+    pairs = next_token_pairs(tokens)
+    losses = [logits_cross_entropy(weights[x], t)["loss"] for x, t in zip(pairs["inputs"], pairs["targets"])]
+    mean = sum(losses) / len(losses)
+    return {"losses": losses, "mean": mean, "perplexity": math.exp(mean)}
+
+
+def greedy_generate(weights, start, steps):
+    tokens = [start]
+    for _ in range(steps):
+        row = weights[tokens[-1]]
+        tokens.append(max(range(len(row)), key=lambda j: row[j]))
+    return tokens
+
+
+def generation_positions(prompt_length, new_tokens, cached=False):
+    if cached:
+        return prompt_length + new_tokens - 1
+    return sum(prompt_length + i for i in range(new_tokens))
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -3396,6 +3462,14 @@ def render(slug, render_template):
         "symmetric_eigen_2x2": symmetric_eigen_2x2,
         "quadratic_ellipse": quadratic_ellipse,
         "zip": zip,
+        "gpt2_small": GPT2_SMALL,
+        "generation_example": GENERATION_EXAMPLE,
+        "decoder_param_count": decoder_param_count,
+        "next_token_pairs": next_token_pairs,
+        "causal_prefix_check": causal_prefix_check,
+        "sequence_nll": sequence_nll,
+        "greedy_generate": greedy_generate,
+        "generation_positions": generation_positions,
         "logistic_example": LOGISTIC_EXAMPLE,
         "boundary_example": BOUNDARY_EXAMPLE,
         "softmax_example": SOFTMAX_EXAMPLE,
