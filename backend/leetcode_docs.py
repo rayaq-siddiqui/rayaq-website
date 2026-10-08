@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -3738,6 +3738,73 @@ def three_sum_triples(nums):
     return {"sorted": items, "triples": triples}
 
 
+
+def window_sum_trace(nums, k):
+    """Fixed window: add the entering value, subtract the leaving one, and track the best sum."""
+    steps = []
+    total = 0
+    best = None
+    for right, value in enumerate(nums):
+        total += value
+        leaving = None
+        if right >= k:
+            leaving = nums[right - k]
+            total -= leaving
+        if right >= k - 1:
+            best = total if best is None else max(best, total)
+            steps.append({"start": right - k + 1, "end": right, "entering": value, "leaving": leaving,
+                          "sum": total, "best": best})
+    return {"steps": steps, "best": best}
+
+
+def anagram_window_trace(text, pattern):
+    """Slide a window of len(pattern) and keep the count of letters whose counts still differ."""
+    need = {}
+    for ch in pattern:
+        need[ch] = need.get(ch, 0) + 1
+    k = len(pattern)
+    delta = {ch: -count for ch, count in need.items()}
+    differing = len(delta)
+    steps = []
+    starts = []
+
+    def bump(ch, change):
+        nonlocal differing
+        before = delta.get(ch, 0)
+        after = before + change
+        delta[ch] = after
+        if before == 0 and after != 0:
+            differing += 1
+        elif before != 0 and after == 0:
+            differing -= 1
+
+    for right, ch in enumerate(text):
+        bump(ch, 1)
+        if right >= k:
+            bump(text[right - k], -1)
+        if right >= k - 1:
+            start = right - k + 1
+            if differing == 0:
+                starts.append(start)
+            steps.append({"start": start, "window": text[start:right + 1], "differing": differing})
+    return {"steps": steps, "starts": starts}
+
+
+def near_duplicate_trace(nums, k):
+    """Keep the last k values in a set; report the index where a value repeats within distance k."""
+    window = set()
+    steps = []
+    for i, value in enumerate(nums):
+        hit = value in window
+        steps.append({"index": i, "value": value, "hit": hit, "window": sorted(window)})
+        if hit:
+            return {"steps": steps, "found": i}
+        window.add(value)
+        if len(window) > k:
+            window.remove(nums[i - k])
+    return {"steps": steps, "found": None}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -3878,6 +3945,9 @@ def render(slug, render_template):
         "converging_pair_trace": converging_pair_trace,
         "container_trace": container_trace,
         "three_sum_triples": three_sum_triples,
+        "window_sum_trace": window_sum_trace,
+        "anagram_window_trace": anagram_window_trace,
+        "near_duplicate_trace": near_duplicate_trace,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,

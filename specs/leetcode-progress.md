@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (build run). `two-pointers` is ready (8 of 58 pages). **The next run is a build run** continuing at `fixed-size-window`.
+**Last updated:** 2026-10-08 (build run). `fixed-size-window` is ready (9 of 58 pages). **The next run is a build run** continuing at `variable-size-window`.
 
 ## The Routine
 
@@ -40,9 +40,9 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 | List | Problems with a ready home | Size |
 |---|---|---|
 | Blind 75 | 11 | 75 |
-| Grind 169 | 29 | 169 |
-| NeetCode 150 | 15 | 150 |
-| NeetCode 250 | 38 | 250 |
+| Grind 169 | 31 | 169 |
+| NeetCode 150 | 16 | 150 |
+| NeetCode 250 | 40 | 250 |
 
 ## Queue
 
@@ -57,8 +57,8 @@ build once research is done.
 6. `prefix-sums` ✓
 7. `in-place-array-tricks` ✓
 8. `two-pointers` ✓
-9. `fixed-size-window` ← next
-10. `variable-size-window`
+9. `fixed-size-window` ✓
+10. `variable-size-window` ← next
 11. `stack`
 12. `monotonic-stack`
 13. `binary-search`
@@ -174,6 +174,9 @@ helpers in `leetcode_docs.py`, two or more inline SVGs and the full §6 format. 
 7/75, Grind 169 16/169, NeetCode 150 9/150, NeetCode 250 21/250. Mobile check passed on `/`,
 `/leetcode` and all six ready pages. Next: `in-place-array-tricks`.
 
-### 2026-10-08 — build run (in progress)
+### 2026-10-08 — build run
 
-Built `in-place-array-tricks` with tested helpers (`compact_trace`, `rotate_stages`, `next_permutation_steps`, `cyclic_placement_trace`), then `two-pointers` (`converging_pair_trace`, `container_trace`, `three_sum_triples`).
+Built `in-place-array-tricks`, `two-pointers` and `fixed-size-window` (3 of 3), each with tested
+helpers in `leetcode_docs.py`, three inline SVGs and the full §6 format. Coverage: Blind 75
+11/75, Grind 169 31/169, NeetCode 150 16/150, NeetCode 250 40/250. Mobile check passed on `/`,
+`/leetcode` and all nine ready pages. Next: `variable-size-window`.

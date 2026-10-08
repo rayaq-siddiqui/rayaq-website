@@ -373,3 +373,21 @@ def test_two_pointer_helpers_match_the_page():
     assert "3 comparisons instead of 21 pairs" in body
     assert "The answer is 49." in body
     assert "<code>[-1, -1, 2]</code>, <code>[-1, 0, 1]</code>" in body
+
+
+def test_fixed_window_helpers_match_the_page():
+    win = leetcode_docs.window_sum_trace([2, 1, 5, 1, 3, 2, 9, 1], 3)
+    assert [s["sum"] for s in win["steps"]] == [8, 7, 9, 6, 14, 12] and win["best"] == 14
+    assert [s["leaving"] for s in win["steps"]] == [None, 2, 1, 5, 1, 3]
+    assert leetcode_docs.window_sum_trace([1], 3) == {"steps": [], "best": None}
+    ana = leetcode_docs.anagram_window_trace("cbaebabacd", "abc")
+    assert ana["starts"] == [0, 6]
+    assert [s["differing"] for s in ana["steps"]] == [0, 2, 2, 2, 2, 2, 0, 2]
+    assert leetcode_docs.anagram_window_trace("ab", "abc")["starts"] == []
+    dup = leetcode_docs.near_duplicate_trace([4, 7, 9, 4, 2], 3)
+    assert dup["found"] == 3 and dup["steps"][-1]["window"] == [4, 7, 9]
+    assert leetcode_docs.near_duplicate_trace([1, 2, 3, 1, 2, 3], 2)["found"] is None
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/fixed-size-window").get_data(as_text=True))
+    assert "The best is 14, found with 6 constant-time updates instead of 18 additions." in body
+    assert "The counter reaches zero at starts 0 and 6." in body
+    assert "The repeat is found at index 3" in body
