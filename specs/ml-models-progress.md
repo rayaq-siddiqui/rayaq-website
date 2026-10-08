@@ -4,9 +4,9 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (fourteenth run). Spec v2 widens the section from model architectures
+**Last updated:** 2026-10-08 (fifteenth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: `transformer` and queue items 1-11, the last being `logistic-regression`.
+format. Ready pages: `transformer` and queue items 1-12, the last being `neurons-and-layers`.
 The next run builds `neurons-and-layers`.
 
 ## Pins
@@ -177,6 +177,9 @@ The paths below are relative to `torch/nn/modules/` unless they give a fuller pa
 - `torch/nn/modules/loss.py`: `KLDivLoss` 464-564; `CrossEntropyLoss` 1200-1407 (`forward` 1398-1407).
 - `torch/nn/modules/loss.py` (loss-functions): `_Loss` 42-50; `L1Loss` 66-133; `NLLLoss` 136-266; `MSELoss` 567-630; `BCEWithLogitsLoss` 719-844; `HingeEmbeddingLoss` 847-922; `SmoothL1Loss` 988-1078; `HuberLoss` 1081-1150; `CosineEmbeddingLoss` 1671-1740; `MarginRankingLoss` 1743-1807; `MultiMarginLoss` 1810-1903; `TripletMarginLoss` 1906-2013.
 - `torch/nn/functional.py` (loss-functions): `nll_loss` 3180-3244; `binary_cross_entropy_with_logits` 3634-3701; `huber_loss` 4107-4192; `l1_loss` 4195-4268; `mse_loss` 4271-4346; `margin_ranking_loss` 4349-4397; `multi_margin_loss` 4635-4696; `triplet_margin_loss` 5977-6016.
+- `torch/nn/modules/module.py` (neurons-and-layers): `class Module` 407, `__init__` 482-525; `register_buffer` 528; `register_parameter` 592-641; `add_module` 642-669; `_wrapped_call_impl` 1779-1786; `_call_impl` 1787-1921 (no-hook fast path 1788-1794), `__call__` 1922; `__setattr__` 1976-2080; `state_dict` 2199; `parameters` 2670-2698; `named_parameters` 2699-2730; `train` 2894; `eval` 2916; `zero_grad` 2957.
+- `torch/nn/modules/container.py` (neurons-and-layers): `Sequential` 59-339 (`__init__` 115-122, `forward` 254-260); `ModuleList` 341-510; `ModuleDict` 511.
+- `torch/nn/modules/linear.py` (neurons-and-layers): `reset_parameters` 117-129, `forward` 130-135. `activation.py`: `ReLU` 104-152, `Sigmoid` 337, `Tanh` 407.
 
 ### scikit-learn 1.9.1 (start lines; check the end before linking a range)
 
@@ -360,6 +363,14 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 | `ml-models: add tested logistic-regression helpers` | `sigmoid`, `logistic_objective` (sklearn's C-weighted objective, intercept unpenalized), `logistic_newton`, `logistic_descent`, `logistic_fit_1d`, `boundary_fits`, and the pass/fail, separable two-feature and softmax examples |
 | `ml-models: build the logistic-regression page` | The page, `ready`, queue ✓; also `BCEWithLogitsLoss` 719-846 and `CrossEntropyLoss` 1200-1409 in PyTorch |
 | `docs: record the logistic-regression run` | This table and the verified scikit-learn logistic ranges above |
+
+## Fifteenth run (2026-10-08) — twelfth page of the 5-minute loop
+
+| Commit | What |
+|---|---|
+| `ml-models: add tested neurons-and-layers helpers` | `mlp_forward`, `collapse_linear`, `xor_network`, `relu_interpolant`, `evaluate_interpolant`, `approximation_fits`, `mlp_param_count`, and the XOR, sin-approximation and MNIST-MLP examples |
+| `ml-models: build the neurons-and-layers page` | The page, `ready`, queue ✓; adds `sin` to the template context |
+| `docs: record the neurons-and-layers run` | This table and the verified `module.py`/`container.py` ranges above |
 
 ## Queue
 
