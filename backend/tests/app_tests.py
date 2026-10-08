@@ -327,3 +327,12 @@ def test_home_links_to_jj_cloud_page():
     body = client.get("/").get_data(as_text=True)
 
     assert 'href="/jj-commit-cloud-poc"' in body
+
+
+def test_ml_models_returns_200():
+    client = app_module.app.test_client()
+
+    response = client.get("/ml-models")
+
+    assert response.status_code == 200
+    assert "ML model architectures" in response.get_data(as_text=True)

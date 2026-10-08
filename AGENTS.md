@@ -30,6 +30,8 @@ backend/            Flask app (Python) — all server-side logic
                      system, plus a jj-lib link helper and the FUSE op list (see "jj-vfs-poc" below)
   jj_cloud_docs.py  The /jj-commit-cloud-poc section: the same shape for the commit cloud,
                      with the protobuf item list (see "jj-commit-cloud-poc" below)
+  ml_models_docs.py The /ml-models section: PyTorch release pin, page registry, pinned
+                     source-link helper, and page rendering (see "ml-models" below)
   requirements.txt       Runtime deps
   requirements-dev.txt   Runtime + pytest, for local dev / CI
   pytest.ini         Configures pytest to discover *_tests.py (not the pytest default
@@ -47,6 +49,8 @@ backend/            Flask app (Python) — all server-side logic
     jj_dojo_docs_tests.py Same checks for /jj-dojo
     jj_vfs_docs_tests.py  Same checks for /jj-vfs-poc, plus jj-lib link pinning
     jj_cloud_docs_tests.py Same checks for /jj-commit-cloud-poc
+    ml_models_docs_tests.py Same checks for /ml-models, plus per-page diagram/table/snippet
+                     rules and that torch never becomes a server dependency
 
 specs/
   jj.md               The rayaq.ca/jj product & technical spec — the contract the
@@ -56,15 +60,18 @@ specs/
   jj-vfs-poc.md / jj-vfs-poc-progress.md   The same pair for /jj-vfs-poc.
   jj-commit-cloud-poc.md / jj-commit-cloud-poc-progress.md   The same pair for
                       /jj-commit-cloud-poc.
+  ml-models.md / ml-models-progress.md   The same pair for /ml-models.
 
 frontend/
   templates/         Jinja2 templates. One per route: home.html, weather.html,
                      resume.html, assembly.html; jj/ holds the /jj layout
                      (base.html), index.html, and one fragment per /jj/<slug> page;
                      jj_dojo/, jj_vfs/ and jj_cloud/ are the same for /jj-dojo,
-                     /jj-vfs-poc and /jj-commit-cloud-poc
+                     /jj-vfs-poc and /jj-commit-cloud-poc; ml_models/ is the same
+                     for /ml-models
   static/            style.css (shared/global), resume.css, assembly.css, jj.css, jj_dojo.css,
-                     jj_vfs.css, jj_cloud.css,
+                     jj_vfs.css, jj_cloud.css, ml_models.css,
+                     ml_models.js (optional step-through for /ml-models figures),
                      script.js (weather chart only)
 
 deploy/
@@ -97,6 +104,8 @@ vmrun.sh            Convenience wrapper: `./vmrun.sh '<command>'` runs a single 
 | `/jj-vfs-poc/<slug>` | One deep-dive page per topic in `jj_vfs_docs.PAGES` that is marked ready; 404 otherwise |
 | `/jj-commit-cloud-poc` | jj-commit-cloud-poc (gRPC commit cloud) architecture reference: overview and page index |
 | `/jj-commit-cloud-poc/<slug>` | One deep-dive page per topic in `jj_cloud_docs.PAGES` that is marked ready; 404 otherwise |
+| `/ml-models` | Large ML model architecture reference (PyTorch-linked): model-family map, vocabulary, page index. **Not linked from `/`** — a homepage card is the owner's call |
+| `/ml-models/<slug>` | One deep-dive page per topic in `ml_models_docs.PAGES` that is marked ready; 404 otherwise |
 | `/health` | Returns `{"status": "ok"}`, 200. Used to verify a deploy actually succeeded. |
 
 ## Local development
@@ -207,6 +216,17 @@ Each call is one command over SSH — deliberately kept to single, auditable com
   (the `v<jj_lib_version>` tag). `PROTO_ITEMS` lists every service, RPC and message in
   `common/proto/*.proto`. A daily Routine ("rayaq.ca/jj-commit-cloud-poc — architecture
   reference agent") builds and maintains it.
+- **ml-models** (`ml_models_docs.py` + `templates/ml_models/` + `ml_models.css`/`ml_models.js`):
+  a static reference to large ML model architecture (Transformer, attention, GPT/BERT/ViT,
+  MoE, diffusion U-Net, training) at `/ml-models`. Read `specs/ml-models.md` first and
+  `specs/ml-models-progress.md` for status. Every code link goes through
+  `ml_models_docs.source_url`, pinned to the commit of one stable PyTorch release tag
+  (`ml_models_docs.UPSTREAM`); links are PyTorch-only. Diagrams are inline SVG; `ml_models.js`
+  is optional progressive enhancement and every page reads fully without it. Torch-computed
+  figures come from offline scripts in `tools/ml_models/` with output committed under
+  `frontend/static/ml_models/` — never add `torch` to the requirements files or run it in CI or
+  at request time. A daily Routine ("rayaq.ca/ml-models — architecture reference agent")
+  builds and maintains it.
 - Phone number is intentionally omitted from the public resume page (privacy choice, since the repo is public). Don't add it back without checking with the site owner first.
 
 ## Conventions
