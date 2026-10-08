@@ -1,0 +1,563 @@
+{% set xor = xor_network(xor_example) %}
+{% set fits = approximation_fits(approximation_example) %}
+{% set counts = mlp_param_count(mlp_example.sizes) %}
+{% set ffn = mlp_param_count([512, 2048, 512]) %}
+{% macro f2(x) -%}{{ "%.2f"|format(x) }}{%- endmacro %}
+{% macro f3(x) -%}{{ "%.3f"|format(x) }}{%- endmacro %}
+{% macro num(x) -%}{{ "%g"|format(x) }}{%- endmacro %}
+{% macro big(n) -%}{{ "{:,}".format(n) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Neurons, layers and the MLP</h1>
+  <p class="tagline">
+    A neuron is logistic regression with a different nonlinearity; a layer is many neurons
+    sharing an input, which is one matrix multiply; a multilayer perceptron stacks layers with
+    nonlinearities between them. This page shows why the nonlinearity is the whole point,
+    what "universal approximation" does and doesn't promise, how to count an MLP's parameters,
+    and how <code>nn.Module</code>, <code>nn.Linear</code> and <code>nn.Sequential</code> build one.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  <a href="{{ url_for('ml_models', slug='logistic-regression') }}">Logistic regression</a> and
+  <a href="{{ url_for('ml_models', slug='linear-regression') }}">linear regression</a> are
+  limited by their features: they can only draw straight boundaries in the space you give them.
+  For decades the fix was hand-made features: products of inputs, polynomials, edge detectors,
+  word counts. Someone had to guess which features made the problem linear.
+</p>
+<p>
+  A neural network learns those features. Its early layers compute new features from the
+  input, and its last layer is an ordinary linear or logistic model on top of them. Everything
+  is trained together, by gradient descent, so the features are whatever makes the final layer's
+  job easy. The multilayer perceptron (MLP) is the simplest network of this kind, and it is still
+  everywhere: as the feed-forward block inside every
+  <a href="{{ url_for('ml_models', slug='transformer') }}">Transformer</a> layer, as the
+  classification head on top of vision and language models, and as the standard model for
+  tabular embeddings.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  One <strong>neuron</strong> takes a weighted sum of its inputs, adds a bias, and passes the
+  result through a nonlinear <strong>activation</strong>: h = φ(w·x + b). With φ the sigmoid,
+  that is logistic regression exactly. Modern networks mostly use the
+  <strong>ReLU</strong>, φ(z) = max(0, z), which passes positive evidence through and blocks
+  negative evidence.
+</p>
+<p>
+  A <strong>layer</strong> is many neurons reading the same input, each with its own weights.
+  Stack the weight vectors as the rows of a matrix W and the whole layer is one
+  <a href="{{ url_for('ml_models', slug='matrix-multiplication') }}">matrix multiply</a>,
+  h = φ(Wx + b), followed by the activation applied element by element. A network is layers
+  fed into layers. Each hidden layer re-describes the input in a new set of coordinates, and the
+  output layer only has to draw a straight line in the last of them.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 270" role="img" aria-labelledby="nl-neuron-title nl-neuron-desc">
+    <title id="nl-neuron-title">One neuron, and a small multilayer perceptron built from them</title>
+    <desc id="nl-neuron-desc">
+      Left: a single neuron. Three inputs x1, x2 and x3 feed arrows labelled w1, w2 and w3 into a
+      circle that computes z = w·x + b, which feeds a box applying the activation φ, producing the
+      output h. Right: a network with 2 inputs, a hidden layer of 3 neurons and 1 output. Every
+      input connects to every hidden neuron, through the weight matrix W1 of shape 3 by 2 and bias
+      b1 of 3 entries; every hidden neuron connects to the output through W2 of shape 1 by 3 and
+      bias b2. That is 9 + 4 = 13 parameters.
+    </desc>
+    {% for i in range(3) %}
+      {% set y = 70 + 65 * i %}
+      <circle cx="40" cy="{{ y }}" r="16" fill="none" class="d-line"></circle>
+      <text x="40" y="{{ y + 4 }}" font-size="12" text-anchor="middle">x{{ i + 1 }}</text>
+      <line x1="56" y1="{{ y }}" x2="146" y2="135" class="d-line"></line>
+      <text x="{{ 96 }}" y="{{ y + (135 - y) * 0.45 - 6 }}" font-size="12" text-anchor="middle" style="fill: var(--jj-accent)">w{{ i + 1 }}</text>
+    {% endfor %}
+    <circle cx="170" cy="135" r="26" fill="none" stroke="var(--jj-accent)" stroke-width="2"></circle>
+    <text x="170" y="139" font-size="13" text-anchor="middle">Σ + b</text>
+    <line x1="196" y1="135" x2="224" y2="135" class="d-line"></line>
+    <rect x="224" y="115" width="40" height="40" rx="6" fill="none" stroke="var(--jj-violet)" stroke-width="2"></rect>
+    <text x="244" y="140" font-size="14" text-anchor="middle" style="fill: var(--jj-violet)">φ</text>
+    <line x1="264" y1="135" x2="292" y2="135" class="d-line"></line>
+    <text x="298" y="139" font-size="13">h</text>
+    <text x="165" y="215" font-size="12" text-anchor="middle">z = w·x + b,&nbsp; h = φ(z)</text>
+    <text x="165" y="256" font-size="12" text-anchor="middle" class="d-muted">one neuron</text>
+
+    {% set ins = [100, 170] %}
+    {% set hid = [70, 135, 200] %}
+    {% for yi in ins %}
+      {% for yh in hid %}
+        <line x1="{{ 400 }}" y1="{{ yi }}" x2="{{ 500 }}" y2="{{ yh }}" stroke="var(--jj-accent)" stroke-width="1.2" opacity="0.7"></line>
+      {% endfor %}
+    {% endfor %}
+    {% for yh in hid %}
+      <line x1="500" y1="{{ yh }}" x2="610" y2="135" stroke="var(--jj-green)" stroke-width="1.2" opacity="0.8"></line>
+    {% endfor %}
+    {% for yi in ins %}
+      <circle cx="400" cy="{{ yi }}" r="16" class="d-line" style="fill: var(--jj-bg)"></circle>
+      <text x="400" y="{{ yi + 4 }}" font-size="12" text-anchor="middle">x{{ loop.index }}</text>
+    {% endfor %}
+    {% for yh in hid %}
+      <circle cx="500" cy="{{ yh }}" r="16" stroke="var(--jj-violet)" stroke-width="2" style="fill: var(--jj-bg)"></circle>
+      <text x="500" y="{{ yh + 4 }}" font-size="12" text-anchor="middle">h{{ loop.index }}</text>
+    {% endfor %}
+    <circle cx="610" cy="135" r="16" stroke="var(--jj-green)" stroke-width="2" style="fill: var(--jj-bg)"></circle>
+    <text x="610" y="139" font-size="12" text-anchor="middle">y</text>
+    <text x="450" y="235" font-size="12" text-anchor="middle" style="fill: var(--jj-accent)">W1 [3, 2], b1 [3]</text>
+    <text x="560" y="235" font-size="12" text-anchor="middle" style="fill: var(--jj-green)">W2 [1, 3], b2 [1]</text>
+    <text x="505" y="256" font-size="12" text-anchor="middle" class="d-muted">a 2-3-1 MLP: 9 + 4 = 13 parameters</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Left: a neuron is a dot product, a bias and a nonlinearity. Right: a layer is several neurons
+  on the same input. Each arrow is one weight, and each layer's arrows together are its weight
+  matrix.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="forward">The forward pass</h3>
+
+<p>
+  For a batch X of shape (N, d<sub>0</sub>), an MLP with layer widths
+  d<sub>0</sub>, d<sub>1</sub>, …, d<sub>L</sub> computes
+</p>
+<p class="ml-formula">H<sub>0</sub> = X, &nbsp; H<sub>ℓ</sub> = φ(H<sub>ℓ−1</sub>W<sub>ℓ</sub>ᵀ + b<sub>ℓ</sub>) for ℓ = 1 … L−1, &nbsp; output = H<sub>L−1</sub>W<sub>L</sub>ᵀ + b<sub>L</sub></p>
+<p>
+  where W<sub>ℓ</sub> has shape (d<sub>ℓ</sub>, d<sub>ℓ−1</sub>), PyTorch's (out, in)
+  convention, and b<sub>ℓ</sub> is broadcast across the batch's rows (see
+  <a href="{{ url_for('ml_models', slug='tensors-and-shapes') }}">tensors and shapes</a>). The last
+  layer has no activation: its outputs are logits or regression values, and the loss supplies the
+  sigmoid or softmax, exactly as on the
+  <a href="{{ url_for('ml_models', slug='loss-functions') }}">loss-functions</a> page. "Depth" is
+  the number of weight layers, L; "width" is the size of the hidden layers.
+</p>
+
+<h3 id="nonlinearity">Why the nonlinearity is needed</h3>
+
+<p>
+  Remove the activations and the network collapses. Two linear layers compose into one:
+</p>
+<p class="ml-formula">W<sub>2</sub>(W<sub>1</sub>x + b<sub>1</sub>) + b<sub>2</sub> = (W<sub>2</sub>W<sub>1</sub>)x + (W<sub>2</sub>b<sub>1</sub> + b<sub>2</sub>)</p>
+<p>
+  which is again just Wx + b. However many layers you stack, a network without activations can
+  only represent linear functions, so depth buys nothing. (It does change the training dynamics,
+  and a product of matrices can have lower rank than any of its factors; but the set of
+  functions is the same.)
+</p>
+<p>
+  The classic counterexample is XOR: output 1 when exactly one of two binary inputs is 1. No line
+  separates {(0, 1), (1, 0)} from {(0, 0), (1, 1)}; the best least-squares linear fit predicts
+  {{ f2(xor.best_linear.outputs[0]) }} for all four. Two ReLU neurons fix it:
+</p>
+<p class="ml-formula">h<sub>1</sub> = ReLU(x<sub>1</sub> + x<sub>2</sub>), &nbsp; h<sub>2</sub> = ReLU(x<sub>1</sub> + x<sub>2</sub> − 1), &nbsp; y = h<sub>1</sub> − 2h<sub>2</sub></p>
+<p>
+  The hidden layer maps the four corners to (0, 0), (1, 0), (1, 0) and (2, 1). In those
+  coordinates, the two positives land on the same point and a line separates them from the
+  negatives. The ReLU did the work: h<sub>2</sub> is zero for three corners and switches on only
+  for (1, 1), a bend no linear map can make.
+</p>
+
+<div class="jj-diagram">
+  {% macro ax(u) -%}{{ 90 + 150 * u }}{%- endmacro %}
+  {% macro ay(v) -%}{{ 205 - 150 * v }}{%- endmacro %}
+  {% macro hx(u) -%}{{ 420 + 110 * u }}{%- endmacro %}
+  {% macro hy(v) -%}{{ 205 - 150 * v }}{%- endmacro %}
+  <svg viewBox="0 0 680 270" role="img" aria-labelledby="nl-xor-title nl-xor-desc">
+    <title id="nl-xor-title">XOR in input space and in the hidden layer's space</title>
+    <desc id="nl-xor-desc">
+      Left: the four inputs of XOR on the unit square. (0, 1) and (1, 0) have target 1 and are
+      filled; (0, 0) and (1, 1) have target 0 and are hollow. They sit on opposite diagonals, so
+      no straight line separates them. Right: the same four inputs after the hidden layer
+      h1 = ReLU(x1 + x2), h2 = ReLU(x1 + x2 − 1). They land at
+      {% for row in xor.rows %}({{ row.h|join(", ") }}){{ ", " if not loop.last else "" }}{% endfor %}:
+      both positives at (1, 0), and the line h1 − 2·h2 = 0.5 separates them from the two negatives.
+      The output y = h1 − 2·h2 is
+      {{ xor.rows|map(attribute="y")|join(", ") }}, exactly XOR.
+    </desc>
+    <line x1="{{ ax(-0.2) }}" y1="{{ ay(0) }}" x2="{{ ax(1.3) }}" y2="{{ ay(0) }}" class="d-line"></line>
+    <line x1="{{ ax(0) }}" y1="{{ ay(-0.2) }}" x2="{{ ax(0) }}" y2="{{ ay(1.25) }}" class="d-line"></line>
+    <line x1="{{ ax(-0.15) }}" y1="{{ ay(0.75) }}" x2="{{ ax(1.2) }}" y2="{{ ay(0.3) }}" stroke="var(--jj-red)" stroke-width="1.5" class="ml-dashed" opacity="0.7"></line>
+    <text x="{{ ax(1.2) }}" y="{{ ay(0.3)|float + 18 }}" font-size="12" text-anchor="end" style="fill: var(--jj-red)">no line works</text>
+    {% for row in xor.rows %}
+      <circle cx="{{ ax(row.x[0]) }}" cy="{{ ay(row.x[1]) }}" r="7" {% if row.target %}style="fill: var(--jj-green)"{% else %}fill="none" stroke="var(--jj-amber)" stroke-width="2.5"{% endif %}></circle>
+      <text x="{{ ax(row.x[0])|float + 12 }}" y="{{ ay(row.x[1])|float - 8 }}" font-size="12">({{ row.x|join(", ") }})</text>
+    {% endfor %}
+    <text x="{{ ax(0.55) }}" y="250" font-size="12" text-anchor="middle" class="d-muted">input space (x1, x2)</text>
+
+    <line x1="{{ hx(0) }}" y1="{{ hy(0) }}" x2="{{ hx(2.25) }}" y2="{{ hy(0) }}" class="d-line"></line>
+    <line x1="{{ hx(0) }}" y1="{{ hy(-0.2) }}" x2="{{ hx(0) }}" y2="{{ hy(1.25) }}" class="d-line"></line>
+    <line x1="{{ hx(0.35) }}" y1="{{ hy(-0.075) }}" x2="{{ hx(2.2) }}" y2="{{ hy(0.85) }}" stroke="var(--jj-violet)" stroke-width="2"></line>
+    <text x="{{ hx(2.2) }}" y="{{ hy(0.85)|float + 18 }}" font-size="12" text-anchor="end" style="fill: var(--jj-violet)">h1 − 2·h2 = 0.5</text>
+    {% for row in xor.rows %}
+      <circle cx="{{ hx(row.h[0]) }}" cy="{{ hy(row.h[1]) }}" r="7" {% if row.target %}style="fill: var(--jj-green)"{% else %}fill="none" stroke="var(--jj-amber)" stroke-width="2.5"{% endif %}></circle>
+    {% endfor %}
+    <text x="{{ hx(1) }}" y="{{ hy(0)|float + 22 }}" font-size="12" text-anchor="middle">(1, 0) ×2</text>
+    <text x="{{ hx(0)|float + 10 }}" y="{{ hy(0)|float - 12 }}" font-size="12">(0, 0)</text>
+    <text x="{{ hx(2)|float - 10 }}" y="{{ hy(1)|float - 12 }}" font-size="12" text-anchor="end">(2, 1)</text>
+    <text x="{{ hx(1) }}" y="250" font-size="12" text-anchor="middle" class="d-muted">hidden space (h1, h2)</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  The hidden layer moves the points so that a line works. Filled points are XOR's 1s and hollow
+  points its 0s.
+</p>
+
+<h3 id="universal-approximation">Universal approximation</h3>
+
+<p>
+  How much can one hidden layer do? The <strong>universal approximation theorem</strong>
+  (Cybenko 1989 for sigmoids; Hornik 1991 and Leshno et al. 1993 for any non-polynomial
+  activation) says: any continuous function on a bounded region can be approximated to any
+  accuracy by a network with one hidden layer, if the layer is wide enough.
+</p>
+<p>
+  For ReLU in one dimension the proof is a picture. Each unit ReLU(x − k) is a hinge that bends
+  the output at x = k, so a sum of n hinges is a piecewise-linear curve with n bends. Put the
+  bends at evenly spaced points, choose each output weight to be the change in slope there, and
+  the network joins the dots of the target function:
+</p>
+<p class="ml-formula">y(x) = f(k<sub>0</sub>) + Σ<sub>i</sub> c<sub>i</sub> ReLU(x − k<sub>i</sub>), &nbsp; c<sub>i</sub> = slope<sub>i</sub> − slope<sub>i−1</sub></p>
+<p>
+  More units, more bends, smaller error. What the theorem does <em>not</em> say matters as much.
+  It doesn't say how wide "wide enough" is (in d dimensions this construction needs a number of
+  units exponential in d); it doesn't say gradient descent will find the weights; and it says
+  nothing about generalizing beyond the training data. In practice depth is what makes networks
+  efficient: a deep network can reuse features, and some functions need exponentially more units
+  when computed with one layer instead of several.
+</p>
+
+<div class="jj-diagram">
+  {% macro ux(x) -%}{{ 60 + 92 * x }}{%- endmacro %}
+  {% macro uy(y) -%}{{ 122 - 86 * y }}{%- endmacro %}
+  {% set colors = ["var(--jj-amber)", "var(--jj-violet)"] %}
+  <svg viewBox="0 0 680 270" role="img" aria-labelledby="nl-ua-title nl-ua-desc">
+    <title id="nl-ua-title">One-hidden-layer ReLU networks approximating sin(x)</title>
+    <desc id="nl-ua-desc">
+      The function sin(x) from 0 to 2π, drawn as a smooth curve, with two ReLU networks that
+      interpolate it at evenly spaced knots, marked by dots.
+      {% for f in fits %}With {{ f.units }} hidden units ({{ f.params }} parameters) the network is
+      a polyline with {{ f.units }} pieces and a largest error of {{ f3(f.max_error) }}. {% endfor %}
+    </desc>
+    <line x1="{{ ux(0) }}" y1="{{ uy(0) }}" x2="{{ ux(6.5) }}" y2="{{ uy(0) }}" class="d-line ml-dashed" opacity="0.5"></line>
+    <line x1="{{ ux(0) }}" y1="{{ uy(-1.15) }}" x2="{{ ux(0) }}" y2="{{ uy(1.15) }}" class="d-line"></line>
+    {% for t in [-1, 0, 1] %}
+      <text x="{{ ux(0)|float - 6 }}" y="{{ uy(t)|float + 4 }}" font-size="12" text-anchor="end">{{ t }}</text>
+    {% endfor %}
+    {% for t in [0, 2, 4, 6] %}
+      <text x="{{ ux(t) }}" y="{{ uy(-1.15)|float + 16 }}" font-size="12" text-anchor="middle">{{ t }}</text>
+    {% endfor %}
+    <path d="M{% for i in range(101) %}{% set x = 6.283185307 * i / 100 %}{% if not loop.first %} L{% endif %}{{ ux(x) }},{{ uy(sin(x)) }}{% endfor %}" fill="none" stroke="var(--jj-accent)" stroke-width="3" opacity="0.6"></path>
+    {% for f in fits %}
+      <path d="M{% for k, v in zip(f.knots, f["values"]) %}{% if not loop.first %} L{% endif %}{{ ux(k) }},{{ uy(v) }}{% endfor %}" fill="none" stroke="{{ colors[loop.index0] }}" stroke-width="2"></path>
+      {% set c = colors[loop.index0] %}
+      {% for k, v in zip(f.knots, f["values"]) %}
+        <circle cx="{{ ux(k) }}" cy="{{ uy(v) }}" r="3.5" style="fill: {{ c }}"></circle>
+      {% endfor %}
+    {% endfor %}
+    <text x="{{ ux(6.45) }}" y="{{ uy(1.0) }}" font-size="12" text-anchor="end" style="fill: var(--jj-accent)">sin(x)</text>
+    {% for f in fits %}
+      <text x="{{ ux(6.45) }}" y="{{ uy(0.8 - 0.2 * loop.index0) }}" font-size="12" text-anchor="end" style="fill: {{ colors[loop.index0] }}">{{ f.units }} units: max error {{ f3(f.max_error) }}</text>
+    {% endfor %}
+    <text x="{{ ux(3.14) }}" y="262" font-size="12" text-anchor="middle" class="d-muted">x (one hidden ReLU layer, output = sum of hinges)</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Each hidden unit contributes one bend. With {{ fits[0].units }} units the network is a crude
+  zigzag; with {{ fits[1].units }} the error is {{ f2(fits[0].max_error / fits[1].max_error) }}
+  times smaller. For a smooth target, error falls roughly as 1/n² for n evenly spaced bends.
+</p>
+
+<h3 id="parameters">Counting parameters</h3>
+
+<p>
+  A layer from width d<sub>in</sub> to d<sub>out</sub> has d<sub>out</sub> × d<sub>in</sub>
+  weights and d<sub>out</sub> biases. Activations have none. So an MLP with widths
+  d<sub>0</sub>, …, d<sub>L</sub> has
+</p>
+<p class="ml-formula">Σ<sub>ℓ</sub> (d<sub>ℓ−1</sub> + 1) · d<sub>ℓ</sub> parameters</p>
+<p>
+  dominated by the widest adjacent pair. The cost of a forward pass is about two floating-point
+  operations per weight per example (one multiply, one add), so parameters and compute go
+  together for an MLP. That's not true of every network: a convolution reuses its few weights at
+  every position.
+</p>
+
+<h3 id="modules">How PyTorch builds one: <code>nn.Module</code></h3>
+
+<p>
+  Everything with parameters in PyTorch is an <code>nn.Module</code>. A module does two jobs. It
+  holds state, and it defines <code>forward</code>. The state bookkeeping is automatic:
+  <code>Module.__setattr__</code> intercepts attribute assignment, so writing
+  <code>self.fc = nn.Linear(4, 3)</code> inside <code>__init__</code> registers a submodule, and
+  assigning an <code>nn.Parameter</code> registers a parameter. That registry is what
+  <code>parameters()</code>, <code>state_dict()</code>, <code>.to(device)</code>,
+  <code>train()</code>/<code>eval()</code> and <code>zero_grad()</code> walk, recursively through
+  submodules. A plain tensor attribute is not registered and silently won't be trained, moved or
+  saved; use <code>register_buffer</code> for non-trained state.
+</p>
+<p>
+  Calling a module, <code>model(x)</code>, runs <code>Module.__call__</code>, which checks for
+  hooks and otherwise goes straight to your <code>forward</code>. Call the module, not
+  <code>forward</code> directly, or hooks are skipped.
+</p>
+<p>
+  <code>nn.Linear(in_features, out_features)</code> stores <code>weight</code> with shape
+  (out, in) and <code>bias</code> with shape (out,), computes <code>x @ weight.T + bias</code> for
+  any number of leading batch dimensions, and initializes both uniformly in
+  ±1/√in_features. <code>nn.Sequential(*modules)</code> registers its arguments as submodules
+  named <code>"0"</code>, <code>"1"</code>, … and its <code>forward</code> is a four-line loop
+  that feeds each module's output to the next. It covers any straight-line stack; anything with
+  branches or skip connections needs a <code>Module</code> subclass with its own
+  <code>forward</code>, and <code>nn.ModuleList</code> to hold a variable number of layers.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Term</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>nn.Module</code></td>
+        <td><code>_parameters</code>, <code>_buffers</code>, <code>_modules</code></td>
+        <td>Base class of every layer and model: holds registered state and defines <code>forward</code>.</td>
+        <td><a href="{{ src('torch/nn/modules/module.py', 407, 525) }}"><code>module.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Module.__setattr__</code></td>
+        <td>name, value</td>
+        <td>Registers <code>Parameter</code>s and submodules assigned as attributes.</td>
+        <td><a href="{{ src('torch/nn/modules/module.py', 1976, 2080) }}"><code>__setattr__</code></a></td>
+      </tr>
+      <tr>
+        <td><code>register_parameter</code>, <code>add_module</code></td>
+        <td>name, tensor or module</td>
+        <td>The explicit forms of that registration.</td>
+        <td><a href="{{ src('torch/nn/modules/module.py', 592, 669) }}"><code>module.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Module.__call__</code></td>
+        <td><code>model(x)</code></td>
+        <td>Runs hooks if any are registered, else calls <code>forward</code> directly.</td>
+        <td><a href="{{ src('torch/nn/modules/module.py', 1787, 1922) }}"><code>_call_impl</code></a></td>
+      </tr>
+      <tr>
+        <td><code>parameters</code>, <code>named_parameters</code></td>
+        <td>iterator of tensors</td>
+        <td>Walks the registry recursively; what you hand to an optimizer.</td>
+        <td><a href="{{ src('torch/nn/modules/module.py', 2670, 2730) }}"><code>module.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.Linear</code></td>
+        <td>weight (out, in), bias (out,)</td>
+        <td>One layer of neurons: <code>x @ weight.T + bias</code>, uniform ±1/√in init.</td>
+        <td><a href="{{ src('torch/nn/modules/linear.py', 53, 147) }}"><code>linear.py</code></a>, <a href="{{ src('torch/nn/modules/linear.py', 117, 135) }}"><code>reset_parameters</code>, <code>forward</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.ReLU</code></td>
+        <td>no parameters</td>
+        <td>The activation max(0, z), element by element.</td>
+        <td><a href="{{ src('torch/nn/modules/activation.py', 104, 152) }}"><code>activation.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.Sequential</code></td>
+        <td>modules named <code>"0"</code>, <code>"1"</code>, …</td>
+        <td>A straight-line stack: <code>forward</code> feeds each output to the next module.</td>
+        <td><a href="{{ src('torch/nn/modules/container.py', 59, 339) }}"><code>container.py</code></a>, <a href="{{ src('torch/nn/modules/container.py', 254, 260) }}"><code>forward</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.ModuleList</code></td>
+        <td>list of modules</td>
+        <td>A registered list, for a variable number of layers in a custom <code>forward</code>.</td>
+        <td><a href="{{ src('torch/nn/modules/container.py', 341, 510) }}"><code>container.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>XOR, layer by layer.</strong> Weights W<sub>1</sub> = [[1, 1], [1, 1]],
+    b<sub>1</sub> = [0, −1], W<sub>2</sub> = [[1, −2]], b<sub>2</sub> = [0].
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>x</th><th>z = W<sub>1</sub>x + b<sub>1</sub></th><th>h = ReLU(z)</th><th>y = W<sub>2</sub>h + b<sub>2</sub></th><th>target</th></tr></thead>
+      <tbody>
+        {% for row in xor.rows %}
+          <tr><td>({{ row.x|join(", ") }})</td><td>({{ row.z|join(", ") }})</td><td>({{ row.h|join(", ") }})</td><td>{{ row.y }}</td><td>{{ row.target }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Only the first input's z<sub>2</sub> = −1 is negative, so ReLU changes only that entry; that
+    one clipped value is the nonlinearity that makes XOR possible. Now delete the ReLU. The
+    network collapses to W<sub>2</sub>W<sub>1</sub> = [{{ xor.collapsed.weight|join(", ") }}] and
+    W<sub>2</sub>b<sub>1</sub> + b<sub>2</sub> = {{ xor.collapsed.bias }}, that is
+    y = {{ xor.collapsed.bias }} − x<sub>1</sub> − x<sub>2</sub>, which outputs
+    {{ xor.collapsed.outputs|join(", ") }}: wrong on (0, 0), where z<sub>2</sub> = −1 now flows
+    through as −1 and W<sub>2</sub>'s −2 turns it into +2.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <p>
+    <strong>Hinges for sin.</strong> With {{ fits[0].units }} units, the knots are at
+    {% for k in fits[0].knots %}{{ f3(k + 0.0) }}{{ ", " if not loop.last }}{% endfor %} and sin there is
+    {% for v in fits[0]["values"] %}{{ f3(v|round(3) + 0.0) }}{{ ", " if not loop.last }}{% endfor %}.
+    {% set c = fits[0].coefficients %}
+    The slopes of the three segments are {{ f3(c[0]) }}, {{ f3(c[0] + c[1]) }} and
+    {{ f3(c[0] + c[1] + c[2]) }}, so the output weights are their changes,
+    c = ({% for v in c %}{{ f3(v) }}{{ ", " if not loop.last }}{% endfor %}), and the network is
+    y = {{ f3(c[0]) }}·ReLU(x){% for i in [1, 2] %} {{ "+" if c[i] >= 0 else "−" }} {{ f3(c[i]|abs) }}·ReLU(x − {{ f3(fits[0].knots[i]) }}){% endfor %}.
+    Each hidden unit has
+    a weight (1) and a bias (−k), plus one output weight, plus the output bias:
+    3·{{ fits[0].units }} + 1 = {{ fits[0].params }} parameters.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <p>
+    <strong>Counting an MNIST classifier.</strong> Widths {{ mlp_example.sizes|join(" → ") }}
+    (28 × 28 pixels in, 10 digits out):
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>layer</th><th>weights</th><th>biases</th><th>total</th></tr></thead>
+      <tbody>
+        {% for layer in counts.layers %}
+          <tr><td>Linear({{ layer.in }}, {{ layer.out }})</td><td>{{ layer.in }} × {{ layer.out }} = {{ big(layer.weights) }}</td><td>{{ layer.biases }}</td><td>{{ big(layer.total) }}</td></tr>
+        {% endfor %}
+        <tr><td colspan="3"><strong>all</strong></td><td><strong>{{ big(counts.total) }}</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The first layer holds {{ "%.0f"|format(100 * counts.layers[0].total / counts.total) }}% of
+    the parameters. The feed-forward block in each layer of the base
+    <a href="{{ url_for('ml_models', slug='transformer') }}">Transformer</a> is the same object,
+    512 → 2048 → 512 with a ReLU between: {{ big(ffn.total) }} parameters, about two thirds of
+    that layer.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+from torch import nn
+
+# XOR with the hand-set weights from this page
+xor = nn.Sequential(nn.Linear(2, 2), nn.ReLU(), nn.Linear(2, 1))
+with torch.no_grad():
+    xor[0].weight.copy_(torch.tensor([[1., 1.], [1., 1.]]))
+    xor[0].bias.copy_(torch.tensor([0., -1.]))
+    xor[2].weight.copy_(torch.tensor([[1., -2.]]))
+    xor[2].bias.zero_()
+X = torch.tensor([[0., 0.], [0., 1.], [1., 0.], [1., 1.]])
+xor(X).squeeze(1)                              # tensor([0., 1., 1., 0.])
+
+# the MNIST-sized MLP, written as a Module subclass
+class MLP(nn.Module):
+    def __init__(self, sizes=(784, 256, 128, 10)):
+        super().__init__()
+        self.layers = nn.ModuleList(
+            nn.Linear(a, b) for a, b in zip(sizes, sizes[1:])
+        )
+
+    def forward(self, x):                      # x: [batch, 784]
+        for layer in self.layers[:-1]:
+            x = torch.relu(layer(x))
+        return self.layers[-1](x)              # logits: [batch, 10]
+
+model = MLP()
+sum(p.numel() for p in model.parameters())     # 235146
+[name for name, _ in model.named_parameters()][:2]
+# ['layers.0.weight', 'layers.0.bias']
+model(torch.randn(32, 784)).shape              # torch.Size([32, 10])</code></pre>
+
+<p>The same forward pass in plain Python:</p>
+
+<pre><code>def relu(values):
+    return [max(0, v) for v in values]
+
+def linear(weight, bias, x):                   # weight: out rows of in columns
+    return [sum(w * xi for w, xi in zip(row, x)) + b for row, b in zip(weight, bias)]
+
+def mlp(layers, x):
+    for i, (weight, bias) in enumerate(layers):
+        x = linear(weight, bias, x)
+        if i &lt; len(layers) - 1:                  # no activation on the output layer
+            x = relu(x)
+    return x
+
+layers = [([[1, 1], [1, 1]], [0, -1]), ([[1, -2]], [0])]
+[mlp(layers, x)[0] for x in ([0, 0], [0, 1], [1, 0], [1, 1])]   # [0, 1, 1, 0]</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Width versus depth.</strong> One wide layer can approximate anything in principle,
+    but deep, narrower networks usually reach the same accuracy with far fewer parameters, because
+    later layers reuse features computed by earlier ones. Depth makes optimization harder:
+    gradients have to pass through every layer, which is why deep networks need careful
+    initialization, normalization and residual connections.
+  </li>
+  <li>
+    <strong>No built-in structure.</strong> An MLP treats its input as an unordered vector. It
+    knows nothing about neighbouring pixels or word order, so on images it needs far more
+    parameters than a convolutional network, which shares weights across positions. Its strength
+    is in places where the structure has already been handled: on top of learned embeddings, or
+    as the per-token block inside a Transformer.
+  </li>
+  <li>
+    <strong>Parameters cost memory and data.</strong> A dense layer between two wide vectors is
+    expensive: the first layer of a 4096 → 4096 MLP alone has 16.8 million weights. More
+    parameters need more data or more regularization to avoid overfitting.
+  </li>
+  <li>
+    <strong>Non-convex training.</strong> Unlike the linear and logistic models, an MLP's loss
+    has many minima and saddle points, and permuting hidden units gives identical networks. In
+    practice gradient descent from a good random initialization finds good solutions, but there
+    is no closed form and no guarantee.
+  </li>
+</ul>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="ml-quiz">
+  <summary>A network has ten <code>nn.Linear</code> layers and no activations. What can it represent?</summary>
+  <p>Only affine functions Wx + b. The layers multiply into a single matrix and a single bias, so it is no more expressive than one <code>nn.Linear</code>.</p>
+</details>
+<details class="ml-quiz">
+  <summary>How many parameters does <code>nn.Sequential(nn.Linear(10, 20), nn.ReLU(), nn.Linear(20, 5))</code> have?</summary>
+  <p>10 × 20 + 20 = 220 for the first layer, 20 × 5 + 5 = 105 for the second, none for the ReLU: 325.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Inside <code>__init__</code> you write <code>self.scale = torch.ones(8, requires_grad=True)</code>. Why won't the optimizer update it?</summary>
+  <p>A plain tensor isn't registered by <code>Module.__setattr__</code>, so it doesn't appear in <code>model.parameters()</code> and is never given to the optimizer (nor moved by <code>.to()</code> or saved in the <code>state_dict</code>). Wrap it in <code>nn.Parameter</code>.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Does the universal approximation theorem mean a one-hidden-layer network is all you need?</summary>
+  <p>No. It promises that some wide enough network exists, not that it is small, that training will find it, or that it will generalize. Deeper networks are usually far more efficient.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Rosenblatt. <em>The Perceptron: A Probabilistic Model for Information Storage and Organization in the Brain.</em> Psychological Review, 1958.</li>
+  <li>Minsky and Papert. <em>Perceptrons.</em> MIT Press, 1969 (the XOR limitation of single-layer networks).</li>
+  <li>Rumelhart, Hinton and Williams. <em>Learning Representations by Back-Propagating Errors.</em> Nature, 1986.</li>
+  <li>Cybenko. <em>Approximation by Superpositions of a Sigmoidal Function.</em> Mathematics of Control, Signals and Systems, 1989.</li>
+  <li>Hornik. <em>Approximation Capabilities of Multilayer Feedforward Networks.</em> Neural Networks, 1991.</li>
+  <li>Leshno, Lin, Pinkus and Schocken. <em>Multilayer Feedforward Networks with a Nonpolynomial Activation Function Can Approximate Any Function.</em> Neural Networks, 1993.</li>
+  <li>Telgarsky. <em>Benefits of Depth in Neural Networks.</em> COLT, 2016 (<a href="https://arxiv.org/abs/1602.04485">arXiv 1602.04485</a>).</li>
+  <li>Goodfellow, Bengio and Courville. <em>Deep Learning</em>, chapter 6. MIT Press, 2016.</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/nn/modules/module.py', 407, 525) }}"><code>torch/nn/modules/module.py</code></a>, <a href="{{ src('torch/nn/modules/linear.py', 53, 147) }}"><code>torch/nn/modules/linear.py</code></a> and <a href="{{ src('torch/nn/modules/container.py', 59, 339) }}"><code>torch/nn/modules/container.py</code></a>.</li>
+</ul>

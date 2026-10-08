@@ -580,7 +580,7 @@ PAGES = [
             "pytorch:torch/nn/modules/container.py",
             "pytorch:torch/nn/modules/module.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "activation-functions",
@@ -2599,6 +2599,7 @@ def render(slug, render_template):
         "perplexity": perplexity,
         "mutual_information": mutual_information,
         "exp": math.exp,
+        "sin": math.sin,
         "constant_fit_example": CONSTANT_FIT_EXAMPLE,
         "triplet_example": TRIPLET_EXAMPLE,
         "infonce_example": INFONCE_EXAMPLE,
