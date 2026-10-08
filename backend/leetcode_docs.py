@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -3565,6 +3565,61 @@ def anagram_groups(words):
         groups.setdefault("".join(sorted(word)), []).append(word)
     return groups
 
+
+def prefix_table(nums):
+    """prefix[i] is the sum of nums[:i], so prefix has one more entry than nums."""
+    prefix = [0]
+    for value in nums:
+        prefix.append(prefix[-1] + value)
+    return prefix
+
+
+def range_sum(prefix, left, right):
+    """Sum of nums[left..right] inclusive from a prefix table, in two lookups."""
+    return prefix[right + 1] - prefix[left]
+
+
+def subarray_sum_trace(nums, target):
+    """Count subarrays summing to target: running sum, the earlier sum needed, and how often it was seen."""
+    seen = {0: 1}
+    running = 0
+    total = 0
+    steps = []
+    for value in nums:
+        running += value
+        need = running - target
+        found = seen.get(need, 0)
+        total += found
+        steps.append({"value": value, "running": running, "need": need, "found": found})
+        seen[running] = seen.get(running, 0) + 1
+    return {"steps": steps, "total": total}
+
+
+def product_except_self(nums):
+    """Left products, right products and their elementwise product (no division)."""
+    left, right = [1] * len(nums), [1] * len(nums)
+    for i in range(1, len(nums)):
+        left[i] = left[i - 1] * nums[i - 1]
+    for i in range(len(nums) - 2, -1, -1):
+        right[i] = right[i + 1] * nums[i + 1]
+    return {"left": left, "right": right, "result": [a * b for a, b in zip(left, right)]}
+
+
+def prefix_table_2d(grid):
+    """table[r][c] is the sum of grid[:r][:c]; one extra row and column of zeros."""
+    rows, cols = len(grid), len(grid[0]) if grid else 0
+    table = [[0] * (cols + 1) for _ in range(rows + 1)]
+    for r in range(rows):
+        for c in range(cols):
+            table[r + 1][c + 1] = grid[r][c] + table[r][c + 1] + table[r + 1][c] - table[r][c]
+    return table
+
+
+def rectangle_sum(table, row1, col1, row2, col2):
+    """Sum of grid rows row1..row2 and columns col1..col2 inclusive, by inclusion and exclusion."""
+    return (table[row2 + 1][col2 + 1] - table[row1][col2 + 1]
+            - table[row2 + 1][col1] + table[row1][col1])
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -3692,6 +3747,12 @@ def render(slug, render_template):
         "majority_vote_trace": majority_vote_trace,
         "frequency_buckets": frequency_buckets,
         "anagram_groups": anagram_groups,
+        "prefix_table": prefix_table,
+        "range_sum": range_sum,
+        "subarray_sum_trace": subarray_sum_trace,
+        "product_except_self": product_except_self,
+        "prefix_table_2d": prefix_table_2d,
+        "rectangle_sum": rectangle_sum,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,

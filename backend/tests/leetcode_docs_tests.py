@@ -306,3 +306,29 @@ def test_counting_helpers_match_the_page():
     assert "counts 4 occurrences in 7 elements, a majority" in body
     assert "<code>aet</code></td><td>eat, tea, ate</td>" in body
     assert "4 and 1. The scan stops" in body
+
+
+def test_prefix_helpers_match_the_page():
+    nums = [3, 1, 4, 1, 5, 9, 2, 6]
+    prefix = leetcode_docs.prefix_table(nums)
+    assert prefix == [0, 3, 4, 8, 9, 14, 23, 25, 31]
+    assert [leetcode_docs.range_sum(prefix, l, r) for l, r in [(0, 7), (2, 5), (3, 3), (4, 6)]] == [31, 19, 1, 16]
+    assert leetcode_docs.prefix_table([]) == [0]
+    trace = leetcode_docs.subarray_sum_trace([3, 4, 7, 2, -3, 1, 4, 2], 7)
+    assert [s["running"] for s in trace["steps"]] == [3, 7, 14, 16, 13, 14, 18, 20]
+    assert [s["found"] for s in trace["steps"]] == [0, 1, 1, 0, 0, 1, 0, 1]
+    assert trace["total"] == 4
+    assert leetcode_docs.subarray_sum_trace([0, 0], 0)["total"] == 3
+    products = leetcode_docs.product_except_self([1, 2, 3, 4])
+    assert products == {"left": [1, 1, 2, 6], "right": [24, 12, 4, 1], "result": [24, 12, 8, 6]}
+    assert leetcode_docs.product_except_self([1, 0, 3])["result"] == [0, 3, 0]
+    grid = [[3, 0, 1, 4], [5, 6, 3, 2], [1, 2, 0, 1], [4, 1, 0, 1]]
+    table = leetcode_docs.prefix_table_2d(grid)
+    assert table[4] == [0, 13, 22, 26, 34]
+    assert leetcode_docs.rectangle_sum(table, 1, 1, 2, 2) == 11
+    assert leetcode_docs.rectangle_sum(table, 0, 0, 3, 3) == 34
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/prefix-sums").get_data(as_text=True))
+    assert "<td class=\"num\">[2..5]</td><td class=\"num\">23 − 4</td><td class=\"num\">19</td>" in body
+    assert "There are 4 such subarrays" in body
+    assert "<code>[24, 12, 8, 6]</code>" in body
+    assert "21 − 4 − 9 + 3 = 11" in body

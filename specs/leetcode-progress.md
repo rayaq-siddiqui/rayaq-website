@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (build run). `complexity-analysis`, `python-toolkit` and `recursion` are ready (all of Foundations). **The next run is a build run** continuing at `hash-maps-and-sets`.
+**Last updated:** 2026-10-08 (build run). `hash-maps-and-sets`, `counting-and-bucketing` and `prefix-sums` are ready, with all of Foundations (6 of 58 pages). **The next run is a build run** continuing at `in-place-array-tricks`.
 
 ## The Routine
 
@@ -39,10 +39,10 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 
 | List | Problems with a ready home | Size |
 |---|---|---|
-| Blind 75 | 0 | 75 |
-| Grind 169 | 1 | 169 |
-| NeetCode 150 | 0 | 150 |
-| NeetCode 250 | 4 | 250 |
+| Blind 75 | 7 | 75 |
+| Grind 169 | 16 | 169 |
+| NeetCode 150 | 9 | 150 |
+| NeetCode 250 | 21 | 250 |
 
 ## Queue
 
@@ -54,8 +54,8 @@ build once research is done.
 3. `recursion` ✓
 4. `hash-maps-and-sets` ✓
 5. `counting-and-bucketing` ✓
-6. `prefix-sums` ← next
-7. `in-place-array-tricks`
+6. `prefix-sums` ✓
+7. `in-place-array-tricks` ← next
 8. `two-pointers`
 9. `fixed-size-window`
 10. `variable-size-window`
@@ -166,3 +166,10 @@ two inline SVGs and the full §6 format; added the shared `_problems.html` parti
 colour classes in `leetcode.css`; made the coverage test independent of which pages are ready.
 Coverage: Blind 75 0/75, Grind 169 1/169, NeetCode 150 0/150, NeetCode 250 4/250. Mobile check
 passed on `/`, `/leetcode` and all three pages. Next: `hash-maps-and-sets`.
+
+### 2026-10-08 — build run
+
+Built `hash-maps-and-sets`, `counting-and-bucketing` and `prefix-sums` (3 of 3), each with tested
+helpers in `leetcode_docs.py`, two or more inline SVGs and the full §6 format. Coverage: Blind 75
+7/75, Grind 169 16/169, NeetCode 150 9/150, NeetCode 250 21/250. Mobile check passed on `/`,
+`/leetcode` and all six ready pages. Next: `in-place-array-tricks`.

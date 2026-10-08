@@ -1,0 +1,352 @@
+{% set nums = [3, 1, 4, 1, 5, 9, 2, 6] %}
+{% set prefix = prefix_table(nums) %}
+{% set queries = [(0, 7), (2, 5), (3, 3), (4, 6)] %}
+{% set sub = subarray_sum_trace([3, 4, 7, 2, -3, 1, 4, 2], 7) %}
+{% set sub_nums = [3, 4, 7, 2, -3, 1, 4, 2] %}
+{% set prod = product_except_self([1, 2, 3, 4]) %}
+{% set grid = [[3, 0, 1, 4], [5, 6, 3, 2], [1, 2, 0, 1], [4, 1, 0, 1]] %}
+{% set table2d = prefix_table_2d(grid) %}
+<header class="jj-header">
+  <h1>Prefix sums and products</h1>
+  <p class="tagline">
+    Spend O(n) once to store running totals, then answer any "sum of this stretch" question with
+    one subtraction. This page builds the idea from first principles, extends it to products
+    without division, to rectangles in a grid, and, combined with a hash map, to counting
+    subarrays with a given sum in one pass.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Questions about contiguous ranges of an array ("sum from index i to j", "how many subarrays
+  add up to k") are slow if every query re-adds its range: O(n) per query, O(n²) over many
+  queries. Prefix sums remove the repeated addition: totals are computed once, and every range
+  becomes the difference of two stored totals.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Signal</th><th>Pattern</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Many range-sum queries on a fixed array</td><td>Prefix-sum array</td><td>Each query is prefix[r + 1] − prefix[l], O(1) after O(n) setup.</td></tr>
+    <tr><td>"Number of subarrays with sum k" (negatives allowed)</td><td>Prefix sums plus a hash map</td><td>A subarray sums to k exactly when two running sums differ by k; count earlier ones in a map.</td></tr>
+    <tr><td>"Equal numbers of 0s and 1s", "balanced" subarrays</td><td>Map values to ±1, then find equal prefix sums</td><td>Equal running totals mean the stretch between them sums to zero.</td></tr>
+    <tr><td>"Product of everything except self", no division</td><td>Prefix and suffix products</td><td>Left product times right product covers everything but the element itself.</td></tr>
+    <tr><td>Sum of a sub-rectangle of a matrix, many queries</td><td>2D prefix sums</td><td>Four lookups with inclusion and exclusion.</td></tr>
+    <tr><td>Random pick weighted by a value</td><td>Prefix sums, then binary search</td><td>Prefix totals are sorted, so a random point finds its slice by binary search.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Think of a car's odometer. To know how far you drove between two stops you do not retrace the
+  trip: you read the odometer at each stop and subtract. A prefix-sum array is the odometer
+  reading after every element. Any distance between two readings is a subtraction, however long
+  the stretch.
+</p>
+<p>
+  The same picture explains the hash-map version. A stretch sums to k when the odometer at its
+  end is k more than at its start. So while driving, at each point ask: "how many earlier
+  readings are exactly k below where I am now?" That is a dictionary lookup, and each such
+  earlier reading is the start of one qualifying stretch.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 230" role="img" aria-labelledby="lc-range-title lc-range-desc">
+    <title id="lc-range-title">A range sum as a difference of two prefix values</title>
+    <desc id="lc-range-desc">
+      The array {{ nums | join(", ") }} drawn above its prefix array {{ prefix | join(", ") }}. The
+      elements at indices 2 to 5 (4, 1, 5, 9) are highlighted, with sum {{ range_sum(prefix, 2, 5) }}. Below, the prefix
+      entries prefix[6] = {{ prefix[6] }} and prefix[2] = {{ prefix[2] }} are highlighted; their difference is the same
+      {{ range_sum(prefix, 2, 5) }}.
+    </desc>
+    <text x="14" y="40" font-size="12" class="d-muted">nums</text>
+    {% for value in nums %}
+      <rect x="{{ 60 + loop.index0 * 68 }}" y="22" width="62" height="32" class="{{ 'lc-fill-m' if 2 <= loop.index0 <= 5 else 'd-box' }}"></rect>
+      <text x="{{ 91 + loop.index0 * 68 }}" y="43" font-size="14" text-anchor="middle">{{ value }}</text>
+      <text x="{{ 91 + loop.index0 * 68 }}" y="68" font-size="11" text-anchor="middle" class="d-muted">{{ loop.index0 }}</text>
+    {% endfor %}
+    <text x="14" y="136" font-size="12" class="d-muted">prefix</text>
+    {% for total in prefix %}
+      <rect x="{{ 26 + loop.index0 * 68 + 34 }}" y="118" width="40" height="32" class="{{ 'lc-fill-g' if loop.index0 == 6 else ('lc-fill-a' if loop.index0 == 2 else 'd-box') }}"></rect>
+      <text x="{{ 26 + loop.index0 * 68 + 54 }}" y="139" font-size="14" text-anchor="middle">{{ total }}</text>
+      <text x="{{ 26 + loop.index0 * 68 + 54 }}" y="164" font-size="11" text-anchor="middle" class="d-muted">{{ loop.index0 }}</text>
+    {% endfor %}
+    <text x="60" y="198" font-size="13">sum(nums[2..5]) = prefix[6] − prefix[2] = {{ prefix[6] }} − {{ prefix[2] }} = {{ range_sum(prefix, 2, 5) }}</text>
+    <text x="60" y="216" font-size="12" class="d-muted">prefix[i] holds the total of the first i elements, so prefix[0] = 0.</text>
+  </svg>
+</div>
+<p class="lc-caption">The extra leading zero removes the special case for ranges that start at index 0.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="invariant">The invariant</h3>
+<p>
+  Define <code>prefix[0] = 0</code> and <code>prefix[i] = prefix[i − 1] + nums[i − 1]</code>. By
+  induction, <code>prefix[i]</code> is the sum of the first i elements. For a range
+  <code>nums[l..r]</code> inclusive, <code>prefix[r + 1] − prefix[l]</code> is the sum of the
+  first r + 1 elements minus the sum of the first l elements, which leaves exactly elements l to
+  r. The leading zero is what makes l = 0 work without a branch.
+</p>
+
+<h3 id="with-hash-map">Prefix sums with a hash map</h3>
+<p>
+  To <em>count</em> subarrays with sum k, you cannot precompute and query; the question is about
+  all ranges at once. Walk the array keeping the running sum s. A subarray ending here starts
+  after some earlier point whose prefix equals s − k. So add to the answer the number of earlier
+  prefix values equal to s − k, then record s. Seed the map with <code>{0: 1}</code>, the empty
+  prefix, so subarrays starting at index 0 count. Negative numbers are fine, because nothing
+  relies on the prefix being monotonic (this is why a sliding window fails here).
+</p>
+
+<h3 id="products">Products without division</h3>
+<p>
+  The product of all elements except nums[i] is
+  (product of nums[0..i−1]) × (product of nums[i+1..n−1]). Compute the left products in one
+  pass and the right products in a second pass. Division would fail on zeros and is usually
+  forbidden. The right pass can multiply into the output array in place, so the extra space is
+  O(1) beyond the answer.
+</p>
+
+<h3 id="two-dimensions">Two dimensions</h3>
+<p>
+  Let <code>table[r][c]</code> be the sum of the sub-grid with rows before r and columns before
+  c. Building it uses inclusion and exclusion: a cell's table entry is the cell plus the entry
+  above plus the entry on the left, minus the entry diagonally above-left that both of them
+  counted. A rectangle then costs four lookups: take the big corner, subtract the strip above and
+  the strip to the left, and add back the overlap that was subtracted twice.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 270" role="img" aria-labelledby="lc-rect-title lc-rect-desc">
+    <title id="lc-rect-title">A rectangle sum from four entries of a 2D prefix table</title>
+    <desc id="lc-rect-desc">
+      A 5 by 5 prefix table for a 4 by 4 grid. The rectangle covering rows 1 to 2 and columns 1 to 2
+      of the grid has sum {{ rectangle_sum(table2d, 1, 1, 2, 2) }}. It is computed as the corner entry
+      {{ table2d[3][3] }}, minus the entry {{ table2d[1][3] }} above, minus the entry {{ table2d[3][1] }} to the left, plus the
+      overlap entry {{ table2d[1][1] }}. The four entries are highlighted: green for the corner, amber for
+      the two subtracted entries and blue for the added one.
+    </desc>
+    {% for row in table2d %}
+      {% set r = loop.index0 %}
+      {% for total in row %}
+        {% set c = loop.index0 %}
+        {% set cls = 'lc-fill-g' if (r == 3 and c == 3) else ('lc-fill-m' if ((r == 1 and c == 3) or (r == 3 and c == 1)) else ('lc-fill-a' if (r == 1 and c == 1) else 'd-box')) %}
+        <rect x="{{ 30 + c * 56 }}" y="{{ 20 + r * 42 }}" width="52" height="38" class="{{ cls }}"></rect>
+        <text x="{{ 56 + c * 56 }}" y="{{ 45 + r * 42 }}" font-size="14" text-anchor="middle">{{ total }}</text>
+      {% endfor %}
+    {% endfor %}
+    <text x="340" y="70" font-size="13">rectangle = rows 1 to 2, columns 1 to 2</text>
+    <text x="340" y="100" font-size="14">{{ table2d[3][3] }} − {{ table2d[1][3] }} − {{ table2d[3][1] }} + {{ table2d[1][1] }} = {{ rectangle_sum(table2d, 1, 1, 2, 2) }}</text>
+    <text x="340" y="130" font-size="12" class="d-muted">green: big corner, amber: strips to remove,</text>
+    <text x="340" y="148" font-size="12" class="d-muted">blue: overlap added back.</text>
+    <text x="340" y="190" font-size="12" class="d-muted">Table row 0 and column 0 are the zero padding.</text>
+  </svg>
+</div>
+<p class="lc-caption">Four lookups whatever the size of the rectangle.</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  <strong>Range queries.</strong> On <code>{{ nums }}</code> the prefix array is
+  <code>{{ prefix }}</code>. Each query below is two lookups and one subtraction.
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Range</th><th>prefix[r + 1] − prefix[l]</th><th>Sum</th></tr></thead>
+    <tbody>
+      {% for l, r in queries %}
+        <tr><td class="num">[{{ l }}..{{ r }}]</td><td class="num">{{ prefix[r + 1] }} − {{ prefix[l] }}</td><td class="num">{{ range_sum(prefix, l, r) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <strong>Counting subarrays with sum 7</strong> in <code>{{ sub_nums }}</code> with the map of
+  earlier prefix sums. At each element, <em>need</em> is the running sum minus 7, and
+  <em>earlier</em> is how many times that value appeared among earlier prefix sums (the
+  empty prefix 0 included).
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Element</th><th>Running sum</th><th>Need (sum − 7)</th><th>Earlier</th><th>Total so far</th></tr></thead>
+    <tbody>
+      {% set ns = namespace(total=0) %}
+      {% for step in sub.steps %}
+        {% set ns.total = ns.total + step.found %}
+        <tr><td class="num">{{ step.value }}</td><td class="num">{{ step.running }}</td><td class="num">{{ step.need }}</td><td class="num">{{ step.found }}</td><td class="num">{{ ns.total }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  There are {{ sub.total }} such subarrays: [3, 4], [7], [7, 2, −3, 1] and [1, 4, 2]. The run
+  made {{ sub.steps | length }} map lookups; checking all ranges would take
+  {{ (sub.steps | length) * ((sub.steps | length) + 1) // 2 }}.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 240" role="img" aria-labelledby="lc-running-title lc-running-desc">
+    <title id="lc-running-title">Running sums and the subarrays that end at each point</title>
+    <desc id="lc-running-desc">
+      A bar for each running sum of [3, 4, 7, 2, −3, 1, 4, 2]: {{ sub.steps | map(attribute="running") | join(", ") }}.
+      Bars are highlighted where an earlier running sum exactly 7 lower exists, which happens at
+      {{ sub.steps | selectattr("found") | list | length }} of the {{ sub.steps | length }} positions, giving {{ sub.total }} subarrays.
+    </desc>
+    <line x1="30" y1="200" x2="650" y2="200" class="d-line"></line>
+    {% for step in sub.steps %}
+      {% set x = 44 + loop.index0 * 76 %}
+      <rect x="{{ x }}" y="{{ 200 - step.running * 8 }}" width="52" height="{{ step.running * 8 }}" class="{{ 'lc-fill-g' if step.found else 'd-box' }}"></rect>
+      <text x="{{ x + 26 }}" y="{{ 194 - step.running * 8 }}" font-size="13" text-anchor="middle">{{ step.running }}</text>
+      <text x="{{ x + 26 }}" y="218" font-size="12" text-anchor="middle" class="d-muted">{{ step.value }}</text>
+    {% endfor %}
+    <text x="44" y="236" font-size="12" class="d-muted">Under each bar: the element added. Green: a start exists 7 lower; found ×{{ sub.steps | map(attribute="found") | sum }} in total.</text>
+  </svg>
+</div>
+<p class="lc-caption">Bar height is the running sum; green bars end at least one subarray summing to 7.</p>
+
+<p>
+  <strong>Products.</strong> For <code>[1, 2, 3, 4]</code>: left products
+  <code>{{ prod.left }}</code>, right products <code>{{ prod.right }}</code>, so each position is
+  their product: <code>{{ prod.result }}</code>.
+</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>from itertools import accumulate
+
+
+class RangeSum:                                 # immutable array, many queries
+    def __init__(self, nums):
+        self.prefix = [0, *accumulate(nums)]
+
+    def query(self, left, right):               # inclusive
+        return self.prefix[right + 1] - self.prefix[left]
+
+
+def count_subarrays_with_sum(nums, k):          # works with negatives
+    seen = {0: 1}                               # the empty prefix
+    running = total = 0
+    for x in nums:
+        running += x
+        total += seen.get(running - k, 0)
+        seen[running] = seen.get(running, 0) + 1
+    return total
+
+
+def product_except_self(nums):
+    out = [1] * len(nums)
+    for i in range(1, len(nums)):               # out[i] = product of everything left of i
+        out[i] = out[i - 1] * nums[i - 1]
+    right = 1
+    for i in range(len(nums) - 1, -1, -1):      # fold in the product of everything right of i
+        out[i] *= right
+        right *= nums[i]
+    return out
+
+
+class RangeSum2D:
+    def __init__(self, grid):
+        rows, cols = len(grid), len(grid[0])
+        self.t = [[0] * (cols + 1) for _ in range(rows + 1)]
+        for r in range(rows):
+            for c in range(cols):
+                self.t[r + 1][c + 1] = (grid[r][c] + self.t[r][c + 1]
+                                        + self.t[r + 1][c] - self.t[r][c])
+
+    def query(self, r1, c1, r2, c2):
+        t = self.t
+        return t[r2 + 1][c2 + 1] - t[r1][c2 + 1] - t[r2 + 1][c1] + t[r1][c1]</code></pre>
+
+<h3 id="variations">Variations and edge cases</h3>
+<ul>
+  <li><strong>Longest subarray with a property.</strong> Store the <em>first</em> index at which each
+    prefix value appeared; when the value appears again, the stretch between has the property
+    and its length is the difference of indices. Balanced 0/1 arrays use this with 0 mapped to −1.</li>
+  <li><strong>Divisibility.</strong> To count subarrays whose sum is divisible by k, count prefix
+    sums by <code>sum % k</code>; two equal remainders bracket a multiple of k. (Python's modulo
+    is never negative, which helps.)</li>
+  <li><strong>Trees.</strong> Running sums along a root-to-node path work the same way, but the
+    map must be undone when the DFS leaves a node so sibling branches do not see it.</li>
+  <li><strong>Weighted random pick.</strong> The prefix array is sorted, so
+    <code>bisect_left(prefix, random_point)</code> chooses the slice containing the point.</li>
+  <li><strong>Updates.</strong> If the array changes between queries, a prefix array costs O(n) per
+    update; use a Fenwick or segment tree instead.</li>
+  <li><strong>Edge cases:</strong> forgetting the leading zero (and the <code>{0: 1}</code> seed),
+    off-by-one on inclusive ranges, recording the running sum before looking up (double counts
+    when k = 0), integer overflow in other languages, and zeros in the array if you try division.</li>
+</ul>
+
+<h2 id="tradeoffs">Complexity and tradeoffs</h2>
+
+<ul>
+  <li><strong>Time:</strong> O(n) to build, O(1) per range query. The map version is O(n) total.
+    The 2D table is O(rows × cols) to build and O(1) per rectangle.</li>
+  <li><strong>Space:</strong> O(n) for the table (or O(distinct prefixes) for the map version). The
+    product trick is O(1) extra beyond the output.</li>
+  <li><strong>Baselines.</strong> Re-adding each range is O(n) per query. For only one query, a
+    plain loop is as good and uses no extra memory. A sliding window solves "sum equals k" in
+    O(1) space but only when all values are non-negative.</li>
+  <li><strong>When it fails.</strong> Mutable arrays (use a Fenwick tree), operations that are not
+    invertible, like max or min (use a sparse table or segment tree), and products with zeros
+    when you want to divide.</li>
+</ul>
+
+<h2 id="problems">Problems</h2>
+
+<p>
+  The home problems cover the three flavors: precomputed products and rectangles, running-sum
+  maps for counting and balancing, and prefix sums as a lookup structure (weighted random,
+  jump windows). The "also uses" list shows prefix totals inside windows, sweep lines and the
+  trapped-water problem.
+</p>
+{% include "leetcode/_problems.html" %}
+
+<h2 id="connections">Connections</h2>
+
+{% include "leetcode/_connections.html" %}
+<p>
+  The hash-map flavor is the complement-map idea from the hash maps page applied to running
+  totals. Fenwick and segment trees keep prefix sums fast under updates. Sweep lines are
+  prefix sums over events, and 2D prefix sums reappear in matrix problems.
+</p>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="lc-quiz">
+  <summary>Why does the prefix array have n + 1 entries and start with 0?</summary>
+  <p>So that sum(nums[l..r]) = prefix[r + 1] − prefix[l] holds for every l, including l = 0, without a special case. On the example the whole array is prefix[8] − prefix[0] = {{ prefix[8] }}.</p>
+</details>
+<details class="lc-quiz">
+  <summary>Why must the map be seeded with {0: 1} when counting subarrays with sum k?</summary>
+  <p>The empty prefix has sum 0. Without it, subarrays that start at index 0 are never counted (in the trace, [3, 4] is found only because 0 is in the map).</p>
+</details>
+<details class="lc-quiz">
+  <summary>A sliding window counts subarrays with sum k when all numbers are positive. Why does it fail with negative numbers, and what replaces it?</summary>
+  <p>With negatives, extending a window can lower its sum, so no rule says when to shrink it. Prefix sums with a map do not need monotonicity and still run in O(n); the example contains −3 and gets {{ sub.total }}.</p>
+</details>
+<details class="lc-quiz">
+  <summary>How do you compute a rectangle sum from the 2D table, and why add one entry back?</summary>
+  <p>Corner − strip above − strip to the left + overlap. The overlap (the top-left region) is inside both strips, so subtracting both removes it twice. Here {{ table2d[3][3] }} − {{ table2d[1][3] }} − {{ table2d[3][1] }} + {{ table2d[1][1] }} = {{ rectangle_sum(table2d, 1, 1, 2, 2) }}.</p>
+</details>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Cormen, Leiserson, Rivest and Stein, <em>Introduction to Algorithms</em>: chapter 11 (hash
+    tables, for the map version) and chapter 14 (augmenting data structures, for range queries
+    under updates).</li>
+  <li>Sedgewick and Wayne, <em>Algorithms</em>: section 5.1, where key-indexed counting turns
+    counts into cumulative positions with the same running-total idea.</li>
+  <li>Steven Skiena, <em>The Algorithm Design Manual</em>: the sections on hashing and on
+    data structures for range queries.</li>
+  <li>Blelloch, "Prefix sums and their applications" (1990), the paper that treats prefix sums
+    as a primitive of parallel algorithms.</li>
+  <li>The <a href="https://neetcode.io/roadmap" rel="noopener">NeetCode roadmap</a> and the
+    Blind 75, Grind 169, NeetCode 150 and NeetCode 250 lists, used as the index of topics and
+    problems.</li>
+</ul>
