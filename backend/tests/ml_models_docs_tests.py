@@ -192,3 +192,39 @@ def test_index_lists_every_upcoming_model():
         for model in tier["models"]:
             assert str(escape(model["name"])) in body
 
+def test_attention_weights_rows_are_distributions():
+    for causal in [False, True]:
+        result = ml_models_docs.attention_weights(ml_models_docs.ATTENTION_EXAMPLE, causal=causal)
+        for row in result["weights"]:
+            assert abs(sum(row) - 1) < 1e-9
+            assert all(weight >= 0 for weight in row)
+
+
+def test_attention_weights_match_the_worked_example():
+    full = ml_models_docs.attention_weights(ml_models_docs.ATTENTION_EXAMPLE)
+    causal = ml_models_docs.attention_weights(ml_models_docs.ATTENTION_EXAMPLE, causal=True)
+
+    assert [round(w, 2) for w in full["weights"][2]] == [0.04, 0.73, 0.18, 0.04]
+    assert [round(x, 2) for x in full["outputs"][2]] == [0.22, 0.91]
+    assert causal["weights"][0] == [1.0, 0.0, 0.0, 0.0]
+    for i, row in enumerate(causal["weights"]):
+        assert all(weight == 0 for weight in row[i + 1:])
+        assert all(score is None for score in causal["scores"][i][i + 1:])
+
+
+def test_unscaled_attention_is_sharper():
+    scaled = ml_models_docs.attention_weights(ml_models_docs.ATTENTION_EXAMPLE)
+    unscaled = ml_models_docs.attention_weights(ml_models_docs.ATTENTION_EXAMPLE, scaled=False)
+
+    assert max(unscaled["weights"][2]) > max(scaled["weights"][2])
+
+
+def test_param_count_matches_nn_transformer_defaults():
+    count = ml_models_docs.transformer_param_count(512, 6, 6, 2048)
+
+    assert count["attention"] == 1_050_624
+    assert count["feed_forward"] == 2_099_712
+    assert count["encoder_layer"] == 3_152_384
+    assert count["decoder_layer"] == 4_204_032
+    assert count["total"] == 44_140_544
+

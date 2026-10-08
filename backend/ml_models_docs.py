@@ -1,3 +1,4 @@
+import math
 import re
 
 UPSTREAM = {
@@ -205,6 +206,19 @@ UPCOMING_MODELS = [
     },
 ]
 
+ATTENTION_EXAMPLE = {
+    "tokens": ["the", "cat", "sat", "down"],
+    "queries": [[0, 1], [1, 1], [2, 0], [1, 2]],
+    "keys": [[0, 1], [2, 0], [1, 1], [0, 2]],
+    "values": [[1, 0], [0, 1], [1, 1], [0, 0]],
+}
+
+TRANSFORMER_PRESETS = [
+    {"name": "nn.Transformer() defaults", "d_model": 512, "nhead": 8, "encoder_layers": 6, "decoder_layers": 6, "dim_feedforward": 2048},
+    {"name": "Paper, big", "d_model": 1024, "nhead": 16, "encoder_layers": 6, "decoder_layers": 6, "dim_feedforward": 4096},
+    {"name": "Tiny (toy)", "d_model": 64, "nhead": 4, "encoder_layers": 2, "decoder_layers": 2, "dim_feedforward": 256},
+]
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -244,6 +258,49 @@ def _neighbours(slug):
     return previous, following
 
 
+def attention_weights(example, causal=False, scaled=True):
+    width = len(example["queries"][0])
+    scale = 1 / math.sqrt(width) if scaled else 1
+    scores, weights, outputs = [], [], []
+    for row, query in enumerate(example["queries"]):
+        row_scores = [
+            None if causal and column > row else sum(q * k for q, k in zip(query, key)) * scale
+            for column, key in enumerate(example["keys"])
+        ]
+        allowed = [score for score in row_scores if score is not None]
+        top = max(allowed)
+        exps = [0.0 if score is None else math.exp(score - top) for score in row_scores]
+        total = sum(exps)
+        row_weights = [value / total for value in exps]
+        scores.append(row_scores)
+        weights.append(row_weights)
+        outputs.append([
+            sum(weight * value[i] for weight, value in zip(row_weights, example["values"]))
+            for i in range(len(example["values"][0]))
+        ])
+    return {"scores": scores, "weights": weights, "outputs": outputs}
+
+
+def transformer_param_count(d_model, encoder_layers, decoder_layers, dim_feedforward, nhead=None):
+    attention = 4 * d_model * d_model + 4 * d_model
+    feed_forward = 2 * d_model * dim_feedforward + dim_feedforward + d_model
+    layer_norm = 2 * d_model
+    encoder_layer = attention + feed_forward + 2 * layer_norm
+    decoder_layer = 2 * attention + feed_forward + 3 * layer_norm
+    encoder = encoder_layers * encoder_layer + layer_norm
+    decoder = decoder_layers * decoder_layer + layer_norm
+    return {
+        "attention": attention,
+        "feed_forward": feed_forward,
+        "layer_norm": layer_norm,
+        "encoder_layer": encoder_layer,
+        "decoder_layer": decoder_layer,
+        "encoder": encoder,
+        "decoder": decoder,
+        "total": encoder + decoder,
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -264,6 +321,10 @@ def render(slug, render_template):
         "previous_page": previous,
         "next_page": following,
         "upcoming": UPCOMING_MODELS,
+        "attention_example": ATTENTION_EXAMPLE,
+        "attention_weights": attention_weights,
+        "presets": TRANSFORMER_PRESETS,
+        "param_count": transformer_param_count,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
