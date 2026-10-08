@@ -4,7 +4,7 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (ninth run). Spec v2 widens the section from model architectures
+**Last updated:** 2026-10-08 (tenth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
 format. Ready pages: `transformer`, `tensors-and-shapes`, `vectors-and-dot-products`,
 `matrix-multiplication`, `derivatives-and-gradients`, `chain-rule`. The next run builds
@@ -170,6 +170,8 @@ The paths below are relative to `torch/nn/modules/` unless they give a fuller pa
 - `torch/distributions/normal.py`: `Normal` docstring 15-31; `__init__` 55-66; `sample` 77-80; `rsample` 82-85; `log_prob` 87-101; `cdf` 103-108; `icdf` 110-111; `entropy` starts at 113.
 - `torch/distributions/categorical.py`: `Categorical` with docstring 13-50; `__init__` 56-85; `sample` 144-149; `log_prob` 151-157; `entropy` 159-163.
 - `torch/distributions/bernoulli.py`: `Bernoulli` with docstring 20-40; `__init__` starts at 47; `sample` 116-119; `log_prob` 121-125; `entropy` 127-130.
+- `torch/distributions/normal.py` properties: `mean` 39-41, `mode` 43-45, `stddev` 47-49, `variance` 51-53 (each `@property` on the line before).
+- `torch/random.py`: `set_rng_state` 27-36; `get_rng_state` 39-46; `manual_seed` 49-59; `_manual_seed_impl` 62-86; `seed` starts at 89; `initial_seed` 144-150; `fork_rng` 156-239 (decorator at 156, def at 157).
 
 ### scikit-learn 1.9.1 (start lines; check the end before linking a range)
 
@@ -301,6 +303,14 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 | `ml-models: add tested probability helpers` | `bernoulli_pmf`, `categorical_from_logits` (logsumexp-normalized, like `Categorical`), `inverse_cdf_sample`, `normal_log_prob`/`normal_pdf`/`normal_cdf`/`normal_band`, `joint_table`, and their example constants |
 | `ml-models: build the probability-and-distributions page` | The page, `ready`, queue ✓; `math.log` exposed to templates |
 | `docs: record the probability-and-distributions run` | This table and the verified `torch.distributions` ranges above |
+
+## Tenth run (2026-10-08) — seventh page of the 5-minute loop
+
+| Commit | What |
+|---|---|
+| `ml-models: add tested expectation and sampling helpers` | `expectation`, `variance`, `covariance`, `die_rolls` (seeded), `running_means`, `sum_pmf`, `minibatch_gradients` (every batch via `itertools.combinations`), and the die, covariance and minibatch example constants |
+| `ml-models: build the expectation-and-variance page` | The page, `ready`, queue ✓; `sqrt` and `log10` exposed to templates; per-batch gradients kept for the dot-strip figure |
+| `docs: record the expectation-and-variance run` | This table and the verified `torch/random.py` and `Normal` property ranges above |
 
 ## Queue
 
