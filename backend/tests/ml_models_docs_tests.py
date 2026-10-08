@@ -779,3 +779,50 @@ def test_minibatch_gradients_are_unbiased_and_shrink_with_batch_size():
         assert size["count"] == math.comb(n, b)
         assert size["mean"] == pytest.approx(result["full"])
         assert size["variance"] == pytest.approx(single / b * (n - b) / (n - 1))
+
+
+def test_entropy_cross_entropy_and_kl_on_the_weather_example():
+    example = ml_models_docs.ENTROPY_EXAMPLE
+    p, q = example["p"], example["q"]
+    assert ml_models_docs.entropy(p) == pytest.approx(1.75)
+    assert ml_models_docs.entropy(q) == pytest.approx(2)
+    assert ml_models_docs.cross_entropy(p, q) == pytest.approx(2)
+    assert ml_models_docs.kl_divergence(p, q) == pytest.approx(0.25)
+    assert ml_models_docs.kl_divergence(p, p) == pytest.approx(0)
+    assert ml_models_docs.information_content(0.125) == pytest.approx(3)
+    assert ml_models_docs.entropy([1, 0]) == 0
+
+
+def test_kl_is_asymmetric_and_infinite_where_q_has_no_mass():
+    example = ml_models_docs.ASYMMETRY_EXAMPLE
+    forward = ml_models_docs.kl_divergence(example["p"], example["q"])
+    backward = ml_models_docs.kl_divergence(example["q"], example["p"])
+    assert forward == pytest.approx(0.531, abs=1e-3)
+    assert backward == pytest.approx(0.737, abs=1e-3)
+    assert ml_models_docs.kl_divergence([0.5, 0.5], [1, 0]) == math.inf
+    assert ml_models_docs.kl_divergence([1, 0], [0.5, 0.5]) == pytest.approx(1)
+
+
+def test_logits_cross_entropy_matches_softmax_and_its_gradient():
+    result = ml_models_docs.logits_cross_entropy([2.0, 1.0, 0.0], 0)
+    assert result["loss"] == pytest.approx(math.log(math.e ** 2 + math.e + 1) - 2)
+    assert result["loss"] == pytest.approx(-math.log(result["probs"][0]))
+    assert sum(result["gradient"]) == pytest.approx(0)
+    assert result["gradient"][0] == pytest.approx(result["probs"][0] - 1)
+    one_hot = [1, 0, 0]
+    assert result["loss"] == pytest.approx(ml_models_docs.cross_entropy(one_hot, result["probs"], base=math.e))
+
+
+def test_perplexity_is_the_exponentiated_mean_negative_log_likelihood():
+    example = ml_models_docs.PERPLEXITY_EXAMPLE
+    result = ml_models_docs.perplexity(example)
+    assert result["perplexity"] == pytest.approx(math.prod(1 / p for p in example["probs"]) ** (1 / 4))
+    assert ml_models_docs.perplexity({"probs": [0.25] * 3})["perplexity"] == pytest.approx(4)
+
+
+def test_mutual_information_is_zero_only_for_independent_variables():
+    result = ml_models_docs.mutual_information(ml_models_docs.JOINT_EXAMPLE)
+    assert result["mutual"] == pytest.approx(0.348, abs=1e-3)
+    assert result["h_xy"] <= result["h_x"] + result["h_y"]
+    independent = ml_models_docs.mutual_information({"counts": [[2, 6], [3, 9]]})
+    assert independent["mutual"] == pytest.approx(0, abs=1e-12)

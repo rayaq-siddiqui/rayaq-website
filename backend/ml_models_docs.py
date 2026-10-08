@@ -1495,6 +1495,16 @@ COVARIANCE_EXAMPLE = {"pairs": [(1, 52), (2, 60), (3, 61), (4, 75), (5, 82)], "l
 
 MINIBATCH_EXAMPLE = {"w": 1.0, "x": [1, 2, 3, 4, 5, 6], "y": [2, 3, 7, 8, 9, 13], "batch_sizes": [1, 2, 3, 6]}
 
+ENTROPY_EXAMPLE = {
+    "labels": ["sun", "cloud", "rain", "snow"],
+    "p": [0.5, 0.25, 0.125, 0.125],
+    "q": [0.25, 0.25, 0.25, 0.25],
+}
+
+ASYMMETRY_EXAMPLE = {"p": [0.9, 0.1], "q": [0.5, 0.5]}
+
+PERPLEXITY_EXAMPLE = {"tokens": ["the", "cat", "sat", "down"], "probs": [0.4, 0.05, 0.2, 0.5]}
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -2016,6 +2026,51 @@ def minibatch_gradients(example):
     return {"per_example": per_example, "full": full, "sizes": sizes}
 
 
+def information_content(p, base=2):
+    return -math.log(p, base)
+
+
+def entropy(probs, base=2):
+    return sum(-p * math.log(p, base) for p in probs if p > 0)
+
+
+def cross_entropy(p, q, base=2):
+    total = 0.0
+    for p_i, q_i in zip(p, q):
+        if p_i == 0:
+            continue
+        if q_i == 0:
+            return math.inf
+        total -= p_i * math.log(q_i, base)
+    return total
+
+
+def kl_divergence(p, q, base=2):
+    return cross_entropy(p, q, base) - entropy(p, base)
+
+
+def logits_cross_entropy(logits, target):
+    log_probs = categorical_from_logits(logits)["log_probs"]
+    probs = [math.exp(v) for v in log_probs]
+    gradient = [prob - (1 if index == target else 0) for index, prob in enumerate(probs)]
+    return {"loss": -log_probs[target], "probs": probs, "gradient": gradient}
+
+
+def perplexity(example):
+    nll = [-math.log(p) for p in example["probs"]]
+    mean_nll = sum(nll) / len(nll)
+    return {"nll": nll, "mean_nll": mean_nll, "perplexity": math.exp(mean_nll)}
+
+
+def mutual_information(example, base=2):
+    table = joint_table(example)
+    joint = [v for row in table["joint"] for v in row]
+    h_x = entropy(table["row_marginal"], base)
+    h_y = entropy(table["column_marginal"], base)
+    h_xy = entropy(joint, base)
+    return {"h_x": h_x, "h_y": h_y, "h_xy": h_xy, "mutual": h_x + h_y - h_xy}
+
+
 def similarity_ranking(example):
     query = example["query"]
     rows = [
@@ -2135,6 +2190,17 @@ def render(slug, render_template):
         "minibatch_gradients": minibatch_gradients,
         "sqrt": math.sqrt,
         "log10": math.log10,
+        "entropy_example": ENTROPY_EXAMPLE,
+        "asymmetry_example": ASYMMETRY_EXAMPLE,
+        "perplexity_example": PERPLEXITY_EXAMPLE,
+        "information_content": information_content,
+        "entropy": entropy,
+        "cross_entropy": cross_entropy,
+        "kl_divergence": kl_divergence,
+        "logits_cross_entropy": logits_cross_entropy,
+        "perplexity": perplexity,
+        "mutual_information": mutual_information,
+        "exp": math.exp,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
