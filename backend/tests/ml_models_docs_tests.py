@@ -1636,3 +1636,27 @@ def test_bigram_next_token_loss_beats_uniform_guessing():
     assert result["pairs"] == 9
     assert result["uniform_loss"] == pytest.approx(math.log(7))
     assert 0 < result["mean_loss"] < result["uniform_loss"]
+
+
+def test_polynomial_fit_recovers_an_exact_line():
+    xs = [0.0, 0.5, 1.0]
+    weights = ml_models_docs.polynomial_fit(xs, [1.0, 2.0, 3.0], 1)
+    assert [ml_models_docs.polynomial_predict(weights, x) for x in xs] == pytest.approx([1.0, 2.0, 3.0])
+
+
+def test_generalization_train_error_falls_while_heldout_error_turns_up():
+    rows = {row["degree"]: row for row in ml_models_docs.generalization_rows(range(0, 10))}
+    train = [rows[d]["train_mse"] for d in range(10)]
+    assert train == sorted(train, reverse=True)
+    assert rows[9]["train_mse"] == pytest.approx(0.0, abs=1e-9)
+    assert rows[1]["train_mse"] == pytest.approx(0.3327, abs=1e-3)
+    assert rows[3]["heldout_mse"] == pytest.approx(0.0089, abs=1e-3)
+    assert rows[9]["heldout_mse"] == pytest.approx(0.067, abs=2e-3)
+    best = min(rows, key=lambda d: rows[d]["heldout_mse"])
+    assert best == 5
+    assert rows[9]["heldout_mse"] > 10 * rows[best]["heldout_mse"]
+
+
+def test_generalization_shift_breaks_the_cubic_outside_the_training_range():
+    rows = {row["degree"]: row for row in ml_models_docs.generalization_rows([3])}
+    assert rows[3]["shifted_mse"] > 1000 * rows[3]["heldout_mse"]

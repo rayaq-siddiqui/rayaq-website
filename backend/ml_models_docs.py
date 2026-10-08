@@ -3550,6 +3550,74 @@ def bigram_next_token_loss(tokens):
     }
 
 
+GENERALIZATION_X = [i / 9 for i in range(10)]
+GENERALIZATION_NOISE = [0.25, -0.30, 0.15, 0.35, -0.20, -0.35, 0.25, 0.20, -0.30, 0.15]
+
+
+def generalization_truth(x):
+    return math.sin(2 * math.pi * x)
+
+
+def generalization_train_targets():
+    return [generalization_truth(x) + e for x, e in zip(GENERALIZATION_X, GENERALIZATION_NOISE)]
+
+
+def _solve_linear(matrix, rhs):
+    n = len(rhs)
+    rows = [list(row) + [rhs[i]] for i, row in enumerate(matrix)]
+    for col in range(n):
+        pivot = max(range(col, n), key=lambda r: abs(rows[r][col]))
+        rows[col], rows[pivot] = rows[pivot], rows[col]
+        for r in range(col + 1, n):
+            factor = rows[r][col] / rows[col][col]
+            for k in range(col, n + 1):
+                rows[r][k] -= factor * rows[col][k]
+    solution = [0.0] * n
+    for i in range(n - 1, -1, -1):
+        solution[i] = (rows[i][n] - sum(rows[i][j] * solution[j] for j in range(i + 1, n))) / rows[i][i]
+    return solution
+
+
+def polynomial_fit(xs, ys, degree):
+    scaled = [2 * x - 1 for x in xs]
+    design = [[u**k for k in range(degree + 1)] for u in scaled]
+    gram = [
+        [sum(row[i] * row[j] for row in design) for j in range(degree + 1)]
+        for i in range(degree + 1)
+    ]
+    moments = [sum(row[i] * y for row, y in zip(design, ys)) for i in range(degree + 1)]
+    return _solve_linear(gram, moments)
+
+
+def polynomial_predict(weights, x):
+    u = 2 * x - 1
+    return sum(w * u**k for k, w in enumerate(weights))
+
+
+def polynomial_mse(weights, xs, ys):
+    return sum((polynomial_predict(weights, x) - y) ** 2 for x, y in zip(xs, ys)) / len(xs)
+
+
+def generalization_rows(degrees):
+    xs = GENERALIZATION_X
+    ys = generalization_train_targets()
+    heldout = [i / 49 for i in range(50)]
+    shifted = [1 + i / 20 for i in range(11)]
+    rows = []
+    for degree in degrees:
+        weights = polynomial_fit(xs, ys, degree)
+        rows.append(
+            {
+                "degree": degree,
+                "params": degree + 1,
+                "train_mse": polynomial_mse(weights, xs, ys),
+                "heldout_mse": polynomial_mse(weights, heldout, [generalization_truth(x) for x in heldout]),
+                "shifted_mse": polynomial_mse(weights, shifted, [generalization_truth(x) for x in shifted]),
+            }
+        )
+    return rows
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -3726,6 +3794,12 @@ def render(slug, render_template):
         "learning_truth": LEARNING_TRUTH,
         "learning_labeled": LEARNING_LABELED,
         "learning_text": LEARNING_TEXT,
+        "generalization_rows": generalization_rows,
+        "generalization_x": GENERALIZATION_X,
+        "generalization_targets": generalization_train_targets,
+        "generalization_truth": generalization_truth,
+        "polynomial_fit": polynomial_fit,
+        "polynomial_predict": polynomial_predict,
         "kmeans_run": kmeans_run,
         "nearest_labeled": nearest_labeled,
         "cluster_then_label": cluster_then_label,
