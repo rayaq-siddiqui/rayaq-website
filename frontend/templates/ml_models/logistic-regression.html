@@ -1,0 +1,665 @@
+{% set ex = logistic_example %}
+{% set fit = logistic_fit_1d(ex) %}
+{% set bex = boundary_example %}
+{% set bounds = boundary_fits(bex) %}
+{% set sm = softmax_example %}
+{% set soft = logits_cross_entropy(sm.logits, sm.target) %}
+{% set sumsq = namespace(v=0) %}{% for h in ex.hours %}{% set sumsq.v = sumsq.v + h * h %}{% endfor %}
+{% macro f2(x) -%}{{ "%.2f"|format(x) }}{%- endmacro %}
+{% macro f3(x) -%}{{ "%.3f"|format(x) }}{%- endmacro %}
+{% macro num(x) -%}{{ "%g"|format(x) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Logistic regression</h1>
+  <p class="tagline">
+    Turn a weighted sum into a probability. This page builds logistic regression from log-odds,
+    derives the cross-entropy loss and its gradient, fits it by Newton's method by hand, shows
+    what the decision boundary and the regularization strength <code>C</code> do, extends it to
+    many classes with softmax, and follows scikit-learn's <code>LogisticRegression</code>
+    through its solvers.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Many targets are yes-or-no: will this student pass, is this email spam, will this customer
+  churn. <a href="{{ url_for('ml_models', slug='linear-regression') }}">Linear regression</a>
+  can't model them well. Its predictions run off past 0 and 1, squared error punishes a
+  confident correct answer for being "too far" from the label, and one extreme point can tip
+  the whole line.
+</p>
+<p>
+  What you want is a <em>probability</em> of the positive class, between 0 and 1, that still
+  comes from an interpretable weighted sum of features. Logistic regression is exactly that,
+  and it is far more than a baseline: it is the output layer of nearly every neural classifier,
+  the model behind most click-through and credit-risk scores, and the template for the
+  cross-entropy loss that trains language models.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Keep the linear score z = w·x + b, but stop reading it as the answer. Read it as evidence:
+  each feature pushes the score up or down, and z = 0 means "no evidence either way". Then
+  squash the score into a probability with the <strong>sigmoid</strong>
+</p>
+<p class="ml-formula">σ(z) = 1 / (1 + e<sup>−z</sup>)</p>
+<p>
+  which maps 0 to ½, large positive scores toward 1 and large negative ones toward 0. Run the
+  sigmoid backwards and you find what z really is: the <strong>log-odds</strong>,
+  log(p / (1 − p)). The model is linear in log-odds, so each unit of a feature multiplies the
+  <em>odds</em> of the positive class by e<sup>w</sup>, wherever you start.
+</p>
+<p>
+  Twelve students' hours studied and whether they passed: the fitted model is
+  z = {{ f3(fit.w) }}·hours − {{ f3(-fit.b) }}. Each extra hour multiplies the odds of passing by
+  e<sup>{{ f3(fit.w) }}</sup> ≈ {{ f2(fit.odds_ratio) }}, and the probability crosses ½ where
+  z = 0, at {{ num(fit.boundary) }} hours.
+</p>
+
+<div class="jj-diagram">
+  {% macro px(h) -%}{{ 55 + 38 * h }}{%- endmacro %}
+  {% macro py(p) -%}{{ 220 - 180 * p }}{%- endmacro %}
+  {% macro qx(h) -%}{{ 400 + 38 * h }}{%- endmacro %}
+  {% macro qy(z) -%}{{ 130 - 18 * z }}{%- endmacro %}
+  <svg viewBox="0 0 680 270" role="img" aria-labelledby="lgr-fit-title lgr-fit-desc">
+    <title id="lgr-fit-title">The fitted sigmoid over pass/fail data, and the straight line of log-odds underneath it</title>
+    <desc id="lgr-fit-desc">
+      Left: twelve students plotted at probability 0 (failed) or 1 (passed) against hours
+      studied from 0.5 to 6. The fitted S-shaped curve p = σ({{ f3(fit.w) }}·hours
+      − {{ f3(-fit.b) }}) rises from {{ f2(fit.probs[0]) }} at half an hour to
+      {{ f2(fit.probs[-1]) }} at six hours and crosses one half at {{ num(fit.boundary) }} hours,
+      marked by a dashed vertical decision boundary. Right: the same model on the log-odds
+      scale is a straight line through zero at {{ num(fit.boundary) }} hours, from
+      {{ f2(fit.w * 0.5 + fit.b) }} at half an hour to {{ f2(fit.w * 6 + fit.b) }} at six.
+    </desc>
+    <line x1="{{ px(0) }}" y1="{{ py(0) }}" x2="{{ px(6.5) }}" y2="{{ py(0) }}" class="d-line"></line>
+    <line x1="{{ px(0) }}" y1="{{ py(0) }}" x2="{{ px(0) }}" y2="{{ py(1) }}" class="d-line"></line>
+    <line x1="{{ px(0) }}" y1="{{ py(0.5) }}" x2="{{ px(6.5) }}" y2="{{ py(0.5) }}" class="d-line ml-dashed" opacity="0.5"></line>
+    <line x1="{{ px(fit.boundary) }}" y1="{{ py(0) }}" x2="{{ px(fit.boundary) }}" y2="{{ py(1) }}" stroke="var(--jj-violet)" stroke-width="1.5" class="ml-dashed"></line>
+    <path d="M{% for i in range(66) %}{% set h = i / 10 %}{% if not loop.first %} L{% endif %}{{ px(h) }},{{ py(sigmoid(fit.w * h + fit.b)) }}{% endfor %}" fill="none" stroke="var(--jj-accent)" stroke-width="2"></path>
+    {% for h, t in zip(ex.hours, ex.passed) %}
+      <circle cx="{{ px(h) }}" cy="{{ py(t) }}" r="5" {% if t %}style="fill: var(--jj-green)"{% else %}fill="none" stroke="var(--jj-red)" stroke-width="2"{% endif %}></circle>
+    {% endfor %}
+    {% for t in [0, 0.5, 1] %}
+      <text x="{{ px(0)|float - 6 }}" y="{{ py(t)|float + 4 }}" font-size="12" text-anchor="end">{{ t }}</text>
+    {% endfor %}
+    {% for t in [0, 2, 4, 6] %}
+      <text x="{{ px(t) }}" y="{{ py(0)|float + 18 }}" font-size="12" text-anchor="middle">{{ t }}</text>
+    {% endfor %}
+    <text x="{{ px(fit.boundary)|float + 6 }}" y="{{ py(0.22) }}" font-size="12" style="fill: var(--jj-violet)">boundary {{ num(fit.boundary) }} h</text>
+    <text x="{{ px(5.2) }}" y="{{ py(0.72) }}" font-size="12" text-anchor="middle" style="fill: var(--jj-accent)">p = σ(z)</text>
+    <text x="{{ px(3.25) }}" y="256" font-size="12" text-anchor="middle" class="d-muted">hours studied (● passed, ○ failed)</text>
+
+    <line x1="{{ qx(0) }}" y1="{{ qy(0) }}" x2="{{ qx(6.5) }}" y2="{{ qy(0) }}" class="d-line ml-dashed" opacity="0.5"></line>
+    <line x1="{{ qx(0) }}" y1="{{ qy(-5) }}" x2="{{ qx(0) }}" y2="{{ qy(5) }}" class="d-line"></line>
+    <line x1="{{ qx(0) }}" y1="{{ qy(-5) }}" x2="{{ qx(6.5) }}" y2="{{ qy(-5) }}" class="d-line"></line>
+    <line x1="{{ qx(0.3) }}" y1="{{ qy(fit.w * 0.3 + fit.b) }}" x2="{{ qx(6.3) }}" y2="{{ qy(fit.w * 6.3 + fit.b) }}" stroke="var(--jj-accent)" stroke-width="2"></line>
+    <line x1="{{ qx(fit.boundary) }}" y1="{{ qy(-5) }}" x2="{{ qx(fit.boundary) }}" y2="{{ qy(5) }}" stroke="var(--jj-violet)" stroke-width="1.5" class="ml-dashed"></line>
+    {% for t in [-4, 0, 4] %}
+      <text x="{{ qx(0)|float - 6 }}" y="{{ qy(t)|float + 4 }}" font-size="12" text-anchor="end">{{ t }}</text>
+    {% endfor %}
+    {% for t in [0, 2, 4, 6] %}
+      <text x="{{ qx(t) }}" y="{{ qy(-5)|float + 18 }}" font-size="12" text-anchor="middle">{{ t }}</text>
+    {% endfor %}
+    <text x="{{ qx(0.2) }}" y="{{ qy(4.2) }}" font-size="12" style="fill: var(--jj-accent)">z = log(p / (1 − p))</text>
+    <text x="{{ qx(3.4) }}" y="{{ qy(-0.6)|float + 6 }}" font-size="12" style="fill: var(--jj-violet)">z = 0 ⇔ p = ½</text>
+    <text x="{{ qx(3.25) }}" y="256" font-size="12" text-anchor="middle" class="d-muted">hours studied</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Left: probabilities. Right: the same model as log-odds, where it is a plain line. The sigmoid
+  only bends that line into the interval (0, 1).
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="model">The model</h3>
+
+<p>
+  For an example x with d features, logistic regression predicts
+</p>
+<p class="ml-formula">p(y = 1 | x) = σ(w·x + b) &nbsp;&nbsp; p(y = 0 | x) = 1 − σ(w·x + b) = σ(−(w·x + b))</p>
+<p>
+  Three sigmoid facts carry the rest of the page: σ(−z) = 1 − σ(z); its inverse is the logit,
+  log(p / (1 − p)); and its derivative is σ′(z) = σ(z)(1 − σ(z)), largest (¼) at z = 0 and
+  vanishing for confident predictions.
+</p>
+
+<h3 id="loss">The cross-entropy loss and its gradient</h3>
+
+<p>
+  Choose w and b to maximize the probability the model assigns to the labels it saw. With
+  p<sub>i</sub> = σ(z<sub>i</sub>), the likelihood of one example is
+  p<sub>i</sub><sup>y<sub>i</sub></sup>(1 − p<sub>i</sub>)<sup>1−y<sub>i</sub></sup>; take
+  minus the log and average to get the <strong>log loss</strong>, the binary
+  <a href="{{ url_for('ml_models', slug='entropy-and-kl') }}">cross-entropy</a> between the
+  labels and the predictions:
+</p>
+<p class="ml-formula">L(w, b) = −(1/n) Σ<sub>i</sub> [ y<sub>i</sub> log p<sub>i</sub> + (1 − y<sub>i</sub>) log(1 − p<sub>i</sub>) ]</p>
+<p>
+  A confident wrong answer costs a lot (−log 0.01 ≈ 4.6) and a confident right one almost
+  nothing; the <a href="{{ url_for('ml_models', slug='loss-functions') }}">loss-functions</a>
+  page computes it straight from logits, as log(1 + e<sup>−z</sup>) for a positive label, so it
+  never takes the log of a rounded-off zero.
+</p>
+<p>
+  Differentiate with the <a href="{{ url_for('ml_models', slug='chain-rule') }}">chain rule</a>.
+  For one example, ∂ℓ/∂p = −y/p + (1 − y)/(1 − p) and ∂p/∂z = p(1 − p); their product
+  collapses to
+</p>
+<p class="ml-formula">∂ℓ/∂z = p − y &nbsp;&nbsp; ∇<sub>w</sub>L = (1/n) Xᵀ(p − y) &nbsp;&nbsp; ∂L/∂b = (1/n) Σ (p<sub>i</sub> − y<sub>i</sub>)</p>
+<p>
+  The error signal is just "prediction minus label", the same form as linear regression's
+  residual. That is not a coincidence: both are generalized linear models with their natural
+  link, and the same p − y appears at the output of every softmax classifier.
+</p>
+<p>
+  Setting the bias gradient to zero gives a check you can run on any unpenalized fit: the
+  predicted probabilities sum to the number of positives. And unlike squared error, there is
+  no closed form; ∇L = 0 is nonlinear in w. But L is convex (its Hessian, below, is positive
+  semidefinite), so any method that reaches a stationary point has found the global minimum.
+</p>
+
+<h3 id="newton">Newton's method, a.k.a. IRLS</h3>
+
+<p>
+  Because the loss is smooth and convex with a cheap Hessian, Newton's method is the classic
+  solver. Differentiate the gradient once more:
+</p>
+<p class="ml-formula">H = (1/n) Xᵀ S X, &nbsp; S = diag(p<sub>i</sub>(1 − p<sub>i</sub>)) &nbsp;&nbsp; w ← w − H⁻¹∇L</p>
+<p>
+  Each step solves a weighted least-squares problem, with weight p<sub>i</sub>(1 − p<sub>i</sub>)
+  on example i, which is why statisticians call it <strong>iteratively reweighted least
+  squares</strong>. Examples the model is already sure about get almost no weight; the
+  uncertain ones near the boundary drive the update. Near the optimum Newton converges
+  quadratically: the number of correct digits roughly doubles per step.
+</p>
+<p>
+  Gradient descent uses only ∇L. It is cheaper per step (no d × d solve) but its speed depends
+  on the conditioning, just as on the
+  <a href="{{ url_for('ml_models', slug='linear-regression') }}">linear-regression</a> page,
+  and uncentered features make it slow.
+</p>
+
+<div class="jj-diagram">
+  {% macro cx(i) -%}{{ 70 + 170 * log10(i) }}{%- endmacro %}
+  {% macro cy(e) -%}{{ 30 + 13 * (-log10(e)) }}{%- endmacro %}
+  <svg viewBox="0 0 680 270" role="img" aria-labelledby="lgr-conv-title lgr-conv-desc">
+    <title id="lgr-conv-title">Newton's method against gradient descent on the pass/fail data</title>
+    <desc id="lgr-conv-desc">
+      Excess loss above the minimum, on a log scale from 1 down to 10 to the −15, against the
+      iteration number, also on a log scale from 1 to 2000. Newton's method, starting from
+      zero weights, has excess loss {{ "%.1e"|format(fit.newton_excess[1]) }} after one step,
+      {{ "%.1e"|format(fit.newton_excess[2]) }} after two, {{ "%.1e"|format(fit.newton_excess[3]) }}
+      after three and {{ "%.1e"|format(fit.newton_excess[4]) }} after four: the curve plunges.
+      Gradient descent with learning rate {{ num(ex.gd_lr) }} starts at
+      {{ "%.2f"|format(fit.descent_excess[1]) }}, is still at
+      {{ "%.3f"|format(fit.descent_excess[100]) }} after 100 steps, and reaches
+      {{ "%.1e"|format(fit.descent_excess[2000]) }} only after 2000.
+    </desc>
+    <line x1="{{ cx(1) }}" y1="{{ cy(1) }}" x2="{{ cx(1) }}" y2="{{ cy(1e-15) }}" class="d-line"></line>
+    <line x1="{{ cx(1) }}" y1="{{ cy(1e-15) }}" x2="{{ cx(2000) }}" y2="{{ cy(1e-15) }}" class="d-line"></line>
+    {% for e in [1, 1e-5, 1e-10, 1e-15] %}
+      <line x1="{{ cx(1) }}" y1="{{ cy(e) }}" x2="{{ cx(2000) }}" y2="{{ cy(e) }}" class="d-line ml-dashed" opacity="0.3"></line>
+      <text x="{{ cx(1)|float - 6 }}" y="{{ cy(e)|float + 4 }}" font-size="12" text-anchor="end">{{ "1" if e == 1 else "1e" ~ ("%d"|format(log10(e)|round)) }}</text>
+    {% endfor %}
+    {% for i in [1, 10, 100, 1000] %}
+      <text x="{{ cx(i) }}" y="{{ cy(1e-15)|float + 18 }}" font-size="12" text-anchor="middle">{{ i }}</text>
+    {% endfor %}
+    {% set newton_pts = zip(range(fit.newton_excess|length), fit.newton_excess)|selectattr(0)|selectattr(1)|list %}
+    <path d="M{% for i, e in newton_pts %}{% if not loop.first %} L{% endif %}{{ cx(i) }},{{ cy(e) }}{% endfor %}" fill="none" stroke="var(--jj-green)" stroke-width="2"></path>
+    {% for i, e in newton_pts %}
+      <circle cx="{{ cx(i) }}" cy="{{ cy(e) }}" r="4" style="fill: var(--jj-green)"></circle>
+    {% endfor %}
+    <path d="M{% for i in ex.gd_marks %}{% if not loop.first %} L{% endif %}{{ cx(i) }},{{ cy(fit.descent_excess[i]) }}{% endfor %}" fill="none" stroke="var(--jj-red)" stroke-width="2"></path>
+    {% for i in ex.gd_marks %}
+      <circle cx="{{ cx(i) }}" cy="{{ cy(fit.descent_excess[i]) }}" r="4" style="fill: var(--jj-red)"></circle>
+    {% endfor %}
+    <text x="{{ cx(5)|float + 10 }}" y="{{ cy(1e-13) }}" font-size="12" style="fill: var(--jj-green)">Newton / IRLS</text>
+    <text x="{{ cx(200) }}" y="{{ cy(0.3) }}" font-size="12" text-anchor="middle" style="fill: var(--jj-red)">gradient descent, η = {{ num(ex.gd_lr) }}</text>
+    <text x="{{ cx(40) }}" y="264" font-size="12" text-anchor="middle" class="d-muted">iteration (log scale); vertical: loss − minimum</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Four Newton steps beat two thousand gradient steps. Each Newton step costs a d × d solve,
+  which is trivial here and prohibitive with a million features; that tradeoff is why
+  scikit-learn defaults to L-BFGS, which approximates the Hessian from recent gradients.
+</p>
+
+<h3 id="decision-boundary">The decision boundary</h3>
+
+<p>
+  Predict the positive class when p ≥ ½, that is when w·x + b ≥ 0. The set w·x + b = 0 is a
+  line in two dimensions and a hyperplane in d, perpendicular to w. So logistic regression is a
+  <em>linear classifier</em>: its contours of equal probability are parallel hyperplanes, and
+  ‖w‖ sets how quickly probability changes as you cross them. The p = 0.9 contour sits where
+  w·x + b = log 9 ≈ 2.2, a distance 2.2 / ‖w‖ from the boundary.
+</p>
+<p>
+  The threshold ½ is a choice, not part of the model. If a missed positive costs ten times a
+  false alarm, predict positive above p = 1/11; the
+  <a href="{{ url_for('ml_models', slug='probability-and-distributions') }}">probabilities</a>
+  are what you threshold, which only makes sense if they are calibrated. Unpenalized logistic
+  regression tends to be well calibrated on the data it was fitted to; strong penalties pull
+  probabilities toward ½.
+</p>
+
+<h3 id="regularization">Regularization and C</h3>
+
+<p>
+  If the classes are <strong>linearly separable</strong>, the unpenalized loss has no minimum.
+  Any separating w can be doubled to push every p<sub>i</sub> closer to its label and the loss
+  closer to zero, so ‖w‖ grows forever and the probabilities become 0s and 1s. With many
+  features, separability is the norm, not the exception. A penalty fixes it.
+</p>
+<p>
+  scikit-learn writes the penalty through <code>C</code>, an <em>inverse</em> strength, in the
+  SVM style:
+</p>
+<p class="ml-formula">min<sub>w,b</sub> &nbsp; C Σ<sub>i</sub> ℓ(y<sub>i</sub>, w·x<sub>i</sub> + b) + ½‖w‖²</p>
+<p>
+  Small C means strong regularization, small weights and soft probabilities; large C trusts
+  the data. The default is C = 1, so <code>LogisticRegression()</code> is penalized unless you
+  say otherwise (pass <code>C=np.inf</code> for the plain maximum-likelihood fit). The intercept
+  is not penalized. Because the data term is a sum, the same C is effectively weaker penalty
+  on a bigger dataset. An L1 penalty (<code>l1_ratio=1</code>, with the liblinear or saga
+  solver) zeroes coefficients exactly, as lasso does. As with ridge, scale the features first,
+  or the penalty falls unevenly on them.
+</p>
+
+<div class="jj-diagram">
+  {% macro bx(u) -%}{{ 50 + 36 * u }}{%- endmacro %}
+  {% macro by(v) -%}{{ 236 - 30 * v }}{%- endmacro %}
+  {% macro gx(i) -%}{{ 420 + 19 * i }}{%- endmacro %}
+  {% macro gy(n) -%}{{ 236 - 2.8 * n }}{%- endmacro %}
+  {% set colors = ["var(--jj-amber)", "var(--jj-accent)", "var(--jj-violet)"] %}
+  {% set mid = bounds.fits[1] %}
+  <svg viewBox="0 0 680 270" role="img" aria-labelledby="lgr-c-title lgr-c-desc">
+    <title id="lgr-c-title">Decision boundaries for three values of C, and weights that diverge without a penalty</title>
+    <desc id="lgr-c-desc">
+      Left: twelve points with two features, six of class 0 and six of class 1, linearly
+      separable. Three fitted decision boundaries: C = {{ num(bex.cs[0]) }} gives weights
+      ({{ bounds.fits[0].params[:2]|map("round", 2)|join(", ") }}) with norm
+      {{ f2(bounds.fits[0].norm) }}; C = {{ num(bex.cs[1]) }} gives
+      ({{ mid.params[:2]|map("round", 2)|join(", ") }}) with norm {{ f2(mid.norm) }}, drawn with
+      dashed p = 0.1 and p = 0.9 contours either side; C = {{ num(bex.cs[2]) }} gives
+      ({{ bounds.fits[2].params[:2]|map("round", 2)|join(", ") }}) with norm
+      {{ f2(bounds.fits[2].norm) }}, a boundary that threads the gap between the classes. Right:
+      with no penalty, the weight norm after each of {{ bex.unpenalized_steps }} Newton steps:
+      {{ bounds.unpenalized|map(attribute="norm")|map("round", 1)|join(", ") }}, growing without
+      bound while the loss falls toward zero.
+    </desc>
+    <defs>
+      <clipPath id="lgr-c-clip"><rect x="{{ bx(0) }}" y="{{ by(7) }}" width="{{ 36 * 7 }}" height="{{ 30 * 7 }}"></rect></clipPath>
+    </defs>
+    <rect x="{{ bx(0) }}" y="{{ by(7) }}" width="{{ 36 * 7 }}" height="{{ 30 * 7 }}" fill="none" class="d-line"></rect>
+    <g clip-path="url(#lgr-c-clip)">
+      {% for level in [-2.1972, 2.1972] %}
+        <line x1="{{ bx(0) }}" y1="{{ by((level - mid.params[2]) / mid.params[1]) }}" x2="{{ bx(7) }}" y2="{{ by((level - mid.params[2] - mid.params[0] * 7) / mid.params[1]) }}" stroke="var(--jj-accent)" stroke-width="1" class="ml-dashed"></line>
+      {% endfor %}
+      {% for f in bounds.fits %}
+        {% set w1, w2, b = f.params %}
+        <line x1="{{ bx(0) }}" y1="{{ by(-b / w2) }}" x2="{{ bx(7) }}" y2="{{ by(-(b + w1 * 7) / w2) }}" stroke="{{ colors[loop.index0] }}" stroke-width="2"></line>
+      {% endfor %}
+    </g>
+    {% for (u, v), t in zip(bex.rows, bex.labels) %}
+      <circle cx="{{ bx(u) }}" cy="{{ by(v) }}" r="5" {% if t %}style="fill: var(--jj-green)"{% else %}fill="none" stroke="var(--jj-red)" stroke-width="2"{% endif %}></circle>
+    {% endfor %}
+    {% for t in [0, 3, 6] %}
+      <text x="{{ bx(t) }}" y="{{ by(0)|float + 16 }}" font-size="12" text-anchor="middle">{{ t }}</text>
+      <text x="{{ bx(0)|float - 6 }}" y="{{ by(t)|float + 4 }}" font-size="12" text-anchor="end">{{ t }}</text>
+    {% endfor %}
+    <text x="{{ bx(0.2) }}" y="{{ by(7)|float - 8 }}" font-size="12" style="fill: var(--jj-amber)">C = {{ num(bex.cs[0]) }}</text>
+    <text x="{{ bx(2.6) }}" y="{{ by(7)|float - 8 }}" font-size="12" style="fill: var(--jj-accent)">C = {{ num(bex.cs[1]) }}</text>
+    <text x="{{ bx(4.6) }}" y="{{ by(7)|float - 8 }}" font-size="12" style="fill: var(--jj-violet)">C = {{ num(bex.cs[2]) }}</text>
+    <text x="{{ bx(3.5) }}" y="264" font-size="12" text-anchor="middle" class="d-muted">feature 1 (● class 1, ○ class 0)</text>
+
+    <line x1="{{ gx(0) }}" y1="{{ gy(0) }}" x2="{{ gx(12.5) }}" y2="{{ gy(0) }}" class="d-line"></line>
+    <line x1="{{ gx(0) }}" y1="{{ gy(0) }}" x2="{{ gx(0) }}" y2="{{ gy(75) }}" class="d-line"></line>
+    <path d="M{% for g in bounds.unpenalized %}{% if not loop.first %} L{% endif %}{{ gx(loop.index0) }},{{ gy(g.norm) }}{% endfor %}" fill="none" stroke="var(--jj-red)" stroke-width="2"></path>
+    {% for g in bounds.unpenalized %}
+      <circle cx="{{ gx(loop.index0) }}" cy="{{ gy(g.norm) }}" r="3.5" style="fill: var(--jj-red)"></circle>
+    {% endfor %}
+    {% for t in [0, 35, 70] %}
+      <text x="{{ gx(0)|float - 6 }}" y="{{ gy(t)|float + 4 }}" font-size="12" text-anchor="end">{{ t }}</text>
+    {% endfor %}
+    {% for t in [0, 6, 12] %}
+      <text x="{{ gx(t) }}" y="{{ gy(0)|float + 16 }}" font-size="12" text-anchor="middle">{{ t }}</text>
+    {% endfor %}
+    <text x="{{ gx(6) }}" y="{{ gy(75)|float - 8 }}" font-size="12" text-anchor="middle">no penalty: ‖w‖ per Newton step</text>
+    <text x="{{ gx(8) }}" y="{{ gy(58) }}" font-size="12" text-anchor="end" style="fill: var(--jj-red)">loss → {{ "%.0e"|format(bounds.unpenalized[-1].loss) }}</text>
+    <text x="{{ gx(6) }}" y="264" font-size="12" text-anchor="middle" class="d-muted">Newton step</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Left: only C = {{ num(bex.cs[2]) }} separates every training point. The stronger penalties
+  give up the class 1 point at (3, 3.5), predicting
+  {{ f2(bounds.fits[0].probs[5]) }} and {{ f2(bounds.fits[1].probs[5]) }} for it, in exchange
+  for a much smaller ‖w‖, so their probability ramps gently (the dashed contours for C = 1 sit
+  far apart). Right: without a
+  penalty the separable data drives the weights off to infinity.
+</p>
+
+<h3 id="softmax">Many classes: softmax regression</h3>
+
+<p>
+  With K classes, give each class its own weight vector and score, z<sub>k</sub> = w<sub>k</sub>·x
+  + b<sub>k</sub>, and turn the scores into a distribution with the <strong>softmax</strong>:
+</p>
+<p class="ml-formula">p(y = k | x) = e<sup>z<sub>k</sub></sup> / Σ<sub>j</sub> e<sup>z<sub>j</sub></sup> &nbsp;&nbsp; ℓ = −log p(y | x) &nbsp;&nbsp; ∂ℓ/∂z<sub>k</sub> = p<sub>k</sub> − [k = y]</p>
+<p>
+  The loss is categorical cross-entropy and the gradient is again "prediction minus one-hot
+  label". With K = 2 it reduces to the sigmoid on z<sub>1</sub> − z<sub>0</sub>: adding the same
+  number to every score changes nothing, so only differences matter. This is also how a neural
+  classifier ends: an <code>nn.Linear</code> layer producing K logits, then
+  <code>CrossEntropyLoss</code>. In matrix form the scores are XWᵀ + b with W of shape (K, d),
+  which is exactly <code>coef_</code>'s shape in scikit-learn.
+</p>
+<p>
+  The alternative is <strong>one-vs-rest</strong>: K separate binary models, each "class k
+  versus everything else", with probabilities renormalized afterwards. Since version 1.5
+  scikit-learn's <code>LogisticRegression</code> always fits the true multinomial model when
+  K ≥ 3 (except with liblinear, which is binary only); wrap it in
+  <code>OneVsRestClassifier</code> to get one-vs-rest.
+</p>
+
+<h3 id="solvers">Solvers</h3>
+
+<p>
+  All of scikit-learn's solvers minimize the same objective; they differ in how they get
+  there and which penalties they support.
+</p>
+<ul>
+  <li><strong>lbfgs</strong> (default): quasi-Newton, builds a Hessian approximation from the last few gradients. A good general choice for dense data and L2 or no penalty.</li>
+  <li><strong>newton-cholesky</strong>: exact Newton steps, factoring the d × d Hessian. Best when n is much larger than d and d is modest (say, under a thousand), including one-hot features.</li>
+  <li><strong>newton-cg</strong>: Newton steps solved approximately by conjugate gradient, using only Hessian-vector products.</li>
+  <li><strong>liblinear</strong>: coordinate descent; binary only; supports L1. Unusually, it penalizes the intercept too, so set <code>intercept_scaling</code> high if that matters.</li>
+  <li><strong>sag</strong> and <strong>saga</strong>: stochastic average gradient, for very large n; saga also handles L1 and elastic net. Both need standardized features to converge quickly.</li>
+</ul>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Term</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>LogisticRegression</code></td>
+        <td><code>C</code>, <code>l1_ratio</code>, <code>solver</code>, <code>max_iter</code></td>
+        <td>Regularized logistic and multinomial regression; stores <code>coef_</code> (1 or K, d) and <code>intercept_</code>.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_logistic.py', 974, 1637) }}"><code>_logistic.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>C</code>, <code>l1_ratio</code>, <code>solver</code></td>
+        <td>C &gt; 0, default 1.0; l1_ratio in [0, 1]</td>
+        <td>Inverse penalty strength, L1/L2 mix, and the solver-penalty compatibility table.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_logistic.py', 1023, 1153) }}"><code>LogisticRegression</code> docstring</a></td>
+      </tr>
+      <tr>
+        <td><code>LogisticRegression.fit</code></td>
+        <td>X (n, d), y (n,)</td>
+        <td>Validates input, encodes classes, picks binary or multinomial, dispatches to the path solver.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_logistic.py', 1333, 1572) }}"><code>fit</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_logistic_regression_path</code></td>
+        <td><code>Cs</code>, <code>solver</code>, <code>coef</code></td>
+        <td>Builds the loss (<code>HalfBinomialLoss</code> or <code>HalfMultinomialLoss</code>) and runs the solver for each C.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_logistic.py', 219, 720) }}"><code>_logistic_regression_path</code></a></td>
+      </tr>
+      <tr>
+        <td>lbfgs branch</td>
+        <td><code>l2_reg_strength = 1 / (C · n)</code></td>
+        <td>Rescales C into a per-sample penalty and calls <code>scipy.optimize.minimize(method="L-BFGS-B")</code>.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_logistic.py', 580, 606) }}"><code>_logistic.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>LinearModelLoss</code></td>
+        <td>coef (d + 1,) or (K, d + 1)</td>
+        <td>Mean loss plus ½·strength·‖w‖² (intercept excluded), with gradients and Hessians.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_linear_loss.py', 47, 290) }}"><code>_linear_loss.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>gradient_hessian</code></td>
+        <td>H (d + 1, d + 1)</td>
+        <td>Xᵀ S X with S = diag(p(1 − p)) plus the penalty: the IRLS Hessian.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_linear_loss.py', 454, 710) }}"><code>gradient_hessian</code></a></td>
+      </tr>
+      <tr>
+        <td><code>NewtonCholeskySolver</code></td>
+        <td><code>tol</code>, <code>max_iter</code></td>
+        <td>Newton steps by Cholesky factorization of the Hessian, with a line search and an L-BFGS fallback.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_glm/_newton_solver.py', 452, 637) }}"><code>_newton_solver.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>decision_function</code></td>
+        <td>X (n, d) → (n,) or (n, K)</td>
+        <td>The raw scores Xwᵀ + b: log-odds in the binary case.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_base.py', 366, 397) }}"><code>_base.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>predict</code></td>
+        <td>X (n, d) → (n,)</td>
+        <td>Thresholds the score at 0 (binary) or takes the argmax (multiclass).</td>
+        <td><a href="{{ skl('sklearn/linear_model/_base.py', 398, 428) }}"><code>_base.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>predict_proba</code></td>
+        <td>X (n, d) → (n, K)</td>
+        <td>Sigmoid of the score (binary) or softmax over the K scores (multinomial).</td>
+        <td><a href="{{ skl('sklearn/linear_model/_logistic.py', 1573, 1604) }}"><code>predict_proba</code></a>, <a href="{{ skl('sklearn/linear_model/_base.py', 429, 452) }}"><code>_predict_proba_lr</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.Linear</code></td>
+        <td>weight (K, d), bias (K,)</td>
+        <td>The same model as a layer: produces the logits.</td>
+        <td><a href="{{ src('torch/nn/modules/linear.py', 53, 147) }}"><code>linear.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>BCEWithLogitsLoss</code>, <code>CrossEntropyLoss</code></td>
+        <td>logits (N,) or (N, K), targets</td>
+        <td>The binary and multinomial log losses, computed stably from logits.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 719, 846) }}"><code>BCEWithLogitsLoss</code></a>, <a href="{{ src('torch/nn/modules/loss.py', 1200, 1409) }}"><code>CrossEntropyLoss</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>Newton's method by hand.</strong> Twelve students studied
+    {{ ex.hours|join(", ") }} hours; passes are {{ ex.passed|join(", ") }}. Start at
+    w = b = 0. Every p<sub>i</sub> is ½, the loss is log 2 ≈ {{ f3(fit.newton[0].loss) }}, and
+    every Hessian weight p(1 − p) is ¼.
+  </p>
+  <ul>
+    <li>Gradient (as sums): Σ(p − y)x = ½·{{ num(ex.hours|sum) }} − {{ num(zip(ex.hours, ex.passed)|selectattr(1)|map(attribute=0)|sum) }} = {{ num(0.5 * ex.hours|sum - zip(ex.hours, ex.passed)|selectattr(1)|map(attribute=0)|sum) }}, and Σ(p − y) = 6 − {{ ex.passed|sum }} = {{ 6 - ex.passed|sum }}.</li>
+    <li>Hessian: ¼·[[Σx², Σx], [Σx, n]] = ¼·[[{{ num(sumsq.v) }}, {{ num(ex.hours|sum) }}], [{{ num(ex.hours|sum) }}, 12]].</li>
+    <li>Solving H·step = gradient and subtracting gives (w, b) = ({{ f3(fit.newton[1].params[0]) }}, {{ f3(fit.newton[1].params[1]) }}), loss {{ f3(fit.newton[1].loss) }}.</li>
+  </ul>
+  <p>Repeating, with p and the weights recomputed each time:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>step</th><th>w</th><th>b</th><th>mean log loss</th><th>‖∇‖</th></tr></thead>
+      <tbody>
+        {% for e in fit.newton[:6] %}
+          <tr><td>{{ loop.index0 }}</td><td>{{ "%.4f"|format(e.params[0]) }}</td><td>{{ "%.4f"|format(e.params[1]) }}</td><td>{{ "%.6f"|format(e.loss) }}</td><td>{{ "%.1e"|format(e.grad_norm) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The gradient norm goes 1.6, 0.4, 0.05, 0.0009, 4 × 10⁻⁷: quadratic convergence. Read the
+    answer: the boundary is at −b/w = {{ num(fit.boundary) }} hours (the data are symmetric
+    about it), each hour multiplies the odds of passing by {{ f2(fit.odds_ratio) }}, and a
+    student who studied 2 hours has p = σ({{ f3(fit.w) }}·2 − {{ f3(-fit.b) }}) =
+    {{ f2(sigmoid(2 * fit.w + fit.b)) }} while one who studied 4 has
+    {{ f2(sigmoid(4 * fit.w + fit.b)) }}. As promised, the fitted probabilities
+    ({{ fit.probs|map("round", 2)|join(", ") }}) sum to {{ "%.4f"|format(fit.probs|sum) }}, the
+    number of passes.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <p>
+    <strong>Separable data and C.</strong> On the twelve two-feature points above,
+    {% for f in bounds.fits %}C = {{ num(f.c) }} gives w = ({{ f.params[:2]|map("round", 3)|join(", ") }}), b = {{ f3(f.params[2]) }}{{ "; " if not loop.last else "." }}{% endfor %}
+    The two stronger penalties misclassify the class 1 point (3, 3.5), at
+    p = {{ f2(bounds.fits[0].probs[5]) }} and {{ f2(bounds.fits[1].probs[5]) }}, because
+    fitting it would need larger weights; C = {{ num(bex.cs[2]) }} gets it right at
+    {{ f2(bounds.fits[2].probs[5]) }}. The direction of w changes only a little; its length grows from {{ f2(bounds.fits[0].norm) }} to
+    {{ f2(bounds.fits[2].norm) }}. The borderline point (4.5, 2.5), a class 0 point sitting
+    among class 1's, gets p = {{ f2(bounds.fits[0].probs[-1]) }},
+    {{ f2(bounds.fits[1].probs[-1]) }} and {{ f2(bounds.fits[2].probs[-1]) }}: larger C makes the
+    model more certain. With no penalty, Newton never stops: ‖w‖ reaches
+    {{ "%.0f"|format(bounds.unpenalized[-1].norm) }} after {{ bex.unpenalized_steps }} steps and
+    the loss {{ "%.0e"|format(bounds.unpenalized[-1].loss) }}, on its way to zero.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <p>
+    <strong>Softmax, one example.</strong> Scores for {{ sm.classes|join(", ") }} are
+    {{ sm.logits|join(", ") }}; the true class is {{ sm.classes[sm.target] }}. Exponentiate:
+    e² ≈ 7.389, e¹ ≈ 2.718, e⁻¹ ≈ 0.368, total 10.475. The probabilities are
+    {{ soft.probs|map("round", 3)|join(", ") }}; the loss is −log {{ f3(soft.probs[0]) }} =
+    {{ f3(soft.loss) }}; and the gradient with respect to the scores is p − one-hot =
+    ({{ soft.gradient|map("round", 3)|join(", ") }}). It pushes the cat score up and the other two
+    down, each in proportion to how much probability it wrongly holds, and the components sum
+    to zero.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+import torch.nn.functional as F
+
+hours = torch.tensor([0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0]).unsqueeze(1)
+passed = torch.tensor([0, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1, 1], dtype=torch.float32).unsqueeze(1)
+
+model = torch.nn.Linear(1, 1)                 # z = w * hours + b, a logit
+opt = torch.optim.LBFGS(model.parameters(), line_search_fn="strong_wolfe")
+
+def closure():
+    opt.zero_grad()
+    loss = F.binary_cross_entropy_with_logits(model(hours), passed)
+    loss.backward()
+    return loss
+
+for _ in range(10):
+    opt.step(closure)
+model.weight, model.bias                      # ≈ 1.4245 and -4.6296
+torch.sigmoid(model(torch.tensor([[2.0], [4.0]])))   # ≈ 0.14 and 0.74
+
+# K classes: K logits, then cross-entropy on the integer label
+logits = torch.tensor([[2.0, 1.0, -1.0]])
+F.cross_entropy(logits, torch.tensor([0]))    # 0.3490</code></pre>
+
+<pre><code>import numpy as np
+from sklearn.linear_model import LogisticRegression
+
+X = np.array([0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6]).reshape(-1, 1)
+y = np.array([0, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1, 1])
+
+clf = LogisticRegression(C=np.inf).fit(X, y)  # C=inf: no penalty
+clf.coef_, clf.intercept_                     # ≈ [[1.4245]], [-4.6296]
+clf.predict_proba([[2.0], [4.0]])[:, 1]       # ≈ [0.14, 0.74]
+clf.decision_function([[3.25]])               # ≈ [0.0], the boundary
+
+LogisticRegression().fit(X, y).coef_          # C=1 by default: a smaller slope</code></pre>
+
+<p>Newton's method in plain Python:</p>
+
+<pre><code>import math
+
+def sigmoid(z):
+    return 1 / (1 + math.exp(-z)) if z &gt;= 0 else math.exp(z) / (1 + math.exp(z))
+
+def fit_logistic_1d(xs, ys, steps=8):
+    w = b = 0.0
+    for _ in range(steps):
+        ps = [sigmoid(w * x + b) for x in xs]
+        gw = sum((p - y) * x for p, x, y in zip(ps, xs, ys))
+        gb = sum(p - y for p, y in zip(ps, ys))
+        s = [p * (1 - p) for p in ps]
+        hww = sum(si * x * x for si, x in zip(s, xs))
+        hwb = sum(si * x for si, x in zip(s, xs))
+        hbb = sum(s)
+        det = hww * hbb - hwb * hwb             # solve the 2x2 Newton system
+        w -= (hbb * gw - hwb * gb) / det
+        b -= (hww * gb - hwb * gw) / det
+    return w, b
+
+fit_logistic_1d([0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6],
+                [0, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1, 1])   # (1.4245, -4.6296)</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Linear boundary.</strong> The model can only separate classes with a hyperplane in
+    its features. Interactions, polynomial terms or splines bend it, at the cost of more
+    columns; past that point, trees or neural networks learn the features instead.
+  </li>
+  <li>
+    <strong>Interpretable, with caveats.</strong> Coefficients are log odds ratios, holding the
+    other features fixed, and carry every caution from linear regression: units, correlated
+    features and confounders. Penalties also shrink them, so a regularized coefficient
+    understates the effect it estimates.
+  </li>
+  <li>
+    <strong>Probabilities.</strong> A fit by maximum likelihood gives fairly well calibrated
+    probabilities, which most classifiers (SVMs, boosted trees) do not; check with a
+    reliability plot before trusting them, especially under strong regularization or class
+    imbalance.
+  </li>
+  <li>
+    <strong>Imbalance.</strong> With rare positives, the intercept absorbs the base rate and
+    accuracy is meaningless. Use <code>class_weight</code>, a moved threshold, and metrics like
+    precision, recall or log loss rather than accuracy.
+  </li>
+  <li>
+    <strong>Solver choice.</strong> Newton-type methods converge in a handful of steps but
+    scale as d² memory and d³ time per step; first-order and stochastic methods scale to huge
+    data but need scaled features and more iterations. A <code>ConvergenceWarning</code>
+    usually means unscaled features, not too few iterations.
+  </li>
+</ul>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="ml-quiz">
+  <summary>A coefficient is 0.7. What does it say about the odds?</summary>
+  <p>Each unit increase in that feature, others fixed, multiplies the odds of the positive class by e<sup>0.7</sup> ≈ 2.0. The change in probability depends on where you start; the change in odds does not.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why is the gradient of the log loss with respect to the score just p − y?</summary>
+  <p>The derivative of the loss with respect to p has a factor 1/(p(1 − p)), and the sigmoid's derivative is p(1 − p). They cancel, leaving p − y.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Your unpenalized fit reports huge coefficients and a convergence warning. What is happening?</summary>
+  <p>The classes are (nearly) linearly separable, so the loss keeps falling as the weights grow and there is no finite minimum. Add a penalty (a finite C), which gives a unique, finite solution.</p>
+</details>
+<details class="ml-quiz">
+  <summary>You raise C from 1 to 100. What happens to the weights and to the predicted probabilities?</summary>
+  <p>The penalty weakens, so the weights grow and the probabilities move toward 0 and 1. Training loss drops; whether test loss does is a question for cross-validation (<code>LogisticRegressionCV</code>).</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Hastie, Tibshirani and Friedman. <em>The Elements of Statistical Learning</em>, 2nd ed., section 4.4. Springer, 2009.</li>
+  <li>Bishop. <em>Pattern Recognition and Machine Learning</em>, sections 4.3.2–4.3.4 (logistic regression, IRLS, multiclass). Springer, 2006.</li>
+  <li>Cox. <em>The Regression Analysis of Binary Sequences.</em> Journal of the Royal Statistical Society B, 1958.</li>
+  <li>Nelder and Wedderburn. <em>Generalized Linear Models.</em> Journal of the Royal Statistical Society A, 1972.</li>
+  <li>Albert and Anderson. <em>On the Existence of Maximum Likelihood Estimates in Logistic Regression Models.</em> Biometrika, 1984.</li>
+  <li>Fan, Chang, Hsieh, Wang and Lin. <em>LIBLINEAR: A Library for Large Linear Classification.</em> JMLR, 2008.</li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/linear_model/_logistic.py', 974, 1637) }}"><code>_logistic.py</code></a>, <a href="{{ skl('sklearn/linear_model/_linear_loss.py', 47, 290) }}"><code>_linear_loss.py</code></a> and <a href="{{ skl('sklearn/linear_model/_glm/_newton_solver.py', 452, 637) }}"><code>_newton_solver.py</code></a>.</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/nn/modules/linear.py', 53, 147) }}"><code>torch/nn/modules/linear.py</code></a> and <a href="{{ src('torch/nn/modules/loss.py', 719, 846) }}"><code>torch/nn/modules/loss.py</code></a>.</li>
+</ul>

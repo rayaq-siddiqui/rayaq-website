@@ -469,7 +469,7 @@ PAGES = [
             "sklearn:sklearn/linear_model/_logistic.py",
             "pytorch:torch/nn/modules/linear.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "decision-trees",
