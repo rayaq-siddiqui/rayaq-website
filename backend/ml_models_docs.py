@@ -207,7 +207,7 @@ PAGES = [
             "pytorch:torch/random.py",
             "pytorch:torch/distributions/normal.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "bayes-rule",
@@ -2010,6 +2010,7 @@ def minibatch_gradients(example):
                 "variance": sum((g - mean) ** 2 for g in grads) / len(grads),
                 "lowest": min(grads),
                 "highest": max(grads),
+                "grads": sorted(grads),
             }
         )
     return {"per_example": per_example, "full": full, "sizes": sizes}
@@ -2133,6 +2134,7 @@ def render(slug, render_template):
         "sum_pmf": sum_pmf,
         "minibatch_gradients": minibatch_gradients,
         "sqrt": math.sqrt,
+        "log10": math.log10,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

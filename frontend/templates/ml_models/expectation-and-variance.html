@@ -1,0 +1,448 @@
+{% set die = die_example %}
+{% set uniform = [1 / die["values"]|length] * die["values"]|length %}
+{% set mu = expectation(die["values"], uniform) %}
+{% set var = variance(die["values"], uniform) %}
+{% set rolls = die_rolls(die.checkpoints[-1], die.seed) %}
+{% set table = running_means(rolls, die["values"], die.checkpoints) %}
+{% set cv = covariance(covariance_example.pairs) %}
+{% set mb = minibatch_gradients(minibatch_example) %}
+{% macro num(x) -%}{{ "%g"|format(x) }}{%- endmacro %}
+{% macro f2(x) -%}{{ "%.2f"|format(x) }}{%- endmacro %}
+{% macro f3(x) -%}{{ "%.3f"|format(x) }}{%- endmacro %}
+{% macro big(n) -%}{{ "{:,}".format(n) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Expectation, variance and sampling</h1>
+  <p class="tagline">
+    Training never sees the true loss, only averages over samples of it. This page defines
+    the average a distribution is heading toward (expectation), how far samples stray from
+    it (variance and covariance), and why averaging more samples helps by exactly 1/√n. It
+    ends with the payoff: a minibatch gradient is an unbiased but noisy estimate of the
+    full gradient, worked out over every possible minibatch of a small dataset.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  The loss you actually care about is the average over every input the model will ever
+  see, which is an expectation over a distribution you can't enumerate. What you can do is
+  draw a sample, a dataset, and average over that. Then, because even the dataset is too
+  big to process at every step, you average over a minibatch of a few hundred examples.
+</p>
+<p>
+  Each of those steps replaces an exact quantity with an estimate. You need to know
+  whether the estimate is right on average (is it <em>biased</em>?), how much it wobbles
+  (its <em>variance</em>), and how both change with the number of samples. Those three
+  questions decide batch sizes, learning rates and how many evaluation examples you need
+  to trust a number.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  The <strong>expectation</strong> is the balance point of a distribution: if the
+  probability mass were weights on a ruler, it is where the ruler balances. A fair die
+  balances at {{ num(mu) }}, even though it never shows {{ num(mu) }}.
+</p>
+<p>
+  The <strong>variance</strong> is how spread out the mass is around that balance point:
+  the average squared distance from it. Its square root, the <strong>standard
+  deviation</strong>, is in the original units and is the typical size of a deviation.
+</p>
+<p>
+  Averages of independent samples are less spread out than single samples, because
+  errors in different directions cancel. They cancel slowly, though: the typical error of
+  an average of n samples is σ/√n, so 100 times the samples buys only 10 times the
+  accuracy.
+</p>
+
+<div class="jj-diagram">
+  {% set pts = [] %}
+  {% for i in range(41) %}{% set _ = pts.append((10 ** (i / 10))|round|int) %}{% endfor %}
+  {% set curve = running_means(rolls, die["values"], pts) %}
+  {% macro px(n) -%}{{ 70 + 140 * log10(n) }}{%- endmacro %}
+  {% macro py(m) -%}{{ 20 + (6 - m) * 34 }}{%- endmacro %}
+  <svg viewBox="0 0 680 260" role="img" aria-labelledby="ev-lln-title ev-lln-desc">
+    <title id="ev-lln-title">The running mean of die rolls settles toward 3.5</title>
+    <desc id="ev-lln-desc">
+      The average of the first n rolls of a fair die, for n from 1 to {{ big(die.checkpoints[-1]) }}
+      on a logarithmic axis. The line starts far from 3.5 and settles toward it. A shaded
+      funnel around 3.5 shows one standard error, σ/√n with σ = {{ f3(sqrt(var)) }}, which
+      narrows by a factor of 10 for every factor of 100 in n. After {{ big(table[-1].n) }}
+      rolls the running mean is {{ f3(table[-1].mean) }}.
+    </desc>
+    <path d="M{% for i in range(41) %}{% set n = 10 ** (i / 10) %}{% if not loop.first %} L{% endif %}{{ px(n) }},{{ py(mu + sqrt(var / n)) }}{% endfor %}{% for i in range(40, -1, -1) %}{% set n = 10 ** (i / 10) %} L{{ px(n) }},{{ py(mu - sqrt(var / n)) }}{% endfor %} Z" style="fill: var(--jj-green); opacity: 0.2"></path>
+    <line x1="{{ px(1) }}" y1="{{ py(mu) }}" x2="{{ px(10000) }}" y2="{{ py(mu) }}" class="d-line ml-dashed"></line>
+    <path d="M{% for row in curve %}{% if not loop.first %} L{% endif %}{{ px(row.n) }},{{ py(row.mean) }}{% endfor %}" fill="none" stroke="var(--jj-amber)" stroke-width="2"></path>
+    <line x1="{{ px(1) }}" y1="{{ py(1) }}" x2="{{ px(10000) }}" y2="{{ py(1) }}" class="d-line"></line>
+    <line x1="{{ px(1) }}" y1="{{ py(6) }}" x2="{{ px(1) }}" y2="{{ py(1) }}" class="d-line"></line>
+    {% for k in range(5) %}
+      <text x="{{ px(10 ** k) }}" y="208" font-size="12" text-anchor="middle">{{ big(10 ** k) }}</text>
+    {% endfor %}
+    {% for m in [1, 2, 3, 4, 5, 6] %}
+      <text x="62" y="{{ py(m)|float + 4 }}" font-size="12" text-anchor="end">{{ m }}</text>
+    {% endfor %}
+    <text x="{{ px(10000) }}" y="{{ py(mu)|float - 8 }}" font-size="12" text-anchor="end" style="fill: var(--jj-green)">E[X] = {{ num(mu) }}</text>
+    <text x="{{ px(30) }}" y="{{ py(5.4) }}" font-size="12" style="fill: var(--jj-amber)">running mean</text>
+    <text x="{{ px(30) }}" y="{{ py(5.0) }}" font-size="12" class="d-muted">shaded: 3.5 ± σ/√n</text>
+    <text x="345" y="252" font-size="12" text-anchor="middle" class="d-muted">number of rolls n (log scale)</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  The law of large numbers in one picture: the sample mean converges to the expectation,
+  and the one-standard-error funnel says how fast.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="expectation">Expectation and linearity</h3>
+
+<p class="ml-formula">E[X] = Σ<sub>x</sub> x · p(x) &nbsp;&nbsp; or &nbsp;&nbsp; E[X] = ∫ x · p(x) dx</p>
+<p>
+  More generally, E[f(X)] = Σ f(x) p(x): average the function's values, weighted by
+  probability. A loss is exactly this, E<sub>(x, y)</sub>[ℓ(model(x), y)]. Expectation is
+  <strong>linear</strong>: E[aX + bY + c] = aE[X] + bE[Y] + c, always, whether or not X and
+  Y are independent. That one fact is behind almost every "unbiased" claim in machine
+  learning, including the minibatch one below.
+</p>
+
+<h3 id="variance">Variance and standard deviation</h3>
+
+<p class="ml-formula">Var[X] = E[(X − E[X])²] = E[X²] − E[X]² &nbsp;&nbsp;&nbsp; σ = √Var[X]</p>
+<p>
+  Variance is not linear. Shifting doesn't change it and scaling squares:
+  Var[aX + c] = a² Var[X]. For independent X and Y, variances add:
+  Var[X + Y] = Var[X] + Var[Y]. Combine the two and the average of n independent copies,
+  X̄ = (X₁ + ⋯ + Xₙ)/n, has
+</p>
+<p class="ml-formula">Var[X̄] = n · Var[X] / n² = σ² / n &nbsp;&nbsp;&nbsp; standard error = σ / √n</p>
+
+<h3 id="covariance">Covariance and correlation</h3>
+
+<p class="ml-formula">Cov[X, Y] = E[(X − E[X])(Y − E[Y])] &nbsp;&nbsp;&nbsp; ρ = Cov[X, Y] / (σ<sub>X</sub> σ<sub>Y</sub>)</p>
+<p>
+  Covariance is positive when X and Y tend to be above their means together, and negative
+  when one tends to be high as the other is low. The correlation ρ rescales it to
+  [−1, 1]. For the five students below ({{ covariance_example.labels|join(" and ") }}),
+  Cov = {{ num(cv.cov) }} and ρ = {{ f3(cv.corr) }}. In general
+  Var[X + Y] = Var[X] + Var[Y] + 2 Cov[X, Y], so correlated errors don't cancel, which is
+  why an ensemble of near-identical models helps less than the count suggests.
+</p>
+<p>
+  Independent variables have zero covariance, but zero covariance does not mean
+  independent: for X uniform on {−2, −1, 0, 1, 2} and Y = X², the covariance is 0 even
+  though Y is a function of X. Covariance only measures <em>linear</em> association.
+</p>
+
+<h3 id="monte-carlo">Monte Carlo estimates and the central limit theorem</h3>
+
+<p>
+  Any expectation can be estimated by sampling: E[f(X)] ≈ (1/n) Σ f(xᵢ) with xᵢ drawn from
+  p. The estimate is unbiased (its expectation is the true value, by linearity), and the
+  <strong>law of large numbers</strong> says it converges as n grows. Its standard error is
+  σ<sub>f</sub>/√n, independent of the dimension of X, which is why Monte Carlo works for
+  integrals over millions of parameters where grids are hopeless.
+</p>
+<p>
+  The <strong>central limit theorem</strong> adds the shape: for large n, the sample mean is
+  approximately Normal(μ, σ²/n), whatever the original distribution looked like. That
+  is what justifies "mean ± 2 standard errors" as a 95% interval on an evaluation score.
+</p>
+
+<div class="jj-diagram">
+  {% set panel = 210 %}
+  <svg viewBox="0 0 680 220" role="img" aria-labelledby="ev-clt-title ev-clt-desc">
+    <title id="ev-clt-title">The mean of n dice becomes bell-shaped and narrower</title>
+    <desc id="ev-clt-desc">
+      Three bar charts of the exact distribution of the average of n fair dice, for n = 1,
+      2 and 5, each on the same axis from 1 to 6. One die is flat; two dice form a
+      triangle peaked at 3.5; five dice form a narrow bell centred on 3.5. The standard
+      deviation shrinks from {{ f2(sqrt(var)) }} to {{ f2(sqrt(var / 2)) }} to {{ f2(sqrt(var / 5)) }}.
+    </desc>
+    {% for n in [1, 2, 5] %}
+      {% set x0 = 20 + loop.index0 * 225 %}
+      {% set pmf = sum_pmf(die["values"], n) %}
+      {% set top = pmf.values()|max %}
+      {% set barw = 180 / (5 * n + 1) %}
+      <text x="{{ x0 + panel / 2 }}" y="20" font-size="13" text-anchor="middle">n = {{ n }}</text>
+      <line x1="{{ x0 }}" y1="170" x2="{{ x0 + panel }}" y2="170" class="d-line"></line>
+      {% for total, prob in pmf.items() %}
+        {% set cx = x0 + 15 + (total / n - 1) / 5 * 180 %}
+        {% set h = 130 * prob / top %}
+        <rect x="{{ cx - barw * 0.4 }}" y="{{ 170 - h }}" width="{{ barw * 0.8 }}" height="{{ h }}" style="fill: var(--jj-amber); opacity: 0.6"></rect>
+      {% endfor %}
+      {% for t in [1, 3.5, 6] %}
+        <text x="{{ x0 + 15 + (t - 1) / 5 * 180 }}" y="186" font-size="11" text-anchor="middle">{{ num(t) }}</text>
+      {% endfor %}
+      <text x="{{ x0 + panel / 2 }}" y="206" font-size="12" text-anchor="middle" class="d-muted">σ = {{ f2(sqrt(var / n)) }}</text>
+    {% endfor %}
+  </svg>
+</div>
+<p class="ml-caption">
+  Exact distributions, computed by convolving the die's PMF with itself. Bars are scaled to
+  each panel's tallest; the narrowing is the σ/√n law.
+</p>
+
+<h3 id="minibatches">Why minibatch gradients are unbiased but noisy</h3>
+
+<p>
+  With N training examples and per-example gradients g₁, …, g<sub>N</sub>, the full
+  gradient is their mean ḡ. A minibatch of b examples drawn uniformly at random gives
+  ĝ = (1/b) Σ<sub>i ∈ batch</sub> gᵢ. Every example is equally likely to be in the batch,
+  so by linearity E[ĝ] = ḡ: <strong>unbiased</strong>. Its variance, sampling without
+  replacement, is
+</p>
+<p class="ml-formula">Var[ĝ] = (σ<sub>g</sub>² / b) · (N − b) / (N − 1)</p>
+<p>
+  where σ<sub>g</sub>² is the variance of the per-example gradients. Doubling the batch
+  halves the variance, so it halves the noise in each step's direction, at twice the
+  compute. The (N − b)/(N − 1) factor only matters when the batch is a large fraction of
+  the data, and makes the variance exactly 0 at b = N.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Term</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Expectation E[X]</td>
+        <td>Σ x p(x)</td>
+        <td>The probability-weighted average; linear in X.</td>
+        <td><a href="{{ src('torch/distributions/normal.py', 39, 41) }}"><code>Normal.mean</code></a></td>
+      </tr>
+      <tr>
+        <td>Variance Var[X]</td>
+        <td>E[(X − μ)²]</td>
+        <td>Average squared deviation; scales as a².</td>
+        <td><a href="{{ src('torch/distributions/normal.py', 51, 53) }}"><code>Normal.variance</code></a></td>
+      </tr>
+      <tr>
+        <td>Standard deviation σ</td>
+        <td>√Var[X]</td>
+        <td>Typical deviation, in the data's units.</td>
+        <td><a href="{{ src('torch/distributions/normal.py', 47, 49) }}"><code>Normal.stddev</code></a></td>
+      </tr>
+      <tr>
+        <td>Covariance</td>
+        <td>E[(X − μ<sub>X</sub>)(Y − μ<sub>Y</sub>)]</td>
+        <td>Linear co-movement; 0 for independent variables.</td>
+        <td>—</td>
+      </tr>
+      <tr>
+        <td>Standard error</td>
+        <td>σ / √n</td>
+        <td>Typical error of a mean of n independent samples.</td>
+        <td>—</td>
+      </tr>
+      <tr>
+        <td><code>torch.manual_seed</code></td>
+        <td><code>seed</code>: int</td>
+        <td>Seed every device's generator so samples repeat run to run.</td>
+        <td><a href="{{ src('torch/random.py', 49, 59) }}"><code>random.manual_seed</code></a></td>
+      </tr>
+      <tr>
+        <td><code>get_rng_state</code> / <code>set_rng_state</code></td>
+        <td><code>ByteTensor</code></td>
+        <td>Save and restore the CPU generator, e.g. in a checkpoint.</td>
+        <td><a href="{{ src('torch/random.py', 27, 46) }}"><code>random.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>torch.random.fork_rng</code></td>
+        <td>context manager</td>
+        <td>Draw samples inside a block without disturbing the outer stream.</td>
+        <td><a href="{{ src('torch/random.py', 156, 239) }}"><code>random.fork_rng</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>A fair die.</strong> E[X] = (1 + 2 + 3 + 4 + 5 + 6)/6 = {{ num(mu) }}.
+    E[X²] = (1 + 4 + 9 + 16 + 25 + 36)/6 = 91/6, so Var[X] = 91/6 − {{ num(mu) }}² = 35/12 ≈
+    {{ f3(var) }} and σ ≈ {{ f3(sqrt(var)) }}. For Y = 2X + 3, E[Y] = {{ num(2 * mu + 3) }} and
+    Var[Y] = 4 · 35/12 ≈ {{ f3(4 * var) }}; the +3 didn't change the spread.
+  </p>
+  <p>Rolling it {{ big(die.checkpoints[-1]) }} times with a fixed seed:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>n</th><th>Running mean</th><th>Error</th><th>σ/√n</th></tr></thead>
+      <tbody>
+        {% for row in table %}
+          <tr><td>{{ big(row.n) }}</td><td>{{ f3(row.mean) }}</td><td>{{ "%+.3f"|format(row.error) }}</td><td>{{ f3(row.standard_error) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Each error is about the size the standard error predicts. Every tenfold increase in n
+    shrinks the standard error by √10 ≈ 3.16.
+  </p>
+  <p>
+    <strong>Every minibatch of a tiny dataset.</strong> Fit y ≈ w·x by squared error at
+    w = {{ num(minibatch_example.w) }} on the points x = {{ minibatch_example.x|join(", ") }},
+    y = {{ minibatch_example.y|join(", ") }}. The per-example gradients
+    2x(wx − y) are {{ mb.per_example|map("int")|join(", ") }}, and the full gradient is their
+    mean, {{ num(mb.full) }}. Now enumerate every possible minibatch:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Batch size b</th><th>Batches</th><th>Mean of ĝ</th><th>Var[ĝ]</th><th>Range of ĝ</th></tr></thead>
+      <tbody>
+        {% for size in mb.sizes %}
+          <tr>
+            <td>{{ size.batch_size }}</td>
+            <td>{{ size.count }}</td>
+            <td>{{ num(size.mean) }}</td>
+            <td>{{ f2(size.variance) }}</td>
+            <td>{{ num(size.lowest) }} to {{ num(size.highest) }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Every row's mean is exactly {{ num(mb.full) }}: unbiased at every batch size. The
+    variance falls from {{ f2(mb.sizes[0].variance) }} at b = 1 to
+    {{ f2(mb.sizes[1].variance) }} at b = 2 (that's {{ f2(mb.sizes[0].variance) }}/2 × 4/5) and
+    {{ f2(mb.sizes[2].variance) }} at b = 3, reaching 0 when the batch is the whole dataset.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  {% macro gx(g) -%}{{ 600 + 6 * g }}{%- endmacro %}
+  <svg viewBox="0 0 680 220" role="img" aria-labelledby="ev-mb-title ev-mb-desc">
+    <title id="ev-mb-title">Minibatch gradients scatter around the full gradient</title>
+    <desc id="ev-mb-desc">
+      For batch sizes {{ minibatch_example.batch_sizes|join(", ") }}, every possible minibatch's
+      gradient is drawn as a dot on a horizontal axis from −90 to 0. A vertical line marks
+      the full gradient, {{ num(mb.full) }}. At batch size 1 the dots span
+      {{ num(mb.sizes[0].lowest) }} to {{ num(mb.sizes[0].highest) }}; they tighten as the batch
+      grows, and at batch size {{ mb.sizes[-1].batch_size }} there is one dot exactly on the line.
+    </desc>
+    <line x1="{{ gx(mb.full) }}" y1="20" x2="{{ gx(mb.full) }}" y2="180" stroke="var(--jj-green)" stroke-width="2"></line>
+    <text x="{{ gx(mb.full) }}" y="14" font-size="12" text-anchor="middle" style="fill: var(--jj-green)">full gradient {{ num(mb.full) }}</text>
+    {% for size in mb.sizes %}
+      {% set y = 45 + 38 * loop.index0 %}
+      <text x="20" y="{{ y + 4 }}" font-size="12">b = {{ size.batch_size }}</text>
+      <line x1="{{ gx(-90) }}" y1="{{ y }}" x2="{{ gx(0) }}" y2="{{ y }}" class="d-line d-muted"></line>
+      {% for g in size.grads %}
+        <circle cx="{{ gx(g) }}" cy="{{ y }}" r="4" style="fill: var(--jj-amber); opacity: 0.6"></circle>
+      {% endfor %}
+    {% endfor %}
+    <line x1="{{ gx(-90) }}" y1="190" x2="{{ gx(0) }}" y2="190" class="d-line"></line>
+    {% for t in [-90, -60, -30, 0] %}
+      <text x="{{ gx(t) }}" y="206" font-size="11" text-anchor="middle">{{ t }}</text>
+    {% endfor %}
+  </svg>
+</div>
+<p class="ml-caption">
+  Each dot is one minibatch's gradient. They balance on the full gradient at every batch
+  size, and bigger batches pull them in.
+</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>Estimating an expectation by sampling in PyTorch, reproducibly:</p>
+
+<pre><code>import torch
+
+torch.manual_seed(0)                         # same draws every run
+rolls = torch.randint(1, 7, (10_000,)).float()
+rolls.mean()                                 # close to 3.5
+rolls.var(correction=0)                      # close to 35/12 ≈ 2.917
+rolls.std() / rolls.numel() ** 0.5           # standard error ≈ 0.017
+
+with torch.random.fork_rng():                # sample without moving the main stream
+    probe = torch.randn(3)
+
+z = torch.distributions.Normal(2.0, 0.5)
+z.mean, z.variance                           # (tensor(2.), tensor(0.2500))
+z.sample((100_000,)).mean()                  # close to 2.0</code></pre>
+
+<p>
+  <code>var</code> divides by n − 1 by default (Bessel's correction), which makes the
+  sample variance an unbiased estimate of the population variance; pass
+  <code>correction=0</code> for the plain average of squared deviations used on this page.
+</p>
+
+<p>Checking minibatch unbiasedness by brute force:</p>
+
+<pre><code>from itertools import combinations
+
+x = [1, 2, 3, 4, 5, 6]
+y = [2, 3, 7, 8, 9, 13]
+w = 1.0
+g = [2 * xi * (w * xi - yi) for xi, yi in zip(x, y)]   # per-example gradients
+full = sum(g) / len(g)                                  # -31.0
+
+for b in (1, 2, 3, 6):
+    batches = [sum(c) / b for c in combinations(g, b)]
+    mean = sum(batches) / len(batches)
+    var = sum((v - mean) ** 2 for v in batches) / len(batches)
+    print(b, mean, round(var, 2))   # mean is -31.0 every time; var 751.67, 300.67, 150.33, 0.0</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Bigger batches: less noise, worse returns.</strong> Noise falls as 1/√b, so
+    going from 256 to 1,024 halves it for four times the compute per step. Past a
+    "critical batch size", extra examples per step barely speed up training.
+  </li>
+  <li>
+    <strong>Noise is not all bad.</strong> Small-batch gradient noise helps escape sharp
+    minima and acts as a regularizer. Large-batch training usually needs a larger learning
+    rate and warmup to match.
+  </li>
+  <li>
+    <strong>Unbiased needs truly random batches.</strong> Batches drawn from sorted or
+    clustered data (all of one class, one user, one day) give biased gradient estimates.
+    Shuffle every epoch.
+  </li>
+  <li>
+    <strong>Seeds give reproducibility, not certainty.</strong> A result from one seed is
+    one sample. Report the mean and spread over several seeds; with only a few runs, the
+    standard error is wide.
+  </li>
+  <li>
+    <strong>Heavy tails break the √n intuition.</strong> If the variance is infinite or
+    enormous (rare huge losses or gradients), averages converge slowly and erratically.
+    Gradient clipping is partly a fix for that.
+  </li>
+</ul>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="ml-quiz">
+  <summary>X has variance 4. What is the variance of −3X + 10?</summary>
+  <p>(−3)² · 4 = 36. The constant doesn't matter and the sign disappears when squared.</p>
+</details>
+<details class="ml-quiz">
+  <summary>An evaluation set of 400 examples gives 80% accuracy. Roughly what is the standard error?</summary>
+  <p>Each example is a Bernoulli(0.8) with variance 0.8 × 0.2 = 0.16, σ = 0.4, so the standard error is 0.4/√400 = 0.02, two percentage points.</p>
+</details>
+<details class="ml-quiz">
+  <summary>You go from batch size 32 to 128. By what factor does the gradient noise (standard deviation) shrink?</summary>
+  <p>√(128/32) = 2, ignoring the finite-population factor.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Is the mean of a minibatch's per-example losses unbiased if you sample examples with weights proportional to their length?</summary>
+  <p>No: long examples are over-represented, so the expectation is a length-weighted loss. Divide each by its sampling weight (importance weighting) to remove the bias.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Blitzstein and Hwang. <em>Introduction to Probability</em>, 2nd ed., chapters 4, 7 and 10. CRC Press, 2019.</li>
+  <li>Goodfellow, Bengio and Courville. <em>Deep Learning</em>, sections 3.8 and 5.9 (stochastic gradient descent). MIT Press, 2016.</li>
+  <li>Bottou, Curtis and Nocedal. <em>Optimization Methods for Large-Scale Machine Learning.</em> SIAM Review, 2018. <a href="https://arxiv.org/abs/1606.04838">arXiv:1606.04838</a></li>
+  <li>McCandlish et al. <em>An Empirical Model of Large-Batch Training.</em> 2018. <a href="https://arxiv.org/abs/1812.06162">arXiv:1812.06162</a> (the critical batch size).</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/random.py', 27, 239) }}"><code>torch/random.py</code></a> and <a href="{{ src('torch/distributions/normal.py', 39, 53) }}"><code>Normal</code>'s moments</a>.</li>
+</ul>
