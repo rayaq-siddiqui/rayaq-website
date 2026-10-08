@@ -181,3 +181,14 @@ def test_upcoming_model_slugs_are_registered_pages():
             if model.get("url"):
                 assert model["url"].startswith("https://arxiv.org/abs/"), model["name"]
 
+def test_index_lists_every_upcoming_model():
+    client = app_module.app.test_client()
+
+    body = client.get("/ml-models").get_data(as_text=True)
+
+    assert 'id="upcoming"' in body
+    for tier in ml_models_docs.UPCOMING_MODELS:
+        assert str(escape(tier["tier"])) in body
+        for model in tier["models"]:
+            assert str(escape(model["name"])) in body
+
