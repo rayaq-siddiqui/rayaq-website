@@ -1,0 +1,495 @@
+{% set cube = (2, 3, 4) %}
+{% set cube_strides = contiguous_strides(cube) %}
+{% set swapped = transpose_layout(cube, cube_strides, 0, 1) %}
+{% set grid = (2, 3) %}
+{% set grid_strides = contiguous_strides(grid) %}
+{% set grid_t = transpose_layout(grid, grid_strides, 0, 1) %}
+{% set classic = broadcast_steps((8, 1, 6, 1), (7, 1, 5)) %}
+{% set outer = broadcast_steps((3, 1), (1, 4)) %}
+{% set column = [0, 10, 20] %}
+{% set row = [0, 1, 2, 3] %}
+{% macro dims(shape) -%}[{{ shape|join(", ") }}]{%- endmacro %}
+<header class="jj-header">
+  <h1>Tensors, shapes and broadcasting</h1>
+  <p class="tagline">
+    Every number a model touches lives in a tensor: a grid of numbers with a <em>shape</em>.
+    Most bugs in model code are shape bugs, and most of the speed comes from moving shapes
+    around without copying data. This page covers what a tensor is, how PyTorch lays one out
+    in memory, which reshapes are free, and the broadcasting rules that let a
+    <code>[512]</code> bias add onto a <code>[32, 10, 512]</code> batch. Every rule is linked
+    to its definition in PyTorch {{ upstream.tag }}.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A model's input is rarely one number. A grayscale image is a grid of pixels, a sentence is
+  a list of token vectors, and a training step processes 32 of either at once. We need one
+  data structure that can hold all of these, tell us how it is organized, and let
+  arithmetic act on whole grids at once instead of looping over elements in Python.
+</p>
+<p>
+  That structure is the tensor. Three questions come up the moment you use one: <em>what
+  shape is it</em> (so layers fit together), <em>where do its numbers sit in memory</em> (so
+  reshapes are cheap), and <em>what happens when two shapes differ</em> (broadcasting).
+  Get any of them wrong and the code either crashes or, worse, runs and computes the wrong
+  thing.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Think of a tensor as nested lists with every level the same length. The number of levels
+  is the <strong>rank</strong> (also called <code>ndim</code>), and the list of lengths is the
+  <strong>shape</strong>. A scalar has rank 0 and shape <code>[]</code>; a vector of 4 numbers
+  has shape <code>[4]</code>; a 3×4 matrix has shape <code>[3, 4]</code>; a stack of two such
+  matrices has shape <code>[2, 3, 4]</code>.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 230" role="img" aria-labelledby="ts-rank-title ts-rank-desc">
+    <title id="ts-rank-title">From a scalar to a rank-3 tensor</title>
+    <desc id="ts-rank-desc">
+      Four panels from left to right. A scalar is one cell, shape empty. A vector is a row of
+      four cells, shape 4. A matrix is three rows of four cells, shape 3 by 4. A rank-3 tensor
+      is two stacked 3 by 4 matrices, shape 2 by 3 by 4, with the first axis drawn as depth.
+      Each panel is labeled with its rank.
+    </desc>
+    <rect x="40" y="90" width="28" height="28" rx="3" class="d-box ml-tensor"></rect>
+    <text x="54" y="160" text-anchor="middle" font-size="13">scalar</text>
+    <text x="54" y="178" text-anchor="middle" font-size="12" class="d-muted">rank 0 · []</text>
+
+    {% for i in range(4) %}<rect x="{{ 120 + i * 28 }}" y="90" width="28" height="28" class="d-box ml-tensor"></rect>{% endfor %}
+    <text x="176" y="160" text-anchor="middle" font-size="13">vector</text>
+    <text x="176" y="178" text-anchor="middle" font-size="12" class="d-muted">rank 1 · [4]</text>
+
+    {% for r in range(3) %}{% for c in range(4) %}<rect x="{{ 280 + c * 28 }}" y="{{ 62 + r * 28 }}" width="28" height="28" class="d-box ml-tensor"></rect>{% endfor %}{% endfor %}
+    <text x="336" y="160" text-anchor="middle" font-size="13">matrix</text>
+    <text x="336" y="178" text-anchor="middle" font-size="12" class="d-muted">rank 2 · [3, 4]</text>
+
+    {% for layer in range(2)|reverse %}{% for r in range(3) %}{% for c in range(4) %}<rect x="{{ 470 + layer * 22 + c * 28 }}" y="{{ 62 - layer * 22 + r * 28 }}" width="28" height="28" class="d-box ml-tensor"></rect>{% endfor %}{% endfor %}{% endfor %}
+    <text x="537" y="160" text-anchor="middle" font-size="13">rank-3 tensor</text>
+    <text x="537" y="178" text-anchor="middle" font-size="12" class="d-muted">rank 3 · [2, 3, 4]</text>
+    <text x="340" y="215" text-anchor="middle" font-size="12" class="d-muted">Each new axis is written on the left: the last number in a shape is the innermost list.</text>
+  </svg>
+</div>
+
+<p>
+  Two ideas carry the rest of the page:
+</p>
+<ul>
+  <li>
+    <strong>The numbers are one flat row in memory.</strong> The shape is just a way of
+    reading that row. Changing how you read it (a transpose, a reshape, a slice) is usually
+    free; only changing the row itself costs a copy.
+  </li>
+  <li>
+    <strong>Size-1 axes stretch.</strong> When two tensors meet in arithmetic, any axis of
+    length 1 is treated as if it were repeated to match the other side. That is
+    broadcasting, and it is how one bias vector is added to every row of a batch.
+  </li>
+</ul>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="shape-dtype-device">Shape, dtype and device</h3>
+
+<p>
+  Every tensor carries three facts besides its numbers. Its <code>shape</code> (a
+  <code>torch.Size</code>, a tuple subclass) fixes the layout; <code>len(t)</code> is just
+  <code>t.shape[0]</code> and fails on a rank-0 tensor
+  (<a href="{{ src('torch/_tensor.py', 1189, 1203) }}"><code>Tensor.__len__</code></a>). Its
+  <code>dtype</code> fixes how each number is stored: <code>float32</code> by default,
+  <code>int64</code> for indices, <code>bfloat16</code> or <code>float16</code> for fast
+  training, <code>bool</code> for masks. Its <code>device</code> says where the memory lives,
+  <code>cpu</code> or a GPU such as <code>cuda:0</code>. Arithmetic between tensors on
+  different devices is an error, never a silent copy.
+</p>
+
+<h3 id="strides-and-views">Strides, views and copies</h3>
+
+<p>
+  A tensor is a pointer into a flat <em>storage</em> plus a shape and a <strong>stride</strong>
+  per axis: how many elements to skip in storage to move one step along that axis. In the
+  default <em>contiguous</em> (row-major) layout the last axis has stride 1 and each earlier
+  stride is the product of the sizes after it. For shape <code>{{ dims(cube) }}</code> the
+  strides are <code>{{ dims(cube_strides) }}</code>, so element <code>[1, 2, 3]</code> sits at
+  offset 1·{{ cube_strides[0] }} + 2·{{ cube_strides[1] }} + 3·{{ cube_strides[2] }} =
+  {{ element_offset((1, 2, 3), cube_strides) }}
+  (<a href="{{ src('torch/_tensor_docs.py', 4963, 4989) }}"><code>Tensor.stride</code></a>).
+</p>
+
+<p class="ml-formula">offset(i<sub>0</sub>, …, i<sub>n−1</sub>) = Σ<sub>k</sub> i<sub>k</sub> · stride<sub>k</sub></p>
+
+<p>
+  A <strong>view</strong> is a new tensor that shares the storage and only changes shape,
+  stride or starting offset. Transposing <code>{{ dims(cube) }}</code> on axes 0 and 1 gives
+  shape <code>{{ dims(swapped[0]) }}</code> with strides <code>{{ dims(swapped[1]) }}</code>:
+  the strides are swapped, no number moves. The result is no longer contiguous, because
+  walking its last axes no longer walks storage in order
+  (<a href="{{ src('torch/_tensor_docs.py', 2702, 2714) }}"><code>is_contiguous</code></a>).
+  Writing through a view writes the original.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 300" role="img" aria-labelledby="ts-stride-title ts-stride-desc">
+    <title id="ts-stride-title">One storage, two views: a 2 by 3 matrix and its transpose</title>
+    <desc id="ts-stride-desc">
+      Top: the flat storage, six cells holding 0 to 5. Bottom left: the original view, shape
+      2 by 3 with strides 3 and 1, reading the storage row by row, so row 0 is 0 1 2 and row 1
+      is 3 4 5. Bottom right: the transposed view, shape 3 by 2 with strides 1 and 3, reading
+      the same cells so row 0 is 0 3, row 1 is 1 4 and row 2 is 2 5. No values are copied;
+      only the strides differ.
+    </desc>
+    <text x="40" y="30" font-size="12" class="d-muted ml-label">STORAGE (one flat row)</text>
+    {% for i in range(6) %}
+      <rect x="{{ 190 + i * 50 }}" y="44" width="50" height="34" class="d-box ml-tensor"></rect>
+      <text x="{{ 215 + i * 50 }}" y="62" text-anchor="middle" dominant-baseline="middle" font-size="14">{{ i }}</text>
+      <text x="{{ 215 + i * 50 }}" y="94" text-anchor="middle" font-size="10" class="d-muted">offset {{ i }}</text>
+    {% endfor %}
+
+    <text x="40" y="140" font-size="12" class="d-muted ml-label">VIEW t: shape {{ dims(grid) }}, stride {{ dims(grid_strides) }}</text>
+    {% for r in range(grid[0]) %}{% for c in range(grid[1]) %}
+      <rect x="{{ 70 + c * 50 }}" y="{{ 156 + r * 40 }}" width="50" height="40" class="d-box"></rect>
+      <text x="{{ 95 + c * 50 }}" y="{{ 176 + r * 40 }}" text-anchor="middle" dominant-baseline="middle" font-size="14">{{ element_offset((r, c), grid_strides) }}</text>
+    {% endfor %}{% endfor %}
+    <text x="145" y="260" text-anchor="middle" font-size="11" class="d-muted">step right: +{{ grid_strides[1] }} · step down: +{{ grid_strides[0] }}</text>
+
+    <text x="380" y="140" font-size="12" class="d-muted ml-label">VIEW t.T: shape {{ dims(grid_t[0]) }}, stride {{ dims(grid_t[1]) }}</text>
+    {% for r in range(grid_t[0][0]) %}{% for c in range(grid_t[0][1]) %}
+      <rect x="{{ 470 + c * 50 }}" y="{{ 156 + r * 34 }}" width="50" height="34" class="d-box ml-op"></rect>
+      <text x="{{ 495 + c * 50 }}" y="{{ 173 + r * 34 }}" text-anchor="middle" dominant-baseline="middle" font-size="14">{{ element_offset((r, c), grid_t[1]) }}</text>
+    {% endfor %}{% endfor %}
+    <text x="520" y="280" text-anchor="middle" font-size="11" class="d-muted">step right: +{{ grid_t[1][1] }} · step down: +{{ grid_t[1][0] }} · not contiguous</text>
+  </svg>
+</div>
+<p class="ml-caption">The cell values are storage offsets computed with the strides shown, so the numbers in each grid are exactly where that view reads from.</p>
+
+<h3 id="reshape-transpose-permute">Reshape, view, transpose and permute</h3>
+
+<p>
+  These operations change the shape and differ in whether they can copy:
+</p>
+<ul>
+  <li>
+    <code>view(shape)</code> never copies. It works only when the new shape can be expressed
+    with strides over the existing storage, roughly: when the axes you merge are already
+    adjacent and in order. Otherwise it raises
+    (<a href="{{ src('torch/_tensor_docs.py', 6041, 6180) }}"><code>Tensor.view</code></a>).
+  </li>
+  <li>
+    <code>reshape(shape)</code> returns a view when it can and a copy when it must, and the
+    docs tell you not to rely on which
+    (<a href="{{ src('torch/_torch_docs.py', 9833, 9863) }}"><code>torch.reshape</code></a>). One
+    axis may be <code>-1</code>, inferred from the element count.
+  </li>
+  <li>
+    <code>transpose(a, b)</code> swaps two axes and <code>permute(*dims)</code> reorders all
+    of them. Both are always views
+    (<a href="{{ src('torch/_torch_docs.py', 11942, 11990) }}"><code>transpose</code></a>,
+    <a href="{{ src('torch/_torch_docs.py', 8953, 8971) }}"><code>permute</code></a>).
+  </li>
+  <li>
+    <code>unsqueeze(d)</code> inserts a size-1 axis and <code>squeeze(d)</code> removes one;
+    they are how you line up axes before broadcasting
+    (<a href="{{ src('torch/_torch_docs.py', 12475, 12504) }}"><code>unsqueeze</code></a>,
+    <a href="{{ src('torch/_torch_docs.py', 11063, 11111) }}"><code>squeeze</code></a>).
+  </li>
+  <li>
+    <code>contiguous()</code> copies into row-major order if the tensor isn't already, and
+    returns the tensor itself if it is
+    (<a href="{{ src('torch/_tensor_docs.py', 1131, 1144) }}"><code>contiguous</code></a>).
+    <code>x.transpose(0, 1).contiguous().view(-1)</code> is the classic fix for a
+    <code>view</code> error.
+  </li>
+</ul>
+
+<h3 id="broadcasting">Broadcasting</h3>
+
+<p>
+  When an elementwise operation (<code>+</code>, <code>*</code>, comparisons) meets two
+  shapes, PyTorch follows NumPy's rules:
+</p>
+<ol>
+  <li>Line the shapes up on the <strong>right</strong>, padding the shorter one with 1s on the left.</li>
+  <li>For each axis, the sizes must be equal or one of them must be 1.</li>
+  <li>The result takes the larger size on each axis; a size-1 side is repeated along it.</li>
+</ol>
+<p>
+  The repeat is free: <code>expand</code> makes a view with stride 0 on the stretched axis,
+  so every step along it reads the same element
+  (<a href="{{ src('torch/_tensor_docs.py', 6198, 6249) }}"><code>Tensor.expand</code></a>,
+  <a href="{{ src('torch/_torch_docs.py', 1896, 1916) }}"><code>broadcast_to</code></a>).
+  <a href="{{ src('torch/functional.py', 79, 117) }}"><code>torch.broadcast_shapes</code></a>
+  computes the result shape without making any tensor, which is handy for checking a shape
+  before running a model.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 230" role="img" aria-labelledby="ts-bc-title ts-bc-desc">
+    <title id="ts-bc-title">Broadcasting a column of shape 3 by 1 against a row of shape 1 by 4</title>
+    <desc id="ts-bc-desc">
+      Left: a column a with values 0, 10, 20, shape 3 by 1. Middle: a row b with values 0, 1,
+      2, 3, shape 1 by 4. Both are stretched along their size-1 axis, shown as dashed copies.
+      Right: a plus b, shape 3 by 4, where each cell is the column value plus the row value,
+      from 0 in the top left to 23 in the bottom right.
+    </desc>
+    <text x="70" y="24" text-anchor="middle" font-size="12" class="d-muted ml-label">a {{ dims((3, 1)) }}</text>
+    {% for r in range(3) %}
+      <rect x="45" y="{{ 40 + r * 40 }}" width="50" height="40" class="d-box ml-tensor"></rect>
+      <text x="70" y="{{ 60 + r * 40 }}" text-anchor="middle" dominant-baseline="middle" font-size="14">{{ column[r] }}</text>
+      {% for c in range(1, 4) %}<rect x="{{ 45 + c * 50 }}" y="{{ 40 + r * 40 }}" width="50" height="40" class="d-box ml-dashed" fill="none"></rect><text x="{{ 70 + c * 50 }}" y="{{ 60 + r * 40 }}" text-anchor="middle" dominant-baseline="middle" font-size="12" class="d-muted">{{ column[r] }}</text>{% endfor %}
+    {% endfor %}
+
+    <text x="270" y="110" text-anchor="middle" font-size="22">+</text>
+
+    <text x="330" y="24" font-size="12" class="d-muted ml-label">b {{ dims((1, 4)) }}</text>
+    {% for c in range(4) %}
+      <rect x="{{ 300 + c * 40 }}" y="40" width="40" height="40" class="d-box ml-tensor"></rect>
+      <text x="{{ 320 + c * 40 }}" y="60" text-anchor="middle" dominant-baseline="middle" font-size="14">{{ row[c] }}</text>
+      {% for r in range(1, 3) %}<rect x="{{ 300 + c * 40 }}" y="{{ 40 + r * 40 }}" width="40" height="40" class="d-box ml-dashed" fill="none"></rect><text x="{{ 320 + c * 40 }}" y="{{ 60 + r * 40 }}" text-anchor="middle" dominant-baseline="middle" font-size="12" class="d-muted">{{ row[c] }}</text>{% endfor %}
+    {% endfor %}
+
+    <text x="483" y="110" text-anchor="middle" font-size="22">=</text>
+
+    <text x="590" y="24" text-anchor="middle" font-size="12" class="d-muted ml-label">a + b {{ dims(outer.shape) }}</text>
+    {% for r in range(3) %}{% for c in range(4) %}
+      <rect x="{{ 510 + c * 40 }}" y="{{ 40 + r * 40 }}" width="40" height="40" class="d-box ml-op"></rect>
+      <text x="{{ 530 + c * 40 }}" y="{{ 60 + r * 40 }}" text-anchor="middle" dominant-baseline="middle" font-size="14">{{ column[r] + row[c] }}</text>
+    {% endfor %}{% endfor %}
+    <text x="340" y="200" text-anchor="middle" font-size="12" class="d-muted">Dashed cells are not stored: expand gives the size-1 axis a stride of 0.</text>
+  </svg>
+</div>
+
+<h3 id="batch-dimension">The batch dimension</h3>
+
+<p>
+  By convention the first axis is the batch: a layer written for one example of shape
+  <code>[features]</code> runs on <code>[batch, features]</code> unchanged, because its
+  weights broadcast across the leading axis. Sequence models add a time axis,
+  <code>[batch, seq, d_model]</code>, and images use <code>[batch, channels, height,
+  width]</code> (NCHW). Watch for exceptions: <code>nn.Transformer</code> and the RNN layers
+  default to <code>[seq, batch, …]</code> unless you pass <code>batch_first=True</code>.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Term</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Shape</td>
+        <td><code>torch.Size</code>, e.g. <code>{{ dims(cube) }}</code></td>
+        <td>Length of each axis, outermost first. <code>len(t)</code> is <code>t.shape[0]</code>.</td>
+        <td><a href="{{ src('torch/_tensor.py', 1189, 1203) }}"><code>__len__</code></a></td>
+      </tr>
+      <tr>
+        <td>Stride</td>
+        <td>one int per axis; contiguous <code>{{ dims(cube) }}</code> → <code>{{ dims(cube_strides) }}</code></td>
+        <td>Elements to skip in storage per step along each axis.</td>
+        <td><a href="{{ src('torch/_tensor_docs.py', 4963, 4989) }}"><code>stride</code></a></td>
+      </tr>
+      <tr>
+        <td>View</td>
+        <td>same storage, new shape/stride</td>
+        <td>Never copies; fails if the strides can't express the new shape.</td>
+        <td><a href="{{ src('torch/_tensor_docs.py', 6041, 6180) }}"><code>view</code></a></td>
+      </tr>
+      <tr>
+        <td>Reshape</td>
+        <td>any shape with the same element count</td>
+        <td>A view when possible, otherwise a copy.</td>
+        <td><a href="{{ src('torch/_torch_docs.py', 9833, 9863) }}"><code>reshape</code></a></td>
+      </tr>
+      <tr>
+        <td>Transpose / permute</td>
+        <td>reorders axes and strides</td>
+        <td>Always a view; usually leaves the tensor non-contiguous.</td>
+        <td><a href="{{ src('torch/_torch_docs.py', 11942, 11990) }}"><code>transpose</code></a>, <a href="{{ src('torch/_torch_docs.py', 8953, 8971) }}"><code>permute</code></a></td>
+      </tr>
+      <tr>
+        <td>Expand</td>
+        <td>size-1 axes → any size, stride 0</td>
+        <td>The view broadcasting uses; no memory is allocated.</td>
+        <td><a href="{{ src('torch/_tensor_docs.py', 6198, 6249) }}"><code>expand</code></a></td>
+      </tr>
+      <tr>
+        <td>Broadcast shape</td>
+        <td>shapes in, <code>torch.Size</code> out</td>
+        <td>Right-align, pad with 1s, match or stretch each axis.</td>
+        <td><a href="{{ src('torch/functional.py', 79, 117) }}"><code>broadcast_shapes</code></a></td>
+      </tr>
+      <tr>
+        <td>Strided view</td>
+        <td>explicit size, stride, offset</td>
+        <td>The low-level constructor every view reduces to. Easy to misuse.</td>
+        <td><a href="{{ src('torch/_torch_docs.py', 1019, 1060) }}"><code>as_strided</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>Broadcasting, axis by axis.</strong> Take shapes <code>[8, 1, 6, 1]</code> and
+    <code>[7, 1, 5]</code>. Pad the shorter on the left, then compare each column:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Axis</th><th>Left</th><th>Right (padded)</th><th>Result</th><th>Why</th></tr></thead>
+      <tbody>
+        {% for step in classic.steps %}
+        <tr>
+          <td>{{ loop.index0 }}</td>
+          <td>{{ classic.padded[0][loop.index0] }}</td>
+          <td>{{ classic.padded[1][loop.index0] }}</td>
+          <td><strong>{{ step.result }}</strong></td>
+          <td>{% if step.sizes[0] == step.sizes[1] %}equal{% elif loop.index0 == 0 %}padded 1 stretches{% else %}a 1 stretches{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The result shape is <code>{{ dims(classic.shape) }}</code>. Shapes <code>[3]</code> and
+    <code>[4]</code> fail: neither is 1, so there is no way to stretch one onto the other.
+  </p>
+
+  <p>
+    <strong>Strides through a transpose.</strong> A contiguous <code>{{ dims(cube) }}</code>
+    tensor has strides <code>{{ dims(cube_strides) }}</code>; element <code>[1, 2, 3]</code> is
+    at offset {{ element_offset((1, 2, 3), cube_strides) }}. After <code>transpose(0, 1)</code>
+    the shape is <code>{{ dims(swapped[0]) }}</code> and the strides
+    <code>{{ dims(swapped[1]) }}</code>. The same number is now at index <code>[2, 1, 3]</code>:
+    2·{{ swapped[1][0] }} + 1·{{ swapped[1][1] }} + 3·{{ swapped[1][2] }} =
+    {{ element_offset((2, 1, 3), swapped[1]) }}, the same offset. The contiguous strides for
+    <code>{{ dims(swapped[0]) }}</code> would be
+    <code>{{ dims(contiguous_strides(swapped[0])) }}</code>, so
+    <code>is_contiguous()</code> is {{ is_contiguous(swapped[0], swapped[1]) }} and
+    <code>.view(-1)</code> raises, while <code>.reshape(-1)</code> copies.
+  </p>
+
+  <p>
+    <strong>A bias over a batch.</strong> Activations <code>[32, 10, 512]</code> plus a bias
+    <code>[512]</code>: pad to <code>[1, 1, 512]</code>, stretch the two 1s, result
+    <code>{{ dims(broadcast_steps((32, 10, 512), (512,)).shape) }}</code>. One 512-vector is
+    added to all 320 positions without being copied 320 times.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  Everything above in a few lines of PyTorch. The comments show what each line prints.
+</p>
+
+<pre><code class="language-python">import torch
+
+x = torch.arange(24).reshape(2, 3, 4)
+x.shape, x.stride(), x.dtype, x.device   # (torch.Size([2, 3, 4]), {{ cube_strides }}, torch.int64, device(type='cpu'))
+
+y = x.transpose(0, 1)                    # a view: no copy
+y.shape, y.stride()                      # (torch.Size([3, 2, 4]), {{ swapped[1] }})
+y.is_contiguous()                        # False
+y.data_ptr() == x.data_ptr()             # True: same storage
+y[2, 1, 3] == x[1, 2, 3]                 # tensor(True)
+# y.view(-1)                             # RuntimeError: use .reshape(...) or .contiguous().view(...)
+flat = y.reshape(-1)                     # copies, because it must
+
+a = torch.tensor([[0], [10], [20]])      # [3, 1]
+b = torch.tensor([[0, 1, 2, 3]])         # [1, 4]
+(a + b).shape                            # torch.Size([3, 4])
+a.expand(3, 4).stride()                  # (1, 0): the stretched axis has stride 0
+torch.broadcast_shapes((8, 1, 6, 1), (7, 1, 5))   # torch.Size([8, 7, 6, 5])
+
+acts = torch.randn(32, 10, 512)
+bias = torch.zeros(512)
+(acts + bias).shape                      # torch.Size([32, 10, 512])
+acts.mean(dim=-1, keepdim=True).shape    # torch.Size([32, 10, 1]): ready to broadcast back</code></pre>
+
+<p>
+  And the stride arithmetic from scratch, the same helpers that computed this page's numbers:
+</p>
+
+<pre><code class="language-python">def contiguous_strides(shape):
+    strides, step = [], 1
+    for size in reversed(shape):
+        strides.append(step)
+        step *= size
+    return tuple(reversed(strides))
+
+def broadcast_shape(*shapes):
+    rank = max(map(len, shapes))
+    padded = [(1,) * (rank - len(s)) + tuple(s) for s in shapes]
+    out = []
+    for sizes in zip(*padded):
+        big = {n for n in sizes if n != 1}
+        if len(big) > 1:
+            raise ValueError(f"cannot broadcast sizes {sizes}")
+        out.append(big.pop() if big else 1)
+    return tuple(out)</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Views are free but alias.</strong> A view costs nothing, but an in-place write to
+    it (<code>y += 1</code>, <code>y[0] = 0</code>) changes the original. Autograd will raise
+    if that write destroys a value it saved for the backward pass.
+  </li>
+  <li>
+    <strong>Non-contiguous tensors can be slower.</strong> Kernels read memory fastest in
+    order. After a <code>permute</code>, an explicit <code>.contiguous()</code> pays one copy
+    to make later ops faster; it is worth it before a heavy op, wasteful before a cheap one.
+  </li>
+  <li>
+    <strong>Broadcasting hides shape bugs.</strong> <code>pred</code> of shape
+    <code>[32, 1]</code> minus <code>target</code> of shape <code>[32]</code> broadcasts to
+    <code>[32, 32]</code>, and <code>.mean()</code> of that is a valid-looking, wrong loss.
+    Assert shapes at module boundaries, or keep matching ranks.
+  </li>
+  <li>
+    <strong>Precision versus memory.</strong> <code>float32</code> is the safe default.
+    <code>bfloat16</code> halves memory and is faster on modern GPUs at the cost of
+    precision; <code>float64</code> is rarely worth its cost in deep learning.
+  </li>
+  <li>
+    <strong>Batch-first versus sequence-first.</strong> Batch-first matches how most code
+    and data loaders think; some fused kernels prefer other layouts. Pick one per project
+    and convert at the boundary.
+  </li>
+</ul>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="ml-quiz">
+  <summary>What shape is <code>[5, 1, 3]</code> + <code>[4, 1]</code>?</summary>
+  <p><code>{{ dims(broadcast_steps((5, 1, 3), (4, 1)).shape) }}</code>. Pad to <code>[1, 4, 1]</code>, then each axis takes the non-1 size.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does <code>x.T.view(-1)</code> fail on a 2×3 matrix while <code>x.view(-1)</code> works?</summary>
+  <p>The transpose has strides <code>{{ dims(grid_t[1]) }}</code>. Flattening it would need to read storage in the order 0, 3, 1, 4, 2, 5, which no single stride can express, so <code>view</code> refuses. <code>reshape</code> copies instead.</p>
+</details>
+<details class="ml-quiz">
+  <summary>How much memory does <code>torch.zeros(512).expand(32, 10, 512)</code> allocate?</summary>
+  <p>Only the original 512 floats. The expanded axes have stride 0, so the view reads the same 512 values for every batch and position.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why use <code>keepdim=True</code> when normalizing?</summary>
+  <p>It leaves a size-1 axis where the reduction was, so the statistic broadcasts back against the original tensor along the right axis. Without it, <code>[32, 10]</code> would right-align against <code>[32, 10, 512]</code> and fail, or worse, line up with the wrong axis.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/_tensor_docs.py', 6041, 6180) }}"><code>Tensor.view</code></a> documentation, including the exact stride condition for a view.</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/functional.py', 79, 117) }}"><code>torch.broadcast_shapes</code></a>.</li>
+  <li>Harris et al. <em>Array programming with NumPy.</em> Nature 585, 2020. <a href="https://doi.org/10.1038/s41586-020-2649-2">doi:10.1038/s41586-020-2649-2</a>. The strided-array model and broadcasting rules PyTorch follows.</li>
+  <li>van der Walt, Colbert and Varoquaux. <em>The NumPy Array: A Structure for Efficient Numerical Computation.</em> 2011. <a href="https://arxiv.org/abs/1102.1523">arXiv:1102.1523</a></li>
+</ul>

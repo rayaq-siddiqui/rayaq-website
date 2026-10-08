@@ -112,7 +112,7 @@ PAGES = [
             "pytorch:torch/_torch_docs.py",
             "pytorch:torch/functional.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "vectors-and-dot-products",
