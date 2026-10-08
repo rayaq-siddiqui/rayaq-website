@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (seventeenth run). Spec v2 widens the section from model architectures
+**Last updated:** 2026-10-08 (eighteenth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: `transformer` and queue items 1-14, the last being `optimizers`.
-The next run builds `embeddings`.
+format. Ready pages: `transformer` and queue items 1-15, the last being `embeddings`.
+The next run builds `attention`.
 
 ## Pins
 
@@ -186,6 +186,7 @@ The paths below are relative to `torch/nn/modules/` unless they give a fuller pa
 - `torch/autograd/gradcheck.py`: `gradcheck` 1999-2105 (`eps=1e-6`, `atol=1e-5`, `rtol=1e-3`), `_compute_numerical_gradient` 358-394. `clip_grad.py`: `clip_grad_norm_` 185-232. `module.py`: `zero_grad` 2957-2985. `torch/utils/checkpoint.py`: `checkpoint` 423-619.
 - `torch/optim/sgd.py` (optimizers): `SGD` 28-105, `_single_tensor_sgd` 322-380. `adam.py`: `Adam` 34-138, `_single_tensor_adam` 347-552 (decoupled decay 415-418, bias correction 528-546). `adamw.py`: `AdamW` 19-47. `rmsprop.py`: `_single_tensor_rmsprop` 265-341.
 - `torch/optim/optimizer.py`: `Optimizer` starts at 358; `state_dict` 700-791, `zero_grad` 1048-1110, `step` 1117-1124, `add_param_group` 1127-1180.
+- `torch/nn/modules/sparse.py` (embeddings): `Embedding` 14-264 (`__init__` 134-177, `reset_parameters` 179-181, `forward` 188-197, `from_pretrained` 213-264); `EmbeddingBag` starts at 267. `torch/nn/functional.py`: `embedding` 2509-2621.
 
 ### scikit-learn 1.9.1 (start lines; check the end before linking a range)
 
@@ -395,6 +396,13 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 | `ml-models: build the optimizers page` | Template fixes, `ready`, queue ✓ |
 | `docs: record the optimizers run` | This table and the verified `torch/optim` ranges above |
 
+## Eighteenth run (2026-10-08) — fifteenth page onward
+
+| Commit | What |
+|---|---|
+| `ml-models: add tested embedding helpers` | `embedding_lookup`, `one_hot_rows`, `embedding_gradient`, `skipgram_pairs`, `train_skipgram` (seed 0, pure Python), `nearest_words`, `tied_parameter_counts` |
+| `ml-models: build the embeddings page` | The page, `ready`, queue ✓ |
+
 ## Queue
 
 1. `tensors-and-shapes` ✓
@@ -411,8 +419,8 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 12. `neurons-and-layers` ✓
 13. `backpropagation` ✓
 14. `optimizers` ✓
-15. `embeddings` ← next
-16. `attention`
+15. `embeddings` ✓
+16. `attention` ← next
 17. `layernorm-and-residuals`
 18. `transformer` ✓ (v1 format; retrofit it to §6 here, keeping its interactive pieces)
 19. `training-loop`
