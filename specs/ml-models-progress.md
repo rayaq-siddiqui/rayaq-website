@@ -321,8 +321,8 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 5. `chain-rule` ✓
 6. `probability-and-distributions` ✓
 7. `expectation-and-variance` ✓
-8. `entropy-and-kl` ← next
-9. `loss-functions`
+8. `entropy-and-kl` ✓
+9. `loss-functions` ← next
 10. `linear-regression`
 11. `logistic-regression`
 12. `neurons-and-layers`

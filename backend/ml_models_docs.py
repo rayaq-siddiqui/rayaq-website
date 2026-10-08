@@ -234,7 +234,7 @@ PAGES = [
             "pytorch:torch/nn/modules/loss.py",
             "pytorch:torch/nn/functional.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "learning-paradigms",

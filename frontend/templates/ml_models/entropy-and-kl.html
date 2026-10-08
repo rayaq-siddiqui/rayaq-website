@@ -1,0 +1,456 @@
+{% set ex = entropy_example %}
+{% set h_p = entropy(ex.p) %}
+{% set h_q = entropy(ex.q) %}
+{% set h_pq = cross_entropy(ex.p, ex.q) %}
+{% set kl_pq = kl_divergence(ex.p, ex.q) %}
+{% set asym = asymmetry_example %}
+{% set kl_fwd = kl_divergence(asym.p, asym.q) %}
+{% set kl_bwd = kl_divergence(asym.q, asym.p) %}
+{% set cat = categorical_example %}
+{% set ce_cat = logits_cross_entropy(cat.logits, 0) %}
+{% set ce_bird = logits_cross_entropy(cat.logits, 2) %}
+{% set ppl = perplexity(perplexity_example) %}
+{% set mi = mutual_information(joint_example) %}
+{% macro f2(x) -%}{{ "%.2f"|format(x) }}{%- endmacro %}
+{% macro f3(x) -%}{{ "%.3f"|format(x) }}{%- endmacro %}
+{% macro num(x) -%}{{ "%g"|format(x) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Entropy, cross-entropy and KL divergence</h1>
+  <p class="tagline">
+    Information theory gives machine learning its most common loss. This page builds it up
+    from one idea, that a surprising outcome carries more information than an expected one,
+    to entropy, cross-entropy, KL divergence, perplexity and mutual information. It shows
+    why minimizing cross-entropy is the same as fitting a distribution, and why the
+    classification loss in every framework is cross-entropy over logits.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A classifier outputs a probability distribution over classes, and a language model
+  outputs one over the next token. To train them, you need a single number that says how
+  good a predicted distribution q is when the truth is p, and it has to behave well under
+  gradient descent. Accuracy is no use: it ignores confidence and has zero gradient almost
+  everywhere. Squared error between probability vectors works, but it barely punishes a
+  confident wrong answer.
+</p>
+<p>
+  You also need a way to compare two distributions in other settings: keeping a fine-tuned
+  model close to its starting point, matching a student to a teacher, or pulling a VAE's
+  latent code toward a prior. And you need to say how much one variable tells you about
+  another. All of these are measured in the same unit, bits (or nats).
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Learning that an outcome of probability p happened gives you
+  <strong>−log₂ p bits</strong> of information. A fair coin flip is 1 bit. An event with
+  probability 1/8 is 3 bits: it is like learning the answers to three yes-or-no questions.
+  A certain event is 0 bits; you learned nothing.
+</p>
+<p>
+  <strong>Entropy</strong> is the average surprise of a distribution, which is also the
+  fewest bits per outcome any code can use to transmit its samples. <strong>Cross-entropy</strong>
+  is the average surprise when outcomes come from p but you expected q, the bits you'd
+  spend using a code built for q. <strong>KL divergence</strong> is the difference: the
+  extra bits you pay for believing q when the truth is p. It is zero only when q = p.
+</p>
+
+<div class="jj-diagram">
+  {% macro bx(p) -%}{{ 80 + 520 * p }}{%- endmacro %}
+  {% macro by(h) -%}{{ 200 - 160 * h }}{%- endmacro %}
+  {% set pb = bernoulli_example.p %}
+  {% set h_b = entropy([pb, 1 - pb]) %}
+  <svg viewBox="0 0 680 250" role="img" aria-labelledby="ek-bin-title ek-bin-desc">
+    <title id="ek-bin-title">The entropy of a coin as its bias changes</title>
+    <desc id="ek-bin-desc">
+      A curve of the entropy of a Bernoulli(p) variable in bits, for p from 0 to 1. It is 0 at
+      both ends, where the outcome is certain, and peaks at 1 bit at p = 0.5, a fair coin. A
+      marked point at p = {{ num(pb) }} has entropy {{ f3(h_b) }} bits.
+    </desc>
+    <path d="M{% for i in range(101) %}{% set p = i / 100 %}{% if not loop.first %} L{% endif %}{{ bx(p) }},{{ by(entropy([p, 1 - p])) }}{% endfor %}" fill="none" stroke="var(--jj-amber)" stroke-width="2"></path>
+    <line x1="{{ bx(0) }}" y1="{{ by(0) }}" x2="{{ bx(1) }}" y2="{{ by(0) }}" class="d-line"></line>
+    <line x1="{{ bx(0) }}" y1="{{ by(0) }}" x2="{{ bx(0) }}" y2="{{ by(1.1) }}" class="d-line"></line>
+    {% for t in [0, 0.25, 0.5, 0.75, 1] %}
+      <text x="{{ bx(t) }}" y="218" font-size="12" text-anchor="middle">{{ num(t) }}</text>
+    {% endfor %}
+    {% for t in [0, 0.5, 1] %}
+      <text x="70" y="{{ by(t)|float + 4 }}" font-size="12" text-anchor="end">{{ num(t) }}</text>
+    {% endfor %}
+    <line x1="{{ bx(pb) }}" y1="{{ by(0) }}" x2="{{ bx(pb) }}" y2="{{ by(h_b) }}" class="d-line ml-dashed"></line>
+    <circle cx="{{ bx(pb) }}" cy="{{ by(h_b) }}" r="5" style="fill: var(--jj-green)"></circle>
+    <text x="{{ bx(pb)|float - 10 }}" y="{{ by(h_b)|float - 10 }}" font-size="12" text-anchor="end" style="fill: var(--jj-green)">p = {{ num(pb) }}: {{ f3(h_b) }} bits</text>
+    <circle cx="{{ bx(0.5) }}" cy="{{ by(1) }}" r="5" style="fill: var(--jj-violet)"></circle>
+    <text x="{{ bx(0.5)|float + 10 }}" y="{{ by(1)|float - 6 }}" font-size="12" style="fill: var(--jj-violet)">fair coin: 1 bit</text>
+    <text x="340" y="242" font-size="12" text-anchor="middle" class="d-muted">p = P(heads)</text>
+    <text x="20" y="{{ by(1.1)|float - 4 }}" font-size="12" class="d-muted">H (bits)</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Entropy measures uncertainty: zero for a certain outcome, largest when every outcome is
+  equally likely.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="entropy">Entropy</h3>
+
+<p class="ml-formula">H(p) = −Σ<sub>x</sub> p(x) log p(x) = E<sub>x∼p</sub>[−log p(x)]</p>
+<p>
+  With log₂ the unit is bits; with the natural log it is nats (1 nat ≈ 1.443 bits).
+  Frameworks use nats. By convention 0 · log 0 = 0, so impossible outcomes contribute
+  nothing. For k outcomes, entropy runs from 0 (one certain outcome) to log k (uniform):
+  a fair die has log₂ 6 ≈ {{ f3(entropy([1 / 6] * 6)) }} bits.
+</p>
+
+<h3 id="cross-entropy">Cross-entropy and KL divergence</h3>
+
+<p class="ml-formula">H(p, q) = −Σ<sub>x</sub> p(x) log q(x) &nbsp;&nbsp;&nbsp; D<sub>KL</sub>(p ‖ q) = Σ<sub>x</sub> p(x) log (p(x) / q(x)) = H(p, q) − H(p)</p>
+<p>
+  KL divergence is never negative (Gibbs' inequality) and is zero only when p = q, so
+  H(p, q) ≥ H(p): you can't beat the true distribution's code. It is
+  <strong>not symmetric</strong>, so it isn't a distance. If q gives probability 0 to an
+  outcome p can produce, D<sub>KL</sub>(p ‖ q) is infinite: you claimed it was
+  impossible, and it happened.
+</p>
+<p>
+  The asymmetry has practical consequences. Minimizing D<sub>KL</sub>(p ‖ q) over q
+  ("forward" KL, what maximum likelihood does) punishes q for missing any region where p
+  has mass, so q spreads out to cover everything. Minimizing D<sub>KL</sub>(q ‖ p)
+  ("reverse" KL, what variational inference does) punishes q for putting mass where p has
+  little, so q locks onto one mode.
+</p>
+
+<div class="jj-diagram">
+  {% set groups = [("D_KL(p ‖ q)", asym.p, asym.q, kl_fwd), ("D_KL(q ‖ p)", asym.q, asym.p, kl_bwd)] %}
+  <svg viewBox="0 0 680 230" role="img" aria-labelledby="ek-asym-title ek-asym-desc">
+    <title id="ek-asym-title">KL divergence depends on the direction</title>
+    <desc id="ek-asym-desc">
+      Two bar charts of the same pair of two-outcome distributions, p = ({{ asym.p|join(", ") }}) and
+      q = ({{ asym.q|join(", ") }}). Measured from p, the divergence is {{ f3(kl_fwd) }} bits;
+      measured from q, it is {{ f3(kl_bwd) }} bits. Swapping the arguments changes the answer.
+    </desc>
+    {% for title, first, second, value in groups %}
+      {% set x0 = 40 + loop.index0 * 330 %}
+      <text x="{{ x0 + 140 }}" y="22" font-size="13" text-anchor="middle">{{ title|replace("D_KL", "KL") }} = {{ f3(value) }} bits</text>
+      <line x1="{{ x0 }}" y1="180" x2="{{ x0 + 280 }}" y2="180" class="d-line"></line>
+      {% for k in range(2) %}
+        {% set gx = x0 + 30 + k * 130 %}
+        <rect x="{{ gx }}" y="{{ 180 - 140 * first[k] }}" width="40" height="{{ 140 * first[k] }}" style="fill: var(--jj-amber); opacity: 0.7"></rect>
+        <rect x="{{ gx + 46 }}" y="{{ 180 - 140 * second[k] }}" width="40" height="{{ 140 * second[k] }}" style="fill: var(--jj-violet); opacity: 0.7"></rect>
+        <text x="{{ gx + 20 }}" y="{{ 174 - 140 * first[k] }}" font-size="11" text-anchor="middle">{{ num(first[k]) }}</text>
+        <text x="{{ gx + 66 }}" y="{{ 174 - 140 * second[k] }}" font-size="11" text-anchor="middle">{{ num(second[k]) }}</text>
+        <text x="{{ gx + 43 }}" y="198" font-size="12" text-anchor="middle">outcome {{ k + 1 }}</text>
+      {% endfor %}
+      <text x="{{ x0 + 140 }}" y="220" font-size="12" text-anchor="middle" class="d-muted">amber: first argument, violet: second</text>
+    {% endfor %}
+  </svg>
+</div>
+<p class="ml-caption">
+  Same two distributions, two different divergences. The first argument decides whose
+  probabilities weight the log-ratios.
+</p>
+
+<h3 id="classification-loss">Why cross-entropy is the classification loss</h3>
+
+<p>
+  In classification the target p is one-hot: probability 1 on the true class y. Then
+  H(p) = 0, the cross-entropy collapses to a single term, and it equals the KL divergence:
+</p>
+<p class="ml-formula">H(p, q) = −log q(y) = D<sub>KL</sub>(p ‖ q)</p>
+<p>
+  That is the <strong>negative log-likelihood</strong> of the true label. Averaged over a
+  dataset, minimizing it is maximum likelihood, and it equals minimizing the KL divergence
+  from the data's distribution to the model's. With q = softmax(z) over logits z, the loss
+  and its gradient are
+</p>
+<p class="ml-formula">ℓ = logsumexp(z) − z<sub>y</sub> &nbsp;&nbsp;&nbsp; ∂ℓ/∂z = softmax(z) − onehot(y)</p>
+<p>
+  The gradient is just "predicted minus target", bounded in [−1, 1] per logit. Computing
+  the loss straight from logits through log-softmax never forms a tiny probability and
+  takes its log, which is why PyTorch's <code>cross_entropy</code> takes logits, not
+  probabilities.
+</p>
+
+<div class="jj-diagram">
+  {% macro lx(q) -%}{{ 80 + 520 * q }}{%- endmacro %}
+  {% macro ly(l) -%}{{ 200 - 34 * l }}{%- endmacro %}
+  <svg viewBox="0 0 680 250" role="img" aria-labelledby="ek-nll-title ek-nll-desc">
+    <title id="ek-nll-title">The cross-entropy loss against the probability of the true class</title>
+    <desc id="ek-nll-desc">
+      A curve of −ln q for q, the predicted probability of the correct class, from 0.01 to 1.
+      The loss is 0 at q = 1 and climbs steeply as q approaches 0. Two marked points come from
+      logits ({{ cat.logits|join(", ") }}): when the true class is {{ cat.labels[0] }}, q = {{ f3(ce_cat.probs[0]) }}
+      and the loss is {{ f3(ce_cat.loss) }} nats; when it is {{ cat.labels[2] }}, q = {{ f3(ce_bird.probs[2]) }}
+      and the loss is {{ f3(ce_bird.loss) }} nats.
+    </desc>
+    <path d="M{% for i in range(1, 101) %}{% set q = i / 100 %}{% if not loop.first %} L{% endif %}{{ lx(q) }},{{ ly(-log(q)) }}{% endfor %}" fill="none" stroke="var(--jj-amber)" stroke-width="2"></path>
+    <line x1="{{ lx(0) }}" y1="{{ ly(0) }}" x2="{{ lx(1) }}" y2="{{ ly(0) }}" class="d-line"></line>
+    <line x1="{{ lx(0) }}" y1="{{ ly(0) }}" x2="{{ lx(0) }}" y2="{{ ly(5) }}" class="d-line"></line>
+    {% for t in [0, 0.25, 0.5, 0.75, 1] %}
+      <text x="{{ lx(t) }}" y="218" font-size="12" text-anchor="middle">{{ num(t) }}</text>
+    {% endfor %}
+    {% for t in [0, 1, 2, 3, 4] %}
+      <text x="70" y="{{ ly(t)|float + 4 }}" font-size="12" text-anchor="end">{{ t }}</text>
+    {% endfor %}
+    {% set q1 = ce_cat.probs[0] %}
+    {% set q2 = ce_bird.probs[2] %}
+    <circle cx="{{ lx(q1) }}" cy="{{ ly(ce_cat.loss) }}" r="5" style="fill: var(--jj-green)"></circle>
+    <text x="{{ lx(q1) }}" y="{{ ly(ce_cat.loss)|float - 12 }}" font-size="12" text-anchor="middle" style="fill: var(--jj-green)">true {{ cat.labels[0] }}: {{ f2(ce_cat.loss) }}</text>
+    <circle cx="{{ lx(q2) }}" cy="{{ ly(ce_bird.loss) }}" r="5" style="fill: var(--jj-red)"></circle>
+    <text x="{{ lx(q2)|float + 12 }}" y="{{ ly(ce_bird.loss)|float + 4 }}" font-size="12" style="fill: var(--jj-red)">true {{ cat.labels[2] }}: {{ f2(ce_bird.loss) }}</text>
+    <text x="340" y="242" font-size="12" text-anchor="middle" class="d-muted">q(y), predicted probability of the true class</text>
+    <text x="20" y="{{ ly(5)|float - 4 }}" font-size="12" class="d-muted">loss (nats)</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  A confident wrong answer is expensive: the loss is unbounded as q(y) → 0, which is
+  what squared error on probabilities fails to do.
+</p>
+
+<h3 id="perplexity">Perplexity</h3>
+
+<p class="ml-formula">PPL = exp( (1/N) Σ<sub>t</sub> −ln q(x<sub>t</sub> | x<sub>&lt;t</sub>) )</p>
+<p>
+  A language model's loss is the mean cross-entropy per token, in nats. Exponentiating it
+  gives <strong>perplexity</strong>: the number of equally likely choices that would be as
+  surprising. A model that spreads probability uniformly over 50,000 tokens has perplexity
+  50,000; one that always gives the true token probability 1/4 has perplexity 4. It is
+  the geometric mean of 1/q over the tokens.
+</p>
+
+<h3 id="mutual-information">Mutual information</h3>
+
+<p class="ml-formula">I(X; Y) = D<sub>KL</sub>( p(x, y) ‖ p(x) p(y) ) = H(X) + H(Y) − H(X, Y)</p>
+<p>
+  Mutual information is how far a joint distribution is from independence: the bits that
+  knowing Y saves you about X. It is zero exactly when X and Y are independent, and unlike
+  covariance it catches non-linear dependence. It underlies decision-tree information gain
+  and contrastive objectives like InfoNCE.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Term</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Information content</td>
+        <td>−log p(x)</td>
+        <td>Surprise of one outcome.</td>
+        <td>—</td>
+      </tr>
+      <tr>
+        <td>Entropy H(p)</td>
+        <td><code>Categorical(probs).entropy()</code></td>
+        <td>Average surprise; minimum average code length.</td>
+        <td><a href="{{ src('torch/distributions/categorical.py', 159, 163) }}"><code>Categorical.entropy</code></a></td>
+      </tr>
+      <tr>
+        <td>Cross-entropy H(p, q)</td>
+        <td>logits <code>(N, C)</code>, target <code>(N,)</code> or <code>(N, C)</code></td>
+        <td>Average surprise under q of samples from p; the classification loss.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 3478, 3569) }}"><code>F.cross_entropy</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.CrossEntropyLoss</code></td>
+        <td><code>weight</code>, <code>ignore_index</code>, <code>reduction</code>, <code>label_smoothing</code></td>
+        <td>Module wrapper that forwards to <code>F.cross_entropy</code>.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 1200, 1407) }}"><code>CrossEntropyLoss</code></a></td>
+      </tr>
+      <tr>
+        <td>KL divergence D<sub>KL</sub>(p ‖ q)</td>
+        <td><code>kl_divergence(p, q)</code></td>
+        <td>Extra bits from using q in place of p; dispatched by distribution type.</td>
+        <td><a href="{{ src('torch/distributions/kl.py', 165, 193) }}"><code>kl.kl_divergence</code></a></td>
+      </tr>
+      <tr>
+        <td>Categorical KL</td>
+        <td>Σ p (log p − log q)</td>
+        <td>Infinite where q is 0 and p isn't; 0 where p is 0.</td>
+        <td><a href="{{ src('torch/distributions/kl.py', 247, 252) }}"><code>_kl_categorical_categorical</code></a></td>
+      </tr>
+      <tr>
+        <td>Gaussian KL</td>
+        <td>closed form in μ, σ</td>
+        <td>The KL term of a VAE.</td>
+        <td><a href="{{ src('torch/distributions/kl.py', 467, 471) }}"><code>_kl_normal_normal</code></a></td>
+      </tr>
+      <tr>
+        <td><code>F.kl_div</code> / <code>nn.KLDivLoss</code></td>
+        <td><code>input</code> = log q, <code>target</code> = p</td>
+        <td>KL as a loss; note the argument order and that input is log-probabilities.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 3401, 3475) }}"><code>F.kl_div</code></a>, <a href="{{ src('torch/nn/modules/loss.py', 464, 564) }}"><code>KLDivLoss</code></a></td>
+      </tr>
+      <tr>
+        <td>Perplexity</td>
+        <td>exp(mean NLL)</td>
+        <td>Effective number of equally likely choices per token.</td>
+        <td>—</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>Coding the weather.</strong> Four outcomes with probabilities p and a lazy
+    model q that thinks they're equally likely:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Outcome</th><th>p</th><th>−log₂ p (bits)</th><th>q</th><th>−log₂ q (bits)</th></tr></thead>
+      <tbody>
+        {% for label in ex.labels %}
+          <tr>
+            <td>{{ label }}</td>
+            <td>{{ num(ex.p[loop.index0]) }}</td>
+            <td>{{ num(information_content(ex.p[loop.index0])) }}</td>
+            <td>{{ num(ex.q[loop.index0]) }}</td>
+            <td>{{ num(information_content(ex.q[loop.index0])) }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    H(p) = 0.5·1 + 0.25·2 + 0.125·3 + 0.125·3 = {{ num(h_p) }} bits: a code with
+    codewords 0, 10, 110, 111 averages {{ num(h_p) }} bits a day. The code built for q uses
+    2 bits for everything, so H(p, q) = {{ num(h_pq) }} bits, and
+    D<sub>KL</sub>(p ‖ q) = {{ num(h_pq) }} − {{ num(h_p) }} = {{ num(kl_pq) }} bits wasted
+    per day.
+  </p>
+  <p>
+    <strong>A classification loss.</strong> Logits ({{ cat.logits|join(", ") }}) over
+    ({{ cat.labels|join(", ") }}) give softmax probabilities
+    ({{ ce_cat.probs|map("round", 3)|join(", ") }}). If the true class is {{ cat.labels[0] }},
+    the loss is −ln {{ f3(ce_cat.probs[0]) }} = {{ f3(ce_cat.loss) }} nats and the gradient on
+    the logits is ({{ ce_cat.gradient|map("round", 3)|join(", ") }}): push the {{ cat.labels[0] }}
+    logit up, the others down, and the entries sum to zero. If the truth is {{ cat.labels[2] }},
+    the loss is −ln {{ f3(ce_bird.probs[2]) }} = {{ f3(ce_bird.loss) }} nats, six times larger.
+  </p>
+  <p>
+    <strong>Perplexity.</strong> A language model gives the true next tokens
+    “{{ perplexity_example.tokens|join(" ") }}” probabilities
+    {{ perplexity_example.probs|join(", ") }}. The per-token losses are
+    {{ ppl.nll|map("round", 3)|join(", ") }} nats, with mean {{ f3(ppl.mean_nll) }}, so the
+    perplexity is e<sup>{{ f3(ppl.mean_nll) }}</sup> ≈ {{ f2(ppl.perplexity) }}. The one bad
+    prediction, “{{ perplexity_example.tokens[1] }}” at {{ num(perplexity_example.probs[1]) }},
+    contributes almost half the loss.
+  </p>
+  <p>
+    <strong>Mutual information.</strong> For the rain-and-umbrella table on the
+    <a href="{{ url_for('ml_models', slug='probability-and-distributions') }}">probability page</a>,
+    H(weather) = {{ f3(mi.h_x) }} bits, H(umbrella) = {{ f3(mi.h_y) }} bits and the joint
+    entropy is {{ f3(mi.h_xy) }} bits, so I = {{ f3(mi.h_x) }} + {{ f3(mi.h_y) }} − {{ f3(mi.h_xy) }}
+    = {{ f3(mi.mutual) }} bits: seeing the umbrella removes about
+    {{ (100 * mi.mutual / mi.h_x)|round|int }}% of your uncertainty about the weather.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+import torch.nn.functional as F
+from torch.distributions import Categorical, kl_divergence
+
+logits = torch.tensor([[2.0, 1.0, 0.0]])
+F.cross_entropy(logits, torch.tensor([0]))      # tensor(0.4076): -log softmax(logits)[0]
+F.cross_entropy(logits, torch.tensor([2]))      # tensor(2.4076)
+
+p = Categorical(probs=torch.tensor([0.5, 0.25, 0.125, 0.125]))
+q = Categorical(probs=torch.full((4,), 0.25))
+p.entropy() / torch.log(torch.tensor(2.0))      # tensor(1.7500) bits; entropy() is in nats
+kl_divergence(p, q) / torch.log(torch.tensor(2.0))   # tensor(0.2500)
+
+# F.kl_div wants log q as input and p as target: KL(target || exp(input))
+F.kl_div(q.logits, p.probs, reduction="sum")    # 0.1733 nats = 0.25 bits
+
+# soft targets work too, e.g. label smoothing or distillation
+F.cross_entropy(logits, torch.tensor([0]), label_smoothing=0.1)</code></pre>
+
+<p>The same quantities in plain Python, in bits:</p>
+
+<pre><code>from math import log2, inf
+
+def entropy(p):
+    return sum(-pi * log2(pi) for pi in p if pi &gt; 0)
+
+def cross_entropy(p, q):
+    if any(pi &gt; 0 and qi == 0 for pi, qi in zip(p, q)):
+        return inf
+    return sum(-pi * log2(qi) for pi, qi in zip(p, q) if pi &gt; 0)
+
+def kl(p, q):
+    return cross_entropy(p, q) - entropy(p)
+
+p, q = [0.5, 0.25, 0.125, 0.125], [0.25] * 4
+entropy(p), cross_entropy(p, q), kl(p, q)        # (1.75, 2.0, 0.25)
+kl([0.9, 0.1], [0.5, 0.5]), kl([0.5, 0.5], [0.9, 0.1])   # (0.531, 0.737)</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Always pass logits.</strong> Applying softmax and then log loses precision when a
+    probability underflows to 0 and gives −inf. <code>F.cross_entropy</code> fuses
+    log-softmax and the negative log-likelihood; don't put a softmax layer before it.
+  </li>
+  <li>
+    <strong>Overconfidence.</strong> Cross-entropy keeps rewarding larger logits on correct
+    answers even when accuracy is perfect, which produces overconfident, poorly calibrated
+    models. Label smoothing and temperature scaling counter it.
+  </li>
+  <li>
+    <strong>Forward or reverse KL.</strong> Forward KL (maximum likelihood) covers every
+    mode and can put mass in implausible places; reverse KL picks one mode and can ignore
+    others. Choosing the direction is a modelling decision, not a detail.
+  </li>
+  <li>
+    <strong>Infinite KL.</strong> Any zero in q where p is positive makes KL infinite and its
+    gradient useless. Smooth or mix in a little uniform mass when comparing empirical
+    histograms.
+  </li>
+  <li>
+    <strong>Perplexities aren't comparable across tokenizers.</strong> A model with a
+    different vocabulary splits text into a different number of tokens, so compare bits per
+    byte or per character instead.
+  </li>
+</ul>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="ml-quiz">
+  <summary>What is the entropy of a uniform distribution over 8 outcomes?</summary>
+  <p>log₂ 8 = 3 bits: each outcome has probability 1/8 and carries 3 bits.</p>
+</details>
+<details class="ml-quiz">
+  <summary>A model's loss is 2.3 nats per token. Roughly what is its perplexity?</summary>
+  <p>e<sup>2.3</sup> ≈ 10: as uncertain, on average, as choosing among 10 equally likely tokens.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does minimizing cross-entropy H(p, q) over q give the same answer as minimizing D<sub>KL</sub>(p ‖ q)?</summary>
+  <p>They differ by H(p), which doesn't depend on q, so they have the same gradient and the same minimizer.</p>
+</details>
+<details class="ml-quiz">
+  <summary>A model gives the true class probability 0.0001. What is its loss, in nats?</summary>
+  <p>−ln 0.0001 ≈ 9.21, versus 0.69 for a probability of 0.5.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Shannon. <em>A Mathematical Theory of Communication.</em> Bell System Technical Journal, 1948.</li>
+  <li>Cover and Thomas. <em>Elements of Information Theory</em>, 2nd ed., chapter 2. Wiley, 2006.</li>
+  <li>MacKay. <em>Information Theory, Inference, and Learning Algorithms</em>, chapters 2 and 4. Cambridge, 2003.</li>
+  <li>Goodfellow, Bengio and Courville. <em>Deep Learning</em>, section 3.13. MIT Press, 2016.</li>
+  <li>Müller, Kornblith and Hinton. <em>When Does Label Smoothing Help?</em> 2019. <a href="https://arxiv.org/abs/1906.02629">arXiv:1906.02629</a></li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/distributions/kl.py', 165, 193) }}"><code>torch/distributions/kl.py</code></a>, <a href="{{ src('torch/nn/functional.py', 3478, 3569) }}"><code>F.cross_entropy</code></a> and <a href="{{ src('torch/nn/modules/loss.py', 1200, 1407) }}"><code>CrossEntropyLoss</code></a>.</li>
+</ul>
