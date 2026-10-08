@@ -1437,6 +1437,13 @@ TRANSFORMER_PRESETS = [
     {"name": "Tiny (toy)", "d_model": 64, "nhead": 4, "encoder_layers": 2, "decoder_layers": 2, "dim_feedforward": 256},
 ]
 
+SIMILARITY_EXAMPLE = {
+    "query": [1, 2],
+    "documents": {"d1": [2, 4], "d2": [2, 1], "d3": [-2, 1], "d4": [6, 0]},
+}
+
+PROJECTION_EXAMPLE = {"onto": [3, 1], "vector": [2, 2]}
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -1604,6 +1611,53 @@ def transpose_layout(shape, strides, first, second):
     return tuple(shape), tuple(strides)
 
 
+def dot_product(u, v):
+    if len(u) != len(v):
+        raise ValueError("vectors must have the same length")
+    return sum(a * b for a, b in zip(u, v))
+
+
+def vector_norm(v, p=2):
+    if p == math.inf:
+        return max(abs(x) for x in v)
+    return sum(abs(x) ** p for x in v) ** (1 / p)
+
+
+def cosine_similarity(u, v, eps=1e-8):
+    return dot_product(u, v) / (max(vector_norm(u), eps) * max(vector_norm(v), eps))
+
+
+def angle_degrees(u, v):
+    return math.degrees(math.acos(max(-1.0, min(1.0, cosine_similarity(u, v)))))
+
+
+def projection(vector, onto):
+    scale = dot_product(vector, onto) / dot_product(onto, onto)
+    along = [scale * x for x in onto]
+    return {"scale": scale, "along": along, "residual": [a - b for a, b in zip(vector, along)]}
+
+
+def similarity_ranking(example):
+    query = example["query"]
+    rows = [
+        {
+            "name": name,
+            "vector": vector,
+            "dot": dot_product(query, vector),
+            "norm": vector_norm(vector),
+            "cosine": cosine_similarity(query, vector),
+            "distance": vector_norm([a - b for a, b in zip(query, vector)]),
+        }
+        for name, vector in example["documents"].items()
+    ]
+    return {
+        "rows": rows,
+        "by_dot": [row["name"] for row in sorted(rows, key=lambda row: -row["dot"])],
+        "by_cosine": [row["name"] for row in sorted(rows, key=lambda row: -row["cosine"])],
+        "by_distance": [row["name"] for row in sorted(rows, key=lambda row: row["distance"])],
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -1642,6 +1696,14 @@ def render(slug, render_template):
         "element_offset": element_offset,
         "is_contiguous": is_contiguous,
         "transpose_layout": transpose_layout,
+        "dot_product": dot_product,
+        "vector_norm": vector_norm,
+        "cosine_similarity": cosine_similarity,
+        "angle_degrees": angle_degrees,
+        "projection": projection,
+        "similarity_example": SIMILARITY_EXAMPLE,
+        "projection_example": PROJECTION_EXAMPLE,
+        "similarity_ranking": similarity_ranking,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

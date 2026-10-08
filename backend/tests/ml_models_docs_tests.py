@@ -1,4 +1,5 @@
 import os
+import math
 import re
 from datetime import date
 
@@ -490,3 +491,33 @@ def test_transpose_swaps_strides_and_breaks_contiguity():
     assert not ml_models_docs.is_contiguous(shape, strides)
     assert ml_models_docs.element_offset((2, 1, 3), strides) == 23
     assert ml_models_docs.is_contiguous((1, 4), (99, 1))
+
+
+def test_dot_product_and_norms():
+    assert ml_models_docs.dot_product([2, 3], [2, 1]) == 7
+    assert ml_models_docs.vector_norm([3, 4]) == 5
+    assert ml_models_docs.vector_norm([3, -4], p=1) == 7
+    assert ml_models_docs.vector_norm([3, -4], p=math.inf) == 4
+    with pytest.raises(ValueError):
+        ml_models_docs.dot_product([1, 2], [1, 2, 3])
+
+
+def test_cosine_similarity_ignores_length_and_guards_zero():
+    assert ml_models_docs.cosine_similarity([1, 2], [2, 4]) == pytest.approx(1)
+    assert ml_models_docs.cosine_similarity([1, 2], [-2, 1]) == 0
+    assert ml_models_docs.cosine_similarity([0, 0], [1, 0]) == 0
+    assert ml_models_docs.angle_degrees([1, 0], [0, 3]) == pytest.approx(90)
+
+
+def test_projection_leaves_an_orthogonal_residual():
+    parts = ml_models_docs.projection([2, 2], [3, 1])
+    assert parts["scale"] == pytest.approx(0.8)
+    assert parts["along"] == pytest.approx([2.4, 0.8])
+    assert ml_models_docs.dot_product(parts["residual"], [3, 1]) == pytest.approx(0)
+
+
+def test_similarity_ranking_shows_dot_product_rewards_length():
+    ranking = ml_models_docs.similarity_ranking(ml_models_docs.SIMILARITY_EXAMPLE)
+    assert ranking["by_dot"] == ["d1", "d4", "d2", "d3"]
+    assert ranking["by_cosine"] == ["d1", "d2", "d4", "d3"]
+    assert ranking["by_distance"][0] == "d2"
