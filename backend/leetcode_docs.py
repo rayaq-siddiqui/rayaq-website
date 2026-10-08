@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit"}
+READY = {"complexity-analysis", "python-toolkit", "recursion"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -3408,6 +3408,68 @@ def front_removal_moves(n):
     list_moves = sum(n - 1 - removed for removed in range(n))
     return {"list": list_moves, "deque": 0}
 
+
+def fib_call_tree(n):
+    """Call tree of naive fib(n) laid out for drawing: nodes in preorder with depth and x slot."""
+    nodes = []
+    next_leaf = [0]
+
+    def visit(k, depth):
+        node = {"n": k, "depth": depth, "value": None, "x": None, "parent": None}
+        index = len(nodes)
+        nodes.append(node)
+        if k < 2:
+            node["value"] = k
+            node["x"] = float(next_leaf[0])
+            next_leaf[0] += 1
+            return index
+        left = visit(k - 1, depth + 1)
+        right = visit(k - 2, depth + 1)
+        nodes[left]["parent"] = index
+        nodes[right]["parent"] = index
+        node["value"] = nodes[left]["value"] + nodes[right]["value"]
+        node["x"] = (nodes[left]["x"] + nodes[right]["x"]) / 2
+        return index
+
+    visit(n, 0)
+    return nodes
+
+
+def fib_call_counts(n):
+    """Calls made by naive fib(n) versus fib(n) with a memo table."""
+    naive = len(fib_call_tree(n))
+    calls = [0]
+    memo = {}
+
+    def fib(k):
+        calls[0] += 1
+        if k < 2:
+            return k
+        if k not in memo:
+            memo[k] = fib(k - 1) + fib(k - 2)
+        return memo[k]
+
+    value = fib(n)
+    return {"n": n, "value": value, "naive": naive, "memo": calls[0]}
+
+
+def fast_power_trace(base, exponent):
+    """Events of recursive square-and-multiply: each call and return with the stack depth."""
+    events = []
+
+    def power(e, depth):
+        events.append({"event": "call", "exponent": e, "depth": depth, "value": None})
+        if e == 0:
+            result = 1
+        else:
+            half = power(e // 2, depth + 1)
+            result = half * half * (base if e % 2 else 1)
+        events.append({"event": "return", "exponent": e, "depth": depth, "value": result})
+        return result
+
+    value = power(exponent, 0)
+    return {"events": events, "value": value, "max_depth": max(e["depth"] for e in events) + 1}
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -3525,6 +3587,9 @@ def render(slug, render_template):
         "heap_push_trace": heap_push_trace,
         "bisect_left_steps": bisect_left_steps,
         "front_removal_moves": front_removal_moves,
+        "fib_call_tree": fib_call_tree,
+        "fib_call_counts": fib_call_counts,
+        "fast_power_trace": fast_power_trace,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,

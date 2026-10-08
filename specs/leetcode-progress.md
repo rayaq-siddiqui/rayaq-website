@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (build run). `complexity-analysis` and `python-toolkit` are ready. **The next run is a build run** continuing at `recursion`.
+**Last updated:** 2026-10-08 (build run). `complexity-analysis`, `python-toolkit` and `recursion` are ready (all of Foundations). **The next run is a build run** continuing at `hash-maps-and-sets`.
 
 ## The Routine
 
@@ -40,9 +40,9 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 | List | Problems with a ready home | Size |
 |---|---|---|
 | Blind 75 | 0 | 75 |
-| Grind 169 | 0 | 169 |
+| Grind 169 | 1 | 169 |
 | NeetCode 150 | 0 | 150 |
-| NeetCode 250 | 0 | 250 |
+| NeetCode 250 | 4 | 250 |
 
 ## Queue
 
@@ -51,8 +51,8 @@ build once research is done.
 
 1. `complexity-analysis` ✓
 2. `python-toolkit` ✓
-3. `recursion` ← next
-4. `hash-maps-and-sets`
+3. `recursion` ✓
+4. `hash-maps-and-sets` ← next
 5. `counting-and-bucketing`
 6. `prefix-sums`
 7. `in-place-array-tricks`
@@ -119,6 +119,10 @@ build once research is done.
 - **Three pages per build run (2026-10-08, owner).** A build run does not stop until it has
   built three queue items (or emptied the queue), pushing after each one. (Briefly five,
   then lowered to three the same day.)
+- **Page helpers (2026-10-08).** Each page's worked-example helpers live in `leetcode_docs.py`
+  and are passed to templates through `render()`'s context; list problems render through the
+  shared `leetcode/_problems.html` partial (home problems by difficulty with list badges and
+  insights, then the "also uses" list). Pages are marked ready by adding their slug to `READY`.
 - **Research reconciliation (2026-10-08).** The list sites (leetcode.com, neetcode.io,
   techinterviewhandbook.org) are blocked by the network policy, so every list comes from two
   independent GitHub-hosted sources that agree exactly (see Sources). Blind 75 follows
@@ -154,3 +158,11 @@ Populated `PROBLEMS` from GitHub-hosted sources (two per list, reconciled; see S
 Decisions): Blind 75 = 75, Grind 169 = 169, NeetCode 150 = 150, NeetCode 250 = 250, 297
 problems in all, each with a home page, related patterns and an original one-sentence insight.
 No content pages built. Coverage is 0 for every list until pages ship.
+
+### 2026-10-08 — build run
+
+Built `complexity-analysis`, `python-toolkit` and `recursion` (3 of 3), each with tested helpers,
+two inline SVGs and the full §6 format; added the shared `_problems.html` partial and diagram
+colour classes in `leetcode.css`; made the coverage test independent of which pages are ready.
+Coverage: Blind 75 0/75, Grind 169 1/169, NeetCode 150 0/150, NeetCode 250 4/250. Mobile check
+passed on `/`, `/leetcode` and all three pages. Next: `hash-maps-and-sets`.

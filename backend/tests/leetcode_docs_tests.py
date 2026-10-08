@@ -240,3 +240,24 @@ def test_toolkit_helpers_match_the_page():
     assert "1, 2, 3, 5, 8, 9" in body
     assert "index 5, reached in 3 probes" in re.sub(r"\s+", " ", body)
     assert "moves 28 elements" in re.sub(r"\s+", " ", body)
+
+
+def test_recursion_helpers_match_the_page():
+    counts = [leetcode_docs.fib_call_counts(n) for n in range(1, 9)]
+    assert [c["naive"] for c in counts] == [1, 3, 5, 9, 15, 25, 41, 67]
+    assert [c["memo"] for c in counts] == [1, 3, 5, 7, 9, 11, 13, 15]
+    assert [c["value"] for c in counts] == [1, 1, 2, 3, 5, 8, 13, 21]
+    tree = leetcode_docs.fib_call_tree(5)
+    assert len(tree) == 15 and tree[0]["value"] == 5
+    assert sum(1 for node in tree if node["n"] == 3) == 2
+    assert all(tree[node["parent"]]["depth"] == node["depth"] - 1 for node in tree if node["parent"] is not None)
+    trace = leetcode_docs.fast_power_trace(2, 10)
+    assert trace["value"] == 1024 and trace["max_depth"] == 5
+    calls = [e["exponent"] for e in trace["events"] if e["event"] == "call"]
+    assert calls == [10, 5, 2, 1, 0]
+    assert [e["value"] for e in trace["events"] if e["event"] == "return"] == [1, 2, 4, 32, 1024]
+    assert leetcode_docs.fast_power_trace(3, 0)["value"] == 1
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/recursion").get_data(as_text=True))
+    assert "<td class=\"num\">1024</td>" in body
+    assert "found with 5 calls and a stack at most 5 frames deep" in body
+    assert "15 calls naive, 9 with memoization" in body
