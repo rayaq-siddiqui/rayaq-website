@@ -2,6 +2,7 @@ import os
 import re
 from datetime import date
 
+import pytest
 from markupsafe import escape
 
 import app as app_module
@@ -459,3 +460,33 @@ def test_progress_queue_lists_every_page_after_its_prerequisites():
             assert position[prerequisite] < position[page["slug"]], (page["slug"], prerequisite)
     for page in ml_models_docs.ready_pages():
         assert re.search(rf"^\d+\. `{page['slug']}` ✓", queue_section, re.M), page["slug"]
+
+
+def test_broadcast_shape_follows_the_numpy_rules():
+    assert ml_models_docs.broadcast_shape((8, 1, 6, 1), (7, 1, 5)) == (8, 7, 6, 5)
+    assert ml_models_docs.broadcast_shape((32, 10, 512), (512,)) == (32, 10, 512)
+    assert ml_models_docs.broadcast_shape((3, 1), (1, 4)) == (3, 4)
+    assert ml_models_docs.broadcast_shape((2,), (3, 1), (1, 1, 1)) == (1, 3, 2)
+    with pytest.raises(ValueError):
+        ml_models_docs.broadcast_shape((3,), (4,))
+
+
+def test_broadcast_steps_pad_on_the_left():
+    steps = ml_models_docs.broadcast_steps((7, 1, 5), (8, 1, 6, 1))
+    assert steps["padded"] == [(1, 7, 1, 5), (8, 1, 6, 1)]
+    assert [step["result"] for step in steps["steps"]] == [8, 7, 6, 5]
+
+
+def test_strides_and_offsets_of_a_contiguous_tensor():
+    strides = ml_models_docs.contiguous_strides((2, 3, 4))
+    assert strides == (12, 4, 1)
+    assert ml_models_docs.element_offset((1, 2, 3), strides) == 23
+    assert ml_models_docs.is_contiguous((2, 3, 4), strides)
+
+
+def test_transpose_swaps_strides_and_breaks_contiguity():
+    shape, strides = ml_models_docs.transpose_layout((2, 3, 4), (12, 4, 1), 0, 1)
+    assert (shape, strides) == ((3, 2, 4), (4, 12, 1))
+    assert not ml_models_docs.is_contiguous(shape, strides)
+    assert ml_models_docs.element_offset((2, 1, 3), strides) == 23
+    assert ml_models_docs.is_contiguous((1, 4), (99, 1))

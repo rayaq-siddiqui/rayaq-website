@@ -1560,6 +1560,50 @@ def transformer_param_count(d_model, encoder_layers, decoder_layers, dim_feedfor
     }
 
 
+def broadcast_steps(*shapes):
+    rank = max(len(shape) for shape in shapes)
+    padded = [(1,) * (rank - len(shape)) + tuple(shape) for shape in shapes]
+    steps = []
+    for position, sizes in enumerate(zip(*padded)):
+        others = {size for size in sizes if size != 1}
+        if len(others) > 1:
+            raise ValueError(f"sizes {sizes} clash at dimension {position}")
+        steps.append({"sizes": sizes, "result": others.pop() if others else 1})
+    return {"padded": padded, "steps": steps, "shape": tuple(step["result"] for step in steps)}
+
+
+def broadcast_shape(*shapes):
+    return broadcast_steps(*shapes)["shape"]
+
+
+def contiguous_strides(shape):
+    strides = []
+    step = 1
+    for size in reversed(shape):
+        strides.append(step)
+        step *= size
+    return tuple(reversed(strides))
+
+
+def element_offset(index, strides):
+    return sum(i * stride for i, stride in zip(index, strides))
+
+
+def is_contiguous(shape, strides):
+    return all(
+        stride == expected
+        for size, stride, expected in zip(shape, strides, contiguous_strides(shape))
+        if size != 1
+    )
+
+
+def transpose_layout(shape, strides, first, second):
+    shape, strides = list(shape), list(strides)
+    shape[first], shape[second] = shape[second], shape[first]
+    strides[first], strides[second] = strides[second], strides[first]
+    return tuple(shape), tuple(strides)
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -1593,6 +1637,11 @@ def render(slug, render_template):
         "attention_weights": attention_weights,
         "presets": TRANSFORMER_PRESETS,
         "param_count": transformer_param_count,
+        "broadcast_steps": broadcast_steps,
+        "contiguous_strides": contiguous_strides,
+        "element_offset": element_offset,
+        "is_contiguous": is_contiguous,
+        "transpose_layout": transpose_layout,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
