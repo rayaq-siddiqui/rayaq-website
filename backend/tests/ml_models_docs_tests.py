@@ -1110,3 +1110,52 @@ def test_optimizer_memory_counts_state_tensors():
     assert rows["SGD"]["gigabytes"] == 0
     assert rows["Adam / AdamW"]["bytes_per_param"] == 8
     assert rows["Adam / AdamW"]["gigabytes"] == pytest.approx(56)
+
+
+def test_embedding_lookup_equals_one_hot_matmul():
+    example = ml_models_docs.EMBEDDING_EXAMPLE
+    ids = example["batch"][0]
+    looked_up = ml_models_docs.embedding_lookup(example["table"], ids)
+    via_matmul = ml_models_docs.matmul(ml_models_docs.one_hot_rows(ids, len(example["vocab"])), example["table"])
+    assert looked_up == via_matmul
+    batch = ml_models_docs.embedding_lookup(example["table"], example["batch"])
+    assert len(batch) == 2 and len(batch[0]) == 6 and len(batch[0][0]) == 3
+    assert batch[1][4] == [0.0, 0.0, 0.0]
+
+
+def test_embedding_gradient_accumulates_rows_and_skips_padding():
+    ones = [[[1.0, 2.0]] * 3] * 2
+    ids = [[1, 2, 1], [0, 1, 3]]
+    grad = ml_models_docs.embedding_gradient(4, 2, ids, ones, padding_idx=0)
+    assert grad[1] == [3.0, 6.0]
+    assert grad[2] == [1.0, 2.0]
+    assert grad[0] == [0.0, 0.0]
+    mean = ml_models_docs.embedding_gradient(4, 2, ids, ones, padding_idx=0, scale_grad_by_freq=True)
+    assert mean[1] == [1.0, 2.0]
+    unpadded = ml_models_docs.embedding_gradient(4, 2, ids, ones)
+    assert unpadded[0] == [1.0, 2.0]
+
+
+def test_skipgram_pairs_use_a_symmetric_window():
+    assert ml_models_docs.skipgram_pairs([["a", "b", "c"]], 1) == [("a", "b"), ("b", "a"), ("b", "c"), ("c", "b")]
+    assert len(ml_models_docs.skipgram_pairs([["a", "b", "c"]], 2)) == 6
+
+
+def test_skipgram_places_words_that_share_contexts_together():
+    result = ml_models_docs.train_skipgram(ml_models_docs.WORD2VEC_EXAMPLE)
+    vectors = result["vectors"]
+    cosine = ml_models_docs.cosine_similarity
+    assert result["losses"][0] > result["uniform_loss"] * 0.8
+    assert result["losses"][-1] < result["losses"][0] * 0.75
+    assert cosine(vectors["car"], vectors["truck"]) > 0.95
+    assert cosine(vectors["fish"], vectors["meat"]) > 0.9
+    assert cosine(vectors["cat"], vectors["dog"]) > 0.9
+    assert cosine(vectors["cat"], vectors["car"]) < 0
+    assert ml_models_docs.nearest_words(vectors, "car", 1)[0][0] in {"truck", "bus"}
+
+
+def test_tied_parameter_counts_for_gpt2_small():
+    counts = ml_models_docs.tied_parameter_counts(50257, 768, 85_842_432)
+    assert counts["table"] == 38_597_376
+    assert counts["tied_total"] == 124_439_808
+    assert counts["untied_total"] - counts["tied_total"] == counts["table"]

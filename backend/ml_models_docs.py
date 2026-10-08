@@ -1602,6 +1602,34 @@ ADAM_EXAMPLE = {
 
 WEIGHT_DECAY_EXAMPLE = {"lr": 0.01, "weight_decay": 0.1, "steps": 1000, "scales": [1.0, 0.01]}
 
+EMBEDDING_EXAMPLE = {
+    "vocab": ["<pad>", "the", "cat", "sat", "on", "mat"],
+    "table": [
+        [0.0, 0.0, 0.0],
+        [0.1, -0.2, 0.3],
+        [0.9, 0.4, -0.5],
+        [-0.3, 0.8, 0.2],
+        [0.2, 0.1, -0.1],
+        [0.7, -0.6, 0.5],
+    ],
+    "batch": [[1, 2, 3, 4, 1, 5], [1, 2, 3, 0, 0, 0]],
+    "padding_idx": 0,
+}
+
+WORD2VEC_EXAMPLE = {
+    "corpus": [
+        "cat eats fish", "dog eats meat", "cat chases mouse", "dog chases cat",
+        "mouse eats cheese", "cat drinks milk", "dog drinks water", "mouse drinks water",
+        "car needs fuel", "truck needs fuel", "car drives road", "truck drives road",
+        "bus drives road",
+    ],
+    "window": 2,
+    "dim": 2,
+    "epochs": 300,
+    "lr": 0.05,
+    "seed": 0,
+}
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -2754,6 +2782,91 @@ def optimizer_memory(parameters):
     ]
 
 
+def embedding_lookup(table, ids):
+    if isinstance(ids, int):
+        return list(table[ids])
+    return [embedding_lookup(table, i) for i in ids]
+
+
+def one_hot_rows(ids, size):
+    return [[1 if i == j else 0 for j in range(size)] for i in ids]
+
+
+def embedding_gradient(vocab_size, dim, ids, upstream, padding_idx=None, scale_grad_by_freq=False):
+    flat_ids = [i for row in ids for i in row]
+    flat_up = [u for row in upstream for u in row]
+    grad = [[0.0] * dim for _ in range(vocab_size)]
+    for i, u in zip(flat_ids, flat_up):
+        if i == padding_idx:
+            continue
+        for d in range(dim):
+            grad[i][d] += u[d]
+    if scale_grad_by_freq:
+        for i in set(flat_ids):
+            count = flat_ids.count(i)
+            grad[i] = [x / count for x in grad[i]]
+    return grad
+
+
+def skipgram_pairs(sentences, window):
+    pairs = []
+    for sentence in sentences:
+        for i, center in enumerate(sentence):
+            for j in range(max(0, i - window), min(len(sentence), i + window + 1)):
+                if j != i:
+                    pairs.append((center, sentence[j]))
+    return pairs
+
+
+def train_skipgram(example):
+    sentences = [line.split() for line in example["corpus"]]
+    vocab = sorted({word for sentence in sentences for word in sentence})
+    index = {word: i for i, word in enumerate(vocab)}
+    dim, lr = example["dim"], example["lr"]
+    rng = random.Random(example["seed"])
+    centers = [[rng.gauss(0, 0.5) for _ in range(dim)] for _ in vocab]
+    contexts = [[rng.gauss(0, 0.5) for _ in range(dim)] for _ in vocab]
+    pairs = [(index[a], index[b]) for a, b in skipgram_pairs(sentences, example["window"])]
+    losses = []
+    for _ in range(example["epochs"]):
+        total = 0.0
+        for center, target in pairs:
+            v = centers[center]
+            probs = categorical_from_logits([dot_product(v, u) for u in contexts])["probs"]
+            total -= math.log(probs[target])
+            grad_v = [0.0] * dim
+            for k, u in enumerate(contexts):
+                g = probs[k] - (1 if k == target else 0)
+                for d in range(dim):
+                    grad_v[d] += g * u[d]
+                    u[d] -= lr * g * v[d]
+            for d in range(dim):
+                v[d] -= lr * grad_v[d]
+        losses.append(total / len(pairs))
+    return {
+        "vocab": vocab,
+        "vectors": dict(zip(vocab, centers)),
+        "pairs": len(pairs),
+        "losses": losses,
+        "uniform_loss": math.log(len(vocab)),
+    }
+
+
+def nearest_words(vectors, word, count=3):
+    scored = [(other, cosine_similarity(vectors[word], vec)) for other, vec in vectors.items() if other != word]
+    return sorted(scored, key=lambda item: -item[1])[:count]
+
+
+def tied_parameter_counts(vocab_size, dim, other_parameters):
+    table = vocab_size * dim
+    return {
+        "table": table,
+        "untied_total": 2 * table + other_parameters,
+        "tied_total": table + other_parameters,
+        "saved": table,
+    }
+
+
 def similarity_ranking(example):
     query = example["query"]
     rows = [
@@ -2935,6 +3048,14 @@ def render(slug, render_template):
         "uncorrected_step_ratio": uncorrected_step_ratio,
         "weight_decay_paths": weight_decay_paths,
         "optimizer_memory": optimizer_memory,
+        "embedding_example": EMBEDDING_EXAMPLE,
+        "word2vec_example": WORD2VEC_EXAMPLE,
+        "embedding_lookup": embedding_lookup,
+        "one_hot_rows": one_hot_rows,
+        "embedding_gradient": embedding_gradient,
+        "train_skipgram": train_skipgram,
+        "nearest_words": nearest_words,
+        "tied_parameter_counts": tied_parameter_counts,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
