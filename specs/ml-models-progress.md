@@ -35,7 +35,9 @@ Use `--no-cone` when the sparse-checkout list includes single files.
 ## The Routine
 
 "rayaq.ca/ml-models — architecture reference agent" (`trig_01VAVRGkmCoUyweU2zQNd9m6`) runs
-daily at 03:38 America/Vancouver. Each firing starts a fresh session that follows spec §8:
+every 5 hours (at :44 America/Vancouver) while the queue has unbuilt pages. Once the queue is
+empty it becomes the weekly audit in spec §8.1: pins, new open-weight models, and deeper
+foundations such as linear algebra. Each firing starts a fresh session that follows spec §8:
 pull, clone the pins, build the `← next` page to §6, maintain the pins, record here, check,
 and push small commits to `main`. The phone check before each push is
 `NODE_PATH=$(npm root -g) node tools/ml_models/check_mobile.js / /ml-models <ready pages>`.

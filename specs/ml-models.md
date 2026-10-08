@@ -525,9 +525,10 @@ Derived from those three:
 - **Static only.** No page loads a script or stylesheet from another origin.
 - **No ML packages.** Neither requirements file names `torch` or any other ML package.
 
-## 8. The daily Routine
+## 8. The Routine
 
-A Routine ("rayaq.ca/ml-models — architecture reference agent") runs once a day. Each run:
+A Routine ("rayaq.ca/ml-models — architecture reference agent") runs every 5 hours while
+the queue has unbuilt pages. Each build run:
 
 1. **Starts clean.** It syncs with `origin/main` (`git pull`), then reads `AGENTS.md`, this
    spec and the progress file.
@@ -559,6 +560,35 @@ A Routine ("rayaq.ca/ml-models — architecture reference agent") runs once a da
    `ml-models: <lowercase imperative>` subject and a body explaining the change. It uses no
    branches, pull requests, force-pushes or history rewrites. If the push is rejected, it
    pulls with a rebase onto its own unpushed commits, re-runs the checks, and pushes again.
+
+### 8.1 The weekly audit (after the build)
+
+The owner set this on 2026-10-08. Once every queued page is ready, the Routine stops
+building and becomes a weekly audit. It moves its own schedule to once a week. If it can't,
+a firing within 7 days of the last recorded audit changes nothing and stops. Each audit:
+
+1. **Moves the pins.** It checks PyTorch, scikit-learn and XGBoost for a newer stable
+   release and handles it as in step 4. It also notes new PyTorch APIs worth a page or a
+   section, such as a new optimizer, attention kernel or export path.
+2. **Tracks open models.** It looks for notable new open-weight and open-source models
+   released since the last audit. Notable means a released model family whose weights
+   anyone can download, with a paper or technical report.
+   - It adds each one to `UPCOMING_MODELS`, citing that paper or report.
+   - When a model introduces an idea no page covers (a new attention variant, routing
+     scheme, training recipe or quantization format), it adds a page for that idea, or
+     a section to the page that owns it.
+   - It never makes claims from memory, press coverage or model-card marketing.
+3. **Deepens the foundations.** It looks for gaps a learner would hit, starting with
+   linear algebra: eigenvalues and eigenvectors, SVD, matrix decompositions, norms and
+   conditioning. It adds pages or sections that fill them.
+4. **Adds pages directly.** For audit additions the owner's approval is already given; this
+   replaces the "propose" rule in §5.13. The Routine adds the row to the right §5 table
+   (and to §5.13's breadth order if needed), registers the page, queues it, builds it to §6
+   and marks it ready, in that run or a later one. It edits no other part of this spec.
+   It adds at most two pages per audit, so each one meets the same bar as the rest.
+5. **Records and checks** as in steps 5–7, with an audit row in the progress file that
+   lists what it checked, what it found and what it added. An audit that finds nothing
+   records that and pushes only the progress row.
 
 ## 9. Acceptance criteria
 
