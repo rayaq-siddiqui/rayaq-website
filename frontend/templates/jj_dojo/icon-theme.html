@@ -1,0 +1,293 @@
+{% set dir = "src/ui/icon_theme_service/" %}
+{% set theme = dir ~ "icon_theme.ts" %}
+{% set parser = dir ~ "icon_theme_json_parser.ts" %}
+{% set svc = dir ~ "icon_theme_service.ts" %}
+{% set test = dir ~ "icon_theme_service_test.ts" %}
+{% set build = dir ~ "BUILD.bazel" %}
+{% set fakes = "src/testing/custom_fakes/fake_extensions.ts" %}
+<header class="jj-header">
+  <h1>Icon theme service</h1>
+  <p class="tagline">
+    How Jujutsu Dojo finds the file-icon theme you picked in VS Code, reads its JSON, and turns a file
+    name into an image or font glyph a webview can display.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: <code>IconThemeService.loadTheme</code> reads <code>workbench.iconTheme</code>, finds the
+  extension that contributes that theme, and parses the theme file with <code>jsonc-parser</code> into an
+  <code>IconTheme</code>. <code>getFileIcon(name)</code> then resolves the name in this order: exact file
+  name, the file name's language, the extension, the extension's language, and finally the default icon.
+  The resolved icon definition becomes a <code>vscode-webview://</code> URI for an image, or a font URI plus
+  glyph and colour for a font icon. The result is cached per theme ID. At this pin nothing outside the
+  directory and its test imports the service, so the commit graph doesn't show file icons yet.
+</p>
+
+<h2 id="files">1. Files</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Lines</th><th>What it holds</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(parser) }}">icon_theme_json_parser.ts</a></td><td>63</td><td>The theme file's types and a one-line parser.</td></tr>
+      <tr><td><a href="{{ src(theme) }}">icon_theme.ts</a></td><td>194</td><td>The <code>IconTheme</code> model: locating the theme, merging the light variant, resolving icon IDs.</td></tr>
+      <tr><td><a href="{{ src(svc) }}">icon_theme_service.ts</a></td><td>145</td><td><code>IconThemeService</code>: the per-webview cache and the <code>FileIcon</code> it returns.</td></tr>
+      <tr><td><a href="{{ src(test) }}">icon_theme_service_test.ts</a></td><td>164</td><td>Two Jasmine tests, one image theme and one font theme.</td></tr>
+      <tr><td><a href="{{ src(build) }}">BUILD.bazel</a></td><td>45</td><td>The <code>ts_library</code> and its <code>jasmine_test</code>.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="locate">2. Finding the active theme</h2>
+
+<p>
+  <code>loadTheme</code> reads the theme ID from <code>workbench.iconTheme</code>, falling back to
+  <code>vs-seti</code> when the setting is empty (<a href="{{ src(svc, 92, 96) }}">source</a>).
+  <code>IconTheme.load</code> then asks <code>getIconThemeExtension</code> where that theme lives
+  (<a href="{{ src(theme, 99, 110) }}">source</a>):
+</p>
+
+<ol>
+  <li>It walks every installed extension and looks at <code>packageJSON.contributes.iconThemes</code>.
+    An entry matches when its <code>id</code> equals the theme ID, or, for an entry with no
+    <code>id</code>, when its <code>label</code> does. The first match wins and supplies the theme file's
+    <code>path</code> (<a href="{{ src(theme, 118, 136) }}">source</a>).</li>
+  <li>With no match, it falls back to the built-in <code>vscode.theme-seti</code> extension and the
+    hard-coded path <code>./icons/vs-seti-icon-theme.json</code>. If even that extension is missing it
+    throws <code>Cannot find built-in VS Code Seti theme</code>
+    (<a href="{{ src(theme, 138, 146) }}">source</a>).</li>
+</ol>
+
+<p>
+  "Every installed extension" is <code>getAllExtensions</code>
+  (<a href="{{ src(theme, 168, 194) }}">source</a>). <code>vscode.extensions.all</code> only lists
+  extensions in the caller's own extension host, so a theme installed in another host (the UI side of a
+  remote window, for instance) would be missed. The function therefore first tries the proposed
+  <code>allAcrossExtensionHosts</code> API. It remembers in a module-level flag whether reading the
+  property succeeded, and uses <code>extensions.all</code> when it threw. The comment above the
+  function says the proposal is meant for internal builds. This repo's <code>package.json</code> has no
+  <code>enabledApiProposals</code>, so a public build relies on the read throwing and takes the fallback.
+  The test fake defines <code>allAcrossExtensionHosts</code> as a getter that returns <code>all</code>
+  (<a href="{{ src(fakes, 25, 27) }}">source</a>), so the tests always take the first branch.
+</p>
+
+<p>
+  The theme file is read with <code>vscode.workspace.fs.readFile</code>, decoded as UTF-8, and parsed.
+  <code>themeDir</code>, the directory holding the file, is kept because every path inside a theme is
+  relative to it (<a href="{{ src(theme, 102, 109) }}">source</a>).
+</p>
+
+<h2 id="parse">3. Parsing the theme file</h2>
+
+<p>
+  <code>parseIconThemeJson</code> is a single call to <code>jsonc-parser</code>'s <code>parse</code>, cast
+  to <code>IconThemeDocument</code> (<a href="{{ src(parser, 61, 63) }}">source</a>). JSONC matters because
+  theme files, Seti's included, may contain comments and trailing commas, which <code>JSON.parse</code>
+  rejects. Nothing is validated. A missing or mistyped field simply reads as <code>undefined</code> later.
+  The types follow VS Code's file icon theme format, which the file links to.
+</p>
+
+<h3 id="type-IconThemeDocument"><code>IconThemeDocument</code> and <code>IconThemeVariant</code></h3>
+<p class="jj-source"><a href="{{ src(parser, 45, 59) }}">icon_theme_json_parser.ts, lines 45–59</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>file</code></td><td><code>string?</code></td><td>Icon ID for files that match nothing else.</td><td><a href="{{ src(parser, 46) }}">L46</a></td></tr>
+      <tr><td><code>folder</code>, <code>folderExpanded</code></td><td><code>string?</code></td><td>Folder icon IDs. Parsed, never read.</td><td><a href="{{ src(parser, 47, 48) }}">L47–48</a></td></tr>
+      <tr><td><code>fileNames</code></td><td><code>Record&lt;string, string&gt;?</code></td><td>Exact (lower-case) file name → icon ID.</td><td><a href="{{ src(parser, 49) }}">L49</a></td></tr>
+      <tr><td><code>fileExtensions</code></td><td><code>Record&lt;string, string&gt;?</code></td><td>Extension without the dot → icon ID.</td><td><a href="{{ src(parser, 50) }}">L50</a></td></tr>
+      <tr><td><code>languageIds</code></td><td><code>Record&lt;string, string&gt;?</code></td><td>VS Code language ID → icon ID.</td><td><a href="{{ src(parser, 51) }}">L51</a></td></tr>
+      <tr><td><code>iconDefinitions</code></td><td><code>Record&lt;string, IconDefinition&gt;?</code></td><td>Icon ID → how to draw it.</td><td><a href="{{ src(parser, 52) }}">L52</a></td></tr>
+      <tr><td><code>fonts</code></td><td><code>ThemeFont[]?</code></td><td>Document only. Fonts that font-glyph icons draw with.</td><td><a href="{{ src(parser, 56) }}">L56</a></td></tr>
+      <tr><td><code>light</code></td><td><code>IconThemeVariant?</code></td><td>Document only. Overrides used under a light colour theme.</td><td><a href="{{ src(parser, 57) }}">L57</a></td></tr>
+      <tr><td><code>highContrast</code></td><td><code>IconThemeVariant?</code></td><td>Document only. Parsed, never read.</td><td><a href="{{ src(parser, 58) }}">L58</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="type-IconDefinition"><code>IconDefinition</code></h3>
+<p class="jj-source"><a href="{{ src(parser, 24, 30) }}">icon_theme_json_parser.ts, lines 24–30</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>iconPath</code></td><td><code>string?</code></td><td>Image path, relative to the theme file. Takes priority over a glyph.</td><td><a href="{{ src(parser, 25) }}">L25</a></td></tr>
+      <tr><td><code>fontCharacter</code></td><td><code>string?</code></td><td>Glyph code, for example <code>\E029</code>.</td><td><a href="{{ src(parser, 26) }}">L26</a></td></tr>
+      <tr><td><code>fontColor</code></td><td><code>string?</code></td><td>Glyph colour. The service needs it for a font icon.</td><td><a href="{{ src(parser, 27) }}">L27</a></td></tr>
+      <tr><td><code>fontId</code></td><td><code>string?</code></td><td>Which <code>ThemeFont</code> to use. The first font if absent.</td><td><a href="{{ src(parser, 28) }}">L28</a></td></tr>
+      <tr><td><code>fontSize</code></td><td><code>string?</code></td><td>Parsed, never read.</td><td><a href="{{ src(parser, 29) }}">L29</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="type-ThemeFont"><code>ThemeFont</code> and <code>ThemeFontSrc</code></h3>
+<p class="jj-source"><a href="{{ src(parser, 32, 43) }}">icon_theme_json_parser.ts, lines 32–43</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>id</code></td><td><code>string?</code></td><td>The name <code>fontId</code> refers to. A font without one is skipped.</td><td><a href="{{ src(parser, 38) }}">L38</a></td></tr>
+      <tr><td><code>src</code></td><td><code>ThemeFontSrc[]?</code></td><td>Font files. Only the first entry's <code>path</code> is used.</td><td><a href="{{ src(parser, 39) }}">L39</a></td></tr>
+      <tr><td><code>weight</code>, <code>style</code>, <code>size</code></td><td><code>string?</code></td><td>Parsed, never read.</td><td><a href="{{ src(parser, 40, 42) }}">L40–42</a></td></tr>
+      <tr><td><code>ThemeFontSrc.path</code></td><td><code>string</code></td><td>Font file, relative to the theme file.</td><td><a href="{{ src(parser, 33) }}">L33</a></td></tr>
+      <tr><td><code>ThemeFontSrc.format</code></td><td><code>string?</code></td><td>For example <code>woff</code>. Parsed, never read.</td><td><a href="{{ src(parser, 34) }}">L34</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="model">4. The <code>IconTheme</code> model</h2>
+
+<p>
+  The private constructor flattens the document into lookup tables once
+  (<a href="{{ src(theme, 39, 67) }}">source</a>). When <code>activeColorTheme.kind</code> is exactly
+  <code>Light</code>, the <code>light</code> variant's three maps are spread over the base ones and its
+  <code>file</code> replaces the base default. Otherwise the base is used as is. The default icon ID falls
+  back to <code>_default</code> when neither sets <code>file</code>.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>themeId</code></td><td><code>string</code></td><td>The ID it was loaded for. The cache key.</td><td><a href="{{ src(theme, 40) }}">L40</a></td></tr>
+      <tr><td><code>themeExtension</code></td><td><code>vscode.Extension</code></td><td>The extension that contributes the theme. Its URI is added to the webview's resource roots.</td><td><a href="{{ src(theme, 41) }}">L41</a></td></tr>
+      <tr><td><code>themeDir</code></td><td><code>vscode.Uri</code></td><td>Directory of the theme file, the base for icon and font paths.</td><td><a href="{{ src(theme, 43) }}">L43</a></td></tr>
+      <tr><td><code>fileNameToIconId</code>, <code>fileExtToIconId</code>, <code>languageIdToIconId</code></td><td><code>Record&lt;string, string&gt;</code></td><td>The theme's maps, with the light variant merged in.</td><td><a href="{{ src(theme, 28, 30) }}">L28–30</a></td></tr>
+      <tr><td><code>defaultIconId</code></td><td><code>string</code></td><td>Used when nothing matches.</td><td><a href="{{ src(theme, 33) }}">L33</a></td></tr>
+      <tr><td><code>fileNameToLanguageId</code>, <code>fileExtensionToLanguageId</code></td><td><code>Record&lt;string, string&gt;</code></td><td>Built from every installed extension's <code>contributes.languages</code> <code>filenames</code> and <code>extensions</code>, lower-cased, leading dot stripped. A later extension overwrites an earlier one.</td><td><a href="{{ src(theme, 149, 166) }}">L149–166</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="resolution">Resolving a file name</h3>
+
+<p><code>getIconId</code> lower-cases the name and stops at the first hit (<a href="{{ src(theme, 69, 89) }}">source</a>):</p>
+
+<ol>
+  <li><code>fileNames[name]</code>.</li>
+  <li>The language registered for that exact file name, then <code>languageIds[language]</code>.</li>
+  <li><code>fileExtensions[ext]</code>, where <code>ext</code> is the text after the last dot.</li>
+  <li>The language registered for that extension, then <code>languageIds[language]</code>.</li>
+  <li><code>defaultIconId</code>.</li>
+</ol>
+
+<p>
+  <code>getIconDefinition</code> then looks the ID up in the document's top-level
+  <code>iconDefinitions</code>, and <code>getFonts</code> returns <code>fonts</code> or an empty list
+  (<a href="{{ src(theme, 91, 97) }}">source</a>).
+</p>
+
+<h2 id="service">5. Serving icons to a webview</h2>
+
+<p>
+  An <code>IconThemeService</code> is built for one <code>vscode.Webview</code>
+  (<a href="{{ src(svc, 48, 55) }}">source</a>). Webviews can only load local files under their
+  <code>localResourceRoots</code>, so when a theme loads, <code>addExtensionUriToWebview</code> appends the
+  theme extension's URI to that list unless it is already there, by reassigning <code>webview.options</code>
+  (<a href="{{ src(svc, 129, 145) }}">source</a>). Each font's first <code>src</code> path is then turned
+  into a webview URI, keyed by font ID, and the first font's ID becomes the default
+  (<a href="{{ src(svc, 107, 117) }}">source</a>).
+</p>
+
+<p>
+  <code>getFileIcon(name)</code> is synchronous and returns <code>{}</code> until a theme has been loaded
+  (<a href="{{ src(svc, 57, 90) }}">source</a>). With a theme, an <code>iconPath</code> definition gives
+  <code>{iconUri}</code>. A <code>fontCharacter</code> definition gives <code>{font}</code>, but only when a
+  font family, its URI and a <code>fontColor</code> are all known. Anything else gives <code>{}</code>.
+</p>
+
+<h3 id="type-FileIcon"><code>FileIcon</code></h3>
+<p class="jj-source"><a href="{{ src(svc, 20, 27) }}">icon_theme_service.ts, lines 20–27</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>iconUri</code></td><td><code>string?</code></td><td>Webview URI of an image icon.</td><td><a href="{{ src(svc, 23) }}">L23</a></td></tr>
+      <tr><td><code>font</code></td><td><code>FileFont?</code></td><td>Set instead when the theme draws with a font. At most one of the two is set. Both are absent when nothing resolved.</td><td><a href="{{ src(svc, 26) }}">L26</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="type-FileFont"><code>FileFont</code></h3>
+<p class="jj-source"><a href="{{ src(svc, 29, 42) }}">icon_theme_service.ts, lines 29–42</a></p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>fontUri</code></td><td><code>string</code></td><td>Webview URI of the font file.</td><td><a href="{{ src(svc, 32) }}">L32</a></td></tr>
+      <tr><td><code>fontCharacter</code></td><td><code>string</code></td><td>The glyph code.</td><td><a href="{{ src(svc, 35) }}">L35</a></td></tr>
+      <tr><td><code>fontColor</code></td><td><code>string</code></td><td>The glyph colour.</td><td><a href="{{ src(svc, 38) }}">L38</a></td></tr>
+      <tr><td><code>fontFamily</code></td><td><code>string</code></td><td>The font's ID, meant to be used as a CSS font family name.</td><td><a href="{{ src(svc, 41) }}">L41</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Both interfaces' doc comments call them duplicates of <code>FileIcon</code> and <code>FileFont</code> in
+  <code>src/ui/commit_graph/api/types.ts</code>, kept separate to avoid a dependency. Those types aren't
+  there at this pin: the protocol's only file type is
+  <a href="{{ url_for('jj_dojo', slug='graph-protocol') }}#type-File"><code>File</code></a>, which has just a
+  <code>path</code>.
+</p>
+
+<h2 id="caching">6. Caching and invalidation</h2>
+
+<p>
+  The cache is one slot per service: the <code>IconTheme</code>, its font URIs and the default font ID
+  (<a href="{{ src(svc, 49, 53) }}">source</a>). <code>loadTheme</code> returns it unchanged when the
+  configured theme ID matches the cached <code>themeId</code>. Otherwise it loads the new theme and
+  replaces the slot (<a href="{{ src(svc, 97, 126) }}">source</a>). There is no event listener: the cache
+  is only refreshed when someone calls <code>loadTheme</code> again. Because the key is only the theme ID,
+  some changes are never picked up while the theme stays the same:
+</p>
+
+<ul>
+  <li>Switching between light and dark colour themes. The light variant is merged in the constructor.</li>
+  <li>Installing or removing an extension that contributes languages. The language maps are built in the constructor.</li>
+  <li>An update to the theme extension that changes its JSON.</li>
+</ul>
+
+<h2 id="tests">7. Tests</h2>
+
+<p>
+  Both tests install the fake VS Code API from <code>src/testing/</code>, register a <code>FakeExtension</code> contributing one icon theme, set
+  <code>workbench.iconTheme</code>, write the theme JSON into the fake file system and load it into a
+  service bound to a <code>FakeWebview</code>.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Test</th><th>Checks</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>resolves image file icons</td><td><code>file.ts</code> resolves through <code>fileExtensions</code> to the TypeScript SVG. <code>other.txt</code> falls back to <code>file</code>. Both are <code>vscode-webview://</code> URIs under the theme directory.</td><td><a href="{{ src(test, 25, 81) }}">25–81</a></td></tr>
+      <tr><td>resolves font-based file icons</td><td><code>file.ts</code> gets the glyph with its explicit <code>fontId</code>. <code>other.txt</code> gets a definition without <code>fontId</code> and so uses the first font. Both share the same font URI.</td><td><a href="{{ src(test, 83, 163) }}">83–163</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Not covered: file-name and language-ID lookups, the light variant, the Seti fallback, label-only theme
+  entries, and the resource-root update.
+</p>
+
+<h2 id="gaps">8. Loose ends at this pin</h2>
+
+<ul>
+  <li><strong>Not wired in.</strong> Nothing outside this directory imports <code>IconThemeService</code>.
+    The Bazel target is visible to <code>//src/ui/commit_graph_provider:__subpackages__</code>, but that
+    directory has no <code>BUILD.bazel</code> at this pin (<a href="{{ src(build, 20, 34) }}">source</a>).
+    The target also depends on <code>//src/ui/commit_graph/api</code> without importing it.</li>
+  <li><strong>Extensions with dots.</strong> Only the text after the last dot is tried, so a theme's
+    <code>d.ts</code> or <code>test.ts</code> entries never match. VS Code itself tries the longer
+    extensions first.</li>
+  <li><strong>Names with a path or no dot.</strong> The whole argument is looked up as a file name, so a
+    path like <code>src/a.ts</code> never hits <code>fileNames</code>. A name with no dot is also tried as an
+    extension.</li>
+  <li><strong>Variants.</strong> <code>highContrast</code> is ignored, and so is <code>light</code> under
+    the high-contrast light kind. A variant's own <code>iconDefinitions</code> are never consulted.</li>
+  <li><strong>Folders and font details.</strong> Folder icons, <code>fontSize</code>, font weight, style,
+    format and every <code>src</code> after the first are dropped. A font glyph without
+    <code>fontColor</code> resolves to nothing, though the format lets it inherit the text colour.</li>
+  <li>The Seti fallback path is hard-coded, so it would break if VS Code moved that file.</li>
+</ul>

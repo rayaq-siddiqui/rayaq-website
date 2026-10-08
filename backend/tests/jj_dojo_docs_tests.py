@@ -161,3 +161,16 @@ def test_graph_webview_covers_every_required_section_with_diagrams():
     assert body.count('<svg viewBox') >= 2
     for name in ["search_box_state", "search_highlighter", "safeHTML", "JjResizeController", "isNoopInsert"]:
         assert name in body, name
+
+
+def test_icon_theme_covers_lookup_parsing_model_and_caching():
+    if jj_dojo_docs.find_page("icon-theme") is None:
+        return
+    client = app_module.app.test_client()
+
+    body = client.get("/jj-dojo/icon-theme").get_data(as_text=True)
+
+    for anchor in ["locate", "parse", "model", "service", "caching", "tests", "gaps"]:
+        assert f'<h2 id="{anchor}">' in body, anchor
+    for name in ["IconTheme", "IconThemeDocument", "IconDefinition", "ThemeFont", "FileIcon", "FileFont", "jsonc-parser"]:
+        assert name in body, name

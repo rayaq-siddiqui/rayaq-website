@@ -53,7 +53,7 @@ PAGES = [
         "title": "Icon theme service",
         "summary": "How the active file-icon theme is found, parsed and served to webviews.",
         "sources": ["src/ui/icon_theme_service/"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "build-and-test",
