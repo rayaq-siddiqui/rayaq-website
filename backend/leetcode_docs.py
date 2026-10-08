@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -3681,6 +3681,63 @@ def cyclic_placement_trace(nums):
     return {"swaps": swaps, "placed": items, "missing": missing}
 
 
+
+def converging_pair_trace(nums, target):
+    """Sorted pair search: each step compares the two ends with the target and discards one end."""
+    left, right = 0, len(nums) - 1
+    steps = []
+    while left < right:
+        total = nums[left] + nums[right]
+        action = "found" if total == target else ("move left" if total < target else "move right")
+        steps.append({"left": left, "right": right, "sum": total, "action": action})
+        if total == target:
+            return {"steps": steps, "pair": (left, right)}
+        if total < target:
+            left += 1
+        else:
+            right -= 1
+    return {"steps": steps, "pair": None}
+
+
+def container_trace(heights):
+    """Container with most water: area at each step, then move the shorter wall inward."""
+    left, right = 0, len(heights) - 1
+    best = 0
+    steps = []
+    while left < right:
+        area = min(heights[left], heights[right]) * (right - left)
+        best = max(best, area)
+        move = "left" if heights[left] <= heights[right] else "right"
+        steps.append({"left": left, "right": right, "area": area, "best": best, "move": move})
+        if move == "left":
+            left += 1
+        else:
+            right -= 1
+    return {"steps": steps, "best": best}
+
+
+def three_sum_triples(nums):
+    """Sorted array, one fixed element and a converging pair on the rest, skipping repeated values."""
+    items = sorted(nums)
+    triples = []
+    for i in range(len(items) - 2):
+        if i and items[i] == items[i - 1]:
+            continue
+        left, right = i + 1, len(items) - 1
+        while left < right:
+            total = items[i] + items[left] + items[right]
+            if total < 0:
+                left += 1
+            elif total > 0:
+                right -= 1
+            else:
+                triples.append((items[i], items[left], items[right]))
+                left += 1
+                while left < right and items[left] == items[left - 1]:
+                    left += 1
+    return {"sorted": items, "triples": triples}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -3818,6 +3875,9 @@ def render(slug, render_template):
         "rotate_stages": rotate_stages,
         "next_permutation_steps": next_permutation_steps,
         "cyclic_placement_trace": cyclic_placement_trace,
+        "converging_pair_trace": converging_pair_trace,
+        "container_trace": container_trace,
+        "three_sum_triples": three_sum_triples,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,

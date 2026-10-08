@@ -355,3 +355,21 @@ def test_in_place_helpers_match_the_page():
     assert "<code>[1, 4, 2, 3, 5]</code>" in body
     assert "takes 3 swaps and leaves <code>[1, -1, 3, 4]</code>" in body
     assert "<td class=\"num\">[5, 6, 7, 1, 2, 3, 4]</td>" in body
+
+
+def test_two_pointer_helpers_match_the_page():
+    pair = leetcode_docs.converging_pair_trace([1, 3, 4, 6, 8, 11, 15], 14)
+    assert [s["action"] for s in pair["steps"]] == ["move right", "move left", "found"]
+    assert pair["pair"] == (1, 5)
+    assert leetcode_docs.converging_pair_trace([1, 2], 10)["pair"] is None
+    box = leetcode_docs.container_trace([1, 8, 6, 2, 5, 4, 8, 3, 7])
+    assert box["best"] == 49 and [s["area"] for s in box["steps"]] == [8, 49, 18, 40, 24, 6, 10, 4]
+    assert leetcode_docs.container_trace([5])["best"] == 0
+    three = leetcode_docs.three_sum_triples([-1, 0, 1, 2, -1, -4, -1])
+    assert three["sorted"] == [-4, -1, -1, -1, 0, 1, 2]
+    assert three["triples"] == [(-1, -1, 2), (-1, 0, 1)]
+    assert leetcode_docs.three_sum_triples([0, 0, 0, 0])["triples"] == [(0, 0, 0)]
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/two-pointers").get_data(as_text=True))
+    assert "3 comparisons instead of 21 pairs" in body
+    assert "The answer is 49." in body
+    assert "<code>[-1, -1, 2]</code>, <code>[-1, 0, 1]</code>" in body
