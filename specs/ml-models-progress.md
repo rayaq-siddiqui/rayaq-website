@@ -251,8 +251,8 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 
 1. `tensors-and-shapes` ✓
 2. `vectors-and-dot-products` ✓
-3. `matrix-multiplication` ← next
-4. `derivatives-and-gradients`
+3. `matrix-multiplication` ✓
+4. `derivatives-and-gradients` ← next
 5. `chain-rule`
 6. `probability-and-distributions`
 7. `expectation-and-variance`

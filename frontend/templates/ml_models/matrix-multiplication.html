@@ -1,0 +1,471 @@
+{% set A = matmul_example.a %}
+{% set B = matmul_example.b %}
+{% set C = matmul(A, B) %}
+{% set lx = linear_example.x %}
+{% set lw = linear_example.weight %}
+{% set lb = linear_example.bias %}
+{% set ly = linear_layer(lx, lw, lb) %}
+{% set M = inverse_example %}
+{% set Minv = inverse_2x2(M) %}
+{% macro mat(m) -%}[{% for row in m %}[{% for x in row %}{{ "%g"|format(x) }}{% if not loop.last %}, {% endif %}{% endfor %}]{% if not loop.last %}, {% endif %}{% endfor %}]{%- endmacro %}
+{% macro dims(shape) -%}[{{ shape|join(", ") }}]{%- endmacro %}
+{% macro gflops(x) -%}{{ "%.1f"|format(x / 1e9) }} GFLOP{%- endmacro %}
+<header class="jj-header">
+  <h1>Matrices and matrix multiplication</h1>
+  <p class="tagline">
+    Matrix multiplication is many dot products done at once, and it is where almost all of a
+    neural network's compute goes. This page covers what it computes, the shape rules
+    PyTorch enforces, batched matmul and <code>einsum</code>, how <code>nn.Linear</code> is
+    one matmul plus a bias, and how to count the FLOPs, with every number worked and every
+    function linked at {{ upstream.tag }}.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A layer with 4096 outputs computes 4096 dot products for every input vector, and a
+  batch holds thousands of input vectors. Writing that as a loop over dot products is slow
+  and hides the structure. We need one operation that means "every row of this, dotted with
+  every column of that". It should be easy to reason about on paper, cheap to count, and
+  fast on hardware built for it.
+</p>
+<p>
+  That operation is matrix multiplication. Reading its shapes fluently is what lets you
+  debug a model ("expected 512, got 768"), estimate its cost before running it, and see
+  that attention, linear layers and embeddings lookups are the same few operations.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  A matrix is a grid of numbers with <code>m</code> rows and <code>k</code> columns, shape
+  <code>[m, k]</code>. Think of it as a stack of m row vectors. Multiplying it by a
+  <code>[k, n]</code> matrix takes each of the m rows and dots it with each of the n
+  columns, giving an <code>[m, n]</code> grid of results. The inner sizes (both k) must
+  match because a dot product needs two vectors of the same length, and they disappear
+  from the result because each dot product collapses them to one number.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 300" role="img" aria-labelledby="mm-grid-title mm-grid-desc">
+    <title id="mm-grid-title">Matrix multiplication as rows dotted with columns</title>
+    <desc id="mm-grid-desc">
+      A is a 2 by 3 matrix on the left, B a 3 by 2 matrix above, and their product C, 2 by 2,
+      where their row and column meet. The second row of A, [4, 5, 6], and the first column
+      of B, [7, 9, 11], are highlighted. Their dot product, 4·7 + 5·9 + 6·11 = 139, fills the
+      highlighted cell in the second row and first column of C.
+    </desc>
+    {% set cell = 46 %}
+    {% set ax = 70 %}{% set ay = 170 %}
+    {% set bx = 230 %}{% set by = 20 %}
+    {% set cx = 230 %}{% set cy = 170 %}
+    <text x="{{ ax + 1.5 * cell }}" y="{{ ay - 10 }}" font-size="13" text-anchor="middle" class="d-muted">A {{ dims([2, 3]) }}</text>
+    {% for row in A %}{% set r = loop.index0 %}{% for x in row %}
+      <rect x="{{ ax + loop.index0 * cell }}" y="{{ ay + r * cell }}" width="{{ cell }}" height="{{ cell }}" class="d-box {{ 'ml-tensor' if r == 1 else '' }}" stroke-width="{{ 2.5 if r == 1 else 1 }}"></rect>
+      <text x="{{ ax + loop.index0 * cell + cell / 2 }}" y="{{ ay + r * cell + 29 }}" font-size="15" text-anchor="middle">{{ x }}</text>
+    {% endfor %}{% endfor %}
+    <text x="{{ bx + cell * 2 + 12 }}" y="{{ by + 1.5 * cell + 5 }}" font-size="13" class="d-muted">B {{ dims([3, 2]) }}</text>
+    {% for row in B %}{% set r = loop.index0 %}{% for x in row %}
+      <rect x="{{ bx + loop.index0 * cell }}" y="{{ by + r * cell }}" width="{{ cell }}" height="{{ cell }}" class="d-box {{ 'ml-weight' if loop.index0 == 0 else '' }}" stroke-width="{{ 2.5 if loop.index0 == 0 else 1 }}"></rect>
+      <text x="{{ bx + loop.index0 * cell + cell / 2 }}" y="{{ by + r * cell + 29 }}" font-size="15" text-anchor="middle">{{ x }}</text>
+    {% endfor %}{% endfor %}
+    {% for row in C %}{% set r = loop.index0 %}{% for x in row %}
+      {% set hit = r == 1 and loop.index0 == 0 %}
+      <rect x="{{ cx + loop.index0 * cell }}" y="{{ cy + r * cell }}" width="{{ cell }}" height="{{ cell }}" class="d-box {{ 'ml-op' if hit else '' }}" stroke-width="{{ 2.5 if hit else 1 }}"></rect>
+      <text x="{{ cx + loop.index0 * cell + cell / 2 }}" y="{{ cy + r * cell + 29 }}" font-size="15" text-anchor="middle" font-weight="{{ 700 if hit else 400 }}">{{ x }}</text>
+    {% endfor %}{% endfor %}
+    <text x="{{ cx + cell * 2 + 12 }}" y="{{ cy + cell + 5 }}" font-size="13" class="d-muted">C = A @ B {{ dims([2, 2]) }}</text>
+    <text x="420" y="60" font-size="13">C[1][0] = A[1] · B[:, 0]</text>
+    <text x="420" y="84" font-size="13">= {% for i in range(3) %}{{ A[1][i] }}·{{ B[i][0] }}{% if not loop.last %} + {% endif %}{% endfor %}</text>
+    <text x="420" y="108" font-size="13">= {% for i in range(3) %}{{ A[1][i] * B[i][0] }}{% if not loop.last %} + {% endif %}{% endfor %} = {{ C[1][0] }}</text>
+    <text x="420" y="270" font-size="12" class="d-muted">4 cells × 3 multiply-adds = 24 FLOPs</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Each output cell sits where its row of A and its column of B line up. The inner size, 3,
+  is used up by the dot product; the outer sizes, 2 and 2, become the result's shape.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="definition">The definition</h3>
+
+<p class="ml-formula">C<sub>ij</sub> = Σ<sub>p=1..k</sub> A<sub>ip</sub> B<sub>pj</sub>, &nbsp; A: [m, k], B: [k, n] → C: [m, n]</p>
+
+<p>
+  Two other readings of the same sum are worth keeping. Column j of C is A times column j
+  of B, a weighted sum of A's columns. Row i of C is row i of A times B, a weighted sum of
+  B's rows. The second is how to read a linear layer: each output is a mixture of the
+  weight rows, weighted by the input. Matmul is associative,
+  (AB)C = A(BC), but not commutative: AB and BA usually differ, and often only one of them
+  has valid shapes.
+</p>
+
+<h3 id="shape-rules">Shape rules and <code>torch.matmul</code></h3>
+
+<p>
+  <code>torch.mm</code> takes exactly two 2-D matrices
+  (<a href="{{ src('torch/_torch_docs.py', 7831, 7887) }}"><code>mm</code></a>).
+  <code>torch.matmul</code>, which <code>@</code> calls, dispatches on rank
+  (<a href="{{ src('torch/_torch_docs.py', 7908, 7990) }}"><code>matmul</code></a>):
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Left</th><th>Right</th><th>Result</th><th>What happens</th></tr></thead>
+    <tbody>
+      {% for left, right, note in [
+        ((3,), (3,), "dot product, a 0-d scalar"),
+        ((2, 3), (3, 4), "matrix–matrix"),
+        ((2, 3), (3,), "matrix–vector: the vector is a column"),
+        ((3,), (3, 4), "vector–matrix: a 1 is prepended, then removed"),
+        ((10, 2, 3), (3, 4), "batched: the matrix is reused for all 10"),
+        ((5, 1, 2, 3), (7, 3, 4), "batch dims broadcast: (5, 1) with (7,)"),
+      ] %}
+      <tr>
+        <td><code>{{ dims(left) }}</code></td>
+        <td><code>{{ dims(right) }}</code></td>
+        <td><code>{{ dims(matmul_shape(left, right)) }}</code></td>
+        <td>{{ note }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The last two dimensions are the matrices; everything before them is a batch and
+  <a href="{{ url_for('ml_models', slug='tensors-and-shapes') }}#broadcasting">broadcasts</a>.
+  When shapes don't fit, the error names the two inner sizes, so "mat1 and mat2 shapes
+  cannot be multiplied (32x768 and 512x10)" means a 768 met a 512.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 210" role="img" aria-labelledby="mm-shape-title mm-shape-desc">
+    <title id="mm-shape-title">The shape rule for matrix multiplication, plain and batched</title>
+    <desc id="mm-shape-desc">
+      Top row: [m, k] @ [k, n] gives [m, n]; the two k's are linked and crossed out, m and n
+      carry through. Bottom row: [b, m, k] @ [b, k, n] gives [b, m, n]; the batch dimension b
+      is matched like broadcasting, the k's cancel, and m and n carry through.
+    </desc>
+    {% for y, batch in [(50, false), (145, true)] %}
+      {% set lead = "b, " if batch else "" %}
+      {% set shift = 30 if batch else 0 %}
+      <text x="40" y="{{ y }}" font-size="18">[{{ lead }}m, <tspan fill="var(--jj-amber)" font-weight="700">k</tspan>]</text>
+      <text x="{{ 130 + shift }}" y="{{ y }}" font-size="18">@</text>
+      <text x="{{ 170 + shift }}" y="{{ y }}" font-size="18">[{{ lead }}<tspan fill="var(--jj-amber)" font-weight="700">k</tspan>, n]</text>
+      <text x="{{ 280 + 2 * shift }}" y="{{ y }}" font-size="18">→</text>
+      <text x="{{ 320 + 2 * shift }}" y="{{ y }}" font-size="18" font-weight="700" style="fill: var(--jj-green)">[{{ lead }}m, n]</text>
+      <text x="40" y="{{ y + 45 }}" font-size="13" class="d-muted">{{ "b matrix products side by side; the batch dims broadcast like elementwise ops" if batch else "the inner k must match and is summed away; m and n carry through" }}</text>
+    {% endfor %}
+    <path d="M 87 58 Q 135 82 183 58" class="d-line ml-dashed" fill="none" stroke-width="1.5"></path>
+    <path d="M 108 153 Q 172 177 236 153" class="d-line ml-dashed" fill="none" stroke-width="1.5"></path>
+  </svg>
+</div>
+
+<h3 id="batched-and-einsum">Batched matmul and <code>einsum</code></h3>
+
+<p>
+  <code>torch.bmm</code> multiplies two stacks of matrices of shape
+  <code>[b, m, k]</code> and <code>[b, k, n]</code>, with no broadcasting
+  (<a href="{{ src('torch/_torch_docs.py', 1706, 1762) }}"><code>bmm</code></a>).
+  <code>addmm</code> and <code>baddbmm</code> fuse "β·C + α·(A @ B)" into one kernel
+  (<a href="{{ src('torch/_torch_docs.py', 592, 665) }}"><code>addmm</code></a>,
+  <a href="{{ src('torch/_torch_docs.py', 1512, 1581) }}"><code>baddbmm</code></a>).
+  <code>torch.einsum</code> names every axis with a letter and sums over any letter missing
+  from the output, so <code>"ik,kj->ij"</code> is matmul, <code>"bik,bkj->bij"</code> is
+  bmm, and <code>"bhqd,bhkd->bhqk"</code> is every attention head's QKᵀ at once
+  (<a href="{{ src('torch/functional.py', 175, 382) }}"><code>einsum</code></a>).
+</p>
+
+<h3 id="linear-layer">A linear layer is a matmul plus a bias</h3>
+
+<p class="ml-formula">y = x Wᵀ + b, &nbsp; x: [batch, in], W: [out, in], b: [out] → y: [batch, out]</p>
+
+<p>
+  <code>nn.Linear</code> stores its weight as <code>[out_features, in_features]</code>, one
+  row per output neuron, and its <code>forward</code> is a single call to
+  <code>F.linear</code>
+  (<a href="{{ src('torch/nn/modules/linear.py', 130, 134) }}"><code>Linear.forward</code></a>,
+  <a href="{{ src('torch/nn/functional.py', 2382, 2403) }}"><code>F.linear</code></a>).
+  So each output is a dot product of the input with one weight row: the neuron from the
+  <a href="{{ url_for('ml_models', slug='vectors-and-dot-products') }}#why-it-is-everywhere">previous page</a>.
+  The transpose is why the weight is <code>[out, in]</code> while the math reads
+  "in to out". The input can have any number of leading dimensions,
+  <code>[batch, seq, in]</code> included; only the last must equal <code>in_features</code>.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 190" role="img" aria-labelledby="mm-linear-title mm-linear-desc">
+    <title id="mm-linear-title">nn.Linear as one matmul and one broadcast add</title>
+    <desc id="mm-linear-desc">
+      An input box x of shape [batch, in] feeds a matmul with the transposed weight Wᵀ of
+      shape [in, out], giving [batch, out]. A bias of shape [out] is broadcast and added to
+      every row, giving the output y of shape [batch, out].
+    </desc>
+    <defs>
+      <marker id="mm-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    <rect x="20" y="70" width="110" height="50" rx="6" class="d-box ml-tensor"></rect>
+    <text x="75" y="92" font-size="14" text-anchor="middle">x</text>
+    <text x="75" y="110" font-size="12" text-anchor="middle" class="d-muted">[batch, in]</text>
+    <rect x="200" y="70" width="80" height="50" rx="25" class="d-box ml-op"></rect>
+    <text x="240" y="100" font-size="15" text-anchor="middle">@</text>
+    <rect x="185" y="0" width="110" height="46" rx="6" class="d-box ml-weight"></rect>
+    <text x="240" y="20" font-size="14" text-anchor="middle">Wᵀ</text>
+    <text x="240" y="37" font-size="12" text-anchor="middle" class="d-muted">[in, out]</text>
+    <rect x="350" y="70" width="80" height="50" rx="25" class="d-box ml-op"></rect>
+    <text x="390" y="100" font-size="15" text-anchor="middle">+</text>
+    <rect x="335" y="140" width="110" height="46" rx="6" class="d-box ml-weight"></rect>
+    <text x="390" y="160" font-size="14" text-anchor="middle">b</text>
+    <text x="390" y="177" font-size="12" text-anchor="middle" class="d-muted">[out]</text>
+    <rect x="510" y="70" width="140" height="50" rx="6" class="d-box ml-tensor"></rect>
+    <text x="580" y="92" font-size="14" text-anchor="middle">y</text>
+    <text x="580" y="110" font-size="12" text-anchor="middle" class="d-muted">[batch, out]</text>
+    <line x1="130" y1="95" x2="198" y2="95" class="d-line" marker-end="url(#mm-arrow)"></line>
+    <line x1="240" y1="46" x2="240" y2="68" class="d-line" marker-end="url(#mm-arrow)"></line>
+    <line x1="280" y1="95" x2="348" y2="95" class="d-line" marker-end="url(#mm-arrow)"></line>
+    <text x="314" y="88" font-size="11" text-anchor="middle" class="d-muted">[batch, out]</text>
+    <line x1="390" y1="140" x2="390" y2="122" class="d-line" marker-end="url(#mm-arrow)"></line>
+    <text x="455" y="160" font-size="11" class="d-muted">broadcast to every row</text>
+    <line x1="430" y1="95" x2="508" y2="95" class="d-line" marker-end="url(#mm-arrow)"></line>
+  </svg>
+</div>
+
+<h3 id="flops">Counting FLOPs</h3>
+
+<p>
+  Each of the m·n output cells needs k multiplies and k adds, so
+</p>
+<p class="ml-formula">FLOPs(A @ B) = 2 · m · k · n &nbsp; (times b for a batch of b)</p>
+<p>
+  A linear layer applied to T tokens costs 2 · T · in · out. That is where the rule of
+  thumb "a forward pass costs about 2 FLOPs per parameter per token" comes from, and
+  backward costs about twice the forward, giving the 6·N·D estimate for training a model of
+  N parameters on D tokens. Moving the matrices costs only (mk + kn + mn) numbers, so for
+  large matrices compute grows much faster than memory traffic, which is why GPUs run
+  matmuls near peak and most other ops far below it.
+</p>
+
+<h3 id="identity-transpose-inverse">Identity, transpose and inverse</h3>
+
+<ul>
+  <li>
+    The <strong>identity</strong> I has ones on the diagonal and zeros elsewhere; AI = A
+    (<a href="{{ src('torch/_torch_docs.py', 4380, 4408) }}"><code>torch.eye</code></a>).
+  </li>
+  <li>
+    The <strong>transpose</strong> Aᵀ swaps rows and columns, and (AB)ᵀ = BᵀAᵀ. In PyTorch
+    <code>.T</code>/<code>.t()</code>/<code>.mT</code> return a view with swapped strides,
+    no copy (<a href="{{ src('torch/_torch_docs.py', 11507, 11544) }}"><code>torch.t</code></a>).
+  </li>
+  <li>
+    The <strong>inverse</strong> A⁻¹ of a square matrix undoes it: AA⁻¹ = I. For
+    M = {{ mat(M) }}, M⁻¹ = {{ mat(Minv) }}. Only matrices with a non-zero determinant have
+    one (<a href="{{ pinned('pytorch', 'torch/linalg/__init__.py', 214, 292) }}"><code>linalg.inv</code></a>;
+    <code>torch.inverse</code> is an alias). In practice you rarely invert: to solve
+    Ax = b, <code>torch.linalg.solve</code> is faster and more accurate.
+  </li>
+</ul>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Term</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Matrix product</td>
+        <td><code>[m, k]</code> @ <code>[k, n]</code> → <code>[m, n]</code></td>
+        <td>Every row of the left dotted with every column of the right.</td>
+        <td><a href="{{ src('torch/_torch_docs.py', 7831, 7887) }}"><code>torch.mm</code></a></td>
+      </tr>
+      <tr>
+        <td><code>matmul</code> / <code>@</code></td>
+        <td>any ranks ≥ 1; batch dims broadcast</td>
+        <td>Dot, matrix–vector, matrix–matrix or batched, chosen by rank.</td>
+        <td><a href="{{ src('torch/_torch_docs.py', 7908, 7990) }}"><code>torch.matmul</code></a></td>
+      </tr>
+      <tr>
+        <td>Batched matmul</td>
+        <td><code>[b, m, k]</code> @ <code>[b, k, n]</code></td>
+        <td>b independent products; no broadcasting.</td>
+        <td><a href="{{ src('torch/_torch_docs.py', 1706, 1762) }}"><code>torch.bmm</code></a></td>
+      </tr>
+      <tr>
+        <td>Fused multiply-add</td>
+        <td><code>beta</code>, <code>alpha</code></td>
+        <td>β·input + α·(A @ B) in one kernel.</td>
+        <td><a href="{{ src('torch/_torch_docs.py', 592, 665) }}"><code>addmm</code></a>, <a href="{{ src('torch/_torch_docs.py', 1512, 1581) }}"><code>baddbmm</code></a></td>
+      </tr>
+      <tr>
+        <td>Einstein summation</td>
+        <td>equation string, e.g. <code>"bik,bkj->bij"</code></td>
+        <td>Any product-and-sum over named axes.</td>
+        <td><a href="{{ src('torch/functional.py', 175, 382) }}"><code>torch.einsum</code></a></td>
+      </tr>
+      <tr>
+        <td>Linear layer</td>
+        <td><code>weight</code> <code>[out, in]</code>, <code>bias</code> <code>[out]</code></td>
+        <td>y = x Wᵀ + b over the last dimension of x.</td>
+        <td><a href="{{ src('torch/nn/modules/linear.py', 53, 147) }}"><code>nn.Linear</code></a>, <a href="{{ src('torch/nn/functional.py', 2382, 2403) }}"><code>F.linear</code></a></td>
+      </tr>
+      <tr>
+        <td>Identity</td>
+        <td><code>n</code>, optional <code>m</code></td>
+        <td>Ones on the diagonal; the "do nothing" matrix.</td>
+        <td><a href="{{ src('torch/_torch_docs.py', 4380, 4408) }}"><code>torch.eye</code></a></td>
+      </tr>
+      <tr>
+        <td>Inverse</td>
+        <td>square, non-singular</td>
+        <td>The matrix that undoes A.</td>
+        <td><a href="{{ pinned('pytorch', 'torch/linalg/__init__.py', 214, 292) }}"><code>linalg.inv</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>A linear layer by hand.</strong> Two inputs with three features each,
+    x = {{ mat(lx) }}, shape <code>{{ dims([2, 3]) }}</code>. A layer with two outputs has
+    W = {{ mat(lw) }}, shape <code>{{ dims([2, 3]) }}</code>, and b = {{ lb }}.
+  </p>
+  <ol>
+    <li>Transpose the weight: Wᵀ = {{ mat(transpose(lw)) }}, shape <code>{{ dims([3, 2]) }}</code>. Now x @ Wᵀ is <code>{{ dims([2, 3]) }}</code> @ <code>{{ dims([3, 2]) }}</code> → <code>{{ dims(matmul_shape([2, 3], [3, 2])) }}</code>.</li>
+    <li>
+      Output 0 dots each input with W's first row, [1, 0, −1], which computes "first
+      feature minus third": 1 − 3 = −2 and 4 − 6 = −2.
+    </li>
+    <li>
+      Output 1 dots with [0.5, 0.5, 0.5], half the sum: 0.5·6 = 3 and 0.5·15 = 7.5.
+    </li>
+    <li>x @ Wᵀ = {{ mat(matmul(lx, transpose(lw))) }}. Add b = {{ lb }} to every row: y = {{ mat(ly) }}.</li>
+    <li>
+      Cost: 2 · 2 · 3 · 2 = {{ matmul_flops(2, 3, 2) }} FLOPs for the matmul, plus 4 adds for the
+      bias.
+    </li>
+  </ol>
+  <p><strong>Scaling the count up.</strong> The same formula sizes real models:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Operation</th><th>m · k · n</th><th>FLOPs</th></tr></thead>
+      <tbody>
+        {% for name, m, k, n in [
+          ("The layer above", 2, 3, 2),
+          ("Linear 4096 → 4096 on 2048 tokens", 2048, 4096, 4096),
+          ("FFN up-projection 4096 → 16384 on 2048 tokens", 2048, 4096, 16384),
+          ("Attention scores QKᵀ, one head, 2048 tokens, d = 128", 2048, 128, 2048),
+        ] %}
+        <tr>
+          <td>{{ name }}</td>
+          <td>{{ m }} · {{ k }} · {{ n }}</td>
+          <td>{% set f = matmul_flops(m, k, n) %}{% if f < 1e6 %}{{ f }}{% else %}{{ gflops(f) }}{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code class="language-python">import torch
+import torch.nn as nn
+
+A = torch.tensor([[1., 2., 3.], [4., 5., 6.]])
+B = torch.tensor([[7., 8.], [9., 10.], [11., 12.]])
+A @ B                                   # tensor([[ 58.,  64.], [139., 154.]])
+torch.einsum("ik,kj->ij", A, B)         # the same product, axes named
+
+layer = nn.Linear(3, 2)                 # weight [2, 3], bias [2]
+with torch.no_grad():
+    layer.weight.copy_(torch.tensor([[1., 0., -1.], [.5, .5, .5]]))
+    layer.bias.copy_(torch.tensor([0., 1.]))
+layer(A)                                # tensor([[-2.0, 4.0], [-2.0, 8.5]])
+A @ layer.weight.T + layer.bias         # identical: what F.linear computes
+
+x = torch.randn(32, 10, 3)              # [batch, seq, in]
+layer(x).shape                          # torch.Size([32, 10, 2])
+torch.matmul(torch.randn(5, 1, 2, 3), torch.randn(7, 3, 4)).shape  # [5, 7, 2, 4]</code></pre>
+
+<p>From scratch, the triple loop every kernel optimizes:</p>
+
+<pre><code class="language-python">def matmul(a, b):
+    m, k, n = len(a), len(b), len(b[0])
+    assert len(a[0]) == k, "inner sizes must match"
+    c = [[0] * n for _ in range(m)]
+    for i in range(m):
+        for j in range(n):
+            for p in range(k):
+                c[i][j] += a[i][p] * b[p][j]
+    return c</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Order of a chain matters.</strong> (AB)C and A(BC) give the same answer at very
+    different costs. With A <code>[1000, 10]</code>, B <code>[10, 1000]</code>,
+    C <code>[1000, 1]</code>: (AB)C costs {{ "{:,}".format(matmul_flops(1000, 10, 1000) + matmul_flops(1000, 1000, 1)) }}
+    FLOPs, A(BC) only {{ "{:,}".format(matmul_flops(10, 1000, 1) + matmul_flops(1000, 10, 1)) }}. LoRA's low-rank
+    update relies on this.
+  </li>
+  <li>
+    <strong>matmul versus einsum.</strong> <code>einsum</code> is clearer for anything with
+    more than two axes and usually lowers to the same kernels, but an unusual equation can
+    fall back to a slower path; profile hot loops.
+  </li>
+  <li>
+    <strong>Precision.</strong> On recent GPUs, float32 matmuls may run in TF32, which keeps
+    float32 range but only about 10 mantissa bits. That is controlled by
+    <code>torch.backends.cuda.matmul.allow_tf32</code> and
+    <code>torch.set_float32_matmul_precision</code>. bfloat16 and float16 matmuls are faster
+    still and accumulate in float32.
+  </li>
+  <li>
+    <strong>Shapes that suit the hardware.</strong> Tensor cores work on tiles; sizes that
+    are multiples of 8 (or 64, 128) run noticeably faster, which is why vocabularies get
+    padded.
+  </li>
+  <li>
+    <strong>Don't invert.</strong> Explicit inverses are slow and amplify rounding error
+    for nearly singular matrices; use <code>linalg.solve</code> or a factorization.
+  </li>
+</ul>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="ml-quiz">
+  <summary>What is the shape of <code>[8, 1, 5, 6] @ [3, 6, 2]</code>?</summary>
+  <p><code>{{ dims(matmul_shape([8, 1, 5, 6], [3, 6, 2])) }}</code>. The matrix dims give [5, 2]; the batch dims (8, 1) and (3,) broadcast to (8, 3).</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why is <code>nn.Linear(768, 10).weight</code> shaped <code>[10, 768]</code> and not <code>[768, 10]</code>?</summary>
+  <p>Each row is one output neuron's weight vector, and <code>F.linear</code> computes x Wᵀ + b. Storing one row per output keeps each neuron's weights contiguous.</p>
+</details>
+<details class="ml-quiz">
+  <summary>How many FLOPs does <code>[64, 512] @ [512, 1000]</code> take?</summary>
+  <p>2 · 64 · 512 · 1000 = {{ "{:,}".format(matmul_flops(64, 512, 1000)) }}.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Write attention's QKᵀ for tensors shaped <code>[batch, heads, seq, d]</code> with einsum.</summary>
+  <p><code>torch.einsum("bhqd,bhkd->bhqk", q, k)</code>: d is missing from the output, so it is summed, giving one score per query–key pair per head.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Strang. <em>Introduction to Linear Algebra</em>, 6th ed., chapter 2 (matrices and their multiplication). Wellesley-Cambridge Press, 2023.</li>
+  <li>Kaplan et al. <em>Scaling Laws for Neural Language Models.</em> 2020, §2.1 on counting compute as 2N FLOPs per token forward. <a href="https://arxiv.org/abs/2001.08361">arXiv:2001.08361</a></li>
+  <li>Hu et al. <em>LoRA: Low-Rank Adaptation of Large Language Models.</em> 2021. <a href="https://arxiv.org/abs/2106.09685">arXiv:2106.09685</a></li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/_torch_docs.py', 7908, 7990) }}"><code>torch.matmul</code></a> and <a href="{{ src('torch/nn/modules/linear.py', 53, 147) }}"><code>nn.Linear</code></a>.</li>
+</ul>

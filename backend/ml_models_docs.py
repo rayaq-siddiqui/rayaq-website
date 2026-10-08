@@ -139,7 +139,7 @@ PAGES = [
             "pytorch:torch/functional.py",
             "pytorch:torch/nn/modules/linear.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "linear-algebra-toolkit",
