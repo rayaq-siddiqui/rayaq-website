@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -3862,6 +3862,66 @@ def replacement_window_trace(text, k):
     return {"steps": steps, "best": best}
 
 
+def bracket_trace(text):
+    """Push openers, pop on closers; record the stack after each character and why a run fails."""
+    pairs = {")": "(", "]": "[", "}": "{"}
+    stack = []
+    steps = []
+    failure = None
+    for i, ch in enumerate(text):
+        if ch in pairs:
+            if not stack or stack[-1] != pairs[ch]:
+                failure = {"index": i, "char": ch, "top": stack[-1] if stack else None}
+                steps.append({"index": i, "char": ch, "action": "mismatch", "stack": list(stack)})
+                break
+            stack.pop()
+            steps.append({"index": i, "char": ch, "action": "pop", "stack": list(stack)})
+        else:
+            stack.append(ch)
+            steps.append({"index": i, "char": ch, "action": "push", "stack": list(stack)})
+    valid = failure is None and not stack
+    return {"steps": steps, "valid": valid, "failure": failure, "left_over": list(stack)}
+
+
+def min_stack_trace(ops):
+    """Min stack: each entry stores (value, minimum at push time); pop restores the earlier minimum."""
+    stack = []
+    steps = []
+    for op in ops:
+        if op[0] == "push":
+            low = op[1] if not stack else min(op[1], stack[-1][1])
+            stack.append((op[1], low))
+        else:
+            stack.pop()
+        steps.append({"op": op[0], "value": op[1] if op[0] == "push" else None,
+                      "stack": list(stack), "min": stack[-1][1] if stack else None})
+    return {"steps": steps}
+
+
+def rpn_trace(tokens):
+    """Evaluate reverse Polish notation; division truncates toward zero."""
+    stack = []
+    steps = []
+    for token in tokens:
+        if token in "+-*/" and len(token) == 1:
+            right = stack.pop()
+            left = stack.pop()
+            if token == "+":
+                value = left + right
+            elif token == "-":
+                value = left - right
+            elif token == "*":
+                value = left * right
+            else:
+                value = int(left / right)
+            stack.append(value)
+            steps.append({"token": token, "stack": list(stack), "applied": f"{left} {token} {right} = {value}"})
+        else:
+            stack.append(int(token))
+            steps.append({"token": token, "stack": list(stack), "applied": None})
+    return {"steps": steps, "result": stack[-1]}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -4008,6 +4068,9 @@ def render(slug, render_template):
         "longest_unique_trace": longest_unique_trace,
         "shortest_subarray_trace": shortest_subarray_trace,
         "replacement_window_trace": replacement_window_trace,
+        "bracket_trace": bracket_trace,
+        "min_stack_trace": min_stack_trace,
+        "rpn_trace": rpn_trace,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,

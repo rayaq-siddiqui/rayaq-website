@@ -1,0 +1,313 @@
+{% set text = "{[()()]}" %}
+{% set good = bracket_trace(text) %}
+{% set bad_text = "([)]" %}
+{% set bad = bracket_trace(bad_text) %}
+{% set ops = [("push", 5), ("push", 3), ("push", 7), ("push", 2), ("pop",), ("pop",), ("push", 4)] %}
+{% set ms = min_stack_trace(ops) %}
+{% set tokens = ["8", "3", "2", "*", "-", "10", "5", "/", "+"] %}
+{% set rpn = rpn_trace(tokens) %}
+<header class="jj-header">
+  <h1>Stacks</h1>
+  <p class="tagline">
+    A stack lets you set something aside and come back to it in the reverse order you left it.
+    That one rule is enough for matching brackets, evaluating expressions, undoing operations
+    and remembering "the last thing still unresolved". This page shows the push-and-resolve
+    loop, the min stack that carries extra information in each entry, and postfix evaluation.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Many inputs have nested structure: parentheses inside brackets, a sub-expression inside an
+  expression, a path with <code>..</code> steps that undo earlier ones. The most recently opened
+  thing is always the first one to close. A stack stores exactly the set of things that are open
+  right now, innermost on top, so each new item only needs to look at the top. Without a stack you
+  end up scanning back and forth for the matching partner, which costs O(n²).
+</p>
+
+<table>
+  <thead>
+    <tr><th>Signal</th><th>Pattern</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>"Is the string of brackets well formed?"</td><td>Push openers, pop on closers</td><td>The innermost open bracket must be the one that closes first.</td></tr>
+    <tr><td>Nested repeat or scope: <code>3[a2[c]]</code>, a path with <code>..</code></td><td>Push the outer state, pop it when the inner part ends</td><td>Entering a scope saves where you were; leaving restores it.</td></tr>
+    <tr><td>"Evaluate an expression" in postfix form, or infix without precedence games</td><td>Operand stack</td><td>An operator always applies to the two most recent values.</td></tr>
+    <tr><td>"Support a minimum / maximum query in O(1)" on a stack</td><td>Store a running summary with each entry</td><td>The summary at each depth depends only on the entries beneath it, so popping restores the previous one.</td></tr>
+    <tr><td>"Undo the previous step", "cancel the last item"</td><td>Stack of past states</td><td>Undo is exactly a pop.</td></tr>
+    <tr><td>"Next greater element", "span", "histogram"</td><td>Monotonic stack (next page)</td><td>The stack's order is kept sorted so items resolve in bulk.</td></tr>
+    <tr><td>Depth-first search without recursion</td><td>Explicit stack</td><td>The call stack is a stack; you can manage it yourself.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  A stack of plates in a cafeteria: you can only touch the top one. Parsing a nested structure
+  has the same shape. Each opening symbol is a promise ("I still owe a closing partner"). Each
+  closing symbol must settle the most recent unsettled promise, which is the top of the stack. If it
+  names a different promise, the input is broken. If the input ends and promises remain, it is
+  broken too.
+</p>
+<p>
+  The second idea is that a stack entry can hold more than one value. A min stack stores
+  <code>(value, minimum so far)</code>. Because the minimum at depth d depends only on entries
+  1 to d, popping the top automatically reveals the right minimum for the entries left behind.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 190" role="img" aria-labelledby="lc-brk-title lc-brk-desc">
+    <title id="lc-brk-title">The stack while checking the brackets {{ text }}</title>
+    <desc id="lc-brk-desc">
+      One column per character of {{ text }}. After each character the stack holds
+      {% for step in good.steps %}{{ step.stack | join("") or "nothing" }}{{ ", " if not loop.last else "." }}{% endfor %}
+      The stack ends empty, so the string is {{ "valid" if good.valid else "invalid" }}.
+    </desc>
+    {% for step in good.steps %}
+      {% set col = loop.index0 %}
+      {% for item in step.stack %}
+        <rect x="{{ 24 + col * 80 }}" y="{{ 112 - loop.index0 * 30 }}" width="64" height="26" class="{{ 'lc-fill-a' if (step.action == 'push' and loop.last) else 'd-box' }}"></rect>
+        <text x="{{ 56 + col * 80 }}" y="{{ 130 - loop.index0 * 30 }}" font-size="15" text-anchor="middle">{{ item }}</text>
+      {% endfor %}
+      <line x1="{{ 24 + col * 80 }}" y1="142" x2="{{ 88 + col * 80 }}" y2="142" class="d-line"></line>
+      <text x="{{ 56 + col * 80 }}" y="162" font-size="14" text-anchor="middle">{{ step.char }}</text>
+      <text x="{{ 56 + col * 80 }}" y="180" font-size="11" text-anchor="middle" class="d-muted">{{ step.action }}</text>
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">
+  The stack after each character. Amber is the item just pushed; a column that shrinks is a pop.
+  The last column is empty: everything that opened was closed.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="invariant">The invariant</h3>
+<p>
+  After reading a prefix, the stack holds exactly the unresolved items of that prefix, oldest at the
+  bottom. For brackets, that means the openers not yet closed, and the prefix is still a possible
+  start of a valid string exactly when every closer so far matched the top at its moment. Pushing an
+  opener keeps the invariant because the new opener is unresolved. Popping on a matching closer keeps it
+  because that pair resolves the top. A closer that does not match the top (or arrives on an empty stack) can
+  never be matched later, because the unresolved items beneath the top can only be reached after the top
+  is gone. So the answer is: valid when no mismatch occurred and the stack is empty at the end.
+</p>
+
+<h3 id="entries-with-memory">Entries with memory</h3>
+<p>
+  Anything computed from "the stack below me" can be stored in the entry at push time. The min
+  stack stores the running minimum; a stack-based calculator stores the running result and sign when it
+  enters a parenthesis; a decoder stores the string built so far and the repeat count. When the scope
+  closes, the pop returns the stored outer state and you combine it with the inner result.
+</p>
+
+<h3 id="postfix">Postfix evaluation</h3>
+<p>
+  In reverse Polish notation operators come after their operands, so there is no precedence to
+  parse. Push numbers. On an operator, pop the right operand first (it was pushed last), then the
+  left, apply, and push the result. The order of the two pops matters for subtraction and division.
+  A valid expression ends with exactly one value on the stack.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 240" role="img" aria-labelledby="lc-min-title lc-min-desc">
+    <title id="lc-min-title">A min stack: each entry stores its value and the minimum at push time</title>
+    <desc id="lc-min-desc">
+      One column per operation. After the operations
+      {% for step in ms.steps %}{{ step.op }}{{ " " ~ step.value if step.value is not none }}{{ ", " if not loop.last else "" }}{% endfor %},
+      the stack holds {% for value, low in ms.steps[-1].stack %}{{ value }} with minimum {{ low }}{{ "; " if not loop.last else "." }}{% endfor %}
+      The minimum after each operation is {{ ms.steps | map(attribute="min") | join(", ") }}.
+    </desc>
+    {% for step in ms.steps %}
+      {% set col = loop.index0 %}
+      {% for value, low in step.stack %}
+        <rect x="{{ 24 + col * 90 }}" y="{{ 150 - loop.index0 * 30 }}" width="74" height="26" class="{{ 'lc-fill-a' if (step.op == 'push' and loop.last) else 'd-box' }}"></rect>
+        <text x="{{ 61 + col * 90 }}" y="{{ 168 - loop.index0 * 30 }}" font-size="13" text-anchor="middle">{{ value }} · min {{ low }}</text>
+      {% endfor %}
+      <line x1="{{ 24 + col * 90 }}" y1="180" x2="{{ 98 + col * 90 }}" y2="180" class="d-line"></line>
+      <text x="{{ 61 + col * 90 }}" y="200" font-size="13" text-anchor="middle">{{ step.op }}{{ " " ~ step.value if step.value is not none }}</text>
+      <text x="{{ 61 + col * 90 }}" y="220" font-size="11" text-anchor="middle" class="d-muted">min {{ step.min }}</text>
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">
+  Each box shows value · minimum at push time. Popping the 2 and then the 7 shows the minimum
+  falling back to 3 with no search.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p><strong>Brackets</strong> in <code>{{ text }}</code>:</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Index</th><th>Char</th><th>Action</th><th>Stack after (bottom to top)</th></tr></thead>
+    <tbody>
+      {% for step in good.steps %}
+        <tr><td class="num">{{ step.index }}</td><td class="num">{{ step.char }}</td><td>{{ step.action }}</td><td class="num">{{ step.stack | join(" ") or "empty" }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>The stack is empty at the end, so {{ text }} is {{ "valid" if good.valid else "invalid" }}.</p>
+<p>
+  For <code>{{ bad_text }}</code> the closer <code>{{ bad.failure.char }}</code> at index {{ bad.failure.index }}
+  arrives while the top is <code>{{ bad.failure.top }}</code>, so the scan stops with a mismatch: the
+  closing round bracket skipped over an unresolved square bracket.
+</p>
+
+<p><strong>Postfix</strong> <code>{{ tokens | join(" ") }}</code>:</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Token</th><th>Applied</th><th>Stack after</th></tr></thead>
+    <tbody>
+      {% for step in rpn.steps %}
+        <tr><td class="num">{{ step.token }}</td><td class="num">{{ step.applied or "push" }}</td><td class="num">{{ step.stack | join(" ") }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>The result is {{ rpn.result }}.</p>
+
+<p><strong>Min stack</strong> after each operation:</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Operation</th><th>Stack (value, min)</th><th>getMin</th></tr></thead>
+    <tbody>
+      {% for step in ms.steps %}
+        <tr><td>{{ step.op }}{{ " " ~ step.value if step.value is not none }}</td><td class="num">{{ step.stack | map("join", ",") | join("  ") }}</td><td class="num">{{ step.min }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>def is_valid(s):
+    pairs = {")": "(", "]": "[", "}": "{"}
+    stack = []
+    for ch in s:
+        if ch in pairs:
+            if not stack or stack.pop() != pairs[ch]:
+                return False
+        else:
+            stack.append(ch)
+    return not stack
+
+
+class MinStack:
+    def __init__(self):
+        self.items = []                     # (value, minimum at push time)
+
+    def push(self, x):
+        low = x if not self.items else min(x, self.items[-1][1])
+        self.items.append((x, low))
+
+    def pop(self):
+        return self.items.pop()[0]
+
+    def top(self):
+        return self.items[-1][0]
+
+    def get_min(self):
+        return self.items[-1][1]
+
+
+def eval_rpn(tokens):
+    stack = []
+    for t in tokens:
+        if t in {"+", "-", "*", "/"}:
+            right, left = stack.pop(), stack.pop()
+            if t == "+": stack.append(left + right)
+            elif t == "-": stack.append(left - right)
+            elif t == "*": stack.append(left * right)
+            else: stack.append(int(left / right))      # truncate toward zero
+        else:
+            stack.append(int(t))
+    return stack[-1]</code></pre>
+
+<h3 id="variations">Variations and edge cases</h3>
+<ul>
+  <li><strong>Store indices, not values.</strong> When the answer is a distance or a length (the longest
+    valid parentheses run), push indices; the value is always <code>s[i]</code> and the position is
+    free. Seeding the stack with a sentinel index <code>-1</code> removes the empty-stack special case.</li>
+  <li><strong>Saving state at a scope boundary.</strong> A calculator with parentheses pushes the running
+    total and sign on <code>(</code> and pops them on <code>)</code>; a decoder pushes the string
+    and repeat count. The pattern is identical to the bracket check with richer entries.</li>
+  <li><strong>Multiplication and division without parentheses.</strong> Push signed terms and fold
+    <code>*</code> and <code>/</code> straight into the top; the answer is the sum of the stack.</li>
+  <li><strong>Collisions.</strong> Asteroids moving in opposite directions resolve against the top of
+    the stack until one side is gone: a loop of pops, not a single comparison.</li>
+  <li><strong>Queue from two stacks.</strong> An inbox and an outbox: refill the outbox from the inbox
+    only when the outbox is empty. Each element moves at most twice, so every operation is amortised O(1).</li>
+  <li><strong>Edge cases:</strong> a closer on an empty stack, openers left over at the end, an odd
+    length (cannot be valid), division truncating toward zero (Python's <code>//</code> floors),
+    popping an empty stack in a malformed expression, and a path that tries to go above the root.</li>
+</ul>
+
+<h2 id="tradeoffs">Complexity and tradeoffs</h2>
+
+<ul>
+  <li><strong>Time:</strong> O(n). Each element is pushed once and popped at most once, so even a loop of pops is
+    amortised constant per element.</li>
+  <li><strong>Space:</strong> O(n) in the worst case (all openers). A bracket check with one bracket
+    type needs only a counter, O(1), but with several types the stack is required.</li>
+  <li><strong>Python:</strong> a <code>list</code> with <code>append</code> and <code>pop</code> is a
+    fast stack. Do not use <code>pop(0)</code> or <code>insert(0, x)</code> for a stack or queue.</li>
+  <li><strong>When it fails.</strong> If matching partners are not nested (crossing intervals), a stack
+    is the wrong shape; if you need the next greater or smaller element, keep the stack
+    ordered (monotonic stack); if you need the oldest item first, use a queue.</li>
+</ul>
+
+<h2 id="problems">Problems</h2>
+
+<p>
+  Most home problems are one of three shapes: match and cancel (parentheses, asteroids, path
+  simplification), evaluate with saved state (calculators, decode string, postfix) or build a data
+  structure out of stacks (min stack, queue from stacks, stack from queues). The longest valid
+  parentheses problem also leans on dynamic programming; the stack version is the cleanest.
+</p>
+{% include "leetcode/_problems.html" %}
+
+<h2 id="connections">Connections</h2>
+
+{% include "leetcode/_connections.html" %}
+<p>
+  The call stack of the recursion page is this structure managed by the language; any recursive
+  algorithm can be rewritten with an explicit stack, which is how iterative tree traversals work.
+  The next page keeps the stack sorted to answer next-greater queries in one pass.
+</p>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="lc-quiz">
+  <summary>Why is it enough to look only at the top of the stack when a closing bracket arrives?</summary>
+  <p>Everything below the top is an opener that was opened before the top one, so by nesting it can only be closed after the top has been. If the arriving closer does not match the top, it cannot match anything beneath it either, and the string is invalid. In {{ bad_text }} the top was {{ bad.failure.top }} when {{ bad.failure.char }} arrived.</p>
+</details>
+<details class="lc-quiz">
+  <summary>Why must the stack be empty at the end, not just free of mismatches?</summary>
+  <p>Leftover items are openers that never found a partner. The string "((" has no mismatch, but it finishes with {{ bracket_trace("((").left_over | length }} unresolved items.</p>
+</details>
+<details class="lc-quiz">
+  <summary>How does a min stack return the old minimum after the current one is popped?</summary>
+  <p>Every entry remembers the minimum of itself and everything beneath it at push time. Popping removes the top entry and its minimum together, and the new top already holds the right value. In the example the minimum goes {{ ms.steps | map(attribute="min") | join(", ") }}.</p>
+</details>
+<details class="lc-quiz">
+  <summary>In postfix evaluation, why do you pop the right operand first?</summary>
+  <p>It was pushed more recently, so it is on top. Subtraction and division are not commutative, so swapping the pops changes the answer; in the example "8 − 6" has to be computed in that order to reach {{ rpn.result }}.</p>
+</details>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Cormen, Leiserson, Rivest and Stein, <em>Introduction to Algorithms</em>: the section on stacks and
+    queues in the elementary data structures chapter.</li>
+  <li>Sedgewick and Wayne, <em>Algorithms</em>, section 1.3: stacks and queues, with Dijkstra's
+    two-stack algorithm for evaluating expressions, which is the origin of the calculator problems.</li>
+  <li>Skiena, <em>The Algorithm Design Manual</em>: the section on stacks and queues.</li>
+  <li>Knuth, <em>The Art of Computer Programming</em>, volume 1, section 2.2.1 on stacks, queues and
+    deques.</li>
+  <li>The <a href="https://neetcode.io/roadmap" rel="noopener">NeetCode roadmap</a> and the
+    Blind 75, Grind 169, NeetCode 150 and NeetCode 250 lists, used as the index of topics and
+    problems.</li>
+</ul>

@@ -410,3 +410,22 @@ def test_variable_window_helpers_match_the_page():
     assert "The longest window is bdace, 5 letters" in body
     assert "The shortest valid run is 2 long, at indices 4 to 5." in body
     assert "The best window is 5 letters long." in body
+
+
+def test_stack_helpers_match_the_page():
+    good = leetcode_docs.bracket_trace("{[()()]}")
+    assert good["valid"] and good["left_over"] == []
+    assert [s["action"] for s in good["steps"]] == ["push", "push", "push", "pop", "push", "pop", "pop", "pop"]
+    bad = leetcode_docs.bracket_trace("([)]")
+    assert not bad["valid"] and bad["failure"] == {"index": 2, "char": ")", "top": "["}
+    assert leetcode_docs.bracket_trace("((")["left_over"] == ["(", "("]
+    assert leetcode_docs.bracket_trace(")")["failure"]["top"] is None
+    ms = leetcode_docs.min_stack_trace([("push", 5), ("push", 3), ("push", 7), ("push", 2), ("pop",), ("pop",), ("push", 4)])
+    assert [s["min"] for s in ms["steps"]] == [5, 3, 3, 2, 3, 3, 3]
+    rpn = leetcode_docs.rpn_trace(["8", "3", "2", "*", "-", "10", "5", "/", "+"])
+    assert rpn["result"] == 4 and rpn["steps"][3]["applied"] == "3 * 2 = 6"
+    assert leetcode_docs.rpn_trace(["7", "-2", "/"])["result"] == -3
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/stack").get_data(as_text=True))
+    assert "The stack is empty at the end, so {[()()]} is valid." in body
+    assert "arrives while the top is <code>[</code>" in body
+    assert "The result is 4." in body
