@@ -31,6 +31,14 @@ git -C pt sparse-checkout set --no-cone torch/nn torch/optim torch/amp   # plus 
 
 Use `--no-cone` when the sparse-checkout list includes single files.
 
+## The Routine
+
+"rayaq.ca/ml-models — architecture reference agent" (`trig_01VAVRGkmCoUyweU2zQNd9m6`) runs
+daily at 03:38 America/Vancouver. Each firing starts a fresh session that follows spec §8:
+pull, clone the pins, build the `← next` page to §6, maintain the pins, record here, check,
+and push small commits to `main`. The phone check before each push is
+`NODE_PATH=$(npm root -g) node tools/ml_models/check_mobile.js / /ml-models <ready pages>`.
+
 ## §9 acceptance criteria
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
@@ -199,6 +207,10 @@ The README was refreshed in a separate `docs:` commit in the same run.
 | `ml-models: show the learning path and every area on the index` | `index.html` |
 | `ml-models: add the connections partial and the page format test` | `_connections.html`, §6 test |
 | `ml-models: expand the build queue for spec v2` | This file, the §5.13 prerequisite rule, the queue test |
+| `ml-models: add a 390px overflow checker for the routine` | `tools/ml_models/check_mobile.js` |
+| `docs: record the ml-models routine` | The Routine section above, AGENTS.md |
+
+The daily Routine was created at the end of this run.
 
 ## Queue
 

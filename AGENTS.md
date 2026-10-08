@@ -232,8 +232,10 @@ Each call is one command over SSH — deliberately kept to single, auditable com
   is optional progressive enhancement and every page reads fully without it. Torch-computed
   figures come from offline scripts in `tools/ml_models/` with output committed under
   `frontend/static/ml_models/` — never add `torch` (or scikit-learn, XGBoost or any other ML
-  package) to the requirements files or run it in CI or at request time. A daily Routine ("rayaq.ca/ml-models — architecture reference agent")
-  builds and maintains it.
+  package) to the requirements files or run it in CI or at request time. A daily Routine
+  ("rayaq.ca/ml-models — architecture reference agent", 03:38 Vancouver, fresh session per run)
+  builds the next queued page and maintains the pins; before pushing it runs
+  `tools/ml_models/check_mobile.js` for the 390px overflow check.
 - Phone number is intentionally omitted from the public resume page (privacy choice, since the repo is public). Don't add it back without checking with the site owner first.
 
 ## Conventions
