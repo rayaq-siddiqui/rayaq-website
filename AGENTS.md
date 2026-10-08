@@ -12,13 +12,8 @@ This file provides shared guidance to Claude Code, Codex, and other coding agent
 backend/            Flask app (Python) — all server-side logic
   app.py            Route definitions only. Keep business logic out of here.
   weather.py        Open-Meteo API client + in-memory cache for the /weather page
-  resume_data.py    Plain Python data (dicts/lists) that resume.html renders — this
+  resume_data.py    Plain Python data (dicts/lists) that _resume.html renders — this
                      is the single source of truth for resume content, not the template
-  assembly.py       Reads showcase.json and builds the view assembly.html renders,
-                     re-reading only when the file's mtime changes
-  showcase.json     The Assembly project digest. SYNCED FROM UPSTREAM — do not
-                     hand-edit (see "Assembly" under Feature-specific notes)
-  sync_showcase.py  Copies that digest out of an assembly-agents checkout
   static_assets.py  Appends ?v=<mtime> to static URLs so they can be cached for a year
   rendered_pages.py Keeps each /jj* reference page's HTML after its first render; pages only
                      change on a deploy, which restarts the process
@@ -45,9 +40,6 @@ backend/            Flask app (Python) — all server-side logic
     app_tests.py     Route-level tests (Flask test client), weather calls are monkeypatched
     weather_tests.py Tests for weather.py logic, with requests calls monkeypatched — no
                      real network calls in the test suite
-    assembly_tests.py     Tests for assembly.py against a fabricated digest, plus one
-                     test that the committed showcase.json actually renders
-    sync_showcase_tests.py Tests the sync refuses anything the page cannot render
     rendered_pages_tests.py Tests the page cache and that each /jj* page renders once
     jj_docs_tests.py Tests the jj registry, pin, pinned links, and every /jj page
     jj_dojo_docs_tests.py Same checks for /jj-dojo
@@ -72,12 +64,14 @@ specs/
 
 frontend/
   templates/         Jinja2 templates. One per route: home.html, weather.html,
-                     resume.html, assembly.html; jj/ holds the /jj layout
+                     resume.html; _resume.html is the resume-sections partial that
+                     both home.html and resume.html include; jj/ holds the /jj layout
                      (base.html), index.html, and one fragment per /jj/<slug> page;
                      jj_dojo/, jj_vfs/ and jj_cloud/ are the same for /jj-dojo,
                      /jj-vfs-poc and /jj-commit-cloud-poc; ml_models/ and leetcode/
                      are the same for /ml-models and /leetcode
-  static/            style.css (shared/global), resume.css, assembly.css, jj.css, jj_dojo.css,
+  static/            style.css (shared/global, plus the light/dark `--site-*` tokens and
+                     homepage styles for pages with `<body class="site">`), resume.css, jj.css, jj_dojo.css,
                      jj_vfs.css, jj_cloud.css, ml_models.css, leetcode.css,
                      ml_models.js (optional step-through for /ml-models figures),
                      script.js (weather chart only)
@@ -100,10 +94,9 @@ vmrun.sh            Convenience wrapper: `./vmrun.sh '<command>'` runs a single 
 
 | Route | Purpose |
 |---|---|
-| `/` | Homepage — name, tagline, feature cards linking to other pages |
+| `/` | Homepage — "About me" (intro plus the full resume, from `resume_data.py`) then "Fun projects" (a grid linking every section) |
 | `/weather` | Live weather dashboard for 4 fixed cities, click a card for an hourly chart |
-| `/resume` | Resume page, **not currently linked from `/`** (disabled "Coming soon" card on homepage — ask before enabling, it's an intentional choice by the site owner) |
-| `/assembly-agents` | Project page for Assembly, rendered from `backend/showcase.json` |
+| `/resume` | Standalone resume page; the homepage renders the same resume and links here |
 | `/jj` | jj architecture reference: overview, big diagram, index of deep-dive pages |
 | `/jj/<slug>` | One deep-dive page per topic in `jj_docs.PAGES` that is marked ready; 404 otherwise |
 | `/jj-dojo` | jj-dojo (VS Code extension) architecture reference: overview and page index |
@@ -179,11 +172,8 @@ Each call is one command over SSH — deliberately kept to single, auditable com
 
 - **Cost optimization**: a weekly Routine looks for measurable savings in the application code (not server config) and logs each run in `docs/COST_OPTIMIZATION.md`.
 - **Weather** (`weather.py`): Open-Meteo API, no API key required. Results are cached in-process per city for 1 hour (`_CACHE_TTL_SECONDS`) to avoid hammering the API — this is a lazy/on-demand cache (only refetches on a request after the TTL expires), not a background poller. Cities are hardcoded in `CITIES` — order matters, it's the display order on the page.
-- **Resume** (`resume_data.py` + `resume.html`): all content lives in `resume_data.py` as plain data — edit that file, not the template, to change resume content. Company/project logos: `cdn.simpleicons.org` for brands that have an icon there (checked availability before using — not every brand does), fallback to a colored initials badge (`{"type": "initials", ...}`) otherwise. Bullets that need an inline link are pre-authored as HTML strings and rendered with Jinja's `| safe` filter — this is safe because the content is fully author-controlled, not user input; don't apply `| safe` to anything that isn't.
-- **Assembly** (`assembly.py` + `showcase.json` + `assembly.html`): `backend/showcase.json` is **not authored here**. The upstream project, `rayaq-siddiqui/assembly-agents` (private), writes `docs/showcase.json` as its published contract with this page, and that file is copied in verbatim — so a hand-edit here is lost on the next sync. To change what the page says, change the digest upstream.
-  - Sync manually with `./venv/bin/python3 sync_showcase.py <path-to-assembly-agents-checkout>` from `backend/`; it prints `updated` or `unchanged`, and refuses to write anything `assembly.build_view` can't render, so upstream schema drift fails the sync instead of the live page.
-  - A Routine ("Sync Assembly showcase to rayaq.ca") runs that sync every 6 hours and pushes the result straight to `main`, which deploys via the normal CI/CD path. If the digest gains fields the page should show, the website is what adapts — keep the copy verbatim.
-  - Upstream also has `.github/workflows/publish-showcase.yml`, which does the same copy on every push to its `main`. It has never actually published: it skips unless a `SHOWCASE_PUBLISH_TOKEN` secret (a fine-grained PAT scoped to this repo, Contents: read+write) exists on assembly-agents. Creating that secret makes syncing instant and the Routine redundant.
+- **Homepage** (`home.html`): the hero and "About me" intro come from `resume_data.py` (headline, location, contact, summary); the intro's other sentences are hand-written from resume facts. The resume renders below it through `_resume.html` with `heading_level=3`. "Fun projects" is a static list in the template — when a new section ships, add its card there and its path to `PROJECT_LINKS` in `tests/app_tests.py`. The owner approved showing the resume publicly; the phone number stays off.
+- **Resume** (`resume_data.py` + `_resume.html`, included by `resume.html` and `home.html`): all content lives in `resume_data.py` as plain data — edit that file, not the templates, to change resume content. Colors come from the `--site-*` tokens in `style.css`, so it works in light and dark mode. Company/project logos: `cdn.simpleicons.org` for brands that have an icon there (checked availability before using — not every brand does), fallback to a colored initials badge (`{"type": "initials", ...}`) otherwise. Bullets that need an inline link are pre-authored as HTML strings and rendered with Jinja's `| safe` filter — this is safe because the content is fully author-controlled, not user input; don't apply `| safe` to anything that isn't.
 - **jj** (`jj_docs.py` + `templates/jj/` + `jj.css`): a static, source-linked reference to
   Jujutsu's internals at `/jj`. Read `specs/jj.md` before changing anything here, and
   `specs/jj-progress.md` for where the build stands.
@@ -258,7 +248,7 @@ Each call is one command over SSH — deliberately kept to single, auditable com
   ("rayaq.ca/leetcode — pattern reference agent", every 5 hours, fresh session per run)
   researches the lists, then builds the next queued page; before pushing it runs
   `tools/leetcode/check_mobile.js` for the 390px overflow check.
-- Phone number is intentionally omitted from the public resume page (privacy choice, since the repo is public). Don't add it back without checking with the site owner first.
+- Phone number is intentionally omitted from the public resume and homepage (privacy choice, since the repo is public). Don't add it back without checking with the site owner first.
 
 ## Conventions
 

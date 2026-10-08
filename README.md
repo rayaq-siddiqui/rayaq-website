@@ -4,9 +4,8 @@ Personal website, live at [rayaq.ca](https://rayaq.ca). Flask backend, server-re
 
 ## Pages
 
-- `/`: homepage
+- `/`: homepage: an "About me" section with the resume, then a grid of the fun projects below
 - `/weather`: live weather dashboard for four cities, with an hourly forecast chart
-- `/assembly-agents`: project page for [Assembly](https://github.com/rayaq-siddiqui/assembly-agents), rendered from a digest synced from that repo
 - `/jj`: a detailed, source-linked reference to the internal architecture of [Jujutsu (jj)](https://github.com/jj-vcs/jj), with an architecture diagram on the overview page
 - `/jj/<page>`: deep-dive pages, either architecture topics (e.g. `/jj/operations`, `/jj/protobufs`) or individual commands (e.g. `/jj/fix`). Pages still being written return 404 and show as "In progress" on `/jj`.
 - `/jj-dojo`: the same kind of reference for [Jujutsu Dojo](https://github.com/jj-vcs/jj-dojo), Google's VS Code extension for jj, starting with its commit graph layout (`/jj-dojo/graph-layout`)
@@ -16,7 +15,7 @@ Personal website, live at [rayaq.ca](https://rayaq.ca). Flask backend, server-re
 - `/ml-models/<page>`: deep-dive pages, starting with an interactive walk through the Transformer (`/ml-models/transformer`): a clickable architecture diagram, a live attention table and a parameter calculator. Planned pages show on `/ml-models` until they are ready.
 - `/leetcode`: every algorithmic pattern behind coding interviews, one page per pattern, organized by the [NeetCode roadmap](https://neetcode.io/roadmap) and measured against Blind 75, Grind 169 and NeetCode 150. Each page covers the signals that point to the pattern, why it works, a traced example, a Python template and the list problems it unlocks. 58 pages are planned in 20 topics; a progress meter on `/leetcode` shows how much of each list is covered.
 - `/leetcode/<page>`: pattern pages (e.g. `/leetcode/two-pointers`). Planned pages show on `/leetcode` until they are ready.
-- `/resume`: resume
+- `/resume`: the same resume on its own page
 - `/health`: health check endpoint
 
 ## Stack
@@ -39,7 +38,6 @@ Several scheduled Claude Code routines push straight to `main`, which deploys th
 | rayaq.ca/ml-models build run | Daily | Builds the next `/ml-models` page from the queue in [`specs/ml-models-progress.md`](specs/ml-models-progress.md), then keeps pages in step with new PyTorch, scikit-learn and XGBoost releases |
 | rayaq.ca/leetcode pattern reference agent | Every 5 hours | Researches the three problem lists, then builds the next `/leetcode` page from the queue in [`specs/leetcode-progress.md`](specs/leetcode-progress.md) until every list problem has a finished home page |
 | Weekly server cost optimization | Weekly (Sunday) | Looks for measurable savings in the application code and logs each run in [`docs/COST_OPTIMIZATION.md`](docs/COST_OPTIMIZATION.md) |
-| Sync Assembly showcase | Every 6 hours | Copies the latest project digest from Assembly into `backend/showcase.json` |
 
 ## Repository layout
 
