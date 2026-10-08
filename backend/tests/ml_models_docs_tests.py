@@ -1056,3 +1056,57 @@ def test_gradient_norms_vanish_or_explode_with_depth():
     assert 0.3 < curves["ReLU, He init"][0] < 3
     assert curves["ReLU, gain 1.4"][0] > 1e3
     assert curves["sigmoid, Xavier init"][0] < 1e-15
+
+
+def test_optimizer_step_follows_pytorch_update_rules():
+    step = ml_models_docs.optimizer_step
+    state = {}
+    assert step("momentum", [1.0], [2.0], state, {"lr": 0.1, "momentum": 0.9}) == pytest.approx([0.8])
+    assert step("momentum", [0.8], [2.0], state, {"lr": 0.1, "momentum": 0.9}) == pytest.approx([0.8 - 0.1 * 3.8])
+    assert step("nesterov", [1.0], [2.0], {}, {"lr": 0.1, "momentum": 0.9}) == pytest.approx([1.0 - 0.1 * 3.8])
+    assert step("sgd", [1.0], [0.0], {}, {"lr": 0.1, "weight_decay": 0.5}) == pytest.approx([0.95])
+    assert step("adamw", [1.0], [0.0], {}, {"lr": 0.1, "weight_decay": 0.5}) == pytest.approx([0.95])
+    first = step("adam", [0.0, 0.0], [1e-3, -50.0], {}, {"lr": 0.01})
+    assert first == pytest.approx([-0.01, 0.01], rel=1e-4)
+    assert step("rmsprop", [0.0], [3.0], {}, {"lr": 0.01}) == pytest.approx([-0.1], rel=1e-6)
+
+
+def test_optimizer_race_rewards_momentum_on_an_ill_conditioned_bowl():
+    runs = {run["label"]: run for run in ml_models_docs.optimizer_race(ml_models_docs.OPTIMIZER_BOWL)}
+    assert runs["SGD, lr 0.042"]["diverged"]
+    assert not runs["SGD, lr 0.036"]["diverged"]
+    assert runs["momentum 0.7, lr 0.03"]["final"] < runs["SGD, lr 0.036"]["final"] / 100
+    assert all(len(run["path"]) == 31 for run in runs.values())
+    assert sum(run["plot"] for run in runs.values()) == 3
+
+
+def test_adam_trace_normalizes_gradient_scale():
+    rows = ml_models_docs.adam_trace(ml_models_docs.ADAM_EXAMPLE)
+    assert [row["t"] for row in rows] == [1, 2, 3]
+    assert rows[0]["m"] == pytest.approx([0.002, -0.4])
+    assert rows[0]["m_hat"] == pytest.approx(rows[0]["grads"])
+    for row in rows:
+        assert all(0.0009 < abs(u) <= 0.001 for u in row["update"])
+    assert rows[-1]["params"][0] == pytest.approx(0.5 + sum(row["update"][0] for row in rows))
+
+
+def test_uncorrected_adam_overshoots_early():
+    ratio = ml_models_docs.uncorrected_step_ratio
+    assert ratio((0.9, 0.999), 1) == pytest.approx(math.sqrt(10))
+    peak = max(range(1, 200), key=lambda t: ratio((0.9, 0.999), t))
+    assert 10 <= peak <= 14 and ratio((0.9, 0.999), peak) > 6.5
+    assert ratio((0.9, 0.999), 5000) == pytest.approx(1, abs=0.01)
+
+
+def test_l2_inside_adam_decays_quiet_weights_faster_than_adamw():
+    curves = {(c["kind"], c["scale"]): c["values"] for c in ml_models_docs.weight_decay_paths(ml_models_docs.WEIGHT_DECAY_EXAMPLE)}
+    assert curves[("adamw", 1.0)][200] == pytest.approx(curves[("adamw", 0.01)][200], rel=1e-6)
+    assert curves[("adamw", 1.0)][200] == pytest.approx(0.999**200, rel=0.03)
+    assert curves[("adam", 0.01)][200] < 0.05 < 0.7 < curves[("adam", 1.0)][200]
+
+
+def test_optimizer_memory_counts_state_tensors():
+    rows = {row["name"]: row for row in ml_models_docs.optimizer_memory(7e9)}
+    assert rows["SGD"]["gigabytes"] == 0
+    assert rows["Adam / AdamW"]["bytes_per_param"] == 8
+    assert rows["Adam / AdamW"]["gigabytes"] == pytest.approx(56)
