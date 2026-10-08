@@ -944,7 +944,7 @@ PAGES = [
             "pytorch:torch/nn/attention/bias.py",
             "pytorch:torch/nn/attention/flex_attention.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "encoder-only",
@@ -1433,6 +1433,20 @@ ATTENTION_EXAMPLE = {
     "values": [[1, 0], [0, 1], [1, 1], [0, 0]],
 }
 
+MULTIHEAD_EXAMPLE = {
+    "tokens": ["the", "cat", "sat", "<pad>"],
+    "padding": [False, False, False, True],
+    "embed_dim": 4,
+    "heads": 2,
+    "x": [[1, 0, 1, 0], [0, 1, 0, 1], [1, 1, 0, 0], [0, 0, 0, 0]],
+    "in_proj_weight": [
+        [1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1],
+        [1, 0, 1, 0], [0, 1, 0, 1], [1, 1, 0, 0], [0, 0, 1, 1],
+        [1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 1], [1, 0, 0, 1],
+    ],
+    "out_proj_weight": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+}
+
 TRANSFORMER_PRESETS = [
     {"name": "nn.Transformer() defaults", "d_model": 512, "nhead": 8, "encoder_layers": 6, "decoder_layers": 6, "dim_feedforward": 2048},
     {"name": "Paper, big", "d_model": 1024, "nhead": 16, "encoder_layers": 6, "decoder_layers": 6, "dim_feedforward": 4096},
@@ -1731,6 +1745,109 @@ def attention_weights(example, causal=False, scaled=True):
             for i in range(len(example["values"][0]))
         ])
     return {"scores": scores, "weights": weights, "outputs": outputs}
+
+
+def masked_softmax_row(scores):
+    top = max(scores)
+    if top == -math.inf:
+        return [math.nan] * len(scores)
+    exps = [math.exp(score - top) for score in scores]
+    total = sum(exps)
+    return [value / total for value in exps]
+
+
+def scaled_attention(queries, keys, values, bias=None, scale=None):
+    width = len(queries[0])
+    scale = 1 / math.sqrt(width) if scale is None else scale
+    scores, weights = [], []
+    for i, query in enumerate(queries):
+        row = [
+            sum(q * k for q, k in zip(query, key)) * scale + (bias[i][j] if bias else 0.0)
+            for j, key in enumerate(keys)
+        ]
+        scores.append(row)
+        weights.append(masked_softmax_row(row))
+    outputs = matmul(weights, values)
+    return {"scores": scores, "weights": weights, "outputs": outputs}
+
+
+def causal_allowed_mask(rows, columns, variant="upper_left"):
+    offset = columns - rows if variant == "lower_right" else 0
+    return [[column <= row + offset for column in range(columns)] for row in range(rows)]
+
+
+def allowed_to_additive(mask):
+    return [[0.0 if cell else -math.inf for cell in row] for row in mask]
+
+
+def masked_out_to_additive(mask):
+    return [[-math.inf if cell else 0.0 for cell in row] for row in mask]
+
+
+def key_padding_additive(padding, rows):
+    return [[-math.inf if flag else 0.0 for flag in padding] for _ in range(rows)]
+
+
+def add_masks(first, second):
+    return [[a + b for a, b in zip(row_a, row_b)] for row_a, row_b in zip(first, second)]
+
+
+def split_heads(matrix, heads):
+    width = len(matrix[0]) // heads
+    return [[row[h * width:(h + 1) * width] for row in matrix] for h in range(heads)]
+
+
+def merge_heads(per_head):
+    return [sum((head[i] for head in per_head), []) for i in range(len(per_head[0]))]
+
+
+def packed_in_projection(x, in_proj_weight):
+    embed_dim = len(x[0])
+    projected = [
+        matmul(x, transpose(in_proj_weight[part * embed_dim:(part + 1) * embed_dim]))
+        for part in range(3)
+    ]
+    return {"q": projected[0], "k": projected[1], "v": projected[2]}
+
+
+def multihead_attention(example, bias=None):
+    heads = example["heads"]
+    qkv = packed_in_projection(example["x"], example["in_proj_weight"])
+    split = {name: split_heads(qkv[name], heads) for name in "qkv"}
+    results = [
+        scaled_attention(split["q"][h], split["k"][h], split["v"][h], bias)
+        for h in range(heads)
+    ]
+    merged = merge_heads([result["outputs"] for result in results])
+    output = matmul(merged, transpose(example["out_proj_weight"]))
+    count = len(example["x"])
+    averaged = [
+        [sum(result["weights"][i][j] for result in results) / heads for j in range(count)]
+        for i in range(count)
+    ]
+    return {
+        "q": qkv["q"], "k": qkv["k"], "v": qkv["v"],
+        "heads": results, "split": split, "merged": merged,
+        "output": output, "average_weights": averaged,
+    }
+
+
+def gqa_groups(query_heads, kv_heads):
+    if query_heads % kv_heads:
+        raise ValueError("query heads must be a multiple of key/value heads")
+    ratio = query_heads // kv_heads
+    return [head // ratio for head in range(query_heads)]
+
+
+def kv_cache_bytes_per_token(layers, kv_heads, head_dim, bytes_per_value):
+    return 2 * layers * kv_heads * head_dim * bytes_per_value
+
+
+def multihead_param_count(embed_dim, bias=True):
+    weights = 3 * embed_dim * embed_dim + embed_dim * embed_dim
+    biases = 3 * embed_dim + embed_dim if bias else 0
+    return {"in_proj": 3 * embed_dim * embed_dim, "out_proj": embed_dim * embed_dim,
+            "biases": biases, "total": weights + biases}
 
 
 def transformer_param_count(d_model, encoder_layers, decoder_layers, dim_feedforward, nhead=None):
@@ -2919,6 +3036,20 @@ def render(slug, render_template):
         "upcoming": UPCOMING_MODELS,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,
+        "multihead_example": MULTIHEAD_EXAMPLE,
+        "scaled_attention": scaled_attention,
+        "multihead_attention": multihead_attention,
+        "causal_allowed_mask": causal_allowed_mask,
+        "allowed_to_additive": allowed_to_additive,
+        "masked_out_to_additive": masked_out_to_additive,
+        "key_padding_additive": key_padding_additive,
+        "add_masks": add_masks,
+        "split_heads": split_heads,
+        "merge_heads": merge_heads,
+        "packed_in_projection": packed_in_projection,
+        "gqa_groups": gqa_groups,
+        "kv_cache_bytes_per_token": kv_cache_bytes_per_token,
+        "multihead_param_count": multihead_param_count,
         "presets": TRANSFORMER_PRESETS,
         "param_count": transformer_param_count,
         "broadcast_steps": broadcast_steps,

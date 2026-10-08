@@ -1159,3 +1159,105 @@ def test_tied_parameter_counts_for_gpt2_small():
     assert counts["table"] == 38_597_376
     assert counts["tied_total"] == 124_439_808
     assert counts["untied_total"] - counts["tied_total"] == counts["table"]
+
+
+def test_scaled_attention_matches_the_single_head_helper():
+    example = ml_models_docs.ATTENTION_EXAMPLE
+    reference = ml_models_docs.attention_weights(example)
+    result = ml_models_docs.scaled_attention(example["queries"], example["keys"], example["values"])
+
+    for got, want in zip(result["weights"], reference["weights"]):
+        assert got == pytest.approx(want)
+    for got, want in zip(result["outputs"], reference["outputs"]):
+        assert got == pytest.approx(want)
+
+
+def test_boolean_mask_directions_are_opposite():
+    allowed = ml_models_docs.causal_allowed_mask(3, 3)
+    masked_out = [[not cell for cell in row] for row in allowed]
+
+    assert ml_models_docs.allowed_to_additive(allowed) == ml_models_docs.masked_out_to_additive(masked_out)
+    assert ml_models_docs.allowed_to_additive(allowed)[0] == [0.0, -math.inf, -math.inf]
+
+
+def test_causal_variants_align_differently_for_rectangular_masks():
+    upper = ml_models_docs.causal_allowed_mask(3, 4, "upper_left")
+    lower = ml_models_docs.causal_allowed_mask(3, 4, "lower_right")
+
+    assert upper == [[True, False, False, False], [True, True, False, False], [True, True, True, False]]
+    assert lower == [[True, True, False, False], [True, True, True, False], [True, True, True, True]]
+    assert ml_models_docs.causal_allowed_mask(3, 3, "upper_left") == ml_models_docs.causal_allowed_mask(3, 3, "lower_right")
+
+
+def test_fully_masked_row_gives_nan_like_pytorch():
+    result = ml_models_docs.scaled_attention([[1, 0]], [[1, 0], [0, 1]], [[1, 0], [0, 1]], [[-math.inf, -math.inf]])
+
+    assert all(math.isnan(weight) for weight in result["weights"][0])
+
+
+def test_split_and_merge_heads_round_trip():
+    matrix = [[1, 2, 3, 4], [5, 6, 7, 8]]
+    split = ml_models_docs.split_heads(matrix, 2)
+
+    assert split == [[[1, 2], [5, 6]], [[3, 4], [7, 8]]]
+    assert ml_models_docs.merge_heads(split) == matrix
+
+
+def test_packed_projection_equals_three_separate_projections():
+    example = ml_models_docs.MULTIHEAD_EXAMPLE
+    packed = ml_models_docs.packed_in_projection(example["x"], example["in_proj_weight"])
+    size = example["embed_dim"]
+
+    for part, name in enumerate("qkv"):
+        rows = example["in_proj_weight"][part * size:(part + 1) * size]
+        assert packed[name] == ml_models_docs.matmul(example["x"], ml_models_docs.transpose(rows))
+
+
+def test_multihead_attention_heads_are_independent_and_rows_sum_to_one():
+    example = ml_models_docs.MULTIHEAD_EXAMPLE
+    result = ml_models_docs.multihead_attention(example)
+
+    assert len(result["heads"]) == example["heads"]
+    for head in result["heads"]:
+        for row in head["weights"]:
+            assert sum(row) == pytest.approx(1)
+    assert result["output"] == ml_models_docs.matmul(
+        result["merged"], ml_models_docs.transpose(example["out_proj_weight"])
+    )
+    for row in result["average_weights"]:
+        assert sum(row) == pytest.approx(1)
+
+
+def test_padding_mask_zeroes_pad_columns_and_causal_zeroes_the_future():
+    example = ml_models_docs.MULTIHEAD_EXAMPLE
+    rows = len(example["x"])
+    padding = ml_models_docs.key_padding_additive(example["padding"], rows)
+    causal = ml_models_docs.allowed_to_additive(ml_models_docs.causal_allowed_mask(rows, rows))
+
+    padded = ml_models_docs.multihead_attention(example, padding)
+    both = ml_models_docs.multihead_attention(example, ml_models_docs.add_masks(padding, causal))
+
+    for head in padded["heads"]:
+        assert all(row[3] == 0 for row in head["weights"])
+    for head in both["heads"]:
+        for i, row in enumerate(head["weights"]):
+            assert all(weight == 0 for weight in row[i + 1:])
+    assert both["heads"][0]["weights"][0] == [1.0, 0.0, 0.0, 0.0]
+
+
+def test_gqa_groups_and_kv_cache_savings():
+    assert ml_models_docs.gqa_groups(8, 2) == [0, 0, 0, 0, 1, 1, 1, 1]
+    assert ml_models_docs.gqa_groups(4, 4) == [0, 1, 2, 3]
+    with pytest.raises(ValueError):
+        ml_models_docs.gqa_groups(6, 4)
+    full = ml_models_docs.kv_cache_bytes_per_token(32, 32, 128, 2)
+    grouped = ml_models_docs.kv_cache_bytes_per_token(32, 8, 128, 2)
+    assert (full, grouped) == (524288, 131072)
+
+
+def test_multihead_param_count_matches_transformer_attention():
+    count = ml_models_docs.multihead_param_count(512)
+
+    assert count["total"] == ml_models_docs.transformer_param_count(512, 1, 0, 2048)["attention"]
+    assert count["in_proj"] == 3 * 512 * 512
+    assert ml_models_docs.multihead_param_count(8, bias=False)["total"] == 4 * 64
