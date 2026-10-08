@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-08 (eighteenth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: `transformer` and queue items 1-16, the last being `attention`.
-The next run builds `layernorm-and-residuals`.
+format. Ready pages: `transformer` and queue items 1-17, the last being `layernorm-and-residuals`.
+The next run retrofits `transformer` to the §6 format (queue item 18).
 
 ## Pins
 
@@ -123,6 +123,11 @@ The paths below are relative to `torch/nn/modules/` unless they give a fuller pa
   - `torch/nn/attention/__init__.py`: `SDPBackend` doc 40-56, `sdpa_kernel` 114-166.
   - `bias.py`: `CausalVariant` 33-84, `CausalBias` 86-306, `causal_upper_left`/`causal_lower_right` 308-376.
   - `flex_attention.py`: `BlockMask` 855-1694, `or_masks`/`and_masks` 1759-1785, `create_block_mask` 1967-2088, `flex_attention` 2365-2640.
+- Normalization ranges verified at the pin:
+  - `normalization.py`: `LayerNorm` 105-236, `GroupNorm` 239-340, `RMSNorm` 343-436.
+  - `batchnorm.py`: `_NormBase` 25-150, `_BatchNorm` 152-224.
+  - `functional.py`: `batch_norm` 2865-2926, `layer_norm` 2972-2996, `rms_norm` 2998-3013.
+  - `transformer.py`: `TransformerEncoderLayer` 663-982 (norm order 944-958, `_sa_block`/`_ff_block` 960-983); `dropout.py` `Dropout` 35-73.
 - `sparse.py`: `Embedding` 14-264, weight 164-168.
 - `linear.py`: `Linear` 53-147, weight and bias 104-114.
 - `dropout.py`: `Dropout` 35-73.
@@ -410,6 +415,8 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 | `ml-models: build the embeddings page` | The page, `ready`, queue ✓ |
 | `ml-models: add tested attention helpers` | `scaled_attention`, `multihead_attention`, mask helpers, GQA and cache helpers |
 | `ml-models: build the attention page` | The page, `ready`, queue ✓ |
+| `ml-models: add tested normalization helpers` | `layer_norm_row`, `rms_norm_row`, `batch_norm_columns`, `group_norm_row`, running statistics, residual blocks, `residual_demo` |
+| `ml-models: build the layernorm-and-residuals page` | The page, `ready`, queue ✓ |
 
 ## Queue
 
@@ -429,8 +436,8 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 14. `optimizers` ✓
 15. `embeddings` ✓
 16. `attention` ✓
-17. `layernorm-and-residuals` ← next
-18. `transformer` ✓ (v1 format; retrofit it to §6 here, keeping its interactive pieces)
+17. `layernorm-and-residuals` ✓
+18. `transformer` ✓ ← next (v1 format; retrofit it to §6 here, keeping its interactive pieces)
 19. `training-loop`
 20. `decoder-only-llm`
 21. `decoding`

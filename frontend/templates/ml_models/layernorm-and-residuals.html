@@ -1,0 +1,466 @@
+{% set ex = norm_example %}
+{% set tokens = ex.tokens %}
+{% set ln = [] %}
+{% set rms = [] %}
+{% for r in ex.x %}{% set _ = ln.append(layer_norm_row(r, eps=ex.eps)) %}{% set _ = rms.append(rms_norm_row(r, eps=ex.eps)) %}{% endfor %}
+{% set bn = batch_norm_columns(ex.x, eps=ex.eps) %}
+{% set gn = group_norm_row(ex.x[0], 2, eps=ex.eps) %}
+{% set demo = residual_demo(6) %}
+{% set stats = running_stats_update(0.0, 1.0, [1.0, 3.0], 0.1) %}
+{% set ev = batch_norm_eval(5.0, 3.0, 4.0, 1.0, 0.0, 0.0) %}
+{% macro n(x) -%}{% if x == x|round %}{{ "%g"|format(x) }}{% else %}{{ "%.2f"|format(x) }}{% endif %}{%- endmacro %}
+{% macro vec(v) -%}[{% for x in v %}{{ n(x) }}{% if not loop.last %}, {% endif %}{% endfor %}]{%- endmacro %}
+{% macro bars(values, x0, y0, label, color) %}
+  <text x="{{ x0 }}" y="{{ y0 - 40 }}" font-size="12" class="d-muted">{{ label }}</text>
+  <line x1="{{ x0 }}" y1="{{ y0 }}" x2="{{ x0 + 40 * values|length }}" y2="{{ y0 }}" class="d-line"></line>
+  {% for v in values %}
+    {% set h = (v * 12)|abs %}
+    <rect x="{{ x0 + 6 + loop.index0 * 40 }}" y="{{ y0 - h if v >= 0 else y0 }}" width="26" height="{{ h }}" rx="2" style="fill: {{ color }}; fill-opacity: 0.6"></rect>
+    <text x="{{ x0 + 19 + loop.index0 * 40 }}" y="{{ y0 + 28 }}" font-size="10" text-anchor="middle" class="d-muted">{{ "%.2f"|format(v) }}</text>
+  {% endfor %}
+{% endmacro %}
+<header class="jj-header">
+  <h1>Normalization and residual connections</h1>
+  <p class="tagline">
+    Two small ideas make deep networks trainable: add a layer's input back to its output (a
+    residual connection), and rescale activations to a steady size (normalization). This page
+    normalizes one tiny batch four ways (LayerNorm, RMSNorm, BatchNorm, GroupNorm), shows why
+    BatchNorm behaves differently in training and evaluation, compares pre-norm and post-norm
+    residual blocks, and reads the modules out of PyTorch {{ upstream.tag }}.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Stack many layers and two things go wrong. First, the size of the activations drifts: each layer
+  multiplies by weights, so the numbers shrink toward zero or blow up, and every layer must keep
+  re-adapting to the shifting scale of the one below. Second, gradients travel back through every
+  layer by the <a href="/ml-models/chain-rule">chain rule</a>, a long product of factors, and a
+  product of many numbers below 1 vanishes while one above 1 explodes (see
+  <a href="/ml-models/backpropagation">backpropagation</a>). Networks beyond a handful of layers
+  simply fail to train.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  <strong>Residual connection:</strong> instead of a block computing y = F(x), let it compute
+  y = x + F(x). The block now only learns a <em>correction</em> to its input, and the identity path
+  gives the gradient a direct route: the derivative of x + F(x) with respect to x is 1 + F′(x), so
+  even when F′ is tiny the gradient still flows. Stack blocks and you get a <em>residual stream</em>:
+  one running vector per position that every block reads from and adds to.
+</p>
+<p>
+  <strong>Normalization:</strong> before (or after) a block, rescale each vector to a standard
+  size: subtract a mean and divide by a standard deviation, then let two learned parameters (a
+  scale γ and shift β) restore whatever range the next layer wants. The variants differ in <em>which
+  numbers share a mean and variance</em>: all features of one example (LayerNorm), one feature
+  across the whole batch (BatchNorm), or a group of channels in one example (GroupNorm).
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 230" role="img" aria-labelledby="ln-axes-title ln-axes-desc">
+    <title id="ln-axes-title">Which entries each normalization averages over</title>
+    <desc id="ln-axes-desc">
+      A grid with rows for the {{ tokens|length }} examples and columns for the 4 features. For
+      LayerNorm the statistics are taken along each row, for BatchNorm along each column, and for
+      GroupNorm along two-column groups within a row.
+    </desc>
+    {% set panels = [("LayerNorm: along each row", "row"), ("BatchNorm: along each column", "col"), ("GroupNorm (2 groups): half a row", "grp")] %}
+    {% for title, kind in panels %}
+      {% set x0 = 20 + loop.index0 * 222 %}
+      <text x="{{ x0 }}" y="30" font-size="12" class="d-muted">{{ title }}</text>
+      {% for r in range(3) %}
+                {% for c in range(4) %}
+          {% set hot = (kind == "row" and r == 1) or (kind == "col" and c == 2) or (kind == "grp" and r == 1 and c < 2) %}
+          <rect x="{{ x0 + c * 46 }}" y="{{ 50 + r * 40 }}" width="42" height="36" rx="4" class="d-box" style="fill: {{ 'var(--jj-accent)' if hot else 'var(--jj-muted)' }}; fill-opacity: {{ 0.45 if hot else 0.12 }}"></rect>
+        {% endfor %}
+      {% endfor %}
+      <text x="{{ x0 }}" y="188" font-size="11" class="d-muted">rows = examples, columns = features</text>
+    {% endfor %}
+    <text x="20" y="214" font-size="11" class="d-muted">shaded cells share one mean and one variance</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  In a transformer the "example" is one token position, and LayerNorm normalizes the E features of
+  that position alone, so it never looks at other tokens or other sequences in the batch.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="residual">The residual stream</h3>
+<p class="ml-formula">y = x + F(x) &nbsp;&nbsp; shapes: x, F(x), y all [N, L, E]</p>
+<p>
+  F must return the same shape as x so the two can be added (when widths differ, a projection on
+  the skip path fixes it). In a transformer block F is either attention or the feed-forward network;
+  each adds its output into the stream. Reading the model this way, the stream is the model's
+  working memory and each block writes a small update into it. Dropout is applied to F(x) <em>before</em>
+  the addition, so a dropped block output leaves the identity path intact.
+</p>
+
+<h3 id="layernorm">LayerNorm</h3>
+<p class="ml-formula">y = (x − E[x]) / √(Var[x] + ε) · γ + β &nbsp;&nbsp; statistics over the last dimension(s), x: [.., E], γ, β: [E]</p>
+<p>
+  The mean and (biased) variance are computed over the E features of each position independently,
+  so each row ends up with zero mean and unit variance, then γ (initialized to 1) and β (initialized
+  to 0) rescale it. ε (default 1e-5) keeps the division finite. Because nothing depends on other
+  examples, LayerNorm behaves identically in training and evaluation, works with any batch size
+  (even 1) and any sequence length, which is why transformers use it. It also makes the output
+  invariant to scaling or shifting its input: multiply a row by 10 or add 100 to every entry and the
+  result is unchanged.
+</p>
+
+<h3 id="rmsnorm">RMSNorm</h3>
+<p class="ml-formula">y = x / √(mean(x²) + ε) · γ</p>
+<p>
+  RMSNorm drops the mean subtraction (and β): it only divides by the root mean square. It is a
+  little cheaper and, empirically, as good for many language models, so recent open-weight models
+  commonly use it. Unlike LayerNorm it does not remove a constant offset, so the output keeps the
+  direction of x exactly. If you leave <code>eps=None</code> PyTorch uses the machine epsilon of the
+  computation type.
+</p>
+
+<h3 id="batchnorm">BatchNorm and the train/eval split</h3>
+<p>
+  BatchNorm normalizes each feature (channel) over the <em>batch</em> (and spatial positions, in
+  images): statistics are per column in the diagram above. In training it uses the current
+  mini-batch's mean and variance and also updates two stored buffers by an exponential moving
+  average:
+</p>
+<p class="ml-formula">running ← (1 − momentum) · running + momentum · batch statistic &nbsp;&nbsp; momentum = 0.1 by default</p>
+<p>
+  (the running variance uses the <em>unbiased</em> batch variance, dividing by n − 1). In
+  evaluation mode it does not look at the batch at all: it normalizes with the stored running mean
+  and variance, so one example gives the same answer whatever else is in the batch. This is why
+  <code>model.eval()</code> matters, why BatchNorm struggles with tiny batches (noisy statistics),
+  and why it is awkward for variable-length sequences. The module's state is
+  <code>weight</code> (γ), <code>bias</code> (β), and buffers <code>running_mean</code>,
+  <code>running_var</code>, <code>num_batches_tracked</code>; the buffers are saved in the state dict
+  but are not trained by gradient descent.
+</p>
+
+<h3 id="groupnorm">GroupNorm and others</h3>
+<p>
+  <strong>GroupNorm</strong> splits the C channels of one example into G groups and normalizes each
+  group on its own, so it needs no batch and no running statistics. With G = 1 it is a LayerNorm
+  over all channels; with G = C every channel is normalized alone (instance norm). It requires
+  <code>num_channels % num_groups == 0</code>. It is the usual choice for convolutional models with
+  small batches.
+</p>
+
+<h3 id="prenorm">Pre-norm versus post-norm</h3>
+<p>Where the normalization sits relative to the residual addition changes training behavior:</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th></th><th>Post-norm (original Transformer)</th><th>Pre-norm</th></tr></thead>
+    <tbody>
+      <tr><td>Block</td><td><code>x = norm(x + F(x))</code></td><td><code>x = x + F(norm(x))</code></td></tr>
+      <tr><td>Identity path</td><td>passes through a norm at every block</td><td>untouched from input to output</td></tr>
+      <tr><td>Training</td><td>needs learning-rate warmup; harder to train deep</td><td>stable at depth, warmup matters less</td></tr>
+      <tr><td>Stream size</td><td>reset to a fixed scale after every block</td><td>grows with depth (hence a final norm before the output layer)</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  In <code>TransformerEncoderLayer</code> the switch is the <code>norm_first</code> argument
+  (default <code>False</code>, i.e. post-norm). The code's own comment points to Fig. 1 of the
+  "On Layer Normalization in the Transformer Architecture" paper for the difference.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 270" role="img" aria-labelledby="ln-blocks-title ln-blocks-desc">
+    <title id="ln-blocks-title">Post-norm and pre-norm residual blocks</title>
+    <desc id="ln-blocks-desc">
+      Left, post-norm: the input goes through a sublayer, is added to the input, and the sum goes
+      through LayerNorm. Right, pre-norm: the input goes through LayerNorm and then the sublayer,
+      and the result is added to the untouched input.
+    </desc>
+    <text x="40" y="24" font-size="13">post-norm: norm(x + F(x))</text>
+    <rect x="130" y="160" width="100" height="36" rx="6" class="d-box"></rect>
+    <text x="180" y="183" font-size="12" text-anchor="middle">sublayer F</text>
+    <circle cx="180" cy="110" r="14" class="d-box"></circle>
+    <text x="180" y="115" font-size="14" text-anchor="middle">+</text>
+    <rect x="130" y="52" width="100" height="32" rx="6" class="d-box d-accent"></rect>
+    <text x="180" y="73" font-size="12" text-anchor="middle">LayerNorm</text>
+    <path d="M180,250 L180,196" class="d-line"></path>
+    <path d="M180,160 L180,124" class="d-line"></path>
+    <path d="M180,96 L180,84" class="d-line"></path>
+    <path d="M180,40 L180,52" class="d-line"></path>
+    <path d="M180,225 L90,225 L90,110 L166,110" class="d-line" style="stroke: var(--jj-green)"></path>
+    <text x="30" y="170" font-size="11" class="d-muted">skip</text>
+    <text x="40" y="258" font-size="11" class="d-muted">x in</text>
+    <text x="196" y="46" font-size="11" class="d-muted">out</text>
+
+    <text x="400" y="24" font-size="13">pre-norm: x + F(norm(x))</text>
+    <rect x="490" y="196" width="100" height="32" rx="6" class="d-box d-accent"></rect>
+    <text x="540" y="217" font-size="12" text-anchor="middle">LayerNorm</text>
+    <rect x="490" y="136" width="100" height="36" rx="6" class="d-box"></rect>
+    <text x="540" y="159" font-size="12" text-anchor="middle">sublayer F</text>
+    <circle cx="540" cy="76" r="14" class="d-box"></circle>
+    <text x="540" y="81" font-size="14" text-anchor="middle">+</text>
+    <path d="M540,255 L540,228" class="d-line"></path>
+    <path d="M540,196 L540,172" class="d-line"></path>
+    <path d="M540,136 L540,90" class="d-line"></path>
+    <path d="M540,62 L540,40" class="d-line"></path>
+    <path d="M540,245 L440,245 L440,76 L526,76" class="d-line" style="stroke: var(--jj-green)"></path>
+    <text x="398" y="170" font-size="11" class="d-muted">skip (clean)</text>
+    <text x="556" y="52" font-size="11" class="d-muted">out</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Green is the skip path. In pre-norm it carries x from the input to the output without passing
+  through any normalization, which is what keeps gradients healthy at depth.
+</p>
+
+<h3 id="ffn">The feed-forward block and dropout</h3>
+<p>
+  The other half of a transformer block is a position-wise two-layer network applied to each
+  position separately: <code>linear2(dropout(activation(linear1(x))))</code>, expanding E to
+  <code>dim_feedforward</code> (commonly 4E) and back, with ReLU by default (GELU or SwiGLU in many
+  newer models). Dropout zeroes each activation with probability p during training and rescales the
+  rest by 1/(1 − p); in evaluation mode it does nothing. In <code>TransformerEncoderLayer</code> it
+  is applied inside the feed-forward block, to the attention output (<code>dropout1</code>) and to
+  the feed-forward output (<code>dropout2</code>), each <em>before</em> its residual addition.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>nn.LayerNorm</code></td>
+        <td><code>normalized_shape</code>, <code>eps=1e-5</code>, <code>elementwise_affine=True</code>, <code>bias=True</code>; weight γ and bias β of shape <code>normalized_shape</code>, initialised to 1 and 0</td>
+        <td>Normalizes the last dimension(s) of each example, then scales and shifts. Same in train and eval.</td>
+        <td><a href="{{ src('torch/nn/modules/normalization.py', 105, 236) }}"><code>LayerNorm</code></a>, <a href="{{ src('torch/nn/functional.py', 2972, 2996) }}"><code>layer_norm</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.RMSNorm</code></td>
+        <td><code>normalized_shape</code>, <code>eps=None</code>, <code>elementwise_affine=True</code>; weight only</td>
+        <td>Divides by the root mean square; no mean subtraction, no bias.</td>
+        <td><a href="{{ src('torch/nn/modules/normalization.py', 343, 436) }}"><code>RMSNorm</code></a>, <a href="{{ src('torch/nn/functional.py', 2998, 3013) }}"><code>rms_norm</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.BatchNorm1d/2d/3d</code></td>
+        <td><code>num_features</code>, <code>eps=1e-5</code>, <code>momentum=0.1</code>, <code>affine=True</code>, <code>track_running_stats=True</code>; γ, β of shape [C]; buffers <code>running_mean</code>, <code>running_var</code> [C], <code>num_batches_tracked</code></td>
+        <td>Normalizes each channel over the batch; updates running statistics in training, uses them in eval.</td>
+        <td><a href="{{ src('torch/nn/modules/batchnorm.py', 25, 150) }}"><code>_NormBase</code></a>, <a href="{{ src('torch/nn/modules/batchnorm.py', 152, 224) }}"><code>_BatchNorm.forward</code></a>, <a href="{{ src('torch/nn/functional.py', 2865, 2926) }}"><code>batch_norm</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.GroupNorm</code></td>
+        <td><code>num_groups</code>, <code>num_channels</code>, <code>eps=1e-5</code>, <code>affine=True</code>; γ, β of shape [C]</td>
+        <td>Normalizes each group of channels within one example; no batch dependence.</td>
+        <td><a href="{{ src('torch/nn/modules/normalization.py', 239, 340) }}"><code>GroupNorm</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.Dropout</code></td>
+        <td><code>p=0.5</code>; no parameters</td>
+        <td>Zeroes entries with probability p in training and scales the rest by 1/(1−p); identity in eval.</td>
+        <td><a href="{{ src('torch/nn/modules/dropout.py', 35, 73) }}"><code>Dropout</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.TransformerEncoderLayer</code></td>
+        <td><code>d_model</code>, <code>nhead</code>, <code>dim_feedforward=2048</code>, <code>dropout=0.1</code>, <code>activation=relu</code>, <code>layer_norm_eps=1e-5</code>, <code>norm_first=False</code></td>
+        <td>Self-attention and feed-forward sublayers, each with dropout, a residual addition and a LayerNorm; <code>norm_first</code> selects pre-norm.</td>
+        <td><a href="{{ src('torch/nn/modules/transformer.py', 663, 982) }}"><code>TransformerEncoderLayer</code></a>, <a href="{{ src('torch/nn/modules/transformer.py', 944, 958) }}">norm order</a></td>
+      </tr>
+      <tr>
+        <td><code>_sa_block</code>, <code>_ff_block</code></td>
+        <td>[N, L, E] → [N, L, E]</td>
+        <td>The two sublayers, each ending in a dropout that runs before the residual add.</td>
+        <td><a href="{{ src('torch/nn/modules/transformer.py', 960, 983) }}"><code>transformer.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    Three examples ({% for t in tokens %}<code>{{ t }}</code>{% if not loop.last %}, {% endif %}{% endfor %}), four features each:
+    {% for r in ex.x %}{{ vec(r) }}{% if not loop.last %}, {% endif %}{% endfor %}.
+    LayerNorm (γ = 1, β = 0, ε = 10<sup>−5</sup>) works on each row.
+    For the first row the mean is 5 and the variance 5, so each entry becomes
+    (x − 5) / √5.00001: {{ vec(ln[0]) }}.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>row</th><th>input</th><th>LayerNorm</th><th>RMSNorm</th></tr></thead>
+      <tbody>
+        {% for t in tokens %}
+        <tr><td><code>{{ t }}</code></td><td>{{ vec(ex.x[loop.index0]) }}</td><td>{{ vec(ln[loop.index0]) }}</td><td>{{ vec(rms[loop.index0]) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The first and third rows, [2, 4, 6, 8] and [−3, 0, 3, 6], are the same straight line with a different spacing (2 versus 3) and offset, and LayerNorm gives them the identical
+    output {{ vec(ln[0]) }}: it forgets scale and offset. The second row,
+    {{ vec(ex.x[1]) }}, has one large value; it becomes {{ vec(ln[1]) }}. RMSNorm keeps
+    every entry's sign and ratio (the first row becomes {{ vec(rms[0]) }}, still all positive and
+    still in the ratio 1 : 2 : 3 : 4), where LayerNorm centres it.
+  </p>
+  <p>
+    <strong>BatchNorm</strong> on the same 3 × 4 matrix normalizes each <em>column</em> across the
+    three examples instead:
+    {% for r in bn %}{{ vec(r) }}{% if not loop.last %}, {% endif %}{% endfor %}. Change a different row in the batch
+    and these numbers change; that is the dependence LayerNorm avoids. <strong>GroupNorm</strong> with
+    two groups on the first row normalizes {{ vec(ex.x[0][:2]) }} and {{ vec(ex.x[0][2:]) }} separately:
+    {{ vec(gn) }}.
+  </p>
+  <p>
+    <strong>Running statistics.</strong> Start from running mean 0 and running variance 1 and feed a
+    training batch [1, 3] for one feature (mean 2, unbiased variance 2). With momentum 0.1 the buffers
+    become {{ n(stats[0]) }} and {{ n(stats[1]) }}. In evaluation mode a value of 5 with running mean 3
+    and running variance 4 is normalized with those stored numbers to (5 − 3) / √4 = {{ n(ev) }}
+    (before γ, β and ε), whatever the batch contains.
+  </p>
+  <p>
+    <strong>Why pre-norm and post-norm differ in scale.</strong> Push a 4-vector through six
+    identical residual blocks. The vector's length after each block, post-norm:
+    {{ vec(demo.post) }}; pre-norm: {{ vec(demo.pre) }}. Post-norm snaps back to a fixed size after
+    every block; pre-norm lets the stream grow, which is why pre-norm models add one last norm
+    before the output layer. All numbers come from stdlib helpers in <code>ml_models_docs.py</code>.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 200" role="img" aria-labelledby="ln-bars-title ln-bars-desc">
+    <title id="ln-bars-title">One row before and after LayerNorm and RMSNorm</title>
+    <desc id="ln-bars-desc">
+      Bar charts of the row {{ vec(ex.x[0]) }} and its normalized forms. LayerNorm gives
+      {{ vec(ln[0]) }}, centred on zero. RMSNorm gives {{ vec(rms[0]) }}, all positive.
+    </desc>
+    {{ bars(ex.x[0], 20, 110, "input", "var(--jj-muted)") }}
+    {{ bars(ln[0], 250, 110, "LayerNorm (zero mean)", "var(--jj-accent)") }}
+    {{ bars(rms[0], 470, 110, "RMSNorm (keeps sign)", "var(--jj-violet)") }}
+  </svg>
+</div>
+<p class="ml-caption">The input bars are drawn at the same scale as the outputs, so the first chart is simply tall.</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+import torch.nn as nn
+
+x = torch.randn(8, 16, 64)                        # [batch, positions, features]
+
+ln = nn.LayerNorm(64)                             # weight [64] = 1, bias [64] = 0
+y = ln(x)                                         # per position: mean 0, variance 1
+rms = nn.RMSNorm(64)                              # weight only
+bn = nn.BatchNorm1d(64)                           # expects [N, C] or [N, C, L]
+y = bn(x.transpose(1, 2))                         # statistics per feature over batch and positions
+bn.running_mean, bn.running_var, bn.num_batches_tracked
+bn.eval()                                         # now uses the stored statistics
+gn = nn.GroupNorm(num_groups=8, num_channels=64)  # 64 % 8 == 0
+
+# a transformer sublayer, both styles
+class Block(nn.Module):
+    def __init__(self, dim, pre_norm=True, p=0.1):
+        super().__init__()
+        self.norm1, self.norm2 = nn.LayerNorm(dim), nn.LayerNorm(dim)
+        self.attn = nn.MultiheadAttention(dim, 4, batch_first=True)
+        self.ff = nn.Sequential(nn.Linear(dim, 4 * dim), nn.GELU(), nn.Linear(4 * dim, dim))
+        self.drop = nn.Dropout(p)
+        self.pre_norm = pre_norm
+
+    def forward(self, x):
+        if self.pre_norm:                          # x = x + F(norm(x))
+            h = self.norm1(x)
+            x = x + self.drop(self.attn(h, h, h, need_weights=False)[0])
+            return x + self.drop(self.ff(self.norm2(x)))
+        x = self.norm1(x + self.drop(self.attn(x, x, x, need_weights=False)[0]))
+        return self.norm2(x + self.drop(self.ff(x)))
+
+layer = nn.TransformerEncoderLayer(64, 4, batch_first=True, norm_first=True)   # the built-in</code></pre>
+
+<p>LayerNorm and a residual block in plain Python:</p>
+
+<pre><code>import math
+
+def layer_norm(row, gamma, beta, eps=1e-5):
+    mean = sum(row) / len(row)
+    var = sum((v - mean) ** 2 for v in row) / len(row)         # biased variance
+    return [(v - mean) / math.sqrt(var + eps) * g + b for v, g, b in zip(row, gamma, beta)]
+
+def rms_norm(row, gamma, eps=1e-5):
+    scale = 1 / math.sqrt(sum(v * v for v in row) / len(row) + eps)
+    return [v * scale * g for v, g in zip(row, gamma)]
+
+def block(x, sublayer, norm, pre_norm):
+    if pre_norm:
+        return [a + b for a, b in zip(x, sublayer(norm(x)))]
+    return norm([a + b for a, b in zip(x, sublayer(x))])</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>BatchNorm needs a decent batch.</strong> With a handful of examples the batch
+    statistics are noisy; with variable-length sequences the padding corrupts them. It works well
+    for image convolutions at moderate batch sizes and badly for most language models.
+  </li>
+  <li>
+    <strong>Train/eval mismatch.</strong> Forgetting <code>model.eval()</code> leaves BatchNorm on batch
+    statistics and Dropout on; predictions then vary with the batch and with chance. LayerNorm and
+    RMSNorm have no such mode switch.
+  </li>
+  <li>
+    <strong>Pre-norm trains more easily, post-norm can end slightly better.</strong> Pre-norm's
+    clean skip path stabilises deep stacks, but the stream grows and later layers contribute
+    relatively less; many large models therefore use pre-norm plus a final norm.
+  </li>
+  <li>
+    <strong>RMSNorm saves a little.</strong> No mean, no bias: slightly fewer operations and
+    parameters ({{ norm_param_count("rms", 4096) }} versus {{ norm_param_count("layer", 4096) }}
+    for E = 4096), with similar quality in practice, but it cannot remove a shared offset.
+  </li>
+  <li>
+    <strong>Pitfalls.</strong> <code>nn.LayerNorm(64)</code> normalizes only the last dimension, so
+    giving it an image tensor [N, C, H, W] with <code>64</code> normalizes over W. Using
+    BatchNorm1d on a [N, L, E] tensor without transposing normalizes the wrong axis (it expects the
+    feature dimension second). Epsilon matters in half precision. Frozen BatchNorm layers during
+    fine-tuning need <code>.eval()</code> on those layers specifically.
+  </li>
+  <li>
+    <strong>When not to use it.</strong> A shallow network with a well-scaled input often needs
+    neither a residual path nor normalization; add them when depth or instability calls for it.
+  </li>
+</ul>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="ml-quiz">
+  <summary>Why is the gradient through y = x + F(x) healthier than through y = F(x)?</summary>
+  <p>The derivative is 1 + F′(x) rather than F′(x). Across many blocks the product of (1 + F′) terms does not collapse toward zero the way a product of small F′ values does, because the identity term always carries gradient straight back.</p>
+</details>
+<details class="ml-quiz">
+  <summary>You evaluate with a batch of one and your BatchNorm model returns nonsense in <code>train()</code> mode but fine in <code>eval()</code>. Why?</summary>
+  <p>In training mode BatchNorm uses the statistics of the current batch; with one example (and one value per feature) the variance is zero, so everything normalizes to β. In eval mode it uses the stored running mean and variance, which do not depend on the batch.</p>
+</details>
+<details class="ml-quiz">
+  <summary>How many parameters does <code>nn.LayerNorm(512)</code> have? <code>nn.RMSNorm(512)</code>? <code>nn.BatchNorm1d(512)</code>, including buffers?</summary>
+  <p>LayerNorm: {{ norm_param_count("layer", 512) }} (γ and β). RMSNorm: {{ norm_param_count("rms", 512) }} (γ only). BatchNorm1d: {{ norm_param_count("batch", 512) }} trainable parameters (γ and β), plus the buffers <code>running_mean</code> and <code>running_var</code> (512 each) and the scalar <code>num_batches_tracked</code>, which are state but not trained.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Which of <code>x + F(norm(x))</code> and <code>norm(x + F(x))</code> needs a final norm before the output layer, and why?</summary>
+  <p>The pre-norm form, <code>x + F(norm(x))</code>. Its stream is never normalized, so it grows with depth, and the last block's output needs one norm to bring it back to a standard scale before the output projection.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>He, Zhang, Ren and Sun. <em>Deep Residual Learning for Image Recognition.</em> CVPR, 2016 (<a href="https://arxiv.org/abs/1512.03385">arXiv 1512.03385</a>).</li>
+  <li>Ioffe and Szegedy. <em>Batch Normalization: Accelerating Deep Network Training by Reducing Internal Covariate Shift.</em> ICML, 2015 (<a href="https://arxiv.org/abs/1502.03167">arXiv 1502.03167</a>).</li>
+  <li>Ba, Kiros and Hinton. <em>Layer Normalization.</em> 2016 (<a href="https://arxiv.org/abs/1607.06450">arXiv 1607.06450</a>).</li>
+  <li>Zhang and Sennrich. <em>Root Mean Square Layer Normalization.</em> NeurIPS, 2019 (<a href="https://arxiv.org/abs/1910.07467">arXiv 1910.07467</a>).</li>
+  <li>Wu and He. <em>Group Normalization.</em> ECCV, 2018 (<a href="https://arxiv.org/abs/1803.08494">arXiv 1803.08494</a>).</li>
+  <li>Xiong et al. <em>On Layer Normalization in the Transformer Architecture.</em> ICML, 2020 (<a href="https://arxiv.org/abs/2002.04745">arXiv 2002.04745</a>).</li>
+  <li>Srivastava et al. <em>Dropout: A Simple Way to Prevent Neural Networks from Overfitting.</em> JMLR, 2014.</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/nn/modules/normalization.py', 105, 436) }}"><code>normalization.py</code></a>, <a href="{{ src('torch/nn/modules/batchnorm.py', 25, 224) }}"><code>batchnorm.py</code></a> and <a href="{{ src('torch/nn/modules/transformer.py', 663, 982) }}"><code>TransformerEncoderLayer</code></a>.</li>
+</ul>

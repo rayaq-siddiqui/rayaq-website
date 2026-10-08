@@ -1347,3 +1347,10 @@ def test_norm_param_counts():
     assert ml_models_docs.norm_param_count("rms", 512) == 512
     assert ml_models_docs.norm_param_count("batch", 64) == 128
     assert ml_models_docs.transformer_param_count(512, 1, 0, 2048)["layer_norm"] == ml_models_docs.norm_param_count("layer", 512)
+
+
+def test_residual_demo_pre_norm_grows_and_post_norm_stays_fixed():
+    demo = ml_models_docs.residual_demo(6)
+    assert len(demo["pre"]) == len(demo["post"]) == 7
+    assert demo["pre"][-1] > 2 * demo["pre"][0]
+    assert all(abs(v - demo["post"][1]) < 1e-3 for v in demo["post"][1:])

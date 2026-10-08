@@ -648,7 +648,7 @@ PAGES = [
             "pytorch:torch/nn/functional.py",
             "pytorch:torch/nn/modules/transformer.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "optimizers",
@@ -1931,6 +1931,15 @@ def residual_stream_norms(x, sublayers, norm, norm_first):
     return x, norms
 
 
+def residual_demo(depth=6, gain=1.0):
+    x = [1.0, -2.0, 3.0, -1.0]
+    sublayer = lambda v: [gain * (value + 0.5 * v[(i + 1) % len(v)]) for i, value in enumerate(v)]
+    sublayers = [sublayer] * depth
+    pre = residual_stream_norms(x, sublayers, layer_norm_row, True)[1]
+    post = residual_stream_norms(x, sublayers, layer_norm_row, False)[1]
+    return {"pre": pre, "post": post}
+
+
 def norm_param_count(kind, features, bias=True):
     if kind == "layer":
         return features * (2 if bias else 1)
@@ -3151,6 +3160,7 @@ def render(slug, render_template):
         "residual_block": residual_block,
         "residual_stream_norms": residual_stream_norms,
         "norm_param_count": norm_param_count,
+        "residual_demo": residual_demo,
         "presets": TRANSFORMER_PRESETS,
         "param_count": transformer_param_count,
         "broadcast_steps": broadcast_steps,
