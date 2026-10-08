@@ -81,7 +81,7 @@ PAGES = [
         "title": "Shared utilities",
         "summary": "The small shared helpers the rest of the extension builds on.",
         "sources": ["src/utils/"],
-        "ready": False,
+        "ready": True,
     },
 ]
 

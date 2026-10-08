@@ -174,3 +174,14 @@ def test_icon_theme_covers_lookup_parsing_model_and_caching():
         assert f'<h2 id="{anchor}">' in body, anchor
     for name in ["IconTheme", "IconThemeDocument", "IconDefinition", "ThemeFont", "FileIcon", "FileFont", "jsonc-parser"]:
         assert name in body, name
+
+
+def test_utils_covers_every_helper():
+    if jj_dojo_docs.find_page("utils") is None:
+        return
+    client = app_module.app.test_client()
+
+    body = client.get("/jj-dojo/utils").get_data(as_text=True)
+
+    for anchor in ["hashmap", "hashset", "check", "dispose", "time", "gaps"]:
+        assert f'<h2 id="{anchor}">' in body, anchor
