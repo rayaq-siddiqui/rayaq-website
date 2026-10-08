@@ -154,6 +154,13 @@ The paths below are relative to `torch/nn/modules/` unless they give a fuller pa
   130-134 (calls `F.linear`).
 - `torch/_tensor_docs.py` (each range from `add_docstr_all(` to `)`): `contiguous` 1131-1144,
   `is_contiguous` 2702-2714, `stride` 4963-4989, `view` 6041-6180, `expand` 6198-6249.
+  Autograd attributes: `grad` 6555-6563 ("accumulate (add)"), `retain_grad` 6595-6603,
+  `requires_grad` 6613-6624, `is_leaf` 6626-6666, `requires_grad_` 4125-4161.
+- `torch/autograd/__init__.py`: `backward` 255-403; `grad` 434-621 (its overloads start at 406).
+- `torch/_tensor.py`: `Tensor.backward` 566-625 (calls `torch.autograd.backward`);
+  `register_hook` starts at 655.
+- `torch/autograd/functional.py`: `jacobian` 587-853; `hessian` starts at 856.
+- `torch/autograd/grad_mode.py`: `no_grad` 22-86; `enable_grad` starts at 89.
 
 ### scikit-learn 1.9.1 (start lines; check the end before linking a range)
 
