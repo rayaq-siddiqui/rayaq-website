@@ -185,3 +185,16 @@ def test_utils_covers_every_helper():
 
     for anchor in ["hashmap", "hashset", "check", "dispose", "time", "gaps"]:
         assert f'<h2 id="{anchor}">' in body, anchor
+
+
+def test_build_and_test_covers_bazel_tests_and_ci():
+    if jj_dojo_docs.find_page("build-and-test") is None:
+        return
+    client = app_module.app.test_client()
+
+    body = client.get("/jj-dojo/build-and-test").get_data(as_text=True)
+
+    for anchor in ["module", "targets", "deps", "rules", "testing", "ci", "gaps"]:
+        assert f'<h2 id="{anchor}">' in body, anchor
+    for name in ["//:extension", "//:vsix", "jasmine_test", "installVscode", "addlicense"]:
+        assert name in body, name

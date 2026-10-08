@@ -67,7 +67,7 @@ PAGES = [
             "src/testing/",
             ".github/workflows/",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "roadmap",
