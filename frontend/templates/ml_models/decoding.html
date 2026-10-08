@@ -1,0 +1,381 @@
+{% set d = decoding_example %}
+{% set toks = d.tokens %}
+{% set cold = temperature_probs(d.logits, 0.5) %}
+{% set base = temperature_probs(d.logits, 1) %}
+{% set hot = temperature_probs(d.logits, 2) %}
+{% set tk = top_k_filter(base, 3) %}
+{% set tp = top_p_filter(base, 0.9) %}
+{% set pen = repeat_penalty(d.logits, [0, 2], 1.5) %}
+{% set pen_probs = temperature_probs(pen, 1) %}
+{% set con = constrained_probs(d.logits, [2, 3, 4]) %}
+{% set steps = beam_step_probs %}
+{% set greedy = greedy_path(steps, 4) %}
+{% set beams = beam_search(steps, 2, 4) %}
+{% set sp = speculative_example %}
+{% set spec = speculative_step(sp.target, sp.draft) %}
+{% set freq = sample_frequencies(base, 1000, 0) %}
+{% macro row(probs) -%}{% for p in probs %}{{ "%.3f"|format(p) }}{% if not loop.last %}, {% endif %}{% endfor %}{%- endmacro %}
+{% macro path(tokens) -%}{% for t in tokens %}{{ t }}{% if not loop.last %} → {% endif %}{% endfor %}{%- endmacro %}
+<header class="jj-header">
+  <h1>Decoding and sampling</h1>
+  <p class="tagline">
+    A language model outputs a probability for every possible next token. Decoding is the rule
+    that turns those probabilities into text: always take the likeliest token, search for the
+    likeliest whole sentence, or draw at random with the odds reshaped by temperature, top-k and
+    top-p. This page works every rule on one six-word vocabulary so you can see exactly what each
+    one does to the numbers, then shows constrained and speculative decoding.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  The <a href="/ml-models/decoder-only-llm">decoder-only model</a> hands back a score (a logit) for
+  each of its tens of thousands of vocabulary entries. To write a sentence we must choose one
+  token, feed it back, and choose again. The choice is not obvious. Always taking the top
+  token is repetitive and can talk itself into a loop. Sampling straight from the probabilities
+  sometimes picks a very unlikely word, and one odd word can derail everything after it. Different tasks want
+  different behaviour: a code completion should be near-deterministic, a story should
+  surprise you.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Think of the model's output as a weighted die with one face per word. Decoding is how you
+  roll it. <em>Greedy</em> always shows the heaviest face. <em>Temperature</em> reshapes the
+  die: low temperature makes heavy faces heavier, high temperature evens the faces out.
+  <em>Top-k</em> and <em>top-p</em> cut away the long tail of silly faces before rolling. <em>Beam
+  search</em> does not roll at all; it keeps a few promising partial sentences and extends them
+  in parallel, because the best first word does not always lead to the best sentence.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 250" role="img" aria-labelledby="dec-pipe-title dec-pipe-desc">
+    <title id="dec-pipe-title">The decoding pipeline for one step</title>
+    <desc id="dec-pipe-desc">
+      Logits from the model pass through optional adjustments in order: a repetition penalty,
+      constraint masking, division by the temperature, then softmax to probabilities, then a top-k
+      or top-p cut with renormalisation, and finally either an argmax or a random draw to pick the
+      next token, which is appended to the sequence and fed back to the model.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <rect x="10" y="30" width="110" height="40" rx="6" class="d-box ml-tensor"></rect>
+      <text x="65" y="55">logits [V]</text>
+      <rect x="140" y="30" width="110" height="40" rx="6" class="d-box ml-op"></rect>
+      <text x="195" y="55">penalty / mask</text>
+      <rect x="270" y="30" width="110" height="40" rx="6" class="d-box ml-op"></rect>
+      <text x="325" y="55">÷ temperature</text>
+      <rect x="400" y="30" width="110" height="40" rx="6" class="d-box ml-op"></rect>
+      <text x="455" y="55">softmax</text>
+      <rect x="530" y="30" width="150" height="40" rx="6" class="d-box ml-op"></rect>
+      <text x="605" y="55">top-k / top-p cut</text>
+      <rect x="400" y="130" width="130" height="40" rx="6" class="d-box ml-op"></rect>
+      <text x="465" y="155">argmax or draw</text>
+      <rect x="230" y="130" width="130" height="40" rx="6" class="d-box ml-tensor"></rect>
+      <text x="295" y="155">next token</text>
+      <rect x="50" y="130" width="130" height="40" rx="6" class="d-box ml-dashed"></rect>
+      <text x="115" y="155">append, repeat</text>
+      <text x="350" y="215" class="d-muted">the order matters: temperature before the cut changes what the cut keeps</text>
+    </g>
+    <g class="d-line" fill="none" stroke-width="1.5">
+      <path d="M120 50 H140"></path><path d="M250 50 H270"></path><path d="M380 50 H400"></path>
+      <path d="M510 50 H530"></path><path d="M605 70 V100 H465 V130"></path>
+      <path d="M400 150 H360"></path><path d="M230 150 H180"></path>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Real libraries apply these steps as a chain of logit processors; the order shown is the common one, not a law.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="greedy">Greedy and beam search</h3>
+<p>
+  Greedy decoding is <code>argmax</code> of the logits at the last position. It is fast and
+  deterministic, but it optimises one step at a time, while what we want is the sequence with the
+  highest total probability, the product of its step probabilities (the sum of their logs).
+  <strong>Beam search</strong> keeps the <var>B</var> best partial sequences by total
+  log-probability. At each step it extends every beam with every token, scores the results, and
+  keeps the best <var>B</var>. With <var>B</var>=1 it is greedy. Beam search is a heuristic: it
+  is not guaranteed to find the best sequence either, only a better one.
+</p>
+
+<h3 id="temperature">Temperature</h3>
+<p>
+  Divide the logits by a temperature <var>T</var> before the softmax:
+  p<sub>i</sub> = exp(z<sub>i</sub>/T) / Σ<sub>j</sub> exp(z<sub>j</sub>/T). As T→0 all the mass goes
+  to the largest logit (greedy); T=1 is the model's own distribution; as T→∞ it approaches uniform.
+  The name comes from the Boltzmann distribution in physics, where the same formula has the
+  temperature as a divisor.
+</p>
+
+<h3 id="truncation">Top-k and top-p (nucleus)</h3>
+<p>
+  <strong>Top-k</strong> keeps only the <var>k</var> highest-probability tokens and renormalises.
+  <strong>Top-p</strong> keeps the smallest set of top tokens whose probabilities add up to at
+  least <var>p</var>, so the number kept adapts: a confident step keeps a few tokens, an uncertain
+  one keeps many. Both finish by dividing the survivors by their total so they sum to 1.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 300" role="img" aria-labelledby="dec-bars-title dec-bars-desc">
+    <title id="dec-bars-title">One distribution under three temperatures</title>
+    <desc id="dec-bars-desc">
+      Three groups of six bars for the words {{ toks|join(", ") }}. At temperature 0.5 the first
+      word has probability {{ "%.2f"|format(cold[0]) }}; at 1 it has {{ "%.2f"|format(base[0]) }}; at 2 it
+      has {{ "%.2f"|format(hot[0]) }}. Lower temperatures concentrate probability on the leading words.
+    </desc>
+    {% for probs, label in [(cold, "T = 0.5"), (base, "T = 1"), (hot, "T = 2")] %}
+      {% set x0 = 20 + loop.index0 * 225 %}
+      <text x="{{ x0 }}" y="24" font-size="12">{{ label }}</text>
+      {% for p in probs %}
+        <rect x="{{ x0 + loop.index0 * 32 }}" y="{{ 250 - 200 * p }}" width="26" height="{{ 200 * p }}" class="d-box ml-op"></rect>
+        <text x="{{ x0 + loop.index0 * 32 + 13 }}" y="268" font-size="9" text-anchor="middle">{{ toks[loop.index0] }}</text>
+      {% endfor %}
+    {% endfor %}
+    <text x="20" y="292" font-size="11" class="d-muted">bar height = probability (tallest bar at T = 0.5 is {{ "%.2f"|format(cold[0]) }})</text>
+  </svg>
+</div>
+
+<h3 id="penalties">Repetition penalties</h3>
+<p>
+  Models are prone to repeating themselves. A repetition penalty lowers the logit of tokens
+  already generated. One common form (the idea comes from the CTRL model's "penalized sampling")
+  divides a positive logit by a penalty θ&gt;1 and multiplies a negative one by θ, so that the
+  token gets less likely in both cases. This page uses that form with θ=1.5.
+</p>
+
+<h3 id="constrained">Constrained decoding</h3>
+<p>
+  When the output must follow a format (valid JSON, a grammar, one of a few labels), set the logit
+  of every token that would break the format to −∞ before the softmax. Those tokens get probability exactly 0,
+  and the remaining ones are renormalised. Each step needs the set of allowed tokens, which a grammar or
+  state machine supplies from what has been written so far.
+</p>
+
+<h3 id="speculative">Speculative decoding</h3>
+<p>
+  Generation is slow because each token needs a pass through the big model. Speculative decoding has a small, cheap
+  <em>draft</em> model propose several tokens, then lets the big <em>target</em> model score all of them in
+  one pass. For a drafted token <var>x</var> with draft probability q(x) and target probability p(x), accept it
+  with probability min(1, p(x)/q(x)). On rejection, draw instead from the <em>residual</em>
+  distribution max(0, p−q), renormalised. The result: the final tokens follow the target's distribution exactly, so quality is unchanged and only speed varies.
+  The check on this page confirms it for one step.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>logits.argmax(-1)</code></td>
+        <td><code>[B, V]</code> → <code>[B]</code></td>
+        <td>Greedy decoding.</td>
+        <td><a href="{{ src('torch/distributions/categorical.py', 130, 132) }}"><code>Categorical.mode</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Categorical(logits=…)</code></td>
+        <td>logits <code>[…, V]</code>, normalised with <code>logsumexp</code></td>
+        <td>A distribution over the vocabulary; <code>logits</code> need not sum to 1.</td>
+        <td><a href="{{ src('torch/distributions/categorical.py', 13, 82) }}"><code>categorical.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Categorical.sample</code></td>
+        <td><code>sample_shape</code> → samples of shape <code>[…]</code></td>
+        <td>Calls <code>torch.multinomial</code> with replacement on the probabilities.</td>
+        <td><a href="{{ src('torch/distributions/categorical.py', 144, 149) }}">lines 144-149</a></td>
+      </tr>
+      <tr>
+        <td><code>torch.multinomial</code></td>
+        <td><code>[B, V]</code> weights → <code>[B, n]</code> indices</td>
+        <td>Draws indices; rows need not sum to 1 but must be non-negative, finite, with a non-zero sum.</td>
+        <td><a href="{{ src('torch/_torch_docs.py', 8088, 8141) }}"><code>_torch_docs.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>torch.topk</code></td>
+        <td><code>[B, V]</code> → values and indices <code>[B, k]</code></td>
+        <td>The k largest entries; indices of ties are not guaranteed stable.</td>
+        <td><a href="{{ src('torch/_torch_docs.py', 11877, 11921) }}"><code>_torch_docs.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>F.softmax(x, dim=-1)</code></td>
+        <td><code>[B, V]</code></td>
+        <td>exp(x<sub>i</sub>)/Σ exp(x<sub>j</sub>) along <code>dim</code>.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 2176, 2216) }}"><code>functional.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Categorical.entropy</code></td>
+        <td><code>[…]</code></td>
+        <td>−Σ p log p, a measure of how spread out the step is.</td>
+        <td><a href="{{ src('torch/distributions/categorical.py', 159, 163) }}">lines 159-163</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-sampling">One step, every rule</h3>
+  <p>
+    The model gives these logits for the next word after "the cat …":
+    {% for t in toks %}<em>{{ t }}</em> {{ d.logits[loop.index0] }}{% if not loop.last %}, {% endif %}{% endfor %}.
+    Each row below is computed by the page's helpers (probabilities for {{ toks|join(", ") }}).
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Rule</th><th>Probabilities</th><th>Note</th></tr></thead>
+      <tbody>
+        <tr><td>Softmax, T = 1</td><td>{{ row(base) }}</td><td>entropy {{ "%.3f"|format(entropy(base)) }} bits</td></tr>
+        <tr><td>T = 0.5</td><td>{{ row(cold) }}</td><td>entropy {{ "%.3f"|format(entropy(cold)) }} bits</td></tr>
+        <tr><td>T = 2</td><td>{{ row(hot) }}</td><td>entropy {{ "%.3f"|format(entropy(hot)) }} bits</td></tr>
+        <tr><td>Top-k, k = 3</td><td>{{ row(tk.probs) }}</td><td>kept {{ tk.kept|map("string")|join(", ") }}; mass before renormalising {{ "%.3f"|format(tk.mass) }}</td></tr>
+        <tr><td>Top-p, p = 0.9</td><td>{{ row(tp.probs) }}</td><td>kept {{ tp.kept|length }} tokens; mass {{ "%.3f"|format(tp.mass) }}</td></tr>
+        <tr><td>Penalty θ = 1.5 on <em>the</em>, <em>cat</em></td><td>{{ row(pen_probs) }}</td><td>logits become {{ pen|map("round", 2)|join(", ") }}</td></tr>
+        <tr><td>Only <em>cat</em>, <em>dog</em>, <em>sat</em> allowed</td><td>{{ row(con) }}</td><td>others are exactly 0</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Greedy picks <em>{{ toks[0] }}</em>. Drawing 1000 samples from the T = 1 row with a fixed seed gives
+    frequencies {{ row(freq) }}, close to the probabilities but not equal: sampling is random, and
+    averages converge slowly. Note that the top-p row kept {{ tp.kept|length }} tokens where
+    top-k kept 3; with p = 0.9, the first three tokens only reach {{ "%.3f"|format(base[0] + base[1] + base[2]) }}, so the fourth is needed.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-beam">Beam search beats greedy</h3>
+  <p>
+    Take a tiny model with start symbol <code>&lt;s&gt;</code>: it says <em>x</em> with probability
+    {{ steps["<s>"].x }}, <em>y</em> with {{ steps["<s>"].y }}, and ends with {{ steps["<s>"].end }}. After <em>x</em>
+    it ends with {{ steps.x.end }}; after <em>y</em> it always ends. Greedy takes <em>x</em> (the
+    larger first step) and then <em>end</em>: {{ path(greedy[0]) }}, probability
+    {{ "%.2f"|format(exp(greedy[1])) }}. Beam search with width 2 keeps both first words and finds
+    {{ path(beams[0][0]) }}, probability {{ "%.2f"|format(exp(beams[0][1])) }}. The best first
+    word did not lead to the best sentence.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-speculative">Speculative decoding preserves the target</h3>
+  <p>
+    Vocabulary {{ sp.tokens|join(", ") }}. Target p = [{{ row(sp.target) }}], draft q = [{{ row(sp.draft) }}].
+    The chance a drafted token is accepted is Σ min(p, q) = {{ "%.2f"|format(spec.acceptance) }}.
+    On rejection we draw from the residual [{{ row(spec.residual) }}]. Adding the two routes,
+    P(output = x) = min(p, q)(x) + (1 − {{ "%.2f"|format(spec.acceptance) }}) · residual(x), gives
+    [{{ row(spec.output) }}], identical to p. With acceptance rate α per token and
+    γ drafted tokens, and assuming each is accepted independently with probability α, one target pass yields
+    1 + α + … + α<sup>γ</sup> tokens on average: for γ = 4 that is
+    {{ "%.2f"|format(speculative_tokens_per_pass(0.5, 4)) }} at α = 0.5,
+    {{ "%.2f"|format(speculative_tokens_per_pass(0.75, 4)) }} at α = 0.75 and
+    {{ "%.2f"|format(speculative_tokens_per_pass(0.9, 4)) }} at α = 0.9.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 220" role="img" aria-labelledby="dec-spec-title dec-spec-desc">
+    <title id="dec-spec-title">Target, draft and the overlap that is accepted</title>
+    <desc id="dec-spec-desc">
+      For each of the four words, two bars: the target probability and the draft probability.
+      The shared part, the smaller of the two, is accepted directly and totals {{ "%.2f"|format(spec.acceptance) }}.
+      Where the target is larger than the draft, the excess is the residual that replaces rejected drafts.
+    </desc>
+    {% for t in sp.tokens %}
+      {% set x0 = 40 + loop.index0 * 160 %}
+      <rect x="{{ x0 }}" y="{{ 170 - 300 * sp.target[loop.index0] }}" width="50" height="{{ 300 * sp.target[loop.index0] }}" class="d-box ml-tensor"></rect>
+      <rect x="{{ x0 + 56 }}" y="{{ 170 - 300 * sp.draft[loop.index0] }}" width="50" height="{{ 300 * sp.draft[loop.index0] }}" class="d-box ml-dashed"></rect>
+      <text x="{{ x0 + 53 }}" y="192" font-size="12" text-anchor="middle">{{ t }}</text>
+      <text x="{{ x0 + 25 }}" y="{{ 164 - 300 * sp.target[loop.index0] }}" font-size="10" text-anchor="middle">p {{ "%.2f"|format(sp.target[loop.index0]) }}</text>
+      <text x="{{ x0 + 81 }}" y="{{ 164 - 300 * sp.draft[loop.index0] }}" font-size="10" text-anchor="middle" class="d-muted">q {{ "%.2f"|format(sp.draft[loop.index0]) }}</text>
+    {% endfor %}
+    <text x="40" y="212" font-size="11" class="d-muted">solid = target p, dashed = draft q</text>
+  </svg>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+import torch.nn.functional as F
+
+def sample_next(logits, temperature=1.0, top_k=None, top_p=None):
+    # logits: [B, V] for the last position
+    if temperature == 0:
+        return logits.argmax(-1, keepdim=True)            # greedy
+    logits = logits / temperature
+    if top_k is not None:
+        kth = torch.topk(logits, top_k).values[..., -1, None]
+        logits = logits.masked_fill(logits &lt; kth, float("-inf"))
+    if top_p is not None:
+        sorted_logits, order = torch.sort(logits, descending=True)
+        probs = F.softmax(sorted_logits, dim=-1)
+        before = probs.cumsum(-1) - probs                  # mass strictly ahead
+        sorted_logits = sorted_logits.masked_fill(before &gt;= top_p, float("-inf"))
+        logits = torch.full_like(logits, float("-inf")).scatter(-1, order, sorted_logits)
+    probs = F.softmax(logits, dim=-1)
+    return torch.multinomial(probs, num_samples=1)        # [B, 1]
+
+# repetition penalty on tokens already in `ids` ([B, T]):
+def penalize(logits, ids, theta=1.5):
+    seen = logits.gather(-1, ids)
+    seen = torch.where(seen &gt; 0, seen / theta, seen * theta)
+    return logits.scatter(-1, ids, seen)</code></pre>
+
+<p>
+  The mask for top-p keeps a token while the mass <em>strictly ahead</em> of it is still below
+  <var>p</var>, so the token that crosses the threshold is kept, matching "smallest set whose
+  mass reaches p". Ties in <code>topk</code> are not stable, so top-k can keep slightly more than
+  k tokens here when logits tie at the cut. <code>torch.multinomial</code> accepts unnormalised
+  weights, but softmax output is already normalised.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Greedy and beam</strong> suit tasks with one right answer (translation, extraction). They are
+    repetitive for open-ended text, and wide beams can favour short or generic outputs, so
+    implementations usually add length normalisation.</li>
+  <li><strong>Temperature</strong> trades diversity for reliability. It is not calibration: dividing logits
+    does not make the model more correct, only more or less committed.</li>
+  <li><strong>Top-k versus top-p.</strong> A fixed k keeps too many tokens when the model is sure and too few
+    when it is not. Top-p adapts to that, which is why it is the usual default. Both are heuristics with no
+    guarantee of better text.</li>
+  <li><strong>Penalties</strong> stop loops but also penalise words that should repeat (names, code
+    identifiers). Keep θ small.</li>
+  <li><strong>Constrained decoding</strong> guarantees format but can force the model into low-probability
+    continuations if the constraint disagrees with what it wanted to write.</li>
+  <li><strong>Speculative decoding</strong> is lossless in distribution but only helps when the draft
+    model is much cheaper and agrees with the target often (high α); a poor draft wastes compute.
+    The speed-up also depends on how verification of γ tokens costs compared with one, which is a
+    hardware question (see the KV cache).</li>
+</ul>
+
+<h3 id="check-yourself">Check yourself</h3>
+<details class="ml-quiz">
+  <summary>What does temperature 0 mean in practice?</summary>
+  <p>Dividing by zero is undefined, so libraries treat it as the limit T→0: argmax, i.e. greedy decoding.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why renormalise after top-k or top-p?</summary>
+  <p>The kept probabilities sum to less than 1 (here {{ "%.3f"|format(tk.mass) }} for k = 3), and sampling needs a distribution that sums to 1.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does speculative decoding need the residual distribution?</summary>
+  <p>Accepted drafts under-represent tokens where the target is larger than the draft. The residual max(0, p−q) supplies exactly that missing mass, so the total is p.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Holtzman, Buys, Du, Forbes and Choi. <em>The Curious Case of Neural Text Degeneration</em> (nucleus sampling). ICLR, 2020 (<a href="https://arxiv.org/abs/1904.09751">arXiv 1904.09751</a>).</li>
+  <li>Fan, Lewis and Dauphin. <em>Hierarchical Neural Story Generation</em> (top-k sampling). ACL, 2018 (<a href="https://arxiv.org/abs/1805.04833">arXiv 1805.04833</a>).</li>
+  <li>Leviathan, Kalman and Matias. <em>Fast Inference from Transformers via Speculative Decoding.</em> ICML, 2023 (<a href="https://arxiv.org/abs/2211.17192">arXiv 2211.17192</a>).</li>
+  <li>Chen et al. <em>Accelerating Large Language Model Decoding with Speculative Sampling.</em> 2023 (<a href="https://arxiv.org/abs/2302.01318">arXiv 2302.01318</a>).</li>
+  <li>Keskar, McCann, Varshney, Xiong and Socher. <em>CTRL: A Conditional Transformer Language Model for Controllable Generation.</em> 2019 (<a href="https://arxiv.org/abs/1909.05858">arXiv 1909.05858</a>).</li>
+  <li>Willard and Louf. <em>Efficient Guided Generation for Large Language Models.</em> 2023 (<a href="https://arxiv.org/abs/2307.09702">arXiv 2307.09702</a>).</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/distributions/categorical.py', 13, 171) }}"><code>categorical.py</code></a>, <a href="{{ src('torch/_torch_docs.py', 8088, 8141) }}"><code>multinomial</code></a>, <a href="{{ src('torch/_torch_docs.py', 11877, 11921) }}"><code>topk</code></a>, <a href="{{ src('torch/nn/functional.py', 2176, 2216) }}"><code>softmax</code></a>.</li>
+</ul>
