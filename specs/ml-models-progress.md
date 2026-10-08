@@ -36,8 +36,8 @@ To verify a line range, use a sparse, shallow clone at the tag. Clone with
   a reference implementation such as nanoGPT or Hugging Face. The spec's non-goals record this.
   Where PyTorch has no module for an idea (a GPT block, RoPE, a U-Net), the page builds it from
   PyTorch primitives in a snippet and links those primitives. Papers are cited for conventions.
-- **No homepage card.** `/ml-models` isn't linked from `/`. Adding a card is the owner's call.
-  The Routine must not add one.
+- **Homepage card.** At the owner's request (2026-10-08), `/` links to `/ml-models`, placed
+  after the jj internals card and before jj-dojo (tested in `app_tests.py`).
 - **Layout reuses `jj.css`.** It is linked, never edited. Section-specific styles live in
   `ml_models.css`.
 - **`ml_models.js` is progressive enhancement only.** A figure marked `data-ml-steps`, with

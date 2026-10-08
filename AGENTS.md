@@ -104,7 +104,7 @@ vmrun.sh            Convenience wrapper: `./vmrun.sh '<command>'` runs a single 
 | `/jj-vfs-poc/<slug>` | One deep-dive page per topic in `jj_vfs_docs.PAGES` that is marked ready; 404 otherwise |
 | `/jj-commit-cloud-poc` | jj-commit-cloud-poc (gRPC commit cloud) architecture reference: overview and page index |
 | `/jj-commit-cloud-poc/<slug>` | One deep-dive page per topic in `jj_cloud_docs.PAGES` that is marked ready; 404 otherwise |
-| `/ml-models` | Large ML model architecture reference (PyTorch-linked): model-family map, vocabulary, page index. **Not linked from `/`** — a homepage card is the owner's call |
+| `/ml-models` | Large ML model architecture reference (PyTorch-linked): model-family map, vocabulary, page index |
 | `/ml-models/<slug>` | One deep-dive page per topic in `ml_models_docs.PAGES` that is marked ready; 404 otherwise |
 | `/health` | Returns `{"status": "ok"}`, 200. Used to verify a deploy actually succeeded. |
 
