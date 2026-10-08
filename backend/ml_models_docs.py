@@ -1024,7 +1024,7 @@ PAGES = [
             "pytorch:torch/distributions/categorical.py",
             "pytorch:torch/_torch_docs.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "kv-cache",
@@ -3305,6 +3305,123 @@ def generation_positions(prompt_length, new_tokens, cached=False):
     return sum(prompt_length + i for i in range(new_tokens))
 
 
+DECODING_EXAMPLE = {
+    "tokens": ["the", "a", "cat", "dog", "sat", "ran"],
+    "logits": [3.0, 2.2, 1.6, 1.4, 0.2, -0.6],
+}
+
+SPECULATIVE_EXAMPLE = {
+    "tokens": ["a", "b", "c", "d"],
+    "target": [0.45, 0.30, 0.15, 0.10],
+    "draft": [0.25, 0.40, 0.10, 0.25],
+}
+
+BEAM_STEP_PROBS = {
+    "<s>": {"x": 0.5, "y": 0.4, "end": 0.1},
+    "x": {"x": 0.3, "y": 0.3, "end": 0.4},
+    "y": {"x": 0.0, "y": 0.0, "end": 1.0},
+    "end": {},
+}
+
+
+def temperature_probs(logits, temperature):
+    return categorical_from_logits([v / temperature for v in logits])["probs"]
+
+
+def top_k_filter(probs, k):
+    order = sorted(range(len(probs)), key=lambda i: (-probs[i], i))
+    kept = sorted(order[:k])
+    mass = sum(probs[i] for i in kept)
+    return {
+        "kept": kept,
+        "mass": mass,
+        "probs": [probs[i] / mass if i in kept else 0.0 for i in range(len(probs))],
+    }
+
+
+def top_p_filter(probs, p):
+    order = sorted(range(len(probs)), key=lambda i: (-probs[i], i))
+    kept = []
+    cumulative = 0.0
+    for index in order:
+        if cumulative >= p:
+            break
+        kept.append(index)
+        cumulative += probs[index]
+    kept.sort()
+    return {
+        "kept": kept,
+        "mass": cumulative,
+        "probs": [probs[i] / cumulative if i in kept else 0.0 for i in range(len(probs))],
+    }
+
+
+def repeat_penalty(logits, seen, penalty):
+    return [
+        (v / penalty if v > 0 else v * penalty) if i in seen else v
+        for i, v in enumerate(logits)
+    ]
+
+
+def constrained_probs(logits, allowed):
+    masked = [v if i in allowed else -math.inf for i, v in enumerate(logits)]
+    top = max(masked)
+    weights = [math.exp(v - top) if v != -math.inf else 0.0 for v in masked]
+    total = sum(weights)
+    return [w / total for w in weights]
+
+
+def sample_frequencies(probs, draws, seed):
+    rng = random.Random(seed)
+    counts = [0] * len(probs)
+    for _ in range(draws):
+        counts[inverse_cdf_sample(probs, rng.random())] += 1
+    return [c / draws for c in counts]
+
+
+def beam_search(step_probs, beam_width, max_len, start="<s>", end="end"):
+    beams = [([start], 0.0)]
+    finished = []
+    for _ in range(max_len):
+        candidates = []
+        for tokens, score in beams:
+            for token, p in step_probs[tokens[-1]].items():
+                if p > 0:
+                    candidates.append((tokens + [token], score + math.log(p)))
+        candidates.sort(key=lambda c: -c[1])
+        beams = []
+        for tokens, score in candidates[:beam_width]:
+            (finished if tokens[-1] == end else beams).append((tokens, score))
+        if not beams:
+            break
+    return sorted(finished + beams, key=lambda c: -c[1])
+
+
+def greedy_path(step_probs, max_len, start="<s>", end="end"):
+    tokens, score = [start], 0.0
+    for _ in range(max_len):
+        token, p = max(step_probs[tokens[-1]].items(), key=lambda kv: kv[1])
+        tokens.append(token)
+        score += math.log(p)
+        if token == end:
+            break
+    return tokens, score
+
+
+def speculative_step(target, draft):
+    overlap = [min(p, q) for p, q in zip(target, draft)]
+    acceptance = sum(overlap)
+    residual = [max(p - q, 0.0) for p, q in zip(target, draft)]
+    norm = sum(residual)
+    residual = [r / norm for r in residual]
+    output = [o + (1 - acceptance) * r for o, r in zip(overlap, residual)]
+    return {"acceptance": acceptance, "residual": residual, "output": output}
+
+
+def speculative_tokens_per_pass(acceptance, draft_tokens):
+    return sum(acceptance**i for i in range(draft_tokens + 1))
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -3470,6 +3587,20 @@ def render(slug, render_template):
         "sequence_nll": sequence_nll,
         "greedy_generate": greedy_generate,
         "generation_positions": generation_positions,
+        "decoding_example": DECODING_EXAMPLE,
+        "beam_step_probs": BEAM_STEP_PROBS,
+        "speculative_example": SPECULATIVE_EXAMPLE,
+        "temperature_probs": temperature_probs,
+        "top_k_filter": top_k_filter,
+        "top_p_filter": top_p_filter,
+        "repeat_penalty": repeat_penalty,
+        "constrained_probs": constrained_probs,
+        "sample_frequencies": sample_frequencies,
+        "beam_search": beam_search,
+        "greedy_path": greedy_path,
+        "speculative_step": speculative_step,
+        "speculative_tokens_per_pass": speculative_tokens_per_pass,
+        "entropy": entropy,
         "logistic_example": LOGISTIC_EXAMPLE,
         "boundary_example": BOUNDARY_EXAMPLE,
         "softmax_example": SOFTMAX_EXAMPLE,

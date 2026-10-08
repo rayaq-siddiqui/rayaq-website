@@ -1497,3 +1497,68 @@ def test_generation_positions_without_a_cache_grow_quadratically():
     assert ml_models_docs.generation_positions(10, 20) == 390
     assert ml_models_docs.generation_positions(10, 20, cached=True) == 29
     assert ml_models_docs.generation_positions(3, 1) == ml_models_docs.generation_positions(3, 1, cached=True) + 1 - 1
+
+
+def test_temperature_sharpens_and_flattens_the_distribution():
+    logits = ml_models_docs.DECODING_EXAMPLE["logits"]
+    cold, base, hot = (ml_models_docs.temperature_probs(logits, t) for t in (0.5, 1, 2))
+    assert cold[0] > base[0] > hot[0]
+    assert ml_models_docs.entropy(cold) < ml_models_docs.entropy(base) < ml_models_docs.entropy(hot)
+    assert all(abs(sum(p) - 1) < 1e-12 for p in (cold, base, hot))
+
+
+def test_top_k_and_top_p_keep_the_head_and_renormalize():
+    probs = ml_models_docs.temperature_probs(ml_models_docs.DECODING_EXAMPLE["logits"], 1)
+    top_k = ml_models_docs.top_k_filter(probs, 3)
+    assert top_k["kept"] == [0, 1, 2]
+    assert abs(sum(top_k["probs"]) - 1) < 1e-12
+    top_p = ml_models_docs.top_p_filter(probs, 0.9)
+    assert top_p["kept"] == [0, 1, 2, 3]
+    assert top_p["mass"] >= 0.9 > sum(probs[:3])
+    assert ml_models_docs.top_p_filter(probs, 0.1)["kept"] == [0]
+
+
+def test_repeat_penalty_lowers_seen_tokens_whatever_their_sign():
+    out = ml_models_docs.repeat_penalty([2.0, -1.0, 0.5], {0, 1}, 2.0)
+    assert out == [1.0, -2.0, 0.5]
+
+
+def test_constrained_probs_zero_the_disallowed_tokens():
+    probs = ml_models_docs.constrained_probs(ml_models_docs.DECODING_EXAMPLE["logits"], {2, 3})
+    assert probs[0] == probs[1] == 0.0
+    assert abs(sum(probs) - 1) < 1e-12
+    assert probs[2] > probs[3]
+
+
+def test_sample_frequencies_are_seeded_and_close_to_the_distribution():
+    probs = [0.5, 0.3, 0.2]
+    first = ml_models_docs.sample_frequencies(probs, 2000, 0)
+    assert first == ml_models_docs.sample_frequencies(probs, 2000, 0)
+    assert all(abs(a - b) < 0.05 for a, b in zip(first, probs))
+
+
+def test_beam_search_beats_greedy_on_the_example():
+    steps = ml_models_docs.BEAM_STEP_PROBS
+    greedy_tokens, greedy_score = ml_models_docs.greedy_path(steps, 4)
+    best_tokens, best_score = ml_models_docs.beam_search(steps, 2, 4)[0]
+    assert greedy_tokens == ["<s>", "x", "end"]
+    assert best_tokens == ["<s>", "y", "end"]
+    assert best_score > greedy_score
+    assert abs(math.exp(greedy_score) - 0.2) < 1e-12
+    assert abs(math.exp(best_score) - 0.4) < 1e-12
+    assert ml_models_docs.beam_search(steps, 1, 4)[0][0] == greedy_tokens
+
+
+def test_speculative_step_reproduces_the_target_distribution():
+    example = ml_models_docs.SPECULATIVE_EXAMPLE
+    result = ml_models_docs.speculative_step(example["target"], example["draft"])
+    assert abs(result["acceptance"] - 0.75) < 1e-12
+    assert abs(sum(result["residual"]) - 1) < 1e-12
+    for got, want in zip(result["output"], example["target"]):
+        assert abs(got - want) < 1e-12
+
+
+def test_speculative_tokens_per_pass_is_a_geometric_sum():
+    assert ml_models_docs.speculative_tokens_per_pass(0.0, 4) == 1
+    assert ml_models_docs.speculative_tokens_per_pass(1.0, 4) == 5
+    assert abs(ml_models_docs.speculative_tokens_per_pass(0.5, 4) - 1.9375) < 1e-12
