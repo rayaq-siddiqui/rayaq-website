@@ -1,4 +1,5 @@
 import re
+from pathlib import Path
 
 import app as app_module
 import resume_data
@@ -149,6 +150,24 @@ def test_weather_includes_date_header(monkeypatch):
     body = client.get("/weather").get_data(as_text=True)
 
     assert "Current Weather for" in body
+
+
+def test_weather_uses_the_shared_light_and_dark_theme(monkeypatch):
+    monkeypatch.setattr(
+        app_module, "get_weather_for_cities", lambda: [fake_city()]
+    )
+    client = app_module.app.test_client()
+
+    body = client.get("/weather").get_data(as_text=True)
+
+    assert '<body class="site">' in body
+
+
+def test_weather_styles_use_theme_tokens():
+    css = (Path(app_module.app.static_folder) / "style.css").read_text()
+    weather_rules = css[css.index(".subheader {"):css.index(".back-link {")]
+
+    assert "#" not in weather_rules
 
 
 def test_health_returns_200_ok():

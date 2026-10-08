@@ -7,6 +7,30 @@ document.addEventListener("DOMContentLoaded", () => {
   let currentCity = null;
 
   const TEMP_PADDING = 2;
+  const colorScheme = window.matchMedia("(prefers-color-scheme: light)");
+
+  function themeColors() {
+    const style = getComputedStyle(document.body);
+    const token = (name) => style.getPropertyValue(name).trim();
+    return {
+      accent: token("--site-accent"),
+      muted: token("--site-muted"),
+      border: token("--site-border"),
+    };
+  }
+
+  function applyTheme() {
+    if (!chart) return;
+    const colors = themeColors();
+    const dataset = chart.data.datasets[0];
+    dataset.borderColor = colors.accent;
+    dataset.backgroundColor = `${colors.accent}26`;
+    for (const axis of [chart.options.scales.x, chart.options.scales.y]) {
+      axis.ticks.color = colors.muted;
+      axis.grid.color = colors.border;
+    }
+    chart.update();
+  }
 
   function openChart(index) {
     currentCity = window.CITY_WEATHER[index];
@@ -20,8 +44,6 @@ document.addEventListener("DOMContentLoaded", () => {
         {
           label: "Temp (°C)",
           data: temps,
-          borderColor: "#4da3ff",
-          backgroundColor: "rgba(77, 163, 255, 0.15)",
           tension: 0.35,
           fill: true,
           pointRadius: 3,
@@ -35,7 +57,6 @@ document.addEventListener("DOMContentLoaded", () => {
       chart.data = data;
       chart.options.scales.y.suggestedMin = suggestedMin;
       chart.options.scales.y.suggestedMax = suggestedMax;
-      chart.update();
     } else {
       chart = new Chart(canvas, {
         type: "line",
@@ -51,10 +72,10 @@ document.addEventListener("DOMContentLoaded", () => {
             },
           },
           scales: {
-            x: { ticks: { color: "#a3a3a3" }, grid: { color: "#2a2a2e" } },
+            x: { ticks: {}, grid: {} },
             y: {
-              ticks: { color: "#a3a3a3" },
-              grid: { color: "#2a2a2e" },
+              ticks: {},
+              grid: {},
               suggestedMin,
               suggestedMax,
             },
@@ -62,7 +83,10 @@ document.addEventListener("DOMContentLoaded", () => {
         },
       });
     }
+    applyTheme();
   }
+
+  colorScheme.addEventListener("change", applyTheme);
 
   function closeChart() {
     section.classList.remove("open");
