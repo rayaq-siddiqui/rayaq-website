@@ -327,7 +327,7 @@ PAGES = [
         "sources": [
             "sklearn:sklearn/model_selection/_split.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "data-leakage",

@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-08 (twenty-first run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: queue items 1-24, the last being `generalization`. The next run builds
-`data-splits` (queue item 25).
+format. Ready pages: queue items 1-25, the last being `data-splits`. The next run builds
+`preprocessing` (queue item 26).
 
 ## Pins
 
@@ -358,8 +358,8 @@ Gaps: arxiv.org was unreachable, so paper claims on the decoding page (nucleus, 
 22. `kv-cache` ✓
 23. `learning-paradigms` ✓
 24. `generalization` ✓
-25. `data-splits` ← next
-26. `preprocessing`
+25. `data-splits` ✓
+26. `preprocessing` ← next
 27. `data-leakage`
 28. `classification-metrics`
 29. `cross-validation`

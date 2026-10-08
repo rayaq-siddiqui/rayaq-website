@@ -1,0 +1,331 @@
+{% set labels = split_labels %}
+{% set unlucky = split_unlucky_order[:5] %}
+{% set plain_counts = class_counts(labels, unlucky) %}
+{% set strat = stratified_allocation(labels, 0.25) %}
+{% set miss = chance_test_misses_class(labels, 5, 1) %}
+{% set groups = split_groups %}
+{% set gorder = split_group_order[:6] %}
+{% set leaked = leaked_group_records(groups, gorder) %}
+{% set gtest = [] %}
+{% for g in groups %}{% if g in (4, 5) %}{% set _ = gtest.append(loop.index0) %}{% endif %}{% endfor %}
+{% set series = split_series %}
+{% set rtest = split_random_test_months %}
+{% set rtrain = [] %}
+{% for t in range(12) %}{% if t not in rtest %}{% set _ = rtrain.append(t) %}{% endif %}{% endfor %}
+{% set mse_random = nearest_in_time_mse(series, rtrain, rtest) %}
+{% set mse_forward = nearest_in_time_mse(series, range(9), [9, 10, 11]) %}
+{% macro f1(x) -%}{{ "%.1f"|format(x) }}{%- endmacro %}
+{% macro f3(x) -%}{{ "%.3f"|format(x) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Train, validation and test splits</h1>
+  <p class="tagline">
+    A model has to be judged on data it did not learn from, so you set data aside before training. This page
+    explains why one held-out set is not enough and three are needed, how big each should be, and when a
+    plain random shuffle gives a dishonest answer: rare classes, grouped records and data that moves through time.
+    It ends with the arguments of scikit-learn's <code>train_test_split</code>.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  <a href="/ml-models/generalization">Generalization</a> is the goal, and held-out data is how you measure it.
+  The catch is that every decision you make by looking at held-out scores, such as which model, which
+  settings, when to stop, quietly trains on those scores. Do enough of that and the held-out number
+  is as optimistic as the training one. You need data that has had no influence on any decision.
+</p>
+<p>
+  The second catch is that "held out" only means something if the held-out rows are really independent of the
+  training rows. Several records from the same patient, or tomorrow's data shuffled in with yesterday's,
+  make the test too easy, and the score you report is not the one you will get in use.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Think of three kinds of practice. <strong>Training data</strong> is the homework you study from.
+  <strong>Validation data</strong> is a set of practice exams you take repeatedly to decide how to study:
+  which book, how many hours. <strong>Test data</strong> is the real exam, sealed in an envelope until
+  the end. Once you have peeked at a practice exam to adjust your study plan, it no longer tells you how you will do
+  on something fresh, which is why the envelope must stay shut.
+</p>
+<p>
+  And the exam must resemble reality. If the real exam will cover next year's material, practising on a
+  shuffled mix of this year's and next year's is cheating, even if the shuffle was random.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 190" role="img" aria-labelledby="ds-three-title ds-three-desc">
+    <title id="ds-three-title">One dataset divided into train, validation and test parts</title>
+    <desc id="ds-three-desc">
+      A horizontal bar split into three blocks: train takes 70 percent and is used to fit parameters,
+      validation takes 15 percent and is used to choose settings, and test takes 15 percent and is used
+      once at the end to report performance. Arrows show fit and choose looping between train and
+      validation, while the test block is only touched at the end.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <rect x="30" y="40" width="460" height="46" rx="4" class="d-box ml-tensor"></rect>
+      <text x="260" y="68" font-weight="bold">train 70%: fit the parameters</text>
+      <rect x="490" y="40" width="98" height="46" rx="4" class="d-box ml-op"></rect>
+      <text x="539" y="68" font-weight="bold">val 15%</text>
+      <rect x="588" y="40" width="82" height="46" rx="4" class="d-box ml-dashed"></rect>
+      <text x="629" y="68" font-weight="bold">test 15%</text>
+      <text x="539" y="110" class="d-muted">choose settings, stop early</text>
+      <text x="629" y="130" class="d-muted">touch once, at the end</text>
+      <text x="260" y="110" class="d-muted">the model only ever learns from these rows</text>
+      <path d="M260 90 V160 H539 V114" class="d-line" fill="none" stroke-width="1.5"></path>
+      <text x="400" y="178" class="d-muted">loop: try a setting, fit on train, score on val</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The 70/15/15 proportions are a common default, not a rule; the section on sizes below says what really matters.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="three">Why three splits</h3>
+<ul>
+  <li><strong>Train</strong> fits the model's parameters.</li>
+  <li><strong>Validation</strong> (also called dev) compares models and settings: architecture, regularization strength, learning rate, early stopping point.
+    You look at it many times, so it becomes slightly fitted to.</li>
+  <li><strong>Test</strong> is used once, after all choices are final, to report an estimate of performance on new data.</li>
+</ul>
+<p>
+  With only train and test, any tuning you do uses the test set, and the final score is biased upward. When data is scarce, cross-validation replaces
+  the single validation set by rotating many of them, but the test set stays untouched either way.
+</p>
+
+<h3 id="sizes">Split sizes</h3>
+<p>
+  The right sizes depend on how precisely you need to know the score, not on a ratio. An accuracy measured on m independent test examples
+  has standard error √(p(1 − p) / m), so for p = 0.8 it is {{ f3(accuracy_standard_error(0.8, 100)) }} at m = 100,
+  {{ f3(accuracy_standard_error(0.8, 1000)) }} at m = 1,000 and {{ f3(accuracy_standard_error(0.8, 10000)) }} at m = 10,000. Quadrupling the test set
+  only halves the uncertainty. With a million examples, 1% held out is already ample; with a hundred, a split of any
+  ratio leaves a noisy estimate and cross-validation is the better tool. The training part should be as large as you can spare, since more
+  data lowers the generalization gap.
+</p>
+
+<h3 id="stratified">Stratified splits</h3>
+<p>
+  A random split keeps class proportions only on average. With a rare class, a particular split can be badly off, even leaving
+  a class out of one part. A <strong>stratified</strong> split fixes the proportion in each part by splitting each class
+  separately and then combining. In scikit-learn, passing <code>stratify=y</code> to <code>train_test_split</code> routes through
+  <code>StratifiedShuffleSplit</code>.
+</p>
+
+<h3 id="grouped">Grouped splits</h3>
+<p>
+  Often rows are not independent: several visits by one patient, several photos of one object, several sentences from one document.
+  If those rows are split at random, the model sees a patient in training and is tested on that same patient, and it can score well by
+  recognizing the patient instead of the disease. The fix is to split by <em>group</em>: all rows of a group go to one side.
+  <code>GroupShuffleSplit</code> and <code>GroupKFold</code> do this. <code>train_test_split</code> itself has no group argument.
+</p>
+
+<h3 id="time">Time-ordered splits</h3>
+<p>
+  When the task is to predict the future, test data must come after training data. A random split lets the model train on the days
+  surrounding every test day, which no real forecaster ever has. Use a <em>forward</em> split: train on the past, test on the following period.
+  <code>train_test_split(..., shuffle=False)</code> does this once (first rows train, last rows test; the data must already be sorted by time), and
+  <code>TimeSeriesSplit</code> repeats it with a growing training window.
+</p>
+
+<h3 id="lies">When a random split lies</h3>
+<p>
+  A random split is honest only if the rows are independent and the future looks like the sample. It misleads when classes are rare, rows come in groups,
+  order matters, near-duplicates exist (the same image resized, the same text reposted), or the deployed data comes from a different place than the
+  collected data. In every case the score looks good and then falls apart in use.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 230" role="img" aria-labelledby="ds-kinds-title ds-kinds-desc">
+    <title id="ds-kinds-title">Random, grouped and time-ordered splits of the same rows</title>
+    <desc id="ds-kinds-desc">
+      Three rows of cells. In the random split, test cells are scattered among train cells even though groups
+      of neighbouring cells belong to the same patient. In the grouped split, whole groups are test. In the
+      time-ordered split, the last cells in the row are test.
+    </desc>
+    <g font-size="11" text-anchor="start">
+      <text x="30" y="30" font-weight="bold">random (rows of one patient end up on both sides)</text>
+      {% for g in groups %}
+        <rect x="{{ 30 + loop.index0 * 36 }}" y="38" width="32" height="26" rx="3" class="d-box {{ 'ml-op' if loop.index0 in split_group_order[:6] else 'ml-tensor' }}"></rect>
+        <text x="{{ 46 + loop.index0 * 36 }}" y="55" text-anchor="middle">{{ g }}</text>
+      {% endfor %}
+      <text x="30" y="100" font-weight="bold">grouped (all rows of a patient on one side)</text>
+      {% for g in groups %}
+        <rect x="{{ 30 + loop.index0 * 36 }}" y="108" width="32" height="26" rx="3" class="d-box {{ 'ml-op' if loop.index0 in gtest else 'ml-tensor' }}"></rect>
+        <text x="{{ 46 + loop.index0 * 36 }}" y="125" text-anchor="middle">{{ g }}</text>
+      {% endfor %}
+      <text x="30" y="170" font-weight="bold">time-ordered (train on the past, test on what follows)</text>
+      {% for t in range(12) %}
+        <rect x="{{ 30 + t * 54 }}" y="178" width="50" height="26" rx="3" class="d-box {{ 'ml-op' if t >= 9 else 'ml-tensor' }}"></rect>
+        <text x="{{ 55 + t * 54 }}" y="195" text-anchor="middle">m{{ t }}</text>
+      {% endfor %}
+      <text x="470" y="222" class="d-muted">shaded cells are test; the digit in a cell is the patient id</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Same data, three ways to cut it. Only the grouped cut keeps patients apart; only the time-ordered cut respects the arrow of time.</p>
+
+<h3 id="api">train_test_split</h3>
+<p>
+  <code>train_test_split(*arrays, test_size=None, train_size=None, random_state=None, shuffle=True, stratify=None)</code>
+  returns each input array cut into a train part and a test part, interleaved: <code>X_train, X_test, y_train, y_test</code>.
+  If neither size is given, <code>test_size</code> defaults to 0.25. Sizes are fractions when floats and counts when ints.
+  With <code>shuffle=True</code> it takes one split from <code>ShuffleSplit</code> (or <code>StratifiedShuffleSplit</code> when
+  <code>stratify</code> is given); with <code>shuffle=False</code> it takes the first rows as train and the rest as test, and
+  combining that with <code>stratify</code> raises an error. Set <code>random_state</code> to an integer to make the split reproducible.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>train_test_split</code></td>
+        <td><code>test_size=None</code> (→ 0.25), <code>train_size</code>, <code>random_state</code>, <code>shuffle=True</code>, <code>stratify=None</code></td>
+        <td>One split of any number of equal-length arrays; the entry point most code uses.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_split.py', 2797, 2976) }}"><code>_split.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>shuffle=False</code> branch</td>
+        <td>first <code>n_train</code> rows, then <code>n_test</code> rows</td>
+        <td>A forward split for ordered data; refuses <code>stratify</code>.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_split.py', 2950, 2958) }}"><code>_split.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>StratifiedShuffleSplit</code></td>
+        <td><code>n_splits</code>, <code>test_size</code>, <code>train_size</code></td>
+        <td>Random splits that keep each class's share in train and test.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_split.py', 2233, 2444) }}"><code>_split.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>GroupShuffleSplit</code></td>
+        <td><code>n_splits</code>, <code>test_size</code>; <code>groups</code> passed to <code>split</code></td>
+        <td>Random splits where whole groups go to one side.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_split.py', 2087, 2232) }}"><code>_split.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>GroupKFold</code></td>
+        <td><code>n_splits=5</code>; <code>groups</code> passed to <code>split</code></td>
+        <td>K folds in which no group appears in two folds.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_split.py', 533, 686) }}"><code>_split.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>StratifiedKFold</code></td>
+        <td><code>n_splits=5</code>, <code>shuffle=False</code></td>
+        <td>K folds that each keep the class proportions.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_split.py', 687, 891) }}"><code>_split.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>TimeSeriesSplit</code></td>
+        <td><code>n_splits=5</code>, <code>max_train_size</code>, <code>test_size</code>, <code>gap=0</code></td>
+        <td>Forward-chaining folds: each test fold follows its training fold.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_split.py', 1116, 1329) }}"><code>_split.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-strat">A rare class and a 25% test set</h3>
+  <p>
+    A dataset of {{ labels|length }} rows has {{ labels|sum }} positives and {{ labels|length - labels|sum }} negatives. A 25% test set is 5 rows.
+    A plain random split can pick rows 0, 1, 2, 4 and 5 (a draw that happens to hold no positives): the test set then has {{ plain_counts.get(0, 0) }} negatives
+    and {{ plain_counts.get(1, 0) }} positives, so recall on the rare class is undefined and any accuracy it reports is blind to the thing you care about.
+    This is not a freak event: the chance that a random 5-row test set contains no positive is C(16,5) / C(20,5) = {{ f3(miss) }}, a little more than one split in four.
+  </p>
+  <p>
+    A stratified split allocates each class its share: {{ strat[0] }} negatives and {{ strat[1] }} positive in test, always. The test set is guaranteed to hold
+    the rare class, though with a single positive it remains a very noisy test of it.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-group">Six patients, three visits each</h3>
+  <p>
+    Eighteen rows come from six patients (ids 0 to 5). A random 6-row test set, rows {{ gorder|join(', ') }}, puts
+    <strong>{{ leaked }} of its 6 rows</strong> next to training rows from the same patient: every test row has a sibling in training. A grouped split sends patients 4 and 5 to
+    test, so all six test rows are from people the model never saw, and the number of siblings in training is
+    {{ leaked_group_records(groups, gtest) }}. The grouped test is smaller in effective sample size (two patients, not six independent rows)
+    but it measures what you want: performance on a new patient.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-time">Twelve months of a rising series</h3>
+  <p>
+    Monthly values rise by about 2 each month: {{ series|map("string")|join(", ") }}. The predictor is deliberately simple: for a test month, use the value
+    of the nearest training month. With a random split holding out months {{ rtest|join(", ") }}, every test month sits between training months, and the mean squared
+    error is {{ f1(mse_random) }}. With a forward split that trains on months 0 to 8 and tests on months 9, 10 and 11, every prediction
+    is the stale month-8 value, and the error is {{ f1(mse_forward) }}, {{ f1(mse_forward / mse_random) }} times larger. The two test sets are different
+    months, but the point stands: the random split reports a forecast skill that does not exist, because it let the model look at the future on both sides of each
+    test point.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>from sklearn.model_selection import (
+    train_test_split, GroupShuffleSplit, TimeSeriesSplit,
+)
+
+# 1) hold out a test set first, then carve validation out of what remains
+X_rest, X_test, y_rest, y_test = train_test_split(
+    X, y, test_size=0.15, stratify=y, random_state=0
+)
+X_train, X_val, y_train, y_val = train_test_split(
+    X_rest, y_rest, test_size=0.15 / 0.85, stratify=y_rest, random_state=0
+)
+
+# 2) grouped: no patient on both sides
+gss = GroupShuffleSplit(n_splits=1, test_size=0.3, random_state=0)
+train_idx, test_idx = next(gss.split(X, y, groups=patient_id))
+
+# 3) time-ordered: sorted by time, train on the past
+X_train, X_test = X[:-k], X[-k:]            # same as shuffle=False
+for train_idx, test_idx in TimeSeriesSplit(n_splits=4).split(X):
+    ...                                      # each test fold follows its train fold</code></pre>
+
+<p>
+  Do any preprocessing that learns from data (scaling, imputing, encoding) after splitting and fit it on the training part only;
+  fitting on all rows first lets test information into training.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Data for training vs. data for measuring.</strong> Every row held out is a row the model does not learn from. The cost is large for small datasets and negligible for huge ones.</li>
+  <li><strong>The validation set wears out.</strong> Compare many models on it and the best score is partly luck. A fresh test set, used once, is the only unbiased report.</li>
+  <li><strong>Stratifying fixes proportions, not the noise.</strong> With very few positives, any split leaves a shaky estimate of the rare class; more data or cross-validation helps, stratification alone does not.</li>
+  <li><strong>Grouped and forward splits cost sample size.</strong> They give smaller effective test sets and noisier estimates, but those estimates are honest.</li>
+  <li><strong>Reproducibility.</strong> Without a fixed <code>random_state</code> the split, and so the score, changes from run to run, which can look like a model change. Fix it while developing; vary it to see how much the score moves.</li>
+  <li><strong>Never reuse the test set to decide.</strong> If you do, relabel it as validation and collect a new test set.</li>
+</ul>
+
+<h3 id="check-yourself">Check yourself</h3>
+<details class="ml-quiz">
+  <summary>You tried 40 models on the validation set and report the best one's validation score. What is wrong?</summary>
+  <p>The maximum over 40 noisy estimates is biased upward. Report performance on the untouched test set, which the chosen model has not been selected against.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why can't you pass <code>stratify</code> to <code>train_test_split</code> together with <code>shuffle=False</code>?</summary>
+  <p>Stratification needs a random draw within each class, while <code>shuffle=False</code> takes fixed positions in the existing order. scikit-learn raises an error rather than guess.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Test accuracy is 99% but live accuracy is 70%. Name two split-related causes.</summary>
+  <p>Rows from the same group (or near-duplicates) on both sides of the split, and a random split of time-ordered data so the test period was not in the future. A shift between collected and deployed data would also do it.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Hastie, Tibshirani and Friedman. <em>The Elements of Statistical Learning</em>, 2nd ed., section 7.2 and 7.10. Springer, 2009.</li>
+  <li>Kaufman, Rosset and Perlich. <em>Leakage in Data Mining: Formulation, Detection, and Avoidance.</em> ACM TKDD, 2012.</li>
+  <li>Roberts et al. <em>Cross-validation strategies for data with temporal, spatial, hierarchical, or phylogenetic structure.</em> Ecography, 2017.</li>
+  <li>scikit-learn {{ pins.sklearn.version }}: <a href="{{ skl('sklearn/model_selection/_split.py', 2797, 2976) }}"><code>train_test_split</code></a>, <a href="{{ skl('sklearn/model_selection/_split.py', 2087, 2232) }}"><code>GroupShuffleSplit</code></a>, <a href="{{ skl('sklearn/model_selection/_split.py', 1116, 1329) }}"><code>TimeSeriesSplit</code></a>.</li>
+</ul>
