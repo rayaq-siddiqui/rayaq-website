@@ -447,3 +447,25 @@ def test_monotonic_stack_helpers_match_the_page():
     assert "The waits are 1, 5, 2, 1, 2, 1, 0" in body
     assert "The largest area is 9, the rectangle of height 3 over bars 2 to 4." in body
     assert "The window maxima are 12, 12, 12, 8, 8." in body
+
+
+def test_binary_search_helpers_match_the_page():
+    nums = [2, 5, 8, 12, 16, 23, 38, 56, 72, 91]
+    lb = leetcode_docs.lower_bound_trace(nums, 23)
+    assert lb["index"] == 5 and lb["found"] and [s["mid"] for s in lb["steps"]] == [5, 2, 4]
+    assert leetcode_docs.lower_bound_trace(nums, 20)["index"] == 5
+    assert not leetcode_docs.lower_bound_trace(nums, 20)["found"]
+    assert leetcode_docs.lower_bound_trace(nums, 100)["index"] == 10
+    assert leetcode_docs.lower_bound_trace([], 1) == {"steps": [], "index": 0, "found": False}
+    rot = [15, 19, 23, 38, 2, 5, 8, 12]
+    assert leetcode_docs.rotated_search_trace(rot, 5)["index"] == 5
+    assert leetcode_docs.rotated_search_trace(rot, 6)["index"] == -1
+    assert all(leetcode_docs.rotated_search_trace(rot, v)["index"] == i for i, v in enumerate(rot))
+    mn = leetcode_docs.rotated_min_trace(rot)
+    assert mn["index"] == 4 and mn["value"] == 2 and len(mn["steps"]) == 3
+    assert leetcode_docs.rotated_min_trace([1, 2, 3])["index"] == 0
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/binary-search").get_data(as_text=True))
+    assert "The search stops at index 5, and 23 equals the target" in body
+    assert "Searching for 20 instead stops at index 5" in body
+    assert "The value 5 is at index 5." in body
+    assert "The minimum is 2 at index 4." in body

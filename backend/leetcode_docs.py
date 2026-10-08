@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -3978,6 +3978,64 @@ def window_max_trace(nums, k):
     return {"steps": steps, "maxima": maxima}
 
 
+def lower_bound_trace(nums, target):
+    """Half-open [lo, hi) search for the first index whose value is at least target."""
+    lo, hi = 0, len(nums)
+    steps = []
+    while lo < hi:
+        mid = (lo + hi) // 2
+        go_right = nums[mid] < target
+        steps.append({"lo": lo, "hi": hi, "mid": mid, "value": nums[mid],
+                      "move": "lo = mid + 1" if go_right else "hi = mid"})
+        if go_right:
+            lo = mid + 1
+        else:
+            hi = mid
+    found = lo < len(nums) and nums[lo] == target
+    return {"steps": steps, "index": lo, "found": found}
+
+
+def rotated_search_trace(nums, target):
+    """Closed [lo, hi] search in a rotated sorted array of distinct values; one half is always sorted."""
+    lo, hi = 0, len(nums) - 1
+    steps = []
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if nums[mid] == target:
+            steps.append({"lo": lo, "hi": hi, "mid": mid, "value": nums[mid], "sorted_half": "-", "move": "found"})
+            return {"steps": steps, "index": mid}
+        if nums[lo] <= nums[mid]:
+            half = "left"
+            inside = nums[lo] <= target < nums[mid]
+        else:
+            half = "right"
+            inside = nums[mid] < target <= nums[hi]
+        keep_left = inside if half == "left" else not inside
+        steps.append({"lo": lo, "hi": hi, "mid": mid, "value": nums[mid], "sorted_half": half,
+                      "move": "hi = mid - 1" if keep_left else "lo = mid + 1"})
+        if keep_left:
+            hi = mid - 1
+        else:
+            lo = mid + 1
+    return {"steps": steps, "index": -1}
+
+
+def rotated_min_trace(nums):
+    """Compare the midpoint with the right end: larger means the minimum is to its right."""
+    lo, hi = 0, len(nums) - 1
+    steps = []
+    while lo < hi:
+        mid = (lo + hi) // 2
+        right = nums[mid] > nums[hi]
+        steps.append({"lo": lo, "hi": hi, "mid": mid, "value": nums[mid], "end": nums[hi],
+                      "move": "lo = mid + 1" if right else "hi = mid"})
+        if right:
+            lo = mid + 1
+        else:
+            hi = mid
+    return {"steps": steps, "index": lo, "value": nums[lo]}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -4130,6 +4188,9 @@ def render(slug, render_template):
         "next_warmer_trace": next_warmer_trace,
         "histogram_trace": histogram_trace,
         "window_max_trace": window_max_trace,
+        "lower_bound_trace": lower_bound_trace,
+        "rotated_search_trace": rotated_search_trace,
+        "rotated_min_trace": rotated_min_trace,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,
