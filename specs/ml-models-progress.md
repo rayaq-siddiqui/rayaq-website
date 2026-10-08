@@ -6,7 +6,7 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-08 (nineteenth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: queue items 1-19, the last being `training-loop`. The next run builds
+format. Ready pages: queue items 1-20, the last being `decoder-only-llm`. The next run builds
 `decoder-only-llm` (queue item 20).
 
 ## Pins
@@ -418,6 +418,21 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 | `ml-models: build the layernorm-and-residuals page` | The page, `ready`, queue ✓ |
 | `docs: record the maintain check` | All three pins checked on 2026-10-08: latest stable is still PyTorch v2.14.1, scikit-learn 1.9.1, XGBoost v3.4.2 (PyTorch has only 2.15.0 release candidates), so no pin moved |
 
+## Nineteenth run (2026-10-08) — transformer retrofit, training-loop, decoder-only-llm
+
+| Commit | What |
+|---|---|
+| `ml-models: retrofit the transformer page to the section format` | `transformer` brought to §6; adds `#training-vs-inference` |
+| `ml-models: add tested training-loop helpers` / `build the training-loop page` | Schedule, GradScaler, memory and accumulation helpers; page, `ready`, queue ✓ |
+| `ml-models: add tested decoder-only helpers` | `decoder_param_count` (GPT-2 small = 124,439,808), `next_token_pairs`, `causal_prefix_check`, `sequence_nll`, `greedy_generate`, `generation_positions` |
+| `ml-models: build the decoder-only-llm page` | The page, `ready`, queue ✓ |
+
+Pins re-checked: PyTorch v2.14.1, scikit-learn 1.9.1, XGBoost v3.4.2 are still the latest stable; none moved.
+
+Verified at PyTorch v2.14.1: `transformer.py` `TransformerEncoderLayer` 663-983 (`norm_first` branch 946-952), `TransformerEncoder` 320-556, `_generate_square_subsequent_mask` 29-42; `sparse.py` `Embedding` 14-266; `functional.py` `scaled_dot_product_attention` 6367-6406, `cross_entropy` 3478-3571.
+
+Gaps: bf16-needs-no-scaler is not verified beyond the autocast docstring; `SequentialLR` calls `_update_lr(0)` at a milestone rather than `step(0)`; the GPT-2 117M vs 124M naming is a paper claim not checkable in pinned source. The decoder-only page leaves `decoding` and `kv-cache` unlinked until those pages exist; link them when built.
+
 ## Queue
 
 1. `tensors-and-shapes` ✓
@@ -439,8 +454,8 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 17. `layernorm-and-residuals` ✓
 18. `transformer` ✓
 19. `training-loop` ✓
-20. `decoder-only-llm` ← next
-21. `decoding`
+20. `decoder-only-llm` ✓
+21. `decoding` ← next
 22. `kv-cache`
 23. `learning-paradigms`
 24. `generalization`

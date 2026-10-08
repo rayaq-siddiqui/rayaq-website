@@ -1,0 +1,528 @@
+{% set g = gpt2_small %}
+{% set cfg = decoder_param_count(g.vocab, g.context, g.d_model, g.layers) %}
+{% set untied = decoder_param_count(g.vocab, g.context, g.d_model, g.layers, tied=False) %}
+{% set head_dim = g.d_model // g.heads %}
+{% set d_ff = 4 * g.d_model %}
+{% set ex = attention_example %}
+{% set causal = attention_weights(ex, causal=True) %}
+{% set prefix = causal_prefix_check(ex, 3) %}
+{% set run = training_run(training_example) %}
+{% set table = run.weights %}
+{% set letters = training_example.vocab %}
+{% set seq = [0, 1, 2, 3] %}
+{% set nll = sequence_nll(table, seq) %}
+{% set pairs = next_token_pairs(seq) %}
+{% set gen = greedy_generate(table, generation_example.start, generation_example.steps) %}
+{% macro f(x) -%}{{ "{:,}".format(x) }}{%- endmacro %}
+{% macro pct(x, total) -%}{{ "%.1f"|format(100 * x / total) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Decoder-only LLMs</h1>
+  <p class="tagline">
+    GPT-2, GPT-3, Llama and most of today's chat models are one idea repeated: a stack of
+    Transformer blocks in which every token may look only at the tokens before it, trained to
+    predict the next token. This page builds that stack from the pieces on the
+    <a href="/ml-models/transformer">transformer</a> page, counts every parameter of GPT-2 small
+    ({{ f(cfg.total) }}), shows why training is parallel while generation is a loop, and
+    builds one in PyTorch {{ upstream.tag }}.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  We want a model that writes text. Text is a sequence of tokens, and the most general thing a
+  model can do with a sequence is predict what comes next given everything so far: P(token<sub>t</sub> |
+  token<sub>1</sub>, …, token<sub>t−1</sub>). Learn that well and you can continue any prompt,
+  answer questions phrased as prompts, translate, summarize and write code, because all of those
+  are "text that continues this text".
+</p>
+<p>
+  Two requirements follow. The model must never use the future when predicting a token (otherwise it
+  would just copy the answer), and it must be cheap to train on trillions of tokens, which means
+  scoring every position of a long sequence in one pass instead of one position at a time. The
+  decoder-only Transformer meets both with a single trick, the causal mask.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Read a sentence with the next words covered by a card, sliding the card right one word at a time.
+  At each position you guess the covered word. A decoder-only model does exactly that, but with every
+  card position at once: it sees the whole sequence, yet each position's computation is blocked from
+  looking at anything to its right. One forward pass therefore gives T separate predictions for a
+  sequence of T tokens, and the loss is the average of T cross-entropies (see
+  the <a href="/ml-models/training-loop">training loop</a>).
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 420" role="img" aria-labelledby="dec-stack-title dec-stack-desc">
+    <title id="dec-stack-title">A decoder-only language model, bottom to top</title>
+    <desc id="dec-stack-desc">
+      Token ids enter at the bottom. A token embedding table and a learned position table are added.
+      The sum passes through {{ g.layers }} identical blocks; each block applies LayerNorm, causal
+      self-attention and a residual add, then LayerNorm, a feed-forward network and a second
+      residual add. A final LayerNorm follows the last block. A linear head, whose weights are
+      shared with the token table, turns each position's vector into one score per vocabulary
+      entry. The scores at position t are the prediction for token t plus one.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <rect x="210" y="372" width="280" height="32" rx="6" class="d-box"></rect>
+      <text x="350" y="392">token ids [B, T]</text>
+      <rect x="140" y="312" width="190" height="36" rx="6" class="d-box ml-op"></rect>
+      <text x="235" y="334">token table [{{ g.vocab }}, {{ g.d_model }}]</text>
+      <rect x="370" y="312" width="190" height="36" rx="6" class="d-box ml-op"></rect>
+      <text x="465" y="334">position table [{{ g.context }}, {{ g.d_model }}]</text>
+      <rect x="210" y="262" width="280" height="30" rx="6" class="d-box ml-tensor"></rect>
+      <text x="350" y="282">x = token + position   [B, T, {{ g.d_model }}]</text>
+      <rect x="150" y="110" width="400" height="136" rx="10" class="d-box ml-dashed"></rect>
+      <text x="350" y="130" font-size="11" class="d-muted">× {{ g.layers }} blocks (pre-norm)</text>
+      <rect x="180" y="142" width="160" height="32" rx="6" class="d-box ml-op"></rect>
+      <text x="260" y="162">LayerNorm → causal attention</text>
+      <rect x="360" y="142" width="160" height="32" rx="6" class="d-box ml-op"></rect>
+      <text x="440" y="162">x = x + attention(…)</text>
+      <rect x="180" y="190" width="160" height="32" rx="6" class="d-box ml-op"></rect>
+      <text x="260" y="210">LayerNorm → feed-forward</text>
+      <rect x="360" y="190" width="160" height="32" rx="6" class="d-box ml-op"></rect>
+      <text x="440" y="210">x = x + ff(…)</text>
+      <rect x="210" y="70" width="280" height="28" rx="6" class="d-box ml-op"></rect>
+      <text x="350" y="89">final LayerNorm</text>
+      <rect x="210" y="24" width="280" height="34" rx="6" class="d-box ml-op"></rect>
+      <text x="350" y="46">LM head (tied) → logits [B, T, {{ g.vocab }}]</text>
+    </g>
+    <g class="d-line" fill="none" stroke-width="1.5">
+      <path d="M350 372 V360 H235 V348"></path><path d="M350 360 H465 V348"></path>
+      <path d="M235 312 V304 H350 V292"></path><path d="M465 312 V304 H350"></path>
+      <path d="M350 262 V246"></path><path d="M350 110 V98"></path><path d="M350 70 V58"></path>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">
+  The stack is the Transformer's decoder with the cross-attention half removed: there is no
+  encoder to attend to, so each block has just two sublayers.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="embeddings">Embeddings: tokens and positions</h3>
+
+<p>
+  Attention treats its input as an unordered set, so order has to be put in by hand. GPT-2 does it
+  the simplest way: a second lookup table with one learned vector for each position
+  0 … {{ g.context - 1 }}, added to the token vector. Both tables are
+  <a href="{{ src('torch/nn/modules/sparse.py', 14, 266) }}"><code>nn.Embedding</code></a>
+  (a row lookup,
+  <a href="{{ src('torch/nn/modules/sparse.py', 188, 197) }}">lines 188-197</a>); by default its
+  weights are drawn from a standard normal
+  (<a href="{{ src('torch/nn/modules/sparse.py', 179, 181) }}">lines 179-181</a>), so GPT-style
+  code overrides that with a small standard deviation such as 0.02. The context length is a hard
+  limit: a learned table has no row for position {{ g.context }}. See
+  <a href="/ml-models/embeddings">embeddings</a> for what the vectors come to mean.
+</p>
+
+<h3 id="causal-attention">Causal self-attention</h3>
+
+<p>
+  Inside each block, every position makes a query, key and value, scores its query against the keys
+  and mixes the values (see <a href="/ml-models/attention">attention</a>). The causal mask adds −∞
+  to every score where the key's position is later than the query's, so softmax gives those keys
+  weight exactly 0. For four tokens the allowed pattern is a lower triangle:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 520 250" role="img" aria-labelledby="dec-mask-title dec-mask-desc">
+    <title id="dec-mask-title">The causal mask for four tokens</title>
+    <desc id="dec-mask-desc">
+      A four by four grid with queries as rows and keys as columns. Cells on and below the diagonal
+      are allowed and shaded; cells above the diagonal are blocked. Token 1 sees only itself, token 2
+      sees tokens 1 and 2, and token 4 sees all four.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <text x="260" y="22" class="d-muted">key position (what is looked at)</text>
+      {% for c in range(4) %}<text x="{{ 150 + c * 52 + 24 }}" y="46">{{ c + 1 }}</text>{% endfor %}
+      {% for r in range(4) %}
+        <text x="124" y="{{ 60 + r * 44 + 28 }}">{{ r + 1 }}</text>
+        {% for c in range(4) %}
+          <rect x="{{ 150 + c * 52 }}" y="{{ 56 + r * 44 }}" width="48" height="40" rx="4" class="{{ 'd-box ml-op' if c <= r else 'd-box ml-dashed' }}"></rect>
+          <text x="{{ 150 + c * 52 + 24 }}" y="{{ 56 + r * 44 + 25 }}" {% if c > r %}class="d-muted"{% endif %}>{{ "ok" if c <= r else "−∞" }}</text>
+        {% endfor %}
+      {% endfor %}
+      <text x="70" y="140" transform="rotate(-90 70 140)" class="d-muted">query position</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">
+  In PyTorch's float-mask form (<code>0</code> allowed, <code>-inf</code> blocked) the grid above is
+  <code>torch.triu(torch.full((T, T), -inf), diagonal=1)</code>
+  (<a href="{{ src('torch/nn/modules/transformer.py', 29, 42) }}">lines 29-42</a>,
+  exposed as <code>Transformer.generate_square_subsequent_mask</code>,
+  <a href="{{ src('torch/nn/modules/transformer.py', 302, 310) }}">lines 302-310</a>).
+</p>
+
+<p>
+  The mask gives a property worth stating exactly: <strong>the output at position t depends only on
+  tokens 1 … t</strong>. Run causal attention on the four-token example from the attention page
+  ({{ ex.tokens|join(", ") }}), then run it again on just the first three tokens. The first three output
+  rows agree to within {{ "%.0e"|format(prefix.causal_gap) }}. Without the mask, dropping the last token changes
+  those rows by up to {{ "%.2f"|format(prefix.bidirectional_gap) }}. This is why a decoder can be trained on whole
+  sequences and still be used one token at a time: the answer for the prefix is the same either way.
+  (Stacking layers keeps the property, because layer k+1 at position t only reads layer k at
+  positions ≤ t.)
+</p>
+
+<h3 id="block">The block, pre-norm</h3>
+
+<p>
+  Each block is x ← x + Attention(LayerNorm(x)), then x ← x + FFN(LayerNorm(x)). This "pre-norm"
+  order is the <code>norm_first=True</code> branch of
+  <a href="{{ src('torch/nn/modules/transformer.py', 663, 983) }}"><code>TransformerEncoderLayer</code></a>
+  (<a href="{{ src('torch/nn/modules/transformer.py', 946, 952) }}">lines 946-952</a>), and it
+  leaves the residual stream untouched by any normalization, which keeps gradients healthy in deep
+  stacks (see <a href="/ml-models/layernorm-and-residuals">LayerNorm and residuals</a>). Because the
+  stream is never normalized inside the blocks, one extra LayerNorm is applied after the last
+  block. GPT-2's paper describes both changes: layer normalization moved to the input of each
+  sub-block, and an additional one after the final block. The feed-forward network is
+  Linear({{ g.d_model }} → {{ d_ff }}) → GELU → Linear({{ d_ff }} → {{ g.d_model }}), a width of four times
+  the model dimension.
+</p>
+<p>
+  Why reuse an <em>encoder</em> layer for a decoder? Because "encoder" and "decoder" in PyTorch
+  differ by cross-attention, not by masking. <code>TransformerDecoderLayer</code>
+  (<a href="{{ src('torch/nn/modules/transformer.py', 985, 1201) }}">lines 985-1201</a>) takes a
+  <code>memory</code> from an encoder and attends to it. A decoder-only model has none, so what it
+  needs is a self-attention layer plus a feed-forward network: exactly an encoder layer, run with a
+  causal mask.
+</p>
+
+<h3 id="head">The LM head and weight tying</h3>
+
+<p>
+  After the final LayerNorm each position holds a vector of {{ g.d_model }} numbers. A linear map to
+  {{ g.vocab }} numbers gives one <em>logit</em> per vocabulary entry; softmax turns them into the
+  next-token distribution. That map has shape [{{ g.vocab }}, {{ g.d_model }}], the same as the token
+  table, and GPT-2 reuses the table's weights for it (<em>weight tying</em>): the vector that
+  represents a token on the way in is the vector it is scored against on the way out. It
+  saves {{ f(cfg.token_table) }} parameters, {{ pct(cfg.token_table, untied.total) }}% of what the untied model would have. In
+  PyTorch it is one line, <code>head.weight = tok.weight</code>, because Embedding and Linear
+  store weights with the same layout.
+</p>
+
+<h3 id="train-vs-generate">Training versus generation</h3>
+
+<p>
+  <strong>Training uses teacher forcing.</strong> Take a sequence, feed tokens 1 … T−1 as inputs, and
+  use tokens 2 … T as targets. For [{% for t in seq %}{{ letters[t] }}{% if not loop.last %}, {% endif %}{% endfor %}] the inputs are
+  [{% for t in pairs.inputs %}{{ letters[t] }}{% if not loop.last %}, {% endif %}{% endfor %}] and the targets
+  [{% for t in pairs.targets %}{{ letters[t] }}{% if not loop.last %}, {% endif %}{% endfor %}]. The model sees the true previous tokens at
+  every position and all {{ pairs.inputs|length }} predictions are scored in one pass.
+</p>
+<p>
+  <strong>Generation is a loop.</strong> Feed the prompt, read the logits at the <em>last</em>
+  position, choose a token (the largest logit for greedy decoding, or a sample, see
+  decoding), append it, and repeat. Each new token needs the
+  model run again. Without a cache the work at step i covers the whole prefix; for a
+  10-token prompt and 20 new tokens that is {{ generation_positions(10, 20) }} token positions processed,
+  against {{ generation_positions(10, 20, cached=True) }} when each position's keys and values are remembered
+  (the KV cache).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>nn.Embedding</code> (tokens)</td>
+        <td><code>[{{ g.vocab }}, {{ g.d_model }}]</code>; {{ f(cfg.token_table) }} params</td>
+        <td>Row lookup: token id → vector. Default init is N(0, 1).</td>
+        <td><a href="{{ src('torch/nn/modules/sparse.py', 14, 266) }}"><code>sparse.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.Embedding</code> (positions)</td>
+        <td><code>[{{ g.context }}, {{ g.d_model }}]</code>; {{ f(cfg.position_table) }} params</td>
+        <td>One learned vector per position; fixes the maximum context.</td>
+        <td><a href="{{ src('torch/nn/modules/sparse.py', 188, 197) }}"><code>sparse.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>TransformerEncoderLayer(norm_first=True)</code></td>
+        <td><code>d_model={{ g.d_model }}</code>, <code>nhead={{ g.heads }}</code>, <code>dim_feedforward={{ d_ff }}</code>; {{ f(cfg.per_block) }} params each</td>
+        <td>A pre-norm block: self-attention and feed-forward, each with a residual add.</td>
+        <td><a href="{{ src('torch/nn/modules/transformer.py', 663, 983) }}"><code>transformer.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>TransformerEncoder(layer, {{ g.layers }}, norm=…)</code></td>
+        <td>{{ g.layers }} deep-copied layers plus an optional final norm</td>
+        <td>Runs the blocks in order, then <code>norm</code>.</td>
+        <td><a href="{{ src('torch/nn/modules/transformer.py', 320, 556) }}"><code>transformer.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>generate_square_subsequent_mask</code></td>
+        <td><code>[T, T]</code> float, <code>-inf</code> above the diagonal</td>
+        <td>The causal mask, added to attention scores.</td>
+        <td><a href="{{ src('torch/nn/modules/transformer.py', 302, 310) }}"><code>transformer.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>F.scaled_dot_product_attention(…, is_causal=True)</code></td>
+        <td><code>q, k, v</code> of shape <code>[B, H, T, {{ head_dim }}]</code></td>
+        <td>Fused attention with the causal mask built in; errors if <code>attn_mask</code> is also given.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 6367, 6406) }}"><code>functional.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.Linear</code> (LM head)</td>
+        <td><code>[{{ g.vocab }}, {{ g.d_model }}]</code>; 0 extra params when tied</td>
+        <td>Hidden vector → one logit per token.</td>
+        <td><a href="{{ src('torch/nn/modules/linear.py', 1, 1) }}"><code>linear.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>F.cross_entropy(logits, targets)</code></td>
+        <td>logits <code>[B·T, {{ g.vocab }}]</code>, targets <code>[B·T]</code></td>
+        <td>Mean next-token loss over all positions.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 3478, 3571) }}"><code>functional.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-params">Counting GPT-2 small, parameter by parameter</h3>
+  <p>
+    GPT-2 small has vocabulary {{ g.vocab }}, context {{ g.context }}, width d = {{ g.d_model }}, {{ g.layers }} blocks and
+    {{ g.heads }} heads of size {{ head_dim }}. Every count below comes from <code>decoder_param_count</code>, which the
+    tests check against the encoder-layer count in
+    <code>transformer_param_count</code> and against the {{ f(cfg.total) }} total.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Part</th><th>Formula</th><th>Parameters</th></tr></thead>
+      <tbody>
+        <tr><td>Token table</td><td>{{ g.vocab }} × {{ g.d_model }}</td><td>{{ f(cfg.token_table) }}</td></tr>
+        <tr><td>Position table</td><td>{{ g.context }} × {{ g.d_model }}</td><td>{{ f(cfg.position_table) }}</td></tr>
+        <tr><td>Attention, per block</td><td>4·d² + 4·d (Q, K, V, output; weights and biases)</td><td>{{ f(cfg.attention) }}</td></tr>
+        <tr><td>Feed-forward, per block</td><td>2·d·{{ d_ff }} + {{ d_ff }} + d</td><td>{{ f(cfg.feed_forward) }}</td></tr>
+        <tr><td>Two LayerNorms, per block</td><td>2 × (2·d)</td><td>{{ f(2 * cfg.layer_norm) }}</td></tr>
+        <tr><td>One block</td><td>sum of the three rows above</td><td>{{ f(cfg.per_block) }}</td></tr>
+        <tr><td>{{ g.layers }} blocks</td><td>{{ g.layers }} × {{ f(cfg.per_block) }}</td><td>{{ f(cfg.blocks) }}</td></tr>
+        <tr><td>Final LayerNorm</td><td>2·d</td><td>{{ f(cfg.final_norm) }}</td></tr>
+        <tr><td>LM head</td><td>tied to the token table</td><td>0</td></tr>
+        <tr><td><strong>Total</strong></td><td></td><td><strong>{{ f(cfg.total) }}</strong></td></tr>
+        <tr><td>Total if the head were untied</td><td>adds {{ g.vocab }} × {{ g.d_model }}</td><td>{{ f(untied.total) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The blocks hold {{ pct(cfg.blocks, cfg.total) }}% of the parameters, the token table {{ pct(cfg.token_table, cfg.total) }}%, and the position
+    table {{ pct(cfg.position_table, cfg.total) }}%. GPT-2's paper lists this size as 117M; the arithmetic here gives
+    {{ "%.1f"|format(cfg.total / 1e6) }}M, which is also the size of the released checkpoint when loaded in common libraries.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 190" role="img" aria-labelledby="dec-share-title dec-share-desc">
+    <title id="dec-share-title">Where GPT-2 small's parameters live</title>
+    <desc id="dec-share-desc">
+      One horizontal bar split into three parts: the {{ g.layers }} transformer blocks hold
+      {{ pct(cfg.blocks, cfg.total) }} percent, the token embedding table (shared with the output head) holds
+      {{ pct(cfg.token_table, cfg.total) }} percent, and the position table with the final LayerNorm holds
+      {{ pct(cfg.position_table + cfg.final_norm, cfg.total) }} percent.
+    </desc>
+    {% set bw = 620 %}
+    {% set w_blocks = bw * cfg.blocks / cfg.total %}
+    {% set w_tok = bw * cfg.token_table / cfg.total %}
+    {% set w_rest = bw - w_blocks - w_tok %}
+    <rect x="30" y="50" width="{{ w_blocks }}" height="54" class="d-box ml-op"></rect>
+    <rect x="{{ 30 + w_blocks }}" y="50" width="{{ w_tok }}" height="54" class="d-box ml-tensor"></rect>
+    <rect x="{{ 30 + w_blocks + w_tok }}" y="50" width="{{ w_rest }}" height="54" class="d-box ml-dashed"></rect>
+    <g font-size="12" text-anchor="middle">
+      <text x="{{ 30 + w_blocks / 2 }}" y="72">{{ g.layers }} blocks</text>
+      <text x="{{ 30 + w_blocks / 2 }}" y="90" class="d-muted">{{ f(cfg.blocks) }} ({{ pct(cfg.blocks, cfg.total) }}%)</text>
+      <text x="{{ 30 + w_blocks + w_tok / 2 }}" y="72">token table</text>
+      <text x="{{ 30 + w_blocks + w_tok / 2 }}" y="90" class="d-muted">{{ pct(cfg.token_table, cfg.total) }}%</text>
+      <text x="30" y="132" text-anchor="start" class="d-muted">position table + final LayerNorm: {{ f(cfg.position_table + cfg.final_norm) }} ({{ pct(cfg.position_table + cfg.final_norm, cfg.total) }}%), the sliver at the right edge</text>
+      <text x="340" y="170">total {{ f(cfg.total) }}</text>
+    </g>
+  </svg>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-teacher">Teacher forcing and perplexity on a tiny trained model</h3>
+  <p>
+    Take the eight-step bigram model from the training-loop page (its weights after training are the
+    4 × 4 table where row <em>x</em> scores the next letter). On the sequence
+    [{% for t in seq %}{{ letters[t] }}{% if not loop.last %}, {% endif %}{% endfor %}] the three next-token losses are
+    {% for l in nll.losses %}{{ "%.4f"|format(l) }}{% if not loop.last %}, {% endif %}{% endfor %}; their mean is {{ "%.4f"|format(nll.mean) }}
+    and the <strong>perplexity</strong> exp(mean) is {{ "%.3f"|format(nll.perplexity) }}: on average the model is
+    as uncertain as if it were choosing among {{ "%.2f"|format(nll.perplexity) }} equally likely letters (an untrained
+    model scores 4.000, the vocabulary size).
+  </p>
+  <p>
+    <strong>Generating</strong> with the same table, always taking the largest logit from
+    <em>{{ letters[generation_example.start] }}</em>: {% for t in gen %}{{ letters[t] }}{% if not loop.last %} → {% endif %}{% endfor %}.
+    The last row of the table is all zeros (the letter <em>{{ letters[3] }}</em> was never a
+    training input with a kept target), so its logits tie and the first index wins, wrapping around
+    to <em>{{ letters[0] }}</em>. A tie like that, or a loop that repeats forever, is typical of greedy
+    decoding; sampling exists to break it.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  Two ways to build the stack. The short one reuses PyTorch's layer, and works because an encoder
+  layer run with a causal mask <em>is</em> a decoder-only block:
+</p>
+
+<pre><code>import torch
+from torch import nn
+
+class GPT(nn.Module):
+    def __init__(self, vocab=50257, context=1024, d=768, layers=12, heads=12):
+        super().__init__()
+        self.tok = nn.Embedding(vocab, d)
+        self.pos = nn.Embedding(context, d)
+        block = nn.TransformerEncoderLayer(
+            d, heads, dim_feedforward=4 * d, dropout=0.1,
+            activation="gelu", batch_first=True, norm_first=True,
+        )
+        self.blocks = nn.TransformerEncoder(
+            block, layers, norm=nn.LayerNorm(d), enable_nested_tensor=False
+        )
+        self.head = nn.Linear(d, vocab, bias=False)
+        self.head.weight = self.tok.weight          # weight tying
+        nn.init.normal_(self.tok.weight, std=0.02)
+        nn.init.normal_(self.pos.weight, std=0.02)
+
+    def forward(self, ids):                          # ids: [B, T]
+        T = ids.size(1)
+        x = self.tok(ids) + self.pos(torch.arange(T, device=ids.device))
+        mask = nn.Transformer.generate_square_subsequent_mask(T, device=ids.device)
+        x = self.blocks(x, mask=mask, is_causal=True)
+        return self.head(x)                          # [B, T, vocab]
+
+model = GPT()
+print(sum(p.numel() for p in model.parameters()))  # tied weights are counted once
+
+ids = torch.randint(0, 50257, (2, 16))
+logits = model(ids)
+loss = nn.functional.cross_entropy(
+    logits[:, :-1].reshape(-1, 50257), ids[:, 1:].reshape(-1)
+)
+
+@torch.no_grad()
+def generate(model, ids, new_tokens):
+    model.eval()
+    for _ in range(new_tokens):
+        logits = model(ids[:, -1024:])               # crop to the context
+        ids = torch.cat([ids, logits[:, -1].argmax(-1, keepdim=True)], dim=1)
+    return ids</code></pre>
+
+<p>
+  The details that matter: <code>norm_first=True</code> selects the pre-norm branch;
+  <code>batch_first=True</code> makes inputs <code>[B, T, d]</code>; the encoder passes the mask to every layer
+  and, if you give <code>is_causal=None</code>, works out for itself whether the mask is causal
+  (<a href="{{ src('torch/nn/modules/transformer.py', 1213, 1247) }}"><code>_detect_is_causal_mask</code></a>), while a wrong
+  <code>is_causal=True</code> hint on a non-causal mask is documented as unpredictable.
+  <code>enable_nested_tensor=False</code> silences a warning: the nested-tensor fast path is
+  disabled for <code>norm_first</code> anyway
+  (<a href="{{ src('torch/nn/modules/transformer.py', 378, 379) }}">line 378</a>). The generate loop
+  recomputes the whole prefix each step, which is correct but wasteful; real implementations cache
+  keys and values.
+</p>
+<p>
+  The longer way builds the block from primitives, replacing the layer with a few lines you control:
+</p>
+
+<pre><code>class Block(nn.Module):
+    def __init__(self, d, heads):
+        super().__init__()
+        self.ln1, self.ln2 = nn.LayerNorm(d), nn.LayerNorm(d)
+        self.qkv, self.proj = nn.Linear(d, 3 * d), nn.Linear(d, d)
+        self.ff = nn.Sequential(nn.Linear(d, 4 * d), nn.GELU(), nn.Linear(4 * d, d))
+        self.heads = heads
+
+    def forward(self, x):                            # x: [B, T, d]
+        B, T, d = x.shape
+        q, k, v = self.qkv(self.ln1(x)).split(d, dim=-1)
+        q, k, v = (t.view(B, T, self.heads, -1).transpose(1, 2) for t in (q, k, v))
+        a = nn.functional.scaled_dot_product_attention(q, k, v, is_causal=True)
+        x = x + self.proj(a.transpose(1, 2).reshape(B, T, d))
+        return x + self.ff(self.ln2(x))</code></pre>
+
+<p>
+  Here <code>scaled_dot_product_attention</code> applies the causal mask itself
+  (<a href="{{ src('torch/nn/functional.py', 6379, 6403) }}">the reference code in its docstring</a>
+  builds the lower-triangular mask, adds −∞ elsewhere, softmaxes and multiplies by V), and
+  raises an error if you also pass <code>attn_mask</code>.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Decoder-only versus encoder-decoder or encoder-only.</strong> A single causal stack
+    handles any task phrased as text continuation, trains on raw text with no labels, and
+    scales simply. Bidirectional models (<a href="/ml-models/transformer">encoder-decoder</a>,
+    encoder-only) see the whole input and often win at classification and translation for a given
+    size, but need paired data or a masking objective and can't generate freely.
+  </li>
+  <li>
+    <strong>The context window is a budget.</strong> Attention compares every pair of positions, so
+    cost grows with T²; a learned position table can't go past {{ g.context }}. Later models replace
+    learned positions with rotary or relative schemes and use grouped-query attention to shrink
+    the KV cache; the Llama 3 paper describes one such recipe (RMSNorm, SwiGLU, rotary positions,
+    grouped-query attention). Those variants are planned for the KV-cache page.
+  </li>
+  <li>
+    <strong>Tying the head.</strong> It removes {{ pct(cfg.token_table, untied.total) }}% of the untied parameters here and
+    often costs little accuracy, but it forces the input and output spaces to agree. With a small
+    model and a big vocabulary it is a large saving; with a huge model it is a rounding error, which
+    is why larger models often untie it.
+  </li>
+  <li>
+    <strong>Generation is sequential.</strong> Training parallelizes over T; generating T tokens takes T
+    forward passes however many GPUs you own. This is why serving cost is dominated by memory
+    traffic, not arithmetic, and why caching, batching and speculative decoding exist.
+  </li>
+  <li>
+    <strong>Pitfalls.</strong> Exposure bias: the model is trained on true prefixes but generates from
+    its own, so small errors compound. Forgetting to shift targets by one trains the model to copy
+    its input. Padding tokens must be excluded from the loss with <code>ignore_index</code>. And a
+    mask that points the wrong way silently lets the model read the future, giving a suspiciously
+    low training loss and useless generation.
+  </li>
+</ul>
+
+<h3 id="check-yourself">Check yourself</h3>
+
+<details class="ml-quiz">
+  <summary>Why can the same causal model be trained on whole sequences yet used one token at a time?</summary>
+  <p>Position t's output depends only on tokens ≤ t. The check above shows the first rows are unchanged when later tokens are removed, so training on the full sequence gives exactly what generation will see at each step.</p>
+</details>
+<details class="ml-quiz">
+  <summary>The inputs are tokens 1…T−1. What are the targets, and how many loss terms are there?</summary>
+  <p>Tokens 2…T; T−1 terms, averaged. Position t's logits are scored against token t+1.</p>
+</details>
+<details class="ml-quiz">
+  <summary>How many parameters does tying the head save for a vocabulary of V and width d?</summary>
+  <p>V·d (for GPT-2 small, {{ f(cfg.token_table) }}); the head would otherwise be a second [V, d] matrix.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why is a perplexity of 4 on a four-letter vocabulary the same as guessing?</summary>
+  <p>A uniform guess gives probability ¼ everywhere, so each loss is ln 4 and exp(ln 4) = 4.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Radford et al. <em>Language Models are Unsupervised Multitask Learners</em> (GPT-2). OpenAI, 2019 (<a href="https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf">PDF</a>).</li>
+  <li>Radford, Narasimhan, Salimans and Sutskever. <em>Improving Language Understanding by Generative Pre-Training</em> (GPT-1). OpenAI, 2018.</li>
+  <li>Brown et al. <em>Language Models are Few-Shot Learners</em> (GPT-3). NeurIPS, 2020 (<a href="https://arxiv.org/abs/2005.14165">arXiv 2005.14165</a>).</li>
+  <li>Vaswani et al. <em>Attention Is All You Need.</em> NeurIPS, 2017 (<a href="https://arxiv.org/abs/1706.03762">arXiv 1706.03762</a>).</li>
+  <li>Press and Wolf. <em>Using the Output Embedding to Improve Language Models.</em> EACL, 2017 (<a href="https://arxiv.org/abs/1608.05859">arXiv 1608.05859</a>; weight tying).</li>
+  <li>Xiong et al. <em>On Layer Normalization in the Transformer Architecture.</em> ICML, 2020 (<a href="https://arxiv.org/abs/2002.04745">arXiv 2002.04745</a>; pre-norm).</li>
+  <li>Llama Team. <em>The Llama 3 Herd of Models.</em> 2024 (<a href="https://arxiv.org/abs/2407.21783">arXiv 2407.21783</a>).</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/nn/modules/transformer.py', 320, 983) }}"><code>transformer.py</code></a>, <a href="{{ src('torch/nn/functional.py', 6367, 6406) }}"><code>functional.py</code></a>, <a href="{{ src('torch/nn/modules/sparse.py', 14, 266) }}"><code>sparse.py</code></a>, <a href="{{ src('torch/nn/modules/loss.py', 1200, 1409) }}"><code>loss.py</code></a>.</li>
+</ul>

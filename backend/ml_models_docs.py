@@ -974,7 +974,7 @@ PAGES = [
             "pytorch:torch/nn/modules/sparse.py",
             "pytorch:torch/nn/modules/loss.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "pretraining",
