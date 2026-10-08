@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -4115,6 +4115,49 @@ def median_partition_trace(a, b):
     raise ValueError("inputs are not sorted")
 
 
+def reverse_list_trace(values):
+    """Each step moves the head of the remaining list onto the front of the reversed part."""
+    reversed_part = []
+    steps = []
+    for i, value in enumerate(values):
+        reversed_part.insert(0, value)
+        steps.append({"node": value, "reversed": list(reversed_part), "remaining": list(values[i + 1:])})
+    return {"steps": steps, "result": reversed_part}
+
+
+def merge_sorted_trace(a, b):
+    """Splice the smaller head onto the tail until one list runs out, then attach the other in one step."""
+    i = j = 0
+    merged = []
+    steps = []
+    while i < len(a) and j < len(b):
+        if a[i] <= b[j]:
+            source, value = "first", a[i]
+            i += 1
+        else:
+            source, value = "second", b[j]
+            j += 1
+        merged.append(value)
+        steps.append({"take": value, "source": source, "merged": list(merged)})
+    leftover = a[i:] + b[j:]
+    merged.extend(leftover)
+    return {"steps": steps, "leftover": leftover, "result": merged}
+
+
+def remove_nth_from_end_trace(values, n):
+    """Lead pointer starts n nodes ahead of the trailer; a dummy head makes the trailer sit before the cut."""
+    count = len(values)
+    lead = n
+    trailer = -1
+    steps = [{"lead": lead, "trailer": trailer}]
+    while lead < count:
+        lead += 1
+        trailer += 1
+        steps.append({"lead": lead, "trailer": trailer})
+    cut = trailer + 1
+    return {"steps": steps, "cut": cut, "removed": values[cut], "result": values[:cut] + values[cut + 1:]}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -4274,6 +4317,9 @@ def render(slug, render_template):
         "min_speed_trace": min_speed_trace,
         "ship_capacity_trace": ship_capacity_trace,
         "median_partition_trace": median_partition_trace,
+        "reverse_list_trace": reverse_list_trace,
+        "merge_sorted_trace": merge_sorted_trace,
+        "remove_nth_from_end_trace": remove_nth_from_end_trace,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,

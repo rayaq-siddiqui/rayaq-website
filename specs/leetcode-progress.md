@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (build run). `binary-search-on-answer` is ready (14 of 58 pages). **The next run is a build run** continuing at `linked-list-basics`.
+**Last updated:** 2026-10-08 (build run). `linked-list-basics` is ready (15 of 58 pages). **The next run is a build run** continuing at `fast-slow-pointers`.
 
 ## The Routine
 
@@ -39,10 +39,10 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 
 | List | Problems with a ready home | Size |
 |---|---|---|
-| Blind 75 | 17 | 75 |
-| Grind 169 | 54 | 169 |
-| NeetCode 150 | 33 | 150 |
-| NeetCode 250 | 74 | 250 |
+| Blind 75 | 20 | 75 |
+| Grind 169 | 63 | 169 |
+| NeetCode 150 | 38 | 150 |
+| NeetCode 250 | 81 | 250 |
 
 ## Queue
 
@@ -63,8 +63,8 @@ build once research is done.
 12. `monotonic-stack` ✓
 13. `binary-search` ✓
 14. `binary-search-on-answer` ✓
-15. `linked-list-basics` ← next
-16. `fast-slow-pointers`
+15. `linked-list-basics` ✓
+16. `fast-slow-pointers` ← next
 17. `linked-list-design`
 18. `tree-dfs`
 19. `tree-bfs`
@@ -187,3 +187,12 @@ Built `variable-size-window`, `stack` and `monotonic-stack` (3 of 3), each with 
 in `leetcode_docs.py`, two inline SVGs and the full §6 format. Mobile check passed on `/`,
 `/leetcode` and all eleven ready pages. Coverage: Blind 75 15/75, Grind 169 46/169, NeetCode 150 26/150,
 NeetCode 250 59/250. Next: `binary-search`.
+
+### 2026-10-08 — build run (checkout repair)
+
+Built `binary-search`, `binary-search-on-answer` and `linked-list-basics` (3 of 3), each with
+tested helpers in `leetcode_docs.py`, two inline SVGs and the full §6 format. Mobile check passed
+on `/`, `/leetcode` and all fifteen ready pages. Coverage: Blind 75 20/75, Grind 169 63/169,
+NeetCode 150 38/150, NeetCode 250 81/250. Next: `fast-slow-pointers`. The sandbox's local `main`
+had no common history with `origin/main`; it was kept as the local branch `backup/stale-local-main`
+and `main` was re-pointed at `origin/main` before building.

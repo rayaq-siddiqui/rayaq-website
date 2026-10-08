@@ -488,3 +488,20 @@ def test_binary_search_on_answer_helpers_match_the_page():
     assert "The slowest speed that finishes in time is 4." in body
     assert "The smallest capacity that works is 15." in body
     assert "the median is the largest value on the left: 11." in body
+
+
+def test_linked_list_helpers_match_the_page():
+    rev = leetcode_docs.reverse_list_trace([1, 2, 3, 4, 5])
+    assert rev["result"] == [5, 4, 3, 2, 1] and rev["steps"][1]["remaining"] == [3, 4, 5]
+    assert leetcode_docs.reverse_list_trace([])["result"] == []
+    mer = leetcode_docs.merge_sorted_trace([1, 4, 6, 9], [2, 3, 7])
+    assert mer["result"] == [1, 2, 3, 4, 6, 7, 9] and mer["leftover"] == [9]
+    assert leetcode_docs.merge_sorted_trace([], [1, 2])["result"] == [1, 2]
+    rm = leetcode_docs.remove_nth_from_end_trace([1, 2, 3, 4, 5], 2)
+    assert rm["result"] == [1, 2, 3, 5] and rm["removed"] == 4 and rm["steps"][-1]["trailer"] == 2
+    assert leetcode_docs.remove_nth_from_end_trace([1, 2, 3], 3)["result"] == [2, 3]
+    assert leetcode_docs.remove_nth_from_end_trace([7], 1)["result"] == []
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/linked-list-basics").get_data(as_text=True))
+    assert "The reversed list is 5, 4, 3, 2, 1." in body
+    assert "The merged list is 1, 2, 3, 4, 6, 7, 9." in body
+    assert "so the node after it, holding 4, is cut. The list becomes 1, 2, 3, 5." in body
