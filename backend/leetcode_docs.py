@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -3922,6 +3922,62 @@ def rpn_trace(tokens):
     return {"steps": steps, "result": stack[-1]}
 
 
+def next_warmer_trace(temps):
+    """Decreasing stack of indices still waiting for a warmer day; each arrival resolves the ones it beats."""
+    stack = []
+    waits = [0] * len(temps)
+    steps = []
+    for i, value in enumerate(temps):
+        resolved = []
+        while stack and temps[stack[-1]] < value:
+            j = stack.pop()
+            waits[j] = i - j
+            resolved.append(j)
+        stack.append(i)
+        steps.append({"index": i, "value": value, "resolved": resolved, "stack": list(stack)})
+    return {"steps": steps, "waits": waits}
+
+
+def histogram_trace(heights):
+    """Increasing stack of bar indices; a shorter bar ends the widest rectangle of each bar it pops."""
+    stack = []
+    pops = []
+    best = 0
+    best_pop = None
+    for i in range(len(heights) + 1):
+        current = heights[i] if i < len(heights) else 0
+        while stack and heights[stack[-1]] >= current:
+            top = stack.pop()
+            left = stack[-1] + 1 if stack else 0
+            area = heights[top] * (i - left)
+            pop = {"bar": top, "height": heights[top], "left": left, "right": i - 1, "area": area}
+            pops.append(pop)
+            if area > best:
+                best = area
+                best_pop = pop
+        stack.append(i)
+    return {"pops": pops, "best": best, "best_pop": best_pop}
+
+
+def window_max_trace(nums, k):
+    """Monotonic deque of indices with decreasing values; the front is the maximum of the window."""
+    from collections import deque
+    window = deque()
+    steps = []
+    maxima = []
+    for i, value in enumerate(nums):
+        while window and nums[window[-1]] <= value:
+            window.pop()
+        window.append(i)
+        if window[0] <= i - k:
+            window.popleft()
+        if i >= k - 1:
+            maxima.append(nums[window[0]])
+        steps.append({"index": i, "value": value, "deque": [nums[j] for j in window],
+                      "max": nums[window[0]] if i >= k - 1 else None})
+    return {"steps": steps, "maxima": maxima}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -4071,6 +4127,9 @@ def render(slug, render_template):
         "bracket_trace": bracket_trace,
         "min_stack_trace": min_stack_trace,
         "rpn_trace": rpn_trace,
+        "next_warmer_trace": next_warmer_trace,
+        "histogram_trace": histogram_trace,
+        "window_max_trace": window_max_trace,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,

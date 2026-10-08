@@ -429,3 +429,21 @@ def test_stack_helpers_match_the_page():
     assert "The stack is empty at the end, so {[()()]} is valid." in body
     assert "arrives while the top is <code>[</code>" in body
     assert "The result is 4." in body
+
+
+def test_monotonic_stack_helpers_match_the_page():
+    warm = leetcode_docs.next_warmer_trace([68, 71, 65, 64, 70, 66, 72])
+    assert warm["waits"] == [1, 5, 2, 1, 2, 1, 0]
+    assert [s["stack"] for s in warm["steps"]][-1] == [6]
+    assert leetcode_docs.next_warmer_trace([5, 4, 3])["waits"] == [0, 0, 0]
+    hist = leetcode_docs.histogram_trace([3, 1, 4, 5, 3, 2, 1])
+    assert hist["best"] == 9 and hist["best_pop"]["left"] == 2 and hist["best_pop"]["right"] == 4
+    assert leetcode_docs.histogram_trace([])["best"] == 0
+    assert leetcode_docs.histogram_trace([2, 2, 2])["best"] == 6
+    win = leetcode_docs.window_max_trace([4, 2, 12, 3, 8, 1, 6], 3)
+    assert win["maxima"] == [12, 12, 12, 8, 8]
+    assert leetcode_docs.window_max_trace([1, 2], 3)["maxima"] == []
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/monotonic-stack").get_data(as_text=True))
+    assert "The waits are 1, 5, 2, 1, 2, 1, 0" in body
+    assert "The largest area is 9, the rectangle of height 3 over bars 2 to 4." in body
+    assert "The window maxima are 12, 12, 12, 8, 8." in body

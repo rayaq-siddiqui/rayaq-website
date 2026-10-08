@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (build run). `stack` is ready (11 of 58 pages). **The next run is a build run** continuing at `monotonic-stack`.
+**Last updated:** 2026-10-08 (build run). `monotonic-stack` is ready (12 of 58 pages). **The next run is a build run** continuing at `binary-search`.
 
 ## The Routine
 
@@ -39,10 +39,10 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 
 | List | Problems with a ready home | Size |
 |---|---|---|
-| Blind 75 | 11 | 75 |
-| Grind 169 | 31 | 169 |
-| NeetCode 150 | 16 | 150 |
-| NeetCode 250 | 40 | 250 |
+| Blind 75 | 15 | 75 |
+| Grind 169 | 46 | 169 |
+| NeetCode 150 | 26 | 150 |
+| NeetCode 250 | 59 | 250 |
 
 ## Queue
 
@@ -60,8 +60,8 @@ build once research is done.
 9. `fixed-size-window` ✓
 10. `variable-size-window` ✓
 11. `stack` ✓
-12. `monotonic-stack` ← next
-13. `binary-search`
+12. `monotonic-stack` ✓
+13. `binary-search` ← next
 14. `binary-search-on-answer`
 15. `linked-list-basics`
 16. `fast-slow-pointers`
@@ -180,3 +180,10 @@ Built `in-place-array-tricks`, `two-pointers` and `fixed-size-window` (3 of 3), 
 helpers in `leetcode_docs.py`, three inline SVGs and the full §6 format. Coverage: Blind 75
 11/75, Grind 169 31/169, NeetCode 150 16/150, NeetCode 250 40/250. Mobile check passed on `/`,
 `/leetcode` and all nine ready pages. Next: `variable-size-window`.
+
+### 2026-10-08 — build run
+
+Built `variable-size-window`, `stack` and `monotonic-stack` (3 of 3), each with tested helpers
+in `leetcode_docs.py`, two inline SVGs and the full §6 format. Mobile check passed on `/`,
+`/leetcode` and all eleven ready pages. Coverage: Blind 75 15/75, Grind 169 46/169, NeetCode 150 26/150,
+NeetCode 250 59/250. Next: `binary-search`.

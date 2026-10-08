@@ -1,0 +1,307 @@
+{% set temps = [68, 71, 65, 64, 70, 66, 72] %}
+{% set warm = next_warmer_trace(temps) %}
+{% set bars = [3, 1, 4, 5, 3, 2, 1] %}
+{% set hist = histogram_trace(bars) %}
+{% set best = hist.best_pop %}
+{% set win_nums = [4, 2, 12, 3, 8, 1, 6] %}
+{% set win = window_max_trace(win_nums, 3) %}
+<header class="jj-header">
+  <h1>Monotonic stack and deque</h1>
+  <p class="tagline">
+    A monotonic stack keeps its items sorted, and the act of restoring that order does the work:
+    when a new item breaks the order, the items it beats are popped and answered in bulk. One pass
+    gives every item its next greater (or smaller) neighbour, the widest rectangle under each histogram
+    bar, and, with a deque, the maximum of every sliding window.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  "For each day, how many days until a warmer one?" Checking forward from every day is O(n²) on a
+  steadily falling run. The observation that saves you: a day that is still waiting for something warmer
+  only needs to be compared with new arrivals, and the moment one arrival is warmer than the most recently
+  waiting day, it is warmer than every waiting day colder than that, too. So waiting days can be kept in a
+  stack in decreasing temperature order, and each arrival resolves a run from the top.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Signal</th><th>Pattern</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>"Next greater / next smaller element" for each position</td><td>Monotonic stack of waiting indices</td><td>An arrival answers every waiting item it beats, in bulk.</td></tr>
+    <tr><td>"How many consecutive earlier days were not higher" (span)</td><td>Stack of (value, span) pairs</td><td>A popped item's span folds into the new item.</td></tr>
+    <tr><td>"Largest rectangle", "maximal area under a profile"</td><td>Increasing stack of bars</td><td>A shorter bar ends the widest rectangle of every taller bar it pops.</td></tr>
+    <tr><td>"Maximum (or minimum) of every window of size k"</td><td>Monotonic deque of indices</td><td>Candidates that can never be the maximum again are discarded from the back.</td></tr>
+    <tr><td>"Trapping water", "visible from the left"</td><td>Stack of walls (or two pointers)</td><td>A taller wall closes the pools bounded by shorter ones.</td></tr>
+    <tr><td>"Lexicographically smallest after removing k digits"</td><td>Increasing stack with a removal budget</td><td>A smaller digit arriving later displaces larger earlier digits while budget remains.</td></tr>
+    <tr><td>Items resolved by arrival time or position rather than value order</td><td>Sort first, then stack (car fleets)</td><td>Sorting gives the order in which the stack's rule applies.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Imagine people standing in a queue facing a stage, each with a height. A tall person arriving
+  makes every shorter person standing right in front of them irrelevant for the purpose of
+  "who can see the stage", because the newcomer blocks them for anyone further back. The stack is the
+  list of people still relevant. Each person enters once and leaves once, so the work is linear
+  even though one arrival may remove many.
+</p>
+<p>
+  The direction (stack decreasing or increasing) is chosen by the question. "Next greater" keeps
+  items that have not yet found a greater one, so values decrease from bottom to top: any larger
+  arrival pops from the top. "Next smaller" and rectangle problems use the mirror image.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 250" role="img" aria-labelledby="lc-hist-title lc-hist-desc">
+    <title id="lc-hist-title">Histogram {{ bars | join(", ") }} with its largest rectangle</title>
+    <desc id="lc-hist-desc">
+      Bars of height {{ bars | join(", ") }}. The largest rectangle has height {{ best.height }}
+      and spans bars {{ best.left }} to {{ best.right }}, width {{ best.right - best.left + 1 }},
+      for an area of {{ hist.best }}.
+    </desc>
+    <line x1="30" y1="220" x2="650" y2="220" class="d-line"></line>
+    {% for h in bars %}
+      <rect x="{{ 44 + loop.index0 * 84 }}" y="{{ 220 - h * 30 }}" width="72" height="{{ h * 30 }}" class="{{ 'lc-fill-g' if best.left <= loop.index0 <= best.right else 'd-box' }}"></rect>
+      <text x="{{ 80 + loop.index0 * 84 }}" y="{{ 212 }}" font-size="14" text-anchor="middle">{{ h }}</text>
+      <text x="{{ 80 + loop.index0 * 84 }}" y="238" font-size="11" text-anchor="middle" class="d-muted">bar {{ loop.index0 }}</text>
+    {% endfor %}
+    <line x1="{{ 44 + best.left * 84 }}" y1="{{ 220 - best.height * 30 }}" x2="{{ 116 + best.right * 84 }}" y2="{{ 220 - best.height * 30 }}" class="d-line"></line>
+  </svg>
+</div>
+<p class="lc-caption">
+  Green bars carry the largest rectangle: height {{ best.height }} across {{ best.right - best.left + 1 }} bars,
+  area {{ hist.best }}. The line marks its top; the shorter bars on either side are what stops it growing.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="invariant">The invariant</h3>
+<p>
+  The stack holds, bottom to top, the indices that have not yet been answered, and their values are
+  monotone (strictly decreasing for next-greater). Before pushing index i, pop every index whose value
+  is beaten by <code>values[i]</code>; each pop <em>is</em> an answer for that index, with i as its
+  next greater element. Why correct: an index is popped by the first later value that beats it, which
+  is by definition its next greater element, and nothing between could have beaten it, or it would
+  have been popped earlier. Indices left at the end have no greater element. Because every index is
+  pushed once and popped once, total work is O(n).
+</p>
+
+<h3 id="histogram">Largest rectangle</h3>
+<p>
+  Keep bar indices with increasing heights. When bar i is not taller than the top, the top bar's
+  rectangle cannot extend any further right: i is its first shorter-or-equal neighbour on the right.
+  Its left limit is the new top of the stack after popping (the nearest shorter bar on the left), so its
+  widest rectangle spans <code>(new top, i)</code> exclusive and has area height × (i − new top − 1).
+  A sentinel height of 0 at the end flushes everything. The maximum of these areas is the answer,
+  because the best rectangle has some bar as its minimum, and that bar's widest rectangle is the one computed.
+</p>
+
+<h3 id="deque">The deque for window maximum</h3>
+<p>
+  A fixed window's running sum can be undone, but a maximum cannot. Keep a deque of indices whose
+  values decrease from front to back. A new value pops every smaller value from the back: those can
+  never be the maximum while the newcomer is in the window, and it outlives them. The front is
+  the maximum; pop it from the front when its index leaves the window. Each index enters and leaves once.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 {{ 36 + warm.steps | length * 34 }}" role="img" aria-labelledby="lc-warm-title lc-warm-desc">
+    <title id="lc-warm-title">The waiting stack for daily temperatures {{ temps | join(", ") }}</title>
+    <desc id="lc-warm-desc">
+      One row per day. The temperatures still waiting for a warmer day, bottom to top, after each day:
+      {% for step in warm.steps %}{% for j in step.stack %}{{ temps[j] }}{{ " " if not loop.last }}{% endfor %}{{ "; " if not loop.last else "." }}{% endfor %}
+      The days to wait are {{ warm.waits | join(", ") }}, where 0 means no warmer day.
+    </desc>
+    {% for step in warm.steps %}
+      {% set row = loop.index0 %}
+      <text x="12" y="{{ 30 + row * 34 }}" font-size="13">day {{ step.index }} · {{ step.value }}</text>
+      {% for j in step.stack %}
+        <rect x="{{ 140 + loop.index0 * 76 }}" y="{{ 10 + row * 34 }}" width="68" height="28" class="{{ 'lc-fill-a' if loop.last else 'd-box' }}"></rect>
+        <text x="{{ 174 + loop.index0 * 76 }}" y="{{ 30 + row * 34 }}" font-size="14" text-anchor="middle">{{ temps[j] }}</text>
+      {% endfor %}
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">
+  Each row is the stack after that day, bottom on the left. The amber box is the day just pushed; a
+  shorter row than the one above means that day popped some waiting days.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p><strong>Days until warmer</strong> for <code>{{ temps }}</code>:</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Day</th><th>Temp</th><th>Resolved (day: wait)</th><th>Stack after (days)</th></tr></thead>
+    <tbody>
+      {% for step in warm.steps %}
+        <tr><td class="num">{{ step.index }}</td><td class="num">{{ step.value }}</td><td class="num">{% for j in step.resolved %}{{ j }}: {{ step.index - j }}{{ ", " if not loop.last }}{% else %}–{% endfor %}</td><td class="num">{{ step.stack | join(" ") }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>The waits are {{ warm.waits | join(", ") }}; the last day never finds a warmer one and stays at 0.</p>
+
+<p><strong>Largest rectangle</strong> for heights <code>{{ bars }}</code>. Each row is a pop, with its widest rectangle:</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Popped bar</th><th>Height</th><th>Spans bars</th><th>Area</th></tr></thead>
+    <tbody>
+      {% for pop in hist.pops %}
+        <tr><td class="num">{{ pop.bar }}</td><td class="num">{{ pop.height }}</td><td class="num">{{ pop.left }}..{{ pop.right }}</td><td class="num">{{ pop.area }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>The largest area is {{ hist.best }}, the rectangle of height {{ best.height }} over bars {{ best.left }} to {{ best.right }}.</p>
+
+<p><strong>Window maximum</strong> for <code>{{ win_nums }}</code> with k = 3. The deque shows values, front first:</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Index</th><th>Value</th><th>Deque after</th><th>Window max</th></tr></thead>
+    <tbody>
+      {% for step in win.steps %}
+        <tr><td class="num">{{ step.index }}</td><td class="num">{{ step.value }}</td><td class="num">{{ step.deque | join(" ") }}</td><td class="num">{{ step.max if step.max is not none else "–" }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>The window maxima are {{ win.maxima | join(", ") }}.</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>from collections import deque
+
+
+def days_until_warmer(temps):
+    waits = [0] * len(temps)
+    stack = []                                   # indices, temperatures decreasing
+    for i, t in enumerate(temps):
+        while stack and temps[stack[-1]] &lt; t:
+            j = stack.pop()
+            waits[j] = i - j
+        stack.append(i)
+    return waits
+
+
+def largest_rectangle(heights):
+    best = 0
+    stack = []                                   # indices, heights increasing
+    for i, h in enumerate(heights + [0]):        # the 0 flushes the stack
+        while stack and heights[stack[-1]] &gt;= h:
+            height = heights[stack.pop()]
+            left = stack[-1] + 1 if stack else 0
+            best = max(best, height * (i - left))
+        stack.append(i)
+    return best
+
+
+def window_maxima(nums, k):
+    window = deque()                             # indices, values decreasing
+    out = []
+    for i, x in enumerate(nums):
+        while window and nums[window[-1]] &lt;= x:
+            window.pop()
+        window.append(i)
+        if window[0] &lt;= i - k:
+            window.popleft()
+        if i &gt;= k - 1:
+            out.append(nums[window[0]])
+    return out</code></pre>
+
+<p>
+  In <code>largest_rectangle</code>, <code>heights + [0]</code> makes the index <code>i</code> run
+  one past the end, but <code>heights[stack[-1]]</code> only reads real bars, because the sentinel
+  index itself is never read.
+</p>
+
+<h3 id="variations">Variations and edge cases</h3>
+<ul>
+  <li><strong>Strict versus non-strict comparison.</strong> Pop on <code>&lt;</code> or
+    <code>&lt;=</code> depending on whether equal values count as "greater". For the rectangle the
+    <code>&gt;=</code> version is right: equal bars merge into a single rectangle when the later one is
+    popped.</li>
+  <li><strong>Both neighbours at once.</strong> The popping step knows the next smaller on the right
+    (the arrival) and the previous smaller on the left (the new top). Sum-of-subarray-minimums problems
+    use both.</li>
+  <li><strong>Circular arrays.</strong> Run the loop over 2n indices, taking values modulo n, and only
+    push on the first lap.</li>
+  <li><strong>Stack of pairs.</strong> The stock span stores (price, span) and merges a popped item's
+    span into the arrival; no index arithmetic is needed.</li>
+  <li><strong>Sorted first.</strong> Car fleets sort by position, then a stack of arrival times drops
+    any car that would catch the one ahead.</li>
+  <li><strong>Edge cases:</strong> an empty array, a strictly increasing input (everything pops at the end
+    or immediately, depending on direction), all equal values, a window larger than the array, k = 1,
+    and forgetting to expire the deque's front.</li>
+</ul>
+
+<h2 id="tradeoffs">Complexity and tradeoffs</h2>
+
+<ul>
+  <li><strong>Time:</strong> O(n): each index is pushed once and popped at most once, so the nested
+    <code>while</code> amortises to constant time per item.</li>
+  <li><strong>Space:</strong> O(n) for the stack or deque.</li>
+  <li><strong>Baseline.</strong> Scanning forward from each item is O(n²); a heap-based window
+    maximum is O(n log k); the deque is O(n).</li>
+  <li><strong>When it fails.</strong> The pattern answers questions about nearest items by order
+    (next greater, previous smaller). If you need the k-th greatest or an arbitrary range's maximum,
+    use a heap, a sparse table or a segment tree.</li>
+</ul>
+
+<h2 id="problems">Problems</h2>
+
+<p>
+  The home problems are the four canonical shapes: next-greater (daily temperatures), span
+  (online stock span), area (histogram), and the deque (window maximum), plus car fleets, where the
+  stack comes after a sort. Trapping rain water is listed as "also uses": its two-pointer solution is
+  shorter, but the stack version is the same idea as the histogram.
+</p>
+{% include "leetcode/_problems.html" %}
+
+<h2 id="connections">Connections</h2>
+
+{% include "leetcode/_connections.html" %}
+<p>
+  This is the stack page with an ordering rule, and the deque is the structure the fixed-size window
+  page said it would need for maxima. The rectangle trick returns in matrix problems that reduce each
+  row to a histogram, and the sort-then-stack shape of car fleets is a greedy argument.
+</p>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="lc-quiz">
+  <summary>The inner loop pops many items on one arrival. Why is the total still O(n)?</summary>
+  <p>Each index is pushed exactly once and can be popped at most once, so all the pops across the whole scan number at most n. In the temperature example the pops were {{ warm.steps | map(attribute="resolved") | map("length") | sum }} for {{ temps | length }} days.</p>
+</details>
+<details class="lc-quiz">
+  <summary>Why do you push indices instead of values?</summary>
+  <p>The answer is usually a distance or a width, which needs the position. The value is always recoverable as <code>values[index]</code>, so the index carries strictly more information.</p>
+</details>
+<details class="lc-quiz">
+  <summary>Why can the deque discard smaller values from the back when a bigger one arrives?</summary>
+  <p>The older, smaller values leave the window before the newcomer does, so they can never again be the largest while the newcomer is inside. Throwing them away loses nothing, and keeps the deque decreasing so the front is the answer.</p>
+</details>
+<details class="lc-quiz">
+  <summary>Why does the last bar's rectangle in the histogram need a sentinel of height 0?</summary>
+  <p>Bars still on the stack at the end have no shorter bar to their right, so nothing triggers their pop. A zero-height bar after the end is shorter than everything, so it flushes the stack and computes their areas. Here it finished the rectangle of height 1 across all {{ bars | length }} bars.</p>
+</details>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Cormen, Leiserson, Rivest and Stein, <em>Introduction to Algorithms</em>: the aggregate analysis of
+    stack operations, which gives the amortised O(n) bound.</li>
+  <li>Berkman, Schieber and Vishkin, "Optimal doubly logarithmic parallel algorithms based on finding
+    all nearest smaller values" (1993): the all-nearest-smaller-values problem this page solves.</li>
+  <li>Vuillemin, "A unifying look at data structures" (1980), which introduced the Cartesian tree; the
+    monotonic stack builds it in linear time.</li>
+  <li>Skiena, <em>The Algorithm Design Manual</em>: the discussion of stacks and of
+    scanning problems that avoid nested loops.</li>
+  <li>The <a href="https://neetcode.io/roadmap" rel="noopener">NeetCode roadmap</a> and the
+    Blind 75, Grind 169, NeetCode 150 and NeetCode 250 lists, used as the index of topics and
+    problems.</li>
+</ul>
