@@ -1578,6 +1578,30 @@ DEPTH_EXAMPLE = {
     ],
 }
 
+OPTIMIZER_BOWL = {
+    "curvatures": [1.0, 50.0],
+    "start": [-4.0, 1.0],
+    "steps": 30,
+    "runs": [
+        {"label": "SGD, lr 0.036", "kind": "sgd", "hyper": {"lr": 0.036}, "plot": True},
+        {"label": "SGD, lr 0.042", "kind": "sgd", "hyper": {"lr": 0.042}, "plot": False},
+        {"label": "momentum 0.7, lr 0.03", "kind": "momentum", "hyper": {"lr": 0.03, "momentum": 0.7}, "plot": True},
+        {"label": "Nesterov 0.7, lr 0.02", "kind": "nesterov", "hyper": {"lr": 0.02, "momentum": 0.7}, "plot": False},
+        {"label": "RMSProp, lr 0.05", "kind": "rmsprop", "hyper": {"lr": 0.05}, "plot": False},
+        {"label": "Adam, lr 0.3", "kind": "adam", "hyper": {"lr": 0.3}, "plot": True},
+    ],
+}
+
+ADAM_EXAMPLE = {
+    "lr": 0.001,
+    "betas": (0.9, 0.999),
+    "eps": 1e-8,
+    "start": [0.5, -0.3],
+    "grads": [[0.02, -4.0], [0.01, -3.0], [0.03, -5.0]],
+}
+
+WEIGHT_DECAY_EXAMPLE = {"lr": 0.01, "weight_decay": 0.1, "steps": 1000, "scales": [1.0, 0.01]}
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -2629,6 +2653,107 @@ def gradient_norms_by_depth(example):
     return curves
 
 
+def optimizer_step(kind, params, grads, state, hyper):
+    lr, decay = hyper["lr"], hyper.get("weight_decay", 0.0)
+    beta1, beta2 = hyper.get("betas", (0.9, 0.999))
+    eps = hyper.get("eps", 1e-8)
+    state["step"] = state.get("step", 0) + 1
+    t = state["step"]
+    updated = []
+    for i, (p, g) in enumerate(zip(params, grads)):
+        if kind == "adamw":
+            p *= 1 - lr * decay
+        else:
+            g += decay * p
+        if kind == "sgd":
+            p -= lr * g
+        elif kind in ("momentum", "nesterov"):
+            mu = hyper["momentum"]
+            buf = state.setdefault("momentum_buffer", [None] * len(params))
+            buf[i] = g if buf[i] is None else mu * buf[i] + g
+            p -= lr * (g + mu * buf[i] if kind == "nesterov" else buf[i])
+        elif kind == "rmsprop":
+            alpha = hyper.get("alpha", 0.99)
+            square = state.setdefault("square_avg", [0.0] * len(params))
+            square[i] = alpha * square[i] + (1 - alpha) * g * g
+            p -= lr * g / (math.sqrt(square[i]) + eps)
+        else:
+            m = state.setdefault("exp_avg", [0.0] * len(params))
+            v = state.setdefault("exp_avg_sq", [0.0] * len(params))
+            m[i] = beta1 * m[i] + (1 - beta1) * g
+            v[i] = beta2 * v[i] + (1 - beta2) * g * g
+            denom = math.sqrt(v[i]) / math.sqrt(1 - beta2**t) + eps
+            p -= lr / (1 - beta1**t) * m[i] / denom
+        updated.append(p)
+    return updated
+
+
+def optimizer_race(example):
+    curvatures = example["curvatures"]
+
+    def loss(point):
+        return 0.5 * sum(a * x * x for a, x in zip(curvatures, point))
+
+    runs = []
+    for run in example["runs"]:
+        point, state, path = list(example["start"]), {}, [list(example["start"])]
+        for _ in range(example["steps"]):
+            point = optimizer_step(run["kind"], point, [a * x for a, x in zip(curvatures, point)], state, run["hyper"])
+            path.append(point)
+        losses = [loss(q) for q in path]
+        runs.append({**run, "path": path, "losses": losses, "final": losses[-1], "diverged": losses[-1] > losses[0]})
+    return runs
+
+
+def adam_trace(example):
+    beta1, beta2 = example["betas"]
+    hyper = {"lr": example["lr"], "betas": example["betas"], "eps": example["eps"]}
+    params, state, rows = list(example["start"]), {}, []
+    for t, grads in enumerate(example["grads"], start=1):
+        params = optimizer_step("adam", params, grads, state, hyper)
+        m, v = list(state["exp_avg"]), list(state["exp_avg_sq"])
+        m_hat = [x / (1 - beta1**t) for x in m]
+        v_hat = [x / (1 - beta2**t) for x in v]
+        rows.append({
+            "t": t, "grads": grads, "m": m, "v": v, "m_hat": m_hat, "v_hat": v_hat,
+            "update": [-example["lr"] * a / (math.sqrt(b) + example["eps"]) for a, b in zip(m_hat, v_hat)],
+            "params": params,
+        })
+    return rows
+
+
+def uncorrected_step_ratio(betas, t):
+    beta1, beta2 = betas
+    return (1 - beta1**t) / math.sqrt(1 - beta2**t)
+
+
+def weight_decay_paths(example):
+    hyper = {"lr": example["lr"], "weight_decay": example["weight_decay"]}
+    curves = []
+    for kind in ("adam", "adamw"):
+        for scale in example["scales"]:
+            weight, state, values = [1.0], {}, [1.0]
+            for k in range(example["steps"]):
+                grad = scale if k % 2 == 0 else -scale
+                weight = optimizer_step(kind, weight, [grad], state, hyper)
+                values.append(weight[0])
+            curves.append({"kind": kind, "scale": scale, "values": values})
+    return curves
+
+
+def optimizer_memory(parameters):
+    rows = [
+        ("SGD", 0, "none"),
+        ("SGD with momentum", 1, "momentum_buffer"),
+        ("RMSProp", 1, "square_avg"),
+        ("Adam / AdamW", 2, "exp_avg, exp_avg_sq"),
+    ]
+    return [
+        {"name": name, "tensors": tensors, "state": state, "bytes_per_param": 4 * tensors, "gigabytes": 4 * tensors * parameters / 1e9}
+        for name, tensors, state in rows
+    ]
+
+
 def similarity_ranking(example):
     query = example["query"]
     rows = [
@@ -2802,6 +2927,14 @@ def render(slug, render_template):
         "gradient_check": gradient_check,
         "gradient_check_all": gradient_check_all,
         "gradient_norms_by_depth": gradient_norms_by_depth,
+        "optimizer_bowl": OPTIMIZER_BOWL,
+        "adam_example": ADAM_EXAMPLE,
+        "weight_decay_example": WEIGHT_DECAY_EXAMPLE,
+        "optimizer_race": optimizer_race,
+        "adam_trace": adam_trace,
+        "uncorrected_step_ratio": uncorrected_step_ratio,
+        "weight_decay_paths": weight_decay_paths,
+        "optimizer_memory": optimizer_memory,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
