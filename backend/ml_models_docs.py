@@ -1037,7 +1037,7 @@ PAGES = [
             "pytorch:torch/nn/functional.py",
             "pytorch:torch/nn/modules/activation.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "similarity-search",
@@ -3422,6 +3422,59 @@ def speculative_tokens_per_pass(acceptance, draft_tokens):
     return sum(acceptance**i for i in range(draft_tokens + 1))
 
 
+KV_CONFIG = {"layers": 32, "q_heads": 32, "kv_heads": 8, "head_dim": 128, "bytes_per_value": 2}
+
+PAGED_EXAMPLE = {"lengths": [37, 120, 5, 64], "block_size": 16, "reserved": 128}
+
+
+def cached_decode(example):
+    keys, values, outputs = [], [], []
+    cached_projections = uncached_projections = score_dots = 0
+    for step, query in enumerate(example["queries"]):
+        keys.append(example["keys"][step])
+        values.append(example["values"][step])
+        result = scaled_attention([query], keys, values)
+        outputs.append(result["outputs"][0])
+        cached_projections += 1
+        uncached_projections += step + 1
+        score_dots += step + 1
+    full = attention_weights(example, causal=True)["outputs"]
+    gap = max(abs(a - b) for row_a, row_b in zip(outputs, full) for a, b in zip(row_a, row_b))
+    return {
+        "outputs": outputs,
+        "gap": gap,
+        "cached_projections": cached_projections,
+        "uncached_projections": uncached_projections,
+        "score_dots": score_dots,
+    }
+
+
+def kv_cache_total_bytes(config, kv_heads, seq_len, batch=1):
+    per_token = kv_cache_bytes_per_token(
+        config["layers"], kv_heads, config["head_dim"], config["bytes_per_value"]
+    )
+    return per_token * seq_len * batch
+
+
+def decode_attention_intensity(q_heads, kv_heads, bytes_per_value):
+    return (4 * q_heads) / (2 * kv_heads * bytes_per_value)
+
+
+def paged_allocation(lengths, block_size, reserved):
+    blocks = [-(-length // block_size) for length in lengths]
+    paged_slots = sum(blocks) * block_size
+    used = sum(lengths)
+    contiguous_slots = reserved * len(lengths)
+    return {
+        "blocks": blocks,
+        "used": used,
+        "paged_slots": paged_slots,
+        "contiguous_slots": contiguous_slots,
+        "paged_waste": paged_slots - used,
+        "contiguous_waste": contiguous_slots - used,
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -3588,6 +3641,12 @@ def render(slug, render_template):
         "greedy_generate": greedy_generate,
         "generation_positions": generation_positions,
         "decoding_example": DECODING_EXAMPLE,
+        "kv_config": KV_CONFIG,
+        "paged_example": PAGED_EXAMPLE,
+        "cached_decode": cached_decode,
+        "kv_cache_total_bytes": kv_cache_total_bytes,
+        "decode_attention_intensity": decode_attention_intensity,
+        "paged_allocation": paged_allocation,
         "beam_step_probs": BEAM_STEP_PROBS,
         "speculative_example": SPECULATIVE_EXAMPLE,
         "temperature_probs": temperature_probs,

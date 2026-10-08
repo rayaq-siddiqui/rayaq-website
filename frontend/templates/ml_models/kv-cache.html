@@ -1,0 +1,326 @@
+{% set ex = attention_example %}
+{% set run = cached_decode(ex) %}
+{% set cfg = kv_config %}
+{% set per_tok = kv_cache_bytes_per_token(cfg.layers, cfg.kv_heads, cfg.head_dim, cfg.bytes_per_value) %}
+{% set mha_tok = kv_cache_bytes_per_token(cfg.layers, cfg.q_heads, cfg.head_dim, cfg.bytes_per_value) %}
+{% set mqa_tok = kv_cache_bytes_per_token(cfg.layers, 1, cfg.head_dim, cfg.bytes_per_value) %}
+{% set gib = 1024 ** 3 %}
+{% set pg = paged_allocation(paged_example.lengths, paged_example.block_size, paged_example.reserved) %}
+{% macro f(x) -%}{{ "{:,}".format(x) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>The KV cache</h1>
+  <p class="tagline">
+    When a language model writes one token at a time, almost everything it computed for the
+    previous token is needed again for the next. The KV cache is the memory that keeps the
+    reusable part, the attention keys and values of every earlier token, so each step does a
+    little new work instead of redoing the whole prefix. It makes generation fast, and it is
+    also what fills the GPU: this page shows how big it gets and the tricks that shrink it.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A <a href="/ml-models/decoder-only-llm">decoder-only model</a> generates by running itself over and over,
+  appending the chosen token each time (see <a href="/ml-models/decoding">decoding</a>). Naively, step <var>t</var>
+  runs the whole network on all <var>t</var> tokens, so writing <var>n</var> tokens costs about
+  n²/2 token-positions of work. On the page's four-token example that is {{ run.uncached_projections }} key/value
+  computations where only {{ run.cached_projections }} were really new.
+</p>
+<p>
+  The waste is avoidable because of causality: the keys and values of token 3 depend only on tokens 1 to 3, so they
+  never change when token 4 arrives. Keep them and the cost of a step no longer grows with the work already done.
+  The price is memory, and for long conversations that price is large.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Imagine taking notes in a meeting. To answer a question about what was said, you do not replay the
+  recording from the start; you look at your notes. Each attention layer keeps two notes per past token: a
+  <em>key</em> (what this token is about, used for matching) and a <em>value</em> (what it contributes if matched).
+  A new token writes its own two notes, then reads all the notes to decide what to attend to. Nothing
+  already written is edited.
+</p>
+<p>
+  Generation therefore has two phases. <strong>Prefill</strong> reads the whole prompt at once and fills the cache,
+  with many tokens processed in parallel, which keeps the hardware busy. <strong>Decode</strong> then adds one token at a time,
+  and each step must read the entire cache but does little arithmetic with it. That makes decode limited by memory
+  bandwidth, not by compute.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 260" role="img" aria-labelledby="kv-flow-title kv-flow-desc">
+    <title id="kv-flow-title">Prefill fills the cache, decode appends to it</title>
+    <desc id="kv-flow-desc">
+      On the left, a prompt of four tokens is processed in one pass and writes four key and value
+      entries into the cache. On the right, decode steps each take one new token, append its key and
+      value as a fifth and then sixth entry, and read all stored entries to compute attention for that
+      one token.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <text x="120" y="24">prefill: whole prompt, one pass</text>
+      {% for i in range(4) %}<rect x="{{ 30 + i * 50 }}" y="40" width="44" height="30" rx="4" class="d-box ml-op"></rect><text x="{{ 52 + i * 50 }}" y="60">t{{ i + 1 }}</text>{% endfor %}
+      <text x="460" y="24">decode: one token per step</text>
+      <rect x="260" y="40" width="44" height="30" rx="4" class="d-box ml-dashed"></rect><text x="282" y="60">t5</text>
+      <rect x="320" y="40" width="44" height="30" rx="4" class="d-box ml-dashed"></rect><text x="342" y="60">t6</text>
+      <text x="350" y="108" class="d-muted">cache: K and V rows per token, per layer</text>
+      {% for i in range(6) %}<rect x="{{ 200 + i * 50 }}" y="120" width="44" height="46" rx="4" class="{{ 'd-box ml-tensor' if i < 4 else 'd-box ml-dashed' }}"></rect>
+      <text x="{{ 222 + i * 50 }}" y="140">K</text><text x="{{ 222 + i * 50 }}" y="158">V</text>{% endfor %}
+      <text x="350" y="200" class="d-muted">solid = written in prefill; dashed = appended by decode steps</text>
+      <text x="350" y="236" class="d-muted">each decode step reads every column, writes one</text>
+    </g>
+    <g class="d-line" fill="none" stroke-width="1.5">
+      <path d="M120 70 V120 H196"></path><path d="M282 70 V90 H400 V118"></path><path d="M342 70 V84 H450 V118"></path>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Prefill is compute-heavy and parallel over the prompt; decode is a sequential loop over the cache.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="what-is-cached">What is cached, and why only K and V</h3>
+<p>
+  In each layer, token <var>i</var> produces a query q<sub>i</sub>, key k<sub>i</sub> and value v<sub>i</sub>
+  (see <a href="/ml-models/attention">attention</a>). Its output is
+  softmax(q<sub>i</sub>·K<sub>≤i</sub><sup>T</sup>/√d) V<sub>≤i</sub>. For a new token only its own
+  query is needed: past queries were used once, for the past tokens' outputs, and are never read again. Past
+  keys and values <em>are</em> read by every later token, so they are the things to store. The causal
+  mask is also free: the cache only contains earlier positions, so nothing needs masking at decode time. The
+  cache has one slot per layer, per token, per K/V head: shape
+  <code>[layers, 2, B, H<sub>kv</sub>, S, D]</code> with S the length so far.
+</p>
+
+<h3 id="cache-size">How big the cache is</h3>
+<p>
+  Per token the cache holds 2 (K and V) × layers × H<sub>kv</sub> × head width × bytes per value. For an
+  8B-class configuration with {{ cfg.layers }} layers, {{ cfg.q_heads }} query heads, {{ cfg.kv_heads }} key/value heads,
+  head width {{ cfg.head_dim }} and {{ cfg.bytes_per_value }}-byte values (fp16 or bf16) that is
+  {{ f(per_tok) }} bytes, 128 KiB, per token. An 8,192-token context costs
+  {{ "%.0f"|format(per_tok * 8192 / gib) }} GiB for one sequence, and a batch of 32 such sequences
+  costs {{ "%.0f"|format(per_tok * 8192 * 32 / gib) }} GiB, comparable to the weights of the model itself.
+</p>
+
+<h3 id="mqa-gqa">Multi-query and grouped-query attention</h3>
+<p>
+  Cache size is proportional to the number of key/value heads, so share them. <strong>Multi-query attention</strong>
+  (MQA) keeps all the query heads but a single K/V head. <strong>Grouped-query attention</strong> (GQA) is the
+  middle: query heads are split into groups, each group sharing one K/V head. With
+  {{ cfg.q_heads }} query heads and {{ cfg.kv_heads }} K/V heads, every K/V head serves
+  {{ cfg.q_heads // cfg.kv_heads }} queries. In PyTorch,
+  <code>F.scaled_dot_product_attention(..., enable_gqa=True)</code> does this by repeating each key and value head
+  to match the query heads
+  (<a href="{{ src('torch/nn/functional.py', 6395, 6397) }}">lines 6395-6397</a> of the reference code in its docstring),
+  so the saving is in what you store, not in the attention arithmetic.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 240" role="img" aria-labelledby="kv-heads-title kv-heads-desc">
+    <title id="kv-heads-title">Query heads and key/value heads in MHA, GQA and MQA</title>
+    <desc id="kv-heads-desc">
+      Three panels with eight query heads each. In multi-head attention every query head has its own
+      key/value head, eight in total. In grouped-query attention, groups of four query heads share one
+      of two key/value heads. In multi-query attention all eight share a single key/value head.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      {% for name, kv in [("MHA: 8 K/V heads", 8), ("GQA: 2 K/V heads", 2), ("MQA: 1 K/V head", 1)] %}
+        {% set x0 = 14 + loop.index0 * 230 %}
+        <text x="{{ x0 + 100 }}" y="20">{{ name }}</text>
+        {% for q in range(8) %}<rect x="{{ x0 + q * 25 }}" y="40" width="21" height="26" rx="3" class="d-box ml-op"></rect><text x="{{ x0 + q * 25 + 10 }}" y="58">q</text>{% endfor %}
+        {% for h in range(kv) %}
+          {% set span = 8 // kv %}
+          <rect x="{{ x0 + h * span * 25 }}" y="150" width="{{ span * 25 - 4 }}" height="30" rx="3" class="d-box ml-tensor"></rect>
+          <text x="{{ x0 + h * span * 25 + (span * 25 - 4) / 2 }}" y="169">kv</text>
+          {% for q in range(span) %}<path d="M{{ x0 + (h * span + q) * 25 + 10 }} 66 L{{ x0 + h * span * 25 + (span * 25 - 4) / 2 }} 150" class="d-line" fill="none" stroke-width="1"></path>{% endfor %}
+        {% endfor %}
+        <text x="{{ x0 + 100 }}" y="214" class="d-muted">cache × {{ "%.3g"|format(kv / 8) }}</text>
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+
+<h3 id="paged">Paged attention</h3>
+<p>
+  A serving system holds many sequences of different, unknown final lengths. Reserving one contiguous
+  region of the maximum length for each wastes most of it, and the leftovers fragment memory. <strong>Paged
+  attention</strong> (the idea behind vLLM) stores each sequence's cache in fixed-size <em>blocks</em> of tokens that need not be
+  adjacent, with a per-sequence block table mapping positions to blocks, as an operating system pages virtual memory.
+  A sequence wastes at most the unused tail of its last block, and blocks can be shared between sequences with
+  a common prefix.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Key cache (per layer)</td>
+        <td><code>[B, H<sub>kv</sub>, S, {{ cfg.head_dim }}]</code></td>
+        <td>Keys of all tokens so far; grows by one row per decode step.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 6367, 6406) }}"><code>sdpa</code> reference code</a> (<code>key</code> argument)</td>
+      </tr>
+      <tr>
+        <td>Value cache (per layer)</td>
+        <td><code>[B, H<sub>kv</sub>, S, {{ cfg.head_dim }}]</code></td>
+        <td>Values of all tokens so far.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 6367, 6406) }}"><code>sdpa</code> reference code</a> (<code>value</code> argument)</td>
+      </tr>
+      <tr>
+        <td>Query at decode</td>
+        <td><code>[B, H<sub>q</sub>, 1, {{ cfg.head_dim }}]</code></td>
+        <td>L = 1 against S cached keys; <code>is_causal=True</code> would align the mask to the <em>upper-left</em>, so omit it and pass no mask.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 6367, 6406) }}"><code>functional.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>enable_gqa=True</code></td>
+        <td>H<sub>q</sub> divisible by H<sub>kv</sub></td>
+        <td>Repeats K and V heads to match the query heads.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 6395, 6397) }}">lines 6395-6397</a></td>
+      </tr>
+      <tr>
+        <td><code>nn.MultiheadAttention</code></td>
+        <td><code>kdim</code>, <code>vdim</code>, no cache argument</td>
+        <td>Recomputes keys and values from its inputs every call; the module has no cache of its own, so a cache must be kept outside it.</td>
+        <td><a href="{{ src('torch/nn/modules/activation.py', 1090, 1573) }}"><code>activation.py</code></a></td>
+      </tr>
+      <tr>
+        <td>Block table (paged)</td>
+        <td><code>[sequences, max_blocks]</code> ints</td>
+        <td>Maps a sequence's block number to a physical block. Not part of PyTorch; defined by the serving engine.</td>
+        <td>Kwon et al., 2023 (see references)</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-recompute">Cached decoding gives the same answer</h3>
+  <p>
+    Take the four-token example from the <a href="/ml-models/attention">attention</a> page. Decode it step by step:
+    at step <var>t</var>, append key and value <var>t</var> to the cache, and attend query <var>t</var> to the cache.
+    The outputs are
+    {% for o in run.outputs %}[{{ o|map("round", 4)|join(", ") }}]{% if not loop.last %}, {% endif %}{% endfor %},
+    and they differ from full causal attention over all four tokens by at most {{ "%.0e"|format(run.gap) }}, i.e. zero.
+    The work differs: the cache computes {{ run.cached_projections }} key/value pairs in total, the recompute version
+    {{ run.uncached_projections }}. At length n these are n and n(n+1)/2.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-memory">Cache memory for {{ cfg.layers }} layers, 8,192 tokens</h3>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Variant</th><th>K/V heads</th><th>Bytes per token</th><th>8,192 tokens (GiB)</th><th>Batch of 32 (GiB)</th></tr></thead>
+      <tbody>
+        <tr><td>MHA</td><td>{{ cfg.q_heads }}</td><td>{{ f(mha_tok) }}</td><td>{{ "%.0f"|format(mha_tok * 8192 / gib) }}</td><td>{{ "%.0f"|format(mha_tok * 8192 * 32 / gib) }}</td></tr>
+        <tr><td>GQA</td><td>{{ cfg.kv_heads }}</td><td>{{ f(per_tok) }}</td><td>{{ "%.0f"|format(per_tok * 8192 / gib) }}</td><td>{{ "%.0f"|format(per_tok * 8192 * 32 / gib) }}</td></tr>
+        <tr><td>MQA</td><td>1</td><td>{{ f(mqa_tok) }}</td><td>{{ "%.2f"|format(mqa_tok * 8192 / gib) }}</td><td>{{ "%.0f"|format(mqa_tok * 8192 * 32 / gib) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Why decode is memory-bound: each step reads the cache once, 2·S·H<sub>kv</sub>·D·b bytes per layer, and does
+    about 4·S·H<sub>q</sub>·D floating-point operations on it (a multiply-add for each of the scores and
+    the weighted sum). The ratio, in FLOPs per byte, is 2·H<sub>q</sub>/(H<sub>kv</sub>·b), independent of S:
+    {{ "%.0f"|format(decode_attention_intensity(cfg.q_heads, cfg.q_heads, 2)) }} for MHA with 2-byte values,
+    {{ "%.0f"|format(decode_attention_intensity(cfg.q_heads, cfg.kv_heads, 2)) }} for this GQA and
+    {{ "%.0f"|format(decode_attention_intensity(cfg.q_heads, 1, 2)) }} for MQA. A modern GPU can do on the order of
+    hundreds of FLOPs per byte it reads, so all three are far below that and the memory system is the limit; sharing
+    K/V heads both shrinks the cache and raises the ratio.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-paged">Paged versus contiguous</h3>
+  <p>
+    Four sequences have {{ paged_example.lengths|join(", ") }} tokens so far, {{ pg.used }} in all. Reserving
+    {{ paged_example.reserved }} slots each takes {{ pg.contiguous_slots }} slots and wastes {{ pg.contiguous_waste }}
+    ({{ "%.0f"|format(100 * pg.contiguous_waste / pg.contiguous_slots) }}%). With blocks of {{ paged_example.block_size }}
+    tokens the sequences take {{ pg.blocks|join(", ") }} blocks, {{ pg.paged_slots }} slots in all, wasting
+    {{ pg.paged_waste }} ({{ "%.0f"|format(100 * pg.paged_waste / pg.paged_slots) }}%).
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+import torch.nn.functional as F
+
+class CachedAttention(torch.nn.Module):
+    def __init__(self, d, q_heads, kv_heads):
+        super().__init__()
+        self.hq, self.hkv, self.dh = q_heads, kv_heads, d // q_heads
+        self.q = torch.nn.Linear(d, q_heads * self.dh, bias=False)
+        self.k = torch.nn.Linear(d, kv_heads * self.dh, bias=False)
+        self.v = torch.nn.Linear(d, kv_heads * self.dh, bias=False)
+        self.o = torch.nn.Linear(d, d, bias=False)
+
+    def forward(self, x, cache=None):          # x: [B, T, d]; T = prompt length, then 1
+        B, T, _ = x.shape
+        q = self.q(x).view(B, T, self.hq, self.dh).transpose(1, 2)
+        k = self.k(x).view(B, T, self.hkv, self.dh).transpose(1, 2)
+        v = self.v(x).view(B, T, self.hkv, self.dh).transpose(1, 2)
+        if cache is not None:                  # append, never rewrite
+            k = torch.cat([cache[0], k], dim=2)
+            v = torch.cat([cache[1], v], dim=2)
+        out = F.scaled_dot_product_attention(
+            q, k, v, is_causal=(cache is None),   # prefill: causal; decode: T == 1
+            enable_gqa=self.hq != self.hkv,
+        )
+        out = out.transpose(1, 2).reshape(B, T, -1)
+        return self.o(out), (k, v)</code></pre>
+
+<p>
+  Prefill calls it with the whole prompt and no cache, then each decode step passes the previous
+  <code>(k, v)</code> back with one new token. <code>torch.cat</code> copies the whole cache every step; real systems
+  preallocate a buffer and write into it (or use blocks, as above). Rotary positions, if the model uses them, are applied
+  to q and k <em>before</em> k is cached, so the cache holds already-rotated keys.
+  A decode step with T = 1 needs no mask, because the cache holds only earlier positions.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Speed versus memory.</strong> The cache turns quadratic recompute into linear work but its size is linear in context
+    and batch, and often decides how many requests fit on a GPU.</li>
+  <li><strong>MQA and GQA</strong> shrink the cache by H<sub>q</sub>/H<sub>kv</sub> at some loss in quality that grows as the
+    K/V heads shrink; GQA is the usual compromise. A model must be trained with the choice (or converted and
+    fine-tuned), since the projections differ.</li>
+  <li><strong>Precision.</strong> Storing the cache in 8-bit or lower cuts memory again, trading accuracy; see quantization.</li>
+  <li><strong>Paging</strong> improves utilisation and allows prefix sharing, at the cost of a more complex attention kernel
+    that follows the block table.</li>
+  <li><strong>Pitfalls.</strong> Passing <code>is_causal=True</code> with a one-token query and a longer key
+    sequence aligns the mask to the wrong corner (the attention page covers the two alignments). Off-by-one position ids when
+    resuming from a cache silently corrupt outputs. And a cache is tied to the exact prefix: change an earlier token and every
+    later entry is stale.</li>
+</ul>
+
+<h3 id="check-yourself">Check yourself</h3>
+<details class="ml-quiz">
+  <summary>Why cache keys and values but not queries?</summary>
+  <p>A token's query is used once, to compute its own output. Later tokens attend to earlier keys and values, not earlier queries.</p>
+</details>
+<details class="ml-quiz">
+  <summary>The per-token cache is 2 × layers × H<sub>kv</sub> × D × bytes. Which factor does GQA change?</summary>
+  <p>H<sub>kv</sub>, from {{ cfg.q_heads }} to {{ cfg.kv_heads }} here, a {{ cfg.q_heads // cfg.kv_heads }}× saving.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why is decode memory-bound but prefill is not?</summary>
+  <p>Prefill reuses each loaded weight and cache entry across many tokens at once; decode reads the whole cache to process a single token.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Shazeer. <em>Fast Transformer Decoding: One Write-Head is All You Need</em> (multi-query attention). 2019 (<a href="https://arxiv.org/abs/1911.02150">arXiv 1911.02150</a>).</li>
+  <li>Ainslie et al. <em>GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints.</em> EMNLP, 2023 (<a href="https://arxiv.org/abs/2305.13245">arXiv 2305.13245</a>).</li>
+  <li>Kwon et al. <em>Efficient Memory Management for Large Language Model Serving with PagedAttention.</em> SOSP, 2023 (<a href="https://arxiv.org/abs/2309.06180">arXiv 2309.06180</a>).</li>
+  <li>Vaswani et al. <em>Attention Is All You Need.</em> NeurIPS, 2017 (<a href="https://arxiv.org/abs/1706.03762">arXiv 1706.03762</a>).</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/nn/functional.py', 6367, 6406) }}"><code>scaled_dot_product_attention</code></a>, <a href="{{ src('torch/nn/modules/activation.py', 1090, 1573) }}"><code>MultiheadAttention</code></a>.</li>
+</ul>

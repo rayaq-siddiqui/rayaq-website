@@ -1562,3 +1562,37 @@ def test_speculative_tokens_per_pass_is_a_geometric_sum():
     assert ml_models_docs.speculative_tokens_per_pass(0.0, 4) == 1
     assert ml_models_docs.speculative_tokens_per_pass(1.0, 4) == 5
     assert abs(ml_models_docs.speculative_tokens_per_pass(0.5, 4) - 1.9375) < 1e-12
+
+
+def test_cached_decode_matches_full_causal_attention_with_less_work():
+    result = ml_models_docs.cached_decode(ml_models_docs.ATTENTION_EXAMPLE)
+    assert result["gap"] < 1e-12
+    assert result["cached_projections"] == 4
+    assert result["uncached_projections"] == 10
+    assert result["score_dots"] == 10
+
+
+def test_kv_cache_totals_scale_with_heads_length_and_batch():
+    config = ml_models_docs.KV_CONFIG
+    one = ml_models_docs.kv_cache_total_bytes(config, config["kv_heads"], 1)
+    assert one == 131_072
+    assert ml_models_docs.kv_cache_total_bytes(config, config["kv_heads"], 8192) == 8192 * one == 2**30
+    assert ml_models_docs.kv_cache_total_bytes(config, 32, 1) == 4 * one
+    assert ml_models_docs.kv_cache_total_bytes(config, 1, 1) * 8 == one
+    assert ml_models_docs.kv_cache_total_bytes(config, 8, 10, batch=3) == 30 * one
+
+
+def test_decode_attention_intensity_is_independent_of_length_and_grows_with_sharing():
+    assert ml_models_docs.decode_attention_intensity(32, 32, 2) == 1.0
+    assert ml_models_docs.decode_attention_intensity(32, 8, 2) == 4.0
+    assert ml_models_docs.decode_attention_intensity(32, 1, 2) == 32.0
+
+
+def test_paged_allocation_wastes_less_than_contiguous_reservation():
+    result = ml_models_docs.paged_allocation(**ml_models_docs.PAGED_EXAMPLE)
+    assert result["blocks"] == [3, 8, 1, 4]
+    assert result["used"] == 226
+    assert result["paged_slots"] == 256
+    assert result["paged_waste"] == 30
+    assert result["contiguous_slots"] == 512
+    assert result["contiguous_waste"] == 286
