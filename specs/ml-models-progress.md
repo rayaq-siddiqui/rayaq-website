@@ -131,6 +131,14 @@ The paths below are relative to `torch/nn/modules/` unless they give a fuller pa
   `flex_attention` 2365.
 - `conv.py`: start lines only for `Conv2d` 388 and `ConvTranspose2d` 1012.
 - `container.py`: start lines only for `Sequential` 59 and `ModuleList` 341.
+- `torch/_tensor.py`: `Tensor` class starts at 102; `__len__` 1189-1203; `unflatten` 1353.
+- `torch/functional.py`: `broadcast_tensors` 47-76, `broadcast_shapes` 79-117, `einsum` 175-382.
+- `torch/_torch_docs.py` (each range runs from `add_docstr(` to its closing `)`): `as_strided`
+  1019-1060, `broadcast_to` 1896-1916, `stack` 1918-1976, `permute` 8953-8971, `reshape`
+  9833-9863, `squeeze` 11063-11111, `transpose` 11942-11990, `unsqueeze` 12475-12504. Start
+  lines of the `torch.X,` entry: `cat` 2532, `matmul` 7909, `tensor` 9583, `zeros` 12618.
+- `torch/_tensor_docs.py` (each range from `add_docstr_all(` to `)`): `contiguous` 1131-1144,
+  `is_contiguous` 2702-2714, `stride` 4963-4989, `view` 6041-6180, `expand` 6198-6249.
 
 ### scikit-learn 1.9.1 (start lines; check the end before linking a range)
 
@@ -211,6 +219,14 @@ The README was refreshed in a separate `docs:` commit in the same run.
 | `docs: record the ml-models routine` | The Routine section above, AGENTS.md |
 
 The daily Routine was created at the end of this run.
+
+## Fourth run (2026-10-08) — first page of the 5-minute loop
+
+| Commit | What |
+|---|---|
+| `ml-models: add tested shape, stride and broadcasting helpers` | `broadcast_steps`, `contiguous_strides`, `element_offset`, `is_contiguous`, `transpose_layout` |
+| `ml-models: build the tensors-and-shapes page` | The page, `ready`, queue ✓ |
+| `docs: record the tensors-and-shapes run` | This table and the verified ranges above |
 
 ## Queue
 
