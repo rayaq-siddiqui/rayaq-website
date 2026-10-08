@@ -108,6 +108,8 @@ build once research is done.
 - **Owner answers (2026-10-08).** Coverage adds **NeetCode 250** as a fourth list (spec v1
   updated with the owner's approval). Page code stays Python only. Once an audit run finds no
   gaps, the Routine moves itself to weekly audits. Notifications stay push.
+- **Five pages per build run (2026-10-08, owner).** A build run does not stop until it has
+  built five queue items (or emptied the queue), pushing after each one.
 
 ## Known gaps and questions for the owner
 

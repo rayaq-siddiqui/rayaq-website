@@ -172,8 +172,9 @@ complete, then weekly, and pushes straight to `main`. Each run:
    still missing and the NeetCode
    roadmap, populates `PROBLEMS` with a home for every problem, adjusts `PAGES` if a problem has
    no natural home (§5), and records sources in the progress file. No content pages that run.
-4. **Build run**: builds the queue item marked `← next` completely to §6, flips it ready, and
-   may build the next one too if time allows, to the same bar.
+4. **Build run**: builds five queue items in order, starting with the one marked `← next`,
+   each completely to §6 and flipped ready (fewer only if the queue runs out). It checks,
+   commits and pushes after each page so finished work is never lost.
 5. **Audit run** (queue empty): fixes one gap per run: a list problem without a ready home, a
    broken cross-link, or a page short of §6. With no gaps left, it records "complete", changes no
    content, and moves its own schedule to weekly audits (`update_trigger` on its trigger; if it

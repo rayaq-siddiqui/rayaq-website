@@ -36,7 +36,7 @@ Several scheduled Claude Code routines push straight to `main`, which deploys th
 | rayaq.ca/jj-vfs-poc architecture reference agent | Weekly (Monday) | The same for `/jj-vfs-poc`, tracked in [`specs/jj-vfs-poc-progress.md`](specs/jj-vfs-poc-progress.md) |
 | rayaq.ca/jj-commit-cloud-poc architecture reference agent | Weekly (Wednesday) | The same for `/jj-commit-cloud-poc`, tracked in [`specs/jj-commit-cloud-poc-progress.md`](specs/jj-commit-cloud-poc-progress.md) |
 | rayaq.ca/ml-models build run | Daily | Builds the next `/ml-models` page from the queue in [`specs/ml-models-progress.md`](specs/ml-models-progress.md), then keeps pages in step with new PyTorch, scikit-learn and XGBoost releases |
-| rayaq.ca/leetcode pattern reference agent | Every 5 hours, weekly once complete | Researches the four problem lists, then builds the next `/leetcode` page from the queue in [`specs/leetcode-progress.md`](specs/leetcode-progress.md) until every list problem has a finished home page, then audits weekly |
+| rayaq.ca/leetcode pattern reference agent | Every 5 hours, weekly once complete | Researches the four problem lists, then builds five `/leetcode` pages per run from the queue in [`specs/leetcode-progress.md`](specs/leetcode-progress.md) until every list problem has a finished home page, then audits weekly |
 | Weekly server cost optimization | Weekly (Sunday) | Looks for measurable savings in the application code and logs each run in [`docs/COST_OPTIMIZATION.md`](docs/COST_OPTIMIZATION.md) |
 
 ## Repository layout
