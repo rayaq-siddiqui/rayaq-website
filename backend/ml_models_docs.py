@@ -353,7 +353,7 @@ PAGES = [
             "sklearn:sklearn/preprocessing/_data.py",
             "sklearn:sklearn/preprocessing/_encoders.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "missing-data",
@@ -3700,6 +3700,10 @@ def ordinal_encode(values):
     return [categories.index(v) for v in values]
 
 
+def log10_column(values):
+    return [math.log10(v) for v in values]
+
+
 def pair_distance(a, b):
     return math.dist(a, b)
 
@@ -3908,6 +3912,7 @@ def render(slug, render_template):
         "one_hot_encode": one_hot_encode,
         "ordinal_encode": ordinal_encode,
         "pair_distance": pair_distance,
+        "log10_column": log10_column,
         "kmeans_run": kmeans_run,
         "nearest_labeled": nearest_labeled,
         "cluster_then_label": cluster_then_label,

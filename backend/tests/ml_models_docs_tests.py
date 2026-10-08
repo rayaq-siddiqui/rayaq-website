@@ -1738,7 +1738,7 @@ def test_fit_statistics_from_train_rows_shift_the_test_value():
 
 def test_log_transform_pulls_the_mean_toward_the_median():
     income = ml_models_docs.PREPROCESS_INCOME
-    logs = [math.log10(v) for v in income]
+    logs = ml_models_docs.log10_column(income)
     assert sum(income) / 5 == 96600 and ml_models_docs.median(income) == 61000
     assert sum(logs) / 5 == pytest.approx(4.8661, abs=1e-4)
     assert ml_models_docs.median(logs) == pytest.approx(4.7853, abs=1e-4)

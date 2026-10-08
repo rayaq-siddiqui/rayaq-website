@@ -1,0 +1,330 @@
+{% set age = preprocess_age %}
+{% set income = preprocess_income %}
+{% set am, asd = column_mean_std(age) %}
+{% set im, isd = column_mean_std(income) %}
+{% set age_z = standardize_with(age, am, asd) %}
+{% set inc_z = standardize_with(income, im, isd) %}
+{% set age_mm = min_max_scale(age, age|min, age|max) %}
+{% set inc_mm = min_max_scale(income, income|min, income|max) %}
+{% set raw_ab = pair_distance((age[1], income[1]), (age[2], income[2])) %}
+{% set raw_ac = pair_distance((age[1], income[1]), (age[0], income[0])) %}
+{% set z_ab = pair_distance((age_z[1], inc_z[1]), (age_z[2], inc_z[2])) %}
+{% set z_ac = pair_distance((age_z[1], inc_z[1]), (age_z[0], inc_z[0])) %}
+{% set logs = log10_column(income) %}
+{% set train_age = age[:4] %}
+{% set tm, tsd = column_mean_std(train_age) %}
+{% set test_z_train = standardize_with([age[4]], tm, tsd)[0] %}
+{% set colors = preprocess_colors %}
+{% set cats, onehot = one_hot_encode(colors) %}
+{% set ords = ordinal_encode(colors) %}
+{% macro f2(x) -%}{{ "%.2f"|format(x) }}{%- endmacro %}
+{% macro f3(x) -%}{{ "%.3f"|format(x) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Preprocessing and feature scaling</h1>
+  <p class="tagline">
+    Models consume numbers, and the numbers you hand them are rarely in a shape they can use well: one column in
+    the tens, another in the hundreds of thousands, a color written as a word. This page covers standardizing and
+    min-max scaling, one-hot and ordinal encoding and log transforms, which models care about scale and which do not,
+    and the one rule that keeps it honest: learn the statistics from training data, then apply them everywhere.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A learner sees an array of numbers and treats them as equally meaningful. It cannot know that one column is in years and
+  another in dollars, so a feature measured in large units can dominate anything that adds, compares or takes steps in
+  proportion to raw size: a distance, a dot product, a gradient. And words such as "red" or "blue" are not numbers at
+  all; encoding them badly (as 0, 1, 2) invents an order that is not there.
+</p>
+<p>
+  Preprocessing is the set of simple, mostly invertible transformations that put features into a form a model can
+  use. They are cheap and easy to get subtly wrong, usually by letting information from the test data reach the training step.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Imagine measuring how far apart two houses are on a map whose east–west axis is marked in meters and whose north–south
+  axis is marked in kilometers. If you ignore the labels and subtract numbers, the east–west gap, being a number in the thousands,
+  swamps the north–south gap, even when the houses are equally far apart in both directions. Scaling redraws the map
+  so a step of "typical size" along either axis counts the same.
+</p>
+<p>
+  Encoding is the opposite problem: giving a label a position in space without implying a distance that does not exist.
+  Red is not "one less than green"; one-hot encoding puts every category on its own axis, equally far from the others.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 170" role="img" aria-labelledby="pp-flow-title pp-flow-desc">
+    <title id="pp-flow-title">Fit statistics on training data, then transform every split</title>
+    <desc id="pp-flow-desc">
+      The training rows flow into a fit step that learns a mean and a standard deviation per column. Those two
+      numbers flow into transform steps applied to the training rows, the validation rows and the test rows. An arrow from the
+      test rows to the fit step is crossed out because test data must never influence the fitted statistics.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <rect x="20" y="30" width="110" height="44" rx="4" class="d-box ml-tensor"></rect>
+      <text x="75" y="57">train rows</text>
+      <rect x="190" y="30" width="150" height="44" rx="4" class="d-box ml-op"></rect>
+      <text x="265" y="57" font-weight="bold">fit: mean, std</text>
+      <rect x="400" y="12" width="130" height="30" rx="4" class="d-box ml-op"></rect>
+      <text x="465" y="32">transform train</text>
+      <rect x="400" y="52" width="130" height="30" rx="4" class="d-box ml-op"></rect>
+      <text x="465" y="72">transform val</text>
+      <rect x="400" y="92" width="130" height="30" rx="4" class="d-box ml-op"></rect>
+      <text x="465" y="112">transform test</text>
+      <rect x="570" y="52" width="110" height="30" rx="4" class="d-box ml-tensor"></rect>
+      <text x="625" y="72">to the model</text>
+      <g class="d-line" fill="none" stroke-width="1.5">
+        <path d="M130 52 H190"></path>
+        <path d="M340 52 H370 M370 27 V107 M370 27 H400 M370 67 H400 M370 107 H400"></path>
+        <path d="M530 27 H550 V67 M530 67 H570 M530 107 H550 V67"></path>
+      </g>
+      <text x="265" y="100" class="d-muted">learned from train only</text>
+      <rect x="20" y="124" width="110" height="30" rx="4" class="d-box ml-dashed"></rect>
+      <text x="75" y="144">test rows</text>
+      <path d="M130 139 H190 L240 84" class="d-line ml-dashed" fill="none" stroke-width="1.5"></path>
+      <text x="165" y="132" font-size="16" font-weight="bold">×</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The same two numbers, computed once on the training rows, are used for every split. Test rows never contribute to them.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="scaling">Scaling numeric features</h3>
+<p>
+  <strong>Standardization</strong> (z-score) subtracts the column mean μ and divides by the standard deviation σ:
+  z = (x − μ) / σ. The result has mean 0 and spread 1, and keeps the shape of the distribution.
+  <strong>Min-max scaling</strong> maps the observed minimum to 0 and the maximum to 1: x′ = (x − min) / (max − min).
+  It bounds the range but is moved around entirely by a single extreme value.
+  <strong>Robust scaling</strong> uses the median and the interquartile range instead of the mean and standard deviation, so outliers have little say.
+  <strong>Max-abs scaling</strong> divides by the largest absolute value and keeps zeros as zeros, which suits sparse data.
+</p>
+<p>
+  A constant column has zero spread; scikit-learn treats a zero scale as 1 rather than dividing by zero.
+</p>
+
+<h3 id="why-scale">Who cares about scale</h3>
+<ul>
+  <li><strong>Gradient descent.</strong> With features on very different scales the loss surface is a long narrow valley: one learning rate is too large for the steep direction and too small for the shallow one, so training zigzags and crawls. Standardized inputs give rounder bowls and faster convergence.</li>
+  <li><strong>Distance-based models</strong> (k-nearest neighbors, k-means, SVMs with an RBF kernel). The distance is a sum of squared differences, so the largest-unit column decides it.</li>
+  <li><strong>Regularized linear models.</strong> Ridge and lasso penalize the size of coefficients, and a coefficient's size depends on the feature's units.</li>
+  <li><strong>PCA.</strong> It finds the directions of greatest variance, which means the biggest-unit feature unless you standardize.</li>
+  <li><strong>Trees and tree ensembles do not care.</strong> A split asks "is x &gt; t?", and any monotone rescaling of x moves t without changing which rows fall on each side.</li>
+</ul>
+
+<h3 id="encoding">Encoding categories</h3>
+<ul>
+  <li><strong>One-hot</strong> creates one 0/1 column per category. No order is implied. Cost: width grows with the number of categories, which hurts for thousands of them.</li>
+  <li><strong>Ordinal</strong> maps categories to integers 0, 1, 2…. It is right only when the categories really are ordered (small, medium, large). Otherwise a linear model reads "blue = 0, red = 2" as a distance.</li>
+  <li>Categories are sorted, so the column order is alphabetical or numeric, and a category that appears only at prediction time must be handled explicitly (scikit-learn's <code>handle_unknown</code>).</li>
+</ul>
+
+<h3 id="transforms">Skewed features and log transforms</h3>
+<p>
+  Incomes, prices, counts and durations are often right-skewed: a few huge values stretch the mean away from the typical row.
+  Taking a logarithm compresses the tail, turns multiplicative differences into additive ones, and makes the spread more even.
+  <code>PowerTransformer</code> (Box-Cox and Yeo-Johnson) learns the power that best makes a column look Gaussian; for counts that include zero use log(1 + x).
+</p>
+
+<h3 id="fit-transform">fit versus transform</h3>
+<p>
+  Every scikit-learn transformer has two steps. <code>fit(X)</code> learns the parameters from data (the mean and standard deviation, the category list, the min and max) and stores them as attributes ending in an underscore.
+  <code>transform(X)</code> applies those stored parameters to any rows. <code>fit_transform</code> does both on one array. The rule is: fit on the training rows
+  only, then transform train, validation and test with that same fitted object. Refitting on the test rows silently gives the test set a different ruler.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 250" role="img" aria-labelledby="pp-scale-title pp-scale-desc">
+    <title id="pp-scale-title">Five people before and after standardizing age and income</title>
+    <desc id="pp-scale-desc">
+      Two scatter plots of the same five people. On the left, raw age and income: the points form a vertical
+      column because income spans a hundred thousand while age spans under forty. On the right, after standardizing both columns,
+      the points spread across a similar range on both axes.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      <path d="M50 20 V210 H300" class="d-line" fill="none" stroke-width="1"></path>
+      <path d="M390 20 V210 H650" class="d-line" fill="none" stroke-width="1"></path>
+      <text x="175" y="238" class="d-muted">raw: age 22–60 (x), income 30k–250k (y)</text>
+      <text x="520" y="238" class="d-muted">standardized (both axes about −2 to 2)</text>
+      {% for i in range(5) %}
+        <circle cx="{{ 60 + (age[i] - 20) / 45 * 230 }}" cy="{{ 210 - (income[i] - 20000) / 240000 * 180 }}" r="5" class="d-box ml-op"></circle>
+        <circle cx="{{ 520 + age_z[i] / 2.2 * 120 }}" cy="{{ 115 - inc_z[i] / 2.2 * 90 }}" r="5" class="d-box ml-op"></circle>
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Same five people. In raw units the x differences are small compared with the y differences, so a distance sees almost only income.</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>StandardScaler</code></td>
+        <td><code>with_mean=True</code>, <code>with_std=True</code>; learns <code>mean_</code>, <code>var_</code>, <code>scale_</code> of shape (n_features,)</td>
+        <td>z = (x − μ) / σ per column; the default scaler for gradient and distance methods.</td>
+        <td><a href="{{ skl('sklearn/preprocessing/_data.py', 742, 1189) }}"><code>_data.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>StandardScaler.transform</code></td>
+        <td>X: (n_samples, n_features)</td>
+        <td>Subtracts <code>mean_</code> and divides by <code>scale_</code>; does not refit.</td>
+        <td><a href="{{ skl('sklearn/preprocessing/_data.py', 1092, 1136) }}"><code>_data.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_handle_zeros_in_scale</code></td>
+        <td>scale: (n_features,)</td>
+        <td>Replaces a zero spread with 1 so a constant column does not divide by zero.</td>
+        <td><a href="{{ skl('sklearn/preprocessing/_data.py', 101, 145) }}"><code>_data.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>MinMaxScaler</code></td>
+        <td><code>feature_range=(0, 1)</code>, <code>clip=False</code></td>
+        <td>x′ = (x − min) / (max − min), then mapped into the range.</td>
+        <td><a href="{{ skl('sklearn/preprocessing/_data.py', 305, 630) }}"><code>_data.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>RobustScaler</code></td>
+        <td><code>quantile_range=(25.0, 75.0)</code></td>
+        <td>Centers on the median and divides by the interquartile range.</td>
+        <td><a href="{{ skl('sklearn/preprocessing/_data.py', 1552, 1830) }}"><code>_data.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>PowerTransformer</code></td>
+        <td><code>method="yeo-johnson"</code>, <code>standardize=True</code></td>
+        <td>Learns a per-column power transform that makes the column more Gaussian.</td>
+        <td><a href="{{ skl('sklearn/preprocessing/_data.py', 3264, 3665) }}"><code>_data.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>OneHotEncoder</code></td>
+        <td><code>handle_unknown</code>, <code>drop</code>, <code>sparse_output</code>; learns <code>categories_</code></td>
+        <td>One 0/1 column per category, with no implied order.</td>
+        <td><a href="{{ skl('sklearn/preprocessing/_encoders.py', 474, 1262) }}"><code>_encoders.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>OrdinalEncoder</code></td>
+        <td><code>categories</code>, <code>handle_unknown</code>, <code>unknown_value</code></td>
+        <td>Maps each category to an integer; correct only for truly ordered categories.</td>
+        <td><a href="{{ skl('sklearn/preprocessing/_encoders.py', 1263, 1700) }}"><code>_encoders.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-scale">Five people, two features</h3>
+  <p>
+    Ages are {{ age|join(", ") }}; incomes are {{ income|join(", ") }}. The age column has mean {{ f2(am) }} and standard deviation {{ f2(asd) }}
+    (the population version, dividing by n, which is what <code>StandardScaler</code> uses); income has mean {{ "{:,.0f}".format(im) }} and standard deviation {{ "{:,.0f}".format(isd) }}.
+    Standardized, the ages become {{ age_z|map("round", 2)|join(", ") }} and the incomes {{ inc_z|map("round", 2)|join(", ") }}.
+    Min-max scaling gives ages {{ age_mm|map("round", 2)|join(", ") }} and incomes {{ inc_mm|map("round", 2)|join(", ") }}; note how the single large income
+    squeezes the other four incomes into 0 to {{ f2(inc_mm[3]) }}.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-distance">Who is nearest to the 35-year-old?</h3>
+  <p>
+    Person B is 47 and earns 61,000; person C is 22 and earns 30,000; person A is 35 and earns 52,000. On raw columns the Euclidean distance from A to B is
+    {{ "{:,.1f}".format(raw_ab) }} and from A to C is {{ "{:,.1f}".format(raw_ac) }}. The twelve-year age gap adds only 144 under the square root next to 81,000,000 for income,
+    so the distance is income alone. After standardizing, A–B is {{ f3(z_ab) }} and A–C is {{ f3(z_ac) }}. Both features now count: B is still nearer, but the margin falls from {{ f2(raw_ac / raw_ab) }} times to {{ f2(z_ac / z_ab) }} times,
+    and with different people the order itself can flip. That change in who counts as near, not the arithmetic, is what scaling is for.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-log">A log transform on income</h3>
+  <p>
+    The mean income is {{ "{:,.0f}".format(im) }} but the median is {{ "{:,.0f}".format(median(income)) }}: one 250,000 earner drags the mean far above the typical row.
+    In base-10 logarithms the incomes are {{ logs|map("round", 3)|join(", ") }}, with mean {{ f3(logs|sum / logs|length) }} and median {{ f3(median(logs)) }}.
+    The gap between mean and median shrinks from {{ f2((im - median(income)) / median(income)) }} of the median to {{ f2((logs|sum / logs|length - median(logs)) / median(logs)) }} of it,
+    and the 250,000 row is now {{ f2(logs[4] - logs[3]) }} above its neighbor instead of 160,000 above.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-fit">Fit on train, apply to test</h3>
+  <p>
+    Suppose the first four people are the training rows and the 60-year-old is the test row. The training ages have mean {{ f2(tm) }} and standard deviation {{ f2(tsd) }}, so the
+    test row becomes (60 − {{ f2(tm) }}) / {{ f2(tsd) }} = {{ f2(test_z_train) }}. Had the scaler been fit on all five, that same person would have been {{ f2(age_z[4]) }}.
+    The two numbers differ because the ruler differs. In real use the test row should be scored with a ruler that existed before it arrived, which is the training one.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-encode">One-hot versus ordinal</h3>
+  <p>
+    The colors {{ colors|join(", ") }} have sorted categories {{ cats|join(", ") }}. One-hot gives each row a vector with a single 1:
+    {% for r in onehot %}{{ r|join(" ") }}{% if not loop.last %}; {% endif %}{% endfor %}.
+    Ordinal gives {{ ords|join(", ") }}, which tells a linear model that red is twice as far from blue as green is, a relationship the colors do not have.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.linear_model import LogisticRegression
+
+pre = ColumnTransformer([
+    ("num", StandardScaler(), ["age", "income"]),
+    ("cat", OneHotEncoder(handle_unknown="ignore"), ["color"]),
+])
+model = Pipeline([("pre", pre), ("clf", LogisticRegression())])
+
+model.fit(X_train, y_train)        # scaler and encoder learn from train only
+model.score(X_test, y_test)        # test rows use the stored mean_, scale_, categories_
+
+# by hand, the same rule:
+scaler = StandardScaler().fit(X_train)       # learn mean_ and scale_
+X_train_s = scaler.transform(X_train)
+X_test_s = scaler.transform(X_test)          # same ruler, never fit on test</code></pre>
+
+<p>
+  Putting the steps in a <code>Pipeline</code> makes the rule automatic: when you cross-validate it, the scaler is refit inside each training fold and never sees the validation fold.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Standardization or min-max?</strong> Standardization tolerates a few large values better and is the usual default. Min-max is handy when you need a bounded range (pixel intensities, inputs to some neural nets) but one outlier compresses everything else.</li>
+  <li><strong>Outliers.</strong> Mean and standard deviation are themselves pulled by outliers; robust scaling or a log transform is safer when the column is heavy-tailed.</li>
+  <li><strong>Interpretability.</strong> Scaled coefficients are per standard deviation, not per original unit; keep the fitted scaler to translate back.</li>
+  <li><strong>One-hot width.</strong> A column with 10,000 categories becomes 10,000 columns. Sparse output, grouping rare categories or learned embeddings are the usual escapes.</li>
+  <li><strong>Trees do not need scaling.</strong> Skipping it for them saves work, but a pipeline with a mix of model types often scales everything for uniformity; it is harmless.</li>
+  <li><strong>Sparse data.</strong> Centering turns zeros into non-zeros and destroys sparsity; use <code>with_mean=False</code> or max-abs scaling.</li>
+  <li><strong>Leakage.</strong> Scaling is the most common way test information gets into training: compute the statistics on all rows before splitting and the model has quietly seen the test set. See <a href="/ml-models/data-splits">data splits</a> for the splitting side of the same discipline.</li>
+</ul>
+
+<h3 id="check-yourself">Check yourself</h3>
+<details class="ml-quiz">
+  <summary>Why does a decision tree give the same splits on raw and standardized features?</summary>
+  <p>Standardizing is a monotone, per-column map. A split "x &gt; t" and "z &gt; (t − μ)/σ" partition the rows identically, so the tree's structure and predictions are unchanged.</p>
+</details>
+<details class="ml-quiz">
+  <summary>You standardize the whole dataset, then split into train and test. What is wrong?</summary>
+  <p>The mean and standard deviation used information from the test rows. Split first, fit the scaler on the training rows, and transform the test rows with it.</p>
+</details>
+<details class="ml-quiz">
+  <summary>When is an ordinal encoding of a categorical feature acceptable?</summary>
+  <p>When the categories have a genuine order and roughly meaningful gaps (sizes, grades), or when the model is a tree, which can split the integers into any groups it likes.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Hastie, Tibshirani and Friedman. <em>The Elements of Statistical Learning</em>, 2nd ed., section 3.4 (ridge regression and standardized inputs). Springer, 2009.</li>
+  <li>LeCun, Bottou, Orr and Müller. <em>Efficient BackProp.</em> In <em>Neural Networks: Tricks of the Trade</em>, 1998, on centering and normalizing inputs.</li>
+  <li>Box and Cox. <em>An Analysis of Transformations.</em> Journal of the Royal Statistical Society B, 1964; Yeo and Johnson, <em>A New Family of Power Transformations to Improve Normality or Symmetry.</em> Biometrika, 2000.</li>
+  <li>scikit-learn {{ pins.sklearn.version }}: <a href="{{ skl('sklearn/preprocessing/_data.py', 742, 1189) }}"><code>StandardScaler</code></a>, <a href="{{ skl('sklearn/preprocessing/_data.py', 305, 630) }}"><code>MinMaxScaler</code></a>, <a href="{{ skl('sklearn/preprocessing/_encoders.py', 474, 1262) }}"><code>OneHotEncoder</code></a>, <a href="{{ skl('sklearn/preprocessing/_encoders.py', 1263, 1700) }}"><code>OrdinalEncoder</code></a>.</li>
+</ul>

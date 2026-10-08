@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-08 (twenty-first run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: queue items 1-25, the last being `data-splits`. The next run builds
-`preprocessing` (queue item 26).
+format. Ready pages: queue items 1-26, the last being `preprocessing`. The next run builds
+`data-leakage` (queue item 27).
 
 ## Pins
 
@@ -230,7 +230,8 @@ Paths are under `sklearn/`.
   `TimeSeriesSplit` 1116, `train_test_split` 2797.
 - `model_selection/_validation.py`: `cross_validate` 101, `cross_val_score` 512,
   `learning_curve` 1776, `validation_curve` 2283.
-- `preprocessing/_data.py`: `StandardScaler` 742.
+- `preprocessing/_data.py`: `StandardScaler` 742 (verified range 742-1189), `MinMaxScaler` 305, `RobustScaler` 1552.
+- `preprocessing/_encoders.py`: `OneHotEncoder` 474, `OrdinalEncoder` 1263.
 - `impute/_base.py`: `SimpleImputer` 171.
 - `pipeline.py`: `Pipeline` 93.
 - `calibration.py`: `CalibratedClassifierCV` 74, `calibration_curve` 1227.
@@ -332,6 +333,20 @@ Verified at scikit-learn 1.9.1: `base.py` `BaseEstimator` 165-560, `ClassifierMi
 
 Gaps: arxiv.org was unreachable, so paper claims on the decoding page (nucleus, top-k, CTRL penalty, speculative sampling, constrained decoding) were not checked against the papers; the speculative expected-tokens formula is derived under an independence assumption and tested, not copied from the paper. The kv-cache page names no real model's configuration, since none could be verified. `kv-cache` mentions quantization as plain text until that page exists.
 
+## Twenty-first run (2026-10-08) — generalization, data-splits, preprocessing
+
+| Commit | What |
+|---|---|
+| `ml-models: add tested generalization helpers` / `build the generalization page` | Polynomial fit by normal equations, train/held-out/shifted error rows; page, `ready`, queue ✓ |
+| `ml-models: add tested data-split helpers` / `build the data-splits page` | Stratified allocation, chance of missing a class, group leakage count, nearest-in-time forecast error, accuracy standard error; page, `ready`, queue ✓ |
+| `ml-models: add tested preprocessing helpers` / `build the preprocessing page` | Column statistics, standardize/min-max, one-hot/ordinal, log10 column, pair distance; page, `ready`, queue ✓ |
+
+Pins re-checked with `git ls-remote --tags`: PyTorch v2.14.1, scikit-learn 1.9.1, XGBoost v3.4.2 are still the latest stable; none moved.
+
+Verified at scikit-learn 1.9.1: `model_selection/_split.py` `KFold` 437-532, `GroupKFold` 533-686, `StratifiedKFold` 687-891, `StratifiedGroupKFold` 892-1115, `TimeSeriesSplit` 1116-1329, `ShuffleSplit` 1982-2086, `GroupShuffleSplit` 2087-2232, `StratifiedShuffleSplit` 2233-2444, `train_test_split` 2797-2976; `model_selection/_validation.py` `cross_val_score` 512-669, `learning_curve` 1776-2113, `validation_curve` 2283-2516; `preprocessing/_data.py` `_handle_zeros_in_scale` 101-145, `MinMaxScaler` 305-630, `StandardScaler` 742-1189 (`transform` 1092-1136), `MaxAbsScaler` 1190-1457, `RobustScaler` 1552-1830, `PowerTransformer` 3264-3665; `preprocessing/_encoders.py` `OneHotEncoder` 474-1262, `OrdinalEncoder` 1263-1700.
+
+Gaps: the `train_test_split` `shuffle=False` line range is cited from reading the function, not a separate check of every branch; the data-splits and generalization papers (Belkin, Nakkiran, Roberts, Kaufman) are cited from memory and were not opened. `data-leakage` is plain text on these pages until it is built; link it then.
+
 ## Queue
 
 1. `tensors-and-shapes` ✓
@@ -359,8 +374,8 @@ Gaps: arxiv.org was unreachable, so paper claims on the decoding page (nucleus, 
 23. `learning-paradigms` ✓
 24. `generalization` ✓
 25. `data-splits` ✓
-26. `preprocessing` ← next
-27. `data-leakage`
+26. `preprocessing` ✓
+27. `data-leakage` ← next
 28. `classification-metrics`
 29. `cross-validation`
 30. `decision-trees`
