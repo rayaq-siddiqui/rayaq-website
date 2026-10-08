@@ -469,3 +469,22 @@ def test_binary_search_helpers_match_the_page():
     assert "Searching for 20 instead stops at index 5" in body
     assert "The value 5 is at index 5." in body
     assert "The minimum is 2 at index 4." in body
+
+
+def test_binary_search_on_answer_helpers_match_the_page():
+    koko = leetcode_docs.min_speed_trace([3, 6, 7, 11], 8)
+    assert koko["answer"] == 4 and [s["mid"] for s in koko["steps"]] == [6, 3, 5, 4]
+    assert leetcode_docs.eating_hours([3, 6, 7, 11], 4) == 8
+    assert leetcode_docs.min_speed_trace([5], 5)["answer"] == 1
+    ship = leetcode_docs.ship_capacity_trace(list(range(1, 11)), 5)
+    assert ship["answer"] == 15 and leetcode_docs.days_needed(list(range(1, 11)), 15) == 5
+    assert leetcode_docs.days_needed(list(range(1, 11)), 14) == 6
+    med = leetcode_docs.median_partition_trace([1, 3, 8, 9, 15], [7, 11, 18, 19, 21, 25])
+    assert med["median"] == 11 and med["steps"][-1]["i"] == 4 and med["steps"][-1]["j"] == 2
+    assert leetcode_docs.median_partition_trace([1, 2], [3, 4])["median"] == 2.5
+    assert leetcode_docs.median_partition_trace([], [2])["median"] == 2
+    assert leetcode_docs.median_partition_trace([2], [1, 3])["median"] == 2
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/binary-search-on-answer").get_data(as_text=True))
+    assert "The slowest speed that finishes in time is 4." in body
+    assert "The smallest capacity that works is 15." in body
+    assert "the median is the largest value on the left: 11." in body

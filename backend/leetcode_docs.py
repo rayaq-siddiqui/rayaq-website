@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -4036,6 +4036,85 @@ def rotated_min_trace(nums):
     return {"steps": steps, "index": lo, "value": nums[lo]}
 
 
+def eating_hours(piles, speed):
+    return sum(-(-pile // speed) for pile in piles)
+
+
+def min_speed_trace(piles, hours):
+    """First-true search over speeds 1..max(piles); more speed never takes more hours."""
+    lo, hi = 1, max(piles)
+    steps = []
+    while lo < hi:
+        mid = (lo + hi) // 2
+        needed = eating_hours(piles, mid)
+        ok = needed <= hours
+        steps.append({"lo": lo, "hi": hi, "mid": mid, "needed": needed, "ok": ok})
+        if ok:
+            hi = mid
+        else:
+            lo = mid + 1
+    return {"steps": steps, "answer": lo}
+
+
+def days_needed(weights, capacity):
+    days, load = 1, 0
+    for weight in weights:
+        if load + weight > capacity:
+            days += 1
+            load = 0
+        load += weight
+    return days
+
+
+def ship_capacity_trace(weights, days):
+    """Search capacities between the heaviest package and the total; greedy loading counts the days."""
+    lo, hi = max(weights), sum(weights)
+    steps = []
+    while lo < hi:
+        mid = (lo + hi) // 2
+        needed = days_needed(weights, mid)
+        ok = needed <= days
+        steps.append({"lo": lo, "hi": hi, "mid": mid, "needed": needed, "ok": ok})
+        if ok:
+            hi = mid
+        else:
+            lo = mid + 1
+    return {"steps": steps, "answer": lo}
+
+
+def median_partition_trace(a, b):
+    """Binary search how many elements the shorter array puts in the left half of the merged order."""
+    if len(a) > len(b):
+        a, b = b, a
+    inf = float("inf")
+    half = (len(a) + len(b) + 1) // 2
+    lo, hi = 0, len(a)
+    steps = []
+    while lo <= hi:
+        i = (lo + hi) // 2
+        j = half - i
+        a_left = a[i - 1] if i > 0 else -inf
+        a_right = a[i] if i < len(a) else inf
+        b_left = b[j - 1] if j > 0 else -inf
+        b_right = b[j] if j < len(b) else inf
+        step = {"i": i, "j": j, "a_left": a_left, "a_right": a_right, "b_left": b_left, "b_right": b_right}
+        if a_left > b_right:
+            step["move"] = "hi = i - 1"
+            hi = i - 1
+        elif b_left > a_right:
+            step["move"] = "lo = i + 1"
+            lo = i + 1
+        else:
+            step["move"] = "found"
+            steps.append(step)
+            left_max = max(a_left, b_left)
+            if (len(a) + len(b)) % 2:
+                return {"steps": steps, "median": left_max}
+            return {"steps": steps, "median": (left_max + min(a_right, b_right)) / 2}
+        steps.append(step)
+    raise ValueError("inputs are not sorted")
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -4191,6 +4270,10 @@ def render(slug, render_template):
         "lower_bound_trace": lower_bound_trace,
         "rotated_search_trace": rotated_search_trace,
         "rotated_min_trace": rotated_min_trace,
+        "eating_hours": eating_hours,
+        "min_speed_trace": min_speed_trace,
+        "ship_capacity_trace": ship_capacity_trace,
+        "median_partition_trace": median_partition_trace,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,
