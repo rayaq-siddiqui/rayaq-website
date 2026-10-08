@@ -1,0 +1,362 @@
+{% set pts = learning_points %}
+{% set truth = learning_truth %}
+{% set lab = learning_labeled %}
+{% set runA = kmeans_run(pts, [pts[0], pts[1]], 6) %}
+{% set runB = kmeans_run(pts, [pts[0], pts[8]], 6) %}
+{% set final = runA[-1] %}
+{% set nearest = nearest_labeled(pts, lab) %}
+{% set named = cluster_then_label(final.assign, lab) %}
+{% set acc_near = prediction_accuracy(nearest, truth) %}
+{% set acc_named = prediction_accuracy(named, truth) %}
+{% set toks = learning_text %}
+{% set pairs = next_token_pairs(toks) %}
+{% set masks = masked_pairs(toks, [1, 5]) %}
+{% set bg = bigram_next_token_loss(toks) %}
+{% macro f2(x) -%}{{ "%.2f"|format(x) }}{%- endmacro %}
+{% macro pt(p) -%}({{ "%.1f"|format(p[0]) }}, {{ "%.1f"|format(p[1]) }}){%- endmacro %}
+<header class="jj-header">
+  <h1>Supervised, unsupervised and self-supervised learning</h1>
+  <p class="tagline">
+    Every learning setup answers one question: where does the target come from? A person supplies it
+    (supervised), nobody does and the model finds structure on its own (unsupervised), or the data
+    supplies it by hiding part of itself (self-supervised). This page runs all three on tiny numbers you can
+    check by hand, covers the in-between cases, and shows why self-supervision is what makes large-scale
+    pretraining possible.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A model improves by being scored against something, so training needs a <em>signal</em>. The expensive
+  part is rarely the model; it is the signal. Labelling a million photos with the objects in them takes
+  people and money, while a trillion words of raw text cost almost nothing. Which setup you are in
+  decides how much data you can use, what the model can learn, and what the loss measures
+  (see <a href="/ml-models/loss-functions">loss functions</a>).
+</p>
+<p>
+  Confusing the setups causes real mistakes: expecting clustering to recover the categories you had in
+  mind, treating a pretraining loss as a quality score, or paying for labels a free objective could
+  have supplied.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Think of studying for an exam. <strong>Supervised</strong>: you have worked problems with answer keys.
+  <strong>Unsupervised</strong>: you have a pile of problems with no answers and sort them into
+  piles that look alike. <strong>Self-supervised</strong>: you cover a word in a textbook sentence and try
+  to recall it; the book itself is the answer key, so you can quiz yourself for free, endlessly.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 250" role="img" aria-labelledby="lp-setups-title lp-setups-desc">
+    <title id="lp-setups-title">Where the target comes from in each setup</title>
+    <desc id="lp-setups-desc">
+      Three columns. Supervised: inputs and human-provided labels both feed the loss. Unsupervised:
+      inputs alone feed an objective such as cluster distance. Self-supervised: the input is split
+      into a visible part and a hidden part, the visible part goes to the model and the hidden part
+      is the target.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <text x="120" y="22" font-weight="bold">supervised</text>
+      <rect x="30" y="40" width="80" height="34" rx="4" class="d-box ml-tensor"></rect><text x="70" y="62">input x</text>
+      <rect x="130" y="40" width="80" height="34" rx="4" class="d-box ml-op"></rect><text x="170" y="62">label y</text>
+      <text x="120" y="110">loss(model(x), y)</text>
+      <text x="120" y="140" class="d-muted">y comes from people</text>
+      <text x="350" y="22" font-weight="bold">unsupervised</text>
+      <rect x="290" y="40" width="120" height="34" rx="4" class="d-box ml-tensor"></rect><text x="350" y="62">input x</text>
+      <text x="350" y="110">objective(x, structure)</text>
+      <text x="350" y="140" class="d-muted">no target; find structure</text>
+      <text x="580" y="22" font-weight="bold">self-supervised</text>
+      <rect x="500" y="40" width="80" height="34" rx="4" class="d-box ml-tensor"></rect><text x="540" y="62">visible</text>
+      <rect x="600" y="40" width="80" height="34" rx="4" class="d-box ml-dashed"></rect><text x="640" y="62">hidden</text>
+      <text x="590" y="110">loss(model(visible), hidden)</text>
+      <text x="590" y="140" class="d-muted">y is part of x itself</text>
+      <text x="350" y="205" class="d-muted">The labelled part is the costly one: supervised needs it, the others do not.</text>
+    </g>
+    <g class="d-line" fill="none" stroke-width="1.5">
+      <path d="M70 74 V92"></path><path d="M170 74 V92"></path><path d="M350 74 V92"></path><path d="M540 74 V92"></path><path d="M640 74 V92"></path>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The only difference between the three is the source of the target.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="supervised">Supervised learning</h3>
+<p>
+  You have pairs (x<sub>i</sub>, y<sub>i</sub>) and fit a function f so that f(x<sub>i</sub>) ≈ y<sub>i</sub>
+  by minimizing a loss. If y is a number it is <em>regression</em>
+  (<a href="/ml-models/linear-regression">linear regression</a>); if y is a category it is
+  <em>classification</em> (<a href="/ml-models/logistic-regression">logistic regression</a>). The label
+  defines the task: change it and the same inputs teach something else.
+</p>
+
+<h3 id="unsupervised">Unsupervised learning</h3>
+<p>
+  You have only x. The goal is structure: groups (clustering), a compact description (dimensionality
+  reduction), or the density p(x) itself. <strong>k-means</strong> is the standard example. It alternates two steps
+  until nothing changes: assign each point to its nearest centre, then move each centre to the mean of its
+  points. The quantity it lowers is <em>inertia</em>, the sum of squared distances from each point to its centre.
+  Neither step can raise it, so it settles, though possibly in a poor spot that depends on the start.
+  Nothing says the groups it finds match any human categories.
+</p>
+
+<h3 id="self-supervised">Self-supervised learning</h3>
+<p>
+  You still only have x, but you <em>manufacture</em> a supervised problem from it by hiding a piece and
+  predicting it. For text there are two standard choices:
+</p>
+<ul>
+  <li><strong>Next-token prediction</strong>: the input is tokens up to position t and the target is token t+1. A sequence of
+    n tokens yields n − 1 labelled examples. This is how a
+    <a href="/ml-models/decoder-only-llm">decoder-only model</a> is pretrained, and what
+    <a href="/ml-models/decoding">decoding</a> later samples from.</li>
+  <li><strong>Masked prediction</strong>: replace some tokens with a mask symbol and predict the originals from the surrounding
+    words on both sides. The loss is a cross-entropy at the masked positions only.</li>
+</ul>
+<p>
+  The loss is the same cross-entropy as in supervised classification; only the labels' origin differs. For images, audio and
+  video the hidden piece is a patch, a frame or the other view of the same item
+  (the contrastive losses on the loss functions page).
+</p>
+
+<h3 id="between">In between</h3>
+<p>
+  <strong>Semi-supervised</strong> learning has a few labels and many unlabelled points, and uses the unlabelled
+  ones to learn the shape of the data, as in the worked example below. <strong>Weak supervision</strong> uses labels that are
+  cheap but noisy: keywords, rules, links, or another model's guesses. <strong>Pretrain-then-fine-tune</strong> chains
+  self-supervised pretraining on lots of raw data with supervised training on a small labelled set.
+  <strong>Reinforcement learning</strong> is another case with its own signal, a reward, not covered here.
+</p>
+
+<h3 id="estimator-api">The estimator API</h3>
+<p>
+  scikit-learn expresses the setups through one interface. Every estimator has <code>fit(X, y=None)</code>; supervised ones
+  need <code>y</code>, unsupervised ones ignore it. Then <code>predict(X)</code> for a supervised model,
+  or <code>labels_</code> and <code>predict</code> for a clusterer. Mixins add behaviour by role:
+  <code>ClassifierMixin.score</code> is accuracy, <code>RegressorMixin.score</code> is R², and
+  <code>ClusterMixin</code> adds <code>fit_predict</code>. PyTorch has no such interface; you write the loop yourself
+  (see <a href="/ml-models/training-loop">the training loop</a>).
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 300" role="img" aria-labelledby="lp-scatter-title lp-scatter-desc">
+    <title id="lp-scatter-title">Nine points and two k-means clusters</title>
+    <desc id="lp-scatter-desc">
+      Nine points on a plane form a lower-left group of five and an upper-right group of four. The two
+      final k-means centres are drawn as larger rings at (1.42, 1.40) and (4.30, 3.90). Two points are
+      marked as the only labelled ones, the first point and the sixth.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      <path d="M40 270 H680 M40 270 V20" class="d-line" fill="none" stroke-width="1"></path>
+      <text x="360" y="292" class="d-muted">feature 1</text>
+      {% for p in pts %}
+        {% set k = final.assign[loop.index0] %}
+        <circle cx="{{ 40 + p[0] * 120 }}" cy="{{ 270 - p[1] * 52 }}" r="6" class="{{ 'd-box ml-tensor' if k == 0 else 'd-box ml-op' }}"></circle>
+        {% if loop.index0 in lab %}<circle cx="{{ 40 + p[0] * 120 }}" cy="{{ 270 - p[1] * 52 }}" r="11" class="d-line" fill="none" stroke-width="1.5"></circle>
+        <text x="{{ 40 + p[0] * 120 }}" y="{{ 270 - p[1] * 52 - 17 }}">labelled</text>{% endif %}
+      {% endfor %}
+      {% for c in final.centers %}
+        <circle cx="{{ 40 + c[0] * 120 }}" cy="{{ 270 - c[1] * 52 }}" r="15" class="d-line ml-dashed" fill="none" stroke-width="1.5"></circle>
+      {% endfor %}
+      <text x="560" y="60" class="d-muted">dashed rings = final centres</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Feature 2 is the vertical axis. Colour shows the cluster k-means found; the two circled points are the only ones with labels.</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>BaseEstimator</code></td>
+        <td><code>get_params</code> / <code>set_params</code></td>
+        <td>Base of every estimator; constructor arguments are the hyperparameters, learned values end in an underscore.</td>
+        <td><a href="{{ skl('sklearn/base.py', 165, 560) }}"><code>base.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>ClassifierMixin.score</code></td>
+        <td>X <code>[n, d]</code>, y <code>[n]</code></td>
+        <td>Marks the estimator as a classifier; <code>score</code> defaults to accuracy.</td>
+        <td><a href="{{ skl('sklearn/base.py', 561, 630) }}"><code>base.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>RegressorMixin.score</code></td>
+        <td>X <code>[n, d]</code>, y <code>[n]</code></td>
+        <td>Marks a regressor; <code>score</code> defaults to R².</td>
+        <td><a href="{{ skl('sklearn/base.py', 631, 718) }}"><code>base.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>ClusterMixin.fit_predict</code></td>
+        <td>X <code>[n, d]</code>, no y</td>
+        <td>Fits and returns a cluster id per point.</td>
+        <td><a href="{{ skl('sklearn/base.py', 719, 772) }}"><code>base.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>KMeans.fit</code></td>
+        <td><code>n_clusters</code>, <code>n_init</code>; sets <code>cluster_centers_</code>, <code>labels_</code>, <code>inertia_</code></td>
+        <td>Lloyd's alternation, repeated from several starts, keeping the lowest inertia.</td>
+        <td><a href="{{ skl('sklearn/cluster/_kmeans.py', 1432, 1559) }}"><code>_kmeans.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.CrossEntropyLoss</code></td>
+        <td>logits <code>[N, C]</code>, class indices <code>[N]</code></td>
+        <td>The loss for supervised classification, and for next-token and masked prediction alike.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 1200, 1409) }}"><code>loss.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.MSELoss</code></td>
+        <td>prediction and target, same shape</td>
+        <td>The usual supervised regression loss.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 567, 632) }}"><code>loss.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-kmeans">k-means with no labels</h3>
+  <p>
+    Nine points, five near the lower left and four upper right (see the figure). Start the two centres badly, on the
+    first two points {{ pt(pts[0]) }} and {{ pt(pts[1]) }}. Each row is one pass: assign, record the inertia,
+    then move the centres.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Pass</th><th>Points in cluster 1</th><th>Inertia</th><th>New centre 1</th><th>New centre 2</th></tr></thead>
+      <tbody>
+        {% for step in runA %}
+        <tr><td>{{ loop.index }}</td><td>{{ step.assign|select("equalto", 1)|list|length }}</td><td>{{ f2(step.inertia) }}</td><td>{{ pt(step.centers[0]) }}</td><td>{{ pt(step.centers[1]) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Inertia falls every pass and the last pass leaves the centres unchanged, so it stops. The clusters match
+    the two visible groups, but the algorithm only produced the numbers 0 and 1; nothing says which is "small".
+    Starting from the first and last points instead, it settles on the same answer in {{ runB|length }} pass{{ "es" if runB|length != 1 }}.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-semi">Two labels and the unlabelled points</h3>
+  <p>
+    Suppose only points 1 and 6 have labels (class 0 and class 1). Option one: give each point the label of its nearest labelled
+    point. Option two: cluster all nine points as above, then give each cluster the label of the labelled point inside it.
+    Against the true labels:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Method</th><th>Uses unlabelled structure</th><th>Wrong points</th><th>Accuracy</th></tr></thead>
+      <tbody>
+        <tr><td>Nearest labelled point</td><td>no</td><td>{{ ((1 - acc_near) * (pts|length))|round|int }}</td><td>{{ f2(acc_near) }}</td></tr>
+        <tr><td>Cluster, then name the cluster</td><td>yes</td><td>{{ ((1 - acc_named) * (pts|length))|round|int }}</td><td>{{ f2(acc_named) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Point 5, {{ pt(pts[4]) }}, is nearer to the labelled class-1 point {{ pt(pts[5]) }} than to the class-0 point
+    {{ pt(pts[0]) }}, so the first method calls it class {{ nearest[4] }}. But it sits in the lower-left cluster, which holds
+    the class-0 label, so the second method gets it right. The unlabelled points told the method where the groups
+    are. This only works if clusters line up with classes; when they do not, the extra data misleads.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-self">Labels from the text itself</h3>
+  <p>
+    Take the {{ toks|length }}-token text "{{ toks|join(' ') }}". With no human involved, it gives {{ pairs.targets|length }} next-token
+    examples: input "{{ pairs.inputs[0] }}" → target "{{ pairs.targets[0] }}", input "{{ pairs.inputs[1] }}" → target "{{ pairs.targets[1] }}", and so on.
+    Masking position 2 gives the input "{{ masks[0].input|join(' ') }}" with target "{{ masks[0].target }}"; masking position 6 gives
+    "{{ masks[1].input|join(' ') }}" with target "{{ masks[1].target }}".
+  </p>
+  <p>
+    A model that just counts which token follows which (a bigram table, fit on this same text) has a mean cross-entropy of
+    {{ f2(bg.mean_loss) }} nats on these {{ bg.pairs }} examples. Guessing uniformly among the {{ toks|unique|list|length }} distinct tokens costs
+    ln {{ toks|unique|list|length }} = {{ f2(bg.uniform_loss) }}. The gap is the structure learned. Measured on its own
+    training text, though, this number is optimistic; a real evaluation uses held-out text.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+import torch.nn.functional as F
+from sklearn.cluster import KMeans
+from sklearn.linear_model import LogisticRegression
+
+# supervised: the labels y come from people
+clf = LogisticRegression().fit(X, y)
+clf.score(X_test, y_test)                       # accuracy
+
+# unsupervised: no y; the labels_ are arbitrary cluster ids
+km = KMeans(n_clusters=2, n_init=10).fit(X)
+km.labels_, km.inertia_
+
+# self-supervised: the targets are the inputs shifted by one
+def next_token_loss(model, tokens):             # tokens: [B, T] ints
+    logits = model(tokens[:, :-1])              # [B, T-1, V]
+    return F.cross_entropy(
+        logits.reshape(-1, logits.size(-1)), tokens[:, 1:].reshape(-1)
+    )
+
+# masked prediction: loss only where a token was hidden
+def masked_loss(model, tokens, mask):           # mask: [B, T] bool
+    corrupted = tokens.masked_fill(mask, MASK_ID)
+    logits = model(corrupted)
+    targets = tokens.masked_fill(~mask, -100)   # ignore_index default
+    return F.cross_entropy(logits.transpose(1, 2), targets)</code></pre>
+
+<p>
+  Note that <code>KMeans.fit(X)</code> takes no <code>y</code>, whereas <code>LogisticRegression.fit(X, y)</code> requires it, which is the
+  whole distinction in one line. The self-supervised loss is the same <code>cross_entropy</code> call as the supervised
+  one; <code>-100</code> is its default <code>ignore_index</code>, which is what lets unmasked positions contribute nothing.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Cost of labels.</strong> Supervised data is limited by annotation; self-supervised data is limited only by what you can collect.
+    The price is that the objective is a proxy: predicting words is not the same as being helpful or correct.</li>
+  <li><strong>Evaluation.</strong> Supervised models have an obvious test, accuracy on held-out labels. Unsupervised ones have no ground truth,
+    so you judge by indirect measures (inertia, downstream use) that can be gamed or misleading.</li>
+  <li><strong>Label quality.</strong> A supervised model learns the labellers' mistakes and biases. Weak labels scale but add noise the model can fit.</li>
+  <li><strong>k-means pitfalls.</strong> You must choose k; it assumes roughly round, similar-sized groups; and different starts give different results, which is why
+    <code>n_init</code> exists. Lower inertia with larger k is not evidence of better clusters, since k = n gives zero.</li>
+  <li><strong>Mixing setups.</strong> Pretraining then fine-tuning gets the best of both but inherits the pretraining data's biases, and a fine-tuned model can forget what
+    it learned in pretraining if tuned too hard.</li>
+</ul>
+
+<h3 id="check-yourself">Check yourself</h3>
+<details class="ml-quiz">
+  <summary>Is next-token prediction supervised or unsupervised?</summary>
+  <p>Mechanically it is supervised (inputs, targets, a cross-entropy loss), but the targets cost nothing because they are part of the input. That is why it is called self-supervised.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why can k-means never raise its inertia from one pass to the next?</summary>
+  <p>Reassigning each point to its nearest centre cannot increase total distance, and the mean is the point that minimizes squared distance to a set, so moving a centre to it cannot either.</p>
+</details>
+<details class="ml-quiz">
+  <summary>In the worked example, how many next-token examples does a text of 100 tokens give?</summary>
+  <p>99. Each position except the last is the input for the token after it.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Hastie, Tibshirani and Friedman. <em>The Elements of Statistical Learning</em>, 2nd ed., chapters 2 and 14. Springer, 2009.</li>
+  <li>Lloyd. <em>Least Squares Quantization in PCM.</em> IEEE Transactions on Information Theory, 1982 (circulated as a Bell Labs memo in 1957).</li>
+  <li>Devlin et al. <em>BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding.</em> 2018 (<a href="https://arxiv.org/abs/1810.04805">arXiv 1810.04805</a>), for masked prediction.</li>
+  <li>Radford et al. <em>Language Models are Unsupervised Multitask Learners</em> (GPT-2). OpenAI, 2019, for next-token pretraining.</li>
+  <li>scikit-learn {{ pins.sklearn.version }}: <a href="{{ skl('sklearn/base.py', 165, 560) }}"><code>BaseEstimator</code></a>, <a href="{{ skl('sklearn/cluster/_kmeans.py', 1432, 1559) }}"><code>KMeans.fit</code></a>.</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/nn/modules/loss.py', 1200, 1409) }}"><code>CrossEntropyLoss</code></a>.</li>
+</ul>

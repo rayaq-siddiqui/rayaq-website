@@ -1596,3 +1596,43 @@ def test_paged_allocation_wastes_less_than_contiguous_reservation():
     assert result["paged_waste"] == 30
     assert result["contiguous_slots"] == 512
     assert result["contiguous_waste"] == 286
+
+
+def test_kmeans_run_converges_and_inertia_never_rises():
+    start = [ml_models_docs.LEARNING_POINTS[0], ml_models_docs.LEARNING_POINTS[1]]
+    history = ml_models_docs.kmeans_run(ml_models_docs.LEARNING_POINTS, start, 6)
+    inertias = [step["inertia"] for step in history]
+    assert len(history) == 4
+    assert inertias == sorted(inertias, reverse=True)
+    assert inertias[0] == pytest.approx(74.92)
+    assert inertias[-1] == pytest.approx(5.888)
+    assert history[-1]["assign"] == ml_models_docs.LEARNING_TRUTH
+    assert history[-1]["centers"][1] == pytest.approx((4.3, 3.9))
+
+
+def test_two_labels_name_clusters_better_than_nearest_label():
+    points = ml_models_docs.LEARNING_POINTS
+    truth = ml_models_docs.LEARNING_TRUTH
+    labeled = ml_models_docs.LEARNING_LABELED
+    nearest = ml_models_docs.nearest_labeled(points, labeled)
+    clusters = ml_models_docs.kmeans_run(points, [points[0], points[8]], 6)[-1]["assign"]
+    named = ml_models_docs.cluster_then_label(clusters, labeled)
+    assert ml_models_docs.prediction_accuracy(nearest, truth) == pytest.approx(8 / 9)
+    assert nearest[4] == 1
+    assert ml_models_docs.prediction_accuracy(named, truth) == 1.0
+
+
+def test_masked_pairs_hide_one_token_each():
+    tokens = ml_models_docs.LEARNING_TEXT
+    pairs = ml_models_docs.masked_pairs(tokens, [1, 5])
+    assert [pair["target"] for pair in pairs] == ["cat", "mat"]
+    assert pairs[0]["input"][1] == "[MASK]"
+    assert pairs[0]["input"].count("[MASK]") == 1
+    assert len(pairs[0]["input"]) == len(tokens)
+
+
+def test_bigram_next_token_loss_beats_uniform_guessing():
+    result = ml_models_docs.bigram_next_token_loss(ml_models_docs.LEARNING_TEXT)
+    assert result["pairs"] == 9
+    assert result["uniform_loss"] == pytest.approx(math.log(7))
+    assert 0 < result["mean_loss"] < result["uniform_loss"]

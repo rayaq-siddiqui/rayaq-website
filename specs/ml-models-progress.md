@@ -457,8 +457,8 @@ Gaps: bf16-needs-no-scaler is not verified beyond the autocast docstring; `Seque
 20. `decoder-only-llm` ✓
 21. `decoding` ✓
 22. `kv-cache` ✓
-23. `learning-paradigms` ← next
-24. `generalization`
+23. `learning-paradigms` ✓
+24. `generalization` ← next
 25. `data-splits`
 26. `preprocessing`
 27. `data-leakage`

@@ -249,7 +249,7 @@ PAGES = [
             "sklearn:sklearn/cluster/_kmeans.py",
             "pytorch:torch/nn/modules/loss.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "loss-functions",
@@ -3475,6 +3475,81 @@ def paged_allocation(lengths, block_size, reserved):
     }
 
 
+LEARNING_POINTS = [
+    (0.5, 1.0), (1.0, 1.4), (1.4, 0.8), (1.8, 1.6), (2.4, 2.2),
+    (3.6, 3.0), (4.0, 4.2), (4.6, 3.8), (5.0, 4.6),
+]
+LEARNING_TRUTH = [0, 0, 0, 0, 0, 1, 1, 1, 1]
+LEARNING_LABELED = {0: 0, 5: 1}
+LEARNING_TEXT = "the cat sat on the mat and the cat ran".split()
+
+
+def _squared_distance(a, b):
+    return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
+
+
+def kmeans_run(points, centers, steps):
+    centers = list(centers)
+    history = []
+    for _ in range(steps):
+        assign = [
+            min(range(len(centers)), key=lambda k: _squared_distance(p, centers[k])) for p in points
+        ]
+        inertia = sum(_squared_distance(p, centers[k]) for p, k in zip(points, assign))
+        updated = []
+        for k in range(len(centers)):
+            members = [p for p, j in zip(points, assign) if j == k]
+            updated.append(
+                (sum(p[0] for p in members) / len(members), sum(p[1] for p in members) / len(members))
+                if members
+                else centers[k]
+            )
+        history.append({"assign": assign, "inertia": inertia, "centers": updated})
+        if updated == centers:
+            break
+        centers = updated
+    return history
+
+
+def nearest_labeled(points, labeled):
+    return [
+        labeled[min(labeled, key=lambda i: _squared_distance(p, points[i]))] for p in points
+    ]
+
+
+def cluster_then_label(assign, labeled):
+    names = {assign[i]: label for i, label in labeled.items()}
+    return [names[a] for a in assign]
+
+
+def prediction_accuracy(predicted, truth):
+    return sum(p == t for p, t in zip(predicted, truth)) / len(truth)
+
+
+def masked_pairs(tokens, positions):
+    return [
+        {"input": ["[MASK]" if j == i else t for j, t in enumerate(tokens)], "target": tokens[i]}
+        for i in positions
+    ]
+
+
+def bigram_next_token_loss(tokens):
+    pairs = next_token_pairs(tokens)
+    counts = {}
+    for before, after in zip(pairs["inputs"], pairs["targets"]):
+        counts.setdefault(before, {}).setdefault(after, 0)
+        counts[before][after] += 1
+    losses = [
+        -math.log(counts[b][a] / sum(counts[b].values()))
+        for b, a in zip(pairs["inputs"], pairs["targets"])
+    ]
+    return {
+        "pairs": len(losses),
+        "mean_loss": sum(losses) / len(losses),
+        "uniform_loss": math.log(len(set(tokens))),
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -3647,6 +3722,16 @@ def render(slug, render_template):
         "kv_cache_total_bytes": kv_cache_total_bytes,
         "decode_attention_intensity": decode_attention_intensity,
         "paged_allocation": paged_allocation,
+        "learning_points": LEARNING_POINTS,
+        "learning_truth": LEARNING_TRUTH,
+        "learning_labeled": LEARNING_LABELED,
+        "learning_text": LEARNING_TEXT,
+        "kmeans_run": kmeans_run,
+        "nearest_labeled": nearest_labeled,
+        "cluster_then_label": cluster_then_label,
+        "prediction_accuracy": prediction_accuracy,
+        "masked_pairs": masked_pairs,
+        "bigram_next_token_loss": bigram_next_token_loss,
         "beam_step_probs": BEAM_STEP_PROBS,
         "speculative_example": SPECULATIVE_EXAMPLE,
         "temperature_probs": temperature_probs,
