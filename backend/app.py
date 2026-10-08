@@ -6,6 +6,7 @@ import jj_docs
 import jj_dojo_docs
 import jj_vfs_docs
 import jj_cloud_docs
+import leetcode_docs
 import ml_models_docs
 import rendered_pages
 import resume_data
@@ -114,6 +115,17 @@ def jj_cloud(slug):
 def ml_models(slug):
     html = rendered_pages.get(
         ("ml-models", slug), lambda: ml_models_docs.render(slug, render_template)
+    )
+    if html is None:
+        abort(404)
+    return html
+
+
+@app.route("/leetcode", defaults={"slug": None})
+@app.route("/leetcode/<slug>")
+def leetcode(slug):
+    html = rendered_pages.get(
+        ("leetcode", slug), lambda: leetcode_docs.render(slug, render_template)
     )
     if html is None:
         abort(404)

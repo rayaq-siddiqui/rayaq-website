@@ -344,3 +344,26 @@ def test_home_links_to_ml_models_between_jj_and_jj_dojo():
     body = client.get("/").get_data(as_text=True)
 
     assert body.index('href="/jj"') < body.index('href="/ml-models"') < body.index('href="/jj-dojo"')
+
+
+def test_leetcode_returns_200():
+    client = app_module.app.test_client()
+
+    response = client.get("/leetcode")
+
+    assert response.status_code == 200
+    assert "LeetCode patterns" in response.get_data(as_text=True)
+
+
+def test_leetcode_unknown_page_returns_404():
+    client = app_module.app.test_client()
+
+    assert client.get("/leetcode/not-a-page").status_code == 404
+
+
+def test_home_links_to_leetcode_between_ml_models_and_jj_dojo():
+    client = app_module.app.test_client()
+
+    body = client.get("/").get_data(as_text=True)
+
+    assert body.index('href="/ml-models"') < body.index('href="/leetcode"') < body.index('href="/jj-dojo"')
