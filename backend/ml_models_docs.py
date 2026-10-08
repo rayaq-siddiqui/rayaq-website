@@ -1460,6 +1460,19 @@ BOWL_EXAMPLE = {"scale": [1, 3], "start": [3, 2], "lr": 0.1, "steps": 6, "unstab
 
 JACOBIAN_EXAMPLE = {"point": [2, 3]}
 
+CHAIN_EXAMPLE = {"x": 1, "a": 3, "b": 1}
+
+TWO_LAYER_EXAMPLE = {
+    "x": [2, 1],
+    "w1": [[1, -1], [-1, 1]],
+    "b1": [1, 0],
+    "w2": [2, 3],
+    "b2": 0,
+    "target": 3,
+}
+
+MODE_COST_EXAMPLE = {"widths": [1000, 1000, 1000, 1]}
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -1793,6 +1806,59 @@ def stable_learning_rate(scale):
     return 1 / max(scale)
 
 
+def scalar_chain(example):
+    x, a, b = example["x"], example["a"], example["b"]
+    u = a * x + b
+    return {"x": x, "u": u, "f": u * u, "du_dx": a, "df_du": 2 * u, "df_dx": 2 * u * a}
+
+
+def relu(values):
+    return [max(0, v) for v in values]
+
+
+def two_layer_loss(x, w1, b1, w2, b2, target):
+    hidden = relu([dot_product(row, x) + b for row, b in zip(w1, b1)])
+    y = dot_product(w2, hidden) + b2
+    return 0.5 * (y - target) ** 2
+
+
+def two_layer_pass(example):
+    x, w1, b1 = example["x"], example["w1"], example["b1"]
+    w2, b2, target = example["w2"], example["b2"], example["target"]
+    z1 = [dot_product(row, x) + b for row, b in zip(w1, b1)]
+    h = relu(z1)
+    y = dot_product(w2, h) + b2
+    dy = y - target
+    dh = [dy * w for w in w2]
+    dz1 = [g if z > 0 else 0 for g, z in zip(dh, z1)]
+    return {
+        "z1": z1,
+        "h": h,
+        "y": y,
+        "loss": 0.5 * dy * dy,
+        "dy": dy,
+        "dw2": [dy * v for v in h],
+        "db2": dy,
+        "dh": dh,
+        "dz1": dz1,
+        "dw1": [[g * xi for xi in x] for g in dz1],
+        "db1": dz1,
+        "dx": [dot_product(column, dz1) for column in transpose(w1)],
+    }
+
+
+def mode_costs(widths):
+    per_pass = sum(a * b for a, b in zip(widths, widths[1:]))
+    inputs, outputs = widths[0], widths[-1]
+    return {
+        "inputs": inputs,
+        "outputs": outputs,
+        "per_pass": per_pass,
+        "forward": inputs * per_pass,
+        "reverse": outputs * per_pass,
+    }
+
+
 def similarity_ranking(example):
     query = example["query"]
     rows = [
@@ -1882,6 +1948,12 @@ def render(slug, render_template):
         "jacobian_example_function": jacobian_example_function,
         "jacobian_example_exact": jacobian_example_exact,
         "numerical_jacobian": numerical_jacobian,
+        "chain_example": CHAIN_EXAMPLE,
+        "scalar_chain": scalar_chain,
+        "two_layer_example": TWO_LAYER_EXAMPLE,
+        "two_layer_pass": two_layer_pass,
+        "mode_cost_example": MODE_COST_EXAMPLE,
+        "mode_costs": mode_costs,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

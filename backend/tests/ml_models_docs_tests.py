@@ -631,3 +631,54 @@ def test_bowl_contours_are_ellipses_through_equal_values():
         rx, ry = contour["radii"]
         assert ml_models_docs.bowl([rx, 0], scale) == pytest.approx(contour["level"])
         assert ml_models_docs.bowl([0, ry], scale) == pytest.approx(contour["level"])
+
+
+def test_scalar_chain_multiplies_local_derivatives():
+    chain = ml_models_docs.scalar_chain(ml_models_docs.CHAIN_EXAMPLE)
+    assert (chain["u"], chain["f"]) == (4, 16)
+    assert chain["df_dx"] == chain["df_du"] * chain["du_dx"] == 24
+    f = lambda x: (3 * x + 1) ** 2
+    assert ml_models_docs.numerical_gradient(lambda p: f(p[0]), [1])[0] == pytest.approx(24, rel=1e-6)
+
+
+def test_two_layer_pass_has_the_hand_derived_values():
+    result = ml_models_docs.two_layer_pass(ml_models_docs.TWO_LAYER_EXAMPLE)
+    assert result["z1"] == [2, -1]
+    assert result["h"] == [2, 0]
+    assert result["y"] == 4
+    assert result["loss"] == 0.5
+    assert result["dw2"] == [2, 0]
+    assert result["dh"] == [2, 3]
+    assert result["dz1"] == [2, 0]
+    assert result["dw1"] == [[4, 2], [0, 0]]
+    assert result["dx"] == [2, -2]
+
+
+def test_two_layer_gradients_match_finite_differences():
+    example = ml_models_docs.TWO_LAYER_EXAMPLE
+    result = ml_models_docs.two_layer_pass(example)
+    loss = ml_models_docs.two_layer_loss
+
+    def w1_loss(flat):
+        return loss(example["x"], [flat[:2], flat[2:]], example["b1"], example["w2"], example["b2"], example["target"])
+
+    flat_w1 = example["w1"][0] + example["w1"][1]
+    numeric = ml_models_docs.numerical_gradient(w1_loss, flat_w1)
+    assert numeric == pytest.approx(result["dw1"][0] + result["dw1"][1], abs=1e-6)
+
+    def x_loss(x):
+        return loss(x, example["w1"], example["b1"], example["w2"], example["b2"], example["target"])
+
+    assert ml_models_docs.numerical_gradient(x_loss, example["x"]) == pytest.approx(result["dx"], abs=1e-6)
+
+    def w2_loss(w2):
+        return loss(example["x"], example["w1"], example["b1"], w2, example["b2"], example["target"])
+
+    assert ml_models_docs.numerical_gradient(w2_loss, example["w2"]) == pytest.approx(result["dw2"], abs=1e-6)
+
+
+def test_reverse_mode_costs_one_pass_per_output():
+    costs = ml_models_docs.mode_costs(ml_models_docs.MODE_COST_EXAMPLE["widths"])
+    assert costs["per_pass"] == 2_001_000
+    assert costs["reverse"] == costs["per_pass"]
+    assert costs["forward"] == 1000 * costs["per_pass"]
