@@ -1850,6 +1850,97 @@ def multihead_param_count(embed_dim, bias=True):
             "biases": biases, "total": weights + biases}
 
 
+NORM_EXAMPLE = {
+    "tokens": ["the", "cat", "sat"],
+    "x": [[2.0, 4.0, 6.0, 8.0], [1.0, 1.0, 1.0, 5.0], [-3.0, 0.0, 3.0, 6.0]],
+    "gamma": [1.0, 1.0, 1.0, 1.0],
+    "beta": [0.0, 0.0, 0.0, 0.0],
+    "eps": 1e-5,
+}
+
+
+def _mean(values):
+    return sum(values) / len(values)
+
+
+def _variance(values):
+    centre = _mean(values)
+    return sum((value - centre) ** 2 for value in values) / len(values)
+
+
+def layer_norm_row(row, gamma=None, beta=None, eps=1e-5):
+    centre = _mean(row)
+    scale = 1.0 / math.sqrt(_variance(row) + eps)
+    gamma = gamma or [1.0] * len(row)
+    beta = beta or [0.0] * len(row)
+    return [(value - centre) * scale * g + b for value, g, b in zip(row, gamma, beta)]
+
+
+def rms_norm_row(row, gamma=None, eps=1e-5):
+    scale = 1.0 / math.sqrt(_mean([value * value for value in row]) + eps)
+    gamma = gamma or [1.0] * len(row)
+    return [value * scale * g for value, g in zip(row, gamma)]
+
+
+def batch_norm_columns(matrix, gamma=None, beta=None, eps=1e-5):
+    columns = [list(column) for column in zip(*matrix)]
+    gamma = gamma or [1.0] * len(columns)
+    beta = beta or [0.0] * len(columns)
+    normalised = []
+    for column, g, b in zip(columns, gamma, beta):
+        centre = _mean(column)
+        scale = 1.0 / math.sqrt(_variance(column) + eps)
+        normalised.append([(value - centre) * scale * g + b for value in column])
+    return [list(row) for row in zip(*normalised)]
+
+
+def group_norm_row(row, groups, eps=1e-5):
+    if len(row) % groups:
+        raise ValueError("channels must be a multiple of groups")
+    size = len(row) // groups
+    out = []
+    for group in range(groups):
+        out.extend(layer_norm_row(row[group * size:(group + 1) * size], eps=eps))
+    return out
+
+
+def running_stats_update(running_mean, running_var, batch, momentum=0.1):
+    batch_mean = _mean(batch)
+    unbiased = _variance(batch) * len(batch) / (len(batch) - 1)
+    return (
+        (1 - momentum) * running_mean + momentum * batch_mean,
+        (1 - momentum) * running_var + momentum * unbiased,
+    )
+
+
+def batch_norm_eval(value, running_mean, running_var, gamma=1.0, beta=0.0, eps=1e-5):
+    return (value - running_mean) / math.sqrt(running_var + eps) * gamma + beta
+
+
+def residual_block(x, sublayer, norm, norm_first):
+    if norm_first:
+        return [a + b for a, b in zip(x, sublayer(norm(x)))]
+    return norm([a + b for a, b in zip(x, sublayer(x))])
+
+
+def residual_stream_norms(x, sublayers, norm, norm_first):
+    norms = [math.sqrt(sum(value * value for value in x))]
+    for sublayer in sublayers:
+        x = residual_block(x, sublayer, norm, norm_first)
+        norms.append(math.sqrt(sum(value * value for value in x)))
+    return x, norms
+
+
+def norm_param_count(kind, features, bias=True):
+    if kind == "layer":
+        return features * (2 if bias else 1)
+    if kind == "rms":
+        return features
+    if kind == "batch":
+        return 2 * features
+    raise ValueError(kind)
+
+
 def transformer_param_count(d_model, encoder_layers, decoder_layers, dim_feedforward, nhead=None):
     attention = 4 * d_model * d_model + 4 * d_model
     feed_forward = 2 * d_model * dim_feedforward + dim_feedforward + d_model
@@ -3050,6 +3141,16 @@ def render(slug, render_template):
         "gqa_groups": gqa_groups,
         "kv_cache_bytes_per_token": kv_cache_bytes_per_token,
         "multihead_param_count": multihead_param_count,
+        "norm_example": NORM_EXAMPLE,
+        "layer_norm_row": layer_norm_row,
+        "rms_norm_row": rms_norm_row,
+        "batch_norm_columns": batch_norm_columns,
+        "group_norm_row": group_norm_row,
+        "running_stats_update": running_stats_update,
+        "batch_norm_eval": batch_norm_eval,
+        "residual_block": residual_block,
+        "residual_stream_norms": residual_stream_norms,
+        "norm_param_count": norm_param_count,
         "presets": TRANSFORMER_PRESETS,
         "param_count": transformer_param_count,
         "broadcast_steps": broadcast_steps,

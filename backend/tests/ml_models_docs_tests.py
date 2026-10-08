@@ -1261,3 +1261,89 @@ def test_multihead_param_count_matches_transformer_attention():
     assert count["total"] == ml_models_docs.transformer_param_count(512, 1, 0, 2048)["attention"]
     assert count["in_proj"] == 3 * 512 * 512
     assert ml_models_docs.multihead_param_count(8, bias=False)["total"] == 4 * 64
+
+
+def test_layer_norm_row_has_zero_mean_and_unit_variance():
+    out = ml_models_docs.layer_norm_row([2.0, 4.0, 6.0, 8.0], eps=0.0)
+    assert abs(sum(out) / 4) < 1e-12
+    assert abs(sum(v * v for v in out) / 4 - 1) < 1e-12
+
+
+def test_layer_norm_applies_scale_and_shift_after_normalising():
+    plain = ml_models_docs.layer_norm_row([1.0, 2.0, 3.0])
+    shifted = ml_models_docs.layer_norm_row([1.0, 2.0, 3.0], [2, 2, 2], [1, 1, 1])
+    assert shifted == [2 * v + 1 for v in plain]
+
+
+def test_layer_norm_ignores_input_scale_and_shift():
+    base = ml_models_docs.layer_norm_row([1.0, 2.0, 4.0], eps=0.0)
+    moved = ml_models_docs.layer_norm_row([21.0, 42.0, 84.0], eps=0.0)
+    shifted = ml_models_docs.layer_norm_row([11.0, 12.0, 14.0], eps=0.0)
+    assert all(abs(a - b) < 1e-9 for a, b in zip(base, moved))
+    assert all(abs(a - b) < 1e-9 for a, b in zip(base, shifted))
+
+
+def test_rms_norm_keeps_the_mean_unlike_layer_norm():
+    row = [1.0, 2.0, 3.0, 6.0]
+    rms = ml_models_docs.rms_norm_row(row, eps=0.0)
+    assert abs(sum(v * v for v in rms) / 4 - 1) < 1e-12
+    assert abs(sum(rms) / 4) > 0.1
+    assert [v / rms[0] for v in rms] == [v / row[0] for v in row]
+
+
+def test_batch_norm_normalises_each_column_across_the_batch():
+    out = ml_models_docs.batch_norm_columns([[1.0, 10.0], [3.0, 10.0], [5.0, 40.0]], eps=0.0)
+    for column in zip(*out):
+        assert abs(sum(column) / 3) < 1e-12
+        assert abs(sum(v * v for v in column) / 3 - 1) < 1e-12
+
+
+def test_batch_norm_depends_on_the_batch_and_layer_norm_does_not():
+    row = [1.0, 2.0, 3.0]
+    alone = ml_models_docs.batch_norm_columns([row, [0.0, 0.0, 0.0]])[0]
+    other = ml_models_docs.batch_norm_columns([row, [9.0, 9.0, 9.0]])[0]
+    assert alone != other
+    assert ml_models_docs.layer_norm_row(row) == ml_models_docs.layer_norm_row(list(row))
+
+
+def test_group_norm_one_group_is_layer_norm_and_per_channel_is_zero():
+    row = [1.0, 2.0, 4.0, 8.0]
+    assert ml_models_docs.group_norm_row(row, 1) == ml_models_docs.layer_norm_row(row)
+    assert all(v == 0 for v in ml_models_docs.group_norm_row(row, 4))
+    with pytest.raises(ValueError):
+        ml_models_docs.group_norm_row(row, 3)
+
+
+def test_running_stats_use_the_unbiased_variance_and_momentum():
+    mean, var = ml_models_docs.running_stats_update(0.0, 1.0, [1.0, 3.0], momentum=0.1)
+    assert abs(mean - 0.2) < 1e-12
+    assert abs(var - (0.9 + 0.1 * 2.0)) < 1e-12
+
+
+def test_batch_norm_eval_uses_the_stored_statistics():
+    assert abs(ml_models_docs.batch_norm_eval(5.0, 3.0, 4.0, eps=0.0) - 1.0) < 1e-12
+
+
+def test_pre_norm_keeps_an_untouched_identity_path():
+    x = [1.0, 2.0, 3.0, 4.0]
+    norm = ml_models_docs.layer_norm_row
+    zero = lambda v: [0.0] * len(v)
+    assert ml_models_docs.residual_block(x, zero, norm, True) == x
+    assert ml_models_docs.residual_block(x, zero, norm, False) != x
+
+
+def test_post_norm_resets_the_stream_scale_every_block():
+    x = [10.0, -20.0, 30.0, -40.0]
+    double = lambda v: [2 * a for a in v]
+    _, post = ml_models_docs.residual_stream_norms(x, [double] * 3, ml_models_docs.layer_norm_row, False)
+    _, pre = ml_models_docs.residual_stream_norms(x, [double] * 3, ml_models_docs.layer_norm_row, True)
+    assert post[1] == pytest.approx(post[2], rel=1e-4) == pytest.approx(post[3], rel=1e-4)
+    assert pre[3] > pre[0]
+
+
+def test_norm_param_counts():
+    assert ml_models_docs.norm_param_count("layer", 512) == 1024
+    assert ml_models_docs.norm_param_count("layer", 512, bias=False) == 512
+    assert ml_models_docs.norm_param_count("rms", 512) == 512
+    assert ml_models_docs.norm_param_count("batch", 64) == 128
+    assert ml_models_docs.transformer_param_count(512, 1, 0, 2048)["layer_norm"] == ml_models_docs.norm_param_count("layer", 512)
