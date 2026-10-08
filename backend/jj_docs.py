@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "320f7e6bde5f533afd0f029b3196398f8cd1cb31",
-    "commit_date": "2026-10-06",
-    "version": "0.45.1",
-    "analyzed_on": "2026-10-06",
+    "commit": "3935c0fcaecebfed6d84dfa501169363112299ce",
+    "commit_date": "2026-10-07",
+    "version": "0.46.0",
+    "analyzed_on": "2026-10-08",
 }
 
 TOPICS = [
@@ -164,8 +164,8 @@ TOPICS = [
         "summary": "From revset text to evaluated commits: grammar, expression tree, symbol resolution and evaluation.",
         "sources": [
             "lib/src/revset.rs",
-            "lib/src/revset_parser.rs",
-            "lib/src/revset.pest",
+            "dsl/src/revset_parser.rs",
+            "dsl/src/revset.pest",
             "lib/src/default_index/revset_engine.rs",
             "lib/src/fileset.rs",
             "docs/technical/revset-evaluation.md",
@@ -737,7 +737,7 @@ COMMANDS = [
         "category": 'Git and remotes',
         "tier": 'A',
         "summary": 'Create a new Git backed repo.',
-        "source": ('cli/src/commands/git/init.rs', 56),
+        "source": ('cli/src/commands/git/init.rs', 66),
     },
     {
         "command": 'git push',
