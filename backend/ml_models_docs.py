@@ -192,7 +192,7 @@ PAGES = [
             "pytorch:torch/distributions/categorical.py",
             "pytorch:torch/distributions/bernoulli.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "expectation-and-variance",
@@ -1481,8 +1481,6 @@ CATEGORICAL_EXAMPLE = {
     "uniforms": [0.10, 0.50, 0.70, 0.95],
 }
 
-NORMAL_EXAMPLE = {"loc": 0.0, "scale": 1.0, "points": [0.0, 1.0, 2.0], "noise": [-1.0, 0.5, 2.0]}
-
 JOINT_EXAMPLE = {
     "rows": ["rain", "sun"],
     "columns": ["umbrella", "no umbrella"],
@@ -2035,7 +2033,7 @@ def render(slug, render_template):
         "categorical_example": CATEGORICAL_EXAMPLE,
         "categorical_from_logits": categorical_from_logits,
         "inverse_cdf_sample": inverse_cdf_sample,
-        "normal_example": NORMAL_EXAMPLE,
+        "log": math.log,
         "normal_log_prob": normal_log_prob,
         "normal_pdf": normal_pdf,
         "normal_cdf": normal_cdf,

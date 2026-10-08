@@ -1,0 +1,481 @@
+{% set p = bernoulli_example.p %}
+{% set cat = categorical_from_logits(categorical_example.logits) %}
+{% set jt = joint_table(joint_example) %}
+{% macro num(x) -%}{{ "%g"|format(x) }}{%- endmacro %}
+{% macro f2(x) -%}{{ "%.2f"|format(x) }}{%- endmacro %}
+{% macro f3(x) -%}{{ "%.3f"|format(x) }}{%- endmacro %}
+{% macro pct(x) -%}{{ "%.1f"|format(100 * x) }}%{%- endmacro %}
+{% macro vec3(v) -%}[{% for x in v %}{{ f3(x) }}{% if not loop.last %}, {% endif %}{% endfor %}]{%- endmacro %}
+<header class="jj-header">
+  <h1>Probability and distributions</h1>
+  <p class="tagline">
+    Every model that predicts something uncertain predicts a distribution: a classifier
+    outputs a categorical distribution over labels, a language model one over tokens, and a
+    regression with noise a Gaussian. This page builds the vocabulary (random variables,
+    PMFs and PDFs, joint, marginal and conditional probability, independence, sampling) and
+    ties each idea to <code>torch.distributions</code> at {{ upstream.tag }}.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A spam filter cannot know whether the next email is spam. A language model cannot know
+  which word comes next. A weather model cannot know tomorrow's temperature to the degree.
+  What each of them can do is say how likely each outcome is, and that statement has to
+  obey rules: the chances of all outcomes add up to one, and combining facts ("it is
+  raining" and "you carried an umbrella") has to give consistent answers.
+</p>
+<p>
+  Probability is the language for those statements. Training a model mostly means making
+  the probability it assigns to what actually happened as large as possible, so you need
+  to be able to write that probability down, compute it stably, and draw samples from it.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Picture probability as a fixed amount of sand, exactly one unit, spread over all the
+  things that could happen. An <strong>event</strong> is a region; its probability is how
+  much sand sits on it. A <strong>random variable</strong> is a rule that turns each outcome
+  into a number (1 if spam, 0 if not; tomorrow's temperature), and its
+  <strong>distribution</strong> says how the sand lands on those numbers.
+</p>
+<p>
+  When the possible values can be listed (spam or not, one of 50,000 tokens), the sand sits
+  in piles and a <strong>probability mass function</strong> (PMF) gives each pile's height.
+  When values are continuous (a temperature), any single exact value has zero sand on it;
+  instead a <strong>probability density function</strong> (PDF) gives how thickly the sand
+  is spread, and probability is the area under it over a range.
+</p>
+
+<div class="jj-diagram">
+  {% set base = 180 %}{% set scale = 150 %}
+  <svg viewBox="0 0 680 230" role="img" aria-labelledby="pd-pmf-title pd-pmf-desc">
+    <title id="pd-pmf-title">Two probability mass functions</title>
+    <desc id="pd-pmf-desc">
+      Left, a Bernoulli distribution with p = {{ num(p) }}: a bar of height {{ num(1 - p) }} at 0 and a
+      bar of height {{ num(p) }} at 1. Right, a categorical distribution over cat, dog and bird
+      from the logits {{ categorical_example.logits|join(", ") }}: bars of height
+      {{ f3(cat.probs[0]) }}, {{ f3(cat.probs[1]) }} and {{ f3(cat.probs[2]) }}. In both the bars sum to 1.
+    </desc>
+    <line x1="40" y1="{{ base }}" x2="300" y2="{{ base }}" class="d-line"></line>
+    <line x1="380" y1="{{ base }}" x2="660" y2="{{ base }}" class="d-line"></line>
+    <text x="170" y="24" font-size="13" text-anchor="middle">Bernoulli(p = {{ num(p) }})</text>
+    <text x="520" y="24" font-size="13" text-anchor="middle">Categorical(logits = [{{ categorical_example.logits|map("int")|join(", ") }}])</text>
+    {% for k in [0, 1] %}
+      {% set h = scale * bernoulli_pmf(k, p) %}
+      {% set x = 80 + 120 * k %}
+      <rect x="{{ x }}" y="{{ base - h }}" width="60" height="{{ h }}" style="fill: var(--jj-green); opacity: 0.55"></rect>
+      <text x="{{ x + 30 }}" y="{{ base - h - 6 }}" font-size="12" text-anchor="middle">{{ num(bernoulli_pmf(k, p)) }}</text>
+      <text x="{{ x + 30 }}" y="{{ base + 18 }}" font-size="12" text-anchor="middle">{{ k }}</text>
+    {% endfor %}
+    {% for label in categorical_example.labels %}
+      {% set h = scale * cat.probs[loop.index0] %}
+      {% set x = 405 + 90 * loop.index0 %}
+      <rect x="{{ x }}" y="{{ base - h }}" width="60" height="{{ h }}" style="fill: var(--jj-amber); opacity: 0.55"></rect>
+      <text x="{{ x + 30 }}" y="{{ base - h - 6 }}" font-size="12" text-anchor="middle">{{ f3(cat.probs[loop.index0]) }}</text>
+      <text x="{{ x + 30 }}" y="{{ base + 18 }}" font-size="12" text-anchor="middle">{{ label }}</text>
+    {% endfor %}
+    <text x="340" y="218" font-size="12" text-anchor="middle" class="d-muted">bar heights are probabilities; each panel sums to 1</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Discrete distributions put mass on listed values. The categorical one is what a
+  classifier's softmax produces.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="random-variables">Random variables, PMFs and PDFs</h3>
+
+<p>
+  A discrete random variable X has a PMF p(x) = P(X = x) with every p(x) ≥ 0 and
+  Σ<sub>x</sub> p(x) = 1. A continuous one has a PDF p(x) ≥ 0 with ∫p(x) dx = 1, and
+  P(a ≤ X ≤ b) = ∫<sub>a</sub><sup>b</sup> p(x) dx. A density can exceed 1 (a very narrow
+  Gaussian does); only its area is bounded. The <strong>cumulative distribution
+  function</strong> F(x) = P(X ≤ x) works for both kinds and climbs from 0 to 1.
+</p>
+
+<h3 id="three-distributions">The three distributions you meet first</h3>
+
+<p class="ml-formula">Bernoulli(p): &nbsp; P(X = 1) = p, &nbsp; P(X = 0) = 1 − p</p>
+<p>
+  One yes/no outcome: spam or not, click or not. Binary classifiers output p through a
+  sigmoid.
+</p>
+
+<p class="ml-formula">Categorical(π): &nbsp; P(X = k) = π<sub>k</sub>, &nbsp; π<sub>k</sub> = e<sup>z<sub>k</sub></sup> / Σ<sub>j</sub> e<sup>z<sub>j</sub></sup></p>
+<p>
+  One of K outcomes. Models emit unnormalized scores z (logits) and the softmax turns them
+  into π. PyTorch's <code>Categorical</code> accepts either and normalizes in log space,
+  subtracting the logsumexp of the logits, which never overflows even when the logits are
+  in the thousands.
+</p>
+
+<p class="ml-formula">Normal(μ, σ): &nbsp; p(x) = (1 / σ√(2π)) · exp(−(x − μ)² / 2σ²)</p>
+<p>
+  The bell curve, centred at μ with spread σ. Sums of many small independent effects tend
+  toward it (the central limit theorem), which is why measurement noise and initial weights
+  are usually Gaussian. Its log-density is a quadratic,
+  log p(x) = −(x − μ)²/2σ² − log σ − ½ log 2π, so maximizing a Gaussian likelihood is the
+  same as minimizing squared error.
+</p>
+
+<div class="jj-diagram">
+  {% set base = 200 %}
+  {% macro px(x) -%}{{ 340 + 75 * x }}{%- endmacro %}
+  {% macro py(x) -%}{{ base - 375 * normal_pdf(x, 0, 1) }}{%- endmacro %}
+  <svg viewBox="0 0 680 250" role="img" aria-labelledby="pd-normal-title pd-normal-desc">
+    <title id="pd-normal-title">The standard normal density and its 68–95–99.7 bands</title>
+    <desc id="pd-normal-desc">
+      The bell-shaped density of Normal(0, 1) drawn from −4 to 4. The area within one
+      standard deviation of the mean is shaded darkest and holds {{ pct(normal_band(1)) }} of
+      the probability; within two standard deviations, {{ pct(normal_band(2)) }}; within three,
+      {{ pct(normal_band(3)) }}. The peak height at 0 is {{ f3(normal_pdf(0, 0, 1)) }}.
+    </desc>
+    {% for k, shade in [(2, 0.18), (1, 0.35)] %}
+      <path d="M{{ px(-k) }},{{ base }}{% for i in range(-k * 20, k * 20 + 1) %} L{{ px(i / 20) }},{{ py(i / 20) }}{% endfor %} L{{ px(k) }},{{ base }} Z" style="fill: var(--jj-green); opacity: {{ shade }}"></path>
+    {% endfor %}
+    <path d="M{% for i in range(-80, 81) %}{% if not loop.first %} L{% endif %}{{ px(i / 20) }},{{ py(i / 20) }}{% endfor %}" fill="none" stroke="var(--jj-text)" stroke-width="2"></path>
+    <line x1="30" y1="{{ base }}" x2="650" y2="{{ base }}" class="d-line"></line>
+    {% for t in range(-3, 4) %}
+      <line x1="{{ px(t) }}" y1="{{ base }}" x2="{{ px(t) }}" y2="{{ base + 5 }}" class="d-line"></line>
+      <text x="{{ px(t) }}" y="{{ base + 20 }}" font-size="12" text-anchor="middle">{{ t }}σ</text>
+    {% endfor %}
+    <text x="{{ px(0) }}" y="120" font-size="13" text-anchor="middle">{{ pct(normal_band(1)) }}</text>
+    <text x="530" y="130" font-size="12">{{ pct(normal_band(2)) }} within 2σ</text>
+    <text x="530" y="150" font-size="12" class="d-muted">{{ pct(normal_band(3)) }} within 3σ</text>
+    <text x="348" y="{{ 194 - 375 * normal_pdf(0, 0, 1) }}" font-size="12" class="d-muted">peak {{ f3(normal_pdf(0, 0, 1)) }}</text>
+    <text x="340" y="242" font-size="12" text-anchor="middle" class="d-muted">area, not height, is probability</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  The 68–95–99.7 rule: these areas are F(k) − F(−k) for k = 1, 2, 3, computed from
+  the Gaussian CDF ½(1 + erf(x / √2)).
+</p>
+
+<h3 id="joint-marginal-conditional">Joint, marginal and conditional</h3>
+
+<p>
+  With two random variables, the <strong>joint</strong> distribution p(x, y) gives the
+  probability of each pair. Summing out one variable gives the <strong>marginal</strong> of
+  the other, and dividing a joint by a marginal gives a <strong>conditional</strong>:
+</p>
+<p class="ml-formula">p(x) = Σ<sub>y</sub> p(x, y) &nbsp;&nbsp;&nbsp; p(y | x) = p(x, y) / p(x) &nbsp;&nbsp;&nbsp; p(x, y) = p(x) · p(y | x)</p>
+<p>
+  The last form, the <strong>product rule</strong>, chains: p(a, b, c) = p(a) p(b | a)
+  p(c | a, b). A language model is exactly this chain over tokens, predicting each one
+  conditioned on all the previous ones.
+</p>
+<p>
+  X and Y are <strong>independent</strong> when p(x, y) = p(x) p(y) for every pair, which
+  is the same as saying p(y | x) = p(y): learning X tells you nothing about Y. Assuming
+  independence is what lets a dataset's likelihood factor into a product over examples,
+  and what lets a loss be an average over examples.
+</p>
+
+<h3 id="sampling">Sampling</h3>
+
+<p>
+  To draw from a categorical distribution, line the probabilities up end to end on [0, 1),
+  draw a uniform number u, and return the segment u lands in. That is
+  <strong>inverse-CDF sampling</strong>: find the first k whose cumulative sum exceeds u.
+  For a continuous distribution the same idea is x = F⁻¹(u), and for a Gaussian there is a
+  shortcut: draw ε from Normal(0, 1) and return μ + σε.
+</p>
+
+<div class="jj-diagram">
+  {% set y0 = 70 %}{% set w = 560 %}{% set left = 60 %}
+  <svg viewBox="0 0 680 190" role="img" aria-labelledby="pd-sample-title pd-sample-desc">
+    <title id="pd-sample-title">Inverse-CDF sampling from a categorical distribution</title>
+    <desc id="pd-sample-desc">
+      The interval from 0 to 1 split into three segments whose lengths are the
+      probabilities of cat ({{ f3(cat.probs[0]) }}), dog ({{ f3(cat.probs[1]) }}) and bird
+      ({{ f3(cat.probs[2]) }}). Four uniform draws,
+      {{ categorical_example.uniforms|join(", ") }}, are marked as arrows; each falls in a
+      segment and returns that label:
+      {% for u in categorical_example.uniforms %}{{ categorical_example.labels[inverse_cdf_sample(cat.probs, u)] }}{% if not loop.last %}, {% endif %}{% endfor %}.
+    </desc>
+    <defs>
+      <marker id="pd-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--jj-violet)"></path>
+      </marker>
+    </defs>
+    {% set ns = namespace(start=0) %}
+    {% for label in categorical_example.labels %}
+      {% set seg = cat.probs[loop.index0] %}
+      <rect x="{{ left + w * ns.start }}" y="{{ y0 }}" width="{{ w * seg }}" height="40" class="d-box" style="fill: var({{ ['--jj-green', '--jj-amber', '--jj-accent'][loop.index0] }}); opacity: 0.4"></rect>
+      <text x="{{ left + w * (ns.start + seg / 2) }}" y="{{ y0 + 25 }}" font-size="12" text-anchor="middle">{{ label }}</text>
+      {% set ns.start = ns.start + seg %}
+      <text x="{{ left + w * ns.start }}" y="{{ y0 + 60 }}" font-size="11" text-anchor="middle" class="d-muted">{{ f3(ns.start) }}</text>
+    {% endfor %}
+    <text x="{{ left }}" y="{{ y0 + 60 }}" font-size="11" text-anchor="middle" class="d-muted">0</text>
+    {% for u in categorical_example.uniforms %}
+      {% set ux = left + w * u %}
+      <line x1="{{ ux }}" y1="20" x2="{{ ux }}" y2="{{ y0 - 2 }}" stroke="var(--jj-violet)" stroke-width="2" marker-end="url(#pd-arrow)"></line>
+      <text x="{{ ux }}" y="16" font-size="12" text-anchor="middle" style="fill: var(--jj-violet)">u = {{ num(u) }}</text>
+    {% endfor %}
+    <text x="340" y="170" font-size="12" text-anchor="middle" class="d-muted">labels sit at their cumulative sums; a draw returns the segment it lands in</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Draws {{ categorical_example.uniforms|join(", ") }} give
+  {% for u in categorical_example.uniforms %}{{ categorical_example.labels[inverse_cdf_sample(cat.probs, u)] }}{% if not loop.last %}, {% endif %}{% endfor %}.
+  Over many draws each label turns up in proportion to its segment's length.
+</p>
+
+<h3 id="torch-distributions">In PyTorch</h3>
+
+<p>
+  <code>torch.distributions</code> wraps each family in an object with the same interface:
+  <code>sample</code>, <code>log_prob</code>, <code>entropy</code>, and for continuous
+  families <code>cdf</code>, <code>icdf</code> and <code>rsample</code>.
+  <a href="{{ src('torch/distributions/normal.py', 87, 101) }}"><code>Normal.log_prob</code></a>
+  is the quadratic above, line for line;
+  <a href="{{ src('torch/distributions/normal.py', 103, 108) }}"><code>Normal.cdf</code></a> is
+  the erf formula.
+  <a href="{{ src('torch/distributions/categorical.py', 56, 85) }}"><code>Categorical.__init__</code></a>
+  normalizes probabilities by their sum or logits by their logsumexp, and
+  <a href="{{ src('torch/distributions/categorical.py', 144, 149) }}"><code>Categorical.sample</code></a>
+  hands the probabilities to <code>torch.multinomial</code>.
+  <a href="{{ src('torch/distributions/bernoulli.py', 121, 125) }}"><code>Bernoulli.log_prob</code></a>
+  is the negative of binary cross-entropy with logits, which is the first sign that the
+  usual classification losses are log-probabilities in disguise.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Term</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>PMF p(x)</td>
+        <td>discrete x; Σ p(x) = 1</td>
+        <td>Probability of each listed value.</td>
+        <td>—</td>
+      </tr>
+      <tr>
+        <td>PDF p(x)</td>
+        <td>continuous x; ∫ p(x) dx = 1</td>
+        <td>Density; probability is area under it over a range.</td>
+        <td>—</td>
+      </tr>
+      <tr>
+        <td><code>Bernoulli</code></td>
+        <td><code>probs</code> or <code>logits</code>, any shape</td>
+        <td>1 with probability p, else 0.</td>
+        <td><a href="{{ src('torch/distributions/bernoulli.py', 20, 40) }}"><code>bernoulli.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Categorical</code></td>
+        <td><code>probs</code> or <code>logits</code>: <code>[..., K]</code></td>
+        <td>One of K classes; the last dimension is the categories, the rest is the batch.</td>
+        <td><a href="{{ src('torch/distributions/categorical.py', 13, 50) }}"><code>categorical.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Normal</code></td>
+        <td><code>loc</code> μ, <code>scale</code> σ &gt; 0, broadcast together</td>
+        <td>Gaussian with mean μ and standard deviation σ.</td>
+        <td><a href="{{ src('torch/distributions/normal.py', 15, 31) }}"><code>normal.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>log_prob(value)</code></td>
+        <td>value: <code>sample_shape + batch_shape</code></td>
+        <td>log p(value); what maximum-likelihood training maximizes.</td>
+        <td><a href="{{ src('torch/distributions/categorical.py', 151, 157) }}"><code>Categorical.log_prob</code></a></td>
+      </tr>
+      <tr>
+        <td><code>sample(shape)</code></td>
+        <td>returns <code>shape + batch_shape</code></td>
+        <td>Draw values; no gradient flows through the draw.</td>
+        <td><a href="{{ src('torch/distributions/bernoulli.py', 116, 119) }}"><code>Bernoulli.sample</code></a></td>
+      </tr>
+      <tr>
+        <td><code>rsample(shape)</code></td>
+        <td>continuous families only</td>
+        <td>Draw as μ + σε so gradients reach μ and σ (the reparameterization trick).</td>
+        <td><a href="{{ src('torch/distributions/normal.py', 82, 85) }}"><code>Normal.rsample</code></a></td>
+      </tr>
+      <tr>
+        <td><code>cdf</code> / <code>icdf</code></td>
+        <td>value or probability</td>
+        <td>F(x) = P(X ≤ x) and its inverse F⁻¹(u).</td>
+        <td><a href="{{ src('torch/distributions/normal.py', 103, 111) }}"><code>Normal.cdf</code>, <code>icdf</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>Rain and umbrellas.</strong> Out of {{ jt.total }} days, you record the weather
+    and whether a passer-by carried an umbrella. Divide each count by {{ jt.total }} to get
+    the joint distribution, then add along rows and columns for the marginals.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead>
+        <tr><th></th>{% for c in joint_example.columns %}<th>{{ c }}</th>{% endfor %}<th>p(weather)</th></tr>
+      </thead>
+      <tbody>
+        {% for r in joint_example.rows %}
+          <tr>
+            <th>{{ r }}</th>
+            {% for v in jt.joint[loop.index0] %}<td>{{ f2(v) }}</td>{% endfor %}
+            <td>{{ f2(jt.row_marginal[loop.index0]) }}</td>
+          </tr>
+        {% endfor %}
+        <tr><th>p(umbrella)</th>{% for v in jt.column_marginal %}<td>{{ f2(v) }}</td>{% endfor %}<td>1.00</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <ol>
+    <li>
+      <strong>Marginal.</strong> p(rain) = {{ f2(jt.joint[0][0]) }} + {{ f2(jt.joint[0][1]) }}
+      = {{ f2(jt.row_marginal[0]) }}, and p(umbrella) = {{ f2(jt.joint[0][0]) }} +
+      {{ f2(jt.joint[1][0]) }} = {{ f2(jt.column_marginal[0]) }}.
+    </li>
+    <li>
+      <strong>Conditional.</strong> p(umbrella | rain) = {{ f2(jt.joint[0][0]) }} /
+      {{ f2(jt.row_marginal[0]) }} = {{ f2(jt.given_row[0][0]) }}, while p(umbrella | sun) =
+      {{ f2(jt.joint[1][0]) }} / {{ f2(jt.row_marginal[1]) }} = {{ f2(jt.given_row[1][0]) }}.
+      Each row of conditionals sums to 1.
+    </li>
+    <li>
+      <strong>The other direction.</strong> p(rain | umbrella) = {{ f2(jt.joint[0][0]) }} /
+      {{ f2(jt.column_marginal[0]) }} = {{ f3(jt.given_column[0][0]) }}. Seeing an umbrella
+      raises the chance of rain from {{ f2(jt.row_marginal[0]) }} to about
+      {{ f2(jt.given_column[0][0]) }}. Turning one conditional into the other is Bayes' rule,
+      the subject of a later page.
+    </li>
+    <li>
+      <strong>Independence.</strong> If weather and umbrellas were independent,
+      p(rain, umbrella) would equal p(rain) · p(umbrella) = {{ f2(jt.row_marginal[0]) }} ×
+      {{ f2(jt.column_marginal[0]) }} = {{ f3(jt.product[0][0]) }}. It is
+      {{ f2(jt.joint[0][0]) }}, so they are {{ "independent" if jt.independent else "not independent" }}.
+    </li>
+  </ol>
+  <p>
+    <strong>Scoring a prediction.</strong> A classifier outputs logits
+    {{ categorical_example.logits|map("int")|join(", ") }} for cat, dog, bird. The softmax gives
+    probabilities {{ vec3(cat.probs) }}. If the true label is dog, the log-probability of the
+    data is log {{ f3(cat.probs[1]) }} = {{ f3(cat.log_probs[1]) }}, and its negative,
+    {{ f3(-cat.log_probs[1]) }}, is the cross-entropy loss for this example. Under a
+    Bernoulli(p = {{ num(p) }}), the outcome 1 has log-probability log {{ num(p) }} =
+    {{ f3(log(bernoulli_pmf(1, p))) }}.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>The same numbers from <code>torch.distributions</code>:</p>
+
+<pre><code>import torch
+from torch.distributions import Bernoulli, Categorical, Normal
+
+coin = Bernoulli(probs=torch.tensor({{ num(p) }}))
+coin.log_prob(torch.tensor(1.0))     # tensor(-1.2040), log 0.3
+coin.log_prob(torch.tensor(0.0))     # tensor(-0.3567), log 0.7
+
+animal = Categorical(logits=torch.tensor([2.0, 1.0, 0.0]))
+animal.probs                         # tensor([0.6652, 0.2447, 0.0900])
+animal.log_prob(torch.tensor(1))     # tensor(-1.4076), cross-entropy 1.4076
+animal.entropy()                     # tensor(0.8324)
+animal.sample((5,))                  # five class indices, e.g. tensor([0, 0, 1, 0, 2])
+
+z = Normal(loc=0.0, scale=1.0)
+z.log_prob(torch.tensor(2.0))        # tensor(-2.9189)
+z.cdf(torch.tensor(1.96))            # tensor(0.9750)
+
+mu = torch.tensor(1.0, requires_grad=True)
+x = Normal(mu, 2.0).rsample()        # mu + 2 * eps, differentiable in mu
+x.backward()
+mu.grad                              # tensor(1.)</code></pre>
+
+<p>And inverse-CDF sampling without any library, as in the diagram above:</p>
+
+<pre><code>import math
+
+def softmax(logits):
+    top = max(logits)
+    exps = [math.exp(z - top) for z in logits]
+    total = sum(exps)
+    return [e / total for e in exps]
+
+def sample(probs, u):
+    total = 0.0
+    for k, p in enumerate(probs):
+        total += p
+        if u &lt; total:
+            return k
+    return len(probs) - 1
+
+probs = softmax([2.0, 1.0, 0.0])
+[sample(probs, u) for u in [0.10, 0.50, 0.70, 0.95]]   # [0, 0, 1, 2]</code></pre>
+
+<p>
+  Subtracting the largest logit before exponentiating changes nothing mathematically (it
+  cancels in the ratio) but keeps <code>exp</code> from overflowing; PyTorch does the same
+  inside <code>logsumexp</code>.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Work in log space.</strong> The probability of a 1,000-token sentence is a
+    product of 1,000 numbers below 1, which underflows to 0 in floating point. Its log is a
+    sum, which doesn't. That's why every API returns <code>log_prob</code>, and why you
+    should pass <code>logits</code> rather than <code>probs</code> when you have them.
+  </li>
+  <li>
+    <strong>The Gaussian is convenient, not always right.</strong> Its tails fall off so
+    fast that a value 6σ out is treated as nearly impossible. Data with outliers or heavy
+    tails (incomes, latencies) is better served by Laplace, Student-t or a mixture.
+  </li>
+  <li>
+    <strong>Independence is an assumption.</strong> Treating examples as independent makes
+    the loss an average and lets you shuffle and batch, but time series, duplicated data and
+    leaked test examples break it, and the model's confidence ends up too high.
+  </li>
+  <li>
+    <strong>Sampling is not differentiable by default.</strong> <code>sample</code> cuts the
+    gradient. Continuous families offer <code>rsample</code>; discrete ones need score-function
+    estimators or relaxations such as Gumbel-softmax, both noisier.
+  </li>
+</ul>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="ml-quiz">
+  <summary>Can a PDF take the value 3? Can a PMF?</summary>
+  <p>A PDF can: Normal(0, 0.1) peaks near 3.99. Only the area under a density must be 1. A PMF cannot, since each value is itself a probability and must be at most 1.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Logits [5, 5, 5] and [105, 105, 105]: which categorical distributions do they give?</summary>
+  <p>The same one, uniform with ⅓ each. Adding a constant to every logit cancels in the softmax.</p>
+</details>
+<details class="ml-quiz">
+  <summary>In the umbrella table, what is p(sun | no umbrella)?</summary>
+  <p>{{ f2(jt.joint[1][1]) }} / {{ f2(jt.column_marginal[1]) }} = {{ f3(jt.given_column[1][1]) }}.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does maximizing a Gaussian likelihood with fixed σ give least squares?</summary>
+  <p>log p(y | μ) = −(y − μ)²/2σ² plus terms that don't depend on μ. Maximizing it over μ is minimizing (y − μ)².</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Blitzstein and Hwang. <em>Introduction to Probability</em>, 2nd ed., chapters 2–5. CRC Press, 2019.</li>
+  <li>Bishop. <em>Pattern Recognition and Machine Learning</em>, sections 1.2 and 2.1–2.3. Springer, 2006.</li>
+  <li>Goodfellow, Bengio and Courville. <em>Deep Learning</em>, chapter 3 (probability and information theory). MIT Press, 2016.</li>
+  <li>Kingma and Welling. <em>Auto-Encoding Variational Bayes.</em> ICLR 2014. <a href="https://arxiv.org/abs/1312.6114">arXiv:1312.6114</a> (the reparameterization trick).</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/distributions/normal.py', 15, 113) }}"><code>Normal</code></a>, <a href="{{ src('torch/distributions/categorical.py', 13, 163) }}"><code>Categorical</code></a>, <a href="{{ src('torch/distributions/bernoulli.py', 20, 130) }}"><code>Bernoulli</code></a>.</li>
+</ul>
