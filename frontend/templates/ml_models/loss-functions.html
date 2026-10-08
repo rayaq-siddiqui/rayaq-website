@@ -1,0 +1,518 @@
+{% set cf = constant_fit_example %}
+{% set fit = fit_constant(cf.targets, cf.delta) %}
+{% set r3 = regression_losses(3, cf.delta) %}
+{% set tr = triplet_example %}
+{% set trip = triplet_loss(tr) %}
+{% set nce = infonce_example %}
+{% set nce_hot = info_nce(nce.similarities, nce.temperatures[0]) %}
+{% set nce_cold = info_nce(nce.similarities, nce.temperatures[1]) %}
+{% set red = reduction_example %}
+{% set reduced = reduce_losses(red) %}
+{% macro f2(x) -%}{{ "%.2f"|format(x) }}{%- endmacro %}
+{% macro f3(x) -%}{{ "%.3f"|format(x) }}{%- endmacro %}
+{% macro num(x) -%}{{ "%g"|format(x) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Loss functions</h1>
+  <p class="tagline">
+    A loss turns "how wrong is this prediction" into one number that gradient descent can
+    shrink. This page shows that nearly every common loss is a negative log-likelihood under
+    some assumed noise, walks through the regression, classification, margin, ranking and
+    contrastive families, explains reduction and <code>ignore_index</code>, and ends with how
+    to choose one.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Training needs a target to minimize. The thing you actually care about, such as accuracy,
+  revenue, or whether a ranking put the right item first, is usually a step function of the
+  model's output: change a weight slightly and it doesn't move, so its gradient is zero almost
+  everywhere and useless for learning. A <strong>loss function</strong> is a smooth stand-in
+  that is small when predictions are good and has a gradient that points toward better ones.
+</p>
+<p>
+  The choice matters more than it looks. The same data fit with squared error and with
+  absolute error gives different models: one chases outliers, the other ignores them. A
+  classifier trained on squared error over probabilities learns slowly when it is confidently
+  wrong. And a loss averaged over a batch quietly changes meaning when some targets are
+  padding. You need to know what each loss assumes so you can pick the one that matches the
+  problem.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Pick a probability model for how targets scatter around your prediction, then score the
+  prediction by how surprised that model is by the real target: the
+  <a href="{{ url_for('ml_models', slug='entropy-and-kl') }}">negative log-likelihood</a>.
+  Each noise model gives a familiar loss:
+</p>
+<ul>
+  <li><strong>Gaussian noise</strong> → −log p is ½(y − ŷ)²/σ² plus a constant: <strong>mean squared error</strong>. Its minimizer is the <a href="{{ url_for('ml_models', slug='expectation-and-variance') }}">mean</a>.</li>
+  <li><strong>Laplace noise</strong> → |y − ŷ|/b plus a constant: <strong>mean absolute error</strong>. Its minimizer is the median.</li>
+  <li><strong>Bernoulli</strong> outcome with probability σ(z) → <strong>binary cross-entropy</strong>.</li>
+  <li><strong>Categorical</strong> outcome with probabilities softmax(z) → <strong>cross-entropy</strong>.</li>
+</ul>
+<p>
+  The shape of a loss tells you how it treats errors. Squared error grows quadratically, so
+  one residual of 10 costs as much as a hundred residuals of 1. Absolute error grows linearly,
+  so large errors get no extra weight. <strong>Huber</strong> is squared near zero and linear
+  past a threshold δ: smooth where errors are small, robust where they are large.
+</p>
+
+<div class="jj-diagram">
+  {% macro rx(r) -%}{{ 340 + 65 * r }}{%- endmacro %}
+  {% macro ry(l) -%}{{ 200 - 20 * l }}{%- endmacro %}
+  <svg viewBox="0 0 680 250" role="img" aria-labelledby="lf-reg-title lf-reg-desc">
+    <title id="lf-reg-title">Squared, absolute and Huber loss as the residual grows</title>
+    <desc id="lf-reg-desc">
+      Three curves of loss against the residual y minus y-hat, from −4 to 4. Squared error is a
+      parabola that leaves the plot past a residual of about 2.8. Absolute error is a V. Huber
+      loss with delta {{ num(cf.delta) }} follows half the parabola for residuals inside ±{{ num(cf.delta) }}
+      and a straight line outside. At a residual of 3 the losses are {{ num(r3.mse) }},
+      {{ num(r3.mae) }} and {{ num(r3.huber) }}.
+    </desc>
+    <line x1="{{ rx(-4) }}" y1="{{ ry(0) }}" x2="{{ rx(4) }}" y2="{{ ry(0) }}" class="d-line"></line>
+    <line x1="{{ rx(0) }}" y1="{{ ry(0) }}" x2="{{ rx(0) }}" y2="{{ ry(8.3) }}" class="d-line"></line>
+    <line x1="{{ rx(-cf.delta) }}" y1="{{ ry(0) }}" x2="{{ rx(-cf.delta) }}" y2="{{ ry(8) }}" class="d-line ml-dashed"></line>
+    <line x1="{{ rx(cf.delta) }}" y1="{{ ry(0) }}" x2="{{ rx(cf.delta) }}" y2="{{ ry(8) }}" class="d-line ml-dashed"></line>
+    <path d="M{% for i in range(57) %}{% set r = -2.8 + i * 0.1 %}{% if not loop.first %} L{% endif %}{{ rx(r) }},{{ ry(r * r) }}{% endfor %}" fill="none" stroke="var(--jj-red)" stroke-width="2"></path>
+    <path d="M{{ rx(-4) }},{{ ry(4) }} L{{ rx(0) }},{{ ry(0) }} L{{ rx(4) }},{{ ry(4) }}" fill="none" stroke="var(--jj-accent)" stroke-width="2"></path>
+    <path d="M{% for i in range(81) %}{% set r = -4 + i * 0.1 %}{% if not loop.first %} L{% endif %}{{ rx(r) }},{{ ry(huber(r, cf.delta)) }}{% endfor %}" fill="none" stroke="var(--jj-green)" stroke-width="2.5"></path>
+    {% for t in [-4, -2, 0, 2, 4] %}
+      <text x="{{ rx(t) }}" y="218" font-size="12" text-anchor="middle">{{ t }}</text>
+    {% endfor %}
+    {% for t in [0, 4, 8] %}
+      <text x="{{ rx(0)|float - 8 }}" y="{{ ry(t)|float + 4 }}" font-size="12" text-anchor="end">{{ t }}</text>
+    {% endfor %}
+    <text x="{{ rx(2.85) }}" y="{{ ry(8.2) }}" font-size="12" style="fill: var(--jj-red)">squared</text>
+    <text x="{{ rx(3.3) }}" y="{{ ry(3.3)|float + 16 }}" font-size="12" text-anchor="middle" style="fill: var(--jj-accent)">absolute</text>
+    <text x="{{ rx(3.5) }}" y="{{ ry(5.9)|float - 6 }}" font-size="12" text-anchor="middle" style="fill: var(--jj-green)">Huber δ = {{ num(cf.delta) }}</text>
+    <text x="{{ rx(-cf.delta) }}" y="{{ ry(8)|float - 6 }}" font-size="12" text-anchor="middle" class="d-muted">−δ</text>
+    <text x="{{ rx(cf.delta) }}" y="{{ ry(8)|float - 6 }}" font-size="12" text-anchor="middle" class="d-muted">δ</text>
+    <text x="340" y="242" font-size="12" text-anchor="middle" class="d-muted">residual r = y − ŷ</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Squared error punishes large residuals hardest; Huber keeps its smooth bottom but grows only
+  linearly past δ, so outliers can't dominate the gradient.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="regression-losses">Regression: squared, absolute, Huber</h3>
+
+<p class="ml-formula">
+  MSE = (1/N) Σ (yᵢ − ŷᵢ)² &nbsp;&nbsp; MAE = (1/N) Σ |yᵢ − ŷᵢ|<br>
+  Huber<sub>δ</sub>(r) = ½ r² if |r| ≤ δ, otherwise δ(|r| − ½δ)
+</p>
+<p>
+  The gradients tell the story. Squared error's gradient with respect to ŷ is −2r: it
+  grows with the error, so a big outlier pulls hard. Absolute error's gradient is −sign(r):
+  the same push for every error, which is robust but never shrinks near the answer, so it
+  bounces unless the learning rate decays. Huber's gradient is −r inside δ and −δ·sign(r)
+  outside: proportional when close, clipped when far. PyTorch's <code>SmoothL1Loss</code> is
+  Huber divided by δ (its <code>beta</code> plays the role of δ).
+</p>
+
+<h3 id="classification-losses">Classification: cross-entropy over logits</h3>
+
+<p>
+  A binary classifier outputs a logit z, and p = σ(z) = 1/(1 + e<sup>−z</sup>). The
+  Bernoulli negative log-likelihood of a label y ∈ {0, 1} is
+  −[y log p + (1 − y) log(1 − p)]. Computed literally, σ(z) rounds to exactly 1 for large z
+  and the log of 1 − p becomes −∞. Rewriting in terms of z gives a form that never overflows:
+</p>
+<p class="ml-formula">BCE(z, y) = max(z, 0) − z·y + log(1 + e<sup>−|z|</sup>)</p>
+<p>
+  This is what <code>BCEWithLogitsLoss</code> computes, and why it takes logits rather than
+  probabilities. The gradient is simply σ(z) − y. Multi-class is the same idea with softmax:
+  cross-entropy over logits, CE(z, k) = −z<sub>k</sub> + log Σ<sub>j</sub> e<sup>z<sub>j</sub></sup>,
+  with gradient softmax(z) − onehot(k). The
+  <a href="{{ url_for('ml_models', slug='entropy-and-kl') }}">entropy page</a> derives it in
+  full.
+</p>
+
+<h3 id="margin-losses">Margin losses: hinge and logistic</h3>
+
+<p>
+  With labels y ∈ {−1, +1}, the <strong>margin</strong> m = y·z is positive when the sign
+  of z is right and large when it is right with room to spare. The loss you'd like is 0-1:
+  1 if m ≤ 0, else 0. It has no useful gradient, so it is replaced by a convex upper bound:
+</p>
+<ul>
+  <li><strong>Hinge</strong>, max(0, 1 − m): zero once the margin passes 1, so correct and confident points stop contributing. This is the support vector machine's loss.</li>
+  <li><strong>Logistic</strong>, log(1 + e<sup>−m</sup>): binary cross-entropy rewritten in margin form. It never reaches zero, so it keeps nudging every point and gives calibrated probabilities.</li>
+</ul>
+
+<div class="jj-diagram">
+  {% macro mx(m) -%}{{ 340 + 85 * m }}{%- endmacro %}
+  {% macro my(l) -%}{{ 200 - 40 * l }}{%- endmacro %}
+  <svg viewBox="0 0 680 250" role="img" aria-labelledby="lf-margin-title lf-margin-desc">
+    <title id="lf-margin-title">Zero-one, hinge and logistic loss as functions of the margin</title>
+    <desc id="lf-margin-desc">
+      Loss against the margin m = y times z, from −3 to 3. The zero-one loss is a step: 1 for
+      m at or below 0, then 0. Hinge loss is a straight line falling from 4 at m = −3 to 0 at
+      m = 1, then flat at 0. Logistic loss is a smooth curve from about 3.05 at m = −3 through
+      0.69 at m = 0, approaching but never reaching 0. Both hinge and logistic lie on or above
+      the zero-one step.
+    </desc>
+    <line x1="{{ mx(-3) }}" y1="{{ my(0) }}" x2="{{ mx(3) }}" y2="{{ my(0) }}" class="d-line"></line>
+    <line x1="{{ mx(0) }}" y1="{{ my(0) }}" x2="{{ mx(0) }}" y2="{{ my(4.1) }}" class="d-line ml-dashed"></line>
+    <path d="M{{ mx(-3) }},{{ my(1) }} L{{ mx(0) }},{{ my(1) }} L{{ mx(0) }},{{ my(0) }} L{{ mx(3) }},{{ my(0) }}" fill="none" stroke="var(--jj-muted)" stroke-width="3"></path>
+    <path d="M{{ mx(-3) }},{{ my(4) }} L{{ mx(1) }},{{ my(0) }} L{{ mx(3) }},{{ my(0) }}" fill="none" stroke="var(--jj-violet)" stroke-width="2"></path>
+    <path d="M{% for i in range(61) %}{% set m = -3 + i * 0.1 %}{% if not loop.first %} L{% endif %}{{ mx(m) }},{{ my(margin_losses(m).logistic) }}{% endfor %}" fill="none" stroke="var(--jj-amber)" stroke-width="2"></path>
+    {% for t in [-3, -2, -1, 0, 1, 2, 3] %}
+      <text x="{{ mx(t) }}" y="218" font-size="12" text-anchor="middle">{{ t }}</text>
+    {% endfor %}
+    {% for t in [0, 1, 2, 3, 4] %}
+      <text x="{{ mx(-3)|float - 8 }}" y="{{ my(t)|float + 4 }}" font-size="12" text-anchor="end">{{ t }}</text>
+    {% endfor %}
+    <text x="{{ mx(-2.2) }}" y="{{ my(3.2)|float - 6 }}" font-size="12" style="fill: var(--jj-violet)">hinge</text>
+    <text x="{{ mx(-2.9) }}" y="{{ my(1.6) }}" font-size="12" style="fill: var(--jj-amber)">logistic</text>
+    <text x="{{ mx(-2.9) }}" y="{{ my(1)|float + 16 }}" font-size="12" class="d-muted">0-1</text>
+    <text x="{{ mx(1.6) }}" y="{{ my(0.7) }}" font-size="12" class="d-muted">correct with margin</text>
+    <text x="{{ mx(-1.5) }}" y="{{ my(0)|float - 8 }}" font-size="12" class="d-muted">wrong side</text>
+    <text x="340" y="242" font-size="12" text-anchor="middle" class="d-muted">margin m = y · z</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Hinge and logistic are convex upper bounds on the 0-1 loss: minimize them and you push the
+  error rate down while still getting gradients.
+</p>
+
+<h3 id="ranking-losses">Ranking and contrastive losses</h3>
+
+<p>
+  Sometimes there is no target value, only "this should score higher than that". Ranking
+  losses compare pairs or sets of scores:
+</p>
+<ul>
+  <li><strong>Margin ranking</strong>: max(0, −y(s₁ − s₂) + margin), for "s₁ should beat s₂ by at least the margin".</li>
+  <li><strong>Triplet</strong>: max(0, d(a, p) − d(a, n) + margin), pulling an anchor toward a positive and away from a negative in embedding space.</li>
+  <li><strong>InfoNCE</strong> (contrastive): cross-entropy where the "classes" are one positive and many negatives, scored by similarity divided by a temperature τ. CLIP and SimCLR use it with every other item in the batch as a negative.</li>
+</ul>
+<p>
+  The temperature sets how sharply the loss focuses. A small τ magnifies differences in
+  similarity, so the loss concentrates on the hardest negatives; a large τ spreads attention
+  across all of them.
+</p>
+
+<h3 id="reduction">Reduction and ignore_index</h3>
+
+<p>
+  Losses are computed per element, then <strong>reduced</strong>:
+  <code>reduction="none"</code> keeps the vector, <code>"sum"</code> adds it, and
+  <code>"mean"</code> (the default) divides by the count. For classification,
+  <code>ignore_index</code> marks targets to skip, usually padding tokens. Skipped elements
+  contribute 0 and are also left out of the mean's denominator, so the mean is over real
+  tokens only. With class <code>weight</code>s, the mean divides by the sum of the weights
+  of the kept targets instead.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Term</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>_Loss</code></td>
+        <td><code>reduction</code></td>
+        <td>Base class: stores the reduction every loss module uses.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 42, 50) }}"><code>_Loss</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.MSELoss</code></td>
+        <td>input, target any matching shape</td>
+        <td>Squared error; Gaussian NLL up to scale.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 567, 630) }}"><code>MSELoss</code></a>, <a href="{{ src('torch/nn/functional.py', 4271, 4346) }}"><code>F.mse_loss</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.L1Loss</code></td>
+        <td>input, target any matching shape</td>
+        <td>Absolute error; Laplace NLL up to scale.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 66, 133) }}"><code>L1Loss</code></a>, <a href="{{ src('torch/nn/functional.py', 4195, 4268) }}"><code>F.l1_loss</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.HuberLoss</code></td>
+        <td><code>delta</code> (default 1.0)</td>
+        <td>Quadratic inside δ, linear outside.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 1081, 1150) }}"><code>HuberLoss</code></a>, <a href="{{ src('torch/nn/functional.py', 4107, 4192) }}"><code>F.huber_loss</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.SmoothL1Loss</code></td>
+        <td><code>beta</code></td>
+        <td>Huber divided by β; equals L1 far from zero.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 988, 1078) }}"><code>SmoothL1Loss</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.BCEWithLogitsLoss</code></td>
+        <td>logits and targets same shape; <code>pos_weight</code></td>
+        <td>Sigmoid plus binary cross-entropy in the stable form.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 719, 844) }}"><code>BCEWithLogitsLoss</code></a>, <a href="{{ src('torch/nn/functional.py', 3634, 3701) }}"><code>F.binary_cross_entropy_with_logits</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.CrossEntropyLoss</code></td>
+        <td>logits <code>(N, C)</code>, target <code>(N,)</code>; <code>ignore_index</code>, <code>label_smoothing</code></td>
+        <td>Log-softmax plus NLL, over logits.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 1200, 1407) }}"><code>CrossEntropyLoss</code></a>, <a href="{{ src('torch/nn/functional.py', 3478, 3569) }}"><code>F.cross_entropy</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.NLLLoss</code></td>
+        <td>log-probabilities <code>(N, C)</code>, target <code>(N,)</code></td>
+        <td>Picks −log p of the target; the second half of cross-entropy.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 136, 266) }}"><code>NLLLoss</code></a>, <a href="{{ src('torch/nn/functional.py', 3180, 3244) }}"><code>F.nll_loss</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.HingeEmbeddingLoss</code>, <code>nn.MultiMarginLoss</code></td>
+        <td><code>margin</code>, <code>p</code></td>
+        <td>Hinge losses for pairs and for multi-class scores.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 847, 922) }}"><code>HingeEmbeddingLoss</code></a>, <a href="{{ src('torch/nn/modules/loss.py', 1810, 1903) }}"><code>MultiMarginLoss</code></a>, <a href="{{ src('torch/nn/functional.py', 4635, 4696) }}"><code>F.multi_margin_loss</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.MarginRankingLoss</code></td>
+        <td>x1, x2, y ∈ {−1, 1}</td>
+        <td>Pairwise ranking with a margin.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 1743, 1807) }}"><code>MarginRankingLoss</code></a>, <a href="{{ src('torch/nn/functional.py', 4349, 4397) }}"><code>F.margin_ranking_loss</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.TripletMarginLoss</code></td>
+        <td>anchor, positive, negative <code>(N, D)</code>; <code>margin</code>, <code>p</code></td>
+        <td>Embedding loss: anchor nearer the positive than the negative.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 1906, 2013) }}"><code>TripletMarginLoss</code></a>, <a href="{{ src('torch/nn/functional.py', 5977, 6016) }}"><code>F.triplet_margin_loss</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.CosineEmbeddingLoss</code></td>
+        <td>x1, x2, y ∈ {−1, 1}</td>
+        <td>Pull similar pairs to cosine 1, push others below a margin.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 1671, 1740) }}"><code>CosineEmbeddingLoss</code></a></td>
+      </tr>
+      <tr>
+        <td>InfoNCE</td>
+        <td>similarities / τ, positive index</td>
+        <td>Cross-entropy over one positive and many negatives.</td>
+        <td>van den Oord et al., 2018</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>One outlier, three losses.</strong> Fit a single constant c to the targets
+    {{ cf.targets|map("round", 1)|join(", ") }}, where the last value is an outlier. Each loss
+    picks a different c:
+  </p>
+  <ul>
+    <li>Squared error is minimized by the mean: c = {{ f3(fit.mse) }}. The outlier drags it above five of the six targets.</li>
+    <li>Absolute error is minimized by the median: c = {{ num(fit.mae) }}, the midpoint of 3.0 and 3.2. The outlier's size doesn't matter, only which side it is on.</li>
+    <li>Huber with δ = {{ num(cf.delta) }} sets the clipped residuals to sum to zero: c = {{ f2(fit.huber) }}. The outlier still counts, but only with force δ.</li>
+  </ul>
+</div>
+
+<div class="jj-diagram">
+  {% macro tx(t) -%}{{ 80 + 45 * (t - 1) }}{%- endmacro %}
+  <svg viewBox="0 0 680 200" role="img" aria-labelledby="lf-fit-title lf-fit-desc">
+    <title id="lf-fit-title">Where each loss puts the best constant</title>
+    <desc id="lf-fit-desc">
+      A number line from 1 to 13 with six targets marked as dots at
+      {{ cf.targets|join(", ") }}. Markers show the constant each loss chooses: the median at
+      {{ num(fit.mae) }} for absolute error, Huber at {{ f2(fit.huber) }}, and the mean at
+      {{ f3(fit.mse) }} for squared error, which is pulled toward the outlier at 12.
+    </desc>
+    <line x1="{{ tx(1) }}" y1="110" x2="{{ tx(13) }}" y2="110" class="d-line"></line>
+    {% for t in range(1, 14) %}
+      <line x1="{{ tx(t) }}" y1="106" x2="{{ tx(t) }}" y2="114" class="d-line"></line>
+      <text x="{{ tx(t) }}" y="132" font-size="12" text-anchor="middle">{{ t }}</text>
+    {% endfor %}
+    {% for t in cf.targets %}
+      <circle cx="{{ tx(t) }}" cy="110" r="5" style="fill: var(--jj-muted)"></circle>
+    {% endfor %}
+    <text x="{{ tx(12) }}" y="94" font-size="12" text-anchor="middle" class="d-muted">outlier</text>
+    <line x1="{{ tx(fit.mae) }}" y1="110" x2="{{ tx(fit.mae) }}" y2="160" stroke="var(--jj-accent)" stroke-width="2"></line>
+    <text x="{{ tx(fit.mae)|float - 4 }}" y="176" font-size="12" text-anchor="end" style="fill: var(--jj-accent)">median {{ num(fit.mae) }} (MAE)</text>
+    <line x1="{{ tx(fit.huber) }}" y1="110" x2="{{ tx(fit.huber) }}" y2="40" stroke="var(--jj-green)" stroke-width="2"></line>
+    <text x="{{ tx(fit.huber)|float - 4 }}" y="36" font-size="12" text-anchor="end" style="fill: var(--jj-green)">Huber {{ f2(fit.huber) }}</text>
+    <line x1="{{ tx(fit.mse) }}" y1="110" x2="{{ tx(fit.mse) }}" y2="60" stroke="var(--jj-red)" stroke-width="2"></line>
+    <text x="{{ tx(fit.mse)|float + 4 }}" y="56" font-size="12" style="fill: var(--jj-red)">mean {{ f2(fit.mse) }} (MSE)</text>
+    <text x="340" y="194" font-size="12" text-anchor="middle" class="d-muted">target value</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  The mean moves toward the outlier; the median ignores its size; Huber sits in between,
+  close to the median because only one point lies beyond δ.
+</p>
+
+<div class="ml-worked">
+  <p>
+    <strong>Binary cross-entropy over logits.</strong> For logit z = 2, σ(z) ≈ 0.881: the loss
+    is {{ f3(bce_with_logits(2, 1)) }} if the label is 1 and {{ f3(bce_with_logits(2, 0)) }} if
+    it is 0. At z = 0, the model is undecided and the loss is ln 2 = {{ f3(bce_with_logits(0, 1)) }}
+    either way. At z = −3 with label 1 the loss is {{ f3(bce_with_logits(-3, 1)) }}. At
+    z = 1000 a naive σ then log gives −log 0 = ∞ for label 0; the stable form gives exactly
+    {{ num(bce_with_logits(1000, 0)) }}.
+  </p>
+  <p>
+    <strong>Triplet.</strong> Anchor ({{ tr.anchor|map("int")|join(", ") }}), positive ({{ tr.positive|map("int")|join(", ") }}), negative
+    ({{ tr.negative|join(", ")|replace(".0", "") }}), margin {{ num(tr.margin) }}. d(a, p) = {{ num(trip.d_ap) }} and
+    d(a, n) = √3.25 = {{ f3(trip.d_an) }}, so the loss is
+    max(0, {{ num(trip.d_ap) }} − {{ f3(trip.d_an) }} + {{ num(tr.margin) }}) = {{ f3(trip.loss) }}.
+    The negative is farther than the positive but not by the full margin, so it still pushes.
+  </p>
+  <p>
+    <strong>InfoNCE and temperature.</strong> An image's similarities to three captions are
+    {{ nce.similarities|join(", ") }}, with the matching caption first. At τ = {{ num(nce.temperatures[0]) }}
+    softmax gives {{ nce_hot.probs|map("round", 3)|join(", ") }} and the loss is
+    {{ f3(nce_hot.loss) }}: the model barely prefers the match. At τ = {{ num(nce.temperatures[1]) }}
+    the same similarities give {{ nce_cold.probs|map("round", 4)|join(", ") }} and a loss of
+    {{ "%.4f"|format(nce_cold.loss) }}. Dividing by a small τ magnifies the 0.6 gap into 6
+    nats of logit.
+  </p>
+  <p>
+    <strong>Reduction with padding.</strong> Per-token losses {{ red.losses|join(", ") }} with
+    targets {{ red.targets|join(", ") }} and <code>ignore_index={{ red.ignore_index }}</code>.
+    With <code>reduction="none"</code> the third loss becomes 0. The sum is
+    {{ num(reduced.sum) }}, and the mean is {{ num(reduced.sum) }} / {{ reduced.count }} =
+    {{ f3(reduced.mean) }}, not {{ num(reduced.sum) }} / {{ red.losses|length }}: padding is
+    excluded from the count.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+y = torch.tensor([2.0, 2.5, 3.0, 3.2, 3.6, 12.0])
+c = torch.full_like(y, 3.0)
+F.mse_loss(c, y), F.l1_loss(c, y), F.huber_loss(c, y, delta=2.0)
+
+# binary: pass logits, never sigmoid outputs
+z = torch.tensor([2.0, 0.0, -3.0, 1000.0])
+t = torch.tensor([1.0, 1.0, 1.0, 0.0])
+F.binary_cross_entropy_with_logits(z, t, reduction="none")
+# tensor([0.1269, 0.6931, 3.0486, 1000.0000])
+
+# multi-class with padding: -100 is the default ignore_index
+logits = torch.randn(4, 10)
+target = torch.tensor([4, 7, -100, 2])
+F.cross_entropy(logits, target)              # mean over the 3 real targets
+
+# embeddings
+a, p, n = torch.tensor([[0.0, 0.0]]), torch.tensor([[1.0, 0.0]]), torch.tensor([[1.5, 1.0]])
+nn.TripletMarginLoss(margin=1.0)(a, p, n)    # tensor(0.1972)
+
+# InfoNCE: row i of the similarity matrix should pick column i
+img, txt = F.normalize(torch.randn(8, 64), dim=-1), F.normalize(torch.randn(8, 64), dim=-1)
+tau = 0.07
+sim = img @ txt.T / tau
+loss = (F.cross_entropy(sim, torch.arange(8)) + F.cross_entropy(sim.T, torch.arange(8))) / 2</code></pre>
+
+<p>The same losses in plain Python:</p>
+
+<pre><code>from math import exp, log1p, log, dist
+
+def huber(r, delta=1.0):
+    return 0.5 * r * r if abs(r) &lt;= delta else delta * (abs(r) - 0.5 * delta)
+
+def bce_with_logits(z, y):
+    return max(z, 0) - z * y + log1p(exp(-abs(z)))
+
+def hinge(margin):
+    return max(0.0, 1 - margin)
+
+def triplet(a, p, n, margin=1.0):
+    return max(0.0, dist(a, p) - dist(a, n) + margin)
+
+def info_nce(sims, tau, target=0):
+    logits = [s / tau for s in sims]
+    top = max(logits)
+    return -logits[target] + top + log(sum(exp(x - top) for x in logits))
+
+huber(3, 2), bce_with_logits(1000, 0), triplet((0, 0), (1, 0), (1.5, 1))
+# (4.0, 1000.0, 0.197)</code></pre>
+
+<h3 id="choosing">Choosing a loss</h3>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Task</th><th>Start with</th><th>Switch when</th></tr></thead>
+    <tbody>
+      <tr><td>Regression, clean noise</td><td>MSE</td><td>Outliers dominate: Huber or L1. You need the median or a quantile: L1 or pinball loss.</td></tr>
+      <tr><td>Binary or multi-label</td><td><code>BCEWithLogitsLoss</code></td><td>Classes are rare: set <code>pos_weight</code> or use focal loss.</td></tr>
+      <tr><td>Multi-class</td><td><code>CrossEntropyLoss</code></td><td>Overconfident: add <code>label_smoothing</code>. Imbalanced: class <code>weight</code>.</td></tr>
+      <tr><td>Max-margin classifier</td><td>Hinge</td><td>You need probabilities: logistic.</td></tr>
+      <tr><td>Embeddings, retrieval</td><td>InfoNCE with in-batch negatives</td><td>Small batches: triplet with mined hard negatives.</td></tr>
+      <tr><td>Sequences with padding</td><td>Cross-entropy with <code>ignore_index</code></td><td>Variable lengths bias per-sequence means: sum and divide by total tokens.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Robustness versus efficiency.</strong> MSE is the most efficient estimator when the
+    noise really is Gaussian, and the worst when it has heavy tails. L1 is robust but its
+    gradient never shrinks, which makes the final steps noisy. Huber needs a δ, which has to
+    match the scale of the targets.
+  </li>
+  <li>
+    <strong>Units matter.</strong> MSE is in squared target units, so rescaling targets
+    rescales the loss and the gradient; normalize targets or adjust the learning rate.
+  </li>
+  <li>
+    <strong>Surrogates aren't the metric.</strong> Lower cross-entropy usually means higher
+    accuracy, but not always; and a loss that ignores class balance can reach a low value by
+    ignoring a rare class. Track the metric you care about separately.
+  </li>
+  <li>
+    <strong>Reductions change the effective learning rate.</strong> Switching from mean to sum
+    multiplies gradients by the batch size. Averaging per sequence and then over sequences
+    weights short sequences' tokens more than averaging over all tokens.
+  </li>
+  <li>
+    <strong>Contrastive losses depend on the batch.</strong> InfoNCE with in-batch negatives
+    gets better with bigger batches, and its temperature is a sensitive hyperparameter
+    (often learned, as in CLIP).
+  </li>
+</ul>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="ml-quiz">
+  <summary>Which constant minimizes the mean absolute error to a set of targets?</summary>
+  <p>The median: moving c past a target changes how many residuals are positive versus negative, and the slope is zero when they balance.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why should a model feed logits, not sigmoid outputs, to its binary loss?</summary>
+  <p>For large |z|, σ(z) rounds to exactly 0 or 1 and log gives −∞. The logit form max(z, 0) − zy + log(1 + e<sup>−|z|</sup>) never overflows.</p>
+</details>
+<details class="ml-quiz">
+  <summary>A point is classified correctly with margin 2. What do hinge and logistic loss give it?</summary>
+  <p>Hinge: max(0, 1 − 2) = 0, so it no longer affects training. Logistic: log(1 + e<sup>−2</sup>) ≈ 0.127, a small push to grow the margin further.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Per-token losses are 1, 1, 1, 1 and two of the four targets are padding. What does mean cross-entropy with ignore_index report?</summary>
+  <p>1: the sum over the two real tokens is 2, divided by 2 real tokens, not by 4.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Huber. <em>Robust Estimation of a Location Parameter.</em> Annals of Mathematical Statistics, 1964.</li>
+  <li>Hastie, Tibshirani and Friedman. <em>The Elements of Statistical Learning</em>, 2nd ed., sections 10.6 and 12.3. Springer, 2009.</li>
+  <li>Bishop. <em>Pattern Recognition and Machine Learning</em>, sections 1.5 and 4.3. Springer, 2006.</li>
+  <li>Cortes and Vapnik. <em>Support-Vector Networks.</em> Machine Learning, 1995.</li>
+  <li>Schroff, Kalenichenko and Philbin. <em>FaceNet: A Unified Embedding for Face Recognition and Clustering.</em> 2015. <a href="https://arxiv.org/abs/1503.03832">arXiv:1503.03832</a></li>
+  <li>van den Oord, Li and Vinyals. <em>Representation Learning with Contrastive Predictive Coding.</em> 2018. <a href="https://arxiv.org/abs/1807.03748">arXiv:1807.03748</a></li>
+  <li>Lin et al. <em>Focal Loss for Dense Object Detection.</em> 2017. <a href="https://arxiv.org/abs/1708.02002">arXiv:1708.02002</a></li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/nn/modules/loss.py', 42, 50) }}"><code>torch/nn/modules/loss.py</code></a> and <a href="{{ src('torch/nn/functional.py', 3478, 3569) }}"><code>torch/nn/functional.py</code></a>.</li>
+</ul>
