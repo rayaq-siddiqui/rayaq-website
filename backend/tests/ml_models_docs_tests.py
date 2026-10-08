@@ -23,7 +23,7 @@ FORMAT_SECTIONS = [
     "connections",
     "references",
 ]
-FORMAT_EXEMPT = {"transformer"}
+FORMAT_EXEMPT = set()
 
 
 def all_urls():

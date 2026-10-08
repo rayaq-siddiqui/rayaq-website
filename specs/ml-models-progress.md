@@ -49,8 +49,7 @@ and push small commits to `main`. The phone check before each push is
 - [ ] Every §5 page is ready and meets its "Must cover" column and §6 (1 of 93 ready:
       `transformer`, still in the v1 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
-- [x] §7.5 tests exist and pass, including the §6 section order for every ready page except
-      the v1 `transformer`.
+- [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
 - [x] No ML package in either requirements file (tested). There is no offline data yet.
 - [x] Mobile at 390px: no horizontal page scroll on `/`, `/ml-models` or
       `/ml-models/transformer` (checked in headless Chromium).
@@ -438,8 +437,8 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 15. `embeddings` ✓
 16. `attention` ✓
 17. `layernorm-and-residuals` ✓
-18. `transformer` ✓ ← next (v1 format; retrofit it to §6 here, keeping its interactive pieces)
-19. `training-loop`
+18. `transformer` ✓
+19. `training-loop` ← next
 20. `decoder-only-llm`
 21. `decoding`
 22. `kv-cache`
