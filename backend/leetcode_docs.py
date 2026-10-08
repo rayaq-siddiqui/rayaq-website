@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -3620,6 +3620,67 @@ def rectangle_sum(table, row1, col1, row2, col2):
     return (table[row2 + 1][col2 + 1] - table[row1][col2 + 1]
             - table[row2 + 1][col1] + table[row1][col1])
 
+
+def compact_trace(nums, drop):
+    """Keep every value that is not `drop` by copying it to a write index; one step per read."""
+    items = list(nums)
+    write = 0
+    steps = []
+    for read, value in enumerate(items):
+        kept = value != drop
+        if kept:
+            items[write] = value
+            write += 1
+        steps.append({"read": read, "value": value, "kept": kept, "write": write, "array": list(items)})
+    return {"steps": steps, "length": write, "result": items[:write]}
+
+
+def rotate_stages(nums, k):
+    """Rotate right by k with three in-place reversals, returning the array after each stage."""
+    items = list(nums)
+    n = len(items)
+    k %= n or 1
+    stages = [("start", list(items))]
+    items.reverse()
+    stages.append(("reverse all", list(items)))
+    items[:k] = reversed(items[:k])
+    stages.append((f"reverse first {k}", list(items)))
+    items[k:] = reversed(items[k:])
+    stages.append((f"reverse last {n - k}", list(items)))
+    return stages
+
+
+def next_permutation_steps(nums):
+    """The pivot (rightmost ascent), the swap partner, and the array after swapping and after reversing."""
+    items = list(nums)
+    pivot = len(items) - 2
+    while pivot >= 0 and items[pivot] >= items[pivot + 1]:
+        pivot -= 1
+    if pivot < 0:
+        return {"pivot": None, "partner": None, "swapped": items, "result": items[::-1]}
+    partner = len(items) - 1
+    while items[partner] <= items[pivot]:
+        partner -= 1
+    items[pivot], items[partner] = items[partner], items[pivot]
+    swapped = list(items)
+    items[pivot + 1:] = reversed(items[pivot + 1:])
+    return {"pivot": pivot, "partner": partner, "swapped": swapped, "result": items}
+
+
+def cyclic_placement_trace(nums):
+    """Swap each value v in 1..n to index v-1; the first index holding the wrong value gives the missing positive."""
+    items = list(nums)
+    n = len(items)
+    swaps = []
+    for i in range(n):
+        while 1 <= items[i] <= n and items[items[i] - 1] != items[i]:
+            target = items[i] - 1
+            items[i], items[target] = items[target], items[i]
+            swaps.append({"index": i, "target": target, "array": list(items)})
+    missing = next((i + 1 for i in range(n) if items[i] != i + 1), n + 1)
+    return {"swaps": swaps, "placed": items, "missing": missing}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -3753,6 +3814,10 @@ def render(slug, render_template):
         "product_except_self": product_except_self,
         "prefix_table_2d": prefix_table_2d,
         "rectangle_sum": rectangle_sum,
+        "compact_trace": compact_trace,
+        "rotate_stages": rotate_stages,
+        "next_permutation_steps": next_permutation_steps,
+        "cyclic_placement_trace": cyclic_placement_trace,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,

@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (build run). `hash-maps-and-sets`, `counting-and-bucketing` and `prefix-sums` are ready, with all of Foundations (6 of 58 pages). **The next run is a build run** continuing at `in-place-array-tricks`.
+**Last updated:** 2026-10-08 (build run). `in-place-array-tricks` is ready (7 of 58 pages). **The next run is a build run** continuing at `two-pointers`.
 
 ## The Routine
 
@@ -39,10 +39,10 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 
 | List | Problems with a ready home | Size |
 |---|---|---|
-| Blind 75 | 7 | 75 |
-| Grind 169 | 16 | 169 |
-| NeetCode 150 | 9 | 150 |
-| NeetCode 250 | 21 | 250 |
+| Blind 75 | 8 | 75 |
+| Grind 169 | 20 | 169 |
+| NeetCode 150 | 10 | 150 |
+| NeetCode 250 | 25 | 250 |
 
 ## Queue
 
@@ -55,8 +55,8 @@ build once research is done.
 4. `hash-maps-and-sets` ✓
 5. `counting-and-bucketing` ✓
 6. `prefix-sums` ✓
-7. `in-place-array-tricks` ← next
-8. `two-pointers`
+7. `in-place-array-tricks` ✓
+8. `two-pointers` ← next
 9. `fixed-size-window`
 10. `variable-size-window`
 11. `stack`
@@ -173,3 +173,7 @@ Built `hash-maps-and-sets`, `counting-and-bucketing` and `prefix-sums` (3 of 3),
 helpers in `leetcode_docs.py`, two or more inline SVGs and the full §6 format. Coverage: Blind 75
 7/75, Grind 169 16/169, NeetCode 150 9/150, NeetCode 250 21/250. Mobile check passed on `/`,
 `/leetcode` and all six ready pages. Next: `in-place-array-tricks`.
+
+### 2026-10-08 — build run (in progress)
+
+Built `in-place-array-tricks` with tested helpers (`compact_trace`, `rotate_stages`, `next_permutation_steps`, `cyclic_placement_trace`).

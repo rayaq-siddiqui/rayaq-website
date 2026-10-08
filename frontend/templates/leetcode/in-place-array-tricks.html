@@ -1,0 +1,354 @@
+{% set drop_nums = [3, 2, 2, 3, 4, 2, 5] %}
+{% set compact = compact_trace(drop_nums, 2) %}
+{% set rot_nums = [1, 2, 3, 4, 5, 6, 7] %}
+{% set rot = rotate_stages(rot_nums, 3) %}
+{% set perm_nums = [1, 3, 5, 4, 2] %}
+{% set perm = next_permutation_steps(perm_nums) %}
+{% set cyc_nums = [3, 4, -1, 1] %}
+{% set cyc = cyclic_placement_trace(cyc_nums) %}
+<header class="jj-header">
+  <h1>In-place array tricks</h1>
+  <p class="tagline">
+    Rearranging an array without allocating a second one. Four moves cover almost every problem:
+    a write index that trails a read index, reversals that compose into rotations, a
+    scan-from-the-right rule for the next permutation, and "put each value where it belongs" so
+    the array becomes its own hash table. This page shows why each is correct, not just that it works.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Many array questions end with "do it in place" or "use O(1) extra space". Copying into a new
+  list would be easy; the constraint forces you to find a place in the array itself to keep
+  your work. The skill is to know which part of the array is already safe to overwrite.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Signal</th><th>Pattern</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>"Remove all X", "move zeroes to the end", keep order</td><td>Read and write indices</td><td>The write index never passes the read index, so unread values are never destroyed.</td></tr>
+    <tr><td>"Rotate the array by k" with O(1) space</td><td>Three reversals</td><td>Reversing everything and then each part restores order inside the parts.</td></tr>
+    <tr><td>"Next lexicographically larger arrangement"</td><td>Pivot, swap, reverse suffix</td><td>Change the shortest possible tail by the smallest possible amount.</td></tr>
+    <tr><td>Values are in 1..n and you need a missing or duplicate one</td><td>Cyclic placement</td><td>Index v − 1 is the natural slot for v, so the array doubles as a presence table.</td></tr>
+    <tr><td>Merge two sorted arrays into the first, which has spare room</td><td>Fill from the back</td><td>The back is empty space, so nothing is overwritten before it is read.</td></tr>
+    <tr><td>Several strings in one, no separator you can trust</td><td>Length prefixes</td><td>Reading a length tells you exactly where each piece ends.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Picture a conveyor belt with a worker standing at a gap. The worker looks at the item
+  arriving, and either lets it pass or slides it into the gap and moves the gap along. The gap
+  is always behind the item being inspected, so the worker never knocks over something they
+  have not looked at yet. That is the read and write index pair.
+</p>
+<p>
+  For rotations, picture reversing a line of people, and then reversing each of the two groups
+  that moved: each group is back in its original internal order, just on the opposite side.
+  For the cyclic trick, picture coat hooks numbered 1 to n: if each coat has a number, hang it
+  on its own hook, and any empty or wrong hook at the end reveals what is missing.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 250" role="img" aria-labelledby="lc-compact-title lc-compact-desc">
+    <title id="lc-compact-title">A write index trailing a read index while removing the value 2</title>
+    <desc id="lc-compact-desc">
+      The array {{ drop_nums | join(", ") }} shown at the start and after the scan. The read index visits every
+      cell. Cells equal to 2 are skipped and shown in amber; the other {{ compact.length }} cells are kept in
+      order and copied to the front, giving {{ compact.result | join(", ") }}. The write index ends at {{ compact.length }}.
+    </desc>
+    <text x="14" y="38" font-size="12" class="d-muted">before</text>
+    {% for value in drop_nums %}
+      <rect x="{{ 70 + loop.index0 * 84 }}" y="20" width="76" height="32" class="{{ 'lc-fill-a' if value == 2 else 'd-box' }}"></rect>
+      <text x="{{ 108 + loop.index0 * 84 }}" y="41" font-size="14" text-anchor="middle">{{ value }}</text>
+      <text x="{{ 108 + loop.index0 * 84 }}" y="68" font-size="11" text-anchor="middle" class="d-muted">read {{ loop.index0 }}</text>
+    {% endfor %}
+    <text x="14" y="148" font-size="12" class="d-muted">after</text>
+    {% for step in compact.steps %}
+      {% set final = compact.steps[-1].array[loop.index0] %}
+      <rect x="{{ 70 + loop.index0 * 84 }}" y="130" width="76" height="32" class="{{ 'lc-fill-g' if loop.index0 < compact.length else 'd-box' }}"></rect>
+      <text x="{{ 108 + loop.index0 * 84 }}" y="151" font-size="14" text-anchor="middle" class="{{ '' if loop.index0 < compact.length else 'd-muted' }}">{{ final }}</text>
+    {% endfor %}
+    <text x="70" y="196" font-size="13">write index ends at {{ compact.length }}: that is the new length.</text>
+    <text x="70" y="216" font-size="12" class="d-muted">Green: the kept prefix. Greyed cells after it are leftovers the answer ignores.</text>
+  </svg>
+</div>
+<p class="lc-caption">Amber values are never copied; the green prefix is the answer.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="invariant">Read and write indices</h3>
+<p>
+  Keep two indices. <code>read</code> scans every position; <code>write</code> is the next slot of
+  the output. The invariant: <code>nums[:write]</code> is exactly the answer for
+  <code>nums[:read]</code>, and <code>write ≤ read</code>. The second half matters for safety:
+  because write never gets ahead of read, assigning <code>nums[write] = nums[read]</code> only
+  overwrites cells that have already been read. Each step either keeps the value (copy, then
+  advance write) or drops it (do nothing). When read reaches the end, write is the new length.
+</p>
+
+<h3 id="reversal">Rotation by three reversals</h3>
+<p>
+  Rotating right by k moves the last k elements to the front, keeping the order within both
+  groups. Reversing the whole array puts those k elements at the front but backwards; reversing
+  the first k puts them back in order, and reversing the remaining n − k does the same for the
+  rest. Always reduce k modulo n first, or k larger than n walks off the array.
+</p>
+
+<h3 id="permutation">Next permutation</h3>
+<p>
+  Arrangements in dictionary order share longer and longer prefixes, so the next one changes
+  as short a tail as possible. Scan from the right for the first position (the pivot) whose
+  value is smaller than its right neighbour: everything to the right of it is non-increasing, so
+  that suffix is already the largest arrangement of its values and cannot go up. Swap the pivot
+  with the smallest suffix value that is larger than it, which makes the prefix as small a step
+  up as possible. The suffix is still non-increasing, so reversing it gives its smallest order.
+  If there is no pivot, the whole array is the last permutation and the answer is its reverse.
+</p>
+
+<h3 id="cyclic">Cyclic placement</h3>
+<p>
+  If the values are known to lie in 1..n, value v has exactly one home, index v − 1. For each
+  index, while the value there is in range and its home does not already hold that value, swap
+  it into its home. Each swap places at least one value permanently, so the total number of
+  swaps is at most n and the whole pass is O(n) even with the inner loop. Afterwards the first index
+  <code>i</code> where <code>nums[i] != i + 1</code> means <code>i + 1</code> is missing; if none, n + 1
+  is. The check for "home already holds it" is also what makes duplicates safe: without it,
+  two equal values would swap forever.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 260" role="img" aria-labelledby="lc-rot-title lc-rot-desc">
+    <title id="lc-rot-title">Rotating right by 3 with three reversals</title>
+    <desc id="lc-rot-desc">
+      Four rows of the array. {% for name, arr in rot %}{{ name }}: {{ arr | join(", ") }}{{ "; " if not loop.last else "." }}{% endfor %}
+      The last row is the original rotated right by 3.
+    </desc>
+    {% for name, arr in rot %}
+      {% set row = loop.index0 %}
+      <text x="14" y="{{ 38 + row * 56 }}" font-size="12" class="d-muted">{{ name }}</text>
+      {% for value in arr %}
+        {% set cls = 'd-box' if row == 0 else ('lc-fill-m' if row == 1 and loop.index0 < 3 else ('lc-fill-g' if row >= 2 and loop.index0 < 3 else ('lc-fill-a' if row == 3 else 'd-box'))) %}
+        <rect x="{{ 150 + loop.index0 * 72 }}" y="{{ 20 + row * 56 }}" width="66" height="30" class="{{ cls }}"></rect>
+        <text x="{{ 183 + loop.index0 * 72 }}" y="{{ 40 + row * 56 }}" font-size="14" text-anchor="middle">{{ value }}</text>
+      {% endfor %}
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">Colour tracks the three values that end up in front: backwards after the first reversal, in order after the second.</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  <strong>Removing the value 2</strong> from <code>{{ drop_nums }}</code>. After each read the table
+  shows the write index and the array's front.
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Read</th><th>Value</th><th>Kept?</th><th>Write after</th><th>Array</th></tr></thead>
+    <tbody>
+      {% for step in compact.steps %}
+        <tr><td class="num">{{ step.read }}</td><td class="num">{{ step.value }}</td><td>{{ "yes" if step.kept else "no" }}</td><td class="num">{{ step.write }}</td><td class="num">{{ step.array }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  The new length is {{ compact.length }} and the kept prefix is <code>{{ compact.result }}</code>.
+  Note that the tail of the array still holds stale values; the problem only asks for the prefix.
+</p>
+
+<p><strong>Rotation.</strong> Rotating <code>{{ rot_nums }}</code> right by 3:</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Stage</th><th>Array</th></tr></thead>
+    <tbody>
+      {% for name, arr in rot %}
+        <tr><td>{{ name }}</td><td class="num">{{ arr }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <strong>Next permutation</strong> of <code>{{ perm_nums }}</code>: the pivot is index
+  {{ perm.pivot }} (value {{ perm_nums[perm.pivot] }}, smaller than its right neighbour
+  {{ perm_nums[perm.pivot + 1] }}). The smallest larger value in the non-increasing suffix is
+  {{ perm_nums[perm.partner] }} at index {{ perm.partner }}. Swapping gives
+  <code>{{ perm.swapped }}</code>; reversing the suffix after the pivot gives
+  <code>{{ perm.result }}</code>.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 250" role="img" aria-labelledby="lc-cyc-title lc-cyc-desc">
+    <title id="lc-cyc-title">Cyclic placement on {{ cyc_nums | join(", ") }}</title>
+    <desc id="lc-cyc-desc">
+      The array {{ cyc_nums | join(", ") }} after each swap: {% for swap in cyc.swaps %}{{ swap.array | join(", ") }}{{ " then " if not loop.last else "" }}{% endfor %}.
+      In the final array {{ cyc.placed | join(", ") }}, index 1 holds {{ cyc.placed[1] }} instead of 2, so the first missing positive is {{ cyc.missing }}.
+    </desc>
+    <text x="14" y="38" font-size="12" class="d-muted">start</text>
+    {% for value in cyc_nums %}
+      <rect x="{{ 130 + loop.index0 * 100 }}" y="20" width="92" height="30" class="d-box"></rect>
+      <text x="{{ 176 + loop.index0 * 100 }}" y="40" font-size="14" text-anchor="middle">{{ value }}</text>
+    {% endfor %}
+    {% for swap in cyc.swaps %}
+      {% set row = loop.index %}
+      <text x="14" y="{{ 38 + row * 48 }}" font-size="12" class="d-muted">swap {{ row }}</text>
+      {% for value in swap.array %}
+        <rect x="{{ 130 + loop.index0 * 100 }}" y="{{ 20 + row * 48 }}" width="92" height="30" class="{{ 'lc-fill-g' if value == loop.index0 + 1 else 'd-box' }}"></rect>
+        <text x="{{ 176 + loop.index0 * 100 }}" y="{{ 40 + row * 48 }}" font-size="14" text-anchor="middle">{{ value }}</text>
+      {% endfor %}
+    {% endfor %}
+    <text x="130" y="{{ 60 + (cyc.swaps | length + 1) * 48 }}" font-size="13">green: value sits at its home index. First mismatch is index 1, so {{ cyc.missing }} is missing.</text>
+  </svg>
+</div>
+<p class="lc-caption">Each swap fixes at least one value for good, so the pass cannot loop.</p>
+
+<p>
+  <strong>Cyclic placement</strong> on <code>{{ cyc_nums }}</code> takes {{ cyc.swaps | length }} swaps and
+  leaves <code>{{ cyc.placed }}</code>. The first index whose value is not index + 1 is 1, so the
+  missing positive is {{ cyc.missing }}. Negative values and values above n are simply ignored.
+</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>def remove_value(nums, val):                    # returns new length
+    write = 0
+    for x in nums:
+        if x != val:
+            nums[write] = x
+            write += 1
+    return write
+
+
+def rotate(nums, k):                            # right by k, in place
+    n = len(nums)
+    k %= n
+
+    def reverse(lo, hi):                        # inclusive bounds
+        while lo &lt; hi:
+            nums[lo], nums[hi] = nums[hi], nums[lo]
+            lo += 1
+            hi -= 1
+
+    reverse(0, n - 1)
+    reverse(0, k - 1)
+    reverse(k, n - 1)
+
+
+def next_permutation(nums):
+    i = len(nums) - 2
+    while i &gt;= 0 and nums[i] &gt;= nums[i + 1]:
+        i -= 1                                  # pivot
+    if i &gt;= 0:
+        j = len(nums) - 1
+        while nums[j] &lt;= nums[i]:
+            j -= 1
+        nums[i], nums[j] = nums[j], nums[i]
+    nums[i + 1:] = reversed(nums[i + 1:])       # i == -1 reverses everything
+
+
+def first_missing_positive(nums):
+    n = len(nums)
+    for i in range(n):
+        while 1 &lt;= nums[i] &lt;= n and nums[nums[i] - 1] != nums[i]:
+            home = nums[i] - 1
+            nums[i], nums[home] = nums[home], nums[i]
+    return next((i + 1 for i in range(n) if nums[i] != i + 1), n + 1)
+
+
+def encode(strs):
+    return "".join(f"{len(s)}#{s}" for s in strs)
+
+
+def decode(text):
+    out, i = [], 0
+    while i &lt; len(text):
+        j = text.index("#", i)
+        size = int(text[i:j])
+        out.append(text[j + 1:j + 1 + size])
+        i = j + 1 + size
+    return out</code></pre>
+
+<h3 id="variations">Variations and edge cases</h3>
+<ul>
+  <li><strong>Move zeroes.</strong> The same write index, but after the scan fill the rest with
+    zeros, or swap instead of copy so the zeros accumulate behind the write index automatically.</li>
+  <li><strong>Remove duplicates from a sorted array.</strong> Keep a value when it differs from
+    the last one written (<code>nums[write - 1]</code>), the invariant being that the prefix has no duplicates.</li>
+  <li><strong>Merge from the back.</strong> When the destination has spare room at the end, fill
+    it from the largest element down; the write index then trails behind the unread values.</li>
+  <li><strong>Sign marking.</strong> For values in 1..n, flip the sign at index v − 1 to record
+    "v seen", using the sign bit as the hash set. Read the absolute value when scanning, or you
+    will treat a mark as data.</li>
+  <li><strong>Edge cases:</strong> k = 0 or k a multiple of n in rotation, a single-element
+    array, an all-descending array for next permutation, duplicates in cyclic placement (the home check),
+    zero or negative values, and strings that themselves contain your delimiter (hence the length prefix).</li>
+</ul>
+
+<h2 id="tradeoffs">Complexity and tradeoffs</h2>
+
+<ul>
+  <li><strong>Time:</strong> O(n) for every trick here. Cyclic placement has a nested loop but
+    at most n swaps in total, because each places one value permanently.</li>
+  <li><strong>Space:</strong> O(1) beyond the input (the encoded string aside).</li>
+  <li><strong>Baseline.</strong> Build a new list or a hash set: also O(n) time, but O(n) space.
+    In-place is worth it when the space limit is part of the question, and almost never otherwise.</li>
+  <li><strong>Costs.</strong> The input is mutated, so these cannot be used when callers share the
+    array; the code is subtle and off-by-one prone, so write the invariant down first. In an interview, say that a copy would be simpler
+    and that you are choosing the in-place version because the constraint asks.</li>
+</ul>
+
+<h2 id="problems">Problems</h2>
+
+<p>
+  The home problems span all four tricks plus length-prefix encoding. The "also uses" list shows
+  the same write-index idea inside two-pointer and palindrome problems.
+</p>
+{% include "leetcode/_problems.html" %}
+
+<h2 id="connections">Connections</h2>
+
+{% include "leetcode/_connections.html" %}
+<p>
+  Read and write indices are the simplest two-pointer pattern, which the next page generalises to
+  pointers that move toward each other. Cyclic placement replaces the hash set from the hash
+  maps page when values are bounded, and the counting page's three-way partition is the same
+  family of in-place swaps.
+</p>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="lc-quiz">
+  <summary>Why is it safe for the write index to overwrite cells in the remove-value loop?</summary>
+  <p>Because write ≤ read always holds, the cell being written has already been read. In the trace the write index ends at {{ compact.length }} while read reaches {{ drop_nums | length }}.</p>
+</details>
+<details class="lc-quiz">
+  <summary>Why does reversing the whole array and then each part rotate it?</summary>
+  <p>The first reversal moves each group to its correct side but flips both internally; reversing each group flips it back. For <code>{{ rot_nums }}</code> the result is <code>{{ rot[-1][1] }}</code>.</p>
+</details>
+<details class="lc-quiz">
+  <summary>In next permutation, why can the suffix after the pivot be reversed instead of sorted?</summary>
+  <p>It is non-increasing by the way the pivot was chosen, and the swap keeps it non-increasing, so reversing gives ascending order in O(n) instead of O(n log n). Here the suffix after the swap is <code>{{ perm.swapped[perm.pivot + 1:] }}</code>.</p>
+</details>
+<details class="lc-quiz">
+  <summary>Why does cyclic placement not loop forever on duplicates?</summary>
+  <p>The swap only happens when the home cell does not already hold the same value. A duplicate finds its home occupied and is left alone, and every real swap places a value permanently, so at most n swaps happen; the example needed {{ cyc.swaps | length }}.</p>
+</details>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Cormen, Leiserson, Rivest and Stein, <em>Introduction to Algorithms</em>: the partition step
+    of quicksort (chapter 7) is the classic in-place read and write pattern, and chapter 2 gives loop invariants.</li>
+  <li>Sedgewick and Wayne, <em>Algorithms</em>: section 2.3 on in-place partitioning, and section 5.1 on key-indexed counting.</li>
+  <li>Steven Skiena, <em>The Algorithm Design Manual</em>: the section on generating permutations.</li>
+  <li>Donald Knuth, <em>The Art of Computer Programming</em>, volume 4A, section 7.2.1.2: Algorithm L, the next-permutation procedure in lexicographic order.</li>
+  <li>The <a href="https://neetcode.io/roadmap" rel="noopener">NeetCode roadmap</a> and the
+    Blind 75, Grind 169, NeetCode 150 and NeetCode 250 lists, used as the index of topics and
+    problems.</li>
+</ul>

@@ -332,3 +332,26 @@ def test_prefix_helpers_match_the_page():
     assert "There are 4 such subarrays" in body
     assert "<code>[24, 12, 8, 6]</code>" in body
     assert "21 − 4 − 9 + 3 = 11" in body
+
+
+def test_in_place_helpers_match_the_page():
+    trace = leetcode_docs.compact_trace([3, 2, 2, 3, 4, 2, 5], 2)
+    assert trace["length"] == 4 and trace["result"] == [3, 3, 4, 5]
+    assert [s["write"] for s in trace["steps"]] == [1, 1, 1, 2, 3, 3, 4]
+    assert leetcode_docs.compact_trace([], 1)["length"] == 0
+    stages = leetcode_docs.rotate_stages([1, 2, 3, 4, 5, 6, 7], 3)
+    assert stages[1][1] == [7, 6, 5, 4, 3, 2, 1] and stages[3][1] == [5, 6, 7, 1, 2, 3, 4]
+    assert leetcode_docs.rotate_stages([1, 2], 5)[-1][1] == [2, 1]
+    perm = leetcode_docs.next_permutation_steps([1, 3, 5, 4, 2])
+    assert (perm["pivot"], perm["partner"]) == (1, 3)
+    assert perm["swapped"] == [1, 4, 5, 3, 2] and perm["result"] == [1, 4, 2, 3, 5]
+    assert leetcode_docs.next_permutation_steps([3, 2, 1])["result"] == [1, 2, 3]
+    cyc = leetcode_docs.cyclic_placement_trace([3, 4, -1, 1])
+    assert len(cyc["swaps"]) == 3 and cyc["placed"] == [1, -1, 3, 4] and cyc["missing"] == 2
+    assert leetcode_docs.cyclic_placement_trace([1, 1])["missing"] == 2
+    assert leetcode_docs.cyclic_placement_trace([1, 2, 3])["missing"] == 4
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/in-place-array-tricks").get_data(as_text=True))
+    assert "The new length is 4 and the kept prefix is <code>[3, 3, 4, 5]</code>" in body
+    assert "<code>[1, 4, 2, 3, 5]</code>" in body
+    assert "takes 3 swaps and leaves <code>[1, -1, 3, 4]</code>" in body
+    assert "<td class=\"num\">[5, 6, 7, 1, 2, 3, 4]</td>" in body
