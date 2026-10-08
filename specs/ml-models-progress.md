@@ -417,6 +417,7 @@ Jinja constant-folds `"inf"|float` into a bare `inf` in compiled template code, 
 | `ml-models: build the attention page` | The page, `ready`, queue ✓ |
 | `ml-models: add tested normalization helpers` | `layer_norm_row`, `rms_norm_row`, `batch_norm_columns`, `group_norm_row`, running statistics, residual blocks, `residual_demo` |
 | `ml-models: build the layernorm-and-residuals page` | The page, `ready`, queue ✓ |
+| `docs: record the maintain check` | All three pins checked on 2026-10-08: latest stable is still PyTorch v2.14.1, scikit-learn 1.9.1, XGBoost v3.4.2 (PyTorch has only 2.15.0 release candidates), so no pin moved |
 
 ## Queue
 
