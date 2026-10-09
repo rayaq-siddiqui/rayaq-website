@@ -357,6 +357,8 @@ Gaps: the `train_test_split` `shuffle=False` line range is cited from reading th
 
 Verified at scikit-learn 1.9.1: `pipeline.py` `Pipeline` 93-1433 (`_fit` 516-576 with `clone` at 553, `fit` 582-653, `predict` 747-801); `model_selection/_split.py` `GroupKFold` 533-686, `TimeSeriesSplit` 1116-1327 (`gap` default 0), `train_test_split` 2797-2977; `metrics/_classification.py` `accuracy_score` 340-427, `confusion_matrix` 428-635, `f1_score` 1448-1642, `precision_score` 2498-2680, `recall_score` 2681-2854, `log_loss` 3321-3446, `_log_loss` 3449-3469; `model_selection/_split.py` `KFold` 437-532, `StratifiedKFold` 687-891, `StratifiedGroupKFold` 892-1115; `_validation.py` `cross_validate` 101-427, `cross_val_score` 512-667, `_fit_and_score` 670-934, `cross_val_predict` 1031-1285; `metrics/_ranking.py` `auc` 53-127, `average_precision_score` 128-311, `roc_auc_score` 511-747, `precision_recall_curve` 1059-1217, `roc_curve` 1218-1382.
 
+Pins checked this run with `git ls-remote --tags`: PyTorch v2.14.1, scikit-learn 1.9.1 and XGBoost v3.4.2 are still the latest stable releases; no pin moved.
+
 Gaps: the data-leakage references (Kaufman et al. 2012, Kapoor and Narayanan 2023, ESL section 7.10.2) and the classification-metrics references (Fawcett 2006, Davis and Goadrich 2006, Saito and Rehmsmeier 2015) and the cross-validation references (ESL ch. 7, Varma and Simon 2006, Cawley and Talbot 2010, Bengio and Grandvalet 2004) are cited from memory and were not opened. The checkout at the start of this run was a stale shallow clone; it was unshallowed and fast-forwarded before work began.
 
 ## Queue
