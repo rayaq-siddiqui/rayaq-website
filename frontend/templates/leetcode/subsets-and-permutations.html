@@ -1,0 +1,350 @@
+{% set items = [1, 2, 3] %}
+{% set sub = subsets_of(items) %}
+{% set perm = permutations_of(items) %}
+{% set sub_tree = backtrack_tree(items, "subsets") %}
+{% set perm_tree = backtrack_tree(items, "permutations") %}
+{% set dup_input = [2, 1, 2] %}
+{% set dup = subsets_with_duplicates(dup_input) %}
+{% set dup_raw = subsets_with_duplicates(dup_input, false) %}
+{% set comb = combinations_of(4, 2) %}
+{% set comb_raw = combinations_of(4, 2, false) %}
+{% set paren = parentheses_of(3) %}
+<header class="jj-header">
+  <h1>Subsets, permutations and combinations</h1>
+  <p class="tagline">
+    Some questions ask for every answer, not the best one: every subset, every ordering, every valid arrangement.
+    The tool is one small recursive routine that chooses an item, explores everything that follows from the choice,
+    then unchooses it so the next option starts from a clean slate. Subsets, permutations, combinations and
+    well-formed parentheses differ only in which items the loop is allowed to offer next.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  You are given a small collection and asked to <em>list</em> or <em>count by listing</em> every selection that fits a
+  rule. The input size is tiny (usually 20 or fewer items) because the answer itself is exponential: a set of n items
+  has 2<sup>n</sup> subsets and n! orderings, so no algorithm can print them faster than they exist. What matters is
+  generating each exactly once, with no repeats, and without building thousands of throwaway copies.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Signal</th><th>Pattern</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>"Return all subsets" or "the power set"</td><td>Include-or-skip recursion, or a loop from a start index</td><td>Every node of the search is itself an answer, and the start index prevents the same subset in a different order.</td></tr>
+    <tr><td>"All orderings" or "all arrangements"</td><td>Permutation search with a used marker</td><td>Order matters, so any unused item may come next.</td></tr>
+    <tr><td>"Choose k of n"</td><td>Combinations with a start index and an early stop</td><td>Order does not matter, and the path stops growing at length k.</td></tr>
+    <tr><td>"Input may contain duplicates, no repeated answers"</td><td>Sort, then skip a value equal to its left sibling</td><td>Two equal choices at the same depth lead to identical subtrees.</td></tr>
+    <tr><td>"Generate all valid strings of some shape"</td><td>Build character by character, offer only moves that keep the prefix valid</td><td>The rule is enforced while building, so dead prefixes are never extended.</td></tr>
+    <tr><td>"Maximum or minimum of something over all selections"</td><td>Dynamic programming if subproblems overlap</td><td>If you need one number rather than the list, listing everything is wasted work.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Picture packing a bag from three items on a table. You decide about the first item, then the second, then the
+  third. Each decision splits the future in two, so after three decisions you have visited every one of the eight
+  possible bags. That is a tree of decisions, and backtracking is simply a walk over that tree.
+</p>
+<p>
+  The only trick is to use <em>one</em> shared bag instead of a new bag per branch. Put an item in, walk everything
+  that can follow, then take the item back out. Taking it back out is the "backtrack" step, and it is what restores
+  the bag to the state the parent expected. Whenever the search reaches a spot that counts as an answer, you copy the
+  bag into the results, because the bag itself will keep changing.
+</p>
+<p>
+  Subsets and permutations are the same walk with different offers at each node. For subsets you only offer items
+  <em>after</em> the last one you took, so {1, 2} is reached once rather than also as {2, 1}. For permutations you
+  offer every item you have not used yet, so order creates distinct answers.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 {{ 60 + sub_tree.columns * 90 }} {{ 40 + sub_tree.levels * 56 }}" role="img" aria-labelledby="lc-sub-tree-title lc-sub-tree-desc">
+    <title id="lc-sub-tree-title">The subset search tree for {{ items | join(", ") }}</title>
+    <desc id="lc-sub-tree-desc">
+      A tree with {{ sub_tree.nodes | length }} nodes, one for each subset of {{ items | join(", ") }}. The root is the
+      empty subset. Each child adds one item larger in position than the last item taken. Every node is recorded as
+      an answer, in the order {% for r in sub.results %}{{ r | join("") or "empty" }}{{ ", " if not loop.last }}{% endfor %}.
+    </desc>
+    {% for node in sub_tree.nodes if node.parent is not none %}
+      {% set par = sub_tree.nodes[node.parent] %}
+      <line x1="{{ 40 + par.x * 90 }}" y1="{{ 32 + par.depth * 56 }}" x2="{{ 40 + node.x * 90 }}" y2="{{ 32 + node.depth * 56 }}" class="d-line"></line>
+    {% endfor %}
+    {% for node in sub_tree.nodes %}
+      <circle cx="{{ 40 + node.x * 90 }}" cy="{{ 32 + node.depth * 56 }}" r="15" class="{{ 'lc-fill-a' if node.depth == 0 else 'd-box' }}"></circle>
+      <text x="{{ 40 + node.x * 90 }}" y="{{ 37 + node.depth * 56 }}" font-size="13" text-anchor="middle">{{ node.path[-1] if node.path else "∅" }}</text>
+      <text x="{{ 62 + node.x * 90 }}" y="{{ 24 + node.depth * 56 }}" font-size="10" class="d-muted">{{ "{" }}{{ node.path | join(",") }}{{ "}" }}</text>
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">
+  Each circle shows the item just added; the label beside it is the whole bag at that moment. Every node of the
+  tree is a subset, so all {{ sub_tree.nodes | length }} are recorded. The diagram scrolls sideways on a narrow
+  screen.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="template">The template in words</h3>
+<p>
+  Keep a shared <code>path</code> list and a recursive function <code>explore</code>. On entry, decide whether the
+  current path is an answer and, if so, copy it into the results. Then loop over the options that are legal here. For
+  each one: append it to the path (choose), call <code>explore</code> (explore), pop it off again (unchoose).
+</p>
+
+<h3 id="invariant">The invariant</h3>
+<p>
+  When <code>explore</code> returns, the path is exactly what it was when the call began. That holds by induction:
+  each iteration of the loop pushes one item and pops one item, and the recursive call in between leaves the path
+  unchanged by the same argument on a shorter remaining problem. Because of that invariant, the caller can keep looping
+  without any cleanup, and the whole search uses one list for its path.
+</p>
+
+<h3 id="no-repeats">Why each answer appears exactly once</h3>
+<p>
+  Every answer corresponds to one root-to-node path in the tree, and the tree is built so that path is unique. For
+  subsets, the loop starts at <code>start</code>, so items are always taken in increasing position, which gives each
+  subset one canonical order. For permutations, nothing is skipped except what is already on the path, so each distinct
+  ordering of the input positions is exactly one path. Counting nodes confirms it: the subset tree has 2<sup>n</sup>
+  nodes and the permutation tree has n! leaves.
+</p>
+
+<h3 id="duplicates">Repeated values</h3>
+<p>
+  If the input has equal values, two different choices at the same depth can produce the same subtree, and the answers
+  repeat. Sort first so equal values sit together, then inside the loop skip index <code>i</code> when
+  <code>i &gt; start</code> and <code>nums[i] == nums[i - 1]</code>. The first of a run of equal values is allowed at
+  any depth; a later one in the run may only be used after the earlier one is already on the path. That condition
+  <code>i &gt; start</code> is the whole subtlety: it says "this value was already offered to this parent".
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 {{ 60 + perm_tree.columns * 90 }} {{ 40 + perm_tree.levels * 56 }}" role="img" aria-labelledby="lc-perm-tree-title lc-perm-tree-desc">
+    <title id="lc-perm-tree-title">The permutation search tree for {{ items | join(", ") }}</title>
+    <desc id="lc-perm-tree-desc">
+      A tree with {{ perm_tree.nodes | length }} nodes and {{ perm.results | length }} leaves. Each level picks one of the
+      items not yet on the path. The leaves, left to right, are the permutations
+      {% for r in perm.results %}{{ r | join("") }}{{ ", " if not loop.last }}{% endfor %}.
+    </desc>
+    {% for node in perm_tree.nodes if node.parent is not none %}
+      {% set par = perm_tree.nodes[node.parent] %}
+      <line x1="{{ 40 + par.x * 90 }}" y1="{{ 32 + par.depth * 56 }}" x2="{{ 40 + node.x * 90 }}" y2="{{ 32 + node.depth * 56 }}" class="d-line"></line>
+    {% endfor %}
+    {% for node in perm_tree.nodes %}
+      <circle cx="{{ 40 + node.x * 90 }}" cy="{{ 32 + node.depth * 56 }}" r="15" class="{{ 'lc-fill-g' if node.leaf else ('lc-fill-a' if node.depth == 0 else 'd-box') }}"></circle>
+      <text x="{{ 40 + node.x * 90 }}" y="{{ 37 + node.depth * 56 }}" font-size="13" text-anchor="middle">{{ node.path[-1] if node.path else "∅" }}</text>
+      {% if node.leaf %}<text x="{{ 40 + node.x * 90 }}" y="{{ 66 + node.depth * 56 }}" font-size="10" text-anchor="middle" class="d-muted">{{ node.path | join("") }}</text>{% endif %}
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">
+  Green leaves are complete permutations. Each level removes one item from the pool, so the fan-out is 3, then 2,
+  then 1: 3! = {{ perm.results | length }} leaves in all.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  Generate every subset of {{ items | join(", ") }}. The search makes {{ sub.calls }} calls to <code>explore</code>,
+  one per subset, and records each on entry, in this order.
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Call</th><th>Path on entry</th><th>Recorded</th></tr></thead>
+    <tbody>
+      {% for r in sub.results %}
+        <tr><td class="num">{{ loop.index }}</td><td class="num">{{ "{" }}{{ r | join(", ") }}{{ "}" }}</td><td class="num">{{ "{" }}{{ r | join(", ") }}{{ "}" }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  The same {{ items | length }} items have {{ perm.results | length }} permutations, found after
+  {{ perm.calls }} calls ({{ perm.results | map("join", "") | join(", ") }}). Only the calls at full depth
+  record an answer; the rest are interior nodes.
+</p>
+<p>
+  <strong>Duplicates.</strong> The input {{ dup_input | join(", ") }} sorts to {{ dup_input | sort | join(", ") }}.
+  Without the skip rule the search yields {{ dup_raw.results | length }} subsets, including repeats. With the skip rule
+  it cuts {{ dup.skipped }} branches and yields {{ dup.results | length }} distinct subsets:
+  {% for r in dup.results %}{{ "{" }}{{ r | join(",") }}{{ "}" }}{{ ", " if not loop.last }}{% endfor %}.
+</p>
+<p>
+  <strong>Combinations.</strong> Choosing 2 of 1 to 4 gives {{ comb.results | length }} pairs
+  ({% for r in comb.results %}{{ r | join("") }}{{ ", " if not loop.last }}{% endfor %}) in {{ comb.calls }} calls.
+  Without the early stop the loop would run all the way to 4 and make {{ comb_raw.calls }} calls; the stop skips
+  starts that could not leave enough numbers to fill the path.
+</p>
+<p>
+  <strong>Parentheses.</strong> Three pairs give {{ paren.results | length }} well-formed strings
+  ({{ paren.results | join(", ") }}) after {{ paren.calls }} calls. The rule "close only if something is open" prunes
+  every invalid prefix before it is built.
+</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>def subsets(nums):
+    results, path = [], []
+
+    def explore(start):
+        results.append(path[:])          # every node is an answer; copy, because path keeps changing
+        for i in range(start, len(nums)):
+            path.append(nums[i])
+            explore(i + 1)
+            path.pop()
+
+    explore(0)
+    return results
+
+
+def permutations(nums):
+    results, path = [], []
+    used = [False] * len(nums)
+
+    def explore():
+        if len(path) == len(nums):
+            results.append(path[:])
+            return
+        for i in range(len(nums)):
+            if used[i]:
+                continue
+            used[i] = True
+            path.append(nums[i])
+            explore()
+            path.pop()
+            used[i] = False
+
+    explore()
+    return results</code></pre>
+
+<h3 id="variations">Variations and edge cases</h3>
+<pre><code>def subsets_with_dup(nums):
+    nums.sort()
+    results, path = [], []
+
+    def explore(start):
+        results.append(path[:])
+        for i in range(start, len(nums)):
+            if i &gt; start and nums[i] == nums[i - 1]:
+                continue
+            path.append(nums[i])
+            explore(i + 1)
+            path.pop()
+
+    explore(0)
+    return results
+
+
+def combine(n, k):
+    results, path = [], []
+
+    def explore(start):
+        if len(path) == k:
+            results.append(path[:])
+            return
+        for value in range(start, n - (k - len(path)) + 2):
+            path.append(value)
+            explore(value + 1)
+            path.pop()
+
+    explore(1)
+    return results
+
+
+def generate_parentheses(n):
+    results = []
+
+    def explore(text, opened, closed):
+        if len(text) == 2 * n:
+            results.append(text)
+            return
+        if opened &lt; n:
+            explore(text + "(", opened + 1, closed)
+        if closed &lt; opened:
+            explore(text + ")", opened, closed + 1)
+
+    explore("", 0, 0)
+    return results</code></pre>
+<ul>
+  <li><strong>Copying the path.</strong> <code>results.append(path)</code> stores a reference to the one shared list,
+    which ends up empty. Always store <code>path[:]</code> or <code>list(path)</code>.</li>
+  <li><strong>Duplicates in permutations.</strong> Sort the input and, in the loop, skip index <code>i</code> if
+    <code>nums[i] == nums[i - 1]</code> and <code>nums[i - 1]</code> is not currently used. That keeps equal values in
+    their original relative order, so each distinct ordering is built once.</li>
+  <li><strong>Start index versus used array.</strong> A start index is for choices where order does not matter
+    (subsets, combinations); a used array is for orderings. Mixing them up either loses answers or repeats them.</li>
+  <li><strong>Bitmask alternative.</strong> For subsets only, counting from 0 to 2<sup>n</sup> - 1 and reading the
+    bits of each number enumerates all of them without recursion.</li>
+  <li><strong>Edge cases:</strong> an empty input (one subset, the empty one; one permutation, the empty list),
+    k equal to 0 or n, k greater than n (no answers), and a phone-digit style input where some choice lists are empty.</li>
+</ul>
+
+<h2 id="tradeoffs">Complexity and tradeoffs</h2>
+
+<ul>
+  <li><strong>Time:</strong> proportional to the number of tree nodes times the cost of copying an answer. Subsets are
+    O(n · 2<sup>n</sup>), permutations are O(n · n!), combinations of k from n are O(k · C(n, k)). Output size sets a
+    floor you cannot beat.</li>
+  <li><strong>Space:</strong> O(n) for the recursion stack and the shared path, not counting the results.</li>
+  <li><strong>Baseline.</strong> Building a new list at every call is easier to write and costs an extra copy per node;
+    the shared path with push and pop avoids that.</li>
+  <li><strong>Pruning pays.</strong> For combinations, the early stop cut the calls from {{ comb_raw.calls }} to
+    {{ comb.calls }} for choosing 2 of 4, and the saving grows quickly with n. Stopping when no valid completion exists is
+    the idea the next page builds on.</li>
+  <li><strong>When it fails.</strong> If the input is large (say 30 items) or you need only a count, a maximum or a
+    yes/no, enumerating everything is hopeless. Use dynamic programming or a formula instead.</li>
+</ul>
+
+<h2 id="problems">Problems</h2>
+
+<p>
+  Every home problem asks for the full list of selections. Sum of All Subset XOR Totals is the odd one out: it can be
+  answered by listing subsets, which is the intended route here, but it also has a closed form that avoids the
+  enumeration. Combination Sum and Combination Sum II appear below because they reuse the template; their home is the
+  next page, where the sum limit becomes the pruning rule.
+</p>
+{% include "leetcode/_problems.html" %}
+
+<h2 id="connections">Connections</h2>
+
+{% include "leetcode/_connections.html" %}
+<p>
+  This is the recursion page applied to a tree you do not store: the call stack is the path. The choose-explore-unchoose
+  shape is also the depth-first traversal of the tree pages, where "unchoose" is just returning. Constrained
+  backtracking adds pruning to this template, and dynamic programming replaces it when the same remaining problem
+  occurs many times and only one number is wanted.
+</p>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="lc-quiz">
+  <summary>Why must the results store a copy of the path?</summary>
+  <p>The path is one shared list that the search keeps pushing to and popping from. Storing the list itself would store a reference, so every recorded answer would end up showing the final (empty) state. A copy freezes the contents at that moment.</p>
+</details>
+<details class="lc-quiz">
+  <summary>How many calls does the subset search make for {{ items | length }} items, and why?</summary>
+  <p>{{ sub.calls }}. Every call corresponds to exactly one subset, and there are 2<sup>{{ items | length }}</sup> of them, so the call count equals the number of answers.</p>
+</details>
+<details class="lc-quiz">
+  <summary>What does the test <code>i &gt; start</code> do in the duplicate-skipping rule?</summary>
+  <p>It restricts the skip to siblings: values offered by the same parent. The first item in a run of equal values (at <code>i == start</code>) is always allowed, so {{ dup_input | sort | join(", ") }} can still produce a subset with both 2s. Without that test, you would also skip a legitimate deeper use of the second 2 and lose answers.</p>
+</details>
+<details class="lc-quiz">
+  <summary>Why is the early stop in combinations safe?</summary>
+  <p>If fewer numbers remain than the path still needs, no completion can reach length k, so those branches contain no answers. Stopping there changed the calls from {{ comb_raw.calls }} to {{ comb.calls }} for choosing 2 of 4 without changing the answers.</p>
+</details>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Skiena, <em>The Algorithm Design Manual</em>, chapter 9 on combinatorial search and backtracking, including generating subsets and permutations.</li>
+  <li>Sedgewick and Wayne, <em>Algorithms</em>, section 2.3 on permutations and the combinatorial-search discussion in the exercises.</li>
+  <li>Knuth, <em>The Art of Computer Programming</em>, volume 4A, sections 7.2.1.2 (generating all permutations) and 7.2.1.3 (generating all combinations).</li>
+  <li>Cormen, Leiserson, Rivest and Stein, <em>Introduction to Algorithms</em>, appendix C on counting and combinatorics.</li>
+  <li>The <a href="https://neetcode.io/roadmap" rel="noopener">NeetCode roadmap</a> and the
+    Blind 75, Grind 169, NeetCode 150 and NeetCode 250 lists, used as the index of topics and
+    problems.</li>
+</ul>

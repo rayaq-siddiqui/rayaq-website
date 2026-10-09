@@ -770,3 +770,36 @@ def test_quickselect_helpers_match_the_page():
     body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/quickselect").get_data(as_text=True))
     assert "The answer is 7, found after 5 partitions and 18 comparisons" in body
     assert "That costs 7 rounds and 28 comparisons for 8 items" in body
+
+
+def test_subsets_and_permutations_helpers_match_the_page():
+    import itertools
+    import math
+
+    items = [1, 2, 3]
+    sub = leetcode_docs.subsets_of(items)
+    assert sub["calls"] == 8 and len(sub["results"]) == 2 ** 3
+    assert sub["results"] == [[], [1], [1, 2], [1, 2, 3], [1, 3], [2], [2, 3], [3]]
+    perm = leetcode_docs.permutations_of(items)
+    assert perm["results"] == [list(p) for p in itertools.permutations(items)]
+    assert perm["calls"] == 16
+    assert leetcode_docs.permutations_of([])["results"] == [[]]
+    assert leetcode_docs.subsets_of([])["results"] == [[]]
+    dup = leetcode_docs.subsets_with_duplicates([2, 1, 2])
+    assert dup["results"] == [[], [1], [1, 2], [1, 2, 2], [2], [2, 2]] and dup["skipped"] == 2
+    assert len(leetcode_docs.subsets_with_duplicates([2, 1, 2], dedupe=False)["results"]) == 8
+    comb = leetcode_docs.combinations_of(4, 2)
+    assert comb["results"] == [list(c) for c in itertools.combinations(range(1, 5), 2)]
+    assert comb["calls"] == 10 and leetcode_docs.combinations_of(4, 2, prune=False)["calls"] == 11
+    assert len(leetcode_docs.combinations_of(7, 3)["results"]) == math.comb(7, 3)
+    assert leetcode_docs.parentheses_of(3)["results"] == ["((()))", "(()())", "(())()", "()(())", "()()()"]
+    assert leetcode_docs.parentheses_of(3)["calls"] == 22
+    tree = leetcode_docs.backtrack_tree(items, "permutations")
+    assert len(tree["nodes"]) == 16 and tree["columns"] == 6 and tree["levels"] == 4
+    assert len(leetcode_docs.backtrack_tree(items, "subsets")["nodes"]) == 8
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/subsets-and-permutations").get_data(as_text=True))
+    assert "The search makes 8 calls" in body
+    assert "found after 16 calls" in body
+    assert "cuts 2 branches and yields 6 distinct subsets" in body
+    assert "make 11 calls" in body
+    assert "after 22 calls" in body

@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-09 (build run). `quickselect` is ready (27 of 58 pages). **The next run is a build run** continuing at `subsets-and-permutations`.
+**Last updated:** 2026-10-09 (build run). 28 of 58 pages are ready. **The next run is a build run** continuing at `constraint-backtracking`.
 
 ## The Routine
 
@@ -40,9 +40,9 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 | List | Problems with a ready home | Size |
 |---|---|---|
 | Blind 75 | 38 | 75 |
-| Grind 169 | 103 | 169 |
-| NeetCode 150 | 69 | 150 |
-| NeetCode 250 | 125 | 250 |
+| Grind 169 | 107 | 169 |
+| NeetCode 150 | 74 | 150 |
+| NeetCode 250 | 133 | 250 |
 
 ## Queue
 
@@ -76,8 +76,8 @@ build once research is done.
 25. `k-way-merge` ✓
 26. `two-heaps` ✓
 27. `quickselect` ✓
-28. `subsets-and-permutations` ← next
-29. `constraint-backtracking`
+28. `subsets-and-permutations` ✓
+29. `constraint-backtracking` ← next
 30. `graph-traversal`
 31. `grid-graphs`
 32. `topological-sort`
@@ -237,3 +237,8 @@ pytest green (445 passed); the 390px phone check passed on `/`, `/leetcode` and 
 Coverage: Blind 75 38/75, Grind 169 103/169, NeetCode 150 69/150, NeetCode 250 125/250.
 Checkout repair: local `main` had unrelated history again; it was kept as the local branch `backup-stale-main`
 and `main` was reset to `origin/main` before building. Next queue item: `subsets-and-permutations`.
+
+### 2026-10-09 — build run (local main diverged)
+
+The sandbox's local `main` had an unrelated history to `origin/main`, so work started from the fetched `origin/main` tip and pushed to `main` from there.
+Built `subsets-and-permutations`, with six tested helpers (`backtrack_tree`, `subsets_of`, `permutations_of`, `subsets_with_duplicates`, `combinations_of`, `parentheses_of`), two inline SVG decision trees and the full §6 format. Mobile check passed on every ready page.

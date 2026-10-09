@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -4851,6 +4851,136 @@ def kth_largest_target(length, k):
     return length - k
 
 
+def backtrack_tree(items, mode):
+    """Decision tree of the choose-explore-unchoose search over `items`; mode is "subsets" or "permutations". Leaves get consecutive columns and parents sit above the mean of their children."""
+    n = len(items)
+    nodes = []
+    leaves = [0]
+
+    def build(path, parent):
+        index = len(nodes)
+        entry = {"path": [items[i] for i in path], "depth": len(path), "parent": parent, "x": 0.0}
+        nodes.append(entry)
+        if mode == "subsets":
+            options = range(path[-1] + 1 if path else 0, n)
+        else:
+            options = [i for i in range(n) if i not in path]
+        kids = [build(path + [i], index) for i in options]
+        if kids:
+            entry["x"] = sum(nodes[k]["x"] for k in kids) / len(kids)
+        else:
+            entry["x"] = float(leaves[0])
+            leaves[0] += 1
+        entry["leaf"] = not kids
+        return index
+
+    build([], None)
+    return {"nodes": nodes, "levels": max(node["depth"] for node in nodes) + 1, "columns": leaves[0]}
+
+
+def subsets_of(nums):
+    """Every subset by choose-explore-unchoose, in the order the search records them, with the number of calls made."""
+    results = []
+    calls = [0]
+    path = []
+
+    def explore(start):
+        calls[0] += 1
+        results.append(list(path))
+        for i in range(start, len(nums)):
+            path.append(nums[i])
+            explore(i + 1)
+            path.pop()
+
+    explore(0)
+    return {"results": results, "calls": calls[0]}
+
+
+def permutations_of(nums):
+    results = []
+    calls = [0]
+    path = []
+    used = [False] * len(nums)
+
+    def explore():
+        calls[0] += 1
+        if len(path) == len(nums):
+            results.append(list(path))
+            return
+        for i in range(len(nums)):
+            if used[i]:
+                continue
+            used[i] = True
+            path.append(nums[i])
+            explore()
+            path.pop()
+            used[i] = False
+
+    explore()
+    return {"results": results, "calls": calls[0]}
+
+
+def subsets_with_duplicates(nums, dedupe=True):
+    """Subsets of a multiset; sorting plus skipping a value equal to its left sibling at the same depth removes repeats, and `skipped` counts those cuts."""
+    nums = sorted(nums)
+    results = []
+    skipped = [0]
+    path = []
+
+    def explore(start):
+        results.append(list(path))
+        for i in range(start, len(nums)):
+            if dedupe and i > start and nums[i] == nums[i - 1]:
+                skipped[0] += 1
+                continue
+            path.append(nums[i])
+            explore(i + 1)
+            path.pop()
+
+    explore(0)
+    return {"results": results, "skipped": skipped[0]}
+
+
+def combinations_of(n, k, prune=True):
+    """k-subsets of 1..n; with pruning the loop stops once too few numbers remain to fill the path. Returns the results and the call count."""
+    results = []
+    calls = [0]
+    path = []
+
+    def explore(start):
+        calls[0] += 1
+        if len(path) == k:
+            results.append(list(path))
+            return
+        last = n - (k - len(path)) + 1 if prune else n
+        for value in range(start, last + 1):
+            path.append(value)
+            explore(value + 1)
+            path.pop()
+
+    explore(1)
+    return {"results": results, "calls": calls[0]}
+
+
+def parentheses_of(n):
+    """Well-formed strings of n pairs, built by adding '(' while any remain and ')' only while it closes an open one."""
+    results = []
+    calls = [0]
+
+    def explore(text, opened, closed):
+        calls[0] += 1
+        if len(text) == 2 * n:
+            results.append(text)
+            return
+        if opened < n:
+            explore(text + "(", opened + 1, closed)
+        if closed < opened:
+            explore(text + ")", opened, closed + 1)
+
+    explore("", 0, 0)
+    return {"results": results, "calls": calls[0]}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -5048,6 +5178,12 @@ def render(slug, render_template):
         "ipo_trace": ipo_trace,
         "quickselect_trace": quickselect_trace,
         "kth_largest_target": kth_largest_target,
+        "backtrack_tree": backtrack_tree,
+        "subsets_of": subsets_of,
+        "permutations_of": permutations_of,
+        "subsets_with_duplicates": subsets_with_duplicates,
+        "combinations_of": combinations_of,
+        "parentheses_of": parentheses_of,
         "merge_strategy_costs": merge_strategy_costs,
         "smallest_range_trace": smallest_range_trace,
         "coverage": coverage(),
