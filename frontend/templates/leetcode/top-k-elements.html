@@ -1,0 +1,310 @@
+{% set values = [4, 9, 1, 7, 3, 8, 2, 6] %}
+{% set k = 3 %}
+{% set trace = top_k_largest_trace(values, k) %}
+{% set steps = trace.steps %}
+{% set words = ["the", "day", "is", "sunny", "the", "the", "the", "sunny", "is", "is"] %}
+{% set freq = top_k_frequent_trace(words, 2) %}
+{% set points = [[3, 3], [5, -1], [-2, 4], [1, 1], [0, 2]] %}
+{% set near = closest_points_trace(points, 2) %}
+<header class="jj-header">
+  <h1>Top-k elements</h1>
+  <p class="tagline">
+    "Give me the k largest" sounds like a job for sorting, and sorting works, but it does far more than asked: it
+    orders all n items when you only want k of them. The better way is to carry a small waiting room of size k. Each
+    newcomer is compared with the weakest person inside; if it beats them, it swaps in. The waiting room is a heap,
+    so the weakest member is always at the door, and the whole scan costs O(n log k).
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  You need the k best items by some measure: the k largest numbers, the k most frequent words, the k points closest
+  to the origin, or just the k-th largest. The data may arrive as a stream you can see only once, or be too large to
+  sort comfortably. In all cases the answer has size k, and k is usually far smaller than n. What you want is a
+  structure of size k, not size n.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Signal</th><th>Pattern</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>"The k largest" or "k-th largest"</td><td>Min-heap of size k</td><td>The root is the k-th largest so far and the bar a newcomer must beat.</td></tr>
+    <tr><td>"The k smallest" or "k closest"</td><td>Max-heap of size k</td><td>The root is the worst of the kept items, the one to evict first.</td></tr>
+    <tr><td>"The k most frequent"</td><td>Count with a dictionary, then a heap of size k (or buckets)</td><td>Counting gives one score per distinct item, and the heap keeps the k best.</td></tr>
+    <tr><td>"Stream: keep the k-th largest after every number"</td><td>Heap that survives between calls</td><td>Each arrival is one O(log k) update, with no re-sort.</td></tr>
+    <tr><td>"k is close to n"</td><td>Sort instead</td><td>A heap of size nearly n does about n log n work and sorting is simpler.</td></tr>
+    <tr><td>"Only the k-th value is needed, input is static"</td><td>Quickselect</td><td>Average O(n) beats O(n log k) when the data can be rearranged in place; a later page covers it.</td></tr>
+    <tr><td>"Scores are small whole numbers"</td><td>Bucket by score</td><td>Counting sort gives O(n) without any heap, as the counting page showed.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Imagine a podium with k places and a doorkeeper who always knows who stands on the lowest step. The first k
+  visitors step straight up. After that, a visitor only gets in by beating the person on the lowest step, who is then
+  sent away. Visitors who do not beat the lowest step are turned away at the door at once. At the end the podium holds
+  exactly the k best, because anyone who was ever evicted was beaten by k other people who stayed or were themselves
+  beaten by better ones.
+</p>
+<p>
+  The surprise is the direction of the heap. To keep the <em>largest</em> k you use a <em>min</em>-heap: the item
+  you need quick access to is the weakest of the strong, since that is the one to compare against and to throw out.
+  Keeping the smallest k uses a max-heap for the same reason. Getting this backwards, a max-heap for the largest, is
+  the classic mistake, and it forces a full sort.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 {{ 60 + values | length * 48 }} 190" role="img" aria-labelledby="lc-topk-bars-title lc-topk-bars-desc">
+    <title id="lc-topk-bars-title">The {{ k }} largest of {{ values | length }} values</title>
+    <desc id="lc-topk-bars-desc">
+      Bars for the values {{ values | join(", ") }}. The {{ k }} tallest, {{ trace.answer | join(", ") }}, are green and
+      form the answer. A dashed line sits at {{ trace.kth }}, the smallest kept value, which is the bar a new value
+      must beat to enter.
+    </desc>
+    {% for v in values %}
+      <rect x="{{ 30 + loop.index0 * 48 }}" y="{{ 160 - v * 14 }}" width="36" height="{{ v * 14 }}" rx="3" class="{{ 'lc-fill-g' if v in trace.answer else 'd-box' }}"></rect>
+      <text x="{{ 48 + loop.index0 * 48 }}" y="{{ 154 - v * 14 }}" font-size="12" text-anchor="middle">{{ v }}</text>
+    {% endfor %}
+    <line x1="20" y1="{{ 160 - trace.kth * 14 }}" x2="{{ 40 + values | length * 48 }}" y2="{{ 160 - trace.kth * 14 }}" class="d-line" stroke-dasharray="5 4"></line>
+    <text x="{{ 44 + values | length * 48 }}" y="{{ 164 - trace.kth * 14 }}" font-size="11" class="d-muted">bar</text>
+  </svg>
+</div>
+<p class="lc-caption">
+  Green bars are the {{ k }} largest. The dashed line marks the weakest kept value: a newcomer must exceed it to
+  get in. The diagram scrolls sideways on a narrow screen.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="invariant">The invariant</h3>
+<p>
+  After processing any prefix of the input, the heap holds exactly the k best items of that prefix (or all of them,
+  if fewer than k have been seen), and its root is the weakest of those. This is true at the start (empty) and
+  survives each step. If the heap has room, adding the item keeps it true. If the heap is full and the newcomer beats
+  the root, then the root is not among the k best of the longer prefix, since k items now beat it, so replacing it
+  keeps the invariant. If the newcomer does not beat the root, then at least k kept items are at least as good, so
+  the newcomer is not in the k best and is dropped. When the input ends, the heap is the answer, and its root is the
+  k-th best.
+</p>
+
+<h3 id="cost">Why O(n log k)</h3>
+<p>
+  Each of the n items costs one comparison with the root, and at most one push or replace, each O(log k) because the
+  heap never grows beyond k. Sorting costs O(n log n). When k is small the gap is large: for a million items and k =
+  10, a heap does about log₂ 10 ≈ 3 levels of work per item, a sort about 20. The heap also needs only O(k) memory, so
+  it works on a stream that does not fit in memory.
+</p>
+
+<h3 id="frequency">Frequency and distance variants</h3>
+<p>
+  The heap only needs a score for each item. For <em>frequency</em>, first count with a dictionary (one pass, O(n)),
+  then run the same procedure over the distinct items with the count as the score. For <em>distance</em>, the score
+  is the distance to a point; compare squared distances, which rank the same and avoid a square root. To keep the
+  closest, you want to evict the farthest, so the heap root is the worst kept item and the heap is a max-heap on
+  distance, usually stored as negated values in Python.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 {{ 70 + steps | length * 48 }} 150" role="img" aria-labelledby="lc-topk-bar-title lc-topk-bar-desc">
+    <title id="lc-topk-bar-title">How the bar to beat changes while scanning</title>
+    <desc id="lc-topk-bar-desc">
+      One column per value scanned: {{ steps | map(attribute="value") | join(", ") }}. Each column shows whether the
+      value filled an empty place, replaced the weakest kept value, or was skipped. The bar, the weakest kept value
+      after each step, never goes down once the heap is full: it ends at {{ trace.kth }}.
+    </desc>
+    {% for st in steps %}
+      {% set action = st.action.split(" ")[0] %}
+      <rect x="{{ 40 + loop.index0 * 48 }}" y="14" width="40" height="28" rx="4" class="{{ 'lc-fill-g' if action == 'fill' else ('lc-fill-m' if action == 'replace' else 'd-box') }}"></rect>
+      <text x="{{ 60 + loop.index0 * 48 }}" y="33" font-size="13" text-anchor="middle">{{ st.value }}</text>
+      <text x="{{ 60 + loop.index0 * 48 }}" y="62" font-size="10" text-anchor="middle" class="d-muted">{{ action }}</text>
+      <text x="{{ 60 + loop.index0 * 48 }}" y="104" font-size="14" text-anchor="middle">{{ st.bar }}</text>
+    {% endfor %}
+    <text x="4" y="33" font-size="11" class="d-muted">value</text>
+    <text x="4" y="104" font-size="11" class="d-muted">bar</text>
+    <text x="4" y="130" font-size="10" class="d-muted">green fill, amber replace, grey skip</text>
+  </svg>
+</div>
+<p class="lc-caption">
+  The bar is the weakest value kept. It rises only when a replacement happens, which is why the scan gets cheaper as
+  it goes: more and more values are skipped with a single comparison.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  Find the {{ k }} largest of {{ values | join(", ") }}. Each row shows the action, the bar (the heap root) and the
+  values kept.
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Value</th><th>Action</th><th>Bar after</th><th>Kept, largest first</th></tr></thead>
+    <tbody>
+      {% for st in steps %}
+        <tr><td class="num">{{ st.value }}</td><td>{{ st.action }}</td><td class="num">{{ st.bar }}</td><td class="num">{{ st.kept | join(", ") }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  The first {{ k }} values fill the heap. Then {{ steps[3].value }} beats the bar {{ steps[2].bar }} and evicts it;
+  {{ steps[4].value }} does not beat the bar {{ steps[3].bar }} and is skipped. The answer is
+  {{ trace.answer | join(", ") }}, and the 3rd largest is the final bar, {{ trace.kth }}.
+</p>
+
+<p>
+  <strong>Most frequent words.</strong> For {{ words | join(" ") }} the counts are
+  {% for w, c in freq.counts.items() %}{{ w }} {{ c }}{{ ", " if not loop.last else "" }}{% endfor %}, from
+  {{ freq.distinct }} distinct words among {{ words | length }}. The top 2 are {{ freq.answer | join(" and ") }}.
+</p>
+
+<p>
+  <strong>Closest points.</strong> To keep the 2 points closest to the origin, compare squared distances:
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Point</th><th>Squared distance</th><th>Action</th><th>Worst kept</th></tr></thead>
+    <tbody>
+      {% for st in near.steps %}
+        <tr><td class="num">({{ st.point[0] }}, {{ st.point[1] }})</td><td class="num">{{ st.dist2 }}</td><td>{{ st.action }}</td><td class="num">{{ st.worst }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  The answer is {% for p in near.answer %}({{ p[0] }}, {{ p[1] }}){{ " and " if not loop.last else "" }}{% endfor %}.
+  The worst kept distance only falls once the heap is full, which is the same shape as the bar above, mirrored.
+</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import heapq
+from collections import Counter
+
+
+def largest_k(nums, k):
+    heap = []
+    for x in nums:
+        if len(heap) &lt; k:
+            heapq.heappush(heap, x)
+        elif x &gt; heap[0]:
+            heapq.heapreplace(heap, x)      # pop the weakest and push x in one step
+    return sorted(heap, reverse=True)
+
+
+class KthLargest:
+    def __init__(self, k, nums):
+        self.k = k
+        self.heap = []
+        for x in nums:
+            self.add(x)
+
+    def add(self, x):
+        if len(self.heap) &lt; self.k:
+            heapq.heappush(self.heap, x)
+        elif x &gt; self.heap[0]:
+            heapq.heapreplace(self.heap, x)
+        return self.heap[0]
+
+
+def top_k_frequent_words(words, k):
+    counts = Counter(words)
+    # most frequent first, ties alphabetical: sort key (-count, word)
+    return heapq.nsmallest(k, counts, key=lambda w: (-counts[w], w))
+
+
+def k_closest(points, k):
+    heap = []                                 # max-heap by distance, stored negated
+    for x, y in points:
+        d = x * x + y * y
+        if len(heap) &lt; k:
+            heapq.heappush(heap, (-d, x, y))
+        elif d &lt; -heap[0][0]:
+            heapq.heapreplace(heap, (-d, x, y))
+    return [[x, y] for _, x, y in heap]</code></pre>
+
+<p>
+  <code>heapq.nlargest</code> and <code>heapq.nsmallest</code> implement the same idea, and they take a
+  <code>key</code>. Writing the loop by hand is worth it in an interview because the interviewer usually asks what
+  happens inside.
+</p>
+
+<h3 id="variations">Variations and edge cases</h3>
+<ul>
+  <li><strong>Ties.</strong> The word problem needs a deterministic order. Make the score a tuple, with the count
+    negated so that smaller means better, and the word as the tiebreak. With the heap-of-size-k approach, a max-heap
+    on (count, reversed word) is harder to write than <code>nsmallest</code> with a key.</li>
+  <li><strong>Bucket by count.</strong> If scores are counts, an array of lists indexed by count, read from the high
+    end, gives the top k in O(n) with no heap.</li>
+  <li><strong>The k-th element only.</strong> A heap of size k gives the answer as its root; quickselect gives it in
+    average O(n) time but changes the input.</li>
+  <li><strong>Streams.</strong> Keep the heap as state between calls; each update is O(log k).</li>
+  <li><strong>Edge cases:</strong> k equal to 0 (return empty, and guard <code>heap[0]</code>), k larger than n
+    (return everything), duplicates in the input (equal values count separately for the largest k, so check what
+    the problem means), negative numbers, and an empty heap when a stream is queried before k values arrive.</li>
+</ul>
+
+<h2 id="tradeoffs">Complexity and tradeoffs</h2>
+
+<ul>
+  <li><strong>Time:</strong> O(n log k): n scans, each with at most one heap update on k items. Counting first, as
+    for frequency, adds an O(n) pass, and then O(d log k) over d distinct items.</li>
+  <li><strong>Space:</strong> O(k) for the heap, plus O(d) for a frequency table.</li>
+  <li><strong>Baseline.</strong> Sort everything: O(n log n) time, O(n) space, three lines of code. It is the right
+    answer when k is a large fraction of n or when n is small.</li>
+  <li><strong>When it fails.</strong> Quickselect has better average time, O(n), for a one-off query on data you may
+    rearrange. If you need the top k repeatedly under insertions and deletions, a balanced tree or a sorted container
+    works better than a heap, which cannot delete arbitrary items cheaply. For small integer scores, buckets beat both.</li>
+</ul>
+
+<h2 id="problems">Problems</h2>
+
+<p>
+  The three home problems are the three flavours: a stream's k-th largest, the most frequent words with a tie rule,
+  and the closest points by distance. The classic array version and the most frequent numbers appear below in
+  "also uses", taught on neighbouring pages.
+</p>
+{% include "leetcode/_problems.html" %}
+
+<h2 id="connections">Connections</h2>
+
+{% include "leetcode/_connections.html" %}
+<p>
+  This page applies the heap operations of the previous page and uses the counting page for frequency scores. It is
+  the bounded-heap trick that the next pages build on: merging k streams keeps one item per stream in a heap, and
+  the two-heap median keeps two heaps balanced. Quickselect later trades the heap for partitioning when only the
+  k-th element is needed.
+</p>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="lc-quiz">
+  <summary>Why do we use a min-heap to keep the k <em>largest</em> values?</summary>
+  <p>Each newcomer must be compared with the weakest kept value, and that is the item to evict if the newcomer wins. A min-heap exposes its smallest value at the root in O(1). In the example the root after the scan is {{ trace.kth }}, the 3rd largest.</p>
+</details>
+<details class="lc-quiz">
+  <summary>Why can a skipped value never belong to the answer?</summary>
+  <p>When the heap is full and a value does not beat the root, k kept values are at least as large, so the value ranks below k others and cannot be among the k best. Values such as {{ steps[4].value }} and {{ steps[6].value }} in the example were skipped for this reason.</p>
+</details>
+<details class="lc-quiz">
+  <summary>When is sorting the better answer?</summary>
+  <p>When k is close to n, the heap does about n log n work with a larger constant than the built-in sort, so a one-line sort is as fast and simpler. It is also right when n is tiny or the whole ordering is needed anyway.</p>
+</details>
+<details class="lc-quiz">
+  <summary>Why compare squared distances for the closest points?</summary>
+  <p>Squaring is increasing for non-negative numbers, so it ranks distances identically and avoids a square root, which also keeps every comparison in exact integer arithmetic. In the example (1, 1) has squared distance {{ near.steps[3].dist2 }} and (0, 2) has {{ near.steps[4].dist2 }}.</p>
+</details>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Cormen, Leiserson, Rivest and Stein, <em>Introduction to Algorithms</em>, chapter 6 (priority queues) and chapter 9 (order statistics).</li>
+  <li>Sedgewick and Wayne, <em>Algorithms</em>, section 2.4: the "TopM" client of a priority queue.</li>
+  <li>Skiena, <em>The Algorithm Design Manual</em>, the section on priority queues and selection.</li>
+  <li>Python documentation, <code>heapq</code>: <code>nlargest</code>, <code>nsmallest</code> and the priority-queue recipes.</li>
+  <li>The <a href="https://neetcode.io/roadmap" rel="noopener">NeetCode roadmap</a> and the
+    Blind 75, Grind 169, NeetCode 150 and NeetCode 250 lists, used as the index of topics and
+    problems.</li>
+</ul>

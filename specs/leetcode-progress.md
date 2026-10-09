@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-09 (build run). `heaps` is ready (23 of 58 pages). **The next run is a build run** continuing at `top-k-elements`.
+**Last updated:** 2026-10-09 (build run). `top-k-elements` is ready (24 of 58 pages). **The next run is a build run** continuing at `k-way-merge`.
 
 ## The Routine
 
@@ -40,9 +40,9 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 | List | Problems with a ready home | Size |
 |---|---|---|
 | Blind 75 | 36 | 75 |
-| Grind 169 | 97 | 169 |
-| NeetCode 150 | 63 | 150 |
-| NeetCode 250 | 118 | 250 |
+| Grind 169 | 99 | 169 |
+| NeetCode 150 | 65 | 150 |
+| NeetCode 250 | 120 | 250 |
 
 ## Queue
 
@@ -72,8 +72,8 @@ build once research is done.
 21. `tree-construction` ✓
 22. `tries` ✓
 23. `heaps` ✓
-24. `top-k-elements` ← next
-25. `k-way-merge`
+24. `top-k-elements` ✓
+25. `k-way-merge` ← next
 26. `two-heaps`
 27. `quickselect`
 28. `subsets-and-permutations`
@@ -215,3 +215,12 @@ Coverage: Blind 75 33/75, Grind 169 92/169, NeetCode 150 59/150, NeetCode 250 11
 Checkout repair: the sandbox's local `main` had diverged from `origin/main` (50 commits each, different
 patch ids), so it was left untouched and the work was done on a branch cut from `origin/main` and pushed
 to `main`. Next queue item: `tries`.
+
+### 2026-10-09 — build run (third)
+
+Built three pages in queue order: `tries`, `heaps`, `top-k-elements` (3 of 3). Each shipped with tested
+stdlib helpers, two or more inline SVGs and a page test; each was pushed separately.
+pytest green (436 passed); the 390px phone check passed on `/`, `/leetcode` and every ready page.
+Coverage: Blind 75 36/75, Grind 169 99/169, NeetCode 150 65/150, NeetCode 250 120/250.
+Checkout repair: local `main` again had unrelated history, so work was done on a branch cut from
+`origin/main` and pushed to `main`. Next queue item: `k-way-merge`.

@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -4687,6 +4687,50 @@ def last_stone_trace(stones):
     return {"rounds": rounds, "last": -heap[0] if heap else 0}
 
 
+def top_k_largest_trace(values, k):
+    """Keep a min-heap of the k largest values so far: the root is the bar a newcomer must beat."""
+    heap = []
+    steps = []
+    for value in values:
+        if len(heap) < k:
+            heapq.heappush(heap, value)
+            action = "fill"
+        elif value > heap[0]:
+            evicted = heapq.heapreplace(heap, value)
+            action = f"replace {evicted}"
+        else:
+            action = "skip"
+        steps.append({"value": value, "action": action, "bar": heap[0], "kept": sorted(heap, reverse=True)})
+    return {"steps": steps, "answer": sorted(heap, reverse=True), "kth": heap[0]}
+
+
+def top_k_frequent_trace(words, k):
+    """Count, then keep the k best (count, word) pairs; ties go to the alphabetically earlier word."""
+    counts = {}
+    for word in words:
+        counts[word] = counts.get(word, 0) + 1
+    ranked = heapq.nsmallest(k, counts, key=lambda w: (-counts[w], w))
+    return {"counts": counts, "answer": ranked, "distinct": len(counts)}
+
+
+def closest_points_trace(points, k):
+    """Squared distances are enough to rank by closeness; a max-heap of size k (negated) holds the closest so far."""
+    heap = []
+    steps = []
+    for x, y in points:
+        d = x * x + y * y
+        if len(heap) < k:
+            heapq.heappush(heap, (-d, x, y))
+            action = "fill"
+        elif d < -heap[0][0]:
+            heapq.heapreplace(heap, (-d, x, y))
+            action = "replace"
+        else:
+            action = "skip"
+        steps.append({"point": [x, y], "dist2": d, "action": action, "worst": -heap[0][0]})
+    return {"steps": steps, "answer": sorted([x, y] for _, x, y in heap)}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -4876,6 +4920,9 @@ def render(slug, render_template):
         "heapify_compare": heapify_compare,
         "heap_layout": heap_layout,
         "last_stone_trace": last_stone_trace,
+        "top_k_largest_trace": top_k_largest_trace,
+        "top_k_frequent_trace": top_k_frequent_trace,
+        "closest_points_trace": closest_points_trace,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,

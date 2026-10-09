@@ -689,3 +689,26 @@ def test_heap_helpers_match_the_page():
     body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/heaps").get_data(as_text=True))
     assert "After 4 rounds the last stone weighs 1." in body
     assert "descending order cost 16 swaps in the example against 7 for heapify" in body
+
+
+def test_top_k_helpers_match_the_page():
+    values = [4, 9, 1, 7, 3, 8, 2, 6]
+    trace = leetcode_docs.top_k_largest_trace(values, 3)
+    assert trace["answer"] == sorted(values, reverse=True)[:3] == heapq.nlargest(3, values)
+    assert trace["kth"] == 7
+    assert [s["action"] for s in trace["steps"]] == ["fill", "fill", "fill", "replace 1", "skip", "replace 4", "skip", "skip"]
+    assert [s["bar"] for s in trace["steps"]] == [4, 4, 1, 4, 4, 7, 7, 7]
+    assert leetcode_docs.top_k_largest_trace([5, 5, 5], 2)["answer"] == [5, 5]
+    words = ["the", "day", "is", "sunny", "the", "the", "the", "sunny", "is", "is"]
+    freq = leetcode_docs.top_k_frequent_trace(words, 2)
+    assert freq["counts"] == {"the": 4, "day": 1, "is": 3, "sunny": 2}
+    assert freq["answer"] == ["the", "is"] and freq["distinct"] == 4
+    assert leetcode_docs.top_k_frequent_trace(["b", "a"], 1)["answer"] == ["a"]
+    points = [[3, 3], [5, -1], [-2, 4], [1, 1], [0, 2]]
+    near = leetcode_docs.closest_points_trace(points, 2)
+    assert near["answer"] == [[0, 2], [1, 1]]
+    assert [s["dist2"] for s in near["steps"]] == [18, 26, 20, 2, 4]
+    assert [s["action"] for s in near["steps"]] == ["fill", "fill", "replace", "replace", "replace"]
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/top-k-elements").get_data(as_text=True))
+    assert "The answer is 9, 8, 7, and the 3rd largest is the final bar, 7." in body
+    assert "The top 2 are the and is." in body
