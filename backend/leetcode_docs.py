@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -4357,6 +4357,30 @@ def max_path_sum_trace(tree):
     return {"steps": steps, "best": best}
 
 
+def tree_bfs_info(tree):
+    """Level-order facts for one tree: levels, the order a queue visits nodes, right-side view, zigzag, and level widths measured by heap-style positions (children of position i sit at 2i and 2i+1)."""
+    levels, widths = [], []
+    frontier = [(tree, 0)]
+    while frontier:
+        levels.append([node[0] for node, _ in frontier])
+        widths.append(frontier[-1][1] - frontier[0][1] + 1)
+        nxt = []
+        for node, pos in frontier:
+            if node[1] is not None:
+                nxt.append((node[1], 2 * pos))
+            if node[2] is not None:
+                nxt.append((node[2], 2 * pos + 1))
+        frontier = nxt
+    return {
+        "levels": levels,
+        "order": [v for level in levels for v in level],
+        "right_view": [level[-1] for level in levels],
+        "zigzag": [level[::-1] if i % 2 else level for i, level in enumerate(levels)],
+        "widths": widths,
+        "max_width": max(widths),
+    }
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -4528,6 +4552,7 @@ def render(slug, render_template):
         "tree_layout": tree_layout,
         "tree_height_trace": tree_height_trace,
         "max_path_sum_trace": max_path_sum_trace,
+        "tree_bfs_info": tree_bfs_info,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,

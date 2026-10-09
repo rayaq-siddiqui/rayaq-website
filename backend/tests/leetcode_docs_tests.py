@@ -573,3 +573,18 @@ def test_tree_dfs_helpers_match_the_page():
     assert "so the tree has depth 4" in body
     assert "so the diameter is 5." in body
     assert "The best bent path sum is 12." in body
+
+
+def test_tree_bfs_helpers_match_the_page():
+    tree = [5, [3, [1, None, [2, None, None]], [4, None, None]], [8, None, [9, None, None]]]
+    info = leetcode_docs.tree_bfs_info(tree)
+    assert info["levels"] == [[5], [3, 8], [1, 4, 9], [2]]
+    assert info["order"] == [5, 3, 8, 1, 4, 9, 2]
+    assert info["right_view"] == [5, 8, 9, 2]
+    assert info["zigzag"] == [[5], [8, 3], [1, 4, 9], [2]]
+    assert info["widths"] == [1, 2, 4, 1] and info["max_width"] == 4
+    assert leetcode_docs.tree_bfs_info([1, None, None])["levels"] == [[1]]
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/tree-bfs").get_data(as_text=True))
+    assert "The right-side view is 5, 8, 9, 2." in body
+    assert "The zigzag order is 5 | 8, 3 | 1, 4, 9 | 2." in body
+    assert "so the maximum width is 4." in body

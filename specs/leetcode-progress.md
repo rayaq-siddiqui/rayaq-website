@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-09 (build run). `tree-dfs` is ready (18 of 58 pages). **The next run is a build run** continuing at `tree-bfs`.
+**Last updated:** 2026-10-09 (build run). `tree-bfs` is ready (19 of 58 pages). **The next run is a build run** continuing at `binary-search-trees`.
 
 ## The Routine
 
@@ -39,10 +39,10 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 
 | List | Problems with a ready home | Size |
 |---|---|---|
-| Blind 75 | 27 | 75 |
-| Grind 169 | 80 | 169 |
-| NeetCode 150 | 52 | 150 |
-| NeetCode 250 | 103 | 250 |
+| Blind 75 | 28 | 75 |
+| Grind 169 | 85 | 169 |
+| NeetCode 150 | 54 | 150 |
+| NeetCode 250 | 105 | 250 |
 
 ## Queue
 
@@ -67,8 +67,8 @@ build once research is done.
 16. `fast-slow-pointers` ✓
 17. `linked-list-design` ✓
 18. `tree-dfs` ✓
-19. `tree-bfs` ← next
-20. `binary-search-trees`
+19. `tree-bfs` ✓
+20. `binary-search-trees` ← next
 21. `tree-construction`
 22. `tries`
 23. `heaps`
