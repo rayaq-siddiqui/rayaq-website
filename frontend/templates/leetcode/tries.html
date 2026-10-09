@@ -1,0 +1,358 @@
+{% set words = ["car", "card", "care", "cat", "do", "dog"] %}
+{% set lay = trie_layout(words) %}
+{% set under = trie_words_under(words, "car") %}
+{% set hit = trie_lookup(words, "card") %}
+{% set partial = trie_lookup(words, "ca") %}
+{% set miss = trie_lookup(words, "cow") %}
+{% set dots = trie_wildcard_trace(words, "ca.") %}
+{% set dots_far = trie_wildcard_trace(words, "..g") %}
+{% set dots_none = trie_wildcard_trace(words, "c.x") %}
+<header class="jj-header">
+  <h1>Tries</h1>
+  <p class="tagline">
+    A trie (pronounced "try", from retrieval) stores a set of words as a tree of letters, so every word that begins
+    the same way shares the same path from the root. That sharing is the whole point: asking "does anything start
+    with <code>ca</code>?" costs two steps, no matter how many words are stored. Prefix questions, autocomplete,
+    wildcard search and pruning a word search on a grid are all the same walk down the same tree.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  You hold a collection of words and must answer questions about <em>prefixes</em>: is this a stored word, does
+  any word start with this, which words start with this, or which of these many words can be spelled on a board.
+  A hash set answers the first question in O(length) but cannot answer the others without scanning every word,
+  because a hash destroys the order of the characters. A sorted list with binary search can answer prefix queries,
+  but inserting is slow. A trie answers every one of them by following one character at a time.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Signal</th><th>Pattern</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>"Implement insert, search and startsWith"</td><td>Plain trie</td><td>Each operation is one walk of at most one step per character.</td></tr>
+    <tr><td>"Does any word begin with this prefix?"</td><td>Walk to the prefix node and stop</td><td>Reaching the node means the prefix exists; no scan of the word list is needed.</td></tr>
+    <tr><td>"Search where a dot can stand for any letter"</td><td>Trie plus depth-first search at the wildcard</td><td>A dot branches into every child, a letter follows one child.</td></tr>
+    <tr><td>"Find all words from a list on a grid of letters"</td><td>Trie of the words, grid depth-first search that follows the trie</td><td>The trie tells the search to stop the moment no word continues the current path.</td></tr>
+    <tr><td>"Many words share long prefixes"</td><td>Trie</td><td>Shared prefixes are stored once, which saves memory and lookup work.</td></tr>
+    <tr><td>"Pairs of words that combine into a palindrome" or a file system by path</td><td>Trie over reversed words, or over path parts</td><td>The tree's edges can be any token: characters, reversed characters or directory names.</td></tr>
+    <tr><td>"Only exact membership, no prefixes"</td><td>A set is simpler</td><td>A trie adds nothing over a hash set when prefixes are never asked about.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Write the words <code>{{ words | join("</code>, <code>") | safe }}</code> on a page. Many start the same way:
+  <code>car</code>, <code>card</code> and <code>care</code> share the prefix <code>car</code>, and
+  <code>car</code> and <code>cat</code> share <code>ca</code>. A trie draws each shared prefix once. Starting at an
+  empty root, each edge carries one letter, and a word is the path from the root to a node that is marked "a word
+  ends here". The {{ words | length }} words have {{ lay.letters }} letters in total, but the trie needs only
+  {{ lay.nodes | length - 1 }} letter nodes, because the shared prefixes collapse.
+</p>
+<p>
+  The mark matters. The node for <code>ca</code> exists because <code>car</code> and <code>cat</code> pass through
+  it, but <code>ca</code> is not a stored word. Without the end mark you could not tell a word from a mere prefix.
+  This is the most common bug in a first trie: answering <code>search</code> with "I found the path" instead of
+  "I found the path and the end mark is set".
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 {{ 40 + lay.columns * 64 }} {{ 40 + lay.levels * 52 }}" role="img" aria-labelledby="lc-trie-shape-title lc-trie-shape-desc">
+    <title id="lc-trie-shape-title">A trie holding six words</title>
+    <desc id="lc-trie-shape-desc">
+      A tree with an empty root and {{ lay.nodes | length - 1 }} letter nodes storing the words {{ words | join(", ") }}.
+      The words car, card and care share the path c, a, r; cat branches off at the node for ca; do and dog share d, o.
+      Nodes drawn in amber mark the end of a stored word, so ca is on the path but is not itself a word.
+    </desc>
+    {% for e in lay.edges %}
+      <line x1="{{ 30 + lay.nodes[e[0]].x * 64 }}" y1="{{ 26 + lay.nodes[e[0]].depth * 52 }}" x2="{{ 30 + lay.nodes[e[1]].x * 64 }}" y2="{{ 26 + lay.nodes[e[1]].depth * 52 }}" class="d-line"></line>
+    {% endfor %}
+    {% for n in lay.nodes %}
+      <circle cx="{{ 30 + n.x * 64 }}" cy="{{ 26 + n.depth * 52 }}" r="15" class="{{ 'lc-fill-m' if n.end else 'd-box' }}"></circle>
+      <text x="{{ 30 + n.x * 64 }}" y="{{ 31 + n.depth * 52 }}" font-size="14" text-anchor="middle">{{ n.char }}</text>
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">
+  Each node is one letter. Amber nodes end a stored word; the root is empty. The diagram scrolls sideways on a
+  narrow screen.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="invariant">The invariant</h3>
+<p>
+  The path from the root to any node spells a prefix of at least one stored word, and every prefix of every stored
+  word has exactly one node. A node's children are keyed by the next letter, so two different words can only share a
+  node if they share the whole path leading to it. An end flag on a node means "the path to here is itself a word".
+</p>
+
+<h3 id="operations">Insert, search and prefix</h3>
+<p>
+  <strong>Insert</strong> walks the word one letter at a time, creating the child when it is missing, and sets the
+  end flag on the last node. <strong>Search</strong> walks the same way but never creates; it fails if a letter has
+  no child, and otherwise answers with the end flag of the last node. <strong>Starts with</strong> is search without
+  the final check: reaching the node at all is the answer. All three cost one step per letter, O(L) for a word of
+  length L, independent of how many words are stored.
+</p>
+<p>
+  Correctness follows from the invariant. A word is stored exactly when its path exists and its last node is marked;
+  a prefix is present exactly when its path exists. Because each node has at most one child per letter, the walk is
+  deterministic, with no choices to try.
+</p>
+
+<h3 id="wildcards">Wildcards and the board search</h3>
+<p>
+  A dot that matches any letter turns the deterministic walk into a search: at a dot, try every child and succeed if
+  any branch succeeds. That is a depth-first search on the trie, and its worst case is every node at that depth. For a
+  grid of letters the roles reverse. Instead of testing each word separately, build a trie of all the words and run a
+  depth-first search from each cell that carries the trie node along: step to a neighbour only if the current node
+  has a child for that neighbour's letter. The moment no stored word continues the path, the search backs out, so one
+  walk over the board serves every word at once. Removing a leaf from the trie after its word is found keeps the
+  search from rediscovering the same word and shrinks the work as the board is mined out.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 520 190" role="img" aria-labelledby="lc-trie-walk-title lc-trie-walk-desc">
+    <title id="lc-trie-walk-title">Three queries walking down the trie</title>
+    <desc id="lc-trie-walk-desc">
+      Three rows of letter boxes. The query card matches all {{ hit.matched }} letters and the last node is marked as
+      a word, so it is found. The query ca matches both letters but ca is only a prefix, not a word. The query cow
+      matches only {{ miss.matched }} letter and then has no child for o, so the walk stops and nothing starts with cow.
+    </desc>
+    {% for q in [["card", hit, "found as a word"], ["ca", partial, "a prefix, not a word"], ["cow", miss, "no word starts with this"]] %}
+      {% set row = loop.index0 %}
+      <text x="8" y="{{ 38 + row * 56 }}" font-size="12" class="d-muted">{{ q[0] }}</text>
+      {% for ch in q[0] %}
+        <rect x="{{ 70 + loop.index0 * 44 }}" y="{{ 18 + row * 56 }}" width="38" height="30" rx="4" class="{{ 'lc-fill-g' if loop.index0 < q[1].matched else 'lc-fill-m' }}"></rect>
+        <text x="{{ 89 + loop.index0 * 44 }}" y="{{ 39 + row * 56 }}" font-size="14" text-anchor="middle">{{ ch }}</text>
+      {% endfor %}
+      <text x="{{ 90 + q[0] | length * 44 }}" y="{{ 38 + row * 56 }}" font-size="12">{{ q[2] }}</text>
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">
+  Green letters found a child; the amber letter is the first with none. Reaching the end of the query is not enough
+  for a word: the node must also carry the end mark.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  The trie holds {{ words | join(", ") }}: {{ lay.nodes | length - 1 }} letter nodes for {{ lay.letters }} letters
+  of text.
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Query</th><th>Letters matched</th><th>Stored word?</th><th>Prefix?</th></tr></thead>
+    <tbody>
+      {% for q in ["car", "card", "ca", "cow"] %}
+        {% set r = trie_lookup(words, q) %}
+        <tr><td><code>{{ q }}</code></td><td class="num">{{ r.matched }} of {{ q | length }}</td><td>{{ "yes" if r.is_word else "no" }}</td><td>{{ "yes" if r.is_prefix else "no" }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  <code>ca</code> is a prefix but not a word, which is exactly why the end mark exists. The prefix <code>car</code>
+  leads to a node with three words below it: {{ under | join(", ") }}.
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Pattern</th><th>Found?</th><th>Nodes entered</th></tr></thead>
+    <tbody>
+      {% for p, r in [("ca.", dots), ("..g", dots_far), ("c.x", dots_none)] %}
+        <tr><td><code>{{ p }}</code></td><td>{{ "yes" if r.found else "no" }}</td><td class="num">{{ r.visited }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  The pattern <code>ca.</code> follows <code>c</code> and <code>a</code> and then branches at the dot. The pattern
+  <code>..g</code> opens with two dots, so it branches at the first two levels and enters {{ dots_far.visited }}
+  nodes before it finds <code>dog</code>. A pattern with a dot early costs more than one with a dot late.
+</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>class TrieNode:
+    __slots__ = ("children", "end")
+
+    def __init__(self):
+        self.children = {}          # letter -&gt; TrieNode
+        self.end = False
+
+
+class Trie:
+    def __init__(self):
+        self.root = TrieNode()
+
+    def insert(self, word):
+        node = self.root
+        for ch in word:
+            node = node.children.setdefault(ch, TrieNode())
+        node.end = True
+
+    def _walk(self, text):
+        node = self.root
+        for ch in text:
+            node = node.children.get(ch)
+            if node is None:
+                return None
+        return node
+
+    def search(self, word):
+        node = self._walk(word)
+        return node is not None and node.end
+
+    def starts_with(self, prefix):
+        return self._walk(prefix) is not None
+
+
+class WordDictionary:
+    def __init__(self):
+        self.root = TrieNode()
+
+    def add_word(self, word):
+        node = self.root
+        for ch in word:
+            node = node.children.setdefault(ch, TrieNode())
+        node.end = True
+
+    def search(self, pattern):
+        def match(node, i):
+            if i == len(pattern):
+                return node.end
+            if pattern[i] == ".":
+                return any(match(child, i + 1) for child in node.children.values())
+            child = node.children.get(pattern[i])
+            return child is not None and match(child, i + 1)
+
+        return match(self.root, 0)
+
+
+def find_words(board, words):
+    root = TrieNode()
+    for word in words:
+        node = root
+        for ch in word:
+            node = node.children.setdefault(ch, TrieNode())
+        node.end = word                  # store the word itself, so no path rebuilding is needed
+
+    rows, cols = len(board), len(board[0])
+    found = []
+
+    def dfs(r, c, parent):
+        ch = board[r][c]
+        node = parent.children[ch]
+        if node.end:
+            found.append(node.end)
+            node.end = False             # report each word once
+        board[r][c] = "#"                # mark visited in place
+        for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nr, nc = r + dr, c + dc
+            if 0 &lt;= nr &lt; rows and 0 &lt;= nc &lt; cols and board[nr][nc] in node.children:
+                dfs(nr, nc, node)
+        board[r][c] = ch
+        if not node.children and not node.end:
+            del parent.children[ch]      # prune exhausted branches
+
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] in root.children:
+                dfs(r, c, root)
+    return found</code></pre>
+
+<p>
+  A dictionary of children is the idiomatic Python choice: it handles any alphabet and only stores the letters
+  that exist. In <code>find_words</code> the end flag holds the word itself, which doubles as the "is a word" test
+  because any non-empty string is truthy.
+</p>
+
+<h3 id="variations">Variations and edge cases</h3>
+<ul>
+  <li><strong>Fixed alphabet.</strong> For lowercase letters a list of 26 slots per node is faster than a
+    dictionary but uses 26 pointers per node even when most are empty.</li>
+  <li><strong>Counts per node.</strong> Store how many words pass through each node to answer "how many words have
+    this prefix" in O(L), or to delete a word by decrementing.</li>
+  <li><strong>Reversed words.</strong> Insert each word backwards to match suffixes; pairs-that-form-a-palindrome
+    problems combine a trie of reversed words with a check on the leftover part.</li>
+  <li><strong>Tokens other than letters.</strong> The edges can be directory names, so an in-memory file system is
+    a trie whose nodes hold file contents.</li>
+  <li><strong>Edge cases:</strong> the empty string (marks the root, so give the root an end flag if empty words
+    are allowed), a word that is a prefix of another, a word inserted twice, a query longer than every stored word,
+    and a board with repeated letters, where the in-place visited mark keeps a path from reusing a cell.</li>
+</ul>
+
+<h2 id="tradeoffs">Complexity and tradeoffs</h2>
+
+<ul>
+  <li><strong>Time:</strong> insert, search and prefix are O(L) for a word of length L, independent of the number of
+    stored words. A wildcard query is O(L) in the best case and can visit every node in the worst case, which is
+    why the dots in the example above matter. The board search is O(cells × 4<sup>L</sup>) in the worst case for a
+    word length L, but the trie prunes almost all of that in practice.</li>
+  <li><strong>Space:</strong> at most one node per letter of input, here {{ lay.nodes | length - 1 }} nodes against
+    {{ lay.letters }} letters, and far fewer when prefixes are shared. The cost is the per-node overhead of a
+    dictionary or a 26-slot array, which can exceed the cost of storing the strings directly.</li>
+  <li><strong>Baseline.</strong> A hash set answers exact membership in O(L) with less memory. Scanning every word
+    for a prefix is O(words × L). A sorted array with binary search finds a prefix in O(L log n) but cannot take new
+    words cheaply.</li>
+  <li><strong>When it fails.</strong> When only exact lookups are needed, a set is simpler and smaller. When the
+    words are few and the prefixes short, the trie's overhead is not paid back. For huge dictionaries a compressed
+    trie or a finite state transducer saves memory by merging single-child chains.</li>
+</ul>
+
+<h2 id="problems">Problems</h2>
+
+<p>
+  The first two home problems are the basic trie and its wildcard extension; the third is the board search that
+  makes pruning pay off. The two Hard problems from the Grind list reuse the structure for palindromes and file
+  paths.
+</p>
+{% include "leetcode/_problems.html" %}
+
+<h2 id="connections">Connections</h2>
+
+{% include "leetcode/_connections.html" %}
+<p>
+  A trie is a tree whose children are keyed by a letter, so the traversals of the depth-first page apply directly,
+  and a dictionary of children is the hash map of the hash-maps page placed at every node. The word-break problems
+  ask whether a string splits into dictionary words; a trie speeds up their inner loop by scanning forward through
+  the string one letter at a time and stopping when the prefix dies, instead of slicing and hashing substrings. The
+  board search is backtracking with a pruning oracle, which returns in the backtracking pages later on.
+</p>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="lc-quiz">
+  <summary>Why does the trie for these words have {{ lay.nodes | length - 1 }} letter nodes and not {{ lay.letters }}?</summary>
+  <p>Words that share a prefix share the nodes of that prefix. <code>car</code>, <code>card</code> and <code>care</code> use one path for <code>car</code>, and <code>cat</code> reuses the nodes for <code>ca</code>; likewise <code>dog</code> reuses <code>do</code>. Only the first occurrence of each prefix creates nodes.</p>
+</details>
+<details class="lc-quiz">
+  <summary>The query <code>ca</code> reaches a node. Why is searching for it still "no"?</summary>
+  <p>The node exists because longer words pass through it, but no word ends there: its end mark is unset. A search must check that mark; a prefix query must not.</p>
+</details>
+<details class="lc-quiz">
+  <summary>Why can the pattern <code>..g</code> cost more than <code>c.x</code>, even though both have three characters?</summary>
+  <p>A dot tries every child, so dots near the root multiply the branches that must be explored. The example entered {{ dots_far.visited }} nodes for <code>..g</code> and only {{ dots_none.visited }} for <code>c.x</code>, which dies as soon as <code>c</code> has no child <code>x</code> after one dot.</p>
+</details>
+<details class="lc-quiz">
+  <summary>In the board search, why is one trie of all the words better than a separate search per word?</summary>
+  <p>The trie lets one walk of the board serve every word at once and lets the search stop the instant no stored word continues the current path. A search per word repeats the same board walk for each word, and cannot share work between words with a common prefix.</p>
+</details>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Fredkin, "Trie memory", <em>Communications of the ACM</em> 3(9), 1960: the paper that introduced the structure and its name.</li>
+  <li>Knuth, <em>The Art of Computer Programming</em>, volume 3, section 6.3: digital searching.</li>
+  <li>Sedgewick and Wayne, <em>Algorithms</em>, section 5.2: tries and ternary search tries.</li>
+  <li>Cormen, Leiserson, Rivest and Stein, <em>Introduction to Algorithms</em>, chapter 12 problems: radix trees.</li>
+  <li>Skiena, <em>The Algorithm Design Manual</em>, the section on string data structures.</li>
+  <li>The <a href="https://neetcode.io/roadmap" rel="noopener">NeetCode roadmap</a> and the
+    Blind 75, Grind 169, NeetCode 150 and NeetCode 250 lists, used as the index of topics and
+    problems.</li>
+</ul>

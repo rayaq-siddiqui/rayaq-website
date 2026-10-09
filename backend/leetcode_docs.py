@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -4503,6 +4503,105 @@ def sorted_array_to_tree(nums):
     return [nums[mid], sorted_array_to_tree(nums[:mid]), sorted_array_to_tree(nums[mid + 1:])]
 
 
+def _trie_nodes(words):
+    """Flat trie: node 0 is the root; each node keeps its character, parent, depth, children by character and whether a word ends there."""
+    nodes = [{"char": "", "parent": None, "depth": 0, "kids": {}, "end": False}]
+    for word in words:
+        at = 0
+        for ch in word:
+            if ch not in nodes[at]["kids"]:
+                nodes.append({"char": ch, "parent": at, "depth": nodes[at]["depth"] + 1, "kids": {}, "end": False})
+                nodes[at]["kids"][ch] = len(nodes) - 1
+            at = nodes[at]["kids"][ch]
+        nodes[at]["end"] = True
+    return nodes
+
+
+def trie_layout(words):
+    """Nodes with a column (leaves take consecutive columns, parents centre over their children) and the edges between them."""
+    nodes = _trie_nodes(words)
+    next_column = 0
+
+    def place(at):
+        nonlocal next_column
+        kids = [nodes[at]["kids"][ch] for ch in sorted(nodes[at]["kids"])]
+        if not kids:
+            nodes[at]["x"] = float(next_column)
+            next_column += 1
+            return
+        for kid in kids:
+            place(kid)
+        nodes[at]["x"] = (nodes[kids[0]]["x"] + nodes[kids[-1]]["x"]) / 2
+
+    place(0)
+    edges = [[n["parent"], i] for i, n in enumerate(nodes) if n["parent"] is not None]
+    return {
+        "nodes": [{"char": n["char"], "depth": n["depth"], "x": n["x"], "end": n["end"]} for n in nodes],
+        "edges": edges,
+        "columns": next_column,
+        "levels": max(n["depth"] for n in nodes) + 1,
+        "letters": sum(len(w) for w in words),
+    }
+
+
+def trie_lookup(words, query):
+    """Walk the query down the trie: how many characters matched, whether the query is a stored word, and whether it is a prefix."""
+    nodes = _trie_nodes(words)
+    at = 0
+    matched = 0
+    for ch in query:
+        if ch not in nodes[at]["kids"]:
+            break
+        at = nodes[at]["kids"][ch]
+        matched += 1
+    complete = matched == len(query)
+    return {"matched": matched, "is_word": complete and nodes[at]["end"], "is_prefix": complete}
+
+
+def trie_words_under(words, prefix):
+    """Every stored word that starts with prefix, found by walking to the prefix node and collecting below it."""
+    nodes = _trie_nodes(words)
+    at = 0
+    for ch in prefix:
+        if ch not in nodes[at]["kids"]:
+            return []
+        at = nodes[at]["kids"][ch]
+    found = []
+
+    def collect(node, text):
+        if nodes[node]["end"]:
+            found.append(text)
+        for ch in sorted(nodes[node]["kids"]):
+            collect(nodes[node]["kids"][ch], text + ch)
+
+    collect(at, prefix)
+    return found
+
+
+def trie_wildcard_trace(words, pattern):
+    """Search where "." matches any one letter; counts the trie nodes entered, which is what a dot costs."""
+    nodes = _trie_nodes(words)
+    visited = 0
+
+    def search(at, i):
+        nonlocal visited
+        if i == len(pattern):
+            return nodes[at]["end"]
+        if pattern[i] == ".":
+            candidates = list(nodes[at]["kids"].values())
+        elif pattern[i] in nodes[at]["kids"]:
+            candidates = [nodes[at]["kids"][pattern[i]]]
+        else:
+            candidates = []
+        for kid in candidates:
+            visited += 1
+            if search(kid, i + 1):
+                return True
+        return False
+
+    return {"found": search(0, 0), "visited": visited}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -4683,6 +4782,10 @@ def render(slug, render_template):
         "tree_serialize": tree_serialize,
         "tree_deserialize": tree_deserialize,
         "sorted_array_to_tree": sorted_array_to_tree,
+        "trie_layout": trie_layout,
+        "trie_lookup": trie_lookup,
+        "trie_words_under": trie_words_under,
+        "trie_wildcard_trace": trie_wildcard_trace,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,

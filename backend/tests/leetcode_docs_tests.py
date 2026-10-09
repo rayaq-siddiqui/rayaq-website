@@ -638,3 +638,23 @@ def test_tree_construction_helpers_match_the_page():
     body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/tree-construction").get_data(as_text=True))
     assert "The serialized string has 11 tokens for 5 nodes" in body
     assert "middle element 0 becomes the root" in body
+
+
+def test_trie_helpers_match_the_page():
+    words = ["car", "card", "care", "cat", "do", "dog"]
+    layout = leetcode_docs.trie_layout(words)
+    assert len(layout["nodes"]) == 10 and layout["letters"] == 19
+    assert layout["columns"] == 4 and layout["levels"] == 5
+    assert sum(1 for n in layout["nodes"] if n["end"]) == len(words)
+    assert leetcode_docs.trie_lookup(words, "car") == {"matched": 3, "is_word": True, "is_prefix": True}
+    assert leetcode_docs.trie_lookup(words, "ca") == {"matched": 2, "is_word": False, "is_prefix": True}
+    assert leetcode_docs.trie_lookup(words, "cow") == {"matched": 1, "is_word": False, "is_prefix": False}
+    assert leetcode_docs.trie_lookup(words, "") == {"matched": 0, "is_word": False, "is_prefix": True}
+    assert leetcode_docs.trie_words_under(words, "car") == ["car", "card", "care"]
+    assert leetcode_docs.trie_words_under(words, "x") == []
+    assert leetcode_docs.trie_wildcard_trace(words, "ca.") == {"found": True, "visited": 3}
+    assert leetcode_docs.trie_wildcard_trace(words, "..g") == {"found": True, "visited": 5}
+    assert leetcode_docs.trie_wildcard_trace(words, "c.x") == {"found": False, "visited": 2}
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/tries").get_data(as_text=True))
+    assert "9 letter nodes for 19 letters" in body
+    assert "enters 5 nodes before it finds" in body
