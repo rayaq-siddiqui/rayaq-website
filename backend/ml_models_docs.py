@@ -3957,6 +3957,241 @@ def selection_bias_demo(rows=40, candidates=50, k=5, trials=200, seed=6):
     return best_total / trials, nested_total / trials
 
 
+TREE_TOY_ROWS = [
+    ((2.0, 7.0), 0), ((3.0, 8.0), 0), ((3.0, 3.0), 0), ((4.0, 5.0), 0),
+    ((5.0, 2.0), 1), ((6.0, 6.0), 1), ((6.0, 1.0), 1), ((7.0, 4.0), 1),
+    ((8.0, 8.0), 1), ((9.0, 3.0), 1), ((5.0, 9.0), 0), ((4.0, 8.0), 1),
+]
+
+
+def label_counts(labels, classes=(0, 1)):
+    return [sum(1 for y in labels if y == c) for c in classes]
+
+
+def gini_impurity(counts):
+    n = sum(counts)
+    return 1.0 - sum((c / n) ** 2 for c in counts)
+
+
+def entropy_impurity(counts):
+    n = sum(counts)
+    return -sum((c / n) * math.log2(c / n) for c in counts if c > 0)
+
+
+def split_candidates(rows, feature, criterion=gini_impurity):
+    values = sorted({x[feature] for x, _ in rows})
+    parent = criterion(label_counts([y for _, y in rows]))
+    n = len(rows)
+    out = []
+    for lo, hi in zip(values, values[1:]):
+        threshold = lo / 2.0 + hi / 2.0
+        left = [y for x, y in rows if x[feature] <= threshold]
+        right = [y for x, y in rows if x[feature] > threshold]
+        li = criterion(label_counts(left))
+        ri = criterion(label_counts(right))
+        weighted = (len(left) * li + len(right) * ri) / n
+        out.append({
+            "feature": feature, "threshold": threshold, "n_left": len(left), "n_right": len(right),
+            "left_impurity": li, "right_impurity": ri, "weighted": weighted, "gain": parent - weighted,
+        })
+    return out
+
+
+def best_split(rows, criterion=gini_impurity, min_samples_leaf=1):
+    best = None
+    n_features = len(rows[0][0])
+    for feature in range(n_features):
+        for cand in split_candidates(rows, feature, criterion):
+            if cand["n_left"] < min_samples_leaf or cand["n_right"] < min_samples_leaf:
+                continue
+            if best is None or cand["gain"] > best["gain"] + 1e-12:
+                best = cand
+    return best
+
+
+def grow_tree(rows, criterion=gini_impurity, max_depth=None, min_samples_split=2,
+              min_samples_leaf=1, total=None, depth=0):
+    total = total if total is not None else len(rows)
+    counts = label_counts([y for _, y in rows])
+    node = {
+        "n": len(rows), "counts": counts, "impurity": criterion(counts), "depth": depth,
+        "total": total, "prediction": counts.index(max(counts)), "feature": None,
+    }
+    stop = (
+        (max_depth is not None and depth >= max_depth)
+        or len(rows) < min_samples_split
+        or len(rows) < 2 * min_samples_leaf
+        or node["impurity"] <= 1e-12
+    )
+    split = None if stop else best_split(rows, criterion, min_samples_leaf)
+    if split is None:
+        return node
+    f, t = split["feature"], split["threshold"]
+    node.update(feature=f, threshold=t)
+    node["left"] = grow_tree([r for r in rows if r[0][f] <= t], criterion, max_depth,
+                             min_samples_split, min_samples_leaf, total, depth + 1)
+    node["right"] = grow_tree([r for r in rows if r[0][f] > t], criterion, max_depth,
+                              min_samples_split, min_samples_leaf, total, depth + 1)
+    return node
+
+
+def tree_predict(node, x):
+    while node["feature"] is not None:
+        node = node["left"] if x[node["feature"]] <= node["threshold"] else node["right"]
+    return node["prediction"]
+
+
+def tree_accuracy(node, rows):
+    return sum(tree_predict(node, x) == y for x, y in rows) / len(rows)
+
+
+def tree_leaves(node):
+    if node["feature"] is None:
+        return [node]
+    return tree_leaves(node["left"]) + tree_leaves(node["right"])
+
+
+def tree_depth(node):
+    if node["feature"] is None:
+        return 0
+    return 1 + max(tree_depth(node["left"]), tree_depth(node["right"]))
+
+
+def tree_nodes(node):
+    if node["feature"] is None:
+        return [node]
+    return [node] + tree_nodes(node["left"]) + tree_nodes(node["right"])
+
+
+def tree_feature_importances(node, n_features):
+    totals = [0.0] * n_features
+    for nd in tree_nodes(node):
+        if nd["feature"] is not None:
+            totals[nd["feature"]] += (
+                nd["n"] * nd["impurity"]
+                - nd["left"]["n"] * nd["left"]["impurity"]
+                - nd["right"]["n"] * nd["right"]["impurity"]
+            ) / node["n"]
+    norm = sum(totals)
+    return [t / norm for t in totals] if norm > 0 else totals
+
+
+def _subtree_r(node):
+    if node["feature"] is None:
+        return node["n"] * node["impurity"] / node["total"]
+    return _subtree_r(node["left"]) + _subtree_r(node["right"])
+
+
+def _copy_tree(node):
+    out = dict(node)
+    if "left" in node:
+        out["left"] = _copy_tree(node["left"])
+        out["right"] = _copy_tree(node["right"])
+    return out
+
+
+def cost_complexity_path(tree):
+    work = _copy_tree(tree)
+    path = [(0.0, len(tree_leaves(work)), _subtree_r(work))]
+    while work["feature"] is not None:
+        weakest = None
+        for nd in tree_nodes(work):
+            if nd["feature"] is None:
+                continue
+            r_node = nd["n"] * nd["impurity"] / nd["total"]
+            alpha = (r_node - _subtree_r(nd)) / (len(tree_leaves(nd)) - 1)
+            if weakest is None or alpha < weakest[0] - 1e-15:
+                weakest = (alpha, nd)
+        alpha, nd = weakest
+        for key in ("threshold", "left", "right"):
+            nd.pop(key, None)
+        nd["feature"] = None
+        path.append((alpha, len(tree_leaves(work)), _subtree_r(work)))
+    return path
+
+
+def prune_tree(tree, ccp_alpha):
+    work = _copy_tree(tree)
+    while work["feature"] is not None:
+        weakest = None
+        for nd in tree_nodes(work):
+            if nd["feature"] is None:
+                continue
+            r_node = nd["n"] * nd["impurity"] / nd["total"]
+            alpha = (r_node - _subtree_r(nd)) / (len(tree_leaves(nd)) - 1)
+            if weakest is None or alpha < weakest[0] - 1e-15:
+                weakest = (alpha, nd)
+        if weakest[0] > ccp_alpha:
+            break
+        nd = weakest[1]
+        for key in ("threshold", "left", "right"):
+            nd.pop(key, None)
+        nd["feature"] = None
+    return work
+
+
+def noisy_diagonal_rows(n, seed, flip=0.15, extra_noise_feature=False):
+    rng = random.Random(seed)
+    rows = []
+    for _ in range(n):
+        a, b = rng.uniform(0, 10), rng.uniform(0, 10)
+        y = int(a + b > 10)
+        if rng.random() < flip:
+            y = 1 - y
+        x = (a, b, rng.random()) if extra_noise_feature else (a, b)
+        rows.append((x, y))
+    return rows
+
+
+def depth_sweep(depths=(1, 2, 3, 4, 6, None), seed=3):
+    train = noisy_diagonal_rows(60, seed)
+    test = noisy_diagonal_rows(400, seed + 100)
+    out = []
+    for d in depths:
+        t = grow_tree(train, max_depth=d)
+        out.append((d, len(tree_leaves(t)), tree_accuracy(t, train), tree_accuracy(t, test)))
+    return out
+
+
+def importance_rows(n, seed, flip=0.2):
+    rng = random.Random(seed)
+    rows = []
+    for _ in range(n):
+        signal = rng.uniform(0, 10)
+        y = int(signal > 5)
+        if rng.random() < flip:
+            y = 1 - y
+        rows.append(((signal, rng.uniform(0, 10), float(rng.randint(0, 1))), y))
+    return rows
+
+
+def importance_demo(seeds=20, n=80):
+    totals = [0.0, 0.0, 0.0]
+    for s in range(seeds):
+        imp = tree_feature_importances(grow_tree(importance_rows(n, s)), 3)
+        totals = [a + b for a, b in zip(totals, imp)]
+    return [t / seeds for t in totals]
+
+
+def regression_split_demo():
+    xs = [1, 2, 3, 4, 5, 6, 7, 8]
+    ys = [1.0, 1.4, 1.1, 1.3, 3.8, 4.2, 4.0, 4.4]
+    n = len(ys)
+
+    def sse(v):
+        m = sum(v) / len(v)
+        return sum((a - m) ** 2 for a in v)
+
+    rows = []
+    for i in range(1, n):
+        left, right = ys[:i], ys[i:]
+        rows.append({
+            "threshold": (xs[i - 1] + xs[i]) / 2, "mean_left": sum(left) / len(left),
+            "mean_right": sum(right) / len(right), "sse": sse(left) + sse(right),
+        })
+    return xs, ys, rows, sse(ys)
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -4189,6 +4424,25 @@ def render(slug, render_template):
         "group_kfold_splits": group_kfold_splits,
         "time_series_splits": time_series_splits,
         "cv_summary": cv_summary,
+        "label_counts": label_counts,
+        "gini_impurity": gini_impurity,
+        "entropy_impurity": entropy_impurity,
+        "split_candidates": split_candidates,
+        "best_split": best_split,
+        "grow_tree": grow_tree,
+        "tree_predict": tree_predict,
+        "tree_accuracy": tree_accuracy,
+        "tree_leaves": tree_leaves,
+        "tree_depth": tree_depth,
+        "tree_nodes": tree_nodes,
+        "tree_feature_importances": tree_feature_importances,
+        "cost_complexity_path": cost_complexity_path,
+        "prune_tree": prune_tree,
+        "noisy_diagonal_rows": noisy_diagonal_rows,
+        "depth_sweep": depth_sweep,
+        "importance_demo": importance_demo,
+        "regression_split_demo": regression_split_demo,
+        "TREE_TOY_ROWS": TREE_TOY_ROWS,
         "centroid_cv_data": centroid_cv_data,
         "centroid_fold_score": centroid_fold_score,
         "centroid_cv_scores": centroid_cv_scores,

@@ -1863,3 +1863,88 @@ def test_selection_bias_demo_best_of_many_is_optimistic_but_nested_is_honest():
     best, nested = ml_models_docs.selection_bias_demo()
     assert best > 0.62
     assert abs(nested - 0.5) < 0.03
+
+
+def test_tree_impurities_match_hand_values():
+    assert ml_models_docs.gini_impurity([5, 7]) == pytest.approx(1 - (5 / 12) ** 2 - (7 / 12) ** 2)
+    assert ml_models_docs.gini_impurity([4, 0]) == 0.0
+    assert ml_models_docs.entropy_impurity([1, 1]) == pytest.approx(1.0)
+    assert ml_models_docs.entropy_impurity([5, 7]) == pytest.approx(0.97986876)
+    assert ml_models_docs.entropy_impurity([6, 0]) == 0.0
+
+
+def test_tree_root_split_matches_sklearn_run():
+    rows = ml_models_docs.TREE_TOY_ROWS
+    best = ml_models_docs.best_split(rows)
+    assert (best["feature"], best["threshold"]) == (0, 5.5)
+    assert (best["n_left"], best["n_right"]) == (7, 5)
+    assert best["gain"] == pytest.approx(0.24801587)
+    assert best["weighted"] == pytest.approx(0.23809524)
+
+
+def test_grown_tree_fits_training_rows_and_matches_sklearn_shape():
+    rows = ml_models_docs.TREE_TOY_ROWS
+    tree = ml_models_docs.grow_tree(rows)
+    assert ml_models_docs.tree_accuracy(tree, rows) == 1.0
+    assert len(ml_models_docs.tree_leaves(tree)) == 6
+    assert ml_models_docs.tree_depth(tree) == 5
+    assert len(ml_models_docs.tree_nodes(tree)) == 11
+    assert ml_models_docs.grow_tree(rows, max_depth=1)["left"]["feature"] is None
+
+
+def test_tree_stopping_rules_limit_growth():
+    rows = ml_models_docs.TREE_TOY_ROWS
+    shallow = ml_models_docs.grow_tree(rows, max_depth=2)
+    assert ml_models_docs.tree_depth(shallow) == 2
+    leafy = ml_models_docs.grow_tree(rows, min_samples_leaf=3)
+    assert all(leaf["n"] >= 3 for leaf in ml_models_docs.tree_leaves(leafy))
+    assert ml_models_docs.grow_tree(rows, min_samples_split=13)["feature"] is None
+
+
+def test_tree_feature_importances_sum_to_one_and_match_sklearn():
+    tree = ml_models_docs.grow_tree(ml_models_docs.TREE_TOY_ROWS)
+    imp = ml_models_docs.tree_feature_importances(tree, 2)
+    assert sum(imp) == pytest.approx(1.0)
+    assert imp == pytest.approx([0.6244898, 0.3755102])
+
+
+def test_cost_complexity_path_matches_sklearn():
+    tree = ml_models_docs.grow_tree(ml_models_docs.TREE_TOY_ROWS)
+    path = ml_models_docs.cost_complexity_path(tree)
+    assert [round(a, 8) for a, _, _ in path] == [0.0, 0.0462963, 0.09920635, 0.24801587]
+    assert [leaves for _, leaves, _ in path] == [6, 3, 2, 1]
+    assert [round(r, 8) for _, _, r in path] == [0.0, 0.13888889, 0.23809524, 0.48611111]
+
+
+def test_pruning_with_alpha_keeps_the_subtree_at_that_alpha():
+    tree = ml_models_docs.grow_tree(ml_models_docs.TREE_TOY_ROWS)
+    assert len(ml_models_docs.tree_leaves(ml_models_docs.prune_tree(tree, 0.0))) == 6
+    assert len(ml_models_docs.tree_leaves(ml_models_docs.prune_tree(tree, 0.05))) == 3
+    assert len(ml_models_docs.tree_leaves(ml_models_docs.prune_tree(tree, 0.1))) == 2
+    assert len(ml_models_docs.tree_leaves(ml_models_docs.prune_tree(tree, 1.0))) == 1
+    assert len(ml_models_docs.tree_leaves(tree)) == 6
+
+
+def test_depth_sweep_shows_training_accuracy_outrunning_test_accuracy():
+    sweep = ml_models_docs.depth_sweep()
+    assert [row[0] for row in sweep] == [1, 2, 3, 4, 6, None]
+    train = [row[2] for row in sweep]
+    assert train == sorted(train) and train[-1] == 1.0
+    best_test = max(row[3] for row in sweep)
+    assert sweep[-1][3] < best_test
+    assert sweep[0][1:] == (2, 0.75, 0.6825)
+
+
+def test_impurity_importance_credits_a_pure_noise_feature():
+    signal, noise_float, noise_bit = ml_models_docs.importance_demo()
+    assert signal > noise_float > noise_bit
+    assert noise_float > 0.2
+
+
+def test_regression_split_picks_the_lowest_sse_threshold():
+    xs, ys, rows, total = ml_models_docs.regression_split_demo()
+    best = min(rows, key=lambda r: r["sse"])
+    assert best["threshold"] == 4.5
+    assert best["mean_left"] == pytest.approx(1.2) and best["mean_right"] == pytest.approx(4.1)
+    assert best["sse"] == pytest.approx(0.3)
+    assert total == pytest.approx(sum((y - sum(ys) / len(ys)) ** 2 for y in ys))
