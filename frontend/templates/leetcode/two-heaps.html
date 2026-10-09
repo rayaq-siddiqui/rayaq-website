@@ -1,0 +1,296 @@
+{% set stream = [5, 15, 1, 3, 8, 7, 9, 10] %}
+{% set trace = running_median_trace(stream) %}
+{% set steps = trace.steps %}
+{% set final = steps[-1] %}
+{% set profits = [1, 2, 3, 5, 9] %}
+{% set capital = [0, 1, 1, 3, 6] %}
+{% set ipo = ipo_trace(3, 0, profits, capital) %}
+<header class="jj-header">
+  <h1>Two heaps</h1>
+  <p class="tagline">
+    The median is the middle of a sorted list, and keeping a list sorted while numbers arrive is expensive. But you
+    never need the whole order, only the two items nearest the middle. Split the numbers into a lower half and an
+    upper half, keep the largest of the lower half and the smallest of the upper half on top of two heaps, and the
+    middle is always within reach in O(1), with O(log n) per arrival.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Values arrive one at a time and after each arrival you must report the median of everything seen so far. Sorting on
+  every query costs O(n log n) each time, and inserting into a sorted array costs O(n) each time. The same two-sided
+  structure also solves a different kind of question: "unlock everything I can afford, then take the best one", where
+  one heap orders what you can reach and another orders what you have not yet reached.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Signal</th><th>Pattern</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>"Median of a stream" or "median after every insertion"</td><td>Max-heap for the lower half, min-heap for the upper half</td><td>The median is one or two heap roots and rebalancing is O(log n).</td></tr>
+    <tr><td>"Sliding-window median"</td><td>Two heaps with lazy deletion, or a sorted container</td><td>The same split, plus a way to forget items that left the window.</td></tr>
+    <tr><td>"Pick the best option among those currently affordable or available"</td><td>Sorted list of unlock thresholds plus a max-heap</td><td>The pending items sit in sorted order and the unlocked ones sit in a heap.</td></tr>
+    <tr><td>"Keep the k-th element as items arrive and leave"</td><td>Two heaps with a size rule</td><td>A lower half of fixed size k puts the k-th element at its top.</td></tr>
+    <tr><td>"Median of a fixed, static array"</td><td>Sort or quickselect</td><td>No stream, so there is nothing to maintain; one O(n log n) or O(n) pass is enough.</td></tr>
+    <tr><td>"Values come from a small range"</td><td>Counting array and a running total</td><td>If values are bounded integers, counts find the median without heaps.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Line everyone up by height and cut the line at the middle. You do not need to keep the people inside each half in
+  order. You only need the tallest person in the short half and the shortest person in the tall half, because those
+  two stand next to the cut. If the halves have equal size, the median is the average of those two; if one half has
+  one more, the median is the extra half's edge person.
+</p>
+<p>
+  That pair is exactly what a heap exposes cheaply. The short half is a <em>max</em>-heap (its largest member is on
+  top), and the tall half is a <em>min</em>-heap (its smallest member is on top). When a new number arrives, you send
+  it through the cut: it may belong in either half, and the cut may no longer be in the middle, so a person is
+  passed across to fix the sizes. Each fix moves at most one item, which is why it stays O(log n).
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 {{ 80 + (final.lower | length + final.upper | length) * 52 }} 120" role="img" aria-labelledby="lc-two-halves-title lc-two-halves-desc">
+    <title id="lc-two-halves-title">The two halves around the median</title>
+    <desc id="lc-two-halves-desc">
+      After the values {{ stream | join(", ") }} the lower half holds {{ final.lower | join(", ") }}, the largest of
+      them, {{ final.lower[0] }}, at the cut. The upper half holds {{ final.upper | join(", ") }}, the smallest of
+      them, {{ final.upper[0] }}, at the cut. A dashed line marks the cut, and the median is
+      {{ '%g' % final.median }}.
+    </desc>
+    {% set n_low = final.lower | length %}
+    {% for v in final.lower %}
+      <rect x="{{ 20 + (n_low - 1 - loop.index0) * 52 }}" y="28" width="44" height="34" rx="4" class="{{ 'lc-fill-g' if loop.first else 'd-box' }}"></rect>
+      <text x="{{ 42 + (n_low - 1 - loop.index0) * 52 }}" y="50" font-size="14" text-anchor="middle">{{ v }}</text>
+    {% endfor %}
+    {% for v in final.upper %}
+      <rect x="{{ 40 + (n_low + loop.index0) * 52 }}" y="28" width="44" height="34" rx="4" class="{{ 'lc-fill-m' if loop.first else 'd-box' }}"></rect>
+      <text x="{{ 62 + (n_low + loop.index0) * 52 }}" y="50" font-size="14" text-anchor="middle">{{ v }}</text>
+    {% endfor %}
+    <line x1="{{ 30 + n_low * 52 }}" y1="12" x2="{{ 30 + n_low * 52 }}" y2="78" class="d-line" stroke-dasharray="5 4"></line>
+    <text x="20" y="98" font-size="11" class="d-muted">lower half: max-heap, top is its largest</text>
+    <text x="{{ 40 + n_low * 52 }}" y="112" font-size="11" class="d-muted">upper half: min-heap, top is its smallest</text>
+  </svg>
+</div>
+<p class="lc-caption">
+  The heaps do not keep their members in this sorted order (a heap only orders the top), but the picture shows what
+  they represent. Green and amber are the two roots next to the cut. The diagram scrolls sideways on a narrow screen.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="invariant">The invariant</h3>
+<p>
+  Two facts hold between operations. <strong>Order:</strong> every value in the lower heap is at most every value in
+  the upper heap, which is the same as saying the lower root is at most the upper root. <strong>Balance:</strong> the
+  lower heap has either the same number of values as the upper heap or exactly one more. Together they give the
+  median directly: with equal sizes it is the mean of the two roots, otherwise it is the lower root.
+</p>
+<p>
+  To add a value x, first push x into the lower heap, then move the lower root to the upper heap. That two-step push
+  makes the order fact hold whatever x was: the value that crosses is the largest of the lower half plus x, which is
+  no larger than anything already above the cut. Then, if the upper heap now has more values than the lower heap, move
+  its root back down. Each add is at most three heap operations, each O(log n), and the median read is O(1).
+</p>
+
+<h3 id="why-two">Why not one heap?</h3>
+<p>
+  A single heap exposes only one end. A min-heap tells you the smallest, but the median is in the middle of the
+  order, and popping your way there destroys the heap. Two heaps meeting at the median expose both neighbours of the
+  cut at once. This "two halves meeting in the middle" shape also appears in the sliding-window median and in
+  problems that ask for the k-th element of a changing set.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 {{ 70 + steps | length * 48 }} 150" role="img" aria-labelledby="lc-two-median-title lc-two-median-desc">
+    <title id="lc-two-median-title">The median after each arrival</title>
+    <desc id="lc-two-median-desc">
+      One column per arrival: {{ stream | join(", ") }}. Under each is the median of everything seen so far:
+      {% for st in steps %}{{ '%g' % st.median }}{{ ", " if not loop.last else "." }}{% endfor %}
+      A dot in each column sits at the height of its median.
+    </desc>
+    {% for st in steps %}
+      <circle cx="{{ 50 + loop.index0 * 48 }}" cy="{{ 100 - st.median * 6 }}" r="6" class="lc-fill-a"></circle>
+      <text x="{{ 50 + loop.index0 * 48 }}" y="{{ 88 - st.median * 6 }}" font-size="11" text-anchor="middle">{{ '%g' % st.median }}</text>
+      <text x="{{ 50 + loop.index0 * 48 }}" y="124" font-size="12" text-anchor="middle" class="d-muted">{{ st.value }}</text>
+    {% endfor %}
+    <text x="4" y="144" font-size="10" class="d-muted">arrival (bottom) and the median so far (dot)</text>
+  </svg>
+</div>
+<p class="lc-caption">
+  The median wobbles as extreme values arrive on either side, but it moves by at most a step through the order each
+  time, which is why only the two roots ever need to be looked at.
+</p>
+
+<h3 id="unlock">The unlock variant</h3>
+<p>
+  The same two-sided structure solves "maximize capital with k projects". One side is a sorted list of projects not
+  yet reachable, ordered by the capital they need. The other side is a max-heap of projects you can afford, ordered
+  by profit. Each round, move every newly affordable project from the sorted list into the heap, then take the best.
+  Because capital only grows, a project once affordable stays affordable, so nothing is ever moved back.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  Feed the numbers {{ stream | join(", ") }} into the structure. Each row shows the two halves after the arrival,
+  largest first on the left and smallest first on the right, and the median.
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Arrival</th><th>Lower half (max-heap)</th><th>Upper half (min-heap)</th><th>Median</th></tr></thead>
+    <tbody>
+      {% for st in steps %}
+        <tr><td class="num">{{ st.value }}</td><td class="num">{{ st.lower | join(", ") }}</td><td class="num">{{ st.upper | join(", ") if st.upper else "empty" }}</td><td class="num">{{ '%g' % st.median }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  After the {{ stream | length }} arrivals the median is {{ '%g' % trace.median }}, the mean of {{ final.lower[0] }}
+  and {{ final.upper[0] }}. After the third arrival the lower half had one more value than the upper half, so its root,
+  {{ steps[2].median | int }}, was the median on its own.
+</p>
+
+<p>
+  <strong>Unlock the best project.</strong> Start with {{ ipo.steps[0].before }} capital and pick at most
+  {{ ipo.steps | length }} of five projects needing capital {{ capital | join(", ") }} with profits
+  {{ profits | join(", ") }}.
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Round</th><th>Capital before</th><th>Profits newly unlocked</th><th>Best profit taken</th><th>Capital after</th></tr></thead>
+    <tbody>
+      {% for st in ipo.steps %}
+        <tr><td class="num">{{ st.round }}</td><td class="num">{{ st.before }}</td><td class="num">{{ st.unlocked | join(", ") if st.unlocked else "none" }}</td><td class="num">{{ st.picked }}</td><td class="num">{{ st.after }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  The final capital is {{ ipo.wealth }}. Taking the biggest profit among the affordable ones is always safe because
+  profits only add to capital, and more capital never makes a project less affordable.
+</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import heapq
+
+
+class MedianFinder:
+    def __init__(self):
+        self.lower = []      # max-heap, stored as negated values
+        self.upper = []      # min-heap
+
+    def add(self, x):
+        heapq.heappush(self.lower, -x)
+        heapq.heappush(self.upper, -heapq.heappop(self.lower))
+        if len(self.upper) &gt; len(self.lower):
+            heapq.heappush(self.lower, -heapq.heappop(self.upper))
+
+    def median(self):
+        if len(self.lower) &gt; len(self.upper):
+            return float(-self.lower[0])
+        return (-self.lower[0] + self.upper[0]) / 2
+
+
+def max_capital(rounds, wealth, profits, capital):
+    projects = sorted(zip(capital, profits))
+    available = []                           # max-heap of profits, negated
+    i = 0
+    for _ in range(rounds):
+        while i &lt; len(projects) and projects[i][0] &lt;= wealth:
+            heapq.heappush(available, -projects[i][1])
+            i += 1
+        if not available:
+            break
+        wealth -= heapq.heappop(available)
+    return wealth</code></pre>
+
+<p>
+  Python has only a min-heap, so the lower half stores negated values; negate again when reading. Return a float, or
+  divide by two carefully, if the problem wants decimal medians.
+</p>
+
+<h3 id="variations">Variations and edge cases</h3>
+<ul>
+  <li><strong>Sliding window.</strong> Use the same halves, but also record each value that leaves the window and
+    delete it lazily: when it reaches a root, pop it. Track the <em>logical</em> sizes of the halves separately from
+    the stored sizes, since stale entries inflate the heaps.</li>
+  <li><strong>Other percentiles.</strong> Keep the lower heap at a chosen fraction of the total instead of half, and
+    its root is that percentile.</li>
+  <li><strong>Bounded values.</strong> If every value is an integer in a small range, a counting array with a running
+    prefix finds the median in O(range), which beats the heaps when the range is small.</li>
+  <li><strong>Order of operations.</strong> Pushing to the lower heap first, then moving across, is not the only
+    ordering, but it handles every case with no comparison with the roots. The "compare with the root and choose a
+    side" version is faster by a constant and easier to get wrong.</li>
+  <li><strong>Edge cases:</strong> asking for the median before any value arrives (guard it), a single value,
+    duplicates (they split across the halves freely), negative numbers (the negation trick is still fine), and an
+    even count (average two roots, in floating point).</li>
+</ul>
+
+<h2 id="tradeoffs">Complexity and tradeoffs</h2>
+
+<ul>
+  <li><strong>Time:</strong> O(log n) per add (at most three heap operations) and O(1) per median query.</li>
+  <li><strong>Space:</strong> O(n) for the stored values, split between the two heaps.</li>
+  <li><strong>Baseline.</strong> Insert with <code>bisect.insort</code> into a sorted list and read the middle:
+    O(log n) to find the spot but O(n) to shift, with a tiny constant. For up to tens of thousands of values it is
+    often as fast in practice and much shorter to write. It is a fair baseline, not a trick.</li>
+  <li><strong>When it fails.</strong> With deletions in the middle (sliding window) plain heaps need lazy deletion,
+    which is fiddly. A balanced tree with subtree sizes, or two sorted containers, handles removals directly. For
+    one-off queries on a static array, quickselect finds the median in expected O(n).</li>
+</ul>
+
+<h2 id="problems">Problems</h2>
+
+<p>
+  The two home problems are the two uses of the pattern: a running median, where the heaps hold the lower and upper
+  halves, and the capital-maximizing project picker, where one side is a sorted queue of what is out of reach.
+</p>
+{% include "leetcode/_problems.html" %}
+
+<h2 id="connections">Connections</h2>
+
+{% include "leetcode/_connections.html" %}
+<p>
+  This page builds on the heap operations from the heaps page. The size-k heap of the top-k page keeps one end of the
+  order; here two heaps keep both neighbours of a cut. Quickselect, next, finds the same middle element without
+  keeping any structure, trading the stream for an in-place pass over a fixed array. The greedy pages later revisit
+  the "take the best of what is currently available" idea behind the project picker.
+</p>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="lc-quiz">
+  <summary>Why is the lower half a max-heap and the upper half a min-heap?</summary>
+  <p>The median depends on the values next to the cut: the largest of the lower half and the smallest of the upper half. A max-heap puts the largest of its members on top and a min-heap the smallest, so both neighbours are available in O(1). In the example they were {{ final.lower[0] }} and {{ final.upper[0] }}.</p>
+</details>
+<details class="lc-quiz">
+  <summary>Why push to the lower heap and then move its root to the upper heap?</summary>
+  <p>Whatever the new value is, the value that crosses to the upper heap is the largest of the lower half plus the newcomer, which is no larger than anything already in the upper half. That keeps the order fact true without comparing against either root.</p>
+</details>
+<details class="lc-quiz">
+  <summary>What does the median equal when the heaps have different sizes?</summary>
+  <p>The lower heap is allowed to have one extra value, and that extra value is the middle one, so the median is the lower root. After the third arrival of the example the halves held {{ steps[2].lower | length }} and {{ steps[2].upper | length }} values and the median was {{ steps[2].median | int }}.</p>
+</details>
+<details class="lc-quiz">
+  <summary>In the project picker, why can we never regret unlocking a project early?</summary>
+  <p>Capital never decreases, because every profit is positive or zero, so a project that is affordable now is affordable in every later round. Moving it into the profit heap early loses nothing, and the heap lets us take the best one when we need it.</p>
+</details>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Cormen, Leiserson, Rivest and Stein, <em>Introduction to Algorithms</em>, chapter 6 (heaps and priority queues) and chapter 9 (medians and order statistics).</li>
+  <li>Sedgewick and Wayne, <em>Algorithms</em>, section 2.4, which includes the median-maintenance exercise with two priority queues.</li>
+  <li>Skiena, <em>The Algorithm Design Manual</em>, the sections on priority queues and on selection.</li>
+  <li>Python documentation, <code>heapq</code>, and the <code>bisect</code> module for the sorted-list alternative.</li>
+  <li>The <a href="https://neetcode.io/roadmap" rel="noopener">NeetCode roadmap</a> and the
+    Blind 75, Grind 169, NeetCode 150 and NeetCode 250 lists, used as the index of topics and
+    problems.</li>
+</ul>

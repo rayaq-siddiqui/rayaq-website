@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -4787,6 +4787,40 @@ def smallest_range_trace(lists):
     return {"steps": steps, "range": list(best)}
 
 
+def running_median_trace(stream):
+    """The lower half lives in a max-heap (stored negated), the upper half in a min-heap; sizes differ by at most one, lower side larger."""
+    lower, upper = [], []
+    steps = []
+    for value in stream:
+        heapq.heappush(lower, -value)
+        heapq.heappush(upper, -heapq.heappop(lower))
+        if len(upper) > len(lower):
+            heapq.heappush(lower, -heapq.heappop(upper))
+        median = -lower[0] if len(lower) > len(upper) else (-lower[0] + upper[0]) / 2
+        steps.append({"value": value, "lower": sorted((-x for x in lower), reverse=True), "upper": sorted(upper), "median": median})
+    return {"steps": steps, "median": steps[-1]["median"] if steps else None}
+
+
+def ipo_trace(rounds, wealth, profits, capital):
+    """Sort by capital, unlock every project the current wealth covers into a profit max-heap, take the best one each round."""
+    projects = sorted(zip(capital, profits))
+    available = []
+    index = 0
+    steps = []
+    for number in range(1, rounds + 1):
+        before = wealth
+        unlocked = []
+        while index < len(projects) and projects[index][0] <= wealth:
+            heapq.heappush(available, -projects[index][1])
+            unlocked.append(projects[index][1])
+            index += 1
+        if not available:
+            break
+        wealth += -heapq.heappop(available)
+        steps.append({"round": number, "before": before, "unlocked": unlocked, "picked": wealth - before, "after": wealth})
+    return {"steps": steps, "wealth": wealth}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -4980,6 +5014,8 @@ def render(slug, render_template):
         "top_k_frequent_trace": top_k_frequent_trace,
         "closest_points_trace": closest_points_trace,
         "merge_k_trace": merge_k_trace,
+        "running_median_trace": running_median_trace,
+        "ipo_trace": ipo_trace,
         "merge_strategy_costs": merge_strategy_costs,
         "smallest_range_trace": smallest_range_trace,
         "coverage": coverage(),

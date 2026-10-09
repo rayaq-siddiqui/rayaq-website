@@ -731,3 +731,23 @@ def test_k_way_merge_helpers_match_the_page():
     assert "the output is 1, 2, 3, 4, 5, 6, 7, 8, 10." in body
     assert "tightest window that contains one value from every list is [4, 6]" in body
     assert "that is 140 moves, against 96 for the heap" in body
+
+
+def test_two_heaps_helpers_match_the_page():
+    import statistics
+
+    stream = [5, 15, 1, 3, 8, 7, 9, 10]
+    trace = leetcode_docs.running_median_trace(stream)
+    assert [s["median"] for s in trace["steps"]] == [statistics.median(stream[:i]) for i in range(1, len(stream) + 1)]
+    last = trace["steps"][-1]
+    assert last["lower"] == [7, 5, 3, 1] and last["upper"] == [8, 9, 10, 15] and trace["median"] == 7.5
+    assert all(s["lower"][0] <= s["upper"][0] for s in trace["steps"] if s["upper"])
+    assert all(0 <= len(s["lower"]) - len(s["upper"]) <= 1 for s in trace["steps"])
+    assert leetcode_docs.running_median_trace([])["median"] is None
+    ipo = leetcode_docs.ipo_trace(3, 0, [1, 2, 3, 5, 9], [0, 1, 1, 3, 6])
+    assert [s["picked"] for s in ipo["steps"]] == [1, 3, 5] and ipo["wealth"] == 9
+    assert [s["unlocked"] for s in ipo["steps"]] == [[1], [2, 3], [5]]
+    assert leetcode_docs.ipo_trace(2, 0, [5], [3])["steps"] == []
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/two-heaps").get_data(as_text=True))
+    assert "After the 8 arrivals the median is 7.5, the mean of 7 and 8." in body
+    assert "The final capital is 9." in body
