@@ -833,3 +833,31 @@ def test_constraint_backtracking_helpers_match_the_page():
     assert "8 queens has 92 solutions" in body
     assert "succeeds after 9 calls" in body and "fails after 20 calls" in body
     assert "in 6 calls" in body
+
+
+def test_graph_traversal_helpers_match_the_page():
+    edges = [(0, 1), (0, 2), (1, 3), (2, 3), (3, 4), (5, 6)]
+    adj = leetcode_docs.adjacency_list(7, edges)
+    assert adj[3] == [1, 2, 4] and adj[6] == [5]
+    walk = leetcode_docs.graph_walks(adj, 0)
+    assert walk["dfs"] == [0, 1, 3, 2, 4] and walk["bfs"] == [0, 1, 2, 3, 4]
+    assert walk["distance"] == {0: 0, 1: 1, 2: 1, 3: 2, 4: 3}
+    assert walk["layers"] == [[0], [1, 2], [3], [4]]
+    assert sorted(leetcode_docs.graph_walks(adj, 5)["bfs"]) == [5, 6]
+    comps = leetcode_docs.connected_components_of(adj)
+    assert [sorted(c) for c in comps] == [[0, 1, 2, 3, 4], [5, 6]]
+    cyc_edges = [(0, 1), (1, 2), (2, 3), (2, 4), (3, 1)]
+    assert leetcode_docs.directed_cycle_of(leetcode_docs.adjacency_list(5, cyc_edges, True)) == [1, 2, 3, 1]
+    assert leetcode_docs.directed_cycle_of(leetcode_docs.adjacency_list(5, cyc_edges[:4], True)) is None
+    ladder = leetcode_docs.word_ladder_of("cat", "dog", ["cot", "cog", "dot", "bat", "cut"])
+    assert ladder["path"] == ["cat", "cot", "dot", "dog"] and ladder["dequeued"] == 7
+    assert leetcode_docs.word_ladder_of("cat", "dog", ["cot"]) == {"path": None, "dequeued": 2}
+    clone = leetcode_docs.clone_graph_of(adj, 3)
+    assert clone["ids"] == {3: 0, 1: 1, 2: 2, 4: 3, 0: 4}
+    back = {new: old for old, new in clone["ids"].items()}
+    assert all(sorted(back[n] for n in clone["adj"][new]) == adj[back[new]] for new in clone["adj"])
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/graph-traversal").get_data(as_text=True))
+    assert "finds 2 components" in body
+    assert "reports the cycle 1 → 2 → 3 → 1" in body
+    assert "cat → cot → dot → dog (3 changes) after taking 7 words off the queue" in body
+    assert "no sequence after 2 words" in body

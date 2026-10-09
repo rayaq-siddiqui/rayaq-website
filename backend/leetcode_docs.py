@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -5110,6 +5110,137 @@ def palindrome_partitions_of(text):
     return {"results": results, "calls": calls[0]}
 
 
+def adjacency_list(node_count, edges, directed=False):
+    adj = {node: [] for node in range(node_count)}
+    for a, b in edges:
+        adj[a].append(b)
+        if not directed:
+            adj[b].append(a)
+    for node in adj:
+        adj[node].sort()
+    return adj
+
+
+def graph_walks(adj, start):
+    """Depth-first (recursive, preorder) and breadth-first visit orders from `start`, plus BFS distances and layers."""
+    dfs_order = []
+    seen = {start}
+
+    def dfs(node):
+        dfs_order.append(node)
+        for nxt in adj[node]:
+            if nxt not in seen:
+                seen.add(nxt)
+                dfs(nxt)
+
+    dfs(start)
+    distance = {start: 0}
+    queue = [start]
+    head = 0
+    while head < len(queue):
+        node = queue[head]
+        head += 1
+        for nxt in adj[node]:
+            if nxt not in distance:
+                distance[nxt] = distance[node] + 1
+                queue.append(nxt)
+    layers = [[node for node in queue if distance[node] == d] for d in range(max(distance.values()) + 1)]
+    return {"dfs": dfs_order, "bfs": queue, "distance": distance, "layers": layers}
+
+
+def connected_components_of(adj):
+    """Components in order of their smallest node, each listed in DFS discovery order."""
+    seen = set()
+    components = []
+    for root in sorted(adj):
+        if root in seen:
+            continue
+        stack = [root]
+        seen.add(root)
+        order = []
+        while stack:
+            node = stack.pop()
+            order.append(node)
+            for nxt in reversed(adj[node]):
+                if nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+        components.append(order)
+    return components
+
+
+def directed_cycle_of(adj):
+    """Finds a cycle in a directed graph with three-colour DFS; returns it as a node list that starts and ends on the same node, or None."""
+    state = {node: 0 for node in adj}
+    stack = []
+
+    def dfs(node):
+        state[node] = 1
+        stack.append(node)
+        for nxt in adj[node]:
+            if state[nxt] == 1:
+                return stack[stack.index(nxt):] + [nxt]
+            if state[nxt] == 0:
+                found = dfs(nxt)
+                if found:
+                    return found
+        stack.pop()
+        state[node] = 2
+        return None
+
+    for node in sorted(adj):
+        if state[node] == 0:
+            found = dfs(node)
+            if found:
+                return found
+    return None
+
+
+def word_ladder_of(begin, end, words):
+    """Shortest transformation sequence by BFS over words that differ in one letter, grouping words by wildcard pattern. Returns the sequence (or None) and how many words were dequeued."""
+    buckets = {}
+    for word in set(words) | {begin, end}:
+        for i in range(len(word)):
+            buckets.setdefault(word[:i] + "*" + word[i + 1:], []).append(word)
+    parent = {begin: None}
+    queue = [begin]
+    head = 0
+    while head < len(queue):
+        word = queue[head]
+        head += 1
+        if word == end:
+            break
+        for i in range(len(word)):
+            for nxt in buckets[word[:i] + "*" + word[i + 1:]]:
+                if nxt not in parent:
+                    parent[nxt] = word
+                    queue.append(nxt)
+    if end not in parent:
+        return {"path": None, "dequeued": head}
+    path = []
+    node = end
+    while node is not None:
+        path.append(node)
+        node = parent[node]
+    return {"path": path[::-1], "dequeued": head}
+
+
+def clone_graph_of(adj, start):
+    """Copies the component of `start` with fresh ids assigned in discovery order. Returns the copy's adjacency and the old-to-new id map."""
+    new_id = {start: 0}
+    order = [start]
+    head = 0
+    while head < len(order):
+        node = order[head]
+        head += 1
+        for nxt in adj[node]:
+            if nxt not in new_id:
+                new_id[nxt] = len(new_id)
+                order.append(nxt)
+    copy = {new_id[node]: [new_id[nxt] for nxt in adj[node]] for node in order}
+    return {"adj": copy, "ids": new_id}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -5317,6 +5448,12 @@ def render(slug, render_template):
         "n_queens_of": n_queens_of,
         "word_search_of": word_search_of,
         "palindrome_partitions_of": palindrome_partitions_of,
+        "adjacency_list": adjacency_list,
+        "graph_walks": graph_walks,
+        "connected_components_of": connected_components_of,
+        "directed_cycle_of": directed_cycle_of,
+        "word_ladder_of": word_ladder_of,
+        "clone_graph_of": clone_graph_of,
         "merge_strategy_costs": merge_strategy_costs,
         "smallest_range_trace": smallest_range_trace,
         "coverage": coverage(),
