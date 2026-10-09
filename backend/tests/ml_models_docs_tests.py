@@ -1774,3 +1774,39 @@ def test_a_feature_from_after_the_outcome_predicts_perfectly():
     assert ml_models_docs.best_threshold_rule(ml_models_docs.LEAK_LOAN_NOTICES, defaulted) == (0.5, 1.0)
     cut, accuracy = ml_models_docs.best_threshold_rule(ml_models_docs.LEAK_LOAN_DEBT_RATIO, defaulted)
     assert cut == pytest.approx(0.365) and accuracy == 0.6
+
+
+def test_threshold_sweep_trades_precision_for_recall():
+    labels, scores = ml_models_docs.METRIC_LABELS, ml_models_docs.METRIC_SCORES
+    assert ml_models_docs.confusion_counts(labels, scores, 0.5) == (3, 2, 1, 4)
+    assert ml_models_docs.confusion_counts(labels, scores, 0.9) == (1, 0, 3, 6)
+    assert ml_models_docs.precision_recall_f1(3, 2, 1) == pytest.approx((0.6, 0.75, 2 / 3))
+    assert ml_models_docs.precision_recall_f1(1, 0, 3) == pytest.approx((1.0, 0.25, 0.4))
+    assert ml_models_docs.precision_recall_f1(0, 0, 5) == (0.0, 0.0, 0.0)
+    recalls = [ml_models_docs.precision_recall_f1(*ml_models_docs.confusion_counts(labels, scores, t)[:3])[1] for t in (0.9, 0.7, 0.5, 0.35)]
+    assert recalls == sorted(recalls)
+
+
+def test_trapezoid_auc_equals_the_pairwise_ranking_probability():
+    labels, scores = ml_models_docs.METRIC_LABELS, ml_models_docs.METRIC_SCORES
+    points = ml_models_docs.roc_points(labels, scores)
+    assert points[0] == (0.0, 0.0) and points[-1] == (1.0, 1.0)
+    assert ml_models_docs.trapezoid_area(points) == pytest.approx(0.875)
+    assert ml_models_docs.rank_auc(labels, scores) == pytest.approx(0.875)
+    assert ml_models_docs.rank_auc([1, 0], [0.5, 0.5]) == 0.5
+
+
+def test_average_precision_is_the_recall_weighted_precision_sum():
+    labels, scores = ml_models_docs.METRIC_LABELS, ml_models_docs.METRIC_SCORES
+    assert ml_models_docs.pr_points(labels, scores)[0] == (0.25, 1.0)
+    assert ml_models_docs.average_precision(labels, scores) == pytest.approx(0.85416667)
+    assert ml_models_docs.average_precision([1, 0], [0.9, 0.1]) == 1.0
+
+
+def test_log_loss_punishes_confident_mistakes_and_micro_macro_differ():
+    assert ml_models_docs.binary_log_loss(ml_models_docs.METRIC_LABELS, ml_models_docs.METRIC_SCORES) == pytest.approx(0.50470531)
+    assert ml_models_docs.binary_log_loss([1, 0], [0.99, 0.01]) == pytest.approx(0.01005034)
+    assert ml_models_docs.binary_log_loss([1], [0.01]) == pytest.approx(4.60517019)
+    per_class, macro, micro = ml_models_docs.averaged_f1(ml_models_docs.METRIC_CLASS_COUNTS)
+    assert per_class["cat"] == pytest.approx(0.8) and per_class["bird"] == 0.0
+    assert macro == pytest.approx(0.36190476) and micro == pytest.approx(0.6)

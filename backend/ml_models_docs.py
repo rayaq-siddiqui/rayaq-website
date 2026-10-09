@@ -3784,6 +3784,79 @@ def best_threshold_rule(values, labels):
     return best
 
 
+METRIC_LABELS = [1, 1, 0, 1, 0, 1, 0, 0, 0, 0]
+METRIC_SCORES = [0.95, 0.85, 0.80, 0.65, 0.55, 0.45, 0.40, 0.30, 0.20, 0.10]
+METRIC_CLASS_COUNTS = {"cat": (8, 2, 2), "dog": (1, 1, 4), "bird": (0, 0, 3)}
+
+
+def confusion_counts(labels, scores, threshold):
+    tp = sum(1 for y, s in zip(labels, scores) if y == 1 and s >= threshold)
+    fp = sum(1 for y, s in zip(labels, scores) if y == 0 and s >= threshold)
+    fn = sum(1 for y, s in zip(labels, scores) if y == 1 and s < threshold)
+    tn = len(labels) - tp - fp - fn
+    return tp, fp, fn, tn
+
+
+def precision_recall_f1(tp, fp, fn):
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    recall = tp / (tp + fn) if tp + fn else 0.0
+    f1 = 2 * tp / (2 * tp + fp + fn) if tp + fp + fn else 0.0
+    return precision, recall, f1
+
+
+def roc_points(labels, scores):
+    positives = sum(labels)
+    negatives = len(labels) - positives
+    points = [(0.0, 0.0)]
+    for cut in sorted(set(scores), reverse=True):
+        tp, fp, _, _ = confusion_counts(labels, scores, cut)
+        points.append((fp / negatives, tp / positives))
+    return points
+
+
+def trapezoid_area(points):
+    return sum((x1 - x0) * (y0 + y1) / 2 for (x0, y0), (x1, y1) in zip(points, points[1:]))
+
+
+def rank_auc(labels, scores):
+    pos = [s for y, s in zip(labels, scores) if y == 1]
+    neg = [s for y, s in zip(labels, scores) if y == 0]
+    wins = sum(1.0 if p > n else 0.5 if p == n else 0.0 for p in pos for n in neg)
+    return wins / (len(pos) * len(neg))
+
+
+def pr_points(labels, scores):
+    positives = sum(labels)
+    points = []
+    for cut in sorted(set(scores), reverse=True):
+        tp, fp, _, _ = confusion_counts(labels, scores, cut)
+        points.append((tp / positives, tp / (tp + fp)))
+    return points
+
+
+def average_precision(labels, scores):
+    previous_recall, total = 0.0, 0.0
+    for recall, precision in pr_points(labels, scores):
+        total += (recall - previous_recall) * precision
+        previous_recall = recall
+    return total
+
+
+def binary_log_loss(labels, probabilities):
+    return -sum(
+        math.log(p) if y == 1 else math.log(1 - p) for y, p in zip(labels, probabilities)
+    ) / len(labels)
+
+
+def averaged_f1(class_counts):
+    per_class = {name: precision_recall_f1(tp, fp, fn)[2] for name, (tp, fp, fn) in class_counts.items()}
+    macro = sum(per_class.values()) / len(per_class)
+    tp = sum(c[0] for c in class_counts.values())
+    fp = sum(c[1] for c in class_counts.values())
+    fn = sum(c[2] for c in class_counts.values())
+    return per_class, macro, precision_recall_f1(tp, fp, fn)[2]
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -3999,6 +4072,18 @@ def render(slug, render_template):
         "duplicate_overlap": duplicate_overlap,
         "lookup_accuracy": lookup_accuracy,
         "best_threshold_rule": best_threshold_rule,
+        "metric_labels": METRIC_LABELS,
+        "metric_scores": METRIC_SCORES,
+        "metric_class_counts": METRIC_CLASS_COUNTS,
+        "confusion_counts": confusion_counts,
+        "precision_recall_f1": precision_recall_f1,
+        "roc_points": roc_points,
+        "trapezoid_area": trapezoid_area,
+        "rank_auc": rank_auc,
+        "pr_points": pr_points,
+        "average_precision": average_precision,
+        "binary_log_loss": binary_log_loss,
+        "averaged_f1": averaged_f1,
         "kmeans_run": kmeans_run,
         "nearest_labeled": nearest_labeled,
         "cluster_then_label": cluster_then_label,
