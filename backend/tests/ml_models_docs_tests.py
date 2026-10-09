@@ -2023,3 +2023,35 @@ def test_regression_tree_helper_fits_a_step_function_exactly():
     tree = ml_models_docs.grow_regression_tree(xs, [1.0, 1.0, 5.0, 5.0], 3)
     assert [ml_models_docs.regression_tree_predict(tree, x) for x in xs] == [1.0, 1.0, 5.0, 5.0]
     assert tree["threshold"] == 2.5
+
+
+def test_poly_ridge_fit_matches_sklearn_ridge_with_free_intercept():
+    weights = ml_models_docs.poly_ridge_fit([0.0, 0.25, 0.5, 0.75, 1.0], [0.0, 1.0, 0.0, -1.0, 0.5], 2, 0.5)
+    assert weights == pytest.approx([0.0090909, -0.1666667, 0.1818182], abs=1e-6)
+
+
+def test_poly_ridge_with_zero_alpha_matches_the_plain_polynomial_fit():
+    xs, ys = ml_models_docs.GENERALIZATION_X, ml_models_docs.generalization_train_targets()
+    assert ml_models_docs.poly_ridge_fit(xs, ys, 3, 0.0) == pytest.approx(ml_models_docs.polynomial_fit(xs, ys, 3))
+
+
+def test_learning_curves_separate_high_bias_from_high_variance():
+    sizes = [15, 40, 320]
+    simple = ml_models_docs.polynomial_learning_curve(1, sizes)
+    flexible = ml_models_docs.polynomial_learning_curve(9, sizes)
+    assert simple[-1][2] > 0.3 and simple[-1][2] - simple[-1][1] < 0.1
+    assert flexible[0][2] > 100 * flexible[0][1]
+    assert flexible[-1][2] < simple[-1][2] / 2
+    assert flexible[-1][2] - flexible[-1][1] < 0.05
+
+
+def test_ridge_strength_sweep_has_an_interior_best_value():
+    rows = ml_models_docs.ridge_strength_sweep([0, 0.01, 10])
+    assert rows[1][2] < rows[0][2] / 10 and rows[1][2] < rows[2][2]
+
+
+def test_memorization_demo_fits_random_labels_without_generalizing():
+    demo = ml_models_docs.memorization_demo()
+    assert demo["train_accuracy"] == 1.0
+    assert 0.45 < demo["test_accuracy"] < 0.6
+    assert demo["leaves"] > 10

@@ -4305,6 +4305,70 @@ def newton_scan(xs, grads, hessians, reg_lambda=1.0, gamma=0.0, min_child_weight
             "root_gain": parent, "candidates": candidates}
 
 
+def _median(values):
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def noisy_sine_rows(n, seed, noise=0.3):
+    rng = random.Random(seed)
+    xs = [rng.uniform(0, 1) for _ in range(n)]
+    return xs, [math.sin(2 * math.pi * x) + rng.gauss(0, noise) for x in xs]
+
+
+def poly_ridge_fit(xs, ys, degree, alpha=0.0):
+    scaled = [2 * x - 1 for x in xs]
+    design = [[u**k for k in range(degree + 1)] for u in scaled]
+    gram = [
+        [sum(row[i] * row[j] for row in design) + (alpha if i == j and i > 0 else 0.0)
+         for j in range(degree + 1)]
+        for i in range(degree + 1)
+    ]
+    moments = [sum(row[i] * y for row, y in zip(design, ys)) for i in range(degree + 1)]
+    return _solve_linear(gram, moments)
+
+
+def _poly_errors(degree, n, alpha, noise, seed, val_xs, val_ys):
+    xs, ys = noisy_sine_rows(n, seed, noise)
+    weights = poly_ridge_fit(xs, ys, degree, alpha)
+    return polynomial_mse(weights, xs, ys), polynomial_mse(weights, val_xs, val_ys)
+
+
+def polynomial_learning_curve(degree, sizes, alpha=0.0, noise=0.3, repeats=30):
+    val_xs, val_ys = noisy_sine_rows(400, 10_000, noise)
+    rows = []
+    for n in sizes:
+        pairs = [_poly_errors(degree, n, alpha, noise, 100 * n + r, val_xs, val_ys) for r in range(repeats)]
+        rows.append((n, _median([p[0] for p in pairs]), _median([p[1] for p in pairs])))
+    return rows
+
+
+def ridge_strength_sweep(alphas, degree=9, n=15, noise=0.3, repeats=30):
+    val_xs, val_ys = noisy_sine_rows(400, 10_000, noise)
+    rows = []
+    for alpha in alphas:
+        pairs = [_poly_errors(degree, n, alpha, noise, 100 * n + r, val_xs, val_ys) for r in range(repeats)]
+        rows.append((alpha, _median([p[0] for p in pairs]), _median([p[1] for p in pairs])))
+    return rows
+
+
+def memorization_demo(n_train=60, n_test=400, seed=3):
+    rng = random.Random(seed)
+
+    def draw(n):
+        return [([rng.uniform(0, 10), rng.uniform(0, 10)], rng.randint(0, 1)) for _ in range(n)]
+
+    train, test = draw(n_train), draw(n_test)
+    tree = grow_tree(train)
+    return {
+        "train_accuracy": tree_accuracy(tree, train),
+        "test_accuracy": tree_accuracy(tree, test),
+        "leaves": len(tree_leaves(tree)),
+        "majority_train": max(label_counts([y for _, y in train])) / n_train,
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -4544,6 +4608,9 @@ def render(slug, render_template):
         "wavy_rows": wavy_rows,
         "boosting_curve": boosting_curve,
         "newton_scan": newton_scan,
+        "polynomial_learning_curve": polynomial_learning_curve,
+        "ridge_strength_sweep": ridge_strength_sweep,
+        "memorization_demo": memorization_demo,
         "BOOST_XS": BOOST_XS,
         "BOOST_YS": BOOST_YS,
         "NEWTON_XS": NEWTON_XS,
