@@ -2109,3 +2109,45 @@ def test_adam_decay_decoupled_is_independent_of_gradient_scale_and_l2_is_not():
     large = ml_models_docs.adam_weight_decay_comparison(100.0)
     assert abs(small["decoupled_extra_shrink"] - large["decoupled_extra_shrink"]) < 1e-6
     assert small["l2_extra_shrink"] > 10 * large["l2_extra_shrink"] > 0
+
+
+def test_activation_slopes_match_finite_differences():
+    for name, f, d in ml_models_docs.ACTIVATIONS:
+        for x in (-2.5, -0.7, 0.4, 1.9):
+            assert abs(ml_models_docs.numeric_slope(f, x) - d(x)) < 1e-6, (name, x)
+
+
+def test_activation_values_and_landmarks():
+    table = {r["name"]: r for r in ml_models_docs.activation_table([-3, 0, 3])}
+    assert table["sigmoid"]["values"][1] == 0.5 and table["sigmoid"]["slopes"][1] == 0.25
+    assert table["tanh"]["slopes"][1] == 1.0
+    assert table["relu"]["values"] == [0.0, 0.0, 3]
+    assert table["leaky_relu"]["values"][0] == -0.03
+    assert abs(table["softplus"]["values"][1] - math.log(2)) < 1e-12
+    assert abs(table["gelu"]["values"][2] - 2.9959502) < 1e-6
+
+
+def test_gelu_tanh_approximation_is_close_but_not_equal():
+    worst, at = ml_models_docs.gelu_tanh_max_error()
+    assert 0 < worst < 1e-3
+    assert 2 < abs(at) < 4
+
+
+def test_chain_gradient_vanishes_for_sigmoid_but_not_relu():
+    assert ml_models_docs.chain_gradient("sigmoid", 10, 0.0) == 0.25**10
+    assert ml_models_docs.chain_gradient("relu", 10, 2.0) == 1.0
+    assert ml_models_docs.chain_gradient("relu", 10, -2.0) == 0.0
+    assert ml_models_docs.chain_gradient("sigmoid", 10, 4.0) < ml_models_docs.chain_gradient("sigmoid", 10, 0.0)
+
+
+def test_glu_variants_gate_one_half_with_the_other():
+    out = ml_models_docs.glu_variants(1.0, 2.0)
+    assert abs(out["glu"] - 1.0 * ml_models_docs.sigmoid(2.0)) < 1e-12
+    assert abs(out["swiglu"] - ml_models_docs.silu(1.0) * 2.0) < 1e-12
+    assert out["reglu"] == 2.0
+
+
+def test_relu_active_fraction_collapses_with_a_negative_bias():
+    assert 0.45 < ml_models_docs.relu_active_fraction(0.0) < 0.55
+    assert ml_models_docs.relu_active_fraction(-5.0) == 0.0
+    assert ml_models_docs.relu_active_fraction(-3.0) < 0.01

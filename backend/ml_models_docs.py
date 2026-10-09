@@ -594,7 +594,7 @@ PAGES = [
             "pytorch:torch/nn/modules/activation.py",
             "pytorch:torch/nn/functional.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "backpropagation",
@@ -4484,6 +4484,84 @@ def adam_weight_decay_comparison(grad, w0=5.0, lr=0.01, weight_decay=0.1, steps=
     }
 
 
+def gelu_exact(x):
+    return 0.5 * x * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def gelu_tanh(x):
+    return 0.5 * x * (1.0 + math.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * x**3)))
+
+
+def silu(x):
+    return x * sigmoid(x)
+
+
+def softplus(x):
+    return max(x, 0.0) + math.log1p(math.exp(-abs(x)))
+
+
+def _gelu_derivative(x):
+    cdf = 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+    pdf = math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+    return cdf + x * pdf
+
+
+def _silu_derivative(x):
+    s = sigmoid(x)
+    return s * (1.0 + x * (1.0 - s))
+
+
+ACTIVATIONS = [
+    ("sigmoid", sigmoid, lambda x: sigmoid(x) * (1.0 - sigmoid(x))),
+    ("tanh", math.tanh, lambda x: 1.0 - math.tanh(x) ** 2),
+    ("relu", lambda x: max(0.0, x), lambda x: 1.0 if x > 0 else 0.0),
+    ("leaky_relu", lambda x: x if x > 0 else 0.01 * x, lambda x: 1.0 if x > 0 else 0.01),
+    ("gelu", gelu_exact, _gelu_derivative),
+    ("silu", silu, _silu_derivative),
+    ("softplus", softplus, sigmoid),
+]
+
+
+def activation_table(xs):
+    return [
+        {"name": name, "values": [f(x) for x in xs], "slopes": [d(x) for x in xs]}
+        for name, f, d in ACTIVATIONS
+    ]
+
+
+def numeric_slope(f, x, h=1e-5):
+    return (f(x + h) - f(x - h)) / (2 * h)
+
+
+def gelu_tanh_max_error(low=-6.0, high=6.0, steps=1200):
+    worst, at = 0.0, low
+    for i in range(steps + 1):
+        x = low + (high - low) * i / steps
+        gap = abs(gelu_exact(x) - gelu_tanh(x))
+        if gap > worst:
+            worst, at = gap, x
+    return worst, at
+
+
+def chain_gradient(name, depth, z):
+    derivative = next(d for n, _, d in ACTIVATIONS if n == name)
+    return derivative(z) ** depth
+
+
+def glu_variants(a, b):
+    return {
+        "glu": a * sigmoid(b),
+        "swiglu": silu(a) * b,
+        "geglu": gelu_exact(a) * b,
+        "reglu": max(0.0, a) * b,
+    }
+
+
+def relu_active_fraction(bias, scale=1.0, n=4000, seed=0):
+    rng = random.Random(seed)
+    return sum(1 for _ in range(n) if rng.gauss(0.0, scale) + bias > 0) / n
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -4728,6 +4806,15 @@ def render(slug, render_template):
         "memorization_demo": memorization_demo,
         "bias_variance_decomposition": bias_variance_decomposition,
         "penalized_fits": penalized_fits,
+        "activation_table": activation_table,
+        "gelu_tanh_max_error": gelu_tanh_max_error,
+        "chain_gradient": chain_gradient,
+        "glu_variants": glu_variants,
+        "relu_active_fraction": relu_active_fraction,
+        "gelu_exact": gelu_exact,
+        "gelu_tanh": gelu_tanh,
+        "silu": silu,
+        "softplus": softplus,
         "lasso_sparsity_path": lasso_sparsity_path,
         "dropout_statistics": dropout_statistics,
         "adam_weight_decay_comparison": adam_weight_decay_comparison,
