@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -4731,6 +4731,62 @@ def closest_points_trace(points, k):
     return {"steps": steps, "answer": sorted([x, y] for _, x, y in heap)}
 
 
+def merge_k_trace(lists):
+    """Pop the smallest head, push its successor: the heap never holds more than one entry per list."""
+    heap = [(seq[0], i, 0) for i, seq in enumerate(lists) if seq]
+    heapq.heapify(heap)
+    steps = []
+    merged = []
+    peak = len(heap)
+    while heap:
+        value, i, j = heapq.heappop(heap)
+        merged.append(value)
+        if j + 1 < len(lists[i]):
+            heapq.heappush(heap, (lists[i][j + 1], i, j + 1))
+        peak = max(peak, len(heap))
+        steps.append({"value": value, "list": i, "size": len(heap), "heads": sorted(h[0] for h in heap)})
+    return {"steps": steps, "merged": merged, "peak": peak}
+
+
+def merge_strategy_costs(sizes):
+    """Element moves for folding lists in one by one, merging pairs in rounds, and the heap (n items, ceil(log2 k) levels)."""
+    n = sum(sizes)
+    running = 0
+    sequential = 0
+    for index, size in enumerate(sizes):
+        running += size
+        if index:
+            sequential += running
+    rounds = 0
+    level = list(sizes)
+    pairwise = 0
+    while len(level) > 1:
+        rounds += 1
+        level = [sum(level[i:i + 2]) for i in range(0, len(level), 2)]
+        pairwise += n
+    return {"n": n, "sequential": sequential, "pairwise": pairwise, "rounds": rounds, "heap": n * max(1, math.ceil(math.log2(len(sizes))))}
+
+
+def smallest_range_trace(lists):
+    """Keep one head per list in a min-heap plus the running maximum; the window [min, max] always touches every list."""
+    heap = [(seq[0], i, 0) for i, seq in enumerate(lists)]
+    heapq.heapify(heap)
+    high = max(h[0] for h in heap)
+    best = (heap[0][0], high)
+    steps = []
+    while True:
+        low, i, j = heap[0]
+        if high - low < best[1] - best[0]:
+            best = (low, high)
+        steps.append({"low": low, "high": high, "best": list(best)})
+        if j + 1 == len(lists[i]):
+            break
+        nxt = lists[i][j + 1]
+        heapq.heapreplace(heap, (nxt, i, j + 1))
+        high = max(high, nxt)
+    return {"steps": steps, "range": list(best)}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -4923,6 +4979,9 @@ def render(slug, render_template):
         "top_k_largest_trace": top_k_largest_trace,
         "top_k_frequent_trace": top_k_frequent_trace,
         "closest_points_trace": closest_points_trace,
+        "merge_k_trace": merge_k_trace,
+        "merge_strategy_costs": merge_strategy_costs,
+        "smallest_range_trace": smallest_range_trace,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,

@@ -712,3 +712,22 @@ def test_top_k_helpers_match_the_page():
     body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/top-k-elements").get_data(as_text=True))
     assert "The answer is 9, 8, 7, and the 3rd largest is the final bar, 7." in body
     assert "The top 2 are the and is." in body
+
+
+def test_k_way_merge_helpers_match_the_page():
+    lists = [[1, 4, 7, 10], [2, 5], [3, 6, 8]]
+    trace = leetcode_docs.merge_k_trace(lists)
+    assert trace["merged"] == list(heapq.merge(*lists)) == [1, 2, 3, 4, 5, 6, 7, 8, 10]
+    assert trace["peak"] == 3
+    assert [s["list"] for s in trace["steps"]] == [0, 1, 2, 0, 1, 2, 0, 2, 0]
+    assert [s["size"] for s in trace["steps"]] == [3, 3, 3, 3, 2, 2, 2, 1, 0]
+    assert leetcode_docs.merge_k_trace([[], [2], []])["merged"] == [2]
+    assert leetcode_docs.merge_k_trace([])["merged"] == []
+    cost = leetcode_docs.merge_strategy_costs([4] * 8)
+    assert cost == {"n": 32, "sequential": 140, "pairwise": 96, "rounds": 3, "heap": 96}
+    rng = leetcode_docs.smallest_range_trace([[1, 5, 9], [2, 6, 11], [4, 7, 8]])
+    assert rng["range"] == [4, 6] and len(rng["steps"]) == 7
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/k-way-merge").get_data(as_text=True))
+    assert "the output is 1, 2, 3, 4, 5, 6, 7, 8, 10." in body
+    assert "tightest window that contains one value from every list is [4, 6]" in body
+    assert "that is 140 moves, against 96 for the heap" in body
