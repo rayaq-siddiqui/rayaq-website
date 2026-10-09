@@ -531,7 +531,9 @@ A Routine ("rayaq.ca/ml-models — architecture reference agent") runs every 5 h
 the queue has unbuilt pages. Each build run:
 
 1. **Starts clean.** It syncs with `origin/main` (`git pull`), then reads `AGENTS.md`, this
-   spec and the progress file.
+   spec and the progress file. The owner set on 2026-10-09 that it always pulls before
+   starting any development: again before each page and before any Maintain or audit
+   change, since other Routines push to `main` during its runs.
 2. **Clones the pinned upstreams.** It makes shallow, sparse clones of each pin at its tag,
    in a scratch directory, and checks out only the paths the next page needs. It verifies
    every path and line range against those clones before linking.
