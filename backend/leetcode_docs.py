@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -4981,6 +4981,135 @@ def parentheses_of(n):
     return {"results": results, "calls": calls[0]}
 
 
+def combination_sum_of(candidates, target, reuse=True, prune=True):
+    """Combinations summing to target by backtracking over sorted candidates. `reuse` lets an item repeat (Combination Sum); without it equal values are skipped among siblings (Combination Sum II). `prune` stops a loop at the first candidate that overshoots."""
+    nums = sorted(candidates)
+    results = []
+    calls = [0]
+    tested = [0]
+    path = []
+
+    def explore(start, remaining):
+        calls[0] += 1
+        if remaining == 0:
+            results.append(list(path))
+            return
+        for i in range(start, len(nums)):
+            tested[0] += 1
+            if not reuse and i > start and nums[i] == nums[i - 1]:
+                continue
+            if nums[i] > remaining:
+                if prune:
+                    break
+                continue
+            path.append(nums[i])
+            explore(i if reuse else i + 1, remaining - nums[i])
+            path.pop()
+
+    explore(0, target)
+    return {"results": results, "calls": calls[0], "tested": tested[0]}
+
+
+def n_queens_of(n):
+    """All N-Queens solutions as column-per-row lists, plus the placement tree (path, depth, parent, layout column) of every safe prefix and the total number of squares tried."""
+    solutions = []
+    nodes = []
+    leaves = [0]
+    tried = [0]
+    cols = set()
+    diag = set()
+    anti = set()
+    path = []
+
+    def explore(row, parent):
+        index = len(nodes)
+        entry = {"path": list(path), "depth": row, "parent": parent, "x": 0.0}
+        nodes.append(entry)
+        kids = []
+        if row == n:
+            solutions.append(list(path))
+        else:
+            for col in range(n):
+                tried[0] += 1
+                if col in cols or row - col in diag or row + col in anti:
+                    continue
+                cols.add(col)
+                diag.add(row - col)
+                anti.add(row + col)
+                path.append(col)
+                kids.append(explore(row + 1, index))
+                path.pop()
+                cols.remove(col)
+                diag.remove(row - col)
+                anti.remove(row + col)
+        if kids:
+            entry["x"] = sum(nodes[k]["x"] for k in kids) / len(kids)
+        else:
+            entry["x"] = float(leaves[0])
+            leaves[0] += 1
+        entry["solution"] = row == n
+        return index
+
+    explore(0, None)
+    return {"solutions": solutions, "nodes": nodes, "columns": leaves[0], "tried": tried[0]}
+
+
+def word_search_of(board, word):
+    """Depth-first search for `word` on a grid, marking cells while they are on the path. Returns whether it was found, the cell path of the first match, and the call count."""
+    grid = [list(row) for row in board]
+    rows, cols = len(grid), len(grid[0])
+    calls = [0]
+    path = []
+
+    def explore(r, c, i):
+        calls[0] += 1
+        if grid[r][c] != word[i]:
+            return False
+        path.append((r, c))
+        if i == len(word) - 1:
+            return True
+        saved = grid[r][c]
+        grid[r][c] = "#"
+        for dr, dc in ((0, 1), (1, 0), (0, -1), (-1, 0)):
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < rows and 0 <= nc < cols and grid[nr][nc] != "#":
+                if explore(nr, nc, i + 1):
+                    grid[r][c] = saved
+                    return True
+        grid[r][c] = saved
+        path.pop()
+        return False
+
+    for r in range(rows):
+        for c in range(cols):
+            path.clear()
+            if explore(r, c, 0):
+                return {"found": True, "path": list(path), "calls": calls[0]}
+    return {"found": False, "path": [], "calls": calls[0]}
+
+
+def palindrome_partitions_of(text):
+    """Every way to cut `text` into palindromes, extending a prefix only when the piece it adds is a palindrome. Returns the partitions and the call count."""
+    results = []
+    calls = [0]
+    path = []
+
+    def explore(start):
+        calls[0] += 1
+        if start == len(text):
+            results.append(list(path))
+            return
+        for end in range(start + 1, len(text) + 1):
+            piece = text[start:end]
+            if piece == piece[::-1]:
+                path.append(piece)
+                explore(end)
+                path.pop()
+
+    explore(0)
+    return {"results": results, "calls": calls[0]}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -5184,6 +5313,10 @@ def render(slug, render_template):
         "subsets_with_duplicates": subsets_with_duplicates,
         "combinations_of": combinations_of,
         "parentheses_of": parentheses_of,
+        "combination_sum_of": combination_sum_of,
+        "n_queens_of": n_queens_of,
+        "word_search_of": word_search_of,
+        "palindrome_partitions_of": palindrome_partitions_of,
         "merge_strategy_costs": merge_strategy_costs,
         "smallest_range_trace": smallest_range_trace,
         "coverage": coverage(),

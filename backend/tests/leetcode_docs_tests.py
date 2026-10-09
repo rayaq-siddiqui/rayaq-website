@@ -803,3 +803,33 @@ def test_subsets_and_permutations_helpers_match_the_page():
     assert "cuts 2 branches and yields 6 distinct subsets" in body
     assert "make 11 calls" in body
     assert "after 22 calls" in body
+
+
+def test_constraint_backtracking_helpers_match_the_page():
+    cs = leetcode_docs.combination_sum_of([2, 3, 6, 7], 7)
+    assert cs["results"] == [[2, 2, 3], [7]] and cs["calls"] == 10 and cs["tested"] == 16
+    assert leetcode_docs.combination_sum_of([2, 3, 6, 7], 7, prune=False)["tested"] == 27
+    cs2 = leetcode_docs.combination_sum_of([10, 1, 2, 7, 6, 1, 5], 8, reuse=False)
+    assert cs2["results"] == [[1, 1, 6], [1, 2, 5], [1, 7], [2, 6]]
+    assert leetcode_docs.combination_sum_of([5], 0)["results"] == [[]]
+    assert leetcode_docs.combination_sum_of([5], 3)["results"] == []
+    q = leetcode_docs.n_queens_of(4)
+    assert q["solutions"] == [[1, 3, 0, 2], [2, 0, 3, 1]]
+    assert len(q["nodes"]) == 17 and q["columns"] == 6 and q["tried"] == 60
+    assert [len(leetcode_docs.n_queens_of(n)["solutions"]) for n in (1, 2, 3, 6, 8)] == [1, 0, 0, 4, 92]
+    board = ["ABCE", "SFCS", "ADEE"]
+    ws = leetcode_docs.word_search_of(board, "ABCCED")
+    assert ws["found"] and len(ws["path"]) == 6 and ws["calls"] == 9
+    assert all(abs(a[0] - b[0]) + abs(a[1] - b[1]) == 1 for a, b in zip(ws["path"], ws["path"][1:]))
+    miss = leetcode_docs.word_search_of(board, "ABCB")
+    assert not miss["found"] and miss["calls"] == 20
+    assert board == ["ABCE", "SFCS", "ADEE"]
+    pal = leetcode_docs.palindrome_partitions_of("aab")
+    assert pal["results"] == [["a", "a", "b"], ["aa", "b"]] and pal["calls"] == 6
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/constraint-backtracking").get_data(as_text=True))
+    assert "in 10 calls. The loop examines 16 candidates" in body
+    assert "it would examine 27" in body
+    assert "tries 60 squares in total, builds 17 safe partial boards and finds 2 solutions" in body
+    assert "8 queens has 92 solutions" in body
+    assert "succeeds after 9 calls" in body and "fails after 20 calls" in body
+    assert "in 6 calls" in body

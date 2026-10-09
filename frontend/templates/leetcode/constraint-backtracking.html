@@ -1,0 +1,355 @@
+{% set cands = [2, 3, 6, 7] %}
+{% set cs = combination_sum_of(cands, 7) %}
+{% set cs_raw = combination_sum_of(cands, 7, true, false) %}
+{% set cs2_in = [10, 1, 2, 7, 6, 1, 5] %}
+{% set cs2 = combination_sum_of(cs2_in, 8, false) %}
+{% set q = n_queens_of(4) %}
+{% set q6 = n_queens_of(6) %}
+{% set q8 = n_queens_of(8) %}
+{% set board = ["ABCE", "SFCS", "ADEE"] %}
+{% set ws = word_search_of(board, "ABCCED") %}
+{% set ws_miss = word_search_of(board, "ABCB") %}
+{% set pal = palindrome_partitions_of("aab") %}
+<header class="jj-header">
+  <h1>Constrained backtracking</h1>
+  <p class="tagline">
+    The generate-everything search from the previous page is exponential, and most of it is wasted. If a half-built
+    answer already breaks a rule, no way of finishing it can succeed, so the search should abandon it on the spot.
+    Constrained backtracking is the same choose-explore-unchoose loop with one extra question before each choice:
+    does this still have a chance? Asking it cheaply and early is where all the speed comes from.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  You must find one, all, or the number of arrangements that satisfy rules: numbers that add to a target, queens that
+  do not attack each other, a path of letters through a grid, a string cut into palindromes. Checking a finished answer
+  is easy; the trouble is the astronomical number of candidates. The rules, however, usually become violated
+  <em>early</em>, long before the answer is complete, and that is the opening.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Signal</th><th>Pattern</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>"Combinations that add up to a target"</td><td>Sorted candidates, a remaining sum, break when a candidate overshoots</td><td>Everything after an overshooting candidate in sorted order overshoots too.</td></tr>
+    <tr><td>"Place pieces so none conflict" (queens, sudoku)</td><td>Place one piece per step, keep sets of used columns, rows or diagonals</td><td>A conflict test in constant time rejects a square before any recursion.</td></tr>
+    <tr><td>"Does this word exist in the grid"</td><td>DFS with a visited mark that is undone on return</td><td>A cell may be reused by a different path, but never twice in one path.</td></tr>
+    <tr><td>"Partition so that every piece satisfies a property"</td><td>Extend a prefix only with a valid next piece</td><td>An invalid piece makes the whole branch dead.</td></tr>
+    <tr><td>"Split into k groups of equal sum"</td><td>Fill one bucket at a time, prune on overshoot and on repeated bucket states</td><td>Many orderings of the same items lead to the same state.</td></tr>
+    <tr><td>"Count or optimize, with overlapping subproblems"</td><td>Dynamic programming or memoization</td><td>If the remaining problem repeats, cache it instead of searching it again.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Walking a maze, you do not walk to the end of every corridor to learn it is a dead end. You turn around the moment you
+  see the wall. Backtracking with constraints is the same: you test each next step against the rules, and a step that
+  breaks a rule is never taken, which removes the entire subtree behind it with one comparison.
+</p>
+<p>
+  The power of that cut depends on how early it happens. Rejecting a bad queen on the second row saves every placement
+  of rows three to eight; rejecting a bad grid letter on the first mismatch saves every longer path. So the craft is in
+  ordering the choices and choosing the constraint test so that failures show up as high in the tree as they can.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 {{ 60 + q.columns * 90 }} {{ 40 + 5 * 56 }}" role="img" aria-labelledby="lc-queens-tree-title lc-queens-tree-desc">
+    <title id="lc-queens-tree-title">The 4-queens search tree</title>
+    <desc id="lc-queens-tree-desc">
+      A tree of safe partial placements for 4 queens, one row per level. Each circle shows the column of the queen
+      placed in that row. The tree has {{ q.nodes | length }} nodes and {{ q.solutions | length }} complete solutions,
+      which are the leaves at the bottom level: columns {{ q.solutions[0] | join(", ") }} and
+      {{ q.solutions[1] | join(", ") }} from top row to bottom row. Every other leaf is a dead end where the next row has no safe
+      square.
+    </desc>
+    {% for node in q.nodes if node.parent is not none %}
+      {% set par = q.nodes[node.parent] %}
+      <line x1="{{ 40 + par.x * 90 }}" y1="{{ 32 + par.depth * 56 }}" x2="{{ 40 + node.x * 90 }}" y2="{{ 32 + node.depth * 56 }}" class="d-line"></line>
+    {% endfor %}
+    {% for node in q.nodes %}
+      <circle cx="{{ 40 + node.x * 90 }}" cy="{{ 32 + node.depth * 56 }}" r="15" class="{{ 'lc-fill-g' if node.solution else ('lc-fill-a' if node.depth == 0 else 'd-box') }}"></circle>
+      <text x="{{ 40 + node.x * 90 }}" y="{{ 37 + node.depth * 56 }}" font-size="13" text-anchor="middle">{{ node.path[-1] if node.path else "∅" }}</text>
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">
+  Only safe placements become nodes. Of the 4<sup>4</sup> = 256 ways to put one queen in each row, the search ever
+  builds {{ q.nodes | length }} partial boards. Green leaves are solutions; the grey leaves higher up are dead ends,
+  found one row early. The diagram scrolls sideways on a narrow screen.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="invariant">The invariant</h3>
+<p>
+  At every call, the path so far satisfies all the rules that can be checked on a partial answer. Each recursive step
+  adds one choice that is validated before it is made, so the invariant holds on entry to the child. When the path is
+  complete, it is therefore a valid answer; when no legal choice remains, the call returns and the loop in the parent
+  tries its next option. Nothing valid is lost, because a rejected choice would have broken a rule that no
+  extension could repair.
+</p>
+<p>
+  That last clause is the correctness condition for any pruning rule: it must only reject a branch when <em>no</em>
+  completion of it is valid. A rule that rejects too much loses answers; a rule that rejects too little is merely slow.
+</p>
+
+<h3 id="constraint-state">Keeping the check cheap</h3>
+<p>
+  The test runs at every node, so it must not scan the board. Keep the facts in sets that you update on choose and
+  restore on unchoose:
+</p>
+<ul>
+  <li>For N-Queens, three sets: used columns, used <code>row - col</code> diagonals and used <code>row + col</code>
+    anti-diagonals. A square is safe if all three miss. One queen per row is guaranteed by recursing one row at a time.</li>
+  <li>For combination sum, the remaining target. Sorting the candidates once means the first candidate that exceeds the
+    remainder ends the loop with a <code>break</code>, not a <code>continue</code>.</li>
+  <li>For word search, the current index into the word, and a visited mark written into the grid itself and restored on
+    the way out.</li>
+</ul>
+
+<h3 id="ordering">Where the cuts come from</h3>
+<p>
+  Three kinds of pruning cover almost every problem. <strong>Feasibility</strong>: reject a choice that already
+  violates a rule (a queen under attack, a letter that does not match). <strong>Bounds</strong>: reject when even the
+  best case cannot succeed (the remaining sum is negative, too few items are left). <strong>Symmetry and
+  duplicates</strong>: do not explore two branches that lead to the same state (a start index so combinations are not
+  reordered, a sort and skip for equal values).
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 {{ 70 + board[0] | length * 52 }} 200" role="img" aria-labelledby="lc-word-grid-title lc-word-grid-desc">
+    <title id="lc-word-grid-title">A word search path through a letter grid</title>
+    <desc id="lc-word-grid-desc">
+      A grid of {{ board | length }} rows and {{ board[0] | length }} columns. The word ABCCED is found by starting at
+      the top-left A and moving through {{ ws.path | length }} adjacent cells, each used once. The path cells are
+      numbered in the order they are visited.
+    </desc>
+    {% for row in board %}
+      {% set r = loop.index0 %}
+      {% for letter in row %}
+        {% set c = loop.index0 %}
+        {% set step = ws.path.index((r, c)) + 1 if (r, c) in ws.path else 0 %}
+        <rect x="{{ 20 + c * 52 }}" y="{{ 20 + r * 52 }}" width="46" height="46" rx="4" class="{{ 'lc-fill-g' if step else 'd-box' }}"></rect>
+        <text x="{{ 43 + c * 52 }}" y="{{ 49 + r * 52 }}" font-size="18" text-anchor="middle">{{ letter }}</text>
+        {% if step %}<text x="{{ 60 + c * 52 }}" y="{{ 34 + r * 52 }}" font-size="10" text-anchor="end" class="d-muted">{{ step }}</text>{% endif %}
+      {% endfor %}
+    {% endfor %}
+    <text x="20" y="190" font-size="11" class="d-muted">green: cells on the path, small number: step</text>
+  </svg>
+</div>
+<p class="lc-caption">
+  The path may bend but never reuses a cell, so each cell is marked while it is on the path and restored when the
+  search backs out.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<h3 id="we-sum">Combination sum</h3>
+<p>
+  Candidates {{ cands | join(", ") }} (each usable any number of times), target 7. Sorted candidates plus the early
+  <code>break</code> find {{ cs.results | length }} answers
+  ({% for r in cs.results %}{{ r | join("+") }}{{ ", " if not loop.last }}{% endfor %}) in {{ cs.calls }} calls. The loop
+  examines {{ cs.tested }} candidates; without the break, which would skip each overshoot one by one, it would examine
+  {{ cs_raw.tested }}.
+</p>
+<p>
+  The no-reuse variant on {{ cs2_in | join(", ") }} with target 8 sorts to {{ cs2_in | sort | join(", ") }} and uses
+  the duplicate-skip rule from the previous page. It finds {{ cs2.results | length }} distinct answers:
+  {% for r in cs2.results %}{{ r | join("+") }}{{ ", " if not loop.last }}{% endfor %}.
+</p>
+
+<h3 id="we-queens">N-Queens</h3>
+<p>
+  For 4 queens the search tries {{ q.tried }} squares in total, builds {{ q.nodes | length }} safe partial boards and
+  finds {{ q.solutions | length }} solutions. Written as the column of the queen in each row from the top, they are:
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Solution</th><th>Columns, top row to bottom</th></tr></thead>
+    <tbody>
+      {% for s in q.solutions %}
+        <tr><td class="num">{{ loop.index }}</td><td class="num">{{ s | join(", ") }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  Scaling up: 6 queens has {{ q6.solutions | length }} solutions and 8 queens has {{ q8.solutions | length }} solutions, yet the
+  search needs only {{ q8.nodes | length }} nodes for 8 queens, instead of the 8<sup>8</sup> = 16,777,216 boards of
+  one queen per row.
+</p>
+
+<h3 id="we-word">Word search and palindrome cuts</h3>
+<p>
+  Searching the grid for ABCCED succeeds after {{ ws.calls }} calls along a {{ ws.path | length }}-cell path. Searching
+  for ABCB fails after {{ ws_miss.calls }} calls: it walks as far as ABC, then the third letter's neighbors cannot
+  supply another B without reusing a cell.
+</p>
+<p>
+  Cutting "aab" into palindromes gives {{ pal.results | length }} ways
+  ({% for r in pal.results %}{{ r | join("|") }}{{ ", " if not loop.last }}{% endfor %}) in {{ pal.calls }} calls. The
+  piece "ab" is never extended, because it is not a palindrome.
+</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>def combination_sum(candidates, target):
+    nums = sorted(candidates)
+    results, path = [], []
+
+    def explore(start, remaining):
+        if remaining == 0:
+            results.append(path[:])
+            return
+        for i in range(start, len(nums)):
+            if nums[i] &gt; remaining:
+                break                          # sorted: every later candidate overshoots too
+            path.append(nums[i])
+            explore(i, remaining - nums[i])    # i, not i + 1: the same item may repeat
+            path.pop()
+
+    explore(0, target)
+    return results
+
+
+def solve_n_queens(n):
+    cols, diag, anti = set(), set(), set()
+    placed, boards = [], []
+
+    def explore(row):
+        if row == n:
+            boards.append(["." * c + "Q" + "." * (n - c - 1) for c in placed])
+            return
+        for col in range(n):
+            if col in cols or row - col in diag or row + col in anti:
+                continue
+            cols.add(col); diag.add(row - col); anti.add(row + col)
+            placed.append(col)
+            explore(row + 1)
+            placed.pop()
+            cols.remove(col); diag.remove(row - col); anti.remove(row + col)
+
+    explore(0)
+    return boards
+
+
+def exist(board, word):
+    rows, cols = len(board), len(board[0])
+
+    def explore(r, c, i):
+        if board[r][c] != word[i]:
+            return False
+        if i == len(word) - 1:
+            return True
+        saved, board[r][c] = board[r][c], "#"
+        found = any(
+            0 &lt;= nr &lt; rows and 0 &lt;= nc &lt; cols and explore(nr, nc, i + 1)
+            for nr, nc in ((r + 1, c), (r - 1, c), (r, c + 1), (r, c - 1))
+        )
+        board[r][c] = saved
+        return found
+
+    return any(explore(r, c, 0) for r in range(rows) for c in range(cols))</code></pre>
+
+<h3 id="variations">Variations and edge cases</h3>
+<pre><code>def partition_palindromes(s):
+    results, path = [], []
+
+    def explore(start):
+        if start == len(s):
+            results.append(path[:])
+            return
+        for end in range(start + 1, len(s) + 1):
+            piece = s[start:end]
+            if piece == piece[::-1]:
+                path.append(piece)
+                explore(end)
+                path.pop()
+
+    explore(0)
+    return results</code></pre>
+<ul>
+  <li><strong>Sudoku.</strong> The same template with one set per row, column and box. Always fill the empty cell with the
+    fewest legal digits first; that ordering often turns a hard puzzle into a quick one.</li>
+  <li><strong>Equal-sum partitions (Matchsticks, k equal subsets).</strong> Sort descending so big items fail fast,
+    reject early if the total is not divisible by k, and skip trying an empty bucket twice, because two empty buckets are
+    interchangeable.</li>
+  <li><strong>Word Break II.</strong> The prefix-extension shape of the palindrome code, with the dictionary lookup as the
+    test. Memoize the answers for each suffix when words overlap heavily, or the search repeats itself.</li>
+  <li><strong>Marks that leak.</strong> Restoring the grid cell must happen on <em>every</em> exit path, including the
+    early success return, or later searches see a damaged grid. Using <code>any(...)</code> with a restore after it
+    keeps the exits to one.</li>
+  <li><strong>Break versus continue.</strong> <code>break</code> is only right when the candidates are sorted and the failing
+    test is monotonic. Otherwise use <code>continue</code>.</li>
+  <li><strong>Edge cases:</strong> a target of zero (the empty combination), no candidate small enough, a 1-cell grid, a
+    word longer than the grid, an N that has no solution (2 and 3 queens) and a string that is already a palindrome.</li>
+</ul>
+
+<h2 id="tradeoffs">Complexity and tradeoffs</h2>
+
+<ul>
+  <li><strong>Time:</strong> still exponential in the worst case: up to n! for queens and 4<sup>L</sup> for a word of
+    length L on a grid. Pruning does not change the bound; it shrinks the constant enormously, and the real cost is the
+    number of nodes that survive the checks.</li>
+  <li><strong>Space:</strong> O(depth) for the call stack and the path, plus the constraint sets.</li>
+  <li><strong>Baseline.</strong> Generate every candidate and filter at the end. For 8 queens that is millions of boards
+    against {{ q8.nodes | length }} nodes.</li>
+  <li><strong>When it fails.</strong> If the same subproblem recurs (the same remaining sum with the same suffix of
+    candidates, the same string suffix), memoizing it, or turning the search into a table, beats backtracking. If the
+    question asks for a count or an optimum rather than the arrangements, dynamic programming is usually the intended
+    tool. If a bad ordering makes the first branches hopeless, reorder so the most constrained choice comes first.</li>
+</ul>
+
+<h2 id="problems">Problems</h2>
+
+<p>
+  Every home problem has a rule that fails early. Combination Sum and Combination Sum II are the cleanest first
+  exercises; N-Queens and Sudoku train the constant-time constraint state; Word Search trains reversible marking.
+  Word Search II (listed below) pairs this with a trie so that many words share one search.
+</p>
+{% include "leetcode/_problems.html" %}
+
+<h2 id="connections">Connections</h2>
+
+{% include "leetcode/_connections.html" %}
+<p>
+  This page sharpens the template from subsets and permutations with a validity test and a bound, and it is DFS on a
+  grid in the sense of the tree pages. Graph traversal drops the "unchoose" step because a visited set is permanent
+  there, while here the mark is undone so another path may use the cell. When states repeat, dynamic programming is the
+  next move.
+</p>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="lc-quiz">
+  <summary>Why is <code>break</code> correct in combination sum but wrong if the candidates are not sorted?</summary>
+  <p>With sorted candidates, once <code>nums[i]</code> exceeds the remaining sum, every later candidate is at least as large and also exceeds it. Unsorted, a later candidate could be small enough, so <code>break</code> would lose answers; you would have to <code>continue</code>. Here it cut the candidates examined from {{ cs_raw.tested }} to {{ cs.tested }}.</p>
+</details>
+<details class="lc-quiz">
+  <summary>What do the three sets in N-Queens test?</summary>
+  <p>Whether the column is taken, and whether the two diagonals through the square are taken. Squares on one diagonal share <code>row - col</code>, and on the other share <code>row + col</code>, so each test is a constant-time set lookup. Rows need no set because the recursion places exactly one queen per row.</p>
+</details>
+<details class="lc-quiz">
+  <summary>What goes wrong if word search forgets to restore the cell on a failed path?</summary>
+  <p>The cell stays marked as visited, so another branch that legitimately needs it sees a wall and the search can report "not found" for a word that is in the grid. Every exit must undo the mark.</p>
+</details>
+<details class="lc-quiz">
+  <summary>The 4-queens search built {{ q.nodes | length }} nodes. Why not 256?</summary>
+  <p>256 counts every way to put a queen in each row. The search only builds a node when the new queen is safe, and it never extends a board that already has a conflict, so whole subtrees of the 256 are never visited.</p>
+</details>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Skiena, <em>The Algorithm Design Manual</em>, chapter 9, backtracking with pruning, including the eight-queens and sudoku examples.</li>
+  <li>Knuth, <em>The Art of Computer Programming</em>, volume 4B, section 7.2.2 (backtrack programming), and Knuth's "Dancing Links" paper for exact-cover problems such as sudoku.</li>
+  <li>Russell and Norvig, <em>Artificial Intelligence: A Modern Approach</em>, chapter 6 on constraint satisfaction, including most-constrained-variable ordering.</li>
+  <li>Sedgewick and Wayne, <em>Algorithms</em>, the backtracking discussion in section 6.1 of the companion text.</li>
+  <li>The <a href="https://neetcode.io/roadmap" rel="noopener">NeetCode roadmap</a> and the
+    Blind 75, Grind 169, NeetCode 150 and NeetCode 250 lists, used as the index of topics and
+    problems.</li>
+</ul>

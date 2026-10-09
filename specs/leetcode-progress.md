@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-09 (build run). 28 of 58 pages are ready. **The next run is a build run** continuing at `constraint-backtracking`.
+**Last updated:** 2026-10-09 (build run). 29 of 58 pages are ready. **The next run is a build run** continuing at `graph-traversal`.
 
 ## The Routine
 
@@ -39,10 +39,10 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 
 | List | Problems with a ready home | Size |
 |---|---|---|
-| Blind 75 | 38 | 75 |
-| Grind 169 | 107 | 169 |
-| NeetCode 150 | 74 | 150 |
-| NeetCode 250 | 133 | 250 |
+| Blind 75 | 40 | 75 |
+| Grind 169 | 111 | 169 |
+| NeetCode 150 | 79 | 150 |
+| NeetCode 250 | 142 | 250 |
 
 ## Queue
 
@@ -77,8 +77,8 @@ build once research is done.
 26. `two-heaps` ✓
 27. `quickselect` ✓
 28. `subsets-and-permutations` ✓
-29. `constraint-backtracking` ← next
-30. `graph-traversal`
+29. `constraint-backtracking` ✓
+30. `graph-traversal` ← next
 31. `grid-graphs`
 32. `topological-sort`
 33. `union-find`
@@ -242,3 +242,4 @@ and `main` was reset to `origin/main` before building. Next queue item: `subsets
 
 The sandbox's local `main` had an unrelated history to `origin/main`, so work started from the fetched `origin/main` tip and pushed to `main` from there.
 Built `subsets-and-permutations`, with six tested helpers (`backtrack_tree`, `subsets_of`, `permutations_of`, `subsets_with_duplicates`, `combinations_of`, `parentheses_of`), two inline SVG decision trees and the full §6 format. Mobile check passed on every ready page.
+Built `constraint-backtracking`, with four tested helpers (`combination_sum_of`, `n_queens_of`, `word_search_of`, `palindrome_partitions_of`), two inline SVGs (the 4-queens search tree and a word-search path) and the full §6 format.
