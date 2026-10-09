@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-09 (twenty-fourth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: queue items 1-34, the last being `regularization`. The next run builds
-`activation-functions` (queue item 35).
+format. Ready pages: queue items 1-35, the last being `activation-functions`. The next run builds
+`linear-algebra-toolkit` (queue item 36).
 
 ## Pins
 
@@ -429,6 +429,20 @@ The Adam comparison uses an alternating-sign gradient so the loss does not move 
 
 Gaps: the references (ESL 3.4 and 3.8, Tibshirani 1996, Srivastava et al. 2014, Loshchilov and Hutter 2019) are cited from memory and were not opened. `Lasso` end line inferred from the next class start.
 
+### Twenty-fourth run, page 3 — activation-functions
+
+| Commit | What |
+|---|---|
+| `ml-models: add tested activation helpers` / `build the activation-functions page` | `gelu_exact`, `gelu_tanh`, `silu`, `softplus`, `ACTIVATIONS`, `activation_table`, `numeric_slope`, `gelu_tanh_max_error`, `chain_gradient`, `glu_variants`, `relu_active_fraction`; page, `ready`, queue ✓ |
+
+Verified at PyTorch v2.14.1 (start and end lines read in the clone): `nn/modules/activation.py` `ReLU` 104-150, `Sigmoid` 337-361, `Tanh` 407-433, `SiLU` 436-483, `GLU` 737-775, `GELU` 778-823, `LeakyReLU` 875-930; `nn/functional.py` `relu` 1766-1788, `glu` 1791-1850, `leaky_relu` 1955-1976, `gelu` 2060-2077 (bound to the C++ kernel and documented in place), `tanh` 2339-2347, `sigmoid` 2350-2357, `silu` 2429-2451.
+
+Slopes in the tests are checked against finite differences. The GELU exact-vs-tanh gap is 0.000473 at x of about 2.7. The page's chain-gradient table ignores weight matrices, and says so.
+
+Pins checked with `git ls-remote --tags`: no pin moved (PyTorch v2.14.1, scikit-learn 1.9.1, XGBoost v3.4.2).
+
+Gaps: references (Hendrycks and Gimpel, Ramachandran et al., Dauphin et al., Shazeer, Glorot et al.) are cited from memory and were not opened. The "hidden size reduced to 2/3" SwiGLU remark is from memory of common practice, not checked against a specific model's code.
+
 ## Queue
 
 1. `tensors-and-shapes` ✓
@@ -465,8 +479,8 @@ Gaps: the references (ESL 3.4 and 3.8, Tibshirani 1996, Srivastava et al. 2014, 
 32. `overfitting` ✓
 33. `bias-variance` ✓
 34. `regularization` ✓
-35. `activation-functions` ← next
-36. `linear-algebra-toolkit`
+35. `activation-functions` ✓
+36. `linear-algebra-toolkit` ← next
 37. `missing-data`
 38. `computation-graphs`
 39. `cnns`

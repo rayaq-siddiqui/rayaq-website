@@ -1,0 +1,332 @@
+{% set xs = [] %}
+{% for i in range(33) %}{% set _ = xs.append(-4 + i * 0.25) %}{% endfor %}
+{% set curves = activation_table(xs) %}
+{% set by_name = {} %}
+{% for c in curves %}{% set _ = by_name.update({c.name: c}) %}{% endfor %}
+{% set marks = [-3, -1, 0, 1, 3] %}
+{% set mark_table = activation_table(marks) %}
+{% set gelu_gap = gelu_tanh_max_error() %}
+{% set depth = 10 %}
+{% set chain_names = ["sigmoid", "tanh", "relu", "gelu", "silu"] %}
+{% set glu = glu_variants(1.0, 2.0) %}
+{% set biases = [0, -1, -3, -5] %}
+{% macro f3(x) -%}{{ "%.3f"|format(x) }}{%- endmacro %}
+{% macro sci(x) -%}{% if x == 0 %}0{% elif x < 0.001 %}{{ "%.1e"|format(x) }}{% else %}{{ "%.3f"|format(x) }}{% endif %}{%- endmacro %}
+<header class="jj-header">
+  <h1>Activation functions</h1>
+  <p class="tagline">
+    The nonlinearity applied after each linear layer: what gives a network more than a straight line. This page shows the shape and slope of sigmoid, tanh, ReLU, leaky ReLU, GELU, SiLU and softplus, why some of them saturate or die, and how gated units such as SwiGLU use a function as a gate.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+<p>
+  The <a href="/ml-models/neurons-and-layers">neurons and layers</a> page showed that stacking linear layers without anything between them collapses to one linear layer. Something nonlinear has to sit between them. But the choice matters in practice: it decides how well gradients travel backwards through many layers (see <a href="/ml-models/backpropagation">backpropagation</a>), how fast training is, and which units can stop learning altogether.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+<p>
+  An activation is a small fixed curve applied to each number independently. Two properties of the curve decide almost everything:
+</p>
+<ul>
+  <li><strong>Its range and flatness.</strong> Sigmoid and tanh squash large inputs into a bounded interval and go flat there (<em>saturate</em>), so the gradient through them shrinks towards zero. ReLU and its relatives are unbounded on the positive side with slope 1, so the gradient passes through unchanged.</li>
+  <li><strong>What happens for negative inputs.</strong> ReLU outputs exactly 0 with slope 0 there: a unit whose input is always negative has no gradient and never recovers (a <em>dead</em> unit). Leaky ReLU, GELU and SiLU keep a small slope or a small negative dip, so something still flows back.</li>
+</ul>
+<p>
+  Modern transformers use smooth ReLU-like curves (GELU, SiLU) inside the feed-forward blocks, often as the gate of a gated linear unit (GLU) such as SwiGLU.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 290" role="img" aria-labelledby="af-fn-title af-fn-desc">
+    <title id="af-fn-title">Activation functions on the interval −4 to 4</title>
+    <desc id="af-fn-desc">
+      Five curves over x from −4 to 4. Sigmoid rises from 0 to 1 through {{ f3(by_name.sigmoid["values"][16]) }} at x = 0. Tanh rises from −1 to 1. ReLU is zero for negative x and equal to x for positive x. GELU and SiLU follow ReLU for large positive x, dip slightly below zero for negative x (GELU reaches about {{ f3(by_name.gelu["values"][14]) }} near x = −1.5) and return to zero for large negative x.
+    </desc>
+    <g font-size="12">
+      <path d="M40 190 L400 190 M220 30 L220 250" class="d-line d-muted" fill="none"></path>
+      {% for name, cls, dash in [("sigmoid", "", ""), ("tanh", "", "6 3"), ("relu", "d-muted", ""), ("gelu", "ml-op", ""), ("silu", "ml-op", "2 4")] %}
+        {% set pts = namespace(v="") %}
+        {% for v in by_name[name]["values"] %}
+          {% set y = [[190 - 40 * v, 30]|max, 250]|min %}
+          {% set pts.v = pts.v ~ ("" if loop.first else " ") ~ (40 + loop.index0 * 11.25) ~ "," ~ y %}
+        {% endfor %}
+        <polyline points="{{ pts.v }}" class="d-line {{ cls }}" fill="none" stroke-width="2.5"{% if dash %} stroke-dasharray="{{ dash }}"{% endif %}></polyline>
+      {% endfor %}
+      <text x="40" y="270" class="d-muted">−4</text>
+      <text x="400" y="270" class="d-muted" text-anchor="end">4</text>
+      <text x="212" y="194" class="d-muted" text-anchor="end">0</text>
+      <text x="212" y="54" class="d-muted" text-anchor="end">4</text>
+      <text x="430" y="60">sigmoid (solid)</text>
+      <text x="430" y="82">tanh (dashed)</text>
+      <text x="430" y="104" class="d-muted">relu (grey)</text>
+      <text x="430" y="126">gelu (accent)</text>
+      <text x="430" y="148">silu (accent, dotted)</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">GELU and SiLU hug ReLU for positive inputs and are smooth at zero. Their dip below zero is small and shallow.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="definitions">The functions and their slopes</h3>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Name</th><th>f(x)</th><th>f′(x)</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>sigmoid</td><td><code>1 / (1 + e⁻ˣ)</code></td><td><code>σ(1 − σ)</code>, at most 0.25</td><td>Output in (0, 1); saturates at both ends.</td></tr>
+      <tr><td>tanh</td><td><code>(eˣ − e⁻ˣ) / (eˣ + e⁻ˣ)</code></td><td><code>1 − tanh²</code>, at most 1</td><td>Zero-centered; saturates at both ends.</td></tr>
+      <tr><td>ReLU</td><td><code>max(0, x)</code></td><td>1 for x &gt; 0, else 0</td><td>Cheap; dead for x &lt; 0.</td></tr>
+      <tr><td>leaky ReLU</td><td><code>x</code> if x &gt; 0 else <code>0.01x</code></td><td>1 or 0.01</td><td>Small slope keeps negative inputs trainable.</td></tr>
+      <tr><td>GELU</td><td><code>x · Φ(x)</code></td><td><code>Φ(x) + x·φ(x)</code></td><td>Φ is the standard normal CDF, φ its density. Smooth.</td></tr>
+      <tr><td>SiLU (Swish)</td><td><code>x · σ(x)</code></td><td><code>σ(x)(1 + x(1 − σ(x)))</code></td><td>Smooth; GELU is close to <code>x·σ(1.702x)</code>.</td></tr>
+      <tr><td>softplus</td><td><code>ln(1 + eˣ)</code></td><td><code>σ(x)</code></td><td>A smooth ReLU; always positive.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 270" role="img" aria-labelledby="af-d-title af-d-desc">
+    <title id="af-d-title">Slopes of the activation functions</title>
+    <desc id="af-d-desc">
+      Derivatives over x from −4 to 4. Sigmoid's slope peaks at {{ f3(by_name.sigmoid.slopes[16]) }} at zero and is almost zero beyond ±4. Tanh's slope peaks at {{ f3(by_name.tanh.slopes[16]) }}. ReLU's slope is a step from 0 to 1. GELU's slope overshoots 1 slightly (up to about {{ f3(by_name.gelu.slopes[20]) }} near x = 1) before settling at 1.
+    </desc>
+    <g font-size="12">
+      <path d="M40 200 L400 200 M220 30 L220 230" class="d-line d-muted" fill="none"></path>
+      {% for name, cls, dash in [("sigmoid", "", ""), ("tanh", "", "6 3"), ("relu", "d-muted", ""), ("gelu", "ml-op", "")] %}
+        {% set pts = namespace(v="") %}
+        {% for v in by_name[name].slopes %}
+          {% set pts.v = pts.v ~ ("" if loop.first else " ") ~ (40 + loop.index0 * 11.25) ~ "," ~ (200 - 140 * v) %}
+        {% endfor %}
+        <polyline points="{{ pts.v }}" class="d-line {{ cls }}" fill="none" stroke-width="2.5"{% if dash %} stroke-dasharray="{{ dash }}"{% endif %}></polyline>
+      {% endfor %}
+      <text x="40" y="250" class="d-muted">−4</text>
+      <text x="400" y="250" class="d-muted" text-anchor="end">4</text>
+      <text x="212" y="204" class="d-muted" text-anchor="end">0</text>
+      <text x="212" y="64" class="d-muted" text-anchor="end">1</text>
+      <text x="430" y="60">sigmoid slope</text>
+      <text x="430" y="82">tanh slope (dashed)</text>
+      <text x="430" y="104" class="d-muted">relu slope (grey)</text>
+      <text x="430" y="126">gelu slope (accent)</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Sigmoid's slope never exceeds 0.25 and tanh's never exceeds 1; both fall to zero away from the origin.</p>
+
+<h3 id="saturation">Saturation and vanishing gradients</h3>
+<p>
+  Backpropagation multiplies the activation's slope into the gradient at every layer. If the slope is at most 0.25, as for sigmoid, ten layers shrink the signal by at least a factor 4¹⁰ ≈ one million. This is the vanishing gradient problem that kept deep sigmoid networks hard to train until ReLU and good initialization arrived.
+  The cure is an activation whose slope is near 1 over a wide range, plus residual connections and normalization (see <a href="/ml-models/layernorm-and-residuals">layer norm and residuals</a>).
+</p>
+
+<h3 id="dead">Dead units</h3>
+<p>
+  ReLU's slope is exactly 0 for negative inputs. If a large learning-rate step pushes a unit's bias or weights so that its pre-activation is negative for every example, that unit's output and gradient are both 0 from then on. Nothing in the loss can bring it back.
+  Leaky ReLU (a small fixed slope) or the smooth GELU and SiLU leave a path for gradient.
+</p>
+
+<h3 id="gelu-silu">GELU and SiLU</h3>
+<p>
+  GELU multiplies x by the probability Φ(x) that a standard normal variable is below x, a smooth gate that is nearly 0 for very negative inputs and nearly 1 for large positive ones. SiLU does the same with the logistic function σ(x) as the gate. Both are non-monotonic: they dip slightly below zero before rising.
+  PyTorch's <code>nn.GELU</code> takes <code>approximate="none"</code> (exact, using the error function) or <code>"tanh"</code>, the cheaper formula used in the original GPT-2 and BERT code.
+</p>
+
+<h3 id="gated">Gated linear units</h3>
+<p>
+  A GLU splits a projection into two halves a and b and returns a ⊙ gate(b). With a sigmoid gate that is the original GLU (PyTorch's <code>F.glu</code>); with SiLU as the gate on a it is <strong>SwiGLU</strong>, and with GELU it is GeGLU. The feed-forward blocks of many recent language models use SwiGLU: three weight matrices instead of two, with the hidden size reduced (typically to 2/3) to keep the parameter count similar. See the <a href="/ml-models/transformer">transformer</a> page for where the feed-forward block sits.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>ReLU</code></td>
+        <td>elementwise, <code>inplace</code></td>
+        <td>Module wrapper around <code>F.relu</code>.</td>
+        <td><a href="{{ src('torch/nn/modules/activation.py', 104, 150) }}"><code>activation.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Sigmoid</code> / <code>Tanh</code></td>
+        <td>elementwise</td>
+        <td>Modules that return <code>torch.sigmoid(input)</code> and <code>torch.tanh(input)</code>.</td>
+        <td><a href="{{ src('torch/nn/modules/activation.py', 337, 361) }}"><code>activation.py</code></a>, <a href="{{ src('torch/nn/modules/activation.py', 407, 433) }}"><code>Tanh</code></a></td>
+      </tr>
+      <tr>
+        <td><code>LeakyReLU</code></td>
+        <td><code>negative_slope=0.01</code></td>
+        <td>Slope on the negative side.</td>
+        <td><a href="{{ src('torch/nn/modules/activation.py', 875, 930) }}"><code>activation.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>GELU</code></td>
+        <td><code>approximate="none"</code> or <code>"tanh"</code></td>
+        <td>Gaussian-gated linear unit, exact or tanh-approximated.</td>
+        <td><a href="{{ src('torch/nn/modules/activation.py', 778, 823) }}"><code>activation.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>SiLU</code></td>
+        <td>elementwise</td>
+        <td>x times sigmoid of x.</td>
+        <td><a href="{{ src('torch/nn/modules/activation.py', 436, 483) }}"><code>activation.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>GLU</code></td>
+        <td><code>dim=-1</code></td>
+        <td>Splits the input in two along <code>dim</code> and returns the first half times the sigmoid of the second.</td>
+        <td><a href="{{ src('torch/nn/modules/activation.py', 737, 775) }}"><code>activation.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>F.relu</code>, <code>F.glu</code></td>
+        <td><code>input</code>, <code>dim</code></td>
+        <td>The functional forms the modules call; <code>glu</code> requires an even size along <code>dim</code>.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 1766, 1788) }}"><code>relu</code></a>, <a href="{{ src('torch/nn/functional.py', 1791, 1850) }}"><code>glu</code></a></td>
+      </tr>
+      <tr>
+        <td><code>F.leaky_relu</code>, <code>F.gelu</code></td>
+        <td><code>negative_slope</code>, <code>approximate</code></td>
+        <td><code>gelu</code> is bound to the C++ kernel and documented in place.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 1955, 1976) }}"><code>leaky_relu</code></a>, <a href="{{ src('torch/nn/functional.py', 2060, 2077) }}"><code>gelu</code></a></td>
+      </tr>
+      <tr>
+        <td><code>F.tanh</code>, <code>F.sigmoid</code>, <code>F.silu</code></td>
+        <td>elementwise</td>
+        <td>Thin wrappers over the tensor ops and C++ kernels.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 2339, 2347) }}"><code>tanh</code></a>, <a href="{{ src('torch/nn/functional.py', 2350, 2357) }}"><code>sigmoid</code></a>, <a href="{{ src('torch/nn/functional.py', 2429, 2451) }}"><code>silu</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-values">Values and slopes at five points</h3>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Function</th>{% for x in marks %}<th>x = {{ x }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for c in mark_table %}
+        <tr><td>{{ c.name }}</td>{% for v in c["values"] %}<td>{{ f3(v) }} <span class="d-muted">({{ f3(c.slopes[loop.index0]) }})</span></td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Each cell is f(x) with the slope f′(x) in brackets. At x = 3 sigmoid's output is {{ f3(mark_table[0]["values"][4]) }} and its slope is {{ f3(mark_table[0].slopes[4]) }}: nearly flat. At x = −3, ReLU has value and slope 0, leaky ReLU has {{ f3(mark_table[3]["values"][0]) }} and slope 0.01, GELU has {{ f3(mark_table[4]["values"][0]) }} with slope {{ f3(mark_table[4].slopes[0]) }}.
+    At x = −1, GELU is {{ f3(mark_table[4]["values"][1]) }} and SiLU is {{ f3(mark_table[5]["values"][1]) }}: the negative dip.
+    The slopes are checked against finite differences in the test suite.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-chain">Ten layers of gradient</h3>
+  <p>
+    Suppose every one of {{ depth }} layers has pre-activation z, so backpropagation multiplies the activation's slope {{ depth }} times. The product, ignoring the weights:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Activation</th><th>z = 0</th><th>z = 2</th></tr></thead>
+      <tbody>
+        {% for name in chain_names %}
+        <tr><td>{{ name }}</td><td>{{ sci(chain_gradient(name, depth, 0.0)) }}</td><td>{{ sci(chain_gradient(name, depth, 2.0)) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Sigmoid, even at its best point z = 0, passes {{ sci(chain_gradient("sigmoid", depth, 0.0)) }} of the gradient (0.25 to the {{ depth }}th power), and at z = 2 only {{ sci(chain_gradient("sigmoid", depth, 2.0)) }}. Tanh passes everything at z = 0 but almost nothing at z = 2, where it is saturated.
+    ReLU passes exactly 1 when the unit is on, and exactly 0 when it is off, which leads to the next example. GELU and SiLU have slope slightly above 1 near z = 2, so their product there exceeds 1: smooth curves can amplify as well as shrink. (Real networks also multiply by weight matrices; careful initialization keeps those near 1 in scale.)
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-dead">How a negative bias kills a unit</h3>
+  <p>
+    A ReLU unit's input is a standard normal variable (mean 0, std 1) plus a bias. The fraction of 4,000 examples for which the unit is active (input above 0):
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Bias</th>{% for b in biases %}<th>{{ b }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        <tr><td>Fraction active</td>{% for b in biases %}<td>{{ "%.1f"|format(100 * relu_active_fraction(b)) }}%</td>{% endfor %}</tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    At bias 0 the unit is active half the time. At −3 it fires on a tiny fraction of examples and receives gradient only from those; at −5 it never fires in this sample: dead. A GELU or leaky unit in the same position would still pass a small gradient back.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-gelu-approx">GELU: exact versus tanh approximation</h3>
+  <p>
+    Over x from −6 to 6, the largest gap between the exact GELU (via the error function) and its tanh approximation is {{ "%.5f"|format(gelu_gap[0]) }}, at x ≈ {{ "%.1f"|format(gelu_gap[1]) }}. Tiny, but not zero, and it matters when reproducing a checkpoint trained with one version and run with the other. At x = 1 they are {{ '%.5f'|format(gelu_exact(1.0)) }} and {{ '%.5f'|format(gelu_tanh(1.0)) }}.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-glu">Gating one number with another</h3>
+  <p>
+    Let a = 1 and b = 2 (the two halves of a projection). The four gated units give: GLU = a·σ(b) = {{ f3(glu.glu) }}; SwiGLU = silu(a)·b = {{ f3(glu.swiglu) }}; GeGLU = gelu(a)·b = {{ f3(glu.geglu) }}; ReGLU = relu(a)·b = {{ f3(glu.reglu) }}. In all of them one half passes through a nonlinearity and the other half scales it, so the layer can learn which features to let through for each input.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+import torch.nn.functional as F
+from torch import nn
+
+x = torch.linspace(-4, 4, 9)
+print(F.relu(x), F.gelu(x), F.silu(x), F.gelu(x, approximate="tanh"))
+
+class SwiGLUFeedForward(nn.Module):
+    def __init__(self, d_model, d_hidden):
+        super().__init__()
+        self.gate = nn.Linear(d_model, d_hidden, bias=False)
+        self.up = nn.Linear(d_model, d_hidden, bias=False)
+        self.down = nn.Linear(d_hidden, d_model, bias=False)
+
+    def forward(self, x):
+        return self.down(F.silu(self.gate(x)) * self.up(x))</code></pre>
+<p>
+  <code>F.glu</code> takes one tensor and splits it in half; the SwiGLU feed-forward above uses two separate projections instead, which is how most transformer implementations write it.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+<ul>
+  <li><strong>ReLU is cheap and can die.</strong> Its simplicity is hard to beat for small models, but a bad learning rate can leave units permanently off.</li>
+  <li><strong>Smooth curves cost more.</strong> GELU and SiLU need an exponential or error function per element, though on a GPU the cost is small next to the matrix multiplications.</li>
+  <li><strong>Sigmoid and tanh are for gates and outputs.</strong> They are still right for recurrent-network gates, binary probabilities and bounded outputs, but not as the default hidden activation of a deep network.</li>
+  <li><strong>Gated units add parameters.</strong> SwiGLU uses three matrices where a plain feed-forward uses two, so the hidden size is usually adjusted for a fair comparison.</li>
+  <li><strong>Evidence is empirical.</strong> The gains of GELU, SiLU and SwiGLU over ReLU are measured on benchmarks, not proved; the difference between the smooth variants is small.</li>
+  <li><strong>Exact and approximate GELU differ.</strong> Match the variant a checkpoint was trained with.</li>
+</ul>
+
+<h3 id="check-yourself">Check yourself</h3>
+<details class="ml-quiz">
+  <summary>What is the largest value the derivative of sigmoid can take, and what does it imply for a 20-layer sigmoid network?</summary>
+  <p>0.25, at z = 0. The activation slopes alone multiply to at most 0.25²⁰ ≈ 10⁻¹², so almost no gradient reaches the early layers.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why can a ReLU unit become permanently dead but a leaky ReLU unit cannot?</summary>
+  <p>ReLU's slope is exactly 0 for negative inputs, so a unit that is negative for all examples gets no gradient. Leaky ReLU keeps a small slope there, so gradient still flows and the unit can recover.</p>
+</details>
+<details class="ml-quiz">
+  <summary>In SwiGLU(x) = silu(xW) ⊙ (xV), which part is the gate?</summary>
+  <p>The silu(xW) branch: it scales the other branch xV element by element, so features can be passed or suppressed depending on the input.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+<ul>
+  <li>Hendrycks and Gimpel. <em>Gaussian Error Linear Units (GELUs).</em> 2016. <a href="https://arxiv.org/abs/1606.08415">arXiv:1606.08415</a>.</li>
+  <li>Ramachandran, Zoph and Le. <em>Searching for activation functions.</em> 2017. <a href="https://arxiv.org/abs/1710.05941">arXiv:1710.05941</a>.</li>
+  <li>Dauphin, Fan, Auli and Grangier. <em>Language modeling with gated convolutional networks.</em> ICML 2017. <a href="https://arxiv.org/abs/1612.08083">arXiv:1612.08083</a>.</li>
+  <li>Shazeer. <em>GLU variants improve transformer.</em> 2020. <a href="https://arxiv.org/abs/2002.05202">arXiv:2002.05202</a>.</li>
+  <li>Glorot, Bordes and Bengio. <em>Deep sparse rectifier neural networks.</em> AISTATS 2011.</li>
+  <li>PyTorch {{ pins.pytorch.version }}: <a href="{{ src('torch/nn/modules/activation.py', 778, 823) }}"><code>GELU</code></a>, <a href="{{ src('torch/nn/functional.py', 1791, 1850) }}"><code>F.glu</code></a>.</li>
+</ul>
