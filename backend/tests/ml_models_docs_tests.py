@@ -1810,3 +1810,56 @@ def test_log_loss_punishes_confident_mistakes_and_micro_macro_differ():
     per_class, macro, micro = ml_models_docs.averaged_f1(ml_models_docs.METRIC_CLASS_COUNTS)
     assert per_class["cat"] == pytest.approx(0.8) and per_class["bird"] == 0.0
     assert macro == pytest.approx(0.36190476) and micro == pytest.approx(0.6)
+
+
+def test_kfold_splits_match_sklearn_sizes_and_partition():
+    splits = ml_models_docs.kfold_splits(10, 3)
+    assert [len(te) for _, te in splits] == [4, 3, 3]
+    assert sorted(i for _, te in splits for i in te) == list(range(10))
+    for train, test in splits:
+        assert not set(train) & set(test)
+        assert len(train) + len(test) == 10
+
+
+def test_stratified_kfold_keeps_class_balance():
+    labels = [0] * 6 + [1] * 4
+    for train, test in ml_models_docs.stratified_kfold_splits(labels, 2):
+        assert sum(labels[i] for i in test) == 2
+        assert len(test) == 5
+        assert not set(train) & set(test)
+
+
+def test_group_kfold_never_splits_a_group():
+    groups = list("aaabbccdde")
+    for train, test in ml_models_docs.group_kfold_splits(groups, 3):
+        assert not {groups[i] for i in train} & {groups[i] for i in test}
+    assert sorted(len(te) for _, te in ml_models_docs.group_kfold_splits(groups, 3)) == [3, 3, 4]
+
+
+def test_time_series_splits_train_only_on_the_past():
+    splits = ml_models_docs.time_series_splits(12, 3)
+    assert [(len(tr), len(te)) for tr, te in splits] == [(3, 3), (6, 3), (9, 3)]
+    for train, test in splits:
+        assert max(train) < min(test)
+
+
+def test_cv_summary_uses_sample_standard_deviation():
+    mean, spread = ml_models_docs.cv_summary([0.6, 0.8, 1.0])
+    assert mean == pytest.approx(0.8)
+    assert spread == pytest.approx(0.2)
+
+
+def test_cv_estimate_varies_with_the_shuffle():
+    data = ml_models_docs.centroid_cv_data()
+    assert ml_models_docs.centroid_cv_data() == data
+    means = ml_models_docs.repeated_cv_means(data, 5)
+    assert max(means) - min(means) > 0.05
+    mean, spread = ml_models_docs.cv_summary(means)
+    assert 0.7 < mean < 0.85
+    assert 0 < spread < 0.05
+
+
+def test_selection_bias_demo_best_of_many_is_optimistic_but_nested_is_honest():
+    best, nested = ml_models_docs.selection_bias_demo()
+    assert best > 0.62
+    assert abs(nested - 0.5) < 0.03

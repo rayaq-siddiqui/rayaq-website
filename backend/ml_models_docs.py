@@ -3857,6 +3857,106 @@ def averaged_f1(class_counts):
     return per_class, macro, precision_recall_f1(tp, fp, fn)[2]
 
 
+def kfold_splits(n, k):
+    sizes = [n // k + (1 if i < n % k else 0) for i in range(k)]
+    splits = []
+    start = 0
+    for size in sizes:
+        test = list(range(start, start + size))
+        train = [i for i in range(n) if i < start or i >= start + size]
+        splits.append((train, test))
+        start += size
+    return splits
+
+
+def stratified_kfold_splits(labels, k):
+    order = sorted(labels)
+    classes = sorted(set(labels))
+    allocation = [[order[i::k].count(c) for c in classes] for i in range(k)]
+    tests = [[] for _ in range(k)]
+    for ci, c in enumerate(classes):
+        members = [i for i, y in enumerate(labels) if y == c]
+        start = 0
+        for fold in range(k):
+            take = allocation[fold][ci]
+            tests[fold].extend(members[start:start + take])
+            start += take
+    n = len(labels)
+    return [([i for i in range(n) if i not in set(t)], sorted(t)) for t in tests]
+
+
+def group_kfold_splits(groups, k):
+    sizes = {}
+    for g in groups:
+        sizes[g] = sizes.get(g, 0) + 1
+    order = sorted(sizes, key=lambda g: (-sizes[g], g))
+    loads = [0] * k
+    assigned = {}
+    for g in order:
+        fold = loads.index(min(loads))
+        assigned[g] = fold
+        loads[fold] += sizes[g]
+    n = len(groups)
+    return [
+        ([i for i in range(n) if assigned[groups[i]] != f], [i for i in range(n) if assigned[groups[i]] == f])
+        for f in range(k)
+    ]
+
+
+def time_series_splits(n, k):
+    test_size = n // (k + 1)
+    splits = []
+    for start in range(n - k * test_size, n, test_size):
+        splits.append((list(range(start)), list(range(start, start + test_size))))
+    return splits
+
+
+def cv_summary(scores):
+    mean = sum(scores) / len(scores)
+    spread = (sum((x - mean) ** 2 for x in scores) / (len(scores) - 1)) ** 0.5
+    return mean, spread
+
+
+def centroid_cv_data(rows=60, seed=4):
+    rng = random.Random(seed)
+    return [(rng.gauss(1.0 if i % 2 else -1.0, 1.4), i % 2) for i in range(rows)]
+
+
+def centroid_fold_score(data, train, test):
+    low = [data[i][0] for i in train if data[i][1] == 0]
+    high = [data[i][0] for i in train if data[i][1] == 1]
+    cut = (sum(low) / len(low) + sum(high) / len(high)) / 2
+    return sum((data[i][0] > cut) == bool(data[i][1]) for i in test) / len(test)
+
+
+def centroid_cv_scores(data, k, seed=None):
+    order = list(range(len(data)))
+    if seed is not None:
+        random.Random(seed).shuffle(order)
+    shuffled = [data[i] for i in order]
+    return [centroid_fold_score(shuffled, tr, te) for tr, te in kfold_splits(len(shuffled), k)]
+
+
+def repeated_cv_means(data, k, repeats=100):
+    return [sum(s) / k for s in (centroid_cv_scores(data, k, seed=r) for r in range(repeats))]
+
+
+def selection_bias_demo(rows=40, candidates=50, k=5, trials=200, seed=6):
+    rng = random.Random(seed)
+    best_total = nested_total = 0.0
+    for _ in range(trials):
+        truth = [rng.randint(0, 1) for _ in range(rows)]
+        guesses = [[rng.randint(0, 1) for _ in range(rows)] for _ in range(candidates)]
+        hits = [[int(g[i] == truth[i]) for i in range(rows)] for g in guesses]
+        best_total += max(sum(h) for h in hits) / rows
+        correct = 0
+        for train, test in kfold_splits(rows, k):
+            pick = max(range(candidates), key=lambda c: sum(hits[c][i] for i in train))
+            correct += sum(hits[pick][i] for i in test)
+        nested_total += correct / rows
+    return best_total / trials, nested_total / trials
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -4084,6 +4184,16 @@ def render(slug, render_template):
         "average_precision": average_precision,
         "binary_log_loss": binary_log_loss,
         "averaged_f1": averaged_f1,
+        "kfold_splits": kfold_splits,
+        "stratified_kfold_splits": stratified_kfold_splits,
+        "group_kfold_splits": group_kfold_splits,
+        "time_series_splits": time_series_splits,
+        "cv_summary": cv_summary,
+        "centroid_cv_data": centroid_cv_data,
+        "centroid_fold_score": centroid_fold_score,
+        "centroid_cv_scores": centroid_cv_scores,
+        "repeated_cv_means": repeated_cv_means,
+        "selection_bias_demo": selection_bias_demo,
         "kmeans_run": kmeans_run,
         "nearest_labeled": nearest_labeled,
         "cluster_then_label": cluster_then_label,
