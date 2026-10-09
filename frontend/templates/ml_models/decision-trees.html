@@ -1,0 +1,470 @@
+{% set rows = TREE_TOY_ROWS %}
+{% set labels = rows|map("last")|list %}
+{% set root_counts = label_counts(labels) %}
+{% set cands0 = split_candidates(rows, 0) %}
+{% set cands1 = split_candidates(rows, 1) %}
+{% set best = best_split(rows) %}
+{% set best_h = best_split(rows, entropy_impurity) %}
+{% set best1_gain = cands1|map(attribute="gain")|max %}
+{% set t2 = grow_tree(rows, max_depth=2) %}
+{% set full = grow_tree(rows) %}
+{% set importances = tree_feature_importances(full, 2) %}
+{% set path = cost_complexity_path(full) %}
+{% set sweep = depth_sweep() %}
+{% set noise_imp = importance_demo() %}
+{% set reg_xs, reg_ys, reg_rows, reg_total = regression_split_demo() %}
+{% set reg_best = reg_rows|sort(attribute="sse")|first %}
+{% macro f3(x) -%}{{ "%.3f"|format(x) }}{%- endmacro %}
+{% macro f4(x) -%}{{ "%.4f"|format(x) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Decision trees</h1>
+  <p class="tagline">
+    A decision tree predicts by asking a short series of yes/no questions about the inputs, such as "is x₁ at most 5.5?", and reading the answer off the leaf you land in.
+    This page covers how the questions are chosen (Gini and entropy), how regression trees differ, how to stop a tree from memorizing its training data, and why impurity-based feature importance can mislead.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+<p>
+  A linear model draws one straight boundary and a nearest-neighbor model needs a distance that makes sense for every feature. Real tabular data is often neither: a rule such as "approve if income is high, or if debt is low and the account is old" is a handful of thresholds on different columns, with no obvious distance between a salary and an age.
+  A decision tree learns rules of exactly that shape directly from labelled rows, and the finished model can be read aloud.
+</p>
+<p>
+  The difficulty is that the number of possible trees is astronomically large, and a tree allowed to grow without limit can always carve the training rows into single-row leaves.
+  On the {{ rows|length }} rows used below it reaches {{ "%.0f"|format(100 * tree_accuracy(full, rows)) }}% training accuracy with {{ tree_leaves(full)|length }} leaves, which says almost nothing about new data.
+  So there are two questions: how do you pick each question, and when do you stop asking?
+</p>
+
+<h2 id="intuition">Intuition</h2>
+<p>
+  Play twenty questions. Each question should split the remaining possibilities into groups that are as <em>pure</em> as you can manage, ideally all one answer, so that the next question has less to do.
+  A tree is built the same way: look at every question of the form "feature ≤ threshold", pick the one that leaves the two groups purest, and then repeat inside each group.
+  This is greedy: it never looks ahead, so it can miss a pair of questions that are only good together.
+</p>
+<p>
+  Because every question looks at one feature at a time, the tree cuts the input space into boxes with sides parallel to the axes, and predicts a constant (the majority class, or the mean) in each box.
+  A diagonal boundary has to be approximated by a staircase of boxes. More boxes fit the training data better, but past a point they fit its noise.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 270" role="img" aria-labelledby="dt-plane-title dt-plane-desc">
+    <title id="dt-plane-title">The toy rows and the first two splits</title>
+    <desc id="dt-plane-desc">
+      A scatter of {{ rows|length }} points on a plane with x₁ across and x₂ up, drawn as circles for class 0 and squares for class 1. A vertical line at x₁ = {{ t2.threshold }} separates {{ t2.left.n }} points on the left from {{ t2.right.n }} on the right, and all {{ t2.right.n }} on the right are class 1. A horizontal line at x₂ = {{ t2.left.threshold }} cuts the left region into a lower part and an upper part.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <rect x="60" y="20" width="300" height="200" class="d-box ml-dashed"></rect>
+      {% for v in range(0, 11, 2) %}
+      <text x="{{ 60 + v * 30 }}" y="238" class="d-muted">{{ v }}</text>
+      <text x="48" y="{{ 224 - v * 20 }}" class="d-muted">{{ v }}</text>
+      {% endfor %}
+      <text x="210" y="258" class="d-muted">x₁</text>
+      <text x="16" y="124" class="d-muted">x₂</text>
+      <path d="M{{ 60 + t2.threshold * 30 }} 20 L{{ 60 + t2.threshold * 30 }} 220" class="d-line" fill="none"></path>
+      <path d="M60 {{ 220 - t2.left.threshold * 20 }} L{{ 60 + t2.threshold * 30 }} {{ 220 - t2.left.threshold * 20 }}" class="d-line" fill="none"></path>
+      {% for x, y in rows %}
+      {% if y == 0 %}
+      <circle cx="{{ 60 + x[0] * 30 }}" cy="{{ 220 - x[1] * 20 }}" r="6" class="d-box ml-tensor"></circle>
+      {% else %}
+      <rect x="{{ 54 + x[0] * 30 }}" y="{{ 214 - x[1] * 20 }}" width="12" height="12" class="d-box ml-op"></rect>
+      {% endif %}
+      {% endfor %}
+      <text x="{{ 60 + t2.threshold * 30 + 6 }}" y="34" class="d-muted" text-anchor="start">x₁ ≤ {{ t2.threshold }}</text>
+      <text x="62" y="{{ 214 - t2.left.threshold * 20 }}" class="d-muted" text-anchor="start">x₂ ≤ {{ t2.left.threshold }}</text>
+      <circle cx="420" cy="60" r="6" class="d-box ml-tensor"></circle>
+      <text x="436" y="64" text-anchor="start">class 0</text>
+      <rect x="414" y="84" width="12" height="12" class="d-box ml-op"></rect>
+      <text x="436" y="94" text-anchor="start">class 1</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Each split is one axis-parallel line. The right region is already pure, so the tree stops there; the left region gets a second question.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="impurity">Impurity: how mixed is a node?</h3>
+<p>
+  For a node whose rows have class proportions p<sub>k</sub>, two measures of mixing are in common use. Both are zero for a pure node and largest when the classes are evenly mixed.
+</p>
+<p class="ml-formula">Gini: G = 1 − Σ<sub>k</sub> p<sub>k</sub>² &nbsp;&nbsp;&nbsp; Entropy: H = − Σ<sub>k</sub> p<sub>k</sub> log₂ p<sub>k</sub></p>
+<p>
+  For two classes at p = ½, G = 0.5 and H = 1 bit. Gini is the chance of mislabelling a random row if you label it by drawing from the node's own class mix.
+  Entropy measures the information in the label. In practice they pick the same split on most data: here the best root split is x{{ best.feature + 1 }} ≤ {{ best.threshold }} under Gini and x{{ best_h.feature + 1 }} ≤ {{ best_h.threshold }} under entropy.
+  In scikit-learn the entropy criterion takes its logarithm through a helper that divides by ln 2, so it is in bits, and <code>"log_loss"</code> is the same criterion under another name.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 250" role="img" aria-labelledby="dt-imp-title dt-imp-desc">
+    <title id="dt-imp-title">Gini and entropy against the class mix</title>
+    <desc id="dt-imp-desc">
+      Two curves over the proportion of class 1 from 0 to 1 in a two-class node. Entropy in bits rises from 0 to 1 at one half and falls back to 0. Gini follows the same arch but peaks at 0.5. Both are zero at a pure node.
+    </desc>
+    {% set ns = namespace(g="", h="") %}
+    {% for i in range(0, 101, 4) %}
+      {% set sep = "" if loop.first else " " %}
+      {% set ns.g = ns.g ~ sep ~ (80 + i * 4) ~ "," ~ (210 - 160 * gini_impurity([i, 100 - i])) %}
+      {% set ns.h = ns.h ~ sep ~ (80 + i * 4) ~ "," ~ (210 - 160 * entropy_impurity([i, 100 - i])) %}
+    {% endfor %}
+    <g font-size="12" text-anchor="middle">
+      <path d="M80 210 L480 210 M80 210 L80 40" class="d-line" fill="none"></path>
+      <polyline points="{{ ns.h }}" class="d-line" fill="none" stroke-width="2.5"></polyline>
+      <polyline points="{{ ns.g }}" class="d-line ml-dashed" fill="none" stroke-width="2.5"></polyline>
+      <text x="80" y="228" class="d-muted">0</text>
+      <text x="280" y="228" class="d-muted">0.5</text>
+      <text x="480" y="228" class="d-muted">1</text>
+      <text x="280" y="246" class="d-muted">proportion of class 1</text>
+      <text x="68" y="214" class="d-muted" text-anchor="end">0</text>
+      <text x="68" y="50" class="d-muted" text-anchor="end">1</text>
+      <text x="520" y="62" text-anchor="start">solid: entropy (bits)</text>
+      <text x="520" y="84" text-anchor="start">dashed: Gini</text>
+      <text x="520" y="130" class="d-muted" text-anchor="start">at p = 0.5:</text>
+      <text x="520" y="150" class="d-muted" text-anchor="start">entropy {{ f3(entropy_impurity([1, 1])) }}, Gini {{ f3(gini_impurity([1, 1])) }}</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Gini is about half the height of entropy at the middle but has the same shape, so they rank splits almost identically.</p>
+
+<h3 id="split">Choosing a split</h3>
+<p>
+  For each feature, sort the distinct values and consider a threshold halfway between each adjacent pair. Send rows with the feature at or below the threshold left, the rest right.
+  Score the split by how much it reduces impurity, weighting each child by its share of the rows:
+</p>
+<p class="ml-formula">Δ = I(parent) − (n<sub>L</sub>/n) I(left) − (n<sub>R</sub>/n) I(right)</p>
+<p>
+  The best (feature, threshold) pair is the one with the largest Δ. Then the same procedure runs on each child, recursively. This is the CART algorithm (Breiman et al., 1984).
+  scikit-learn's search sorts the node's rows by one feature, walks the sorted order and updates running class counts, so a feature costs O(n log n) at a node. Features are visited in a random order drawn from <code>random_state</code>, so exact ties between features can resolve differently from seed to seed.
+</p>
+
+<h3 id="stopping">When to stop</h3>
+<p>
+  A node becomes a leaf when any of these holds: it is pure; its depth has reached <code>max_depth</code>; it has fewer than <code>min_samples_split</code> rows, or fewer than 2 × <code>min_samples_leaf</code>; or the best split improves impurity by less than <code>min_impurity_decrease</code>.
+  Candidate splits that would leave fewer than <code>min_samples_leaf</code> rows on a side are skipped outright. With the defaults (<code>max_depth=None</code>, <code>min_samples_split=2</code>, <code>min_samples_leaf=1</code>) only purity stops the tree, which is why a default tree fits its training set perfectly unless two identical rows carry different labels.
+  Setting <code>max_leaf_nodes</code> switches to best-first growth, which always splits the leaf with the largest improvement next.
+</p>
+
+<h3 id="regression">Regression trees</h3>
+<p>
+  The tree is unchanged except for the impurity and the leaf value. A leaf predicts the mean of its targets, and a node's impurity is the variance of its targets, so a split's score is the reduction in the weighted variance, equivalently the drop in the total sum of squared errors:
+</p>
+<p class="ml-formula">I(node) = (1/n) Σ (y<sub>i</sub> − ȳ)² &nbsp;&nbsp;&nbsp; prediction = ȳ &nbsp;&nbsp;&nbsp; best split minimizes SSE<sub>left</sub> + SSE<sub>right</sub></p>
+<p>
+  <code>absolute_error</code> uses the median and <code>poisson</code> a deviance, for count targets. Predictions are a staircase of constants, so a regression tree cannot extrapolate beyond the target range it saw.
+</p>
+
+<h3 id="pruning">Pruning: cost-complexity</h3>
+<p>
+  Instead of stopping early, grow the full tree and cut back. Cost-complexity pruning trades training error against size. With R(T) the sum over leaves of (n<sub>t</sub>/N) · I(t), it minimizes
+</p>
+<p class="ml-formula">R<sub>α</sub>(T) = R(T) + α · |leaves(T)| &nbsp;&nbsp;&nbsp; α<sub>eff</sub>(t) = ( R(t) − R(T<sub>t</sub>) ) / ( |leaves(T<sub>t</sub>)| − 1 )</p>
+<p>
+  The effective alpha of an internal node t is the price per leaf saved if you collapse its subtree T<sub>t</sub> into one leaf. Repeatedly collapsing the node with the smallest effective alpha (the weakest link) gives a nested sequence of trees, one for each alpha.
+  Set <code>ccp_alpha</code> to keep the largest tree whose effective alpha is at most that value; <code>cost_complexity_pruning_path</code> returns the whole sequence so you can choose alpha by cross-validation.
+</p>
+
+<h3 id="importance">Feature importance, and its trap</h3>
+<p>
+  A feature's impurity-based importance is the total impurity reduction over all the nodes that split on it, each weighted by its share of the training rows, then normalized to sum to 1 across features:
+</p>
+<p class="ml-formula">imp(f) ∝ Σ<sub>t splits on f</sub> [ n<sub>t</sub> I(t) − n<sub>L</sub> I(L) − n<sub>R</sub> I(R) ] / n</p>
+<p>
+  It is computed on the training data only and it rewards features that offer many candidate thresholds: a continuous column with a unique value per row can always carve out a pure-looking sliver by chance.
+  Permutation importance on held-out data (<code>sklearn.inspection.permutation_importance</code>) measures what the fitted model actually relies on and is the usual alternative.
+  Correlated features also split the credit between them, so a small importance does not mean a feature is uninformative.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 290" role="img" aria-labelledby="dt-tree-title dt-tree-desc">
+    <title id="dt-tree-title">The depth-2 tree for the toy rows</title>
+    <desc id="dt-tree-desc">
+      A tree with a root asking x₁ ≤ {{ t2.threshold }}. Its right branch is a leaf of {{ t2.right.n }} rows, all class 1. Its left branch asks x₂ ≤ {{ t2.left.threshold }} and ends in two leaves of {{ t2.left.left.n }} and {{ t2.left.right.n }} rows. Each node shows its row count, class counts and Gini impurity.
+    </desc>
+    <g font-size="13" text-anchor="middle">
+      <path d="M300 78 L170 138 M300 78 L500 138 M170 198 L100 228 M170 198 L240 228" class="d-line" fill="none"></path>
+      <text x="215" y="102" class="d-muted">yes</text>
+      <text x="410" y="102" class="d-muted">no</text>
+      <rect x="200" y="14" width="200" height="64" rx="6" class="d-box ml-tensor"></rect>
+      <text x="300" y="36">x₁ ≤ {{ t2.threshold }}</text>
+      <text x="300" y="54" class="d-muted">n = {{ t2.n }}, counts {{ t2.counts }}</text>
+      <text x="300" y="70" class="d-muted">Gini {{ f3(t2.impurity) }}</text>
+      <rect x="70" y="134" width="200" height="64" rx="6" class="d-box ml-tensor"></rect>
+      <text x="170" y="156">x₂ ≤ {{ t2.left.threshold }}</text>
+      <text x="170" y="174" class="d-muted">n = {{ t2.left.n }}, counts {{ t2.left.counts }}</text>
+      <text x="170" y="190" class="d-muted">Gini {{ f3(t2.left.impurity) }}</text>
+      <rect x="410" y="134" width="180" height="64" rx="6" class="d-box ml-op"></rect>
+      <text x="500" y="156">leaf: class {{ t2.right.prediction }}</text>
+      <text x="500" y="174" class="d-muted">n = {{ t2.right.n }}, counts {{ t2.right.counts }}</text>
+      <text x="500" y="190" class="d-muted">Gini {{ f3(t2.right.impurity) }}</text>
+      <rect x="10" y="226" width="180" height="56" rx="6" class="d-box ml-op"></rect>
+      <text x="100" y="246">leaf: class {{ t2.left.left.prediction }}</text>
+      <text x="100" y="262" class="d-muted">n = {{ t2.left.left.n }}, counts {{ t2.left.left.counts }}</text>
+      <rect x="200" y="226" width="180" height="56" rx="6" class="d-box ml-op"></rect>
+      <text x="290" y="246">leaf: class {{ t2.left.right.prediction }}</text>
+      <text x="290" y="262" class="d-muted">n = {{ t2.left.right.n }}, counts {{ t2.left.right.counts }}</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The same tree as the lines in the scatter above. A leaf's class counts are its prediction: <code>predict_proba</code> returns their fractions.</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>DecisionTreeClassifier</code></td>
+        <td><code>criterion="gini"</code>, <code>max_depth=None</code>, <code>min_samples_split=2</code>, <code>min_samples_leaf=1</code>, <code>max_features=None</code>, <code>ccp_alpha=0.0</code></td>
+        <td>The classifier and its defaults: a fully grown tree considering every feature at each split.</td>
+        <td><a href="{{ skl('sklearn/tree/_classes.py', 951, 983) }}"><code>_classes.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>DecisionTreeRegressor</code></td>
+        <td><code>criterion="squared_error"</code>, same stopping parameters</td>
+        <td>The regressor: mean-valued leaves, variance impurity.</td>
+        <td><a href="{{ skl('sklearn/tree/_classes.py', 1328, 1368) }}"><code>_classes.py</code></a></td>
+      </tr>
+      <tr>
+        <td>Builder choice</td>
+        <td><code>max_leaf_nodes</code> unset (−1) or set</td>
+        <td>Depth-first growth by default; best-first when <code>max_leaf_nodes</code> is given.</td>
+        <td><a href="{{ skl('sklearn/tree/_classes.py', 446, 466) }}"><code>_classes.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Gini</code></td>
+        <td>class counts per node</td>
+        <td>1 − Σ pₖ², from running per-class counts.</td>
+        <td><a href="{{ skl('sklearn/tree/_criterion.pyx', 605, 688) }}"><code>_criterion.pyx</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Entropy</code></td>
+        <td>class counts per node</td>
+        <td>−Σ pₖ log pₖ, with the log in base 2.</td>
+        <td><a href="{{ skl('sklearn/tree/_criterion.pyx', 532, 602) }}"><code>_criterion.pyx</code></a>, <a href="{{ skl('sklearn/tree/_utils.pyx', 64, 65) }}"><code>_utils.pyx</code></a></td>
+      </tr>
+      <tr>
+        <td><code>MSE</code></td>
+        <td>sum and sum of squares of y per node</td>
+        <td>Variance impurity for regression, with a proxy score that skips constant terms.</td>
+        <td><a href="{{ skl('sklearn/tree/_criterion.pyx', 922, 1018) }}"><code>_criterion.pyx</code></a></td>
+      </tr>
+      <tr>
+        <td><code>impurity_improvement</code></td>
+        <td>parent, left and right impurity</td>
+        <td>(N<sub>t</sub>/N) · (I − n<sub>R</sub>/n<sub>t</sub> · I<sub>R</sub> − n<sub>L</sub>/n<sub>t</sub> · I<sub>L</sub>), the quantity compared with <code>min_impurity_decrease</code>.</td>
+        <td><a href="{{ skl('sklearn/tree/_criterion.pyx', 165, 199) }}"><code>_criterion.pyx</code></a></td>
+      </tr>
+      <tr>
+        <td><code>node_split_best</code></td>
+        <td>sorted values of each drawn feature</td>
+        <td>Scans every cut point, skips those violating <code>min_samples_leaf</code>, sets the threshold to the midpoint of the neighbouring values.</td>
+        <td><a href="{{ skl('sklearn/tree/_splitter.pyx', 262, 504) }}"><code>_splitter.pyx</code></a></td>
+      </tr>
+      <tr>
+        <td>Leaf conditions</td>
+        <td><code>depth</code>, <code>n_node_samples</code>, <code>impurity</code></td>
+        <td>The checks that turn a node into a leaf in the depth-first builder.</td>
+        <td><a href="{{ skl('sklearn/tree/_tree.pyx', 230, 252) }}"><code>_tree.pyx</code></a></td>
+      </tr>
+      <tr>
+        <td><code>predict_proba</code></td>
+        <td>(n_samples, n_classes)</td>
+        <td>The class fractions of the leaf each row lands in.</td>
+        <td><a href="{{ skl('sklearn/tree/_classes.py', 1023, 1058) }}"><code>_classes.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_cost_complexity_prune</code></td>
+        <td>per-node <code>r_node</code>, <code>r_branch</code>, <code>n_leaves</code></td>
+        <td>Repeatedly prunes the node with the smallest effective alpha.</td>
+        <td><a href="{{ skl('sklearn/tree/_tree.pyx', 1623, 1778) }}"><code>_tree.pyx</code></a></td>
+      </tr>
+      <tr>
+        <td><code>cost_complexity_pruning_path</code></td>
+        <td>returns <code>ccp_alphas</code>, <code>impurities</code></td>
+        <td>The nested sequence of pruned trees to choose alpha from.</td>
+        <td><a href="{{ skl('sklearn/tree/_classes.py', 627, 665) }}"><code>_classes.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>feature_importances_</code></td>
+        <td>(n_features,) summing to 1</td>
+        <td>Normalized total impurity decrease per feature.</td>
+        <td><a href="{{ skl('sklearn/tree/_classes.py', 666, 686) }}"><code>_classes.py</code></a>, <a href="{{ skl('sklearn/tree/_tree.pyx', 1244, 1281) }}"><code>_tree.pyx</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-impurity">The root node</h3>
+  <p>
+    The {{ rows|length }} toy rows have {{ root_counts[0] }} of class 0 and {{ root_counts[1] }} of class 1, so p = ({{ root_counts[0] }}/{{ rows|length }}, {{ root_counts[1] }}/{{ rows|length }}).
+    Gini = 1 − ({{ root_counts[0] }}/{{ rows|length }})² − ({{ root_counts[1] }}/{{ rows|length }})² = {{ f4(gini_impurity(root_counts)) }}, and entropy = {{ f4(entropy_impurity(root_counts)) }} bits.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-split">Scoring every threshold on x₁</h3>
+  <p>The distinct values of x₁ give {{ cands0|length }} candidate thresholds. Each row below is one candidate, scored by Gini.</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Threshold</th><th>Left rows</th><th>Right rows</th><th>Left Gini</th><th>Right Gini</th><th>Weighted Gini</th><th>Gain Δ</th></tr></thead>
+      <tbody>
+        {% for c in cands0 %}
+        <tr{% if c.threshold == best.threshold and best.feature == 0 %} class="ml-best"{% endif %}>
+          <td>x₁ ≤ {{ c.threshold }}</td><td>{{ c.n_left }}</td><td>{{ c.n_right }}</td>
+          <td>{{ f3(c.left_impurity) }}</td><td>{{ f3(c.right_impurity) }}</td><td>{{ f3(c.weighted) }}</td><td>{{ f3(c.gain) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The largest gain is {{ f4(best.gain) }} at x{{ best.feature + 1 }} ≤ {{ best.threshold }}: the left child has {{ best.n_left }} rows with Gini {{ f3(best.left_impurity) }}, the right child {{ best.n_right }} pure rows, so the weighted impurity falls from {{ f3(gini_impurity(root_counts)) }} to {{ f3(best.weighted) }}.
+    The best threshold on x₂ gains only {{ f4(best1_gain) }}, so x₁ wins the root. The tree then repeats the search inside each child.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-grow">Growing to purity</h3>
+  <p>
+    Without limits the recursion ends with {{ tree_leaves(full)|length }} leaves and depth {{ tree_depth(full) }}, with {{ f3(tree_accuracy(full, rows)) }} training accuracy.
+    Its deepest splits isolate a single row each. Impurity-based importance for the two features is x₁ = {{ f3(importances[0]) }} and x₂ = {{ f3(importances[1]) }}.
+    Capping the depth at 2 leaves the three-leaf tree in the diagram above, whose leaf sizes are {% for leaf in tree_leaves(t2) %}{{ leaf.n }}{% if not loop.last %}, {% endif %}{% endfor %}.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-regression">A regression split</h3>
+  <p>
+    Eight points with x = 1 … 8 and y = {{ reg_ys|join(", ") }} have total sum of squared errors {{ f3(reg_total) }} around their mean. Each threshold below splits them and predicts each side's mean.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Threshold</th><th>Left mean</th><th>Right mean</th><th>SSE after split</th></tr></thead>
+      <tbody>
+        {% for r in reg_rows %}
+        <tr{% if r.threshold == reg_best.threshold %} class="ml-best"{% endif %}>
+          <td>x ≤ {{ r.threshold }}</td><td>{{ f3(r.mean_left) }}</td><td>{{ f3(r.mean_right) }}</td><td>{{ f3(r.sse) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>The best cut is x ≤ {{ reg_best.threshold }}, with leaf predictions {{ f3(reg_best.mean_left) }} and {{ f3(reg_best.mean_right) }} and SSE {{ f3(reg_best.sse) }}, down from {{ f3(reg_total) }}.</p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-prune">The pruning path</h3>
+  <p>The full toy tree has {{ path[0][1] }} leaves. Each row is the tree left after collapsing the weakest link; R is the sum over its leaves of (n/N) · Gini.</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>ccp_alpha at which it appears</th><th>Leaves</th><th>R(T)</th></tr></thead>
+      <tbody>
+        {% for alpha, leaves, r in path %}
+        <tr><td>{{ f4(alpha) }}</td><td>{{ leaves }}</td><td>{{ f4(r) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    A <code>ccp_alpha</code> of 0.05 keeps the {{ tree_leaves(prune_tree(full, 0.05))|length }}-leaf tree, 0.1 keeps {{ tree_leaves(prune_tree(full, 0.1))|length }} leaves, and anything above {{ f4(path[-1][0]) }} leaves a single node.
+    The alphas and R values match what scikit-learn's <code>cost_complexity_pruning_path</code> returns for this data.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-depth">Depth against held-out accuracy</h3>
+  <p>
+    Now a larger noisy problem: 60 training and 400 test rows, with x₁ and x₂ uniform on 0 to 10, class 1 when x₁ + x₂ &gt; 10, and 15% of labels flipped. The diagonal boundary needs a staircase.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>max_depth</th><th>Leaves</th><th>Train accuracy</th><th>Test accuracy</th></tr></thead>
+      <tbody>
+        {% for d, leaves, train_acc, test_acc in sweep %}
+        <tr><td>{{ d if d is not none else "None" }}</td><td>{{ leaves }}</td><td>{{ f3(train_acc) }}</td><td>{{ f3(test_acc) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Training accuracy climbs to {{ f3(sweep[-1][2]) }} as the tree grows, while test accuracy peaks at {{ f3(sweep|map("last")|max) }} and ends at {{ f3(sweep[-1][3]) }}. The extra leaves are fitting the flipped labels. One draw is noisy, so read the shape rather than the exact numbers.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-importance">A noise feature earns importance</h3>
+  <p>
+    Take 80 rows whose label depends only on a signal feature (class 1 when it exceeds 5, with 20% of labels flipped), and add two features of pure noise: a continuous one and a 0/1 coin flip.
+    Grow a full tree on each of 20 such datasets and average the impurity importances: signal {{ f3(noise_imp[0]) }}, continuous noise {{ f3(noise_imp[1]) }}, binary noise {{ f3(noise_imp[2]) }}.
+    The continuous noise column collects about a quarter of the credit although it carries no information, because it offers a fresh threshold at every row.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>from sklearn.tree import (
+    DecisionTreeClassifier, DecisionTreeRegressor, export_text,
+)
+from sklearn.inspection import permutation_importance
+from sklearn.model_selection import cross_val_score
+
+clf = DecisionTreeClassifier(max_depth=3, min_samples_leaf=5, random_state=0)
+clf.fit(X_train, y_train)
+clf.predict_proba(X_test)                  # (n, n_classes): leaf class fractions
+print(export_text(clf, feature_names=names))
+
+# choose the pruning strength by cross-validation
+path = DecisionTreeClassifier(random_state=0).cost_complexity_pruning_path(X_train, y_train)
+scores = {a: cross_val_score(DecisionTreeClassifier(ccp_alpha=a, random_state=0),
+                             X_train, y_train, cv=5).mean()
+          for a in path.ccp_alphas}
+best_alpha = max(scores, key=scores.get)
+
+clf.feature_importances_                    # impurity-based, training data only
+permutation_importance(clf, X_test, y_test, n_repeats=10, random_state=0)
+
+reg = DecisionTreeRegressor(max_depth=4, min_samples_leaf=3).fit(X_train, y_reg)</code></pre>
+<p>
+  <code>fit</code> grows the tree, <code>_prune_tree</code> applies <code>ccp_alpha</code> afterwards, and the fitted structure lives in the Cython <code>Tree</code> object as parallel arrays (feature, threshold, children, impurity, counts per node).
+  Rows are never normalized or scaled: a tree only compares a feature with a threshold, so monotonic rescaling changes nothing. Recent scikit-learn versions can also route missing values (NaN) at each split, with the default splitter.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+<ul>
+  <li><strong>Why use one.</strong> No feature scaling, mixed numeric and encoded categorical inputs, interactions found automatically, and a model a person can read, audit and explain. Fast to train and to predict.</li>
+  <li><strong>High variance.</strong> A small change in the data can change the root split and everything below it. Single trees are rarely the most accurate model; they are the building block of random forests and gradient boosting, which average or sum many of them.</li>
+  <li><strong>Overfitting by default.</strong> The default tree memorizes its training set. Always constrain it (<code>max_depth</code>, <code>min_samples_leaf</code>) or prune it (<code>ccp_alpha</code>), and choose the setting on validation data, not training accuracy.</li>
+  <li><strong>Axis-parallel boundaries.</strong> A diagonal or smooth boundary costs many splits. Rotating the features, or a different model family, can do much better.</li>
+  <li><strong>No extrapolation.</strong> Predictions are piecewise constant, so outside the training range a tree repeats its edge value; a linear trend is approximated by steps.</li>
+  <li><strong>Greedy search.</strong> Each split is chosen alone. Data like XOR, where neither feature helps by itself, can mislead the first split even though two splits together would solve it.</li>
+  <li><strong>Imbalanced classes.</strong> Majority-dominated leaves predict the majority; use <code>class_weight</code>, a sensible decision threshold on <code>predict_proba</code>, and a metric that is not accuracy (see <a href="/ml-models/classification-metrics">classification metrics</a>).</li>
+  <li><strong>Importances.</strong> Impurity-based importance favours high-cardinality columns and is measured on training data; confirm with permutation importance on held-out rows.</li>
+  <li><strong>Alternatives compared.</strong> Against logistic regression: trees capture interactions without engineering but lose smooth, extrapolating, well-calibrated scores. Against forests and boosting: a single tree is cheaper and readable, an ensemble is almost always more accurate.</li>
+</ul>
+
+<h3 id="check-yourself">Check yourself</h3>
+<details class="ml-quiz">
+  <summary>A node holds 6 rows of class A and 2 of class B. What are its Gini impurity and the class probabilities a leaf here would give?</summary>
+  <p>p = (0.75, 0.25), so Gini = 1 − 0.5625 − 0.0625 = 0.375. The leaf predicts class A, with <code>predict_proba</code> of 0.75 and 0.25.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why is the threshold for a split on the values 3 and 5 equal to 4, and not 3 or 5?</summary>
+  <p>Any threshold between the two values sends the same rows each way, so the choice does not change the training split. Using the midpoint puts the boundary as far as possible from both neighbours, which tends to generalize a little better than sitting on a training value.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Training accuracy is 100% and validation accuracy is 71%. Name two changes that may help.</summary>
+  <p>Limit the tree: lower <code>max_depth</code>, raise <code>min_samples_leaf</code>, or prune with <code>ccp_alpha</code> chosen by cross-validation. Or replace the single tree with an ensemble such as a random forest.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+<ul>
+  <li>Breiman, Friedman, Olshen and Stone. <em>Classification and Regression Trees.</em> Wadsworth, 1984.</li>
+  <li>Quinlan. <em>Induction of Decision Trees.</em> Machine Learning 1(1), 1986. <a href="https://doi.org/10.1007/BF00116251">doi:10.1007/BF00116251</a>.</li>
+  <li>Hastie, Tibshirani and Friedman. <em>The Elements of Statistical Learning</em>, chapter 9.2: tree-based methods, including cost-complexity pruning.</li>
+  <li>Strobl, Boulesteix, Zeileis and Hothorn. <em>Bias in random forest variable importance measures.</em> BMC Bioinformatics, 2007. <a href="https://doi.org/10.1186/1471-2105-8-25">doi:10.1186/1471-2105-8-25</a>.</li>
+  <li>scikit-learn {{ pins.sklearn.version }}: <a href="{{ skl('sklearn/tree/_classes.py', 951, 983) }}"><code>DecisionTreeClassifier</code></a>, <a href="{{ skl('sklearn/tree/_criterion.pyx', 605, 688) }}"><code>Gini</code></a>, <a href="{{ skl('sklearn/tree/_tree.pyx', 1623, 1778) }}"><code>_cost_complexity_prune</code></a>.</li>
+</ul>

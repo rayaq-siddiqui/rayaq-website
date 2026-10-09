@@ -484,7 +484,7 @@ PAGES = [
             "sklearn:sklearn/tree/_criterion.pyx",
             "sklearn:sklearn/tree/_splitter.pyx",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "random-forests",

@@ -1948,3 +1948,12 @@ def test_regression_split_picks_the_lowest_sse_threshold():
     assert best["mean_left"] == pytest.approx(1.2) and best["mean_right"] == pytest.approx(4.1)
     assert best["sse"] == pytest.approx(0.3)
     assert total == pytest.approx(sum((y - sum(ys) / len(ys)) ** 2 for y in ys))
+
+
+def test_toy_tree_diagram_layout_matches_the_grown_tree():
+    tree = ml_models_docs.grow_tree(ml_models_docs.TREE_TOY_ROWS, max_depth=2)
+    assert (tree["feature"], tree["threshold"]) == (0, 5.5)
+    assert tree["right"]["feature"] is None and tree["right"]["n"] == 5
+    assert (tree["left"]["feature"], tree["left"]["threshold"]) == (1, 2.5)
+    assert tree["left"]["left"]["feature"] is None
+    assert tree["left"]["right"]["feature"] is None

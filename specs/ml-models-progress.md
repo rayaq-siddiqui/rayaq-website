@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-09 (twenty-second run). Spec v2 widens the section from model architectures
+**Last updated:** 2026-10-09 (twenty-third run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: queue items 1-29, the last being `cross-validation`. The next run builds
-`decision-trees` (queue item 30).
+format. Ready pages: queue items 1-30, the last being `decision-trees`. The next run builds
+`gradient-boosting` (queue item 31).
 
 ## Pins
 
@@ -361,6 +361,20 @@ Pins checked this run with `git ls-remote --tags`: PyTorch v2.14.1, scikit-learn
 
 Gaps: the data-leakage references (Kaufman et al. 2012, Kapoor and Narayanan 2023, ESL section 7.10.2) and the classification-metrics references (Fawcett 2006, Davis and Goadrich 2006, Saito and Rehmsmeier 2015) and the cross-validation references (ESL ch. 7, Varma and Simon 2006, Cawley and Talbot 2010, Bengio and Grandvalet 2004) are cited from memory and were not opened. The checkout at the start of this run was a stale shallow clone; it was unshallowed and fast-forwarded before work began.
 
+## Twenty-third run (2026-10-09) — decision-trees
+
+| Commit | What |
+|---|---|
+| `ml-models: add tested decision-tree helpers` / `build the decision-trees page` | Gini and entropy (bits), split search, grown and pruned trees, cost-complexity path (alphas 0, 0.0463, 0.0992, 0.2480), depth sweep, noise-feature importance, regression split; page, `ready`, queue ✓ |
+
+Verified at scikit-learn 1.9.1: `tree/_classes.py` `BaseDecisionTree.__init__` 127-156, `_fit` 226-475 (builder choice 447-470), `predict` 501-550, `_prune_tree` 605-625, `cost_complexity_pruning_path` 627-665, `feature_importances_` 666-686, `DecisionTreeClassifier.__init__` 951-983, `fit` 985-1021, `predict_proba` 1023-1058, `DecisionTreeRegressor.__init__` 1328-1368; `_criterion.pyx` `impurity_improvement` 165-199, `Entropy` 532-602, `Gini` 605-688, `MSE` 922-1018; `_splitter.pyx` `node_split_best` 262-504; `_tree.pyx` `DepthFirstTreeBuilder` 126-339 (leaf rules 230-252), `compute_feature_importances` 1244-1281, `_cost_complexity_prune` 1623-1778; `_utils.pyx` `log` 64-65.
+
+sklearn's `Entropy` criterion is in bits (log base 2), not nats. The helpers were cross-checked against a real scikit-learn 1.9.1 in a scratch venv (never added to requirements): tree shape, root split, ccp path and entropy match. Importance on the noise demo differs from a single sklearn fit only through random tie-breaking between features. No offline outputs were needed.
+
+Pins checked with `git ls-remote --tags`: see the end of this run's report; no pin moved.
+
+Gaps: the decision-trees references (Breiman et al. 1984, Quinlan 1986, ESL 9.2, Strobl et al. 2007) are cited from memory and were not opened.
+
 ## Queue
 
 1. `tensors-and-shapes` ✓
@@ -392,8 +406,8 @@ Gaps: the data-leakage references (Kaufman et al. 2012, Kapoor and Narayanan 202
 27. `data-leakage` ✓
 28. `classification-metrics` ✓
 29. `cross-validation` ✓
-30. `decision-trees` ← next
-31. `gradient-boosting`
+30. `decision-trees` ✓
+31. `gradient-boosting` ← next
 32. `overfitting`
 33. `bias-variance`
 34. `regularization`
