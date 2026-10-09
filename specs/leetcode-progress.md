@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-09 (build run). `tries` is ready (22 of 58 pages). **The next run is a build run** continuing at `heaps`.
+**Last updated:** 2026-10-09 (build run). `heaps` is ready (23 of 58 pages). **The next run is a build run** continuing at `top-k-elements`.
 
 ## The Routine
 
@@ -41,8 +41,8 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 |---|---|---|
 | Blind 75 | 36 | 75 |
 | Grind 169 | 97 | 169 |
-| NeetCode 150 | 62 | 150 |
-| NeetCode 250 | 115 | 250 |
+| NeetCode 150 | 63 | 150 |
+| NeetCode 250 | 118 | 250 |
 
 ## Queue
 
@@ -71,8 +71,8 @@ build once research is done.
 20. `binary-search-trees` ✓
 21. `tree-construction` ✓
 22. `tries` ✓
-23. `heaps` ← next
-24. `top-k-elements`
+23. `heaps` ✓
+24. `top-k-elements` ← next
 25. `k-way-merge`
 26. `two-heaps`
 27. `quickselect`

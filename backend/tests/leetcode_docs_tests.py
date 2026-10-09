@@ -1,3 +1,4 @@
+import heapq
 import os
 import re
 
@@ -658,3 +659,33 @@ def test_trie_helpers_match_the_page():
     body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/tries").get_data(as_text=True))
     assert "9 letter nodes for 19 letters" in body
     assert "enters 5 nodes before it finds" in body
+
+
+def test_heap_helpers_match_the_page():
+    values = [7, 3, 9, 1, 5, 2]
+    pushed = leetcode_docs.heap_build_trace(values)
+    expected = []
+    for value in values:
+        heapq.heappush(expected, value)
+    assert pushed["heap"] == expected == [1, 3, 2, 7, 5, 9]
+    assert [s["swaps"] for s in pushed["steps"]] == [0, 1, 0, 2, 0, 1]
+    popped = leetcode_docs.heap_pop_trace(pushed["heap"])
+    after = list(expected)
+    assert heapq.heappop(after) == popped["popped"] == 1
+    assert popped["heap"] == after == [2, 3, 9, 7, 5] and popped["moved"] == 9 and popped["swaps"] == 1
+    assert leetcode_docs.heap_pop_trace([4]) == {"popped": 4, "moved": 4, "heap": [], "swaps": 0}
+    compared = leetcode_docs.heapify_compare([9, 8, 7, 6, 5, 4, 3, 2, 1])
+    check = [9, 8, 7, 6, 5, 4, 3, 2, 1]
+    heapq.heapify(check)
+    assert compared["heap"] == check
+    assert (compared["heapify_swaps"], compared["push_swaps"]) == (7, 16)
+    layout = leetcode_docs.heap_layout([1, 3, 2, 7, 5, 9])
+    assert layout["levels"] == 3 and layout["edges"][-1] == [2, 5]
+    assert [n["depth"] for n in layout["nodes"]] == [0, 1, 1, 2, 2, 2]
+    smash = leetcode_docs.last_stone_trace([2, 7, 4, 1, 8, 1])
+    assert smash["last"] == 1 and len(smash["rounds"]) == 4
+    assert smash["rounds"][0] == {"first": 8, "second": 7, "rest": 1, "left": [4, 2, 1, 1, 1]}
+    assert leetcode_docs.last_stone_trace([3, 3])["last"] == 0
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/heaps").get_data(as_text=True))
+    assert "After 4 rounds the last stone weighs 1." in body
+    assert "descending order cost 16 swaps in the example against 7 for heapify" in body

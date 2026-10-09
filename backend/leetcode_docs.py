@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -4602,6 +4602,91 @@ def trie_wildcard_trace(words, pattern):
     return {"found": search(0, 0), "visited": visited}
 
 
+def _sift_up(heap, i):
+    swaps = 0
+    while i > 0 and heap[(i - 1) // 2] > heap[i]:
+        parent = (i - 1) // 2
+        heap[parent], heap[i] = heap[i], heap[parent]
+        i = parent
+        swaps += 1
+    return swaps
+
+
+def _sift_down(heap, i, size):
+    swaps = 0
+    while True:
+        smallest = i
+        for child in (2 * i + 1, 2 * i + 2):
+            if child < size and heap[child] < heap[smallest]:
+                smallest = child
+        if smallest == i:
+            return swaps
+        heap[i], heap[smallest] = heap[smallest], heap[i]
+        i = smallest
+        swaps += 1
+
+
+def heap_build_trace(values):
+    """Push values one at a time into a min-heap array, recording the array and the swaps each push needed."""
+    heap = []
+    steps = []
+    for value in values:
+        heap.append(value)
+        swaps = _sift_up(heap, len(heap) - 1)
+        steps.append({"value": value, "heap": list(heap), "swaps": swaps})
+    return {"steps": steps, "heap": heap, "swaps": sum(s["swaps"] for s in steps)}
+
+
+def heap_pop_trace(heap):
+    """Pop the minimum: move the last item to the root, then sift it down."""
+    heap = list(heap)
+    smallest = heap[0]
+    last = heap.pop()
+    moved = last
+    swaps = 0
+    if heap:
+        heap[0] = last
+        swaps = _sift_down(heap, 0, len(heap))
+    return {"popped": smallest, "moved": moved, "heap": heap, "swaps": swaps}
+
+
+def heapify_compare(values):
+    """Swaps used by bottom-up heapify against pushing the same values one by one."""
+    heap = list(values)
+    swaps = 0
+    for i in range(len(heap) // 2 - 1, -1, -1):
+        swaps += _sift_down(heap, i, len(heap))
+    return {"heap": heap, "heapify_swaps": swaps, "push_swaps": heap_build_trace(values)["swaps"]}
+
+
+def heap_layout(heap):
+    """Array index i sits on level floor(log2(i + 1)); slots on each level are spread across the widest level."""
+    levels = (len(heap)).bit_length()
+    nodes = []
+    for i, value in enumerate(heap):
+        depth = (i + 1).bit_length() - 1
+        slot = i + 1 - (1 << depth)
+        span = 1 << depth
+        nodes.append({"value": value, "depth": depth, "x": (slot + 0.5) / span * (1 << (levels - 1))})
+    edges = [[(i - 1) // 2, i] for i in range(1, len(heap))]
+    return {"nodes": nodes, "edges": edges, "levels": levels, "columns": 1 << (levels - 1)}
+
+
+def last_stone_trace(stones):
+    """Smash the two heaviest stones until at most one is left; each round pops two and may push their difference."""
+    heap = [-s for s in stones]
+    heapq.heapify(heap)
+    rounds = []
+    while len(heap) > 1:
+        first = -heapq.heappop(heap)
+        second = -heapq.heappop(heap)
+        rest = first - second
+        if rest:
+            heapq.heappush(heap, -rest)
+        rounds.append({"first": first, "second": second, "rest": rest, "left": sorted((-h for h in heap), reverse=True)})
+    return {"rounds": rounds, "last": -heap[0] if heap else 0}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -4786,6 +4871,11 @@ def render(slug, render_template):
         "trie_lookup": trie_lookup,
         "trie_words_under": trie_words_under,
         "trie_wildcard_trace": trie_wildcard_trace,
+        "heap_build_trace": heap_build_trace,
+        "heap_pop_trace": heap_pop_trace,
+        "heapify_compare": heapify_compare,
+        "heap_layout": heap_layout,
+        "last_stone_trace": last_stone_trace,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,
