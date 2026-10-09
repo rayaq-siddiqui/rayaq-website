@@ -1,0 +1,340 @@
+{% set one = leaky_selection_demo() %}
+{% set avg = leaky_selection_average() %}
+{% set dup_train = leak_dup_train %}
+{% set dup_test = leak_dup_test %}
+{% set overlap = duplicate_overlap(dup_train, dup_test) %}
+{% set dup_acc = lookup_accuracy(dup_train, dup_test) %}
+{% set fresh_acc = lookup_accuracy(dup_train, dup_test, True) %}
+{% set notice_cut, notice_acc = best_threshold_rule(leak_loan_notices, leak_loan_defaulted) %}
+{% set debt_cut, debt_acc = best_threshold_rule(leak_loan_debt_ratio, leak_loan_defaulted) %}
+{% macro pct(x) -%}{{ "%.1f"|format(x * 100) }}%{%- endmacro %}
+<header class="jj-header">
+  <h1>Data leakage</h1>
+  <p class="tagline">
+    Leakage is any route by which information the model will not have at prediction time reaches the model during training or
+    evaluation. The result is a score that looks excellent and a deployed model that does not. This page covers the three families
+    (target leakage, train–test contamination and temporal leakage), shows each with numbers, and ends with the structural fix
+    (do every learned step inside a <code>Pipeline</code>) and a checklist.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A model is only useful if it works on rows it has not seen, at a moment when the answer is not yet known. We estimate that by
+  holding rows back and scoring on them. Leakage breaks the estimate: something about the held-back rows, or about the future,
+  or about the answer itself, got into the model. The score then measures how well the model uses a shortcut, not how well it predicts.
+</p>
+<p>
+  The danger is that leakage rarely fails loudly. Nothing crashes; the validation number is simply too good. The worse a leak is, the
+  more the result looks like a breakthrough. A very high score on a hard problem is the first thing to distrust.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Imagine a student sitting an exam. If they saw the questions beforehand, the mark tells you nothing about what they know. There are three ways
+  that can happen. They may have been handed a column that is secretly the answer key (<em>target leakage</em>). They may have seen the exam
+  paper itself while studying, because the paper and the practice sheets overlapped (<em>train–test contamination</em>). Or they
+  may have read tomorrow's newspaper to predict tomorrow's news (<em>temporal leakage</em>).
+</p>
+<p>
+  The test for all three is the same question: <strong>at the moment this prediction would be made in real use, would I have this piece of information?</strong>
+  If not, it cannot be in the training recipe, the features or the evaluation, whether it arrived through a column, a row or a statistic.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 200" role="img" aria-labelledby="dl-kinds-title dl-kinds-desc">
+    <title id="dl-kinds-title">Three routes by which information leaks into a model</title>
+    <desc id="dl-kinds-desc">
+      Three rows. Target leakage: a feature column that is computed from or after the label flows into the model. Train–test
+      contamination: a statistic or a duplicated row crosses from the test set into training. Temporal leakage: data from after the
+      prediction time flows backward into a model trained to predict that time.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <rect x="20" y="14" width="150" height="40" rx="4" class="d-box ml-tensor"></rect>
+      <text x="95" y="39">feature built from the label</text>
+      <rect x="300" y="14" width="110" height="40" rx="4" class="d-box ml-op"></rect>
+      <text x="355" y="39" font-weight="bold">model</text>
+      <rect x="540" y="14" width="140" height="40" rx="4" class="d-box ml-tensor"></rect>
+      <text x="610" y="39">target leakage</text>
+      <rect x="20" y="72" width="150" height="40" rx="4" class="d-box ml-dashed"></rect>
+      <text x="95" y="97">test rows (statistics, copies)</text>
+      <rect x="300" y="72" width="110" height="40" rx="4" class="d-box ml-op"></rect>
+      <text x="355" y="97" font-weight="bold">model</text>
+      <rect x="540" y="72" width="140" height="40" rx="4" class="d-box ml-tensor"></rect>
+      <text x="610" y="97">contamination</text>
+      <rect x="20" y="130" width="150" height="40" rx="4" class="d-box ml-dashed"></rect>
+      <text x="95" y="155">rows from after the cutoff</text>
+      <rect x="300" y="130" width="110" height="40" rx="4" class="d-box ml-op"></rect>
+      <text x="355" y="155" font-weight="bold">model</text>
+      <rect x="540" y="130" width="140" height="40" rx="4" class="d-box ml-tensor"></rect>
+      <text x="610" y="155">temporal leakage</text>
+      <g class="d-line" fill="none" stroke-width="1.5">
+        <path d="M170 34 H300 M410 34 H540"></path>
+        <path d="M170 92 H300 M410 92 H540"></path>
+        <path d="M170 150 H300 M410 150 H540"></path>
+      </g>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Different doors, one problem: the model sees something it would not have in production.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="target-leakage">Target leakage</h3>
+<p>
+  A feature is available in your table but is created by, or only exists because of, the outcome. Predicting loan default with a
+  column "number of late-payment notices sent" is the classic case: notices are only sent after someone has missed payments. Others:
+  "discharge medication" in a model for diagnosing the condition; "refund issued" when predicting churn; a column that is a transformation of the label
+  (a rescaled copy, a category that the label defines). Tell-tale signs are a single feature that
+  alone predicts nearly perfectly, and importance that is wildly concentrated.
+</p>
+
+<h3 id="contamination">Train–test contamination</h3>
+<p>
+  Information flows from evaluation rows into training <em>without</em> a feature naming the label:
+</p>
+<ul>
+  <li><strong>Preprocessing fit on everything.</strong> Computing a mean, a scale, a vocabulary, an imputation value, a PCA basis or a target encoding on all rows before the split lets the test rows influence what the model is given.</li>
+  <li><strong>Selection fit on everything.</strong> Choosing the "best" features, hyperparameters or model by looking at the test score makes the test score a training objective.</li>
+  <li><strong>Duplicates and near-duplicates.</strong> The same record, image, document or user appears on both sides. The model gets credit for remembering it.</li>
+  <li><strong>Groups split apart.</strong> Several rows from one patient, device or session are spread over both sides, so the model can recognize the entity, not the pattern. This is why splitters such as <code>GroupKFold</code> exist.</li>
+</ul>
+
+<h3 id="temporal">Temporal leakage</h3>
+<p>
+  When rows are ordered in time, a random split lets the model train on the future and be scored on the past. Even features can leak
+  time: "total purchases this year" computed at year end contains purchases that had not happened on the prediction date. The fix is to split by
+  time (train strictly before validation strictly before test) and to build every feature using only data stamped before the prediction time,
+  including the aggregates. <code>TimeSeriesSplit</code> produces such splits.
+</p>
+
+<h3 id="pipeline-fix">The structural fix: one pipeline</h3>
+<p>
+  Most contamination comes from the order of operations. The safe order is: split first; then, for each training set, <strong>fit</strong> every learned step
+  (scaler, imputer, selector, encoder, model) on those rows only; finally <strong>transform</strong> the held-out rows with the fitted steps.
+  A <code>Pipeline</code> enforces that order: its <code>fit</code> clones each transformer, calls <code>fit_transform</code> on the training data one
+  step at a time, then fits the final estimator, and its <code>predict</code> only calls <code>transform</code> on new rows. Cross-validating the
+  whole pipeline refits all of it inside each fold, so no fold's validation rows ever influence a fitted step.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 230" role="img" aria-labelledby="dl-order-title dl-order-desc">
+    <title id="dl-order-title">Wrong order versus right order</title>
+    <desc id="dl-order-desc">
+      Top row, the wrong order: all rows flow into one fit step, and only afterwards are they split into train and test, so the test rows
+      influenced the fit. Bottom row, the right order: the rows are split first, the fit step sees only the train rows, and the fitted result
+      is applied to the test rows.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <text x="20" y="22" text-anchor="start" font-weight="bold">wrong</text>
+      <rect x="80" y="8" width="100" height="36" rx="4" class="d-box ml-tensor"></rect>
+      <text x="130" y="31">all rows</text>
+      <rect x="230" y="8" width="130" height="36" rx="4" class="d-box ml-op"></rect>
+      <text x="295" y="31">fit scaler / select</text>
+      <rect x="410" y="8" width="90" height="36" rx="4" class="d-box ml-tensor"></rect>
+      <text x="455" y="31">split</text>
+      <rect x="550" y="8" width="60" height="36" rx="4" class="d-box ml-tensor"></rect>
+      <text x="580" y="31">train</text>
+      <rect x="620" y="8" width="60" height="36" rx="4" class="d-box ml-dashed"></rect>
+      <text x="650" y="31">test</text>
+      <text x="20" y="130" text-anchor="start" font-weight="bold">right</text>
+      <rect x="80" y="104" width="100" height="36" rx="4" class="d-box ml-tensor"></rect>
+      <text x="130" y="127">all rows</text>
+      <rect x="230" y="104" width="90" height="36" rx="4" class="d-box ml-tensor"></rect>
+      <text x="275" y="127">split</text>
+      <rect x="370" y="104" width="60" height="36" rx="4" class="d-box ml-tensor"></rect>
+      <text x="400" y="127">train</text>
+      <rect x="470" y="104" width="130" height="36" rx="4" class="d-box ml-op"></rect>
+      <text x="535" y="127">fit on train only</text>
+      <rect x="470" y="160" width="60" height="36" rx="4" class="d-box ml-dashed"></rect>
+      <text x="500" y="183">test</text>
+      <rect x="570" y="160" width="110" height="36" rx="4" class="d-box ml-op"></rect>
+      <text x="625" y="183">transform only</text>
+      <g class="d-line" fill="none" stroke-width="1.5">
+        <path d="M180 26 H230 M360 26 H410 M500 26 H550"></path>
+        <path d="M180 122 H230 M320 122 H370 M430 122 H470"></path>
+        <path d="M275 140 V178 H470 M530 178 H570"></path>
+        <path d="M535 140 V150 H625 V160"></path>
+      </g>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Splitting first costs nothing; fitting before splitting can silently inflate every number that follows.</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>Pipeline</code></td>
+        <td><code>steps</code>: list of (name, estimator); <code>memory</code>, <code>verbose</code></td>
+        <td>Chains transformers and a final estimator so that fitted state is learned only from the rows passed to <code>fit</code>.</td>
+        <td><a href="{{ skl('sklearn/pipeline.py', 93, 1433) }}"><code>pipeline.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Pipeline._fit</code></td>
+        <td>X, y; loops over every step but the last</td>
+        <td>Clones each transformer, calls <code>fit_transform</code> on the running training data and stores the fitted copy.</td>
+        <td><a href="{{ skl('sklearn/pipeline.py', 516, 576) }}"><code>pipeline.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Pipeline.fit</code></td>
+        <td>X: training rows, y: labels</td>
+        <td>Runs <code>_fit</code> for the transformers, then fits the final estimator on the transformed training data.</td>
+        <td><a href="{{ skl('sklearn/pipeline.py', 582, 653) }}"><code>pipeline.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Pipeline.predict</code></td>
+        <td>X: new rows</td>
+        <td>Calls <code>transform</code> (never <code>fit</code>) on each transformer, then the final estimator's <code>predict</code>.</td>
+        <td><a href="{{ skl('sklearn/pipeline.py', 747, 801) }}"><code>pipeline.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>train_test_split</code></td>
+        <td><code>test_size</code>, <code>shuffle=True</code>, <code>stratify</code>, <code>random_state</code></td>
+        <td>A random split; wrong for grouped or time-ordered data, which need the splitters below.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_split.py', 2797, 2977) }}"><code>_split.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>GroupKFold</code></td>
+        <td><code>n_splits=5</code>, <code>groups</code> passed to <code>split</code></td>
+        <td>Keeps every group entirely in the test fold or entirely out of it, so an entity cannot straddle the split.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_split.py', 533, 686) }}"><code>_split.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>TimeSeriesSplit</code></td>
+        <td><code>n_splits=5</code>, <code>gap</code>, <code>max_train_size</code></td>
+        <td>Each fold trains on earlier rows and tests on later ones, never the reverse.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_split.py', 1116, 1327) }}"><code>_split.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-select">Pure noise that "predicts" the label</h3>
+  <p>
+    Take {{ 40 }} rows, a random 0/1 label, and {{ 500 }} features that are also pure coin flips, so no feature has any real relationship to
+    the label. Split the rows into the first 20 for training and the last 20 for test. <strong>Leaky:</strong> pick the feature that agrees with the
+    label most often over all 40 rows, then report its accuracy on the 20 test rows. In one run (seed 3) that feature, number {{ one.leaky_feature }},
+    scores {{ pct(one.leaky_test_accuracy) }} on test. <strong>Honest:</strong> pick the best feature using the 20 training rows only. Its
+    training accuracy is {{ pct(one.honest_train_accuracy) }}, the best of 500 coin flips by luck, and on the test rows it scores
+    {{ pct(one.honest_test_accuracy) }}.
+  </p>
+  <p>
+    One run is noisy, so repeat with 100 different seeds: the leaky procedure averages {{ pct(avg.leaky_test_accuracy) }} on test,
+    the honest one {{ pct(avg.honest_test_accuracy) }}, which is what no signal means (a coin). The honest training accuracy averages
+    {{ pct(avg.honest_train_accuracy) }}, so selection also inflated the <em>training</em> score; only the held-out rows told the truth.
+    The leaky number is entirely an artefact of letting the test labels vote on the selection.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-dup">Duplicates across the split</h3>
+  <p>
+    The training set has {{ dup_train|length }} records and the test set has {{ dup_test|length }}, of which {{ overlap }} also appear in training.
+    A "model" that only memorizes training records (and guesses the training majority label, 0, for anything unseen) scores
+    {{ pct(dup_acc) }} on the full test set: 4 copies right by memory plus 3 of the 6 fresh records right by the majority guess. Drop the {{ overlap }}
+    duplicates from the test set and it scores {{ pct(fresh_acc) }}, because the memorizer knows nothing that transfers. The 20 points in between are
+    pure leakage, and the gap grows with the share of duplicates.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-target">A feature from after the outcome</h3>
+  <p>
+    Ten loans, four of them defaulted. The number of late notices is 3, 0, 0, 2, 0, 4, 0, 0, 1, 0 for the loans in order; the loan defaulted
+    whenever the count is above zero. The best threshold rule (&gt; {{ notice_cut }}) is right on {{ pct(notice_acc) }} of loans. The debt ratio, which is known at
+    application time, has a best single threshold rule (&gt; {{ "%.3f"|format(debt_cut) }}) that is right on {{ pct(debt_acc) }}. A model trained with the notices
+    column would look nearly perfect and be useless at the moment it matters, because at application time the notices do not exist yet.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-scale">Scaling on all rows</h3>
+  <p>
+    The <a href="/ml-models/preprocessing">preprocessing page</a> shows the same test age standardized to different values depending on whether the
+    mean and standard deviation came from the four training rows or all five. That difference is information from the test row flowing into the number
+    the model receives; with a statistic as small as a mean it is subtle, with a selection step or a target encoding it can be
+    large, as the first example shows.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import GroupKFold, TimeSeriesSplit, cross_val_score
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+
+# wrong: the selector and scaler have already seen every row
+X_sel = SelectKBest(f_classif, k=10).fit_transform(X, y)
+cross_val_score(LogisticRegression(), X_sel, y, cv=5)
+
+# right: every learned step is refit inside each training fold
+model = Pipeline([
+    ("scale", StandardScaler()),
+    ("select", SelectKBest(f_classif, k=10)),
+    ("clf", LogisticRegression()),
+])
+cross_val_score(model, X, y, cv=5)
+
+# grouped rows: an entity never straddles the split
+cross_val_score(model, X, y, cv=GroupKFold(n_splits=5), groups=patient_id)
+
+# time-ordered rows: train on the past, validate on the future
+cross_val_score(model, X, y, cv=TimeSeriesSplit(n_splits=5))</code></pre>
+
+<h3 id="checklist">A leakage checklist</h3>
+<ul>
+  <li>For every feature, can you say <em>when</em> it is known? If it is known only after the outcome, remove it.</li>
+  <li>Is the split done before any statistic, selection, imputation, encoding or resampling is fit? Is the whole recipe inside a <code>Pipeline</code>?</li>
+  <li>Are there duplicate or near-duplicate records, or several rows per entity, spread across the splits? Split by entity.</li>
+  <li>Is the data ordered in time? Split by time and build aggregates with a cutoff.</li>
+  <li>Was the test set used once, at the end? Tuning on it makes it a validation set.</li>
+  <li>Is the score suspiciously good, or is one feature carrying nearly all the importance? Treat that as a bug until shown otherwise.</li>
+  <li>Does the deployed score on fresh data match the offline estimate? A large gap is the final symptom.</li>
+</ul>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Pipelines versus convenience.</strong> A pipeline refits every step per fold, which costs time for expensive preprocessing (a large PCA, a heavy encoder). The cost buys an honest estimate; caching with <code>memory</code> reduces it.</li>
+  <li><strong>Unsupervised preprocessing on all data.</strong> Fitting a scaler or vocabulary on unlabeled test inputs is sometimes done on purpose (transductive learning), but then the reported number is for that setting, not for new data. Say so, or avoid it.</li>
+  <li><strong>Gap between train and validation.</strong> With time series, features such as rolling windows reach back; leave a <code>gap</code> equal to the longest lookback so windows do not straddle the boundary.</li>
+  <li><strong>Near-duplicates are hard to define.</strong> Exact-match checks catch the easy cases; images, paraphrased text and the same user with different ids need hashing, embeddings or domain keys. Over-aggressive deduplication discards real data.</li>
+  <li><strong>Leakage in the loop.</strong> Repeated peeking at one test set (many experiments, one benchmark) leaks slowly through your own decisions. Keep a final untouched set, and expect public leaderboards to be optimistic.</li>
+  <li><strong>Pretraining contamination.</strong> A large language model may have seen a benchmark's test items in its training corpus. The same logic applies, and the evidence is usually indirect.</li>
+</ul>
+
+<h3 id="check-yourself">Check yourself</h3>
+<details class="ml-quiz">
+  <summary>You impute missing values with the column median over the whole dataset and then cross-validate. Is that leakage?</summary>
+  <p>Yes, a mild form: each validation fold's values contributed to the median used to fill the training fold. Put the imputer in a pipeline so it is refit inside each training fold.</p>
+</details>
+<details class="ml-quiz">
+  <summary>A model's validation accuracy is 99.9% on a problem humans find hard. What do you check first?</summary>
+  <p>Which feature carries the signal, and whether it is available at prediction time; then duplicates across the split; then whether any learned step was fit before the split.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does the honest procedure's training accuracy look so good on pure noise?</summary>
+  <p>Choosing the best of 500 coin-flip features on 20 rows guarantees some feature agrees by chance. The selection overfits the training rows, and only rows that did not take part in the selection reveal it.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Kaufman, Rosset, Perlich and Stitelman. <em>Leakage in Data Mining: Formulation, Detection, and Avoidance.</em> ACM Transactions on Knowledge Discovery from Data, 2012.</li>
+  <li>Hastie, Tibshirani and Friedman. <em>The Elements of Statistical Learning</em>, 2nd ed., section 7.10.2 ("The wrong and right way to do cross-validation"). Springer, 2009.</li>
+  <li>Kapoor and Narayanan. <em>Leakage and the Reproducibility Crisis in Machine-Learning-Based Science.</em> Patterns, 2023.</li>
+  <li>scikit-learn {{ pins.sklearn.version }}: <a href="{{ skl('sklearn/pipeline.py', 93, 1433) }}"><code>Pipeline</code></a>, <a href="{{ skl('sklearn/model_selection/_split.py', 533, 686) }}"><code>GroupKFold</code></a>, <a href="{{ skl('sklearn/model_selection/_split.py', 1116, 1327) }}"><code>TimeSeriesSplit</code></a>, <a href="{{ skl('sklearn/model_selection/_split.py', 2797, 2977) }}"><code>train_test_split</code></a>.</li>
+</ul>

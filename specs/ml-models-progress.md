@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-08 (twenty-first run). Spec v2 widens the section from model architectures
+**Last updated:** 2026-10-09 (twenty-second run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: queue items 1-26, the last being `preprocessing`. The next run builds
-`data-leakage` (queue item 27).
+format. Ready pages: queue items 1-27, the last being `data-leakage`. The next run builds
+`classification-metrics` (queue item 28).
 
 ## Pins
 
@@ -347,6 +347,16 @@ Verified at scikit-learn 1.9.1: `model_selection/_split.py` `KFold` 437-532, `Gr
 
 Gaps: the `train_test_split` `shuffle=False` line range is cited from reading the function, not a separate check of every branch; the data-splits and generalization papers (Belkin, Nakkiran, Roberts, Kaufman) are cited from memory and were not opened. `data-leakage` is plain text on these pages until it is built; link it then.
 
+## Twenty-second run (2026-10-09) — data-leakage, classification-metrics, cross-validation
+
+| Commit | What |
+|---|---|
+| `ml-models: add tested data-leakage helpers` / `build the data-leakage page` | Noise-feature selection on all rows versus train rows (100-seed average 0.729 versus 0.479), duplicate-lookup accuracy 0.7 versus 0.5, best-threshold rule 1.0 versus 0.6; page, `ready`, queue ✓ |
+
+Verified at scikit-learn 1.9.1: `pipeline.py` `Pipeline` 93-1433 (`_fit` 516-576 with `clone` at 553, `fit` 582-653, `predict` 747-801); `model_selection/_split.py` `GroupKFold` 533-686, `TimeSeriesSplit` 1116-1327 (`gap` default 0), `train_test_split` 2797-2977.
+
+Gaps: the data-leakage references (Kaufman et al. 2012, Kapoor and Narayanan 2023, ESL section 7.10.2) are cited from memory and were not opened. The checkout at the start of this run was a stale shallow clone; it was unshallowed and fast-forwarded before work began.
+
 ## Queue
 
 1. `tensors-and-shapes` ✓
@@ -375,8 +385,8 @@ Gaps: the `train_test_split` `shuffle=False` line range is cited from reading th
 24. `generalization` ✓
 25. `data-splits` ✓
 26. `preprocessing` ✓
-27. `data-leakage` ← next
-28. `classification-metrics`
+27. `data-leakage` ✓
+28. `classification-metrics` ← next
 29. `cross-validation`
 30. `decision-trees`
 31. `gradient-boosting`

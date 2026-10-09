@@ -340,7 +340,7 @@ PAGES = [
             "sklearn:sklearn/pipeline.py",
             "sklearn:sklearn/model_selection/_split.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "preprocessing",
