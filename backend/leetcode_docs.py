@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -4158,6 +4158,54 @@ def remove_nth_from_end_trace(values, n):
     return {"steps": steps, "cut": cut, "removed": values[cut], "result": values[:cut] + values[cut + 1:]}
 
 
+def floyd_trace(nxt, start=0):
+    """nxt[i] is the index after i, or -1 for the end. Phase one races slow and fast until they meet; phase two walks from the head and the meeting point in lockstep to the cycle's entrance."""
+    slow = fast = start
+    steps = [{"slow": slow, "fast": fast}]
+    while True:
+        ahead = nxt[fast]
+        if ahead == -1 or nxt[ahead] == -1:
+            return {"has_cycle": False, "steps": steps}
+        slow, fast = nxt[slow], nxt[ahead]
+        steps.append({"slow": slow, "fast": fast})
+        if slow == fast:
+            break
+    meeting = slow
+    a, b = start, meeting
+    walk = [{"head": a, "meeting": b}]
+    while a != b:
+        a, b = nxt[a], nxt[b]
+        walk.append({"head": a, "meeting": b})
+    entrance = a
+    cycle_length = 1
+    node = nxt[entrance]
+    while node != entrance:
+        node = nxt[node]
+        cycle_length += 1
+    return {
+        "has_cycle": True,
+        "steps": steps,
+        "meeting": meeting,
+        "walk": walk,
+        "entrance": entrance,
+        "tail_length": len(walk) - 1,
+        "cycle_length": cycle_length,
+    }
+
+
+def middle_trace(count):
+    """Fast advances two nodes per slow step; the loop ends when fast has no node or no next node left."""
+    if count < 1:
+        raise ValueError("the list needs at least one node")
+    slow = fast = 0
+    steps = [{"slow": slow, "fast": fast}]
+    while fast + 1 < count:
+        slow += 1
+        fast += 2
+        steps.append({"slow": slow, "fast": fast})
+    return {"steps": steps, "middle": slow}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -4320,6 +4368,8 @@ def render(slug, render_template):
         "reverse_list_trace": reverse_list_trace,
         "merge_sorted_trace": merge_sorted_trace,
         "remove_nth_from_end_trace": remove_nth_from_end_trace,
+        "floyd_trace": floyd_trace,
+        "middle_trace": middle_trace,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,

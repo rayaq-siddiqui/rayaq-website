@@ -505,3 +505,26 @@ def test_linked_list_helpers_match_the_page():
     assert "The reversed list is 5, 4, 3, 2, 1." in body
     assert "The merged list is 1, 2, 3, 4, 6, 7, 9." in body
     assert "so the node after it, holding 4, is cut. The list becomes 1, 2, 3, 5." in body
+
+
+def test_fast_slow_pointer_helpers_match_the_page():
+    nxt = [1, 2, 3, 4, 5, 6, 7, 3]
+    fl = leetcode_docs.floyd_trace(nxt)
+    assert fl["has_cycle"] and fl["meeting"] == 5 and fl["entrance"] == 3
+    assert fl["tail_length"] == 3 and fl["cycle_length"] == 5
+    assert (len(fl["steps"]) - 1) % fl["cycle_length"] == 0
+    assert not leetcode_docs.floyd_trace([1, 2, 3, -1])["has_cycle"]
+    assert not leetcode_docs.floyd_trace([-1])["has_cycle"]
+    self_loop = leetcode_docs.floyd_trace([0])
+    assert self_loop["entrance"] == 0 and self_loop["tail_length"] == 0 and self_loop["cycle_length"] == 1
+    dup = leetcode_docs.floyd_trace([3, 1, 3, 4, 2])
+    assert dup["entrance"] == 3 and dup["meeting"] == 2
+    assert leetcode_docs.middle_trace(7)["middle"] == 3
+    assert leetcode_docs.middle_trace(6)["middle"] == 3
+    assert leetcode_docs.middle_trace(1)["middle"] == 0
+    with pytest.raises(ValueError):
+        leetcode_docs.middle_trace(0)
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/fast-slow-pointers").get_data(as_text=True))
+    assert "They meet at node 5 after 5 turns" in body
+    assert "the cycle begins at node 3, the tail has 3 nodes and the loop has 5." in body
+    assert "The entrance is 3, and that is the repeated value" in body
