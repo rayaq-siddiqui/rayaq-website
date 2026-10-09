@@ -2075,3 +2075,37 @@ def test_bias_variance_ridge_and_bagging_cut_variance():
     stronger = ml_models_docs.bias_variance_decomposition(9, alpha=1e-2, repeats=40)
     assert bagged["variance"] < plain["variance"]
     assert stronger["variance"] < plain["variance"]
+
+
+def test_penalized_fits_lasso_zeroes_noise_features_and_ridge_does_not():
+    fits = ml_models_docs.penalized_fits(20, 0.4)
+    assert all(c == 0.0 for c in fits["lasso"][3:])
+    assert all(c != 0.0 for c in fits["ridge"])
+    assert sum(abs(c) for c in fits["ridge"]) < sum(abs(c) for c in fits["ols"])
+    assert sum(abs(c) for c in fits["lasso"]) < sum(abs(c) for c in fits["ols"])
+
+
+def test_lasso_sparsity_path_shrinks_the_active_set():
+    path = ml_models_docs.lasso_sparsity_path([0, 0.2, 0.8, 3.2])
+    counts = [count for _, count, _ in path]
+    assert counts[0] == 8
+    assert counts == sorted(counts, reverse=True)
+    assert counts[-1] < counts[1]
+
+
+def test_dropout_statistics_is_unbiased_with_inverted_scaling():
+    stats = ml_models_docs.dropout_statistics([1.0, 2.0, -3.0], 0.5, trials=3000)
+    assert stats["scale"] == 2.0
+    assert abs(stats["kept_fraction"] - 0.5) < 0.03
+    for mean, value in zip(stats["means"], [1.0, 2.0, -3.0]):
+        assert abs(mean - value) < 0.2
+    assert stats["exact_variances"] == [1.0, 4.0, 9.0]
+    for estimate, exact in zip(stats["variances"], stats["exact_variances"]):
+        assert abs(estimate - exact) < 0.15 * exact
+
+
+def test_adam_decay_decoupled_is_independent_of_gradient_scale_and_l2_is_not():
+    small = ml_models_docs.adam_weight_decay_comparison(0.1)
+    large = ml_models_docs.adam_weight_decay_comparison(100.0)
+    assert abs(small["decoupled_extra_shrink"] - large["decoupled_extra_shrink"]) < 1e-6
+    assert small["l2_extra_shrink"] > 10 * large["l2_extra_shrink"] > 0

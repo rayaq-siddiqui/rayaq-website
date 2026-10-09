@@ -315,7 +315,7 @@ PAGES = [
             "pytorch:torch/nn/modules/dropout.py",
             "pytorch:torch/optim/adamw.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "data-splits",
@@ -4403,6 +4403,87 @@ def bias_variance_decomposition(degree, n=25, alpha=0.0, noise=0.3, repeats=200,
     }
 
 
+SPARSE_TRUE_WEIGHTS = [3.0, -2.0, 1.5, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+
+def sparse_regression_data(n=40, seed=3, noise=1.0):
+    rng = random.Random(seed)
+    x = [[rng.gauss(0, 1) for _ in SPARSE_TRUE_WEIGHTS] for _ in range(n)]
+    y = [sum(w * v for w, v in zip(SPARSE_TRUE_WEIGHTS, row)) + rng.gauss(0, noise) for row in x]
+    return x, y
+
+
+def penalized_fits(ridge_alpha, lasso_alpha, n=40, seed=3, noise=1.0):
+    x, y = sparse_regression_data(n, seed, noise)
+    z = standardize(x)["z"]
+    mean_y = sum(y) / n
+    centered = [t - mean_y for t in y]
+    return {
+        "ols": ridge_coefficients(z, centered, 0.0),
+        "ridge": ridge_coefficients(z, centered, ridge_alpha),
+        "lasso": lasso_coefficients(z, centered, lasso_alpha),
+    }
+
+
+def lasso_sparsity_path(alphas, n=40, seed=3, noise=1.0):
+    x, y = sparse_regression_data(n, seed, noise)
+    z = standardize(x)["z"]
+    mean_y = sum(y) / n
+    centered = [t - mean_y for t in y]
+    rows = []
+    for alpha in alphas:
+        coef = lasso_coefficients(z, centered, alpha)
+        rows.append((alpha, sum(1 for c in coef if c != 0.0), coef))
+    return rows
+
+
+def dropout_statistics(values, p, trials=4000, seed=0):
+    rng = random.Random(seed)
+    scale = 1.0 / (1.0 - p)
+    sums = [0.0] * len(values)
+    squares = [0.0] * len(values)
+    kept = 0
+    for _ in range(trials):
+        for i, v in enumerate(values):
+            out = v * scale if rng.random() >= p else 0.0
+            kept += out != 0.0
+            sums[i] += out
+            squares[i] += out * out
+    means = [t / trials for t in sums]
+    variances = [q / trials - m * m for q, m in zip(squares, means)]
+    return {
+        "means": means,
+        "variances": variances,
+        "exact_variances": [v * v * p / (1.0 - p) for v in values],
+        "kept_fraction": kept / (trials * len(values)),
+        "scale": scale,
+    }
+
+
+def adam_weight_decay_comparison(grad, w0=5.0, lr=0.01, weight_decay=0.1, steps=300, beta1=0.9, beta2=0.999, eps=1e-8):
+    def run(mode):
+        w, m, v = w0, 0.0, 0.0
+        for t in range(1, steps + 1):
+            g = grad if t % 2 else -grad
+            if mode == "l2":
+                g += weight_decay * w
+            elif mode == "decoupled":
+                w *= 1.0 - lr * weight_decay
+            m = beta1 * m + (1 - beta1) * g
+            v = beta2 * v + (1 - beta2) * g * g
+            w -= lr * (m / (1 - beta1**t)) / (math.sqrt(v / (1 - beta2**t)) + eps)
+        return w
+
+    plain = run("none")
+    return {
+        "none": plain,
+        "l2": run("l2"),
+        "decoupled": run("decoupled"),
+        "l2_extra_shrink": plain - run("l2"),
+        "decoupled_extra_shrink": plain - run("decoupled"),
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -4646,6 +4727,10 @@ def render(slug, render_template):
         "ridge_strength_sweep": ridge_strength_sweep,
         "memorization_demo": memorization_demo,
         "bias_variance_decomposition": bias_variance_decomposition,
+        "penalized_fits": penalized_fits,
+        "lasso_sparsity_path": lasso_sparsity_path,
+        "dropout_statistics": dropout_statistics,
+        "adam_weight_decay_comparison": adam_weight_decay_comparison,
         "BOOST_XS": BOOST_XS,
         "BOOST_YS": BOOST_YS,
         "NEWTON_XS": NEWTON_XS,

@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-09 (twenty-fourth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: queue items 1-33, the last being `bias-variance`. The next run builds
-`regularization` (queue item 34).
+format. Ready pages: queue items 1-34, the last being `regularization`. The next run builds
+`activation-functions` (queue item 35).
 
 ## Pins
 
@@ -415,6 +415,20 @@ Pins checked with `git ls-remote --tags`: PyTorch v2.14.1, scikit-learn 1.9.1 an
 
 Gaps: the references (ESL 7.3, Geman et al. 1992, Belkin et al. 2019, Breiman 1996) are cited from memory and were not opened.
 
+### Twenty-fourth run, page 2 — regularization
+
+| Commit | What |
+|---|---|
+| `ml-models: add tested regularization helpers` / `build the regularization page` | `sparse_regression_data`, `penalized_fits` (OLS, ridge, lasso on 8 features, 3 informative), `lasso_sparsity_path`, `dropout_statistics` (inverted dropout, measured vs exact variance), `adam_weight_decay_comparison` (L2-in-gradient vs decoupled decay); page, `ready`, queue ✓, link added from `overfitting` |
+
+Verified at scikit-learn 1.9.1: `linear_model/_ridge.py` `_solve_cholesky` 215-235, `Ridge.fit` 1229-1263; `_coordinate_descent.py` `ElasticNet.fit` 1097-1294, `Lasso` 1329-1663 (class start 1329; end is the line before `LinearModelCV` at 1665).
+
+Verified at PyTorch v2.14.1: `nn/modules/dropout.py` `Dropout` 35-73; `nn/functional.py` `dropout` 1473-1498; `optim/adamw.py` `AdamW` 19-49. Finding: in 2.14.1 `AdamW` is `Adam` with `decoupled_weight_decay=True`, so the decay itself is in `optim/adam.py` 416-428 (single-tensor branch; the foreach path is at 688-698), and the page links that rather than `adamw.py` alone.
+
+The Adam comparison uses an alternating-sign gradient so the loss does not move the weight and only the decay does; a constant gradient made the L2 case misleading (Adam's second-moment memory of early large gradients shrinks later steps). The Adam update is a hand implementation of the standard bias-corrected rule and was not cross-checked against an installed PyTorch (none in the scratch venv).
+
+Gaps: the references (ESL 3.4 and 3.8, Tibshirani 1996, Srivastava et al. 2014, Loshchilov and Hutter 2019) are cited from memory and were not opened. `Lasso` end line inferred from the next class start.
+
 ## Queue
 
 1. `tensors-and-shapes` ✓
@@ -450,8 +464,8 @@ Gaps: the references (ESL 7.3, Geman et al. 1992, Belkin et al. 2019, Breiman 19
 31. `gradient-boosting` ✓
 32. `overfitting` ✓
 33. `bias-variance` ✓
-34. `regularization` ← next
-35. `activation-functions`
+34. `regularization` ✓
+35. `activation-functions` ← next
 36. `linear-algebra-toolkit`
 37. `missing-data`
 38. `computation-graphs`

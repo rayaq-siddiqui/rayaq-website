@@ -1,0 +1,328 @@
+{% set fits = penalized_fits(20, 0.4) %}
+{% set alphas = [0, 0.1, 0.2, 0.4, 0.8, 1.6, 3.2] %}
+{% set path = lasso_sparsity_path(alphas) %}
+{% set drop_values = [1.0, 2.0, -3.0] %}
+{% set drop = dropout_statistics(drop_values, 0.5) %}
+{% set grads = [0.1, 1, 10, 100] %}
+{% set decays = [] %}
+{% for g in grads %}{% set _ = decays.append(adam_weight_decay_comparison(g)) %}{% endfor %}
+{% macro f2(x) -%}{{ "%.2f"|format(x) }}{%- endmacro %}
+{% macro f3(x) -%}{{ "%.3f"|format(x) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Regularization</h1>
+  <p class="tagline">
+    Regularization trades a little fit on the training data for better behavior on new data, by penalizing, constraining or perturbing a model so it cannot use all of its freedom.
+    This page covers the L2 and L1 penalties and their geometry, dropout, and the difference between weight decay and an L2 penalty under Adam.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+<p>
+  The <a href="/ml-models/overfitting">overfitting</a> page showed that a flexible model fits noise, and the <a href="/ml-models/bias-variance">bias–variance</a> page showed why: its predictions swing from one training set to the next. Shrinking the model by hand (fewer features, shallower trees) is a blunt tool, and for neural networks there is no obvious knob.
+</p>
+<p>
+  Regularization is a family of smoother knobs. Each one gives up a controlled amount of training fit (adds a little bias) to cut variance, and the strength is a hyperparameter chosen by validation.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+<p>
+  Think of the training loss as a bowl and the model parameters as a ball resting at the bottom. With noisy data the bottom sits at a place that exploits the noise: some weights are large, balanced against each other. A penalty adds a second bowl centred at zero and the ball settles between them. The stronger the penalty, the closer to zero.
+</p>
+<ul>
+  <li><strong>L2 (ridge, weight decay)</strong> penalizes squared weights. It shrinks all weights smoothly, rarely to exactly zero, and handles correlated features by splitting weight among them.</li>
+  <li><strong>L1 (lasso)</strong> penalizes absolute values. It can set weights exactly to zero, so it also selects features.</li>
+  <li><strong>Dropout</strong> randomly removes units during training, so no unit can rely on a particular partner being present.</li>
+  <li><strong>Early stopping, data augmentation and label smoothing</strong> regularize without touching the weights directly: they limit how far training goes, enlarge the dataset with label-preserving changes, or soften the targets.</li>
+</ul>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 280" role="img" aria-labelledby="rg-geo-title rg-geo-desc">
+    <title id="rg-geo-title">Why L1 produces zeros and L2 does not</title>
+    <desc id="rg-geo-desc">
+      Two panels in a plane of two weights. Ellipses are contours of the training loss, centred away from the origin. On the left a circle (the L2 constraint) touches the smallest contour at a point where both weights are non-zero. On the right a diamond (the L1 constraint) touches it at a corner on an axis, where one weight is exactly zero.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <g transform="translate(40 20)">
+        <path d="M0 120 L200 120 M100 20 L100 220" class="d-line d-muted" fill="none"></path>
+        <ellipse cx="175" cy="60" rx="50" ry="28" transform="rotate(-30 175 60)" class="d-line d-muted" fill="none"></ellipse>
+        <ellipse cx="175" cy="60" rx="85" ry="48" transform="rotate(-30 175 60)" class="d-line d-muted" fill="none"></ellipse>
+        <ellipse cx="175" cy="60" rx="120" ry="68" transform="rotate(-30 175 60)" class="d-line d-muted" fill="none"></ellipse>
+        <circle cx="100" cy="120" r="62" class="d-box ml-op" fill="none" stroke-width="2.5"></circle>
+        <circle cx="145" cy="77" r="4" class="ml-tensor"></circle>
+        <text x="100" y="245">L2: both weights non-zero</text>
+      </g>
+      <g transform="translate(380 20)">
+        <path d="M0 120 L200 120 M100 20 L100 220" class="d-line d-muted" fill="none"></path>
+        <ellipse cx="175" cy="60" rx="50" ry="28" transform="rotate(-30 175 60)" class="d-line d-muted" fill="none"></ellipse>
+        <ellipse cx="175" cy="60" rx="85" ry="48" transform="rotate(-30 175 60)" class="d-line d-muted" fill="none"></ellipse>
+        <ellipse cx="175" cy="60" rx="120" ry="68" transform="rotate(-30 175 60)" class="d-line d-muted" fill="none"></ellipse>
+        <path d="M100 56 L162 120 L100 184 L38 120 Z" class="d-box ml-op" fill="none" stroke-width="2.5"></path>
+        <circle cx="100" cy="56" r="4" class="ml-tensor"></circle>
+        <text x="100" y="245">L1: one weight exactly zero</text>
+      </g>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The penalized fit is where the loss contours first touch the constraint region. A circle has no corners; a diamond's corners lie on the axes. The picture is schematic.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="l2">L2: ridge and weight decay</h3>
+<p>
+  Add λ‖w‖² (or ½λ‖w‖², depending on convention) to the loss. For linear regression the minimizer has a closed form that differs from ordinary least squares by one term on the diagonal:
+</p>
+<pre><code>w = (XᵀX + αI)⁻¹ Xᵀy</code></pre>
+<p>
+  The αI makes the matrix invertible even with correlated or duplicated features, and shrinks each weight along the directions the data barely constrains (those with small singular values) the most. scikit-learn's <code>_solve_cholesky</code> literally adds α to the diagonal of XᵀX and solves.
+  For gradient-trained models the penalty's gradient is λw, so each step pulls every weight towards zero in proportion to its size. That is why L2 is also called <em>weight decay</em>.
+  The <a href="/ml-models/linear-regression">linear regression</a> page has the full derivation and path.
+</p>
+
+<h3 id="l1">L1: lasso and sparsity</h3>
+<p>
+  Add λ‖w‖₁ instead. The penalty has a corner at zero, so the minimizer sets a weight exactly to zero whenever the data's pull on it is weaker than λ. Coordinate descent updates one weight at a time using the soft-threshold function S(ρ, λ) = sign(ρ)·max(|ρ| − λ, 0), which is exactly where the zeros come from.
+  Elastic net mixes the two with a ratio <code>l1_ratio</code>; scikit-learn's objective is <code>1/(2n)‖y − Xw‖² + α·l1_ratio·‖w‖₁ + ½α(1 − l1_ratio)‖w‖²</code>.
+  Note that scikit-learn divides the squared error by 2n, so its α is on a different scale from <code>Ridge</code>'s.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 270" role="img" aria-labelledby="rg-path-title rg-path-desc">
+    <title id="rg-path-title">Lasso coefficient path</title>
+    <desc id="rg-path-desc">
+      Standardized coefficients of eight features against the L1 penalty, from 0 to 3.2 on a categorical axis. The three informative features start at {{ f2(path[0][2][0]) }}, {{ f2(path[0][2][1]) }} and {{ f2(path[0][2][2]) }} and shrink as the penalty grows. The five noise features sit near zero and are exactly zero by a penalty of 0.4, where {{ path[3][1] }} features remain. At a penalty of 3.2 only {{ path[-1][1] }} feature is left.
+    </desc>
+    {% set ns = namespace(lines=[]) %}
+    <g font-size="12" text-anchor="middle">
+      <path d="M70 130 L440 130 M70 20 L70 240" class="d-line d-muted" fill="none"></path>
+      {% for j in range(8) %}
+        {% set pts = namespace(v="") %}
+        {% for a, count, coef in path %}
+          {% set pts.v = pts.v ~ ("" if loop.first else " ") ~ (70 + loop.index0 * 55) ~ "," ~ (130 - 30 * coef[j]) %}
+        {% endfor %}
+        <polyline points="{{ pts.v }}" class="d-line{% if j >= 3 %} d-muted{% endif %}" fill="none" stroke-width="{{ 2.5 if j < 3 else 1.5 }}"></polyline>
+      {% endfor %}
+      {% for a in alphas %}
+      <text x="{{ 70 + loop.index0 * 55 }}" y="258" class="d-muted">{{ a }}</text>
+      {% endfor %}
+      <text x="255" y="272" class="d-muted">L1 penalty α</text>
+      <text x="60" y="134" class="d-muted" text-anchor="end">0</text>
+      <text x="470" y="40" text-anchor="start">dark: informative features</text>
+      <text x="470" y="62" text-anchor="start">grey: noise features</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Each line is one coefficient. Grey lines reach zero and stay there; the informative ones shrink gradually and drop out last.</p>
+
+<h3 id="dropout">Dropout</h3>
+<p>
+  During training, each unit's output is set to zero with probability p, and the survivors are multiplied by 1/(1 − p) ("inverted" dropout). The scaling keeps the expected output unchanged, so at evaluation time the layer is simply the identity and nothing needs rescaling.
+  Because a different random subnetwork is trained at every step, a unit cannot depend on another being present; the effect resembles averaging an enormous ensemble of thinned networks, though with shared weights.
+  PyTorch's <code>nn.Dropout</code> checks <code>0 ≤ p ≤ 1</code> in its constructor and calls <code>F.dropout(input, p, self.training, ...)</code>, so <code>model.eval()</code> switches it off.
+  Forgetting <code>eval()</code> at inference time is a common bug that makes predictions noisy.
+</p>
+
+<h3 id="adamw">Weight decay versus an L2 penalty under Adam</h3>
+<p>
+  With plain SGD, adding λw to the gradient and shrinking the weight by a factor (1 − ηλ) are the same thing. With an adaptive optimizer like Adam they are not. Adam divides the update by the running root-mean-square of the gradient, and if the penalty is folded into the gradient, the decay is divided too:
+  weights whose loss gradients are large are decayed little, and weights with tiny gradients are decayed a lot.
+  AdamW (Loshchilov and Hutter, 2019) applies the decay directly to the weights, <code>w ← w(1 − lr·λ)</code>, outside the adaptive step, so every weight decays at the same rate.
+  In PyTorch {{ pins.pytorch.version }}, <code>AdamW</code> is <code>Adam</code> with <code>decoupled_weight_decay=True</code>; the branch is in <code>adam.py</code>. See the <a href="/ml-models/optimizers">optimizers</a> page for the rest of Adam.
+</p>
+
+<h3 id="others">Early stopping, augmentation, label smoothing</h3>
+<p>
+  <strong>Early stopping</strong> halts training at the minimum of validation error (see the <a href="/ml-models/overfitting">overfitting</a> page); for linear models it behaves much like an L2 penalty.
+  <strong>Data augmentation</strong> adds label-preserving transformed copies of the data (crops, flips, noise) so the model sees more variety: it regularizes by enlarging the training set, not by shrinking weights.
+  <strong>Label smoothing</strong> replaces a one-hot target with (1 − ε) on the true class and ε/(K − 1) elsewhere, which stops the network from pushing its logits to infinity to reach a probability of exactly 1.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>_solve_cholesky</code></td>
+        <td><code>X</code> (n, p), <code>alpha</code></td>
+        <td>Ridge solver: adds α to the diagonal of XᵀX and solves for the weights.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_ridge.py', 215, 235) }}"><code>_ridge.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Ridge.fit</code></td>
+        <td><code>alpha=1.0</code></td>
+        <td>The public ridge estimator; validates input and delegates to the shared solver.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_ridge.py', 1229, 1263) }}"><code>_ridge.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>ElasticNet.fit</code></td>
+        <td><code>alpha</code>, <code>l1_ratio</code></td>
+        <td>Coordinate descent for the mixed L1 and L2 objective; <code>Lasso</code> is the special case <code>l1_ratio=1</code>.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_coordinate_descent.py', 1097, 1294) }}"><code>_coordinate_descent.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Lasso</code></td>
+        <td><code>alpha=1.0</code></td>
+        <td>The L1-only estimator, a subclass of <code>ElasticNet</code>.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_coordinate_descent.py', 1329, 1663) }}"><code>_coordinate_descent.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Dropout</code></td>
+        <td><code>p=0.5</code></td>
+        <td>Module that zeroes elements with probability p in training and passes through in evaluation.</td>
+        <td><a href="{{ src('torch/nn/modules/dropout.py', 35, 73) }}"><code>dropout.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>F.dropout</code></td>
+        <td><code>input</code>, <code>p</code>, <code>training</code></td>
+        <td>Checks the range of p, then calls the C++ kernel that samples the mask and rescales.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 1473, 1498) }}"><code>functional.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>AdamW</code></td>
+        <td><code>weight_decay=1e-2</code></td>
+        <td>Calls <code>Adam</code> with <code>decoupled_weight_decay=True</code>.</td>
+        <td><a href="{{ src('torch/optim/adamw.py', 19, 49) }}"><code>adamw.py</code></a></td>
+      </tr>
+      <tr>
+        <td>decoupled decay branch</td>
+        <td><code>param</code>, <code>lr</code>, <code>weight_decay</code></td>
+        <td><code>param.mul_(1 - lr * weight_decay)</code> when decoupled, otherwise <code>grad.add(param, alpha=weight_decay)</code> (the L2 form).</td>
+        <td><a href="{{ src('torch/optim/adam.py', 416, 428) }}"><code>adam.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-l1-l2">Ridge keeps everything, lasso picks</h3>
+  <p>
+    Data: 40 rows, 8 standardized features. Only the first three matter (true weights 3, −2, 1.5); the other five are noise. The label has noise σ = 1. Fits on standardized features with centered labels:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Feature</th><th>True</th><th>OLS</th><th>Ridge α = 20</th><th>Lasso α = 0.4</th></tr></thead>
+      <tbody>
+        {% for j in range(8) %}
+        <tr><td>x{{ j + 1 }}</td><td>{{ "%.1f"|format(3.0 if j == 0 else (-2.0 if j == 1 else (1.5 if j == 2 else 0.0))) }}</td><td>{{ f2(fits.ols[j]) }}</td><td>{{ f2(fits.ridge[j]) }}</td><td>{{ f2(fits.lasso[j]) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Least squares gives small non-zero weights to the five noise features. Ridge shrinks everything, the useful weights and the noise weights alike (x1 falls from {{ f2(fits.ols[0]) }} to {{ f2(fits.ridge[0]) }}), and none reaches zero.
+    Lasso at α = 0.4 sets all five noise weights to exactly 0 and keeps the three real ones at {{ f2(fits.lasso[0]) }}, {{ f2(fits.lasso[1]) }} and {{ f2(fits.lasso[2]) }}: it found the right support. It also shrank the real weights, as the path in the diagram shows: the number of surviving features goes {% for a, count, coef in path %}{{ count }}{% if not loop.last %}, {% endif %}{% endfor %} as α runs through {{ alphas|join(", ") }}.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-dropout">Inverted dropout keeps the mean</h3>
+  <p>
+    Apply dropout with p = 0.5 to the vector {{ drop_values|join(", ") }}, repeating {{ "{:,}".format(4000) }} times with different random masks. A kept element is multiplied by 1/(1 − p) = {{ drop.scale|int }}, a dropped one is 0. The kept fraction comes out at {{ "%.1f"|format(100 * drop.kept_fraction) }}%.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Input</th><th>Mean of outputs</th><th>Variance (measured)</th><th>Variance x²·p/(1−p)</th></tr></thead>
+      <tbody>
+        {% for v in drop_values %}
+        <tr><td>{{ v }}</td><td>{{ f2(drop.means[loop.index0]) }}</td><td>{{ f2(drop.variances[loop.index0]) }}</td><td>{{ f2(drop.exact_variances[loop.index0]) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The means match the inputs, so at evaluation time (no mask, no scaling) the layer gives the same values on average. Each output is a noisy version of its input with variance x²·p/(1 − p): larger inputs get noisier, and that noise is the regularizer, since the next layer must work with unreliable inputs.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-adamw">The same decay, two optimizers</h3>
+  <p>
+    One weight starts at 5.0. Its loss gradient alternates between +g and −g (so the loss alone does not move it), learning rate 0.01, decay 0.1, 300 Adam steps. Without any decay it ends at {{ f2(decays[0].none) }}. The table gives how far each form of decay pulls it down relative to that:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Gradient size g</th><th>L2 penalty in the gradient</th><th>Decoupled (AdamW)</th></tr></thead>
+      <tbody>
+        {% for g in grads %}
+        <tr><td>{{ g }}</td><td>{{ f3(decays[loop.index0].l2_extra_shrink) }}</td><td>{{ f3(decays[loop.index0].decoupled_extra_shrink) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The decoupled column is constant: {{ f3(decays[0].decoupled_extra_shrink) }} at every gradient scale, equal to the weight multiplied by (1 − 0.01·0.1) per step. The L2 column falls from {{ f3(decays[0].l2_extra_shrink) }} at g = {{ grads[0] }} to {{ f3(decays[-1].l2_extra_shrink) }} at g = {{ grads[-1] }}: Adam's division by the gradient's size shrinks the penalty to almost nothing for weights with large gradients.
+    With the L2 form, "weight decay 0.1" therefore means something different for every parameter; with AdamW it means the same thing everywhere. This is the reason transformer training uses AdamW.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+from torch import nn
+from sklearn.linear_model import Lasso, Ridge
+
+# sklearn: closed-form ridge, coordinate-descent lasso
+ridge = Ridge(alpha=20.0).fit(X, y)
+lasso = Lasso(alpha=0.4).fit(X, y)
+print((lasso.coef_ != 0).sum(), "features kept")
+
+# PyTorch: dropout in the model, decoupled decay in the optimizer
+model = nn.Sequential(
+    nn.Linear(64, 128), nn.ReLU(), nn.Dropout(p=0.1),
+    nn.Linear(128, 10),
+)
+# no decay on biases and norm scales is the common convention
+decay = [p for n, p in model.named_parameters() if p.ndim &gt; 1]
+no_decay = [p for n, p in model.named_parameters() if p.ndim &lt;= 1]
+opt = torch.optim.AdamW(
+    [{"params": decay, "weight_decay": 0.01},
+     {"params": no_decay, "weight_decay": 0.0}],
+    lr=1e-3,
+)
+
+model.train()   # dropout active
+# ... training steps ...
+model.eval()    # dropout off, identity
+</code></pre>
+<p>
+  Always standardize features before an L1 or L2 penalty: the penalty treats all weights alike, so features on a larger scale would otherwise be penalized less for the same effect.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+<ul>
+  <li><strong>Strength is a hyperparameter.</strong> Too weak and nothing changes; too strong and the model underfits (the right arm of the validation curve). Choose it by cross-validation, on a log grid.</li>
+  <li><strong>Lasso is unstable with correlated features.</strong> Among a group of near-duplicates it keeps one, and which one can change with the sample. Elastic net or ridge keeps the group.</li>
+  <li><strong>Shrinkage biases the kept weights.</strong> Lasso's survivors are smaller than their true values, as the worked example shows; a common fix is to refit an unpenalized model on the selected features.</li>
+  <li><strong>Dropout is noisy.</strong> It slows convergence, and it interacts with normalization layers (batch statistics change between training and evaluation). It matters less in large, data-rich transformer pretraining, where it is often set to 0.</li>
+  <li><strong>Penalties do not fix bad data.</strong> If the validation set leaks, regularization strength chosen on it will be too weak; see <a href="/ml-models/data-leakage">data leakage</a>.</li>
+  <li><strong>Which weights to decay.</strong> Biases and normalization gains are usually left out of weight decay.</li>
+</ul>
+
+<h3 id="check-yourself">Check yourself</h3>
+<details class="ml-quiz">
+  <summary>Why does an L1 penalty give exact zeros while an L2 penalty only shrinks?</summary>
+  <p>The L1 penalty's slope is constant (λ) all the way to zero, so if the loss's pull on a weight is below λ the minimum sits exactly at zero. The L2 penalty's slope 2λw vanishes at zero, so a small pull always leaves a small non-zero weight.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does inverted dropout multiply the kept units by 1/(1 − p)?</summary>
+  <p>So the expected output equals the input: a unit survives with probability 1 − p, and the scaling cancels that factor. Evaluation can then skip dropout and the scale entirely.</p>
+</details>
+<details class="ml-quiz">
+  <summary>With Adam, which weights does an L2 penalty folded into the gradient decay least?</summary>
+  <p>Those with large loss gradients, since Adam divides the whole gradient (penalty included) by its running RMS. AdamW removes this dependence by decaying the weights directly.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+<ul>
+  <li>Hastie, Tibshirani and Friedman. <em>The Elements of Statistical Learning</em>, sections 3.4 (shrinkage) and 3.8 (lasso and elastic net).</li>
+  <li>Tibshirani. <em>Regression shrinkage and selection via the lasso.</em> JRSS B, 1996.</li>
+  <li>Srivastava, Hinton, Krizhevsky, Sutskever and Salakhutdinov. <em>Dropout: a simple way to prevent neural networks from overfitting.</em> JMLR 2014.</li>
+  <li>Loshchilov and Hutter. <em>Decoupled weight decay regularization.</em> ICLR 2019. <a href="https://arxiv.org/abs/1711.05101">arXiv:1711.05101</a>.</li>
+  <li>scikit-learn {{ pins.sklearn.version }}: <a href="{{ skl('sklearn/linear_model/_ridge.py', 215, 235) }}"><code>_solve_cholesky</code></a>, <a href="{{ skl('sklearn/linear_model/_coordinate_descent.py', 1097, 1294) }}"><code>ElasticNet.fit</code></a>.</li>
+  <li>PyTorch {{ pins.pytorch.version }}: <a href="{{ src('torch/nn/modules/dropout.py', 35, 73) }}"><code>Dropout</code></a>, <a href="{{ src('torch/optim/adam.py', 416, 428) }}">decoupled weight decay in <code>adam.py</code></a>.</li>
+</ul>
