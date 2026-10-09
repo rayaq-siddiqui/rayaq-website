@@ -1,0 +1,373 @@
+{% set bst = [8, [3, [1, none, none], [6, [4, none, none], [7, none, none]]], [10, none, [14, [13, none, none], none]]] %}
+{% set bad = [5, [1, none, none], [4, [3, none, none], [6, none, none]]] %}
+{% set lay = tree_layout(bst) %}
+{% set blay = tree_layout(bad) %}
+{% set orders = tree_orders(bst) %}
+{% set val = bst_validate_trace(bad) %}
+{% set fail = (val.steps | selectattr("ok", "equalto", false) | list)[0] %}
+{% set kth = bst_kth_smallest(bst, 4) %}
+{% set lca = bst_lca_path(bst, 4, 7) %}
+{% set gone_leaf = bst_delete(bst, 13) %}
+{% set gone_two = bst_delete(bst, 3) %}
+{% macro interval(low, high) -%}
+  ({{ "-inf" if low is none else low }}, {{ "+inf" if high is none else high }})
+{%- endmacro %}
+<header class="jj-header">
+  <h1>Binary search trees</h1>
+  <p class="tagline">
+    A binary search tree is a binary tree with one extra promise: at every node, everything in the left subtree
+    is smaller and everything in the right subtree is larger. That promise is binary search spread across
+    pointers. It lets you find, insert and delete by discarding half the remaining tree at each step, and it makes
+    an inorder walk produce the values in sorted order. Most search-tree questions are the same promise used in
+    one of four ways: check it, walk it in order, descend by it, or repair it after a change.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A plain tree cannot answer "is 13 in here?" without looking at every node. A search tree can: compare with the
+  root, go left or right, repeat. If the tree is reasonably balanced that takes about log n steps, the same as
+  binary search on a sorted array, but the tree also supports cheap insertion and deletion, which a sorted array
+  does not. The interview questions test whether you hold the invariant precisely. The common failure is checking
+  only a node against its parent, when the promise is about <em>every</em> ancestor.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Signal</th><th>Pattern</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>"Is this a valid search tree?"</td><td>Pass an open interval (low, high) down</td><td>Each value must respect the bounds set by every ancestor, not only its parent.</td></tr>
+    <tr><td>"The k-th smallest / largest", "next larger value"</td><td>Inorder walk, stop early</td><td>Inorder visits values in sorted order, so the k-th visit is the k-th smallest.</td></tr>
+    <tr><td>"Lowest common ancestor in a search tree"</td><td>Descend until the two targets split</td><td>While both are on one side, the answer is on that side; the first node between them is the answer.</td></tr>
+    <tr><td>"Insert a value", "find a value", "closest value"</td><td>Descend by comparison, O(h)</td><td>Every comparison discards one whole subtree.</td></tr>
+    <tr><td>"Delete a node"</td><td>Three cases: leaf, one child, two children</td><td>Two children: replace with the inorder successor, then delete that successor.</td></tr>
+    <tr><td>"Convert a sorted array / list to a balanced tree"</td><td>Pick the middle as the root, recurse on halves</td><td>The middle keeps both sides equal, so height stays at about log n.</td></tr>
+    <tr><td>"Inorder successor", "iterator over a search tree"</td><td>Stack of left spine or parent-free descent</td><td>The successor is the leftmost node of the right subtree, or the lowest ancestor you turned left at.</td></tr>
+    <tr><td>"Repair" or "recover" a tree with two swapped values</td><td>Inorder walk, spot the descents</td><td>A sorted list with two swapped entries has one or two places where it goes down.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Picture a library whose shelves are arranged so that, at every shelf, books to your left come earlier in the
+  alphabet and books to your right come later. To find a title you never scan; you ask at each shelf "left or
+  right?" and walk away from the wrong half. That works because the rule holds for the <em>whole</em> half, not
+  just the next shelf over. If one shelf deep on the right there is a book that belongs far to the left, the
+  search will walk right past it and conclude it is missing.
+</p>
+<p>
+  This is why the invariant is stated for subtrees, and why validation passes a range down. Each time you step
+  left, the node's value becomes the new upper limit; each time you step right, it becomes the new lower limit.
+  The range only ever shrinks, and every node must lie strictly inside the range it inherits. The inorder walk is
+  the same fact told as a list: reading left subtree, node, right subtree gives a strictly increasing sequence
+  exactly when the promise holds everywhere, by induction on the subtree.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 {{ 60 + (lay.nodes | length) * 40 }} {{ 40 + lay.levels * 48 }}" role="img" aria-labelledby="lc-bst-order-title lc-bst-order-desc">
+    <title id="lc-bst-order-title">A search tree drawn so that left to right is sorted, with the search path for a common ancestor</title>
+    <desc id="lc-bst-order-desc">
+      A binary search tree with {{ lay.nodes | length }} values. Nodes are placed left to right by inorder
+      position, so the values read {{ orders.inorder | join(", ") }} from left to right. The filled nodes
+      {{ lca.path | join(", ") }} are the path taken to find the lowest common ancestor of 4 and 7, which is
+      {{ lca.ancestor }}.
+    </desc>
+    {% for e in lay.edges %}
+      <line x1="{{ 30 + lay.nodes[e[0]].x * 40 }}" y1="{{ 30 + lay.nodes[e[0]].depth * 48 }}" x2="{{ 30 + lay.nodes[e[1]].x * 40 }}" y2="{{ 30 + lay.nodes[e[1]].depth * 48 }}" class="d-line"></line>
+    {% endfor %}
+    {% for n in lay.nodes %}
+      <circle cx="{{ 30 + n.x * 40 }}" cy="{{ 30 + n.depth * 48 }}" r="14" class="{{ 'lc-fill-m' if n.value in lca.path else 'd-box' }}"></circle>
+      <text x="{{ 30 + n.x * 40 }}" y="{{ 35 + n.depth * 48 }}" font-size="13" text-anchor="middle">{{ n.value }}</text>
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">
+  Every node sits at its sorted position from left to right, so reading the bottom edge of the picture gives the
+  inorder list. The amber path is how you find the common ancestor of 4 and 7: go left of 8 (both are smaller), go
+  right of 3 (both are larger), and stop at 6, where they split.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="invariant">The invariant, stated carefully</h3>
+<p>
+  For every node x: all values in x's left subtree are less than x.val, and all values in x's right subtree are
+  greater. Whether duplicates are allowed, and on which side, changes by problem; the strict version used here has
+  none. The local test "left child &lt; node &lt; right child" is necessary but <em>not sufficient</em>: it
+  misses a value that is correct against its parent but wrong against a grandparent.
+</p>
+
+<h3 id="validate">Validating with intervals</h3>
+<p>
+  Walk the tree carrying <code>(low, high)</code>, starting at <code>(-inf, +inf)</code>. A node is acceptable if
+  <code>low &lt; val &lt; high</code>. Its left child inherits <code>(low, val)</code> and its right child
+  <code>(val, high)</code>. If every node passes, every ancestor-descendant pair has been checked, because each
+  ancestor contributed a bound to every node below it. The alternative, checking that the inorder sequence is
+  strictly increasing by remembering the previous value, is equivalent and often shorter.
+</p>
+
+<h3 id="search">Searching, inserting and the descent loop</h3>
+<p>
+  Find, insert and the common ancestor all share one loop: compare, then go to one child. Insertion walks until
+  it falls off the tree and attaches the new node where the search ended, which is the only place the invariant
+  allows it. None of these need recursion; a <code>while</code> loop uses O(1) extra space. The cost is the
+  height, which is log n for a balanced tree and n for a tree built from already-sorted input, since every insert
+  then goes right.
+</p>
+
+<h3 id="delete">Deleting a node</h3>
+<p>
+  Find the node, then handle three cases. A leaf is simply removed. A node with one child is replaced by that
+  child. A node with two children cannot be replaced by either child without breaking something, so copy the
+  value of its <em>inorder successor</em> (the smallest value in the right subtree: go right once, then left as
+  far as possible) into it, and delete the successor from the right subtree, where it has at most one child. The
+  successor is the only value that is larger than everything on the left and no larger than everything else on
+  the right, which is why swapping it in keeps the invariant.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 {{ 60 + (blay.nodes | length) * 80 }} {{ 40 + blay.levels * 70 }}" role="img" aria-labelledby="lc-bst-bad-title lc-bst-bad-desc">
+    <title id="lc-bst-bad-title">A tree that passes the parent check but is not a search tree</title>
+    <desc id="lc-bst-bad-desc">
+      A tree with root {{ bad[0] }}. Under each node is the interval of values allowed there. Node
+      {{ fail.node }} is a left child of {{ bad[2][0] }}, so it looks fine locally, but it sits in the right
+      subtree of {{ bad[0] }} and its interval is {{ interval(fail.low, fail.high) }}. It is outside that interval,
+      so the tree is not a search tree.
+    </desc>
+    {% for e in blay.edges %}
+      <line x1="{{ 40 + blay.nodes[e[0]].x * 80 }}" y1="{{ 30 + blay.nodes[e[0]].depth * 70 }}" x2="{{ 40 + blay.nodes[e[1]].x * 80 }}" y2="{{ 30 + blay.nodes[e[1]].depth * 70 }}" class="d-line"></line>
+    {% endfor %}
+    {% for n in blay.nodes %}
+      {% set st = (val.steps | selectattr("node", "equalto", n.value) | list) %}
+      <circle cx="{{ 40 + n.x * 80 }}" cy="{{ 30 + n.depth * 70 }}" r="16" class="{{ 'lc-fill-m' if n.value == fail.node else 'd-box' }}"></circle>
+      <text x="{{ 40 + n.x * 80 }}" y="{{ 35 + n.depth * 70 }}" font-size="14" text-anchor="middle">{{ n.value }}</text>
+      {% if st %}
+        <text x="{{ 40 + n.x * 80 }}" y="{{ 60 + n.depth * 70 }}" font-size="11" text-anchor="middle" class="d-muted">{{ interval(st[0].low, st[0].high) }}</text>
+      {% endif %}
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">
+  Allowed interval under each node. The walk stops at the amber node, so the nodes after it get no interval.
+  Locally, 3 &lt; 4 &lt; 6 looks fine; globally, 3 and 4 are on the right of 5 and must be larger than 5.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p><strong>Validation.</strong> The tree in the second diagram, walked in preorder with the inherited interval:</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Step</th><th>Node</th><th>Allowed interval</th><th>Inside?</th></tr></thead>
+    <tbody>
+      {% for st in val.steps %}
+        <tr><td class="num">{{ loop.index }}</td><td class="num">{{ st.node }}</td><td class="num">{{ interval(st.low, st.high) }}</td><td>{{ "yes" if st.ok else "no" }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  Node {{ fail.node }} fails its interval {{ interval(fail.low, fail.high) }}, so the whole tree is rejected
+  after {{ val.steps | length }} steps without looking at the rest.
+</p>
+
+<p>
+  <strong>k-th smallest and common ancestor.</strong> On the valid tree in the first diagram, the inorder list is
+  {{ orders.inorder | join(", ") }}. Asking for the {{ kth.visited | length }}th smallest value, the walk
+  visits {{ kth.visited | join(", ") }} and stops. The {{ kth.visited | length }}th smallest value is
+  {{ kth.value }}, and nothing to the right of it was touched. For the common ancestor of 4 and 7, the descent
+  visits {{ lca.path | join(", ") }}: at 8 both are smaller so go left, at 3 both are larger so go right, and at
+  {{ lca.ancestor }} one is on each side or equal, so the lowest common ancestor is {{ lca.ancestor }}.
+</p>
+
+<p>
+  <strong>Deleting.</strong> Removing the leaf 13 leaves inorder {{ tree_orders(gone_leaf).inorder | join(", ") }}.
+  Removing 3, which has two children, copies in its successor 4 (the leftmost value of the right subtree) and
+  deletes the old 4 below it: the root's left child is now {{ gone_two[1][0] }} and the inorder list is
+  {{ tree_orders(gone_two).inorder | join(", ") }}, still sorted.
+</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>class TreeNode:
+    def __init__(self, val=0, left=None, right=None):
+        self.val, self.left, self.right = val, left, right
+
+
+def is_valid_bst(root):
+    def ok(node, low, high):
+        if not node:
+            return True
+        if not (low &lt; node.val &lt; high):
+            return False
+        return ok(node.left, low, node.val) and ok(node.right, node.val, high)
+
+    return ok(root, float("-inf"), float("inf"))
+
+
+def kth_smallest(root, k):
+    stack, cur = [], root
+    while stack or cur:
+        while cur:
+            stack.append(cur)
+            cur = cur.left
+        cur = stack.pop()
+        k -= 1
+        if k == 0:
+            return cur.val
+        cur = cur.right
+
+
+def lca_bst(root, p, q):
+    node = root
+    while node:
+        if p.val &lt; node.val and q.val &lt; node.val:
+            node = node.left
+        elif p.val &gt; node.val and q.val &gt; node.val:
+            node = node.right
+        else:
+            return node
+
+
+def insert(root, val):
+    if not root:
+        return TreeNode(val)
+    if val &lt; root.val:
+        root.left = insert(root.left, val)
+    else:
+        root.right = insert(root.right, val)
+    return root
+
+
+def search(root, val):
+    while root and root.val != val:
+        root = root.left if val &lt; root.val else root.right
+    return root
+
+
+def delete(root, key):
+    if not root:
+        return None
+    if key &lt; root.val:
+        root.left = delete(root.left, key)
+    elif key &gt; root.val:
+        root.right = delete(root.right, key)
+    else:
+        if not root.left:
+            return root.right
+        if not root.right:
+            return root.left
+        succ = root.right
+        while succ.left:
+            succ = succ.left
+        root.val = succ.val
+        root.right = delete(root.right, succ.val)
+    return root
+
+
+def inorder_successor(root, p):
+    succ = None
+    while root:
+        if p.val &lt; root.val:
+            succ = root                              # last node where we turned left
+            root = root.left
+        else:
+            root = root.right
+    return succ
+
+
+def sorted_array_to_bst(nums):
+    if not nums:
+        return None
+    mid = len(nums) // 2
+    return TreeNode(nums[mid], sorted_array_to_bst(nums[:mid]), sorted_array_to_bst(nums[mid + 1:]))</code></pre>
+
+<p>
+  <code>is_valid_bst</code> uses infinities so the first comparison needs no special case; if node values can be
+  as extreme as the integer limits, use <code>None</code> bounds instead of sentinels. <code>kth_smallest</code>
+  is the iterative inorder from the previous page with an early return. <code>sorted_array_to_bst</code> copies
+  slices for clarity, which costs O(n log n); pass index bounds to make it O(n).
+</p>
+
+<h3 id="variations">Variations and edge cases</h3>
+<ul>
+  <li><strong>Previous-value validation.</strong> Do an inorder walk and keep the previous value; the tree is
+    valid when each value is greater than the one before. It needs one variable but must compare against the
+    previous <em>visited</em> value, not the parent.</li>
+  <li><strong>Augmented trees.</strong> To answer many k-th smallest queries, store each node's subtree size and
+    descend: if the left size is at least k go left, if it equals k-1 stop here, otherwise go right with k reduced.
+    That gives O(h) per query.</li>
+  <li><strong>Recover a swapped pair.</strong> Inorder walk, record the places where a value is smaller than its
+    predecessor; the first descent's larger value and the last descent's smaller value are the swapped nodes.</li>
+  <li><strong>Balancing.</strong> Interview BSTs are usually unbalanced and their cost is O(h). Self-balancing
+    trees (red-black, AVL) keep h at O(log n); you describe them rather than implement them.</li>
+  <li><strong>Edge cases:</strong> an empty tree (valid), a single node, duplicates (confirm the rule and make
+    the comparison strict or non-strict on one side only), a skewed tree of 10<sup>5</sup> nodes that exceeds
+    the recursion limit, deleting the root, and deleting a key that is absent.</li>
+</ul>
+
+<h2 id="tradeoffs">Complexity and tradeoffs</h2>
+
+<ul>
+  <li><strong>Time:</strong> search, insert, delete and common ancestor take O(h). Validation visits every node:
+    O(n). The k-th smallest takes O(h + k) because the walk goes down the left spine first. In the example, the
+    4th smallest of {{ lay.nodes | length }} values needed {{ kth.visited | length }} visits plus the spine.</li>
+  <li><strong>Space:</strong> O(h) for a stack or recursion, O(1) for the descent loops that need none.</li>
+  <li><strong>Baseline.</strong> Searching an unordered tree is O(n); searching a sorted array is O(log n) but
+    insert and delete are O(n) because elements shift. A balanced search tree gives O(log n) for all three.</li>
+  <li><strong>When it fails.</strong> An unbalanced tree degrades every O(h) bound to O(n). Heavy repeated
+    insertions of sorted data are the classic cause. Also, a search tree orders by one key; for "k-th smallest"
+    under many updates, a balanced tree with subtree sizes or a Fenwick tree is the better fit.</li>
+</ul>
+
+<h2 id="problems">Problems</h2>
+
+<p>
+  The home problems use the invariant in four ways: checking it (validate), reading it in order (k-th smallest,
+  inorder successor), descending by it (lowest common ancestor, insert) and repairing it (delete). Converting a
+  sorted array into a balanced tree builds a tree and lives with tree construction; it appears below.
+</p>
+{% include "leetcode/_problems.html" %}
+
+<h2 id="connections">Connections</h2>
+
+{% include "leetcode/_connections.html" %}
+<p>
+  This page is the tree version of binary search: the same "discard half" argument, with pointers instead of
+  indices. It reuses the traversals from the depth-first page, especially inorder. The iterator and successor
+  ideas return in heap and ordered-structure problems, and the sorted-array-to-tree construction appears again
+  when you build trees from traversals.
+</p>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="lc-quiz">
+  <summary>Why does checking "left child &lt; node &lt; right child" at every node fail to validate a search tree?</summary>
+  <p>It only compares each node with its parent, but the rule covers every ancestor. In the example the node {{ fail.node }} is below {{ bad[2][0] }} and passes against its parent, yet it sits in the right subtree of {{ bad[0] }} and must exceed {{ bad[0] }}, so its true interval is {{ interval(fail.low, fail.high) }}.</p>
+</details>
+<details class="lc-quiz">
+  <summary>When deleting a node with two children, why use the inorder successor?</summary>
+  <p>It is the smallest value larger than everything in the left subtree, and no larger than anything else in the right subtree, so placing it at the node keeps both sides on the correct side. It also has no left child, so removing it from the right subtree is an easy one-child or leaf case. The inorder predecessor works symmetrically.</p>
+</details>
+<details class="lc-quiz">
+  <summary>The k-th smallest took {{ kth.visited | length }} visits for k = {{ kth.visited | length }}. Why is the worst case O(h + k), not O(k)?</summary>
+  <p>The first visit is the leftmost node, which is h steps below the root, so the walk must descend the left spine before it can count anything. After that each visit is amortised constant work.</p>
+</details>
+<details class="lc-quiz">
+  <summary>Why is the lowest common ancestor in a search tree O(h) with O(1) space, while in a general tree it needs a full traversal?</summary>
+  <p>Values tell you which side each target is on, so you never have to look: while both are smaller go left, both larger go right, otherwise you are at the split. A general tree has no ordering, so you must search both subtrees for the targets.</p>
+</details>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Cormen, Leiserson, Rivest and Stein, <em>Introduction to Algorithms</em>, chapter 12 (binary search trees: querying, successor and predecessor, insertion and deletion) and chapter 13 (red-black trees).</li>
+  <li>Sedgewick and Wayne, <em>Algorithms</em>, section 3.2: binary search trees, with rank and select via subtree sizes.</li>
+  <li>Skiena, <em>The Algorithm Design Manual</em>, the dictionary data structures chapter: binary search trees and their balance.</li>
+  <li>Adelson-Velsky and Landis, "An algorithm for the organization of information" (1962), the original self-balancing search tree.</li>
+  <li>The <a href="https://neetcode.io/roadmap" rel="noopener">NeetCode roadmap</a> and the
+    Blind 75, Grind 169, NeetCode 150 and NeetCode 250 lists, used as the index of topics and
+    problems.</li>
+</ul>

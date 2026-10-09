@@ -588,3 +588,30 @@ def test_tree_bfs_helpers_match_the_page():
     assert "The right-side view is 5, 8, 9, 2." in body
     assert "The zigzag order is 5 | 8, 3 | 1, 4, 9 | 2." in body
     assert "so the maximum width is 4." in body
+
+
+def test_bst_helpers_match_the_page():
+    bst = [8, [3, [1, None, None], [6, [4, None, None], [7, None, None]]], [10, None, [14, [13, None, None], None]]]
+    assert leetcode_docs.tree_orders(bst)["inorder"] == [1, 3, 4, 6, 7, 8, 10, 13, 14]
+    assert leetcode_docs.bst_validate_trace(bst)["valid"] is True
+    bad = [5, [1, None, None], [4, [3, None, None], [6, None, None]]]
+    trace = leetcode_docs.bst_validate_trace(bad)
+    assert trace["valid"] is False
+    assert [(s["node"], s["low"], s["high"], s["ok"]) for s in trace["steps"]] == [
+        (5, None, None, True), (1, None, 5, True), (4, 5, None, False)]
+    leaky = [5, [1, None, None], [6, [3, None, None], [7, None, None]]]
+    assert leetcode_docs.bst_validate_trace(leaky)["valid"] is False
+    kth = leetcode_docs.bst_kth_smallest(bst, 4)
+    assert kth["value"] == 6 and kth["visited"] == [1, 3, 4, 6]
+    assert leetcode_docs.bst_kth_smallest(bst, 10)["value"] is None
+    assert leetcode_docs.bst_lca_path(bst, 4, 7) == {"path": [8, 3, 6], "ancestor": 6}
+    assert leetcode_docs.bst_lca_path(bst, 1, 13)["ancestor"] == 8
+    after_leaf = leetcode_docs.bst_delete(bst, 13)
+    assert leetcode_docs.tree_orders(after_leaf)["inorder"] == [1, 3, 4, 6, 7, 8, 10, 14]
+    after_two = leetcode_docs.bst_delete(bst, 3)
+    assert after_two[1][0] == 4 and leetcode_docs.tree_orders(after_two)["inorder"] == [1, 4, 6, 7, 8, 10, 13, 14]
+    assert leetcode_docs.bst_delete(bst, 99) == bst
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/binary-search-trees").get_data(as_text=True))
+    assert "The 4th smallest value is 6" in body
+    assert "so the lowest common ancestor is 6." in body
+    assert "fails its interval (5, +inf)" in body

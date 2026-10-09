@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -4381,6 +4381,71 @@ def tree_bfs_info(tree):
     }
 
 
+def bst_validate_trace(tree):
+    """Preorder walk that passes the open interval (low, high) every value must fall in; stops at the first violation."""
+    steps = []
+
+    def walk(node, low, high):
+        if node is None:
+            return True
+        ok = (low is None or node[0] > low) and (high is None or node[0] < high)
+        steps.append({"node": node[0], "low": low, "high": high, "ok": ok})
+        return ok and walk(node[1], low, node[0]) and walk(node[2], node[0], high)
+
+    valid = walk(tree, None, None)
+    return {"steps": steps, "valid": valid}
+
+
+def bst_kth_smallest(tree, k):
+    """Inorder walk that stops as soon as the kth value is reached; reports the values it visited."""
+    visited = []
+
+    def walk(node):
+        if node is None or len(visited) == k:
+            return
+        walk(node[1])
+        if len(visited) < k:
+            visited.append(node[0])
+        walk(node[2])
+
+    walk(tree)
+    return {"value": visited[-1] if len(visited) == k else None, "visited": visited}
+
+
+def bst_lca_path(tree, p, q):
+    """Walk down from the root; the first node between p and q (inclusive) is the lowest common ancestor."""
+    path = []
+    node = tree
+    while node is not None:
+        path.append(node[0])
+        if p < node[0] and q < node[0]:
+            node = node[1]
+        elif p > node[0] and q > node[0]:
+            node = node[2]
+        else:
+            return {"path": path, "ancestor": node[0]}
+    return {"path": path, "ancestor": None}
+
+
+def bst_delete(tree, key):
+    """Delete key from a [value, left, right] search tree; a node with two children takes its inorder successor's value."""
+    if tree is None:
+        return None
+    value, left, right = tree
+    if key < value:
+        return [value, bst_delete(left, key), right]
+    if key > value:
+        return [value, left, bst_delete(right, key)]
+    if left is None:
+        return right
+    if right is None:
+        return left
+    successor = right
+    while successor[1] is not None:
+        successor = successor[1]
+    return [successor[0], left, bst_delete(right, successor[0])]
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -4553,6 +4618,10 @@ def render(slug, render_template):
         "tree_height_trace": tree_height_trace,
         "max_path_sum_trace": max_path_sum_trace,
         "tree_bfs_info": tree_bfs_info,
+        "bst_validate_trace": bst_validate_trace,
+        "bst_kth_smallest": bst_kth_smallest,
+        "bst_lca_path": bst_lca_path,
+        "bst_delete": bst_delete,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,
