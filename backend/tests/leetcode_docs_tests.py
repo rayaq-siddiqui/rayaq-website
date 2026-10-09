@@ -615,3 +615,26 @@ def test_bst_helpers_match_the_page():
     assert "The 4th smallest value is 6" in body
     assert "so the lowest common ancestor is 6." in body
     assert "fails its interval (5, +inf)" in body
+
+
+def test_tree_construction_helpers_match_the_page():
+    built = leetcode_docs.build_from_traversals([3, 9, 20, 15, 7], [9, 3, 15, 20, 7])
+    assert built["tree"] == [3, [9, None, None], [20, [15, None, None], [7, None, None]]]
+    assert built["steps"][0] == {"root": 3, "left": [9], "right": [15, 20, 7]}
+    assert [s["root"] for s in built["steps"]] == [3, 9, 20, 15, 7]
+    orders = leetcode_docs.tree_orders(built["tree"])
+    assert orders["preorder"] == [3, 9, 20, 15, 7] and orders["inorder"] == [9, 3, 15, 20, 7]
+    tokens = leetcode_docs.tree_serialize(built["tree"])
+    assert tokens == ["3", "9", "#", "#", "20", "15", "#", "#", "7", "#", "#"]
+    assert leetcode_docs.tree_deserialize(tokens) == built["tree"]
+    assert leetcode_docs.tree_serialize(None) == ["#"] and leetcode_docs.tree_deserialize(["#"]) is None
+    negative = [-1, [-2, None, None], None]
+    assert leetcode_docs.tree_deserialize(leetcode_docs.tree_serialize(negative)) == negative
+    balanced = leetcode_docs.sorted_array_to_tree([-10, -3, 0, 5, 9])
+    assert balanced == [0, [-3, [-10, None, None], None], [9, [5, None, None], None]]
+    assert leetcode_docs.tree_orders(balanced)["inorder"] == [-10, -3, 0, 5, 9]
+    assert leetcode_docs.tree_height_trace(balanced)["depth"] == 3
+    assert leetcode_docs.sorted_array_to_tree([]) is None
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/tree-construction").get_data(as_text=True))
+    assert "The serialized string has 11 tokens for 5 nodes" in body
+    assert "middle element 0 becomes the root" in body

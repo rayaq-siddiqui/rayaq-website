@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -4446,6 +4446,63 @@ def bst_delete(tree, key):
     return [successor[0], left, bst_delete(right, successor[0])]
 
 
+def build_from_traversals(preorder, inorder):
+    """Rebuild a tree of distinct values; each step records the root taken from preorder and the inorder slices left and right of it."""
+    position = {value: i for i, value in enumerate(inorder)}
+    steps = []
+    cursor = 0
+
+    def build(lo, hi):
+        nonlocal cursor
+        if lo > hi:
+            return None
+        root = preorder[cursor]
+        cursor += 1
+        mid = position[root]
+        steps.append({"root": root, "left": inorder[lo:mid], "right": inorder[mid + 1:hi + 1]})
+        left = build(lo, mid - 1)
+        right = build(mid + 1, hi)
+        return [root, left, right]
+
+    return {"tree": build(0, len(inorder) - 1), "steps": steps}
+
+
+def tree_serialize(tree):
+    """Preorder tokens with "#" for every missing child."""
+    tokens = []
+
+    def walk(node):
+        if node is None:
+            tokens.append("#")
+            return
+        tokens.append(str(node[0]))
+        walk(node[1])
+        walk(node[2])
+
+    walk(tree)
+    return tokens
+
+
+def tree_deserialize(tokens):
+    stream = iter(tokens)
+
+    def build():
+        token = next(stream)
+        if token == "#":
+            return None
+        return [int(token), build(), build()]
+
+    return build()
+
+
+def sorted_array_to_tree(nums):
+    """The middle element becomes the root, so both halves differ in size by at most one."""
+    if not nums:
+        return None
+    mid = len(nums) // 2
+    return [nums[mid], sorted_array_to_tree(nums[:mid]), sorted_array_to_tree(nums[mid + 1:])]
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -4622,6 +4679,10 @@ def render(slug, render_template):
         "bst_kth_smallest": bst_kth_smallest,
         "bst_lca_path": bst_lca_path,
         "bst_delete": bst_delete,
+        "build_from_traversals": build_from_traversals,
+        "tree_serialize": tree_serialize,
+        "tree_deserialize": tree_deserialize,
+        "sorted_array_to_tree": sorted_array_to_tree,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,

@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-09 (build run). `binary-search-trees` is ready (20 of 58 pages). **The next run is a build run** continuing at `tree-construction`.
+**Last updated:** 2026-10-09 (build run). `tree-construction` is ready (21 of 58 pages). **The next run is a build run** continuing at `tries`.
 
 ## The Routine
 
@@ -39,10 +39,10 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 
 | List | Problems with a ready home | Size |
 |---|---|---|
-| Blind 75 | 31 | 75 |
-| Grind 169 | 89 | 169 |
-| NeetCode 150 | 57 | 150 |
-| NeetCode 250 | 110 | 250 |
+| Blind 75 | 33 | 75 |
+| Grind 169 | 92 | 169 |
+| NeetCode 150 | 59 | 150 |
+| NeetCode 250 | 112 | 250 |
 
 ## Queue
 
@@ -69,8 +69,8 @@ build once research is done.
 18. `tree-dfs` ✓
 19. `tree-bfs` ✓
 20. `binary-search-trees` ✓
-21. `tree-construction` ← next
-22. `tries`
+21. `tree-construction` ✓
+22. `tries` ← next
 23. `heaps`
 24. `top-k-elements`
 25. `k-way-merge`
@@ -205,3 +205,13 @@ Each shipped with a tested stdlib helper, two or more inline SVGs and a page tes
 Coverage: Blind 75 27/75, Grind 169 80/169, NeetCode 150 52/150, NeetCode 250 103/250.
 Checkout repair: the local `main` had diverged, so it was saved as `backup-stale-main` and reset
 to `origin/main`. Next queue item: `tree-bfs`.
+
+### 2026-10-09 — build run (second)
+
+Built three pages in queue order: `tree-bfs`, `binary-search-trees`, `tree-construction` (3 of 3).
+Each shipped with tested stdlib helpers, two inline SVGs and a page test; each was pushed separately.
+pytest green (413 passed); the 390px phone check passed on `/`, `/leetcode` and every ready page.
+Coverage: Blind 75 33/75, Grind 169 92/169, NeetCode 150 59/150, NeetCode 250 112/250.
+Checkout repair: the sandbox's local `main` had diverged from `origin/main` (50 commits each, different
+patch ids), so it was left untouched and the work was done on a branch cut from `origin/main` and pushed
+to `main`. Next queue item: `tries`.
