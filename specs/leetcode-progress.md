@@ -196,3 +196,12 @@ on `/`, `/leetcode` and all fifteen ready pages. Coverage: Blind 75 20/75, Grind
 NeetCode 150 38/150, NeetCode 250 81/250. Next: `fast-slow-pointers`. The sandbox's local `main`
 had no common history with `origin/main`; it was kept as the local branch `backup/stale-local-main`
 and `main` was re-pointed at `origin/main` before building.
+
+### 2026-10-09 — build run
+
+Built three pages in queue order: `fast-slow-pointers`, `linked-list-design`, `tree-dfs` (3 of 3).
+Each shipped with a tested stdlib helper, two or more inline SVGs and a page test. pytest green
+(404 passed); the 390px phone check passed on `/`, `/leetcode` and every ready page.
+Coverage: Blind 75 27/75, Grind 169 80/169, NeetCode 150 52/150, NeetCode 250 103/250.
+Checkout repair: the local `main` had diverged, so it was saved as `backup-stale-main` and reset
+to `origin/main`. Next queue item: `tree-bfs`.
