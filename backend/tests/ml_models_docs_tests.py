@@ -1750,3 +1750,27 @@ def test_encoders_order_categories_alphabetically():
     assert categories == ["blue", "green", "red"]
     assert rows[0] == [0, 0, 1] and rows[1] == [0, 1, 0]
     assert ml_models_docs.ordinal_encode(ml_models_docs.PREPROCESS_COLORS) == [2, 1, 0, 1, 2]
+
+
+def test_selection_on_all_rows_inflates_noise_accuracy():
+    one = ml_models_docs.leaky_selection_demo(seed=3)
+    assert one["leaky_test_accuracy"] == 0.75 and one["honest_test_accuracy"] == 0.25
+    assert one["honest_train_accuracy"] == 0.9
+    average = ml_models_docs.leaky_selection_average()
+    assert average["leaky_test_accuracy"] == pytest.approx(0.7285, abs=1e-4)
+    assert average["honest_test_accuracy"] == pytest.approx(0.479, abs=1e-4)
+    assert average["honest_train_accuracy"] == pytest.approx(0.827, abs=1e-4)
+
+
+def test_duplicates_across_splits_lift_a_memorizer():
+    train, test = ml_models_docs.LEAK_DUP_TRAIN, ml_models_docs.LEAK_DUP_TEST
+    assert ml_models_docs.duplicate_overlap(train, test) == 4
+    assert ml_models_docs.lookup_accuracy(train, test) == 0.7
+    assert ml_models_docs.lookup_accuracy(train, test, skip_seen=True) == 0.5
+
+
+def test_a_feature_from_after_the_outcome_predicts_perfectly():
+    defaulted = ml_models_docs.LEAK_LOAN_DEFAULTED
+    assert ml_models_docs.best_threshold_rule(ml_models_docs.LEAK_LOAN_NOTICES, defaulted) == (0.5, 1.0)
+    cut, accuracy = ml_models_docs.best_threshold_rule(ml_models_docs.LEAK_LOAN_DEBT_RATIO, defaulted)
+    assert cut == pytest.approx(0.365) and accuracy == 0.6

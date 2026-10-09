@@ -3708,6 +3708,82 @@ def pair_distance(a, b):
     return math.dist(a, b)
 
 
+LEAK_DUP_TRAIN = [("a", 1), ("b", 0), ("c", 0), ("d", 1), ("e", 0), ("f", 0), ("g", 1), ("h", 0)]
+LEAK_DUP_TEST = [
+    ("a", 1), ("d", 1), ("g", 1), ("b", 0),
+    ("x1", 0), ("x2", 1), ("x3", 0), ("x4", 1), ("x5", 0), ("x6", 1),
+]
+LEAK_LOAN_DEFAULTED = [1, 0, 0, 1, 0, 1, 0, 0, 1, 0]
+LEAK_LOAN_NOTICES = [3, 0, 0, 2, 0, 4, 0, 0, 1, 0]
+LEAK_LOAN_DEBT_RATIO = [0.48, 0.52, 0.35, 0.55, 0.41, 0.43, 0.60, 0.30, 0.38, 0.45]
+
+
+def noise_feature_table(rows, features, seed):
+    rng = random.Random(seed)
+    labels = [rng.random() < 0.5 for _ in range(rows)]
+    table = [[rng.random() < 0.5 for _ in range(features)] for _ in range(rows)]
+    return table, labels
+
+
+def feature_accuracy(table, labels, feature, row_ids):
+    return sum(1 for i in row_ids if table[i][feature] == labels[i]) / len(row_ids)
+
+
+def best_noise_feature(table, labels, row_ids):
+    best, best_hits = 0, -1
+    for j in range(len(table[0])):
+        hits = sum(1 for i in row_ids if table[i][j] == labels[i])
+        if hits > best_hits:
+            best, best_hits = j, hits
+    return best, best_hits / len(row_ids)
+
+
+def leaky_selection_demo(rows=40, features=500, seed=3):
+    table, labels = noise_feature_table(rows, features, seed)
+    train = list(range(rows // 2))
+    test = list(range(rows // 2, rows))
+    leaky, _ = best_noise_feature(table, labels, train + test)
+    honest, honest_fit = best_noise_feature(table, labels, train)
+    return {
+        "leaky_feature": leaky,
+        "leaky_test_accuracy": feature_accuracy(table, labels, leaky, test),
+        "honest_feature": honest,
+        "honest_train_accuracy": honest_fit,
+        "honest_test_accuracy": feature_accuracy(table, labels, honest, test),
+    }
+
+
+def leaky_selection_average(trials=100, rows=40, features=500):
+    runs = [leaky_selection_demo(rows, features, seed) for seed in range(trials)]
+    return {
+        key: sum(run[key] for run in runs) / trials
+        for key in ("leaky_test_accuracy", "honest_train_accuracy", "honest_test_accuracy")
+    }
+
+
+def duplicate_overlap(train, test):
+    seen = {key for key, _ in train}
+    return sum(1 for key, _ in test if key in seen)
+
+
+def lookup_accuracy(train, test, skip_seen=False):
+    memory = dict(train)
+    labels = [label for _, label in train]
+    majority = 1 if sum(labels) * 2 > len(labels) else 0
+    rows = [(key, label) for key, label in test if not (skip_seen and key in memory)]
+    return sum(1 for key, label in rows if memory.get(key, majority) == label) / len(rows)
+
+
+def best_threshold_rule(values, labels):
+    best = (None, -1.0)
+    for low, high in zip(sorted(set(values)), sorted(set(values))[1:]):
+        cut = (low + high) / 2
+        hits = sum(1 for v, y in zip(values, labels) if (v > cut) == bool(y))
+        if hits / len(values) > best[1]:
+            best = (cut, hits / len(values))
+    return best
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -3913,6 +3989,16 @@ def render(slug, render_template):
         "ordinal_encode": ordinal_encode,
         "pair_distance": pair_distance,
         "log10_column": log10_column,
+        "leak_dup_train": LEAK_DUP_TRAIN,
+        "leak_dup_test": LEAK_DUP_TEST,
+        "leak_loan_defaulted": LEAK_LOAN_DEFAULTED,
+        "leak_loan_notices": LEAK_LOAN_NOTICES,
+        "leak_loan_debt_ratio": LEAK_LOAN_DEBT_RATIO,
+        "leaky_selection_demo": leaky_selection_demo,
+        "leaky_selection_average": leaky_selection_average,
+        "duplicate_overlap": duplicate_overlap,
+        "lookup_accuracy": lookup_accuracy,
+        "best_threshold_rule": best_threshold_rule,
         "kmeans_run": kmeans_run,
         "nearest_labeled": nearest_labeled,
         "cluster_then_label": cluster_then_label,
