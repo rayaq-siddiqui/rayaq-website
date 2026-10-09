@@ -4192,6 +4192,119 @@ def regression_split_demo():
     return xs, ys, rows, sse(ys)
 
 
+BOOST_XS = [1, 2, 3, 4, 5, 6, 7, 8]
+BOOST_YS = [1.2, 1.9, 3.1, 3.8, 4.1, 3.4, 2.2, 1.5]
+NEWTON_XS = [1, 2, 3, 4, 5, 6, 7, 8]
+NEWTON_LABELS = [0, 0, 0, 1, 0, 1, 1, 1]
+
+
+def _boost_mean(values):
+    return sum(values) / len(values)
+
+
+def best_regression_stump(xs, targets):
+    pairs = sorted(zip(xs, targets))
+    best = None
+    for i in range(1, len(pairs)):
+        if pairs[i - 1][0] == pairs[i][0]:
+            continue
+        left = [t for _, t in pairs[:i]]
+        right = [t for _, t in pairs[i:]]
+        ml, mr = _boost_mean(left), _boost_mean(right)
+        sse = sum((t - ml) ** 2 for t in left) + sum((t - mr) ** 2 for t in right)
+        threshold = pairs[i - 1][0] / 2 + pairs[i][0] / 2
+        if best is None or sse < best["sse"] - 1e-12:
+            best = {"threshold": threshold, "left": ml, "right": mr, "sse": sse}
+    return best
+
+
+def boost_stumps(xs, ys, rounds, learning_rate):
+    init = _boost_mean(ys)
+    preds = [init] * len(ys)
+    history = []
+    for _ in range(rounds):
+        residuals = [y - p for y, p in zip(ys, preds)]
+        stump = best_regression_stump(xs, residuals)
+        preds = [
+            p + learning_rate * (stump["left"] if x <= stump["threshold"] else stump["right"])
+            for x, p in zip(xs, preds)
+        ]
+        history.append({
+            "residuals": residuals, "threshold": stump["threshold"],
+            "left": stump["left"], "right": stump["right"],
+            "predictions": list(preds),
+            "mse": _boost_mean([(y - p) ** 2 for y, p in zip(ys, preds)]),
+        })
+    return init, history
+
+
+def grow_regression_tree(xs, ys, max_depth, depth=0):
+    mean = _boost_mean(ys)
+    if depth >= max_depth or len(ys) < 2 or max(ys) - min(ys) <= 1e-12:
+        return {"value": mean}
+    stump = best_regression_stump(xs, ys)
+    if stump is None:
+        return {"value": mean}
+    pairs = list(zip(xs, ys))
+    left = [(x, y) for x, y in pairs if x <= stump["threshold"]]
+    right = [(x, y) for x, y in pairs if x > stump["threshold"]]
+    return {
+        "threshold": stump["threshold"],
+        "left": grow_regression_tree([p[0] for p in left], [p[1] for p in left], max_depth, depth + 1),
+        "right": grow_regression_tree([p[0] for p in right], [p[1] for p in right], max_depth, depth + 1),
+    }
+
+
+def regression_tree_predict(tree, x):
+    while "value" not in tree:
+        tree = tree["left"] if x <= tree["threshold"] else tree["right"]
+    return tree["value"]
+
+
+def wavy_rows(n, seed, noise=0.4):
+    rng = random.Random(seed)
+    xs = [rng.uniform(0, 10) for _ in range(n)]
+    return xs, [math.sin(x) + rng.gauss(0, noise) for x in xs]
+
+
+def boosting_curve(learning_rate, rounds, depth=2, seed=5, n_train=40, n_test=400):
+    train_x, train_y = wavy_rows(n_train, seed)
+    test_x, test_y = wavy_rows(n_test, seed + 100)
+    init = _boost_mean(train_y)
+    train_pred = [init] * n_train
+    test_pred = [init] * n_test
+    curve = []
+    for _ in range(rounds):
+        residuals = [y - p for y, p in zip(train_y, train_pred)]
+        tree = grow_regression_tree(train_x, residuals, depth)
+        train_pred = [p + learning_rate * regression_tree_predict(tree, x) for x, p in zip(train_x, train_pred)]
+        test_pred = [p + learning_rate * regression_tree_predict(tree, x) for x, p in zip(test_x, test_pred)]
+        curve.append((
+            _boost_mean([(y - p) ** 2 for y, p in zip(train_y, train_pred)]),
+            _boost_mean([(y - p) ** 2 for y, p in zip(test_y, test_pred)]),
+        ))
+    return curve
+
+
+def newton_scan(xs, grads, hessians, reg_lambda=1.0, gamma=0.0, min_child_weight=0.0):
+    total_g, total_h = sum(grads), sum(hessians)
+    parent = total_g ** 2 / (total_h + reg_lambda)
+    candidates = []
+    for i in range(1, len(xs)):
+        gl, hl = sum(grads[:i]), sum(hessians[:i])
+        gr, hr = total_g - gl, total_h - hl
+        valid = hl > 0 and hr > 0 and hl >= min_child_weight and hr >= min_child_weight
+        loss_chg = gl ** 2 / (hl + reg_lambda) + gr ** 2 / (hr + reg_lambda) - parent
+        candidates.append({
+            "threshold": xs[i - 1] / 2 + xs[i] / 2, "g_left": gl, "h_left": hl,
+            "g_right": gr, "h_right": hr, "loss_chg": loss_chg,
+            "w_left": -gl / (hl + reg_lambda), "w_right": -gr / (hr + reg_lambda),
+            "valid": valid, "kept": valid and loss_chg >= gamma,
+        })
+    return {"g": total_g, "h": total_h, "root_weight": -total_g / (total_h + reg_lambda),
+            "root_gain": parent, "candidates": candidates}
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -4424,6 +4537,17 @@ def render(slug, render_template):
         "group_kfold_splits": group_kfold_splits,
         "time_series_splits": time_series_splits,
         "cv_summary": cv_summary,
+        "best_regression_stump": best_regression_stump,
+        "boost_stumps": boost_stumps,
+        "grow_regression_tree": grow_regression_tree,
+        "regression_tree_predict": regression_tree_predict,
+        "wavy_rows": wavy_rows,
+        "boosting_curve": boosting_curve,
+        "newton_scan": newton_scan,
+        "BOOST_XS": BOOST_XS,
+        "BOOST_YS": BOOST_YS,
+        "NEWTON_XS": NEWTON_XS,
+        "NEWTON_LABELS": NEWTON_LABELS,
         "label_counts": label_counts,
         "gini_impurity": gini_impurity,
         "entropy_impurity": entropy_impurity,

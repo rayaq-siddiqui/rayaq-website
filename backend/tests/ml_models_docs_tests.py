@@ -1957,3 +1957,69 @@ def test_toy_tree_diagram_layout_matches_the_grown_tree():
     assert (tree["left"]["feature"], tree["left"]["threshold"]) == (1, 2.5)
     assert tree["left"]["left"]["feature"] is None
     assert tree["left"]["right"]["feature"] is None
+
+
+def test_boost_stumps_match_sklearn_gradient_boosting_run():
+    init, history = ml_models_docs.boost_stumps(ml_models_docs.BOOST_XS, ml_models_docs.BOOST_YS, 4, 0.5)
+    assert init == pytest.approx(2.65)
+    assert [round(r["mse"], 6) for r in history] == [0.745, 0.503264, 0.375855, 0.276978]
+    assert [r["threshold"] for r in history] == [2.5, 6.5, 2.5, 7.5]
+    assert history[0]["left"] == pytest.approx(-1.1)
+    assert history[0]["right"] == pytest.approx(0.366667, abs=1e-6)
+
+
+def test_each_boosting_round_lowers_training_error_on_the_toy_data():
+    _, history = ml_models_docs.boost_stumps(ml_models_docs.BOOST_XS, ml_models_docs.BOOST_YS, 8, 0.5)
+    errors = [r["mse"] for r in history]
+    assert errors == sorted(errors, reverse=True)
+
+
+def test_boosting_curve_shows_shrinkage_and_early_stopping():
+    def best(curve):
+        test = [t for _, t in curve]
+        return min(range(len(test)), key=test.__getitem__) + 1, min(test)
+
+    fast = ml_models_docs.boosting_curve(1.0, 300)
+    slow = ml_models_docs.boosting_curve(0.1, 300)
+    fast_round, fast_best = best(fast)
+    slow_round, slow_best = best(slow)
+    assert (fast_round, round(fast_best, 4)) == (2, 0.3141)
+    assert (slow_round, round(slow_best, 4)) == (40, 0.2901)
+    assert slow_best < fast_best
+    assert fast[-1][0] < 1e-6 and fast[-1][1] > 0.45
+    assert slow[-1][1] > slow_best
+
+
+def test_newton_scan_matches_xgboost_run():
+    grads = [0.5 - label for label in ml_models_docs.NEWTON_LABELS]
+    hessians = [0.25] * len(grads)
+    scan = ml_models_docs.newton_scan(ml_models_docs.NEWTON_XS, grads, hessians, reg_lambda=1.0)
+    best = max(scan["candidates"], key=lambda c: c["loss_chg"])
+    assert best["threshold"] == 3.5
+    assert best["loss_chg"] == pytest.approx(2.2857143, abs=1e-6)
+    assert best["w_left"] == pytest.approx(-0.857143, abs=1e-6)
+    assert best["w_right"] == pytest.approx(0.666667, abs=1e-6)
+    assert (best["h_left"], best["h_right"]) == (0.75, 1.25)
+
+
+def test_newton_scan_regularization_gamma_and_min_child_weight():
+    grads = [0.5 - label for label in ml_models_docs.NEWTON_LABELS]
+    hessians = [0.25] * len(grads)
+
+    def best(**kwargs):
+        scan = ml_models_docs.newton_scan(ml_models_docs.NEWTON_XS, grads, hessians, **kwargs)
+        kept = [c for c in scan["candidates"] if c["kept"]]
+        return max(kept, key=lambda c: c["loss_chg"]) if kept else None
+
+    assert best(reg_lambda=0.0)["w_left"] == pytest.approx(-2.0)
+    assert best(reg_lambda=4.0)["w_left"] == pytest.approx(-0.315789, abs=1e-6)
+    assert best(reg_lambda=1.0, gamma=2.2) is not None
+    assert best(reg_lambda=1.0, gamma=2.3) is None
+    assert best(reg_lambda=1.0, min_child_weight=1.0)["threshold"] == 4.5
+
+
+def test_regression_tree_helper_fits_a_step_function_exactly():
+    xs = [1, 2, 3, 4]
+    tree = ml_models_docs.grow_regression_tree(xs, [1.0, 1.0, 5.0, 5.0], 3)
+    assert [ml_models_docs.regression_tree_predict(tree, x) for x in xs] == [1.0, 1.0, 5.0, 5.0]
+    assert tree["threshold"] == 2.5
