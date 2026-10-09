@@ -1,0 +1,469 @@
+{% set tree = [5, [3, [1, none, [2, none, none]], [4, none, none]], [8, none, [9, none, none]]] %}
+{% set orders = tree_orders(tree) %}
+{% set lay = tree_layout(tree) %}
+{% set ht = tree_height_trace(tree) %}
+{% set path_tree = [6, [-3, [5, none, none], [2, none, none]], [4, [-1, none, none], none]] %}
+{% set mp = max_path_sum_trace(path_tree) %}
+{% set bend = (ht.steps | selectattr("through", "equalto", ht.diameter) | list)[0] %}
+<header class="jj-header">
+  <h1>Tree depth-first search</h1>
+  <p class="tagline">
+    A binary tree is a root with two smaller binary trees hanging off it, so almost every tree question is a
+    recursive function that asks the left subtree, asks the right subtree, and combines the two answers with the
+    current node. Learn the three visiting orders, learn when information flows down as arguments and when it
+    flows up as return values, and learn to separate "what I return to my parent" from "what I record as the
+    answer". That covers most of the tree problems you will meet.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A tree gives you a root and, at each node, a left and a right child that may be missing. There is no index and
+  no way to jump to a node. You reach everything by walking down from the root. Depth-first search walks one
+  branch to its end before trying the next, which is exactly what a recursive function on a node does. The
+  questions are about the whole shape: how deep is it, is it balanced, are these two trees equal, what is the
+  best path, who is the common ancestor of two nodes.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Signal</th><th>Pattern</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>"Height", "depth", "is it balanced", "diameter"</td><td>Postorder: return the height up</td><td>A node's height is one plus the larger child height, so each node needs its children's answers first.</td></tr>
+    <tr><td>"Are these two trees the same / mirror / is one a subtree"</td><td>Walk two trees in step</td><td>Two trees match when the roots match and both pairs of children match.</td></tr>
+    <tr><td>"Along the path from the root to this node ..." (good nodes, path sums)</td><td>Preorder: pass state down as arguments</td><td>The path so far is known on the way down, before the children are visited.</td></tr>
+    <tr><td>"Best path anywhere in the tree"</td><td>Return one thing, record another</td><td>The path a parent can extend goes down one side; the best path may bend at a node using both sides.</td></tr>
+    <tr><td>"Lowest common ancestor"</td><td>Each subtree reports whether it found a target</td><td>The first node that gets a report from both sides is the ancestor.</td></tr>
+    <tr><td>"Invert", "delete", "prune" the tree</td><td>Rebuild on the way back up</td><td>Assign the processed children back to the node, then return the node.</td></tr>
+    <tr><td>"Visit in sorted order" or "do it without recursion"</td><td>Inorder, or an explicit stack</td><td>The stack mirrors the recursion's call stack one for one.</td></tr>
+    <tr><td>Each node has a choice that affects its parent (take or skip)</td><td>Return a pair of values</td><td>The parent needs the child's best result under each possibility.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Imagine you are a manager of a team tree and you want the headcount. You do not count everyone yourself. You
+  ask your two direct reports, "how many people are under you?", each of whom asks theirs, and you answer
+  <em>their numbers added together, plus one for me</em>. Someone with no reports answers zero immediately. You
+  never need to know how the work gets done below you; you only trust the contract that each report returns the
+  correct answer for their own team. That trust is the entire technique, and the proof that it works is the
+  same as for any recursion: if the answer is right for the smallest trees and the combine step is right
+  whenever the children's answers are right, then it is right for every tree.
+</p>
+<p>
+  The only real decision is <em>when</em> to do your own work. Do it before asking the children and you can pass
+  what you know down to them (preorder). Do it between the two questions and, in a search tree, you meet the
+  values in sorted order (inorder). Do it after both answers arrive and you can use what the children found
+  (postorder). Pick the order by asking which direction the information needs to travel.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 {{ 40 + lay.levels * 44 }}" role="img" aria-labelledby="lc-tree-orders-title lc-tree-orders-desc">
+    <title id="lc-tree-orders-title">The same tree numbered by preorder, inorder and postorder visits</title>
+    <desc id="lc-tree-orders-desc">
+      Three copies of one binary tree with {{ lay.nodes | length }} nodes. The number in each circle is the order
+      the node is visited. Preorder visits the values {{ orders.preorder | join(", ") }}; inorder visits
+      {{ orders.inorder | join(", ") }}; postorder visits {{ orders.postorder | join(", ") }}.
+    </desc>
+    {% for key, label in [("pre", "preorder"), ("in", "inorder"), ("post", "postorder")] %}
+      {% set px = loop.index0 * 212 %}
+      <text x="{{ px + 100 }}" y="16" font-size="13" text-anchor="middle">{{ label }}</text>
+      {% for e in lay.edges %}
+        <line x1="{{ px + 20 + lay.nodes[e[0]].x * 26 }}" y1="{{ 40 + lay.nodes[e[0]].depth * 44 }}" x2="{{ px + 20 + lay.nodes[e[1]].x * 26 }}" y2="{{ 40 + lay.nodes[e[1]].depth * 44 }}" class="d-line"></line>
+      {% endfor %}
+      {% for n in lay.nodes %}
+        <circle cx="{{ px + 20 + n.x * 26 }}" cy="{{ 40 + n.depth * 44 }}" r="12" class="{{ 'lc-fill-a' if n[key] == 1 else 'd-box' }}"></circle>
+        <text x="{{ px + 20 + n.x * 26 }}" y="{{ 45 + n.depth * 44 }}" font-size="13" text-anchor="middle">{{ n[key] }}</text>
+      {% endfor %}
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">
+  Same tree three times; the number in a circle is when that node is visited. Preorder starts at the top, inorder
+  starts at the leftmost node, and postorder ends at the root. The filled node is the first one visited.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="contract">The contract and the base case</h3>
+<p>
+  Write down, in one sentence, what <code>f(node)</code> returns for the whole subtree at <code>node</code>,
+  including <code>node = None</code>. The recursion is then forced: handle the empty tree, call
+  <code>f</code> on both children, combine. Correctness is induction on subtree size: <code>f(None)</code> is
+  right by the base case, and if <code>f</code> is right for both children then the combine step makes it right
+  for the node. Bugs come from a vague contract: the height of an empty tree is 0 here, not −1, and mixing the
+  two conventions between base case and combine is the most common error.
+</p>
+
+<h3 id="direction">Information flowing down, information flowing up</h3>
+<p>
+  <strong>Down</strong> is a parameter: the sum so far, the maximum on the path from the root, the remaining
+  target. It describes the path from the root to this node, which only the ancestors know. <strong>Up</strong> is
+  a return value: height, size, whether a target was found, the best total below. It describes the subtree, which
+  only the descendants know. A problem that needs both passes them in both directions at once; counting good
+  nodes only passes down, balance checking only returns up, and path sum with a target uses both.
+</p>
+
+<h3 id="return-vs-record">Return one thing, record another</h3>
+<p>
+  The trickiest family is where the best answer is a path that is allowed to bend at its highest node. A parent
+  can extend a path that goes <em>down</em> through exactly one child, so that is what a node must return. But
+  the best path overall may use both children at some node, so each node also computes the bent path and updates a
+  running best. For the diameter, a node returns its height but records left + right; for the maximum path sum, a
+  node returns its value plus the better child's gain (never less than zero) but records its value plus both
+  gains. The two numbers answer different questions: one is for the caller, one is for the final result.
+</p>
+
+<h3 id="stack">Iterative versions</h3>
+<p>
+  Recursion uses the call stack, so each order can also use an explicit stack. Preorder pushes the root, then
+  pops a node, visits it, and pushes its right child before its left (so the left comes off first). Inorder goes
+  left as far as it can pushing nodes, then pops, visits and turns right. Postorder is easiest as preorder with
+  the children swapped (root, right, left) and the result reversed. The need arises because Python's default
+  recursion limit is about 1000 frames: a degenerate tree shaped like a list with 10<sup>5</sup> nodes overflows
+  it even though the algorithm is correct.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 600 {{ 70 + lay.levels * 70 }}" role="img" aria-labelledby="lc-tree-height-title lc-tree-height-desc">
+    <title id="lc-tree-height-title">Heights returned up the tree and the longest path through each node</title>
+    <desc id="lc-tree-height-desc">
+      The tree from the first diagram. Under each node is the height it returns to its parent and the sum of its
+      two child heights, which is the number of edges on the longest path bending at that node. The node
+      {{ bend.node }} has the largest bend, {{ bend.through }} edges, so the diameter is {{ ht.diameter }} and the
+      tree has depth {{ ht.depth }}.
+    </desc>
+    {% for e in lay.edges %}
+      <line x1="{{ 40 + lay.nodes[e[0]].x * 70 }}" y1="{{ 36 + lay.nodes[e[0]].depth * 70 }}" x2="{{ 40 + lay.nodes[e[1]].x * 70 }}" y2="{{ 36 + lay.nodes[e[1]].depth * 70 }}" class="d-line"></line>
+    {% endfor %}
+    {% for n in lay.nodes %}
+      {% set st = (ht.steps | selectattr("node", "equalto", n.value) | list)[0] %}
+      <circle cx="{{ 40 + n.x * 70 }}" cy="{{ 36 + n.depth * 70 }}" r="16" class="{{ 'lc-fill-m' if st.node == bend.node else 'd-box' }}"></circle>
+      <text x="{{ 40 + n.x * 70 }}" y="{{ 41 + n.depth * 70 }}" font-size="14" text-anchor="middle">{{ n.value }}</text>
+      <text x="{{ 40 + n.x * 70 }}" y="{{ 66 + n.depth * 70 }}" font-size="11" text-anchor="middle" class="d-muted">h={{ st.height }} bend={{ st.through }}</text>
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">
+  Each node shows the height it returns (<code>h</code>) and the longest path bending there
+  (<code>bend</code>, in edges). The amber node has the largest bend: that value is the tree's diameter.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  <strong>The three orders.</strong> For the tree in the diagrams (root {{ tree[0] }}):
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Order</th><th>Visits</th><th>Work happens</th></tr></thead>
+    <tbody>
+      <tr><td>Preorder</td><td class="num">{{ orders.preorder | join(", ") }}</td><td>before the children</td></tr>
+      <tr><td>Inorder</td><td class="num">{{ orders.inorder | join(", ") }}</td><td>between the children</td></tr>
+      <tr><td>Postorder</td><td class="num">{{ orders.postorder | join(", ") }}</td><td>after the children</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  The inorder list is increasing because this tree is a search tree: everything in a left subtree is smaller than
+  its root and everything in the right is larger.
+</p>
+
+<p><strong>Height and diameter.</strong> Postorder, so every node is processed after its children:</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Step</th><th>Node</th><th>Left height</th><th>Right height</th><th>Returns</th><th>Bend (left + right)</th></tr></thead>
+    <tbody>
+      {% for st in ht.steps %}
+        <tr><td class="num">{{ loop.index }}</td><td class="num">{{ st.node }}</td><td class="num">{{ st.left }}</td><td class="num">{{ st.right }}</td><td class="num">{{ st.height }}</td><td class="num">{{ st.through }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  The root returns {{ ht.depth }}, so the tree has depth {{ ht.depth }}. The largest bend is {{ ht.diameter }}
+  edges, at node {{ bend.node }}, so the diameter is {{ ht.diameter }}.
+</p>
+
+<p>
+  <strong>Maximum path sum.</strong> A different tree, with a negative value in the middle: root
+  {{ path_tree[0] }}, a left child {{ path_tree[1][0] }} with children {{ path_tree[1][1][0] }} and
+  {{ path_tree[1][2][0] }}, and a right child {{ path_tree[2][0] }} whose left child is {{ path_tree[2][1][0] }}.
+  Each node clamps a negative child gain to zero:
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Step</th><th>Node</th><th>Left gain</th><th>Right gain</th><th>Bent path sum</th><th>Returns to parent</th></tr></thead>
+    <tbody>
+      {% for st in mp.steps %}
+        <tr><td class="num">{{ loop.index }}</td><td class="num">{{ st.node }}</td><td class="num">{{ st.left }}</td><td class="num">{{ st.right }}</td><td class="num">{{ st.through }}</td><td class="num">{{ st.returns }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  The best bent path sum is {{ mp.best }}. Node {{ path_tree[1][0] }} returns only
+  {{ (mp.steps | selectattr("node", "equalto", path_tree[1][0]) | list)[0].returns }}, since a parent can extend
+  just one side, but the root can still use that side together with its right side.
+</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>class TreeNode:
+    def __init__(self, val=0, left=None, right=None):
+        self.val, self.left, self.right = val, left, right
+
+
+def preorder(root):
+    out, stack = [], [root] if root else []
+    while stack:
+        node = stack.pop()
+        out.append(node.val)
+        if node.right:
+            stack.append(node.right)                 # right first so left pops first
+        if node.left:
+            stack.append(node.left)
+    return out
+
+
+def inorder(root):
+    out, stack, cur = [], [], root
+    while cur or stack:
+        while cur:
+            stack.append(cur)
+            cur = cur.left
+        cur = stack.pop()
+        out.append(cur.val)
+        cur = cur.right
+    return out
+
+
+def postorder(root):
+    out, stack = [], [root] if root else []
+    while stack:
+        node = stack.pop()
+        out.append(node.val)
+        if node.left:
+            stack.append(node.left)
+        if node.right:
+            stack.append(node.right)
+    return out[::-1]                                 # root, right, left reversed
+
+
+def max_depth(root):
+    return 0 if not root else 1 + max(max_depth(root.left), max_depth(root.right))
+
+
+def diameter(root):
+    best = 0
+
+    def height(node):
+        nonlocal best
+        if not node:
+            return 0
+        left, right = height(node.left), height(node.right)
+        best = max(best, left + right)               # record the bend
+        return 1 + max(left, right)                  # return the straight part
+
+    height(root)
+    return best
+
+
+def is_balanced(root):
+    def height(node):
+        if not node:
+            return 0
+        left = height(node.left)
+        if left == -1:
+            return -1
+        right = height(node.right)
+        if right == -1 or abs(left - right) &gt; 1:
+            return -1                                # sentinel for unbalanced
+        return 1 + max(left, right)
+
+    return height(root) != -1
+
+
+def is_same(a, b):
+    if not a or not b:
+        return a is b
+    return a.val == b.val and is_same(a.left, b.left) and is_same(a.right, b.right)
+
+
+def is_subtree(root, sub):
+    return bool(root) and (is_same(root, sub) or is_subtree(root.left, sub) or is_subtree(root.right, sub))
+
+
+def is_symmetric(root):
+    def mirror(a, b):
+        if not a or not b:
+            return a is b
+        return a.val == b.val and mirror(a.left, b.right) and mirror(a.right, b.left)
+
+    return not root or mirror(root.left, root.right)
+
+
+def count_good(root):
+    def go(node, top):
+        if not node:
+            return 0
+        return (node.val &gt;= top) + go(node.left, max(top, node.val)) + go(node.right, max(top, node.val))
+
+    return go(root, float("-inf"))
+
+
+def lowest_common_ancestor(root, p, q):
+    if root is None or root is p or root is q:
+        return root
+    left = lowest_common_ancestor(root.left, p, q)
+    right = lowest_common_ancestor(root.right, p, q)
+    return root if left and right else left or right
+
+
+def max_path_sum(root):
+    best = float("-inf")
+
+    def gain(node):
+        nonlocal best
+        if not node:
+            return 0
+        left, right = max(0, gain(node.left)), max(0, gain(node.right))
+        best = max(best, node.val + left + right)
+        return node.val + max(left, right)
+
+    gain(root)
+    return best
+
+
+def path_sum_paths(root, target):
+    paths, path = [], []
+
+    def go(node, remaining):
+        if not node:
+            return
+        path.append(node.val)
+        remaining -= node.val
+        if not node.left and not node.right and remaining == 0:
+            paths.append(path[:])
+        go(node.left, remaining)
+        go(node.right, remaining)
+        path.pop()                                   # undo on the way back
+
+    go(root, target)
+    return paths
+
+
+def rob_tree(root):
+    def go(node):
+        if not node:
+            return 0, 0
+        take_l, skip_l = go(node.left)
+        take_r, skip_r = go(node.right)
+        return node.val + skip_l + skip_r, max(take_l, skip_l) + max(take_r, skip_r)
+
+    return max(go(root))
+
+
+def delete_leaves(root, target):
+    if not root:
+        return None
+    root.left = delete_leaves(root.left, target)
+    root.right = delete_leaves(root.right, target)
+    if not root.left and not root.right and root.val == target:
+        return None
+    return root</code></pre>
+
+<p>
+  <code>is_same</code> and <code>mirror</code> use <code>a is b</code> after the guard: if either node is
+  missing, the trees agree only when both are missing. <code>is_subtree</code> assumes <code>sub</code> is not
+  empty; an empty tree is trivially a subtree of anything, so handle that before the call.
+</p>
+
+<h3 id="variations">Variations and edge cases</h3>
+<ul>
+  <li><strong>Pass the path down, record at the leaf.</strong> Path sums and root-to-leaf listings append to a
+    shared list before recursing and pop afterwards. Copy the list (<code>path[:]</code>) when recording, or
+    every stored path will be emptied by the later pops.</li>
+  <li><strong>Return a pair.</strong> House robber on a tree returns (best with this node taken, best with it
+    skipped). Any problem where the parent's choice depends on the child's choice returns one value per state.</li>
+  <li><strong>Return a sentinel.</strong> Balance checking uses −1 for "already failed", which avoids a second
+    pass that would recompute heights repeatedly (that version is O(n²) on a skewed tree).</li>
+  <li><strong>Rebuild on return.</strong> Pruning, inverting and deleting reassign <code>root.left</code> and
+    <code>root.right</code> from the recursive calls and return the node (or <code>None</code> to remove it).</li>
+  <li><strong>Edge cases:</strong> an empty tree, a single node, a chain of nodes that is deeper than the
+    recursion limit, negative values (the clamp to zero in the path sum), duplicate values (compare nodes with
+    <code>is</code> when the problem gives you the node, not its value), and trees where a leaf is a node with
+    both children missing, not merely one.</li>
+</ul>
+
+<h2 id="tradeoffs">Complexity and tradeoffs</h2>
+
+<ul>
+  <li><strong>Time:</strong> O(n). Each node is visited once and does constant work besides the calls. The
+    height trace above took {{ ht.steps | length }} steps for {{ ht.steps | length }} nodes. Checking whether one
+    tree is a subtree of another is O(n·m) in the worst case, since <code>is_same</code> may run at every node.</li>
+  <li><strong>Space:</strong> O(h), where h is the tree's height, for the call stack or the explicit stack: about
+    log n for a balanced tree and n for a chain. Paths that are stored add the size of the output.</li>
+  <li><strong>Baseline.</strong> Computing height separately at every node, as in a naive balance check, repeats
+    work and costs O(n²) on a skewed tree. Returning the height from the same pass makes it O(n).</li>
+  <li><strong>When it fails.</strong> Questions about distance from the root, level by level, or the nearest
+    node to something are shortest-path questions on a tree and are cleaner with breadth-first search. Questions
+    about a graph that may contain cycles need a visited set. And when the input is a search tree, use its order
+    to skip half the tree (see the binary search trees page) instead of visiting every node.</li>
+</ul>
+
+<h2 id="problems">Problems</h2>
+
+<p>
+  The home problems fall into four groups: the traversals themselves (preorder, inorder, postorder); questions
+  about shape computed by returning values up (depth, balance, diameter, maximum path sum, house robber III,
+  deleting leaves); comparing trees (same, symmetric, subtree, invert); and carrying state down (good nodes, path
+  sum II, lowest common ancestor). Serialization, search-tree validation, right-side view and the like have
+  another home page and are listed below as "also uses".
+</p>
+{% include "leetcode/_problems.html" %}
+
+<h2 id="connections">Connections</h2>
+
+{% include "leetcode/_connections.html" %}
+<p>
+  This page applies the recursion page's habits to a branching structure, and the explicit-stack versions come
+  from the stack page. Breadth-first search is the other way to traverse a tree and answers level-based
+  questions. When the tree is ordered, the binary search trees page uses the same traversals with extra pruning;
+  and the "carry a running value down, update a best on the way" shape reappears in Kadane's algorithm and in
+  prefix sums on paths.
+</p>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="lc-quiz">
+  <summary>Why does the inorder traversal of a binary search tree come out sorted?</summary>
+  <p>Inorder visits the whole left subtree, then the node, then the whole right subtree. In a search tree every left value is smaller than the node and every right value is larger, so by induction each subtree is output sorted and the node sits between them. In the example it prints {{ orders.inorder | join(", ") }}.</p>
+</details>
+<details class="lc-quiz">
+  <summary>The diameter code returns <code>1 + max(left, right)</code> but records <code>left + right</code>. Why not just return the larger?</summary>
+  <p>The parent can only extend a path that comes up through one child, so the returned value must be the straight height. The bent path through both children can never be extended by a parent, so it is only recorded. Here node {{ bend.node }} returned {{ bend.height }} but recorded {{ bend.through }}, the diameter.</p>
+</details>
+<details class="lc-quiz">
+  <summary>In the path-sum table, why does node {{ path_tree[1][0] }} return {{ (mp.steps | selectattr("node", "equalto", path_tree[1][0]) | list)[0].returns }} while its own bent path sum is {{ (mp.steps | selectattr("node", "equalto", path_tree[1][0]) | list)[0].through }}?</summary>
+  <p>The bent path uses both children, which a parent could not extend, so only the better single side ({{ (mp.steps | selectattr("node", "equalto", path_tree[1][0]) | list)[0].left }} versus {{ (mp.steps | selectattr("node", "equalto", path_tree[1][0]) | list)[0].right }}) plus the node's own value, {{ path_tree[1][0] }}, is returned.</p>
+</details>
+<details class="lc-quiz">
+  <summary>When should information be a parameter, and when a return value?</summary>
+  <p>If it describes the path from the root to this node (a running sum, the maximum so far), only the ancestors know it, so pass it down. If it describes the subtree below (height, size, whether a target is inside), only the descendants know it, so return it up. Some problems need both.</p>
+</details>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Cormen, Leiserson, Rivest and Stein, <em>Introduction to Algorithms</em>, section 10.4 (representing rooted trees) and section 12.1 (inorder walks of a search tree); the depth-first search of chapter 22 is the graph generalisation.</li>
+  <li>Sedgewick and Wayne, <em>Algorithms</em>, section 3.2: binary search trees and their traversals.</li>
+  <li>Skiena, <em>The Algorithm Design Manual</em>: the treatment of traversal orders and recursion on trees.</li>
+  <li>Knuth, <em>The Art of Computer Programming</em>, volume 1, section 2.3.1: traversing binary trees, which names and compares the three orders.</li>
+  <li>The <a href="https://neetcode.io/roadmap" rel="noopener">NeetCode roadmap</a> and the
+    Blind 75, Grind 169, NeetCode 150 and NeetCode 250 lists, used as the index of topics and
+    problems.</li>
+</ul>

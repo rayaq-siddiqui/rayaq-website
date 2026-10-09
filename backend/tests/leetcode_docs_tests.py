@@ -554,3 +554,22 @@ def test_linked_list_design_helpers_match_the_page():
     assert "The first eviction is key b" in body
     assert "After the last step the cache holds d, e, c." in body
     assert "The pops return 4, 6, 4, 8." in body
+
+
+def test_tree_dfs_helpers_match_the_page():
+    tree = [5, [3, [1, None, [2, None, None]], [4, None, None]], [8, None, [9, None, None]]]
+    orders = leetcode_docs.tree_orders(tree)
+    assert orders["preorder"] == [5, 3, 1, 2, 4, 8, 9]
+    assert orders["inorder"] == [1, 2, 3, 4, 5, 8, 9]
+    assert orders["postorder"] == [2, 1, 4, 3, 9, 8, 5]
+    ht = leetcode_docs.tree_height_trace(tree)
+    assert ht["depth"] == 4 and ht["diameter"] == 5
+    assert ht["steps"][-1]["node"] == 5 and ht["steps"][-1]["height"] == 4
+    lay = leetcode_docs.tree_layout(tree)
+    assert len(lay["nodes"]) == 7 and len(lay["edges"]) == 6
+    path_tree = [6, [-3, [5, None, None], [2, None, None]], [4, [-1, None, None], None]]
+    assert leetcode_docs.max_path_sum_trace(path_tree)["best"] == 12
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/tree-dfs").get_data(as_text=True))
+    assert "so the tree has depth 4" in body
+    assert "so the diameter is 5." in body
+    assert "The best bent path sum is 12." in body

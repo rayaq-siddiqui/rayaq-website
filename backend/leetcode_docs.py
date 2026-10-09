@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -4271,6 +4271,92 @@ def freq_stack_trace(ops):
     return steps
 
 
+def tree_orders(tree):
+    """A tree is [value, left, right] with None for a missing child."""
+    orders = {"preorder": [], "inorder": [], "postorder": []}
+
+    def walk(node):
+        if node is None:
+            return
+        orders["preorder"].append(node[0])
+        walk(node[1])
+        orders["inorder"].append(node[0])
+        walk(node[2])
+        orders["postorder"].append(node[0])
+
+    walk(tree)
+    return orders
+
+
+def tree_layout(tree):
+    """Nodes in preorder with their depth, inorder column and 1-based visit rank in each traversal; edges join parent and child indices."""
+    nodes = []
+    edges = []
+    ranks = {"pre": 0, "in": 0, "post": 0}
+
+    def walk(node, depth):
+        if node is None:
+            return None
+        entry = {"value": node[0], "depth": depth}
+        nodes.append(entry)
+        index = len(nodes) - 1
+        ranks["pre"] += 1
+        entry["pre"] = ranks["pre"]
+        left = walk(node[1], depth + 1)
+        ranks["in"] += 1
+        entry["in"] = ranks["in"]
+        entry["x"] = ranks["in"] - 1
+        right = walk(node[2], depth + 1)
+        ranks["post"] += 1
+        entry["post"] = ranks["post"]
+        for child in (left, right):
+            if child is not None:
+                edges.append([index, child])
+        return index
+
+    walk(tree, 0)
+    return {"nodes": nodes, "edges": edges, "levels": max(n["depth"] for n in nodes) + 1}
+
+
+def tree_height_trace(tree):
+    """Postorder: each node returns its height in nodes, and the longest path through it has left + right edges."""
+    steps = []
+    best = 0
+
+    def height(node):
+        nonlocal best
+        if node is None:
+            return 0
+        left = height(node[1])
+        right = height(node[2])
+        best = max(best, left + right)
+        steps.append({"node": node[0], "left": left, "right": right, "height": 1 + max(left, right), "through": left + right})
+        return 1 + max(left, right)
+
+    depth = height(tree)
+    return {"steps": steps, "depth": depth, "diameter": best}
+
+
+def max_path_sum_trace(tree):
+    """Each node returns the best sum of a path that starts at it and goes down; the answer may bend through the node."""
+    steps = []
+    best = None
+
+    def gain(node):
+        nonlocal best
+        if node is None:
+            return 0
+        left = max(0, gain(node[1]))
+        right = max(0, gain(node[2]))
+        through = node[0] + left + right
+        best = through if best is None else max(best, through)
+        steps.append({"node": node[0], "left": left, "right": right, "through": through, "returns": node[0] + max(left, right)})
+        return node[0] + max(left, right)
+
+    gain(tree)
+    return {"steps": steps, "best": best}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -4438,6 +4524,10 @@ def render(slug, render_template):
         "lru_trace": lru_trace,
         "copy_random_trace": copy_random_trace,
         "freq_stack_trace": freq_stack_trace,
+        "tree_orders": tree_orders,
+        "tree_layout": tree_layout,
+        "tree_height_trace": tree_height_trace,
+        "max_path_sum_trace": max_path_sum_trace,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,
