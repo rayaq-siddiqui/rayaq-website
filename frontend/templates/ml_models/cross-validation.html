@@ -1,0 +1,288 @@
+{% set data = centroid_cv_data() %}
+{% set fold_scores = centroid_cv_scores(data, 5) %}
+{% set fold_mean, fold_spread = cv_summary(fold_scores) %}
+{% set rep5 = cv_summary(repeated_cv_means(data, 5)) %}
+{% set rep5_all = repeated_cv_means(data, 5) %}
+{% set rep10 = cv_summary(repeated_cv_means(data, 10)) %}
+{% set best_of_many, nested_score = selection_bias_demo() %}
+{% set kf = kfold_splits(10, 3) %}
+{% set ts = time_series_splits(12, 3) %}
+{% set strat = stratified_kfold_splits([0, 0, 0, 0, 0, 0, 1, 1, 1, 1], 2) %}
+{% set grp = group_kfold_splits(["a", "a", "a", "b", "b", "c", "c", "d", "d", "e"], 3) %}
+{% macro f3(x) -%}{{ "%.3f"|format(x) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Cross-validation</h1>
+  <p class="tagline">
+    One train–test split gives one noisy number. Cross-validation reuses every row for both training and testing, in turn, to give a steadier estimate and a way to compare models.
+    This page covers k-fold and its stratified, grouped and time-series variants, the variance of the estimate, and nested cross-validation for honest model selection.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+<p>
+  A single holdout split of {{ data|length }} rows leaves a handful of test rows, so the accuracy you measure depends heavily on which rows landed there. Hold out more and you train on less.
+  Cross-validation (CV) splits the data into k parts, trains k times with a different part held out each time, and averages the k scores.
+  Every row is tested exactly once and trained on k − 1 times.
+</p>
+<p>
+  The second problem is using the score to choose. Trying many models or settings and keeping the best CV score selects partly for luck, so the winning score is optimistic.
+  Reporting an honest figure for the whole procedure, selection included, needs the nested form below.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+<p>
+  Think of k exams, each written by a student who has studied from every chapter except the one on that exam. Averaging the k grades says how well the student handles unseen chapters better than one exam would.
+  How you cut the chapters matters, though: if related questions share a chapter, a student has effectively seen the answer, and if the exams run later than the study material, you must not let a student study from the future.
+  Each splitter below is a rule about what counts as "unseen".
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 190" role="img" aria-labelledby="cv-folds-title cv-folds-desc">
+    <title id="cv-folds-title">Three-fold cross-validation on ten rows</title>
+    <desc id="cv-folds-desc">
+      Three rows of ten cells. In each row a different block of cells is the test fold and the remaining cells are training rows. The test folds have {{ kf[0][1]|length }}, {{ kf[1][1]|length }} and {{ kf[2][1]|length }} rows, and together cover every row exactly once.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      {% for train, test in kf %}
+      {% set row = loop.index0 %}
+      <text x="40" y="{{ 50 + row * 50 }}" class="d-muted">fold {{ loop.index }}</text>
+      {% for i in range(10) %}
+      <rect x="{{ 80 + i * 45 }}" y="{{ 30 + row * 50 }}" width="40" height="30" rx="3" class="d-box {{ 'ml-op' if i in test else 'ml-tensor' }}"></rect>
+      <text x="{{ 100 + i * 45 }}" y="{{ 50 + row * 50 }}">{{ i }}</text>
+      {% endfor %}
+      {% endfor %}
+      <text x="350" y="185" class="d-muted">highlighted = test fold, plain = training rows</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The first n mod k folds get one extra row, so ten rows in three folds is 4, 3, 3.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="splitters">The splitters</h3>
+<ul>
+  <li><strong>KFold</strong>: contiguous blocks, optionally shuffled first (<code>shuffle=False</code> by default). Plain k-fold assumes rows are independent and identically distributed.</li>
+  <li><strong>StratifiedKFold</strong>: each fold keeps the class proportions of the whole set. Use it for classification, and above all when a class is rare, since an unlucky fold could otherwise contain none of it. On the labels 0 0 0 0 0 0 1 1 1 1 in two folds, each test fold gets {{ strat[0][1]|length }} rows with exactly two positives.</li>
+  <li><strong>GroupKFold</strong>: all rows of a group (a patient, a user, a document) land in the same fold, so no group is on both sides. The test folds on groups a a a b b c c d d e in three folds have sizes {{ grp|map("last")|map("length")|join(", ") }}.</li>
+  <li><strong>StratifiedGroupKFold</strong> combines both, as well as it can.</li>
+  <li><strong>TimeSeriesSplit</strong>: the training set is always the past and the test fold the block right after it; the training window grows. With 12 rows and 3 splits the (train, test) sizes are {% for tr, te in ts %}({{ tr|length }}, {{ te|length }}){% if not loop.last %}, {% endif %}{% endfor %}. Unlike k-fold, the folds are not a partition: the first block is never tested.</li>
+  <li><strong>RepeatedKFold</strong> and <strong>ShuffleSplit</strong> repeat the procedure with different random cuts to average out the effect of any one cut.</li>
+</ul>
+
+<h3 id="variance">How noisy is a CV score?</h3>
+<p>
+  The k fold scores are not independent (the training sets overlap heavily), so the usual standard-error formula understates the uncertainty. The reliable guide is empirical:
+  the spread of the fold scores shows how much a single fold can mislead, and repeating the CV with different shuffles shows how much the <em>mean</em> depends on where the cuts fell.
+  Larger k gives training sets closer to the full data (less pessimistic bias) but folds that are more alike, and costs k fits. Five or ten is the usual compromise.
+</p>
+
+<h3 id="nested">Choosing models: nested CV</h3>
+<p>
+  Pick the best of many settings by CV score and that score is biased upward, because the maximum of many noisy estimates is larger than any one's true value.
+  <strong>Nested CV</strong> wraps the whole selection in an outer loop: in each outer fold, an <em>inner</em> CV on the outer-training rows chooses the setting, the chosen model is refit on those rows and scored on the untouched outer test fold.
+  The outer average estimates how well the <em>procedure</em> works. In scikit-learn this is a <code>GridSearchCV</code> (inner) passed as the estimator to <code>cross_val_score</code> (outer). The final model is then fit on all data using the same procedure.
+</p>
+
+<h3 id="rules">Rules that keep it honest</h3>
+<ul>
+  <li>Put every fitted step (scaling, imputation, feature selection) inside a <code>Pipeline</code> so it is refit within each training fold (see <a href="/ml-models/data-leakage">data leakage</a>).</li>
+  <li>Split by the unit you will generalize over: patients, not visits; the future, not the past.</li>
+  <li>Keep a final test set the CV never touched if the number will be reported.</li>
+</ul>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 250" role="img" aria-labelledby="cv-nested-title cv-nested-desc">
+    <title id="cv-nested-title">Nested cross-validation</title>
+    <desc id="cv-nested-desc">
+      A large outer box holds all the data. An outer fold is held out as the test block. Inside the remaining outer-training rows, an inner cross-validation compares candidate settings and picks one, which is refit on the outer-training rows and scored on the held-out outer test block. The outer scores are averaged.
+    </desc>
+    <g font-size="13" text-anchor="middle">
+      <rect x="20" y="20" width="660" height="210" rx="6" class="d-box ml-dashed"></rect>
+      <text x="350" y="42" class="d-muted">outer loop: repeat for each outer fold</text>
+      <rect x="40" y="60" width="440" height="150" rx="6" class="d-box ml-tensor"></rect>
+      <text x="260" y="82">outer-training rows</text>
+      <rect x="60" y="95" width="190" height="95" rx="4" class="d-box ml-op"></rect>
+      <text x="155" y="125">inner CV</text>
+      <text x="155" y="145" class="d-muted">compare settings</text>
+      <text x="155" y="165" class="d-muted">pick the best</text>
+      <rect x="280" y="95" width="180" height="95" rx="4" class="d-box ml-op"></rect>
+      <text x="370" y="130">refit chosen setting</text>
+      <text x="370" y="150" class="d-muted">on all outer-training rows</text>
+      <path d="M250 142 L280 142" class="d-line" fill="none"></path>
+      <rect x="510" y="95" width="150" height="95" rx="4" class="d-box ml-op"></rect>
+      <text x="585" y="130">outer test fold</text>
+      <text x="585" y="150" class="d-muted">scored once</text>
+      <path d="M460 142 L510 142" class="d-line" fill="none"></path>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The outer test fold plays no part in choosing the setting, so its score is not inflated by the choice.</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>KFold</code></td>
+        <td><code>n_splits=5</code>, <code>shuffle=False</code>, <code>random_state=None</code></td>
+        <td>Contiguous (or shuffled) blocks; the first n mod k folds are one row larger.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_split.py', 437, 532) }}"><code>_split.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>StratifiedKFold</code></td>
+        <td>y: (n,) class labels</td>
+        <td>Preserves class proportions in each fold.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_split.py', 687, 891) }}"><code>_split.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>GroupKFold</code></td>
+        <td>groups: (n,)</td>
+        <td>No group appears in both train and test; folds are balanced by group size.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_split.py', 533, 686) }}"><code>_split.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>StratifiedGroupKFold</code></td>
+        <td>y and groups</td>
+        <td>Groups kept whole while class proportions are matched as closely as possible.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_split.py', 892, 1115) }}"><code>_split.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>TimeSeriesSplit</code></td>
+        <td><code>n_splits=5</code>, <code>max_train_size</code>, <code>test_size</code>, <code>gap=0</code></td>
+        <td>Expanding past-only training window, then a later test block; <code>gap</code> skips rows between them.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_split.py', 1116, 1327) }}"><code>_split.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>cross_validate</code></td>
+        <td><code>cv=None</code> (5-fold), <code>scoring</code>, <code>return_train_score=False</code>, <code>n_jobs</code></td>
+        <td>Fits and scores per fold; returns a dict with <code>fit_time</code>, <code>score_time</code> and <code>test_score</code> arrays.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_validation.py', 101, 427) }}"><code>_validation.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>cross_val_score</code></td>
+        <td>estimator, X, y, <code>cv</code>, <code>scoring</code></td>
+        <td>The test scores only, one per fold.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_validation.py', 512, 667) }}"><code>_validation.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_fit_and_score</code></td>
+        <td>one train/test index pair</td>
+        <td>The per-fold worker: clones the estimator, fits on the train rows, scores the test rows.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_validation.py', 670, 934) }}"><code>_validation.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>cross_val_predict</code></td>
+        <td>returns (n,) out-of-fold predictions</td>
+        <td>Each row predicted by a model that never saw it; for diagnostics and stacking, not a clean score.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_validation.py', 1031, 1285) }}"><code>_validation.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-folds">Fold sizes</h3>
+  <p>
+    Ten rows in three folds: the test folds are {% for tr, te in kf %}{{ te|join(", ") }}{% if not loop.last %}; {% endif %}{% endfor %}.
+    Their sizes are 4, 3, 3 because 10 = 3 × 3 + 1, so one fold takes the extra row. Every index appears once as test and twice as training.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-scores">Five folds of a nearest-centroid classifier</h3>
+  <p>
+    The data are {{ data|length }} points from two overlapping Gaussians (means −1 and +1, standard deviation 1.4). The classifier puts a cutoff halfway between the two class means of the training rows.
+    The five fold accuracies are {{ fold_scores|map("round", 3)|join(", ") }}, so the CV estimate is {{ f3(fold_mean) }} with a fold-to-fold standard deviation of {{ f3(fold_spread) }}.
+    A single fold would have said anything from {{ f3(fold_scores|min) }} to {{ f3(fold_scores|max) }}.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-variance">The mean depends on the cuts</h3>
+  <p>
+    Repeat the 5-fold CV with 100 different shuffles. The mean score ranges from {{ f3(rep5_all|min) }} to {{ f3(rep5_all|max) }}, with mean {{ f3(rep5[0]) }} and standard deviation {{ f3(rep5[1]) }}.
+    With ten folds the spread of the mean is {{ f3(rep10[1]) }}. The shuffle alone moves the headline number by a few points, which is why a 1-point difference between two models on one CV run means little.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-nested">Selection bias</h3>
+  <p>
+    Fifty candidate "models" that are pure coin flips are scored on 40 rows whose labels are also coin flips, so every candidate's true accuracy is 0.5.
+    Keeping the best candidate's score on all the rows reports {{ f3(best_of_many) }} on average (200 trials). Choosing the candidate on four fifths of the rows and scoring it on the held-out fifth, as the outer loop of nested CV does, gives {{ f3(nested_score) }}.
+    The first number is the best of 50 noisy estimates; the second is an honest estimate of a selection procedure that has no skill.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>from sklearn.model_selection import (
+    KFold, StratifiedKFold, GroupKFold, TimeSeriesSplit,
+    cross_val_score, cross_validate, GridSearchCV,
+)
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+
+model = make_pipeline(StandardScaler(), LogisticRegression())
+
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=0)
+scores = cross_val_score(model, X, y, cv=cv)           # shape (5,)
+print(scores.mean(), scores.std(ddof=1))
+
+result = cross_validate(model, X, y, cv=cv,
+                        scoring=["accuracy", "roc_auc"],
+                        return_train_score=True)
+result["test_roc_auc"]                                  # one per fold
+
+cross_val_score(model, X, y, groups=patient_id, cv=GroupKFold(n_splits=5))
+cross_val_score(model, X, y, cv=TimeSeriesSplit(n_splits=5))
+
+# nested: the search is the estimator, the outer CV scores it
+search = GridSearchCV(model, {"logisticregression__C": [0.01, 0.1, 1, 10]},
+                      cv=KFold(5, shuffle=True, random_state=1))
+nested = cross_val_score(search, X, y, cv=KFold(5, shuffle=True, random_state=2))</code></pre>
+<p>
+  Passing an integer or <code>None</code> as <code>cv</code> builds the right splitter: stratified k-fold for a classifier with discrete targets, plain k-fold otherwise (via <code>check_cv</code>).
+  Pass <code>groups</code> alongside a group-aware splitter; the splitter ignores it otherwise.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+<ul>
+  <li><strong>Choice of k.</strong> Small k trains on less data (pessimistic estimate) and has more overlap-free noise; large k is closer to unbiased but costs k fits and gives highly correlated folds. Leave-one-out is the extreme and is rarely worth its cost.</li>
+  <li><strong>Cost.</strong> k fits per candidate, and nested CV is k_outer × k_inner × the number of candidates. Budget for it or reduce the grid.</li>
+  <li><strong>Wrong splitter, optimistic score.</strong> Plain k-fold on grouped or time-ordered data leaks across the split and overstates performance, often by a lot.</li>
+  <li><strong>Shuffling.</strong> Shuffle independent rows; never shuffle time series.</li>
+  <li><strong>Reusing the CV score.</strong> The more choices you make by looking at it, the less it means. A final untouched test set, or nested CV, restores an honest number.</li>
+  <li><strong>Large data.</strong> With millions of rows a single holdout is already stable and CV is an expense, not a need. For deep networks CV is usually skipped for the same reason.</li>
+  <li><strong>The estimate is of a procedure, not a model.</strong> The k models differ from the final one trained on everything; the CV score describes how the recipe performs.</li>
+</ul>
+
+<h3 id="check-yourself">Check yourself</h3>
+<details class="ml-quiz">
+  <summary>Nine rows in four folds: what are the test-fold sizes?</summary>
+  <p>9 = 4 × 2 + 1, so one fold gets the extra row: 3, 2, 2, 2.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Rows come from 100 patients with about 20 visits each. Why use GroupKFold?</summary>
+  <p>Visits from one patient are alike. With plain k-fold, a patient's other visits are in training and the model partly recognizes the patient, inflating the score; grouping ensures every test patient is wholly unseen.</p>
+</details>
+<details class="ml-quiz">
+  <summary>You tuned five hyperparameters with 5-fold CV and report the best CV score. What is wrong?</summary>
+  <p>That score was used to choose, so it is biased upward. Report a score from rows the selection never saw: nested CV or a held-out test set.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+<ul>
+  <li>Hastie, Tibshirani and Friedman. <em>The Elements of Statistical Learning</em>, chapter 7: model assessment and selection.</li>
+  <li>Varma and Simon. <em>Bias in error estimation when using cross-validation for model selection.</em> BMC Bioinformatics, 2006.</li>
+  <li>Cawley and Talbot. <em>On Over-fitting in Model Selection and Subsequent Selection Bias in Performance Evaluation.</em> JMLR, 2010.</li>
+  <li>Bengio and Grandvalet. <em>No Unbiased Estimator of the Variance of K-Fold Cross-Validation.</em> JMLR, 2004.</li>
+  <li>scikit-learn {{ pins.sklearn.version }}: <a href="{{ skl('sklearn/model_selection/_split.py', 437, 532) }}"><code>KFold</code></a>, <a href="{{ skl('sklearn/model_selection/_validation.py', 101, 427) }}"><code>cross_validate</code></a>.</li>
+</ul>

@@ -393,7 +393,7 @@ PAGES = [
             "sklearn:sklearn/model_selection/_split.py",
             "sklearn:sklearn/model_selection/_validation.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "classification-metrics",
