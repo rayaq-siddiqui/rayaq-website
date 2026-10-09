@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-09 (twenty-second run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: queue items 1-27, the last being `data-leakage`. The next run builds
-`classification-metrics` (queue item 28).
+format. Ready pages: queue items 1-28, the last being `classification-metrics`. The next run builds
+`cross-validation` (queue item 29).
 
 ## Pins
 
@@ -352,10 +352,11 @@ Gaps: the `train_test_split` `shuffle=False` line range is cited from reading th
 | Commit | What |
 |---|---|
 | `ml-models: add tested data-leakage helpers` / `build the data-leakage page` | Noise-feature selection on all rows versus train rows (100-seed average 0.729 versus 0.479), duplicate-lookup accuracy 0.7 versus 0.5, best-threshold rule 1.0 versus 0.6; page, `ready`, queue ✓ |
+| `ml-models: add tested classification-metrics helpers` / `build the classification-metrics page` | Threshold sweep, ROC AUC 0.875 (trapezoid and rank), AP 0.854, log loss 0.505, macro F1 0.362 vs micro 0.6; page, `ready`, queue ✓ |
 
-Verified at scikit-learn 1.9.1: `pipeline.py` `Pipeline` 93-1433 (`_fit` 516-576 with `clone` at 553, `fit` 582-653, `predict` 747-801); `model_selection/_split.py` `GroupKFold` 533-686, `TimeSeriesSplit` 1116-1327 (`gap` default 0), `train_test_split` 2797-2977.
+Verified at scikit-learn 1.9.1: `pipeline.py` `Pipeline` 93-1433 (`_fit` 516-576 with `clone` at 553, `fit` 582-653, `predict` 747-801); `model_selection/_split.py` `GroupKFold` 533-686, `TimeSeriesSplit` 1116-1327 (`gap` default 0), `train_test_split` 2797-2977; `metrics/_classification.py` `accuracy_score` 340-427, `confusion_matrix` 428-635, `f1_score` 1448-1642, `precision_score` 2498-2680, `recall_score` 2681-2854, `log_loss` 3321-3446, `_log_loss` 3449-3469; `metrics/_ranking.py` `auc` 53-127, `average_precision_score` 128-311, `roc_auc_score` 511-747, `precision_recall_curve` 1059-1217, `roc_curve` 1218-1382.
 
-Gaps: the data-leakage references (Kaufman et al. 2012, Kapoor and Narayanan 2023, ESL section 7.10.2) are cited from memory and were not opened. The checkout at the start of this run was a stale shallow clone; it was unshallowed and fast-forwarded before work began.
+Gaps: the data-leakage references (Kaufman et al. 2012, Kapoor and Narayanan 2023, ESL section 7.10.2) and the classification-metrics references (Fawcett 2006, Davis and Goadrich 2006, Saito and Rehmsmeier 2015) are cited from memory and were not opened. The checkout at the start of this run was a stale shallow clone; it was unshallowed and fast-forwarded before work began.
 
 ## Queue
 
@@ -386,8 +387,8 @@ Gaps: the data-leakage references (Kaufman et al. 2012, Kapoor and Narayanan 202
 25. `data-splits` ✓
 26. `preprocessing` ✓
 27. `data-leakage` ✓
-28. `classification-metrics` ← next
-29. `cross-validation`
+28. `classification-metrics` ✓
+29. `cross-validation` ← next
 30. `decision-trees`
 31. `gradient-boosting`
 32. `overfitting`

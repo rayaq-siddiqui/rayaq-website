@@ -1,0 +1,353 @@
+{% set labels = metric_labels %}
+{% set scores = metric_scores %}
+{% set roc = roc_points(labels, scores) %}
+{% set pr = pr_points(labels, scores) %}
+{% set auc_value = trapezoid_area(roc) %}
+{% set ap_value = average_precision(labels, scores) %}
+{% set at_half = confusion_counts(labels, scores, 0.5) %}
+{% set half_p, half_r, half_f = precision_recall_f1(at_half[0], at_half[1], at_half[2]) %}
+{% set sweep = [0.9, 0.7, 0.5, 0.35, 0.15] %}
+{% set ll = binary_log_loss(labels, scores) %}
+{% set per_class, macro_f1, micro_f1 = averaged_f1(metric_class_counts) %}
+{% macro f2(x) -%}{{ "%.2f"|format(x) }}{%- endmacro %}
+{% macro f3(x) -%}{{ "%.3f"|format(x) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Classification metrics</h1>
+  <p class="tagline">
+    A classifier makes two kinds of mistake, and a single "accuracy" number hides which one it is making. This page covers the
+    confusion matrix, precision, recall and F1, the ROC and precision–recall curves and the areas under them, log loss for probabilities,
+    how to choose a threshold, and the difference between micro and macro averaging.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Suppose one email in a hundred is a phishing attempt. A filter that labels every email "fine" is right 99% of the time and catches nothing.
+  Accuracy answers "how often was the label right?", which is rarely the question you care about. A hospital wants to know how many
+  sick patients the screen finds and how many healthy ones it frightens; a search engine wants to know how many of the top results
+  are good; a fraud team wants a ranked list it can work down until the budget runs out.
+</p>
+<p>
+  Each of these is a different summary of the same raw material: how the model's predictions line up with the truth, and, for models that output a
+  score, how that alignment changes as you move the cutoff. Choosing the metric is choosing what to optimize, so it deserves the same care as choosing the model.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Think of a metal detector at a beach. Turn the sensitivity up and it finds every coin, but it also beeps at bottle caps and you spend your day digging
+  junk. Turn it down and every beep is a real coin, but you walk past coins. <strong>Recall</strong> is the share of the coins you found; <strong>precision</strong>
+  is the share of beeps that were coins. Sensitivity is the threshold, and no setting gets both to 100% unless the detector is perfect.
+</p>
+<p>
+  A <strong>ROC curve</strong> and a <strong>precision–recall curve</strong> are simply the record of what happens at every sensitivity setting, so you can judge
+  the detector before deciding where to set the dial. The area under a curve compresses that record into one number when you need to compare detectors.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 210" role="img" aria-labelledby="cm-matrix-title cm-matrix-desc">
+    <title id="cm-matrix-title">The confusion matrix for a threshold of 0.5</title>
+    <desc id="cm-matrix-desc">
+      A two by two grid. Rows are the true class, columns the predicted class. True positives {{ at_half[0] }}, false negatives {{ at_half[2] }},
+      false positives {{ at_half[1] }}, true negatives {{ at_half[3] }}. To the right, the formulas: precision is true positives over
+      predicted positives (the first column); recall is true positives over actual positives (the first row).
+    </desc>
+    <g font-size="13" text-anchor="middle">
+      <text x="195" y="22" class="d-muted">predicted positive</text>
+      <text x="315" y="22" class="d-muted">predicted negative</text>
+      <text x="70" y="75" class="d-muted">actual positive</text>
+      <text x="70" y="145" class="d-muted">actual negative</text>
+      <rect x="135" y="35" width="120" height="60" rx="4" class="d-box ml-op"></rect>
+      <text x="195" y="60" font-weight="bold">TP = {{ at_half[0] }}</text>
+      <text x="195" y="80" class="d-muted">found</text>
+      <rect x="255" y="35" width="120" height="60" rx="4" class="d-box ml-dashed"></rect>
+      <text x="315" y="60" font-weight="bold">FN = {{ at_half[2] }}</text>
+      <text x="315" y="80" class="d-muted">missed</text>
+      <rect x="135" y="105" width="120" height="60" rx="4" class="d-box ml-dashed"></rect>
+      <text x="195" y="130" font-weight="bold">FP = {{ at_half[1] }}</text>
+      <text x="195" y="150" class="d-muted">false alarm</text>
+      <rect x="255" y="105" width="120" height="60" rx="4" class="d-box ml-tensor"></rect>
+      <text x="315" y="130" font-weight="bold">TN = {{ at_half[3] }}</text>
+      <text x="315" y="150" class="d-muted">correctly ignored</text>
+      <g text-anchor="start">
+        <text x="420" y="60">precision = TP / (TP + FP) = {{ f2(half_p) }}</text>
+        <text x="420" y="90">recall = TP / (TP + FN) = {{ f2(half_r) }}</text>
+        <text x="420" y="120">F1 = 2TP / (2TP + FP + FN) = {{ f2(half_f) }}</text>
+        <text x="420" y="150">accuracy = (TP + TN) / n = {{ f2((at_half[0] + at_half[3]) / 10) }}</text>
+      </g>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Every threshold metric is a ratio of these four counts.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="counts">Counts and ratios</h3>
+<p>
+  For a binary problem, mark one class positive. A prediction is one of four things: a true positive (TP), false positive (FP), false negative (FN) or true negative (TN).
+</p>
+<ul>
+  <li><strong>Accuracy</strong> = (TP + TN) / n. Honest only when the classes are balanced and the two mistakes cost about the same.</li>
+  <li><strong>Precision</strong> = TP / (TP + FP): of what the model flagged, how much was right. Falls when you tolerate more false alarms.</li>
+  <li><strong>Recall</strong> (sensitivity, true-positive rate) = TP / (TP + FN): of what was out there, how much did the model find.</li>
+  <li><strong>False-positive rate</strong> = FP / (FP + TN); specificity = 1 − FPR.</li>
+  <li><strong>F1</strong> is the harmonic mean of precision and recall, 2PR / (P + R) = 2TP / (2TP + FP + FN). The harmonic mean is dragged toward the smaller number, so you cannot hide a poor recall behind a high precision. <code>fbeta_score</code> weights recall β times as much as precision.</li>
+  <li>When a denominator is zero (no predicted positives, so precision is 0/0), scikit-learn's <code>zero_division</code> parameter decides the value; the default <code>"warn"</code> returns 0 and raises a warning.</li>
+</ul>
+
+<h3 id="curves">Scores, thresholds and curves</h3>
+<p>
+  Most models output a score or probability, and a label requires a threshold. Sweeping the threshold from high to low
+  traces out a path. The <strong>ROC curve</strong> plots recall (TPR) against the false-positive rate. A random scorer follows the diagonal; a perfect one hugs the top-left corner. The
+  <strong>area under it (AUC)</strong> has a clean meaning: the probability that a randomly chosen positive gets a higher score than a randomly chosen negative, counting ties as half.
+  It only depends on the <em>ordering</em> of the scores, so it ignores calibration and any threshold.
+</p>
+<p>
+  The <strong>precision–recall curve</strong> plots precision against recall. Precision depends on the class balance, which ROC's FPR hides: with 1,000 negatives
+  per positive, a 1% false-positive rate is ten false alarms for every real hit, and the ROC curve still looks excellent. When positives are rare and you care about
+  the flagged list, the PR curve is the more informative one. <strong>Average precision</strong> summarizes it as AP = Σ (R<sub>n</sub> − R<sub>n−1</sub>) P<sub>n</sub>,
+  the precision at each threshold weighted by the recall gained there. scikit-learn's implementation is a step sum, not the trapezoid area, because linear interpolation between PR points is too optimistic.
+</p>
+
+<h3 id="logloss">Log loss</h3>
+<p>
+  If the model outputs probabilities, <strong>log loss</strong> (cross-entropy) scores them directly: −(1/n) Σ [y log p + (1 − y) log(1 − p)]. It is
+  the quantity logistic regression and neural classifiers minimize (see <a href="/ml-models/loss-functions">loss functions</a>). A confident wrong answer is punished without bound: predicting 0.01 for something that happens costs 4.6 nats,
+  while 0.99 for something that happens and 0.01 for something that does not together cost only 0.01 nats on average. scikit-learn clips probabilities to
+  [ε, 1 − ε] with ε the machine epsilon of the dtype, so a stated certainty never produces an infinity.
+</p>
+
+<h3 id="threshold">Choosing a threshold</h3>
+<p>
+  The threshold is a decision, separate from the model. Set it from costs: if a missed fraud costs 100 times a false alarm, flag far more cases than the 0.5 default would.
+  Or set it from capacity: review the top 50 a day, which is a precision-at-k decision. Or set it from a requirement: the highest threshold that still gives 95% recall.
+  Choose it on validation data, never on the test set (see <a href="/ml-models/data-leakage">data leakage</a>), and re-check it when class balance shifts.
+</p>
+
+<h3 id="averaging">Many classes: micro versus macro</h3>
+<p>
+  With more than two classes, compute each class's metric one-vs-rest and then combine. <strong>Macro</strong> averaging takes the unweighted mean of the per-class scores, so a rare class counts
+  as much as a common one. <strong>Micro</strong> pools all the TP, FP and FN first and computes one ratio, so common classes dominate (for single-label problems micro-F1 equals accuracy).
+  <strong>Weighted</strong> averaging weights the per-class scores by support. Report macro when every class matters, micro when each example matters equally.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 280" role="img" aria-labelledby="cm-curves-title cm-curves-desc">
+    <title id="cm-curves-title">ROC curve and precision–recall curve for ten scored examples</title>
+    <desc id="cm-curves-desc">
+      Left, a ROC curve of false-positive rate against true-positive rate rising in steps from the origin to the top right, above the
+      diagonal, with an area of {{ f3(auc_value) }}. Right, a precision–recall curve of precision against recall that starts at precision 1.0 at
+      recall 0.25 and falls to 0.4 at recall 1.0.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      <rect x="50" y="20" width="230" height="200" class="d-box ml-dashed"></rect>
+      <path d="M50 220 L280 20" class="d-line ml-dashed" fill="none" stroke-width="1"></path>
+      <polyline fill="none" stroke-width="2" class="d-line" points="{% for x, y in roc %}{{ 50 + x * 230 }},{{ 220 - y * 200 }} {% endfor %}"></polyline>
+      {% for x, y in roc %}<circle cx="{{ 50 + x * 230 }}" cy="{{ 220 - y * 200 }}" r="3" class="d-box ml-op"></circle>{% endfor %}
+      <text x="165" y="245" class="d-muted">false-positive rate</text>
+      <text x="165" y="266" font-weight="bold">ROC, AUC = {{ f3(auc_value) }}</text>
+      <rect x="400" y="20" width="230" height="200" class="d-box ml-dashed"></rect>
+      <polyline fill="none" stroke-width="2" class="d-line" points="{% for r, p in pr %}{{ 400 + r * 230 }},{{ 220 - p * 200 }} {% endfor %}"></polyline>
+      {% for r, p in pr %}<circle cx="{{ 400 + r * 230 }}" cy="{{ 220 - p * 200 }}" r="3" class="d-box ml-op"></circle>{% endfor %}
+      <text x="515" y="245" class="d-muted">recall</text>
+      <text x="515" y="266" font-weight="bold">precision–recall, AP = {{ f3(ap_value) }}</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The same ten examples. Each dot is one threshold; the vertical axes are true-positive rate on the left and precision on the right.</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>confusion_matrix</code></td>
+        <td>y_true, y_pred: (n,); returns (n_classes, n_classes)</td>
+        <td>Rows are true classes, columns predicted classes; the counts behind every threshold metric.</td>
+        <td><a href="{{ skl('sklearn/metrics/_classification.py', 428, 635) }}"><code>_classification.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>accuracy_score</code></td>
+        <td><code>normalize=True</code></td>
+        <td>The fraction of exact label matches.</td>
+        <td><a href="{{ skl('sklearn/metrics/_classification.py', 340, 427) }}"><code>_classification.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>precision_score</code> / <code>recall_score</code></td>
+        <td><code>average="binary"</code>, <code>pos_label=1</code>, <code>zero_division="warn"</code></td>
+        <td>TP / (TP + FP) and TP / (TP + FN); <code>average</code> selects micro, macro, weighted or samples for many classes.</td>
+        <td><a href="{{ skl('sklearn/metrics/_classification.py', 2498, 2680) }}"><code>precision</code></a>, <a href="{{ skl('sklearn/metrics/_classification.py', 2681, 2854) }}"><code>recall</code></a></td>
+      </tr>
+      <tr>
+        <td><code>f1_score</code></td>
+        <td><code>average="binary"</code>, <code>zero_division="warn"</code></td>
+        <td>2TP / (2TP + FP + FN), the harmonic mean of precision and recall.</td>
+        <td><a href="{{ skl('sklearn/metrics/_classification.py', 1448, 1642) }}"><code>_classification.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>roc_curve</code></td>
+        <td>y_true, y_score: (n,); <code>drop_intermediate=True</code></td>
+        <td>FPR, TPR and the thresholds at which they change; the corner points that add no shape are dropped by default.</td>
+        <td><a href="{{ skl('sklearn/metrics/_ranking.py', 1218, 1382) }}"><code>_ranking.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>roc_auc_score</code></td>
+        <td>binary needs scores; <code>max_fpr</code>; <code>multi_class</code> for many classes</td>
+        <td>Builds <code>roc_curve</code> and applies the trapezoid rule via <code>auc</code>.</td>
+        <td><a href="{{ skl('sklearn/metrics/_ranking.py', 511, 747) }}"><code>roc_auc_score</code></a>, <a href="{{ skl('sklearn/metrics/_ranking.py', 53, 127) }}"><code>auc</code></a></td>
+      </tr>
+      <tr>
+        <td><code>precision_recall_curve</code></td>
+        <td>y_true, y_score: (n,); <code>drop_intermediate=False</code></td>
+        <td>Precision and recall per threshold; a final point (precision 1, recall 0) is appended with no threshold.</td>
+        <td><a href="{{ skl('sklearn/metrics/_ranking.py', 1059, 1217) }}"><code>_ranking.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>average_precision_score</code></td>
+        <td><code>average="macro"</code>, <code>pos_label=1</code></td>
+        <td>Σ (R<sub>n</sub> − R<sub>n−1</sub>) P<sub>n</sub>, not interpolated.</td>
+        <td><a href="{{ skl('sklearn/metrics/_ranking.py', 128, 311) }}"><code>_ranking.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>log_loss</code></td>
+        <td>y_true: (n,); y_proba: (n,) or (n, n_classes)</td>
+        <td>Mean negative log-likelihood; probabilities clipped to [ε, 1 − ε].</td>
+        <td><a href="{{ skl('sklearn/metrics/_classification.py', 3321, 3446) }}"><code>log_loss</code></a>, <a href="{{ skl('sklearn/metrics/_classification.py', 3449, 3459) }}"><code>_log_loss</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-data">Ten scored examples</h3>
+  <p>
+    Four of ten examples are positive. The model's scores in descending order are {{ scores|join(", ") }} and their true labels, in the same order, are
+    {{ labels|join(", ") }}. Reading the scores as probabilities, log loss is {{ f3(ll) }}.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-sweep">Sweeping the threshold</h3>
+  <p>Call an example positive when its score is at least the threshold:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Threshold</th><th>TP</th><th>FP</th><th>FN</th><th>TN</th><th>Precision</th><th>Recall</th><th>F1</th></tr></thead>
+      <tbody>
+        {% for t in sweep %}
+        {% set c = confusion_counts(labels, scores, t) %}
+        {% set prf = precision_recall_f1(c[0], c[1], c[2]) %}
+        <tr><td>{{ t }}</td><td>{{ c[0] }}</td><td>{{ c[1] }}</td><td>{{ c[2] }}</td><td>{{ c[3] }}</td><td>{{ f2(prf[0]) }}</td><td>{{ f2(prf[1]) }}</td><td>{{ f2(prf[2]) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Lowering the threshold never reduces recall and usually lowers precision. F1 peaks at 0.35 here ({{ f2(precision_recall_f1(4, 3, 0)[2]) }}), which finds all four positives at the price of three false alarms.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-auc">AUC two ways</h3>
+  <p>
+    Walking the ten thresholds gives the ROC points in the left plot; the trapezoid area is {{ f3(auc_value) }}. Counting directly: there are 4 positives and 6 negatives, so 24 positive–negative pairs; the positive
+    outscores the negative in {{ (rank_auc(labels, scores) * 24)|int }} of them, and {{ (rank_auc(labels, scores) * 24)|int }}/24 = {{ f3(rank_auc(labels, scores)) }}. The two routes agree because AUC <em>is</em> that pair fraction.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-ap">Average precision</h3>
+  <p>
+    At each distinct threshold the precision–recall pair is ({{ pr|map("first")|map("round", 2)|join(", ") }}) for recall and ({{ pr|map("last")|map("round", 2)|join(", ") }}) for precision.
+    Weighting each precision by the recall gained gives AP = {{ f3(ap_value) }}: recall rises by 0.25 at four of the thresholds where a positive appears, and the precision at those moments is
+    1.00, 1.00, 0.75 and 0.67 (0.25 × 3.42 = {{ f3(ap_value) }}). Notice AP ({{ f3(ap_value) }}) is not the ROC area ({{ f3(auc_value) }}): the two curves reward different things.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-imbalance">Accuracy when positives are rare</h3>
+  <p>
+    A hundred patients, five of them sick, and a model that says "healthy" every time: TP 0, FP 0, FN 5, TN 95. Accuracy is 0.95; precision is 0/0, reported as 0, and recall is
+    {{ f2(precision_recall_f1(0, 0, 5)[1]) }}. A 95% accurate model that finds nobody is exactly what the other metrics are for.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-averaging">Micro versus macro on three classes</h3>
+  <p>
+    Per-class (TP, FP, FN) counts are
+    {% for name, c in metric_class_counts.items() %}{{ name }} = {{ c|join(", ") }}{% if not loop.last %}; {% endif %}{% endfor %}.
+    Per-class F1 values are {% for name, v in per_class.items() %}{{ name }} {{ f2(v) }}{% if not loop.last %}, {% endif %}{% endfor %}. The macro average is {{ f2(macro_f1) }}, pulled down by the two rare classes.
+    Pooling the counts first (TP 9, FP 3, FN 9) gives micro F1 = 18 / 30 = {{ f2(micro_f1) }}, dominated by the common class. Neither is wrong; they answer different questions.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>from sklearn.metrics import (
+    confusion_matrix, precision_score, recall_score, f1_score,
+    roc_auc_score, roc_curve, average_precision_score,
+    precision_recall_curve, log_loss,
+)
+
+y_true  = [1, 1, 0, 1, 0, 1, 0, 0, 0, 0]
+y_score = [0.95, 0.85, 0.80, 0.65, 0.55, 0.45, 0.40, 0.30, 0.20, 0.10]
+y_pred  = [int(s &gt;= 0.5) for s in y_score]
+
+confusion_matrix(y_true, y_pred)          # [[tn, fp], [fn, tp]]
+precision_score(y_true, y_pred)           # tp / (tp + fp)
+recall_score(y_true, y_pred)              # tp / (tp + fn)
+f1_score(y_true, y_pred)                  # 2tp / (2tp + fp + fn)
+
+roc_auc_score(y_true, y_score)            # needs scores, not labels
+average_precision_score(y_true, y_score)  # step sum, not the trapezoid
+fpr, tpr, thresholds = roc_curve(y_true, y_score)
+precision, recall, thresholds = precision_recall_curve(y_true, y_score)
+
+log_loss(y_true, y_score)                 # needs probabilities
+f1_score(y_multi, y_pred_multi, average="macro")   # or "micro", "weighted"</code></pre>
+
+<p>
+  Note the row and column order of <code>confusion_matrix</code>: rows are true classes and columns are predicted classes, sorted by label, so for labels 0 and 1 the layout is [[TN, FP], [FN, TP]].
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>ROC versus PR.</strong> ROC is insensitive to class balance, which is both a virtue (comparable across datasets) and a trap (it can look excellent when the flagged list is mostly false alarms). Use PR or precision-at-k when positives are rare and you act on the top of the list.</li>
+  <li><strong>Threshold-free versus threshold-based.</strong> AUC and AP rank models without a cutoff but say nothing about performance at the cutoff you will deploy. Report a threshold metric at the operating point too.</li>
+  <li><strong>F1 treats the two errors alike.</strong> If a miss is much worse than a false alarm, use F-beta with β &gt; 1 or, better, a cost-weighted score; F1 also ignores true negatives entirely.</li>
+  <li><strong>Log loss versus accuracy.</strong> Log loss rewards well-calibrated probabilities and punishes overconfidence, while accuracy and AUC ignore how sure the model was. They can disagree about which of two models is better (see <a href="/ml-models/loss-functions">loss functions</a>).</li>
+  <li><strong>Variance.</strong> With few positives every metric is noisy. A recall measured on 20 positives has a standard error near 0.1; report intervals or cross-validated spreads, not a bare number.</li>
+  <li><strong>Averaging choices.</strong> Macro, micro and weighted answer different questions and can differ by a factor of two, as above. State which one you report.</li>
+  <li><strong>Metric versus loss.</strong> Most of these metrics are not differentiable, so models are trained on a surrogate (log loss) and judged on another; the gap between them is a real risk to monitor.</li>
+</ul>
+
+<h3 id="check-yourself">Check yourself</h3>
+<details class="ml-quiz">
+  <summary>A model has precision 1.0 and recall 0.25. What is its F1?</summary>
+  <p>2 × 1.0 × 0.25 / (1.0 + 0.25) = 0.4. The harmonic mean is closer to the smaller number than the arithmetic mean (0.625) would be.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why can a model with a very high AUC still have poor precision at the threshold you deploy?</summary>
+  <p>AUC measures ranking over all thresholds and is blind to class balance. With rare positives, even a small false-positive rate produces many more false alarms than hits at your operating point.</p>
+</details>
+<details class="ml-quiz">
+  <summary>You scale all of a model's scores by 0.5 without changing their order. What changes?</summary>
+  <p>AUC and average precision do not change, since they depend only on ordering. A fixed threshold of 0.5 now gives different counts, and log loss changes.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Fawcett. <em>An Introduction to ROC Analysis.</em> Pattern Recognition Letters, 2006.</li>
+  <li>Davis and Goadrich. <em>The Relationship Between Precision-Recall and ROC Curves.</em> ICML, 2006.</li>
+  <li>Saito and Rehmsmeier. <em>The Precision-Recall Plot Is More Informative than the ROC Plot When Evaluating Binary Classifiers on Imbalanced Datasets.</em> PLOS ONE, 2015.</li>
+  <li>scikit-learn {{ pins.sklearn.version }}: <a href="{{ skl('sklearn/metrics/_classification.py', 1448, 1642) }}"><code>f1_score</code></a>, <a href="{{ skl('sklearn/metrics/_ranking.py', 511, 747) }}"><code>roc_auc_score</code></a>, <a href="{{ skl('sklearn/metrics/_ranking.py', 128, 311) }}"><code>average_precision_score</code></a>, <a href="{{ skl('sklearn/metrics/_classification.py', 3321, 3446) }}"><code>log_loss</code></a>.</li>
+</ul>

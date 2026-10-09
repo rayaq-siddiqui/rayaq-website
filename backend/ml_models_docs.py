@@ -406,7 +406,7 @@ PAGES = [
             "sklearn:sklearn/metrics/_classification.py",
             "sklearn:sklearn/metrics/_ranking.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "regression-metrics",
