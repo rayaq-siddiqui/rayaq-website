@@ -287,7 +287,7 @@ PAGES = [
         "sources": [
             "sklearn:sklearn/model_selection/_validation.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "overfitting",
@@ -4369,6 +4369,40 @@ def memorization_demo(n_train=60, n_test=400, seed=3):
     }
 
 
+def bias_variance_decomposition(degree, n=25, alpha=0.0, noise=0.3, repeats=200, bags=1, grid_size=40):
+    grid = [(i + 0.5) / grid_size for i in range(grid_size)]
+    truth = [generalization_truth(x) for x in grid]
+    predictions = []
+    for r in range(repeats):
+        xs, ys = noisy_sine_rows(n, 7000 + r, noise)
+        if bags == 1:
+            members = [poly_ridge_fit(xs, ys, degree, alpha)]
+        else:
+            rng = random.Random(9000 + r)
+            members = []
+            for _ in range(bags):
+                pick = [rng.randrange(n) for _ in range(n)]
+                members.append(poly_ridge_fit([xs[i] for i in pick], [ys[i] for i in pick], degree, alpha))
+        predictions.append([_boost_mean([polynomial_predict(w, x) for w in members]) for x in grid])
+    per_x = []
+    for g in range(grid_size):
+        column = [row[g] for row in predictions]
+        mean = _boost_mean(column)
+        per_x.append({
+            "x": grid[g], "mean": mean,
+            "bias2": (mean - truth[g]) ** 2,
+            "variance": _boost_mean([(v - mean) ** 2 for v in column]),
+            "error": _boost_mean([(v - truth[g]) ** 2 for v in column]),
+        })
+    return {
+        "bias2": _boost_mean([c["bias2"] for c in per_x]),
+        "variance": _boost_mean([c["variance"] for c in per_x]),
+        "noise": noise ** 2,
+        "error": _boost_mean([c["error"] for c in per_x]),
+        "per_x": per_x,
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -4611,6 +4645,7 @@ def render(slug, render_template):
         "polynomial_learning_curve": polynomial_learning_curve,
         "ridge_strength_sweep": ridge_strength_sweep,
         "memorization_demo": memorization_demo,
+        "bias_variance_decomposition": bias_variance_decomposition,
         "BOOST_XS": BOOST_XS,
         "BOOST_YS": BOOST_YS,
         "NEWTON_XS": NEWTON_XS,

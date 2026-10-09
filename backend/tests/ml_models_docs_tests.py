@@ -2055,3 +2055,23 @@ def test_memorization_demo_fits_random_labels_without_generalizing():
     assert demo["train_accuracy"] == 1.0
     assert 0.45 < demo["test_accuracy"] < 0.6
     assert demo["leaves"] > 10
+
+
+def test_bias_variance_decomposition_adds_up_and_tracks_flexibility():
+    stiff = ml_models_docs.bias_variance_decomposition(1, repeats=60)
+    mid = ml_models_docs.bias_variance_decomposition(3, repeats=60)
+    wild = ml_models_docs.bias_variance_decomposition(9, repeats=60)
+    assert stiff["bias2"] > mid["bias2"]
+    assert wild["variance"] > 10 * mid["variance"]
+    assert wild["variance"] > stiff["variance"]
+    for r in (stiff, mid, wild):
+        assert abs(r["error"] - (r["bias2"] + r["variance"])) < 1e-6 * max(1, r["error"])
+        assert r["noise"] == 0.3 ** 2
+
+
+def test_bias_variance_ridge_and_bagging_cut_variance():
+    plain = ml_models_docs.bias_variance_decomposition(9, alpha=1e-3, repeats=40)
+    bagged = ml_models_docs.bias_variance_decomposition(9, alpha=1e-3, repeats=40, bags=10)
+    stronger = ml_models_docs.bias_variance_decomposition(9, alpha=1e-2, repeats=40)
+    assert bagged["variance"] < plain["variance"]
+    assert stronger["variance"] < plain["variance"]

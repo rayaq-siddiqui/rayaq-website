@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-09 (twenty-third run). Spec v2 widens the section from model architectures
+**Last updated:** 2026-10-09 (twenty-fourth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: queue items 1-32, the last being `overfitting`. The next run builds
-`bias-variance` (queue item 33).
+format. Ready pages: queue items 1-33, the last being `bias-variance`. The next run builds
+`regularization` (queue item 34).
 
 ## Pins
 
@@ -401,6 +401,20 @@ Learning-curve tables use medians over 30 draws because a degree-9 fit on 15 poi
 
 Gaps: the references (ESL ch. 7, Zhang et al. 2017, Belkin et al. 2019) are cited from memory and were not opened. The end of `_incremental_fit_estimator` was not independently checked.
 
+## Twenty-fourth run (2026-10-09) — bias-variance
+
+| Commit | What |
+|---|---|
+| `ml-models: add tested bias-variance helper` / `build the bias-variance page` | `bias_variance_decomposition` (Monte Carlo bias², variance and noise over refitted training sets, with optional ridge and bagging); page, `ready`, queue ✓ |
+
+Verified at scikit-learn 1.9.1: `model_selection/_validation.py` `learning_curve` 1776-2111, `_translate_train_sizes` 2114-2179, `validation_curve` 2283-2514 (all from the overfitting run).
+
+The table uses odd degrees only: the sine is odd about x = 0.5, so degree 2 adds variance without reducing bias, and variance is not monotone between degrees 1 and 3 (0.030 vs 0.021 at 200 draws); the page says so rather than claiming a strict ladder.
+
+Pins checked with `git ls-remote --tags`: PyTorch v2.14.1, scikit-learn 1.9.1 and XGBoost v3.4.2 are still the latest stable releases; no pin moved.
+
+Gaps: the references (ESL 7.3, Geman et al. 1992, Belkin et al. 2019, Breiman 1996) are cited from memory and were not opened.
+
 ## Queue
 
 1. `tensors-and-shapes` ✓
@@ -435,8 +449,8 @@ Gaps: the references (ESL ch. 7, Zhang et al. 2017, Belkin et al. 2019) are cite
 30. `decision-trees` ✓
 31. `gradient-boosting` ✓
 32. `overfitting` ✓
-33. `bias-variance` ← next
-34. `regularization`
+33. `bias-variance` ✓
+34. `regularization` ← next
 35. `activation-functions`
 36. `linear-algebra-toolkit`
 37. `missing-data`
