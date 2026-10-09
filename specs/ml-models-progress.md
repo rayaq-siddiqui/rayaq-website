@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-09 (twenty-third run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: queue items 1-30, the last being `decision-trees`. The next run builds
-`gradient-boosting` (queue item 31).
+format. Ready pages: queue items 1-31, the last being `gradient-boosting`. The next run builds
+`overfitting` (queue item 32).
 
 ## Pins
 
@@ -371,9 +371,23 @@ Verified at scikit-learn 1.9.1: `tree/_classes.py` `BaseDecisionTree.__init__` 1
 
 sklearn's `Entropy` criterion is in bits (log base 2), not nats. The helpers were cross-checked against a real scikit-learn 1.9.1 in a scratch venv (never added to requirements): tree shape, root split, ccp path and entropy match. Importance on the noise demo differs from a single sklearn fit only through random tie-breaking between features. No offline outputs were needed.
 
-Pins checked with `git ls-remote --tags`: see the end of this run's report; no pin moved.
+Pins checked with `git ls-remote --tags`: PyTorch v2.14.1, scikit-learn 1.9.1 and XGBoost v3.4.2 are still the latest stable releases; no pin moved.
 
 Gaps: the decision-trees references (Breiman et al. 1984, Quinlan 1986, ESL 9.2, Strobl et al. 2007) are cited from memory and were not opened.
+
+### Twenty-third run, page 2 — gradient-boosting
+
+| Commit | What |
+|---|---|
+| `ml-models: add tested gradient-boosting helpers` / `build the gradient-boosting page` | `boost_stumps`, `best_regression_stump`, `grow_regression_tree`, `boosting_curve` (noisy sine, lr 1.0 vs 0.1), `newton_scan` (XGBoost-convention `loss_chg`, λ, γ, `min_child_weight`); page, `ready`, queue ✓ |
+
+Verified at scikit-learn 1.9.1: `ensemble/_gb.py` `_init_raw_predictions` 94-133, `_update_terminal_regions` 136-271, `_fit_stage` 438-522, `_fit_stages` 831-961, `GradientBoostingRegressor.__init__` 2089-2136; `_hist_gradient_boosting/gradient_boosting.py` HistGradientBoosting regressor `__init__` 1646-1692 (approximate end), early-stopping `auto` at 534; `splitting.pyx` `_split_gain` 1089-1136, `_loss_from_value` 1138-1147, `compute_node_value` 1172-1198.
+
+Verified at XGBoost v3.4.2: `src/tree/param.h` `TrainParam` defaults 82-123, `ThresholdL1` 233-241, `CalcGainGivenWeight` 245-248, `CalcWeight` 252-264, `CalcGain` 266-281; `split_evaluator.h` `CalcSplitGain` 187-211; `hist/evaluate_splits.h` `EnumerateSplit` 204-264, `ApplyTreeSplit` 339-382; `driver.h` `IsValidExpandEntry` 30-47; `python-package/xgboost/training.py` `train` 53-209; `updater_quantile_hist.cc` `HistUpdater` from 408, root leaf at 520.
+
+Cross-checks: the helpers match scikit-learn 1.9.1 (stump thresholds, MSEs, staged test MSE) and XGBoost (split, `loss_chg`, leaf weights, γ and `min_child_weight` behavior). XGBoost 3.4.2 was not on the package mirror, so the check used 3.2.0 in a scratch venv; the gain and leaf formulas did not change between the two. Finding: the code's `loss_chg` has no ½ and compares with γ directly, so γ is on a different scale from the paper's ½[...] − γ; the page says so.
+
+Gaps: the gradient-boosting references (Friedman 2001, Chen and Guestrin 2016, Ke et al. 2017, ESL ch. 10) are cited from memory and were not opened. The end line of the HistGradientBoosting `__init__` range was not independently checked.
 
 ## Queue
 
@@ -407,8 +421,8 @@ Gaps: the decision-trees references (Breiman et al. 1984, Quinlan 1986, ESL 9.2,
 28. `classification-metrics` ✓
 29. `cross-validation` ✓
 30. `decision-trees` ✓
-31. `gradient-boosting` ← next
-32. `overfitting`
+31. `gradient-boosting` ✓
+32. `overfitting` ← next
 33. `bias-variance`
 34. `regularization`
 35. `activation-functions`

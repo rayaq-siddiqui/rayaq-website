@@ -513,7 +513,7 @@ PAGES = [
             "xgboost:src/tree/hist/evaluate_splits.h",
             "xgboost:python-package/xgboost/training.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "support-vector-machines",
