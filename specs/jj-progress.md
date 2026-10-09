@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-08 (fifty-second run): bumped the pin `3935c0f..26bcd69` (0.46.0). **The
+**Last updated:** 2026-10-09 (fifty-third run): bumped the pin `26bcd69..da1d234` (0.46.0). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@26bcd6972e5d04a824f501b98e91e02ee423f201` (committed 2026-10-08, version
-0.46.0), analyzed 2026-10-08. Held in `jj_docs.UPSTREAM`. Previous pin: `3935c0f`.
+`jj-vcs/jj@da1d234f309a36e665a222cb02d92a07ccef7c34` (committed 2026-10-08, version
+0.46.0), analyzed 2026-10-09. Held in `jj_docs.UPSTREAM`. Previous pin: `26bcd69`.
 
 ## §10 acceptance criteria
 
@@ -31,7 +31,13 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to fifty-second runs: pin bumped).
+      run: pin bumped; fiftieth to fifty-third runs: pin bumped).
+
+## Fifty-third run (2026-10-09)
+
+- `c3d8c40` maintenance `26bcd69..da1d234` (1 commit: tag-name completion for `tag`/`git` commands). Re-pinned
+  shifted ranges on 10 pages (`git-fetch`, `git-push`, `tag-*`, `undo`, `workspace-root`, `config-get`/
+  `-unset`, `util-config-schema`); each remapped range cites the same text. No prose change; registry same.
 
 ## Fifty-second run (2026-10-08)
 
