@@ -167,6 +167,8 @@ has `"ready": True`, and 404s otherwise. Both go through `rendered_pages.get`.
 complete, then weekly, and pushes straight to `main`. Each run:
 
 1. Gets a clean, current checkout of `main` and confirms the suite is green.
+   It pulls `main` again before it starts each page or any other development, since other
+   Routines and the owner push to `main` at any time.
 2. Reads `AGENTS.md`, this spec and the progress file.
 3. **Research run** (while any list has no problems in `PROBLEMS`): researches every list
    still missing and the NeetCode

@@ -136,6 +136,10 @@ build once research is done.
   `complexity-analysis`, `dp-fundamentals`, `interview-approach`, `segment-trees`,
   `fenwick-trees`, `string-matching`, `bitmask-dp`.
 
+- **Pull before every change (2026-10-09, owner).** The Routine runs `git pull --rebase
+  origin main` before it starts each page or any other development, not only at the start of a
+  run, and re-reads this file if anything came in.
+
 ## Known gaps and questions for the owner
 
 - None open.
