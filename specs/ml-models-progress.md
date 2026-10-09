@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-09 (twenty-third run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: queue items 1-31, the last being `gradient-boosting`. The next run builds
-`overfitting` (queue item 32).
+format. Ready pages: queue items 1-32, the last being `overfitting`. The next run builds
+`bias-variance` (queue item 33).
 
 ## Pins
 
@@ -389,6 +389,18 @@ Cross-checks: the helpers match scikit-learn 1.9.1 (stump thresholds, MSEs, stag
 
 Gaps: the gradient-boosting references (Friedman 2001, Chen and Guestrin 2016, Ke et al. 2017, ESL ch. 10) are cited from memory and were not opened. The end line of the HistGradientBoosting `__init__` range was not independently checked.
 
+### Twenty-third run, page 3 — overfitting
+
+| Commit | What |
+|---|---|
+| `ml-models: add tested overfitting helpers` / `build the overfitting page` | `poly_ridge_fit` (matches scikit-learn `Ridge` with a free intercept), median `polynomial_learning_curve`, `ridge_strength_sweep`, `memorization_demo`; page, `ready`, queue ✓ |
+
+Verified at scikit-learn 1.9.1: `model_selection/_validation.py` `learning_curve` 1776-2111, `_translate_train_sizes` 2114-2179, `_incremental_fit_estimator` 2182-2262 (end approximate), `validation_curve` 2283-2514; `tree/_classes.py` `DecisionTreeClassifier.__init__` 951-983 (from the decision-trees run).
+
+Learning-curve tables use medians over 30 draws because a degree-9 fit on 15 points occasionally explodes and would dominate a mean. The early-stopping example reuses `boosting_curve`. The page links no `regularization` page yet (not built); add the link when it is ready.
+
+Gaps: the references (ESL ch. 7, Zhang et al. 2017, Belkin et al. 2019) are cited from memory and were not opened. The end of `_incremental_fit_estimator` was not independently checked.
+
 ## Queue
 
 1. `tensors-and-shapes` ✓
@@ -422,8 +434,8 @@ Gaps: the gradient-boosting references (Friedman 2001, Chen and Guestrin 2016, K
 29. `cross-validation` ✓
 30. `decision-trees` ✓
 31. `gradient-boosting` ✓
-32. `overfitting` ← next
-33. `bias-variance`
+32. `overfitting` ✓
+33. `bias-variance` ← next
 34. `regularization`
 35. `activation-functions`
 36. `linear-algebra-toolkit`

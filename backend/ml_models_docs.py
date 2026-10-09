@@ -300,7 +300,7 @@ PAGES = [
             "sklearn:sklearn/model_selection/_validation.py",
             "sklearn:sklearn/tree/_classes.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "regularization",
