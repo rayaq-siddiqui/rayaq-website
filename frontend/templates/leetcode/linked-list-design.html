@@ -1,0 +1,462 @@
+{% set lru_cap = 3 %}
+{% set lru_ops = [["put", "a", 1], ["put", "b", 2], ["put", "c", 3], ["get", "a"], ["put", "d", 4], ["get", "b"], ["put", "c", 30], ["put", "e", 5], ["get", "a"], ["get", "d"]] %}
+{% set lru = lru_trace(lru_cap, lru_ops) %}
+{% set rand_to = [2, 0, 4, -1, 1] %}
+{% set cr = copy_random_trace(rand_to) %}
+{% set pushes = [["push", 4], ["push", 6], ["push", 4], ["push", 8], ["push", 6], ["push", 4]] %}
+{% set fq_ops = pushes + [["pop"]] * 4 %}
+{% set fq = freq_stack_trace(fq_ops) %}
+{% set built = fq[pushes | length - 1] %}
+<header class="jj-header">
+  <h1>Linked lists with hash maps</h1>
+  <p class="tagline">
+    A linked list keeps things in order and lets you remove or move a node in constant time, but it cannot find a
+    node without walking. A hash map finds any node in constant time but has no order. Put the two together, with
+    the map pointing into the list, and you get structures that do both: the least recently used cache, a copy of
+    a list with extra pointers, and stacks that pop by frequency. This page is about designing those
+    combinations.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  "Design" problems ask you to build a small data structure with a promised cost for each operation, usually
+  O(1). No single textbook structure meets all the promises, so you combine two: one to answer <em>where is
+  it?</em> and one to answer <em>what comes next?</em> The skill is deciding which question each structure
+  answers, and keeping them in agreement after every operation.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Signal</th><th>Pattern</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>"Evict the least recently used item" with O(1) get and put</td><td>Hash map plus doubly linked list</td><td>The map finds the node; the list keeps recency order and unlinks in constant time.</td></tr>
+    <tr><td>"Evict the least frequently used", ties by recency</td><td>Map of frequency to a recency list, plus a minimum-frequency counter</td><td>Each frequency has its own LRU list, and the minimum tells which one to evict from.</td></tr>
+    <tr><td>Copy a structure whose pointers can go anywhere</td><td>Map from original node to copy</td><td>Wiring a pointer needs the copy of its target, which the map hands back.</td></tr>
+    <tr><td>"Pop the most frequent element, newest first on a tie"</td><td>One stack per frequency level</td><td>The top of the highest level is exactly the answer, and popping steps down a level.</td></tr>
+    <tr><td>Fixed-size queue that reuses space</td><td>Array with head index and count, wrap with modulo</td><td>No shifting; the count distinguishes empty from full.</td></tr>
+    <tr><td>"Get, put, remove, and a random or ordered element, all in O(1)"</td><td>Map for lookup plus a sequence for order</td><td>Whichever operation the map cannot answer, the sequence does.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Think of a cloakroom. Coats hang on a rail in the order they were last used, with the newest at one end. To
+  find yours, the attendant keeps a ticket stub that says exactly which hook it is on, so there is no searching.
+  Taking a coat to use it and putting it back at the newest end is just lifting it off its hook and hanging it at
+  the end of the rail, which touches only the neighbours of that hook. When the rail is full and a new coat
+  arrives, the attendant takes the coat at the oldest end and tears up its stub. The rail is the linked list, the
+  stubs are the hash map, and neither is any use without the other.
+</p>
+<p>
+  The pattern generalises. Whenever you need a lookup by key <em>and</em> a maintained order, let the map store
+  the list node, not just the value. A node already knows its neighbours, so removing it needs no search.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 600 {{ 20 + (lru | length) * 36 }}" role="img" aria-labelledby="lc-ld-lru-title lc-ld-lru-desc">
+    <title id="lc-ld-lru-title">Recency order of a cache of {{ lru_cap }} keys after each operation</title>
+    <desc id="lc-ld-lru-desc">
+      One row per operation, most recently used key on the left.
+      {% for step in lru %}After {{ step.op[0] }} {{ step.op[1] }}: {{ step.order | join(", ") }}{% if step.evicted %}, evicting {{ step.evicted }}{% endif %}. {% endfor %}
+    </desc>
+    {% for step in lru %}
+      {% set row = loop.index0 %}
+      <text x="14" y="{{ 28 + row * 36 }}" font-size="13">{{ step.op[0] }} {{ step.op[1] }}{% if step.op[0] == "put" %}={{ step.op[2] }}{% endif %}</text>
+      {% for key in step.order %}
+        <rect x="{{ 130 + loop.index0 * 56 }}" y="{{ 10 + row * 36 }}" width="46" height="26" class="{{ 'lc-fill-a' if loop.index0 == 0 else 'd-box' }}"></rect>
+        <text x="{{ 153 + loop.index0 * 56 }}" y="{{ 28 + row * 36 }}" font-size="14" text-anchor="middle">{{ key }}</text>
+      {% endfor %}
+      {% if step.evicted %}
+        <rect x="{{ 130 + step.order | length * 56 + 12 }}" y="{{ 10 + row * 36 }}" width="46" height="26" class="lc-fill-m"></rect>
+        <text x="{{ 153 + step.order | length * 56 + 12 }}" y="{{ 28 + row * 36 }}" font-size="14" text-anchor="middle">{{ step.evicted }}</text>
+        <text x="{{ 130 + step.order | length * 56 + 68 }}" y="{{ 28 + row * 36 }}" font-size="12" class="d-muted">evicted</text>
+      {% endif %}
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">
+  The blue key is the most recently used. The amber key was at the oldest end when the cache was full and a new
+  key arrived. A hit or an update moves its key back to the blue end.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="lru">The least recently used cache</h3>
+<p>
+  <strong>Invariant.</strong> The map contains exactly the keys that are in the list, each mapped to its own node,
+  and the list runs from most recently used (next to a front sentinel) to least recently used (next to a back
+  sentinel). Every operation must preserve both facts, and it can do so with three constant-time moves:
+  look up a node in the map, unlink a node from where it is, and link a node in at the front.
+</p>
+<ul>
+  <li><strong>get(key).</strong> Miss: return −1. Hit: unlink the node, link it at the front, return its value.</li>
+  <li><strong>put(key, value).</strong> Existing key: update the value, then move the node to the front.
+    New key: if the cache is full, take the node next to the back sentinel, unlink it and delete its key from the
+    map, then create the new node, add it to the map and link it at the front.</li>
+</ul>
+<p>
+  <strong>Why doubly linked.</strong> Unlinking a node means making its predecessor point at its successor. In a
+  singly linked list you would have to walk from the front to find the predecessor, which costs O(n). The
+  <code>prev</code> pointer makes that a constant-time step. <strong>Why the node stores its key.</strong> When
+  the back node is evicted, the only thing you hold is the node, and you need its key to delete the map entry.
+  <strong>Why sentinels.</strong> With a front and a back dummy node, "first node" and "last node" are never
+  special cases, so link and unlink have no <code>if</code> for empty or single-element lists.
+</p>
+
+<h3 id="copy">Copying with a map</h3>
+<p>
+  A list whose nodes also carry a <code>random</code> pointer cannot be copied in one pass, because when you
+  copy node <i>i</i> the copy of its random target may not exist yet. The fix is two passes. Pass one walks the
+  list and makes one copy per node, recording <code>copies[original] = copy</code>. Pass two walks again and sets
+  each copy's <code>next</code> and <code>random</code> to <code>copies[original.next]</code> and
+  <code>copies[original.random]</code>. The map is what turns "the node this pointer targets" into "its copy".
+  Mapping <code>None</code> to <code>None</code> removes the null checks.
+</p>
+<p>
+  There is an O(1)-space version: insert each copy directly after its original, so the copy of any node is
+  <code>node.next</code>; set each copy's random from <code>original.random.next</code>; then split the two
+  interleaved lists apart. The map version is easier to get right and is the one to write first.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 600 270" role="img" aria-labelledby="lc-ld-copy-title lc-ld-copy-desc">
+    <title id="lc-ld-copy-title">Copying a list of {{ rand_to | length }} nodes with random pointers through a map</title>
+    <desc id="lc-ld-copy-desc">
+      Originals in the top row and their copies in the bottom row, joined by the map. Random pointers:
+      {% for r in cr.wires %}node {{ r.node }} points to {{ "nothing" if r.random is none else "node " ~ r.random }}{{ "; " if not loop.last else "." }}{% endfor %}
+      Each copy has the same shape, and every pointer in the bottom row stays inside the bottom row.
+    </desc>
+    {% for w in cr.wires %}
+      {% set i = w.node %}
+      {% set cx = 48 + i * 110 %}
+      <rect x="{{ cx - 28 }}" y="70" width="56" height="28" class="d-box"></rect>
+      <text x="{{ cx }}" y="89" font-size="14" text-anchor="middle">{{ i }}</text>
+      <rect x="{{ cx - 28 }}" y="170" width="56" height="28" class="lc-fill-a"></rect>
+      <text x="{{ cx }}" y="189" font-size="14" text-anchor="middle">{{ i }}′</text>
+      <line x1="{{ cx }}" y1="98" x2="{{ cx }}" y2="170" class="d-line" stroke-dasharray="4 4"></line>
+      {% if w.next is not none %}
+        <line x1="{{ cx + 28 }}" y1="84" x2="{{ cx + 82 }}" y2="84" class="d-line"></line>
+        <line x1="{{ cx + 28 }}" y1="184" x2="{{ cx + 82 }}" y2="184" class="d-line"></line>
+      {% endif %}
+      {% if w.random is not none %}
+        {% set tx = 48 + w.random * 110 %}
+        {% set span = (w.random - i) | abs %}
+        <path d="M {{ cx }} 70 Q {{ (cx + tx) / 2 }} {{ 70 - (10 + 22 * span) }} {{ tx }} 70" class="lc-a"></path>
+        <path d="M {{ cx }} 198 Q {{ (cx + tx) / 2 }} {{ 198 + (10 + 22 * span) }} {{ tx }} 198" class="lc-a"></path>
+      {% endif %}
+    {% endfor %}
+    <text x="14" y="136" font-size="12" class="d-muted">dashed: the map from original to copy</text>
+  </svg>
+</div>
+<p class="lc-caption">
+  Straight lines are <code>next</code>, blue arcs are <code>random</code>. The copy of every node has been wired
+  to the copy of its targets, never to an original.
+</p>
+
+<h3 id="frequency">Frequency levels</h3>
+<p>
+  The most frequent element stack pops the most frequent value, and among equals the one pushed last. Keep
+  <code>count[value]</code> and a list of stacks, where stack <i>k</i> holds one entry of a value each time its
+  count reached <i>k</i>. Pushing a value whose count becomes <i>c</i> appends it to stack <i>c</i>. Popping takes
+  the top of the highest non-empty stack. A value with count 3 appears once in each of stacks 1, 2 and 3, so after
+  popping it from stack 3 it is still correctly in stacks 1 and 2 with count 2. The highest stack is always the
+  highest frequency, and within a stack the top is the latest push, which is the tie-break.
+</p>
+<p>
+  The least-frequently-used cache is the same idea with the roles reversed: keep a recency list for each
+  frequency, plus the current minimum frequency. A hit moves the key from its list to the next frequency's list;
+  if the old list was the minimum and is now empty, the minimum goes up by one. A new key resets the minimum to 1.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 600 220" role="img" aria-labelledby="lc-ld-freq-title lc-ld-freq-desc">
+    <title id="lc-ld-freq-title">One stack per frequency level after pushing {{ pushes | map("last") | join(", ") }}</title>
+    <desc id="lc-ld-freq-desc">
+      {% for level in built.levels %}Level {{ loop.index }}, bottom to top: {{ level | join(", ") }}. {% endfor %}
+      The next pop takes the top of the highest level, which is {{ built.levels[-1][-1] }}.
+    </desc>
+    {% for level in built.levels %}
+      {% set col = loop.index0 %}
+      {% for v in level %}
+        <rect x="{{ 40 + col * 150 }}" y="{{ 156 - loop.index0 * 34 }}" width="56" height="28" class="{{ 'lc-fill-m' if loop.last and col == built.levels | length - 1 else 'lc-fill-a' }}"></rect>
+        <text x="{{ 68 + col * 150 }}" y="{{ 175 - loop.index0 * 34 }}" font-size="14" text-anchor="middle">{{ v }}</text>
+      {% endfor %}
+      <line x1="{{ 30 + col * 150 }}" y1="188" x2="{{ 106 + col * 150 }}" y2="188" class="d-line"></line>
+      <text x="{{ 68 + col * 150 }}" y="208" font-size="12" text-anchor="middle" class="d-muted">level {{ loop.index }}</text>
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">
+  Each column is one stack, bottom at the base. The amber entry, the top of the highest level, is the value the
+  next pop returns.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  <strong>LRU cache with capacity {{ lru_cap }}.</strong> The order column lists keys from most to least recently
+  used.
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Step</th><th>Operation</th><th>Returns</th><th>Order after</th><th>Evicted</th></tr></thead>
+    <tbody>
+      {% for step in lru %}
+        <tr>
+          <td class="num">{{ loop.index }}</td>
+          <td>{{ step.op[0] }}({{ step.op[1] }}{% if step.op[0] == "put" %}, {{ step.op[2] }}{% endif %})</td>
+          <td class="num">{{ step.result if step.result is not none else "–" }}</td>
+          <td>{{ step.order | join(", ") }}</td>
+          <td>{{ step.evicted if step.evicted else "–" }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  The first eviction is key {{ (lru | selectattr("evicted") | list)[0].evicted }}: it was the oldest because
+  <code>get(a)</code> had just moved <code>a</code> to the front. The second put of <code>c</code> updates the value
+  and moves it to the front without evicting. After the last step the cache holds
+  {{ lru[-1].order | join(", ") }}.
+</p>
+
+<p>
+  <strong>Copy a list with random pointers.</strong> The list has {{ rand_to | length }} nodes numbered from 0. Pass
+  one creates {{ cr.copies | length }} copies. Pass two wires them:
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Node</th><th>Copy's next</th><th>Copy's random</th></tr></thead>
+    <tbody>
+      {% for w in cr.wires %}
+        <tr>
+          <td class="num">{{ w.node }}′</td>
+          <td class="num">{{ (w.next ~ "′") if w.next is not none else "null" }}</td>
+          <td class="num">{{ (w.random ~ "′") if w.random is not none else "null" }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <strong>Frequency stack.</strong> Push {{ pushes | map("last") | join(", ") }}, then pop four times:
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Step</th><th>Operation</th><th>Popped</th><th>Stacks, level 1 upward</th><th>Counts</th></tr></thead>
+    <tbody>
+      {% for step in fq %}
+        <tr>
+          <td class="num">{{ loop.index }}</td>
+          <td>{{ step.op[0] }}{% if step.op | length > 1 %}({{ step.op[1] }}){% endif %}</td>
+          <td class="num">{{ step.popped if step.popped is not none else "–" }}</td>
+          <td>{% for level in step.levels %}[{{ level | join(", ") }}]{{ " " if not loop.last }}{% endfor %}</td>
+          <td>{% for k, v in step.counts | dictsort %}{{ k }}×{{ v }}{{ ", " if not loop.last }}{% endfor %}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  The pops return {{ fq[pushes | length:] | map(attribute="popped") | join(", ") }}. The value {{ fq[pushes | length].popped }}
+  comes first because it reached count {{ built.levels | length }}, the highest; the later pops step down to level
+  {{ built.levels | length - 1 }} and then level 1.
+</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>class Node:
+    __slots__ = ("key", "val", "prev", "next")
+
+    def __init__(self, key=0, val=0):
+        self.key, self.val = key, val
+        self.prev = self.next = None
+
+
+class LRUCache:
+    def __init__(self, capacity):
+        self.cap = capacity
+        self.nodes = {}
+        self.front, self.back = Node(), Node()       # sentinels
+        self.front.next, self.back.prev = self.back, self.front
+
+    def _unlink(self, node):
+        node.prev.next, node.next.prev = node.next, node.prev
+
+    def _push_front(self, node):
+        node.prev, node.next = self.front, self.front.next
+        self.front.next.prev = node
+        self.front.next = node
+
+    def get(self, key):
+        node = self.nodes.get(key)
+        if node is None:
+            return -1
+        self._unlink(node)
+        self._push_front(node)
+        return node.val
+
+    def put(self, key, val):
+        node = self.nodes.get(key)
+        if node:
+            node.val = val
+            self._unlink(node)
+        else:
+            if len(self.nodes) == self.cap:
+                oldest = self.back.prev
+                self._unlink(oldest)
+                del self.nodes[oldest.key]           # why the node keeps its key
+            node = self.nodes[key] = Node(key, val)
+        self._push_front(node)
+
+
+def copy_random_list(head):
+    copies = {None: None}
+    cur = head
+    while cur:
+        copies[cur] = Node(cur.val)
+        cur = cur.next
+    cur = head
+    while cur:
+        copy = copies[cur]
+        copy.next, copy.random = copies[cur.next], copies[cur.random]
+        cur = cur.next
+    return copies[head]
+
+
+class FreqStack:
+    def __init__(self):
+        self.count = {}
+        self.levels = []                             # levels[k] holds values whose count reached k + 1
+
+    def push(self, x):
+        c = self.count[x] = self.count.get(x, 0) + 1
+        if c &gt; len(self.levels):
+            self.levels.append([])
+        self.levels[c - 1].append(x)
+
+    def pop(self):
+        x = self.levels[-1].pop()
+        if not self.levels[-1]:
+            self.levels.pop()
+        self.count[x] -= 1
+        return x
+
+
+class CircularQueue:
+    def __init__(self, k):
+        self.buf, self.head, self.size = [None] * k, 0, 0
+
+    def enqueue(self, v):
+        if self.size == len(self.buf):
+            return False
+        self.buf[(self.head + self.size) % len(self.buf)] = v
+        self.size += 1
+        return True
+
+    def dequeue(self):
+        if self.size == 0:
+            return False
+        self.head = (self.head + 1) % len(self.buf)
+        self.size -= 1
+        return True</code></pre>
+
+<p>
+  In <code>copy_random_list</code> the nodes are used as dictionary keys, which works because
+  <code>Node</code> uses the default identity hash. If you define <code>__eq__</code> on a node class, the map
+  would merge distinct nodes that happen to compare equal.
+</p>
+
+<h3 id="variations">Variations and edge cases</h3>
+<ul>
+  <li><strong><code>OrderedDict</code> shortcut.</strong> <code>collections.OrderedDict</code> is a hash map plus
+    a doubly linked list already: <code>move_to_end(key)</code> refreshes, and <code>popitem(last=False)</code>
+    evicts the oldest. It is a legitimate answer in practice, but interviewers often want the hand-built version,
+    so know both.</li>
+  <li><strong>LFU cache.</strong> Keep <code>key_to_freq</code>, a map from frequency to an ordered set of keys
+    (oldest first), and <code>min_freq</code>. A hit removes the key from its frequency's set and adds it to the
+    next one; if that emptied the minimum's set, increase the minimum. Eviction removes the oldest key of the
+    minimum's set.</li>
+  <li><strong>Circular queue.</strong> A head index and a size suffice. Tracking only head and tail cannot tell
+    empty from full, since both look like head equal to tail. Keeping the size removes the ambiguity.</li>
+  <li><strong>Time-based or capacity-by-weight caches.</strong> The same skeleton works; only the eviction
+    condition changes, from "count exceeds capacity" to "total weight exceeds budget", sometimes evicting
+    several nodes in a loop.</li>
+  <li><strong>Edge cases:</strong> capacity 1, putting an existing key when the cache is full (update, never
+    evict), getting a missing key (must not change the order), and a stored value of 0 (the code above tests
+    the node, which is always truthy, never the value).</li>
+</ul>
+
+<h2 id="tradeoffs">Complexity and tradeoffs</h2>
+
+<ul>
+  <li><strong>Time:</strong> O(1) per operation for the LRU cache, the frequency stack and the circular queue:
+    one hash lookup plus a bounded number of pointer updates. Copying a list is O(n), two passes.</li>
+  <li><strong>Space:</strong> O(capacity) for the cache. Copying with a map uses O(n) extra beyond the copy
+    itself; the interleaving trick brings that to O(1).</li>
+  <li><strong>Baseline.</strong> A plain list ordered by recency makes get O(n), since you must search and then
+    move. A map with timestamps makes get O(1) but eviction O(n), since the oldest timestamp must be found by
+    scanning. The combination is the only one of the three that makes both operations constant.</li>
+  <li><strong>When it fails.</strong> If the order you need is by value (the smallest, the median), a linked list
+    does not help and a heap or balanced tree does. Under concurrency the two structures must change together
+    under one lock, or the map and list disagree. Pointer-heavy structures also have poor cache locality in
+    real programs; an array-based design can beat them even at the same asymptotics.</li>
+</ul>
+
+<h2 id="problems">Problems</h2>
+
+<p>
+  The home problems are all "design" questions: the LRU and LFU caches, the maximum frequency stack, the
+  circular queue, and copying a list with random pointers. Design Twitter and Design Hit Counter are listed as
+  "also uses" because the main idea belongs to merging sorted lists and to a time window, but they too need a
+  map from a user or time to a small sequence.
+</p>
+{% include "leetcode/_problems.html" %}
+
+<h2 id="connections">Connections</h2>
+
+{% include "leetcode/_connections.html" %}
+<p>
+  The pointer moves come from the linked list basics page, and the lookup half comes from the hash maps page, so
+  a bug usually lives in one of those two habits: forgetting to save a pointer before overwriting it, or
+  letting the map hold a stale node after it was evicted. The frequency stack is a cousin of the monotonic
+  stack in spirit, in that the stack's structure encodes the answer, and the LFU cache shares the
+  "bucket by count" idea with the counting and bucketing page.
+</p>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="lc-quiz">
+  <summary>Why must the LRU list be doubly linked, and why must each node store its key?</summary>
+  <p>Moving or evicting a node means unlinking it, and that needs its predecessor. With only <code>next</code>, finding the predecessor costs a walk from the front, making get O(n). The key is needed because eviction starts from the list end and arrives at a node, not a key, and the map entry for that key has to be deleted too.</p>
+</details>
+<details class="lc-quiz">
+  <summary>In the trace, why was key {{ (lru | selectattr("evicted") | list)[0].evicted }} evicted at the first overflow rather than <code>a</code>?</summary>
+  <p><code>get(a)</code> ran just before, so <code>a</code> moved to the front and became the most recently used. The oldest key at that point was {{ (lru | selectattr("evicted") | list)[0].evicted }}, at the back of the order.</p>
+</details>
+<details class="lc-quiz">
+  <summary>Why can't the list with random pointers be copied correctly in a single pass without a map?</summary>
+  <p>A copy's random pointer must target the copy of some other node. When node <i>i</i> is copied, its random target may be later in the list and not yet copied (here node 0 targets node {{ rand_to[0] }}). The map from the first pass supplies the copy of any node in the second.</p>
+</details>
+<details class="lc-quiz">
+  <summary>The value {{ built.levels[-1][-1] }} appears in {{ built.levels | length }} of the frequency stacks. Why is that not duplication?</summary>
+  <p>Each occurrence records the moment its count reached that level. Popping removes only the highest one, leaving the value with count {{ built.levels | length - 1 }} still present in the lower levels, which is what a later pop needs to find.</p>
+</details>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Cormen, Leiserson, Rivest and Stein, <em>Introduction to Algorithms</em>, section 10.2 (doubly linked lists and sentinels) and chapter 11 (hash tables).</li>
+  <li>Sedgewick and Wayne, <em>Algorithms</em>, sections 1.3 and 3.4: linked lists, and hash tables with symbol-table semantics.</li>
+  <li>Skiena, <em>The Algorithm Design Manual</em>: dictionaries and the combination of structures to meet an operation budget.</li>
+  <li>Shah, Mitra and Matani, "An O(1) algorithm for implementing the LFU cache eviction scheme" (2010): the frequency-list design sketched above.</li>
+  <li>Knuth, <em>The Art of Computer Programming</em>, volume 1, section 2.2.3: linked allocation and the manipulation of doubly linked lists.</li>
+  <li>The <a href="https://neetcode.io/roadmap" rel="noopener">NeetCode roadmap</a> and the
+    Blind 75, Grind 169, NeetCode 150 and NeetCode 250 lists, used as the index of topics and
+    problems.</li>
+</ul>

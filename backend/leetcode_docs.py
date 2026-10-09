@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -4206,6 +4206,71 @@ def middle_trace(count):
     return {"steps": steps, "middle": slow}
 
 
+def lru_trace(capacity, ops):
+    """Each op is ["put", key, value] or ["get", key]; order lists keys most recently used first."""
+    data = {}
+    order = []
+    steps = []
+    for op in ops:
+        evicted = None
+        result = None
+        if op[0] == "get":
+            key = op[1]
+            if key in data:
+                order.remove(key)
+                order.insert(0, key)
+                result = data[key]
+            else:
+                result = -1
+        else:
+            _, key, value = op
+            if key in data:
+                order.remove(key)
+            elif len(data) == capacity:
+                evicted = order.pop()
+                del data[evicted]
+            data[key] = value
+            order.insert(0, key)
+        steps.append({"op": list(op), "result": result, "evicted": evicted, "order": list(order)})
+    return steps
+
+
+def copy_random_trace(random_to):
+    """random_to[i] is the index node i's random pointer targets, or -1. Pass one makes a copy per node; pass two wires copies through the original-to-copy map."""
+    count = len(random_to)
+    wires = [
+        {"node": i, "next": i + 1 if i + 1 < count else None, "random": random_to[i] if random_to[i] != -1 else None}
+        for i in range(count)
+    ]
+    return {"copies": list(range(count)), "wires": wires}
+
+
+def freq_stack_trace(ops):
+    """Each op is ["push", value] or ["pop"]; levels[k] is the stack of values whose count reached k + 1, lowest level first."""
+    counts = {}
+    levels = {}
+    steps = []
+    for op in ops:
+        popped = None
+        if op[0] == "push":
+            value = op[1]
+            counts[value] = counts.get(value, 0) + 1
+            levels.setdefault(counts[value], []).append(value)
+        else:
+            top = max(levels)
+            popped = levels[top].pop()
+            if not levels[top]:
+                del levels[top]
+            counts[popped] -= 1
+        steps.append({
+            "op": list(op),
+            "popped": popped,
+            "levels": [list(levels[k]) for k in sorted(levels)],
+            "counts": {k: v for k, v in counts.items() if v},
+        })
+    return steps
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -4370,6 +4435,9 @@ def render(slug, render_template):
         "remove_nth_from_end_trace": remove_nth_from_end_trace,
         "floyd_trace": floyd_trace,
         "middle_trace": middle_trace,
+        "lru_trace": lru_trace,
+        "copy_random_trace": copy_random_trace,
+        "freq_stack_trace": freq_stack_trace,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,

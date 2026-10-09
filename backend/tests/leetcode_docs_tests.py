@@ -528,3 +528,29 @@ def test_fast_slow_pointer_helpers_match_the_page():
     assert "They meet at node 5 after 5 turns" in body
     assert "the cycle begins at node 3, the tail has 3 nodes and the loop has 5." in body
     assert "The entrance is 3, and that is the repeated value" in body
+
+
+def test_linked_list_design_helpers_match_the_page():
+    ops = [["put", "a", 1], ["put", "b", 2], ["put", "c", 3], ["get", "a"], ["put", "d", 4], ["get", "b"],
+           ["put", "c", 30], ["put", "e", 5], ["get", "a"], ["get", "d"]]
+    lru = leetcode_docs.lru_trace(3, ops)
+    assert lru[3]["result"] == 1 and lru[3]["order"] == ["a", "c", "b"]
+    assert lru[4]["evicted"] == "b" and lru[5]["result"] == -1
+    assert lru[6]["evicted"] is None and lru[6]["order"] == ["c", "d", "a"]
+    assert lru[7]["evicted"] == "a" and lru[-1]["order"] == ["d", "e", "c"] and lru[-1]["result"] == 4
+    assert leetcode_docs.lru_trace(1, [["put", 1, 1], ["put", 2, 2], ["get", 1]])[-1]["result"] == -1
+    cr = leetcode_docs.copy_random_trace([2, 0, 4, -1, 1])
+    assert cr["copies"] == [0, 1, 2, 3, 4]
+    assert cr["wires"][3] == {"node": 3, "next": 4, "random": None}
+    assert cr["wires"][4] == {"node": 4, "next": None, "random": 1}
+    assert leetcode_docs.copy_random_trace([])["wires"] == []
+    pushes = [["push", v] for v in [4, 6, 4, 8, 6, 4]]
+    fq = leetcode_docs.freq_stack_trace(pushes + [["pop"]] * 4)
+    assert fq[5]["levels"] == [[4, 6, 8], [4, 6], [4]] and fq[5]["counts"] == {4: 3, 6: 2, 8: 1}
+    assert [step["popped"] for step in fq[6:]] == [4, 6, 4, 8]
+    with pytest.raises(ValueError):
+        leetcode_docs.freq_stack_trace([["pop"]])
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/linked-list-design").get_data(as_text=True))
+    assert "The first eviction is key b" in body
+    assert "After the last step the cache holds d, e, c." in body
+    assert "The pops return 4, 6, 4, 8." in body
