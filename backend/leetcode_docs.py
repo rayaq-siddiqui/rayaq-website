@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -4821,6 +4821,36 @@ def ipo_trace(rounds, wealth, profits, capital):
     return {"steps": steps, "wealth": wealth}
 
 
+def quickselect_trace(values, target):
+    """Lomuto partition around the last item of the live range, then keep only the side that holds sorted index `target`."""
+    a = list(values)
+    lo, hi = 0, len(a) - 1
+    rounds = []
+    comparisons = 0
+    while lo < hi:
+        pivot = a[hi]
+        boundary = lo
+        for j in range(lo, hi):
+            comparisons += 1
+            if a[j] < pivot:
+                a[boundary], a[j] = a[j], a[boundary]
+                boundary += 1
+        a[boundary], a[hi] = a[hi], a[boundary]
+        rounds.append({"lo": lo, "hi": hi, "pivot": pivot, "index": boundary, "array": list(a)})
+        if boundary == target:
+            return {"answer": a[boundary], "rounds": rounds, "comparisons": comparisons}
+        if target < boundary:
+            hi = boundary - 1
+        else:
+            lo = boundary + 1
+    return {"answer": a[target], "rounds": rounds, "comparisons": comparisons}
+
+
+def kth_largest_target(length, k):
+    """Index of the k-th largest in ascending order."""
+    return length - k
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -5016,6 +5046,8 @@ def render(slug, render_template):
         "merge_k_trace": merge_k_trace,
         "running_median_trace": running_median_trace,
         "ipo_trace": ipo_trace,
+        "quickselect_trace": quickselect_trace,
+        "kth_largest_target": kth_largest_target,
         "merge_strategy_costs": merge_strategy_costs,
         "smallest_range_trace": smallest_range_trace,
         "coverage": coverage(),

@@ -751,3 +751,22 @@ def test_two_heaps_helpers_match_the_page():
     body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/two-heaps").get_data(as_text=True))
     assert "After the 8 arrivals the median is 7.5, the mean of 7 and 8." in body
     assert "The final capital is 9." in body
+
+
+def test_quickselect_helpers_match_the_page():
+    values = [9, 4, 7, 1, 8, 3, 6, 2]
+    target = leetcode_docs.kth_largest_target(len(values), 3)
+    assert target == 5
+    qs = leetcode_docs.quickselect_trace(values, target)
+    assert qs["answer"] == sorted(values)[target] == 7
+    assert [(r["lo"], r["hi"], r["pivot"], r["index"]) for r in qs["rounds"]] == [(0, 7, 2, 1), (2, 7, 4, 3), (4, 7, 9, 7), (4, 6, 6, 4), (5, 6, 8, 6)]
+    assert qs["comparisons"] == 18
+    assert values == [9, 4, 7, 1, 8, 3, 6, 2]
+    for t in range(len(values)):
+        assert leetcode_docs.quickselect_trace(values, t)["answer"] == sorted(values)[t]
+    assert leetcode_docs.quickselect_trace([5], 0)["answer"] == 5
+    worst = leetcode_docs.quickselect_trace(list(range(1, 9)), 0)
+    assert worst["comparisons"] == 28 and len(worst["rounds"]) == 7
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/quickselect").get_data(as_text=True))
+    assert "The answer is 7, found after 5 partitions and 18 comparisons" in body
+    assert "That costs 7 rounds and 28 comparisons for 8 items" in body

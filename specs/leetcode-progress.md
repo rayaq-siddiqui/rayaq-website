@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-09 (build run). `two-heaps` is ready (26 of 58 pages). **The next run is a build run** continuing at `quickselect`.
+**Last updated:** 2026-10-09 (build run). `quickselect` is ready (27 of 58 pages). **The next run is a build run** continuing at `subsets-and-permutations`.
 
 ## The Routine
 
@@ -40,9 +40,9 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 | List | Problems with a ready home | Size |
 |---|---|---|
 | Blind 75 | 38 | 75 |
-| Grind 169 | 102 | 169 |
-| NeetCode 150 | 68 | 150 |
-| NeetCode 250 | 124 | 250 |
+| Grind 169 | 103 | 169 |
+| NeetCode 150 | 69 | 150 |
+| NeetCode 250 | 125 | 250 |
 
 ## Queue
 
@@ -75,8 +75,8 @@ build once research is done.
 24. `top-k-elements` ✓
 25. `k-way-merge` ✓
 26. `two-heaps` ✓
-27. `quickselect` ← next
-28. `subsets-and-permutations`
+27. `quickselect` ✓
+28. `subsets-and-permutations` ← next
 29. `constraint-backtracking`
 30. `graph-traversal`
 31. `grid-graphs`
@@ -224,3 +224,12 @@ pytest green (436 passed); the 390px phone check passed on `/`, `/leetcode` and 
 Coverage: Blind 75 36/75, Grind 169 99/169, NeetCode 150 65/150, NeetCode 250 120/250.
 Checkout repair: local `main` again had unrelated history, so work was done on a branch cut from
 `origin/main` and pushed to `main`. Next queue item: `k-way-merge`.
+
+### 2026-10-09 — build run (fourth)
+
+Built three pages in queue order: `k-way-merge`, `two-heaps`, `quickselect` (3 of 3). Each shipped with tested
+stdlib helpers, two inline SVGs and a page test; each was pushed separately.
+pytest green (445 passed); the 390px phone check passed on `/`, `/leetcode` and every ready page.
+Coverage: Blind 75 38/75, Grind 169 103/169, NeetCode 150 69/150, NeetCode 250 125/250.
+Checkout repair: local `main` had unrelated history again; it was kept as the local branch `backup-stale-main`
+and `main` was reset to `origin/main` before building. Next queue item: `subsets-and-permutations`.
