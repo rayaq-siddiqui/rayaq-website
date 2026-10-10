@@ -940,3 +940,28 @@ def test_union_find_helpers_match_the_page():
     assert "<code>0, 0, 0, 0, 4, 4, 6</code> and the count is 3 groups" in body
     assert "<td>Neither</td><td class=\"num\">7</td><td class=\"num\">21</td>" in body
     assert "<td>Path compression only</td><td class=\"num\">7</td><td class=\"num\">9</td>" in body
+
+
+def test_dijkstra_helpers_match_the_page():
+    edges = [(0, 1, 4), (0, 2, 1), (2, 1, 2), (1, 3, 1), (2, 3, 5), (3, 4, 3), (2, 5, 8), (4, 5, 1)]
+    trace = leetcode_docs.dijkstra_trace(6, edges, 0)
+    assert trace["dist"] == [0, 3, 1, 4, 7, 8]
+    assert trace["settled"] == [(0, 0), (2, 1), (1, 3), (3, 4), (4, 7), (5, 8)]
+    assert (trace["pushes"], trace["pops"], trace["stale"]) == (9, 9, 3)
+    assert leetcode_docs.shortest_path_to(trace, 5) == [0, 2, 1, 3, 4, 5]
+    assert leetcode_docs.dijkstra_trace(3, [(0, 1, 1)], 0)["dist"] == [0, 1, None]
+    assert leetcode_docs.shortest_path_to(leetcode_docs.dijkstra_trace(3, [(0, 1, 1)], 0), 2) is None
+    assert leetcode_docs.dijkstra_trace(1, [], 0)["dist"] == [0]
+    assert leetcode_docs.network_delay_of([(2, 1, 1), (2, 3, 1), (3, 4, 1)], 4, 2) == 2
+    assert leetcode_docs.network_delay_of([(1, 2, 1)], 3, 1) == -1
+    assert leetcode_docs.minimum_effort_of([[1, 2, 2], [3, 8, 2], [5, 3, 5]]) == 2
+    assert leetcode_docs.minimum_effort_of([[7]]) == 0
+    assert leetcode_docs.swim_in_water_of([[0, 2], [1, 3]]) == 3
+    assert leetcode_docs.swim_in_water_of([[0, 1, 2, 3, 4], [24, 23, 22, 21, 5], [12, 13, 14, 15, 16], [11, 17, 18, 19, 20], [10, 9, 8, 7, 6]]) == 16
+    assert leetcode_docs.negative_edge_counterexample() == (1, -3)
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/dijkstra").get_data(as_text=True))
+    assert "node 0 at 0; node 2 at 1; node 1 at 3; node 3 at 4; node 4 at 7; node 5 at 8" in body
+    assert "<code>0, 3, 1, 4, 7, 8</code>" in body
+    assert "0 → 2 → 1 → 3 → 4 → 5, costing 8" in body
+    assert "<td>Stale pops skipped</td><td class=\"num\">3</td>" in body
+    assert "settles node 1 at distance 1" in body or "node 1 at distance 1 first" in body

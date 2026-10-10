@@ -1,0 +1,300 @@
+{% set edges = [(0, 1, 4), (0, 2, 1), (2, 1, 2), (1, 3, 1), (2, 3, 5), (3, 4, 3), (2, 5, 8), (4, 5, 1)] %}
+{% set pos = {0: (40, 110), 1: (170, 50), 2: (130, 170), 3: (270, 110), 4: (370, 50), 5: (430, 170)} %}
+{% set trace = dijkstra_trace(6, edges, 0) %}
+{% set route = shortest_path_to(trace, 5) %}
+{% set route_edges = [] %}
+{% for i in range(route | length - 1) %}{% set _ = route_edges.append((route[i], route[i + 1])) %}{% endfor %}
+{% set flights = [(2, 1, 1), (2, 3, 1), (3, 4, 1)] %}
+{% set heights = [[1, 2, 2], [3, 8, 2], [5, 3, 5]] %}
+{% set water = [[0, 2], [1, 3]] %}
+{% set neg = negative_edge_counterexample() %}
+<header class="jj-header">
+  <h1>Dijkstra's algorithm</h1>
+  <p class="tagline">
+    Dijkstra's algorithm finds the cheapest route from one starting node to every other node when no edge has a negative
+    cost. It keeps a heap of the best known distance to each frontier node and always finalizes the cheapest one. The same
+    loop, with a different meaning for "cost", solves minimum-effort paths and rising-water grids.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  You have a graph whose edges carry costs (travel time, price, effort) and a start node. The question is the cheapest way
+  to reach one node or all of them. Breadth-first search finds fewest edges, not least cost, and trying every path is
+  exponential. The costs are never negative, which is the property that makes a greedy choice safe.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Signal</th><th>Pattern</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>"Cheapest", "fastest" or "shortest" over weighted edges that are never negative</td><td>Dijkstra with a min-heap</td><td>The cheapest unfinalized node can never be improved later.</td></tr>
+    <tr><td>"Time for a signal to reach all nodes"</td><td>Dijkstra, answer is the largest distance</td><td>Every node needs a final distance; the slowest one decides.</td></tr>
+    <tr><td>Grid where a route's cost is its worst step or highest cell</td><td>Dijkstra with a max-so-far cost</td><td>Replace "sum of weights" by "max along the path"; the greedy argument still holds.</td></tr>
+    <tr><td>All edges cost 1 (or 0 and 1)</td><td>Plain BFS (or 0-1 BFS)</td><td>No heap is needed when costs are uniform.</td></tr>
+    <tr><td>Negative edge, or at most k edges</td><td>Bellman-Ford</td><td>Dijkstra's greedy finalization breaks with negative weights.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Imagine lighting a fuse at the start node. The fire runs along every edge at a speed set by its cost, and the order in
+  which nodes catch fire is the order of their shortest distance. Dijkstra simulates exactly that. At any moment the
+  node that will catch fire next is the cheapest one among those reachable from nodes already burning, and a heap hands
+  you that node in O(log n).
+</p>
+<p>
+  Why can the first pop be trusted? Suppose node u is the cheapest frontier node with distance d. Any other route to u
+  would have to leave the burning region through some other frontier node whose distance is already at least d, and
+  then pay a cost that is not negative, so it arrives at u no earlier than d. That argument is the whole proof, and it
+  is exactly where a negative edge breaks it.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 470 220" role="img" aria-labelledby="lc-dj-graph-title lc-dj-graph-desc">
+    <title id="lc-dj-graph-title">A weighted directed graph with its cheapest route highlighted</title>
+    <desc id="lc-dj-graph-desc">
+      Six nodes and the edges {% for a, b, w in edges %}{{ a }} to {{ b }} costing {{ w }}{{ ", " if not loop.last }}{% endfor %}.
+      Starting from node 0 the final distances are {% for d in trace.dist %}node {{ loop.index0 }} at {{ d }}{{ ", " if not loop.last }}{% endfor %}.
+      The cheapest route to node 5 is {{ route | join(", then ") }}.
+    </desc>
+    {% for a, b, w in edges %}
+      {% set on_route = (a, b) in route_edges %}
+      <line x1="{{ pos[a][0] }}" y1="{{ pos[a][1] }}" x2="{{ pos[b][0] }}" y2="{{ pos[b][1] }}" class="d-line" stroke-width="{{ 3.5 if on_route else 1.5 }}"></line>
+      <text x="{{ (pos[a][0] + pos[b][0]) // 2 + 6 }}" y="{{ (pos[a][1] + pos[b][1]) // 2 - 6 }}" font-size="12" class="d-muted">{{ w }}</text>
+    {% endfor %}
+    {% for node, (x, y) in pos.items() %}
+      <circle cx="{{ x }}" cy="{{ y }}" r="17" class="{{ 'lc-fill-a' if node == 0 else 'lc-fill-g' }}"></circle>
+      <text x="{{ x }}" y="{{ y + 4 }}" font-size="12" text-anchor="middle">{{ node }}</text>
+      <text x="{{ x }}" y="{{ y + 32 }}" font-size="11" text-anchor="middle" class="d-muted">d={{ trace.dist[node] }}</text>
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">
+  Edge labels are costs and every edge is directed from the first node listed to the second (here always the lower-numbered one); thick
+  edges form the cheapest route to node 5. The diagram scrolls sideways on a narrow screen.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="loop">The loop</h3>
+<p>
+  Keep <code>dist</code>, the final distance of each settled node, and a heap of <code>(distance, node)</code> pairs.
+  Push the start with distance 0. Repeatedly pop the smallest pair. If its node is already settled, skip it. Otherwise
+  record its distance, and for each outgoing edge push <code>(distance + cost, neighbor)</code> when that beats the best
+  known distance to the neighbor.
+</p>
+
+<h3 id="stale">Stale entries</h3>
+<p>
+  Python's heap has no decrease-key. Instead, whenever a better route is found, push another entry and leave the old
+  one in the heap. When the old entry is eventually popped the node is already settled, and the pop is skipped. This
+  costs at most one push per edge, so the heap holds at most E entries and each push or pop is O(log E) = O(log V).
+</p>
+
+<h3 id="invariants">Invariant and proof</h3>
+<p>
+  Every time a node is popped and not skipped, its distance is final, and the settled distances come out in
+  non-decreasing order. Induction: assume it holds for all settled nodes so far. The popped pair is the smallest in the
+  heap, and any unsettled node's true shortest route must cross from the settled set to the unsettled set by one edge, so
+  its true distance is at least the smallest heap entry. Non-negative edges never reduce a distance, which is the
+  step a negative edge violates.
+</p>
+
+<h3 id="early-exit">Early exit and variants</h3>
+<p>
+  If you only need one target, stop when it is first popped; its distance is final then. The cost need not be a sum:
+  any combination <code>cost(path + edge)</code> that never decreases as the path grows works, such as the maximum step
+  on the path, or the maximum cell value seen.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 440 {{ 50 + trace.settled | length * 28 }}" role="img" aria-labelledby="lc-dj-order-title lc-dj-order-desc">
+    <title id="lc-dj-order-title">The order Dijkstra settles the nodes and their distances</title>
+    <desc id="lc-dj-order-desc">
+      Nodes are settled in the order {% for n, d in trace.settled %}node {{ n }} at distance {{ d }}{{ ", " if not loop.last }}{% endfor %}.
+      The distances never decrease. The run pushed {{ trace.pushes }} entries onto the heap and popped {{ trace.pops }}, of which {{ trace.stale }} were stale and skipped.
+    </desc>
+    <text x="10" y="18" font-size="12" class="d-muted">settle order (bar length = distance)</text>
+    {% for n, d in trace.settled %}
+      <text x="10" y="{{ 48 + loop.index0 * 28 }}" font-size="12">node {{ n }}</text>
+      <rect x="70" y="{{ 34 + loop.index0 * 28 }}" width="{{ 40 + d * 40 }}" height="18" class="lc-fill-g"></rect>
+      <text x="{{ 76 + d * 40 + 40 }}" y="{{ 48 + loop.index0 * 28 }}" font-size="12">{{ d }}</text>
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">
+  The bars only ever grow: that monotone order is the invariant in action.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  On the graph above, starting from node 0, the nodes settle in this order with these distances:
+  {% for n, d in trace.settled %}node {{ n }} at {{ d }}{{ "; " if not loop.last }}{% endfor %}.
+  The final distance array is <code>{{ trace.dist | join(", ") }}</code>. The cheapest route to node 5 is
+  {{ route | join(" → ") }}, costing {{ trace.dist[5] }}. Note that the direct edge 0 → 1 costs 4, but going through
+  node 2 costs only 3, so node 1 is pushed twice: the cost-4 entry goes stale.
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Heap work</th><th>Count</th></tr></thead>
+    <tbody>
+      <tr><td>Pushes</td><td class="num">{{ trace.pushes }}</td></tr>
+      <tr><td>Pops</td><td class="num">{{ trace.pops }}</td></tr>
+      <tr><td>Stale pops skipped</td><td class="num">{{ trace.stale }}</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  <strong>Network delay.</strong> With travel times {% for u, v, w in flights %}{{ u }}→{{ v }} ({{ w }}){{ ", " if not loop.last }}{% endfor %}
+  and a signal sent from node 2 on 4 nodes, the last node to hear is node 4 after {{ network_delay_of(flights, 4, 2) }}.
+  Unreachable nodes make the answer -1: with only the edge 1→2 and 3 nodes, a signal from node 1
+  never reaches node 3, so the answer is {{ network_delay_of([(1, 2, 1)], 3, 1) }}.
+</p>
+<p>
+  <strong>Minimum effort.</strong> On the height grid {{ heights }} the best route's biggest height jump is
+  {{ minimum_effort_of(heights) }}. <strong>Rising water.</strong> On {{ water }} you can reach the far corner at time
+  {{ swim_in_water_of(water) }}, because the final cell only opens then.
+</p>
+<p>
+  <strong>Why negative edges break it.</strong> Take edges 0→1 (1), 0→2 (2) and 2→1 (-5). Dijkstra settles node 1 at
+  distance {{ neg[0] }} first, but the true shortest distance is {{ neg[1] }}, via node 2. The settled value can no longer be improved, so the answer is wrong.
+</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import heapq
+
+def dijkstra(graph, source):
+    # graph[u] is a list of (v, cost) with cost &gt;= 0
+    dist = {}
+    heap = [(0, source)]
+    while heap:
+        d, u = heapq.heappop(heap)
+        if u in dist:
+            continue
+        dist[u] = d
+        for v, cost in graph[u]:
+            if v not in dist:
+                heapq.heappush(heap, (d + cost, v))
+    return dist
+
+
+def network_delay_time(times, n, k):
+    graph = {i: [] for i in range(1, n + 1)}
+    for u, v, w in times:
+        graph[u].append((v, w))
+    dist = dijkstra(graph, k)
+    return max(dist.values()) if len(dist) == n else -1</code></pre>
+
+<h3 id="variations">Variations and edge cases</h3>
+<pre><code>def minimum_effort(heights):
+    rows, cols = len(heights), len(heights[0])
+    best = {(0, 0): 0}
+    heap = [(0, 0, 0)]
+    while heap:
+        effort, r, c = heapq.heappop(heap)
+        if (r, c) == (rows - 1, cols - 1):
+            return effort
+        if effort &gt; best[(r, c)]:
+            continue
+        for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nr, nc = r + dr, c + dc
+            if 0 &lt;= nr &lt; rows and 0 &lt;= nc &lt; cols:
+                step = max(effort, abs(heights[nr][nc] - heights[r][c]))
+                if step &lt; best.get((nr, nc), float("inf")):
+                    best[(nr, nc)] = step
+                    heapq.heappush(heap, (step, nr, nc))
+
+
+def swim_in_water(grid):
+    n = len(grid)
+    seen = {(0, 0)}
+    heap = [(grid[0][0], 0, 0)]
+    while heap:
+        t, r, c = heapq.heappop(heap)
+        if (r, c) == (n - 1, n - 1):
+            return t
+        for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nr, nc = r + dr, c + dc
+            if 0 &lt;= nr &lt; n and 0 &lt;= nc &lt; n and (nr, nc) not in seen:
+                seen.add((nr, nc))
+                heapq.heappush(heap, (max(t, grid[nr][nc]), nr, nc))</code></pre>
+<ul>
+  <li><strong>Skip stale entries.</strong> Without the settled check the algorithm still works but may reprocess nodes and
+    can blow up on dense graphs.</li>
+  <li><strong>Heap ties.</strong> Tuples compare by distance first, then node. Use integer node ids, or add a counter, if
+    nodes are not comparable.</li>
+  <li><strong>Unreachable nodes.</strong> They never appear in <code>dist</code>; check the count before taking a maximum.</li>
+  <li><strong>Directed vs. undirected.</strong> For an undirected graph add each edge in both directions.</li>
+  <li><strong>Zero-cost edges</strong> are fine. A negative edge is not: use Bellman-Ford.</li>
+  <li><strong>Reconstructing the route.</strong> Store the parent whenever you push a better distance, then walk parents back
+    from the target.</li>
+  <li><strong>Edge cases:</strong> source equals target (distance 0), a single node, parallel edges (the heap picks the cheaper),
+    and disconnected graphs.</li>
+</ul>
+
+<h2 id="tradeoffs">Complexity and tradeoffs</h2>
+
+<ul>
+  <li><strong>Time:</strong> O((V + E) log V) with a binary heap, since each edge causes at most one push and each push or pop costs O(log V).</li>
+  <li><strong>Space:</strong> O(V + E) for the graph, plus O(E) heap entries in the worst case.</li>
+  <li><strong>Baseline.</strong> Trying every simple path is exponential. Bellman-Ford handles any weights in O(V · E), slower
+    but more general. A dense graph can use an array scan instead of a heap for O(V²).</li>
+  <li><strong>Versus BFS.</strong> With uniform costs BFS is O(V + E) and simpler; the heap only earns its log factor when costs differ.</li>
+  <li><strong>When it fails.</strong> Negative edges (use Bellman-Ford), paths limited to k edges (Bellman-Ford rounds, or a
+    state of node plus stops), and all-pairs distances (run it from each node, or use Floyd-Warshall).</li>
+</ul>
+
+<h2 id="problems">Problems</h2>
+
+<p>
+  Network Delay Time is the textbook run: distances from one source, answered by the largest. Swim in Rising Water and
+  Path With Minimum Effort keep the same loop but change the cost into a running maximum. Cheapest Flights Within K Stops,
+  homed on the Bellman-Ford page, adds a stop limit that plain Dijkstra cannot enforce.
+</p>
+{% include "leetcode/_problems.html" %}
+
+<h2 id="connections">Connections</h2>
+
+{% include "leetcode/_connections.html" %}
+<p>
+  Dijkstra is BFS with a priority queue instead of a plain queue, and it leans on the heap page for its inner loop.
+  Minimizing a maximum along a path can also be solved by binary searching the answer or by adding edges in
+  cost order with union-find, which is why those pages are linked.
+</p>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="lc-quiz">
+  <summary>Why is a node's distance final the moment it is popped?</summary>
+  <p>Every other unsettled node has a heap entry at least as large, and any route to the popped node must leave the settled region through such a node and then pay non-negative costs, so it cannot be cheaper. In the example node {{ trace.settled[2][0] }} is settled at {{ trace.settled[2][1] }} and nothing later can undercut it.</p>
+</details>
+<details class="lc-quiz">
+  <summary>What does a stale pop mean, and why is it harmless?</summary>
+  <p>A better route to the same node was pushed after this entry, so the node is already settled when the old entry comes out. The settled check skips it. The example run skipped {{ trace.stale }} of its {{ trace.pops }} pops.</p>
+</details>
+<details class="lc-quiz">
+  <summary>Which part of the proof fails with a negative edge?</summary>
+  <p>The claim that costs after leaving the settled region cannot reduce the total. With edges 0→1 (1), 0→2 (2), 2→1 (-5), Dijkstra settles node 1 at {{ neg[0] }} but the true distance is {{ neg[1] }}.</p>
+</details>
+<details class="lc-quiz">
+  <summary>How would you change the loop to minimize the biggest step on a path instead of the total?</summary>
+  <p>Push <code>max(current, step)</code> instead of <code>current + step</code>. Since that value never decreases as a path grows, the greedy argument holds. The height grid above gives {{ minimum_effort_of(heights) }}.</p>
+</details>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Cormen, Leiserson, Rivest and Stein, <em>Introduction to Algorithms</em>, section 22.3 (Dijkstra's algorithm, with the correctness proof).</li>
+  <li>Dijkstra, "A note on two problems in connexion with graphs", <em>Numerische Mathematik</em> 1, 1959, the original paper.</li>
+  <li>Sedgewick and Wayne, <em>Algorithms</em>, section 4.4 (shortest paths).</li>
+  <li>Skiena, <em>The Algorithm Design Manual</em>, section on shortest paths.</li>
+  <li>The <a href="https://neetcode.io/roadmap" rel="noopener">NeetCode roadmap</a> and the
+    Blind 75, Grind 169, NeetCode 150 and NeetCode 250 lists, used as the index of topics and
+    problems.</li>
+</ul>

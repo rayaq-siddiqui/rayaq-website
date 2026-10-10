@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -5564,6 +5564,94 @@ def gcd_traversal_of(nums):
     return len({find(("i", i)) for i in range(len(nums))}) == 1
 
 
+def dijkstra_trace(node_count, edges, source):
+    """Dijkstra over directed weighted `edges` (u, v, w). Returns final distances (None when unreachable), parents, the order nodes were settled with their distances, and counts of heap pushes, pops and stale pops skipped."""
+    graph = [[] for _ in range(node_count)]
+    for u, v, w in edges:
+        graph[u].append((v, w))
+    dist = [None] * node_count
+    best = {source: 0}
+    parent = [None] * node_count
+    heap = [(0, source)]
+    pushes, pops, stale = 1, 0, 0
+    settled = []
+    while heap:
+        d, u = heapq.heappop(heap)
+        pops += 1
+        if dist[u] is not None:
+            stale += 1
+            continue
+        dist[u] = d
+        settled.append((u, d))
+        for v, w in graph[u]:
+            nd = d + w
+            if dist[v] is None and (v not in best or nd < best[v]):
+                best[v] = nd
+                parent[v] = u
+                heapq.heappush(heap, (nd, v))
+                pushes += 1
+    return {"dist": dist, "parent": parent, "settled": settled, "pushes": pushes, "pops": pops, "stale": stale}
+
+
+def shortest_path_to(trace, target):
+    """The node sequence from the source to `target` by following parents, or None when unreachable."""
+    if trace["dist"][target] is None:
+        return None
+    path = [target]
+    while trace["parent"][path[-1]] is not None:
+        path.append(trace["parent"][path[-1]])
+    return path[::-1]
+
+
+def network_delay_of(times, node_count, source):
+    """Time for a signal from `source` (1-indexed nodes) to reach every node, or -1."""
+    trace = dijkstra_trace(node_count + 1, [(u, v, w) for u, v, w in times], source)
+    reached = trace["dist"][1:]
+    return -1 if None in reached else max(reached)
+
+
+def minimum_effort_of(heights):
+    """Smallest possible largest height step on a route from the top-left to the bottom-right cell, found with a heap keyed by the worst step so far."""
+    rows, cols = len(heights), len(heights[0])
+    best = {(0, 0): 0}
+    heap = [(0, 0, 0)]
+    while heap:
+        effort, r, c = heapq.heappop(heap)
+        if (r, c) == (rows - 1, cols - 1):
+            return effort
+        if effort > best[(r, c)]:
+            continue
+        for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < rows and 0 <= nc < cols:
+                step = max(effort, abs(heights[nr][nc] - heights[r][c]))
+                if step < best.get((nr, nc), math.inf):
+                    best[(nr, nc)] = step
+                    heapq.heappush(heap, (step, nr, nc))
+
+
+def swim_in_water_of(grid):
+    """Earliest time you can walk from the top-left to the bottom-right when cell (r, c) is only enterable once the time reaches grid[r][c]."""
+    size = len(grid)
+    seen = {(0, 0)}
+    heap = [(grid[0][0], 0, 0)]
+    while heap:
+        t, r, c = heapq.heappop(heap)
+        if (r, c) == (size - 1, size - 1):
+            return t
+        for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < size and 0 <= nc < size and (nr, nc) not in seen:
+                seen.add((nr, nc))
+                heapq.heappush(heap, (max(t, grid[nr][nc]), nr, nc))
+
+
+def negative_edge_counterexample():
+    """A three-node graph where a negative edge into an already settled node breaks Dijkstra. Returns (distance Dijkstra reports for node 1, true shortest distance to node 1)."""
+    edges = [(0, 1, 1), (0, 2, 2), (2, 1, -5)]
+    return dijkstra_trace(3, edges, 0)["dist"][1], 2 + -5
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -5778,6 +5866,12 @@ def render(slug, render_template):
         "word_ladder_of": word_ladder_of,
         "clone_graph_of": clone_graph_of,
         "union_find_trace": union_find_trace,
+        "dijkstra_trace": dijkstra_trace,
+        "shortest_path_to": shortest_path_to,
+        "network_delay_of": network_delay_of,
+        "minimum_effort_of": minimum_effort_of,
+        "swim_in_water_of": swim_in_water_of,
+        "negative_edge_counterexample": negative_edge_counterexample,
         "is_valid_tree_of": is_valid_tree_of,
         "forest_layout_of": forest_layout_of,
         "accounts_merge_of": accounts_merge_of,

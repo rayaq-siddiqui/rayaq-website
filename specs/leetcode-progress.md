@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-10 (build run). 33 of 58 pages are ready. **The next run is a build run** continuing at `dijkstra`.
+**Last updated:** 2026-10-10 (build run). 34 of 58 pages are ready. **The next run is a build run** continuing at `bellman-ford`.
 
 ## The Routine
 
@@ -41,8 +41,8 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 |---|---|---|
 | Blind 75 | 47 | 75 |
 | Grind 169 | 128 | 169 |
-| NeetCode 150 | 93 | 150 |
-| NeetCode 250 | 165 | 250 |
+| NeetCode 150 | 95 | 150 |
+| NeetCode 250 | 168 | 250 |
 
 ## Queue
 
@@ -82,8 +82,8 @@ build once research is done.
 31. `grid-graphs` ✓
 32. `topological-sort` ✓
 33. `union-find` ✓
-34. `dijkstra` ← next
-35. `bellman-ford`
+34. `dijkstra` ✓
+35. `bellman-ford` ← next
 36. `minimum-spanning-trees`
 37. `eulerian-paths`
 38. `dp-fundamentals`
@@ -252,3 +252,7 @@ Built `grid-graphs`, `topological-sort` and `union-find` (3 of 3), each with tes
 Mobile check passed on `/`, `/leetcode` and all thirty-three ready
 pages. The sandbox checkout was shallow and behind `origin/main`; deepened it and fast-forwarded
 before starting. Next: `dijkstra`.
+
+### 2026-10-10 — build run (second)
+
+Built `dijkstra` (1 of 3 this run; the run ended after one page), with six tested helpers (`dijkstra_trace`, `shortest_path_to`, `network_delay_of`, `minimum_effort_of`, `swim_in_water_of`, `negative_edge_counterexample`), two inline SVGs and the full §6 format. Coverage: Blind 75 47/75, Grind 169 128/169, NeetCode 150 95/150, NeetCode 250 168/250. Mobile check passed on all thirty-four ready pages. The sandbox's local `main` held 50 unpushed ml-models commits unrelated to `origin/main`; they were kept on the local branch `backup-stale-main` and `main` was reset to `origin/main`. Next: `bellman-ford`.
