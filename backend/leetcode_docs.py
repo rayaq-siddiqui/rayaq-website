@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -6148,6 +6148,61 @@ def manacher_of(text):
     return {"padded": padded, "radii": radii, "longest": text[start : start + radii[k]]}
 
 
+def lis_dp_trace(nums):
+    """Quadratic DP: length[i] is the longest strictly increasing subsequence ending at index i. Returns the lengths, the parent links, the answer and one longest subsequence (as values and as indices)."""
+    length = [1] * len(nums)
+    parent = [None] * len(nums)
+    for i in range(len(nums)):
+        for j in range(i):
+            if nums[j] < nums[i] and length[j] + 1 > length[i]:
+                length[i] = length[j] + 1
+                parent[i] = j
+    if not nums:
+        return {"length": [], "parent": [], "answer": 0, "sequence": [], "indices": []}
+    end = max(range(len(nums)), key=lambda index: (length[index], -index))
+    indices = []
+    while end is not None:
+        indices.append(end)
+        end = parent[end]
+    indices.reverse()
+    return {"length": length, "parent": parent, "answer": len(indices), "sequence": [nums[i] for i in indices], "indices": indices}
+
+
+def patience_trace(nums):
+    """Binary-search version: tails[k] is the smallest tail of any increasing subsequence of length k + 1. Each row is (value, slot it lands in, replaced value or None, tails afterwards)."""
+    tails, rows = [], []
+    for value in nums:
+        low, high = 0, len(tails)
+        while low < high:
+            mid = (low + high) // 2
+            if tails[mid] < value:
+                low = mid + 1
+            else:
+                high = mid
+        replaced = tails[low] if low < len(tails) else None
+        if low == len(tails):
+            tails.append(value)
+        else:
+            tails[low] = value
+        rows.append((value, low, replaced, list(tails)))
+    return {"rows": rows, "answer": len(tails), "tails": tails}
+
+
+def lis_count_of(nums):
+    """How many distinct index sets form a longest strictly increasing subsequence. Returns the length and the count."""
+    n = len(nums)
+    length, count = [1] * n, [1] * n
+    for i in range(n):
+        for j in range(i):
+            if nums[j] < nums[i]:
+                if length[j] + 1 > length[i]:
+                    length[i], count[i] = length[j] + 1, count[j]
+                elif length[j] + 1 == length[i]:
+                    count[i] += count[j]
+    best = max(length, default=0)
+    return {"length": best, "count": sum(count[i] for i in range(n) if length[i] == best)}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -6392,6 +6447,9 @@ def render(slug, render_template):
         "palindrome_table_of": palindrome_table_of,
         "expand_centers_trace": expand_centers_trace,
         "manacher_of": manacher_of,
+        "lis_dp_trace": lis_dp_trace,
+        "patience_trace": patience_trace,
+        "lis_count_of": lis_count_of,
         "bellman_ford_rounds": bellman_ford_rounds,
         "cheapest_flights_of": cheapest_flights_of,
         "has_negative_cycle_of": has_negative_cycle_of,

@@ -1145,3 +1145,25 @@ def test_palindrome_dp_helpers_match_the_page():
     assert "Counting every step that matched gives 8 palindromic substrings: 6 single letters" in body
     assert "The table agrees: it has 8 true cells and the longest is \"abba\"" in body
     assert "<code>0, 1, 0, 1, 0, 1, 4, 1, 0, 1, 0, 1, 0</code>" in body
+
+
+def test_lis_helpers_match_the_page():
+    nums = [4, 10, 4, 3, 8, 9, 6, 11]
+    dp = leetcode_docs.lis_dp_trace(nums)
+    assert dp["length"] == [1, 2, 1, 1, 2, 3, 2, 4] and dp["parent"] == [None, 0, None, None, 0, 4, 0, 5]
+    assert dp["answer"] == 4 and dp["sequence"] == [4, 8, 9, 11] and dp["indices"] == [0, 4, 5, 7]
+    assert leetcode_docs.lis_dp_trace([]) == {"length": [], "parent": [], "answer": 0, "sequence": [], "indices": []}
+    assert leetcode_docs.lis_dp_trace([5, 5, 5])["answer"] == 1
+    tails = leetcode_docs.patience_trace(nums)
+    assert tails["tails"] == [3, 6, 9, 11] and tails["answer"] == 4
+    assert tails["rows"][2] == (4, 0, 4, [4, 10]) and tails["rows"][6] == (6, 1, 8, [3, 6, 9])
+    assert leetcode_docs.patience_trace([])["answer"] == 0
+    assert leetcode_docs.lis_count_of(nums) == {"length": 4, "count": 3}
+    assert leetcode_docs.lis_count_of([2, 2, 2]) == {"length": 1, "count": 3}
+    assert leetcode_docs.lis_count_of([]) == {"length": 0, "count": 0}
+    for case in ([1, 3, 6, 7, 9, 4, 10, 5, 6], [7, 6, 5], [0, 1, 0, 3, 2, 3]):
+        assert leetcode_docs.lis_dp_trace(case)["answer"] == leetcode_docs.patience_trace(case)["answer"]
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/longest-increasing-subsequence").get_data(as_text=True))
+    assert "<code>1, 2, 1, 1, 2, 3, 2, 4</code>, so the answer is 4, for example <code>4, 8, 9, 11</code>" in body
+    assert "The final list is <code>3, 6, 9, 11</code>, with length 4" in body
+    assert "3 different index choices give a longest run of 4" in body
