@@ -965,3 +965,27 @@ def test_dijkstra_helpers_match_the_page():
     assert "0 → 2 → 1 → 3 → 4 → 5, costing 8" in body
     assert "<td>Stale pops skipped</td><td class=\"num\">3</td>" in body
     assert "settles node 1 at distance 1" in body or "node 1 at distance 1 first" in body
+
+
+def test_bellman_ford_helpers_match_the_page():
+    edges = [(3, 4, 2), (1, 3, 3), (2, 3, 6), (2, 1, -2), (0, 2, 1), (0, 1, 4)]
+    run = leetcode_docs.bellman_ford_rounds(5, edges, 0)
+    inf = float("inf")
+    assert run["history"][1] == [0, 4, 1, inf, inf]
+    assert run["history"][-2] == run["history"][-1] == [0, -1, 1, 2, 4]
+    assert run["stable_at"] == 5 and run["negative_cycle"] is False
+    flights = [(0, 1, 100), (1, 2, 100), (2, 0, 100), (1, 3, 600), (2, 3, 200)]
+    assert [leetcode_docs.cheapest_flights_of(4, flights, 0, 3, k) for k in (0, 1, 2)] == [-1, 700, 400]
+    assert leetcode_docs.cheapest_flights_of(2, [], 0, 0, 0) == 0
+    assert leetcode_docs.bellman_ford_rounds(4, flights, 0, 1)["history"][-1][3] == inf
+    assert leetcode_docs.bellman_ford_rounds(4, flights, 0, 1, snapshot=False)["history"][-1][3] == 400
+    cyc = [(0, 1, 1), (1, 2, -3), (2, 1, 1)]
+    assert leetcode_docs.bellman_ford_rounds(3, cyc, 0)["negative_cycle"] is True
+    assert leetcode_docs.has_negative_cycle_of(3, cyc) is True
+    assert leetcode_docs.has_negative_cycle_of(3, [(0, 1, 1), (1, 2, -1)]) is False
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/bellman-ford").get_data(as_text=True))
+    assert "<code>0, -1, 1, 2, 4</code>" in body
+    assert "with 0 stops the answer is -1" in body
+    assert "with 1 stop it is 700" in body and "with 2 stops it is 400" in body
+    assert "reporting 400, which uses three flights" in body
+    assert "negative cycle: True" in body

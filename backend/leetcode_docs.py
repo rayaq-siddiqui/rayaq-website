@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -5652,6 +5652,52 @@ def negative_edge_counterexample():
     return dijkstra_trace(3, edges, 0)["dist"][1], 2 + -5
 
 
+def bellman_ford_rounds(node_count, edges, source, max_rounds=None, snapshot=True):
+    """Bellman-Ford relaxation rounds. After round r, dist holds the cheapest cost using at most r edges when `snapshot` is True (each round reads the previous round's values). Returns the distance list after every round (round 0 first), the round at which nothing changed, and whether a further round would still improve (a negative cycle)."""
+    inf = math.inf
+    dist = [inf] * node_count
+    dist[source] = 0
+    history = [list(dist)]
+    limit = node_count if max_rounds is None else max_rounds
+    stable_at = None
+    for round_number in range(1, limit + 1):
+        read = list(dist) if snapshot else dist
+        changed = False
+        for u, v, w in edges:
+            if read[u] != inf and read[u] + w < dist[v]:
+                dist[v] = read[u] + w
+                changed = True
+        history.append(list(dist))
+        if not changed:
+            stable_at = round_number
+            break
+    has_negative_cycle = False
+    if max_rounds is None and stable_at is None:
+        has_negative_cycle = any(dist[u] != inf and dist[u] + w < dist[v] for u, v, w in edges)
+    return {"history": history, "stable_at": stable_at, "negative_cycle": has_negative_cycle}
+
+
+def cheapest_flights_of(node_count, flights, source, target, stops):
+    """Cheapest price from source to target using at most `stops` intermediate cities, or -1."""
+    run = bellman_ford_rounds(node_count, flights, source, stops + 1)
+    price = run["history"][-1][target]
+    return -1 if price == math.inf else price
+
+
+def has_negative_cycle_of(node_count, edges):
+    """Whether any negative cycle exists anywhere: start every node at distance 0 so cycles unreachable from one source still show."""
+    dist = [0] * node_count
+    for _ in range(node_count):
+        changed = False
+        for u, v, w in edges:
+            if dist[u] + w < dist[v]:
+                dist[v] = dist[u] + w
+                changed = True
+        if not changed:
+            return False
+    return True
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -5867,6 +5913,9 @@ def render(slug, render_template):
         "clone_graph_of": clone_graph_of,
         "union_find_trace": union_find_trace,
         "dijkstra_trace": dijkstra_trace,
+        "bellman_ford_rounds": bellman_ford_rounds,
+        "cheapest_flights_of": cheapest_flights_of,
+        "has_negative_cycle_of": has_negative_cycle_of,
         "shortest_path_to": shortest_path_to,
         "network_delay_of": network_delay_of,
         "minimum_effort_of": minimum_effort_of,
