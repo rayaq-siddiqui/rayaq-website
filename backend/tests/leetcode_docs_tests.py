@@ -1050,3 +1050,35 @@ def test_dp_fundamentals_helpers_match_the_page():
     assert "it makes 13 calls and computes 6 states" in body
     assert "<code>0, 1, 1, 2, 3, 5, 8, 13</code>" in body
     assert "top cell holds 15" in body and "ends at 18" in body
+
+
+def test_linear_dp_helpers_match_the_page():
+    assert leetcode_docs.climb_table_of(7) == [1, 1, 2, 3, 5, 8, 13, 21]
+    assert leetcode_docs.climb_table_of(0) == [1]
+    assert leetcode_docs.min_cost_climb_of([4, 2, 9, 3, 6, 1]) == {"table": [0, 0, 2, 2, 5, 5, 6], "answer": 6}
+    rob = leetcode_docs.house_robber_trace([4, 9, 3, 2, 8, 5])
+    assert rob == {"best": [4, 9, 9, 11, 17, 17], "answer": 17, "chosen": [1, 4]}
+    assert leetcode_docs.house_robber_trace([]) == {"best": [], "answer": 0, "chosen": []}
+    assert leetcode_docs.circular_robber_of([5, 1, 2, 1, 5]) == {"without_first": 7, "without_last": 7, "answer": 7}
+    assert leetcode_docs.house_robber_trace([5, 1, 2, 1, 5])["answer"] == 12
+    assert leetcode_docs.circular_robber_of([5])["answer"] == 5
+    assert leetcode_docs.decode_ways_trace("2261") == {"table": [1, 1, 2, 3, 3], "answer": 3}
+    assert leetcode_docs.decode_ways_trace("1001")["answer"] == 0
+    assert leetcode_docs.decode_ways_trace("06")["answer"] == 0
+    assert leetcode_docs.decode_ways_trace("")["answer"] == 0
+    product = leetcode_docs.max_product_trace([2, -5, -2, -4, 3])
+    assert product["rows"] == [(2, 2, 2), (-5, -5, -10), (-2, 20, -2), (-4, 8, -80), (3, 24, -240)]
+    assert product["answer"] == 24
+    assert leetcode_docs.max_product_trace([-3])["answer"] == -3
+    assert leetcode_docs.tribonacci_of(10) == [0, 1, 1, 2, 4, 7, 13, 24, 44, 81, 149]
+    assert leetcode_docs.integer_break_of(10)["answer"] == 36 and leetcode_docs.integer_break_of(2)["answer"] == 1
+    assert leetcode_docs.integer_break_of(10)["table"] == [0, 1, 1, 2, 4, 6, 9, 12, 18, 27, 36]
+    game = leetcode_docs.stone_game_three_of([3, -4, 5, 6, -2])
+    assert game["lead"] == -4 and game["result"] == "second" and game["diff"] == [-4, 9, 13, 8, -2, 0]
+    assert leetcode_docs.stone_game_three_of([5])["result"] == "first"
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/linear-dp").get_data(as_text=True))
+    assert "there are 21 ways to climb 7" in body
+    assert "<code>4, 9, 9, 11, 17, 17</code>, so the answer is 17, from houses 1 and 4" in body
+    assert "giving 3 readings" in body and "The answer is 6" in body
+    assert "the answer is 24, the run" in body and "(3 + 3 + 4)" in body
+    assert "first player's lead is -4, so the second player wins" in body

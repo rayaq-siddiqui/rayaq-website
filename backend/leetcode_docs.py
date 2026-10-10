@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -5927,6 +5927,103 @@ def triangle_dp_of(triangle):
     return {"best_from": best, "answer": best[0][0], "path": path, "greedy": greedy}
 
 
+def climb_table_of(n):
+    """ways[i] = number of ways to climb i stairs taking one or two at a time; ways[0] = 1."""
+    ways = [1, 1][: n + 1]
+    for i in range(2, n + 1):
+        ways.append(ways[-1] + ways[-2])
+    return ways
+
+
+def min_cost_climb_of(cost):
+    """Cheapest way to reach the top of a staircase where stepping off stair i costs cost[i] and you may start on stair 0 or 1. Returns the table of cheapest costs to stand on position i (position len(cost) is the top) and the answer."""
+    table = [0, 0]
+    for i in range(2, len(cost) + 1):
+        table.append(min(table[i - 1] + cost[i - 1], table[i - 2] + cost[i - 2]))
+    return {"table": table, "answer": table[-1]}
+
+
+def house_robber_trace(nums):
+    """Maximum sum of non-adjacent values. best[i] is the answer using only houses 0 through i. Returns best, the answer and the indices chosen."""
+    prefix = [0]
+    for i, value in enumerate(nums):
+        prefix.append(max(prefix[-1], (prefix[-2] if i else 0) + value))
+    chosen = []
+    i = len(nums)
+    while i > 0:
+        if prefix[i] == prefix[i - 1]:
+            i -= 1
+        else:
+            chosen.append(i - 1)
+            i -= 2
+    return {"best": prefix[1:], "answer": prefix[-1], "chosen": chosen[::-1]}
+
+
+def circular_robber_of(nums):
+    """House robber on a ring: the first and last houses are neighbours, so the answer is the better of skipping the first or skipping the last."""
+    if len(nums) == 1:
+        return {"without_first": 0, "without_last": 0, "answer": nums[0]}
+    without_last = house_robber_trace(nums[:-1])["answer"]
+    without_first = house_robber_trace(nums[1:])["answer"]
+    return {"without_first": without_first, "without_last": without_last, "answer": max(without_first, without_last)}
+
+
+def decode_ways_trace(text):
+    """Number of ways to read a digit string as letters 1-26. table[i] is the count for the first i characters."""
+    table = [1, 1 if text and text[0] != "0" else 0]
+    for i in range(2, len(text) + 1):
+        ways = 0
+        if text[i - 1] != "0":
+            ways += table[i - 1]
+        if 10 <= int(text[i - 2 : i]) <= 26:
+            ways += table[i - 2]
+        table.append(ways)
+    return {"table": table if text else [1], "answer": table[-1] if text else 0}
+
+
+def max_product_trace(nums):
+    """Largest product of a contiguous run. Each row is (value, biggest product ending here, smallest product ending here); the smallest is kept because a negative number can turn it into the biggest."""
+    rows = []
+    high = low = None
+    best = None
+    for value in nums:
+        if high is None:
+            high = low = value
+        else:
+            options = (value, high * value, low * value)
+            high, low = max(options), min(options)
+        rows.append((value, high, low))
+        best = high if best is None else max(best, high)
+    return {"rows": rows, "answer": best}
+
+
+def tribonacci_of(n):
+    """T(0) = 0, T(1) = T(2) = 1, T(i) = T(i-1) + T(i-2) + T(i-3). Returns the table up to n."""
+    table = [0, 1, 1][: n + 1]
+    for i in range(3, n + 1):
+        table.append(table[-1] + table[-2] + table[-3])
+    return table
+
+
+def integer_break_of(n):
+    """Largest product of two or more positive integers summing to n. best[i] is the answer for a part of size i that may stay whole."""
+    best = [0] * (n + 1)
+    best[1] = 1
+    for i in range(2, n + 1):
+        best[i] = max(max(j * (i - j), j * best[i - j]) for j in range(1, i))
+    return {"table": best, "answer": best[n] if n > 1 else 1}
+
+
+def stone_game_three_of(values):
+    """Players alternate taking one to three stones from the front of the row, each maximizing their own total. diff[i] is the mover's lead from position i. Returns diff, the first player's lead and the result."""
+    n = len(values)
+    diff = [0] * (n + 1)
+    for i in range(n - 1, -1, -1):
+        diff[i] = max(sum(values[i : i + k]) - diff[i + k] for k in (1, 2, 3) if i + k <= n)
+    lead = diff[0]
+    return {"diff": diff, "lead": lead, "result": "first" if lead > 0 else "second" if lead < 0 else "tie"}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -6153,6 +6250,15 @@ def render(slug, render_template):
         "fib_memo_calls": fib_memo_calls,
         "fib_table_of": fib_table_of,
         "triangle_dp_of": triangle_dp_of,
+        "climb_table_of": climb_table_of,
+        "min_cost_climb_of": min_cost_climb_of,
+        "house_robber_trace": house_robber_trace,
+        "circular_robber_of": circular_robber_of,
+        "decode_ways_trace": decode_ways_trace,
+        "max_product_trace": max_product_trace,
+        "tribonacci_of": tribonacci_of,
+        "integer_break_of": integer_break_of,
+        "stone_game_three_of": stone_game_three_of,
         "bellman_ford_rounds": bellman_ford_rounds,
         "cheapest_flights_of": cheapest_flights_of,
         "has_negative_cycle_of": has_negative_cycle_of,

@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-10 (build run). 38 of 58 pages are ready. **The next run is a build run** continuing at `linear-dp`.
+**Last updated:** 2026-10-10 (build run). 39 of 58 pages are ready. **The next run is a build run** continuing at `knapsack-dp`.
 
 ## The Routine
 
@@ -39,10 +39,10 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 
 | List | Problems with a ready home | Size |
 |---|---|---|
-| Blind 75 | 47 | 75 |
-| Grind 169 | 129 | 169 |
-| NeetCode 150 | 98 | 150 |
-| NeetCode 250 | 172 | 250 |
+| Blind 75 | 52 | 75 |
+| Grind 169 | 133 | 169 |
+| NeetCode 150 | 104 | 150 |
+| NeetCode 250 | 181 | 250 |
 
 ## Queue
 
@@ -87,8 +87,8 @@ build once research is done.
 36. `minimum-spanning-trees` ✓
 37. `eulerian-paths` ✓
 38. `dp-fundamentals` ✓
-39. `linear-dp` ← next
-40. `knapsack-dp`
+39. `linear-dp` ✓
+40. `knapsack-dp` ← next
 41. `palindrome-dp`
 42. `longest-increasing-subsequence`
 43. `grid-dp`
@@ -256,3 +256,7 @@ before starting. Next: `dijkstra`.
 ### 2026-10-10 — build run (second)
 
 Built `dijkstra`, `bellman-ford` and `minimum-spanning-trees` (3 of 3), with six tested helpers (`dijkstra_trace`, `shortest_path_to`, `network_delay_of`, `minimum_effort_of`, `swim_in_water_of`, `negative_edge_counterexample`), two inline SVGs and the full §6 format; `bellman-ford` adds `bellman_ford_rounds`, `cheapest_flights_of` and `has_negative_cycle_of`. `minimum-spanning-trees` adds `kruskal_trace`, `prim_trace`, `connect_points_cost_of` and `critical_edges_of`. Coverage: Blind 75 47/75, Grind 169 129/169, NeetCode 150 97/150, NeetCode 250 171/250. Mobile check passed on all thirty-six ready pages. The sandbox's local `main` held 50 unpushed ml-models commits unrelated to `origin/main`; they were kept on the local branch `backup-stale-main` and `main` was reset to `origin/main`. Next: `eulerian-paths`.
+
+### 2026-10-10 — build run (third)
+
+Built `eulerian-paths`, `dp-fundamentals` and `linear-dp` (3 of 3), each with tested helpers in `leetcode_docs.py`, two or three inline SVGs and the full §6 format. `linear-dp` adds `climb_table_of`, `min_cost_climb_of`, `house_robber_trace`, `circular_robber_of`, `decode_ways_trace`, `max_product_trace`, `tribonacci_of`, `integer_break_of` and `stone_game_three_of`. Coverage: Blind 75 52/75, Grind 169 133/169, NeetCode 150 104/150, NeetCode 250 181/250. Mobile check passed on `/`, `/leetcode` and all 39 ready pages. The sandbox checkout was shallow; `git fetch --unshallow` fixed a false "no merge base". Next: `knapsack-dp`.
