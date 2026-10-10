@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -5241,6 +5241,126 @@ def clone_graph_of(adj, start):
     return {"adj": copy, "ids": new_id}
 
 
+GRID_STEPS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+
+
+def grid_islands_of(grid):
+    """Labels 4-connected groups of '1' cells with flood fill. Returns labels (-1 for water), the area of each island in discovery order, and the total perimeter of all land."""
+    rows, cols = len(grid), len(grid[0])
+    labels = [[-1] * cols for _ in range(rows)]
+    areas = []
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r][c] != "1" or labels[r][c] != -1:
+                continue
+            label = len(areas)
+            labels[r][c] = label
+            stack = [(r, c)]
+            area = 0
+            while stack:
+                cr, cc = stack.pop()
+                area += 1
+                for dr, dc in GRID_STEPS:
+                    nr, nc = cr + dr, cc + dc
+                    if 0 <= nr < rows and 0 <= nc < cols and grid[nr][nc] == "1" and labels[nr][nc] == -1:
+                        labels[nr][nc] = label
+                        stack.append((nr, nc))
+            areas.append(area)
+    perimeter = 0
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r][c] == "1":
+                for dr, dc in GRID_STEPS:
+                    nr, nc = r + dr, c + dc
+                    if not (0 <= nr < rows and 0 <= nc < cols) or grid[nr][nc] != "1":
+                        perimeter += 1
+    return {"labels": labels, "areas": areas, "perimeter": perimeter}
+
+
+def grid_distance_from_zeros(grid):
+    """Multi-source BFS: every '0' starts in the queue at distance 0; returns the distance from each cell to its nearest '0' and the number of cells enqueued."""
+    rows, cols = len(grid), len(grid[0])
+    dist = [[-1] * cols for _ in range(rows)]
+    queue = []
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r][c] == "0":
+                dist[r][c] = 0
+                queue.append((r, c))
+    head = 0
+    while head < len(queue):
+        r, c = queue[head]
+        head += 1
+        for dr, dc in GRID_STEPS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < rows and 0 <= nc < cols and dist[nr][nc] == -1:
+                dist[nr][nc] = dist[r][c] + 1
+                queue.append((nr, nc))
+    return {"dist": dist, "enqueued": len(queue)}
+
+
+def rotting_minutes_of(grid):
+    """Minutes until no fresh ('1') cell remains when each rotten ('2') cell infects its neighbors every minute, or -1 if some fresh cell is unreachable."""
+    rows, cols = len(grid), len(grid[0])
+    cells = [list(row) for row in grid]
+    frontier = [(r, c) for r in range(rows) for c in range(cols) if cells[r][c] == "2"]
+    fresh = sum(row.count("1") for row in cells)
+    minutes = 0
+    while frontier and fresh:
+        nxt = []
+        for r, c in frontier:
+            for dr, dc in GRID_STEPS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < rows and 0 <= nc < cols and cells[nr][nc] == "1":
+                    cells[nr][nc] = "2"
+                    fresh -= 1
+                    nxt.append((nr, nc))
+        frontier = nxt
+        minutes += 1
+    return -1 if fresh else minutes
+
+
+def flood_fill_of(grid, row, col, color):
+    """Recolors the 4-connected region containing (row, col) and returns the new grid and how many cells changed."""
+    old = grid[row][col]
+    out = [list(line) for line in grid]
+    if old == color:
+        return {"grid": ["".join(line) for line in out], "changed": 0}
+    stack = [(row, col)]
+    out[row][col] = color
+    changed = 0
+    while stack:
+        r, c = stack.pop()
+        changed += 1
+        for dr, dc in GRID_STEPS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < len(out) and 0 <= nc < len(out[0]) and out[nr][nc] == old:
+                out[nr][nc] = color
+                stack.append((nr, nc))
+    return {"grid": ["".join(line) for line in out], "changed": changed}
+
+
+def pacific_atlantic_of(heights):
+    """Cells whose water can reach both oceans, found by searching uphill from each ocean's border instead of downhill from every cell."""
+    rows, cols = len(heights), len(heights[0])
+
+    def reach(starts):
+        seen = set(starts)
+        stack = list(starts)
+        while stack:
+            r, c = stack.pop()
+            for dr, dc in GRID_STEPS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < rows and 0 <= nc < cols and (nr, nc) not in seen and heights[nr][nc] >= heights[r][c]:
+                    seen.add((nr, nc))
+                    stack.append((nr, nc))
+        return seen
+
+    pacific = reach([(0, c) for c in range(cols)] + [(r, 0) for r in range(1, rows)])
+    atlantic = reach([(rows - 1, c) for c in range(cols)] + [(r, cols - 1) for r in range(rows - 1)])
+    return {"pacific": pacific, "atlantic": atlantic, "both": sorted(pacific & atlantic)}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -5454,6 +5574,11 @@ def render(slug, render_template):
         "directed_cycle_of": directed_cycle_of,
         "word_ladder_of": word_ladder_of,
         "clone_graph_of": clone_graph_of,
+        "grid_islands_of": grid_islands_of,
+        "grid_distance_from_zeros": grid_distance_from_zeros,
+        "rotting_minutes_of": rotting_minutes_of,
+        "flood_fill_of": flood_fill_of,
+        "pacific_atlantic_of": pacific_atlantic_of,
         "merge_strategy_costs": merge_strategy_costs,
         "smallest_range_trace": smallest_range_trace,
         "coverage": coverage(),

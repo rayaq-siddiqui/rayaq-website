@@ -1,0 +1,342 @@
+{% set island_grid = ["11000", "11010", "00100", "00011"] %}
+{% set isl = grid_islands_of(island_grid) %}
+{% set zero_grid = ["00111", "11111", "11011", "11111"] %}
+{% set zd = grid_distance_from_zeros(zero_grid) %}
+{% set rot_grid = ["211", "110", "011"] %}
+{% set rot_blocked = ["211", "011", "101"] %}
+{% set fill_grid = ["112", "110", "101"] %}
+{% set fill = flood_fill_of(fill_grid, 1, 1, "3") %}
+{% set heights = [[1, 2, 2, 3], [3, 2, 3, 4], [2, 4, 5, 3], [6, 7, 1, 4]] %}
+{% set pa = pacific_atlantic_of(heights) %}
+{% set fills = ["lc-fill-g", "lc-fill-m", "lc-fill-a", "lc-fill-g"] %}
+<header class="jj-header">
+  <h1>Grids as graphs</h1>
+  <p class="tagline">
+    A matrix is a graph that was never drawn. Every cell is a node and its neighbors above, below, left and right are
+    its edges, so no adjacency list is ever built: the shape of the grid is the adjacency structure. Counting islands,
+    filling regions and spreading rot are the same two searches as on any graph, plus a bounds check. The new idea is
+    starting a breadth-first search from many cells at once.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  The input is a rectangular array of cells: land and water, walls and gates, fresh and rotten fruit, heights. You are
+  asked how many connected regions there are, how big the largest is, how far each cell is from something, or which
+  cells can reach somewhere. Moving is allowed between touching cells (four directions unless the statement says
+  otherwise) and blocked by some cell values.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Signal</th><th>Pattern</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>"Count the islands", "largest region", "recolor the area"</td><td>Flood fill (DFS or BFS) from each unvisited cell</td><td>One search covers one whole region; the number of starts is the number of regions.</td></tr>
+    <tr><td>"Distance from every cell to the nearest X"</td><td>Multi-source BFS from all X cells together</td><td>Starting every source at distance 0 makes the first visit to a cell its nearest-source distance.</td></tr>
+    <tr><td>"Everything spreads each minute"</td><td>BFS by layers, one layer per minute</td><td>A layer is exactly the set of cells infected at the same time.</td></tr>
+    <tr><td>"Which cells can reach the border / both oceans"</td><td>Search inward from the border, in reverse</td><td>One search per source set beats one search per cell.</td></tr>
+    <tr><td>"Cells that are not connected to the border"</td><td>Mark the border-connected cells, then flip the rest</td><td>The complement is easier to find than the thing itself.</td></tr>
+    <tr><td>"Shortest path" with weights per cell</td><td>Dijkstra</td><td>BFS counts steps, not costs.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Pour a bucket of paint on one square of a floor plan: it spreads to every touching square of the same kind and stops
+  at walls. Flood fill is exactly that, and the paint is the visited mark. Everything you learned about graph search
+  carries over, because "touching" is the only edge rule and the grid gives it for free.
+</p>
+<p>
+  Now pour paint on several squares at the same moment. Each drop spreads outward one ring per tick, and the first ring
+  to reach a square is the nearest drop. That is multi-source BFS: put every source in the queue before the first
+  step. The queue still holds nodes in nondecreasing distance, so the shortest-path argument for ordinary BFS still
+  applies, with a virtual super-source joined to every source by an edge of length zero.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 300 220" role="img" aria-labelledby="lc-grid-islands-title lc-grid-islands-desc">
+    <title id="lc-grid-islands-title">A grid split into islands by flood fill</title>
+    <desc id="lc-grid-islands-desc">
+      A grid of {{ island_grid | length }} rows and {{ island_grid[0] | length }} columns. Land cells are coloured by
+      island and water cells are empty. Flood fill finds {{ isl.areas | length }} islands with areas
+      {{ isl.areas | join(", ") }}, and the land has a total perimeter of {{ isl.perimeter }} edges.
+    </desc>
+    {% for row in island_grid %}
+      {% set r = loop.index0 %}
+      {% for ch in row %}
+        {% set c = loop.index0 %}
+        {% set label = isl.labels[r][c] %}
+        <rect x="{{ 20 + c * 52 }}" y="{{ 10 + r * 48 }}" width="48" height="44" rx="4" class="{{ fills[label % 4] if label >= 0 else 'd-box' }}"></rect>
+        <text x="{{ 44 + c * 52 }}" y="{{ 38 + r * 48 }}" font-size="14" text-anchor="middle">{{ label + 1 if label >= 0 else "" }}</text>
+      {% endfor %}
+    {% endfor %}
+    <text x="20" y="212" font-size="11" class="d-muted">number = island found by the fill that started there</text>
+  </svg>
+</div>
+<p class="lc-caption">
+  Scanning in reading order, each land cell that has no number yet starts a fill that numbers its whole island. Empty
+  cells are water. The diagram scrolls sideways on a narrow screen.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="neighbors">Neighbors and bounds</h3>
+<p>
+  Keep a tuple of direction offsets, <code>((1, 0), (-1, 0), (0, 1), (0, -1))</code>, and for each cell test
+  <code>0 &lt;= nr &lt; rows and 0 &lt;= nc &lt; cols</code> before reading the neighbor. Eight-direction problems just
+  use eight offsets. Cell <code>(r, c)</code> can be stored as a tuple or as the integer <code>r * cols + c</code>
+  when you need a compact key.
+</p>
+
+<h3 id="flood-fill">Flood fill and visited marks</h3>
+<p>
+  Visiting needs a mark so a cell is processed once. Either keep a separate <code>seen</code> set, or, when you may
+  change the input, overwrite the cell (sink the island by writing water into it). The mark goes on when the cell is
+  pushed, as in any graph search. The invariant is: a cell is marked exactly when it has been put on the frontier, and
+  every marked cell has had all its in-bounds, same-kind neighbors marked or queued. When the frontier empties, the
+  region is the set of marked cells, and none of its neighbors of the same kind remain unmarked.
+</p>
+<p>
+  Prefer an explicit stack or queue to recursion: a 300 × 300 grid of land is a path 90,000 deep, far past Python's
+  default limit of about a thousand frames.
+</p>
+
+<h3 id="multi-source">Multi-source BFS</h3>
+<p>
+  Seed the queue with every source, each at distance 0, then run the ordinary loop. All cells at distance d leave the
+  queue before any at d + 1, so a cell's recorded distance is its distance to the <em>nearest</em> source. One search
+  of O(R·C) replaces a search from every cell, which would cost O((R·C)²). When time matters, as in "minutes until
+  everything rots", process the queue one layer at a time and count the layers.
+</p>
+
+<h3 id="reverse">Reverse the search</h3>
+<p>
+  "Which cells can flow to the ocean" asks about many starting cells and a few targets. Run the search from the targets
+  over the reversed rule (water flows downhill, so search uphill). Two searches, one per ocean, intersect to the answer.
+  The same trick solves "regions not touching the border": mark what touches the border, and everything else is the
+  answer.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 300 220" role="img" aria-labelledby="lc-grid-multi-title lc-grid-multi-desc">
+    <title id="lc-grid-multi-title">Distance from the nearest zero by multi-source BFS</title>
+    <desc id="lc-grid-multi-desc">
+      A grid of {{ zero_grid | length }} rows and {{ zero_grid[0] | length }} columns. Cells containing zero are
+      sources at distance 0. Each other cell shows its distance to the nearest zero. The rows read
+      {% for row in zd.dist %}{{ row | join(", ") }}{{ "; " if not loop.last }}{% endfor %}.
+    </desc>
+    {% for row in zd.dist %}
+      {% set r = loop.index0 %}
+      {% for d in row %}
+        {% set c = loop.index0 %}
+        <rect x="{{ 20 + c * 52 }}" y="{{ 10 + r * 48 }}" width="48" height="44" rx="4" class="{{ 'lc-fill-a' if d == 0 else ('lc-fill-g' if d == 1 else ('lc-fill-m' if d == 2 else 'd-box')) }}"></rect>
+        <text x="{{ 44 + c * 52 }}" y="{{ 38 + r * 48 }}" font-size="14" text-anchor="middle">{{ d }}</text>
+      {% endfor %}
+    {% endfor %}
+    <text x="20" y="212" font-size="11" class="d-muted">blue = source, green = 1, amber = 2, grey = 3 or more</text>
+  </svg>
+</div>
+<p class="lc-caption">
+  All the zeros start in the queue together, so each ring grows from the nearest one. The cell in the bottom-right
+  corner is {{ zd.dist[3][4] }} steps from its nearest zero.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Question</th><th>Input</th><th>Answer</th></tr></thead>
+    <tbody>
+      <tr><td>Islands</td><td class="num">{{ island_grid | join(" / ") }}</td><td class="num">{{ isl.areas | length }} islands, areas {{ isl.areas | join(", ") }}</td></tr>
+      <tr><td>Total land perimeter</td><td class="num">same grid</td><td class="num">{{ isl.perimeter }}</td></tr>
+      <tr><td>Nearest-zero distances</td><td class="num">{{ zero_grid | join(" / ") }}</td><td class="num">largest distance {{ zd.dist | map("max") | max }}, {{ zd.enqueued }} cells enqueued</td></tr>
+      <tr><td>Minutes to rot (0 empty, 1 fresh, 2 rotten)</td><td class="num">{{ rot_grid | join(" / ") }}</td><td class="num">{{ rotting_minutes_of(rot_grid) }} minutes</td></tr>
+      <tr><td>Same, with a fresh cell walled off</td><td class="num">{{ rot_blocked | join(" / ") }}</td><td class="num">{{ rotting_minutes_of(rot_blocked) }} (impossible)</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  <strong>Islands.</strong> The scan reaches cell (0,0) first and fills the 2 × 2 block, which is island 1 with area
+  {{ isl.areas[0] }}. The lone land cells at (1,3) and (2,2) touch only diagonally, so they are separate islands of
+  area {{ isl.areas[1] }} each, and the pair in the last row is island 4 with area {{ isl.areas[3] }}. Diagonal contact
+  does not connect cells under the four-direction rule.
+</p>
+<p>
+  <strong>Perimeter.</strong> Every land cell contributes one edge for each side that faces water or the grid
+  boundary: {{ isl.perimeter }} in total. That count needs no search at all, only a pass over the cells, which is a
+  reminder to check whether a grid problem needs a traversal in the first place.
+</p>
+<p>
+  <strong>Painting.</strong> Filling the region around cell (1,1) of {{ fill_grid | join(" / ") }} with colour 3 changes
+  {{ fill.changed }} cells and gives {{ fill.grid | join(" / ") }}. Calling the fill with the colour already in place
+  must return immediately, or it would loop forever; the helper checks that first.
+</p>
+<p>
+  <strong>Reverse flow.</strong> On a 4 × 4 height map, searching uphill from the Pacific edge (top and left) and from
+  the Atlantic edge (bottom and right) reaches {{ pa.pacific | length }} and {{ pa.atlantic | length }} cells; the
+  {{ pa.both | length }} cells in both sets are {{ pa.both | join(", ") }}, written as (row, column).
+</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>from collections import deque
+
+DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+
+
+def num_islands(grid):
+    rows, cols = len(grid), len(grid[0])
+    count = 0
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r][c] != "1":
+                continue
+            count += 1
+            grid[r][c] = "0"
+            stack = [(r, c)]
+            while stack:
+                cr, cc = stack.pop()
+                for dr, dc in DIRS:
+                    nr, nc = cr + dr, cc + dc
+                    if 0 &lt;= nr &lt; rows and 0 &lt;= nc &lt; cols and grid[nr][nc] == "1":
+                        grid[nr][nc] = "0"
+                        stack.append((nr, nc))
+    return count
+
+
+def nearest_zero(mat):
+    rows, cols = len(mat), len(mat[0])
+    dist = [[-1] * cols for _ in range(rows)]
+    queue = deque()
+    for r in range(rows):
+        for c in range(cols):
+            if mat[r][c] == 0:
+                dist[r][c] = 0
+                queue.append((r, c))
+    while queue:
+        r, c = queue.popleft()
+        for dr, dc in DIRS:
+            nr, nc = r + dr, c + dc
+            if 0 &lt;= nr &lt; rows and 0 &lt;= nc &lt; cols and dist[nr][nc] == -1:
+                dist[nr][nc] = dist[r][c] + 1
+                queue.append((nr, nc))
+    return dist</code></pre>
+
+<h3 id="variations">Variations and edge cases</h3>
+<pre><code>def oranges_rotting(grid):
+    rows, cols = len(grid), len(grid[0])
+    queue = deque((r, c) for r in range(rows) for c in range(cols) if grid[r][c] == 2)
+    fresh = sum(row.count(1) for row in grid)
+    minutes = 0
+    while queue and fresh:
+        for _ in range(len(queue)):
+            r, c = queue.popleft()
+            for dr, dc in DIRS:
+                nr, nc = r + dr, c + dc
+                if 0 &lt;= nr &lt; rows and 0 &lt;= nc &lt; cols and grid[nr][nc] == 1:
+                    grid[nr][nc] = 2
+                    fresh -= 1
+                    queue.append((nr, nc))
+        minutes += 1
+    return -1 if fresh else minutes
+
+
+def solve_surrounded(board):
+    rows, cols = len(board), len(board[0])
+    stack = [(r, c) for r in range(rows) for c in range(cols)
+             if (r in (0, rows - 1) or c in (0, cols - 1)) and board[r][c] == "O"]
+    for r, c in stack:
+        board[r][c] = "S"
+    while stack:
+        r, c = stack.pop()
+        for dr, dc in DIRS:
+            nr, nc = r + dr, c + dc
+            if 0 &lt;= nr &lt; rows and 0 &lt;= nc &lt; cols and board[nr][nc] == "O":
+                board[nr][nc] = "S"
+                stack.append((nr, nc))
+    for r in range(rows):
+        for c in range(cols):
+            board[r][c] = "O" if board[r][c] == "S" else "X"</code></pre>
+<ul>
+  <li><strong>Mutating the input.</strong> Overwriting cells is shortest, but only if the caller does not need the grid
+    afterwards. Otherwise keep a <code>seen</code> set of tuples.</li>
+  <li><strong>Counting layers.</strong> To count minutes, take <code>len(queue)</code> before each round and process
+    exactly that many cells, as above. A <code>fresh</code> counter detects unreachable cells without a final scan.</li>
+  <li><strong>Seeding the queue.</strong> Sources must all be queued before the first pop. Seeding them lazily gives
+    wrong distances.</li>
+  <li><strong>Different neighbor rules.</strong> Knight moves, eight directions, wrap-around edges and one-way doors
+    change only the offsets or the test. Keep that rule in one place.</li>
+  <li><strong>Edge cases:</strong> an empty grid or an empty first row, a single cell, a grid with no sources (the
+    distance table stays all -1), a start that is already the target, and rows of unequal length when the input is
+    ragged.</li>
+  <li><strong>Backtracking on a grid</strong> (Word Search) is not a flood fill: the same cell may be reused on another
+    path, so the mark is undone on the way back. See <a href="{{ url_for('leetcode', slug='constraint-backtracking') }}">constraint backtracking</a>.</li>
+</ul>
+
+<h2 id="tradeoffs">Complexity and tradeoffs</h2>
+
+<ul>
+  <li><strong>Time:</strong> O(R·C). Each cell is marked once and examines a constant number of neighbors (four or
+    eight). Multi-source BFS is also O(R·C), not O(sources × R·C).</li>
+  <li><strong>Space:</strong> O(R·C) worst case for the frontier or the seen set; O(min(R, C)) for a BFS ring on a
+    square-ish open grid. Marking in place removes the seen set.</li>
+  <li><strong>Baseline.</strong> Running a separate search from every cell to its nearest source is O((R·C)²). The
+    shared queue is what removes the square.</li>
+  <li><strong>DFS or BFS.</strong> Regions, areas and border tests: either works, and an explicit stack is the simplest.
+    Distances and "per minute" spreads need BFS.</li>
+  <li><strong>When it fails.</strong> Cells with different move costs need Dijkstra
+    (Path With Minimum Effort, Swim in Rising Water). Repeated "add land, then count islands" queries suit
+    union-find. Very large sparse grids should be stored as a set of occupied cells, not a full matrix.</li>
+</ul>
+
+<h2 id="problems">Problems</h2>
+
+<p>
+  Flood Fill, Number of Islands, Max Area of Island and Island Perimeter are the plain region questions. Surrounded
+  Regions and Pacific Atlantic Water Flow reverse the question to start from the border. Rotting Oranges, 01 Matrix,
+  Walls And Gates and Shortest Path to Get Food are multi-source or single-source BFS where the answer is a number of steps.
+</p>
+{% include "leetcode/_problems.html" %}
+
+<h2 id="connections">Connections</h2>
+
+{% include "leetcode/_connections.html" %}
+<p>
+  This is graph traversal with the adjacency list replaced by a neighbor rule, so cycles, visited marks and the BFS
+  distance argument all carry over unchanged. Weighted grids move on to Dijkstra, and grid problems that ask for
+  connectivity under changes use union-find.
+</p>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="lc-quiz">
+  <summary>Why does multi-source BFS give each cell its distance to the nearest source?</summary>
+  <p>All sources enter the queue at distance 0, and the queue releases cells in nondecreasing distance. The first time any ring reaches a cell it comes from the closest source, exactly as if a virtual node were joined to every source by a zero-length edge.</p>
+</details>
+<details class="lc-quiz">
+  <summary>The example grid has two lone land cells at (1,3) and (2,2). Are they one island?</summary>
+  <p>No. They touch only at a corner, and under four-direction movement diagonal cells are not neighbors. The fill finds {{ isl.areas | length }} islands in total. An eight-direction rule would merge them.</p>
+</details>
+<details class="lc-quiz">
+  <summary>Why search from the border in Surrounded Regions and Pacific Atlantic?</summary>
+  <p>The border cells are the few known answers, and the interior has many unknown cells. One search from the known side marks everything connected to it; asking the question from every interior cell would repeat that work thousands of times.</p>
+</details>
+<details class="lc-quiz">
+  <summary>Why can a flood fill on a large all-land grid crash a recursive solution?</summary>
+  <p>A fill can walk a path as long as the number of cells, and a 300 × 300 grid is 90,000 deep, past Python's default recursion limit of about a thousand. Use an explicit stack or queue.</p>
+</details>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Cormen, Leiserson, Rivest and Stein, <em>Introduction to Algorithms</em>, chapter 20 (breadth-first search and its shortest-path proof, which covers the super-source argument).</li>
+  <li>Skiena, <em>The Algorithm Design Manual</em>, chapter 7 (graph traversal and connected components).</li>
+  <li>Sedgewick and Wayne, <em>Algorithms</em>, section 4.1 (undirected graphs and implicit graphs).</li>
+  <li>Foley, van Dam, Feiner and Hughes, <em>Computer Graphics: Principles and Practice</em>, the section on seed fill (the origin of flood fill, with the scanline variants used for large images).</li>
+  <li>The <a href="https://neetcode.io/roadmap" rel="noopener">NeetCode roadmap</a> and the
+    Blind 75, Grind 169, NeetCode 150 and NeetCode 250 lists, used as the index of topics and
+    problems.</li>
+</ul>

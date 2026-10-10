@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-09 (build run). 30 of 58 pages are ready. **The next run is a build run** continuing at `grid-graphs`.
+**Last updated:** 2026-10-10 (build run). 31 of 58 pages are ready. **The next run is a build run** continuing at `topological-sort`.
 
 ## The Routine
 
@@ -39,10 +39,10 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 
 | List | Problems with a ready home | Size |
 |---|---|---|
-| Blind 75 | 41 | 75 |
-| Grind 169 | 115 | 169 |
-| NeetCode 150 | 81 | 150 |
-| NeetCode 250 | 147 | 250 |
+| Blind 75 | 43 | 75 |
+| Grind 169 | 121 | 169 |
+| NeetCode 150 | 87 | 150 |
+| NeetCode 250 | 154 | 250 |
 
 ## Queue
 
@@ -79,8 +79,8 @@ build once research is done.
 28. `subsets-and-permutations` ✓
 29. `constraint-backtracking` ✓
 30. `graph-traversal` ✓
-31. `grid-graphs` ← next
-32. `topological-sort`
+31. `grid-graphs` ✓
+32. `topological-sort` ← next
 33. `union-find`
 34. `dijkstra`
 35. `bellman-ford`

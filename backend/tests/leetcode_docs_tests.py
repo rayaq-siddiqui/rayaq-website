@@ -861,3 +861,25 @@ def test_graph_traversal_helpers_match_the_page():
     assert "reports the cycle 1 → 2 → 3 → 1" in body
     assert "cat → cot → dot → dog (3 changes) after taking 7 words off the queue" in body
     assert "no sequence after 2 words" in body
+
+
+def test_grid_graphs_helpers_match_the_page():
+    islands = leetcode_docs.grid_islands_of(["11000", "11010", "00100", "00011"])
+    assert islands["areas"] == [4, 1, 1, 2] and islands["perimeter"] == 22
+    assert islands["labels"][3] == [-1, -1, -1, 3, 3]
+    dist = leetcode_docs.grid_distance_from_zeros(["00111", "11111", "11011", "11111"])
+    assert dist["dist"][0] == [0, 0, 1, 2, 3] and dist["dist"][3] == [3, 2, 1, 2, 3]
+    assert dist["enqueued"] == 20
+    assert leetcode_docs.rotting_minutes_of(["211", "110", "011"]) == 4
+    assert leetcode_docs.rotting_minutes_of(["211", "011", "101"]) == -1
+    assert leetcode_docs.rotting_minutes_of(["022"]) == 0 and leetcode_docs.rotting_minutes_of(["011"]) == -1
+    filled = leetcode_docs.flood_fill_of(["112", "110", "101"], 1, 1, "3")
+    assert filled == {"grid": ["332", "330", "301"], "changed": 5}
+    assert leetcode_docs.flood_fill_of(["11"], 0, 0, "1")["changed"] == 0
+    flow = leetcode_docs.pacific_atlantic_of([[1, 2, 2, 3], [3, 2, 3, 4], [2, 4, 5, 3], [6, 7, 1, 4]])
+    assert flow["both"] == [(0, 3), (1, 3), (2, 2), (3, 0), (3, 1)]
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/grid-graphs").get_data(as_text=True))
+    assert "4 islands, areas 4, 1, 1, 2" in body
+    assert "Total land perimeter</td><td class=\"num\">same grid</td><td class=\"num\">22<" in body
+    assert "changes 5 cells and gives 332 / 330 / 301" in body
+    assert "<td class=\"num\">4 minutes</td>" in body and "-1 (impossible)" in body
