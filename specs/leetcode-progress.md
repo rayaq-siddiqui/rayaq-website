@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-10 (build run). 44 of 58 pages are ready. **The next run is a build run** continuing at `interval-dp`.
+**Last updated:** 2026-10-10 (build run). 45 of 58 pages are ready. **The next run is a build run** continuing at `state-machine-dp`.
 
 ## The Routine
 
@@ -41,8 +41,8 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 |---|---|---|
 | Blind 75 | 59 | 75 |
 | Grind 169 | 143 | 169 |
-| NeetCode 150 | 119 | 150 |
-| NeetCode 250 | 202 | 250 |
+| NeetCode 150 | 120 | 150 |
+| NeetCode 250 | 205 | 250 |
 
 ## Queue
 
@@ -93,8 +93,8 @@ build once research is done.
 42. `longest-increasing-subsequence` ✓
 43. `grid-dp` ✓
 44. `string-dp` ✓
-45. `interval-dp` ← next
-46. `state-machine-dp`
+45. `interval-dp` ✓
+46. `state-machine-dp` ← next
 47. `greedy`
 48. `kadanes-algorithm`
 49. `interval-merging`
@@ -264,3 +264,12 @@ Built `eulerian-paths`, `dp-fundamentals` and `linear-dp` (3 of 3), each with te
 ### 2026-10-10 — build run (fourth)
 
 Built `knapsack-dp`, `palindrome-dp` and `longest-increasing-subsequence` (3 of 3; the last adds `lis_dp_trace`, `patience_trace` and `lis_count_of`; palindrome-dp adds `palindrome_table_of`, `expand_centers_trace` and `manacher_of`). `knapsack-dp`: with `subset_sum_trace`, `coin_change_trace`, `greedy_coin_count`, `coin_ways_of`, `word_break_table` and `target_sum_of`, three inline SVGs and the full §6 format. Local `main` again had unrelated history; it was kept as `backup/stale-local-main` and reset to `origin/main`. Coverage: Blind 75 57/75, Grind 169 140/169, NeetCode 150 112/150, NeetCode 250 193/250. Mobile check passed on all 42 ready pages. Next: `grid-dp`.
+
+### 2026-10-10 — build run
+
+Built `grid-dp`, `string-dp` and `interval-dp` (3 of 3), each with tested helpers in
+`leetcode_docs.py` (cross-checked against brute force where cheap), two or three inline SVGs and
+the full §6 format. The sandbox checkout was a stale shallow clone with no merge base, so it was
+unshallowed and fast-forwarded to `origin/main` before any edit. Coverage: Blind 75 59/75, Grind 169 143/169, NeetCode 150 120/150, NeetCode 250 205/250.
+Mobile check passed on `/`, `/leetcode` and
+every ready page. Next: `state-machine-dp`.
