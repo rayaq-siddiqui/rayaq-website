@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -5361,6 +5361,93 @@ def pacific_atlantic_of(heights):
     return {"pacific": pacific, "atlantic": atlantic, "both": sorted(pacific & atlantic)}
 
 
+def kahn_order_of(node_count, edges):
+    """Kahn's algorithm. Returns the order produced, the rounds (nodes whose last prerequisite finished in the same round) and the nodes left over, which are non-empty exactly when the graph has a cycle."""
+    adj = adjacency_list(node_count, edges, directed=True)
+    indegree = {node: 0 for node in adj}
+    for _, b in edges:
+        indegree[b] += 1
+    ready = [node for node in sorted(adj) if indegree[node] == 0]
+    order = []
+    rounds = []
+    while ready:
+        rounds.append(ready)
+        order.extend(ready)
+        following = []
+        for node in ready:
+            for nxt in adj[node]:
+                indegree[nxt] -= 1
+                if indegree[nxt] == 0:
+                    following.append(nxt)
+        ready = following
+    return {"order": order, "rounds": rounds, "stuck": sorted(set(adj) - set(order)), "indegree": {node: sum(1 for _, b in edges if b == node) for node in sorted(adj)}}
+
+
+def dfs_topological_order_of(node_count, edges):
+    """Reverse DFS finishing order; returns None when a cycle is found."""
+    adj = adjacency_list(node_count, edges, directed=True)
+    state = {node: 0 for node in adj}
+    finished = []
+
+    def visit(node):
+        state[node] = 1
+        for nxt in adj[node]:
+            if state[nxt] == 1:
+                return False
+            if state[nxt] == 0 and not visit(nxt):
+                return False
+        state[node] = 2
+        finished.append(node)
+        return True
+
+    for node in sorted(adj):
+        if state[node] == 0 and not visit(node):
+            return None
+    return finished[::-1]
+
+
+def alien_order_of(words):
+    """Letter order implied by a dictionary-sorted word list. Each adjacent pair gives at most one edge (its first differing letters). Returns the edges, the order ('' if impossible) and why."""
+    letters = sorted({ch for word in words for ch in word})
+    edges = []
+    for first, second in zip(words, words[1:]):
+        for a, b in zip(first, second):
+            if a != b:
+                if (a, b) not in edges:
+                    edges.append((a, b))
+                break
+        else:
+            if len(first) > len(second):
+                return {"edges": edges, "order": "", "why": "prefix"}
+    index = {ch: i for i, ch in enumerate(letters)}
+    result = kahn_order_of(len(letters), [(index[a], index[b]) for a, b in edges])
+    if result["stuck"]:
+        return {"edges": edges, "order": "", "why": "cycle"}
+    return {"edges": edges, "order": "".join(letters[i] for i in result["order"]), "why": None}
+
+
+def min_height_roots_of(node_count, edges):
+    """Roots giving the shortest rooted tree, found by peeling leaves round by round. Returns the roots and the number of rounds peeled."""
+    if node_count == 1:
+        return {"roots": [0], "rounds": 0}
+    adj = adjacency_list(node_count, edges)
+    degree = {node: len(adj[node]) for node in adj}
+    leaves = [node for node in sorted(adj) if degree[node] == 1]
+    remaining = node_count
+    rounds = 0
+    while remaining > 2:
+        remaining -= len(leaves)
+        following = []
+        for leaf in leaves:
+            for nxt in adj[leaf]:
+                degree[nxt] -= 1
+                if degree[nxt] == 1:
+                    following.append(nxt)
+        leaves = following
+        rounds += 1
+    return {"roots": sorted(leaves), "rounds": rounds}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -5574,6 +5661,10 @@ def render(slug, render_template):
         "directed_cycle_of": directed_cycle_of,
         "word_ladder_of": word_ladder_of,
         "clone_graph_of": clone_graph_of,
+        "kahn_order_of": kahn_order_of,
+        "dfs_topological_order_of": dfs_topological_order_of,
+        "alien_order_of": alien_order_of,
+        "min_height_roots_of": min_height_roots_of,
         "grid_islands_of": grid_islands_of,
         "grid_distance_from_zeros": grid_distance_from_zeros,
         "rotting_minutes_of": rotting_minutes_of,

@@ -883,3 +883,29 @@ def test_grid_graphs_helpers_match_the_page():
     assert "Total land perimeter</td><td class=\"num\">same grid</td><td class=\"num\">22<" in body
     assert "changes 5 cells and gives 332 / 330 / 301" in body
     assert "<td class=\"num\">4 minutes</td>" in body and "-1 (impossible)" in body
+
+
+def test_topological_sort_helpers_match_the_page():
+    edges = [(5, 2), (5, 0), (4, 0), (4, 1), (2, 3), (3, 1)]
+    kahn = leetcode_docs.kahn_order_of(6, edges)
+    assert kahn["order"] == [4, 5, 0, 2, 3, 1]
+    assert kahn["rounds"] == [[4, 5], [0, 2], [3], [1]] and kahn["stuck"] == []
+    assert kahn["indegree"] == {0: 2, 1: 2, 2: 1, 3: 1, 4: 0, 5: 0}
+    assert leetcode_docs.dfs_topological_order_of(6, edges) == [5, 4, 2, 3, 1, 0]
+    looped = edges + [(1, 5)]
+    assert leetcode_docs.kahn_order_of(6, looped)["stuck"] == [0, 1, 2, 3, 5]
+    assert leetcode_docs.dfs_topological_order_of(6, looped) is None
+    assert leetcode_docs.kahn_order_of(3, [])["order"] == [0, 1, 2]
+    assert leetcode_docs.kahn_order_of(2, [(0, 0)])["stuck"] == [0]
+    alien = leetcode_docs.alien_order_of(["wrt", "wrf", "er", "ett", "rftt"])
+    assert alien["order"] == "wertf" and ("t", "f") in alien["edges"]
+    assert leetcode_docs.alien_order_of(["abc", "ab"])["why"] == "prefix"
+    assert leetcode_docs.alien_order_of(["z", "x", "z"])["why"] == "cycle"
+    assert leetcode_docs.min_height_roots_of(6, [(3, 0), (3, 1), (3, 2), (3, 4), (5, 4)]) == {"roots": [3, 4], "rounds": 1}
+    assert leetcode_docs.min_height_roots_of(1, [])["roots"] == [0]
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/topological-sort").get_data(as_text=True))
+    assert '<td class="num">4, 5, 0, 2, 3, 1</td>' in body
+    assert '<td class="num">5, 4, 2, 3, 1, 0</td>' in body
+    assert "5 nodes stuck: 0, 1, 2, 3, 5" in body
+    assert "alphabet <code>wertf</code>" in body
+    assert "leaves nodes 3 and 4" in body
