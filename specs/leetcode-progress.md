@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-10 (build run). 37 of 58 pages are ready. **The next run is a build run** continuing at `dp-fundamentals`.
+**Last updated:** 2026-10-10 (build run). 38 of 58 pages are ready. **The next run is a build run** continuing at `linear-dp`.
 
 ## The Routine
 
@@ -86,8 +86,8 @@ build once research is done.
 35. `bellman-ford` ✓
 36. `minimum-spanning-trees` ✓
 37. `eulerian-paths` ✓
-38. `dp-fundamentals` ← next
-39. `linear-dp`
+38. `dp-fundamentals` ✓
+39. `linear-dp` ← next
 40. `knapsack-dp`
 41. `palindrome-dp`
 42. `longest-increasing-subsequence`

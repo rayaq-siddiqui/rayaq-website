@@ -1030,3 +1030,23 @@ def test_eulerian_helpers_match_the_page():
     assert "<code>JFK, LAX, SEA, JFK, ATL</code>" in body
     assert "reports a <code>path</code> from JFK to ATL" in body
     assert "stuck at once with 3 tickets unused" in body
+
+
+def test_dp_fundamentals_helpers_match_the_page():
+    tally = leetcode_docs.fib_call_tally(7)
+    assert tally == {7: 1, 6: 1, 5: 2, 4: 3, 3: 5, 2: 8, 1: 13, 0: 8} and sum(tally.values()) == 41
+    assert leetcode_docs.fib_memo_calls(7) == {"value": 13, "calls": 13, "states": 6}
+    assert leetcode_docs.fib_memo_calls(0) == {"value": 0, "calls": 1, "states": 0}
+    assert leetcode_docs.fib_table_of(7) == [0, 1, 1, 2, 3, 5, 8, 13]
+    assert leetcode_docs.fib_table_of(0) == [0]
+    assert 2 * leetcode_docs.fib_table_of(31)[31] - 1 == sum(leetcode_docs.fib_call_tally(30).values())
+    result = leetcode_docs.triangle_dp_of([[5], [7, 3], [2, 8, 6], [9, 1, 4, 7]])
+    assert result["best_from"] == [[15], [10, 12], [3, 9, 10], [9, 1, 4, 7]]
+    assert result["answer"] == 15 and result["greedy"] == 18
+    assert result["path"] == [(0, 0), (1, 0), (2, 0), (3, 1)]
+    assert leetcode_docs.triangle_dp_of([[4]])["answer"] == 4
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/dp-fundamentals").get_data(as_text=True))
+    assert "makes 41 calls" in body and "(2692537)" in body
+    assert "it makes 13 calls and computes 6 states" in body
+    assert "<code>0, 1, 1, 2, 3, 5, 8, 13</code>" in body
+    assert "top cell holds 15" in body and "ends at 18" in body

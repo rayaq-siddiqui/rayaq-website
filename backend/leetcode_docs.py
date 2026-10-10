@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -5871,6 +5871,62 @@ def greedy_walk_of(tickets, start):
     return {"walk": walk, "unused": len(tickets) - (len(walk) - 1)}
 
 
+def fib_call_tally(n):
+    """How many times plain recursion calls fib(k) while computing fib(n), with fib(0) = 0 and fib(1) = 1. Returns {k: calls}."""
+    tally = {}
+
+    def fib(k):
+        tally[k] = tally.get(k, 0) + 1
+        return k if k < 2 else fib(k - 1) + fib(k - 2)
+
+    fib(n)
+    return tally
+
+
+def fib_memo_calls(n):
+    """The same recursion with a cache. Returns the value, the total number of calls, and the number of distinct states computed."""
+    cache = {}
+    calls = 0
+
+    def fib(k):
+        nonlocal calls
+        calls += 1
+        if k < 2:
+            return k
+        if k not in cache:
+            cache[k] = fib(k - 1) + fib(k - 2)
+        return cache[k]
+
+    value = fib(n)
+    return {"value": value, "calls": calls, "states": len(cache)}
+
+
+def fib_table_of(n):
+    """Bottom-up table of fib(0) through fib(n)."""
+    table = [0, 1][: n + 1]
+    for k in range(2, n + 1):
+        table.append(table[-1] + table[-2])
+    return table
+
+
+def triangle_dp_of(triangle):
+    """Minimum top-to-bottom path sum of a number triangle (each step moves to the same index or the next one below), by bottom-up DP. Returns best_from (the cheapest finish from every cell, in the triangle's shape), the answer, the chosen path as (row, index) cells, and the sum a greedy smaller-child walk would get."""
+    best = [list(row) for row in triangle]
+    for i in range(len(triangle) - 2, -1, -1):
+        for j in range(len(triangle[i])):
+            best[i][j] = triangle[i][j] + min(best[i + 1][j], best[i + 1][j + 1])
+    path = [(0, 0)]
+    for i in range(1, len(triangle)):
+        j = path[-1][1]
+        path.append((i, j if best[i][j] <= best[i][j + 1] else j + 1))
+    greedy, j = triangle[0][0], 0
+    for i in range(1, len(triangle)):
+        if triangle[i][j + 1] < triangle[i][j]:
+            j += 1
+        greedy += triangle[i][j]
+    return {"best_from": best, "answer": best[0][0], "path": path, "greedy": greedy}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -6093,6 +6149,10 @@ def render(slug, render_template):
         "euler_kind_of": euler_kind_of,
         "hierholzer_trace": hierholzer_trace,
         "greedy_walk_of": greedy_walk_of,
+        "fib_call_tally": fib_call_tally,
+        "fib_memo_calls": fib_memo_calls,
+        "fib_table_of": fib_table_of,
+        "triangle_dp_of": triangle_dp_of,
         "bellman_ford_rounds": bellman_ford_rounds,
         "cheapest_flights_of": cheapest_flights_of,
         "has_negative_cycle_of": has_negative_cycle_of,
