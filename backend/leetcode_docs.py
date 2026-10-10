@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -6289,6 +6289,103 @@ def longest_increasing_path_of(matrix):
     return {"length": length, "answer": best, "path": path}
 
 
+def lcs_table(a, b):
+    """table[i][j] is the length of the longest common subsequence of a[:i] and b[:j]. Also returns one such subsequence, walked back from the corner."""
+    table = [[0] * (len(b) + 1) for _ in range(len(a) + 1)]
+    for i in range(1, len(a) + 1):
+        for j in range(1, len(b) + 1):
+            if a[i - 1] == b[j - 1]:
+                table[i][j] = table[i - 1][j - 1] + 1
+            else:
+                table[i][j] = max(table[i - 1][j], table[i][j - 1])
+    i, j, letters, cells = len(a), len(b), [], [(len(a), len(b))]
+    while i and j:
+        if a[i - 1] == b[j - 1]:
+            letters.append(a[i - 1])
+            i, j = i - 1, j - 1
+        elif table[i - 1][j] >= table[i][j - 1]:
+            i -= 1
+        else:
+            j -= 1
+        cells.append((i, j))
+    return {"table": table, "answer": table[-1][-1], "subsequence": "".join(reversed(letters)), "cells": cells}
+
+
+def edit_distance_table(a, b):
+    """table[i][j] is the fewest insert, delete or replace steps turning a[:i] into b[:j]. Also returns one cheapest script as (operation, detail) pairs."""
+    table = [[0] * (len(b) + 1) for _ in range(len(a) + 1)]
+    for i in range(len(a) + 1):
+        table[i][0] = i
+    for j in range(len(b) + 1):
+        table[0][j] = j
+    for i in range(1, len(a) + 1):
+        for j in range(1, len(b) + 1):
+            if a[i - 1] == b[j - 1]:
+                table[i][j] = table[i - 1][j - 1]
+            else:
+                table[i][j] = 1 + min(table[i - 1][j], table[i][j - 1], table[i - 1][j - 1])
+    i, j, script, cells = len(a), len(b), [], [(len(a), len(b))]
+    while i or j:
+        if i and j and a[i - 1] == b[j - 1] and table[i][j] == table[i - 1][j - 1]:
+            i, j = i - 1, j - 1
+        elif i and j and table[i][j] == table[i - 1][j - 1] + 1:
+            script.append(("replace", a[i - 1] + " with " + b[j - 1]))
+            i, j = i - 1, j - 1
+        elif i and table[i][j] == table[i - 1][j] + 1:
+            script.append(("delete", a[i - 1]))
+            i -= 1
+        else:
+            script.append(("insert", b[j - 1]))
+            j -= 1
+        cells.append((i, j))
+    script.reverse()
+    return {"table": table, "answer": table[-1][-1], "script": script, "cells": cells}
+
+
+def interleave_table(first, second, target):
+    """table[i][j] is True when first[:i] and second[:j] can be woven (each kept in order) into target[:i + j]."""
+    if len(first) + len(second) != len(target):
+        return {"table": [], "answer": False}
+    table = [[False] * (len(second) + 1) for _ in range(len(first) + 1)]
+    table[0][0] = True
+    for i in range(len(first) + 1):
+        for j in range(len(second) + 1):
+            if i and table[i - 1][j] and first[i - 1] == target[i + j - 1]:
+                table[i][j] = True
+            if j and table[i][j - 1] and second[j - 1] == target[i + j - 1]:
+                table[i][j] = True
+    return {"table": table, "answer": table[-1][-1]}
+
+
+def distinct_subsequences_table(source, target):
+    """table[i][j] counts the ways target[:j] appears as a subsequence of source[:i]."""
+    table = [[0] * (len(target) + 1) for _ in range(len(source) + 1)]
+    for i in range(len(source) + 1):
+        table[i][0] = 1
+    for i in range(1, len(source) + 1):
+        for j in range(1, len(target) + 1):
+            table[i][j] = table[i - 1][j]
+            if source[i - 1] == target[j - 1]:
+                table[i][j] += table[i - 1][j - 1]
+    return {"table": table, "answer": table[-1][-1]}
+
+
+def regex_match_table(text, pattern):
+    """table[i][j] is True when text[:i] matches pattern[:j] under '.' (any one letter) and 'x*' (zero or more x)."""
+    table = [[False] * (len(pattern) + 1) for _ in range(len(text) + 1)]
+    table[0][0] = True
+    for j in range(2, len(pattern) + 1):
+        if pattern[j - 1] == "*":
+            table[0][j] = table[0][j - 2]
+    for i in range(1, len(text) + 1):
+        for j in range(1, len(pattern) + 1):
+            if pattern[j - 1] == "*":
+                table[i][j] = table[i][j - 2] or (pattern[j - 2] in (text[i - 1], ".") and table[i - 1][j])
+            else:
+                table[i][j] = pattern[j - 1] in (text[i - 1], ".") and table[i - 1][j - 1]
+    return {"table": table, "answer": table[-1][-1]}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -6537,6 +6634,11 @@ def render(slug, render_template):
         "patience_trace": patience_trace,
         "lis_count_of": lis_count_of,
         "grid_paths_table": grid_paths_table,
+        "lcs_table": lcs_table,
+        "edit_distance_table": edit_distance_table,
+        "interleave_table": interleave_table,
+        "distinct_subsequences_table": distinct_subsequences_table,
+        "regex_match_table": regex_match_table,
         "min_path_sum_table": min_path_sum_table,
         "maximal_square_table": maximal_square_table,
         "longest_increasing_path_of": longest_increasing_path_of,

@@ -1196,3 +1196,36 @@ def test_grid_dp_helpers_match_the_page():
     assert "so the cheapest route costs 10" in body
     assert "The largest side is 3, so the area is 9, with its bottom-right corner at (3, 3)" in body
     assert "and the answer is 5" in body
+
+
+def test_string_dp_helpers_match_the_page():
+    lcs = leetcode_docs.lcs_table("plumber", "humbler")
+    assert lcs["answer"] == 5 and lcs["subsequence"] == "umber" and lcs["table"][-1] == [0, 0, 1, 2, 3, 3, 4, 5]
+    assert leetcode_docs.lcs_table("", "abc")["answer"] == 0
+    assert leetcode_docs.lcs_table("abc", "abc")["subsequence"] == "abc"
+    edit = leetcode_docs.edit_distance_table("flaw", "lawn")
+    assert edit["answer"] == 2 and edit["script"] == [("delete", "f"), ("insert", "n")]
+    assert edit["table"][-1] == [4, 3, 2, 1, 2]
+    assert leetcode_docs.edit_distance_table("", "abc")["answer"] == 3
+    assert leetcode_docs.edit_distance_table("abc", "")["answer"] == 3
+    assert leetcode_docs.edit_distance_table("same", "same")["answer"] == 0
+    counts = leetcode_docs.distinct_subsequences_table("aabab", "ab")
+    assert counts["answer"] == 5 and [row[-1] for row in counts["table"]] == [0, 0, 0, 2, 2, 5]
+    assert leetcode_docs.distinct_subsequences_table("abc", "")["answer"] == 1
+    assert leetcode_docs.distinct_subsequences_table("", "a")["answer"] == 0
+    assert leetcode_docs.interleave_table("ab", "cd", "acbd")["answer"] is True
+    assert leetcode_docs.interleave_table("ab", "cd", "adbc")["answer"] is False
+    assert leetcode_docs.interleave_table("ab", "cd", "abc")["answer"] is False
+    assert leetcode_docs.regex_match_table("abbc", "ab*c")["answer"] is True
+    assert leetcode_docs.regex_match_table("abbc", "a.*d")["answer"] is False
+    assert leetcode_docs.regex_match_table("", "a*b*")["answer"] is True
+    assert leetcode_docs.regex_match_table("a", "")["answer"] is False
+    for a, b in (("abcbdab", "bdcaba"), ("xyz", "zyx"), ("aaaa", "aa")):
+        assert leetcode_docs.lcs_table(a, b)["answer"] == leetcode_docs.lcs_table(b, a)["answer"]
+        assert leetcode_docs.edit_distance_table(a, b)["answer"] == leetcode_docs.edit_distance_table(b, a)["answer"]
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/string-dp").get_data(as_text=True))
+    assert "so the longest common subsequence has length 5" in body
+    assert "recovers \"umber\"" in body
+    assert "takes 2 edits: delete f, then insert n" in body
+    assert "appears 5 times as a subsequence" in body
+    assert "<code>0, 0, 0, 2, 2, 5</code>" in body
