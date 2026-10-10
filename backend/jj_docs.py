@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "da1d234f309a36e665a222cb02d92a07ccef7c34",
-    "commit_date": "2026-10-08",
+    "commit": "889e5a68fc24f00b9dfa0fe58dc140c9f064f902",
+    "commit_date": "2026-10-10",
     "version": "0.46.0",
-    "analyzed_on": "2026-10-09",
+    "analyzed_on": "2026-10-10",
 }
 
 TOPICS = [
@@ -84,6 +84,7 @@ TOPICS = [
             "core/src/conflict_labels.rs",
             "lib/src/conflicts.rs",
             "lib/src/tree_merge.rs",
+            "core/src/files.rs",
             "docs/technical/conflicts.md",
         ],
         "ready": True,
@@ -153,7 +154,12 @@ TOPICS = [
         "title": "The commit index",
         "kind": "topic",
         "summary": "Index segments, the change-ID index, the changed-path index, and short ID prefixes.",
-        "sources": ["lib/src/index.rs", "lib/src/default_index/", "lib/src/id_prefix.rs"],
+        "sources": [
+            "lib/src/index.rs",
+            "lib/src/index_store.rs",
+            "lib/src/default_index/",
+            "lib/src/id_prefix.rs",
+        ],
         "template": "jj/commit-index.html",
         "ready": True,
     },
@@ -164,10 +170,12 @@ TOPICS = [
         "summary": "From revset text to evaluated commits: grammar, expression tree, symbol resolution and evaluation.",
         "sources": [
             "lib/src/revset.rs",
+            "lib/src/revset_backend.rs",
             "dsl/src/revset_parser.rs",
             "dsl/src/revset.pest",
             "lib/src/default_index/revset_engine.rs",
             "lib/src/fileset.rs",
+            "core/src/fileset_backend.rs",
             "docs/technical/revset-evaluation.md",
         ],
         "ready": True,
@@ -289,14 +297,14 @@ COMMANDS = [
         "category": 'Moving and combining changes',
         "tier": 'A',
         "summary": 'Split a revision in two',
-        "source": ('cli/src/commands/split.rs', 106),
+        "source": ('cli/src/commands/split.rs', 107),
     },
     {
         "command": 'absorb',
         "category": 'Moving and combining changes',
         "tier": 'A',
         "summary": 'Move changes from a revision into the stack of mutable revisions',
-        "source": ('cli/src/commands/absorb.rs', 52),
+        "source": ('cli/src/commands/absorb.rs', 53),
     },
     {
         "command": 'duplicate',
@@ -352,7 +360,7 @@ COMMANDS = [
         "category": 'Moving and combining changes',
         "tier": 'A',
         "summary": 'Restore paths from another revision',
-        "source": ('cli/src/commands/restore.rs', 52),
+        "source": ('cli/src/commands/restore.rs', 53),
     },
     {
         "command": 'diffedit',
@@ -499,7 +507,7 @@ COMMANDS = [
         "category": 'Inspecting history',
         "tier": 'B',
         "summary": 'Show differences between the diffs of two revisions',
-        "source": ('cli/src/commands/interdiff.rs', 62),
+        "source": ('cli/src/commands/interdiff.rs', 63),
     },
     {
         "command": 'status',
@@ -597,14 +605,14 @@ COMMANDS = [
         "category": 'Bookmarks and tags',
         "tier": 'A',
         "summary": 'Advance the closest bookmarks to a target revision',
-        "source": ('cli/src/commands/bookmark/advance.rs', 54),
+        "source": ('cli/src/commands/bookmark/advance.rs', 55),
     },
     {
         "command": 'bookmark create',
         "category": 'Bookmarks and tags',
         "tier": 'A',
         "summary": 'Create a new bookmark',
-        "source": ('cli/src/commands/bookmark/create.rs', 32),
+        "source": ('cli/src/commands/bookmark/create.rs', 33),
     },
     {
         "command": 'bookmark delete',
@@ -632,7 +640,7 @@ COMMANDS = [
         "category": 'Bookmarks and tags',
         "tier": 'A',
         "summary": 'Move existing bookmarks to target revision',
-        "source": ('cli/src/commands/bookmark/move.rs', 46),
+        "source": ('cli/src/commands/bookmark/move.rs', 47),
     },
     {
         "command": 'bookmark rename',
@@ -646,7 +654,7 @@ COMMANDS = [
         "category": 'Bookmarks and tags',
         "tier": 'A',
         "summary": 'Create a new bookmark, or update an existing one by name',
-        "source": ('cli/src/commands/bookmark/set.rs', 39),
+        "source": ('cli/src/commands/bookmark/set.rs', 40),
     },
     {
         "command": 'bookmark track',
@@ -681,7 +689,7 @@ COMMANDS = [
         "category": 'Bookmarks and tags',
         "tier": 'A',
         "summary": 'Create or update tags',
-        "source": ('cli/src/commands/tag/set.rs', 31),
+        "source": ('cli/src/commands/tag/set.rs', 32),
     },
     {
         "command": 'tag track',
@@ -919,7 +927,7 @@ COMMANDS = [
         "category": 'Utilities and internals',
         "tier": 'C',
         "summary": 'Compare two files on disk',
-        "source": ('cli/src/commands/util/diff.rs', 40),
+        "source": ('cli/src/commands/util/diff.rs', 39),
     },
     {
         "command": 'util exec',
@@ -1576,6 +1584,7 @@ COMMAND_PAGE_OVERRIDES = {
             "cli/src/commit_templater.rs",
             "cli/src/config/templates.toml",
             "lib/src/fileset.rs",
+            "core/src/fileset_backend.rs",
         ],
         "ready": True,
     },
@@ -1587,6 +1596,7 @@ COMMAND_PAGE_OVERRIDES = {
             "lib/src/conflicts.rs",
             "lib/src/merged_tree.rs",
             "lib/src/fileset.rs",
+            "core/src/fileset_backend.rs",
         ],
         "ready": True,
     },
@@ -1597,6 +1607,7 @@ COMMAND_PAGE_OVERRIDES = {
             "lib/src/conflicts.rs",
             "lib/src/merged_tree.rs",
             "core/src/file_util.rs",
+            "core/src/fileset_backend.rs",
         ],
         "ready": True,
     },
