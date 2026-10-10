@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-10 (build run). 41 of 58 pages are ready. **The next run is a build run** continuing at `longest-increasing-subsequence`.
+**Last updated:** 2026-10-10 (build run). 42 of 58 pages are ready. **The next run is a build run** continuing at `grid-dp`.
 
 ## The Routine
 
@@ -39,10 +39,10 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 
 | List | Problems with a ready home | Size |
 |---|---|---|
-| Blind 75 | 56 | 75 |
-| Grind 169 | 139 | 169 |
-| NeetCode 150 | 111 | 150 |
-| NeetCode 250 | 192 | 250 |
+| Blind 75 | 57 | 75 |
+| Grind 169 | 140 | 169 |
+| NeetCode 150 | 112 | 150 |
+| NeetCode 250 | 193 | 250 |
 
 ## Queue
 
@@ -90,8 +90,8 @@ build once research is done.
 39. `linear-dp` ✓
 40. `knapsack-dp` ✓
 41. `palindrome-dp` ✓
-42. `longest-increasing-subsequence` ← next
-43. `grid-dp`
+42. `longest-increasing-subsequence` ✓
+43. `grid-dp` ← next
 44. `string-dp`
 45. `interval-dp`
 46. `state-machine-dp`
@@ -263,4 +263,4 @@ Built `eulerian-paths`, `dp-fundamentals` and `linear-dp` (3 of 3), each with te
 
 ### 2026-10-10 — build run (fourth)
 
-Built `knapsack-dp` and `palindrome-dp` (2 of 3 so far; palindrome-dp adds `palindrome_table_of`, `expand_centers_trace` and `manacher_of`). `knapsack-dp`: with `subset_sum_trace`, `coin_change_trace`, `greedy_coin_count`, `coin_ways_of`, `word_break_table` and `target_sum_of`, three inline SVGs and the full §6 format. Local `main` again had unrelated history; it was kept as `backup/stale-local-main` and reset to `origin/main`.
+Built `knapsack-dp`, `palindrome-dp` and `longest-increasing-subsequence` (3 of 3; the last adds `lis_dp_trace`, `patience_trace` and `lis_count_of`; palindrome-dp adds `palindrome_table_of`, `expand_centers_trace` and `manacher_of`). `knapsack-dp`: with `subset_sum_trace`, `coin_change_trace`, `greedy_coin_count`, `coin_ways_of`, `word_break_table` and `target_sum_of`, three inline SVGs and the full §6 format. Local `main` again had unrelated history; it was kept as `backup/stale-local-main` and reset to `origin/main`. Coverage: Blind 75 57/75, Grind 169 140/169, NeetCode 150 112/150, NeetCode 250 193/250. Mobile check passed on all 42 ready pages. Next: `grid-dp`.
