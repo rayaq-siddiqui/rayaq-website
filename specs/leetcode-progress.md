@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-10 (build run). 39 of 58 pages are ready. **The next run is a build run** continuing at `knapsack-dp`.
+**Last updated:** 2026-10-10 (build run). 40 of 58 pages are ready. **The next run is a build run** continuing at `palindrome-dp`.
 
 ## The Routine
 
@@ -39,10 +39,10 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 
 | List | Problems with a ready home | Size |
 |---|---|---|
-| Blind 75 | 52 | 75 |
-| Grind 169 | 133 | 169 |
-| NeetCode 150 | 104 | 150 |
-| NeetCode 250 | 181 | 250 |
+| Blind 75 | 54 | 75 |
+| Grind 169 | 138 | 169 |
+| NeetCode 150 | 109 | 150 |
+| NeetCode 250 | 190 | 250 |
 
 ## Queue
 
@@ -88,8 +88,8 @@ build once research is done.
 37. `eulerian-paths` ✓
 38. `dp-fundamentals` ✓
 39. `linear-dp` ✓
-40. `knapsack-dp` ← next
-41. `palindrome-dp`
+40. `knapsack-dp` ✓
+41. `palindrome-dp` ← next
 42. `longest-increasing-subsequence`
 43. `grid-dp`
 44. `string-dp`
@@ -260,3 +260,7 @@ Built `dijkstra`, `bellman-ford` and `minimum-spanning-trees` (3 of 3), with six
 ### 2026-10-10 — build run (third)
 
 Built `eulerian-paths`, `dp-fundamentals` and `linear-dp` (3 of 3), each with tested helpers in `leetcode_docs.py`, two or three inline SVGs and the full §6 format. `linear-dp` adds `climb_table_of`, `min_cost_climb_of`, `house_robber_trace`, `circular_robber_of`, `decode_ways_trace`, `max_product_trace`, `tribonacci_of`, `integer_break_of` and `stone_game_three_of`. Coverage: Blind 75 52/75, Grind 169 133/169, NeetCode 150 104/150, NeetCode 250 181/250. Mobile check passed on `/`, `/leetcode` and all 39 ready pages. The sandbox checkout was shallow; `git fetch --unshallow` fixed a false "no merge base". Next: `knapsack-dp`.
+
+### 2026-10-10 — build run (fourth)
+
+Built `knapsack-dp` (1 of 3 so far) with `subset_sum_trace`, `coin_change_trace`, `greedy_coin_count`, `coin_ways_of`, `word_break_table` and `target_sum_of`, three inline SVGs and the full §6 format. Local `main` again had unrelated history; it was kept as `backup/stale-local-main` and reset to `origin/main`.
