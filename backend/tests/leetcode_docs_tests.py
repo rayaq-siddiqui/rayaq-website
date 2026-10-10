@@ -1167,3 +1167,32 @@ def test_lis_helpers_match_the_page():
     assert "<code>1, 2, 1, 1, 2, 3, 2, 4</code>, so the answer is 4, for example <code>4, 8, 9, 11</code>" in body
     assert "The final list is <code>3, 6, 9, 11</code>, with length 4" in body
     assert "3 different index choices give a longest run of 4" in body
+
+
+def test_grid_dp_helpers_match_the_page():
+    paths = leetcode_docs.grid_paths_table(3, 4, [(1, 1)])
+    assert paths["table"] == [[1, 1, 1, 1], [1, 0, 1, 2], [1, 1, 2, 4]] and paths["answer"] == 4
+    assert leetcode_docs.grid_paths_table(3, 7)["answer"] == 28
+    assert leetcode_docs.grid_paths_table(1, 5)["answer"] == 1
+    assert leetcode_docs.grid_paths_table(2, 2, [(0, 0)])["answer"] == 0
+    grid = [[1, 3, 1, 4], [1, 5, 1, 2], [4, 2, 1, 3]]
+    cheapest = leetcode_docs.min_path_sum_table(grid)
+    assert cheapest["cost"] == [[1, 4, 5, 9], [2, 7, 6, 8], [6, 8, 7, 10]] and cheapest["answer"] == 10
+    assert sum(grid[r][c] for r, c in cheapest["path"]) == 10 and cheapest["path"][0] == (0, 0)
+    assert leetcode_docs.min_path_sum_table([[5]])["answer"] == 5
+    bits = [[1, 0, 1, 1, 1], [1, 1, 1, 1, 1], [0, 1, 1, 1, 0], [1, 1, 1, 1, 0]]
+    squares = leetcode_docs.maximal_square_table(bits)
+    assert squares["side"][3] == [1, 1, 2, 3, 0] and squares["best"] == 3 and squares["area"] == 9 and squares["corner"] == (3, 3)
+    assert leetcode_docs.maximal_square_table([[0, 0]])["area"] == 0
+    hills = [[2, 5, 6], [3, 1, 7], [9, 4, 8]]
+    climb = leetcode_docs.longest_increasing_path_of(hills)
+    assert climb["length"] == [[5, 4, 3], [2, 5, 2], [1, 2, 1]] and climb["answer"] == 5
+    values = [hills[r][c] for r, c in climb["path"]]
+    assert values == sorted(set(values)) and len(values) == 5
+    assert leetcode_docs.longest_increasing_path_of([[1]])["answer"] == 1
+    assert leetcode_docs.longest_increasing_path_of([[3, 3], [3, 3]])["answer"] == 1
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/grid-dp").get_data(as_text=True))
+    assert "so there are 4 routes" in body
+    assert "so the cheapest route costs 10" in body
+    assert "The largest side is 3, so the area is 9, with its bottom-right corner at (3, 3)" in body
+    assert "and the answer is 5" in body

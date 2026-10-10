@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -6203,6 +6203,92 @@ def lis_count_of(nums):
     return {"length": best, "count": sum(count[i] for i in range(n) if length[i] == best)}
 
 
+def grid_paths_table(rows, cols, blocked=()):
+    """Number of right/down routes from the top-left cell to every cell; a blocked cell holds 0."""
+    blocked = set(blocked)
+    table = [[0] * cols for _ in range(rows)]
+    for r in range(rows):
+        for c in range(cols):
+            if (r, c) in blocked:
+                continue
+            if r == 0 and c == 0:
+                table[r][c] = 1
+            else:
+                table[r][c] = (table[r - 1][c] if r else 0) + (table[r][c - 1] if c else 0)
+    return {"table": table, "answer": table[-1][-1] if rows and cols else 0}
+
+
+def min_path_sum_table(grid):
+    """Cheapest right/down path cost to every cell, plus the cells of one cheapest path (walked back from the corner)."""
+    rows, cols = len(grid), len(grid[0])
+    cost = [[0] * cols for _ in range(rows)]
+    for r in range(rows):
+        for c in range(cols):
+            options = []
+            if r:
+                options.append(cost[r - 1][c])
+            if c:
+                options.append(cost[r][c - 1])
+            cost[r][c] = grid[r][c] + (min(options) if options else 0)
+    path, r, c = [(rows - 1, cols - 1)], rows - 1, cols - 1
+    while (r, c) != (0, 0):
+        if r and (not c or cost[r - 1][c] <= cost[r][c - 1]):
+            r -= 1
+        else:
+            c -= 1
+        path.append((r, c))
+    path.reverse()
+    return {"cost": cost, "answer": cost[-1][-1], "path": path}
+
+
+def maximal_square_table(matrix):
+    """side[r][c] is the side of the largest all-ones square whose bottom-right corner is (r, c)."""
+    rows, cols = len(matrix), len(matrix[0])
+    side = [[0] * cols for _ in range(rows)]
+    for r in range(rows):
+        for c in range(cols):
+            if matrix[r][c] == 1:
+                if r == 0 or c == 0:
+                    side[r][c] = 1
+                else:
+                    side[r][c] = 1 + min(side[r - 1][c], side[r][c - 1], side[r - 1][c - 1])
+    best = max(max(row) for row in side)
+    corner = next((r, c) for r in range(rows) for c in range(cols) if side[r][c] == best)
+    return {"side": side, "best": best, "area": best * best, "corner": corner}
+
+
+def longest_increasing_path_of(matrix):
+    """Memoized DFS: length[r][c] is the longest strictly increasing path starting at (r, c). Also returns one longest path."""
+    rows, cols = len(matrix), len(matrix[0])
+    length = [[0] * cols for _ in range(rows)]
+
+    def solve(r, c):
+        if length[r][c]:
+            return length[r][c]
+        best = 1
+        for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < rows and 0 <= nc < cols and matrix[nr][nc] > matrix[r][c]:
+                best = max(best, 1 + solve(nr, nc))
+        length[r][c] = best
+        return best
+
+    for r in range(rows):
+        for c in range(cols):
+            solve(r, c)
+    best = max(max(row) for row in length)
+    r, c = next((r, c) for r in range(rows) for c in range(cols) if length[r][c] == best)
+    path = [(r, c)]
+    while length[r][c] > 1:
+        for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < rows and 0 <= nc < cols and matrix[nr][nc] > matrix[r][c] and length[nr][nc] == length[r][c] - 1:
+                r, c = nr, nc
+                path.append((r, c))
+                break
+    return {"length": length, "answer": best, "path": path}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -6450,6 +6536,10 @@ def render(slug, render_template):
         "lis_dp_trace": lis_dp_trace,
         "patience_trace": patience_trace,
         "lis_count_of": lis_count_of,
+        "grid_paths_table": grid_paths_table,
+        "min_path_sum_table": min_path_sum_table,
+        "maximal_square_table": maximal_square_table,
+        "longest_increasing_path_of": longest_increasing_path_of,
         "bellman_ford_rounds": bellman_ford_rounds,
         "cheapest_flights_of": cheapest_flights_of,
         "has_negative_cycle_of": has_negative_cycle_of,

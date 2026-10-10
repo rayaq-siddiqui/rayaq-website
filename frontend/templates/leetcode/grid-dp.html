@@ -1,0 +1,332 @@
+{% set blocked = [(1, 1)] %}
+{% set paths = grid_paths_table(3, 4, blocked) %}
+{% set grid = [[1, 3, 1, 4], [1, 5, 1, 2], [4, 2, 1, 3]] %}
+{% set mps = min_path_sum_table(grid) %}
+{% set bits = [[1, 0, 1, 1, 1], [1, 1, 1, 1, 1], [0, 1, 1, 1, 0], [1, 1, 1, 1, 0]] %}
+{% set sq = maximal_square_table(bits) %}
+{% set hills = [[2, 5, 6], [3, 1, 7], [9, 4, 8]] %}
+{% set lip = longest_increasing_path_of(hills) %}
+<header class="jj-header">
+  <h1>Grid DP</h1>
+  <p class="tagline">
+    When a problem lives on a grid and each cell's answer depends only on a few neighbours that come earlier, you can fill the
+    grid like a spreadsheet. Counting routes, cheapest routes and the biggest square of ones all share that shape, and when the
+    order of cells is not obvious, a memoized DFS finds it for you.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  You are given a rectangle of cells. You may be asked how many ways there are to walk from the top-left to the bottom-right
+  moving only right or down, the cheapest such walk, the largest block of ones, or the longest chain of growing values. Trying
+  every walk is exponential: a grid with r rows and c columns has C(r + c - 2, r - 1) right/down routes. But the routes into a
+  cell all pass through one of only two cells just before it, so the answer for a cell can be built from the answers for those two.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Signal</th><th>Pattern</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>"Move only right or down" plus "count the ways"</td><td>ways[r][c] = ways above + ways to the left</td><td>Every route enters a cell from exactly one of two neighbours, so the cases do not overlap.</td></tr>
+    <tr><td>"Move only right or down" plus "minimum or maximum total"</td><td>cost[r][c] = cell + better of above and left</td><td>A cheapest route to a cell must use a cheapest route to its predecessor.</td></tr>
+    <tr><td>"Largest square or rectangle of ones"</td><td>side[r][c] = 1 + min of three neighbours</td><td>A square ending at a cell needs squares of nearly the same size on three sides.</td></tr>
+    <tr><td>Obstacles in the grid</td><td>The same table, with blocked cells forced to 0 ways</td><td>No route can pass through a blocked cell, so it contributes nothing downstream.</td></tr>
+    <tr><td>"Longest increasing path" with moves in four directions</td><td>Memoized DFS from every cell</td><td>The values strictly rise, so no cycle exists and each cell's answer is well defined and reusable.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Picture a spreadsheet where each cell is a formula pointing at the cell above and the cell to its left. If you fill it row by
+  row, every formula finds its inputs already computed. That is all a grid DP is: choose what a cell means, write the formula in
+  terms of earlier cells, and read the answer from the last cell.
+</p>
+<p>
+  The only real work is choosing the meaning. For counting it is "how many ways reach this cell". For cheapest routes it is "the least
+  total cost of any route that ends here". For squares it is "the biggest all-ones square whose <em>bottom-right corner</em> is
+  this cell"; pinning down the corner is what makes the formula work.
+</p>
+<p>
+  When moves go in all four directions, there is no row-by-row order that works. The fix is to let recursion find the order: ask a
+  cell for its answer, and let it ask its neighbours. If the rule forbids cycles, as "strictly increasing" does, a cache makes every
+  cell computed once.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 {{ 60 + paths.table[0] | length * 56 }} {{ 40 + paths.table | length * 48 }}" role="img" aria-labelledby="lc-grid-paths-title lc-grid-paths-desc">
+    <title id="lc-grid-paths-title">Route counts on a grid with one blocked cell</title>
+    <desc id="lc-grid-paths-desc">
+      A grid with {{ paths.table | length }} rows and {{ paths.table[0] | length }} columns where the cell at row 1, column 1 is blocked.
+      Each open cell shows the number of right-and-down routes from the top-left corner. Rows read:
+      {% for row in paths.table %}{{ row | join(", ") }}{{ "; " if not loop.last }}{% endfor %}.
+      The bottom-right cell holds {{ paths.answer }}.
+    </desc>
+    <text x="10" y="16" font-size="12" class="d-muted">routes from the top-left corner (blocked cell is dark)</text>
+    {% for row in paths.table %}
+      {% set r = loop.index0 %}
+      {% for ways in row %}
+        {% set c = loop.index0 %}
+        <rect x="{{ 20 + c * 56 }}" y="{{ 28 + r * 48 }}" width="50" height="42" class="{{ 'lc-fill-m' if (r, c) in blocked else ('lc-fill-a' if r == paths.table | length - 1 and c == row | length - 1 else 'lc-fill-g') }}"></rect>
+        <text x="{{ 20 + c * 56 + 25 }}" y="{{ 28 + r * 48 + 26 }}" font-size="14" text-anchor="middle">{{ "" if (r, c) in blocked else ways }}</text>
+      {% endfor %}
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">
+  Each open cell is the sum of the cell above and the cell to the left; the blocked cell is a zero that feeds nothing. The blue cell is the answer.
+  The diagram scrolls sideways on a narrow screen.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="counting">Counting routes</h3>
+<p>
+  Let <code>ways[r][c]</code> be the number of right/down routes from the start to cell (r, c). The first row and first column
+  have one route each, since there is only one way to stay on an edge. Elsewhere,
+  <code>ways[r][c] = ways[r - 1][c] + ways[r][c - 1]</code>. A blocked cell is set to 0 before anything uses it. Because a row
+  depends only on the row above, one list of length c is enough: overwrite it in place, adding the left neighbour as you go.
+</p>
+
+<h3 id="cheapest">Cheapest route</h3>
+<p>
+  Let <code>cost[r][c]</code> be the least total of cell values along any route ending at (r, c). Then
+  <code>cost[r][c] = grid[r][c] + min(cost[r - 1][c], cost[r][c - 1])</code>, using only the neighbours that exist on an edge.
+  The recurrence is correct because a cheapest route to (r, c) must arrive from above or from the left, and its earlier part
+  has to be a cheapest route to that neighbour: otherwise swapping in a cheaper one would improve it. To recover the route itself,
+  walk back from the corner, each time stepping to whichever neighbour has the smaller cost.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 {{ 60 + grid[0] | length * 74 }} {{ 40 + grid | length * 48 }}" role="img" aria-labelledby="lc-grid-cost-title lc-grid-cost-desc">
+    <title id="lc-grid-cost-title">Cheapest route cost to each cell</title>
+    <desc id="lc-grid-cost-desc">
+      The cell values are
+      {% for row in grid %}row {{ loop.index0 }}: {{ row | join(", ") }}{{ "; " if not loop.last }}{% endfor %}.
+      The least cost to reach each cell is
+      {% for row in mps.cost %}row {{ loop.index0 }}: {{ row | join(", ") }}{{ "; " if not loop.last }}{% endfor %}.
+      The cheapest full route costs {{ mps.answer }}.
+    </desc>
+    <text x="10" y="16" font-size="12" class="d-muted">cell value (small) and cheapest cost to arrive (large)</text>
+    {% for row in grid %}
+      {% set r = loop.index0 %}
+      {% for value in row %}
+        {% set c = loop.index0 %}
+        <rect x="{{ 20 + c * 74 }}" y="{{ 28 + r * 48 }}" width="68" height="42" class="{{ 'lc-fill-a' if (r, c) in mps.path else 'lc-fill-g' }}"></rect>
+        <text x="{{ 20 + c * 74 + 8 }}" y="{{ 28 + r * 48 + 14 }}" font-size="11" class="d-muted">{{ value }}</text>
+        <text x="{{ 20 + c * 74 + 34 }}" y="{{ 28 + r * 48 + 34 }}" font-size="15" text-anchor="middle">{{ mps.cost[r][c] }}</text>
+      {% endfor %}
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">
+  Blue cells lie on a cheapest route, recovered by walking back from the bottom-right cell to the cheaper neighbour each time.
+</p>
+
+<h3 id="squares">Largest square of ones</h3>
+<p>
+  Let <code>side[r][c]</code> be the side of the largest all-ones square whose bottom-right corner is (r, c). It is 0 if the cell
+  is 0, 1 on the top row or left column, and otherwise
+  <code>1 + min(side[r - 1][c], side[r][c - 1], side[r - 1][c - 1])</code>. Why the minimum? A square of side k at (r, c) needs
+  squares of side at least k - 1 ending directly above, directly left and diagonally up-left, since those are its three sub-squares
+  that overlap it. Conversely, if all three neighbours support side k - 1 and the cell itself is 1, the union of those squares plus
+  the cell is a solid square of side k. The area is the best side squared.
+</p>
+
+<h3 id="memo-dfs">Four-direction moves: memoized DFS</h3>
+<p>
+  Let <code>length[r][c]</code> be the longest strictly increasing path that <em>starts</em> at (r, c). It is
+  1 plus the best <code>length</code> over neighbours holding a bigger value, or just 1 if none is bigger. Row-by-row order does
+  not work here, since a cell depends on neighbours in every direction. Recursion with a cache does: the strict increase means
+  each recursive call moves to a larger value, so the calls can never loop back, and every cell is solved exactly once. This is the
+  grid-graph DFS from the <a href="{{ url_for('leetcode', slug='grid-graphs') }}">grid graphs page</a> with a memo table added.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 {{ 60 + hills[0] | length * 74 }} {{ 40 + hills | length * 48 }}" role="img" aria-labelledby="lc-grid-lip-title lc-grid-lip-desc">
+    <title id="lc-grid-lip-title">Longest increasing path from each cell</title>
+    <desc id="lc-grid-lip-desc">
+      The values are
+      {% for row in hills %}row {{ loop.index0 }}: {{ row | join(", ") }}{{ "; " if not loop.last }}{% endfor %}.
+      The longest strictly increasing path starting at each cell is
+      {% for row in lip.length %}row {{ loop.index0 }}: {{ row | join(", ") }}{{ "; " if not loop.last }}{% endfor %}.
+      The best is {{ lip.answer }}.
+    </desc>
+    <text x="10" y="16" font-size="12" class="d-muted">value (small) and longest path starting there (large)</text>
+    {% for row in hills %}
+      {% set r = loop.index0 %}
+      {% for value in row %}
+        {% set c = loop.index0 %}
+        <rect x="{{ 20 + c * 74 }}" y="{{ 28 + r * 48 }}" width="68" height="42" class="{{ 'lc-fill-a' if (r, c) in lip.path else 'lc-fill-g' }}"></rect>
+        <text x="{{ 20 + c * 74 + 8 }}" y="{{ 28 + r * 48 + 14 }}" font-size="11" class="d-muted">{{ value }}</text>
+        <text x="{{ 20 + c * 74 + 34 }}" y="{{ 28 + r * 48 + 34 }}" font-size="15" text-anchor="middle">{{ lip.length[r][c] }}</text>
+      {% endfor %}
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">
+  Blue cells form one longest path, found by following from the best start to a neighbour whose length is exactly one less.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  <strong>Routes with an obstacle.</strong> On a 3 by 4 grid with the middle cell (row 1, column 1) blocked, the table is
+  {% for row in paths.table %}<code>{{ row | join(", ") }}</code>{{ ", " if not loop.last }}{% endfor %}, so there are {{ paths.answer }}
+  routes. Check one cell by hand: the cell at row 1, column 3 has {{ paths.table[0][3] }} from above and {{ paths.table[1][2] }} from the left,
+  giving {{ paths.table[1][3] }}.
+</p>
+<p>
+  <strong>Cheapest route.</strong> For the grid
+  {% for row in grid %}<code>{{ row | join(", ") }}</code>{{ ", " if not loop.last }}{% endfor %}
+  the cost table is
+  {% for row in mps.cost %}<code>{{ row | join(", ") }}</code>{{ ", " if not loop.last }}{% endfor %},
+  so the cheapest route costs {{ mps.answer }}. One such route visits
+  {% for r, c in mps.path %}({{ r }}, {{ c }}){{ " then " if not loop.last }}{% endfor %}.
+</p>
+<p>
+  <strong>Largest square.</strong> The ones-and-zeros grid gives side table
+  {% for row in sq.side %}<code>{{ row | join(", ") }}</code>{{ ", " if not loop.last }}{% endfor %}.
+  The largest side is {{ sq.best }}, so the area is {{ sq.area }}, with its bottom-right corner at ({{ sq.corner[0] }}, {{ sq.corner[1] }}).
+  That corner cell took 1 plus the smallest of its three neighbours, which are {{ sq.side[2][3] }}, {{ sq.side[3][2] }} and {{ sq.side[2][2] }}.
+</p>
+<p>
+  <strong>Longest increasing path.</strong> For the value grid the memoized DFS fills
+  {% for row in lip.length %}<code>{{ row | join(", ") }}</code>{{ ", " if not loop.last }}{% endfor %},
+  and the answer is {{ lip.answer }}.
+</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>def unique_paths(rows, cols):
+    ways = [1] * cols
+    for _ in range(1, rows):
+        for c in range(1, cols):
+            ways[c] += ways[c - 1]      # above is the old ways[c]
+    return ways[-1]
+
+
+def min_path_sum(grid):
+    rows, cols = len(grid), len(grid[0])
+    cost = [0] * cols
+    for r in range(rows):
+        for c in range(cols):
+            best = min(
+                cost[c] if r else float("inf"),
+                cost[c - 1] if c else float("inf"),
+            )
+            cost[c] = grid[r][c] + (0 if best == float("inf") else best)
+    return cost[-1]</code></pre>
+
+<pre><code>from functools import cache
+
+
+def longest_increasing_path(matrix):
+    rows, cols = len(matrix), len(matrix[0])
+
+    @cache
+    def start_at(r, c):
+        best = 1
+        for nr, nc in ((r + 1, c), (r - 1, c), (r, c + 1), (r, c - 1)):
+            if 0 &lt;= nr &lt; rows and 0 &lt;= nc &lt; cols and matrix[nr][nc] &gt; matrix[r][c]:
+                best = max(best, 1 + start_at(nr, nc))
+        return best
+
+    return max(start_at(r, c) for r in range(rows) for c in range(cols))</code></pre>
+
+<h3 id="variations">Variations and edge cases</h3>
+<pre><code>def unique_paths_with_obstacles(grid):
+    if grid[0][0] or grid[-1][-1]:
+        return 0
+    cols = len(grid[0])
+    ways = [0] * cols
+    ways[0] = 1
+    for row in grid:
+        for c in range(cols):
+            if row[c]:
+                ways[c] = 0
+            elif c:
+                ways[c] += ways[c - 1]
+    return ways[-1]
+
+
+def maximal_square(matrix):
+    cols = len(matrix[0])
+    side = [0] * (cols + 1)             # one padding column on the left
+    best = 0
+    for row in matrix:
+        diagonal = 0                    # side up-left of the current cell
+        for c in range(1, cols + 1):
+            above = side[c]
+            side[c] = 1 + min(side[c], side[c - 1], diagonal) if row[c - 1] == "1" else 0
+            diagonal = above
+            best = max(best, side[c])
+    return best * best</code></pre>
+<ul>
+  <li><strong>Blocked start or end.</strong> If either corner is blocked the answer is 0 before any table work.</li>
+  <li><strong>Edges.</strong> Row 0 and column 0 have only one predecessor. Handle them with padding or an explicit <code>if</code>, never by indexing -1, which silently wraps in Python.</li>
+  <li><strong>One-row or one-column grid.</strong> The answer is 1 way, or the sum of the cells, which the same code gives without a special case.</li>
+  <li><strong>Rolling the row.</strong> When shrinking to one list, the diagonal value is overwritten before you read it unless you save it first, as <code>diagonal</code> does above.</li>
+  <li><strong>Characters versus numbers.</strong> Some inputs give cells as strings like <code>"1"</code>; compare against the right type.</li>
+  <li><strong>Memo DFS depth.</strong> A long spiral can recurse up to rows times cols deep. Python's default limit is about 1000, so very large grids need the limit raised or an iterative order by sorting cells by value.</li>
+</ul>
+
+<h2 id="tradeoffs">Complexity and tradeoffs</h2>
+
+<ul>
+  <li><strong>Time:</strong> O(r &middot; c) for every pattern here; each cell does a constant amount of work. The memoized DFS visits each cell once and looks at 4 neighbours.</li>
+  <li><strong>Space:</strong> O(r &middot; c) for a full table, O(c) when only the previous row is needed. The memo DFS needs the full table, plus recursion depth.</li>
+  <li><strong>Baseline.</strong> Enumerating routes is exponential; for a 15 by 15 grid the count is already over 40 million.</li>
+  <li><strong>Count by formula.</strong> For plain Unique Paths with no obstacles the answer is the binomial C(r + c - 2, r - 1), computed in O(min(r, c)); the table is for when the grid has obstacles or costs.</li>
+  <li><strong>When it fails.</strong> If moves can go up or left too and costs are not all the same sign, row order no longer works; use Dijkstra on the grid instead. If a path may revisit cells, there is no DP order at all.</li>
+</ul>
+
+<h2 id="problems">Problems</h2>
+
+<p>
+  Unique Paths is the entry point, and the same table with a different formula answers Minimum Path Sum and Maximal Square.
+  Longest Increasing Path is the hard one: it is the same idea carried to four-direction moves, with recursion supplying the order.
+</p>
+{% include "leetcode/_problems.html" %}
+
+<h2 id="connections">Connections</h2>
+
+{% include "leetcode/_connections.html" %}
+<p>
+  Every grid DP is a shortest-path or counting problem on a directed acyclic graph whose nodes are cells, which links it to
+  the <a href="{{ url_for('leetcode', slug='dp-fundamentals') }}">DP fundamentals page</a> and to topological ordering. The
+  memoized DFS is the same traversal as flood fill with a cache bolted on.
+</p>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="lc-quiz">
+  <summary>Why does the square formula use the minimum of three neighbours rather than the maximum or the sum?</summary>
+  <p>A square of side k needs all three sub-squares of side k - 1, so the weakest neighbour limits it. In the example the corner at ({{ sq.corner[0] }}, {{ sq.corner[1] }}) sees {{ sq.side[2][3] }}, {{ sq.side[3][2] }} and {{ sq.side[2][2] }}, and the minimum plus one gives {{ sq.best }}.</p>
+</details>
+<details class="lc-quiz">
+  <summary>How does an obstacle change the route-counting table?</summary>
+  <p>Only the blocked cell itself: it stays at 0. The zero then flows naturally into the cells that would have used it. Here the answer drops to {{ paths.answer }}.</p>
+</details>
+<details class="lc-quiz">
+  <summary>Why is the memoized DFS for the longest increasing path guaranteed to terminate?</summary>
+  <p>Every recursive call moves to a strictly larger value, so a cell can never be reached again from its own descendants. The call graph is acyclic, and the cache makes each of the {{ hills | length * hills[0] | length }} cells computed once.</p>
+</details>
+<details class="lc-quiz">
+  <summary>When does the cheapest-route recurrence break down?</summary>
+  <p>When moves other than right and down are allowed, the cheapest route to a cell might come from a cell computed later. Then you need Dijkstra's algorithm, or Bellman-Ford if costs can be negative.</p>
+</details>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Bellman, R., <em>Dynamic Programming</em>, Princeton University Press, 1957.</li>
+  <li>Cormen, Leiserson, Rivest and Stein, <em>Introduction to Algorithms</em>, chapter 14 on dynamic programming.</li>
+  <li>Skiena, S., <em>The Algorithm Design Manual</em>, chapter 10 on dynamic programming.</li>
+  <li>Sedgewick and Wayne, <em>Algorithms</em>, section 6.4.</li>
+  <li>The <a href="https://neetcode.io/roadmap" rel="noopener">NeetCode roadmap</a> and the
+    Blind 75, Grind 169, NeetCode 150 and NeetCode 250 lists, used as the index of topics and
+    problems.</li>
+</ul>
