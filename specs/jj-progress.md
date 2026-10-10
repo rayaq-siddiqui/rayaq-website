@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-09 (fifty-third run): bumped the pin `26bcd69..da1d234` (0.46.0). **The
+**Last updated:** 2026-10-10 (fifty-fourth run): bumped the pin `da1d234..889e5a6` (0.46.0). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@da1d234f309a36e665a222cb02d92a07ccef7c34` (committed 2026-10-08, version
-0.46.0), analyzed 2026-10-09. Held in `jj_docs.UPSTREAM`. Previous pin: `26bcd69`.
+`jj-vcs/jj@889e5a68fc24f00b9dfa0fe58dc140c9f064f902` (committed 2026-10-10, version
+0.46.0), analyzed 2026-10-10. Held in `jj_docs.UPSTREAM`. Previous pin: `da1d234`.
 
 ## §10 acceptance criteria
 
@@ -31,40 +31,37 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to fifty-third runs: pin bumped).
+      run: pin bumped; fiftieth to fifty-fourth runs: pin bumped).
+
+## Fifty-fourth run (2026-10-10)
+
+- `b4bc7c5` maintenance `da1d234..889e5a6` (17 commits, a refactor wave). `files.rs` moved to `core/src/`,
+  `template_parser.rs`/`template.pest` to `dsl/src/`, `IndexStore` to `lib/src/index_store.rs`, revset and
+  fileset backend types to `lib/src/revset_backend.rs` and `core/src/fileset_backend.rs`; page source
+  sets now list them. `MergeOptions` is now built by `UserSettings::merge_options`;
+  `parent_tree`/`is_empty`/`is_discardable` take an index; `is_hidden` was inlined into the `hidden()`
+  template method (`commits`, `show`, `conflicts` updated). `git fetch` now prints "Fetching from Git
+  remotes: …" and joins remotes with ", " (`git-fetch` and the `bookmark-forget` snapshot updated).
+  About 570 ranges were remapped, and 10 command source lines shifted in the regenerated registry. Protos
+  are unchanged. A `gerrit-upload` range that ran one line past EOF was fixed.
+- A link check rendered all 121 pages: 5,480 pinned links, every path and range inside the checkout.
+  0px overflow at 390px on the changed pages.
 
 ## Fifty-third run (2026-10-09)
 
-- `c3d8c40` maintenance `26bcd69..da1d234` (1 commit: tag-name completion for `tag`/`git` commands). Re-pinned
-  shifted ranges on 10 pages (`git-fetch`, `git-push`, `tag-*`, `undo`, `workspace-root`, `config-get`/
-  `-unset`, `util-config-schema`); each remapped range cites the same text. No prose change; registry same.
+- `c3d8c40` maintenance `26bcd69..da1d234` (tag-name completion): ranges re-pinned on 10 pages, no prose change.
 
-## Fifty-second run (2026-10-08)
+## Fifty-first and fifty-second runs (2026-10-08)
 
-- `7eafa56` pin-only maintenance `3935c0f..26bcd69` (1 commit: unused `pest`/`pest_derive` dropped from
-  `lib/Cargo.toml`). No page cites that file; the `revsets` grammar links already point at
-  `dsl/src/`. Command registry regenerated: unchanged (107 commands).
-
-## Fifty-first run (2026-10-08)
-
-- `d7ebdbf` maintenance `320f7e6..3935c0f` (5 commits, release 0.46.0). The revset/fileset parsers,
-  their grammars and `dsl_util.rs` moved from `lib/src/` to the new `jj-dsl` crate (`dsl/src/`); the
-  `revsets` page links there and says so. `git init`'s help text was rewritten, so its ranges were
-  remapped and the flag table re-checked. Shifted ranges re-pinned on 3 more pages.
-- This bump was held from 2026-10-07 to 2026-10-08 by a permission denial, until the owner allowed the
-  agent to push to `main`; the pin went past the then-tip `d91f81a` to the current tip.
-- 123 URLs return 200; 0px overflow at 390px on `/jj`, `revsets`, `git-init`, `git-clone`.
+- `d7ebdbf` maintenance `320f7e6..3935c0f` (release 0.46.0): revset/fileset parsers and grammars moved to
+  the new `jj-dsl` crate (`dsl/src/`); `revsets` says so; `git init` help remapped. Held a day by a
+  permission denial until the owner allowed pushes to `main`.
+- `7eafa56` pin-only `3935c0f..26bcd69` (unused `pest` deps dropped from `lib/Cargo.toml`).
 
 ## Fiftieth run (2026-10-06)
 
-- `58584d3` maintenance `4df5265..320f7e6` (17 commits): re-pinned ranges on 49 pages; `converge`
-  gained the "No revisions were found to be divergent" messages; `diffedit`/`restore` now cite the
-  shared `rebase_or_reparent_descendants`; gix error migration checked, behaviour unchanged.
-- `39e7fb0` `file delete`; `8e737cf` `file edit` (both new upstream, Tier A).
-- `437a375` `help`, `version`, plus a test that every ready Tier C page has its sections.
-- `03bf8f4` `util config-schema`/`markdown-help`/`install-man-pages`; `eab649a` `util gc`/`snapshot`/
-  `exec`; `73d8546` `util completion`/`diff`/`backend`; `901d340` `debug`, `bench` (group pages).
-- 123 URLs return 200; 0px overflow at 390px on every new page.
+- `58584d3` maintenance `4df5265..320f7e6` (17 commits, 49 pages re-pinned). New pages: `39e7fb0`
+  `file delete`, `8e737cf` `file edit`, and the Tier C pages (`437a375` through `901d340`).
 
 ## Thirty-ninth to forty-ninth runs (2026-10-05 to 2026-10-06)
 
