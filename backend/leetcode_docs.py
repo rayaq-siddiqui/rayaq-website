@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -6386,6 +6386,69 @@ def regex_match_table(text, pattern):
     return {"table": table, "answer": table[-1][-1]}
 
 
+def burst_balloons_table(nums):
+    """Pad the row with a 1 on each side; coins[l][r] is the most you can earn bursting every balloon strictly between l and r. last[l][r] is the balloon chosen to burst last in that range."""
+    padded = [1] + list(nums) + [1]
+    size = len(padded)
+    coins = [[0] * size for _ in range(size)]
+    last = [[None] * size for _ in range(size)]
+    for gap in range(2, size):
+        for left in range(size - gap):
+            right = left + gap
+            for k in range(left + 1, right):
+                value = coins[left][k] + padded[left] * padded[k] * padded[right] + coins[k][right]
+                if value > coins[left][right]:
+                    coins[left][right] = value
+                    last[left][right] = k
+    order = []
+
+    def walk(left, right):
+        k = last[left][right]
+        if k is None:
+            return
+        walk(left, k)
+        walk(k, right)
+        order.append(k - 1)
+
+    walk(0, size - 1)
+    return {"padded": padded, "coins": coins, "last": last, "answer": coins[0][size - 1], "order": order}
+
+
+def stone_game_diff_table(piles):
+    """diff[l][r] is the best (mover's score minus opponent's score) from piles[l..r] when the mover takes either end. The table is upper triangular; entries below the diagonal stay 0."""
+    n = len(piles)
+    diff = [[0] * n for _ in range(n)]
+    for i in range(n):
+        diff[i][i] = piles[i]
+    for gap in range(1, n):
+        for left in range(n - gap):
+            right = left + gap
+            diff[left][right] = max(piles[left] - diff[left + 1][right], piles[right] - diff[left][right - 1])
+    total = sum(piles)
+    first = (total + diff[0][n - 1]) // 2
+    return {"diff": diff, "margin": diff[0][n - 1], "first": first, "second": total - first, "first_wins": diff[0][n - 1] > 0}
+
+
+def stone_game_two_value(piles):
+    """Stone Game II: the mover may take the first 1..2M piles of what remains and then M becomes max(M, taken). Returns the most stones the first player can collect and the memo of (start, M) -> best haul."""
+    n = len(piles)
+    suffix = [0] * (n + 1)
+    for i in range(n - 1, -1, -1):
+        suffix[i] = suffix[i + 1] + piles[i]
+    memo = {}
+
+    def best(start, m):
+        if start >= n:
+            return 0
+        if start + 2 * m >= n:
+            return suffix[start]
+        if (start, m) not in memo:
+            memo[(start, m)] = max(suffix[start] - best(start + x, max(m, x)) for x in range(1, 2 * m + 1))
+        return memo[(start, m)]
+
+    return {"answer": best(0, 1), "memo": memo, "suffix": suffix}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -6635,6 +6698,9 @@ def render(slug, render_template):
         "lis_count_of": lis_count_of,
         "grid_paths_table": grid_paths_table,
         "lcs_table": lcs_table,
+        "burst_balloons_table": burst_balloons_table,
+        "stone_game_diff_table": stone_game_diff_table,
+        "stone_game_two_value": stone_game_two_value,
         "edit_distance_table": edit_distance_table,
         "interleave_table": interleave_table,
         "distinct_subsequences_table": distinct_subsequences_table,

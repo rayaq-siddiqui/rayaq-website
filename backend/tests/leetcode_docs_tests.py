@@ -1229,3 +1229,39 @@ def test_string_dp_helpers_match_the_page():
     assert "takes 2 edits: delete f, then insert n" in body
     assert "appears 5 times as a subsequence" in body
     assert "<code>0, 0, 0, 2, 2, 5</code>" in body
+
+
+def test_interval_dp_helpers_match_the_page():
+    def brute_coins(row):
+        if not row:
+            return 0
+        return max((row[i - 1] if i else 1) * row[i] * (row[i + 1] if i + 1 < len(row) else 1) + brute_coins(row[:i] + row[i + 1 :]) for i in range(len(row)))
+
+    def brute_margin(piles):
+        if not piles:
+            return 0
+        if len(piles) == 1:
+            return piles[0]
+        return max(piles[0] - brute_margin(piles[1:]), piles[-1] - brute_margin(piles[:-1]))
+
+    balloons = leetcode_docs.burst_balloons_table([2, 4, 3, 5])
+    assert balloons["answer"] == 115 == brute_coins([2, 4, 3, 5]) and balloons["order"] == [2, 1, 0, 3]
+    assert balloons["coins"][0] == [0, 0, 8, 30, 110, 115] and balloons["padded"] == [1, 2, 4, 3, 5, 1]
+    assert leetcode_docs.burst_balloons_table([7])["answer"] == 7
+    assert leetcode_docs.burst_balloons_table([])["answer"] == 0
+    for row in ([1, 5], [3, 1, 2], [4, 2, 6, 1]):
+        assert leetcode_docs.burst_balloons_table(row)["answer"] == brute_coins(row)
+    stones = leetcode_docs.stone_game_diff_table([3, 1, 4, 1, 5, 9])
+    assert stones["diff"][0] == [3, 2, 2, 5, 0, 9] and stones["margin"] == 9
+    assert (stones["first"], stones["second"], stones["first_wins"]) == (16, 7, True)
+    for piles in ([3, 1, 4, 1, 5, 9], [8, 2, 7], [5]):
+        assert leetcode_docs.stone_game_diff_table(piles)["margin"] == brute_margin(piles)
+    two = leetcode_docs.stone_game_two_value([3, 1, 4, 1, 5, 9])
+    assert two["answer"] == 16 and two["suffix"][0] == 23 and len(two["memo"]) == 4
+    assert leetcode_docs.stone_game_two_value([4])["answer"] == 4
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/interval-dp").get_data(as_text=True))
+    assert "the table fills out to 115 coins" in body
+    assert "<code>0, 0, 8, 30, 110, 115</code>" in body
+    assert "force a margin of 9" in body
+    assert "collects 16 and the second 7" in body
+    assert "is 16 stones out of 23" in body
