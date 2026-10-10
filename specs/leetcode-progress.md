@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-10 (build run). 42 of 58 pages are ready. **The next run is a build run** continuing at `grid-dp`.
+**Last updated:** 2026-10-10 (build run). 43 of 58 pages are ready. **The next run is a build run** continuing at `string-dp`.
 
 ## The Routine
 
@@ -39,10 +39,10 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 
 | List | Problems with a ready home | Size |
 |---|---|---|
-| Blind 75 | 57 | 75 |
-| Grind 169 | 140 | 169 |
-| NeetCode 150 | 112 | 150 |
-| NeetCode 250 | 193 | 250 |
+| Blind 75 | 58 | 75 |
+| Grind 169 | 143 | 169 |
+| NeetCode 150 | 114 | 150 |
+| NeetCode 250 | 197 | 250 |
 
 ## Queue
 
@@ -91,8 +91,8 @@ build once research is done.
 40. `knapsack-dp` ✓
 41. `palindrome-dp` ✓
 42. `longest-increasing-subsequence` ✓
-43. `grid-dp` ← next
-44. `string-dp`
+43. `grid-dp` ✓
+44. `string-dp` ← next
 45. `interval-dp`
 46. `state-machine-dp`
 47. `greedy`
