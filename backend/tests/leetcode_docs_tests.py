@@ -1115,3 +1115,33 @@ def test_knapsack_dp_helpers_match_the_page():
     assert "largest-first uses 5 coins (5 + 5 + 1 + 1 + 1)" in body
     assert "so there are 5 sign assignments" in body
     assert "so the string splits as apple + pen" in body
+
+
+def test_palindrome_dp_helpers_match_the_page():
+    table = leetcode_docs.palindrome_table_of("cabbad")
+    assert table["longest"] == "abba" and table["count"] == 8
+    assert table["table"][1] == [False, True, False, False, True, False]
+    assert table["table"][2][3] is True and table["table"][0][5] is False
+    empty = leetcode_docs.palindrome_table_of("")
+    assert empty == {"table": [], "longest": "", "count": 0}
+    centers = leetcode_docs.expand_centers_trace("cabbad")
+    assert len(centers["rows"]) == 11 and centers["rows"][5] == ("gap 2|3", 1, "abba")
+    assert centers["longest"] == "abba" and centers["count"] == 8
+    assert leetcode_docs.expand_centers_trace("aaaa")["count"] == 10
+    assert leetcode_docs.expand_centers_trace("babad")["longest"] == "bab"
+    assert leetcode_docs.expand_centers_trace("") == {"rows": [], "longest": "", "count": 0}
+    manacher = leetcode_docs.manacher_of("cabbad")
+    assert manacher["padded"] == "#c#a#b#b#a#d#"
+    assert manacher["radii"] == [0, 1, 0, 1, 0, 1, 4, 1, 0, 1, 0, 1, 0] and manacher["longest"] == "abba"
+    assert leetcode_docs.manacher_of("")["longest"] == ""
+    for text in ["a", "aaaa", "abacdfgdcaba", "abababab", "abcd"]:
+        brute = [text[i : j + 1] for i in range(len(text)) for j in range(i, len(text)) if text[i : j + 1] == text[i : j + 1][::-1]]
+        assert leetcode_docs.palindrome_table_of(text)["count"] == len(brute)
+        assert leetcode_docs.expand_centers_trace(text)["count"] == len(brute)
+        longest = max(map(len, brute))
+        assert len(leetcode_docs.palindrome_table_of(text)["longest"]) == longest
+        assert len(leetcode_docs.manacher_of(text)["longest"]) == longest
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/palindrome-dp").get_data(as_text=True))
+    assert "Counting every step that matched gives 8 palindromic substrings: 6 single letters" in body
+    assert "The table agrees: it has 8 true cells and the longest is \"abba\"" in body
+    assert "<code>0, 1, 0, 1, 0, 1, 4, 1, 0, 1, 0, 1, 0</code>" in body

@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -6092,6 +6092,62 @@ def target_sum_of(nums, target):
     return {"subset_target": goal, "table": table, "answer": table[goal]}
 
 
+def palindrome_table_of(text):
+    """is_pal[i][j] is True when text[i..j] reads the same both ways; filled by increasing length. Returns the table, the longest palindromic substring (leftmost on ties) and the count of palindromic substrings."""
+    n = len(text)
+    is_pal = [[False] * n for _ in range(n)]
+    count, longest = 0, ""
+    for length in range(1, n + 1):
+        for i in range(n - length + 1):
+            j = i + length - 1
+            if text[i] == text[j] and (length <= 2 or is_pal[i + 1][j - 1]):
+                is_pal[i][j] = True
+                count += 1
+                if length > len(longest):
+                    longest = text[i : j + 1]
+    return {"table": is_pal, "longest": longest, "count": count}
+
+
+def expand_centers_trace(text):
+    """Expands outward from each of the 2n-1 centers (characters and gaps). Each row is (center label, start index, widest palindrome there). Returns the rows, the longest palindrome (leftmost on ties) and the count."""
+    rows, longest, count = [], "", 0
+    for center in range(2 * len(text) - 1):
+        left, right = center // 2, center // 2 + center % 2
+        while left >= 0 and right < len(text) and text[left] == text[right]:
+            left -= 1
+            right += 1
+            count += 1
+        found = text[left + 1 : right]
+        label = f"char {center // 2}" if center % 2 == 0 else f"gap {center // 2}|{center // 2 + 1}"
+        rows.append((label, left + 1, found))
+        if len(found) > len(longest):
+            longest = found
+    return {"rows": rows, "longest": longest, "count": count}
+
+
+def manacher_of(text):
+    """Manacher's algorithm on the text with a separator between characters. radii[k] is how far the palindrome centred at k extends in that padded string, which equals its length in the original."""
+    padded = "#" + "#".join(text) + "#"
+    radii = [0] * len(padded)
+    centre = right = 0
+    for k in range(len(padded)):
+        if k < right:
+            radii[k] = min(right - k, radii[2 * centre - k])
+        while (
+            k - radii[k] - 1 >= 0
+            and k + radii[k] + 1 < len(padded)
+            and padded[k - radii[k] - 1] == padded[k + radii[k] + 1]
+        ):
+            radii[k] += 1
+        if k + radii[k] > right:
+            centre, right = k, k + radii[k]
+    if not text:
+        return {"padded": padded, "radii": radii, "longest": ""}
+    k = max(range(len(padded)), key=lambda index: (radii[index], -index))
+    start = (k - radii[k]) // 2
+    return {"padded": padded, "radii": radii, "longest": text[start : start + radii[k]]}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -6333,6 +6389,9 @@ def render(slug, render_template):
         "greedy_coin_count": greedy_coin_count,
         "word_break_table": word_break_table,
         "target_sum_of": target_sum_of,
+        "palindrome_table_of": palindrome_table_of,
+        "expand_centers_trace": expand_centers_trace,
+        "manacher_of": manacher_of,
         "bellman_ford_rounds": bellman_ford_rounds,
         "cheapest_flights_of": cheapest_flights_of,
         "has_negative_cycle_of": has_negative_cycle_of,
