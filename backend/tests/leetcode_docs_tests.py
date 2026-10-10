@@ -1009,3 +1009,24 @@ def test_minimum_spanning_tree_helpers_match_the_page():
     assert "Removing any of edges 1, 2, 3, 5" in body
     assert "Edges 7 and 8 can appear" in body
     assert "3-5 (6)" in body
+
+
+def test_eulerian_helpers_match_the_page():
+    tickets = [("JFK", "ATL"), ("JFK", "LAX"), ("LAX", "SEA"), ("SEA", "JFK")]
+    trace = leetcode_docs.hierholzer_trace(tickets, "JFK")
+    assert trace["route"] == ["JFK", "LAX", "SEA", "JFK", "ATL"]
+    assert len(trace["steps"]) == 9 and trace["steps"][-1][3] == ["ATL", "JFK", "SEA", "LAX", "JFK"]
+    assert leetcode_docs.greedy_walk_of(tickets, "JFK") == {"walk": ["JFK", "ATL"], "unused": 3}
+    assert leetcode_docs.euler_kind_of(tickets) == {"kind": "path", "start": "JFK", "end": "ATL"}
+    assert leetcode_docs.euler_kind_of([("a", "b"), ("b", "a"), ("c", "d"), ("d", "c")])["kind"] == "none"
+    assert leetcode_docs.euler_kind_of([("a", "b"), ("a", "c")])["kind"] == "none"
+    assert leetcode_docs.euler_kind_of([])["kind"] == "circuit"
+    circuit = [("A", "B"), ("B", "C"), ("C", "A"), ("A", "D"), ("D", "A")]
+    assert leetcode_docs.euler_kind_of(circuit)["kind"] == "circuit"
+    assert leetcode_docs.hierholzer_trace(circuit, "A")["route"] == ["A", "B", "C", "A", "D", "A"]
+    assert leetcode_docs.hierholzer_trace([("a", "b"), ("c", "d")], "a")["route"] is None
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/eulerian-paths").get_data(as_text=True))
+    assert "Running the algorithm takes 9 steps" in body
+    assert "<code>JFK, LAX, SEA, JFK, ATL</code>" in body
+    assert "reports a <code>path</code> from JFK to ATL" in body
+    assert "stuck at once with 3 tickets unused" in body

@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -5802,6 +5802,75 @@ def critical_edges_of(node_count, edges):
     return critical, pseudo
 
 
+def euler_kind_of(edges):
+    """Classifies a directed edge list: an Eulerian "circuit" (every node balanced), a "path" (one start with one extra out-edge, one end with one extra in-edge) or "none". Also requires every edge to lie in one weakly connected piece."""
+    out, into = {}, {}
+    for u, v in edges:
+        out[u] = out.get(u, 0) + 1
+        into[v] = into.get(v, 0) + 1
+    starts, ends = [], []
+    for node in set(out) | set(into):
+        diff = out.get(node, 0) - into.get(node, 0)
+        if diff == 1:
+            starts.append(node)
+        elif diff == -1:
+            ends.append(node)
+        elif diff != 0:
+            return {"kind": "none", "start": None, "end": None}
+    neighbors = {}
+    for u, v in edges:
+        neighbors.setdefault(u, set()).add(v)
+        neighbors.setdefault(v, set()).add(u)
+    if neighbors:
+        first = next(iter(neighbors))
+        seen = {first}
+        stack = [first]
+        while stack:
+            for nxt in neighbors[stack.pop()]:
+                if nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+        if len(seen) != len(neighbors):
+            return {"kind": "none", "start": None, "end": None}
+    if not starts and not ends:
+        return {"kind": "circuit", "start": None, "end": None}
+    if len(starts) == 1 and len(ends) == 1:
+        return {"kind": "path", "start": starts[0], "end": ends[0]}
+    return {"kind": "none", "start": None, "end": None}
+
+
+def hierholzer_trace(tickets, start):
+    """Hierholzer's algorithm over directed `tickets` (from, to), always taking the smallest unused destination first. Returns the route (None when it cannot use every ticket) and one step per stack change as (action, node, stack, finished), where finished holds the nodes popped so far in pop order."""
+    graph = {}
+    for u, v in sorted(tickets, reverse=True):
+        graph.setdefault(u, []).append(v)
+    stack = [start]
+    finished = []
+    steps = []
+    while stack:
+        u = stack[-1]
+        if graph.get(u):
+            v = graph[u].pop()
+            stack.append(v)
+            steps.append(("walk", v, list(stack), list(finished)))
+        else:
+            finished.append(stack.pop())
+            steps.append(("back", u, list(stack), list(finished)))
+    route = finished[::-1]
+    return {"route": route if len(route) == len(tickets) + 1 else None, "steps": steps}
+
+
+def greedy_walk_of(tickets, start):
+    """Walks to the smallest unused destination and never backs up. Returns the walk and how many tickets stayed unused when it got stuck."""
+    graph = {}
+    for u, v in sorted(tickets, reverse=True):
+        graph.setdefault(u, []).append(v)
+    walk = [start]
+    while graph.get(walk[-1]):
+        walk.append(graph[walk[-1]].pop())
+    return {"walk": walk, "unused": len(tickets) - (len(walk) - 1)}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -6021,6 +6090,9 @@ def render(slug, render_template):
         "prim_trace": prim_trace,
         "connect_points_cost_of": connect_points_cost_of,
         "critical_edges_of": critical_edges_of,
+        "euler_kind_of": euler_kind_of,
+        "hierholzer_trace": hierholzer_trace,
+        "greedy_walk_of": greedy_walk_of,
         "bellman_ford_rounds": bellman_ford_rounds,
         "cheapest_flights_of": cheapest_flights_of,
         "has_negative_cycle_of": has_negative_cycle_of,

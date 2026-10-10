@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-10 (build run). 36 of 58 pages are ready. **The next run is a build run** continuing at `eulerian-paths`.
+**Last updated:** 2026-10-10 (build run). 37 of 58 pages are ready. **The next run is a build run** continuing at `dp-fundamentals`.
 
 ## The Routine
 
@@ -41,8 +41,8 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 |---|---|---|
 | Blind 75 | 47 | 75 |
 | Grind 169 | 129 | 169 |
-| NeetCode 150 | 97 | 150 |
-| NeetCode 250 | 171 | 250 |
+| NeetCode 150 | 98 | 150 |
+| NeetCode 250 | 172 | 250 |
 
 ## Queue
 
@@ -85,8 +85,8 @@ build once research is done.
 34. `dijkstra` ✓
 35. `bellman-ford` ✓
 36. `minimum-spanning-trees` ✓
-37. `eulerian-paths` ← next
-38. `dp-fundamentals`
+37. `eulerian-paths` ✓
+38. `dp-fundamentals` ← next
 39. `linear-dp`
 40. `knapsack-dp`
 41. `palindrome-dp`
