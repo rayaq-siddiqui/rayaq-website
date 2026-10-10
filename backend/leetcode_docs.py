@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -5448,6 +5448,122 @@ def min_height_roots_of(node_count, edges):
     return {"roots": sorted(leaves), "rounds": rounds}
 
 
+def union_find_trace(node_count, edges, by_size=True, compress=True):
+    """Runs union-find over `edges` in order. Returns, per edge, whether it merged two sets, plus the final parent array, the component count, the first redundant edge, the deepest chain a find had to walk and the total parent hops."""
+    parent = list(range(node_count))
+    size = [1] * node_count
+    hops = [0]
+    deepest = [0]
+
+    def find(x):
+        root = x
+        walked = 0
+        while parent[root] != root:
+            root = parent[root]
+            walked += 1
+        hops[0] += walked
+        deepest[0] = max(deepest[0], walked)
+        if compress:
+            while parent[x] != root:
+                parent[x], x = root, parent[x]
+        return root
+
+    merged = []
+    components = node_count
+    for a, b in edges:
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            merged.append(False)
+            continue
+        if by_size and size[ra] < size[rb]:
+            ra, rb = rb, ra
+        parent[rb] = ra
+        size[ra] += size[rb]
+        components -= 1
+        merged.append(True)
+    redundant = next((edge for edge, did in zip(edges, merged) if not did), None)
+    return {"merged": merged, "parent": parent, "components": components, "redundant": redundant, "deepest": deepest[0], "hops": hops[0]}
+
+
+def forest_layout_of(parent):
+    """Depth and left-to-right slot of each node in a parent-pointer forest, for drawing."""
+    def depth(node):
+        steps = 0
+        while parent[node] != node:
+            node = parent[node]
+            steps += 1
+        return steps
+
+    slots = {}
+    layout = {}
+    for node in range(len(parent)):
+        d = depth(node)
+        layout[node] = (d, slots.get(d, 0))
+        slots[d] = slots.get(d, 0) + 1
+    return layout
+
+
+def is_valid_tree_of(node_count, edges):
+    """A graph is a tree exactly when it has n - 1 edges and none of them closes a cycle."""
+    if len(edges) != node_count - 1:
+        return False
+    return union_find_trace(node_count, edges)["components"] == 1
+
+
+def accounts_merge_of(accounts):
+    """Merges accounts that share an email. Each account is [name, email, ...]; returns [name, sorted emails...] lists ordered by their first email."""
+    parent = {}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    owner = {}
+    for name, *emails in accounts:
+        for email in emails:
+            parent.setdefault(email, email)
+            owner[email] = name
+        for email in emails[1:]:
+            ra, rb = find(emails[0]), find(email)
+            if ra != rb:
+                parent[rb] = ra
+    groups = {}
+    for email in parent:
+        groups.setdefault(find(email), []).append(email)
+    merged = [[owner[root]] + sorted(emails) for root, emails in groups.items()]
+    return sorted(merged, key=lambda row: row[1])
+
+
+def gcd_traversal_of(nums):
+    """Whether every pair of indices is connected, where two indices link when their numbers share a prime factor. Unions each index with the primes of its number and counts the sets that contain an index."""
+    if len(nums) == 1:
+        return True
+    if 1 in nums:
+        return False
+    parent = {}
+
+    def find(x):
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i, value in enumerate(nums):
+        factor = 2
+        while factor * factor <= value:
+            if value % factor == 0:
+                parent[find(("p", factor))] = find(("i", i))
+                while value % factor == 0:
+                    value //= factor
+            factor += 1
+        if value > 1:
+            parent[find(("p", value))] = find(("i", i))
+    return len({find(("i", i)) for i in range(len(nums))}) == 1
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -5661,6 +5777,11 @@ def render(slug, render_template):
         "directed_cycle_of": directed_cycle_of,
         "word_ladder_of": word_ladder_of,
         "clone_graph_of": clone_graph_of,
+        "union_find_trace": union_find_trace,
+        "is_valid_tree_of": is_valid_tree_of,
+        "forest_layout_of": forest_layout_of,
+        "accounts_merge_of": accounts_merge_of,
+        "gcd_traversal_of": gcd_traversal_of,
         "kahn_order_of": kahn_order_of,
         "dfs_topological_order_of": dfs_topological_order_of,
         "alien_order_of": alien_order_of,

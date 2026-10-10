@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-10 (build run). 32 of 58 pages are ready. **The next run is a build run** continuing at `union-find`.
+**Last updated:** 2026-10-10 (build run). 33 of 58 pages are ready. **The next run is a build run** continuing at `dijkstra`.
 
 ## The Routine
 
@@ -39,10 +39,10 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 
 | List | Problems with a ready home | Size |
 |---|---|---|
-| Blind 75 | 45 | 75 |
-| Grind 169 | 125 | 169 |
-| NeetCode 150 | 90 | 150 |
-| NeetCode 250 | 160 | 250 |
+| Blind 75 | 47 | 75 |
+| Grind 169 | 128 | 169 |
+| NeetCode 150 | 93 | 150 |
+| NeetCode 250 | 165 | 250 |
 
 ## Queue
 
@@ -81,8 +81,8 @@ build once research is done.
 30. `graph-traversal` ✓
 31. `grid-graphs` ✓
 32. `topological-sort` ✓
-33. `union-find` ← next
-34. `dijkstra`
+33. `union-find` ✓
+34. `dijkstra` ← next
 35. `bellman-ford`
 36. `minimum-spanning-trees`
 37. `eulerian-paths`
@@ -244,3 +244,11 @@ The sandbox's local `main` had an unrelated history to `origin/main`, so work st
 Built `subsets-and-permutations`, with six tested helpers (`backtrack_tree`, `subsets_of`, `permutations_of`, `subsets_with_duplicates`, `combinations_of`, `parentheses_of`), two inline SVG decision trees and the full §6 format. Mobile check passed on every ready page.
 Built `constraint-backtracking`, with four tested helpers (`combination_sum_of`, `n_queens_of`, `word_search_of`, `palindrome_partitions_of`), two inline SVGs (the 4-queens search tree and a word-search path) and the full §6 format.
 Built `graph-traversal` (3 of 3 this run), with six tested helpers (`adjacency_list`, `graph_walks`, `connected_components_of`, `directed_cycle_of`, `word_ladder_of`, `clone_graph_of`), two inline SVGs (DFS/BFS visit orders and BFS layers) and the full §6 format. Mobile check passed on `/`, `/leetcode` and all 30 ready pages. Next: `grid-graphs`.
+
+### 2026-10-10 — build run
+
+Built `grid-graphs`, `topological-sort` and `union-find` (3 of 3), each with tested helpers in
+`leetcode_docs.py`, two or three inline SVGs and the full §6 format. Coverage: Blind 75 47/75, Grind 169 128/169, NeetCode 150 93/150, NeetCode 250 165/250.
+Mobile check passed on `/`, `/leetcode` and all thirty-three ready
+pages. The sandbox checkout was shallow and behind `origin/main`; deepened it and fast-forwarded
+before starting. Next: `dijkstra`.

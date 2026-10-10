@@ -909,3 +909,34 @@ def test_topological_sort_helpers_match_the_page():
     assert "5 nodes stuck: 0, 1, 2, 3, 5" in body
     assert "alphabet <code>wertf</code>" in body
     assert "leaves nodes 3 and 4" in body
+
+
+def test_union_find_helpers_match_the_page():
+    demo = leetcode_docs.union_find_trace(7, [(0, 1), (2, 3), (1, 2), (4, 5), (3, 0)])
+    assert demo["merged"] == [True, True, True, True, False]
+    assert demo["parent"] == [0, 0, 0, 0, 4, 4, 6]
+    assert demo["components"] == 3 and demo["redundant"] == (3, 0)
+    chain = [(i + 1, i) for i in range(7)]
+    queries = chain + [(0, 7)] * 3
+    runs = {(s, c): leetcode_docs.union_find_trace(8, queries, s, c) for s in (False, True) for c in (False, True)}
+    assert (runs[(False, False)]["deepest"], runs[(False, False)]["hops"]) == (7, 21)
+    assert (runs[(False, True)]["deepest"], runs[(False, True)]["hops"]) == (7, 9)
+    assert runs[(True, False)]["deepest"] == 1 and runs[(True, True)]["deepest"] == 1
+    layout = leetcode_docs.forest_layout_of(runs[(False, False)]["parent"])
+    assert layout[0] == (7, 0) and layout[7] == (0, 0)
+    assert leetcode_docs.union_find_trace(3, [])["redundant"] is None
+    assert leetcode_docs.union_find_trace(2, [(1, 1)])["redundant"] == (1, 1)
+    assert leetcode_docs.is_valid_tree_of(5, [(0, 1), (0, 2), (0, 3), (1, 4)]) is True
+    assert leetcode_docs.is_valid_tree_of(5, [(0, 1), (1, 2), (2, 3), (1, 3)]) is False
+    assert leetcode_docs.is_valid_tree_of(1, []) is True
+    merged = leetcode_docs.accounts_merge_of([["John", "a@m", "b@m"], ["John", "c@m"], ["John", "a@m", "d@m"], ["Mary", "e@m"]])
+    assert merged == [["John", "a@m", "b@m", "d@m"], ["John", "c@m"], ["Mary", "e@m"]]
+    assert leetcode_docs.gcd_traversal_of([2, 3, 6]) is True
+    assert leetcode_docs.gcd_traversal_of([3, 9, 5]) is False
+    assert leetcode_docs.gcd_traversal_of([4, 3, 12, 8]) is True
+    assert leetcode_docs.gcd_traversal_of([1]) is True and leetcode_docs.gcd_traversal_of([1, 2]) is False
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/union-find").get_data(as_text=True))
+    assert "0-1 merges; 2-3 merges; 1-2 merges; 4-5 merges; 3-0 is redundant" in body
+    assert "<code>0, 0, 0, 0, 4, 4, 6</code> and the count is 3 groups" in body
+    assert "<td>Neither</td><td class=\"num\">7</td><td class=\"num\">21</td>" in body
+    assert "<td>Path compression only</td><td class=\"num\">7</td><td class=\"num\">9</td>" in body
