@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-10 (build run). 35 of 58 pages are ready. **The next run is a build run** continuing at `minimum-spanning-trees`.
+**Last updated:** 2026-10-10 (build run). 36 of 58 pages are ready. **The next run is a build run** continuing at `eulerian-paths`.
 
 ## The Routine
 
@@ -41,8 +41,8 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 |---|---|---|
 | Blind 75 | 47 | 75 |
 | Grind 169 | 129 | 169 |
-| NeetCode 150 | 96 | 150 |
-| NeetCode 250 | 169 | 250 |
+| NeetCode 150 | 97 | 150 |
+| NeetCode 250 | 171 | 250 |
 
 ## Queue
 
@@ -84,8 +84,8 @@ build once research is done.
 33. `union-find` ✓
 34. `dijkstra` ✓
 35. `bellman-ford` ✓
-36. `minimum-spanning-trees` ← next
-37. `eulerian-paths`
+36. `minimum-spanning-trees` ✓
+37. `eulerian-paths` ← next
 38. `dp-fundamentals`
 39. `linear-dp`
 40. `knapsack-dp`
@@ -255,4 +255,4 @@ before starting. Next: `dijkstra`.
 
 ### 2026-10-10 — build run (second)
 
-Built `dijkstra` and `bellman-ford`, with six tested helpers (`dijkstra_trace`, `shortest_path_to`, `network_delay_of`, `minimum_effort_of`, `swim_in_water_of`, `negative_edge_counterexample`), two inline SVGs and the full §6 format; `bellman-ford` adds `bellman_ford_rounds`, `cheapest_flights_of` and `has_negative_cycle_of`. Coverage: Blind 75 47/75, Grind 169 129/169, NeetCode 150 96/150, NeetCode 250 169/250. Mobile check passed on all thirty-five ready pages. The sandbox's local `main` held 50 unpushed ml-models commits unrelated to `origin/main`; they were kept on the local branch `backup-stale-main` and `main` was reset to `origin/main`. Next: `minimum-spanning-trees`.
+Built `dijkstra`, `bellman-ford` and `minimum-spanning-trees` (3 of 3), with six tested helpers (`dijkstra_trace`, `shortest_path_to`, `network_delay_of`, `minimum_effort_of`, `swim_in_water_of`, `negative_edge_counterexample`), two inline SVGs and the full §6 format; `bellman-ford` adds `bellman_ford_rounds`, `cheapest_flights_of` and `has_negative_cycle_of`. `minimum-spanning-trees` adds `kruskal_trace`, `prim_trace`, `connect_points_cost_of` and `critical_edges_of`. Coverage: Blind 75 47/75, Grind 169 129/169, NeetCode 150 97/150, NeetCode 250 171/250. Mobile check passed on all thirty-six ready pages. The sandbox's local `main` held 50 unpushed ml-models commits unrelated to `origin/main`; they were kept on the local branch `backup-stale-main` and `main` was reset to `origin/main`. Next: `eulerian-paths`.

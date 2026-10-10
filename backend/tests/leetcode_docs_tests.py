@@ -989,3 +989,23 @@ def test_bellman_ford_helpers_match_the_page():
     assert "with 1 stop it is 700" in body and "with 2 stops it is 400" in body
     assert "reporting 400, which uses three flights" in body
     assert "negative cycle: True" in body
+
+
+def test_minimum_spanning_tree_helpers_match_the_page():
+    edges = [(0, 1, 4), (0, 2, 3), (1, 2, 1), (1, 3, 2), (2, 3, 4), (3, 4, 2), (2, 4, 7), (4, 5, 6), (3, 5, 6)]
+    kruskal = leetcode_docs.kruskal_trace(6, edges)
+    assert kruskal["total"] == 14 and kruskal["connected"] is True
+    assert kruskal["chosen"] == [(1, 2, 1), (1, 3, 2), (3, 4, 2), (0, 2, 3), (4, 5, 6)]
+    prim = leetcode_docs.prim_trace(6, edges)
+    assert prim["total"] == 14 and prim["added"][-1] == (3, 5, 6)
+    assert leetcode_docs.kruskal_trace(3, [(0, 1, 1)])["connected"] is False
+    assert leetcode_docs.prim_trace(3, [(0, 1, 1)])["connected"] is False
+    assert leetcode_docs.kruskal_trace(1, [])["connected"] is True
+    assert leetcode_docs.connect_points_cost_of([[0, 0], [2, 2], [3, 10], [5, 2], [7, 0]]) == 20
+    assert leetcode_docs.connect_points_cost_of([[1, 1]]) == 0
+    assert leetcode_docs.critical_edges_of(6, edges) == ([1, 2, 3, 5], [7, 8])
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/minimum-spanning-trees").get_data(as_text=True))
+    assert "The tree has 5 edges and total weight 14" in body
+    assert "Removing any of edges 1, 2, 3, 5" in body
+    assert "Edges 7 and 8 can appear" in body
+    assert "3-5 (6)" in body

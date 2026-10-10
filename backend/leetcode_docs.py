@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -5698,6 +5698,110 @@ def has_negative_cycle_of(node_count, edges):
     return True
 
 
+def kruskal_trace(node_count, edges):
+    """Kruskal's algorithm over undirected `edges` (u, v, w). Returns the edges in the order they were considered, each marked taken or skipped, the chosen edges, the total weight, and whether they connect every node."""
+    parent = list(range(node_count))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    considered = []
+    chosen = []
+    total = 0
+    for u, v, w in sorted(edges, key=lambda e: e[2]):
+        ru, rv = find(u), find(v)
+        taken = ru != rv
+        if taken:
+            parent[ru] = rv
+            chosen.append((u, v, w))
+            total += w
+        considered.append(((u, v, w), taken))
+    return {"considered": considered, "chosen": chosen, "total": total, "connected": len(chosen) == node_count - 1}
+
+
+def prim_trace(node_count, edges, start=0):
+    """Prim's algorithm with a heap. Returns the edges in the order they were added (each as (parent, node, weight)), the total weight, and whether every node was reached."""
+    graph = [[] for _ in range(node_count)]
+    for u, v, w in edges:
+        graph[u].append((w, u, v))
+        graph[v].append((w, v, u))
+    seen = {start}
+    heap = list(graph[start])
+    heapq.heapify(heap)
+    added = []
+    total = 0
+    while heap and len(seen) < node_count:
+        w, u, v = heapq.heappop(heap)
+        if v in seen:
+            continue
+        seen.add(v)
+        added.append((u, v, w))
+        total += w
+        for item in graph[v]:
+            if item[2] not in seen:
+                heapq.heappush(heap, item)
+    return {"added": added, "total": total, "connected": len(seen) == node_count}
+
+
+def connect_points_cost_of(points):
+    """Minimum total Manhattan length of segments joining every point (Prim on the implicit complete graph, O(n^2))."""
+    n = len(points)
+    best = [math.inf] * n
+    best[0] = 0
+    used = [False] * n
+    total = 0
+    for _ in range(n):
+        u = min((i for i in range(n) if not used[i]), key=lambda i: best[i])
+        used[u] = True
+        total += best[u]
+        for v in range(n):
+            if not used[v]:
+                best[v] = min(best[v], abs(points[u][0] - points[v][0]) + abs(points[u][1] - points[v][1]))
+    return total
+
+
+def critical_edges_of(node_count, edges):
+    """Classifies each edge index of a connected graph: critical (in every minimum spanning tree) or pseudo-critical (in some but not all). Returns (critical, pseudo_critical) as sorted index lists."""
+    def mst_weight(skip=None, force=None):
+        parent = list(range(node_count))
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        total = 0
+        count = 0
+        if force is not None:
+            u, v, w = edges[force]
+            parent[find(u)] = find(v)
+            total += w
+            count += 1
+        for i in sorted(range(len(edges)), key=lambda i: edges[i][2]):
+            if i == skip or i == force:
+                continue
+            u, v, w = edges[i]
+            ru, rv = find(u), find(v)
+            if ru != rv:
+                parent[ru] = rv
+                total += w
+                count += 1
+        return total if count == node_count - 1 else math.inf
+
+    base = mst_weight()
+    critical, pseudo = [], []
+    for i in range(len(edges)):
+        if mst_weight(skip=i) > base:
+            critical.append(i)
+        elif mst_weight(force=i) == base:
+            pseudo.append(i)
+    return critical, pseudo
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -5913,6 +6017,10 @@ def render(slug, render_template):
         "clone_graph_of": clone_graph_of,
         "union_find_trace": union_find_trace,
         "dijkstra_trace": dijkstra_trace,
+        "kruskal_trace": kruskal_trace,
+        "prim_trace": prim_trace,
+        "connect_points_cost_of": connect_points_cost_of,
+        "critical_edges_of": critical_edges_of,
         "bellman_ford_rounds": bellman_ford_rounds,
         "cheapest_flights_of": cheapest_flights_of,
         "has_negative_cycle_of": has_negative_cycle_of,
