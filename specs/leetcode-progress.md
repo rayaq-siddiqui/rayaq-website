@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-10 (build run). 40 of 58 pages are ready. **The next run is a build run** continuing at `palindrome-dp`.
+**Last updated:** 2026-10-10 (build run). 41 of 58 pages are ready. **The next run is a build run** continuing at `longest-increasing-subsequence`.
 
 ## The Routine
 
@@ -39,10 +39,10 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 
 | List | Problems with a ready home | Size |
 |---|---|---|
-| Blind 75 | 54 | 75 |
-| Grind 169 | 138 | 169 |
-| NeetCode 150 | 109 | 150 |
-| NeetCode 250 | 190 | 250 |
+| Blind 75 | 56 | 75 |
+| Grind 169 | 139 | 169 |
+| NeetCode 150 | 111 | 150 |
+| NeetCode 250 | 192 | 250 |
 
 ## Queue
 
@@ -89,8 +89,8 @@ build once research is done.
 38. `dp-fundamentals` ✓
 39. `linear-dp` ✓
 40. `knapsack-dp` ✓
-41. `palindrome-dp` ← next
-42. `longest-increasing-subsequence`
+41. `palindrome-dp` ✓
+42. `longest-increasing-subsequence` ← next
 43. `grid-dp`
 44. `string-dp`
 45. `interval-dp`
@@ -263,4 +263,4 @@ Built `eulerian-paths`, `dp-fundamentals` and `linear-dp` (3 of 3), each with te
 
 ### 2026-10-10 — build run (fourth)
 
-Built `knapsack-dp` (1 of 3 so far) with `subset_sum_trace`, `coin_change_trace`, `greedy_coin_count`, `coin_ways_of`, `word_break_table` and `target_sum_of`, three inline SVGs and the full §6 format. Local `main` again had unrelated history; it was kept as `backup/stale-local-main` and reset to `origin/main`.
+Built `knapsack-dp` and `palindrome-dp` (2 of 3 so far; palindrome-dp adds `palindrome_table_of`, `expand_centers_trace` and `manacher_of`). `knapsack-dp`: with `subset_sum_trace`, `coin_change_trace`, `greedy_coin_count`, `coin_ways_of`, `word_break_table` and `target_sum_of`, three inline SVGs and the full §6 format. Local `main` again had unrelated history; it was kept as `backup/stale-local-main` and reset to `origin/main`.
