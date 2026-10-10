@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -6024,6 +6024,74 @@ def stone_game_three_of(values):
     return {"diff": diff, "lead": lead, "result": "first" if lead > 0 else "second" if lead < 0 else "tie"}
 
 
+def subset_sum_trace(nums, target):
+    """0/1 knapsack as reachability. rows[i] is the sorted sums reachable (at most target) using the first i numbers."""
+    reachable = {0}
+    rows = [(None, [0])]
+    for value in nums:
+        reachable |= {total + value for total in reachable if total + value <= target}
+        rows.append((value, sorted(reachable)))
+    return {"rows": rows, "answer": target in reachable}
+
+
+def coin_change_trace(coins, amount):
+    """Fewest coins for every amount up to the target, unlimited copies. -1 marks an amount nothing reaches."""
+    inf = amount + 1
+    table = [0] + [inf] * amount
+    for total in range(1, amount + 1):
+        for coin in coins:
+            if coin <= total:
+                table[total] = min(table[total], table[total - coin] + 1)
+    shown = [-1 if value == inf else value for value in table]
+    return {"table": shown, "answer": shown[amount]}
+
+
+def greedy_coin_count(coins, amount):
+    """Largest coin first, the strategy the DP exists to beat. Returns the coins used, or None when the remainder gets stuck."""
+    used = []
+    for coin in sorted(coins, reverse=True):
+        while amount >= coin:
+            amount -= coin
+            used.append(coin)
+    return used if amount == 0 else None
+
+
+def coin_ways_of(coins, amount):
+    """Counts the unordered combinations (coins in the outer loop) and the ordered sequences (amounts in the outer loop) that make each amount."""
+    combos = [1] + [0] * amount
+    for coin in coins:
+        for total in range(coin, amount + 1):
+            combos[total] += combos[total - coin]
+    orders = [1] + [0] * amount
+    for total in range(1, amount + 1):
+        for coin in coins:
+            if coin <= total:
+                orders[total] += orders[total - coin]
+    return {"combinations": combos, "orders": orders}
+
+
+def word_break_table(text, words):
+    """reach[i] is True when the first i characters split into dictionary words. Returns the table and the answer."""
+    vocabulary = set(words)
+    reach = [True] + [False] * len(text)
+    for end in range(1, len(text) + 1):
+        reach[end] = any(reach[start] and text[start:end] in vocabulary for start in range(end))
+    return {"reach": reach, "answer": reach[len(text)]}
+
+
+def target_sum_of(nums, target):
+    """Ways to put + or - before each number to reach target, by reducing to a subset count of (total + target) / 2."""
+    total = sum(nums)
+    if abs(target) > total or (total + target) % 2:
+        return {"subset_target": None, "table": [], "answer": 0}
+    goal = (total + target) // 2
+    table = [1] + [0] * goal
+    for value in nums:
+        for amount in range(goal, value - 1, -1):
+            table[amount] += table[amount - value]
+    return {"subset_target": goal, "table": table, "answer": table[goal]}
+
+
 _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
@@ -6259,6 +6327,12 @@ def render(slug, render_template):
         "tribonacci_of": tribonacci_of,
         "integer_break_of": integer_break_of,
         "stone_game_three_of": stone_game_three_of,
+        "subset_sum_trace": subset_sum_trace,
+        "coin_change_trace": coin_change_trace,
+        "coin_ways_of": coin_ways_of,
+        "greedy_coin_count": greedy_coin_count,
+        "word_break_table": word_break_table,
+        "target_sum_of": target_sum_of,
         "bellman_ford_rounds": bellman_ford_rounds,
         "cheapest_flights_of": cheapest_flights_of,
         "has_negative_cycle_of": has_negative_cycle_of,

@@ -1082,3 +1082,36 @@ def test_linear_dp_helpers_match_the_page():
     assert "giving 3 readings" in body and "The answer is 6" in body
     assert "the answer is 24, the run" in body and "(3 + 3 + 4)" in body
     assert "first player's lead is -4, so the second player wins" in body
+
+
+def test_knapsack_dp_helpers_match_the_page():
+    subset = leetcode_docs.subset_sum_trace([3, 1, 5, 9, 12], 15)
+    assert subset["answer"] is True
+    assert subset["rows"][1] == (3, [0, 3]) and subset["rows"][2] == (1, [0, 1, 3, 4])
+    assert subset["rows"][-1][1][-1] == 15
+    assert leetcode_docs.subset_sum_trace([2, 4], 5)["answer"] is False
+    assert leetcode_docs.subset_sum_trace([], 0)["answer"] is True
+    change = leetcode_docs.coin_change_trace([1, 4, 5], 13)
+    assert change["table"] == [0, 1, 2, 3, 1, 1, 2, 3, 2, 2, 2, 3, 3, 3] and change["answer"] == 3
+    assert leetcode_docs.coin_change_trace([2], 3)["answer"] == -1
+    assert leetcode_docs.coin_change_trace([5], 0)["answer"] == 0
+    assert leetcode_docs.greedy_coin_count([1, 4, 5], 13) == [5, 5, 1, 1, 1]
+    assert leetcode_docs.greedy_coin_count([4], 6) is None
+    ways = leetcode_docs.coin_ways_of([1, 2, 5], 7)
+    assert ways["combinations"] == [1, 1, 2, 2, 3, 4, 5, 6] and ways["orders"][7] == 26
+    assert leetcode_docs.coin_ways_of([1, 2, 5], 11)["combinations"][11] == 11
+    assert leetcode_docs.coin_ways_of([3], 2)["combinations"][2] == 0
+    word_break = leetcode_docs.word_break_table("applepen", ["apple", "pen"])
+    assert word_break["reach"] == [True, False, False, False, False, True, False, False, True]
+    assert leetcode_docs.word_break_table("catsandog", ["cats", "dog", "sand", "and", "cat"])["answer"] is False
+    target = leetcode_docs.target_sum_of([1, 1, 2, 3, 1], 2)
+    assert target == {"subset_target": 5, "table": [1, 3, 4, 5, 6, 5], "answer": 5}
+    assert leetcode_docs.target_sum_of([1, 1, 2, 3, 1], 3)["answer"] == 0
+    assert leetcode_docs.target_sum_of([1], 2)["answer"] == 0
+    assert leetcode_docs.target_sum_of([0, 0, 1], 1)["answer"] == 4
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/knapsack-dp").get_data(as_text=True))
+    assert "<code>0, 1, 2, 3, 1, 1, 2, 3, 2, 2, 2, 3, 3, 3</code>, so 13 needs 3 coins" in body
+    assert "counts 6 combinations" in body and "26 ordered sequences" in body
+    assert "largest-first uses 5 coins (5 + 5 + 1 + 1 + 1)" in body
+    assert "so there are 5 sign assignments" in body
+    assert "so the string splits as apple + pen" in body

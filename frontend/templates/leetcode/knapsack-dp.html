@@ -1,0 +1,340 @@
+{% set items = [3, 1, 5, 9, 12] %}
+{% set subset = subset_sum_trace(items, 15) %}
+{% set coins = [1, 4, 5] %}
+{% set change = coin_change_trace(coins, 13) %}
+{% set greedy = greedy_coin_count(coins, 13) %}
+{% set ways_coins = [1, 2, 5] %}
+{% set ways = coin_ways_of(ways_coins, 7) %}
+{% set text = "applepen" %}
+{% set vocab = ["apple", "pen"] %}
+{% set wb = word_break_table(text, vocab) %}
+{% set signs = [1, 1, 2, 3, 1] %}
+{% set tsum = target_sum_of(signs, 2) %}
+<header class="jj-header">
+  <h1>Knapsack DP</h1>
+  <p class="tagline">
+    Knapsack DP adds a second thing to remember besides "how many items so far": a budget, a target sum or a length.
+    The state is a number between 0 and the target, and each item either uses part of it or does not. Coin change,
+    partition, target sum and word break are all this one table with different combining rules.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  You have a collection of items (numbers, coins, dictionary words) and a target (a sum, an amount, a string length).
+  The question is whether the target is reachable, how cheaply, or in how many ways. Trying every subset is exponential.
+  The way out is to notice that only the <em>total so far</em> matters, not which items made it, so you track a table
+  indexed by totals from 0 to the target.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Signal</th><th>Pattern</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>"Can a subset reach exactly this sum / half the total?"</td><td>0/1 reachability table</td><td>Each number is used at most once, so the sums reachable only grow as numbers are added.</td></tr>
+    <tr><td>"Fewest coins to make an amount", unlimited supply</td><td>Unbounded min table</td><td>The last coin is any denomination; what came before is a smaller amount.</td></tr>
+    <tr><td>"Number of ways to make an amount" with order ignored</td><td>Coins in the outer loop</td><td>Fixing the order in which denominations are considered counts each multiset once.</td></tr>
+    <tr><td>"Number of ordered sequences that add up to the target"</td><td>Amounts in the outer loop</td><td>Every amount tries every last element, so different orders count separately.</td></tr>
+    <tr><td>Put + or - in front of each number to reach a target</td><td>Reduce to a subset count</td><td>The numbers given a plus form a subset with a computed sum.</td></tr>
+    <tr><td>"Can this string be split into dictionary words?"</td><td>Table over prefix lengths</td><td>The last word ends the prefix, and what precedes it is a shorter prefix.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Imagine a row of boxes labelled 0 up to the target, each one lit if that exact total is possible. Start with only
+  box 0 lit (the empty selection). Each new number lets you move from any lit box up by that number, lighting the box
+  you land on. When the numbers are used up, you just check whether the target box is lit. You never need to remember
+  <em>which</em> numbers lit a box, because anything that completes the sum from there looks the same.
+</p>
+<p>
+  The only real choice is whether an item may be used once or many times. If each number can be used once, you process
+  numbers one at a time and each can only act on the boxes that were lit <em>before</em> it. If a coin can be reused,
+  the new box it lights may immediately be used by the same coin again. That single difference decides the direction of
+  the inner loop, and it is where most knapsack bugs live.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 {{ 70 + 16 * 36 }} {{ 40 + subset.rows | length * 30 }}" role="img" aria-labelledby="lc-kn-sub-title lc-kn-sub-desc">
+    <title id="lc-kn-sub-title">Sums reachable after each number is added</title>
+    <desc id="lc-kn-sub-desc">
+      The numbers {{ items | join(", ") }} are added one at a time and the target is 15. After each number the reachable sums are:
+      {% for value, sums in subset.rows[1:] %}after {{ value }}, {{ sums | join(", ") }}{{ "; " if not loop.last }}{% endfor %}.
+      The target 15 is {{ "reachable" if subset.answer else "not reachable" }}.
+    </desc>
+    {% for total in range(16) %}
+      <text x="{{ 70 + total * 36 + 16 }}" y="16" font-size="11" text-anchor="middle" class="d-muted">{{ total }}</text>
+    {% endfor %}
+    {% for value, sums in subset.rows %}
+      {% set y = 26 + loop.index0 * 30 %}
+      <text x="6" y="{{ y + 17 }}" font-size="12" class="d-muted">{{ "start" if value is none else "add " ~ value }}</text>
+      {% for total in range(16) %}
+        <rect x="{{ 70 + total * 36 }}" y="{{ y }}" width="32" height="24" class="{{ ('lc-fill-a' if total == 15 else 'lc-fill-g') if total in sums else 'lc-fill-m' }}"></rect>
+        {% if total in sums %}<text x="{{ 70 + total * 36 + 16 }}" y="{{ y + 17 }}" font-size="12" text-anchor="middle">{{ total }}</text>{% endif %}
+      {% endfor %}
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">
+  Each row is the set of lit boxes after one more number. Green boxes are reachable; the blue box is the target. The diagram
+  scrolls sideways on a narrow screen.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="zero-one">0/1: each item once</h3>
+<p>
+  Let <code>can[s]</code> say whether sum s is reachable. For each number v, set <code>can[s] = can[s] or can[s - v]</code>.
+  To use v at most once, the right-hand side must read the table as it was <em>before</em> v. Updating a one-dimensional
+  array from the high end down to v guarantees that: when you write <code>can[s]</code>, the entry <code>can[s - v]</code>
+  is lower and has not been updated yet. Going upward would let v feed itself and turn the problem into the unbounded one.
+</p>
+
+<h3 id="unbounded">Unbounded: items reused</h3>
+<p>
+  For coins with unlimited supply, <code>fewest[a] = 1 + min(fewest[a - c])</code> over every coin c not above a, with
+  <code>fewest[0] = 0</code>. The last coin used could be any denomination, so the table takes the best. Here an upward
+  inner loop is correct, because <code>fewest[a - c]</code> may already include another copy of c.
+</p>
+<p>
+  Greedy fails here. With coins <code>{{ coins | join(", ") }}</code> and amount 13, largest-first uses
+  {{ greedy | length }} coins ({{ greedy | join(" + ") }}), while the table finds {{ change.answer }}.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 {{ 30 + change.table | length * 44 }} 130" role="img" aria-labelledby="lc-kn-coin-title lc-kn-coin-desc">
+    <title id="lc-kn-coin-title">Fewest coins for every amount from 0 to 13</title>
+    <desc id="lc-kn-coin-desc">
+      With coins {{ coins | join(", ") }} the fewest coins for amounts 0 to 13 are {{ change.table | join(", ") }}.
+      Amount 13 needs {{ change.answer }} coins, while taking the largest coin first needs {{ greedy | length }}.
+    </desc>
+    <text x="10" y="16" font-size="12" class="d-muted">amount (top) and fewest coins (below)</text>
+    {% for count in change.table %}
+      {% set x = 14 + loop.index0 * 44 %}
+      <text x="{{ x + 18 }}" y="40" font-size="12" text-anchor="middle" class="d-muted">{{ loop.index0 }}</text>
+      <rect x="{{ x }}" y="48" width="36" height="{{ 8 + count * 14 }}" class="{{ 'lc-fill-a' if loop.last else 'lc-fill-g' }}"></rect>
+      <text x="{{ x + 18 }}" y="{{ 48 + 8 + count * 14 + 16 }}" font-size="13" text-anchor="middle">{{ count }}</text>
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">
+  Bar height is the number of coins. The blue bar is the answer. Amount 4 is one coin because 4 is itself a denomination,
+  which is why the greedy choice of 5 first goes wrong at 13.
+</p>
+
+<h3 id="counting">Counting: the loop order decides what is counted</h3>
+<p>
+  For the number of ways, the update is a sum: <code>ways[a] += ways[a - c]</code>. With denominations in the outer loop and
+  amounts inside, each coin is introduced once and the order inside a selection is fixed, so <code>{{ ways_coins | join(", ") }}</code>
+  making 7 counts {{ ways.combinations[7] }} combinations. Swap the loops (amounts outside, coins inside) and every amount tries every last
+  coin, so 1+2+... and 2+1+... count separately: {{ ways.orders[7] }} ordered sequences for the same coins.
+</p>
+
+<h3 id="strings">Strings: the table runs over lengths</h3>
+<p>
+  For splitting a string into dictionary words, <code>reach[i]</code> is true when the first i characters split. It holds if some earlier
+  position j has <code>reach[j]</code> true and <code>text[j:i]</code> is a word. The "items" are words and the "amount" is the
+  length, which is why the problem is a knapsack in disguise.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 {{ 40 + wb.reach | length * 44 }} 110" role="img" aria-labelledby="lc-kn-wb-title lc-kn-wb-desc">
+    <title id="lc-kn-wb-title">Which prefixes of "{{ text }}" split into words</title>
+    <desc id="lc-kn-wb-desc">
+      For "{{ text }}" with the dictionary {{ vocab | join(", ") }}, the prefix lengths that split are
+      {% for flag in wb.reach %}{% if flag %}{{ loop.index0 }}{{ ", " if not loop.last }}{% endif %}{% endfor %}.
+      The whole string {{ "splits" if wb.answer else "does not split" }}.
+    </desc>
+    {% for ch in text %}
+      <text x="{{ 36 + loop.index0 * 44 + 22 }}" y="22" font-size="14" text-anchor="middle">{{ ch }}</text>
+    {% endfor %}
+    {% for flag in wb.reach %}
+      {% set x = 14 + loop.index0 * 44 %}
+      <rect x="{{ x }}" y="40" width="28" height="28" class="{{ ('lc-fill-a' if loop.last else 'lc-fill-g') if flag else 'lc-fill-m' }}"></rect>
+      <text x="{{ x + 14 }}" y="59" font-size="12" text-anchor="middle">{{ "T" if flag else "F" }}</text>
+      <text x="{{ x + 14 }}" y="88" font-size="11" text-anchor="middle" class="d-muted">{{ loop.index0 }}</text>
+    {% endfor %}
+  </svg>
+</div>
+<p class="lc-caption">
+  The cell under each gap says whether the prefix ending there splits. Only the ends of "apple" and "pen" are true.
+</p>
+
+<h3 id="invariants">Invariant</h3>
+<p>
+  After processing the first k items, the table holds the exact answer for every total using only those k items (and,
+  for the 0/1 case, each at most once). Induction on k: an optimal selection either leaves item k out, covered by the
+  previous table, or includes it, in which case the rest is an optimal selection of the first k - 1 items for the
+  smaller total. The table is a bounded set of such sub-answers, which is what makes the cost pseudo-polynomial.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  <strong>Partition (0/1 reachability).</strong> The numbers are <code>{{ items | join(", ") }}</code>, total {{ items | sum }},
+  so each half must be 15. The reachable sums after each number are in the diagram above; the final row
+  {{ "contains" if subset.answer else "does not contain" }} 15, so a split exists.
+</p>
+<p>
+  <strong>Coin change.</strong> For coins <code>{{ coins | join(", ") }}</code>, the table of fewest coins for amounts 0 to 13 is
+  <code>{{ change.table | join(", ") }}</code>, so 13 needs {{ change.answer }} coins. Largest-first would take
+  {{ greedy | join(" + ") }}, which is {{ greedy | length }}.
+</p>
+<p>
+  <strong>Counting.</strong> For coins <code>{{ ways_coins | join(", ") }}</code> and amount 7, the table of combinations is
+  <code>{{ ways.combinations | join(", ") }}</code>, giving {{ ways.combinations[7] }}. The ordered version is
+  <code>{{ ways.orders | join(", ") }}</code>, giving {{ ways.orders[7] }}.
+</p>
+<p>
+  <strong>Word break.</strong> For "{{ text }}" and words {{ vocab | join(", ") }}, the reachable prefix lengths are
+  {% for flag in wb.reach %}{% if flag %}{{ loop.index0 }}{{ ", " if not loop.last }}{% endif %}{% endfor %}, so the string splits as
+  apple + pen.
+</p>
+<p>
+  <strong>Target sum.</strong> With <code>{{ signs | join(", ") }}</code> and target 2, numbers given a plus must sum to
+  ({{ signs | sum }} + 2) / 2 = {{ tsum.subset_target }}. The table of subset counts is <code>{{ tsum.table | join(", ") }}</code>, so there
+  are {{ tsum.answer }} sign assignments. If {{ signs | sum }} plus the target is odd, or the target is bigger than the total, the answer is 0.
+</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>def can_partition(nums):
+    total = sum(nums)
+    if total % 2:
+        return False
+    target = total // 2
+    can = [True] + [False] * target
+    for value in nums:
+        for s in range(target, value - 1, -1):    # downward: each number once
+            can[s] = can[s] or can[s - value]
+    return can[target]
+
+
+def coin_change(coins, amount):
+    inf = amount + 1
+    fewest = [0] + [inf] * amount
+    for a in range(1, amount + 1):
+        for c in coins:
+            if c &lt;= a:
+                fewest[a] = min(fewest[a], fewest[a - c] + 1)
+    return -1 if fewest[amount] == inf else fewest[amount]
+
+
+def word_break(s, words):
+    vocabulary = set(words)
+    reach = [True] + [False] * len(s)
+    for end in range(1, len(s) + 1):
+        reach[end] = any(reach[start] and s[start:end] in vocabulary
+                         for start in range(end))
+    return reach[-1]</code></pre>
+
+<h3 id="variations">Variations and edge cases</h3>
+<pre><code>def coin_change_ways(coins, amount):
+    ways = [1] + [0] * amount
+    for c in coins:                       # coins outside: combinations
+        for a in range(c, amount + 1):    # upward: unlimited copies
+            ways[a] += ways[a - c]
+    return ways[amount]
+
+
+def combination_sum_ordered(nums, target):
+    ways = [1] + [0] * target
+    for a in range(1, target + 1):        # amounts outside: ordered
+        for v in nums:
+            if v &lt;= a:
+                ways[a] += ways[a - v]
+    return ways[target]
+
+
+def find_target_sum_ways(nums, target):
+    total = sum(nums)
+    if abs(target) &gt; total or (total + target) % 2:
+        return 0
+    goal = (total + target) // 2
+    ways = [1] + [0] * goal
+    for v in nums:
+        for s in range(goal, v - 1, -1):
+            ways[s] += ways[s - v]
+    return ways[goal]
+
+
+def can_partition_bits(nums):
+    total = sum(nums)
+    if total % 2:
+        return False
+    bits = 1
+    for v in nums:
+        bits |= bits &lt;&lt; v                # every reachable sum in one integer
+    return bits &gt;&gt; (total // 2) &amp; 1 == 1</code></pre>
+<ul>
+  <li><strong>Direction of the inner loop.</strong> Downward for use-once, upward for reuse. Reversing either silently solves a different problem.</li>
+  <li><strong>Unreachable amounts.</strong> Fill with a sentinel larger than any real answer (amount + 1), not <code>float("inf")</code> arithmetic you forget to test, and map it to -1 at the end.</li>
+  <li><strong>Zero amount.</strong> There is exactly one way (take nothing) and zero coins are needed; seed <code>[0]</code> or <code>[1]</code> accordingly.</li>
+  <li><strong>Zeros in the number list.</strong> A zero doubles the count of target-sum assignments, since + 0 and - 0 are both valid. The table handles this only if the inner loop reaches 0, so check it.</li>
+  <li><strong>Negative targets.</strong> Take the absolute value; the signs mirror.</li>
+  <li><strong>Words longer than the string.</strong> Skip them, or cap the lookback to the longest word, for a faster word break.</li>
+</ul>
+
+<h2 id="tradeoffs">Complexity and tradeoffs</h2>
+
+<ul>
+  <li><strong>Time:</strong> O(n &times; T) for n items and target T. Word break is O(L &times; W) with a set of words and a lookback limited to the longest word, otherwise O(L<sup>2</sup>) substring checks.</li>
+  <li><strong>Space:</strong> O(T) with a single array; the two-dimensional version (items by totals) is O(n &times; T) and only needed to recover which items were used.</li>
+  <li><strong>Pseudo-polynomial.</strong> T is a value, not an input length. If the target is a billion, the table is unusable and the problem is NP-hard in general. Interview constraints keep T small on purpose.</li>
+  <li><strong>Baseline.</strong> Trying all subsets costs 2<sup>n</sup>. Meet-in-the-middle halves the exponent when n is about 40 and T is huge.</li>
+  <li><strong>When it fails.</strong> Greedy works only for special denominations (like US coins), so use the table when in doubt. If the items have two budgets (weight and volume), the table gains a dimension. If you need the items and not just the count, keep the table and walk back, or keep parent pointers.</li>
+</ul>
+
+<h2 id="problems">Problems</h2>
+
+<p>
+  Partition Equal Subset Sum and Last Stone Weight II are 0/1 reachability. Target Sum reduces to counting subsets.
+  Coin Change, Perfect Squares and the ordered Combination Sum IV are unbounded versions with different combining rules, and
+  Coin Change II is the combination count. Word Break and Extra Characters in a String run the same table over string
+  length. Maximum Profit in Job Scheduling is a take-or-skip over jobs ordered by end time.
+</p>
+{% include "leetcode/_problems.html" %}
+
+<h2 id="connections">Connections</h2>
+
+{% include "leetcode/_connections.html" %}
+<p>
+  Knapsack is linear DP with a second axis. The same take-or-skip structure appears in subsets and permutations, where
+  backtracking enumerates what the table counts. Word Break II is the enumeration partner of Word Break: the table prunes,
+  and a backtracking pass lists the splits. Two-string DP and grid DP use the same idea with two indices instead of an item
+  index and a total.
+</p>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="lc-quiz">
+  <summary>Why does the 0/1 knapsack loop run the totals from high to low?</summary>
+  <p>So that <code>can[s - v]</code> still reflects the table before this number was added. Going upward would let the same number be reused in one pass. In the example, 15 is reached by {{ items | join(", ") }} with each number at most once.</p>
+</details>
+<details class="lc-quiz">
+  <summary>Why is greedy wrong for coin change?</summary>
+  <p>Taking the largest coin first can leave a remainder that needs many small ones. For <code>{{ coins | join(", ") }}</code> and 13, greedy uses {{ greedy | length }} coins but 4 + 4 + 5 uses {{ change.answer }}.</p>
+</details>
+<details class="lc-quiz">
+  <summary>How do you count combinations rather than ordered sequences?</summary>
+  <p>Put the coins in the outer loop and the amounts inside, so each denomination is introduced once. For <code>{{ ways_coins | join(", ") }}</code> and 7 that gives {{ ways.combinations[7] }}; swapping the loops gives {{ ways.orders[7] }}.</p>
+</details>
+<details class="lc-quiz">
+  <summary>How does Target Sum become a subset count?</summary>
+  <p>If P is the sum of numbers given a plus and N the sum of those given a minus, P + N is the total and P - N is the target, so P = (total + target) / 2. For the example that is {{ tsum.subset_target }}, and {{ tsum.answer }} subsets reach it.</p>
+</details>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Cormen, Leiserson, Rivest and Stein, <em>Introduction to Algorithms</em>, chapter 14 (dynamic programming), and the subset-sum discussion in chapter 34 (NP-completeness).</li>
+  <li>Skiena, <em>The Algorithm Design Manual</em>, sections 10.5 and 10.8 (the knapsack problem).</li>
+  <li>Sedgewick and Wayne, <em>Algorithms</em>, section 6.4 (reductions; knapsack).</li>
+  <li>Bellman, <em>Dynamic Programming</em>, Princeton University Press, 1957.</li>
+  <li>The <a href="https://neetcode.io/roadmap" rel="noopener">NeetCode roadmap</a> and the
+    Blind 75, Grind 169, NeetCode 150 and NeetCode 250 lists, used as the index of topics and
+    problems.</li>
+</ul>
