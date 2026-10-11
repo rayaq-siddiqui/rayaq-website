@@ -1,0 +1,489 @@
+{% set factors = chain_rule_factors(ar_joint) %}
+{% set markov = markov_approximation(ar_joint) %}
+{% set samples = ancestral_samples(ar_joint, 1000, 0) %}
+{% set small = table_sizes(2, 3) %}
+{% set big = table_sizes(50000, 3) %}
+{% set tf = teacher_forcing_example() %}
+{% set drift = exposure_bias_curve() %}
+{% set stack = causal_stack(ar_causal_input) %}
+{% set check = causality_check() %}
+{% set fields = wavenet_receptive_fields() %}
+{% set mask_a = pixelcnn_mask(5, "A") %}
+{% set mask_b = pixelcnn_mask(5, "B") %}
+{% set deps = pixelcnn_dependencies(3) %}
+{% macro bits(seq) -%}{% for b in seq %}{{ b }}{% endfor %}{%- endmacro %}
+{% macro row(values) -%}{% for v in values %}{{ "%g"|format(v) }}{% if not loop.last %}, {% endif %}{% endfor %}{%- endmacro %}
+{% macro taps(mask) -%}{{ mask|map("sum")|sum }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Autoregressive models</h1>
+  <p class="tagline">
+    An autoregressive model writes one piece at a time (a word, a pixel, an audio sample), each
+    time asking "given everything so far, what comes next?". The chain rule of probability says
+    this loses nothing: any distribution over sequences can be written that way. This page works
+    the chain rule on an exact toy distribution, trains a tiny model by teacher forcing, shows why
+    a model fed its own mistakes drifts, and builds the causal convolutions behind WaveNet and
+    PixelCNN.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  We want a model of a whole sequence x = (x<sub>1</sub>, …, x<sub>T</sub>): a sentence, an image
+  read pixel by pixel, a second of audio. We want to assign it a probability (to score data
+  and train by <a href="/ml-models/entropy-and-kl">cross-entropy</a>) and to draw new samples from it. A direct table of
+  p(x) is hopeless. With a vocabulary of V tokens there are V<sup>T</sup> possible sequences; for
+  a 50,000-token vocabulary and just three tokens that is already
+  {{ "{:,}".format(big.joint + 1) }} entries. We need a way to break the joint probability into
+  pieces a neural network can output, without assuming the pieces are independent.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Read a sentence left to right and guess each next word. If you can say how likely every possible
+  next word is, given the words so far, you have described the whole sentence's probability: multiply
+  your guesses' probabilities together. Generating is the same game played forward: draw a word,
+  write it down, and guess again with that word now part of the past. The model only ever answers one
+  question, "what comes next?", but it answers it with the whole past in view.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 250" role="img" aria-labelledby="ar-loop-title ar-loop-desc">
+    <title id="ar-loop-title">Training with teacher forcing versus generating</title>
+    <desc id="ar-loop-desc">
+      Top row, training: the true tokens start, the, cat, ran are the inputs and the model predicts the
+      shifted targets the, cat, ran, full stop, all positions at once, each prediction compared to the
+      true next token by cross-entropy. Bottom row, generation: the model predicts one token, it is drawn,
+      appended to the input, and fed back for the next step, so the model now conditions on its own outputs.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <text x="20" y="22" text-anchor="start">training (teacher forcing): all positions in parallel</text>
+      {% for t in tf.inputs %}
+        {% set x0 = 30 + loop.index0 * 120 %}
+        <rect x="{{ x0 }}" y="90" width="90" height="30" rx="6" class="d-box ml-tensor"></rect>
+        <text x="{{ x0 + 45 }}" y="110">{{ t }}</text>
+        <rect x="{{ x0 }}" y="40" width="90" height="30" rx="6" class="d-box ml-op"></rect>
+        <text x="{{ x0 + 45 }}" y="60">→ {{ tf.targets[loop.index0] }}</text>
+      {% endfor %}
+      <text x="590" y="60" text-anchor="start" class="d-muted">targets</text>
+      <text x="590" y="110" text-anchor="start" class="d-muted">true inputs</text>
+      <text x="20" y="160" text-anchor="start">generation: one step at a time, output fed back</text>
+      <rect x="30" y="185" width="140" height="34" rx="6" class="d-box ml-tensor"></rect>
+      <text x="100" y="207">prefix so far</text>
+      <rect x="230" y="185" width="130" height="34" rx="6" class="d-box ml-op"></rect>
+      <text x="295" y="207">p(next | prefix)</text>
+      <rect x="420" y="185" width="110" height="34" rx="6" class="d-box ml-op"></rect>
+      <text x="475" y="207">draw a token</text>
+      <rect x="580" y="185" width="100" height="34" rx="6" class="d-box ml-dashed"></rect>
+      <text x="630" y="207">append</text>
+    </g>
+    <g class="d-line" fill="none" stroke-width="1.5">
+      {% for t in tf.inputs %}<path d="M{{ 75 + loop.index0 * 120 }} 90 V70"></path>{% endfor %}
+      <path d="M170 202 H230"></path><path d="M360 202 H420"></path><path d="M530 202 H580"></path>
+      <path d="M630 219 V240 H100 V219"></path>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Training sees only true prefixes; generation sees the model's own. That gap is exposure bias.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="chain-rule">The chain rule factorization</h3>
+<p>
+  For any joint distribution, by the definition of conditional probability applied repeatedly,
+</p>
+<p class="ml-formula">
+  p(x<sub>1</sub>, …, x<sub>T</sub>) = p(x<sub>1</sub>) · p(x<sub>2</sub> | x<sub>1</sub>) · … · p(x<sub>T</sub> | x<sub>1</sub>, …, x<sub>T−1</sub>) = Π<sub>t</sub> p(x<sub>t</sub> | x<sub>&lt;t</sub>).
+</p>
+<p>
+  This is an identity, not an approximation: an autoregressive model that represented every
+  conditional exactly would represent the joint exactly. The approximations come from the model:
+  a <em>Markov</em> model keeps only the last k tokens of the past; an RNN squeezes the past into a
+  fixed-size state; a <a href="/ml-models/transformer">Transformer</a> with a
+  <a href="/ml-models/attention">causal mask</a> reads the whole past (up to its context length)
+  and shares one set of weights across all positions. Any order works in principle (right to left,
+  or a scan through image pixels), but the model must fix one. MADE builds the same factorization into
+  a single feed-forward autoencoder by masking its weights so each output only sees earlier inputs.
+</p>
+<p>
+  The log of the product is a sum, so the log-likelihood of a sequence is
+  Σ<sub>t</sub> log p(x<sub>t</sub> | x<sub>&lt;t</sub>): one classification loss per position.
+  Sampling is <em>ancestral</em>: draw x<sub>1</sub>, then x<sub>2</sub> given it, and so on. Scoring a
+  sequence takes one parallel pass; sampling takes T sequential passes.
+</p>
+
+<h3 id="teacher-forcing">Maximum likelihood by teacher forcing</h3>
+<p>
+  Training maximises the log-likelihood of the data, which is the same as minimising the summed
+  cross-entropy between the model's next-token distribution and the true next token. During
+  training the model is fed the <em>true</em> prefix at every position, never its own guesses. That
+  is <strong>teacher forcing</strong>. It makes training parallel: the input is the sequence, the
+  target is the same sequence shifted one step left, and with a causal model every position's
+  loss comes out of one forward pass. For a model that is just a table of conditional probabilities,
+  the maximum-likelihood solution is the count ratio: p(b | a) = count(a b) / count(a ·). The worked
+  example checks that the gradient of the loss is zero there.
+</p>
+
+<h3 id="exposure-bias">Exposure bias</h3>
+<p>
+  At generation time there is no teacher. The model conditions on what it wrote, and if it wrote
+  something unusual it is now in a prefix it never saw in training. Errors can compound: one bad
+  token makes the next prediction worse. This mismatch between training on true prefixes and
+  running on generated ones is called <strong>exposure bias</strong>. Remedies include scheduled
+  sampling (gradually feeding the model its own predictions during training), sequence-level
+  training objectives, and in practice simply much more data and capacity, so that the model's
+  own outputs stay close to the data distribution. Decoding rules (see
+  <a href="/ml-models/decoding">decoding and sampling</a>) also matter: truncating the long tail
+  keeps the model away from prefixes it handles badly.
+</p>
+
+<h3 id="causal-convolutions">Causal convolutions: WaveNet</h3>
+<p>
+  A convolution can be autoregressive if output t only reads inputs at t and earlier. PyTorch's
+  <code>nn.Conv1d</code> pads <em>both</em> sides by <code>padding</code>, so it is not causal by
+  itself. The usual trick is to pad only the left with <code>F.pad(x, (dilation·(k−1), 0))</code> and
+  use <code>padding=0</code>. Stacking causal layers grows the receptive field, the window of past
+  inputs an output can see, by (k−1)·d per layer for kernel size k and dilation d. With
+  <strong>dilations</strong> 1, 2, 4, … the receptive field doubles per layer instead of growing by
+  one. WaveNet used kernel size 2 with dilations 1, 2, …, 512 and repeated that block, so one block
+  sees {{ fields[2].size }} samples.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 270" role="img" aria-labelledby="ar-dil-title ar-dil-desc">
+    <title id="ar-dil-title">A stack of dilated causal convolutions</title>
+    <desc id="ar-dil-desc">
+      Four rows of eight positions: the input at the bottom, then layers with dilation 1, 2 and 4. Each
+      output connects to itself and one position to its left at the layer's dilation, never to the right.
+      The top-right output depends on all eight inputs: the receptive field is
+      {{ causal_receptive_field(2, ar_causal_dilations) }}.
+    </desc>
+    {% set labels = ["input", "dilation 1", "dilation 2", "dilation 4"] %}
+    {% for layer in stack %}
+      {% set y = 230 - loop.index0 * 65 %}
+      {% set li = loop.index0 %}
+      <text x="10" y="{{ y + 5 }}" font-size="11" class="d-muted">{{ labels[li] }}</text>
+      {% for v in layer %}
+        {% set x = 130 + loop.index0 * 70 %}
+        <circle cx="{{ x }}" cy="{{ y }}" r="16" class="d-box {{ 'ml-tensor' if li == 0 else 'ml-op' }}"></circle>
+        <text x="{{ x }}" y="{{ y + 4 }}" font-size="10" text-anchor="middle">{{ "%g"|format(v) }}</text>
+      {% endfor %}
+    {% endfor %}
+    <g class="d-line" fill="none" stroke-width="1.2">
+      {% for d in ar_causal_dilations %}
+        {% set y_out = 230 - loop.index * 65 %}
+        {% for t in range(8) %}
+          {% set x = 130 + t * 70 %}
+          <path d="M{{ x }} {{ y_out + 16 }} L{{ x }} {{ y_out + 49 }}"></path>
+          {% if t - d >= 0 %}<path d="M{{ x }} {{ y_out + 16 }} L{{ x - 70 * d }} {{ y_out + 49 }}"></path>{% endif %}
+        {% endfor %}
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Kernel [{{ row(ar_causal_kernel) }}] at every layer; each node shows its computed value. Missing left neighbours read the zero padding.</p>
+
+<h3 id="pixelcnn">Masked convolutions: PixelCNN</h3>
+<p>
+  For images, fix a raster order (rows top to bottom, left to right in a row) and predict each pixel
+  from the ones before it. PixelCNN keeps a normal k×k convolution but multiplies its kernel by a
+  mask that zeroes every tap at or after the centre in raster order. The first layer uses
+  <strong>mask A</strong>, which also zeroes the centre, so a pixel never sees itself. Later layers use
+  <strong>mask B</strong>, which keeps the centre, because the centre position there holds features
+  computed only from earlier pixels. (With colour, the paper also orders R, G, B within a pixel.)
+  A 5×5 mask A has {{ taps(mask_a) }} live taps and mask B has {{ taps(mask_b) }}.
+</p>
+<p>
+  Stacked masked 3×3 layers leave a <strong>blind spot</strong>: some earlier pixels up and to the
+  right never reach the output, however many layers you stack, because each layer's
+  receptive field only grows up-left and sideways in a way that misses a wedge. Gated PixelCNN fixed
+  this by splitting the network into a vertical stack (rows above) and a horizontal stack (the
+  current row to the left).
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 270" role="img" aria-labelledby="ar-pix-title ar-pix-desc">
+    <title id="ar-pix-title">PixelCNN masks and the blind spot</title>
+    <desc id="ar-pix-desc">
+      Left: a 5 by 5 mask A with {{ taps(mask_a) }} live taps, the rows above the centre and the cells to its left. Middle: mask B,
+      the same plus the centre, {{ taps(mask_b) }} taps. Right: a 7 by 7 image after three masked 3 by 3 layers, one mask A and two mask B.
+      The target pixel depends on {{ deps.seen }} earlier pixels, but {{ deps.blind }} earlier pixels up and to its right are blind:
+      they come before it in raster order yet never affect it. Pixels after it are future and must not be seen.
+    </desc>
+    {% for mask, label, x0 in [(mask_a, "mask A", 20), (mask_b, "mask B", 200)] %}
+      <text x="{{ x0 }}" y="20" font-size="12">{{ label }}</text>
+      {% for r in range(5) %}{% for c in range(5) %}
+        <rect x="{{ x0 + c * 30 }}" y="{{ 30 + r * 30 }}" width="28" height="28" class="d-box {{ 'ml-op' if mask[r][c] else 'ml-dashed' }}"></rect>
+        {% if r == 2 and c == 2 %}<text x="{{ x0 + 74 }}" y="{{ 109 }}" font-size="10" text-anchor="middle">centre</text>{% endif %}
+      {% endfor %}{% endfor %}
+    {% endfor %}
+    {% set marks = {"target": "T", "seen": "", "blind": "?", "future": "", "far": ""} %}
+    {% set styles = {"target": "ml-tensor", "seen": "ml-op", "blind": "ml-tensor", "future": "ml-dashed", "far": "ml-dashed"} %}
+    <text x="420" y="20" font-size="12">3 layers on a 7×7 image</text>
+    {% for line in deps.grid %}{% set r = loop.index0 %}
+      {% for cell in line %}
+        <rect x="{{ 420 + loop.index0 * 30 }}" y="{{ 30 + r * 30 }}" width="28" height="28" class="d-box {{ styles[cell] }}"></rect>
+        <text x="{{ 434 + loop.index0 * 30 }}" y="{{ 49 + r * 30 }}" font-size="11" text-anchor="middle">{{ marks[cell] }}</text>
+      {% endfor %}
+    {% endfor %}
+    <text x="20" y="215" font-size="11" class="d-muted">solid = tap used / pixel seen, dashed = zeroed / future or out of range</text>
+    <text x="20" y="235" font-size="11" class="d-muted">T = target pixel, ? = blind spot (earlier in raster order but never seen)</text>
+  </svg>
+</div>
+
+<h3 id="language-models">Language models: the main case</h3>
+<p>
+  A modern <a href="/ml-models/decoder-only-llm">decoder-only language model</a> is an autoregressive
+  model over tokens: a causal Transformer outputs logits for p(x<sub>t</sub> | x<sub>&lt;t</sub>) at
+  every position, trained with teacher forcing and cross-entropy on shifted targets, and sampled one
+  token at a time. The <a href="/ml-models/kv-cache">KV cache</a> exists because generation is
+  sequential: it saves the past's keys and values so each new step does not recompute them.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>Categorical(logits=…)</code></td>
+        <td>logits <code>[B, T, V]</code></td>
+        <td>One next-token distribution per position; logits are normalised with <code>logsumexp</code>.</td>
+        <td><a href="{{ src('torch/distributions/categorical.py', 56, 85) }}"><code>Categorical.__init__</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Categorical.log_prob</code></td>
+        <td>value <code>[B, T]</code> → <code>[B, T]</code></td>
+        <td>log p(x<sub>t</sub> | x<sub>&lt;t</sub>) by gathering the target's log-probability; sum over T for log p(x).</td>
+        <td><a href="{{ src('torch/distributions/categorical.py', 151, 157) }}">lines 151-157</a></td>
+      </tr>
+      <tr>
+        <td><code>Categorical.sample</code></td>
+        <td><code>[B, V]</code> → <code>[B]</code></td>
+        <td>One ancestral-sampling step (calls <code>torch.multinomial</code>).</td>
+        <td><a href="{{ src('torch/distributions/categorical.py', 144, 149) }}">lines 144-149</a></td>
+      </tr>
+      <tr>
+        <td><code>nn.CrossEntropyLoss</code></td>
+        <td>input <code>[N, V]</code>, target <code>[N]</code>; <code>ignore_index=-100</code></td>
+        <td>Teacher-forced loss on shifted targets; padding positions set to −100 are skipped.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 1200, 1407) }}"><code>loss.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.Conv1d</code></td>
+        <td><code>[B, C, T]</code>; <code>kernel_size</code>, <code>dilation</code>, <code>padding</code></td>
+        <td>Pads both sides symmetrically, so use <code>padding=0</code> and pad the left by hand for causality.</td>
+        <td><a href="{{ src('torch/nn/modules/conv.py', 225, 385) }}"><code>Conv1d</code></a></td>
+      </tr>
+      <tr>
+        <td><code>F.pad(x, (left, right))</code></td>
+        <td>pad tuple starts with the last dimension</td>
+        <td><code>(dilation·(k−1), 0)</code> left-pads time by exactly the receptive-field reach.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 5761, 5849) }}"><code>functional.pad</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.Conv2d</code> + mask</td>
+        <td><code>weight [C<sub>out</sub>, C<sub>in</sub>, k, k]</code></td>
+        <td>PixelCNN multiplies <code>weight</code> by a fixed 0/1 mask before each forward.</td>
+        <td><a href="{{ src('torch/nn/modules/conv.py', 388, 565) }}"><code>Conv2d</code></a></td>
+      </tr>
+      <tr>
+        <td><code>torch.triu</code></td>
+        <td><code>[T, T]</code>, <code>diagonal=1</code></td>
+        <td>The causal mask for attention: positions above the diagonal (the future) are blocked.</td>
+        <td><a href="{{ src('torch/_torch_docs.py', 12183, 12247) }}"><code>_torch_docs.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-chain">The chain rule, exactly</h3>
+  <p>
+    Take a distribution over three bits with these probabilities:
+    {% for f in factors %}{{ bits(f.sequence) }} = {{ "%g"|format(f.joint) }}{% if not loop.last %}, {% endif %}{% endfor %}.
+    Each row factors it into first-bit, second-given-first and third-given-both probabilities,
+    and the product rebuilds the joint exactly.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Sequence</th><th>p(x<sub>1</sub>)</th><th>p(x<sub>2</sub>|x<sub>1</sub>)</th><th>p(x<sub>3</sub>|x<sub>1</sub>x<sub>2</sub>)</th><th>Product</th><th>Sampled (1000 draws)</th></tr></thead>
+      <tbody>
+        {% for f in factors %}
+        <tr><td>{{ bits(f.sequence) }}</td>{% for p in f.factors %}<td>{{ "%.4f"|format(p) }}</td>{% endfor %}<td>{{ "%.4f"|format(f.product) }}</td><td>{{ "%.3f"|format(samples[f.sequence]) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The last column draws 1000 sequences by ancestral sampling (bit by bit from the conditionals, seed 0);
+    the frequencies land near the joint. A first-order Markov model, which drops x<sub>1</sub> from the
+    last factor, gives 000 probability {{ "%.4f"|format(markov.approx[(0, 0, 0)]) }} instead of 0.3 and
+    101 {{ "%.4f"|format(markov.approx[(1, 0, 1)]) }} instead of 0.05; the KL divergence from the true joint is
+    {{ "%.4f"|format(markov.kl_bits) }} bits. Free parameters: the full joint needs {{ small.joint }}, the chain
+    rule's conditionals also {{ small.chain }} (the same distribution, re-expressed) and the Markov model
+    {{ small.markov }}. With V = 50,000 the joint and full conditionals need {{ "{:,}".format(big.joint) }} each and the
+    Markov model {{ "{:,}".format(big.markov) }}. Neural models escape this by sharing weights across all prefixes.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-teacher">Teacher forcing on a toy corpus</h3>
+  <p>
+    Corpus: {% for line in ar_corpus %}"{{ line }}"{% if not loop.last %}, {% endif %}{% endfor %}.
+    The maximum-likelihood bigram model is the table of count ratios, e.g. p(cat | the) =
+    {{ "%.4f"|format(tf.model["the"]["cat"]) }}. Teacher forcing scores "the cat ran ." from the true prefixes:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Input</th><th>Target</th><th>p(target | input)</th><th>−log p</th></tr></thead>
+      <tbody>
+        {% for r in tf.rows %}
+        <tr><td>{{ r.input }}</td><td>{{ r.target }}</td><td>{{ "%.4f"|format(r.prob) }}</td><td>{{ "%.4f"|format(r.nll|abs) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Total negative log-likelihood {{ "%.4f"|format(tf.total_nll) }} nats (that is ln 3), mean
+    {{ "%.4f"|format(tf.mean_nll) }} per token, perplexity {{ "%.3f"|format(tf.perplexity) }}. Treating each row of
+    the table as a softmax over logits, the gradient of the corpus loss with respect to every logit is
+    p − 1[target], summed over occurrences; at the count ratios its largest magnitude is
+    {{ "%.0e"|format(tf.max_gradient) }}, zero up to rounding, so counting really is the maximum-likelihood fit.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-drift">Errors compound when the teacher leaves</h3>
+  <p>
+    A toy: at every step the model picks the right next token with probability 0.9 given a correct prefix,
+    and otherwise one of the 3 wrong tokens (vocabulary of 4). Under teacher forcing every step is scored at
+    0.9. Free running, the chance the whole prefix is still right after t steps is 0.9<sup>t</sup>. In the toy, each
+    slip shifts the sequence by a random offset, and it is back on track only when the slips cancel out; the chance
+    of being on track decays toward chance (1/4):
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Step t</th>{% for r in drift if r.t in [1, 2, 4, 8, 12] %}<th>{{ r.t }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        <tr><td>Teacher-forced accuracy</td>{% for r in drift if r.t in [1, 2, 4, 8, 12] %}<td>{{ "%.3f"|format(r.teacher_forced) }}</td>{% endfor %}</tr>
+        <tr><td>Whole prefix correct</td>{% for r in drift if r.t in [1, 2, 4, 8, 12] %}<td>{{ "%.3f"|format(r.all_correct) }}</td>{% endfor %}</tr>
+        <tr><td>On track (free running)</td>{% for r in drift if r.t in [1, 2, 4, 8, 12] %}<td>{{ "%.3f"|format(r.free_running) }}</td>{% endfor %}</tr>
+      </tbody>
+    </table>
+  </div>
+  <p>Training loss looks the same at every step; generation quality does not. Real models are not this simple: a strong model can recover from a slip, which this toy cannot.</p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-causal">A causal stack, checked</h3>
+  <p>
+    Input [{{ row(ar_causal_input) }}], kernel [{{ row(ar_causal_kernel) }}] (an average of the current value and the one d steps back),
+    dilations {{ ar_causal_dilations|join(", ") }}. The layers give:
+  </p>
+  <ul>
+    {% for layer in stack[1:] %}<li>dilation {{ ar_causal_dilations[loop.index0] }}: [{{ row(layer) }}]</li>{% endfor %}
+  </ul>
+  <p>
+    Receptive field 1 + (2−1)(1+2+4) = {{ causal_receptive_field(2, ar_causal_dilations) }}. Now add 100 to input position {{ check.changed }}
+    (zero-based). The top layer becomes [{{ row(check.after) }}]: outputs before position {{ check.first_changed }} do not move, so nothing
+    reads the future. WaveNet's receptive fields with kernel size 2:
+    {% for f in fields %}{{ f.label }}: {{ f.size }}{% if not loop.last %}; {% endif %}{% endfor %}.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class CausalConv1d(nn.Conv1d):
+    def __init__(self, c_in, c_out, kernel_size, dilation=1):
+        super().__init__(c_in, c_out, kernel_size, dilation=dilation, padding=0)
+        self.left = dilation * (kernel_size - 1)
+
+    def forward(self, x):                     # x: [B, C, T]
+        return super().forward(F.pad(x, (self.left, 0)))   # output [B, C_out, T]
+
+class MaskedConv2d(nn.Conv2d):                # PixelCNN, single channel ordering
+    def __init__(self, mask_type, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        k = self.kernel_size[0]
+        mask = torch.ones_like(self.weight)
+        mask[:, :, k // 2, k // 2 + (mask_type == "B"):] = 0
+        mask[:, :, k // 2 + 1:] = 0
+        self.register_buffer("mask", mask)
+
+    def forward(self, x):
+        return F.conv2d(x, self.weight * self.mask, self.bias,
+                        self.stride, self.padding, self.dilation, self.groups)
+
+# teacher forcing for a language model: inputs and shifted targets
+def lm_loss(model, ids):                      # ids: [B, T+1]
+    logits = model(ids[:, :-1])               # [B, T, V], causal model
+    return F.cross_entropy(logits.reshape(-1, logits.size(-1)),
+                           ids[:, 1:].reshape(-1), ignore_index=-100)
+
+@torch.no_grad()
+def generate(model, ids, steps):
+    for _ in range(steps):
+        probs = model(ids)[:, -1].softmax(-1) # only the last position
+        nxt = torch.multinomial(probs, 1)     # [B, 1]
+        ids = torch.cat([ids, nxt], dim=1)    # fed back: no teacher now
+    return ids</code></pre>
+
+<p>
+  The causal convolution relies on <code>Conv1d</code>'s default <code>padding_mode="zeros"</code>
+  being irrelevant once <code>padding=0</code>; all padding comes from <code>F.pad</code>, whose tuple
+  starts with the last dimension's (left, right). The <code>generate</code> loop recomputes the whole
+  prefix each step for clarity; real implementations keep a cache.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Exact likelihood.</strong> Autoregressive models give an exact log p(x), so they can be trained and compared by
+    cross-entropy or perplexity directly. Many other generative models (diffusion models, VAEs) only give a bound or none.</li>
+  <li><strong>Sequential sampling.</strong> Scoring is parallel, but generating T tokens takes T steps. That is the cost behind
+    the KV cache and speculative decoding, and why parallel generators exist.</li>
+  <li><strong>A fixed order.</strong> The model must commit to an order. Text has a natural one; images and audio do not, and the
+    order affects what is easy to learn (PixelCNN's blind spot is an artefact of order plus architecture).</li>
+  <li><strong>Exposure bias.</strong> Teacher forcing is efficient and is maximum likelihood, but it never shows the model its
+    own mistakes. Scheduled sampling breaks the parallelism of training; most large models live with the bias.</li>
+  <li><strong>Context length.</strong> Convolutions see a fixed receptive field; RNNs see everything through a bottleneck;
+    Transformers see the whole window at quadratic attention cost.</li>
+</ul>
+
+<h3 id="check-yourself">Check yourself</h3>
+<details class="ml-quiz">
+  <summary>Is the chain-rule factorization an approximation?</summary>
+  <p>No. It holds for every joint distribution. Approximation enters only when a model cannot represent the true conditionals, for example a Markov model that forgets the far past (KL {{ "%.4f"|format(markov.kl_bits) }} bits in the toy).</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does the first PixelCNN layer use mask A but later layers mask B?</summary>
+  <p>The first layer reads raw pixels, so its centre is the pixel being predicted and must be hidden. After that, each position holds features built only from earlier pixels, so keeping the centre leaks nothing.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why can training run all positions in parallel but generation cannot?</summary>
+  <p>Training feeds the true sequence, known in advance, and a causal model computes every position's prediction in one pass. Generation needs each token before it can predict the next.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Bengio, Ducharme, Vincent and Jauvin. <em>A Neural Probabilistic Language Model.</em> JMLR 3, 2003 (<a href="https://www.jmlr.org/papers/v3/bengio03a.html">JMLR</a>).</li>
+  <li>van den Oord, Kalchbrenner and Kavukcuoglu. <em>Pixel Recurrent Neural Networks</em> (PixelCNN, masks A and B). ICML, 2016 (<a href="https://arxiv.org/abs/1601.06759">arXiv 1601.06759</a>).</li>
+  <li>van den Oord, Kalchbrenner, Vinyals, Espeholt, Graves and Kavukcuoglu. <em>Conditional Image Generation with PixelCNN Decoders</em> (Gated PixelCNN, the blind spot). NeurIPS, 2016 (<a href="https://arxiv.org/abs/1606.05328">arXiv 1606.05328</a>).</li>
+  <li>van den Oord, Dieleman, Zen, Simonyan, Vinyals, Graves, Kalchbrenner, Senior and Kavukcuoglu. <em>WaveNet: A Generative Model for Raw Audio.</em> 2016 (<a href="https://arxiv.org/abs/1609.03499">arXiv 1609.03499</a>).</li>
+  <li>Bengio, Vinyals, Jaitly and Shazeer. <em>Scheduled Sampling for Sequence Prediction with Recurrent Neural Networks.</em> NeurIPS, 2015 (<a href="https://arxiv.org/abs/1506.03099">arXiv 1506.03099</a>).</li>
+  <li>Ranzato, Chopra, Auli and Zaremba. <em>Sequence Level Training with Recurrent Neural Networks</em> (names exposure bias). ICLR, 2016 (<a href="https://arxiv.org/abs/1511.06732">arXiv 1511.06732</a>).</li>
+  <li>Germain, Gregor, Murray and Larochelle. <em>MADE: Masked Autoencoder for Distribution Estimation.</em> ICML, 2015 (<a href="https://arxiv.org/abs/1502.03509">arXiv 1502.03509</a>).</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/distributions/categorical.py', 56, 163) }}"><code>categorical.py</code></a>, <a href="{{ src('torch/nn/modules/loss.py', 1200, 1407) }}"><code>CrossEntropyLoss</code></a>, <a href="{{ src('torch/nn/modules/conv.py', 225, 565) }}"><code>Conv1d</code>/<code>Conv2d</code></a>, <a href="{{ src('torch/nn/functional.py', 5761, 5849) }}"><code>F.pad</code></a>.</li>
+</ul>

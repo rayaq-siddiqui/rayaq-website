@@ -455,8 +455,8 @@ Dumoulin and Visin 2016 and Luo et al. 2016 are cited from memory and were not o
 37. `missing-data` ✓
 38. `computation-graphs` ✓
 39. `cnns` ✓
-40. `autoregressive-models` ← next
-41. `tokenization`
+40. `autoregressive-models` ✓
+41. `tokenization` ← next
 42. `nearest-neighbors`
 43. `similarity-search`
 44. `gpu-execution`
