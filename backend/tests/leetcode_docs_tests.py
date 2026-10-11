@@ -1767,3 +1767,43 @@ def test_interview_approach_helpers_match_the_page():
     assert "<td class=\"num\">64</td><td class=\"num\">2016</td><td class=\"num\">254</td><td class=\"num\">64</td>" in body
     assert "<strong>[-2]</strong>: the buggy version returns 0, the right answer is -2" in body
     assert "<td>O(n²)</td><td class=\"num\">10,000</td>" in body
+
+
+def test_segment_trees_helpers_match_the_page():
+    nums = [5, 8, 6, 3, 2, 7, 2, 6]
+    tree = leetcode_docs.segment_tree_of(nums)
+    assert len(tree) == 15 and tree[0]["value"] == sum(nums)
+    for entry in tree:
+        assert entry["value"] == sum(nums[entry["lo"]:entry["hi"] + 1])
+
+    q = leetcode_docs.segment_query_trace(nums, 2, 6)
+    assert [(v["node"], v["kind"]) for v in q["visits"]] == [
+        (1, "split"), (2, "split"), (4, "outside"), (5, "inside"), (3, "split"),
+        (6, "inside"), (7, "split"), (14, "inside"), (15, "outside"),
+    ]
+    assert q["value"] == 20 == sum(nums[2:7]) and q["inside"] == [5, 6, 14]
+    assert leetcode_docs.segment_query_trace(nums, 2, 6, "min")["value"] == 2 == min(nums[2:7])
+    for left in range(len(nums)):
+        for right in range(left, len(nums)):
+            for combine, fn in (("sum", sum), ("min", min), ("max", max)):
+                assert leetcode_docs.segment_query_trace(nums, left, right, combine)["value"] == fn(nums[left:right + 1])
+
+    up = leetcode_docs.segment_update_trace(nums, 3, 10)
+    assert [(p["node"], p["old"], p["new"]) for p in up["path"]] == [(11, 3, 10), (5, 9, 16), (2, 22, 29), (1, 39, 46)]
+    assert up["nums"] == [5, 8, 6, 10, 2, 7, 2, 6] and up["changed"] == [1, 2, 5, 11]
+
+    sizes = leetcode_docs.segment_tree_sizes([8, 13, 100, 256])
+    assert [(r["nodes"], r["largest_index"], r["worst_visits"], r["depth"]) for r in sizes] == [
+        (15, 15, 11, 3), (25, 29, 15, 4), (199, 253, 27, 7), (511, 511, 31, 8),
+    ]
+    for row in sizes:
+        assert row["largest_index"] < 4 * row["n"] and row["worst_visits"] <= 4 * row["depth"]
+
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/segment-trees").get_data(as_text=True))
+    assert "sum of [2..6] = 9 + 9 + 2 = 20" in body
+    assert "<td class=\"num\">5</td><td class=\"num\">[2..3]</td><td>inside: use whole</td><td class=\"num\">9</td>" in body
+    assert "<td class=\"num\">11</td><td class=\"num\">[3..3]</td><td class=\"num\">3</td><td class=\"num\">10</td>" in body
+    assert "the root holds <strong>46</strong>" in body
+    assert "with <code>min</code> as the combining operation give <strong>2</strong>" in body
+    assert "<td class=\"num\">100</td><td class=\"num\">199</td><td class=\"num\">253</td><td class=\"num\">400</td><td class=\"num\">27</td><td class=\"num\">28</td>" in body
+    assert "Beyond the interview" in body

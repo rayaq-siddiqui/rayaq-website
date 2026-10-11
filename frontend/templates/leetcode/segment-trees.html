@@ -1,0 +1,405 @@
+{% set nums = [5, 8, 6, 3, 2, 7, 2, 6] %}
+{% set tree = segment_tree_of(nums) %}
+{% set q = segment_query_trace(nums, 2, 6) %}
+{% set qmin = segment_query_trace(nums, 2, 6, "min") %}
+{% set up = segment_update_trace(nums, 3, 10) %}
+{% set sizes = segment_tree_sizes([8, 13, 100, 256]) %}
+{% macro seg_tree(fills, labels) %}
+  {% for entry in tree %}
+    {% set span = 640 / 2 ** entry.depth %}
+    {% set cx = (entry.node - 2 ** entry.depth + 0.5) * span %}
+    {% set y = 16 + entry.depth * 66 %}
+    {% if entry.depth > 0 %}
+      {% set pspan = 640 / 2 ** (entry.depth - 1) %}
+      {% set pcx = (entry.node // 2 - 2 ** (entry.depth - 1) + 0.5) * pspan %}
+      <line x1="{{ pcx }}" y1="{{ y - 22 }}" x2="{{ cx }}" y2="{{ y }}" class="d-line"></line>
+    {% endif %}
+  {% endfor %}
+  {% for entry in tree %}
+    {% set span = 640 / 2 ** entry.depth %}
+    {% set cx = (entry.node - 2 ** entry.depth + 0.5) * span %}
+    {% set y = 16 + entry.depth * 66 %}
+    {% set w = 66 if entry.depth == 3 else 84 %}
+    <rect x="{{ cx - w / 2 }}" y="{{ y }}" width="{{ w }}" height="44" rx="5" class="d-box"></rect>
+    {% set fill = fills.get(entry.node) %}
+    {% if fill == "outside" %}
+      <rect x="{{ cx - w / 2 }}" y="{{ y }}" width="{{ w }}" height="44" rx="5" class="lc-r"></rect>
+    {% elif fill %}
+      <rect x="{{ cx - w / 2 + 2 }}" y="{{ y + 2 }}" width="{{ w - 4 }}" height="40" rx="4" class="{{ fill }}"></rect>
+    {% endif %}
+    <text x="{{ cx }}" y="{{ y + 15 }}" font-size="10" text-anchor="middle" class="d-muted">{{ "[%d]" % entry.lo if entry.lo == entry.hi else "[%d..%d]" % (entry.lo, entry.hi) }}</text>
+    <text x="{{ cx }}" y="{{ y + 35 }}" font-size="14" text-anchor="middle">{{ labels.get(entry.node, entry.value) }}</text>
+  {% endfor %}
+{% endmacro %}
+<header class="jj-header">
+  <h1>Segment trees</h1>
+  <p class="tagline">
+    A segment tree answers "what is the sum, minimum or maximum of this range?" while the array keeps changing. It stores the answer for the whole
+    array at the root, for each half below it, for each quarter below those, down to single elements. Any range is then a handful of stored pieces,
+    and changing one element only touches the pieces that contain it, so both operations cost O(log n). It rarely comes up in interviews: none of the
+    four lists needs it. It is here because it is the general answer whenever prefix sums break.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  <a href="{{ url_for('leetcode', slug='prefix-sums') }}">Prefix sums</a> answer any range sum in O(1), but only on an array that never changes: one
+  update shifts every prefix after it, costing O(n). Recomputing each query from the raw array is the opposite trade, O(1) to update and O(n) to ask.
+  When a problem interleaves the two, up to 10<sup>5</sup> of each, both are quadratic. A segment tree meets in the middle at O(log n) for each, and
+  it works for any operation that combines two neighbouring answers into one, such as sum, min, max, gcd or "count of values in a bucket".
+</p>
+
+<table>
+  <thead>
+    <tr><th>Signal</th><th>Pattern</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Range sum, min or max, with point updates between queries</td><td>Segment tree</td><td>Each node stores its half's answer, so a range is O(log n) stored pieces and an update fixes O(log n) ancestors.</td></tr>
+    <tr><td>Range queries but no updates</td><td><a href="{{ url_for('leetcode', slug='prefix-sums') }}">Prefix sums</a></td><td>Without updates, O(n) precomputation gives O(1) queries and a tree is wasted effort.</td></tr>
+    <tr><td>"Add v to every element in [l, r]" mixed with range queries</td><td>Segment tree with lazy propagation</td><td>A node fully inside the update records the change once and passes it down only when someone looks below it.</td></tr>
+    <tr><td>"For each element, how many later or earlier values are smaller?"</td><td>Segment tree over value ranks</td><td>Index the tree by value instead of position; counting smaller values seen so far is a range sum over ranks.</td></tr>
+    <tr><td>Tallest point or most overlaps among intervals added one at a time</td><td>Segment tree over compressed coordinates</td><td>Each new interval is a range update and the answer is a range max, where a static <a href="{{ url_for('leetcode', slug='sweep-line') }}">sweep</a> would need all intervals up front.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Imagine a tournament bracket over the array. Each leaf is one element. Each match above combines two neighbours into one result, so the node above
+  leaves 2 and 3 holds their sum, the node above that holds the sum of 0 to 3, and the root holds everything. Every node is responsible for one
+  contiguous block, and the blocks at each level tile the array without overlap.
+</p>
+<p>
+  To answer a range, walk down from the root. A block entirely inside the range is used whole, without looking inside it. A block entirely outside is
+  ignored. Only a block that straddles one of the range's two ends needs opening, and since a range has only two ends, only two blocks per level can
+  straddle. That is why a query touches a few nodes per level and never the whole array. To change an element, fix its leaf and then recompute every
+  ancestor on the way up: one node per level.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 312" role="img" aria-labelledby="lc-seg-query-title lc-seg-query-desc">
+    <title id="lc-seg-query-title">A sum segment tree over {{ nums | join(", ") }} answering the sum of indices 2 to 6</title>
+    <desc id="lc-seg-query-desc">
+      The root covers indices 0 to 7 with sum {{ tree[0].value }}. The query visits
+      {% for v in q.visits %}node [{{ v.lo }}..{{ v.hi }}] ({{ v.kind }}{% if v.contribution is not none %}, adds {{ v.contribution }}{% endif %}){{ "; " if not loop.last }}{% endfor %}.
+      The green nodes add up to {{ q.value }}.
+    </desc>
+    {% set fills = {} %}
+    {% for v in q.visits %}{% set _ = fills.update({v.node: {"inside": "lc-fill-g", "split": "lc-fill-m", "outside": "outside"}[v.kind]}) %}{% endfor %}
+    {{ seg_tree(fills, {}) }}
+    {% for i in range(nums | length) %}
+      <text x="{{ (i + 0.5) * 80 }}" y="{{ 16 + 3 * 66 + 62 }}" font-size="11" text-anchor="middle" class="d-muted">i = {{ i }}</text>
+    {% endfor %}
+    <text x="320" y="304" font-size="12" text-anchor="middle">sum of [2..6] = {% for v in q.visits if v.kind == "inside" %}{{ v.contribution }}{{ " + " if not loop.last }}{% endfor %} = {{ q.value }}</text>
+  </svg>
+</div>
+<p class="lc-caption">
+  Amber nodes straddle an end of the range and are opened; green nodes lie inside it and are used whole; red outlines are visited and rejected at
+  once; plain nodes are never touched. The diagram scrolls sideways on a narrow screen.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="layout">Layout</h3>
+<p>
+  Store the tree in a flat list, the way a <a href="{{ url_for('leetcode', slug='heaps') }}">heap</a> is stored. Node 1 is the root and covers
+  <code>[0, n - 1]</code>. Node v covering <code>[lo, hi]</code> has children 2v and 2v + 1 covering <code>[lo, mid]</code> and <code>[mid + 1, hi]</code>
+  with <code>mid = (lo + hi) // 2</code>. A node whose range is one element is a leaf. Building is a post-order
+  <a href="{{ url_for('leetcode', slug='recursion') }}">recursion</a>: build both children, then set the node to their combination, which visits each
+  of the 2n &minus; 1 nodes once.
+</p>
+
+<h3 id="invariant">The invariant</h3>
+<p>
+  <strong>Every node holds the combination of the array values in its range.</strong> Build establishes it bottom-up. A point update breaks it only at
+  the nodes whose range contains the changed index, which are exactly the leaf and its ancestors, and recomputing them bottom-up restores it, since each
+  depends only on its two children. The combining operation must be associative, so that splitting a range into pieces and combining the pieces gives the
+  same answer in any grouping; it does not have to be commutative if pieces are combined left to right, and it needs an identity (0 for sum, infinity
+  for min) to return for an empty piece.
+</p>
+
+<h3 id="query-rule">The query</h3>
+<p>
+  <code>query(node)</code> for a target range <code>[left, right]</code> has three cases. If the node's range is disjoint from the target, return the
+  identity. If it is contained in the target, return the stored value: by the invariant it is exactly that block's answer. Otherwise it overlaps
+  partly, so recurse into both children and combine. Correctness follows by induction on the node's size: the inside and outside cases are right by the
+  invariant, and a partial node's range is the disjoint union of its children's, so combining their correct answers for the overlap is correct.
+</p>
+
+<h3 id="cost">Why O(log n)</h3>
+<p>
+  At any level, the nodes that partly overlap the target are the at most two that contain <code>left</code> or <code>right</code> without lying
+  inside the range. Any node strictly between them lies inside, and the recursion never descends below an inside or outside node. So each level has at
+  most two split nodes, they open at most four children on the next level, and the depth is &lceil;log<sub>2</sub> n&rceil;. A query therefore visits at
+  most about 4 log<sub>2</sub> n nodes. The table in the tradeoffs section checks that bound against every possible range.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p><strong>The tree over [{{ nums | join(", ") }}].</strong> Node values by level, root first:</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Level</th><th>Nodes (range: value)</th></tr></thead>
+    <tbody>
+      {% for depth in range(4) %}
+        <tr><td class="num">{{ depth }}</td><td>{% for entry in tree if entry.depth == depth %}{{ entry.node }} [{{ entry.lo }}..{{ entry.hi }}]: {{ entry.value }}{{ ", " if not loop.last }}{% endfor %}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<p><strong>Query the sum of indices 2 to 6.</strong> The visits in order, matching the first diagram:</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Step</th><th>Node</th><th>Range</th><th>Case</th><th>Contributes</th></tr></thead>
+    <tbody>
+      {% for v in q.visits %}
+        <tr><td class="num">{{ loop.index }}</td><td class="num">{{ v.node }}</td><td class="num">[{{ v.lo }}..{{ v.hi }}]</td><td>{{ {"inside": "inside: use whole", "outside": "outside: skip", "split": "partial: open both children"}[v.kind] }}</td><td class="num">{{ v.contribution if v.contribution is not none else "" }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  The answer is <strong>{{ q.value }}</strong>, assembled from {{ q.inside | length }} stored values after {{ q.visits | length }} visits. The same
+  ranges with <code>min</code> as the combining operation give <strong>{{ qmin.value }}</strong>.
+</p>
+
+<p><strong>Set index 3 to 10.</strong> Only the leaf and its ancestors change:</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Node</th><th>Range</th><th>Old value</th><th>New value</th></tr></thead>
+    <tbody>
+      {% for p in up.path %}
+        <tr><td class="num">{{ p.node }}</td><td class="num">[{{ p.lo }}..{{ p.hi }}]</td><td class="num">{{ p.old }}</td><td class="num">{{ p.new }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  {{ up.changed | length }} of {{ tree | length }} nodes change; the array is now [{{ up.nums | join(", ") }}] and the root holds
+  <strong>{{ up.path[-1].new }}</strong>.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 280" role="img" aria-labelledby="lc-seg-update-title lc-seg-update-desc">
+    <title id="lc-seg-update-title">Updating index 3 from {{ nums[3] }} to {{ up.nums[3] }} changes one path from leaf to root</title>
+    <desc id="lc-seg-update-desc">
+      The leaf for index 3 and its ancestors are recomputed bottom-up:
+      {% for p in up.path %}node [{{ p.lo }}..{{ p.hi }}] goes from {{ p.old }} to {{ p.new }}{{ "; " if not loop.last }}{% endfor %}.
+      Every other node keeps its value.
+    </desc>
+    {% set fills = {} %}
+    {% set labels = {} %}
+    {% for p in up.path %}{% set _ = fills.update({p.node: "lc-fill-m"}) %}{% set _ = labels.update({p.node: "%d → %d" % (p.old, p.new)}) %}{% endfor %}
+    {{ seg_tree(fills, labels) }}
+    <text x="320" y="272" font-size="12" text-anchor="middle">{{ up.path | length }} nodes recomputed, one per level; the other {{ (tree | length) - (up.path | length) }} are untouched</text>
+  </svg>
+</div>
+<p class="lc-caption">Amber nodes are recomputed from their children after the leaf changes, bottom to top.</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>class SegmentTree:
+    def __init__(self, nums):
+        self.n = len(nums)
+        self.tree = [0] * (4 * self.n)
+        self._build(1, 0, self.n - 1, nums)
+
+    def _build(self, node, lo, hi, nums):
+        if lo == hi:
+            self.tree[node] = nums[lo]
+            return
+        mid = (lo + hi) // 2
+        self._build(2 * node, lo, mid, nums)
+        self._build(2 * node + 1, mid + 1, hi, nums)
+        self.tree[node] = self.tree[2 * node] + self.tree[2 * node + 1]
+
+    def update(self, index, value, node=1, lo=0, hi=None):
+        if hi is None:
+            hi = self.n - 1
+        if lo == hi:
+            self.tree[node] = value
+            return
+        mid = (lo + hi) // 2
+        if index &lt;= mid:
+            self.update(index, value, 2 * node, lo, mid)
+        else:
+            self.update(index, value, 2 * node + 1, mid + 1, hi)
+        self.tree[node] = self.tree[2 * node] + self.tree[2 * node + 1]
+
+    def query(self, left, right, node=1, lo=0, hi=None):
+        if hi is None:
+            hi = self.n - 1
+        if right &lt; lo or hi &lt; left:
+            return 0
+        if left &lt;= lo and hi &lt;= right:
+            return self.tree[node]
+        mid = (lo + hi) // 2
+        return (self.query(left, right, 2 * node, lo, mid)
+                + self.query(left, right, 2 * node + 1, mid + 1, hi))</code></pre>
+<p>
+  For min or max, replace the <code>+</code> in all three places and return the identity (<code>math.inf</code> for min) from the disjoint case.
+</p>
+
+<h3 id="variations">Variations and edge cases</h3>
+<p><strong>Bottom-up, in 2n slots.</strong> Put the leaves at <code>tree[n:]</code> and fill parents from the back. A query climbs from both ends at once,
+  taking a node whenever the boundary is a right child on the left side or a left child on the right side. No recursion and half the memory:</p>
+<pre><code>class BottomUpTree:
+    def __init__(self, nums):
+        self.n = n = len(nums)
+        self.tree = [0] * n + list(nums)
+        for i in range(n - 1, 0, -1):
+            self.tree[i] = self.tree[2 * i] + self.tree[2 * i + 1]
+
+    def update(self, index, value):
+        i = index + self.n
+        self.tree[i] = value
+        while i &gt; 1:
+            i //= 2
+            self.tree[i] = self.tree[2 * i] + self.tree[2 * i + 1]
+
+    def query(self, left, right):
+        total, lo, hi = 0, left + self.n, right + self.n + 1
+        while lo &lt; hi:
+            if lo &amp; 1:
+                total += self.tree[lo]
+                lo += 1
+            if hi &amp; 1:
+                hi -= 1
+                total += self.tree[hi]
+            lo //= 2
+            hi //= 2
+        return total</code></pre>
+
+<p><strong>Lazy propagation for range updates.</strong> Adding v to every element of a range would touch up to n leaves. Instead, a node fully inside
+  the update adds <code>v &times; length</code> to its own total and remembers v as <em>pending</em>; the pending value is pushed to its children only
+  when a later call needs to look below it:</p>
+<pre><code>class LazyTree:
+    def __init__(self, n):
+        self.n = n
+        self.total = [0] * (4 * n)
+        self.pending = [0] * (4 * n)
+
+    def _apply(self, node, lo, hi, delta):
+        self.total[node] += delta * (hi - lo + 1)
+        self.pending[node] += delta
+
+    def _push(self, node, lo, mid, hi):
+        if self.pending[node]:
+            self._apply(2 * node, lo, mid, self.pending[node])
+            self._apply(2 * node + 1, mid + 1, hi, self.pending[node])
+            self.pending[node] = 0
+
+    def add(self, left, right, delta, node=1, lo=0, hi=None):
+        if hi is None:
+            hi = self.n - 1
+        if right &lt; lo or hi &lt; left:
+            return
+        if left &lt;= lo and hi &lt;= right:
+            self._apply(node, lo, hi, delta)
+            return
+        mid = (lo + hi) // 2
+        self._push(node, lo, mid, hi)
+        self.add(left, right, delta, 2 * node, lo, mid)
+        self.add(left, right, delta, 2 * node + 1, mid + 1, hi)
+        self.total[node] = self.total[2 * node] + self.total[2 * node + 1]
+
+    def query(self, left, right, node=1, lo=0, hi=None):
+        if hi is None:
+            hi = self.n - 1
+        if right &lt; lo or hi &lt; left:
+            return 0
+        if left &lt;= lo and hi &lt;= right:
+            return self.total[node]
+        mid = (lo + hi) // 2
+        self._push(node, lo, mid, hi)
+        return (self.query(left, right, 2 * node, lo, mid)
+                + self.query(left, right, 2 * node + 1, mid + 1, hi))</code></pre>
+<p><strong>Over values instead of positions.</strong> To count, for each element, how many smaller values come after it, compress the values to ranks
+  0 to k &minus; 1, walk the array from the right, query the sum of ranks below the current one, then add 1 at its rank. The same trick, with max
+  instead of sum, gives the longest increasing subsequence ending at each value.</p>
+<ul>
+  <li><strong>Array size.</strong> With the recursive layout, node indices can exceed 2n when n is not a power of two; 4n is always enough. The table below shows the largest index actually used.</li>
+  <li><strong>Inclusive or half-open.</strong> Pick <code>[left, right]</code> or <code>[left, right)</code> once and use it in every comparison; mixing them drops or double-counts a boundary element.</li>
+  <li><strong>Empty array.</strong> <code>_build(1, 0, -1)</code> never reaches a leaf and recurses until the stack overflows; guard <code>n == 0</code> first.</li>
+  <li><strong>Recursion depth.</strong> The depth is only about log<sub>2</sub> n, so Python's recursion limit is not a problem here, unlike a DFS on a path-shaped graph.</li>
+</ul>
+
+<h2 id="tradeoffs">Complexity and tradeoffs</h2>
+
+<p>
+  Build is O(n) time and the tree uses O(n) space; a query or a point update is O(log n); a lazy range update is O(log n) as well. The query bound,
+  checked by running every possible range:
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>n</th><th>Nodes (2n &minus; 1)</th><th>Largest node index</th><th>4n</th><th>Most nodes one query visits</th><th>4 &times; &lceil;log<sub>2</sub> n&rceil;</th></tr></thead>
+    <tbody>
+      {% for row in sizes %}
+        <tr><td class="num">{{ row.n }}</td><td class="num">{{ row.nodes }}</td><td class="num">{{ row.largest_index }}</td><td class="num">{{ 4 * row.n }}</td><td class="num">{{ row.worst_visits }}</td><td class="num">{{ 4 * row.depth }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<ul>
+  <li><strong>Against the alternatives.</strong> With q queries and u updates, a plain array costs O(u + qn), prefix sums O(un + q), and a segment tree O((u + q) log n).</li>
+  <li><strong>Against a Fenwick tree.</strong> A Fenwick (binary indexed) tree does prefix sums with point updates in fewer lines and less memory, but it needs an invertible operation to turn prefixes into ranges, so it cannot do range min or max directly. The segment tree is the general tool; the Fenwick tree is the compact special case.</li>
+  <li><strong>Against a sorted container.</strong> "How many values below x" can also be answered by binary search over a sorted list, but inserting into a Python list is O(n). A segment tree over ranks keeps every operation at O(log n), at the cost of knowing all values up front for compression.</li>
+  <li><strong>When it is overkill.</strong> If updates never happen, use prefix sums or a sparse table. If the queries are a sliding window, a <a href="{{ url_for('leetcode', slug='monotonic-stack') }}">monotonic deque</a> gives O(1) amortized. In an interview, say that the tree exists and why before writing 40 lines of it.</li>
+</ul>
+
+<h2 id="problems">Problems</h2>
+
+{% include "leetcode/_problems.html" %}
+<p>For practice beyond the lists, in rising difficulty:</p>
+<ul class="lc-problems">
+  <li><a href="{{ problem_url('range-sum-query-mutable') }}" rel="noopener">307. Range Sum Query - Mutable</a> <span class="jj-badge">Medium</span><br /><span class="lc-insight">The template on this page, unchanged: point updates and range sums interleaved.</span></li>
+  <li><a href="{{ problem_url('count-of-smaller-numbers-after-self') }}" rel="noopener">315. Count of Smaller Numbers After Self</a> <span class="jj-badge">Hard</span><br /><span class="lc-insight">Index the tree by value rank and sweep from the right, asking how many smaller ranks are already present.</span></li>
+  <li><a href="{{ problem_url('falling-squares') }}" rel="noopener">699. Falling Squares</a> <span class="jj-badge">Hard</span><br /><span class="lc-insight">Each square reads the max height over its footprint and then raises that whole footprint: a range max query followed by a range assignment.</span></li>
+  <li><a href="{{ problem_url('longest-increasing-subsequence-ii') }}" rel="noopener">2407. Longest Increasing Subsequence II</a> <span class="jj-badge">Hard</span><br /><span class="lc-insight">The best chain ending at value v extends the best chain among values in [v &minus; k, v &minus; 1], a range max over values.</span></li>
+</ul>
+
+<h2 id="connections">Connections</h2>
+
+{% include "leetcode/_connections.html" %}
+<p>
+  A segment tree is <a href="{{ url_for('leetcode', slug='prefix-sums') }}">prefix sums</a> made dynamic, built by the divide-and-conquer
+  <a href="{{ url_for('leetcode', slug='recursion') }}">recursion</a> of merge sort, and stored with the index arithmetic of a
+  <a href="{{ url_for('leetcode', slug='heaps') }}">heap</a>. Over value ranks it answers the questions a
+  <a href="{{ url_for('leetcode', slug='binary-search-trees') }}">balanced BST</a> with subtree sizes would, and over coordinates it turns a
+  <a href="{{ url_for('leetcode', slug='sweep-line') }}">sweep line</a> into an online structure. Range max over values speeds up
+  <a href="{{ url_for('leetcode', slug='longest-increasing-subsequence') }}">LIS</a>-style DPs whose transition looks back over a band of values.
+</p>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="lc-quiz">
+  <summary>Which stored values make up the sum of indices 2 to 6 in the example, and why is node [4..7] opened instead of used?</summary>
+  <p>{% for v in q.visits if v.kind == "inside" %}[{{ v.lo }}..{{ v.hi }}] = {{ v.contribution }}{{ ", " if not loop.last }}{% endfor %}, total {{ q.value }}. Node [4..7] includes index 7, which is outside the range, so its stored sum would count {{ nums[7] }} too many; it is split and its child [7] is rejected.</p>
+</details>
+<details class="lc-quiz">
+  <summary>Why can at most two nodes per level partly overlap a query range?</summary>
+  <p>A node at some level partly overlaps only if one of the range's two ends falls strictly inside it. The nodes at a level tile the array, so each end lies in exactly one of them. Every node between those two is wholly inside the range.</p>
+</details>
+<details class="lc-quiz">
+  <summary>Why can a Fenwick tree do range sums but not range minimums, while a segment tree does both?</summary>
+  <p>A Fenwick tree only stores prefixes, and gets a range as prefix(right) minus prefix(left &minus; 1). Subtraction undoes addition, but nothing undoes min. A segment tree assembles the range from disjoint pieces, so it only needs to combine, never to undo.</p>
+</details>
+<details class="lc-quiz">
+  <summary>With lazy propagation, what goes wrong if <code>query</code> forgets to call <code>_push</code> before recursing?</summary>
+  <p>Children under a node with a pending add still hold their old totals. The parent's total is right, so a query that uses the parent whole is fine, but one that descends reads stale children and misses the pending addition.</p>
+</details>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Bentley, J. L., "Solutions to Klee's rectangle problems", unpublished manuscript, Carnegie Mellon University, 1977: the origin of the segment tree.</li>
+  <li>de Berg, Cheong, van Kreveld and Overmars, <em>Computational Geometry: Algorithms and Applications</em>, 3rd edition, chapter 10, section 10.3 "Segment Trees".</li>
+  <li>Cormen, Leiserson, Rivest and Stein, <em>Introduction to Algorithms</em>, 3rd edition, chapter 14, "Augmenting Data Structures", for the idea of storing a subtree's summary at each node.</li>
+  <li>Sedgewick and Wayne, <em>Algorithms</em>, 4th edition, section 2.4, for the implicit array layout with children at 2k and 2k + 1.</li>
+  <li>Skiena, S., <em>The Algorithm Design Manual</em>, the catalog entry "Range Search", on choosing among range-query structures.</li>
+  <li>The <a href="https://neetcode.io/roadmap" rel="noopener">NeetCode roadmap</a> and the
+    Blind 75, Grind 169, NeetCode 150 and NeetCode 250 lists, used as the index of topics and
+    problems.</li>
+</ul>

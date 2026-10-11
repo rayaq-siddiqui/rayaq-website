@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-11 (build run). 54 of 58 pages are ready. **The next run is a build run** continuing at `segment-trees`.
+**Last updated:** 2026-10-11 (build run). 55 of 58 pages are ready. **The next run is a build run** continuing at `fenwick-trees`.
 
 ## The Routine
 
@@ -103,8 +103,8 @@ build once research is done.
 52. `number-math` ✓
 53. `bit-manipulation` ✓
 54. `interview-approach` ✓
-55. `segment-trees` ← next
-56. `fenwick-trees`
+55. `segment-trees` ✓
+56. `fenwick-trees` ← next
 57. `string-matching`
 58. `bitmask-dp`
 
@@ -308,3 +308,13 @@ pattern page, the interview loop as a flowchart, and Two Sum costed three ways (
 sort plus two pointers, hash map) with step counts from tested helpers. It is home to no list
 problems by design. Three of three queue items built. Mobile check passed on `/`, `/leetcode`
 and every ready page. Next: `segment-trees`.
+
+### 2026-10-11 — build run (fourth)
+
+Built `segment-trees` with tested helpers in `leetcode_docs.py` (`segment_tree_of`,
+`segment_query_trace` and `segment_update_trace` for sum, min and max, checked against every
+range by brute force, and `segment_tree_sizes` for the 4n and 4 log n bounds), two inline SVGs
+drawn from the helper output, and the full §6 format with the recursive, bottom-up and lazy
+trees. It is home to no list problems, so `_problems.html` now says so for *beyond* pages, and
+the page lists off-list practice problems instead. Mobile check passed on `/`, `/leetcode` and
+every ready page. Next: `fenwick-trees`.

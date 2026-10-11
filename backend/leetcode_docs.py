@@ -305,7 +305,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy", "kadanes-algorithm", "interval-merging", "sweep-line", "matrix-manipulation", "number-math", "bit-manipulation", "interview-approach"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy", "kadanes-algorithm", "interval-merging", "sweep-line", "matrix-manipulation", "number-math", "bit-manipulation", "interview-approach", "segment-trees"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -7117,6 +7117,80 @@ def buggy_kadane_counterexample(values=range(-2, 3), max_length=3):
     return None
 
 
+SEGMENT_COMBINE = {"sum": lambda a, b: a + b, "min": min, "max": max}
+
+
+def segment_tree_of(nums, combine="sum"):
+    """A recursive segment tree: node 1 covers the whole array and node v's children 2v and 2v + 1 cover its two halves. Returns the nodes in index order."""
+    op = SEGMENT_COMBINE[combine]
+    nodes = {}
+
+    def build(node, lo, hi, depth):
+        if lo == hi:
+            value = nums[lo]
+        else:
+            mid = (lo + hi) // 2
+            value = op(build(2 * node, lo, mid, depth + 1), build(2 * node + 1, mid + 1, hi, depth + 1))
+        nodes[node] = {"node": node, "lo": lo, "hi": hi, "value": value, "depth": depth}
+        return value
+
+    build(1, 0, len(nums) - 1, 0)
+    return [nodes[node] for node in sorted(nodes)]
+
+
+def segment_query_trace(nums, left, right, combine="sum"):
+    """Every node a range query visits, in visit order: a node outside [left, right] contributes nothing, one inside contributes its stored value, and one that straddles a bound splits into its children."""
+    op = SEGMENT_COMBINE[combine]
+    tree = {entry["node"]: entry for entry in segment_tree_of(nums, combine)}
+    visits = []
+
+    def query(node):
+        entry = tree[node]
+        if entry["hi"] < left or right < entry["lo"]:
+            visits.append({**entry, "kind": "outside", "contribution": None})
+            return None
+        if left <= entry["lo"] and entry["hi"] <= right:
+            visits.append({**entry, "kind": "inside", "contribution": entry["value"]})
+            return entry["value"]
+        visits.append({**entry, "kind": "split", "contribution": None})
+        parts = [part for part in (query(2 * node), query(2 * node + 1)) if part is not None]
+        return parts[0] if len(parts) == 1 else op(*parts)
+
+    value = query(1)
+    return {"visits": visits, "value": value, "inside": [v["node"] for v in visits if v["kind"] == "inside"]}
+
+
+def segment_update_trace(nums, index, value, combine="sum"):
+    """A point update: overwrite the leaf, then recombine each ancestor on the way back to the root. Only the nodes on that one path change."""
+    before = {entry["node"]: entry for entry in segment_tree_of(nums, combine)}
+    updated = list(nums)
+    updated[index] = value
+    after = {entry["node"]: entry for entry in segment_tree_of(updated, combine)}
+    node = next(n for n, entry in before.items() if entry["lo"] == entry["hi"] == index)
+    path = []
+    while node:
+        path.append({"node": node, "lo": before[node]["lo"], "hi": before[node]["hi"],
+                     "old": before[node]["value"], "new": after[node]["value"]})
+        node //= 2
+    changed = sorted(n for n in before if before[n]["value"] != after[n]["value"])
+    return {"path": path, "nums": updated, "changed": changed}
+
+
+def segment_tree_sizes(sizes):
+    """For each n: nodes in the tree, the largest node index (why arrays are sized 4n) and the most nodes any single range query visits, found by trying every range."""
+    rows = []
+    for n in sizes:
+        nums = [0] * n
+        tree = segment_tree_of(nums)
+        worst = max(
+            len(segment_query_trace(nums, left, right)["visits"])
+            for left in range(n) for right in range(left, n)
+        )
+        rows.append({"n": n, "nodes": len(tree), "largest_index": tree[-1]["node"],
+                     "worst_visits": worst, "depth": max(1, (n - 1).bit_length())})
+    return rows
+
+
 def problem_url(slug):
     return f"https://leetcode.com/problems/{slug}/"
 
@@ -7443,6 +7517,10 @@ def render(slug, render_template):
         "two_sum_growth": two_sum_growth,
         "hash_two_sum_trace": hash_two_sum_trace,
         "buggy_kadane_counterexample": buggy_kadane_counterexample,
+        "segment_tree_of": segment_tree_of,
+        "segment_query_trace": segment_query_trace,
+        "segment_update_trace": segment_update_trace,
+        "segment_tree_sizes": segment_tree_sizes,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,
