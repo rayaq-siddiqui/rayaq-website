@@ -1126,7 +1126,7 @@ PAGES = [
             "pytorch:torch/cuda/__init__.py",
             "pytorch:torch/cuda/streams.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "mixed-precision",

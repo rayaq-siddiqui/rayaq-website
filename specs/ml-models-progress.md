@@ -300,8 +300,8 @@ Gaps:
 41. `tokenization` ✓
 42. `nearest-neighbors` ✓
 43. `similarity-search` ✓
-44. `gpu-execution` ← next
-45. `mixed-precision`
+44. `gpu-execution` ✓
+45. `mixed-precision` ← next
 46. `quantization`
 47. `reinforcement-learning`
 48. `bayes-rule`

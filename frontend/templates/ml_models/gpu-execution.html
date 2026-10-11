@@ -1,0 +1,456 @@
+{% set gpu = example_gpu %}
+{% set ops = gpu_op_examples(4096) %}
+{% set mm = ops[0] %}
+{% set mv = ops[1] %}
+{% set relu = ops[2] %}
+{% set fuse = fusion_example() %}
+{% set tiles = [tiled_matmul_traffic(4096, 1), tiled_matmul_traffic(4096, 16), tiled_matmul_traffic(4096, 128), tiled_matmul_traffic(4096, 256)] %}
+{% set short = async_timeline([2] * 10, launch_us=5) %}
+{% set long = async_timeline([50] * 10, launch_us=5) %}
+{% macro f(x, n=1) -%}{{ ("%." ~ n ~ "f")|format(x) }}{%- endmacro %}
+{% macro us(seconds, n=1) -%}{{ f(seconds * 1e6, n) }}{%- endmacro %}
+{% macro gb(b, n=3) -%}{{ f(b / 1e9, n) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>How a GPU runs a model</h1>
+  <p class="tagline">
+    What actually happens when PyTorch runs a layer on a GPU: kernels queued on streams while Python runs
+    ahead, a memory hierarchy where moving data costs more than arithmetic, the roofline that says which of
+    the two limits an operation, why matrix multiplication is fast and elementwise operations are not, and
+    how kernel fusion and <code>torch.compile</code> close the gap.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A GPU is advertised by its peak FLOP/s, yet a model rarely gets close. One layer runs at near peak, the
+  next at a fraction of a percent; adding a cheap-looking activation costs more time than it should; a timer
+  around a forward pass reports a number that is far too small. All of these come from two facts about the
+  hardware: work is queued and runs <em>asynchronously</em> from the Python that queued it, and most
+  operations are limited not by arithmetic but by how fast data moves to and from memory. This page builds a
+  working model of both, enough to predict which operations are slow before profiling them.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Think of the GPU as a very wide factory with a small loading dock. The factory floor (thousands of
+  arithmetic units) can do enormous amounts of work per second, but every item has to come in and leave
+  through the dock (memory bandwidth). A job that does a lot of work on each item that comes in, like a
+  matrix multiplication, keeps the floor busy. A job that does one tiny thing to each item, like adding a
+  constant, spends almost all its time waiting at the dock.
+</p>
+
+<p>
+  Meanwhile the factory takes orders from one clerk, the Python thread. The clerk writes each order (a
+  <em>kernel launch</em>) and goes straight back to writing the next one without waiting for the first to
+  finish. If each order is big, the floor is always busy and the clerk runs far ahead. If each order is tiny,
+  the floor finishes it before the clerk has written the next one, and the expensive factory sits idle
+  waiting on paperwork.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 330" role="img" aria-labelledby="gpu-async-title gpu-async-desc">
+    <title id="gpu-async-title">CPU launches and GPU kernels on one stream, for short and long kernels</title>
+    <desc id="gpu-async-desc">Two timelines with a launch cost of {{ short.launch_us }} microseconds per kernel. Top: ten kernels of 2 microseconds each. The CPU finishes launching at {{ short.cpu_done }} microseconds and the GPU finishes at {{ short.total }}, busy only {{ f(short.utilization * 100, 0) }} percent of the time, with a gap after every kernel. Bottom: ten kernels of 50 microseconds each. The CPU finishes launching at {{ long.cpu_done }} microseconds while the GPU runs back to back until {{ long.total }}, busy {{ f(long.utilization * 100, 0) }} percent of the time.</desc>
+    {% for panel, label, y0 in [(short, "10 kernels × 2 µs: launch-bound", 30), (long, "10 kernels × 50 µs: GPU-bound", 185)] %}
+    {% set scale = 560 / panel.total %}
+    <text x="20" y="{{ y0 }}" font-size="12" class="ml-label">{{ label }}</text>
+    <text x="20" y="{{ y0 + 32 }}" font-size="11" class="d-muted ml-label">CPU</text>
+    <text x="20" y="{{ y0 + 77 }}" font-size="11" class="d-muted ml-label">GPU</text>
+    <path d="M110 {{ y0 + 50 }} H675 M110 {{ y0 + 95 }} H675" class="d-line"></path>
+    {% for row in panel.rows %}
+    <rect x="{{ f(110 + (row.issued - panel.launch_us) * scale) }}" y="{{ y0 + 18 }}" width="{{ f(panel.launch_us * scale - 1) }}" height="22" class="d-box ml-op"></rect>
+    <rect x="{{ f(110 + row.start * scale) }}" y="{{ y0 + 63 }}" width="{{ f([(row.end - row.start) * scale - 1, 1]|max) }}" height="22" class="d-box ml-tensor"></rect>
+    {% endfor %}
+    <path d="M{{ f(110 + panel.cpu_done * scale) }} {{ y0 + 14 }} V{{ y0 + 100 }}" class="d-accent ml-dashed" stroke-width="1.5"></path>
+    <text x="{{ f(110 + panel.cpu_done * scale + 6) }}" y="{{ y0 + 10 if panel.cpu_done * scale > 400 else y0 + 33 }}" font-size="11" text-anchor="{{ 'end' if panel.cpu_done * scale > 400 else 'start' }}" class="ml-label">CPU done {{ panel.cpu_done }} µs</text>
+    <text x="675" y="{{ y0 + 114 }}" font-size="11" text-anchor="end" class="ml-label">GPU done {{ panel.total }} µs · busy {{ f(panel.utilization * 100, 0) }}%</text>
+    {% endfor %}
+  </svg>
+</div>
+<p class="ml-caption">
+  Amber blocks are the CPU's launch work (an assumed {{ short.launch_us }} µs per kernel), green blocks the
+  kernels themselves. With short kernels the GPU waits for each launch; with long ones the CPU races ahead,
+  and a timer read on the CPU at the dashed line would report {{ long.cpu_done }} µs for {{ long.total }} µs
+  of work.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="kernels">Kernels</h3>
+
+<p>
+  A <dfn>kernel</dfn> is one function the GPU runs over many threads at once. Calling <code>x + y</code> on
+  CUDA tensors launches one elementwise-add kernel; <code>a @ b</code> launches a matrix-multiplication
+  kernel picked from a vendor library; a fused attention call is one large kernel doing what would otherwise
+  take several. The launch describes a grid of <em>thread blocks</em>; the GPU spreads the blocks over its
+  streaming multiprocessors (SMs), each of which runs many threads in lockstep groups. A launch has a fixed
+  cost on the CPU side (Python, PyTorch's dispatcher, the driver) that does not shrink with the size of the
+  work, which is why a long chain of tiny operations is slow no matter how fast the GPU is.
+</p>
+
+<h3 id="streams">Streams and asynchronous execution</h3>
+
+<p>
+  A <dfn>stream</dfn> is a queue of GPU work. In PyTorch's words it is "a linear sequence of execution that
+  belongs to a specific device, independent from other streams": kernels on one stream run in the order
+  they were queued, and kernels on different streams may overlap. Each device has a default stream, and
+  unless code selects another one with <code>torch.cuda.stream(s)</code>, every operation goes there, so
+  ordinary PyTorch code is correctly ordered without thinking about streams at all.
+</p>
+
+<p>
+  Queuing is asynchronous: a CUDA operation returns to Python as soon as its kernel is enqueued, and the
+  result tensor is a promise that the data will be there by the time a later kernel on the same stream reads
+  it. The CPU only waits at a <dfn>synchronization point</dfn>, which is anything that needs a value on the
+  host:
+</p>
+
+<ul>
+  <li><code>tensor.item()</code>, <code>tensor.tolist()</code>, <code>print(tensor)</code> and copies to the CPU wait for the kernels that produce the value.</li>
+  <li><code>torch.cuda.synchronize()</code> waits "for all kernels in all streams on a CUDA device to complete"; <code>Stream.synchronize()</code> and <code>Event.synchronize()</code> wait for one stream or for the work an event captured.</li>
+  <li>Data-dependent shapes (<code>torch.nonzero</code>, boolean-mask indexing) need the result size on the CPU before they can allocate it.</li>
+</ul>
+
+<p>
+  Every unneeded synchronization point stalls the queue: the GPU drains, the CPU wakes, and the next launch
+  starts from an empty pipeline. Logging <code>loss.item()</code> every step is the classic example. Work
+  across streams is ordered with <dfn>events</dfn>: <code>event.record(s1)</code> marks a point in stream
+  <code>s1</code>, and <code>s2.wait_event(event)</code> makes all <em>future</em> work on <code>s2</code>
+  wait for it without blocking the CPU. <code>s2.wait_stream(s1)</code> is exactly those two calls. Host to
+  device copies can overlap compute only when the source is in pinned (page-locked) host memory and the copy
+  is called with <code>non_blocking=True</code>.
+</p>
+
+<h3 id="memory-hierarchy">The memory hierarchy</h3>
+
+<p>
+  Data lives at several levels, each larger and slower than the one before:
+</p>
+
+<ul>
+  <li><strong>Registers</strong>, private to each thread: the operands arithmetic reads directly.</li>
+  <li><strong>Shared memory and L1</strong>, on each SM and shared by a thread block: the scratchpad a matmul kernel stages tiles in.</li>
+  <li><strong>L2 cache</strong>, shared by all SMs.</li>
+  <li><strong>Device memory</strong> (HBM or GDDR): the gigabytes that hold parameters, activations and optimizer state. "GPU memory" in <code>nvidia-smi</code> and out-of-memory errors means this level.</li>
+  <li><strong>Host memory</strong>, reached over PCIe or a faster link, far slower again.</li>
+</ul>
+
+<p>
+  A kernel's inputs start in device memory and its outputs end there, so every kernel pays at least one
+  read of its inputs and one write of its outputs at device-memory bandwidth. What happens in between, in
+  registers and shared memory, is nearly free by comparison. PyTorch's caching allocator keeps freed device
+  memory reserved for reuse, which is why reserved memory stays high after tensors are deleted.
+</p>
+
+<h3 id="roofline">Arithmetic intensity and the roofline</h3>
+
+<p>
+  An operation does some number of floating-point operations and moves some number of bytes to and from
+  device memory. Its <dfn>arithmetic intensity</dfn> is the ratio. The time it needs is at least the larger
+  of the time to do the arithmetic at peak and the time to move the bytes at full bandwidth:
+</p>
+
+<p class="ml-formula">intensity I = FLOPs / bytes moved &nbsp;&nbsp;&nbsp; time ≥ max(FLOPs / peak, bytes / bandwidth) &nbsp;&nbsp;&nbsp; attainable FLOP/s = min(peak, I × bandwidth)</p>
+
+<p>
+  Plotting attainable FLOP/s against intensity on log axes gives the <dfn>roofline</dfn>: a slanted line
+  (bandwidth-limited) meeting a flat one (compute-limited) at the <dfn>ridge point</dfn>, I = peak /
+  bandwidth. Operations left of the ridge are <dfn>memory-bound</dfn> and speed up only by moving fewer bytes;
+  operations right of it are <dfn>compute-bound</dfn> and speed up only with faster or lower-precision
+  arithmetic. The numbers on this page use an example GPU with a peak of {{ f(gpu.peak_flops / 1e12, 0) }}
+  TFLOP/s and {{ f(gpu.bandwidth / 1e12, 0) }} TB/s of bandwidth, a ridge at
+  {{ f(gpu.peak_flops / gpu.bandwidth, 0) }} FLOP/byte. Real GPUs have ridges of the same order; check your
+  own card's datasheet for its figures, which differ by precision.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 320" role="img" aria-labelledby="gpu-roof-title gpu-roof-desc">
+    <title id="gpu-roof-title">The roofline for the example GPU with four operations placed on it</title>
+    <desc id="gpu-roof-desc">Log-log axes: arithmetic intensity from 1/16 to 1024 FLOP per byte, attainable throughput from 0.1 to 100 TFLOP/s. The memory roof rises with slope one until the ridge at {{ f(mm.ridge, 0) }} FLOP per byte, then the compute roof is flat at {{ f(gpu.peak_flops / 1e12, 0) }} TFLOP/s. ReLU sits at intensity {{ relu.intensity }} and {{ f(relu.attainable_flops / 1e12, 2) }} TFLOP/s, the fused three-op chain at {{ f(fuse.fused.intensity, 3) }} and {{ f(fuse.fused.attainable_flops / 1e12, 2) }}, the matrix-vector product at {{ f(mv.intensity, 2) }} and {{ f(mv.attainable_flops / 1e12, 2) }}, all on the memory roof. The 4096 matmul sits at {{ f(mm.intensity, 0) }} on the compute roof at {{ f(mm.attainable_flops / 1e12, 0) }}.</desc>
+    {% set lo = roofline_xy(1 / 16, gpu.bandwidth / 16) %}
+    {% set ridge = roofline_xy(mm.ridge, gpu.peak_flops) %}
+    {% set hi = roofline_xy(1024, gpu.peak_flops) %}
+    <path d="M60 260 H620 M60 260 V40" class="d-line"></path>
+    {% for e in [-4, -2, 0, 2, 4, 6, 8, 10] %}
+    <text x="{{ 60 + (e + 4) * 40 }}" y="276" font-size="10" text-anchor="middle" class="d-muted ml-label">{{ "1/" ~ (2 ** -e) if e < 0 else 2 ** e }}</text>
+    {% endfor %}
+    {% for t, y in [("0.1", 260), ("1", 190), ("10", 120), ("100", 50)] %}
+    <text x="54" y="{{ y + 4 }}" font-size="10" text-anchor="end" class="d-muted ml-label">{{ t }}</text>
+    <path d="M60 {{ y }} H620" class="d-line ml-dashed" opacity="0.3"></path>
+    {% endfor %}
+    <text x="340" y="300" font-size="11" text-anchor="middle" class="ml-label">arithmetic intensity (FLOP/byte, log₂)</text>
+    <text x="16" y="150" font-size="11" text-anchor="middle" transform="rotate(-90 16 150)" class="ml-label">TFLOP/s</text>
+    <path d="M{{ f(lo[0]) }} {{ f(lo[1]) }} L{{ f(ridge[0]) }} {{ f(ridge[1]) }} L{{ f(hi[0]) }} {{ f(hi[1]) }}" class="d-accent" fill="none" stroke-width="2.5"></path>
+    <text x="{{ f(ridge[0]) }}" y="{{ f(ridge[1] - 8) }}" font-size="11" text-anchor="middle" class="ml-label">ridge {{ f(mm.ridge, 0) }}</text>
+    <text x="250" y="141" font-size="11" text-anchor="middle" transform="rotate(-28 250 141)" class="d-muted ml-label">memory-bound</text>
+    <text x="540" y="42" font-size="11" text-anchor="middle" class="d-muted ml-label">compute-bound</text>
+    {% for name, op, dx, dy, anchor in [("ReLU", relu, 8, 18, "start"), ("fused chain", fuse.fused, -8, -10, "end"), ("matrix-vector", mv, 4, 22, "start"), ("4096 matmul", mm, 8, 20, "start")] %}
+    {% set p = roofline_xy(op.intensity, op.attainable_flops) %}
+    <circle cx="{{ f(p[0]) }}" cy="{{ f(p[1]) }}" r="5" class="d-box ml-tensor"></circle>
+    <text x="{{ f(p[0] + dx) }}" y="{{ f(p[1] + dy) }}" font-size="11" text-anchor="{{ anchor }}" class="ml-label">{{ name }}</text>
+    {% endfor %}
+  </svg>
+</div>
+<p class="ml-caption">
+  Everything left of the ridge runs at intensity × bandwidth, however fast the arithmetic units are. The
+  matmul is the only one of the four that can use the peak.
+</p>
+
+<h3 id="why-matmul-is-fast">Why matmul is fast and elementwise ops are memory-bound</h3>
+
+<p>
+  An elementwise op over <var>N</var> fp32 values reads 4<var>N</var> bytes, writes 4<var>N</var>, and does
+  about <var>N</var> FLOPs: intensity 1/8, far left of any ridge, whatever <var>N</var> is. A matrix
+  multiplication of two <var>n</var> × <var>n</var> matrices does 2<var>n</var>³ FLOPs on only
+  3<var>n</var>² values, so its intensity grows with <var>n</var>: each input value is used <var>n</var>
+  times. The kernel turns that reuse into fewer bytes by <dfn>tiling</dfn>: a thread block loads a
+  <var>T</var> × <var>T</var> tile of each input into shared memory once and uses every loaded value
+  <var>T</var> times before loading the next tile. Without tiling every multiply-add would read both operands
+  from device memory; with tiles of side <var>T</var>, device-memory traffic drops by a factor of
+  <var>T</var>.
+</p>
+
+<p class="ml-formula">device-memory reads ≈ 2n³ / T values &nbsp;&nbsp;&nbsp; intensity ≈ 2n³ / (2n³ / T × bytes per value) = T / bytes per value</p>
+
+<p>
+  Dedicated matrix units (tensor cores) raise the compute roof further, for lower-precision inputs, which
+  pushes the ridge to the right and makes the gap between matmuls and everything else wider still. That is
+  the subject of mixed precision, the next page.
+</p>
+
+<h3 id="kernel-fusion">Kernel fusion</h3>
+
+<p>
+  If a memory-bound op's time is its bytes, the way to speed up a chain of them is to stop writing
+  intermediate results to device memory. <dfn>Kernel fusion</dfn> merges several ops into one kernel that
+  reads the inputs once, keeps intermediates in registers, and writes only the final output. A chain of
+  <var>k</var> elementwise ops over the same tensor goes from 2<var>k</var> tensor-sized transfers to 2, and
+  from <var>k</var> launches to one. The same idea at a larger scale is why fused attention kernels exist:
+  they never write the full attention-score matrix to device memory. Fusion cannot help a compute-bound op;
+  the matmul already reads each byte only a few times.
+</p>
+
+<h3 id="torch-compile">torch.compile in one paragraph</h3>
+
+<p>
+  <code>torch.compile(model)</code> captures the Python code of a model into a graph (TorchDynamo), hands the
+  graph to a backend ("inductor" is the default), and the backend generates fused kernels for the
+  elementwise and reduction parts while calling vendor libraries for matmuls and convolutions. The first
+  call is slow (compilation); later calls with the same shapes reuse the compiled code, and new shapes or
+  Python-level changes the graph guards on trigger a recompile. <code>mode="reduce-overhead"</code> also
+  records the kernels into CUDA graphs, replaying a whole sequence with one launch, which attacks the
+  launch-bound case in the first diagram; <code>mode="max-autotune"</code> tries several matmul and
+  convolution kernels and keeps the fastest. <code>fullgraph=True</code> makes any part the compiler cannot
+  capture an error instead of a silent fall-back to eager Python.
+</p>
+
+<h3 id="pytorch-api">The PyTorch API</h3>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead>
+      <tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>torch.cuda.Stream</code></td>
+        <td><code>device=None, priority=0</code></td>
+        <td>A queue of kernels on one device. Lower <code>priority</code> numbers mean higher priority. Usable as a context manager.</td>
+        <td><a href="{{ src('torch/cuda/streams.py', 17, 133) }}">streams.py 17-133</a></td>
+      </tr>
+      <tr>
+        <td><code>Stream.wait_stream</code>, <code>wait_event</code></td>
+        <td><code>(stream)</code>, <code>(event)</code></td>
+        <td>Make future work on this stream wait; returns immediately. <code>wait_stream</code> records an event on the other stream and waits on it.</td>
+        <td><a href="{{ src('torch/cuda/streams.py', 48, 77) }}">streams.py 48-77</a></td>
+      </tr>
+      <tr>
+        <td><code>torch.cuda.Event</code></td>
+        <td><code>enable_timing=False, blocking=False, interprocess=False, external=False</code></td>
+        <td>A marker recorded into a stream: used to order streams and to time GPU work.</td>
+        <td><a href="{{ src('torch/cuda/streams.py', 159, 271) }}">streams.py 159-271</a></td>
+      </tr>
+      <tr>
+        <td><code>Event.elapsed_time</code></td>
+        <td><code>(end_event) → float</code>, milliseconds</td>
+        <td>GPU time between two recorded events; both need <code>enable_timing=True</code>.</td>
+        <td><a href="{{ src('torch/cuda/streams.py', 234, 243) }}">streams.py 234-243</a></td>
+      </tr>
+      <tr>
+        <td><code>torch.cuda.synchronize</code></td>
+        <td><code>device=None</code></td>
+        <td>Block the CPU until every kernel in every stream on the device has finished.</td>
+        <td><a href="{{ src('torch/cuda/__init__.py', 1271, 1281) }}">__init__.py 1271-1281</a></td>
+      </tr>
+      <tr>
+        <td><code>torch.cuda.current_stream</code>, <code>default_stream</code></td>
+        <td><code>device=None → Stream</code></td>
+        <td>The stream new kernels go to now, and the device's default one.</td>
+        <td><a href="{{ src('torch/cuda/__init__.py', 1297, 1330) }}">__init__.py 1297-1330</a></td>
+      </tr>
+      <tr>
+        <td><code>torch.cuda.stream</code></td>
+        <td><code>(stream) → StreamContext</code></td>
+        <td>Context manager: kernels queued inside go to <code>stream</code>; a no-op for <code>None</code>.</td>
+        <td><a href="{{ src('torch/cuda/__init__.py', 818, 886) }}">__init__.py 818-886</a></td>
+      </tr>
+      <tr>
+        <td><code>torch.cuda.get_device_properties</code></td>
+        <td><code>device=None</code></td>
+        <td>Name, memory size and SM count of a device.</td>
+        <td><a href="{{ src('torch/cuda/__init__.py', 787, 803) }}">__init__.py 787-803</a></td>
+      </tr>
+      <tr>
+        <td><code>torch.compile</code></td>
+        <td><code>fullgraph=False, dynamic=None, backend=None, mode=None</code>; modes <code>"default"</code>, <code>"reduce-overhead"</code>, <code>"max-autotune"</code>, <code>"max-autotune-no-cudagraphs"</code></td>
+        <td>Capture the model with TorchDynamo and compile it with a backend, "inductor" by default.</td>
+        <td><a href="{{ src('torch/__init__.py', 3045, 3288) }}">torch/__init__.py 3045-3288</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p><strong>Three operations on the roofline.</strong> fp32 (4 bytes per value), the example GPU at {{ f(gpu.peak_flops / 1e12, 0) }} TFLOP/s and {{ f(gpu.bandwidth / 1e12, 0) }} TB/s:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Op</th><th>FLOPs</th><th>Bytes</th><th>FLOP/byte</th><th>Compute µs</th><th>Memory µs</th><th>Bound</th></tr></thead>
+      <tbody>
+        {% for op in ops %}
+        <tr><td>{{ op.name }}</td><td>{{ "{:,}".format(op.flops) }}</td><td>{{ "{:,}".format(op.bytes) }}</td><td>{{ f(op.intensity, 3) }}</td><td>{{ us(op.compute_seconds, 2) }}</td><td>{{ us(op.memory_seconds, 2) }}</td><td>{{ op.bound }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The matmul: 2 × 4096³ = {{ "{:,}".format(mm.flops) }} FLOPs on 3 × 4096² × 4 = {{ "{:,}".format(mm.bytes) }}
+    bytes, intensity {{ f(mm.intensity, 1) }}, well right of the ridge at {{ f(mm.ridge, 0) }}. It needs
+    {{ us(mm.compute_seconds, 0) }} µs of arithmetic and only {{ us(mm.memory_seconds, 0) }} µs of traffic.
+    The ReLU does {{ "{:,}".format(mm.flops // relu.flops) }} times fewer FLOPs and still takes
+    {{ us(relu.seconds, 0) }} µs, {{ f(relu.seconds / mm.seconds * 100, 1) }}% of the matmul's time, running at
+    {{ f(relu.attainable_flops / 1e12, 2) }} TFLOP/s against the matmul's {{ f(mm.attainable_flops / 1e12, 0) }}.
+    The matrix-vector product has the matmul's weight matrix but one row of input, so each weight is used
+    once: intensity {{ f(mv.intensity, 2) }}, memory-bound. That is the shape of every layer when a language
+    model generates one token at a time.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <p><strong>Fusing a chain of three elementwise ops</strong> (say multiply, add, then an activation) over the same 4096 × 4096 tensor, counting 1 FLOP per op per element:</p>
+  <ul>
+    <li>Unfused: 3 kernels, each reading and writing the tensor: 3 × 2 × {{ "{:,}".format(fuse.numel) }} × 4 = {{ "{:,}".format(fuse.unfused.bytes) }} bytes, {{ us(fuse.unfused.seconds) }} µs.</li>
+    <li>Fused: 1 kernel, one read and one write: {{ "{:,}".format(fuse.fused.bytes) }} bytes, {{ us(fuse.fused.seconds) }} µs.</li>
+    <li>Speedup {{ f(fuse.speedup, 1) }}×, and intensity rises from {{ f(fuse.unfused.intensity, 3) }} to {{ f(fuse.fused.intensity, 3) }} FLOP/byte: still memory-bound, but doing three times the work per byte moved.</li>
+  </ul>
+</div>
+
+<div class="ml-worked">
+  <p><strong>Tiling a 4096 × 4096 matmul.</strong> Device-memory reads of A and B under the tiling model (writes of C left out), fp32:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Tile side T</th><th>Bytes read</th><th>FLOP/byte</th><th>vs ridge {{ f(mm.ridge, 0) }}</th></tr></thead>
+      <tbody>
+        {% for t in tiles %}
+        <tr><td>{{ t.tile }}</td><td>{{ gb(t.bytes, 1) }} GB</td><td>{{ f(t.intensity, 2) }}</td><td>{{ "compute-bound" if t.intensity >= mm.ridge else "memory-bound" }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    With no reuse (T = 1) the matmul would read {{ gb(tiles[0].bytes, 0) }} GB and be as memory-bound as a
+    ReLU. Real kernels stage tiles in shared memory and registers at more than one level, which is how they
+    reach the compute roof.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <p><strong>Timing without synchronizing.</strong> The second timeline in the first diagram: ten 50 µs kernels, {{ long.launch_us }} µs to launch each.</p>
+  <ul>
+    <li>The CPU finishes queuing at {{ long.cpu_done }} µs. A <code>time.perf_counter()</code> pair around the loop reports about {{ long.cpu_done }} µs.</li>
+    <li>The GPU finishes at {{ long.total }} µs. Calling <code>torch.cuda.synchronize()</code> before reading the second timestamp, or timing with CUDA events, reports this.</li>
+    <li>The unsynchronized timer is off by {{ f(long.total / long.cpu_done, 1) }}×. With the 2 µs kernels the gap closes ({{ short.cpu_done }} µs vs {{ short.total }} µs) but the GPU is busy only {{ f(short.utilization * 100, 0) }}% of the time: that workload needs fewer, larger kernels (fusion or CUDA graphs), not a faster GPU.</li>
+  </ul>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+
+x = torch.randn(4096, 4096, device="cuda")
+w = torch.randn(4096, 4096, device="cuda")
+
+# Timing GPU work: warm up, then measure with events (or synchronize around a CPU timer).
+for _ in range(3):
+    y = x @ w
+start = torch.cuda.Event(enable_timing=True)
+end = torch.cuda.Event(enable_timing=True)
+start.record()
+for _ in range(10):
+    y = x @ w
+end.record()
+end.synchronize()                       # wait until the work the event captured is done
+ms = start.elapsed_time(end) / 10
+tflops = 2 * 4096**3 / (ms / 1e3) / 1e12
+
+# Overlapping a host-to-device copy with compute on a side stream.
+batch = torch.randn(256, 4096).pin_memory()
+copy_stream = torch.cuda.Stream()
+with torch.cuda.stream(copy_stream):
+    next_batch = batch.to("cuda", non_blocking=True)
+y = x @ w                               # runs on the default stream meanwhile
+torch.cuda.current_stream().wait_stream(copy_stream)
+next_batch.record_stream(torch.cuda.current_stream())
+
+# Fusing elementwise chains.
+def gelu_bias(x, b):
+    return torch.nn.functional.gelu(x * 0.5 + b)
+
+fast = torch.compile(gelu_bias)         # first call compiles; later calls run one fused kernel</code></pre>
+
+<p>
+  <code>record_stream</code> tells PyTorch's caching allocator that <code>next_batch</code>, allocated on
+  <code>copy_stream</code>, is used on another stream, so its memory is not reused before that stream is done
+  with it. The warmup loop matters: the first calls pay for library initialization, kernel selection and,
+  under <code>torch.compile</code>, compilation.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Batch size.</strong> Bigger batches raise the intensity of every weight-reading op (each weight is reused per row), moving matmuls from memory-bound to compute-bound, at the cost of memory and, in serving, latency.</li>
+  <li><strong>Fusion versus flexibility.</strong> Fused kernels (hand-written or compiled) remove traffic and launches, but compilation takes time, recompiles on new shapes, and is harder to debug than eager code.</li>
+  <li><strong>CUDA graphs.</strong> Replaying a recorded sequence removes launch overhead but needs static shapes and memory addresses, and holds that memory for as long as the graph lives.</li>
+  <li><strong>Extra streams.</strong> Overlapping copies or communication with compute hides their time, but adds ordering bugs (reading a tensor before its producer finished) that the default stream never has.</li>
+  <li><strong>Synchronization.</strong> Each <code>.item()</code> or CPU copy costs a pipeline drain; checking values every step is convenient for debugging and slow in production. Log a running tensor and read it every few hundred steps.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Doubling a GPU's peak FLOP/s without changing its bandwidth speeds up which of the three operations in the worked example?</summary>
+  <p>Only the 4096 matmul, which is compute-bound. The ReLU and the matrix-vector product are memory-bound and take the same time, and the ridge point moves right from {{ f(mm.ridge, 0) }} to {{ f(mm.ridge * 2, 0) }}, so even more operations become memory-bound.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does a training loop that calls <code>loss.item()</code> every step run slower than one that does not, even though <code>.item()</code> is tiny?</summary>
+  <p>It is a synchronization point. The CPU stops queuing until the GPU has finished every kernel up to the loss, so the queue drains and the next step's first kernels start on an idle GPU instead of having been queued in advance.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Can kernel fusion make a large matmul faster?</summary>
+  <p>Not the matmul itself: it is compute-bound, and its time is its FLOPs. Fusing the bias, activation or scaling that follows it into the matmul's epilogue does help, because it removes those memory-bound ops' separate reads and writes of the output.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Williams, Waterman and Patterson. <em>Roofline: An Insightful Visual Performance Model for Multicore Architectures.</em> Communications of the ACM 52(4), 2009.</li>
+  <li>Dao, Fu, Ermon, Rudra and Ré. <em>FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness.</em> NeurIPS, 2022. <a href="https://arxiv.org/abs/2205.14135">arXiv:2205.14135</a>.</li>
+  <li>Ansel et al. <em>PyTorch 2: Faster Machine Learning Through Dynamic Python Bytecode Transformation and Graph Compilation.</em> ASPLOS, 2024 (TorchDynamo and TorchInductor).</li>
+  <li>NVIDIA. <em>CUDA C++ Programming Guide</em>: the programming model, memory hierarchy and streams chapters.</li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/cuda/streams.py') }}"><code>torch/cuda/streams.py</code></a>, <a href="{{ src('torch/cuda/__init__.py', 1271, 1281) }}"><code>torch.cuda.synchronize</code></a>, <a href="{{ src('torch/__init__.py', 3045, 3288) }}"><code>torch.compile</code></a>.</li>
+</ul>
