@@ -1664,3 +1664,65 @@ def test_number_math_helpers_match_the_page():
     assert "<td>ZY</td>" in body and "<td class=\"num\">1994</td>" in body
     assert "<code>\"AB\"</code>" in body and "1 3 0 and 1 0 0" in body
     assert "<td class=\"num\">-42</td>" in body and "<td class=\"num\">2147483647</td>" in body
+
+
+def test_bit_manipulation_helpers_match_the_page():
+    single = leetcode_docs.xor_fold_trace([4, 1, 2, 1, 2])
+    assert [r["acc"] for r in single["rows"]] == [4, 5, 7, 6, 4] and single["value"] == 4
+
+    pop = leetcode_docs.popcount_trace(44)
+    assert [(r["n"], r["lowest"], r["next"]) for r in pop["rows"]] == [(44, 4, 40), (40, 8, 32), (32, 32, 0)]
+    for n in range(0, 5000):
+        assert leetcode_docs.popcount_trace(n)["count"] == bin(n).count("1")
+
+    cb = leetcode_docs.counting_bits_table(8)
+    assert cb["counts"] == [0, 1, 1, 2, 1, 2, 2, 3, 1]
+    assert leetcode_docs.counting_bits_table(1000)["counts"] == [bin(i).count("1") for i in range(1001)]
+
+    add = leetcode_docs.add_without_plus_trace(5, 3)
+    assert [(r["a"], r["b"], r["sum"], r["carry"]) for r in add["rows"]] == [(5, 3, 6, 2), (6, 2, 4, 4), (4, 4, 0, 8), (0, 8, 8, 0)]
+    assert add["value"] == 8
+    neg = leetcode_docs.add_without_plus_trace(-2, 3)
+    assert neg["value"] == 1 and neg["rows"][0]["a"] == 2 ** 32 - 2 and len(neg["rows"]) == 31
+    for a in range(-40, 41, 3):
+        for b in range(-1000, 1001, 37):
+            assert leetcode_docs.add_without_plus_trace(a, b)["value"] == a + b
+
+    for n in [0, 1, 0b1011, 43261596, 2 ** 32 - 1, 2 ** 31]:
+        assert leetcode_docs.reverse_bits_of(n) == int(format(n, "032b")[::-1], 2)
+
+    rng = leetcode_docs.range_and_trace(9, 12)
+    assert [(r["left"], r["right"], r["shift"]) for r in rng["rows"]] == [(9, 12, 0), (4, 6, 1), (2, 3, 2), (1, 1, 3)]
+    assert rng["value"] == 8
+    for left in range(0, 70):
+        for right in range(left, 70):
+            expected = left
+            for v in range(left, right + 1):
+                expected &= v
+            assert leetcode_docs.range_and_trace(left, right)["value"] == expected
+
+    mae = leetcode_docs.minimum_array_end_of(3, 4)
+    assert mae["value"] == 6 and mae["filled"] == [{"position": 0, "bit": 0}, {"position": 1, "bit": 1}]
+    for x in range(1, 40):
+        supersets = [v for v in range(x, 4000) if v & x == x]
+        for n in range(1, 30):
+            assert leetcode_docs.minimum_array_end_of(n, x)["value"] == supersets[n - 1]
+
+    assert leetcode_docs.add_binary_of("1011", "111") == "10010"
+    for a in range(0, 40):
+        for b in range(0, 40):
+            assert leetcode_docs.add_binary_of(bin(a)[2:], bin(b)[2:]) == bin(a + b)[2:]
+    assert leetcode_docs.missing_number_xor([3, 0, 1]) == 2
+    for n in range(1, 30):
+        for gone in range(n + 1):
+            assert leetcode_docs.missing_number_xor([v for v in range(n + 1) if v != gone][::-1]) == gone
+    assert leetcode_docs.binary_of(44, 6) == "101100" and leetcode_docs.binary_of(-1, 4) == "1111"
+
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/bit-manipulation").get_data(as_text=True))
+    assert "the accumulator ends at <strong>4</strong>" in body
+    assert "<td class=\"num\">44</td><td class=\"num\">101100</td><td class=\"num\">4</td><td class=\"num\">40</td>" in body
+    assert "<td class=\"num\">7</td><td class=\"num\">0111</td><td class=\"num\">3</td><td class=\"num\">1</td><td class=\"num\">3</td>" in body
+    assert "<td class=\"num\">3</td><td class=\"num\">4</td><td class=\"num\">4</td><td class=\"num\">0</td><td class=\"num\">8</td>" in body
+    assert "reads back as <strong>1</strong>" in body
+    assert "= <strong>8</strong>" in body and "<strong>6</strong>, so the array is 4, 5, 6" in body
+    assert "gives 2, and Add Binary on \"1011\" and \"111\" gives \"10010\"" in body

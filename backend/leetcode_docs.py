@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy", "kadanes-algorithm", "interval-merging", "sweep-line", "matrix-manipulation", "number-math"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy", "kadanes-algorithm", "interval-merging", "sweep-line", "matrix-manipulation", "number-math", "bit-manipulation"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -6932,6 +6932,103 @@ def plus_one_of(digits):
     return [1] + result
 
 
+MASK_32 = 0xFFFFFFFF
+
+
+def binary_of(n, width):
+    """n's low `width` bits as a 0/1 string, most significant first."""
+    return format(n & ((1 << width) - 1), "0%db" % width)
+
+
+def xor_fold_trace(nums):
+    """Single Number: XOR everything together; x ^ x = 0 and x ^ 0 = x, so every pair cancels and the lone value is left."""
+    rows, acc = [], 0
+    for value in nums:
+        acc ^= value
+        rows.append({"value": value, "acc": acc})
+    return {"rows": rows, "value": acc}
+
+
+def popcount_trace(n):
+    """Number of 1 Bits: n & (n - 1) clears the lowest set bit, so the loop runs once per set bit."""
+    rows = []
+    while n:
+        rows.append({"n": n, "lowest": n & -n, "next": n & (n - 1)})
+        n &= n - 1
+    return {"rows": rows, "count": len(rows)}
+
+
+def counting_bits_table(n):
+    """Counting Bits: bits(i) = bits(i >> 1) + (i & 1), since shifting right drops exactly the lowest bit."""
+    counts, rows = [0] * (n + 1), []
+    for i in range(n + 1):
+        if i:
+            counts[i] = counts[i >> 1] + (i & 1)
+        rows.append({"i": i, "half": i >> 1, "low": i & 1, "count": counts[i]})
+    return {"rows": rows, "counts": counts}
+
+
+def add_without_plus_trace(a, b):
+    """Sum of Two Integers: a ^ b is the sum without carries and (a & b) << 1 is the carries; repeat until no carry is left. Python ints are unbounded, so every step is masked to 32 bits and the result read back as signed."""
+    a, b, rows = a & MASK_32, b & MASK_32, []
+    while b:
+        total, carry = a ^ b, ((a & b) << 1) & MASK_32
+        rows.append({"a": a, "b": b, "sum": total, "carry": carry})
+        a, b = total, carry
+    return {"rows": rows, "value": a if a <= INT_MAX else a - (1 << 32)}
+
+
+def reverse_bits_of(n):
+    """Reverse Bits: shift the low bit out of n and into the result, 32 times."""
+    result = 0
+    for _ in range(32):
+        result = (result << 1) | (n & 1)
+        n >>= 1
+    return result
+
+
+def range_and_trace(left, right):
+    """Bitwise AND of Numbers Range: any bit below the highest bit where left and right differ is 0 somewhere in the range, so the answer is their common prefix."""
+    rows, shift = [], 0
+    while left != right:
+        rows.append({"left": left, "right": right, "shift": shift})
+        left, right, shift = left >> 1, right >> 1, shift + 1
+    rows.append({"left": left, "right": right, "shift": shift})
+    return {"rows": rows, "value": left << shift}
+
+
+def minimum_array_end_of(n, x):
+    """Minimum Array End: every element must keep x's set bits, so the k-th smallest valid value writes k (here n - 1) into the zero bits of x, lowest first."""
+    result, position, k, filled = x, 0, n - 1, []
+    while k:
+        if not x >> position & 1:
+            if k & 1:
+                result |= 1 << position
+            filled.append({"position": position, "bit": k & 1})
+            k >>= 1
+        position += 1
+    return {"value": result, "filled": filled}
+
+
+def add_binary_of(a, b):
+    """Add Binary: column addition from the right with a carry, in base two."""
+    i, j, carry, digits = len(a) - 1, len(b) - 1, 0, []
+    while i >= 0 or j >= 0 or carry:
+        total = carry + (int(a[i]) if i >= 0 else 0) + (int(b[j]) if j >= 0 else 0)
+        digits.append(str(total & 1))
+        carry = total >> 1
+        i, j = i - 1, j - 1
+    return "".join(reversed(digits)) or "0"
+
+
+def missing_number_xor(nums):
+    """Missing Number: XOR every index 0..n with every value; each present number cancels with its index, leaving the missing one."""
+    acc = len(nums)
+    for index, value in enumerate(nums):
+        acc ^= index ^ value
+    return acc
+
+
 def problem_url(slug):
     return f"https://leetcode.com/problems/{slug}/"
 
@@ -7243,6 +7340,17 @@ def render(slug, render_template):
         "atoi_trace": atoi_trace,
         "roman_trace": roman_trace,
         "plus_one_of": plus_one_of,
+        "MASK_32": MASK_32,
+        "binary_of": binary_of,
+        "xor_fold_trace": xor_fold_trace,
+        "popcount_trace": popcount_trace,
+        "counting_bits_table": counting_bits_table,
+        "add_without_plus_trace": add_without_plus_trace,
+        "reverse_bits_of": reverse_bits_of,
+        "range_and_trace": range_and_trace,
+        "minimum_array_end_of": minimum_array_end_of,
+        "add_binary_of": add_binary_of,
+        "missing_number_xor": missing_number_xor,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,

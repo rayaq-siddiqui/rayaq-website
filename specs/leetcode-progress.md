@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-11 (build run). 52 of 58 pages are ready. **The next run is a build run** continuing at `bit-manipulation`.
+**Last updated:** 2026-10-11 (build run). 53 of 58 pages are ready. **The next run is a build run** continuing at `interview-approach`.
 
 ## The Routine
 
@@ -39,10 +39,10 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 
 | List | Problems with a ready home | Size |
 |---|---|---|
-| Blind 75 | 70 | 75 |
-| Grind 169 | 163 | 169 |
-| NeetCode 150 | 144 | 150 |
-| NeetCode 250 | 241 | 250 |
+| Blind 75 | 75 | 75 |
+| Grind 169 | 169 | 169 |
+| NeetCode 150 | 150 | 150 |
+| NeetCode 250 | 250 | 250 |
 
 ## Queue
 
@@ -101,8 +101,8 @@ build once research is done.
 50. `sweep-line` ✓
 51. `matrix-manipulation` ✓
 52. `number-math` ✓
-53. `bit-manipulation` ← next
-54. `interview-approach`
+53. `bit-manipulation` ✓
+54. `interview-approach` ← next
 55. `segment-trees`
 56. `fenwick-trees`
 57. `string-matching`
@@ -299,6 +299,9 @@ NeetCode 250 234/250. Mobile check passed on `/`, `/leetcode` and every ready pa
 Built `number-math` with tested helpers in `leetcode_docs.py` (reverse with the 32-bit check
 before the multiply, half-reversal palindrome, square-and-multiply, the multiply-strings slot
 array, bijective base 26, Euclid, atoi, Roman numerals, Plus One), each cross-checked against
-brute force, two inline SVGs and the full §6 format. Coverage: Blind 75 70/75, Grind 169
-163/169, NeetCode 150 144/150, NeetCode 250 241/250. Mobile check passed on `/`, `/leetcode`
-and every ready page. Next: `bit-manipulation`.
+brute force, two inline SVGs and the full §6 format. Then built `bit-manipulation` the same
+way (XOR folds, `n & (n - 1)` popcount, counting bits, the masked XOR/AND adder, reverse bits,
+range AND, minimum array end, add binary, missing number). Every problem on all four lists now
+has a ready home: Blind 75 75/75, Grind 169 169/169, NeetCode 150 150/150, NeetCode 250
+250/250. Mobile check passed on `/`, `/leetcode` and every ready page. Next:
+`interview-approach`.
