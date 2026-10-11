@@ -1,0 +1,446 @@
+{% set dx = diagnostic_test() %}
+{% set beliefs = repeated_tests() %}
+{% set coin = coin_estimates() %}
+{% set coin_big = coin_estimates(70, 100) %}
+{% set laplace = coin_estimates(0, 3, (2, 2)) %}
+{% set curves = coin_curves() %}
+{% set nb = naive_bayes_posterior() %}
+{% set nb_raw = naive_bayes_posterior([1, 1, 0, 0], alpha=0.0) %}
+{% set nb_short = naive_bayes_posterior([1, 1, 0, 0]) %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(x)|replace("-", "−") }}{%- endmacro %}
+{% macro n0(x) -%}{{ "{:,}".format(x|round|int) }}{%- endmacro %}
+{% macro pct(x, n=1) -%}{{ ("%." ~ n ~ "f")|format(100 * x) }}%{%- endmacro %}
+{% macro cx(t) -%}{{ 60 + t * 560 }}{%- endmacro %}
+{% macro cy(v) -%}{{ 200 - v * 150 }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Bayes' rule and likelihood</h1>
+  <p class="tagline">
+    How to update a belief with evidence, and how fitting a model is the same move in reverse: Bayes'
+    rule with a diagnostic test worked through, likelihood versus probability, maximum likelihood, MAP
+    estimation with priors as regularizers, and naive Bayes as scikit-learn implements it.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A test for a rare disease is 90% sensitive and gives a false positive 9% of the time. You test positive.
+  How likely is it that you have the disease? The tempting answer is about 90%. The right answer for this test is under 10%. The data (a positive result) has to be combined with what was
+  believed before it arrived (the disease is rare), and intuition is bad at that combination.
+</p>
+<p>
+  Machine learning faces the same question everywhere. A model has parameters θ and sees data <var>x</var>.
+  The model says how probable the data is for each θ; what we want is the reverse, which θ is plausible given
+  the data. Bayes' rule is the exact way to turn one into the other, and its two simplified uses, maximum
+  likelihood and MAP estimation, are how almost every model in this reference is trained.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Think in counts rather than percentages. Out of {{ n0(diagnostic_population) }} people, 1% ({{ n0(dx.sick) }})
+  are sick, and the test catches {{ n0(dx.true_positives) }} of them. Of the {{ n0(dx.healthy) }} healthy people,
+  9% ({{ n0(dx.false_positives) }}) also test positive. So {{ n0(dx.true_positives + dx.false_positives) }}
+  people test positive, and only {{ n0(dx.true_positives) }} of them are sick: {{ pct(dx.posterior) }}. The
+  false positives win because they come from a group 99 times larger. A positive result multiplies the odds
+  of being sick by 10 (0.9 / 0.09), but from a starting point of 1 in 99.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 260" role="img" aria-labelledby="bayes-tree-title bayes-tree-desc">
+    <title id="bayes-tree-title">The diagnostic test as natural frequencies</title>
+    <desc id="bayes-tree-desc">{{ n0(diagnostic_population) }} people split into {{ n0(dx.sick) }} sick and {{ n0(dx.healthy) }} healthy. The sick split into {{ n0(dx.true_positives) }} positive and {{ n0(dx.false_negatives) }} negative; the healthy into {{ n0(dx.false_positives) }} positive and {{ n0(dx.true_negatives) }} negative. Of the {{ n0(dx.true_positives + dx.false_positives) }} positives, {{ n0(dx.true_positives) }} are sick, so P(sick | positive) = {{ f(dx.posterior, 3) }}.</desc>
+    <g font-size="12" text-anchor="middle">
+      <rect x="290" y="10" width="120" height="40" rx="4" class="d-box"></rect>
+      <text x="350" y="35">{{ n0(diagnostic_population) }} people</text>
+      <rect x="110" y="90" width="140" height="40" rx="4" class="ml-heat"></rect>
+      <text x="180" y="115">{{ n0(dx.sick) }} sick (1%)</text>
+      <rect x="450" y="90" width="140" height="40" rx="4" class="d-box"></rect>
+      <text x="520" y="115">{{ n0(dx.healthy) }} healthy</text>
+      <rect x="30" y="170" width="120" height="40" rx="4" class="ml-weight"></rect>
+      <text x="90" y="195">{{ n0(dx.true_positives) }} positive</text>
+      <rect x="190" y="170" width="120" height="40" rx="4" class="d-box"></rect>
+      <text x="250" y="195">{{ n0(dx.false_negatives) }} negative</text>
+      <rect x="390" y="170" width="120" height="40" rx="4" class="ml-weight"></rect>
+      <text x="450" y="195">{{ n0(dx.false_positives) }} positive</text>
+      <rect x="550" y="170" width="120" height="40" rx="4" class="d-box"></rect>
+      <text x="610" y="195">{{ n0(dx.true_negatives) }} negative</text>
+      <g font-size="10" class="d-muted">
+        <text x="245" y="70">prior 0.01</text>
+        <text x="455" y="70">0.99</text>
+        <text x="110" y="155">sensitivity 0.9</text>
+        <text x="245" y="155">0.1</text>
+        <text x="400" y="155">false positive 0.09</text>
+        <text x="595" y="155">0.91</text>
+      </g>
+      <text x="350" y="245">P(sick | positive) = {{ n0(dx.true_positives) }} / ({{ n0(dx.true_positives) }} + {{ n0(dx.false_positives) }}) = {{ f(dx.posterior, 3) }}</text>
+    </g>
+    <g class="d-line" fill="none">
+      <line x1="330" y1="50" x2="200" y2="90"></line>
+      <line x1="370" y1="50" x2="500" y2="90"></line>
+      <line x1="160" y1="130" x2="100" y2="170"></line>
+      <line x1="200" y1="130" x2="240" y2="170"></line>
+      <line x1="500" y1="130" x2="460" y2="170"></line>
+      <line x1="540" y1="130" x2="600" y2="170"></line>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">
+  The highlighted boxes are everyone who tests positive. Bayes' rule is this picture written as a formula.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="bayes">Bayes' rule</h3>
+
+<p>
+  The definition of conditional probability gives the joint probability two ways, P(<var>A</var>, <var>B</var>) =
+  P(<var>A</var> | <var>B</var>) P(<var>B</var>) = P(<var>B</var> | <var>A</var>) P(<var>A</var>). Dividing by
+  P(<var>B</var>):
+</p>
+
+<p class="ml-formula">P(θ | x) = P(x | θ) P(θ) / P(x) &nbsp;&nbsp;&nbsp; posterior = likelihood × prior / evidence</p>
+
+<p>
+  The <dfn>prior</dfn> P(θ) is the belief before the data, the <dfn>likelihood</dfn> P(<var>x</var> | θ) says
+  how well each θ explains the data, and the <dfn>evidence</dfn> P(<var>x</var>) = Σ<sub>θ</sub>
+  P(<var>x</var> | θ) P(θ) just makes the posterior sum to one. For the test, P(positive) =
+  0.9 × 0.01 + 0.09 × 0.99 = {{ f(dx.evidence, 4) }}, and P(sick | positive) = 0.009 / {{ f(dx.evidence, 4) }} =
+  {{ f(dx.posterior, 4) }}. Because the evidence does not depend on θ, it is often dropped:
+  posterior ∝ likelihood × prior. In odds form the evidence cancels exactly: posterior odds = likelihood ratio
+  × prior odds.
+</p>
+<p>
+  Today's posterior is tomorrow's prior. A second, independent positive test starts from
+  {{ f(beliefs[1], 4) }} and ends at {{ f(beliefs[2], 4) }}; a third reaches {{ f(beliefs[3], 4) }}. Each
+  result multiplies the odds by the same factor of 10.
+</p>
+
+<h3 id="likelihood">Likelihood versus probability</h3>
+
+<p>
+  P(<var>x</var> | θ) is one formula read two ways. With θ fixed and <var>x</var> varying, it is a
+  <dfn>probability</dfn>: it sums (or integrates) to one over all possible data. With the data fixed and θ
+  varying, it is the <dfn>likelihood</dfn> L(θ) = P(<var>x</var> | θ): a score for each parameter value, which
+  need not sum to one over θ and is not a probability of θ. Flip a coin {{ coin_flips }} times and see
+  {{ coin_heads }} heads. For a fixed bias θ = 0.7 the probabilities of 0 to 10 heads add to 1; the
+  likelihood of the observed {{ coin_heads }} heads, as a function of θ, has area {{ f(likelihood_area(), 4) }}
+  (exactly 1/11). To make a statement about θ itself, you need a prior and Bayes' rule.
+</p>
+<p>
+  For independent examples the likelihood is a product, so in practice everything uses the log:
+  log L(θ) = Σ<sub><var>i</var></sub> log P(<var>x</var><sub><var>i</var></sub> | θ). Products of many small
+  numbers underflow; sums of logs do not. This is why every <code>torch.distributions</code> class exposes
+  <code>log_prob</code> rather than a probability.
+</p>
+
+<h3 id="mle">Maximum likelihood</h3>
+
+<p>
+  <dfn>Maximum likelihood estimation</dfn> (MLE) picks the θ that makes the observed data most probable,
+  θ̂ = argmax<sub>θ</sub> Σ log P(<var>x</var><sub><var>i</var></sub> | θ); equivalently it minimizes the
+  <dfn>negative log-likelihood</dfn> (NLL). For the coin, setting the derivative of
+  {{ coin_heads }} log θ + {{ coin_flips - coin_heads }} log(1 − θ) to zero gives θ̂ = {{ coin_heads }}/{{ coin_flips }} =
+  {{ coin.mle }}, the observed frequency.
+</p>
+<p>
+  The common training losses are NLLs of a chosen noise model. If <var>y</var> ∼ Normal(<var>f</var>(<var>x</var>), σ²)
+  with fixed σ, the NLL is Σ(<var>y</var> − <var>f</var>(<var>x</var>))² / 2σ² plus a constant, so least
+  squares is MLE under Gaussian noise; <code>nn.GaussianNLLLoss</code> keeps the variance term for models that
+  predict σ² too. If <var>y</var> ∼ Bernoulli(σ(<var>z</var>)), the NLL is binary cross-entropy, and PyTorch's
+  <code>Bernoulli.log_prob</code> is literally <code>-binary_cross_entropy_with_logits</code>. Categorical
+  labels give cross-entropy (see <a href="/ml-models/loss-functions">loss functions</a>).
+</p>
+
+<h3 id="map">MAP estimation and priors as regularizers</h3>
+
+<p>
+  MLE trusts the data completely. With 0 heads in 3 flips it says θ̂ = 0: the coin can never land heads.
+  <dfn>Maximum a posteriori</dfn> (MAP) estimation instead maximizes the posterior, which by Bayes' rule is
+  the likelihood plus a log-prior term:
+</p>
+
+<p class="ml-formula">θ̂<sub>MAP</sub> = argmax<sub>θ</sub> [ Σ<sub>i</sub> log P(x<sub>i</sub> | θ) + log P(θ) ]</p>
+
+<p>
+  For the coin, a Beta(<var>a</var>, <var>b</var>) prior acts like <var>a</var> − 1 extra heads and
+  <var>b</var> − 1 extra tails, so θ̂<sub>MAP</sub> = (<var>k</var> + <var>a</var> − 1) / (<var>n</var> +
+  <var>a</var> + <var>b</var> − 2). With a Beta(2, 2) prior, 0 heads in 3 gives
+  {{ laplace.map }} instead of 0: add-one (Laplace) smoothing is MAP estimation.
+</p>
+<p>
+  The log-prior is a regularizer. Take linear regression with Gaussian noise of variance σ² and a Gaussian
+  prior <var>w</var> ∼ Normal(0, τ²) on each weight. The negative log-posterior is, up to constants and a
+  factor 1/2σ²,
+</p>
+
+<p class="ml-formula">‖y − Xw‖² + (σ² / τ²) ‖w‖²</p>
+
+<p>
+  which is exactly ridge regression's objective with α = σ²/τ²: a tighter prior (small τ) means stronger
+  regularization. A Laplace prior gives the L1 penalty of the lasso instead (see
+  <a href="/ml-models/regularization">regularization</a>). Weight decay in a neural network is the same
+  Gaussian prior. With more data the likelihood term grows with <var>n</var> while the prior stays fixed, so
+  MAP approaches MLE.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 260" role="img" aria-labelledby="bayes-coin-title bayes-coin-desc">
+    <title id="bayes-coin-title">Prior, likelihood and posterior for a coin's bias</title>
+    <desc id="bayes-coin-desc">Three curves over the bias θ from 0 to 1, each scaled to a peak of 1. The Beta({{ coin_prior[0] }}, {{ coin_prior[1] }}) prior peaks at 0.5. The likelihood of {{ coin_heads }} heads in {{ coin_flips }} flips peaks at the MLE, {{ coin.mle }}. The posterior, Beta({{ coin.posterior[0] }}, {{ coin.posterior[1] }}), lies between them and peaks at the MAP estimate, {{ f(coin.map) }}.</desc>
+    <line x1="60" y1="200" x2="620" y2="200" class="d-line"></line>
+    <g font-size="11" text-anchor="middle" class="d-muted">
+      {% for t in [0.0, 0.25, 0.5, 0.75, 1.0] %}
+      <line x1="{{ cx(t) }}" y1="200" x2="{{ cx(t) }}" y2="205" class="d-line"></line>
+      <text x="{{ cx(t) }}" y="218">{{ t }}</text>
+      {% endfor %}
+      <text x="340" y="240">coin bias θ</text>
+    </g>
+    {% for name, colour, dash in [("prior", "var(--jj-muted)", "4 3"), ("likelihood", "var(--jj-amber)", ""), ("posterior", "var(--jj-green)", "")] %}
+    <polyline points="{% for t in curves.theta %}{{ cx(t) }},{{ cy(curves[name][loop.index0]) }} {% endfor %}" fill="none" stroke="{{ colour }}" stroke-width="2.5"{% if dash %} stroke-dasharray="{{ dash }}"{% endif %}></polyline>
+    {% endfor %}
+    <line x1="{{ cx(coin.mle) }}" y1="45" x2="{{ cx(coin.mle) }}" y2="200" class="d-line ml-dashed" stroke-width="0.8"></line>
+    <line x1="{{ cx(coin.map) }}" y1="45" x2="{{ cx(coin.map) }}" y2="200" class="d-line ml-dashed" stroke-width="0.8"></line>
+    <g font-size="11">
+      <text x="{{ cx(coin.mle)|float + 4 }}" y="40" style="fill: var(--jj-amber)">MLE {{ coin.mle }}</text>
+      <text x="{{ cx(coin.map)|float - 4 }}" y="40" text-anchor="end" style="fill: var(--jj-green)">MAP {{ f(coin.map) }}</text>
+      <text x="66" y="50" style="fill: var(--jj-muted)">prior Beta({{ coin_prior[0] }}, {{ coin_prior[1] }})</text>
+      <text x="66" y="68" style="fill: var(--jj-amber)">likelihood, {{ coin_heads }} of {{ coin_flips }}</text>
+      <text x="66" y="86" style="fill: var(--jj-green)">posterior Beta({{ coin.posterior[0] }}, {{ coin.posterior[1] }})</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">
+  The posterior is the product of the other two, renormalized: narrower than either and between their peaks.
+</p>
+
+<h3 id="naive-bayes">Naive Bayes</h3>
+
+<p>
+  A classifier can use Bayes' rule directly: model how each class generates features, P(<var>x</var> | <var>y</var>),
+  and the class frequencies, P(<var>y</var>), then predict argmax<sub><var>y</var></sub> P(<var>y</var>)
+  P(<var>x</var> | <var>y</var>). With many features P(<var>x</var> | <var>y</var>) is impossible to estimate
+  jointly, so <dfn>naive Bayes</dfn> assumes the features are independent given the class:
+</p>
+
+<p class="ml-formula">log P(y | x) = log P(y) + Σ<sub>j</sub> log P(x<sub>j</sub> | y) − log P(x)</p>
+
+<p>
+  The assumption is almost always false (words in an email are not independent), but the classifier still
+  ranks classes well, trains in one pass of counting, and needs little data. Its probabilities tend to be
+  overconfident because correlated features are counted as independent evidence. scikit-learn's estimators all
+  compute the "joint log likelihood" log P(<var>y</var>) + log P(<var>x</var> | <var>y</var>) and normalize it
+  with a log-sum-exp; they differ in the per-feature model: <code>GaussianNB</code> (a Normal per feature and
+  class), <code>MultinomialNB</code> (word counts), <code>BernoulliNB</code> (binary features) and
+  <code>CategoricalNB</code>. <code>MultinomialNB</code>'s <code>alpha</code> adds pseudo-counts to every
+  feature: the MAP smoothing above.
+</p>
+
+<h3 id="library">In the libraries</h3>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead>
+      <tr><th>Term</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Log-likelihood</td>
+        <td><code>Distribution.log_prob(value)</code></td>
+        <td>The base class's contract: log of the density or mass at <code>value</code>; every distribution implements it.</td>
+        <td><a href="{{ src('torch/distributions/distribution.py', 194, 202) }}">distribution.py 194-202</a></td>
+      </tr>
+      <tr>
+        <td>Gaussian log-likelihood</td>
+        <td><code>Normal(loc, scale).log_prob</code></td>
+        <td>−(<var>x</var> − μ)²/2σ² − log σ − log √(2π); the squared error inside is why least squares is MLE.</td>
+        <td><a href="{{ src('torch/distributions/normal.py', 87, 101) }}">normal.py 87-101</a></td>
+      </tr>
+      <tr>
+        <td>Bernoulli log-likelihood</td>
+        <td><code>Bernoulli(logits=…).log_prob</code></td>
+        <td>Returns <code>-binary_cross_entropy_with_logits(logits, value)</code>: BCE is the Bernoulli NLL.</td>
+        <td><a href="{{ src('torch/distributions/bernoulli.py', 121, 125) }}">bernoulli.py 121-125</a></td>
+      </tr>
+      <tr>
+        <td>Gaussian NLL loss</td>
+        <td><code>full=False, eps=1e-6</code>; <code>(input, target, var)</code></td>
+        <td>½(log max(var, eps) + (input − target)²/max(var, eps)), the constant omitted unless <code>full</code>.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 377, 461) }}">loss.py 377-461</a></td>
+      </tr>
+      <tr>
+        <td>Gaussian prior as a penalty</td>
+        <td><code>Ridge(alpha=1.0)</code></td>
+        <td>Minimizes ‖<var>y</var> − <var>Xw</var>‖² + α‖<var>w</var>‖², the MAP objective with α = σ²/τ².</td>
+        <td><a href="{{ skl('sklearn/linear_model/_ridge.py', 1022, 1031) }}">_ridge.py 1022-1031</a></td>
+      </tr>
+      <tr>
+        <td>Joint log likelihood</td>
+        <td>(n_samples, n_classes)</td>
+        <td>log P(<var>y</var>) + log P(<var>x</var> | <var>y</var>); <code>predict</code> takes its argmax.</td>
+        <td><a href="{{ skl('sklearn/naive_bayes.py', 72, 117) }}">naive_bayes.py 72-117</a></td>
+      </tr>
+      <tr>
+        <td>Posterior P(<var>y</var> | <var>x</var>)</td>
+        <td><code>predict_log_proba</code>, <code>predict_proba</code></td>
+        <td>Subtracts log P(<var>x</var>), the log-sum-exp of the joint over classes.</td>
+        <td><a href="{{ skl('sklearn/naive_bayes.py', 119, 161) }}">naive_bayes.py 119-161</a></td>
+      </tr>
+      <tr>
+        <td>Class prior P(<var>y</var>)</td>
+        <td><code>fit_prior=True, class_prior=None</code></td>
+        <td>Given priors, else class frequencies, else uniform.</td>
+        <td><a href="{{ skl('sklearn/naive_bayes.py', 615, 637) }}">naive_bayes.py 615-637</a></td>
+      </tr>
+      <tr>
+        <td>Smoothed word probabilities</td>
+        <td><code>MultinomialNB(alpha=1.0)</code></td>
+        <td>log(count + α) − log Σ(count + α) per class; the joint is <var>X</var> · feature_log_prob<sup>T</sup> + class_log_prior.</td>
+        <td><a href="{{ skl('sklearn/naive_bayes.py', 925, 937) }}">naive_bayes.py 925-937</a></td>
+      </tr>
+      <tr>
+        <td>Gaussian class-conditionals</td>
+        <td><code>GaussianNB(priors=None, var_smoothing=1e-9)</code></td>
+        <td>Sums per-feature Normal log-densities with each class's mean and variance; <code>var_smoothing</code> adds a fraction of the largest feature variance.</td>
+        <td><a href="{{ skl('sklearn/naive_bayes.py', 533, 545) }}">naive_bayes.py 533-545</a>, <a href="{{ skl('sklearn/naive_bayes.py', 451) }}">451</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p><strong>The diagnostic test.</strong> Prior 0.01, sensitivity 0.9, false-positive rate 0.09:</p>
+  <ul>
+    <li>Evidence: P(+) = 0.9 × 0.01 + 0.09 × 0.99 = {{ f(dx.evidence, 4) }}.</li>
+    <li>Posterior: P(sick | +) = 0.009 / {{ f(dx.evidence, 4) }} = {{ f(dx.posterior, 4) }}, the same as {{ n0(dx.true_positives) }} / {{ n0(dx.true_positives + dx.false_positives) }} in the tree.</li>
+    <li>Odds: prior odds 1 : 99, likelihood ratio 0.9 / 0.09 = 10, posterior odds 10 : 99, which is {{ f(dx.posterior, 4) }} again.</li>
+    <li>Repeated positives: {% for b in beliefs %}{{ f(b, 4) }}{% if not loop.last %} → {% endif %}{% endfor %}.</li>
+  </ul>
+</div>
+
+<div class="ml-worked">
+  <p><strong>Likelihood, MLE and MAP for the coin</strong> ({{ coin_heads }} heads in {{ coin_flips }}):</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>θ</th>{% for t in [0.3, 0.5, 0.6, 0.7, 0.8, 0.9] %}<th>{{ t }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        <tr><td>L(θ)</td>{% for t in [0.3, 0.5, 0.6, 0.7, 0.8, 0.9] %}<td>{{ f(binomial_likelihood(t), 4) }}</td>{% endfor %}</tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The likelihood peaks at θ̂<sub>MLE</sub> = {{ coin.mle }}. With the Beta({{ coin_prior[0] }}, {{ coin_prior[1] }}) prior
+    (a mild belief that the coin is fair, worth 4 heads and 4 tails), the posterior is
+    Beta({{ coin_heads }} + {{ coin_prior[0] }}, {{ coin_flips - coin_heads }} + {{ coin_prior[1] }}) =
+    Beta({{ coin.posterior[0] }}, {{ coin.posterior[1] }}), with mode θ̂<sub>MAP</sub> = ({{ coin_heads }} + 4) / ({{ coin_flips }} + 8) =
+    {{ f(coin.map, 4) }} and mean {{ f(coin.posterior_mean, 4) }}. With 70 heads in 100 the same prior moves the estimate
+    much less: MAP {{ f(coin_big.map, 4) }} against MLE {{ coin_big.mle }}. And with 0 heads in 3 under Beta(2, 2),
+    the MAP is {{ laplace.map }} rather than 0.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <p><strong>Ridge as MAP, one weight.</strong> Points (1, 1), (2, 3), (3, 2), model <var>y</var> = <var>wx</var>.
+    Σ<var>xy</var> = 13 and Σ<var>x</var>² = 14, and the MAP weight is Σ<var>xy</var> / (Σ<var>x</var>² + α):</p>
+  <ul>
+    {% for alpha, note in [(0, "no prior: least squares, the MLE"), (1, "prior variance equal to the noise variance"), (14, "prior variance one fourteenth of the noise variance")] %}
+    <li>α = {{ alpha }} ({{ note }}): <var>w</var> = 13 / {{ 14 + alpha }} = {{ f(ridge_map_1d([1, 2, 3], [1, 3, 2], alpha), 4) }}.</li>
+    {% endfor %}
+  </ul>
+</div>
+
+<div class="ml-worked">
+  <p><strong>Naive Bayes by hand.</strong> Training data: {{ nb_documents.spam }} spam and {{ nb_documents.ham }} ham emails, with these word counts:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Class</th>{% for w in nb_vocabulary %}<th>{{ w }}</th>{% endfor %}<th>Prior</th><th>Smoothed P(word | class), α = 1</th></tr></thead>
+      <tbody>
+        {% for c in nb_classes %}
+        <tr><td>{{ c }}</td>{% for n in nb_word_counts[c] %}<td>{{ n }}</td>{% endfor %}<td>{{ f(nb[c].prior, 1) }}</td><td>{% for p in nb[c].word_probs %}{{ f(p) }}{% if not loop.last %}, {% endif %}{% endfor %}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Classify "free win meeting". Spam: 0.4 × 0.4 × 0.3 × 0.1 = {{ f(0.4 * 0.4 * 0.3 * 0.1, 4) }}. Ham:
+    0.6 × {{ f(nb.ham.word_probs[0]) }} × {{ f(nb.ham.word_probs[1]) }} × {{ f(nb.ham.word_probs[2]) }} =
+    {{ f(0.6 * nb.ham.word_probs[0] * nb.ham.word_probs[1] * nb.ham.word_probs[2], 4) }}. Normalizing,
+    P(spam | message) = {{ f(nb.spam.posterior, 4) }}. In logs, as scikit-learn computes it, the joint log
+    likelihoods are {{ f(nb.spam.joint_log, 4) }} and {{ f(nb.ham.joint_log, 4) }}.
+  </p>
+  <p>
+    Without smoothing, "win" never appeared in ham, so P(win | ham) = 0 and any email containing "win" (and not "meeting") is
+    spam with probability {{ f(nb_raw.spam.posterior, 1) }}, however much else points to ham; "free win" alone gets
+    {{ f(nb_short.spam.posterior, 4) }} with α = 1. And "free win meeting" without smoothing has zero probability
+    under both classes ("meeting" never appeared in spam), so the posterior is undefined.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+from torch.distributions import Normal
+
+data = torch.tensor([2.1, 1.7, 2.6, 2.0, 1.4])
+mu = torch.zeros((), requires_grad=True)
+log_sigma = torch.zeros((), requires_grad=True)
+opt = torch.optim.Adam([mu, log_sigma], lr=0.05)
+prior = Normal(0.0, 1.0)          # a prior on mu; drop it for plain MLE
+
+for _ in range(500):
+    nll = -Normal(mu, log_sigma.exp()).log_prob(data).sum()
+    loss = nll - prior.log_prob(mu)   # negative log-posterior: MAP
+    opt.zero_grad(); loss.backward(); opt.step()
+
+from sklearn.naive_bayes import MultinomialNB
+
+X = [[3, 2, 0, 1], [1, 0, 3, 4]]   # word counts, one row per class
+y = ["spam", "ham"]
+clf = MultinomialNB(alpha=1.0).fit(X, y)
+clf.predict_proba([[1, 1, 1, 0]])</code></pre>
+
+<p>
+  The MAP loss is the MLE loss plus −log prior, the same shape as a data loss plus a penalty. Parameterizing
+  σ through its log keeps it positive without constraints. The scikit-learn lines pool each class's counts
+  into one row, so the class prior they learn is uniform, not the 2 : 3 of the worked example; pass
+  <code>class_prior=[0.6, 0.4]</code> (classes are sorted, ham first) to match it.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>MLE versus MAP.</strong> MLE needs no prior but overfits small samples and gives zero probability to anything unseen; MAP fixes that at the price of choosing a prior, whose influence fades as data grows.</li>
+  <li><strong>Point estimates versus the full posterior.</strong> MLE and MAP return one θ and discard how uncertain it is. Keeping the posterior (Bayesian inference) gives calibrated uncertainty but is rarely tractable for neural networks; ensembles and dropout approximations are the usual compromises.</li>
+  <li><strong>MAP depends on the parameterization.</strong> The mode of a density moves when θ is transformed (say, to log θ), so MAP is not invariant the way MLE is.</li>
+  <li><strong>Naive Bayes.</strong> Fast, works with little data and many features, and a strong baseline for text; but the independence assumption makes its probabilities overconfident and it cannot model feature interactions.</li>
+  <li><strong>Base rates matter.</strong> A classifier's posterior depends on the class prior it was trained with; a model trained on balanced data overstates rare classes when deployed where they are rare.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>A test has 99% sensitivity and a 1% false-positive rate. The disease affects 1 in 10,000 people. You test positive: roughly how likely are you to be sick?</summary>
+  <p>About 1%. The likelihood ratio is 99, and the prior odds are 1 : 9,999, so the posterior odds are about 99 : 9,999, a probability near 0.0098.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does minimizing mean squared error amount to maximum likelihood?</summary>
+  <p>Under Gaussian noise with a fixed variance, the negative log-likelihood of each target is (<var>y</var> − <var>f</var>(<var>x</var>))² / 2σ² plus a constant, so minimizing the summed NLL and minimizing the summed squared error pick the same parameters.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Which prior on the weights corresponds to L2 weight decay, and what does a stronger penalty mean about that prior?</summary>
+  <p>A zero-mean Gaussian. The penalty coefficient is σ²/τ², so a stronger penalty means a smaller prior variance τ²: a firmer belief that the weights are near zero.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Bishop. <em>Pattern Recognition and Machine Learning.</em> Springer, 2006 (Bayes' rule, MLE and MAP, Beta-binomial conjugacy, the Gaussian prior behind ridge).</li>
+  <li>Murphy. <em>Probabilistic Machine Learning: An Introduction.</em> MIT Press, 2022 (naive Bayes and smoothing).</li>
+  <li>Gigerenzer and Hoffrage. <em>How to Improve Bayesian Reasoning Without Instruction: Frequency Formats.</em> Psychological Review 102(4), 1995 (natural frequencies).</li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/distributions/distribution.py') }}"><code>torch/distributions/distribution.py</code></a>, <a href="{{ src('torch/distributions/normal.py') }}"><code>normal.py</code></a>, <a href="{{ src('torch/distributions/bernoulli.py') }}"><code>bernoulli.py</code></a>.</li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/naive_bayes.py') }}"><code>sklearn/naive_bayes.py</code></a>, <a href="{{ skl('sklearn/linear_model/_ridge.py', 1022, 1031) }}"><code>_ridge.py</code></a>.</li>
+</ul>
