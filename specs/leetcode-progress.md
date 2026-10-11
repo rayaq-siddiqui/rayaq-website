@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-11 (build run). 47 of 58 pages are ready. **The next run is a build run** continuing at `kadanes-algorithm`.
+**Last updated:** 2026-10-11 (build run). 48 of 58 pages are ready. **The next run is a build run** continuing at `interval-merging`.
 
 ## The Routine
 
@@ -39,10 +39,10 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 
 | List | Problems with a ready home | Size |
 |---|---|---|
-| Blind 75 | 61 | 75 |
-| Grind 169 | 148 | 169 |
-| NeetCode 150 | 130 | 150 |
-| NeetCode 250 | 221 | 250 |
+| Blind 75 | 63 | 75 |
+| Grind 169 | 150 | 169 |
+| NeetCode 150 | 132 | 150 |
+| NeetCode 250 | 224 | 250 |
 
 ## Queue
 
@@ -96,8 +96,8 @@ build once research is done.
 45. `interval-dp` ✓
 46. `state-machine-dp` ✓
 47. `greedy` ✓
-48. `kadanes-algorithm` ← next
-49. `interval-merging`
+48. `kadanes-algorithm` ✓
+49. `interval-merging` ← next
 50. `sweep-line`
 51. `matrix-manipulation`
 52. `number-math`
@@ -273,3 +273,12 @@ the full §6 format. The sandbox checkout was a stale shallow clone with no merg
 unshallowed and fast-forwarded to `origin/main` before any edit. Coverage: Blind 75 59/75, Grind 169 143/169, NeetCode 150 120/150, NeetCode 250 205/250.
 Mobile check passed on `/`, `/leetcode` and
 every ready page. Next: `state-machine-dp`.
+
+### 2026-10-11 — build run
+
+Built `state-machine-dp`, `greedy` and `kadanes-algorithm` (3 of 3), each with tested helpers in
+`leetcode_docs.py` (cross-checked against brute force), two inline SVGs and the full §6 format.
+The sandbox's local `main` was an unrelated history with no merge base, so work was done in a
+separate git worktree on `origin/main` and pushed from there; the stale local branch was left
+untouched. Coverage: Blind 75 63/75, Grind 169 150/169, NeetCode 150 132/150, NeetCode 250 224/250.
+Mobile check passed on `/`, `/leetcode` and every ready page. Next: `interval-merging`.
