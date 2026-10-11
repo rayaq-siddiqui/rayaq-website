@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy", "kadanes-algorithm", "interval-merging", "sweep-line"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy", "kadanes-algorithm", "interval-merging", "sweep-line", "matrix-manipulation"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -6703,6 +6703,91 @@ def min_interval_queries_trace(intervals, queries):
     return {"rows": rows, "answers": answers}
 
 
+def transpose_of(matrix):
+    """Transpose Matrix: cell (i, j) of the result is cell (j, i) of the input, so an r x c matrix becomes c x r."""
+    return [list(column) for column in zip(*matrix)]
+
+
+def rotate_matrix_stages(matrix):
+    """Rotate Image clockwise in place: transpose across the main diagonal, then reverse each row. Returns both stages and the number of swaps each step made."""
+    grid = [row[:] for row in matrix]
+    n = len(grid)
+    transpose_swaps = 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            grid[i][j], grid[j][i] = grid[j][i], grid[i][j]
+            transpose_swaps += 1
+    transposed = [row[:] for row in grid]
+    for row in grid:
+        row.reverse()
+    return {"transposed": transposed, "rotated": grid, "transpose_swaps": transpose_swaps, "reverse_swaps": n * (n // 2)}
+
+
+def rotation_cycles(n):
+    """The four-cell cycles a layer-by-layer clockwise rotation of an n x n matrix moves: each is (top, right, bottom, left) positions, and the value at each moves to the next."""
+    cycles = []
+    for layer in range(n // 2):
+        last = n - 1 - layer
+        for k in range(last - layer):
+            cycles.append(((layer, layer + k), (layer + k, last), (last, last - k), (last - k, layer)))
+    return cycles
+
+
+def spiral_trace(matrix):
+    """Spiral Matrix with four shrinking boundaries. sides[i] holds which side was walked, the cells visited and the bounds left afterwards; order is every value in spiral order."""
+    if not matrix or not matrix[0]:
+        return {"sides": [], "order": []}
+    top, bottom, left, right = 0, len(matrix) - 1, 0, len(matrix[0]) - 1
+    sides, order = [], []
+
+    def walk(name, cells):
+        order.extend(matrix[r][c] for r, c in cells)
+        sides.append({"side": name, "cells": cells, "bounds": (top, bottom, left, right)})
+
+    while top <= bottom and left <= right:
+        cells = [(top, c) for c in range(left, right + 1)]
+        top += 1
+        walk("top row, left to right", cells)
+        cells = [(r, right) for r in range(top, bottom + 1)]
+        right -= 1
+        if cells:
+            walk("right column, downward", cells)
+        if top <= bottom:
+            cells = [(bottom, c) for c in range(right, left - 1, -1)]
+            bottom -= 1
+            if cells:
+                walk("bottom row, right to left", cells)
+        if left <= right:
+            cells = [(r, left) for r in range(bottom, top - 1, -1)]
+            left += 1
+            if cells:
+                walk("left column, upward", cells)
+    return {"sides": sides, "order": order}
+
+
+def set_zeroes_trace(matrix):
+    """Set Matrix Zeroes with O(1) extra space: record whether the first row and column hold a zero, mark each other zero's row and column in that first row and column, clear from the markers, then clear the first row and column last."""
+    grid = [row[:] for row in matrix]
+    rows, cols = len(grid), len(grid[0])
+    first_row = any(value == 0 for value in grid[0])
+    first_col = any(grid[r][0] == 0 for r in range(rows))
+    for r in range(1, rows):
+        for c in range(1, cols):
+            if grid[r][c] == 0:
+                grid[r][0] = grid[0][c] = 0
+    marked = [row[:] for row in grid]
+    for r in range(1, rows):
+        for c in range(1, cols):
+            if grid[r][0] == 0 or grid[0][c] == 0:
+                grid[r][c] = 0
+    if first_row:
+        grid[0] = [0] * cols
+    if first_col:
+        for r in range(rows):
+            grid[r][0] = 0
+    return {"first_row": first_row, "first_col": first_col, "marked": marked, "result": grid}
+
+
 def problem_url(slug):
     return f"https://leetcode.com/problems/{slug}/"
 
@@ -6964,6 +7049,11 @@ def render(slug, render_template):
         "car_pool_trace": car_pool_trace,
         "common_free_time_of": common_free_time_of,
         "min_interval_queries_trace": min_interval_queries_trace,
+        "transpose_of": transpose_of,
+        "rotate_matrix_stages": rotate_matrix_stages,
+        "rotation_cycles": rotation_cycles,
+        "spiral_trace": spiral_trace,
+        "set_zeroes_trace": set_zeroes_trace,
         "min_jumps_levels": min_jumps_levels,
         "gas_station_trace": gas_station_trace,
         "straights_groups": straights_groups,

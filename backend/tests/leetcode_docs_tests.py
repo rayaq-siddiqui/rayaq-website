@@ -1499,3 +1499,70 @@ def test_sweep_line_helpers_match_the_page():
     assert "with 4 seats the load first goes over at location 2" in body
     assert "everyone is free during [5, 6] and [7, 9]" in body
     assert "the answers are <code>-1, 4, 5, 3, 1</code>" in body
+
+
+def test_matrix_manipulation_helpers_match_the_page():
+    square = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16]]
+    stages = leetcode_docs.rotate_matrix_stages(square)
+    assert stages["transposed"] == [[1, 5, 9, 13], [2, 6, 10, 14], [3, 7, 11, 15], [4, 8, 12, 16]]
+    assert stages["rotated"] == [[13, 9, 5, 1], [14, 10, 6, 2], [15, 11, 7, 3], [16, 12, 8, 4]]
+    assert (stages["transpose_swaps"], stages["reverse_swaps"]) == (6, 8)
+    assert square[0] == [1, 2, 3, 4]
+    for n in range(1, 7):
+        m = [[n * r + c for c in range(n)] for r in range(n)]
+        expected = [[m[n - 1 - c][r] for c in range(n)] for r in range(n)]
+        assert leetcode_docs.rotate_matrix_stages(m)["rotated"] == expected
+        by_layers = [row[:] for row in m]
+        for cycle in leetcode_docs.rotation_cycles(n):
+            values = [by_layers[r][c] for r, c in cycle]
+            for (r, c), value in zip(cycle[1:] + cycle[:1], values):
+                by_layers[r][c] = value
+        assert by_layers == expected
+        assert len(leetcode_docs.rotation_cycles(n)) == (n // 2) * ((n + 1) // 2)
+
+    cycles = leetcode_docs.rotation_cycles(4)
+    assert len(cycles) == 4 and cycles[0] == ((0, 0), (0, 3), (3, 3), (3, 0))
+
+    assert leetcode_docs.transpose_of([[1, 2, 3], [4, 5, 6]]) == [[1, 4], [2, 5], [3, 6]]
+
+    grid = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]
+    spiral = leetcode_docs.spiral_trace(grid)
+    assert spiral["order"] == [1, 2, 3, 4, 8, 12, 11, 10, 9, 5, 6, 7]
+    assert [s["bounds"] for s in spiral["sides"]] == [(1, 2, 0, 3), (1, 2, 0, 2), (1, 1, 0, 2), (1, 1, 1, 2), (2, 1, 1, 2)]
+
+    def peel(matrix):
+        out = []
+        while matrix:
+            out.extend(matrix.pop(0))
+            matrix = [list(row) for row in zip(*matrix)][::-1]
+        return out
+
+    for rows in range(1, 6):
+        for cols in range(1, 6):
+            m = [[rows * 10 + r * cols + c for c in range(cols)] for r in range(rows)]
+            assert leetcode_docs.spiral_trace(m)["order"] == peel([row[:] for row in m])
+    assert leetcode_docs.spiral_trace([])["order"] == []
+
+    zgrid = [[1, 2, 3, 4], [5, 0, 7, 8], [0, 10, 11, 12], [13, 14, 15, 16]]
+    zeroes = leetcode_docs.set_zeroes_trace(zgrid)
+    assert (zeroes["first_row"], zeroes["first_col"]) == (False, True)
+    assert zeroes["marked"] == [[1, 0, 3, 4], [0, 0, 7, 8], [0, 10, 11, 12], [13, 14, 15, 16]]
+    assert zeroes["result"] == [[0, 0, 3, 4], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 15, 16]]
+
+    def brute_zeroes(matrix):
+        zero_rows = {r for r, row in enumerate(matrix) for v in row if v == 0}
+        zero_cols = {c for row in matrix for c, v in enumerate(row) if v == 0}
+        return [[0 if r in zero_rows or c in zero_cols else v for c, v in enumerate(row)] for r, row in enumerate(matrix)]
+
+    for seed in range(200):
+        rows, cols = 1 + seed % 4, 1 + (seed // 4) % 5
+        m = [[(seed * 7 + r * 5 + c * 3) % 6 for c in range(cols)] for r in range(rows)]
+        assert leetcode_docs.set_zeroes_trace(m)["result"] == brute_zeroes(m)
+
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/matrix-manipulation").get_data(as_text=True))
+    assert "<td>Rows reversed (8 swaps)</td><td class=\"num\">13 9 5 1</td>" in body
+    assert "<td>Transposed (6 swaps)</td><td class=\"num\">1 5 9 13</td>" in body
+    assert "order: 1 2 3 4 8 12 11 10 9 5 6 7" in body
+    assert "<td>Result</td><td class=\"num\">0 0 3 4</td><td class=\"num\">0 0 0 0</td><td class=\"num\">0 0 0 0</td><td class=\"num\">0 0 15 16</td>" in body
+    assert "3 &times; 2 matrix [1, 4], [2, 5], [3, 6]" in body
+    assert "6 for n = 4" in body
