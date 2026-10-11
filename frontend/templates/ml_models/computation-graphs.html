@@ -1,0 +1,585 @@
+{% set ex = graph_example_data %}
+{% set g = graph_example() %}
+{% set c = graph_controls() %}
+{% set v = g["values"] %}
+{% set st = c.clamps.straight_through_clamp %}
+{% macro f0(x) -%}{{ "%g"|format(x) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Computation graphs and autograd</h1>
+  <p class="tagline">
+    Every operation on a tensor that requires a gradient leaves a node behind. Together the nodes form a graph
+    that runs backward from the loss to the parameters. This page opens that graph up: what <code>grad_fn</code>
+    and <code>next_functions</code> are, which tensors are leaves, how the engine walks the graph and frees it, and
+    the controls you have over it: <code>retain_graph</code>, <code>no_grad</code>, <code>detach</code>, hooks
+    and custom <code>autograd.Function</code>s.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  <a href="{{ url_for('ml_models', slug='backpropagation') }}">Backpropagation</a> needs the whole chain of
+  operations that produced the loss, in order, along with the intermediate values each local derivative uses.
+  You could write that chain down by hand for a fixed network, but real models branch on data, loop a variable
+  number of times, and change shape from batch to batch. Something has to record the chain while the forward pass
+  runs, decide which tensors need gradients, keep only the values backward will need, and throw it all away
+  afterward so memory does not grow with every step.
+</p>
+<p>
+  In PyTorch that something is autograd. Most of the time it is invisible: you call <code>loss.backward()</code>
+  and read <code>.grad</code>. But the moment you freeze part of a model, evaluate without gradients, call
+  backward twice, clip a gradient in flight, or write an operation PyTorch does not know how to differentiate,
+  you are working with the graph directly, and its rules decide what happens.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Think of the forward pass as leaving a trail of receipts. Each operation writes one: "I multiplied these two
+  things; to send a gradient back, multiply it by the other input, and here is a copy of that input". The receipt
+  points back to the receipts of whatever produced its inputs. The loss holds the last receipt, so following
+  pointers from it reaches every operation that mattered, and nothing else.
+</p>
+<p>
+  Backward reads the receipts in reverse. It starts at the loss with a gradient of 1, asks each receipt to turn
+  the gradient of its output into gradients of its inputs, and passes those along the pointers. Where the trail
+  starts, at the parameters you created yourself, a special receipt adds the arriving gradient into
+  <code>.grad</code>. Once a receipt has been used, its saved copies are shredded unless you asked to keep them.
+</p>
+<p>
+  The graph is <strong>dynamic</strong>: it is built fresh by running ordinary Python each step. An
+  <code>if</code> that takes the other branch next step simply records different nodes. There is no separate
+  "compile the graph" phase, which is why PyTorch code reads like normal code and debugs with print statements.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="nodes">Nodes, <code>grad_fn</code> and <code>next_functions</code></h3>
+<p>
+  When an operation runs with gradient recording on and at least one input has <code>requires_grad=True</code>,
+  PyTorch creates a backward node and stores it on the output as <code>output.grad_fn</code>. The node's class
+  name says which derivative it computes: <code>MulBackward0</code>, <code>AddBackward0</code>,
+  <code>ClampBackward1</code> (the digit tells overloads apart). Every node is a
+  <code>torch.autograd.graph.Node</code> with a <code>name()</code> and a <code>next_functions</code> tuple.
+</p>
+<p>
+  <code>next_functions</code> holds one <code>(node, index)</code> pair per input, in argument order. The node is
+  the input's own <code>grad_fn</code>; it is <code>None</code> for an input that does not require gradients; and
+  the integer says which output of that node the edge connects to (0 for single-output operations). Following
+  <code>next_functions</code> from <code>loss.grad_fn</code> visits the whole graph.
+</p>
+<p>
+  Each node also saves what its derivative needs. <code>MulBackward0</code> saves the other operand,
+  <code>ExpBackward0</code> saves its own output, <code>AddBackward0</code> saves nothing. These saved tensors are
+  most of the memory a training step uses beyond the weights.
+</p>
+
+<h3 id="leaves">Leaf tensors and <code>AccumulateGrad</code></h3>
+<p>
+  A tensor is a <strong>leaf</strong> when <code>grad_fn</code> is <code>None</code>: you created it (a parameter,
+  an input batch), or it came out of operations on tensors that do not require gradients. A tensor that requires
+  gradients and was produced by a recorded operation is <strong>not</strong> a leaf.
+</p>
+<p>
+  The edge to a leaf that requires gradients points at an <code>AccumulateGrad</code> node, one per leaf. When
+  backward reaches it, it adds the incoming gradient into the leaf's <code>.grad</code>: it stores it if
+  <code>.grad</code> is empty and adds to it otherwise. That is why gradients accumulate across
+  <code>backward()</code> calls and you call <code>optimizer.zero_grad()</code> each step. Non-leaf tensors do not
+  get a <code>.grad</code> (it stays <code>None</code>) unless you call <code>retain_grad()</code> on them.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 300" role="img" aria-labelledby="cg-graph-title cg-graph-desc">
+    <title id="cg-graph-title">The recorded graph for loss = (w·x + b)²</title>
+    <desc id="cg-graph-desc">
+      Forward values on the left: x = {{ f0(v.x) }}, w = {{ f0(v.w) }}, b = {{ f0(v.b) }}, a = w·x = {{ f0(v.a) }},
+      y = a + b = {{ f0(v.y) }}, loss = y·y = {{ f0(v.loss) }}. On the right, the backward graph: loss.grad_fn is
+      MulBackward0, whose two next_functions both point to AddBackward0. AddBackward0 points to MulBackward0 (for a)
+      and to AccumulateGrad for b. That MulBackward0 points to AccumulateGrad for w and to None for x, which does not
+      require gradients.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <text x="110" y="22" font-weight="bold">forward (tensors)</text>
+      <text x="460" y="22" font-weight="bold">backward graph (nodes)</text>
+
+      <rect x="20" y="40" width="60" height="30" rx="4" class="d-box ml-tensor"></rect>
+      <text x="50" y="60">x={{ f0(v.x) }}</text>
+      <rect x="90" y="40" width="60" height="30" rx="4" class="d-box ml-weight"></rect>
+      <text x="120" y="60">w={{ f0(v.w) }}</text>
+      <rect x="160" y="40" width="60" height="30" rx="4" class="d-box ml-weight"></rect>
+      <text x="190" y="60">b={{ f0(v.b) }}</text>
+      <rect x="55" y="110" width="80" height="30" rx="4" class="d-box ml-tensor"></rect>
+      <text x="95" y="130">a={{ f0(v.a) }}</text>
+      <rect x="100" y="180" width="80" height="30" rx="4" class="d-box ml-tensor"></rect>
+      <text x="140" y="200">y={{ f0(v.y) }}</text>
+      <rect x="100" y="250" width="80" height="30" rx="4" class="d-box ml-tensor"></rect>
+      <text x="140" y="270">loss={{ f0(v.loss) }}</text>
+      <g class="d-line" fill="none" stroke-width="1.2">
+        <path d="M50 70 L85 110"></path>
+        <path d="M120 70 L100 110"></path>
+        <path d="M95 140 L130 180"></path>
+        <path d="M190 70 L160 180"></path>
+        <path d="M135 210 L135 250"></path>
+        <path d="M145 210 L145 250"></path>
+      </g>
+      <text x="40" y="100" class="d-muted" font-size="10">×</text>
+      <text x="100" y="168" class="d-muted" font-size="10">+</text>
+      <text x="160" y="235" class="d-muted" font-size="10">×</text>
+
+      <line x1="250" y1="35" x2="250" y2="290" class="d-line ml-dashed" stroke-width="1"></line>
+
+      <rect x="390" y="40" width="140" height="34" rx="4" class="d-box ml-op"></rect>
+      <text x="460" y="56">{{ g.nodes[2].name }}</text>
+      <text x="460" y="69" font-size="10" class="d-muted">loss.grad_fn</text>
+      <rect x="390" y="115" width="140" height="34" rx="4" class="d-box ml-op"></rect>
+      <text x="460" y="131">{{ g.nodes[1].name }}</text>
+      <text x="460" y="144" font-size="10" class="d-muted">y.grad_fn</text>
+      <rect x="290" y="190" width="140" height="34" rx="4" class="d-box ml-op"></rect>
+      <text x="360" y="206">{{ g.nodes[0].name }}</text>
+      <text x="360" y="219" font-size="10" class="d-muted">a.grad_fn</text>
+      <rect x="520" y="190" width="150" height="34" rx="4" class="d-box ml-weight"></rect>
+      <text x="595" y="206">AccumulateGrad</text>
+      <text x="595" y="219" font-size="10" class="d-muted">b.grad</text>
+      <rect x="290" y="258" width="140" height="34" rx="4" class="d-box ml-weight"></rect>
+      <text x="360" y="274">AccumulateGrad</text>
+      <text x="360" y="287" font-size="10" class="d-muted">w.grad</text>
+      <text x="520" y="280" font-size="12">None (x)</text>
+      <g class="d-line" fill="none" stroke-width="1.2">
+        <path d="M445 74 L445 115"></path>
+        <path d="M475 74 L475 115"></path>
+        <path d="M430 149 L380 190"></path>
+        <path d="M490 149 L580 190"></path>
+        <path d="M360 224 L360 258"></path>
+        <path d="M400 224 L505 268" class="ml-dashed"></path>
+      </g>
+      <text x="420" y="100" font-size="10" class="d-muted">(…, 0)</text>
+      <text x="500" y="100" font-size="10" class="d-muted">(…, 0)</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Because loss = y·y uses y twice, <code>MulBackward0.next_functions</code> lists <code>AddBackward0</code> twice. Edges point from a node to the nodes that produced its inputs, which is the direction gradients flow.</p>
+
+<h3 id="engine">How backward walks the graph</h3>
+<p>
+  <code>loss.backward()</code> calls <code>torch.autograd.backward</code>, which hands the roots to the C++
+  engine. The engine works in three steps:
+</p>
+<ol>
+  <li><strong>Count dependencies.</strong> Starting from the root, it visits every reachable node once and counts,
+    for each node, how many edges point into it. In the example <code>AddBackward0</code> gets 2.</li>
+  <li><strong>Run ready nodes.</strong> A node is ready when all of its incoming gradients have arrived (its count
+    reaches zero). Their gradients are summed in an input buffer first, so a tensor used twice gets the sum of both
+    contributions, which is the multivariable chain rule. Among ready nodes on one device, the one with the highest
+    <code>sequence_nr</code> (created most recently in the forward pass) runs first. <code>AccumulateGrad</code>
+    nodes have the largest possible sequence number, so leaf gradients are written as soon as they are complete.</li>
+  <li><strong>Release.</strong> After a node runs, unless the graph is being kept, the engine calls its
+    <code>release_variables()</code>, freeing the saved tensors.</li>
+</ol>
+
+<h3 id="retain-graph"><code>retain_graph</code> and <code>create_graph</code></h3>
+<p>
+  Because saved tensors are freed as backward goes, a second <code>backward()</code> through the same nodes fails
+  with "Trying to backward through the graph a second time". Pass <code>retain_graph=True</code> to keep them, for
+  example when two losses share a trunk and you call backward on each. Its default is <code>None</code>, which
+  means "the same as <code>create_graph</code>". <code>create_graph=True</code> records the backward pass itself as
+  a graph, so the gradients are differentiable and you can take second derivatives (Hessian-vector products,
+  gradient penalties). Calling backward on the sum of the losses usually beats retaining the graph.
+</p>
+
+<h3 id="no-grad"><code>no_grad</code>, <code>inference_mode</code> and <code>detach</code></h3>
+<ul>
+  <li><strong><code>torch.no_grad()</code></strong> switches recording off for its block on the current thread.
+    Every result has <code>requires_grad=False</code> and no <code>grad_fn</code>, so no nodes or saved tensors are
+    kept. Use it for evaluation and for in-place parameter updates. Factory functions that take a
+    <code>requires_grad</code> argument (like creating an <code>nn.Parameter</code>) are not affected.</li>
+  <li><strong><code>torch.inference_mode()</code></strong> goes further: it also skips view tracking and version
+    counter bumps, so it is faster, but tensors made inside it can never be used later in a recorded
+    computation.</li>
+  <li><strong><code>t.detach()</code></strong> returns a new tensor that shares storage with <code>t</code> but has
+    no <code>grad_fn</code> and <code>requires_grad=False</code>: a leaf cut off from the graph. Gradients stop at
+    it. It is how you use a value without differentiating through it: a target network in reinforcement learning,
+    a stop-gradient in a contrastive loss, or a value you want to log.</li>
+  <li><strong><code>requires_grad_(False)</code></strong> on parameters freezes them: operations that touch only
+    frozen tensors record nothing.</li>
+</ul>
+
+<h3 id="hooks">Hooks</h3>
+<p>
+  Hooks run your function in the middle of backward:
+</p>
+<ul>
+  <li><strong><code>tensor.register_hook(fn)</code></strong> calls <code>fn(grad)</code> when the gradient with
+    respect to that tensor has been computed. If <code>fn</code> returns a tensor, that replaces the gradient for
+    everything further back. It raises if the tensor does not require gradients. Use it to inspect, clip or
+    rescale a gradient in flight.</li>
+  <li><strong><code>tensor.register_post_accumulate_grad_hook(fn)</code></strong>, leaves only, runs after
+    <code>.grad</code> has been updated and receives the tensor itself. Optimizers can step a parameter the moment
+    its gradient is ready and free the gradient right away.</li>
+  <li><strong><code>node.register_hook(fn)</code></strong> and <strong><code>node.register_prehook(fn)</code></strong>
+    on a <code>grad_fn</code> see the gradients going into and out of one node.</li>
+  <li><strong><code>torch.autograd.graph.saved_tensors_hooks(pack, unpack)</code></strong> intercepts every
+    tensor saved for backward, for example to move it to CPU (<code>save_on_cpu</code>) or compress it.</li>
+</ul>
+<p>Module-level hooks (<code>register_full_backward_hook</code>) are built from these.</p>
+
+<h3 id="custom-function">Custom <code>autograd.Function</code></h3>
+<p>
+  To define your own operation's derivative, subclass <code>torch.autograd.Function</code> with two static
+  methods. <code>forward(ctx, *inputs)</code> computes the output and stashes what backward needs with
+  <code>ctx.save_for_backward(...)</code> (tensors) or as plain attributes on <code>ctx</code> (everything
+  else). <code>backward(ctx, *grad_outputs)</code> returns one gradient per forward input, <code>None</code> for
+  inputs that need none. Call it with <code>MyFn.apply(x)</code>, never <code>MyFn()(x)</code>; its node in the
+  graph is named after the class, <code>MyFnBackward</code>.
+</p>
+<p>
+  The usual reasons are a derivative that is cheaper or more stable than the one autograd would compose, an
+  operation implemented outside PyTorch, or a deliberately different gradient such as the straight-through
+  estimator. Helpers on <code>ctx</code>: <code>mark_dirty</code> for in-place outputs,
+  <code>mark_non_differentiable</code> for outputs like indices, and <code>set_materialize_grads(False)</code> to
+  receive <code>None</code> instead of zeros. Check a hand-written backward with
+  <code>torch.autograd.gradcheck</code>.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>torch.autograd.graph.Node</code></td>
+        <td><code>name()</code>, <code>next_functions</code>, <code>register_hook</code>, <code>register_prehook</code></td>
+        <td>The interface every <code>grad_fn</code> implements.</td>
+        <td><a href="{{ src('torch/autograd/graph.py', 58, 194) }}"><code>graph.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Node.next_functions</code></td>
+        <td>tuple of <code>(Node | None, int)</code>, one per input</td>
+        <td>The edges back to the inputs' nodes.</td>
+        <td><a href="{{ src('torch/autograd/graph.py', 74, 84) }}"><code>graph.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Tensor.backward</code></td>
+        <td><code>gradient=None</code>, <code>retain_graph=None</code>, <code>create_graph=False</code>, <code>inputs=None</code></td>
+        <td>Entry point; forwards to <code>torch.autograd.backward</code>.</td>
+        <td><a href="{{ src('torch/_tensor.py', 566, 625) }}"><code>_tensor.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>torch.autograd.backward</code></td>
+        <td><code>retain_graph</code> defaults to <code>create_graph</code></td>
+        <td>Builds the root gradients and calls the engine.</td>
+        <td><a href="{{ src('torch/autograd/__init__.py', 255, 403) }}"><code>__init__.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Engine::compute_dependencies</code></td>
+        <td>map node → number of incoming edges</td>
+        <td>The counting pass before backward runs.</td>
+        <td><a href="{{ src('torch/csrc/autograd/engine.cpp', 1301, 1367) }}"><code>engine.cpp</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Engine::evaluate_function</code></td>
+        <td>runs a node, releases its saved variables, decrements and queues its successors</td>
+        <td>One step of the backward walk.</td>
+        <td><a href="{{ src('torch/csrc/autograd/engine.cpp', 1109, 1286) }}"><code>engine.cpp</code></a></td>
+      </tr>
+      <tr>
+        <td><code>ReadyQueue::CompareNodeTaskTime</code></td>
+        <td>higher <code>sequence_nr</code> first</td>
+        <td>Which ready node runs next.</td>
+        <td><a href="{{ src('torch/csrc/autograd/engine.h', 91, 106) }}"><code>engine.h</code></a></td>
+      </tr>
+      <tr>
+        <td><code>AccumulateGrad</code></td>
+        <td><code>sequence_nr = UINT64_MAX</code></td>
+        <td>Writes or adds into a leaf's <code>.grad</code>.</td>
+        <td><a href="{{ src('torch/csrc/autograd/functions/accumulate_grad.h', 43, 308) }}"><code>accumulate_grad.h</code></a></td>
+      </tr>
+      <tr>
+        <td><code>ERR_BACKWARD_TWICE</code></td>
+        <td>raised when a freed saved tensor is unpacked</td>
+        <td>The error a second backward without <code>retain_graph</code> gives.</td>
+        <td><a href="{{ src('torch/csrc/autograd/saved_variable.cpp', 291, 296) }}"><code>saved_variable.cpp</code></a></td>
+      </tr>
+      <tr>
+        <td><code>torch.no_grad</code></td>
+        <td>thread-local; decorator or context manager</td>
+        <td>Turns recording off.</td>
+        <td><a href="{{ src('torch/autograd/grad_mode.py', 22, 86) }}"><code>grad_mode.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>torch.inference_mode</code></td>
+        <td><code>mode=True</code></td>
+        <td>Stricter, faster no-grad.</td>
+        <td><a href="{{ src('torch/autograd/grad_mode.py', 213, 302) }}"><code>grad_mode.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Tensor.register_hook</code></td>
+        <td><code>hook(grad) -&gt; Tensor | None</code></td>
+        <td>Inspect or replace a tensor's gradient.</td>
+        <td><a href="{{ src('torch/_tensor.py', 655, 703) }}"><code>_tensor.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Tensor.register_post_accumulate_grad_hook</code></td>
+        <td><code>hook(param) -&gt; None</code>; leaves only</td>
+        <td>Runs after <code>.grad</code> is updated.</td>
+        <td><a href="{{ src('torch/_tensor.py', 705, 765) }}"><code>_tensor.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>saved_tensors_hooks</code></td>
+        <td><code>pack_hook(tensor)</code>, <code>unpack_hook(packed)</code></td>
+        <td>Control how saved tensors are stored.</td>
+        <td><a href="{{ src('torch/autograd/graph.py', 273, 355) }}"><code>graph.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>torch.autograd.Function</code></td>
+        <td>static <code>forward(ctx, ...)</code>, <code>backward(ctx, ...)</code>; <code>apply</code></td>
+        <td>A custom operation with its own derivative.</td>
+        <td><a href="{{ src('torch/autograd/function.py', 555, 655) }}"><code>function.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>FunctionCtx.save_for_backward</code></td>
+        <td>tensors only; read back as <code>ctx.saved_tensors</code></td>
+        <td>Saves inputs or outputs for backward.</td>
+        <td><a href="{{ src('torch/autograd/function.py', 41, 100) }}"><code>function.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-graph">The graph for (w·x + b)²</h3>
+  <p>
+    Take x = {{ f0(ex.x) }} (an input, no gradient), w = {{ f0(ex.w) }} and b = {{ f0(ex.b) }} (parameters,
+    <code>requires_grad=True</code>). Compute a = w·x = {{ f0(v.a) }}, y = a + b = {{ f0(v.y) }} and
+    loss = y·y = {{ f0(v.loss) }}. Three nodes are recorded, in this order:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Tensor</th><th><code>grad_fn</code></th><th>Order created</th><th><code>next_functions</code></th></tr></thead>
+      <tbody>
+        {% for n in g.nodes %}
+        <tr><td>{{ n.tensor }}</td><td><code>{{ n.name }}</code></td><td>{{ n.sequence_nr + 1 }}</td><td>{% for t in n.next %}{% if t is none %}<code>None</code>{% else %}<code>{{ t }}</code>{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    x, w and b are leaves; a, y and loss are not. x does not require gradients, so its edge is <code>None</code> and
+    it never gets a <code>.grad</code>.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-backward">The backward walk</h3>
+  <p>
+    Dependency counts: <code>AddBackward0</code> has 2 incoming edges (y was used twice), every other node 1. The
+    engine starts at <code>loss.grad_fn</code> with gradient 1 and runs:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Step</th><th>Node</th><th>Gradient arriving</th><th>What it sends back</th></tr></thead>
+      <tbody>
+        {% set sends = [
+          "y·1 = " ~ f0(v.y) ~ " on each edge, both to AddBackward0",
+          "the same " ~ f0(g.trace[1].grad) ~ " to MulBackward0 and to b's AccumulateGrad",
+          "b.grad = " ~ f0(g.grads.b),
+          "x·" ~ f0(g.trace[3].grad) ~ " = " ~ f0(g.trace[4].grad) ~ " to w's AccumulateGrad; nothing to x",
+          "w.grad = " ~ f0(g.grads.w),
+        ] %}
+        {% for t in g.trace %}
+        <tr><td>{{ loop.index }}</td><td><code>{{ t.name }}</code></td><td>{{ f0(t.grad) }}</td><td>{{ sends[loop.index0] }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    <code>AddBackward0</code> waits until both of its gradients ({{ f0(v.y) }} + {{ f0(v.y) }}) have arrived. After
+    it runs, two nodes are ready: <code>MulBackward0</code> for a and b's <code>AccumulateGrad</code>.
+    <code>AccumulateGrad</code> has the larger sequence number and goes first. The results match the chain rule:
+    ∂loss/∂w = 2y·x = {{ f0(g.grads.w) }} and ∂loss/∂b = 2y = {{ f0(g.grads.b) }}, and a central finite
+    difference agrees. The intermediate tensors a and y keep <code>.grad = None</code>.
+  </p>
+  <p>
+    Calling <code>loss.backward()</code> a second time now fails: the two <code>MulBackward0</code> nodes freed
+    their saved operands. The message is <q>{{ g.second_backward.split(". ")[0] }}.</q>
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-controls">Changing the graph's behavior</h3>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Change</th><th>w.grad</th><th>b.grad</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td>None (baseline)</td><td>{{ f0(g.grads.w) }}</td><td>{{ f0(g.grads.b) }}</td><td>∂loss/∂w = 2y·x</td></tr>
+        <tr><td><code>backward(retain_graph=True)</code> twice</td><td>{{ f0(c.retained.second) }}</td><td>{{ f0(c.retained.b) }}</td><td>The second call works and adds to <code>.grad</code>: {{ f0(c.retained.first) }} + {{ f0(c.retained.first) }}.</td></tr>
+        <tr><td><code>y.register_hook(lambda g: g * 0.5)</code></td><td>{{ f0(c.hooked.w) }}</td><td>{{ f0(c.hooked.b) }}</td><td>The hook sees ∂loss/∂y = {{ f0(2 * v.y) }} and replaces it with {{ f0(v.y) }} for everything behind y.</td></tr>
+        <tr><td><code>loss = y.detach() * y</code></td><td>{{ f0(c.detached.w) }}</td><td>{{ f0(c.detached.b) }}</td><td>Same value, {{ f0(c.detached.value) }}, but only one factor is in the graph, so the gradient halves.</td></tr>
+        <tr><td><code>with torch.no_grad(): w * x</code></td><td colspan="2">no graph</td><td>The result has <code>requires_grad={{ c.no_grad.requires_grad }}</code>, <code>grad_fn=None</code> and is a leaf.</td></tr>
+        <tr><td><code>loss = clamp(y, 0, {{ f0(ex.clamp_max) }})²</code></td><td>{{ f0(c.clamps.clamp.w) }}</td><td>{{ f0(c.clamps.clamp.b) }}</td><td>y = {{ f0(v.y) }} is above the range, so <code>{{ c.clamps.clamp.name }}</code> passes zero gradient.</td></tr>
+        <tr><td>Straight-through clamp (custom <code>Function</code>)</td><td>{{ f0(st.w) }}</td><td>{{ f0(st.b) }}</td><td>Same forward value {{ f0(st.value) }}, but <code>{{ st.name }}</code> passes the gradient 2·{{ f0(ex.clamp_max) }} = {{ f0(2 * ex.clamp_max) }} through unchanged.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The straight-through gradient is not the derivative of the forward function: <code>gradcheck</code> would
+    reject it, and that is the point. It is how quantized and discrete operations are trained, by pretending in
+    backward that the rounding or clamping step was the identity.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 220" role="img" aria-labelledby="cg-walk-title cg-walk-desc">
+    <title id="cg-walk-title">Backward execution order with dependency counts</title>
+    <desc id="cg-walk-desc">
+      Five numbered steps from left to right: MulBackward0 for loss receives 1, AddBackward0 receives
+      {{ f0(g.trace[1].grad) }} after its dependency count drops from 2 to 0, AccumulateGrad for b receives
+      {{ f0(g.grads.b) }}, MulBackward0 for a receives {{ f0(g.trace[3].grad) }}, and AccumulateGrad for w receives
+      {{ f0(g.grads.w) }}. Below, the saved values of both MulBackward0 nodes are crossed out as freed.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      {% set labels = ["loss.grad_fn", "y.grad_fn", "b", "a.grad_fn", "w"] %}
+      {% set deps = ["root", "deps 2 → 0", "deps 1 → 0", "deps 1 → 0", "deps 1 → 0"] %}
+      {% for t in g.trace %}
+      {% set x0 = 10 + loop.index0 * 138 %}
+      <rect x="{{ x0 }}" y="40" width="124" height="60" rx="4" class="d-box {% if t.name == 'AccumulateGrad' %}ml-weight{% else %}ml-op{% endif %}"></rect>
+      <text x="{{ x0 + 62 }}" y="30" font-weight="bold">{{ loop.index }}</text>
+      <text x="{{ x0 + 62 }}" y="60">{{ t.name }}</text>
+      <text x="{{ x0 + 62 }}" y="76" class="d-muted" font-size="10">{{ labels[loop.index0] }}</text>
+      <text x="{{ x0 + 62 }}" y="92" font-size="10">grad in = {{ f0(t.grad) }}</text>
+      <text x="{{ x0 + 62 }}" y="118" class="d-muted" font-size="10">{{ deps[loop.index0] }}</text>
+      {% if not loop.last %}<path d="M{{ x0 + 124 }} 70 h14" class="d-line" stroke-width="1.5"></path>{% endif %}
+      {% endfor %}
+      <rect x="10" y="145" width="124" height="44" rx="4" class="d-box ml-dashed"></rect>
+      <text x="72" y="164">saved: y, y</text>
+      <text x="72" y="180" class="d-muted" font-size="10">freed after step 1</text>
+      <line x1="30" y1="160" x2="114" y2="160" class="d-line" stroke-width="1"></line>
+      <rect x="424" y="145" width="124" height="44" rx="4" class="d-box ml-dashed"></rect>
+      <text x="486" y="164">saved: w, x</text>
+      <text x="486" y="180" class="d-muted" font-size="10">freed after step 4</text>
+      <line x1="444" y1="160" x2="528" y2="160" class="d-line" stroke-width="1"></line>
+      <text x="279" y="172" class="d-muted" font-size="10">AddBackward0 saves nothing</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Steps 3 and 4 were both ready after step 2; <code>AccumulateGrad</code>'s maximal sequence number puts it first. Without <code>retain_graph=True</code> each node frees its saved values right after it runs.</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>The worked example in PyTorch:</p>
+<pre><code>import torch
+
+x = torch.tensor(2.0)
+w = torch.tensor(3.0, requires_grad=True)
+b = torch.tensor(1.0, requires_grad=True)
+y = w * x + b
+loss = y * y
+
+print(loss.grad_fn)                    # &lt;MulBackward0 ...&gt;
+print(loss.grad_fn.next_functions)     # ((&lt;AddBackward0&gt;, 0), (&lt;AddBackward0&gt;, 0))
+print(y.grad_fn.next_functions)        # ((&lt;MulBackward0&gt;, 0), (&lt;AccumulateGrad&gt;, 0))
+print(w.is_leaf, y.is_leaf)            # True False
+
+loss.backward()
+print(w.grad, b.grad)                  # tensor(28.) tensor(14.)
+# loss.backward()                      # RuntimeError: Trying to backward through the graph a second time ...
+
+with torch.no_grad():
+    z = w * x
+print(z.requires_grad, z.grad_fn)      # False None
+
+
+class StraightThroughClamp(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, t, low, high):
+        return t.clamp(low, high)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output, None, None   # identity for t; low and high get no gradient
+
+
+w.grad = b.grad = None
+y = w * x + b
+c = StraightThroughClamp.apply(y, 0.0, 5.0)
+print(c.grad_fn.name())                # StraightThroughClampBackward
+(c * c).backward()
+print(w.grad, b.grad)                  # tensor(20.) tensor(10.)
+</code></pre>
+
+<p>A minimal engine that follows the same rules, in plain Python (the tested helper behind this page's numbers is a slightly longer version):</p>
+<pre><code>class Node:
+    count = 0
+
+    def __init__(self, name, inputs, backward):
+        self.name, self.backward = name, backward
+        self.next = [t.grad_fn or t.acc if t.requires_grad else None for t in inputs]
+        self.seq = Node.count
+        Node.count += 1
+
+
+def backward(root):
+    deps, stack, seen = {}, [root], {root}
+    while stack:                                   # 1. count incoming edges
+        for n in filter(None, stack.pop().next):
+            deps[n] = deps.get(n, 0) + 1
+            if n not in seen:
+                seen.add(n)
+                stack.append(n)
+    buf, ready = {root: 1.0}, [root]
+    while ready:                                   # 2. run newest ready node
+        ready.sort(key=lambda n: n.seq)
+        node = ready.pop()
+        grads = node.backward(buf.pop(node))       # AccumulateGrad: adds into .grad, returns ()
+        for n, g in zip(node.next, grads):
+            if n is None:
+                continue
+            buf[n] = buf.get(n, 0.0) + g           # sum contributions
+            deps[n] -= 1
+            if deps[n] == 0:
+                ready.append(n)
+</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Dynamic graphs.</strong> Rebuilding the graph every step costs Python overhead per operation and hides the whole program from the compiler, but it makes control flow, debugging and variable shapes trivial. <code>torch.compile</code> recovers much of the speed by tracing the same Python into a fused graph.</li>
+  <li><strong>Memory.</strong> Saved tensors scale with depth, width and batch size. <code>no_grad</code> during evaluation, activation checkpointing (recompute instead of save) and <code>saved_tensors_hooks</code> to offload are the levers.</li>
+  <li><strong><code>retain_graph=True</code></strong> keeps every saved tensor alive until the graph is dropped. Summing losses and calling backward once is almost always better.</li>
+  <li><strong><code>detach</code> versus <code>no_grad</code>.</strong> <code>detach</code> cuts one tensor out and keeps recording everything else; <code>no_grad</code> stops recording for a block. Detaching shares storage, so an in-place change to the detached tensor changes the original and can break a later backward.</li>
+  <li><strong>Hooks</strong> are powerful and easy to get wrong: a tensor hook that returns a new gradient changes training silently, and hooks registered inside a loop pile up unless you keep the handle and call <code>remove()</code>.</li>
+  <li><strong>Custom Functions</strong> buy control over the derivative at the cost of correctness being your problem. Run <code>gradcheck</code> in double precision on small inputs, unless the gradient is deliberately not the true derivative.</li>
+</ul>
+
+<h3 id="check-yourself">Check yourself</h3>
+
+<details class="ml-quiz">
+  <summary>Why does <code>loss.grad_fn.next_functions</code> list the same node twice for loss = y * y?</summary>
+  <p>There is one edge per input, and both inputs are y, whose <code>grad_fn</code> is <code>AddBackward0</code>. The engine sums the two gradients in that node's input buffer before running it.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why do you need <code>optimizer.zero_grad()</code>?</summary>
+  <p><code>AccumulateGrad</code> adds into <code>.grad</code> rather than overwriting it, so without zeroing (or setting to None), each step's gradient includes every earlier step's.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Would a second <code>backward()</code> fail if the graph contained only additions?</summary>
+  <p>No. The error comes from unpacking a freed saved tensor, and <code>AddBackward0</code> saves nothing. It fails here because <code>MulBackward0</code> needs its operands.</p>
+</details>
+<details class="ml-quiz">
+  <summary>You compute <code>pred = model(x)</code> inside <code>torch.no_grad()</code> and then call <code>loss(pred, y).backward()</code>. What happens?</summary>
+  <p>It raises: <code>pred</code> has no <code>grad_fn</code> and does not require gradients, so the loss has no graph to walk ("element 0 of tensors does not require grad and does not have a grad_fn").</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Paszke et al. <em>Automatic Differentiation in PyTorch.</em> NIPS Autodiff Workshop, 2017.</li>
+  <li>Paszke et al. <em>PyTorch: An Imperative Style, High-Performance Deep Learning Library.</em> NeurIPS, 2019 (<a href="https://arxiv.org/abs/1912.01703">arXiv 1912.01703</a>).</li>
+  <li>Baydin, Pearlmutter, Radul and Siskind. <em>Automatic Differentiation in Machine Learning: a Survey.</em> JMLR, 2018 (<a href="https://arxiv.org/abs/1502.05767">arXiv 1502.05767</a>).</li>
+  <li>Bengio, Léonard and Courville. <em>Estimating or Propagating Gradients Through Stochastic Neurons for Conditional Computation.</em> 2013 (<a href="https://arxiv.org/abs/1308.3432">arXiv 1308.3432</a>; the straight-through estimator).</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/autograd/graph.py', 58, 194) }}"><code>torch/autograd/graph.py</code></a>, <a href="{{ src('torch/autograd/function.py', 555, 655) }}"><code>torch/autograd/function.py</code></a>, <a href="{{ src('torch/_tensor.py', 566, 625) }}"><code>torch/_tensor.py</code></a>, <a href="{{ src('torch/autograd/function.py', 678, 726) }}"><code>once_differentiable</code></a>, <a href="{{ src('torch/autograd/function.py', 204, 234) }}"><code>mark_non_differentiable</code></a>, <a href="{{ src('torch/autograd/function.py', 276, 322) }}"><code>set_materialize_grads</code></a>, and the engine in <a href="{{ src('torch/csrc/autograd/engine.cpp', 1301, 1367) }}"><code>engine.cpp</code></a>.</li>
+</ul>

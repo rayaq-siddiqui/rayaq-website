@@ -432,8 +432,8 @@ the pinned 3.4.2; the linked split code is from the pin.
 35. `activation-functions` ✓
 36. `linear-algebra-toolkit` ✓
 37. `missing-data` ✓
-38. `computation-graphs` ← next
-39. `cnns`
+38. `computation-graphs` ✓
+39. `cnns` ← next
 40. `autoregressive-models`
 41. `tokenization`
 42. `nearest-neighbors`

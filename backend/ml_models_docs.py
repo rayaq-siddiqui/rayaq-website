@@ -621,7 +621,7 @@ PAGES = [
             "pytorch:torch/autograd/function.py",
             "pytorch:torch/_tensor.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "initialization",
