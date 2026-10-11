@@ -1265,3 +1265,43 @@ def test_interval_dp_helpers_match_the_page():
     assert "force a margin of 9" in body
     assert "collects 16 and the second 7" in body
     assert "is 16 stones out of 23" in body
+
+
+def test_state_machine_dp_helpers_match_the_page():
+    def brute_cooldown(prices):
+        def go(day, holding, cooling):
+            if day == len(prices):
+                return 0
+            best = go(day + 1, holding, False)
+            if holding:
+                best = max(best, prices[day] + go(day + 1, False, True))
+            elif not cooling:
+                best = max(best, -prices[day] + go(day + 1, True, False))
+            return best
+
+        return go(0, False, False)
+
+    def brute_signs(nums, target):
+        import itertools
+
+        return sum(1 for signs in itertools.product((1, -1), repeat=len(nums)) if sum(s * v for s, v in zip(signs, nums)) == target)
+
+    prices = [6, 1, 4, 9, 2, 5, 8, 3]
+    cooldown = leetcode_docs.stock_cooldown_table(prices)
+    assert cooldown["answer"] == 11 == brute_cooldown(prices)
+    assert cooldown["rows"][3] == (-1, 8, 3) and cooldown["rows"][-1] == (5, 6, 11)
+    for sample in ([], [5], [3, 1], [1, 2, 3, 0, 2], [7, 6, 4, 3, 1]):
+        assert leetcode_docs.stock_cooldown_table(sample)["answer"] == brute_cooldown(sample)
+    unlimited = leetcode_docs.stock_unlimited_states(prices)
+    assert unlimited["answer"] == unlimited["rises"] == 14
+    nums = [2, 3, 1, 4, 2]
+    signed = leetcode_docs.target_sum_states(nums, 4)
+    assert signed["answer"] == 3 == brute_signs(nums, 4) == leetcode_docs.target_sum_of(nums, 4)["answer"]
+    assert [len(layer) for layer in signed["states"]] == [1, 2, 4, 7, 11, 13]
+    assert leetcode_docs.target_sum_states([], 0)["answer"] == 1
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/state-machine-dp").get_data(as_text=True))
+    assert "best profit with a cooldown is 11" in body
+    assert "<code>5, 6, 11</code>" in body
+    assert "ends at 14, and adding up the rises also gives 14" in body
+    assert "1, 2, 4, 7, 11, 13 distinct sums" in body
+    assert "3 sign assignments land on the target" in body

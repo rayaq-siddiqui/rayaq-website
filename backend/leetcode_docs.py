@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -6453,6 +6453,39 @@ _HEADING = re.compile(r'<h([23]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 
 
+def stock_cooldown_table(prices):
+    """Three states per day: hold (own a share), sold (sold today) and rest (own nothing, free to buy). Day 0 starts with sold = 0, which equals rest and never beats it. rows[i] is (hold, sold, rest) after day i; the answer is the larger of sold and rest on the last day."""
+    hold, sold, rest = float("-inf"), 0, 0
+    rows = []
+    for day, price in enumerate(prices):
+        hold, sold, rest = max(hold, rest - price), (hold + price if day else 0), max(rest, sold)
+        rows.append((hold, sold, rest))
+    return {"rows": rows, "answer": max(rows[-1][1], rows[-1][2]) if rows else 0}
+
+
+def stock_unlimited_states(prices):
+    """Unlimited transactions, no cooldown: two states, holding and free. Also returns the sum of positive day-over-day increases, which is always the same number."""
+    hold, free = float("-inf"), 0
+    rows = []
+    for price in prices:
+        hold, free = max(hold, free - price), max(free, hold + price)
+        rows.append((hold, free))
+    rises = sum(max(0, b - a) for a, b in zip(prices, prices[1:]))
+    return {"rows": rows, "answer": free, "rises": rises}
+
+
+def target_sum_states(nums, target):
+    """Walk the numbers keeping a map from running sum to the number of sign choices that reach it. states[i] is the map after i numbers."""
+    states = [{0: 1}]
+    for value in nums:
+        nxt = {}
+        for running, ways in states[-1].items():
+            nxt[running + value] = nxt.get(running + value, 0) + ways
+            nxt[running - value] = nxt.get(running - value, 0) + ways
+        states.append(nxt)
+    return {"states": states, "answer": states[-1].get(target, 0)}
+
+
 def problem_url(slug):
     return f"https://leetcode.com/problems/{slug}/"
 
@@ -6701,6 +6734,9 @@ def render(slug, render_template):
         "burst_balloons_table": burst_balloons_table,
         "stone_game_diff_table": stone_game_diff_table,
         "stone_game_two_value": stone_game_two_value,
+        "stock_cooldown_table": stock_cooldown_table,
+        "stock_unlimited_states": stock_unlimited_states,
+        "target_sum_states": target_sum_states,
         "edit_distance_table": edit_distance_table,
         "interleave_table": interleave_table,
         "distinct_subsequences_table": distinct_subsequences_table,
