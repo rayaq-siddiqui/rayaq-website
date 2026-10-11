@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-11 (twenty-fifth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: queue items 1-36, the last being `linear-algebra-toolkit`. The next page is
-`missing-data` (queue item 37).
+format. Ready pages: queue items 1-37, the last being `missing-data`. The next page is
+`computation-graphs` (queue item 38).
 
 ## Pins
 
@@ -232,7 +232,8 @@ Paths are under `sklearn/`.
   `learning_curve` 1776, `validation_curve` 2283.
 - `preprocessing/_data.py`: `StandardScaler` 742 (verified range 742-1189), `MinMaxScaler` 305, `RobustScaler` 1552.
 - `preprocessing/_encoders.py`: `OneHotEncoder` 474, `OrdinalEncoder` 1263.
-- `impute/_base.py`: `SimpleImputer` 171.
+- `impute/_base.py`: `_BaseImputer` 95-168, `SimpleImputer` 171-784, `MissingIndicator` 787-1149
+  (all verified, used by `missing-data`); `impute/_iterative.py` `IterativeImputer` 60-1002.
 - `pipeline.py`: `Pipeline` 93.
 - `calibration.py`: `CalibratedClassifierCV` 74, `calibration_curve` 1227.
 - `metrics/_ranking.py`: `roc_auc_score` 511, `precision_recall_curve` 1059.
@@ -336,7 +337,7 @@ Open gaps from these runs:
   `_incremental_fit_estimator`, and the `Lasso` end line, were inferred, not checked.
 - The SwiGLU "hidden size reduced to 2/3" remark is from memory of common practice.
 
-## Twenty-fifth run (2026-10-11) — linear-algebra-toolkit
+## Twenty-fifth run (2026-10-11) — linear-algebra-toolkit, missing-data
 
 | Commit | What |
 |---|---|
@@ -361,6 +362,36 @@ are still the latest stable releases; no pin moved.
 Gaps: the references (Eckart and Young 1936, Trefethen and Bau, Strang, Halko et al. 2011, Saxe et
 al. 2014, Hu et al. 2021) are cited from memory and were not opened. The torch snippet's printed
 values come from the stdlib helpers, not from running torch.
+
+### missing-data
+
+| Commit | What |
+|---|---|
+| `590aa67` `ml-models: add tested missing-data helpers` | `column_fill_values`, `impute_column`, `missing_indicator`, `complete_rows`, `mechanism_estimates` (MCAR/MAR/MNAR, n=4000), `iterative_impute`/`iterative_comparison` (round-robin OLS, sklearn's stopping rule), `indicator_comparison`, `missing_split_scan` (XGBoost's forward-then-backward order, ties keep missing right), `routing_example`, with nine tests |
+| `64c0ccc` `ml-models: build the missing-data page` | The page, `ready`, queue ✓ |
+
+Verified at scikit-learn 1.9.1: `impute/_base.py` `_BaseImputer` 95-168,
+`_concatenate_indicator` 137-156, `SimpleImputer` 171-784, `_dense_fit` 529-599, `transform`
+601-688, `MissingIndicator` 787-1149; `impute/_iterative.py` `IterativeImputer` 60-1002,
+`__init__` 314-352, `_impute_one_feature` 354-475, `_get_ordered_idx` 513-551,
+`_initial_imputation` 591-668, `fit_transform` 723-873 (stop rule 819-871);
+`_hist_gradient_boosting/splitting.pyx` scan dispatch 549-574, `sample_goes_left` 1149-1169;
+`grower.py` no-missing rule 546-552.
+
+Verified at XGBoost v3.4.2: `src/tree/hist/evaluate_splits.h` `SplitContainsMissingValues` 47-57,
+`EnumerateSplit` 200-264, dispatch 322-326; `src/tree/param.h` `NeedReplace` 410-430, `Update`
+450-476 (`default_left` in bit 31 of `sindex`).
+
+Cross-checks (scratch venv, scikit-learn 1.9.1 and XGBoost 3.2.0; 3.4.2 is not on the package
+mirror): `SimpleImputer` statistics and `MissingIndicator` match the helpers;
+`IterativeImputer(LinearRegression())` matches `iterative_impute` to 1.7e-15 with `n_iter_` 9;
+the XGBoost depth-1 dump is `[f0<4] missing=1, gain=2.63888741`, leaves 0.833333373 / 2.25, as
+the page states; trained without missing values the split defaults right; sklearn HGB picks
+threshold 3.5 with `missing_go_to_left=1`.
+
+Gaps: Rubin 1976, Little and Rubin, van Buuren and Groothuis-Oudshoorn 2011 and Chen and
+Guestrin 2016 are cited from memory and were not opened. The XGBoost cross-check ran 3.2.0, not
+the pinned 3.4.2; the linked split code is from the pin.
 
 ## Queue
 
