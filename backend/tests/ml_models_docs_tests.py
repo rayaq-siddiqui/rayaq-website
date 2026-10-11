@@ -2151,3 +2151,115 @@ def test_relu_active_fraction_collapses_with_a_negative_bias():
     assert 0.45 < ml_models_docs.relu_active_fraction(0.0) < 0.55
     assert ml_models_docs.relu_active_fraction(-5.0) == 0.0
     assert ml_models_docs.relu_active_fraction(-3.0) < 0.01
+
+
+def _close_matrices(first, second, tol=1e-9):
+    return all(abs(a - b) < tol for r1, r2 in zip(first, second) for a, b in zip(r1, r2))
+
+
+def test_jacobi_eigh_matches_the_closed_form_and_sorts_ascending():
+    eigen = ml_models_docs.jacobi_eigh([[2, 1], [1, 2]])
+    assert [round(x, 12) for x in eigen["values"]] == [1.0, 3.0]
+    closed = ml_models_docs.symmetric_eigen_2x2([[2, 1], [1, 2]])
+    assert abs(eigen["values"][1] - closed["values"][0]) < 1e-12
+    for value, vector in zip(eigen["values"], eigen["vectors"]):
+        image = [ml_models_docs.dot_product(row, vector) for row in [[2, 1], [1, 2]]]
+        assert all(abs(a - value * b) < 1e-12 for a, b in zip(image, vector))
+
+
+def test_jacobi_eigh_rebuilds_a_symmetric_3x3():
+    s = [[4, 1, 2], [1, 3, 0], [2, 0, 5]]
+    eigen = ml_models_docs.jacobi_eigh(s)
+    q = ml_models_docs.transpose(eigen["vectors"])
+    rebuilt = ml_models_docs.matmul(
+        ml_models_docs.matmul(q, [[v if i == j else 0 for j, v in enumerate(eigen["values"])] for i in range(3)]),
+        eigen["vectors"],
+    )
+    assert _close_matrices(rebuilt, s)
+    assert abs(sum(eigen["values"]) - 12) < 1e-12
+
+
+def test_power_iteration_converges_at_the_eigenvalue_ratio():
+    example = ml_models_docs.EIGEN_EXAMPLE
+    trace = ml_models_docs.power_iteration(example["matrix"], example["start"], example["steps"])
+    errors = [3 - step["value"] for step in trace]
+    assert all(e > 0 for e in errors)
+    for before, after in zip(errors, errors[1:]):
+        assert abs(after / before - 1 / 9) < 0.02
+
+
+def test_svd_of_the_geometry_example():
+    factors = ml_models_docs.svd(ml_models_docs.SVD_EXAMPLE)
+    assert abs(factors["S"][0] - 3 * math.sqrt(5)) < 1e-12
+    assert abs(factors["S"][1] - math.sqrt(5)) < 1e-12
+    assert _close_matrices(ml_models_docs.from_svd(factors), ml_models_docs.SVD_EXAMPLE)
+    assert abs(ml_models_docs.condition_number(ml_models_docs.SVD_EXAMPLE) - 3) < 1e-12
+
+
+def test_svd_factors_are_orthonormal_for_tall_and_wide_matrices():
+    for matrix in (ml_models_docs.RATINGS_EXAMPLE["ratings"], [[1, 2, 3], [4, 5, 6]]):
+        factors = ml_models_docs.svd(matrix)
+        k = len(factors["S"])
+        assert factors["S"] == sorted(factors["S"], reverse=True)
+        assert _close_matrices(ml_models_docs.matmul(factors["Vh"], ml_models_docs.transpose(factors["Vh"])), ml_models_docs.identity(k))
+        assert _close_matrices(ml_models_docs.matmul(ml_models_docs.transpose(factors["U"]), factors["U"]), ml_models_docs.identity(k))
+        assert _close_matrices(ml_models_docs.from_svd(factors), matrix)
+
+
+def test_low_rank_error_is_the_sum_of_dropped_squared_singular_values():
+    errors = ml_models_docs.low_rank_errors(ml_models_docs.RATINGS_EXAMPLE["ratings"])
+    assert errors[0]["error"] == pytest.approx(214)
+    for entry in errors:
+        assert entry["error"] == pytest.approx(entry["dropped"], abs=1e-9)
+    assert [e["error"] for e in errors] == sorted((e["error"] for e in errors), reverse=True)
+    assert errors[2]["kept_share"] > 0.98
+
+
+def test_eckart_young_beats_other_rank_one_choices():
+    ratings = ml_models_docs.RATINGS_EXAMPLE["ratings"]
+    best = ml_models_docs.low_rank_errors(ratings)[1]["error"]
+    rng = __import__("random").Random(0)
+    for _ in range(50):
+        v = [rng.uniform(-1, 1) for _ in range(4)]
+        n = ml_models_docs.vector_norm(v)
+        v = [x / n for x in v]
+        u = [ml_models_docs.dot_product(row, v) for row in ratings]
+        error = sum((ratings[i][j] - u[i] * v[j]) ** 2 for i in range(5) for j in range(4))
+        assert error >= best - 1e-9
+
+
+def test_matrix_rank_uses_the_torch_tolerance():
+    assert ml_models_docs.matrix_rank(ml_models_docs.RANK_EXAMPLE) == 2
+    assert ml_models_docs.matrix_rank(ml_models_docs.identity(3)) == 3
+    assert ml_models_docs.rank_from_singular_values([1.0, 1e-17], (2, 2)) == 1
+    assert ml_models_docs.rank_from_singular_values([1.0, 0.1], (2, 2), atol=0.5) == 1
+
+
+def test_an_ill_conditioned_solve_amplifies_a_tiny_change():
+    result = ml_models_docs.perturbed_solve(ml_models_docs.CONDITION_EXAMPLE)
+    assert [round(x, 6) for x in result["x"]] == [1.0, 1.0]
+    assert [round(x, 6) for x in result["x_nudged"]] == [0.0, 2.0]
+    assert 40000 < result["cond"] < 40004
+    assert 1000 < result["amplification"] <= result["cond"]
+
+
+def test_unit_circle_image_reaches_the_singular_values():
+    points = ml_models_docs.unit_circle_image(ml_models_docs.SVD_EXAMPLE, count=720)
+    lengths = [ml_models_docs.vector_norm(p["out"]) for p in points]
+    assert max(lengths) == pytest.approx(3 * math.sqrt(5), rel=1e-4)
+    assert min(lengths) == pytest.approx(math.sqrt(5), rel=1e-4)
+
+
+def test_lora_param_counts():
+    counts = ml_models_docs.lora_param_counts(4096, 4096, 8)
+    assert counts == {"full": 16777216, "lora": 65536, "share": 65536 / 16777216}
+
+
+def test_svd_stages_rotate_stretch_then_rotate_to_the_image():
+    stages = ml_models_docs.svd_stages(ml_models_docs.SVD_EXAMPLE, count=36)
+    factors = ml_models_docs.svd(ml_models_docs.SVD_EXAMPLE)
+    for rotated in stages["rotated"]:
+        assert ml_models_docs.vector_norm(rotated) == pytest.approx(1)
+    for stretched, image in zip(stages["stretched"], stages["image"]):
+        rebuilt = [ml_models_docs.dot_product(row, stretched) for row in factors["U"]]
+        assert rebuilt == pytest.approx(image)

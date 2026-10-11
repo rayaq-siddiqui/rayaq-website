@@ -1471,6 +1471,20 @@ LINEAR_EXAMPLE = {
 
 INVERSE_EXAMPLE = [[2, 1], [1, 1]]
 
+EIGEN_EXAMPLE = {"matrix": [[2, 1], [1, 2]], "start": [1, 0], "steps": 6}
+
+SVD_EXAMPLE = [[3, 0], [4, 5]]
+
+RATINGS_EXAMPLE = {
+    "users": ["Ana", "Ben", "Cy", "Dee", "Eli"],
+    "films": ["Alien", "Heat", "Up", "Coco"],
+    "ratings": [[5, 4, 1, 1], [4, 5, 1, 2], [1, 1, 5, 4], [2, 1, 4, 5], [3, 3, 3, 3]],
+}
+
+RANK_EXAMPLE = [[1, 2, 3], [2, 4, 6], [1, 0, 1]]
+
+CONDITION_EXAMPLE = {"a": [[1, 1], [1, 1.0001]], "b": [2, 2.0001], "nudged": [2, 2.0002]}
+
 SLOPE_EXAMPLE = {"x": 3, "steps": [1, 0.1, 0.01, 0.001]}
 
 BOWL_EXAMPLE = {"scale": [1, 3], "start": [3, 2], "lr": 0.1, "steps": 6, "unstable_lr": 0.4}
@@ -2092,6 +2106,190 @@ def inverse_2x2(matrix):
     if determinant == 0:
         raise ValueError("matrix is singular")
     return [[d / determinant, -b / determinant], [-c / determinant, a / determinant]]
+
+
+def jacobi_eigh(matrix, tol=1e-12, sweeps=100):
+    n = len(matrix)
+    a = [list(map(float, row)) for row in matrix]
+    v = [[float(i == j) for j in range(n)] for i in range(n)]
+    for _ in range(sweeps):
+        off = sum(a[i][j] ** 2 for i in range(n) for j in range(n) if i != j)
+        if off < tol:
+            break
+        for p in range(n - 1):
+            for q in range(p + 1, n):
+                if abs(a[p][q]) < 1e-300:
+                    continue
+                theta = (a[q][q] - a[p][p]) / (2 * a[p][q])
+                t = math.copysign(1.0, theta) / (abs(theta) + math.hypot(theta, 1.0))
+                c = 1 / math.hypot(t, 1.0)
+                s = t * c
+                for k in range(n):
+                    akp, akq = a[k][p], a[k][q]
+                    a[k][p], a[k][q] = c * akp - s * akq, s * akp + c * akq
+                for k in range(n):
+                    apk, aqk = a[p][k], a[q][k]
+                    a[p][k], a[q][k] = c * apk - s * aqk, s * apk + c * aqk
+                for k in range(n):
+                    vkp, vkq = v[k][p], v[k][q]
+                    v[k][p], v[k][q] = c * vkp - s * vkq, s * vkp + c * vkq
+    order = sorted(range(n), key=lambda i: a[i][i])
+    values = [a[i][i] for i in order]
+    vectors = [_sign_fixed([v[k][i] for k in range(n)]) for i in order]
+    return {"values": values, "vectors": vectors}
+
+
+def _sign_fixed(vector):
+    pivot = max(vector, key=abs)
+    return [-x for x in vector] if pivot < 0 else vector
+
+
+def power_iteration(matrix, start, steps):
+    vector = list(map(float, start))
+    trace = []
+    for _ in range(steps):
+        image = [dot_product(row, vector) for row in matrix]
+        length = vector_norm(image)
+        vector = [x / length for x in image]
+        rayleigh = dot_product(vector, [dot_product(row, vector) for row in matrix])
+        trace.append({"vector": vector, "value": rayleigh})
+    return trace
+
+
+def svd(matrix, sweeps=60):
+    rows, cols = len(matrix), len(matrix[0])
+    if rows < cols:
+        factors = svd(transpose(matrix), sweeps)
+        return {"U": transpose(factors["Vh"]), "S": factors["S"], "Vh": transpose(factors["U"])}
+    columns = [[float(matrix[i][j]) for i in range(rows)] for j in range(cols)]
+    right = [[float(i == j) for i in range(cols)] for j in range(cols)]
+    for _ in range(sweeps):
+        rotated = False
+        for p in range(cols - 1):
+            for q in range(p + 1, cols):
+                alpha = dot_product(columns[p], columns[p])
+                beta = dot_product(columns[q], columns[q])
+                gamma = dot_product(columns[p], columns[q])
+                if abs(gamma) <= 1e-15 * math.sqrt(alpha * beta) or gamma == 0:
+                    continue
+                rotated = True
+                zeta = (beta - alpha) / (2 * gamma)
+                t = math.copysign(1.0, zeta) / (abs(zeta) + math.hypot(zeta, 1.0))
+                c = 1 / math.hypot(t, 1.0)
+                s = c * t
+                for vectors in (columns, right):
+                    vp, vq = vectors[p], vectors[q]
+                    vectors[p] = [c * a - s * b for a, b in zip(vp, vq)]
+                    vectors[q] = [s * a + c * b for a, b in zip(vp, vq)]
+        if not rotated:
+            break
+    singular = [vector_norm(column) for column in columns]
+    order = sorted(range(cols), key=lambda j: -singular[j])
+    left, vh = [], []
+    for j in order:
+        u = [x / singular[j] for x in columns[j]] if singular[j] > 0 else [0.0] * rows
+        v = right[j]
+        if max(v, key=abs) < 0:
+            u, v = [-x for x in u], [-x for x in v]
+        left.append(u)
+        vh.append(v)
+    return {"U": transpose(left), "S": [singular[j] for j in order], "Vh": vh}
+
+
+def from_svd(factors, k=None):
+    k = len(factors["S"]) if k is None else k
+    rows, cols = len(factors["U"]), len(factors["Vh"][0])
+    out = [[0.0] * cols for _ in range(rows)]
+    for r in range(k):
+        sigma, v = factors["S"][r], factors["Vh"][r]
+        for i in range(rows):
+            u = factors["U"][i][r] * sigma
+            for j in range(cols):
+                out[i][j] += u * v[j]
+    return out
+
+
+def frobenius_norm(matrix):
+    return math.sqrt(sum(x * x for row in matrix for x in row))
+
+
+def low_rank_errors(matrix):
+    factors = svd(matrix)
+    total = frobenius_norm(matrix) ** 2
+    out = []
+    for k in range(len(factors["S"]) + 1):
+        approx = from_svd(factors, k)
+        residual = [[a - b for a, b in zip(r1, r2)] for r1, r2 in zip(matrix, approx)]
+        error = frobenius_norm(residual) ** 2
+        out.append({
+            "k": k,
+            "error": error,
+            "dropped": sum(s * s for s in factors["S"][k:]),
+            "kept_share": 1 - error / total,
+        })
+    return out
+
+
+def rank_from_singular_values(singular, shape, rtol=None, atol=0.0):
+    rtol = max(shape) * 2.0 ** -52 if rtol is None else rtol
+    threshold = max(atol, singular[0] * rtol) if singular else atol
+    return sum(1 for s in singular if s > threshold)
+
+
+def matrix_rank(matrix, rtol=None, atol=0.0):
+    return rank_from_singular_values(svd(matrix)["S"], (len(matrix), len(matrix[0])), rtol, atol)
+
+
+def condition_number(matrix):
+    singular = svd(matrix)["S"]
+    return math.inf if singular[-1] == 0 else singular[0] / singular[-1]
+
+
+def solve_2x2(matrix, rhs):
+    inverse = inverse_2x2(matrix)
+    return [dot_product(row, rhs) for row in inverse]
+
+
+def perturbed_solve(example):
+    a, b, nudged = example["a"], example["b"], example["nudged"]
+    x, x_nudged = solve_2x2(a, b), solve_2x2(a, nudged)
+    rhs_change = vector_norm([p - q for p, q in zip(nudged, b)]) / vector_norm(b)
+    x_change = vector_norm([p - q for p, q in zip(x_nudged, x)]) / vector_norm(x)
+    return {
+        "x": x,
+        "x_nudged": x_nudged,
+        "rhs_change": rhs_change,
+        "x_change": x_change,
+        "amplification": x_change / rhs_change,
+        "cond": condition_number(a),
+    }
+
+
+def unit_circle_image(matrix, count=72):
+    points = []
+    for k in range(count + 1):
+        t = 2 * math.pi * k / count
+        x = [math.cos(t), math.sin(t)]
+        points.append({"in": x, "out": [dot_product(row, x) for row in matrix]})
+    return points
+
+
+def svd_stages(matrix, count=72):
+    factors = svd(matrix)
+    stages = {"circle": [], "rotated": [], "stretched": [], "image": []}
+    for point in unit_circle_image(matrix, count):
+        rotated = [dot_product(row, point["in"]) for row in factors["Vh"]]
+        stages["circle"].append(point["in"])
+        stages["rotated"].append(rotated)
+        stages["stretched"].append([s * x for s, x in zip(factors["S"], rotated)])
+        stages["image"].append(point["out"])
+    return stages
+
+
+def lora_param_counts(d_out, d_in, rank):
+    full = d_out * d_in
+    low = rank * (d_out + d_in)
+    return {"full": full, "lora": low, "share": low / full}
 
 
 def square(x):
@@ -4914,6 +5112,22 @@ def render(slug, render_template):
         "scaled_gradient_roundtrip": scaled_gradient_roundtrip,
         "grad_scaler_trace": grad_scaler_trace,
         "training_memory": training_memory,
+        "eigen_example": EIGEN_EXAMPLE,
+        "svd_example": SVD_EXAMPLE,
+        "ratings_example": RATINGS_EXAMPLE,
+        "rank_example": RANK_EXAMPLE,
+        "condition_example": CONDITION_EXAMPLE,
+        "jacobi_eigh": jacobi_eigh,
+        "power_iteration": power_iteration,
+        "svd": svd,
+        "from_svd": from_svd,
+        "low_rank_errors": low_rank_errors,
+        "matrix_rank": matrix_rank,
+        "condition_number": condition_number,
+        "perturbed_solve": perturbed_solve,
+        "unit_circle_image": unit_circle_image,
+        "svd_stages": svd_stages,
+        "lora_param_counts": lora_param_counts,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
