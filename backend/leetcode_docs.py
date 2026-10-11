@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy", "kadanes-algorithm"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -6546,6 +6546,46 @@ def straights_groups(hand, group_size):
     return groups
 
 
+def kadane_trace(nums):
+    """ending[i] is the best sum of a subarray that ends at i. Returns that list, the best overall sum and the (first, last) indices of the leftmost best subarray."""
+    ending, best, span, begin = [], None, (0, 0), 0
+    for i, value in enumerate(nums):
+        if i and ending[-1] > 0:
+            ending.append(ending[-1] + value)
+        else:
+            ending.append(value)
+            begin = i
+        if best is None or ending[-1] > best:
+            best, span = ending[-1], (begin, i)
+    return {"ending": ending, "best": best, "span": span}
+
+
+def min_subarray_sum(nums):
+    """Smallest sum of a non-empty subarray: Kadane on the negated values."""
+    return -kadane_trace([-value for value in nums])["best"]
+
+
+def circular_max_subarray(nums):
+    """Maximum non-empty subarray of a circular array: the larger of the plain maximum and the total minus the minimum subarray, except when every value is negative (then the wrap would be empty)."""
+    total = sum(nums)
+    straight = kadane_trace(nums)["best"]
+    lowest = min_subarray_sum(nums)
+    wrapped = total - lowest
+    use_wrap = wrapped > straight and lowest != total
+    return {"total": total, "straight": straight, "lowest": lowest, "wrapped": wrapped, "answer": wrapped if use_wrap else straight}
+
+
+def max_product_pairs(nums):
+    """Maximum product subarray: track the largest and smallest product ending at each index, since a negative value swaps them. rows[i] is (largest, smallest) ending at i."""
+    high = low = nums[0]
+    rows, best = [(high, low)], high
+    for value in nums[1:]:
+        high, low = max(value, high * value, low * value), min(value, high * value, low * value)
+        rows.append((high, low))
+        best = max(best, high)
+    return {"rows": rows, "best": best}
+
+
 def problem_url(slug):
     return f"https://leetcode.com/problems/{slug}/"
 
@@ -6796,6 +6836,9 @@ def render(slug, render_template):
         "stone_game_two_value": stone_game_two_value,
         "stock_cooldown_table": stock_cooldown_table,
         "jump_reach_trace": jump_reach_trace,
+        "kadane_trace": kadane_trace,
+        "circular_max_subarray": circular_max_subarray,
+        "max_product_pairs": max_product_pairs,
         "min_jumps_levels": min_jumps_levels,
         "gas_station_trace": gas_station_trace,
         "straights_groups": straights_groups,

@@ -1386,3 +1386,46 @@ def test_greedy_helpers_match_the_page():
     assert "<code>-1, -1, 0, 2, 3, 2</code>" in body
     assert "the starting station is 2" in body
     assert "<code>1, 2, 3</code>; <code>3, 4, 5</code>; <code>4, 5, 6</code>" in body
+
+
+def test_kadane_helpers_match_the_page():
+    def brute_best(nums):
+        return max(sum(nums[i : j + 1]) for i in range(len(nums)) for j in range(i, len(nums)))
+
+    def brute_circular(nums):
+        n = len(nums)
+        return max(sum(nums[(i + k) % n] for k in range(length)) for i in range(n) for length in range(1, n + 1))
+
+    def brute_product(nums):
+        best = nums[0]
+        for i in range(len(nums)):
+            product = 1
+            for j in range(i, len(nums)):
+                product *= nums[j]
+                best = max(best, product)
+        return best
+
+    row = [3, -4, 2, -1, 5, -6, 1, 4]
+    trace = leetcode_docs.kadane_trace(row)
+    assert trace == {"ending": [3, -1, 2, 1, 6, 0, 1, 5], "best": 6, "span": (2, 4)}
+    assert sum(row[trace["span"][0] : trace["span"][1] + 1]) == trace["best"]
+    circular = leetcode_docs.circular_max_subarray(row)
+    assert (circular["total"], circular["straight"], circular["lowest"], circular["wrapped"], circular["answer"]) == (4, 6, -6, 10, 10)
+    assert leetcode_docs.min_subarray_sum(row) == -6 and leetcode_docs.kadane_trace([-x for x in row])["span"] == (5, 5)
+    assert leetcode_docs.circular_max_subarray([-3, -2, -5])["answer"] == -2
+    assert leetcode_docs.circular_max_subarray([5, -3, 5])["answer"] == 10
+    for sample in ([1], [-1], [-2, -1], [1, 2, 3], [5, -2, 5], [4, -1, -1, 4], [-3, 2, -3, 2], [2, -5, 3, 1, -2, 2]):
+        assert leetcode_docs.kadane_trace(sample)["best"] == brute_best(sample)
+        assert leetcode_docs.circular_max_subarray(sample)["answer"] == brute_circular(sample)
+    product = [2, 3, -2, 4, -1, 5, 0, 2]
+    result = leetcode_docs.max_product_pairs(product)
+    assert result["best"] == 240 == brute_product(product)
+    assert result["rows"][3] == (4, -48) and result["rows"][4] == (48, -4)
+    for sample in ([-2], [-2, 3, -4], [0, 2], [-1, -1, -1], [2, -5, -2, -4, 3]):
+        assert leetcode_docs.max_product_pairs(sample)["best"] == brute_product(sample)
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/kadanes-algorithm").get_data(as_text=True))
+    assert "<code>3, -1, 2, 1, 6, 0, 1, 5</code>" in body
+    assert "from index 2 to index 4" in body
+    assert "4 &minus; (-6) = 10" in body
+    assert "The best product is 240" in body
+    assert "the smallest product -48 at index 3 becomes the largest, 48" in body
