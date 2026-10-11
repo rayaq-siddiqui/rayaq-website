@@ -282,3 +282,14 @@ The sandbox's local `main` was an unrelated history with no merge base, so work 
 separate git worktree on `origin/main` and pushed from there; the stale local branch was left
 untouched. Coverage: Blind 75 63/75, Grind 169 150/169, NeetCode 150 132/150, NeetCode 250 224/250.
 Mobile check passed on `/`, `/leetcode` and every ready page. Next: `interval-merging`.
+
+### 2026-10-11 — build run (second)
+
+Built `interval-merging`, `sweep-line` and `matrix-manipulation` (3 of 3), each with tested
+helpers in `leetcode_docs.py` (cross-checked against brute force), two inline SVGs and the full
+§6 format. The matrix rotation helper is `rotate_matrix_stages`, because `rotate_stages` already
+belongs to the array-rotation page. The checkout was a shallow clone that looked diverged
+("ahead 50, behind 50"); `git fetch --unshallow origin main` showed it was only behind, and it
+fast-forwarded cleanly. Coverage: Blind 75 70/75, Grind 169 158/169, NeetCode 150 140/150,
+NeetCode 250 234/250. Mobile check passed on `/`, `/leetcode` and every ready page. Next:
+`number-math`.
