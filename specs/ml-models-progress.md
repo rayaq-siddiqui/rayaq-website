@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-11 (twenty-fifth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: queue items 1-38, the last being `computation-graphs`. The next page is
-`cnns` (queue item 39).
+format. Ready pages: queue items 1-39, the last being `cnns`. The next page is
+`autoregressive-models` (queue item 40).
 
 ## Pins
 
@@ -142,7 +142,12 @@ The paths below are relative to `torch/nn/modules/` unless they give a fuller pa
   `causal_lower_right` 342.
 - `torch/nn/attention/flex_attention.py`: start lines only for `create_block_mask` 1967 and
   `flex_attention` 2365.
-- `conv.py`: start lines only for `Conv2d` 388 and `ConvTranspose2d` 1012.
+- `conv.py` (cnns): `_ConvNd` 55-222, `__init__` 87-180 (groups checks 105-110, `padding="same"`
+  stride check 116-119 and split 143-155, weight shape 161-174), `reset_parameters` 182-201,
+  `Conv2d` 388-565 (cross-correlation 395-403, shape formula 468-476, `_conv_forward` 546-562,
+  `forward` 564-565). `ConvTranspose2d` starts at 1012 (end unverified).
+- `pooling.py` (cnns): `_MaxPoolNd` 43-76 (stride defaults to `kernel_size` at 66), `MaxPool2d`
+  155-232 (formula 194-201, `forward` 222-232), `AvgPool2d` 680-787, `AdaptiveAvgPool2d` 1477-1514.
 - `container.py`: start lines only for `Sequential` 59 and `ModuleList` 341.
 - `torch/_tensor.py`: `Tensor` class starts at 102; `__len__` 1189-1203; `unflatten` 1353.
 - `torch/functional.py`: `broadcast_tensors` 47-76, `broadcast_shapes` 79-117, `einsum` 175-382.
@@ -257,41 +262,16 @@ Paths are under `sklearn/`.
 - `transformer` uses the v1 section layout and is exempt from the §6 order test until its
   retrofit (queue item 18).
 
-## First run (2026-10-08) — bootstrap
+## First to third runs (2026-10-08) — condensed
 
-| Commit | What |
-|---|---|
-| see `git log -- specs/ml-models.md` | Spec v1, pin, scaffold (`ml_models_docs.py`, routes, base/index templates, CSS, JS, tests, AGENTS.md entry, this file) |
-
-## Second run (2026-10-08) — transformer and upcoming models
-
-| Commit | What |
-|---|---|
-| `ml-models: add the upcoming models list data` | `UPCOMING_MODELS` with tests |
-| `ml-models: list upcoming models on the index` | The tiered grid on `/ml-models` |
-| `ml-models: compute the transformer page's worked numbers` | `attention_weights`, `transformer_param_count`, presets |
-| `ml-models: add an interactive attention table` | The attention playground in `ml_models.js` |
-| `ml-models: add a parameter calculator` | The calculator in `ml_models.js` |
-| `ml-models: add the transformer page` | `transformer.html`, ready flag, CSS, test |
-
-The README was refreshed in a separate `docs:` commit in the same run.
-
-## Third run (2026-10-08) — spec v2
-
-| Commit | What |
-|---|---|
-| `ml-models: widen the spec to a full ml reference` | Spec v2 |
-| `ml-models: pin scikit-learn and xgboost beside pytorch` | `PINS`, `pinned_url`, template helpers, tests |
-| `ml-models: register the twelve areas and every planned page` | `AREAS`, `PAGES` and spec-inventory tests |
-| `ml-models: add the learning path and page connections` | `LEARNING_PATH`, `connections`, tests |
-| `ml-models: group the nav by area and credit every pin` | `base.html` nav, breadcrumb, footer |
-| `ml-models: show the learning path and every area on the index` | `index.html` |
-| `ml-models: add the connections partial and the page format test` | `_connections.html`, §6 test |
-| `ml-models: expand the build queue for spec v2` | This file, the §5.13 prerequisite rule, the queue test |
-| `ml-models: add a 390px overflow checker for the routine` | `tools/ml_models/check_mobile.js` |
-| `docs: record the ml-models routine` | The Routine section above, AGENTS.md |
-
-The daily Routine was created at the end of this run.
+The first run wrote spec v1, the PyTorch pin and the scaffold (`ml_models_docs.py`, routes,
+base and index templates, CSS, JS, tests, the AGENTS.md entry and this file). The second added
+the upcoming-models list and the original `transformer` page with its attention table and
+parameter calculator in `ml_models.js`. The third widened the section to spec v2: the
+scikit-learn and XGBoost pins beside PyTorch (`PINS`, `pinned_url`), the twelve `AREAS` and every
+planned page, `LEARNING_PATH` and connections, the area-grouped nav and index, the §6 format and
+queue tests, `tools/ml_models/check_mobile.js`, and the Routine. `git log -- specs/ml-models.md
+backend/ml_models_docs.py` has the per-commit detail.
 
 ## Fourth to eighteenth runs (2026-10-08) — condensed
 
@@ -338,7 +318,7 @@ Open gaps from these runs:
   `_incremental_fit_estimator`, and the `Lasso` end line, were inferred, not checked.
 - The SwiGLU "hidden size reduced to 2/3" remark is from memory of common practice.
 
-## Twenty-fifth run (2026-10-11) — linear-algebra-toolkit, missing-data, computation-graphs
+## Twenty-fifth run (2026-10-11) — linear-algebra-toolkit, missing-data, computation-graphs, cnns
 
 | Commit | What |
 |---|---|
@@ -413,6 +393,26 @@ message, every control row (retained 56/28, hook 14/7, detach 14/7, `ClampBackwa
 
 Gaps: Paszke et al. 2017 and 2019, Baydin et al. 2018 and Bengio et al. 2013 are cited from
 memory and were not opened.
+
+### cnns
+
+| Commit | What |
+|---|---|
+| `6a7b9b1` `ml-models: add tested convolution helpers` | `conv_output_size`, `pool_output_size` (with `ceil_mode`), `pad2d`, `conv2d`, `pool2d`, `receptive_fields`, `conv_params`, `lenet_stack`, `resnet18_stack`, `stacking_comparison`, `resnet_receptive_fields`, `conv_example`, `output_size_rows`, with six tests |
+| `62d0869` `ml-models: build the cnns page` | The page, `ready`, queue ✓ |
+
+Verified at PyTorch v2.14.1: the `conv.py` and `pooling.py` ranges listed under the PyTorch pin
+above. torchvision is not pinned, so ResNet-18 is described from its paper and the page's own
+`BasicBlock`, not linked.
+
+Cross-check: torch 2.14.1 (CPU) gives the same edge-kernel outputs at all four settings, a
+random 3-channel convolution with stride, padding and dilation matching `conv2d`, the same max
+and average pooling, every output size including a `ceil_mode` sweep, LeNet's 61,706
+parameters, torchvision-style ResNet-18's 11,689,512 parameters and stage shapes, and a
+gradient-measured receptive field of 435 for a `layer4` output unit.
+
+Gaps: LeCun et al. 1998, Krizhevsky et al. 2012, Simonyan and Zisserman 2015, He et al. 2016,
+Dumoulin and Visin 2016 and Luo et al. 2016 are cited from memory and were not opened.
 
 ## Queue
 
