@@ -2880,3 +2880,61 @@ def test_one_outlier_wrecks_absmax_int8_until_it_is_split_out():
     assert abs(example["naive"] - example["exact"]) / example["exact"] > 0.4
     assert example["outliers"] == 1
     assert abs(example["mixed"] - example["exact"]) / example["exact"] < 0.01
+
+
+def test_discounted_returns_and_value_iteration_reach_the_bellman_fixed_point():
+    assert ml_models_docs.discounted_returns([0, 0, 1]) == pytest.approx([0.81, 0.9, 1.0])
+    assert ml_models_docs.discounted_returns([1, 1, 1, 1]) == pytest.approx([3.439, 2.71, 1.9, 1.0])
+    result = ml_models_docs.value_iteration()
+    assert result["history"][1] == pytest.approx([0.0, 0.0, 0.8, 0.0])
+    assert result["history"][2] == pytest.approx([0.0, 0.576, 0.944, 0.0])
+    assert result["values"] == pytest.approx(ml_models_docs.chain_values_closed_form())
+    assert result["values"][2] == pytest.approx(0.8 / (1 - 0.9 * 0.2))
+    values = result["values"]
+    for row, value in zip(ml_models_docs.chain_q_values(values), values):
+        assert max(row.values()) == pytest.approx(value)
+        assert row["right"] > row["left"]
+
+
+def test_q_learning_finds_the_optimal_policy_on_the_slippery_chain():
+    update = ml_models_docs.q_update(0.5, 0.0, 0.8, alpha=0.1)
+    assert update["target"] == pytest.approx(0.72)
+    assert update["new"] == pytest.approx(0.522)
+    for seed in range(3):
+        result = ml_models_docs.q_learning(seed=seed)
+        assert result["greedy"] == ["right", "right", "right"]
+        assert result["max_error"] < 0.03
+
+
+def test_advantages_average_to_zero_under_the_true_values():
+    result = ml_models_docs.chain_advantages()
+    assert [row["next"] for row in result["rows"]] == [2, 1]
+    assert result["rows"][0]["td_error"] > 0 > result["rows"][1]["td_error"]
+    assert result["mean"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_reinforce_is_unbiased_and_a_baseline_cuts_its_variance():
+    plain = ml_models_docs.reinforce_gradient([0.0, 0.0, 0.0])
+    assert plain["exact"] == pytest.approx([-4 / 9, -1 / 9, 5 / 9])
+    assert plain["mean"] == pytest.approx(plain["exact"])
+    based = ml_models_docs.reinforce_gradient([0.0, 0.0, 0.0], baseline=plain["expected"])
+    assert based["mean"] == pytest.approx(plain["exact"])
+    assert based["variance"] == pytest.approx(14 / 27)
+    assert plain["variance"] == pytest.approx(112 / 27)
+    rows = ml_models_docs.bandit_training()
+    expected = [row["expected"] for row in rows]
+    assert expected == sorted(expected)
+    assert rows[-1]["probs"][2] > 0.9
+
+
+def test_ppo_clip_only_removes_the_gradient_in_the_greedy_direction():
+    clip = ml_models_docs.ppo_clip
+    assert clip(1.5, 1.0)["objective"] == pytest.approx(1.2)
+    assert clip(1.5, 1.0)["gradient"] == 0.0
+    assert clip(0.5, 1.0)["objective"] == pytest.approx(0.5)
+    assert clip(0.5, 1.0)["gradient"] == 1.0
+    assert clip(0.5, -1.0)["objective"] == pytest.approx(-0.8)
+    assert clip(0.5, -1.0)["gradient"] == 0.0
+    assert clip(1.5, -1.0)["objective"] == pytest.approx(-1.5)
+    assert clip(1.5, -1.0)["gradient"] == -1.0
+    assert clip(1.1, 1.0)["gradient"] == 1.0

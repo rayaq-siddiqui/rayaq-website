@@ -6435,6 +6435,162 @@ def outlier_example(x=OUTLIER_ACTIVATIONS, w=OUTLIER_WEIGHTS, threshold=6.0):
     }
 
 
+RL_GAMMA = 0.9
+CHAIN_STATES = 4
+CHAIN_SLIP = 0.2
+CHAIN_ACTIONS = ("left", "right")
+
+
+def discounted_returns(rewards, gamma=RL_GAMMA):
+    returns = []
+    running = 0.0
+    for reward in reversed(rewards):
+        running = reward + gamma * running
+        returns.append(running)
+    return returns[::-1]
+
+
+def chain_transitions(state, action, slip=CHAIN_SLIP, states=CHAIN_STATES):
+    goal = states - 1
+    target = max(state - 1, 0) if action == "left" else state + 1
+    outcomes = [(1 - slip, target), (slip, state)]
+    return [(p, s, 1.0 if s == goal else 0.0) for p, s in outcomes if p > 0]
+
+
+def chain_q_values(values, gamma=RL_GAMMA, slip=CHAIN_SLIP, states=CHAIN_STATES):
+    goal = states - 1
+    return [
+        {
+            action: sum(
+                p * (r + gamma * (0.0 if s2 == goal else values[s2]))
+                for p, s2, r in chain_transitions(s, action, slip, states)
+            )
+            for action in CHAIN_ACTIONS
+        }
+        for s in range(goal)
+    ]
+
+
+def value_iteration(gamma=RL_GAMMA, slip=CHAIN_SLIP, states=CHAIN_STATES, sweeps=60):
+    values = [0.0] * states
+    history = [list(values)]
+    for _ in range(sweeps):
+        values = [max(row.values()) for row in chain_q_values(values, gamma, slip, states)] + [0.0]
+        history.append(list(values))
+    return {"values": values, "q": chain_q_values(values, gamma, slip, states), "history": history}
+
+
+def chain_values_closed_form(gamma=RL_GAMMA, slip=CHAIN_SLIP, states=CHAIN_STATES):
+    stay = 1 / (1 - gamma * slip)
+    values = [0.0] * states
+    following = 1.0
+    for s in range(states - 2, -1, -1):
+        values[s] = (1 - slip) * following * stay
+        following = gamma * values[s]
+    return values
+
+
+def q_update(q, reward, next_max, alpha, gamma=RL_GAMMA):
+    target = reward + gamma * next_max
+    return {"target": target, "td_error": target - q, "new": q + alpha * (target - q)}
+
+
+def q_learning(episodes=500, alpha=0.1, epsilon=0.2, gamma=RL_GAMMA, slip=CHAIN_SLIP, states=CHAIN_STATES, seed=0):
+    rng = random.Random(seed)
+    goal = states - 1
+    q = [{action: 0.0 for action in CHAIN_ACTIONS} for _ in range(goal)]
+    steps = 0
+    for _ in range(episodes):
+        s = 0
+        while s != goal:
+            if rng.random() < epsilon:
+                action = rng.choice(CHAIN_ACTIONS)
+            else:
+                action = max(CHAIN_ACTIONS, key=lambda name: q[s][name])
+            u = rng.random()
+            cumulative = 0.0
+            for p, s2, r in chain_transitions(s, action, slip, states):
+                cumulative += p
+                if u < cumulative:
+                    break
+            next_max = 0.0 if s2 == goal else max(q[s2].values())
+            q[s][action] = q_update(q[s][action], r, next_max, alpha, gamma)["new"]
+            s = s2
+            steps += 1
+    optimal = value_iteration(gamma, slip, states)["q"]
+    return {
+        "q": q,
+        "steps": steps,
+        "greedy": [max(CHAIN_ACTIONS, key=lambda name: row[name]) for row in q],
+        "max_error": max(abs(row[a] - best[a]) for row, best in zip(q, optimal) for a in CHAIN_ACTIONS),
+    }
+
+
+def chain_advantages(gamma=RL_GAMMA, slip=CHAIN_SLIP, states=CHAIN_STATES, state=1):
+    values = value_iteration(gamma, slip, states)["values"]
+    goal = states - 1
+    rows = []
+    for p, s2, r in chain_transitions(state, "right", slip, states):
+        delta = r + (0.0 if s2 == goal else gamma * values[s2]) - values[state]
+        rows.append({"probability": p, "next": s2, "reward": r, "td_error": delta})
+    return {"value": values[state], "rows": rows, "mean": sum(row["probability"] * row["td_error"] for row in rows)}
+
+
+BANDIT_REWARDS = [1.0, 2.0, 4.0]
+
+
+def softmax_probs(logits):
+    top = max(logits)
+    exps = [math.exp(x - top) for x in logits]
+    total = sum(exps)
+    return [e / total for e in exps]
+
+
+def score_function(probs, action):
+    return [(1.0 if k == action else 0.0) - p for k, p in enumerate(probs)]
+
+
+def reinforce_gradient(logits, rewards=BANDIT_REWARDS, baseline=0.0):
+    probs = softmax_probs(logits)
+    arms = range(len(probs))
+    expected = sum(p * r for p, r in zip(probs, rewards))
+    samples = [[(rewards[a] - baseline) * g for g in score_function(probs, a)] for a in arms]
+    mean = [sum(probs[a] * samples[a][k] for a in arms) for k in arms]
+    return {
+        "probs": probs,
+        "expected": expected,
+        "exact": [p * (r - expected) for p, r in zip(probs, rewards)],
+        "samples": samples,
+        "mean": mean,
+        "variance": sum(probs[a] * sum((samples[a][k] - mean[k]) ** 2 for k in arms) for a in arms),
+    }
+
+
+def bandit_training(steps=5, lr=1.0, rewards=BANDIT_REWARDS):
+    logits = [0.0] * len(rewards)
+    rows = []
+    for _ in range(steps + 1):
+        gradient = reinforce_gradient(logits, rewards)
+        rows.append({"logits": list(logits), "probs": gradient["probs"], "expected": gradient["expected"]})
+        logits = [x + lr * d for x, d in zip(logits, gradient["exact"])]
+    return rows
+
+
+PPO_EPSILON = 0.2
+PPO_RATIOS = [0.5, 0.9, 1.1, 1.5]
+
+
+def ppo_clip(ratio, advantage, epsilon=PPO_EPSILON):
+    unclipped = ratio * advantage
+    clipped = min(max(ratio, 1 - epsilon), 1 + epsilon) * advantage
+    return {
+        "unclipped": unclipped,
+        "clipped": clipped,
+        "objective": min(unclipped, clipped),
+        "gradient": advantage if unclipped <= clipped else 0.0,
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -6903,6 +7059,21 @@ def render(slug, render_template):
         "symmetric_qparams": symmetric_qparams,
         "outlier_activations": OUTLIER_ACTIVATIONS,
         "outlier_weights": OUTLIER_WEIGHTS,
+        "rl_gamma": RL_GAMMA,
+        "chain_states": CHAIN_STATES,
+        "chain_slip": CHAIN_SLIP,
+        "discounted_returns": discounted_returns,
+        "value_iteration": value_iteration,
+        "chain_values_closed_form": chain_values_closed_form,
+        "q_update": q_update,
+        "q_learning": q_learning,
+        "chain_advantages": chain_advantages,
+        "bandit_rewards": BANDIT_REWARDS,
+        "reinforce_gradient": reinforce_gradient,
+        "bandit_training": bandit_training,
+        "ppo_epsilon": PPO_EPSILON,
+        "ppo_ratios": PPO_RATIOS,
+        "ppo_clip": ppo_clip,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
