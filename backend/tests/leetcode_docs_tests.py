@@ -1,4 +1,5 @@
 import heapq
+import itertools
 import math
 import os
 import re
@@ -1889,3 +1890,49 @@ def test_string_matching_helpers_match_the_page():
     assert "<td class=\"num\">4</td><td><code>dad</code></td><td class=\"num\">6</td><td>hash hit, characters differ: collision</td>" in body
     assert "<td class=\"num\">1000</td><td class=\"num\">100</td><td class=\"num\">90100</td><td class=\"num\">1901</td><td class=\"num\">2000</td>" in body
     assert "Its last entry is 6, the border <code>abcabc</code>" in body
+
+
+def test_bitmask_dp_helpers_match_the_page():
+    cost = [[9, 2, 7], [6, 4, 3], [5, 8, 1]]
+    assign = leetcode_docs.assignment_dp_trace(cost)
+    assert [(r["bits"], r["cost"]) for r in assign["rows"]] == [
+        ("000", 0), ("001", 9), ("010", 2), ("100", 7), ("011", 8), ("101", 12), ("110", 5), ("111", 9),
+    ]
+    assert [(s["worker"], s["job"]) for s in assign["path"]] == [(0, 1), (1, 0), (2, 2)]
+    assert assign["greedy"] == [1, 2, 0] and assign["greedy_cost"] == 10
+    for matrix in (cost, [[4, 1, 3, 2], [2, 0, 5, 3], [3, 2, 2, 4], [1, 6, 3, 2]], [[5]]):
+        n = len(matrix)
+        brute = min(sum(matrix[w][j] for w, j in enumerate(order)) for order in itertools.permutations(range(n)))
+        assert leetcode_docs.assignment_dp_trace(matrix)["best"] == brute
+
+    dist = [[0, 10, 15, 20], [10, 0, 35, 25], [15, 35, 0, 30], [20, 25, 30, 0]]
+    tsp = leetcode_docs.held_karp_of(dist)
+    assert tsp["best"] == 80 and tsp["tour"] == [0, 2, 3, 1, 0]
+    assert [(r["end"], r["path"], r["total"]) for r in tsp["closing"]] == [(1, 70, 80), (2, 65, 80), (3, 75, 95)]
+    assert [(s["bits"], s["end"], s["cost"]) for s in tsp["states"]] == [
+        ("0001", 0, 0), ("0101", 2, 15), ("1101", 3, 45), ("1111", 1, 70),
+    ]
+    assert len(tsp["rows"]) == 13
+    other = [[0, 3, 9, 4, 7], [3, 0, 2, 8, 6], [9, 2, 0, 5, 1], [4, 8, 5, 0, 3], [7, 6, 1, 3, 0]]
+    for matrix in (dist, other):
+        n = len(matrix)
+        brute = min(sum(matrix[a][b] for a, b in zip((0,) + order, order + (0,)))
+                    for order in itertools.permutations(range(1, n)))
+        result = leetcode_docs.held_karp_of(matrix)
+        assert result["best"] == brute
+        assert sum(matrix[a][b] for a, b in zip(result["tour"], result["tour"][1:])) == brute
+
+    assert leetcode_docs.submasks_of(11) == [11, 10, 9, 8, 3, 2, 1, 0]
+    for mask in range(32):
+        assert sorted(leetcode_docs.submasks_of(mask)) == [s for s in range(32) if s & mask == s]
+    assert sum(len(leetcode_docs.submasks_of(mask)) for mask in range(1 << 6)) == 3 ** 6
+    counts = leetcode_docs.bitmask_state_counts([4, 20])
+    assert counts[0] == {"n": 4, "orders": 24, "held_karp": 256, "assignment": 64, "submask_pairs": 81}
+    assert counts[1]["orders"] == 2432902008176640000 and counts[1]["assignment"] == 20971520
+
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/bitmask-dp").get_data(as_text=True))
+    assert "<td class=\"num\">3</td><td class=\"num\"><code>011</code></td><td>{0, 1}</td><td class=\"num\">2</td><td class=\"num\">8</td><td>B takes job 0 from mask 2: 2 + 6</td>" in body
+    assert "for a total of <strong>9</strong>. The greedy order costs 10." in body
+    assert "<td class=\"num\"><code>1101</code></td><td>{0, 2, 3}</td><td class=\"num\">3</td><td class=\"num\">45</td><td class=\"num\">2</td>" in body
+    assert "<strong>0 &rarr; 2 &rarr; 3 &rarr; 1 &rarr; 0</strong>, length 80" in body
+    assert "<td class=\"num\">20</td><td class=\"num\">2,432,902,008,176,640,000</td><td class=\"num\">419,430,400</td><td class=\"num\">20,971,520</td><td class=\"num\">3,486,784,401</td>" in body

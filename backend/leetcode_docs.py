@@ -305,7 +305,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy", "kadanes-algorithm", "interval-merging", "sweep-line", "matrix-manipulation", "number-math", "bit-manipulation", "interview-approach", "segment-trees", "fenwick-trees", "string-matching"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy", "kadanes-algorithm", "interval-merging", "sweep-line", "matrix-manipulation", "number-math", "bit-manipulation", "interview-approach", "segment-trees", "fenwick-trees", "string-matching", "bitmask-dp"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -7350,6 +7350,100 @@ def rabin_karp_trace(text, pattern, base=26, mod=11):
             "collisions": [w["start"] for w in windows if w["candidate"] and not w["match"]]}
 
 
+def assignment_dp_trace(cost):
+    """Assignment by DP over subsets: dp[mask] is the cheapest way to give the first popcount(mask) workers the jobs whose bits are set in mask."""
+    n = len(cost)
+    full = (1 << n) - 1
+    dp = [math.inf] * (1 << n)
+    choice = [None] * (1 << n)
+    dp[0] = 0
+    for mask in range(1 << n):
+        if dp[mask] == math.inf:
+            continue
+        worker = bin(mask).count("1")
+        if worker == n:
+            continue
+        for job in range(n):
+            if not mask >> job & 1:
+                bigger = mask | 1 << job
+                if dp[mask] + cost[worker][job] < dp[bigger]:
+                    dp[bigger] = dp[mask] + cost[worker][job]
+                    choice[bigger] = (mask, job)
+    rows = []
+    for mask in sorted(range(1 << n), key=lambda m: (bin(m).count("1"), m)):
+        previous, job = choice[mask] if choice[mask] else (None, None)
+        rows.append({"mask": mask, "bits": binary_of(mask, n), "jobs": [j for j in range(n) if mask >> j & 1],
+                     "workers": bin(mask).count("1"), "cost": dp[mask], "from": previous, "job": job})
+    path, mask = [], full
+    while mask:
+        previous, job = choice[mask]
+        path.append({"worker": bin(previous).count("1"), "job": job, "mask": mask, "from": previous})
+        mask = previous
+    path.reverse()
+    greedy, taken = [], 0
+    for worker in range(n):
+        job = min((j for j in range(n) if not taken >> j & 1), key=lambda j: cost[worker][j])
+        taken |= 1 << job
+        greedy.append(job)
+    return {"rows": rows, "best": dp[full], "path": path, "greedy": greedy,
+            "greedy_cost": sum(cost[w][j] for w, j in enumerate(greedy))}
+
+
+def held_karp_of(dist):
+    """Held-Karp: dp[(mask, end)] is the shortest path that starts at city 0, visits exactly the cities in mask and stops at end."""
+    n = len(dist)
+    dp = {(1, 0): (0, None)}
+    for mask in range(1, 1 << n):
+        if not mask & 1:
+            continue
+        for end in range(n):
+            if (mask, end) not in dp:
+                continue
+            here = dp[(mask, end)][0]
+            for city in range(1, n):
+                if mask >> city & 1:
+                    continue
+                key = (mask | 1 << city, city)
+                if key not in dp or here + dist[end][city] < dp[key][0]:
+                    dp[key] = (here + dist[end][city], end)
+    full = (1 << n) - 1
+    closing = [{"end": end, "path": dp[(full, end)][0], "back": dist[end][0],
+                "total": dp[(full, end)][0] + dist[end][0]} for end in range(1, n)]
+    best = min(closing, key=lambda row: row["total"])
+    tour, mask, end = [0], full, best["end"]
+    while end is not None and mask != 1:
+        tour.append(end)
+        previous = dp[(mask, end)][1]
+        mask ^= 1 << end
+        end = previous
+    tour.append(0)
+    tour.reverse()
+    states, mask = [], 0
+    for city in tour[:-1]:
+        mask |= 1 << city
+        states.append({"mask": mask, "bits": binary_of(mask, n), "end": city, "cost": dp[(mask, city)][0]})
+    rows = [{"mask": mask, "bits": binary_of(mask, n), "cities": [c for c in range(n) if mask >> c & 1],
+             "end": end, "cost": cost, "from": previous}
+            for (mask, end), (cost, previous) in sorted(dp.items(), key=lambda item: (bin(item[0][0]).count("1"), item[0][0], item[0][1]))]
+    return {"rows": rows, "closing": closing, "best": best["total"], "tour": tour, "states": states}
+
+
+def submasks_of(mask):
+    """Every submask of mask, largest first, by the sub = (sub - 1) & mask step, ending with 0."""
+    result, sub = [], mask
+    while True:
+        result.append(sub)
+        if sub == 0:
+            return result
+        sub = (sub - 1) & mask
+
+
+def bitmask_state_counts(sizes):
+    """Work for n items: every order (n!), every set of chosen items with a last item (n^2 * 2^n), and every set alone (n * 2^n)."""
+    return [{"n": n, "orders": math.factorial(n), "held_karp": n * n * 2 ** n,
+             "assignment": n * 2 ** n, "submask_pairs": 3 ** n} for n in sizes]
+
+
 def problem_url(slug):
     return f"https://leetcode.com/problems/{slug}/"
 
@@ -7690,6 +7784,10 @@ def render(slug, render_template):
         "naive_search_comparisons": naive_search_comparisons,
         "string_search_costs": string_search_costs,
         "rabin_karp_trace": rabin_karp_trace,
+        "assignment_dp_trace": assignment_dp_trace,
+        "held_karp_of": held_karp_of,
+        "submasks_of": submasks_of,
+        "bitmask_state_counts": bitmask_state_counts,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,
