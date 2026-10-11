@@ -1218,7 +1218,7 @@ PAGES = [
         "sources": [
             "pytorch:torch/ao/quantization/quantize.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "distillation",

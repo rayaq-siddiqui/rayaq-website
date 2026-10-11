@@ -293,8 +293,8 @@ Gaps:
 43. `similarity-search` ✓
 44. `gpu-execution` ✓
 45. `mixed-precision` ✓
-46. `quantization` ← next
-47. `reinforcement-learning`
+46. `quantization` ✓
+47. `reinforcement-learning` ← next
 48. `bayes-rule`
 49. `class-imbalance`
 50. `random-forests`
