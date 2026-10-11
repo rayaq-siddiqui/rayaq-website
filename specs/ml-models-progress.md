@@ -212,6 +212,9 @@ Open gaps from these runs:
 | `cc36b43` `docs: record the similarity-search build` | This file, condensed |
 | `513a150` `ml-models: add tested gpu execution helpers` | Example-GPU roofline for matmul and elementwise ops, fusion traffic, tiled matmul traffic, launch timeline, chart coordinates, with three tests |
 | `125f5d9` `ml-models: build the gpu-execution page` | The page, `ready`, queue ✓ |
+| `0746aa5` `docs: record the gpu-execution build` | This file |
+| `a8bbbb4` `ml-models: add float format and loss scaling helpers` | Six float formats, round-to-nearest-even with fp8 saturation, bit strings, loss scaling, a GradScaler simulation and master-weight accumulation, with five tests (checked against `struct` and PyTorch's bf16 bit trick) |
+| `9a9b600` `ml-models: build the mixed-precision page` | The page, `ready`, queue ✓, older run sections condensed |
 
 Pins checked with `git ls-remote --tags`: PyTorch v2.14.1, scikit-learn 1.9.1 and XGBoost v3.4.2
 are still the latest stable releases; no pin moved.
@@ -235,6 +238,11 @@ Gaps:
   knowledge (no pinned source covers them); the NVIDIA programming guide is cited without a link.
   `Event.elapsed_time` needing `enable_timing=True` on both events is not stated in the pinned
   docstring.
+- `mixed-precision`: fp8 is described from PyTorch's fp8 headers and the FP8 formats paper;
+  the per-tensor scaling recipes live outside the pins. The GradScaler simulation resets its
+  growth tracker after a skip, following the docstring's "consecutive"; the
+  `_amp_update_scale_` kernel was not read. tf32's Ampere availability and the IEEE 754
+  reference come from general knowledge, not a pinned source.
 - BM25 has no pinned implementation (none of the three pins ships it); the page uses the
   Lucene idf variant from Robertson and Zaragoza and says so.
 
