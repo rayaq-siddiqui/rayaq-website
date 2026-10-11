@@ -1,0 +1,307 @@
+{% set spans = [(5, 8), (1, 4), (2, 3), (9, 12), (12, 14), (6, 7), (16, 17)] %}
+{% set mt = merge_intervals_trace(spans) %}
+{% set existing = [(1, 2), (4, 6), (7, 8), (10, 13), (15, 16)] %}
+{% set fresh = (5, 11) %}
+{% set ins = insert_interval_parts(existing, fresh) %}
+{% set busy = [(9, 10), (13, 15), (10, 12), (11, 13)] %}
+{% set fc = first_conflict_of(busy) %}
+{% set calm = [(13, 15), (9, 10), (10, 12)] %}
+{% set fc_calm = first_conflict_of(calm) %}
+{% set scale = 32 %}
+<header class="jj-header">
+  <h1>Merging intervals</h1>
+  <p class="tagline">
+    A pile of time ranges becomes easy once it is sorted by start: every range then either joins the block you are building or starts a new one.
+    That single scan merges overlaps, inserts a new range into a sorted list and checks a calendar for double bookings.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Interval questions hand you pairs <code>[start, end]</code>: meetings, bookings, ranges of numbers, spans of a string. They ask you to combine the ones that
+  overlap, to add one more range to a tidy list, or to decide whether any two collide. Compared pair by pair, n intervals give about n&sup2;/2 comparisons, and
+  the merged result can still depend on chains (A overlaps B, B overlaps C, but A and C are far apart). Sorting by start removes both problems: after the sort,
+  only neighbours in the scan ever need comparing.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Signal</th><th>Pattern</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>"Merge all overlapping ranges"</td><td>Sort by start, then extend or open a block</td><td>After sorting, an interval can only overlap the block that is still open.</td></tr>
+    <tr><td>"Insert a range into a sorted, disjoint list"</td><td>Three phases: copy before, absorb overlaps, copy after</td><td>The list is already sorted, so no re-sort is needed and the scan is O(n).</td></tr>
+    <tr><td>"Can one person attend every meeting?"</td><td>Sort by start, compare each meeting with the previous one</td><td>If any two overlap, some neighbouring pair in start order overlaps.</td></tr>
+    <tr><td>"Remove the fewest ranges so none overlap"</td><td>Sort by <em>end</em> and keep greedily</td><td>An exchange argument: the range that finishes first leaves the most room.</td></tr>
+    <tr><td>"How many overlap at once?"</td><td>Not merging: use a sweep line or a heap of end times</td><td>Merging loses how deep the overlap was.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Picture the intervals as bars on a timeline. Slide a finger from left to right and keep track of one thing: the block of overlapping bars you are currently
+  inside, and where it ends. When the next bar starts before that end, it belongs to the same block, and the block may stretch further right. When it starts
+  after the end, there is a gap, the block is finished for good, and a new one begins.
+</p>
+<p>
+  Why can a finished block never grow again? Every later bar starts at or after the bar that just opened the new block, and that start is already past the
+  finished block's end. Sorting by start guarantees this, which is the whole trick.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 {{ 130 + 18 * scale }} {{ 104 + (mt.steps | length) * 24 }}" role="img" aria-labelledby="lc-im-merge-title lc-im-merge-desc">
+    <title id="lc-im-merge-title">Merging intervals sorted by start</title>
+    <desc id="lc-im-merge-desc">
+      The intervals, sorted by start, are {% for s, e in mt.sorted %}[{{ s }}, {{ e }}]{{ ", " if not loop.last }}{% endfor %}. Each one opens a new block,
+      extends the open block or lies inside it. The merged blocks at the bottom are {% for s, e in mt.merged %}[{{ s }}, {{ e }}]{{ ", " if not loop.last }}{% endfor %}.
+    </desc>
+    {% for t in range(0, 19, 2) %}
+      <line x1="{{ 20 + t * scale }}" y1="28" x2="{{ 20 + t * scale }}" y2="{{ 44 + (mt.steps | length) * 24 + 30 }}" class="d-line" stroke-dasharray="2 4"></line>
+      <text x="{{ 20 + t * scale }}" y="20" font-size="11" text-anchor="middle" class="d-muted">{{ t }}</text>
+    {% endfor %}
+    {% for step in mt.steps %}
+      {% set s, e = step.interval %}
+      {% set y = 36 + loop.index0 * 24 %}
+      <rect x="{{ 20 + s * scale }}" y="{{ y }}" width="{{ (e - s) * scale }}" height="16" rx="3"
+            class="{{ 'lc-fill-a' if step.action == 'new block' else ('lc-fill-m' if step.action == 'extend' else 'lc-fill-g') }}"></rect>
+      <text x="{{ 26 + e * scale }}" y="{{ y + 12 }}" font-size="11">[{{ s }}, {{ e }}] {{ step.action }}</text>
+    {% endfor %}
+    {% set yb = 44 + (mt.steps | length) * 24 %}
+    <text x="20" y="{{ yb }}" font-size="11" class="d-muted">merged</text>
+    {% for s, e in mt.merged %}
+      <rect x="{{ 20 + s * scale }}" y="{{ yb + 8 }}" width="{{ (e - s) * scale }}" height="18" rx="3" class="lc-fill-a"></rect>
+    {% endfor %}
+    <text x="20" y="{{ yb + 46 }}" font-size="11" class="d-muted">blue = opens a block, amber = extends it, green = already inside it</text>
+  </svg>
+</div>
+<p class="lc-caption">
+  Rows are in sorted order. A row can only touch the block opened above it; once a gap appears, earlier blocks are final.
+  The diagram scrolls sideways on a narrow screen.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="merge">Merge: the invariant</h3>
+<p>
+  Sort by start. Keep a list <code>merged</code> of disjoint blocks. The invariant after processing the first k intervals is: <code>merged</code> is exactly
+  the union of those k intervals, written as disjoint blocks in increasing order, and every block except possibly the last is <em>final</em>, meaning no
+  unprocessed interval can touch it.
+</p>
+<p>
+  For the next interval <code>[s, e]</code>, compare <code>s</code> with the last block's end. If <code>s &le; end</code> the two overlap (or touch), so set
+  <code>end = max(end, e)</code>; the <code>max</code> matters because a short interval can sit entirely inside a long one. Otherwise open a new block. In the
+  second case the old last block becomes final: every remaining interval starts at <code>s</code> or later, and <code>s</code> is already past its end.
+  That proves the invariant carries forward, and at the end it says <code>merged</code> is the answer.
+</p>
+
+<h3 id="touching">Closed or half-open?</h3>
+<p>
+  Read the problem for whether <code>[1, 4]</code> and <code>[4, 5]</code> overlap. For ranges of numbers they share the point 4, so they merge (use
+  <code>&le;</code>). For meetings, one ending at 10 and the next starting at 10 do not clash, because a meeting is the half-open range <code>[start, end)</code>
+  (use <code>&lt;</code>). That one character is the most common bug in this family.
+</p>
+
+<h3 id="insert">Insert into a sorted, disjoint list</h3>
+<p>
+  When the existing list is already sorted and disjoint, do not append and re-sort. Walk it once in three phases:
+</p>
+<ol>
+  <li>Copy every interval that ends <em>before</em> the new one starts. They cannot touch it.</li>
+  <li>While the next interval starts at or before the new one's end, absorb it: the new interval becomes <code>[min(starts), max(ends)]</code>.</li>
+  <li>Append the grown interval, then copy everything left. Those start after it ends.</li>
+</ol>
+<p>
+  The absorbed intervals form one contiguous run, because the list is sorted by start and disjoint, so their ends are sorted too. That is why a single
+  pass suffices.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 {{ 40 + 18 * scale }} 170" role="img" aria-labelledby="lc-im-insert-title lc-im-insert-desc">
+    <title id="lc-im-insert-title">Inserting an interval in three phases</title>
+    <desc id="lc-im-insert-desc">
+      Existing intervals {% for s, e in existing %}[{{ s }}, {{ e }}]{{ ", " if not loop.last }}{% endfor %} and the new interval [{{ fresh[0] }}, {{ fresh[1] }}].
+      Copied before: {% for s, e in ins.before %}[{{ s }}, {{ e }}]{% endfor %}. Absorbed: {% for s, e in ins.absorbed %}[{{ s }}, {{ e }}]{{ ", " if not loop.last }}{% endfor %}.
+      Copied after: {% for s, e in ins.after %}[{{ s }}, {{ e }}]{% endfor %}. The result is {% for s, e in ins.result %}[{{ s }}, {{ e }}]{{ ", " if not loop.last }}{% endfor %}.
+    </desc>
+    {% for t in range(0, 19, 2) %}
+      <text x="{{ 20 + t * scale }}" y="16" font-size="11" text-anchor="middle" class="d-muted">{{ t }}</text>
+    {% endfor %}
+    <text x="20" y="38" font-size="11" class="d-muted">existing</text>
+    {% for s, e in existing %}
+      {% set iv = (s, e) %}
+      <rect x="{{ 20 + s * scale }}" y="44" width="{{ (e - s) * scale }}" height="16" rx="3"
+            class="{{ 'lc-fill-m' if iv in ins.absorbed else 'lc-fill-g' }}"></rect>
+    {% endfor %}
+    <text x="20" y="80" font-size="11" class="d-muted">new</text>
+    <rect x="{{ 20 + fresh[0] * scale }}" y="86" width="{{ (fresh[1] - fresh[0]) * scale }}" height="16" rx="3" class="lc-fill-a"></rect>
+    <text x="20" y="122" font-size="11" class="d-muted">result</text>
+    {% for s, e in ins.result %}
+      <rect x="{{ 20 + s * scale }}" y="128" width="{{ (e - s) * scale }}" height="16" rx="3"
+            class="{{ 'lc-fill-a' if (s, e) == ins.merged else 'lc-fill-g' }}"></rect>
+    {% endfor %}
+    <text x="20" y="164" font-size="11" class="d-muted">green = copied unchanged, amber = absorbed into the new interval</text>
+  </svg>
+</div>
+<p class="lc-caption">
+  The amber run is contiguous in the sorted list, so one forward pass finds it.
+</p>
+
+<h3 id="conflicts">Detecting any overlap</h3>
+<p>
+  To answer "does anything overlap?", sort by start and compare each interval only with the one before it. Why is that enough? Suppose no neighbouring pair
+  overlaps, so each interval ends no later than the next one starts. Chaining those inequalities, interval i ends no later than any later interval j starts,
+  so no pair at all overlaps. Turned around: if any two intervals overlap, some neighbouring pair in start order does too.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  <strong>Merge.</strong> The intervals {% for s, e in spans %}[{{ s }}, {{ e }}]{{ ", " if not loop.last }}{% endfor %} sort by start to
+  {% for s, e in mt.sorted %}[{{ s }}, {{ e }}]{{ ", " if not loop.last }}{% endfor %}. Then the scan goes:
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Interval</th><th>Action</th><th>Blocks so far</th></tr></thead>
+    <tbody>
+      {% for step in mt.steps %}
+        <tr>
+          <td class="num">[{{ step.interval[0] }}, {{ step.interval[1] }}]</td>
+          <td>{{ step.action }}</td>
+          <td>{% for s, e in step.merged %}[{{ s }}, {{ e }}]{{ " " if not loop.last }}{% endfor %}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  The answer is {% for s, e in mt.merged %}[{{ s }}, {{ e }}]{{ ", " if not loop.last }}{% endfor %}. Note that [12, 14] extends [9, 12] because closed
+  intervals that share an endpoint overlap.
+</p>
+<p>
+  <strong>Insert.</strong> Adding [{{ fresh[0] }}, {{ fresh[1] }}] to {% for s, e in existing %}[{{ s }}, {{ e }}]{{ ", " if not loop.last }}{% endfor %}:
+  phase 1 copies {% for s, e in ins.before %}[{{ s }}, {{ e }}]{% endfor %}, phase 2 absorbs
+  {% for s, e in ins.absorbed %}[{{ s }}, {{ e }}]{{ ", " if not loop.last }}{% endfor %} and grows the new interval to
+  [{{ ins.merged[0] }}, {{ ins.merged[1] }}], and phase 3 copies {% for s, e in ins.after %}[{{ s }}, {{ e }}]{% endfor %}. The result is
+  {% for s, e in ins.result %}[{{ s }}, {{ e }}]{{ ", " if not loop.last }}{% endfor %}.
+</p>
+<p>
+  <strong>Meetings.</strong> Sorted, the meetings {% for s, e in fc.sorted %}[{{ s }}, {{ e }}){{ ", " if not loop.last }}{% endfor %} first clash at
+  [{{ fc.conflict[0][0] }}, {{ fc.conflict[0][1] }}) and [{{ fc.conflict[1][0] }}, {{ fc.conflict[1][1] }}). Drop the clashing one and the remaining
+  {% for s, e in fc_calm.sorted %}[{{ s }}, {{ e }}){{ ", " if not loop.last }}{% endfor %} {{ "can all be attended" if fc_calm.conflict is none else "still clash" }}:
+  back-to-back meetings that share an endpoint are fine.
+</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>def merge(intervals):
+    merged = []
+    for start, end in sorted(intervals):
+        if merged and start &lt;= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return merged</code></pre>
+
+<h3 id="variations">Variations and edge cases</h3>
+<pre><code>def insert(intervals, new):
+    start, end = new
+    result, i, n = [], 0, len(intervals)
+    while i &lt; n and intervals[i][1] &lt; start:
+        result.append(intervals[i])
+        i += 1
+    while i &lt; n and intervals[i][0] &lt;= end:
+        start = min(start, intervals[i][0])
+        end = max(end, intervals[i][1])
+        i += 1
+    result.append([start, end])
+    result.extend(intervals[i:])
+    return result
+
+
+def can_attend_all(meetings):
+    meetings = sorted(meetings)
+    return all(prev[1] &lt;= cur[0] for prev, cur in zip(meetings, meetings[1:]))
+
+
+def intersect(a, b):
+    i = j = 0
+    out = []
+    while i &lt; len(a) and j &lt; len(b):
+        lo, hi = max(a[i][0], b[j][0]), min(a[i][1], b[j][1])
+        if lo &lt;= hi:
+            out.append([lo, hi])
+        if a[i][1] &lt; b[j][1]:   # the one that ends first cannot meet anything later
+            i += 1
+        else:
+            j += 1
+    return out</code></pre>
+<ul>
+  <li><strong>Forgetting <code>max</code>.</strong> Writing <code>merged[-1][1] = end</code> shrinks a block when a short interval sits inside a long one, as [2, 3] does inside [1, 4] above.</li>
+  <li><strong>Touching endpoints.</strong> Decide <code>&le;</code> or <code>&lt;</code> from the problem's meaning, not by habit.</li>
+  <li><strong>Mutating the input.</strong> <code>merged.append([start, end])</code> builds a fresh list; appending the input's own list and then editing it changes the caller's data.</li>
+  <li><strong>Empty input.</strong> All three functions return an empty result or <code>True</code> without special cases; check yours does too.</li>
+  <li><strong>Insert at the ends.</strong> The new interval may go before everything, after everything, or absorb everything. Each phase loop may run zero times.</li>
+</ul>
+
+<h2 id="tradeoffs">Complexity and tradeoffs</h2>
+
+<ul>
+  <li><strong>Merge:</strong> O(n log n) for the sort, O(n) for the scan, O(n) output space.</li>
+  <li><strong>Insert:</strong> O(n) time, because the list is already sorted. Binary search finds where phase 2 begins in O(log n), but copying the output is still O(n).</li>
+  <li><strong>Any overlap:</strong> O(n log n) for the sort, O(1) extra space if you sort in place.</li>
+  <li><strong>Baseline.</strong> Checking every pair is O(n&sup2;), and merging by repeated pairwise unions can take O(n&sup2;) passes in the worst case.</li>
+  <li><strong>When it is the wrong tool.</strong> Merging answers "what is covered?", not "how many at once?" or "which to drop?". Counting simultaneous intervals
+    needs a sweep line or a heap of end times; choosing a maximum set of disjoint intervals needs the greedy rule that sorts by end.
+    When intervals arrive one at a time and queries interleave, a balanced tree or a sorted container keyed by start keeps each insert at O(log n).</li>
+</ul>
+
+<h2 id="problems">Problems</h2>
+
+<p>
+  Start with Meeting Rooms to practise sorting and comparing neighbours, then Merge Intervals for the full invariant, then Insert Interval to do it
+  without a sort. Each one is a different question asked of the same sorted scan.
+</p>
+{% include "leetcode/_problems.html" %}
+
+<h2 id="connections">Connections</h2>
+
+{% include "leetcode/_connections.html" %}
+<p>
+  Sorting before scanning is the move from the <a href="{{ url_for('leetcode', slug='python-toolkit') }}">Python toolkit</a> page: <code>sorted</code> on
+  tuples orders by start and then by end for free. Removing the fewest intervals to make the rest disjoint is a <a href="{{ url_for('leetcode', slug='greedy') }}">greedy</a>
+  problem that sorts by end instead, and the intersection variant above is <a href="{{ url_for('leetcode', slug='two-pointers') }}">two pointers</a>
+  walking two sorted lists. Counting how many intervals overlap at once moves from a single open block to a <a href="{{ url_for('leetcode', slug='heaps') }}">heap</a>
+  of end times.
+</p>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="lc-quiz">
+  <summary>Why is it enough to compare each interval with only the last merged block?</summary>
+  <p>Every earlier block ended before some interval that came after it started, and all later intervals start even later. So only the open block can still be reached.</p>
+</details>
+<details class="lc-quiz">
+  <summary>What breaks if you update the block's end with <code>end = e</code> instead of <code>max(end, e)</code>?</summary>
+  <p>An interval inside the block would shrink it. In the example, [2, 3] would cut [1, 4] down to [1, 3].</p>
+</details>
+<details class="lc-quiz">
+  <summary>Why does Insert Interval not need to sort?</summary>
+  <p>The input is sorted and disjoint, so the intervals that touch the new one form a single contiguous run, and one pass can copy, absorb and copy again. Here it absorbs {{ ins.absorbed | length }} intervals into [{{ ins.merged[0] }}, {{ ins.merged[1] }}].</p>
+</details>
+<details class="lc-quiz">
+  <summary>Meetings [9, 10) and [10, 12): conflict or not? And intervals [9, 10] and [10, 12]?</summary>
+  <p>The meetings do not conflict, because the first ends the moment the second begins. The closed intervals share the point 10, so they overlap and merge to [9, 12].</p>
+</details>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Cormen, Leiserson, Rivest and Stein, <em>Introduction to Algorithms</em>, 3rd edition, section 16.1 on activity selection and section 14.3 on interval trees.</li>
+  <li>Skiena, S., <em>The Algorithm Design Manual</em>, section 4.1 on applications of sorting, including interval problems.</li>
+  <li>Sedgewick and Wayne, <em>Algorithms</em>, section 2.5 on applications of sorting.</li>
+  <li>The <a href="https://neetcode.io/roadmap" rel="noopener">NeetCode roadmap</a> and the
+    Blind 75, Grind 169, NeetCode 150 and NeetCode 250 lists, used as the index of topics and
+    problems.</li>
+</ul>

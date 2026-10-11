@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-11 (build run). 48 of 58 pages are ready. **The next run is a build run** continuing at `interval-merging`.
+**Last updated:** 2026-10-11 (build run). 49 of 58 pages are ready. **The next run is a build run** continuing at `sweep-line`.
 
 ## The Routine
 
@@ -39,10 +39,10 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 
 | List | Problems with a ready home | Size |
 |---|---|---|
-| Blind 75 | 63 | 75 |
-| Grind 169 | 150 | 169 |
-| NeetCode 150 | 132 | 150 |
-| NeetCode 250 | 224 | 250 |
+| Blind 75 | 66 | 75 |
+| Grind 169 | 153 | 169 |
+| NeetCode 150 | 135 | 150 |
+| NeetCode 250 | 227 | 250 |
 
 ## Queue
 
@@ -97,8 +97,8 @@ build once research is done.
 46. `state-machine-dp` ✓
 47. `greedy` ✓
 48. `kadanes-algorithm` ✓
-49. `interval-merging` ← next
-50. `sweep-line`
+49. `interval-merging` ✓
+50. `sweep-line` ← next
 51. `matrix-manipulation`
 52. `number-math`
 53. `bit-manipulation`

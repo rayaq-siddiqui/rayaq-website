@@ -1429,3 +1429,36 @@ def test_kadane_helpers_match_the_page():
     assert "4 &minus; (-6) = 10" in body
     assert "The best product is 240" in body
     assert "the smallest product -48 at index 3 becomes the largest, 48" in body
+
+
+def test_interval_merging_helpers_match_the_page():
+    def brute_union(intervals):
+        points = {x for s, e in intervals for x in range(2 * s, 2 * e + 1)}
+        blocks, run = [], None
+        for x in sorted(points):
+            if run and x == run[1] + 1:
+                run[1] = x
+            else:
+                run = [x, x]
+                blocks.append(run)
+        return [(lo // 2, hi // 2) for lo, hi in blocks]
+
+    spans = [(5, 8), (1, 4), (2, 3), (9, 12), (12, 14), (6, 7), (16, 17)]
+    trace = leetcode_docs.merge_intervals_trace(spans)
+    assert [step["action"] for step in trace["steps"]] == ["new block", "inside", "new block", "inside", "new block", "extend", "new block"]
+    assert trace["merged"] == [(1, 4), (5, 8), (9, 14), (16, 17)] == brute_union(spans)
+    for sample in ([], [(1, 1)], [(1, 3), (3, 5)], [(4, 9), (1, 2), (2, 4)], [(1, 10), (2, 3), (4, 5), (11, 12)]):
+        assert leetcode_docs.merge_intervals_trace(sample)["merged"] == brute_union(sample)
+    parts = leetcode_docs.insert_interval_parts([(1, 2), (4, 6), (7, 8), (10, 13), (15, 16)], (5, 11))
+    assert parts["before"] == [(1, 2)] and parts["absorbed"] == [(4, 6), (7, 8), (10, 13)] and parts["after"] == [(15, 16)]
+    assert parts["result"] == [(1, 2), (4, 13), (15, 16)]
+    for existing, new in (([], (2, 5)), ([(3, 4)], (0, 1)), ([(3, 4)], (6, 7)), ([(1, 2), (5, 6)], (0, 9)), ([(1, 5)], (2, 3))):
+        assert leetcode_docs.insert_interval_parts(existing, new)["result"] == brute_union(existing + [new])
+    clash = leetcode_docs.first_conflict_of([(9, 10), (13, 15), (10, 12), (11, 13)])
+    assert clash["conflict"] == ((10, 12), (11, 13))
+    assert leetcode_docs.first_conflict_of([(13, 15), (9, 10), (10, 12)])["conflict"] is None
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/interval-merging").get_data(as_text=True))
+    assert "The answer is [1, 4], [5, 8], [9, 14], [16, 17]." in body
+    assert "grows the new interval to [4, 13]" in body
+    assert "first clash at [10, 12) and [11, 13)" in body
+    assert "[9, 10), [10, 12), [13, 15) can all be attended" in body

@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy", "kadanes-algorithm"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy", "kadanes-algorithm", "interval-merging"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -6586,6 +6586,49 @@ def max_product_pairs(nums):
     return {"rows": rows, "best": best}
 
 
+def merge_intervals_trace(intervals):
+    """Merge Intervals over closed intervals: sort by start, then each interval opens a new block, extends the last block, or lies inside it. steps[i] holds the interval, that action and the blocks so far."""
+    ordered = sorted(tuple(interval) for interval in intervals)
+    merged, steps = [], []
+    for start, end in ordered:
+        if merged and start <= merged[-1][1]:
+            if end > merged[-1][1]:
+                merged[-1] = (merged[-1][0], end)
+                action = "extend"
+            else:
+                action = "inside"
+        else:
+            merged.append((start, end))
+            action = "new block"
+        steps.append({"interval": (start, end), "action": action, "merged": list(merged)})
+    return {"sorted": ordered, "steps": steps, "merged": merged}
+
+
+def insert_interval_parts(intervals, new):
+    """Insert Interval into sorted, disjoint closed intervals: the ones ending before the new interval, the ones it absorbs, the merged interval, the ones starting after it, and the joined result."""
+    start, end = new
+    i, n = 0, len(intervals)
+    before, absorbed = [], []
+    while i < n and intervals[i][1] < start:
+        before.append(tuple(intervals[i]))
+        i += 1
+    while i < n and intervals[i][0] <= end:
+        absorbed.append(tuple(intervals[i]))
+        start, end = min(start, intervals[i][0]), max(end, intervals[i][1])
+        i += 1
+    after = [tuple(interval) for interval in intervals[i:]]
+    return {"before": before, "absorbed": absorbed, "merged": (start, end), "after": after, "result": before + [(start, end)] + after}
+
+
+def first_conflict_of(meetings):
+    """Meeting Rooms over half-open [start, end) meetings: sort by start and return the first neighbouring pair that overlaps, or None when one person can attend them all."""
+    ordered = sorted(tuple(meeting) for meeting in meetings)
+    for previous, current in zip(ordered, ordered[1:]):
+        if current[0] < previous[1]:
+            return {"sorted": ordered, "conflict": (previous, current)}
+    return {"sorted": ordered, "conflict": None}
+
+
 def problem_url(slug):
     return f"https://leetcode.com/problems/{slug}/"
 
@@ -6839,6 +6882,9 @@ def render(slug, render_template):
         "kadane_trace": kadane_trace,
         "circular_max_subarray": circular_max_subarray,
         "max_product_pairs": max_product_pairs,
+        "merge_intervals_trace": merge_intervals_trace,
+        "insert_interval_parts": insert_interval_parts,
+        "first_conflict_of": first_conflict_of,
         "min_jumps_levels": min_jumps_levels,
         "gas_station_trace": gas_station_trace,
         "straights_groups": straights_groups,
