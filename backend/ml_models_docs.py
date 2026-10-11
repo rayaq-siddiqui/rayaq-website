@@ -5907,6 +5907,110 @@ def ball_bound_example(points=KNN_POINTS, query=KNN_QUERY, label=0):
     return {"centroid": centroid, "radius": radius, "bound": bound, "true_min": true_min}
 
 
+SEARCH_EXAMPLE = {
+    "query": [1.0, 0.5],
+    "documents": {
+        "A": [4.0, 1.0],
+        "B": [1.0, 1.0],
+        "C": [0.9, 0.3],
+        "D": [2.0, 2.4],
+        "E": [0.2, 1.0],
+    },
+}
+
+
+def unit_vector(vector):
+    norm = vector_norm(vector)
+    return [x / norm for x in vector]
+
+
+def metric_agreement(example=SEARCH_EXAMPLE):
+    raw = similarity_ranking(example)
+    unit = {
+        "query": unit_vector(example["query"]),
+        "documents": {name: unit_vector(v) for name, v in example["documents"].items()},
+    }
+    normalized = similarity_ranking(unit)
+    identity = [
+        {
+            "name": row["name"],
+            "squared_distance": row["distance"] ** 2,
+            "two_minus_two_cos": 2 - 2 * row["cosine"],
+        }
+        for row in normalized["rows"]
+    ]
+    return {"raw": raw, "normalized": normalized, "identity": identity}
+
+
+def brute_force_search_cost(n, dim, bytes_per_value=4, queries=1):
+    flops = 2 * n * dim * queries
+    return {
+        "n": n,
+        "dim": dim,
+        "flops": flops,
+        "index_bytes": n * dim * bytes_per_value,
+        "intensity": flops / (n * dim * bytes_per_value),
+    }
+
+
+BM25_EXAMPLE = {
+    "documents": {
+        "d1": "the cat sat on the mat",
+        "d2": "a dog chased the cat around the cat tree",
+        "d3": "cats and dogs make good pets",
+        "d4": "the market fell as investors sold shares and the dollar rose against the euro",
+    },
+    "query": "cat mat",
+    "k1": 1.2,
+    "b": 0.75,
+}
+
+
+def bm25_idf(n_docs, doc_freq):
+    return math.log((n_docs - doc_freq + 0.5) / (doc_freq + 0.5) + 1)
+
+
+def bm25_scores(example=BM25_EXAMPLE):
+    docs = {name: text.split() for name, text in example["documents"].items()}
+    terms = example["query"].split()
+    n_docs = len(docs)
+    avgdl = sum(len(tokens) for tokens in docs.values()) / n_docs
+    k1, b = example["k1"], example["b"]
+    idf = {t: bm25_idf(n_docs, sum(t in tokens for tokens in docs.values())) for t in terms}
+    rows = []
+    for name, tokens in docs.items():
+        parts = {}
+        for t in terms:
+            tf = tokens.count(t)
+            norm = k1 * (1 - b + b * len(tokens) / avgdl)
+            parts[t] = idf[t] * tf * (k1 + 1) / (tf + norm) if tf else 0.0
+        rows.append({"name": name, "length": len(tokens), "parts": parts, "score": sum(parts.values())})
+    ranking = [row["name"] for row in sorted(rows, key=lambda row: (-row["score"], row["name"]))]
+    return {"avgdl": avgdl, "idf": idf, "rows": rows, "ranking": ranking}
+
+
+def bm25_saturation(k1=1.2, tfs=(1, 2, 3, 5, 10)):
+    return [{"tf": tf, "weight": tf * (k1 + 1) / (tf + k1)} for tf in tfs]
+
+
+def reciprocal_rank_fusion(rankings, k=60):
+    scores = {}
+    for ranking in rankings:
+        for rank, name in enumerate(ranking, start=1):
+            scores[name] = scores.get(name, 0.0) + 1 / (k + rank)
+    fused = sorted(scores, key=lambda name: (-scores[name], name))
+    return {"scores": scores, "ranking": fused}
+
+
+HYBRID_DENSE_RANKING = ["d3", "d1", "d2", "d4"]
+
+
+def hybrid_example(k=60):
+    lexical = [row["name"] for row in sorted(bm25_scores()["rows"], key=lambda row: -row["score"]) if row["score"] > 0]
+    fused = reciprocal_rank_fusion([lexical, HYBRID_DENSE_RANKING], k=k)
+    return {"lexical": lexical, "dense": HYBRID_DENSE_RANKING, "k": k, **fused}
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -6335,6 +6439,12 @@ def render(slug, render_template):
         "kd_tree_build": kd_tree_build,
         "kd_tree_query": kd_tree_query,
         "ball_bound_example": ball_bound_example,
+        "search_example": SEARCH_EXAMPLE,
+        "metric_agreement": metric_agreement,
+        "brute_force_search_cost": brute_force_search_cost,
+        "bm25_scores": bm25_scores,
+        "bm25_saturation": bm25_saturation,
+        "hybrid_example": hybrid_example,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

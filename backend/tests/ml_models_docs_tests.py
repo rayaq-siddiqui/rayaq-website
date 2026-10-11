@@ -2649,3 +2649,52 @@ def test_kd_tree_matches_sklearn_sizes_and_prunes():
 
     ball = ml_models_docs.ball_bound_example(label=0)
     assert 0 < ball["bound"] <= ball["true_min"]
+
+
+def test_metrics_disagree_raw_and_agree_after_normalizing():
+    result = ml_models_docs.metric_agreement()
+    raw, unit = result["raw"], result["normalized"]
+
+    assert raw["by_dot"] == ["A", "D", "B", "C", "E"]
+    assert raw["by_cosine"] == ["C", "A", "B", "D", "E"]
+    assert raw["by_distance"] == ["C", "B", "E", "D", "A"]
+    assert unit["by_dot"] == unit["by_cosine"] == unit["by_distance"] == raw["by_cosine"]
+    for row in result["identity"]:
+        assert math.isclose(row["squared_distance"], row["two_minus_two_cos"], abs_tol=1e-12)
+
+
+def test_brute_force_search_cost():
+    cost = ml_models_docs.brute_force_search_cost(1_000_000, 768)
+
+    assert cost["flops"] == 1_536_000_000
+    assert cost["index_bytes"] == 3_072_000_000
+    assert cost["intensity"] == 0.5
+    assert ml_models_docs.brute_force_search_cost(10, 4, queries=3)["flops"] == 240
+
+
+def test_bm25_matches_the_lucene_formula():
+    result = ml_models_docs.bm25_scores()
+    rows = {row["name"]: row for row in result["rows"]}
+
+    assert result["avgdl"] == 8.75
+    assert math.isclose(result["idf"]["cat"], math.log(2))
+    assert math.isclose(result["idf"]["mat"], math.log(3.5 / 1.5 + 1))
+    norm = 1.2 * (1 - 0.75 + 0.75 * 6 / 8.75)
+    assert math.isclose(rows["d1"]["parts"]["cat"], math.log(2) * 2.2 / (1 + norm))
+    assert rows["d2"]["parts"]["cat"] > rows["d1"]["parts"]["cat"]
+    assert rows["d3"]["score"] == 0 and rows["d4"]["score"] == 0
+    assert result["ranking"][:2] == ["d1", "d2"]
+
+    weights = [row["weight"] for row in ml_models_docs.bm25_saturation()]
+    assert weights[0] == 1.0 and weights == sorted(weights) and weights[-1] < 2.2
+
+
+def test_reciprocal_rank_fusion():
+    fused = ml_models_docs.reciprocal_rank_fusion([["x", "y"], ["y", "z"]], k=60)
+    assert math.isclose(fused["scores"]["y"], 1 / 62 + 1 / 61)
+    assert fused["ranking"] == ["y", "x", "z"]
+
+    hybrid = ml_models_docs.hybrid_example()
+    assert hybrid["lexical"] == ["d1", "d2"]
+    assert hybrid["ranking"] == ["d1", "d2", "d3", "d4"]
+    assert math.isclose(hybrid["scores"]["d1"], 1 / 61 + 1 / 62)
