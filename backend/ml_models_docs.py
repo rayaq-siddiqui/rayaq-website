@@ -6295,6 +6295,7 @@ def fake_quantize(values, scale, zero_point, quant_min, quant_max):
     unclamped = [round(v / scale) + zero_point for v in values]
     codes = [min(max(q, quant_min), quant_max) for q in unclamped]
     return {
+        "unclamped": unclamped,
         "codes": codes,
         "output": dequantize_values(codes, scale, zero_point),
         "mask": [quant_min <= q <= quant_max for q in unclamped],
@@ -6900,6 +6901,8 @@ def render(slug, render_template):
         "quant_ranges": QUANT_RANGES,
         "affine_qparams": affine_qparams,
         "symmetric_qparams": symmetric_qparams,
+        "outlier_activations": OUTLIER_ACTIVATIONS,
+        "outlier_weights": OUTLIER_WEIGHTS,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

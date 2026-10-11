@@ -1,0 +1,544 @@
+{% set dyn = quantize_roundtrip(affine_example) %}
+{% set act = activation_example %}
+{% set aff = quantize_roundtrip(act) %}
+{% set sym = quantize_roundtrip(act, "symmetric", "qint8") %}
+{% set fq_in = fake_quant_example %}
+{% set fq = fake_quantize(fq_in["values"], fq_in.scale, fq_in.zero_point, fq_in.quant_min, fq_in.quant_max) %}
+{% set pc = per_channel_example() %}
+{% set g_whole = group_quantize(group_row) %}
+{% set g_grouped = group_quantize(group_row, group_size=4) %}
+{% set g_int8 = group_quantize(group_row, bits=8) %}
+{% set mem = weight_memory_example() %}
+{% set out = outlier_example() %}
+{% macro f(x, n=1) -%}{{ ("%." ~ n ~ "f")|format(x) }}{%- endmacro %}
+{% macro g(x, n=4) -%}{{ ("%." ~ n ~ "g")|format(x) }}{%- endmacro %}
+{% macro pct(x, n=1) -%}{{ ("%." ~ n ~ "f")|format(x * 100) }}%{%- endmacro %}
+{% macro fx(v) -%}{{ 360 + v * 110 }}{%- endmacro %}
+{% macro cx(c) -%}{{ 440 + c }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Quantization</h1>
+  <p class="tagline">
+    How a model's weights and activations are stored as 8-bit or 4-bit integers: the scale and zero point
+    that map floats to integers, per-tensor versus per-channel and per-group scales, post-training quantization
+    versus quantization-aware training with fake quantization, and why outliers make large language models
+    hard to quantize.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A trained network stores every weight as a 32-bit or 16-bit float, but it rarely needs that much
+  precision to give the same answers. Inference cost is dominated by moving bytes: during LLM decoding every
+  weight is read from memory once per generated token (see <a href="/ml-models/kv-cache">the KV cache</a> and
+  <a href="/ml-models/gpu-execution">how a GPU runs a model</a>), so halving the bytes per weight nearly halves
+  the time per token, and lets a model fit on a smaller device. Integer arithmetic is also cheaper than
+  floating point on most hardware. <dfn>Quantization</dfn> replaces floats with small integers plus a few
+  floats that say how to read them. The question is how to choose those few floats so the model's outputs
+  barely change.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  An 8-bit integer has 256 values. Quantizing a tensor means laying a ruler with 256 evenly spaced marks over
+  the range the tensor's values actually occupy, and storing each value as the number of its nearest mark.
+  The spacing between marks is the <dfn>scale</dfn>; the mark that sits exactly on 0.0 is the
+  <dfn>zero point</dfn>. Every value moves by at most half a spacing. So the whole game is keeping the ruler
+  short: the narrower the range one scale has to cover, the finer its marks. That is why quantizers use a
+  separate scale per output channel or per small group of weights, and why one huge value (an outlier)
+  stretches the ruler and wipes out the precision of everything else that shares its scale.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 300" role="img" aria-labelledby="qz-ruler-title qz-ruler-desc">
+    <title id="qz-ruler-title">Five activations on a float axis and their codes under affine quint8 and symmetric qint8</title>
+    <desc id="qz-ruler-desc">A float axis from −2.6 to 2.6 shows five values: {{ act|join(", ")|replace("-", "−") }}. Below it, the affine quint8 ruler covers exactly the observed range from {{ act|min|string|replace("-", "−") }} to {{ act|max }} with codes 0 to 255 and zero point {{ aff.zero_point }}; the values get codes {{ aff.codes|join(", ") }}. Below that, the symmetric qint8 ruler is centred on zero and covers −{{ act|max }} to {{ act|max }}; the values get codes {{ sym.codes|join(", ")|replace("-", "−") }}, and the codes from −128 to {{ (sym.codes|min - 1)|string|replace("-", "−") }} are never used, so its spacing is {{ f(sym.scale / aff.scale, 2) }} times coarser.</desc>
+    <g font-size="11">
+      <text x="74" y="22">float values</text>
+      <line x1="{{ fx(-2.6) }}" y1="50" x2="{{ fx(2.6) }}" y2="50" class="d-line" stroke-width="1.5"></line>
+      {% for t in [-2, -1, 0, 1, 2] %}
+      <line x1="{{ fx(t) }}" y1="45" x2="{{ fx(t) }}" y2="55" class="d-line"></line>
+      <text x="{{ fx(t) }}" y="70" text-anchor="middle" class="d-muted">{{ t|replace("-", "−") }}</text>
+      {% endfor %}
+      {% for v in act %}
+      <line x1="{{ fx(v) }}" y1="50" x2="{{ fx(v) }}" y2="246" class="d-line ml-dashed" stroke-width="0.8"></line>
+      <circle cx="{{ fx(v) }}" cy="50" r="4" class="ml-heat"></circle>
+      <text x="{{ fx(v) }}" y="38" text-anchor="middle">{{ v|replace("-", "−") }}</text>
+      {% endfor %}
+
+      <text x="74" y="104">quint8, affine: scale {{ g(aff.scale) }}, zero point {{ aff.zero_point }}</text>
+      <rect x="{{ fx(act|min) }}" y="112" width="{{ fx(act|max)|float - fx(act|min)|float }}" height="24" class="ml-tensor"></rect>
+      {% for q in aff.codes %}
+      <text x="{{ fx(act[loop.index0]) }}" y="152" text-anchor="middle">{{ q }}</text>
+      {% endfor %}
+
+      <text x="74" y="194">qint8, symmetric: scale {{ g(sym.scale) }}, zero point 0</text>
+      <rect x="{{ fx(-128 * sym.scale) }}" y="202" width="{{ fx(-0.62)|float - fx(-128 * sym.scale)|float }}" height="24" class="d-box ml-dashed"></rect>
+      <rect x="{{ fx(-0.62) }}" y="202" width="{{ fx(127 * sym.scale)|float - fx(-0.62)|float }}" height="24" class="ml-tensor"></rect>
+      <text x="{{ (fx(-128 * sym.scale)|float + fx(-0.62)|float) / 2 }}" y="218" text-anchor="middle" class="d-muted">codes −128…{{ (sym.codes|min - 1)|string|replace("-", "−") }} unused</text>
+      {% for q in sym.codes %}
+      <text x="{{ fx(act[loop.index0]) }}" y="242" text-anchor="middle">{{ q|replace("-", "−") }}</text>
+      {% endfor %}
+      <text x="74" y="282" class="d-muted">every float lands on its nearest mark: at most half a scale away</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">
+  Both rulers have 256 marks. The affine one is laid over exactly the range the values occupy; the
+  symmetric one is centred on zero, so with mostly positive values almost half its codes go unused and its
+  marks are {{ f(sym.scale / aff.scale, 2) }}× farther apart.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="scale-and-zero-point">Scale and zero point</h3>
+
+<p>
+  An integer type has a range [<var>q</var><sub>min</sub>, <var>q</var><sub>max</sub>]: [−128, 127] for
+  <code>torch.qint8</code>, [0, 255] for <code>torch.quint8</code>. <dfn>Affine</dfn> (asymmetric)
+  quantization maps a float <var>x</var> to an integer <var>q</var> and back with a scale <var>s</var> and an
+  integer zero point <var>z</var>:
+</p>
+
+<p class="ml-formula">q = clamp(round(x / s) + z, q<sub>min</sub>, q<sub>max</sub>) &nbsp;&nbsp;&nbsp; x̂ = (q − z) × s</p>
+
+<p>
+  The rounding is to the nearest integer with ties to even (PyTorch's kernels call
+  <code>std::nearbyint</code>). Given the minimum and maximum a tensor takes, PyTorch's observers first
+  stretch the range to include 0, then divide it evenly:
+</p>
+
+<p class="ml-formula">min⁻ = min(min, 0), max⁺ = max(max, 0) &nbsp;&nbsp;&nbsp; s = (max⁺ − min⁻) / (q<sub>max</sub> − q<sub>min</sub>) &nbsp;&nbsp;&nbsp; z = q<sub>min</sub> − round(min⁻ / s)</p>
+
+<p>
+  Including 0 guarantees that 0.0 is represented exactly (it becomes <var>z</var>), which matters because
+  padding, ReLU outputs and masked values are exact zeros. <dfn>Symmetric</dfn> quantization fixes
+  <var>z</var> = 0 for signed types (128 for unsigned) and sets <var>s</var> = max(|min⁻|, max⁺) /
+  ((<var>q</var><sub>max</sub> − <var>q</var><sub>min</sub>) / 2), which divides by 127.5 for qint8. The
+  quantized matmul is then simpler (no zero-point cross terms), at the cost of wasting codes when the values
+  are lopsided, as in the diagram. PyTorch's defaults follow that split: weights are symmetric qint8,
+  activations affine quint8. Values outside the range are clamped, so the error per value is at most
+  <var>s</var>/2 inside the range and unbounded outside it.
+</p>
+
+<h3 id="granularity">Granularity: per tensor, per channel, per group</h3>
+
+<p>
+  One scale for a whole tensor (<code>per_tensor_affine</code>, <code>per_tensor_symmetric</code>) is cheapest
+  but lets the largest value anywhere set the spacing for everything. A weight matrix's output channels
+  (rows of a linear layer's weight) often differ in magnitude by an order of magnitude, so PyTorch's
+  <code>PerChannelMinMaxObserver</code> keeps a separate min and max, and so a separate scale, along
+  <code>ch_axis</code> (0 by default). Because each output channel's scale multiplies a whole output
+  element, per-channel weight scales cost nothing in the matmul: the integer dot product is computed first and
+  scaled once at the end. Weight-only LLM quantization goes further, with one scale per <dfn>group</dfn> of
+  32 to 128 consecutive weights within a row. Each fp16 scale over a group of <var>g</var> weights adds
+  16/<var>g</var> bits per weight. PyTorch's observer module names the same granularities as
+  <code>PerTensor</code>, <code>PerAxis</code>, <code>PerGroup</code>, <code>PerRow</code>,
+  <code>PerToken</code> and <code>PerBlock</code>.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 270" role="img" aria-labelledby="qz-chan-title qz-chan-desc">
+    <title id="qz-chan-title">The int8 codes used by each row of a 3 × 4 weight matrix, with one scale per tensor and one per row</title>
+    <desc id="qz-chan-desc">With one symmetric scale for the whole tensor, set by the largest weight {{ channel_weights[2][0] }}, row 1 uses only codes {{ pc.tensor_codes[0]|min|string|replace("-", "−") }} to {{ pc.tensor_codes[0]|max }} of the −127 to 127 range and loses {{ pct(pc.tensor_error[0]) }} of its magnitude to rounding; row 2 uses {{ pc.tensor_codes[1]|min|string|replace("-", "−") }} to {{ pc.tensor_codes[1]|max }} and loses {{ pct(pc.tensor_error[1]) }}. With one scale per row, every row reaches 127 and every row's error is below 1%.</desc>
+    <g font-size="11">
+      <text x="20" y="22" font-weight="600">one scale for the tensor: s = {{ g(pc.tensor_scale) }}</text>
+      {% for row in pc.tensor_codes %}
+      {% set y = 36 + loop.index0 * 30 %}
+      <text x="20" y="{{ y + 14 }}">row {{ loop.index }} · max |w| {{ channel_weights[loop.index0]|map("abs")|max }}</text>
+      <rect x="{{ cx(-127) }}" y="{{ y }}" width="254" height="18" class="d-box ml-dashed"></rect>
+      <rect x="{{ cx(row|min) }}" y="{{ y }}" width="{{ row|max - row|min }}" height="18" class="ml-heat"></rect>
+      <text x="586" y="{{ y + 14 }}">error {{ pct(pc.tensor_error[loop.index0]) }}</text>
+      {% endfor %}
+      <text x="20" y="150" font-weight="600">one scale per row (output channel)</text>
+      {% for row in pc.channel_codes %}
+      {% set y = 164 + loop.index0 * 30 %}
+      <text x="20" y="{{ y + 14 }}">row {{ loop.index }} · s = {{ g(pc.channel_scales[loop.index0], 3) }}</text>
+      <rect x="{{ cx(-127) }}" y="{{ y }}" width="254" height="18" class="d-box ml-dashed"></rect>
+      <rect x="{{ cx(row|min) }}" y="{{ y }}" width="{{ row|max - row|min }}" height="18" class="ml-heat"></rect>
+      <text x="586" y="{{ y + 14 }}">error {{ pct(pc.channel_error[loop.index0]) }}</text>
+      {% endfor %}
+      <text x="{{ cx(-127) }}" y="262" text-anchor="middle" class="d-muted">−127</text>
+      <text x="{{ cx(0) }}" y="262" text-anchor="middle" class="d-muted">0</text>
+      <text x="{{ cx(127) }}" y="262" text-anchor="middle" class="d-muted">127</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">
+  Filled bars are the span of int8 codes each row actually uses; dashed outlines are the full range. Error is
+  the row's total absolute rounding error relative to its total magnitude.
+</p>
+
+<h3 id="ptq">Post-training quantization</h3>
+
+<p>
+  <dfn>Post-training quantization</dfn> (PTQ) quantizes a trained model without further training. In
+  <dfn>dynamic</dfn> quantization the weights are quantized ahead of time and each activation's scale and zero
+  point are computed from that activation at run time; <code>quantize_dynamic</code>'s docstring calls this
+  "dynamic (i.e. weights-only)", and by default it swaps <code>nn.Linear</code> and the recurrent layers for
+  int8 versions (or fp16 with <code>dtype=torch.float16</code>). In <dfn>static</dfn> quantization the
+  activation scales are fixed too: <code>prepare</code> inserts <dfn>observers</dfn> after each quantizable
+  module, you run a sample of representative batches through the model (<dfn>calibration</dfn>), and
+  <code>convert</code> replaces each module with a quantized one that uses the observed ranges. A
+  <code>MinMaxObserver</code> tracks the running minimum and maximum; a <code>MovingAverageMinMaxObserver</code>
+  averages them; a <code>HistogramObserver</code> chooses a range that minimizes quantization error, which can
+  clip rare extreme values on purpose. Which observer each module gets comes from its <code>QConfig</code>:
+  <code>default_qconfig</code> pairs a <code>MinMaxObserver</code> for activations (quint8, codes 0-127) with
+  a symmetric qint8 per-tensor weight observer; <code>default_per_channel_qconfig</code> uses the per-channel
+  weight observer instead.
+</p>
+
+<h3 id="qat">Quantization-aware training</h3>
+
+<p>
+  When PTQ loses too much accuracy, <dfn>quantization-aware training</dfn> (QAT) fine-tunes the model with the
+  quantization error in the loop. <code>prepare_qat</code> inserts <code>FakeQuantize</code> modules that
+  quantize and immediately dequantize, so values stay floats but take only the 256 representable levels:
+</p>
+
+<p class="ml-formula">x_out = (clamp(round(x / s + z), q<sub>min</sub>, q<sub>max</sub>) − z) × s</p>
+
+<p>
+  Rounding has zero derivative almost everywhere, which would stop all gradients. The fix is the
+  <dfn>straight-through estimator</dfn>: treat rounding as the identity in the backward pass. PyTorch's kernel
+  records a boolean mask in the forward pass, true where round(<var>x</var>/<var>s</var>) + <var>z</var> fell
+  inside [<var>q</var><sub>min</sub>, <var>q</var><sub>max</sub>], and the backward pass is just
+  <code>dY * mask</code>: the gradient passes through unchanged where the value was rounded and is zero where
+  it was clamped. The weights learn to sit where rounding hurts least, and the observers inside each
+  <code>FakeQuantize</code> keep updating the scales during training. After training, <code>convert</code>
+  produces the real integer model.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 210" role="img" aria-labelledby="qz-qat-title qz-qat-desc">
+    <title id="qz-qat-title">Quantization-aware training: fake quantization in the forward pass, the straight-through estimator in the backward pass</title>
+    <desc id="qz-qat-desc">Forward, left to right: the fp32 weight goes into a FakeQuantize module, where an observer computes the scale and zero point and the value is quantized and dequantized; the result feeds the matmul and the loss. Backward, right to left: the gradient with respect to the fake-quantized weight is multiplied by the mask (1 where the value was inside the integer range, 0 where it was clamped) and becomes the gradient of the fp32 weight, which the optimizer updates.</desc>
+    <defs>
+      <marker id="qz-fwd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--jj-green)"></path>
+      </marker>
+      <marker id="qz-bwd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--jj-amber)"></path>
+      </marker>
+    </defs>
+    <g font-size="12" text-anchor="middle">
+      <rect x="20" y="40" width="120" height="50" rx="4" class="ml-weight"></rect>
+      <text x="80" y="62">weight w</text><text x="80" y="78" font-size="10" class="d-muted">fp32, trained</text>
+      <rect x="190" y="30" width="250" height="70" rx="4" class="ml-op"></rect>
+      <text x="315" y="50">FakeQuantize</text>
+      <text x="315" y="68" font-size="10" class="d-muted">observer → s, z</text>
+      <text x="315" y="86" font-size="10" class="d-muted">ŵ = (clamp(round(w/s + z)) − z) × s</text>
+      <rect x="490" y="40" width="190" height="50" rx="4" class="d-box"></rect>
+      <text x="585" y="62">matmul with x, loss L</text><text x="585" y="78" font-size="10" class="d-muted">sees only 256 levels</text>
+      <text x="315" y="150" fill="var(--jj-amber)">∂L/∂w = ∂L/∂ŵ × mask</text>
+      <text x="315" y="190" font-size="10" class="d-muted">mask = 1 where round(w/s) + z was in [q_min, q_max], 0 where it was clamped</text>
+    </g>
+    <line x1="140" y1="65" x2="186" y2="65" stroke="var(--jj-green)" stroke-width="2" marker-end="url(#qz-fwd)"></line>
+    <line x1="440" y1="65" x2="486" y2="65" stroke="var(--jj-green)" stroke-width="2" marker-end="url(#qz-fwd)"></line>
+    <polyline points="585,90 585,130 80,130 80,94" fill="none" stroke="var(--jj-amber)" stroke-width="2" marker-end="url(#qz-bwd)"></polyline>
+  </svg>
+</div>
+<p class="ml-caption">
+  Forward (green) sees quantized values; backward (amber) pretends rounding was the identity, except where
+  clamping cut the value off.
+</p>
+
+<h3 id="llms">Weight-only int8 and int4 for LLMs</h3>
+
+<p>
+  For LLM decoding, which is memory-bound, the usual recipe is <dfn>weight-only</dfn> quantization: weights
+  are stored in int8 or int4 and dequantized to fp16 or bf16 inside the matmul kernel, while activations stay
+  in 16-bit. The speedup comes from reading fewer bytes, not from integer arithmetic. At 8 bits, symmetric
+  per-channel round-to-nearest is usually close to lossless. At 4 bits there are only 16 levels, so
+  round-to-nearest needs small groups, and better methods choose the rounding with data:
+</p>
+
+<ul>
+  <li>
+    <strong>GPTQ</strong> quantizes a layer's weights one column at a time and, after each column, adjusts
+    the columns not yet quantized to compensate for the rounding error just introduced, using second-order
+    information (the inverse Hessian of the layer's reconstruction error) computed from a small calibration set.
+    It reaches 3 to 4 bits per weight on large models in a single pass, with no retraining.
+  </li>
+  <li>
+    <strong>Outliers.</strong> In large transformers a few hidden dimensions carry activations far larger than
+    the rest. With one scale per activation vector, a single outlier stretches the scale so far that the
+    ordinary values round to zero (worked example below). <strong>LLM.int8()</strong> handles this with a
+    mixed-precision decomposition: the hidden dimensions whose activations exceed a threshold (6.0 in the
+    paper) are multiplied in fp16, and everything else in int8 with a separate scale per row of the
+    activations and per column of the weights.
+  </li>
+</ul>
+
+<p>
+  A note on the PyTorch API: in {{ pins.pytorch.tag }} the entry points in
+  <code>torch.ao.quantization</code>'s <code>quantize.py</code> (<code>prepare</code>, <code>convert</code>,
+  <code>quantize_dynamic</code>, <code>prepare_qat</code> and the rest) are marked deprecated, with a warning that points to the separate
+  <code>torchao</code> library (its <code>quantize_</code> API for eager models, and <code>prepare_pt2e</code>
+  and <code>convert_pt2e</code> for exported graphs). They still work, and the observers, fake
+  quantization and the formulas above are the same ideas torchao builds on.
+</p>
+
+<h3 id="pytorch-api">The PyTorch API</h3>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead>
+      <tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>quantize_dynamic</code></td>
+        <td><code>model, qconfig_spec=None, dtype=torch.qint8, mapping=None, inplace=False</code></td>
+        <td>Dynamic PTQ: weights quantized now, activation qparams computed per batch. Defaults cover <code>Linear</code>, <code>LSTM</code>, <code>GRU</code> and the RNN cells.</td>
+        <td><a href="{{ src('torch/ao/quantization/quantize.py', 483, 572) }}">quantize.py 483-572</a></td>
+      </tr>
+      <tr>
+        <td><code>prepare</code>, <code>convert</code></td>
+        <td><code>(model, inplace=False, ...)</code></td>
+        <td>Static PTQ: insert observers per the module's <code>qconfig</code>; after calibration, swap in quantized modules.</td>
+        <td><a href="{{ src('torch/ao/quantization/quantize.py', 343, 410) }}">quantize.py 343-410</a>, <a href="{{ src('torch/ao/quantization/quantize.py', 629, 680) }}">629-680</a></td>
+      </tr>
+      <tr>
+        <td><code>prepare_qat</code></td>
+        <td><code>(model, mapping=None, inplace=False)</code></td>
+        <td>QAT: swap modules for versions with <code>FakeQuantize</code> on weights and outputs.</td>
+        <td><a href="{{ src('torch/ao/quantization/quantize.py', 574, 604) }}">quantize.py 574-604</a></td>
+      </tr>
+      <tr>
+        <td><code>QConfig</code> defaults</td>
+        <td><code>default_qconfig</code>, <code>default_per_channel_qconfig</code>, <code>default_dynamic_qconfig</code></td>
+        <td>Which observer to use for activations and for weights.</td>
+        <td><a href="{{ src('torch/ao/quantization/qconfig.py', 153, 178) }}">qconfig.py 153-178</a></td>
+      </tr>
+      <tr>
+        <td><code>MinMaxObserver</code></td>
+        <td><code>dtype=torch.quint8, qscheme=torch.per_tensor_affine, reduce_range=False</code></td>
+        <td>Records the running min and max of what passes through; computes <var>s</var> and <var>z</var> from them.</td>
+        <td><a href="{{ src('torch/ao/quantization/observer.py', 440, 585) }}">observer.py 440-585</a></td>
+      </tr>
+      <tr>
+        <td><code>PerChannelMinMaxObserver</code></td>
+        <td><code>ch_axis=0, dtype=torch.quint8, qscheme=torch.per_channel_affine</code></td>
+        <td>The same, with one min, max, scale and zero point per slice along <code>ch_axis</code>.</td>
+        <td><a href="{{ src('torch/ao/quantization/observer.py', 686, 896) }}">observer.py 686-896</a></td>
+      </tr>
+      <tr>
+        <td><code>_calculate_qparams</code></td>
+        <td><code>(min_val, max_val) → (scale, zero_point)</code></td>
+        <td>The formulas above: include 0, then symmetric, affine or float-zero-point qparams; scale at least <code>eps</code>.</td>
+        <td><a href="{{ src('torch/ao/quantization/observer.py', 348, 430) }}">observer.py 348-430</a></td>
+      </tr>
+      <tr>
+        <td><code>calculate_qmin_qmax</code></td>
+        <td><code>quant_min, quant_max, has_customized_qrange, dtype, reduce_range</code></td>
+        <td>Default integer ranges: qint8 [−128, 127], quint8 [0, 255]; <code>reduce_range</code> halves them to [−64, 63] and [0, 127].</td>
+        <td><a href="{{ src('torch/ao/quantization/utils.py', 445, 506) }}">utils.py 445-506</a></td>
+      </tr>
+      <tr>
+        <td><code>FakeQuantize</code></td>
+        <td><code>observer=MovingAverageMinMaxObserver, quant_min, quant_max, is_dynamic=False</code></td>
+        <td>Quantize-dequantize in float during training; toggled with <code>enable_fake_quant</code> and <code>enable_observer</code>.</td>
+        <td><a href="{{ src('torch/ao/quantization/fake_quantize.py', 128, 329) }}">fake_quantize.py 128-329</a></td>
+      </tr>
+      <tr>
+        <td>Fake-quant kernel and gradient</td>
+        <td><code>(input, scale, zero_point, quant_min, quant_max) → (output, mask)</code></td>
+        <td>Forward rounds with <code>std::nearbyint</code> and saves the in-range mask; backward returns <code>dY * mask</code>.</td>
+        <td><a href="{{ src('aten/src/ATen/native/quantized/cpu/kernels/QuantizedOpKernels.cpp', 2655, 2715) }}">QuantizedOpKernels.cpp 2655-2715</a>, <a href="{{ src('aten/src/ATen/native/quantized/FakeQuantPerTensorAffine.cpp', 121, 134) }}">FakeQuantPerTensorAffine.cpp 121-134</a></td>
+      </tr>
+      <tr>
+        <td><code>torch.quantize_per_tensor</code>, <code>quantize_per_tensor_dynamic</code></td>
+        <td><code>(input, scale, zero_point, dtype)</code>, <code>(input, dtype, reduce_range)</code></td>
+        <td>Make a quantized tensor with given or computed qparams; <code>.int_repr()</code> shows the codes.</td>
+        <td><a href="{{ src('torch/_torch_docs.py', 13807, 13871) }}">_torch_docs.py 13807-13871</a></td>
+      </tr>
+      <tr>
+        <td><code>DEPRECATION_WARNING</code></td>
+        <td>string</td>
+        <td>Points eager-mode users to torchao's <code>quantize_</code> and graph-mode users to <code>prepare_pt2e</code>/<code>convert_pt2e</code>.</td>
+        <td><a href="{{ src('torch/ao/quantization/utils.py', 818, 829) }}">utils.py 818-829</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p><strong>Affine qparams by hand.</strong> PyTorch's <code>quantize_per_tensor_dynamic</code> docstring quantizes [{{ affine_example|join(", ") }}] to quint8. With min = −1 and max = 2:</p>
+  <ul>
+    <li><var>s</var> = (2 − (−1)) / (255 − 0) = 3/255 = {{ dyn.scale }}</li>
+    <li><var>z</var> = 0 − round(−1 / <var>s</var>) = −round(−85) = {{ dyn.zero_point }}</li>
+    <li>codes: round(<var>x</var>/<var>s</var>) + 85 = [{{ dyn.codes|join(", ") }}], exactly the docstring's <code>int_repr()</code>, and every value dequantizes back exactly because each is a multiple of <var>s</var> from 0.</li>
+  </ul>
+</div>
+
+<div class="ml-worked">
+  <p><strong>Rounding error, affine versus symmetric.</strong> The five activations from the first diagram:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th><var>x</var></th><th>quint8 code</th><th>x̂</th><th>Error</th><th>qint8 sym. code</th><th>x̂</th><th>Error</th></tr></thead>
+      <tbody>
+        {% for x in act %}
+        <tr><td>{{ x }}</td><td>{{ aff.codes[loop.index0] }}</td><td>{{ f(aff.restored[loop.index0], 4) }}</td><td>{{ f(aff.errors[loop.index0], 4) }}</td><td>{{ sym.codes[loop.index0] }}</td><td>{{ f(sym.restored[loop.index0], 4) }}</td><td>{{ f(sym.errors[loop.index0], 4) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Affine: <var>s</var> = {{ g(aff.scale) }}, <var>z</var> = {{ aff.zero_point }}, largest error
+    {{ f(aff.max_error, 4) }} (at most <var>s</var>/2 = {{ f(aff.scale / 2, 4) }}); the endpoints and 0 are exact.
+    Symmetric: <var>s</var> = 2.48/127.5 = {{ g(sym.scale) }}, largest error {{ f(sym.max_error, 4) }}, and
+    even the maximum is no longer exact, because 2.48 maps to 127.5 and rounds to 127.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <p><strong>Per tensor versus per channel.</strong> The weight matrix from the second diagram, symmetric qint8:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Row</th><th>Weights</th><th>Per-tensor codes</th><th>Error</th><th>Per-channel <var>s</var></th><th>Codes</th><th>Error</th></tr></thead>
+      <tbody>
+        {% for row in channel_weights %}
+        {% set i = loop.index0 %}
+        <tr><td>{{ loop.index }}</td><td>{{ row|join(", ")|replace("-", "−") }}</td><td>{{ pc.tensor_codes[i]|join(", ")|replace("-", "−") }}</td><td>{{ pct(pc.tensor_error[i]) }}</td><td>{{ g(pc.channel_scales[i], 3) }}</td><td>{{ pc.channel_codes[i]|join(", ")|replace("-", "−") }}</td><td>{{ pct(pc.channel_error[i]) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    With one scale, row 1's weights become ±3 to ±6 out of 127, about 4 of the 8 bits in use, and a
+    {{ pct(pc.tensor_error[0]) }} error. Per channel, row 1 gets a scale {{ f(pc.tensor_scale / pc.channel_scales[0], 0) }}× finer and its error
+    drops to {{ pct(pc.channel_error[0], 2) }}. Row 3 sets the tensor's scale, so it is identical both ways.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <p><strong>Fake quantization and its gradient.</strong> The <code>fake_quantize_per_tensor_affine</code> docstring example, <var>s</var> = {{ fq_in.scale }}, <var>z</var> = {{ fq_in.zero_point }}, range [{{ fq_in.quant_min }}, {{ fq_in.quant_max }}]:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th><var>x</var></th><th>round(<var>x</var>/<var>s</var>) + <var>z</var></th><th>Output</th><th>Mask</th><th>Gradient passed (upstream 1.0)</th></tr></thead>
+      <tbody>
+        {% set ste = straight_through_grad([1.0] * fq.mask|length, fq.mask) %}
+        {% for x in fq_in["values"] %}
+        <tr><td>{{ x }}</td><td>{% if fq.mask[loop.index0] %}{{ fq.codes[loop.index0] }}{% else %}{{ fq.unclamped[loop.index0]|replace("-", "−") }}, clamped to {{ fq.codes[loop.index0] }}{% endif %}</td><td>{{ f(fq.output[loop.index0], 4) }}</td><td>{{ 1 if fq.mask[loop.index0] else 0 }}</td><td>{{ f(ste[loop.index0], 1) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The outputs [{{ fq.output|map("round", 4)|join(", ") }}] match the docstring. The last value was clamped,
+    so the straight-through estimator gives it no gradient: nudging it slightly would not change the output.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <p><strong>int4 groups and memory.</strong> One row of 8 weights with an outlier, [{{ group_row|join(", ")|replace("-", "−") }}], symmetric absmax int4 (codes −8 to 7, scale = max |w| / 7):</p>
+  <ul>
+    <li>One scale for the row: <var>s</var> = {{ g(g_whole.scales[0]) }}; the row becomes {{ g_whole.restored|map("round", 3)|join(", ")|replace("-", "−") }}, error {{ pct(g_whole.error) }}.</li>
+    <li>Groups of 4: scales {{ g_grouped.scales|map("round", 4)|join(" and ") }}; the first group no longer shares the outlier's scale, and the error falls to {{ pct(g_grouped.error) }}.</li>
+    <li>For comparison, int8 with one scale: error {{ pct(g_int8.error) }}.</li>
+  </ul>
+  <p>Weight memory for an {{ (mem.params / 1e9)|int }}-billion-parameter model, with an fp16 scale per group:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Format</th><th>Bits per weight</th><th>Weights</th></tr></thead>
+      <tbody>
+        {% for row in mem.rows %}
+        <tr><td>{{ row.name }}</td><td>{{ row.bits_per_weight }}</td><td>{{ f(row.bytes / 1e9, 2) }} GB</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>Per-channel int8 scales add one fp16 per row, negligible next to the weights; groups of 32 cost half a bit per weight.</p>
+</div>
+
+<div class="ml-worked">
+  <p><strong>One outlier.</strong> An activation vector <var>x</var> = [{{ outlier_activations|join(", ")|replace("-", "−") }}] with one outlier dimension, dotted with weights <var>w</var> = [{{ outlier_weights|join(", ")|replace("-", "−") }}]. Exact <var>x</var> · <var>w</var> = {{ f(out.exact, 4) }}.</p>
+  <ul>
+    <li>absmax int8 on the whole vector: <var>s</var> = 60/127 = {{ f(out.naive_scale, 4) }}, so the ordinary values become [{{ out.naive_x[:5]|map("round", 3)|join(", ")|replace("-", "−") }}] (0.2 rounds to 0) and <var>x</var> · <var>w</var> = {{ f(out.naive, 4) }}, off by {{ pct((out.naive - out.exact)|abs / out.exact, 0) }}.</li>
+    <li>Split the outlier out (|<var>x</var>| ≥ 6) and keep it in 16-bit, LLM.int8()'s decomposition: the remaining {{ out.mixed_x|length - out.outliers }} values get <var>s</var> = 0.8/127 = {{ f(out.mixed_scale, 5) }}, and <var>x</var> · <var>w</var> = {{ f(out.mixed, 4) }}, off by {{ pct((out.mixed - out.exact)|abs / out.exact, 2) }}.</li>
+  </ul>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+from torch.ao.quantization import (
+    get_default_qconfig, prepare, convert, quantize_dynamic,
+    get_default_qat_qconfig, prepare_qat,
+)
+
+# The primitives: a quantized tensor, its codes and its qparams.
+t = torch.quantize_per_tensor_dynamic(torch.tensor([-1.0, 0.0, 1.0, 2.0]), torch.quint8, False)
+t.int_repr()                       # tensor([  0,  85, 170, 255], dtype=torch.uint8)
+t.q_scale(), t.q_zero_point()      # (0.011764705882352941, 85)
+
+# Dynamic PTQ: int8 weights for every nn.Linear, activations quantized per batch.
+qmodel = quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
+
+# Static PTQ: observe, calibrate, convert.
+model.eval()
+model.qconfig = get_default_qconfig("x86")
+prepared = prepare(model)          # inserts observers (model needs QuantStub/DeQuantStub)
+with torch.no_grad():
+    for x, _ in calibration_loader:
+        prepared(x)                # observers record min/max
+qmodel = convert(prepared)
+
+# QAT: fake-quantize during fine-tuning, then convert.
+model.train()
+model.qconfig = get_default_qat_qconfig("x86")
+qat = prepare_qat(model)
+for x, y in loader:
+    loss_fn(qat(x), y).backward()  # gradients flow through FakeQuantize via the STE
+    optimizer.step(); optimizer.zero_grad()
+qmodel = convert(qat.eval())</code></pre>
+
+<p>
+  <code>prepare</code>, <code>convert</code>, <code>quantize_dynamic</code> and <code>prepare_qat</code> raise a
+  deprecation warning in {{ pins.pytorch.tag }}; new code should use <code>torchao</code>, which provides the same flows (and the
+  int4 weight-only and GPTQ-style recipes for LLMs) on top of the same ideas. Eager-mode static quantization
+  also needs <code>QuantStub</code> and <code>DeQuantStub</code> at the model's float/int boundaries and
+  usually module fusion (conv + batch norm + ReLU) before <code>prepare</code>.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Bits versus accuracy.</strong> int8 with per-channel weight scales is close to lossless for most models. int4 needs groups and, for the best results, data-aware rounding such as GPTQ; below 4 bits accuracy drops quickly.</li>
+  <li><strong>Weight-only versus weights and activations.</strong> Weight-only is simple and speeds up memory-bound decoding. Quantizing activations too unlocks integer matmuls for compute-bound work (large batches, prefill) but must handle activation outliers and needs calibration.</li>
+  <li><strong>Dynamic versus static.</strong> Dynamic quantization needs no calibration data but computes activation ranges on every call; static is faster at run time but only as good as the calibration set.</li>
+  <li><strong>PTQ versus QAT.</strong> PTQ takes minutes and no labels; QAT recovers more accuracy at low bit widths but costs a training run.</li>
+  <li><strong>Granularity.</strong> Finer scales (per channel, per group) cut error but add storage (16/<var>g</var> bits per weight) and kernel complexity; per-token activation scales help with outliers but must be computed on the fly.</li>
+  <li><strong>Range choice.</strong> Min/max ranges never clip but let one extreme value coarsen every other; histogram-based ranges clip a few values to keep the rest precise.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>A ReLU output is always ≥ 0. Why is affine quint8 a better fit for it than symmetric qint8?</summary>
+  <p>Symmetric qint8 reserves the negative codes −128 to −1 for values that never occur, so the 0..max range gets only 128 levels. Affine quint8 puts <var>z</var> = 0 and spends all 256 codes on [0, max], halving the spacing.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does PyTorch stretch the observed range to include 0 before computing the scale?</summary>
+  <p>So that 0.0 maps exactly to the integer <var>z</var>. Zeros are common (padding, ReLU, masks) and must stay exactly zero; it also means a zero-padded convolution or matmul needs no correction for the padding.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Round has derivative zero almost everywhere. How does QAT still get gradients for the weights?</summary>
+  <p>With the straight-through estimator: the backward pass treats quantize-dequantize as the identity, multiplying the incoming gradient by a mask that is 1 where the value fell inside the integer range and 0 where it was clamped.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Jacob, Kligys, Chen, Zhu, Tang, Howard, Adam and Kalenichenko. <em>Quantization and Training of Neural Networks for Efficient Integer-Arithmetic-Only Inference.</em> CVPR, 2018. <a href="https://arxiv.org/abs/1712.05877">arXiv:1712.05877</a> (the affine scheme with scale and zero point).</li>
+  <li>Bengio, Léonard and Courville. <em>Estimating or Propagating Gradients Through Stochastic Neurons for Conditional Computation.</em> 2013. <a href="https://arxiv.org/abs/1308.3432">arXiv:1308.3432</a> (the straight-through estimator).</li>
+  <li>Dettmers, Lewis, Belkada and Zettlemoyer. <em>LLM.int8(): 8-bit Matrix Multiplication for Transformers at Scale.</em> NeurIPS, 2022. <a href="https://arxiv.org/abs/2208.07339">arXiv:2208.07339</a>.</li>
+  <li>Frantar, Ashkboos, Hoefler and Alistarh. <em>GPTQ: Accurate Post-Training Quantization for Generative Pre-trained Transformers.</em> ICLR, 2023. <a href="https://arxiv.org/abs/2210.17323">arXiv:2210.17323</a>.</li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/ao/quantization/quantize.py') }}"><code>torch/ao/quantization/quantize.py</code></a>, <a href="{{ src('torch/ao/quantization/observer.py') }}"><code>torch/ao/quantization/observer.py</code></a>, <a href="{{ src('torch/ao/quantization/fake_quantize.py') }}"><code>torch/ao/quantization/fake_quantize.py</code></a>.</li>
+</ul>

@@ -2839,6 +2839,7 @@ def test_fake_quantize_matches_the_docstring_and_masks_clamped_gradients():
     )
     assert result["output"] == pytest.approx([0.1, 1.0, 0.4, 0.0])
     assert result["mask"] == [True, True, True, False]
+    assert result["unclamped"][3] == -11
     assert ml_models_docs.straight_through_grad([0.5, -1.0, 2.0, 3.0], result["mask"]) == [
         0.5,
         -1.0,
