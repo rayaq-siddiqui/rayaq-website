@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-10 (fifty-fourth run): bumped the pin `da1d234..889e5a6` (0.46.0). **The
+**Last updated:** 2026-10-11 (fifty-fifth run): bumped the pin `889e5a6..0558176` (0.46.0). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@889e5a68fc24f00b9dfa0fe58dc140c9f064f902` (committed 2026-10-10, version
-0.46.0), analyzed 2026-10-10. Held in `jj_docs.UPSTREAM`. Previous pin: `da1d234`.
+`jj-vcs/jj@05581760660a7d488e3c19d6aec6f6668822e94d` (committed 2026-10-11, version
+0.46.0), analyzed 2026-10-11. Held in `jj_docs.UPSTREAM`. Previous pin: `889e5a6`.
 
 ## §10 acceptance criteria
 
@@ -31,21 +31,22 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to fifty-fourth runs: pin bumped).
+      run: pin bumped; fiftieth to fifty-fifth runs: pin bumped).
+
+## Fifty-fifth run (2026-10-11)
+
+- `937e560` maintenance `889e5a6..0558176` (9 commits). `resolve` documents the new `:editor` tool (any
+  number of sides, leftover markers kept, `check_two_sided` skipped, new hint and editor errors).
+  `restore` now describes `restore_tree` merging filtered trees (`MergedTree::filtered`,
+  `FilteredTreeWriter`). `diffedit`: the built-in editor merges trees, so restored conflicts keep labels.
+  Hunk-header snapshots gained generic symbol context. `time_util` moved to `core/` (not cited). About
+  225 ranges remapped; the `resolve` clap line moved 50→53; protos unchanged.
+- Link check: 121 pages, 5,498 pinned links, 0 bad. 0px overflow at 390px on every page.
 
 ## Fifty-fourth run (2026-10-10)
 
-- `b4bc7c5` maintenance `da1d234..889e5a6` (17 commits, a refactor wave). `files.rs` moved to `core/src/`,
-  `template_parser.rs`/`template.pest` to `dsl/src/`, `IndexStore` to `lib/src/index_store.rs`, revset and
-  fileset backend types to `lib/src/revset_backend.rs` and `core/src/fileset_backend.rs`; page source
-  sets now list them. `MergeOptions` is now built by `UserSettings::merge_options`;
-  `parent_tree`/`is_empty`/`is_discardable` take an index; `is_hidden` was inlined into the `hidden()`
-  template method (`commits`, `show`, `conflicts` updated). `git fetch` now prints "Fetching from Git
-  remotes: …" and joins remotes with ", " (`git-fetch` and the `bookmark-forget` snapshot updated).
-  About 570 ranges were remapped, and 10 command source lines shifted in the regenerated registry. Protos
-  are unchanged. A `gerrit-upload` range that ran one line past EOF was fixed.
-- A link check rendered all 121 pages: 5,480 pinned links, every path and range inside the checkout.
-  0px overflow at 390px on the changed pages.
+- `b4bc7c5` maintenance `da1d234..889e5a6` (17-commit refactor wave: `files.rs`, `template_parser.rs`,
+  `IndexStore`, revset/fileset backend types moved; `git fetch` output changed). About 570 ranges remapped.
 
 ## Fifty-third run (2026-10-09)
 
