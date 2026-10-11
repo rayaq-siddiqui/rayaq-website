@@ -1,0 +1,532 @@
+{% set fp32 = find_float_format("fp32") %}
+{% set fp16 = find_float_format("fp16") %}
+{% set bf16 = find_float_format("bf16") %}
+{% set e4m3 = find_float_format("fp8 e4m3") %}
+{% set e5m2 = find_float_format("fp8 e5m2") %}
+{% set s32 = float_format_stats(fp32) %}
+{% set s16 = float_format_stats(fp16) %}
+{% set sbf = float_format_stats(bf16) %}
+{% set pe = precision_example %}
+{% set ls = loss_scaling_example() %}
+{% set lsb = loss_scaling_example(fmt_name="bf16") %}
+{% set run = grad_scaler_run([0.6] * 12, growth_interval=3) %}
+{% set mw = master_weight_example() %}
+{% macro f(x, n=1) -%}{{ ("%." ~ n ~ "f")|format(x) }}{%- endmacro %}
+{% macro e(x, n=2) -%}{{ ("%." ~ n ~ "e")|format(x) }}{%- endmacro %}
+{% macro g(x, n=6) -%}{{ ("%." ~ n ~ "g")|format(x) }}{%- endmacro %}
+{% macro pow2(k) -%}2<tspan dy="-5" font-size="8">{{ k|replace("-", "−") }}</tspan>{%- endmacro %}
+<header class="jj-header">
+  <h1>Precision and mixed precision</h1>
+  <p class="tagline">
+    How the floating-point formats used in deep learning (fp32, tf32, fp16, bf16 and the two fp8 formats)
+    split their bits between range and precision, which operations PyTorch's <code>autocast</code> runs in
+    which format, why fp16 training needs loss scaling and bf16 does not, and why the weights themselves stay
+    in fp32.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Matrix units on modern GPUs run several times faster on 16-bit and 8-bit inputs than on 32-bit ones, and
+  half the bytes per value means half the memory traffic for every memory-bound operation
+  (see <a href="/ml-models/gpu-execution">how a GPU runs a model</a>). Training entirely in a 16-bit format,
+  though, fails in specific ways: small gradients round to zero, large activations overflow to infinity,
+  and a weight update smaller than the gap between two neighbouring 16-bit numbers is lost entirely. Mixed
+  precision keeps the speed by running the matmul-heavy parts in a low-precision format while keeping the
+  parts that need range or accumulation in fp32. Doing that well needs a clear picture of what each format
+  can and cannot represent.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  A floating-point number is scientific notation in base 2: a sign, an exponent that says where the binary
+  point goes, and a mantissa that holds the significant digits. A fixed bit budget is split between the two.
+  <em>Exponent bits buy range</em>, how large and how small a number can get before it overflows to
+  infinity or underflows to zero. <em>Mantissa bits buy precision</em>, how many significant digits survive
+  rounding at any scale. fp16 and bf16 both use 16 bits; fp16 spends them on precision (10 mantissa bits),
+  bf16 on range (8 exponent bits, the same as fp32). That one choice decides almost everything else on this
+  page.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 330" role="img" aria-labelledby="mp-bits-title mp-bits-desc">
+    <title id="mp-bits-title">Bit layouts of six floating-point formats, drawn to the same scale per bit</title>
+    <desc id="mp-bits-desc">Each format is a row of sign, exponent and mantissa fields. fp32: 1 sign, 8 exponent, 23 mantissa bits. tf32: 1, 8 and 10, a 19-bit format used inside matrix units on fp32 data. fp16: 1, 5 and 10. bf16: 1, 8 and 7, the top half of an fp32. fp8 e4m3: 1, 4 and 3. fp8 e5m2: 1, 5 and 2. fp32, tf32 and bf16 share the 8-bit exponent and so the same range; fp16 and e5m2 share the 5-bit exponent.</desc>
+    <rect x="130" y="10" width="14" height="12" class="d-box ml-box-key"></rect>
+    <text x="150" y="20" font-size="11">sign</text>
+    <rect x="200" y="10" width="14" height="12" class="ml-op"></rect>
+    <text x="220" y="20" font-size="11">exponent (range)</text>
+    <rect x="340" y="10" width="14" height="12" class="ml-tensor"></rect>
+    <text x="360" y="20" font-size="11">mantissa (precision)</text>
+    {% for fmt in float_formats %}
+    {% set y = 44 + loop.index0 * 46 %}
+    {% set ex = 130 + 16 %}
+    {% set mx = ex + fmt.exponent * 16 %}
+    <text x="20" y="{{ y + 13 }}" font-size="12">{{ fmt.name }}</text>
+    <text x="20" y="{{ y + 28 }}" font-size="10" class="d-muted">1 · {{ fmt.exponent }} · {{ fmt.mantissa }}</text>
+    <rect x="130" y="{{ y }}" width="16" height="26" class="d-box ml-box-key"></rect>
+    <rect x="{{ ex }}" y="{{ y }}" width="{{ fmt.exponent * 16 }}" height="26" class="ml-op"></rect>
+    <rect x="{{ mx }}" y="{{ y }}" width="{{ fmt.mantissa * 16 }}" height="26" class="ml-tensor"></rect>
+    <text x="{{ ex + fmt.exponent * 8 }}" y="{{ y + 17 }}" font-size="11" text-anchor="middle">{{ fmt.exponent }}</text>
+    <text x="{{ mx + fmt.mantissa * 8 }}" y="{{ y + 17 }}" font-size="11" text-anchor="middle">{{ fmt.mantissa }}</text>
+    {% if fmt.name == "tf32" %}
+    <rect x="{{ mx + fmt.mantissa * 16 }}" y="{{ y }}" width="{{ 13 * 16 }}" height="26" class="d-line ml-dashed"></rect>
+    <text x="{{ mx + fmt.mantissa * 16 + 104 }}" y="{{ y + 17 }}" font-size="10" text-anchor="middle" class="d-muted">13 bits of the fp32 ignored</text>
+    {% endif %}
+    {% endfor %}
+  </svg>
+</div>
+<p class="ml-caption">
+  Each square is one bit at the same width in every row. bf16 is fp32 with the low 16 mantissa bits
+  dropped, so converting between them is a shift and a rounding step; tf32 is not a storage format at all,
+  but the precision matrix units use when they are allowed to round fp32 inputs.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="how-a-float-is-read">How a float is read</h3>
+
+<p>
+  With <var>e</var> exponent bits and <var>m</var> mantissa bits, the stored exponent field is offset by a
+  <dfn>bias</dfn> of 2<sup><var>e</var>−1</sup> − 1 so that both tiny and huge numbers are representable. A
+  normal number is read as
+</p>
+
+<p class="ml-formula">value = (−1)<sup>sign</sup> × 1.mantissa<sub>2</sub> × 2<sup>field − bias</sup> &nbsp;&nbsp;&nbsp; spacing just above 1 = 2<sup>−m</sup> (machine epsilon)</p>
+
+<p>
+  The all-ones exponent field is reserved for infinity and NaN in the IEEE formats, and the all-zeros field
+  for zero and <dfn>subnormal</dfn> numbers, which drop the implicit leading 1 to fill the gap between the
+  smallest normal number and zero with evenly spaced, less precise values. Between any two powers of two
+  there are exactly 2<sup><var>m</var></sup> representable numbers, so the <em>relative</em> spacing stays
+  near 2<sup>−<var>m</var></sup> everywhere in the normal range while the absolute spacing doubles with each
+  power of two. Converting a number into a format rounds it to the nearest representable value, ties to the
+  one with an even last bit (round-to-nearest-even).
+</p>
+
+<h3 id="the-formats">The formats</h3>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Format</th><th>Bits (s · e · m)</th><th>Largest</th><th>Smallest normal</th><th>Smallest subnormal</th><th>Epsilon</th><th>≈ Decimal digits</th></tr></thead>
+    <tbody>
+      {% for fmt in float_formats %}
+      {% set st = float_format_stats(fmt) %}
+      <tr><td>{{ fmt.name }}</td><td>1 · {{ fmt.exponent }} · {{ fmt.mantissa }}</td><td>{{ g(st.max, 6) }}</td><td>{{ e(st.smallest_normal) }}</td><td>{{ e(st.smallest_subnormal) }}</td><td>{{ e(st.epsilon) }}</td><td>{{ f(st.digits, 1) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<ul>
+  <li><strong>fp32</strong> (<code>torch.float32</code>): the default. About 7 decimal digits, range from about 10<sup>−38</sup> to 10<sup>38</sup>.</li>
+  <li><strong>tf32</strong>: fp32's exponent with fp16's mantissa. NVIDIA matrix units since the Ampere generation can multiply fp32 inputs at this precision while still accumulating and storing fp32. PyTorch controls it with <code>torch.set_float32_matmul_precision</code>: <code>"highest"</code> (the default) keeps full fp32; <code>"high"</code> allows tf32 or a two-bf16 split; <code>"medium"</code> allows bf16.</li>
+  <li><strong>fp16</strong> (<code>torch.float16</code>, IEEE half): 3 digits of precision but a range that stops at {{ g(s16.max) }} and, for normal numbers, {{ e(s16.smallest_normal) }}.</li>
+  <li><strong>bf16</strong> (<code>torch.bfloat16</code>, "brain float"): fp32's range with 2 to 3 digits of precision. PyTorch converts fp32 to bf16 with round-to-nearest-even on the top 16 bits.</li>
+  <li><strong>fp8 e4m3</strong> (<code>torch.float8_e4m3fn</code>): more precision, less range. The "fn" means <em>finite</em>: it has no infinities, gives the all-ones exponent back to ordinary numbers (keeping only <code>S.1111.111</code> as NaN), and so reaches 448 instead of 240. PyTorch's conversion saturates: anything at or past the overflow threshold becomes ±448.</li>
+  <li><strong>fp8 e5m2</strong> (<code>torch.float8_e5m2</code>): fp16's exponent with 2 mantissa bits, IEEE-like with infinities; overflow rounds to infinity.</li>
+</ul>
+
+<h3 id="range-versus-precision">Range versus precision</h3>
+
+<p>
+  The two failure modes are different. A <em>range</em> failure turns a number into ±infinity (overflow) or
+  0 (underflow), which is catastrophic: one infinity in a gradient poisons the whole update. A
+  <em>precision</em> failure perturbs a number by up to half a spacing, which is usually harmless noise in a
+  neural network, except in one place: adding a small number to a large one. If the small number is less
+  than half the spacing at the large one, the sum rounds back to the large number exactly. That is what
+  happens to a weight update in a low-precision weight, and it is why the weights themselves stay fp32
+  (master weights, below). Training has values of very different scales in different places: activations and
+  weights near 1, gradients that can be many orders of magnitude smaller, and sums of thousands of terms
+  inside every matmul. Each needs a different trade.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 360" role="img" aria-labelledby="mp-range-title mp-range-desc">
+    <title id="mp-range-title">The representable range of each format on a log scale, with five gradients before and after loss scaling</title>
+    <desc id="mp-range-desc">A horizontal log-2 axis from 2 to the minus 40 up to 2 to the 20. fp32 and bf16 cover the whole axis and beyond. fp16 covers 2 to the minus 24 (subnormal, normal from 2 to the minus 14) up to {{ g(s16.max) }}. fp8 e5m2 covers 2 to the minus 16 up to 57344 and fp8 e4m3 covers 2 to the minus 9 up to 448. Below, five example gradients from {{ e(ls.rows[0].grad, 0) }} down to {{ e(ls.rows[4].grad, 0) }}: the two smallest fall below fp16's smallest subnormal and round to zero. Multiplying them all by 2 to the 16 shifts every point 16 powers of two to the right, where all five fit inside fp16's range.</desc>
+    {% set X0 = 90 %}
+    {% macro X(v) -%}{{ f(90 + ([[log2(v), -40]|max, 20]|min + 40) * 10) }}{%- endmacro %}
+    {% for fmt, label in [(fp32, "fp32"), (bf16, "bf16"), (fp16, "fp16"), (e5m2, "fp8 e5m2"), (e4m3, "fp8 e4m3")] %}
+    {% set st = float_format_stats(fmt) %}
+    {% set y = 34 + loop.index0 * 30 %}
+    <text x="20" y="{{ y + 4 }}" font-size="11">{{ label }}</text>
+    <path d="M{{ X(st.smallest_subnormal) }} {{ y }} H{{ X(st.smallest_normal) }}" class="d-accent ml-dashed" stroke-width="6"></path>
+    <path d="M{{ X(st.smallest_normal) }} {{ y }} H{{ X(st.max) }}" class="d-accent" stroke-width="6"></path>
+    {% if log2(st.smallest_subnormal) < -40 %}
+    <text x="{{ X0 + 4 }}" y="{{ y - 6 }}" font-size="9" class="d-muted ml-label">from {{ pow2(log2(st.smallest_subnormal)|round|int) }}</text>
+    {% endif %}
+    {% if log2(st.max) > 20 %}
+    <text x="690" y="{{ y - 6 }}" font-size="9" text-anchor="end" class="d-muted ml-label">to {{ pow2(log2(st.max)|round(0, "ceil")|int) }}</text>
+    {% else %}
+    <text x="{{ f(X(st.max)|float + 6) }}" y="{{ y + 4 }}" font-size="9" class="d-muted ml-label">{{ g(st.max) }}</text>
+    {% endif %}
+    {% endfor %}
+    <path d="M{{ X(s16.smallest_subnormal) }} 20 V290 M{{ X(s16.max) }} 20 V290" class="d-line ml-dashed"></path>
+    <text x="20" y="214" font-size="11">gradients</text>
+    <text x="20" y="254" font-size="11">× {{ pow2(16) }}</text>
+    {% for row in ls.rows %}
+    <circle cx="{{ X(row.grad) }}" cy="210" r="5" class="{{ 'ml-heat' if row.plain > 0 else 'd-box d-accent' }}"></circle>
+    <circle cx="{{ X(row.grad * ls.scale) }}" cy="250" r="5" class="ml-heat"></circle>
+    <path d="M{{ X(row.grad) }} 216 L{{ f(X(row.grad * ls.scale)|float - 4) }} 245" class="d-line" stroke-width="0.8"></path>
+    {% endfor %}
+    <text x="{{ f(X(ls.rows[4].grad)|float - 8) }}" y="196" font-size="10" class="ml-label">rounds to 0 in fp16</text>
+    <path d="M90 300 H690" class="d-line"></path>
+    {% for k in [-40, -30, -20, -10, 0, 10, 20] %}
+    <path d="M{{ 90 + (k + 40) * 10 }} 300 V306" class="d-line"></path>
+    <text x="{{ 90 + (k + 40) * 10 }}" y="322" font-size="11" text-anchor="middle">{{ pow2(k) }}</text>
+    {% endfor %}
+    <text x="390" y="346" font-size="11" text-anchor="middle" class="d-muted">magnitude (log scale); dashed lines mark fp16's smallest subnormal and largest value</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Solid bars are the normal range, dashed bars the subnormals. The hollow dots are gradients fp16 cannot hold;
+  loss scaling moves every gradient right by the same factor, and the whole set fits.
+</p>
+
+<h3 id="autocast">autocast and its op lists</h3>
+
+<p>
+  <code>torch.autocast(device_type, dtype=None, enabled=True, cache_enabled=None)</code> is a context manager
+  that changes which dtype operations run in, without changing the model. Inside it, each eligible op is
+  intercepted at PyTorch's dispatcher (the <code>Autocast</code> dispatch key) and its floating-point CUDA
+  inputs are cast according to a per-op <dfn>cast policy</dfn>. The default <code>dtype</code> is
+  <code>torch.float16</code> for CUDA and <code>torch.bfloat16</code> for CPU. fp64 tensors are never
+  cast, and ops on no list fall through and run in whatever dtype their inputs already have. The CUDA
+  registration in <code>autocast_mode.cpp</code> sorts ops into five policies:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Policy</th><th>What it does</th><th>Ops on the CUDA list (from the pinned source)</th></tr></thead>
+    <tbody>
+      <tr><td><code>lower_precision_fp</code></td><td>Cast every input to the autocast dtype and run there.</td><td><code>mm</code>, <code>bmm</code>, <code>matmul</code>, <code>addmm</code>, <code>baddbmm</code>, <code>linear</code>, <code>einsum</code>, the <code>conv*</code> and <code>conv_transpose*</code> family, <code>prelu</code>, the LSTM/GRU/RNN cells, <code>scaled_dot_product_attention</code>, <code>_scaled_dot_product_flash_attention</code>.</td></tr>
+      <tr><td><code>fp32</code></td><td>Cast every input to fp32 and run there.</td><td><code>exp</code>, <code>log</code>, <code>log1p</code>, <code>pow</code>, <code>reciprocal</code>, <code>rsqrt</code>, <code>softplus</code>, <code>layer_norm</code>, <code>rms_norm</code>, <code>group_norm</code>, <code>logsumexp</code>, <code>cosine_similarity</code>, <code>cdist</code>, the losses (<code>nll_loss</code>, <code>mse_loss</code>, <code>l1_loss</code>, <code>kl_div</code>, <code>binary_cross_entropy_with_logits</code> and others), the <code>upsample_*</code> ops.</td></tr>
+      <tr><td><code>fp32_set_opt_dtype</code></td><td>Run in fp32 by setting the op's optional output <code>dtype</code>, unless the caller set one.</td><td><code>softmax</code>, <code>log_softmax</code>, <code>sum</code>, <code>prod</code>, <code>cumsum</code>, <code>cumprod</code>, <code>linalg_vector_norm</code>, <code>linalg_matrix_norm</code>.</td></tr>
+      <tr><td><code>fp32_append_dtype</code></td><td>Redispatch to the overload that takes a dtype, passing fp32.</td><td><code>norm</code> (two overloads).</td></tr>
+      <tr><td><code>promote</code></td><td>Run in the widest dtype among the inputs.</td><td><code>addcdiv</code>, <code>addcmul</code>, <code>atan2</code>, <code>bilinear</code>, <code>cross</code>, <code>dot</code>, <code>vdot</code>, <code>grid_sampler</code>, <code>index_put</code>, <code>tensordot</code>, <code>scatter_add</code>.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The pattern follows the formats. Matmuls and convolutions are compute-bound, run on matrix units that are
+  fastest in 16 bits, and accumulate their dot products in fp32 internally, so they go low. Exponentials,
+  logs, normalizations, reductions and losses can overflow or need to sum many terms accurately, so they go
+  to fp32. One op is banned outright: <code>binary_cross_entropy</code> raises an error under CUDA autocast,
+  because it usually follows a sigmoid whose output loses too much precision in fp16; the error points to
+  <code>binary_cross_entropy_with_logits</code>, which fuses the two and is on the fp32 list.
+</p>
+
+<p>
+  autocast also keeps a <dfn>weight cast cache</dfn>: the first time an fp32 leaf tensor that requires grad
+  (a parameter) is cast to the low dtype inside an autocast region, the cast copy is kept and reused by later
+  ops in the same region, so a weight used by several matmuls is converted once per forward pass. The cache
+  is cleared when the outermost autocast region exits. Its documentation also says to wrap only the forward
+  pass and the loss, not <code>backward()</code>: backward ops run in the same dtype autocast chose for their
+  forward ops anyway.
+</p>
+
+<h3 id="loss-scaling">Loss scaling</h3>
+
+<p>
+  In fp16, the gradients of a deep network often include values below {{ e(s16.smallest_subnormal) }},
+  fp16's smallest subnormal, which round to zero, and many more in the subnormal range where they keep only a
+  few bits. <dfn>Loss scaling</dfn> multiplies the loss by a factor <var>S</var> before
+  <code>backward()</code>. By the chain rule every gradient is multiplied by <var>S</var> too, which shifts
+  the whole gradient distribution up into fp16's range (the second diagram). Before the optimizer uses them,
+  the gradients are divided by <var>S</var> again, in fp32, where the small values are representable.
+</p>
+
+<p>
+  A fixed <var>S</var> is hard to choose: too small and gradients still underflow, too large and some
+  overflow to infinity. <code>GradScaler</code> picks it dynamically. It starts at
+  <code>init_scale</code>, by default 2<sup>16</sup> = {{ "{:,}".format(2 ** 16) }}. Each iteration
+  <code>scaler.step(optimizer)</code> unscales the gradients and checks them for infs and NaNs: if any are
+  found, it skips <code>optimizer.step()</code> so the weights are untouched, and <code>update()</code>
+  multiplies the scale by <code>backoff_factor</code> (0.5). After <code>growth_interval</code> (2000)
+  consecutive iterations without infs it multiplies the scale by <code>growth_factor</code> (2.0). The scale
+  settles near the largest value that does not overflow, and skipped steps become rare.
+  <code>unscale_</code> and <code>update</code> keep the inf flags and the scale on the GPU without a
+  CPU-GPU sync; <code>step</code> reads the flags back with <code>.item()</code> to decide whether to call
+  the optimizer.
+</p>
+
+<p>
+  bf16 needs none of this. Its exponent is fp32's, so every magnitude down to fp32's smallest normal
+  number, {{ e(s32.smallest_normal) }}, is representable in bf16, far below where gradients live. What bf16 gives up is precision, and
+  scaling cannot add mantissa bits. Its documentation for <code>update()</code> notes the converse
+  risk: bf16-pretrained models are often incompatible with fp16 training, because their activations use a
+  range fp16 does not have.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 220" role="img" aria-labelledby="mp-scaler-title mp-scaler-desc">
+    <title id="mp-scaler-title">GradScaler's scale over twelve steps with a growth interval of 3</title>
+    <desc id="mp-scaler-desc">The largest gradient is 0.6 every step. The scale starts at 2 to the 16. After three clean steps it doubles to 2 to the 17, at which 0.6 times the scale exceeds fp16's maximum of {{ g(s16.max) }}, so step 4 overflows, is skipped, and the scale halves back to 2 to the 16. The pattern repeats: {{ run.skipped }} of 12 steps skipped.</desc>
+    <path d="M80 170 H680" class="d-line"></path>
+    <path d="M80 {{ 170 - 120 * (s16.max / 0.6) / (2 ** 17) }} H680" class="d-accent ml-dashed"></path>
+    <text x="288" y="{{ 164 - 120 * (s16.max / 0.6) / (2 ** 17) }}" font-size="10" class="ml-label">overflow above ≈ {{ "{:,}".format((s16.max / 0.6)|round|int) }}</text>
+    {% for row in run.rows %}
+    {% set h = 120 * row.scale / (2 ** 17) %}
+    <rect x="{{ 90 + loop.index0 * 49 }}" y="{{ f(170 - h) }}" width="34" height="{{ f(h) }}" class="{{ 'ml-op' if row.overflow else 'ml-tensor' }}"></rect>
+    <text x="{{ 107 + loop.index0 * 49 }}" y="186" font-size="10" text-anchor="middle">{{ row.step }}</text>
+    {% if row.overflow %}
+    <text x="{{ 107 + loop.index0 * 49 }}" y="{{ f(170 - h - 6) }}" font-size="10" text-anchor="middle" class="ml-label">skip</text>
+    {% endif %}
+    {% endfor %}
+    <text x="20" y="{{ 170 - 60 + 4 }}" font-size="10">{{ pow2(16) }}</text>
+    <text x="20" y="{{ 170 - 120 + 4 }}" font-size="10">{{ pow2(17) }}</text>
+    <text x="380" y="206" font-size="11" text-anchor="middle" class="d-muted">step</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Bar height is the scale used at each step: green steps run the optimizer, amber steps overflow and are
+  skipped. The dashed line is the largest scale at which 0.6 × scale still fits under fp16's
+  {{ g(s16.max) }}. With the default <code>growth_interval</code> of 2000 the same probe costs one skipped step in
+  2001 instead of one in 4.
+</p>
+
+<h3 id="master-weights">Master weights and fp32 accumulation</h3>
+
+<p>
+  Micikevicius et al. (2018) named the three techniques that made fp16 training match fp32 accuracy: loss
+  scaling, an fp32 <dfn>master copy</dfn> of the weights, and accumulating fp16 products into fp32. The master
+  copy exists for the precision failure above: an update <var>lr</var> × <var>g</var> is often far smaller
+  than the weight it is added to, and in fp16 the spacing near 1.0 is {{ e(mw.fp16_spacing) }}. Any update
+  below half of that vanishes. Keeping the weights and the optimizer's state in fp32, applying the update
+  there, and using a low-precision copy only for the forward and backward matmuls keeps every small update.
+</p>
+
+<p>
+  In PyTorch's autocast recipe this is automatic: the parameters stay fp32 (<code>model.half()</code> is
+  exactly what the autocast documentation says not to do), autocast's weight cache provides the fp16 or bf16
+  copy for each forward pass, and the optimizer updates the fp32 parameters. The third technique lives inside
+  the matmul kernels, which accumulate in fp32 even when their inputs are 16-bit. Pure-bf16 training, with
+  parameters stored in bf16, saves the master copy's memory but has to deal with lost updates some other way
+  (stochastic rounding or compensated summation), and is a separate recipe from autocast.
+</p>
+
+<h3 id="fp8">fp8</h3>
+
+<p>
+  fp8 doubles matrix-unit throughput again on hardware that supports it, but with only 3 or 2 mantissa bits
+  and a narrow range, a single global scale is not enough. fp8 training recipes keep a scale per tensor
+  (or per block of a tensor), computed from recent maximum absolute values, and use e4m3 where precision
+  matters (weights and activations in the forward pass) and e5m2 where range matters (gradients in the
+  backward pass), as the FP8 format paper proposes. PyTorch provides the dtypes and conversions; the scaled
+  matmuls and their recipes live in separate libraries and are beyond this page.
+</p>
+
+<h3 id="pytorch-api">The PyTorch API</h3>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead>
+      <tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>torch.autocast</code></td>
+        <td><code>device_type, dtype=None, enabled=True, cache_enabled=None</code></td>
+        <td>Context manager or decorator that runs eligible ops in a lower-precision dtype; default <code>float16</code> on CUDA, <code>bfloat16</code> on CPU.</td>
+        <td><a href="{{ src('torch/amp/autocast_mode.py', 52, 307) }}">autocast_mode.py 52-307</a></td>
+      </tr>
+      <tr>
+        <td><code>CastPolicy</code></td>
+        <td><code>lower_precision_fp</code>, <code>fp32</code>, <code>fp32_set_opt_dtype</code>, <code>fp32_append_dtype</code>, <code>promote</code></td>
+        <td>The five ways an autocast wrapper casts an op's inputs.</td>
+        <td><a href="{{ src('aten/src/ATen/autocast_mode.h', 416, 438) }}">autocast_mode.h 416-438</a></td>
+      </tr>
+      <tr>
+        <td>Op lists</td>
+        <td><code>AT_FORALL_LOWER_PRECISION_FP</code>, <code>AT_FORALL_FP32</code>, <code>AT_FORALL_FP32_SET_OPT_DTYPE</code>, <code>AT_FORALL_PROMOTE</code></td>
+        <td>Which op gets which policy; the CUDA registration also bans <code>binary_cross_entropy</code>.</td>
+        <td><a href="{{ src('aten/src/ATen/autocast_mode.h', 819, 956) }}">autocast_mode.h 819-956</a>, <a href="{{ src('aten/src/ATen/autocast_mode.cpp', 181, 222) }}">autocast_mode.cpp 181-222</a></td>
+      </tr>
+      <tr>
+        <td><code>cached_cast</code></td>
+        <td><code>(to_type, arg, device_type)</code></td>
+        <td>Casts one input; caches low-precision casts of fp32 leaf tensors that require grad (the weights).</td>
+        <td><a href="{{ src('aten/src/ATen/autocast_mode.cpp', 122, 157) }}">autocast_mode.cpp 122-157</a></td>
+      </tr>
+      <tr>
+        <td><code>torch.amp.GradScaler</code></td>
+        <td><code>device="cuda", init_scale=2.**16, growth_factor=2.0, backoff_factor=0.5, growth_interval=2000, enabled=True</code></td>
+        <td>Dynamic loss scaling for fp16.</td>
+        <td><a href="{{ src('torch/amp/grad_scaler.py', 53, 159) }}">grad_scaler.py 53-159</a></td>
+      </tr>
+      <tr>
+        <td><code>scale</code>, <code>unscale_</code></td>
+        <td><code>(outputs)</code>, <code>(optimizer)</code></td>
+        <td>Multiply the loss by the scale; divide an optimizer's gradients by it and record infs, before clipping.</td>
+        <td><a href="{{ src('torch/amp/grad_scaler.py', 193, 374) }}">grad_scaler.py 193-374</a></td>
+      </tr>
+      <tr>
+        <td><code>step</code>, <code>update</code></td>
+        <td><code>(optimizer, *args, **kwargs)</code>, <code>(new_scale=None)</code></td>
+        <td>Run <code>optimizer.step()</code> unless infs were found; back off or grow the scale.</td>
+        <td><a href="{{ src('torch/amp/grad_scaler.py', 375, 559) }}">grad_scaler.py 375-559</a></td>
+      </tr>
+      <tr>
+        <td><code>torch.set_float32_matmul_precision</code></td>
+        <td><code>"highest"</code> (default), <code>"high"</code>, <code>"medium"</code></td>
+        <td>Lets fp32 matmuls use tf32 or bf16 internally; outputs stay fp32.</td>
+        <td><a href="{{ src('torch/__init__.py', 1987, 2050) }}">torch/__init__.py 1987-2050</a></td>
+      </tr>
+      <tr>
+        <td>bf16 conversion</td>
+        <td><code>round_to_nearest_even(float) → uint16</code></td>
+        <td>fp32 to bf16: add a rounding bias to the fp32 bits and keep the top 16.</td>
+        <td><a href="{{ src('torch/headeronly/util/BFloat16.h', 100, 114) }}">BFloat16.h 100-114</a></td>
+      </tr>
+      <tr>
+        <td>fp8 conversions</td>
+        <td><code>fp8e4m3fn_from_fp32_value</code>, <code>fp8e5m2_from_fp32_value</code></td>
+        <td>fp32 to fp8: e4m3fn saturates overflow to ±448, e5m2 overflows to ±inf.</td>
+        <td><a href="{{ src('torch/headeronly/util/Float8_e4m3fn.h', 171, 243) }}">Float8_e4m3fn.h 171-243</a>, <a href="{{ src('torch/headeronly/util/Float8_e5m2.h', 77, 144) }}">Float8_e5m2.h 77-144</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p><strong>One number in every format.</strong> Rounding to nearest even, computed from each format's bit layout:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Format</th><th>1/3</th><th>Bits of 1/3 (s | e | m)</th><th>{{ "{:,}".format(pe.big|int) }}</th><th>{{ e(pe.tiny, 0) }}</th></tr></thead>
+      <tbody>
+        {% for fmt in float_formats %}
+        {% set b = float_bits(pe.value, fmt) %}
+        <tr><td>{{ fmt.name }}</td><td>{{ g(b.value, 9) }}</td><td><code>{{ b.sign }} | {{ b.exponent }} | {{ b.mantissa }}</code></td><td>{{ g(round_to_format(pe.big, fmt), 6) }}</td><td>{{ g(round_to_format(pe.tiny, fmt), 4) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    fp16 holds 1/3 to {{ e((float_bits(pe.value, fp16).value - pe.value)|abs / pe.value, 1) }} relative error,
+    better than bf16's {{ e((float_bits(pe.value, bf16).value - pe.value)|abs / pe.value, 1) }}, but
+    {{ "{:,}".format(pe.big|int) }} overflows it to infinity and {{ e(pe.tiny, 0) }} underflows to zero.
+    bf16 keeps both, coarsely. e4m3 saturates {{ "{:,}".format(pe.big|int) }} to 448, as PyTorch's
+    conversion does; e5m2 overflows to infinity.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <p><strong>Loss scaling five gradients.</strong> Each gradient rounded to fp16 directly, and after scaling by <var>S</var> = 2<sup>16</sup> and dividing back in fp32:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Gradient</th><th>fp16</th><th>Error</th><th>× S in fp16</th><th>÷ S</th><th>Error</th><th>bf16, unscaled error</th></tr></thead>
+      <tbody>
+        {% for row in ls.rows %}
+        <tr><td>{{ e(row.grad, 0) }}</td><td>{{ g(row.plain, 4) }}</td><td>{{ f(row.plain_error * 100, 2) }}%</td><td>{{ g(row.scaled, 5) }}</td><td>{{ g(row.recovered, 5) }}</td><td>{{ f(row.scaled_error * 100, 2) }}%</td><td>{{ f(lsb.rows[loop.index0].plain_error * 100, 2) }}%</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Unscaled, {{ e(ls.rows[2].grad, 0) }} lands among the subnormals with an error of {{ f(ls.rows[2].plain_error * 100, 0) }}% and the two smallest gradients become exactly 0. Scaled, every value keeps three to four significant
+    digits. bf16 holds all five unscaled, each within its usual precision of about
+    {{ f(sbf.epsilon / 2 * 100, 2) }}%.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <p><strong>GradScaler's schedule.</strong> The third diagram, with the largest gradient 0.6 every step and <code>growth_interval=3</code> to keep it short:</p>
+  <ul>
+    <li>Steps 1-3 at 2<sup>16</sup>: 0.6 × {{ "{:,}".format(2 ** 16) }} = {{ "{:,}".format((0.6 * 2 ** 16)|round|int) }}, below {{ g(s16.max) }}. After three clean steps the scale doubles.</li>
+    <li>Step 4 at 2<sup>17</sup>: 0.6 × {{ "{:,}".format(2 ** 17) }} = {{ "{:,}".format((0.6 * 2 ** 17)|round|int) }} overflows to infinity. The step is skipped, the weights are unchanged, and the scale halves.</li>
+    <li>{{ run.skipped }} of {{ run.rows|length }} steps are skipped; the final scale is 2<sup>{{ log2(run.final_scale)|int }}</sup>. With the default interval of 2000 the scale probes upward once every 2001 steps and nearly every step trains.</li>
+  </ul>
+</div>
+
+<div class="ml-worked">
+  <p><strong>Lost updates.</strong> Add an update of {{ e(mw["update"], 0) }} to a weight of {{ f(mw.weight, 1) }}, {{ mw.steps }} times, rounding after each add:</p>
+  <ul>
+    <li>fp16: the spacing at 1.0 is 2<sup>−10</sup> = {{ e(mw.fp16_spacing) }}, so 1 + {{ e(mw["update"], 0) }} rounds back to 1. After {{ mw.steps }} steps the weight is {{ g(mw.fp16) }}.</li>
+    <li>bf16: the spacing is 2<sup>−7</sup>; the weight is still {{ g(mw.bf16) }}.</li>
+    <li>fp32 master weight: {{ g(mw.fp32, 8) }}, the intended 1.01 up to fp32 rounding. Cast to fp16 for the next forward pass it is {{ g(mw.fp32_cast_fp16, 8) }}: the forward pass sees the change even though no single update was representable in fp16.</li>
+  </ul>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+
+model = MyModel().cuda()                      # parameters stay float32: the master weights
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+
+# float16: autocast plus dynamic loss scaling.
+scaler = torch.amp.GradScaler("cuda")
+for x, y in loader:
+    optimizer.zero_grad(set_to_none=True)
+    with torch.autocast("cuda", dtype=torch.float16):
+        loss = loss_fn(model(x), y)           # matmuls in fp16, softmax/norms/loss in fp32
+    scaler.scale(loss).backward()             # outside autocast
+    scaler.unscale_(optimizer)                # so clipping sees true gradient norms
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    scaler.step(optimizer)                    # skipped if any gradient is inf/NaN
+    scaler.update()
+
+# bfloat16: the same autocast, no scaler.
+for x, y in loader:
+    optimizer.zero_grad(set_to_none=True)
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        loss = loss_fn(model(x), y)
+    loss.backward()
+    optimizer.step()
+
+# Let plain float32 matmuls use TF32 on GPUs that support it.
+torch.set_float32_matmul_precision("high")
+
+torch.finfo(torch.float16).max                # 65504.0
+torch.finfo(torch.bfloat16).eps               # 0.0078125</code></pre>
+
+<p>
+  Save <code>scaler.state_dict()</code> with the model and optimizer so a resumed fp16 run does not restart
+  its scale from 2<sup>16</sup>. Inside an autocast region an op's output dtype follows its policy, so a
+  tensor coming out of a matmul is fp16 and one coming out of a softmax is fp32. Mixing an autocast output
+  with an fp32 tensor in an op outside autocast needs an explicit <code>.float()</code>.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>fp16 versus bf16.</strong> fp16 has 3 more mantissa bits and needs loss scaling, occasional skipped steps and care with large activations. bf16 needs none of that and is the usual choice where the hardware supports it, at the cost of noisier values.</li>
+  <li><strong>Speed versus where it comes from.</strong> Matrix-unit throughput gains apply only to the compute-bound ops autocast lowers. Memory-bound ops gain only from halved bytes, and ops on the fp32 list gain nothing, so the end-to-end speedup is smaller than the matmul speedup.</li>
+  <li><strong>Memory.</strong> Activations saved for backward are halved, but fp32 master weights and fp32 optimizer state stay, plus the cached low-precision weight copies. The savings are mostly in activations.</li>
+  <li><strong>tf32.</strong> A free speedup for fp32 code with fp16-level precision inside matmuls. That is fine for training most networks and wrong for code that needs full fp32 matmuls, which is why PyTorch's default is <code>"highest"</code>.</li>
+  <li><strong>fp8.</strong> Another 2× in matmul throughput, but per-tensor scaling, saturation and format choice per tensor role add engineering that 16-bit training avoids.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>A bf16 run and an fp16 run of the same model: which one needs <code>GradScaler</code>, and why does the other not?</summary>
+  <p>The fp16 run. fp16's smallest subnormal is {{ e(s16.smallest_subnormal) }}, so small gradients underflow to zero unless the loss is scaled up first. bf16 has fp32's 8-bit exponent and the same normal range, down to {{ e(sbf.smallest_normal) }}, so realistic gradients do not underflow; scaling would not add the precision bf16 lacks.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does autocast run <code>softmax</code> and <code>layer_norm</code> in fp32 but <code>linear</code> in fp16?</summary>
+  <p>Linear layers are matmuls: compute-bound, fast on 16-bit matrix units, and accumulated in fp32 inside the kernel. Softmax exponentiates (easy to overflow at fp16's maximum of {{ g(s16.max) }}) and both it and layer norm sum over a whole row, where low precision loses accuracy.</p>
+</details>
+<details class="ml-quiz">
+  <summary>With learning rate × gradient = {{ e(mw["update"], 0) }} and weights near 1, why can't the weights simply be stored in fp16?</summary>
+  <p>The spacing between fp16 numbers near 1 is {{ e(mw.fp16_spacing) }}. Any update smaller than half of it rounds away, so the weight never moves ({{ g(mw.fp16) }} after {{ mw.steps }} steps). An fp32 master copy accumulates the updates ({{ g(mw.fp32, 6) }}).</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Micikevicius, Narang, Alben, Diamos, Elsen, Garcia, Ginsburg, Houston, Kuchaiev, Venkatesh and Wu. <em>Mixed Precision Training.</em> ICLR, 2018. <a href="https://arxiv.org/abs/1710.03740">arXiv:1710.03740</a>.</li>
+  <li>Micikevicius et al. <em>FP8 Formats for Deep Learning.</em> 2022. <a href="https://arxiv.org/abs/2209.05433">arXiv:2209.05433</a> (the e4m3 and e5m2 formats; PyTorch's fp8 headers cite it).</li>
+  <li>Kalamkar et al. <em>A Study of BFLOAT16 for Deep Learning Training.</em> 2019. <a href="https://arxiv.org/abs/1905.12322">arXiv:1905.12322</a>.</li>
+  <li>Henry, Tang and Heinecke. <em>Leveraging the bfloat16 Artificial Intelligence Datatype For Higher-Precision Computations.</em> 2019. <a href="https://arxiv.org/abs/1904.06376">arXiv:1904.06376</a> (the two-bf16 split behind <code>"high"</code> matmul precision).</li>
+  <li>IEEE. <em>IEEE Standard for Floating-Point Arithmetic</em> (IEEE 754-2019): binary32 and binary16.</li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/amp/autocast_mode.py') }}"><code>torch/amp/autocast_mode.py</code></a>, <a href="{{ src('torch/amp/grad_scaler.py') }}"><code>torch/amp/grad_scaler.py</code></a>, <a href="{{ src('aten/src/ATen/autocast_mode.cpp') }}"><code>aten/src/ATen/autocast_mode.cpp</code></a>, <a href="{{ src('aten/src/ATen/autocast_mode.h') }}"><code>aten/src/ATen/autocast_mode.h</code></a>.</li>
+</ul>

@@ -1139,7 +1139,7 @@ PAGES = [
             "pytorch:torch/amp/autocast_mode.py",
             "pytorch:torch/amp/grad_scaler.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "data-loading-and-batching",
@@ -6707,6 +6707,7 @@ def render(slug, render_template):
         "loss_scaling_example": loss_scaling_example,
         "grad_scaler_run": grad_scaler_run,
         "master_weight_example": master_weight_example,
+        "log2": math.log2,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

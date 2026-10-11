@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-11 (twenty-seventh run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-44, the last being `gpu-execution`. The next
-page is `mixed-precision` (queue item 45).
+fixed page format. Ready pages: queue items 1-45, the last being `mixed-precision`. The next
+page is `quantization` (queue item 46).
 
 ## Pins
 
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (44 of 93 ready, all
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (45 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -97,8 +97,6 @@ file); this list keeps only what queued pages still need.
 
 - `torch/optim/lr_scheduler.py`: `CosineAnnealingLR` 1338-1475. Start lines only: `LambdaLR`
   343, `LinearLR` 877, `SequentialLR` 1082, `OneCycleLR` 2285.
-- `torch/amp/autocast_mode.py`: `autocast` starts at 52.
-- `torch/amp/grad_scaler.py`: `GradScaler` starts at 53.
 - `torch/nn/utils/clip_grad.py`: `clip_grad_norm_` starts at 185.
 - `torch/nn/attention/bias.py`: `CausalBias` 86-306, `causal_upper_left`/`causal_lower_right`
   308-376.
@@ -112,6 +110,12 @@ file); this list keeps only what queued pages still need.
 - `torch/optim/optimizer.py`: `Optimizer` starts at 358; `state_dict` 700-791, `zero_grad`
   1048-1110.
 - `torch/nn/modules/module.py`: `class Module` 407; `register_buffer` 528.
+- Mixed precision (used): `autocast_mode.py` `autocast` 52-307 (`_cast` 410-417);
+  `grad_scaler.py` `GradScaler` 53-159, `scale`/`unscale_` 193-374, `step`/`update` 375-559;
+  `autocast_mode.h` `CastPolicy` 416-438, op lists 819-956; `autocast_mode.cpp` `cached_cast`
+  122-157, CUDA registration 181-222; `torch/__init__.py` `set_float32_matmul_precision`
+  1987-2050; `torch/headeronly/util/BFloat16.h` 100-114, `Float8_e4m3fn.h` 171-243,
+  `Float8_e5m2.h` 77-144. `quantization` will want `torch/ao/quantization/` (not yet read).
 - GPU execution (used): `torch/cuda/streams.py` `Stream` 17-133, `wait_event`/`wait_stream`
   48-77, `Event` 159-271, `elapsed_time` 234-243; `torch/cuda/__init__.py` `get_device_properties`
   787-803, `StreamContext`/`stream` 818-886, `synchronize` 1271-1281, `current_stream`/
@@ -167,71 +171,37 @@ Paths are under `sklearn/`.
 - `transformer` uses the v1 section layout and is exempt from the §6 order test until its
   retrofit (queue item 18).
 
-## First to eighteenth runs (2026-10-08) — condensed
+## First to twenty-sixth runs (2026-10-08 to 2026-10-11) — condensed
 
-Runs 1-3 wrote the spec (v1, then v2 with the scikit-learn and XGBoost pins, twelve `AREAS`,
-every planned page, `LEARNING_PATH`, the §6 format and queue tests, `check_mobile.js` and the
-Routine) and the scaffold. Runs 4-18 each added a tested-helpers commit, a page commit (page,
-`ready`, queue ✓) and a `docs:` commit, building in order: `tensors-and-shapes` through
-`layernorm-and-residuals` (queue items 1-17). Pins never moved. `git log` has the detail.
-
-## Nineteenth to twenty-fourth runs (2026-10-08 to 2026-10-09) — condensed
-
-Same pattern as above: a tested-helpers commit, a page commit (page, `ready`, queue ✓) and a
-`docs:` commit per page. Pages built, in order: `transformer` (retrofit to §6), `training-loop`,
-`decoder-only-llm`, `decoding`, `kv-cache`, `learning-paradigms`, `generalization`,
-`data-splits`, `preprocessing`, `data-leakage`, `classification-metrics`, `cross-validation`,
-`decision-trees`, `gradient-boosting`, `overfitting`, `bias-variance`, `regularization`,
-`activation-functions`. Pins were re-checked each run and none moved. The line ranges each page
-links were verified in the pinned clones at build time and live in the page templates (grep
-`src(`, `skl(`, `xgb(`); per-run range lists were dropped here, and `git log -p` on this file has
-them.
+Runs 1-3 wrote the spec (v1, then v2), the registry, `LEARNING_PATH`, the §6 and queue tests,
+`check_mobile.js` and the Routine. Every run since adds, per page, a tested-helpers commit, a
+page commit (page, `ready`, queue ✓) and usually a `docs:` commit; items 1-42 were built in
+queue order. `6f0803f` fixed 13 templates that read a missing `pins.X.version` key. Pins never
+moved. The ranges each page links live in its template (grep `src(`, `skl(`, `xgb(`);
+`git log -p` on this file has every old commit table and range list.
 
 Findings worth keeping:
 
-- sklearn's `Entropy` criterion is in bits. The decision-tree helpers match a real scikit-learn
-  1.9.1 in a scratch venv (never added to requirements).
-- XGBoost's `loss_chg` has no ½ and compares with γ directly, so γ is on a different scale from
-  the paper's ½[...] − γ; `gradient-boosting` says so. The cross-check used XGBoost 3.2.0 (3.4.2
-  was not on the mirror); the gain and leaf formulas are unchanged between them.
-- In PyTorch 2.14.1 `AdamW` is `Adam` with `decoupled_weight_decay=True`; `regularization` links
-  the decay in `optim/adam.py` 416-428.
-- `overfitting` uses medians over 30 draws, since a degree-9 fit on 15 points sometimes explodes.
-  `bias-variance` uses odd degrees only and does not claim a strict variance ladder.
+- sklearn's `Entropy` criterion is in bits. XGBoost's `loss_chg` has no ½, so γ is on a
+  different scale from the paper's; `gradient-boosting` says so. In PyTorch 2.14.1 `AdamW` is
+  `Adam` with `decoupled_weight_decay=True`.
+- Cross-checks ran in scratch venvs, never in requirements: scikit-learn 1.9.1, torch 2.14.1,
+  and XGBoost 3.2.0 (3.4.2 is not on the mirror; the formulas used are unchanged).
+- An SVD through the eigenvalues of AᵀA squared the condition number and gave the wrong rank;
+  the one-sided Jacobi SVD is used. `overfitting` uses medians over 30 draws.
+- On the BPE toy corpus BPE and WordPiece pick different first merges; the KD-tree example
+  scans 4 of 16 points for k = 1 and all 16 for k = 5.
 
 Open gaps from these runs:
 
-- Paper references on every page were cited from memory and not opened (arxiv.org was
-  unreachable during the decoding run).
-- bf16-needs-no-scaler is checked only against the autocast docstring. `kv-cache` names no real
-  model's configuration. `kv-cache` mentions quantization as plain text until that page exists.
-- The end lines of the HistGradientBoosting regressor `__init__` and of
-  `_incremental_fit_estimator`, and the `Lasso` end line, were inferred, not checked.
-- The SwiGLU "hidden size reduced to 2/3" remark is from memory of common practice.
-
-## Twenty-fifth and twenty-sixth runs (2026-10-11) — condensed
-
-Same pattern: helpers commit, page commit (page, `ready`, queue ✓). Pages built, in order:
-`linear-algebra-toolkit`, `missing-data`, `computation-graphs`, `cnns`, `autoregressive-models`,
-`tokenization`, `nearest-neighbors`. `6f0803f` fixed 13 templates that read the missing
-`pins.X.version` key and added a test for every `pins.X.<key>` a template reads. Pins did not
-move. `git log -p` on this file has the per-run commit tables.
-
-Findings worth keeping:
-
-- An SVD through the eigenvalues of AᵀA squares the condition number and gave rank 3 for a
-  rank-2 matrix; the one-sided Jacobi SVD gives rank 2.
-- Cross-checked in a scratch venv (never in requirements): scikit-learn 1.9.1 imputers,
-  XGBoost 3.2.0 (3.4.2 is not on the mirror) splits and default direction, torch 2.14.1
-  computation-graph nodes and every cnns size and the 435-pixel receptive field.
-- On the BPE toy corpus `e`+`s` and `s`+`t` tie at count 9; BPE takes `e`+`s`, WordPiece's
-  likelihood gain picks `s`+`t`. The KD-tree example scans 4 of 16 points for k = 1 and all 16
-  for k = 5. torchvision is not pinned, so ResNet-18 is described from its paper.
-
-Gaps from these runs: WordPiece training has no pinned implementation to check against; the
-pre-arXiv papers (Cover and Hart, Bentley, Friedman et al., Omohundro, Beyer et al., Schuster
-and Nakajima) and the GPT-2 report have no link; page commits exceed 400 lines because each
-template is one file.
+- Paper references were cited from memory (arxiv.org was unreachable); pre-arXiv papers
+  (Cover and Hart, Bentley, Friedman et al., Omohundro, Beyer et al., Schuster and Nakajima)
+  and the GPT-2 report have no link.
+- `kv-cache` names no real model's configuration and mentions quantization as plain text
+  until that page exists. WordPiece training has no pinned implementation to check against.
+- The end lines of the HistGradientBoosting regressor `__init__`, `_incremental_fit_estimator`
+  and `Lasso` were inferred. The SwiGLU "2/3 hidden size" remark is from memory.
+- Page commits exceed 400 lines because each template is one file.
 
 ## Twenty-seventh run (2026-10-11) — similarity-search, gpu-execution, mixed-precision
 
@@ -314,8 +284,8 @@ Gaps:
 42. `nearest-neighbors` ✓
 43. `similarity-search` ✓
 44. `gpu-execution` ✓
-45. `mixed-precision` ← next
-46. `quantization`
+45. `mixed-precision` ✓
+46. `quantization` ← next
 47. `reinforcement-learning`
 48. `bayes-rule`
 49. `class-imbalance`
