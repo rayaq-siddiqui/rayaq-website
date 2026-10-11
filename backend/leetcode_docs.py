@@ -1,5 +1,6 @@
 import bisect
 import heapq
+import itertools
 import math
 import re
 
@@ -304,7 +305,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy", "kadanes-algorithm", "interval-merging", "sweep-line", "matrix-manipulation", "number-math", "bit-manipulation"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy", "kadanes-algorithm", "interval-merging", "sweep-line", "matrix-manipulation", "number-math", "bit-manipulation", "interview-approach"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -7029,6 +7030,93 @@ def missing_number_xor(nums):
     return acc
 
 
+def _merge_sort_counting(values):
+    if len(values) <= 1:
+        return values, 0
+    middle = len(values) // 2
+    left, left_count = _merge_sort_counting(values[:middle])
+    right, right_count = _merge_sort_counting(values[middle:])
+    merged, i, j, count = [], 0, 0, left_count + right_count
+    while i < len(left) and j < len(right):
+        count += 1
+        if left[i] <= right[j]:
+            merged.append(left[i])
+            i += 1
+        else:
+            merged.append(right[j])
+            j += 1
+    return merged + left[i:] + right[j:], count
+
+
+def two_sum_costs(nums, target):
+    """The three Two Sum approaches an interview walks through, each counted in its own basic step: pairs checked, sort comparisons plus pointer moves, and dictionary lookups. Each finds the same pair of values."""
+    pairs, found = 0, None
+    for i in range(len(nums)):
+        for j in range(i + 1, len(nums)):
+            pairs += 1
+            if nums[i] + nums[j] == target:
+                found = (nums[i], nums[j])
+                break
+        if found:
+            break
+    ordered, comparisons = _merge_sort_counting(list(nums))
+    low, high, moves = 0, len(ordered) - 1, 0
+    while low < high and ordered[low] + ordered[high] != target:
+        moves += 1
+        if ordered[low] + ordered[high] < target:
+            low += 1
+        else:
+            high -= 1
+    seen, lookups, hashed = set(), 0, None
+    for value in nums:
+        lookups += 1
+        if target - value in seen:
+            hashed = (target - value, value)
+            break
+        seen.add(value)
+    return {
+        "brute": {"steps": pairs, "pair": found},
+        "sorted": {"steps": comparisons + moves, "comparisons": comparisons, "moves": moves,
+                   "pair": (ordered[low], ordered[high]) if low < high else None},
+        "hashed": {"steps": lookups, "pair": hashed},
+    }
+
+
+def two_sum_growth(sizes):
+    """two_sum_costs on 1..n with the answer the last two values, the worst case for the brute force."""
+    rows = []
+    for n in sizes:
+        costs = two_sum_costs(list(range(1, n + 1)), 2 * n - 1)
+        rows.append({"n": n, "brute": costs["brute"]["steps"], "sorted": costs["sorted"]["steps"], "hashed": costs["hashed"]["steps"]})
+    return rows
+
+
+def hash_two_sum_trace(nums, target):
+    """The one-pass dictionary version: for each value, ask whether its complement was seen earlier, then remember the value's index."""
+    seen, rows = {}, []
+    for index, value in enumerate(nums):
+        need = target - value
+        rows.append({"index": index, "value": value, "need": need, "hit": seen.get(need), "seen": dict(seen)})
+        if need in seen:
+            return {"rows": rows, "answer": (seen[need], index)}
+        seen[value] = index
+    return {"rows": rows, "answer": None}
+
+
+def buggy_kadane_counterexample(values=range(-2, 3), max_length=3):
+    """The smallest input on which a maximum-subarray loop that starts its best at 0 disagrees with brute force, searching shortest arrays first. It shows why 'test the all-negative case' is on every checklist."""
+    for length in range(1, max_length + 1):
+        for nums in itertools.product(values, repeat=length):
+            best, running = 0, 0
+            for value in nums:
+                running = max(value, running + value)
+                best = max(best, running)
+            correct = max(sum(nums[i:j]) for i in range(length) for j in range(i + 1, length + 1))
+            if best != correct:
+                return {"nums": list(nums), "buggy": best, "correct": correct}
+    return None
+
+
 def problem_url(slug):
     return f"https://leetcode.com/problems/{slug}/"
 
@@ -7351,6 +7439,10 @@ def render(slug, render_template):
         "minimum_array_end_of": minimum_array_end_of,
         "add_binary_of": add_binary_of,
         "missing_number_xor": missing_number_xor,
+        "two_sum_costs": two_sum_costs,
+        "two_sum_growth": two_sum_growth,
+        "hash_two_sum_trace": hash_two_sum_trace,
+        "buggy_kadane_counterexample": buggy_kadane_counterexample,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,

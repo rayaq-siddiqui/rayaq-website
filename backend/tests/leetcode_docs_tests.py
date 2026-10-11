@@ -1726,3 +1726,44 @@ def test_bit_manipulation_helpers_match_the_page():
     assert "reads back as <strong>1</strong>" in body
     assert "= <strong>8</strong>" in body and "<strong>6</strong>, so the array is 4, 5, 6" in body
     assert "gives 2, and Add Binary on \"1011\" and \"111\" gives \"10010\"" in body
+
+
+def test_interview_approach_helpers_match_the_page():
+    nums, target = [2, 7, 11, 4, 8], 12
+    trace = leetcode_docs.hash_two_sum_trace(nums, target)
+    assert [(r["value"], r["need"], r["hit"]) for r in trace["rows"]] == [(2, 10, None), (7, 5, None), (11, 1, None), (4, 8, None), (8, 4, 3)]
+    assert trace["answer"] == (3, 4) and trace["rows"][-1]["seen"] == {2: 0, 7: 1, 11: 2, 4: 3}
+    assert leetcode_docs.hash_two_sum_trace([3, 3], 6)["answer"] == (0, 1)
+    assert leetcode_docs.hash_two_sum_trace([3, 2, 4], 6)["answer"] == (1, 2)
+
+    costs = leetcode_docs.two_sum_costs(nums, target)
+    assert (costs["brute"]["steps"], costs["sorted"]["comparisons"], costs["sorted"]["moves"], costs["hashed"]["steps"]) == (10, 7, 2, 5)
+    assert costs["brute"]["pair"] == costs["sorted"]["pair"] == costs["hashed"]["pair"] == (4, 8)
+
+    growth = leetcode_docs.two_sum_growth([8, 16, 32, 64])
+    assert [(r["brute"], r["sorted"], r["hashed"]) for r in growth] == [(28, 18, 8), (120, 46, 16), (496, 110, 32), (2016, 254, 64)]
+    for row in growth:
+        assert row["brute"] == row["n"] * (row["n"] - 1) // 2 and row["hashed"] == row["n"]
+
+    for seed in range(60):
+        values = [(seed * 31 + i * 17) % 23 - 5 for i in range(2 + seed % 9)]
+        ordered, count = leetcode_docs._merge_sort_counting(values)
+        assert ordered == sorted(values) and count <= len(values) * max(1, math.ceil(math.log2(len(values))))
+        pair_sum = values[0] + values[-1]
+        found = leetcode_docs.two_sum_costs(values, pair_sum)
+        for approach in ("brute", "sorted", "hashed"):
+            assert sum(found[approach]["pair"]) == pair_sum
+
+    bug = leetcode_docs.buggy_kadane_counterexample()
+    assert bug == {"nums": [-2], "buggy": 0, "correct": -2}
+    assert leetcode_docs.buggy_kadane_counterexample(values=range(0, 3)) is None
+
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/interview-approach").get_data(as_text=True))
+    assert "<td class=\"num\">10</td><td class=\"num\">4 + 8</td>" in body
+    assert "<td class=\"num\">7 + 2 = 9</td>" in body
+    assert "<td class=\"num\">5</td><td class=\"num\">4 + 8</td>" in body
+    assert "<td class=\"num\">2: 0, 7: 1, 11: 2, 4: 3</td><td class=\"num\">3</td>" in body
+    assert "indices <strong>3 and 4</strong>" in body
+    assert "<td class=\"num\">64</td><td class=\"num\">2016</td><td class=\"num\">254</td><td class=\"num\">64</td>" in body
+    assert "<strong>[-2]</strong>: the buggy version returns 0, the right answer is -2" in body
+    assert "<td>O(n²)</td><td class=\"num\">10,000</td>" in body

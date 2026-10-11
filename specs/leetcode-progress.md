@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-11 (build run). 53 of 58 pages are ready. **The next run is a build run** continuing at `interview-approach`.
+**Last updated:** 2026-10-11 (build run). 54 of 58 pages are ready. **The next run is a build run** continuing at `segment-trees`.
 
 ## The Routine
 
@@ -102,8 +102,8 @@ build once research is done.
 51. `matrix-manipulation` ✓
 52. `number-math` ✓
 53. `bit-manipulation` ✓
-54. `interview-approach` ← next
-55. `segment-trees`
+54. `interview-approach` ✓
+55. `segment-trees` ← next
 56. `fenwick-trees`
 57. `string-matching`
 58. `bitmask-dp`
@@ -303,5 +303,8 @@ brute force, two inline SVGs and the full §6 format. Then built `bit-manipulati
 way (XOR folds, `n & (n - 1)` popcount, counting bits, the masked XOR/AND adder, reverse bits,
 range AND, minimum array end, add binary, missing number). Every problem on all four lists now
 has a ready home: Blind 75 75/75, Grind 169 169/169, NeetCode 150 150/150, NeetCode 250
-250/250. Mobile check passed on `/`, `/leetcode` and every ready page. Next:
-`interview-approach`.
+250/250. Last, built `interview-approach`: a master signals table linking every ready
+pattern page, the interview loop as a flowchart, and Two Sum costed three ways (all pairs,
+sort plus two pointers, hash map) with step counts from tested helpers. It is home to no list
+problems by design. Three of three queue items built. Mobile check passed on `/`, `/leetcode`
+and every ready page. Next: `segment-trees`.
