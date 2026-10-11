@@ -5716,6 +5716,197 @@ def batch_ids(sentences, specials=("<pad>", "<bos>", "<eos>")):
     }
 
 
+KNN_POINTS = [
+    (1.0, 2.0, 0), (2.0, 1.0, 0), (2.0, 4.0, 0), (3.0, 3.0, 0),
+    (1.0, 5.0, 0), (4.0, 2.0, 0), (3.0, 6.0, 0), (5.0, 4.0, 0),
+    (6.0, 7.0, 1), (7.0, 5.0, 1), (8.0, 8.0, 1), (7.0, 9.0, 1),
+    (9.0, 6.0, 1), (6.0, 4.5, 1), (8.0, 3.0, 1), (5.0, 8.0, 1),
+]
+KNN_QUERY = (4.8, 5.0)
+KNN_DOC_X = [0.0, 1.0, 2.0, 3.0]
+KNN_DOC_Y = [0, 0, 1, 1]
+
+
+def minkowski(a, b, p=2):
+    diffs = [abs(x - y) for x, y in zip(a, b)]
+    if p == math.inf:
+        return max(diffs)
+    return sum(d**p for d in diffs) ** (1 / p)
+
+
+def metric_table(a=(0.0, 0.0), b=(3.0, 4.0)):
+    rows = [("manhattan", 1), ("euclidean", 2), ("minkowski", 3), ("chebyshev", math.inf)]
+    return [{"name": name, "p": p, "distance": minkowski(a, b, p)} for name, p in rows]
+
+
+def nearest(points, query, k, p=2):
+    ranked = sorted(
+        ({"index": i, "point": pt[:-1], "label": pt[-1], "distance": minkowski(pt[:-1], query, p)}
+         for i, pt in enumerate(points)),
+        key=lambda r: (r["distance"], r["index"]),
+    )
+    return ranked[:k]
+
+
+def neighbor_weights(distances, weights="uniform"):
+    if weights == "uniform":
+        return [1.0] * len(distances)
+    if any(d == 0 for d in distances):
+        return [1.0 if d == 0 else 0.0 for d in distances]
+    return [1 / d for d in distances]
+
+
+def knn_classify(points=KNN_POINTS, query=KNN_QUERY, k=5, weights="uniform", p=2):
+    neighbors = nearest(points, query, k, p)
+    w = neighbor_weights([n["distance"] for n in neighbors], weights)
+    labels = sorted({pt[-1] for pt in points})
+    votes = {label: 0.0 for label in labels}
+    for n, wi in zip(neighbors, w):
+        votes[n["label"]] += wi
+    total = sum(votes.values())
+    prediction = max(labels, key=lambda label: (votes[label], -label))
+    return {
+        "neighbors": [dict(n, weight=wi) for n, wi in zip(neighbors, w)],
+        "votes": votes,
+        "proba": {label: votes[label] / total for label in labels},
+        "prediction": prediction,
+    }
+
+
+def knn_regress(xs=KNN_DOC_X, ys=KNN_DOC_Y, query=1.5, k=2, weights="uniform"):
+    points = [(x, y) for x, y in zip(xs, ys)]
+    neighbors = nearest(points, (query,), k)
+    w = neighbor_weights([n["distance"] for n in neighbors], weights)
+    return sum(wi * n["label"] for n, wi in zip(neighbors, w)) / sum(w)
+
+
+def docstring_examples():
+    points = [(x, y) for x, y in zip(KNN_DOC_X, KNN_DOC_Y)]
+    return {
+        "predict_1_1": knn_classify(points, (1.1,), k=3)["prediction"],
+        "proba_0_9": knn_classify(points, (0.9,), k=3)["proba"],
+        "regress_1_5": knn_regress(query=1.5, k=2),
+    }
+
+
+def k_sweep(points=KNN_POINTS, query=KNN_QUERY, ks=(1, 3, 5, 7, 9)):
+    rows = []
+    for k in ks:
+        result = knn_classify(points, query, k)
+        rows.append({"k": k, "votes": result["votes"], "prediction": result["prediction"]})
+    return rows
+
+
+def leave_one_out(points=KNN_POINTS, ks=(1, 3, 5, 7, 9, 15)):
+    rows = []
+    for k in ks:
+        errors = 0
+        for i, pt in enumerate(points):
+            rest = points[:i] + points[i + 1:]
+            if knn_classify(rest, pt[:-1], k)["prediction"] != pt[-1]:
+                errors += 1
+        rows.append({"k": k, "errors": errors, "error_rate": errors / len(points)})
+    return rows
+
+
+def distance_concentration(dims=(1, 2, 10, 100, 1000), n=200, seed=0):
+    rng = random.Random(seed)
+    rows = []
+    for d in dims:
+        query = [rng.random() for _ in range(d)]
+        dists = [minkowski([rng.random() for _ in range(d)], query) for _ in range(n)]
+        near, far = min(dists), max(dists)
+        rows.append({"dim": d, "nearest": near, "farthest": far, "ratio": near / far})
+    return rows
+
+
+def neighborhood_edge(dims=(1, 2, 10, 100), fraction=0.01):
+    return [{"dim": d, "edge": fraction ** (1 / d)} for d in dims]
+
+
+def tree_size(n_samples, leaf_size):
+    n_levels = int(math.log2(max(1, (n_samples - 1) / leaf_size)) + 1)
+    return {"n_levels": n_levels, "n_nodes": 2**n_levels - 1}
+
+
+def kd_tree_build(points=KNN_POINTS, leaf_size=2):
+    coords = [pt[:-1] for pt in points]
+    n_nodes = tree_size(len(points), leaf_size)["n_nodes"]
+    nodes = {}
+
+    def build(i_node, idx):
+        dims = len(coords[0])
+        lower = [min(coords[i][j] for i in idx) for j in range(dims)]
+        upper = [max(coords[i][j] for i in idx) for j in range(dims)]
+        node = {"index": i_node, "points": list(idx), "lower": lower, "upper": upper}
+        nodes[i_node] = node
+        if 2 * i_node + 1 >= n_nodes:
+            node["leaf"] = True
+            return
+        node["leaf"] = False
+        spread = [upper[j] - lower[j] for j in range(dims)]
+        split = spread.index(max(spread))
+        ordered = sorted(idx, key=lambda i: (coords[i][split], i))
+        mid = len(ordered) // 2
+        node["split_dim"] = split
+        node["split_value"] = coords[ordered[mid]][split]
+        build(2 * i_node + 1, ordered[:mid])
+        build(2 * i_node + 2, ordered[mid:])
+
+    build(0, list(range(len(points))))
+    return {"n_nodes": n_nodes, "nodes": [nodes[i] for i in sorted(nodes)]}
+
+
+def box_min_dist(lower, upper, query):
+    gaps = [max(lo - q, 0.0, q - hi) for lo, hi, q in zip(lower, upper, query)]
+    return math.sqrt(sum(g * g for g in gaps))
+
+
+def kd_tree_query(points=KNN_POINTS, query=KNN_QUERY, k=1, leaf_size=2):
+    tree = kd_tree_build(points, leaf_size)
+    nodes = {n["index"]: n for n in tree["nodes"]}
+    coords = [pt[:-1] for pt in points]
+    heap = []
+    log = {"trimmed": [], "leaves": [], "scanned": 0}
+
+    def largest():
+        return heap[-1][0] if len(heap) == k else math.inf
+
+    def visit(i_node, bound):
+        node = nodes[i_node]
+        if bound > largest():
+            log["trimmed"].append(i_node)
+        elif node["leaf"]:
+            log["leaves"].append(i_node)
+            for i in node["points"]:
+                log["scanned"] += 1
+                heap.append((minkowski(coords[i], query), i))
+                heap.sort()
+                del heap[k:]
+        else:
+            children = [2 * i_node + 1, 2 * i_node + 2]
+            bounds = [box_min_dist(nodes[c]["lower"], nodes[c]["upper"], query) for c in children]
+            order = [0, 1] if bounds[0] <= bounds[1] else [1, 0]
+            for j in order:
+                visit(children[j], bounds[j])
+
+    visit(0, box_min_dist(nodes[0]["lower"], nodes[0]["upper"], query))
+    return dict(log, neighbors=[{"index": i, "distance": d} for d, i in heap], n_points=len(points))
+
+
+def ball_min_dist(query, centroid, radius):
+    return max(0.0, minkowski(query, centroid) - radius)
+
+
+def ball_bound_example(points=KNN_POINTS, query=KNN_QUERY, label=0):
+    members = [pt[:-1] for pt in points if pt[-1] == label]
+    centroid = tuple(sum(c[j] for c in members) / len(members) for j in range(2))
+    radius = max(minkowski(c, centroid) for c in members)
+    bound = ball_min_dist(query, centroid, radius)
+    true_min = min(minkowski(c, query) for c in members)
+    return {"centroid": centroid, "radius": radius, "bound": bound, "true_min": true_min}
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -6131,6 +6322,19 @@ def render(slug, render_template):
         "utf8_lengths": utf8_lengths,
         "digit_groups": digit_groups,
         "batch_ids": batch_ids,
+        "knn_points": KNN_POINTS,
+        "knn_query": KNN_QUERY,
+        "metric_table": metric_table,
+        "knn_classify": knn_classify,
+        "docstring_examples": docstring_examples,
+        "k_sweep": k_sweep,
+        "leave_one_out": leave_one_out,
+        "distance_concentration": distance_concentration,
+        "neighborhood_edge": neighborhood_edge,
+        "tree_size": tree_size,
+        "kd_tree_build": kd_tree_build,
+        "kd_tree_query": kd_tree_query,
+        "ball_bound_example": ball_bound_example,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

@@ -2586,3 +2586,66 @@ def test_batch_ids_pad_mask_and_shift_targets():
     assert batch["ids"] == [[1, 3, 4, 5, 2], [1, 3, 6, 2, 0]]
     assert batch["mask"] == [[1, 1, 1, 1, 1], [1, 1, 1, 1, 0]]
     assert batch["targets"] == [[3, 4, 5, 2], [3, 6, 2, -100]]
+
+
+def test_minkowski_metrics_order_by_p():
+    rows = {r["name"]: r["distance"] for r in ml_models_docs.metric_table()}
+
+    assert rows["manhattan"] == 7.0
+    assert rows["euclidean"] == 5.0
+    assert rows["chebyshev"] == 4.0
+    assert rows["chebyshev"] < rows["minkowski"] < rows["euclidean"]
+
+
+def test_knn_reproduces_the_sklearn_docstring_examples():
+    examples = ml_models_docs.docstring_examples()
+
+    assert examples["predict_1_1"] == 0
+    assert math.isclose(examples["proba_0_9"][0], 2 / 3)
+    assert math.isclose(examples["proba_0_9"][1], 1 / 3)
+    assert examples["regress_1_5"] == 0.5
+
+
+def test_knn_vote_flips_with_k_and_distance_weights():
+    sweep = ml_models_docs.k_sweep()
+    weighted = ml_models_docs.knn_classify(k=5, weights="distance")
+
+    assert [r["prediction"] for r in sweep] == [0, 0, 1, 0, 0]
+    assert sweep[2]["votes"] == {0: 2.0, 1: 3.0}
+    assert weighted["prediction"] == 1
+    assert math.isclose(weighted["neighbors"][0]["weight"], 1 / math.hypot(0.2, 1.0))
+    assert ml_models_docs.neighbor_weights([0.0, 2.0, 0.0], "distance") == [1.0, 0.0, 1.0]
+
+
+def test_leave_one_out_error_picks_a_middle_k():
+    rows = {r["k"]: r["errors"] for r in ml_models_docs.leave_one_out()}
+
+    assert rows == {1: 2, 3: 0, 5: 0, 7: 1, 9: 1, 15: 16}
+
+
+def test_distances_concentrate_as_dimension_grows():
+    ratios = [r["ratio"] for r in ml_models_docs.distance_concentration()]
+    edges = [r["edge"] for r in ml_models_docs.neighborhood_edge()]
+
+    assert ratios == sorted(ratios)
+    assert ratios[0] < 0.01 and ratios[-1] > 0.9
+    assert math.isclose(edges[1], 0.1)
+    assert edges[-1] > 0.95
+
+
+def test_kd_tree_matches_sklearn_sizes_and_prunes():
+    assert ml_models_docs.tree_size(16, 2) == {"n_levels": 3, "n_nodes": 7}
+    assert ml_models_docs.tree_size(1000, 40) == {"n_levels": 5, "n_nodes": 31}
+
+    tree = ml_models_docs.kd_tree_build()
+    leaves = [n for n in tree["nodes"] if n["leaf"]]
+    assert [len(n["points"]) for n in leaves] == [4, 4, 4, 4]
+    assert (tree["nodes"][0]["split_dim"], tree["nodes"][0]["split_value"]) == (0, 5.0)
+
+    one = ml_models_docs.kd_tree_query(k=1)
+    assert one["scanned"] == 4 and one["trimmed"] == [3, 5, 6]
+    assert one["neighbors"][0]["index"] == 7
+    assert ml_models_docs.kd_tree_query(k=5)["scanned"] == 16
+
+    ball = ml_models_docs.ball_bound_example(label=0)
+    assert 0 < ball["bound"] <= ball["true_min"]
