@@ -5215,6 +5215,181 @@ def graph_controls(example=GRAPH_EXAMPLE):
     return {"retained": retained, "hooked": hooked, "detached": detached, "no_grad": no_grad, "clamps": clamps}
 
 
+CONV_IMAGE = [[3, 3, 3, 0, 0, 0] for _ in range(6)]
+EDGE_KERNEL = [[1, 0, -1], [1, 0, -1], [1, 0, -1]]
+POOL_MAP = [[1, 3, 2, 0], [4, 6, 1, 1], [0, 2, 5, 7], [1, 1, 3, 2]]
+
+
+def conv_output_size(n, kernel, stride=1, padding=0, dilation=1):
+    return (n + 2 * padding - dilation * (kernel - 1) - 1) // stride + 1
+
+
+def pool_output_size(n, kernel, stride=None, padding=0, dilation=1, ceil_mode=False):
+    stride = stride or kernel
+    span = n + 2 * padding - dilation * (kernel - 1) - 1
+    out = (span + (stride - 1 if ceil_mode else 0)) // stride + 1
+    if ceil_mode and (out - 1) * stride >= n + padding:
+        out -= 1
+    return out
+
+
+def pad2d(plane, padding):
+    width = len(plane[0]) + 2 * padding
+    rows = [[0] * width for _ in range(padding)]
+    rows += [[0] * padding + list(row) + [0] * padding for row in plane]
+    return rows + [[0] * width for _ in range(padding)]
+
+
+def conv2d(x, weight, bias=None, stride=1, padding=0, dilation=1):
+    planes = [pad2d(plane, padding) for plane in x]
+    kh, kw = len(weight[0][0]), len(weight[0][0][0])
+    out_h = conv_output_size(len(x[0]), kh, stride, padding, dilation)
+    out_w = conv_output_size(len(x[0][0]), kw, stride, padding, dilation)
+    out = []
+    for o, kernels in enumerate(weight):
+        start = bias[o] if bias else 0
+        out.append([
+            [
+                start + sum(
+                    kernels[c][a][b] * planes[c][i * stride + a * dilation][j * stride + b * dilation]
+                    for c in range(len(x)) for a in range(kh) for b in range(kw)
+                )
+                for j in range(out_w)
+            ]
+            for i in range(out_h)
+        ])
+    return out
+
+
+def pool2d(plane, kernel, stride=None, reduce=max):
+    stride = stride or kernel
+    out_h = pool_output_size(len(plane), kernel, stride)
+    out_w = pool_output_size(len(plane[0]), kernel, stride)
+    return [
+        [
+            reduce([plane[i * stride + a][j * stride + b] for a in range(kernel) for b in range(kernel)])
+            for j in range(out_w)
+        ]
+        for i in range(out_h)
+    ]
+
+
+def _mean(values):
+    return sum(values) / len(values)
+
+
+def receptive_fields(layers):
+    size, jump, rows = 1, 1, []
+    for name, kernel, stride, dilation in layers:
+        size += (kernel - 1) * dilation * jump
+        jump *= stride
+        rows.append({"layer": name, "size": size, "jump": jump})
+    return rows
+
+
+def conv_params(in_channels, out_channels, kernel, bias=True, groups=1):
+    return out_channels * (in_channels // groups) * kernel * kernel + (out_channels if bias else 0)
+
+
+def conv_example():
+    image, kernel = CONV_IMAGE, EDGE_KERNEL
+    terms = [(kernel[a][b], image[a][1 + b]) for a in range(3) for b in range(3)]
+    return {
+        "image": image,
+        "kernel": kernel,
+        "output": conv2d([image], [[kernel]])[0],
+        "terms": terms,
+        "term_sum": sum(k * v for k, v in terms),
+        "padded": conv2d([image], [[kernel]], padding=1)[0],
+        "strided": conv2d([image], [[kernel]], stride=2, padding=1)[0],
+        "dilated": conv2d([image], [[kernel]], dilation=2)[0],
+        "max_pool": pool2d(POOL_MAP, 2),
+        "avg_pool": pool2d(POOL_MAP, 2, reduce=_mean),
+        "pool_map": POOL_MAP,
+    }
+
+
+def output_size_rows():
+    cases = [
+        ("3×3, stride 1, no padding", 32, 3, 1, 0, 1),
+        ("3×3, stride 1, padding 1", 32, 3, 1, 1, 1),
+        ("3×3, stride 2, padding 1", 32, 3, 2, 1, 1),
+        ("5×5, stride 1, no padding", 32, 5, 1, 0, 1),
+        ("3×3, dilation 2, padding 2", 32, 3, 1, 2, 2),
+        ("7×7, stride 2, padding 3", 224, 7, 2, 3, 1),
+        ("1×1, stride 2", 56, 1, 2, 0, 1),
+    ]
+    return [
+        {"label": label, "n": n, "out": conv_output_size(n, k, s, p, d), "kernel": k, "stride": s, "padding": p, "dilation": d}
+        for label, n, k, s, p, d in cases
+    ]
+
+
+def lenet_stack(image=32):
+    channels, size, rows = 1, image, [{"layer": "input", "shape": [1, image, image], "params": 0}]
+    for out_channels in (6, 16):
+        size = conv_output_size(size, 5)
+        rows.append({"layer": f"Conv2d({channels}, {out_channels}, 5) + ReLU", "shape": [out_channels, size, size], "params": conv_params(channels, out_channels, 5)})
+        size = pool_output_size(size, 2)
+        rows.append({"layer": "MaxPool2d(2)", "shape": [out_channels, size, size], "params": 0})
+        channels = out_channels
+    features = channels * size * size
+    rows.append({"layer": "Flatten", "shape": [features], "params": 0})
+    for width in (120, 84, 10):
+        rows.append({"layer": f"Linear({features}, {width})", "shape": [width], "params": features * width + width})
+        features = width
+    return {"rows": rows, "total": sum(row["params"] for row in rows)}
+
+
+def _basic_block_params(in_channels, out_channels, downsample):
+    params = conv_params(in_channels, out_channels, 3, bias=False)
+    params += conv_params(out_channels, out_channels, 3, bias=False)
+    params += 2 * (2 * out_channels)
+    if downsample:
+        params += conv_params(in_channels, out_channels, 1, bias=False) + 2 * out_channels
+    return params
+
+
+def resnet18_stack(image=224, classes=1000):
+    size = conv_output_size(image, 7, 2, 3)
+    rows = [{"layer": "conv1 7×7/2 + BN + ReLU", "shape": [64, size, size], "params": conv_params(3, 64, 7, bias=False) + 128}]
+    size = pool_output_size(size, 3, 2, 1)
+    rows.append({"layer": "maxpool 3×3/2", "shape": [64, size, size], "params": 0})
+    channels = 64
+    for stage, width in enumerate([64, 128, 256, 512], start=1):
+        stride = 1 if stage == 1 else 2
+        size = conv_output_size(size, 3, stride, 1)
+        downsample = stride != 1 or channels != width
+        params = _basic_block_params(channels, width, downsample) + _basic_block_params(width, width, False)
+        rows.append({"layer": f"layer{stage}: 2 blocks", "shape": [width, size, size], "params": params, "downsample": downsample})
+        channels = width
+    rows.append({"layer": "adaptive avgpool → flatten", "shape": [channels], "params": 0})
+    rows.append({"layer": f"fc {channels}→{classes}", "shape": [classes], "params": channels * classes + classes})
+    return {"rows": rows, "total": sum(row["params"] for row in rows)}
+
+
+def stacking_comparison(channels=64):
+    stacked = receptive_fields([(f"3×3 #{i}", 3, 1, 1) for i in range(1, 4)])
+    return {
+        "stacked_rf": stacked[-1]["size"],
+        "single_rf": receptive_fields([("7×7", 7, 1, 1)])[-1]["size"],
+        "stacked_params": 3 * conv_params(channels, channels, 3, bias=False),
+        "single_params": conv_params(channels, channels, 7, bias=False),
+        "dense_params": (channels * 56 * 56) ** 2,
+        "channels": channels,
+    }
+
+
+def resnet_receptive_fields():
+    layers = [("conv1", 7, 2, 1), ("maxpool", 3, 2, 1)]
+    for stage, stride in zip(range(1, 5), [1, 2, 2, 2]):
+        layers += [
+            (f"layer{stage}.0 conv1", 3, stride, 1), (f"layer{stage}.0 conv2", 3, 1, 1),
+            (f"layer{stage}.1 conv1", 3, 1, 1), (f"layer{stage}.1 conv2", 3, 1, 1),
+        ]
+    return receptive_fields(layers)
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -5597,6 +5772,12 @@ def render(slug, render_template):
         "graph_example": graph_example,
         "graph_controls": graph_controls,
         "graph_example_data": GRAPH_EXAMPLE,
+        "conv_example": conv_example,
+        "output_size_rows": output_size_rows,
+        "lenet_stack": lenet_stack,
+        "resnet18_stack": resnet18_stack,
+        "stacking_comparison": stacking_comparison,
+        "resnet_receptive_fields": resnet_receptive_fields,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

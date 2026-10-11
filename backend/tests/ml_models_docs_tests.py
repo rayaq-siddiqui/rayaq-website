@@ -2408,3 +2408,54 @@ def test_graph_hook_needs_requires_grad():
     engine = ml_models_docs.Autograd()
     with pytest.raises(RuntimeError, match="doesn't require gradient"):
         engine.register_hook(engine.tensor(1.0), lambda g: g)
+
+
+def test_conv_output_size_matches_the_pytorch_formula():
+    sizes = {row["label"]: row["out"] for row in ml_models_docs.output_size_rows()}
+    assert sizes["3×3, stride 1, padding 1"] == 32
+    assert sizes["3×3, stride 2, padding 1"] == 16
+    assert sizes["7×7, stride 2, padding 3"] == 112
+    assert ml_models_docs.conv_output_size(32, 3, padding=2, dilation=2) == 32
+    assert ml_models_docs.pool_output_size(5, 2) == 2
+    assert ml_models_docs.pool_output_size(5, 2, ceil_mode=True) == 3
+    assert ml_models_docs.pool_output_size(112, 3, 2, 1) == 56
+
+
+def test_conv2d_is_a_sliding_dot_product():
+    example = ml_models_docs.conv_example()
+    assert example["output"] == [[0, 9, 9, 0]] * 4
+    assert example["term_sum"] == example["output"][0][1]
+    assert len(example["padded"]) == 6 and len(example["strided"]) == 3
+    assert example["dilated"] == [[9, 9], [9, 9]]
+    x = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+    weight = [[[[1]], [[10]]]]
+    assert ml_models_docs.conv2d(x, weight, bias=[1]) == [[[52, 63], [74, 85]]]
+
+
+def test_pooling_reduces_each_window():
+    example = ml_models_docs.conv_example()
+    assert example["max_pool"] == [[6, 2], [2, 7]]
+    assert example["avg_pool"] == [[3.5, 1.0], [1.0, 4.25]]
+
+
+def test_receptive_fields_grow_with_depth_and_stride():
+    comparison = ml_models_docs.stacking_comparison()
+    assert comparison["stacked_rf"] == comparison["single_rf"] == 7
+    assert comparison["stacked_params"] == 27 * 64 * 64
+    assert comparison["single_params"] == 49 * 64 * 64
+    assert ml_models_docs.resnet_receptive_fields()[-1] == {"layer": "layer4.1 conv2", "size": 435, "jump": 32}
+
+
+def test_lenet_stack_shapes_and_params():
+    stack = ml_models_docs.lenet_stack()
+    assert [row["shape"] for row in stack["rows"]][1:6] == [[6, 28, 28], [6, 14, 14], [16, 10, 10], [16, 5, 5], [400]]
+    assert stack["total"] == 61706
+
+
+def test_resnet18_stack_matches_the_published_size():
+    stack = ml_models_docs.resnet18_stack()
+    assert [row["shape"] for row in stack["rows"]][:6] == [
+        [64, 112, 112], [64, 56, 56], [64, 56, 56], [128, 28, 28], [256, 14, 14], [512, 7, 7],
+    ]
+    assert [row.get("downsample") for row in stack["rows"][2:6]] == [False, True, True, True]
+    assert stack["total"] == 11_689_512
