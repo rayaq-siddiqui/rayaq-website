@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy", "kadanes-algorithm", "interval-merging"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy", "kadanes-algorithm", "interval-merging", "sweep-line"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -6629,6 +6629,80 @@ def first_conflict_of(meetings):
     return {"sorted": ordered, "conflict": None}
 
 
+def room_sweep_trace(meetings):
+    """Meeting Rooms II as a sweep over half-open meetings: +1 at each start, -1 at each end, with ends sorted before starts at the same time. steps[i] is (time, change, rooms in use after it)."""
+    events = sorted([(start, 1) for start, _ in meetings] + [(end, -1) for _, end in meetings])
+    steps, in_use, peak = [], 0, 0
+    for time, change in events:
+        in_use += change
+        peak = max(peak, in_use)
+        steps.append((time, change, in_use))
+    return {"steps": steps, "rooms": peak}
+
+
+def rooms_heap_trace(meetings):
+    """Meeting Rooms II with a min-heap of end times: in start order, free every room whose meeting has ended, then take one. rows[i] holds the meeting, the end times freed and the sorted heap after."""
+    heap, rows, peak = [], [], 0
+    for start, end in sorted(meetings):
+        freed = []
+        while heap and heap[0] <= start:
+            freed.append(heapq.heappop(heap))
+        heapq.heappush(heap, end)
+        peak = max(peak, len(heap))
+        rows.append({"meeting": (start, end), "freed": freed, "heap": sorted(heap)})
+    return {"rows": rows, "rooms": peak}
+
+
+def car_pool_trace(trips, capacity):
+    """Car Pooling with a difference array: add passengers at pickup, subtract at drop-off, then take running sums. Returns the change and load at each location, the first location over capacity (or None) and whether the trips fit."""
+    last = max((end for _, _, end in trips), default=0)
+    change = [0] * (last + 1)
+    for passengers, start, end in trips:
+        change[start] += passengers
+        change[end] -= passengers
+    load, running, first_over = [], 0, None
+    for location, delta in enumerate(change):
+        running += delta
+        load.append(running)
+        if running > capacity and first_over is None:
+            first_over = location
+    return {"change": change, "load": load, "first_over": first_over, "fits": first_over is None}
+
+
+def common_free_time_of(schedules):
+    """Employee Free Time: merge everyone's busy intervals in start order; the finite gaps between merged blocks are the shared free time."""
+    busy = sorted(interval for schedule in schedules for interval in schedule)
+    merged = []
+    for start, end in busy:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    gaps = [(a[1], b[0]) for a, b in zip(merged, merged[1:])]
+    return {"busy": busy, "merged": merged, "free": gaps}
+
+
+def min_interval_queries_trace(intervals, queries):
+    """Minimum Interval to Include Each Query: visit queries in increasing order, push every interval that has started onto a heap keyed by size, pop the ones that already ended, and read the top. rows follow sorted query order; answers follow the original order."""
+    ordered = sorted(intervals)
+    heap, i, rows = [], 0, []
+    answers = [-1] * len(queries)
+    for index in sorted(range(len(queries)), key=lambda k: queries[k]):
+        query = queries[index]
+        added, dropped = [], []
+        while i < len(ordered) and ordered[i][0] <= query:
+            start, end = ordered[i]
+            heapq.heappush(heap, (end - start + 1, end, start))
+            added.append(ordered[i])
+            i += 1
+        while heap and heap[0][1] < query:
+            _, end, start = heapq.heappop(heap)
+            dropped.append((start, end))
+        answers[index] = heap[0][0] if heap else -1
+        rows.append({"query": query, "added": added, "dropped": dropped, "answer": answers[index]})
+    return {"rows": rows, "answers": answers}
+
+
 def problem_url(slug):
     return f"https://leetcode.com/problems/{slug}/"
 
@@ -6885,6 +6959,11 @@ def render(slug, render_template):
         "merge_intervals_trace": merge_intervals_trace,
         "insert_interval_parts": insert_interval_parts,
         "first_conflict_of": first_conflict_of,
+        "room_sweep_trace": room_sweep_trace,
+        "rooms_heap_trace": rooms_heap_trace,
+        "car_pool_trace": car_pool_trace,
+        "common_free_time_of": common_free_time_of,
+        "min_interval_queries_trace": min_interval_queries_trace,
         "min_jumps_levels": min_jumps_levels,
         "gas_station_trace": gas_station_trace,
         "straights_groups": straights_groups,

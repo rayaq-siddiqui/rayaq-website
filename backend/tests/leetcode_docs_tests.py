@@ -1462,3 +1462,40 @@ def test_interval_merging_helpers_match_the_page():
     assert "grows the new interval to [4, 13]" in body
     assert "first clash at [10, 12) and [11, 13)" in body
     assert "[9, 10), [10, 12), [13, 15) can all be attended" in body
+
+
+def test_sweep_line_helpers_match_the_page():
+    def brute_rooms(meetings):
+        times = {t for s, e in meetings for t in (s, e)}
+        return max((sum(1 for s, e in meetings if s <= t < e) for t in times), default=0)
+
+    def brute_smallest(intervals, query):
+        sizes = [e - s + 1 for s, e in intervals if s <= query <= e]
+        return min(sizes) if sizes else -1
+
+    meetings = [(1, 5), (2, 6), (4, 8), (5, 9), (8, 10), (11, 12)]
+    sweep = leetcode_docs.room_sweep_trace(meetings)
+    assert [count for _, _, count in sweep["steps"]] == [1, 2, 3, 2, 3, 2, 1, 2, 1, 0, 1, 0]
+    assert sweep["rooms"] == 3 == brute_rooms(meetings)
+    heap = leetcode_docs.rooms_heap_trace(meetings)
+    assert heap["rooms"] == 3 and heap["rows"][4]["freed"] == [6, 8] and heap["rows"][4]["heap"] == [9, 10]
+    for sample in ([], [(1, 2)], [(1, 3), (3, 5)], [(1, 10), (2, 3), (4, 5), (6, 7)], [(0, 5), (1, 5), (2, 5), (5, 6)]):
+        assert leetcode_docs.room_sweep_trace(sample)["rooms"] == brute_rooms(sample) == leetcode_docs.rooms_heap_trace(sample)["rooms"]
+    trips = [(2, 1, 4), (3, 2, 6), (2, 5, 8), (1, 7, 9)]
+    pool = leetcode_docs.car_pool_trace(trips, 5)
+    assert pool["change"] == [0, 2, 3, 0, -2, 2, -3, 1, -2, -1]
+    assert pool["load"] == [sum(p for p, s, e in trips if s <= x < e) for x in range(10)]
+    assert pool["fits"] and leetcode_docs.car_pool_trace(trips, 4)["first_over"] == 2
+    free = leetcode_docs.common_free_time_of([[(1, 3), (6, 7)], [(2, 4)], [(2, 5), (9, 12)]])
+    assert free["merged"] == [(1, 5), (6, 7), (9, 12)] and free["free"] == [(5, 6), (7, 9)]
+    spans, asks = [(2, 5), (1, 8), (4, 6), (7, 7), (10, 14)], [9, 3, 12, 5, 7]
+    queries = leetcode_docs.min_interval_queries_trace(spans, asks)
+    assert queries["answers"] == [-1, 4, 5, 3, 1] == [brute_smallest(spans, q) for q in asks]
+    assert [row["query"] for row in queries["rows"]] == [3, 5, 7, 9, 12]
+    assert queries["rows"][3]["dropped"] == [(7, 7), (4, 6), (2, 5), (1, 8)]
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/sweep-line").get_data(as_text=True))
+    assert "The peak is 3, so 3 rooms are needed." in body
+    assert "<code>0, 2, 3, 0, -2, 2, -3, 1, -2, -1</code>" in body and "<code>0, 2, 5, 5, 3, 5, 2, 3, 1, 0</code>" in body
+    assert "with 4 seats the load first goes over at location 2" in body
+    assert "everyone is free during [5, 6] and [7, 9]" in body
+    assert "the answers are <code>-1, 4, 5, 3, 1</code>" in body

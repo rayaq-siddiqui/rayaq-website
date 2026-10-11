@@ -1,0 +1,342 @@
+{% set meetings = [(1, 5), (2, 6), (4, 8), (5, 9), (8, 10), (11, 12)] %}
+{% set rs = room_sweep_trace(meetings) %}
+{% set rh = rooms_heap_trace(meetings) %}
+{% set trips = [(2, 1, 4), (3, 2, 6), (2, 5, 8), (1, 7, 9)] %}
+{% set cp = car_pool_trace(trips, 5) %}
+{% set cp_tight = car_pool_trace(trips, 4) %}
+{% set schedules = [[(1, 3), (6, 7)], [(2, 4)], [(2, 5), (9, 12)]] %}
+{% set ft = common_free_time_of(schedules) %}
+{% set spans = [(2, 5), (1, 8), (4, 6), (7, 7), (10, 14)] %}
+{% set asks = [9, 3, 12, 5, 7] %}
+{% set mq = min_interval_queries_trace(spans, asks) %}
+{% set sx = 40 %}
+<header class="jj-header">
+  <h1>Sweep line</h1>
+  <p class="tagline">
+    Turn every interval into two events, "something starts here" and "something ends here", sort the events, and walk through them keeping a running
+    count. The count at each moment answers "how many overlap right now?", which merging cannot. A heap of end times does the same job when you also need
+    to know <em>which</em> intervals are active.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  <a href="{{ url_for('leetcode', slug='interval-merging') }}">Merging intervals</a> tells you what is covered, but it forgets how deeply. Many questions
+  care about depth: the most meetings happening at once (so the number of rooms), whether a car ever carries more passengers than it has seats, or
+  which of the active intervals is the shortest at a given point. Checking every point in time against every interval is O(n &middot; T). The sweep
+  replaces time with the 2n moments where something changes.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Signal</th><th>Pattern</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>"Minimum number of rooms / platforms / machines"</td><td>Count +1 at starts and &minus;1 at ends, take the peak</td><td>The rooms needed equal the largest number of meetings in progress at one instant.</td></tr>
+    <tr><td>"Does the load ever exceed capacity?" with small coordinates</td><td>Difference array, then prefix sums</td><td>Each interval touches only its two endpoints; the running sum rebuilds the load.</td></tr>
+    <tr><td>"Which active interval is best at each query point?"</td><td>Sort queries, push intervals as they start, pop expired ones from a heap</td><td>Sorted queries mean an interval enters once and leaves once.</td></tr>
+    <tr><td>"Time when everyone is free"</td><td>Merge all busy intervals and read the gaps</td><td>Free for everyone means covered by nobody.</td></tr>
+    <tr><td>"Merge" or "is there any overlap"</td><td>Plain interval merging</td><td>No depth needed, so a single open block is enough.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Imagine a vertical line sliding across a timeline from left to right. Between events nothing changes, so the line only needs to stop where an interval
+  starts or ends. At each stop it updates a small summary of what it is crossing: a count, a load, or a heap of the intervals currently under it. The
+  answer is read off that summary, either at its peak or at the query points.
+</p>
+<p>
+  The only subtle part is ties. If one meeting ends at 5 and another starts at 5, does the line see both at once? For half-open meetings it should not, so
+  the end is processed first. Sorting events as <code>(time, change)</code> with <code>&minus;1</code> for ends does this automatically, because
+  &minus;1 sorts before +1.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 {{ 60 + 13 * sx }} {{ 40 + (meetings | length) * 22 + 130 }}" role="img" aria-labelledby="lc-sl-rooms-title lc-sl-rooms-desc">
+    <title id="lc-sl-rooms-title">Rooms in use as the sweep line moves</title>
+    <desc id="lc-sl-rooms-desc">
+      Meetings {% for s, e in meetings %}[{{ s }}, {{ e }}){{ ", " if not loop.last }}{% endfor %} as bars. Below them, the number of rooms in use after each event:
+      {% for t, c, n in rs.steps %}{{ n }} at time {{ t }}{{ ", " if not loop.last }}{% endfor %}. The peak, and so the rooms needed, is {{ rs.rooms }}.
+    </desc>
+    {% for t in range(0, 14) %}
+      <line x1="{{ 30 + t * sx }}" y1="24" x2="{{ 30 + t * sx }}" y2="{{ 40 + (meetings | length) * 22 + 90 }}" class="d-line" stroke-dasharray="2 4"></line>
+      <text x="{{ 30 + t * sx }}" y="16" font-size="11" text-anchor="middle" class="d-muted">{{ t }}</text>
+    {% endfor %}
+    {% for s, e in meetings %}
+      <rect x="{{ 30 + s * sx + 2 }}" y="{{ 30 + loop.index0 * 22 }}" width="{{ (e - s) * sx - 4 }}" height="15" rx="3" class="lc-fill-g"></rect>
+    {% endfor %}
+    {% set base = 40 + (meetings | length) * 22 + 90 %}
+    {% set unit = 26 %}
+    {% for t, c, n in rs.steps %}
+      {% if not loop.last %}
+        {% set nt = rs.steps[loop.index][0] %}
+        {% if nt > t and n > 0 %}
+          <rect x="{{ 30 + t * sx }}" y="{{ base - n * unit }}" width="{{ (nt - t) * sx }}" height="{{ n * unit }}"
+                class="{{ 'lc-fill-m' if n == rs.rooms else 'lc-fill-a' }}"></rect>
+          <text x="{{ 30 + t * sx + (nt - t) * sx / 2 }}" y="{{ base - n * unit - 5 }}" font-size="12" text-anchor="middle">{{ n }}</text>
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+    <line x1="30" y1="{{ base }}" x2="{{ 30 + 13 * sx }}" y2="{{ base }}" class="d-line"></line>
+    <text x="30" y="{{ base + 22 }}" font-size="11" class="d-muted">bars: rooms in use between events; amber = the peak, {{ rs.rooms }} rooms</text>
+  </svg>
+</div>
+<p class="lc-caption">
+  At time 5 one meeting ends and another starts. Ending first keeps the count at 3 instead of a false 4. The diagram scrolls sideways on a narrow screen.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="events">Counting with events</h3>
+<p>
+  Make the list of events <code>(start, +1)</code> and <code>(end, &minus;1)</code> for every interval and sort it. Walk it, adding each change to a running
+  count. <strong>Invariant:</strong> after processing every event at times &le; t, the count equals the number of intervals with
+  <code>start &le; t &lt; end</code>, which is exactly the intervals active just after t. Each interval contributes +1 once its start has passed and cancels
+  it once its end has passed, so the count is right. The rooms needed are the peak of the count: at the peak moment that many meetings overlap and need
+  separate rooms, and at no moment are more needed.
+</p>
+
+<h3 id="two-arrays">Two sorted arrays instead of one event list</h3>
+<p>
+  An equivalent trick sorts the start times and the end times as two separate lists and walks them with two pointers. When the next start is earlier than the
+  next end, a meeting begins (count up); otherwise one finishes (count down). Using <code>&lt;</code> rather than <code>&le;</code> processes ends first on ties. This
+  works because the count only depends on how many starts and how many ends have passed, not on which meeting they belong to.
+</p>
+
+<h3 id="heap">A heap of end times</h3>
+<p>
+  When you need to know which intervals are active, keep them in a <a href="{{ url_for('leetcode', slug='heaps') }}">min-heap</a> keyed by end time. Process
+  intervals in start order; before adding one, pop every end time &le; its start, since those meetings are over and their rooms are free. The heap's size is
+  the number of rooms in use, and its largest size is the answer. This is the same sweep, but the heap remembers each active interval.
+</p>
+
+<h3 id="difference">Difference arrays</h3>
+<p>
+  When coordinates are small integers, skip the sort: write <code>+k</code> at each start and <code>&minus;k</code> at each end into an array indexed by
+  position, then take <a href="{{ url_for('leetcode', slug='prefix-sums') }}">prefix sums</a>. The running sum at position x is the total load over x. Every
+  interval costs O(1), and one pass rebuilds the whole profile.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 {{ 60 + (cp.load | length) * 52 }} 230" role="img" aria-labelledby="lc-sl-car-title lc-sl-car-desc">
+    <title id="lc-sl-car-title">Car pooling load from a difference array</title>
+    <desc id="lc-sl-car-desc">
+      Changes at locations 0 to {{ cp.load | length - 1 }}: {{ cp.change | join(", ") }}. Their running sums, the passengers in the car, are {{ cp.load | join(", ") }}.
+      The capacity line is at 5, and the load never goes above it.
+    </desc>
+    {% set floor = 170 %}
+    {% set unit = 22 %}
+    {% for delta in cp.change %}
+      {% set x = 30 + loop.index0 * 52 %}
+      <text x="{{ x + 22 }}" y="16" font-size="11" text-anchor="middle" class="d-muted">{{ "%+d" % delta if delta else "0" }}</text>
+      <rect x="{{ x }}" y="{{ floor - cp.load[loop.index0] * unit }}" width="44" height="{{ cp.load[loop.index0] * unit }}"
+            class="{{ 'lc-fill-m' if cp.load[loop.index0] == 5 else 'lc-fill-a' }}"></rect>
+      <text x="{{ x + 22 }}" y="{{ floor - cp.load[loop.index0] * unit - 5 }}" font-size="12" text-anchor="middle">{{ cp.load[loop.index0] }}</text>
+      <text x="{{ x + 22 }}" y="{{ floor + 16 }}" font-size="11" text-anchor="middle" class="d-muted">{{ loop.index0 }}</text>
+    {% endfor %}
+    <line x1="24" y1="{{ floor - 5 * unit }}" x2="{{ 36 + (cp.load | length) * 52 }}" y2="{{ floor - 5 * unit }}" class="lc-r" stroke-dasharray="6 4"></line>
+    <text x="30" y="{{ floor + 38 }}" font-size="11" class="d-muted">top row: change written at each location; bars: running sum = passengers aboard</text>
+    <text x="30" y="{{ floor + 54 }}" font-size="11" class="d-muted">red dashes: capacity 5; amber = exactly at capacity</text>
+  </svg>
+</div>
+<p class="lc-caption">
+  Each trip writes two numbers; the bars come from one left-to-right running sum. Passengers leave at their drop-off, so a drop-off and a pickup at the same place never overlap.
+</p>
+
+<h3 id="queries">Sweeping queries</h3>
+<p>
+  "For each point q, what is the smallest interval containing q?" Sort the queries and the intervals by start. For each query in increasing order, push every
+  interval with <code>start &le; q</code> onto a heap keyed by length, then pop from the top while the top's end is <code>&lt; q</code>. Popping is safe
+  because queries only increase, so an interval that ended before this query can never contain a later one. Intervals that ended but are not on top stay
+  in the heap (lazy deletion) and are discarded only when they surface. Answers are written back to each query's original index.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  <strong>Rooms by events.</strong> For meetings {% for s, e in meetings %}[{{ s }}, {{ e }}){{ ", " if not loop.last }}{% endfor %}:
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Time</th><th>Event</th><th>Rooms in use</th></tr></thead>
+    <tbody>
+      {% for t, c, n in rs.steps %}
+        <tr><td class="num">{{ t }}</td><td>{{ "start" if c > 0 else "end" }}</td><td class="num">{{ n }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>The peak is {{ rs.rooms }}, so {{ rs.rooms }} rooms are needed.</p>
+
+<p><strong>Rooms by heap.</strong> The same meetings in start order, with the end times still occupying rooms:</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Meeting</th><th>Freed</th><th>End times in the heap</th></tr></thead>
+    <tbody>
+      {% for row in rh.rows %}
+        <tr><td class="num">[{{ row.meeting[0] }}, {{ row.meeting[1] }})</td><td>{{ row.freed | join(", ") if row.freed else "none" }}</td><td>{{ row.heap | join(", ") }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>The heap never holds more than {{ rh.rooms }} end times, matching the event count.</p>
+
+<p>
+  <strong>Car pooling.</strong> Trips (passengers, pickup, drop-off) {% for p, s, e in trips %}({{ p }}, {{ s }}, {{ e }}){{ ", " if not loop.last }}{% endfor %}
+  write the changes <code>{{ cp.change | join(", ") }}</code>, whose running sums are <code>{{ cp.load | join(", ") }}</code>. With 5 seats the trips
+  {{ "fit" if cp.fits else "do not fit" }}; with 4 seats the load first goes over at location {{ cp_tight.first_over }}.
+</p>
+
+<p>
+  <strong>Employee free time.</strong> All busy intervals in start order are {% for s, e in ft.busy %}[{{ s }}, {{ e }}]{{ ", " if not loop.last }}{% endfor %}. They merge to
+  {% for s, e in ft.merged %}[{{ s }}, {{ e }}]{{ ", " if not loop.last }}{% endfor %}, so everyone is free during
+  {% for s, e in ft.free %}[{{ s }}, {{ e }}]{{ " and " if not loop.last }}{% endfor %}.
+</p>
+
+<p>
+  <strong>Smallest interval per query.</strong> Intervals {% for s, e in spans %}[{{ s }}, {{ e }}]{{ ", " if not loop.last }}{% endfor %} (length = end &minus; start + 1),
+  queries {{ asks | join(", ") }} visited in sorted order:
+</p>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Query</th><th>Pushed</th><th>Popped (ended)</th><th>Smallest length</th></tr></thead>
+    <tbody>
+      {% for row in mq.rows %}
+        <tr>
+          <td class="num">{{ row.query }}</td>
+          <td>{% for s, e in row.added %}[{{ s }}, {{ e }}]{{ " " if not loop.last }}{% else %}none{% endfor %}</td>
+          <td>{% for s, e in row.dropped %}[{{ s }}, {{ e }}]{{ " " if not loop.last }}{% else %}none{% endfor %}</td>
+          <td class="num">{{ row.answer }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  In the original query order the answers are <code>{{ mq.answers | join(", ") }}</code>. At query 7, [2, 5] has already ended but stays in the heap
+  because [7, 7] is on top; it is popped later, at query 9.
+</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>def min_rooms(meetings):
+    events = []
+    for start, end in meetings:
+        events.append((start, 1))
+        events.append((end, -1))
+    events.sort()                 # (t, -1) before (t, 1): a room is freed before it is reused
+    rooms = best = 0
+    for _, change in events:
+        rooms += change
+        best = max(best, rooms)
+    return best</code></pre>
+
+<h3 id="variations">Variations and edge cases</h3>
+<pre><code>import heapq
+
+
+def min_rooms_heap(meetings):
+    ends = []
+    for start, end in sorted(meetings):
+        if ends and ends[0] &lt;= start:
+            heapq.heapreplace(ends, end)
+        else:
+            heapq.heappush(ends, end)
+    return len(ends)
+
+
+def car_pooling(trips, capacity):
+    change = [0] * (max(end for _, _, end in trips) + 1)
+    for passengers, start, end in trips:
+        change[start] += passengers
+        change[end] -= passengers
+    load = 0
+    for delta in change:
+        load += delta
+        if load &gt; capacity:
+            return False
+    return True
+
+
+def smallest_containing(intervals, queries):
+    intervals = sorted(intervals)
+    heap, i, answers = [], 0, {}
+    for q in sorted(set(queries)):
+        while i &lt; len(intervals) and intervals[i][0] &lt;= q:
+            start, end = intervals[i]
+            heapq.heappush(heap, (end - start + 1, end))
+            i += 1
+        while heap and heap[0][1] &lt; q:
+            heapq.heappop(heap)
+        answers[q] = heap[0][0] if heap else -1
+    return [answers[q] for q in queries]</code></pre>
+<ul>
+  <li><strong>Tie order.</strong> Sorting <code>(time, +1)</code> before <code>(time, &minus;1)</code> over-counts back-to-back meetings. Closed intervals, where touching ones do overlap, need the opposite order.</li>
+  <li><strong>The heap answer is its size at the end.</strong> In <code>min_rooms_heap</code> the heap only grows when no room is free, so its final size is the peak. If you pop several ended meetings per step, track the maximum size instead.</li>
+  <li><strong>Big coordinates.</strong> A difference array over times up to 10<sup>9</sup> is too large; sort the events or compress the coordinates first.</li>
+  <li><strong>Repeated queries.</strong> Answer each distinct query once and map back, or keep the original indices as the helper on this page does.</li>
+  <li><strong>Drop-off at the end index.</strong> In car pooling the passengers leave at <code>end</code>, so the change goes at <code>end</code>, not <code>end + 1</code>; for closed ranges it would be <code>end + 1</code>.</li>
+</ul>
+
+<h2 id="tradeoffs">Complexity and tradeoffs</h2>
+
+<ul>
+  <li><strong>Event sweep:</strong> O(n log n) to sort 2n events, O(n) space.</li>
+  <li><strong>Heap of end times:</strong> O(n log n) time, O(n) space in the worst case; it costs a little more than counting but knows which intervals are active.</li>
+  <li><strong>Difference array:</strong> O(n + C) time and O(C) space for coordinates up to C; no sort at all, which beats the sweep when C is small.</li>
+  <li><strong>Query sweep:</strong> O((n + q) log n) after sorting both, against O(n &middot; q) for checking every interval for every query.</li>
+  <li><strong>When it is the wrong tool.</strong> If intervals and queries arrive online and interleaved, there is no global order to sweep; use a balanced
+    tree, a segment tree or a Fenwick tree over compressed coordinates. If you only need coverage, plain merging is simpler.</li>
+</ul>
+
+<h2 id="problems">Problems</h2>
+
+<p>
+  Meeting Rooms II is the canonical sweep: solve it with events, with two sorted arrays and with a heap. Car Pooling is the difference-array form. The two
+  Hard problems combine the sweep with merging (free time) and with a heap that answers sorted queries.
+</p>
+{% include "leetcode/_problems.html" %}
+
+<h2 id="connections">Connections</h2>
+
+{% include "leetcode/_connections.html" %}
+<p>
+  The difference array is <a href="{{ url_for('leetcode', slug='prefix-sums') }}">prefix sums</a> run backwards: write changes, then integrate. Employee Free Time can also be solved
+  as a <a href="{{ url_for('leetcode', slug='k-way-merge') }}">k-way merge</a> of each employee's already-sorted schedule. Processing items in sorted order while a heap holds the
+  candidates is the same shape as the <a href="{{ url_for('leetcode', slug='two-heaps') }}">two-heaps</a> IPO problem, and the event sweep is the one-dimensional case of the
+  sweep-line algorithms of computational geometry.
+</p>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="lc-quiz">
+  <summary>Why is the number of rooms equal to the peak of the running count?</summary>
+  <p>At the peak moment that many meetings are in progress, so at least that many rooms are needed. And that many suffice: no more than the peak are ever active together, so a starting meeting can always take a room freed by one that has ended.</p>
+</details>
+<details class="lc-quiz">
+  <summary>In the example, what would the count reach at time 5 if starts were processed before ends?</summary>
+  <p>4: the meeting starting at 5 would be counted while the one ending at 5 was still counted. The correct order gives {{ rs.rooms }}.</p>
+</details>
+<details class="lc-quiz">
+  <summary>Why can the query sweep pop an interval forever once its end is before the current query?</summary>
+  <p>Queries are visited in increasing order, so every later query is larger still and lies after that interval too. In the example, [7, 7] is popped at query 9 and never needed again.</p>
+</details>
+<details class="lc-quiz">
+  <summary>When would you choose a difference array over sorting events?</summary>
+  <p>When coordinates are small integers, as in car pooling: O(n + C) with no sort. With coordinates up to 10<sup>9</sup> the array would be too big, so sort the events instead.</p>
+</details>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Cormen, Leiserson, Rivest and Stein, <em>Introduction to Algorithms</em>, 3rd edition, section 33.2 on sweeping in computational geometry, and exercise 16.1-4 on scheduling activities into the fewest lecture halls (the rooms problem).</li>
+  <li>Shamos, M. I. and Hoey, D., "Geometric intersection problems", <em>17th Symposium on Foundations of Computer Science</em>, 1976, which introduced the sweep-line technique.</li>
+  <li>Skiena, S., <em>The Algorithm Design Manual</em>, section 4.1 on applications of sorting and the catalog's computational geometry chapter.</li>
+  <li>Sedgewick and Wayne, <em>Algorithms</em>, section 2.4 on priority queues.</li>
+  <li>The <a href="https://neetcode.io/roadmap" rel="noopener">NeetCode roadmap</a> and the
+    Blind 75, Grind 169, NeetCode 150 and NeetCode 250 lists, used as the index of topics and
+    problems.</li>
+</ul>
