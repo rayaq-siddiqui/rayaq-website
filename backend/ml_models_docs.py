@@ -5568,6 +5568,154 @@ def pixelcnn_dependencies(layers, size=7, kernel=3):
     return {"grid": grid, "target": target, "seen": len(seen), "blind": sum(row.count("blind") for row in grid)}
 
 
+BPE_CORPUS = {"low": 5, "lower": 2, "newest": 6, "widest": 3}
+BPE_END = "</w>"
+TOKEN_TEXTS = ["cat", "café", "猫", "🐈"]
+UNIGRAM_PIECES = {
+    "l": 0.04, "o": 0.04, "w": 0.04, "e": 0.06, "s": 0.04, "t": 0.04,
+    "lo": 0.05, "low": 0.12, "we": 0.03, "est": 0.10, "es": 0.05, "west": 0.02, "lowe": 0.01,
+}
+
+
+def _merge_word(word, pair):
+    merged, i = [], 0
+    while i < len(word):
+        if i + 1 < len(word) and (word[i], word[i + 1]) == pair:
+            merged.append(word[i] + word[i + 1])
+            i += 2
+        else:
+            merged.append(word[i])
+            i += 1
+    return tuple(merged)
+
+
+def _pair_counts(words):
+    pairs = {}
+    for word, count in words.items():
+        for pair in zip(word, word[1:]):
+            pairs[pair] = pairs.get(pair, 0) + count
+    return pairs
+
+
+def _bpe_words(word_counts):
+    return {tuple(w) + (BPE_END,): c for w, c in word_counts.items()}
+
+
+def bpe_train(word_counts=BPE_CORPUS, merges=10):
+    words = _bpe_words(word_counts)
+    vocab = sorted({s for w in words for s in w})
+    steps = []
+    for _ in range(merges):
+        pairs = _pair_counts(words)
+        if not pairs:
+            break
+        best = max(pairs, key=pairs.get)
+        words = {_merge_word(w, best): c for w, c in words.items()}
+        vocab.append(best[0] + best[1])
+        steps.append({
+            "pair": best,
+            "count": pairs[best],
+            "vocab_size": len(vocab),
+            "tokens": sum(len(w) * c for w, c in words.items()),
+        })
+    start = _bpe_words(word_counts)
+    return {
+        "base": sorted({s for w in start for s in w}),
+        "start_tokens": sum(len(w) * c for w, c in start.items()),
+        "steps": steps,
+        "words": words,
+    }
+
+
+def bpe_encode(word, merges):
+    tokens = tuple(word) + (BPE_END,)
+    for pair in merges:
+        tokens = _merge_word(tokens, pair)
+    return list(tokens)
+
+
+def _unigram_log_likelihood(words):
+    counts = {}
+    for word, c in words.items():
+        for unit in word:
+            counts[unit] = counts.get(unit, 0) + c
+    total = sum(counts.values())
+    return sum(n * math.log(n / total) for n in counts.values())
+
+
+def wordpiece_gains(word_counts=BPE_CORPUS):
+    words = _bpe_words(word_counts)
+    base = _unigram_log_likelihood(words)
+    rows = []
+    for pair, count in _pair_counts(words).items():
+        merged = {_merge_word(w, pair): c for w, c in words.items()}
+        rows.append({"pair": pair, "count": count, "gain": _unigram_log_likelihood(merged) - base})
+    return sorted(rows, key=lambda r: -r["gain"])
+
+
+def unigram_segmentations(word, pieces=UNIGRAM_PIECES):
+    results = []
+
+    def walk(start, path):
+        if start == len(word):
+            results.append(path)
+            return
+        for end in range(start + 1, len(word) + 1):
+            if word[start:end] in pieces:
+                walk(end, path + [word[start:end]])
+
+    walk(0, [])
+    rows = [{"pieces": p, "log_prob": sum(math.log(pieces[x]) for x in p)} for p in results]
+    rows.sort(key=lambda r: -r["log_prob"])
+    total = sum(math.exp(r["log_prob"]) for r in rows)
+    for r in rows:
+        r["share"] = math.exp(r["log_prob"]) / total
+    return rows
+
+
+def unigram_viterbi(word, pieces=UNIGRAM_PIECES):
+    best = [(0.0, [])] + [(-math.inf, None)] * len(word)
+    for end in range(1, len(word) + 1):
+        for start in range(end):
+            piece = word[start:end]
+            if piece in pieces and best[start][1] is not None:
+                score = best[start][0] + math.log(pieces[piece])
+                if score > best[end][0]:
+                    best[end] = (score, best[start][1] + [piece])
+    return {"pieces": best[-1][1], "log_prob": best[-1][0]}
+
+
+def utf8_lengths(texts=TOKEN_TEXTS):
+    return [
+        {"text": t, "chars": len(t), "bytes": list(t.encode("utf-8")), "byte_count": len(t.encode("utf-8"))}
+        for t in texts
+    ]
+
+
+def digit_groups(number, group=3, from_right=False):
+    digits = str(number)
+    if not from_right:
+        return [digits[i:i + group] for i in range(0, len(digits), group)]
+    head = len(digits) % group
+    return ([digits[:head]] if head else []) + [digits[i:i + group] for i in range(head, len(digits), group)]
+
+
+def batch_ids(sentences, specials=("<pad>", "<bos>", "<eos>")):
+    vocab = {s: i for i, s in enumerate(specials)}
+    for sentence in sentences:
+        for token in sentence.split():
+            vocab.setdefault(token, len(vocab))
+    pad, bos, eos = (vocab[s] for s in specials)
+    rows = [[bos] + [vocab[t] for t in s.split()] + [eos] for s in sentences]
+    width = max(len(r) for r in rows)
+    return {
+        "vocab": vocab,
+        "ids": [r + [pad] * (width - len(r)) for r in rows],
+        "mask": [[1] * len(r) + [0] * (width - len(r)) for r in rows],
+        "targets": [r[1:] + [-100] * (width - len(r)) for r in rows],
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -5973,6 +6121,16 @@ def render(slug, render_template):
         "wavenet_receptive_fields": wavenet_receptive_fields,
         "pixelcnn_mask": pixelcnn_mask,
         "pixelcnn_dependencies": pixelcnn_dependencies,
+        "bpe_corpus": BPE_CORPUS,
+        "bpe_train": bpe_train,
+        "bpe_encode": bpe_encode,
+        "wordpiece_gains": wordpiece_gains,
+        "unigram_pieces": UNIGRAM_PIECES,
+        "unigram_segmentations": unigram_segmentations,
+        "unigram_viterbi": unigram_viterbi,
+        "utf8_lengths": utf8_lengths,
+        "digit_groups": digit_groups,
+        "batch_ids": batch_ids,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

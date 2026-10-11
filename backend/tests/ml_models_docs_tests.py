@@ -2527,3 +2527,62 @@ def test_pixelcnn_masks_and_blind_spot():
     assert result["blind"] == 3
     assert grid[3][6] == grid[4][5] == grid[4][6] == "blind"
     assert all(cell == "far" for cell in grid[0])
+
+
+def test_bpe_merges_the_most_frequent_pair_each_step():
+    result = ml_models_docs.bpe_train(merges=10)
+    steps = result["steps"]
+
+    assert result["start_tokens"] == 95
+    assert [s["pair"] for s in steps[:5]] == [("e", "s"), ("es", "t"), ("est", "</w>"), ("l", "o"), ("lo", "w")]
+    assert [s["count"] for s in steps[:3]] == [9, 9, 9]
+    previous = result["start_tokens"]
+    for step in steps:
+        assert previous - step["tokens"] == step["count"]
+        previous = step["tokens"]
+    assert steps[-1]["vocab_size"] == len(result["base"]) + 10
+
+
+def test_bpe_encodes_unseen_words_from_learned_merges():
+    merges = [s["pair"] for s in ml_models_docs.bpe_train(merges=10)["steps"]]
+
+    assert ml_models_docs.bpe_encode("lowest", merges) == ["low", "est</w>"]
+    assert ml_models_docs.bpe_encode("newer", merges) == ["new", "e", "r", "</w>"]
+    assert ml_models_docs.bpe_encode("low", merges) == ["low</w>"]
+
+
+def test_wordpiece_picks_the_largest_likelihood_gain():
+    rows = ml_models_docs.wordpiece_gains()
+
+    assert rows[0]["pair"] == ("s", "t")
+    assert rows == sorted(rows, key=lambda r: -r["gain"])
+    bpe_first = ml_models_docs.bpe_train(merges=1)["steps"][0]["pair"]
+    assert bpe_first != rows[0]["pair"]
+
+
+def test_unigram_viterbi_finds_the_most_likely_segmentation():
+    rows = ml_models_docs.unigram_segmentations("lowest")
+    best = ml_models_docs.unigram_viterbi("lowest")
+
+    assert len(rows) == 14
+    assert best["pieces"] == rows[0]["pieces"] == ["low", "est"]
+    assert math.isclose(best["log_prob"], math.log(0.12) + math.log(0.10))
+    assert math.isclose(sum(r["share"] for r in rows), 1.0)
+    assert all("".join(r["pieces"]) == "lowest" for r in rows)
+
+
+def test_utf8_lengths_and_digit_groups():
+    rows = {r["text"]: r for r in ml_models_docs.utf8_lengths()}
+
+    assert [rows[t]["byte_count"] for t in ["cat", "café", "猫", "🐈"]] == [3, 5, 3, 4]
+    assert rows["café"]["bytes"][-2:] == [195, 169]
+    assert ml_models_docs.digit_groups(12345) == ["123", "45"]
+    assert ml_models_docs.digit_groups(1234567, from_right=True) == ["1", "234", "567"]
+
+
+def test_batch_ids_pad_mask_and_shift_targets():
+    batch = ml_models_docs.batch_ids(["the cat sat", "the dog"])
+
+    assert batch["ids"] == [[1, 3, 4, 5, 2], [1, 3, 6, 2, 0]]
+    assert batch["mask"] == [[1, 1, 1, 1, 1], [1, 1, 1, 1, 0]]
+    assert batch["targets"] == [[3, 4, 5, 2], [3, 6, 2, -100]]
