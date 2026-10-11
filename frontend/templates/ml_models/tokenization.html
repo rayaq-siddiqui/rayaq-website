@@ -1,0 +1,382 @@
+{% set bpe = bpe_train(bpe_corpus, 10) %}
+{% set merges = bpe.steps|map(attribute="pair")|list %}
+{% set wp = wordpiece_gains(bpe_corpus) %}
+{% set segs = unigram_segmentations("lowest") %}
+{% set best = unigram_viterbi("lowest") %}
+{% set texts = utf8_lengths() %}
+{% set batch = batch_ids(["the cat sat", "the dog"]) %}
+{% macro toks(items) -%}{% for t in items %}<code>{{ t }}</code>{% if not loop.last %} · {% endif %}{% endfor %}{%- endmacro %}
+{% macro pair(p) -%}<code>{{ p[0] }}</code> + <code>{{ p[1] }}</code>{%- endmacro %}
+<header class="jj-header">
+  <h1>Tokenization</h1>
+  <p class="tagline">
+    A language model never sees letters or words. It sees integers, each one the ID of a token from a
+    fixed vocabulary. Tokenization is the step that cuts text into those tokens. This page compares
+    characters, words and subwords, runs byte-pair encoding by hand on a tiny corpus, contrasts it with
+    WordPiece and the unigram model, and shows how the choice changes cost, arithmetic and fairness
+    across languages.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A neural network takes numbers. To feed it text we need a function from strings to sequences of
+  integers and back, so that each integer can index a row of an
+  <a href="/ml-models/embeddings">embedding table</a> and so that the model's output can be a
+  probability over a fixed list. The list must be small enough to fit (the embedding table and the
+  output layer are both vocabulary-sized) yet expressive enough that any text, including names, typos,
+  code and every language, can be written with it. Sequences should also be short, because a
+  <a href="/ml-models/transformer">Transformer's</a> cost grows with sequence length.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  There are three natural ways to cut text. <strong>Characters</strong> give a tiny vocabulary and never
+  meet an unknown symbol, but sequences are long and each token carries little meaning.
+  <strong>Words</strong> give short sequences, but the vocabulary is enormous and still misses new words
+  ("unfriendliest"), which become an unknown token. <strong>Subwords</strong> sit between: frequent words
+  are one token, rare words split into frequent pieces (<code>un</code> · <code>friend</code> ·
+  <code>li</code> · <code>est</code>). A subword tokenizer is learned from data: it keeps whatever
+  pieces let it write the training text compactly.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 250" role="img" aria-labelledby="tok-gran-title tok-gran-desc">
+    <title id="tok-gran-title">The same word at three granularities</title>
+    <desc id="tok-gran-desc">
+      The word lowest written as characters, six tokens l, o, w, e, s, t plus an end-of-word marker; as a
+      word, one token that is not in a vocabulary built from low, lower, newest and widest, so it becomes
+      unknown; and as subwords learned by BPE from that corpus, two tokens: low and est with the end marker.
+    </desc>
+    {% set rows = [("characters", "lowest"|list + ["</w>"], "ml-op"), ("words", ["<unk>"], "ml-dashed"), ("BPE subwords", bpe_encode("lowest", merges), "ml-tensor")] %}
+    {% for label, items, style in rows %}
+      {% set y = 30 + loop.index0 * 70 %}
+      <text x="10" y="{{ y + 24 }}" font-size="12">{{ label }}</text>
+      {% for t in items %}
+        <rect x="{{ 140 + loop.index0 * 72 }}" y="{{ y }}" width="64" height="36" rx="6" class="d-box {{ style }}"></rect>
+        <text x="{{ 172 + loop.index0 * 72 }}" y="{{ y + 23 }}" font-size="12" text-anchor="middle">{{ t }}</text>
+      {% endfor %}
+      <text x="690" y="{{ y + 24 }}" font-size="11" text-anchor="end" class="d-muted">{{ items|length }} token{{ "s" if items|length > 1 }}</text>
+    {% endfor %}
+    <text x="10" y="240" font-size="11" class="d-muted">"lowest" never appears in the corpus; BPE still writes it from pieces it learned</text>
+  </svg>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="bpe">Byte-pair encoding (BPE)</h3>
+<p>
+  BPE, adapted to word segmentation by Sennrich, Haddow and Birch, starts with every word split into
+  characters plus an end-of-word marker (written <code>&lt;/w&gt;</code> here). Then it repeats:
+  count every adjacent pair of symbols across the corpus, weighted by word frequency; merge the most
+  frequent pair into a new symbol everywhere; add that symbol to the vocabulary. The number of merges is
+  the one hyperparameter, and it sets the vocabulary size. The output is an ordered list of merges.
+  Encoding a new word replays those merges in the order they were learned, so a word the tokenizer never
+  saw still comes out as known pieces, down to single characters in the worst case.
+</p>
+
+<h3 id="wordpiece">WordPiece</h3>
+<p>
+  WordPiece (from Schuster and Nakajima's speech work, later used by Google's translation system and by
+  BERT) builds its vocabulary the same way, merge by merge, but chooses the merge that most increases the
+  likelihood of the training data under a unigram language model over the current units, not the most
+  frequent pair. Frequent pairs of rare units gain the most. BERT marks pieces that continue a word with
+  <code>##</code> (<code>play</code> · <code>##ing</code>) and encodes a word greedily, longest matching
+  piece first.
+</p>
+
+<h3 id="unigram">The unigram language model</h3>
+<p>
+  The unigram method (Kudo, 2018) works the other way round. It starts from a large set of candidate
+  pieces, gives each a probability, and treats a segmentation's probability as the product of its pieces'
+  probabilities. Encoding picks the most probable segmentation with the Viterbi algorithm. Training
+  alternates expectation-maximization over the piece probabilities with pruning the pieces whose removal
+  hurts the corpus likelihood least, keeping single characters so everything stays writable. Because it
+  defines a distribution over segmentations, it can also <em>sample</em> one, a regularizer Kudo calls
+  subword regularization. SentencePiece implements both BPE and unigram directly on raw text, treating
+  the space as an ordinary symbol (shown as <code>▁</code>), so no language-specific pre-splitting is
+  needed and decoding is lossless.
+</p>
+
+<h3 id="byte-level">Byte-level BPE</h3>
+<p>
+  Unicode has well over a hundred thousand characters, so even a character base vocabulary is large and
+  can still meet unseen characters. Byte-level BPE, used by GPT-2, runs BPE over the UTF-8 bytes of the
+  text instead. The base vocabulary is exactly 256 byte values, so there is no unknown token: any string
+  is some sequence of bytes. GPT-2's vocabulary has 50,257 entries: 256 bytes, 50,000 merges and one
+  end-of-text token. The price is that characters outside ASCII start as several tokens and only shrink
+  where the training data had enough of them to learn merges.
+</p>
+
+<h3 id="special-tokens">Special tokens</h3>
+<p>
+  Vocabularies reserve IDs for symbols that are not text: beginning and end of sequence (so the model
+  learns where to start and when to stop), padding (to make a batch rectangular), unknown (for
+  tokenizers that have one), separators and, in chat models, role markers. Padding needs care twice: its
+  embedding should not be trained (<code>nn.Embedding(padding_idx=…)</code> keeps that row fixed and out
+  of the gradient) and its positions must not count in the loss (<code>CrossEntropyLoss(ignore_index=-100)</code>).
+  The attention mask stops real tokens from attending to padding.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 260" role="img" aria-labelledby="tok-pipe-title tok-pipe-desc">
+    <title id="tok-pipe-title">From text to model input</title>
+    <desc id="tok-pipe-desc">
+      Two sentences pass through the tokenizer into IDs with beginning and end markers, then are padded to the
+      same length with ID 0. Below each ID row is its attention mask, ones for real tokens and zero for padding,
+      and the shifted training targets, with minus one hundred where the target is padding so the loss ignores it.
+      The IDs index rows of the embedding table.
+    </desc>
+    <g font-size="12">
+      <text x="10" y="24">ids</text>
+      <text x="10" y="134">mask</text>
+      <text x="10" y="214">targets</text>
+      {% for r in batch.ids %}{% set ri = loop.index0 %}
+        {% for v in r %}
+          <rect x="{{ 90 + loop.index0 * 56 }}" y="{{ 8 + ri * 44 }}" width="48" height="32" rx="5" class="d-box {{ 'ml-dashed' if v == 0 else 'ml-tensor' }}"></rect>
+          <text x="{{ 114 + loop.index0 * 56 }}" y="{{ 29 + ri * 44 }}" text-anchor="middle">{{ v }}</text>
+        {% endfor %}
+      {% endfor %}
+      {% for r in batch.mask %}{% set ri = loop.index0 %}
+        <text x="90" y="{{ 120 + ri * 22 }}" class="d-muted">{{ r|join("    ") }}</text>
+      {% endfor %}
+      {% for r in batch.targets %}{% set ri = loop.index0 %}
+        <text x="90" y="{{ 200 + ri * 22 }}" class="d-muted">{{ r|join("    ") }}</text>
+      {% endfor %}
+      <rect x="400" y="100" width="280" height="40" rx="6" class="d-box ml-op"></rect>
+      <text x="540" y="125" text-anchor="middle">nn.Embedding(V, d, padding_idx=0)</text>
+      <rect x="400" y="180" width="280" height="40" rx="6" class="d-box ml-op"></rect>
+      <text x="540" y="205" text-anchor="middle">CrossEntropyLoss(ignore_index=-100)</text>
+    </g>
+    <g class="d-line" fill="none" stroke-width="1.5">
+      <path d="M370 30 H540 V100"></path>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Vocabulary: {% for t, i in batch.vocab.items() %}{{ t }}={{ i }}{% if not loop.last %}, {% endif %}{% endfor %}. Targets are the IDs shifted one step left, for teacher forcing.</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>nn.Embedding</code></td>
+        <td><code>num_embeddings</code> = V, <code>embedding_dim</code> = d; weight <code>[V, d]</code></td>
+        <td>The table the token IDs index; its size is set by the tokenizer's vocabulary.</td>
+        <td><a href="{{ src('torch/nn/modules/sparse.py', 134, 177) }}"><code>Embedding.__init__</code></a></td>
+      </tr>
+      <tr>
+        <td><code>padding_idx</code></td>
+        <td>int, negative counts from the end</td>
+        <td>That row starts at zero and gets no gradient, so padding stays a fixed vector.</td>
+        <td><a href="{{ src('torch/nn/modules/sparse.py', 179, 186) }}"><code>_fill_padding_idx_with_zero</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Embedding.forward</code></td>
+        <td>IDs <code>[B, T]</code> → <code>[B, T, d]</code></td>
+        <td>A row lookup through <code>F.embedding</code>.</td>
+        <td><a href="{{ src('torch/nn/modules/sparse.py', 188, 197) }}">lines 188-197</a></td>
+      </tr>
+      <tr>
+        <td><code>F.embedding</code></td>
+        <td>input, weight, <code>padding_idx</code>, <code>max_norm</code></td>
+        <td>The functional lookup the module calls.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 2509, 2621) }}"><code>functional.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>CrossEntropyLoss(ignore_index)</code></td>
+        <td>default <code>-100</code></td>
+        <td>Target positions with this value add nothing to the loss: padding and other non-targets.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 1385, 1396) }}"><code>__init__</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-bpe">BPE on a toy corpus</h3>
+  <p>
+    Corpus word counts: {% for w, c in bpe_corpus.items() %}<em>{{ w }}</em> ×{{ c }}{% if not loop.last %}, {% endif %}{% endfor %}.
+    Split into characters plus <code>&lt;/w&gt;</code>, that is {{ bpe.start_tokens }} tokens over a base vocabulary of
+    {{ bpe.base|length }} symbols. Each merge takes the most frequent adjacent pair (ties go to the pair seen first):
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Merge</th><th>Pair</th><th>Count</th><th>Vocabulary</th><th>Corpus tokens</th></tr></thead>
+      <tbody>
+        {% for s in bpe.steps %}
+        <tr><td>{{ loop.index }}</td><td>{{ pair(s.pair) }}</td><td>{{ s.count }}</td><td>{{ s.vocab_size }}</td><td>{{ s.tokens }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Each merge shrinks the corpus by exactly its count. After 10 merges the words read
+    {% for w, c in bpe.words.items() %}{{ toks(w) }}{% if not loop.last %}; {% endif %}{% endfor %}.
+    Replaying the merges on words the corpus never had: <em>lowest</em> → {{ toks(bpe_encode("lowest", merges)) }},
+    <em>newer</em> → {{ toks(bpe_encode("newer", merges)) }}, <em>wider</em> → {{ toks(bpe_encode("wider", merges)) }}.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-wordpiece">WordPiece chooses differently</h3>
+  <p>
+    On the same starting corpus, the likelihood gain of each candidate first merge (change in the corpus
+    log-likelihood, in nats, under a unigram model over the units) ranks the pairs like this:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Pair</th><th>Count (BPE score)</th><th>Likelihood gain</th></tr></thead>
+      <tbody>
+        {% for r in wp[:6] %}
+        <tr><td>{{ pair(r.pair) }}</td><td>{{ r.count }}</td><td>{{ "%.2f"|format(r.gain) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    BPE's first merge is {{ pair(bpe.steps[0].pair) }} (count {{ bpe.steps[0].count }}); WordPiece's is
+    {{ pair(wp[0].pair) }}. Both have count 9, but <code>s</code> and <code>t</code> never appear apart here, so
+    merging them makes the unit counts much more predictable. <code>{{ wp[1].pair[0] }}</code> + <code>{{ wp[1].pair[1] }}</code>, with count {{ wp[1].count }},
+    beats several pairs of count 9 for the same reason.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-unigram">Unigram segmentation of "lowest"</h3>
+  <p>
+    With a toy piece vocabulary ({% for p, v in unigram_pieces.items() %}{{ p }} {{ v }}{% if not loop.last %}, {% endif %}{% endfor %}),
+    "lowest" has {{ segs|length }} segmentations. The most probable ones:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Segmentation</th><th>log p</th><th>Share of all segmentations</th></tr></thead>
+      <tbody>
+        {% for r in segs[:4] %}
+        <tr><td>{{ toks(r.pieces) }}</td><td>{{ "%.3f"|format(r.log_prob) }}</td><td>{{ "%.3f"|format(r.share) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Viterbi finds {{ toks(best.pieces) }} (log p = ln 0.12 + ln 0.10 = {{ "%.3f"|format(best.log_prob) }}) without listing
+    all {{ segs|length }}. Subword regularization would sample: about {{ "%.0f"|format(100 * segs[1].share) }}% of the
+    time it would train on {{ toks(segs[1].pieces) }} instead.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-bytes">Bytes, numbers and cost</h3>
+  <ul>
+    {% for t in texts %}
+    <li><strong>{{ t.text }}</strong>: {{ t.chars }} character{{ "s" if t.chars > 1 }}, {{ t.byte_count }} UTF-8 bytes [{{ t.bytes|join(", ") }}]</li>
+    {% endfor %}
+  </ul>
+  <p>
+    Before any merges, byte-level BPE spends 3 tokens on the one-character Chinese word for cat and 4 on the emoji.
+    Merges recover this only for scripts common in the training data, so the same sentence can cost several times
+    more tokens in one language than another, which means more compute, a higher price per request and less text
+    in the same context window.
+  </p>
+  <p>
+    Numbers have the same issue. Chunking digits into groups of three from the left gives 12345 → {{ toks(digit_groups(12345)) }}
+    but 1234 → {{ toks(digit_groups(1234)) }}: the token <code>123</code> means 12,300 in one and 1,230 in the other, so place value
+    is not visible from the token. Grouping from the right, 1234567 → {{ toks(digit_groups(1234567, 3, true)) }}, lines groups up with
+    thousands; splitting every digit makes every number position-consistent at the cost of longer sequences. Learned BPE merges
+    over digits give neither guarantee, one reason language models are clumsy at arithmetic.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>from collections import Counter
+
+def train_bpe(word_counts, num_merges):
+    words = {tuple(w) + ("&lt;/w&gt;",): c for w, c in word_counts.items()}
+    merges = []
+    for _ in range(num_merges):
+        pairs = Counter()
+        for word, c in words.items():
+            for a, b in zip(word, word[1:]):
+                pairs[a, b] += c
+        if not pairs:
+            break
+        best = max(pairs, key=pairs.get)       # most frequent pair
+        merges.append(best)
+        words = {merge(w, best): c for w, c in words.items()}
+    return merges
+
+def merge(word, pair):
+    out, i = [], 0
+    while i &lt; len(word):
+        if word[i:i + 2] == pair:
+            out.append(word[i] + word[i + 1]); i += 2
+        else:
+            out.append(word[i]); i += 1
+    return tuple(out)
+
+def encode(word, merges):
+    tokens = tuple(word) + ("&lt;/w&gt;",)
+    for pair in merges:                         # replay in learned order
+        tokens = merge(tokens, pair)
+    return tokens
+
+# into the model: ids [B, T] -&gt; vectors [B, T, d]
+import torch.nn as nn
+emb = nn.Embedding(num_embeddings=50257, embedding_dim=768, padding_idx=0)</code></pre>
+
+<p>
+  Production tokenizers apply merges by rank with a priority queue instead of looping over the whole merge list,
+  and pre-split text (on spaces, punctuation or character classes) before BPE so merges never cross those
+  boundaries. The vocabulary size and <code>num_embeddings</code> must match: an ID at or above it fails the lookup.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Vocabulary size.</strong> A bigger vocabulary means shorter sequences (cheaper attention, more text per
+    context window) but bigger embedding and output layers and rarer, less-trained tokens.</li>
+  <li><strong>BPE versus unigram.</strong> BPE is simple and deterministic. Unigram gives a probability for every
+    segmentation, enabling sampling as a regularizer; WordPiece sits between, merging by likelihood.</li>
+  <li><strong>Bytes versus characters.</strong> Byte-level vocabularies can write anything with no unknown token, but
+    non-Latin scripts start at 2-4 tokens per character.</li>
+  <li><strong>Fairness and cost.</strong> A tokenizer trained mostly on English text makes other languages longer, so
+    they pay more and fit less in context.</li>
+  <li><strong>Frozen choice.</strong> The tokenizer is fixed before training; changing it means retraining or at least
+    re-learning the embedding table. Its quirks (spaces attached to words, odd number splits) become the model's quirks.</li>
+</ul>
+
+<h3 id="check-yourself">Check yourself</h3>
+<details class="ml-quiz">
+  <summary>Why can a BPE tokenizer encode a word it never saw?</summary>
+  <p>Its base vocabulary contains every character (or every byte), and merges only ever combine existing symbols. In the worst case the word stays split into single characters or bytes.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does each merge shrink the corpus by exactly its count?</summary>
+  <p>Every occurrence of the pair turns two symbols into one, so the token count drops by the number of occurrences, the pair's weighted count ({{ bpe.steps[0].count }} for the first merge here). Overlapping pairs like <code>a a a</code> are the one exception: only non-overlapping occurrences merge.</p>
+</details>
+<details class="ml-quiz">
+  <summary>What two things must happen to padding tokens in training?</summary>
+  <p>They must not be attended to (the attention mask) and must not count in the loss (ignore_index); keeping their embedding fixed with padding_idx is a common extra.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Sennrich, Haddow and Birch. <em>Neural Machine Translation of Rare Words with Subword Units.</em> ACL, 2016 (<a href="https://arxiv.org/abs/1508.07909">arXiv 1508.07909</a>).</li>
+  <li>Kudo and Richardson. <em>SentencePiece: A simple and language independent subword tokenizer and detokenizer for Neural Text Processing.</em> EMNLP demo, 2018 (<a href="https://arxiv.org/abs/1808.06226">arXiv 1808.06226</a>).</li>
+  <li>Kudo. <em>Subword Regularization: Improving Neural Network Translation Models with Multiple Subword Candidates.</em> ACL, 2018 (<a href="https://arxiv.org/abs/1804.10959">arXiv 1804.10959</a>).</li>
+  <li>Schuster and Nakajima. <em>Japanese and Korean Voice Search.</em> ICASSP, 2012 (the original WordPiece).</li>
+  <li>Wu et al. <em>Google's Neural Machine Translation System: Bridging the Gap between Human and Machine Translation.</em> 2016 (<a href="https://arxiv.org/abs/1609.08144">arXiv 1609.08144</a>).</li>
+  <li>Devlin, Chang, Lee and Toutanova. <em>BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding.</em> NAACL, 2019 (<a href="https://arxiv.org/abs/1810.04805">arXiv 1810.04805</a>).</li>
+  <li>Radford, Wu, Child, Luan, Amodei and Sutskever. <em>Language Models are Unsupervised Multitask Learners</em> (GPT-2, byte-level BPE). OpenAI, 2019.</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/nn/modules/sparse.py', 14, 264) }}"><code>Embedding</code></a>, <a href="{{ src('torch/nn/functional.py', 2509, 2621) }}"><code>F.embedding</code></a>, <a href="{{ src('torch/nn/modules/loss.py', 1200, 1407) }}"><code>CrossEntropyLoss</code></a>.</li>
+</ul>

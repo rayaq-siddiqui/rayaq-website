@@ -902,7 +902,7 @@ PAGES = [
         "sources": [
             "pytorch:torch/nn/modules/sparse.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "embeddings",
