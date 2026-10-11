@@ -2698,3 +2698,40 @@ def test_reciprocal_rank_fusion():
     assert hybrid["lexical"] == ["d1", "d2"]
     assert hybrid["ranking"] == ["d1", "d2", "d3", "d4"]
     assert math.isclose(hybrid["scores"]["d1"], 1 / 61 + 1 / 62)
+
+
+def test_roofline_separates_matmul_from_elementwise_ops():
+    matmul, matvec, relu = ml_models_docs.gpu_op_examples(4096)
+    assert matmul["flops"] == 2 * 4096**3
+    assert matmul["bytes"] == 3 * 4096**2 * 4
+    assert matmul["bound"] == "compute"
+    assert matmul["attainable_flops"] == ml_models_docs.EXAMPLE_GPU["peak_flops"]
+    assert matvec["bound"] == "memory"
+    assert matvec["intensity"] == pytest.approx(0.5, abs=1e-3)
+    assert relu["intensity"] == 0.125
+    assert relu["bound"] == "memory"
+    assert relu["seconds"] == pytest.approx(4096**2 * 8 / 2e12)
+    assert matmul["ridge"] == 50
+    assert ml_models_docs.roofline_xy(1 / 16, 0.1e12) == (60, 260)
+    assert ml_models_docs.roofline_xy(1024, 100e12) == (620, 50)
+
+
+def test_fusion_and_tiling_cut_memory_traffic():
+    fusion = ml_models_docs.fusion_example(numel=1000, ops=3)
+    assert fusion["unfused"]["bytes"] == 3 * fusion["fused"]["bytes"]
+    assert fusion["speedup"] == pytest.approx(3)
+    traffic = [ml_models_docs.tiled_matmul_traffic(4096, tile) for tile in (1, 16, 128)]
+    assert traffic[0]["bytes"] == 2 * 4096**3 * 4
+    assert traffic[0]["bytes"] == 16 * traffic[1]["bytes"]
+    assert [row["intensity"] for row in traffic] == [0.25, 4.0, 32.0]
+
+
+def test_async_timeline_runs_ahead_of_the_gpu():
+    short = ml_models_docs.async_timeline([2] * 10, launch_us=5)
+    assert short["cpu_done"] == 50
+    assert short["total"] == 52
+    assert short["utilization"] == pytest.approx(20 / 52)
+    long = ml_models_docs.async_timeline([50] * 10, launch_us=5)
+    assert long["cpu_done"] == 50
+    assert long["total"] == 505
+    assert long["rows"][1] == {"issued": 10, "start": 55, "end": 105}

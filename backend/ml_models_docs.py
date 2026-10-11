@@ -6011,6 +6011,89 @@ def hybrid_example(k=60):
     return {"lexical": lexical, "dense": HYBRID_DENSE_RANKING, "k": k, **fused}
 
 
+EXAMPLE_GPU = {"peak_flops": 100e12, "bandwidth": 2e12}
+
+
+def roofline(flops, bytes_moved, gpu=EXAMPLE_GPU):
+    compute_seconds = flops / gpu["peak_flops"]
+    memory_seconds = bytes_moved / gpu["bandwidth"]
+    intensity = flops / bytes_moved
+    return {
+        "flops": flops,
+        "bytes": bytes_moved,
+        "intensity": intensity,
+        "ridge": gpu["peak_flops"] / gpu["bandwidth"],
+        "compute_seconds": compute_seconds,
+        "memory_seconds": memory_seconds,
+        "seconds": max(compute_seconds, memory_seconds),
+        "bound": "compute" if compute_seconds >= memory_seconds else "memory",
+        "attainable_flops": min(gpu["peak_flops"], intensity * gpu["bandwidth"]),
+    }
+
+
+def matmul_roofline(m, n, k, bytes_per_value=4, gpu=EXAMPLE_GPU):
+    flops = 2 * m * n * k
+    bytes_moved = (m * k + k * n + m * n) * bytes_per_value
+    return {"shape": (m, n, k), **roofline(flops, bytes_moved, gpu)}
+
+
+def elementwise_roofline(numel, flops_per_element=1, tensors_read=1, tensors_written=1, bytes_per_value=4, gpu=EXAMPLE_GPU):
+    flops = numel * flops_per_element
+    bytes_moved = numel * (tensors_read + tensors_written) * bytes_per_value
+    return {"numel": numel, **roofline(flops, bytes_moved, gpu)}
+
+
+def gpu_op_examples(size=4096):
+    return [
+        {"name": f"matmul {size}×{size} by {size}×{size}", **matmul_roofline(size, size, size)},
+        {"name": f"matrix-vector 1×{size} by {size}×{size}", **matmul_roofline(1, size, size)},
+        {"name": f"ReLU over {size}×{size}", **elementwise_roofline(size * size)},
+    ]
+
+
+def fusion_example(numel=4096 * 4096, ops=3, bytes_per_value=4, gpu=EXAMPLE_GPU):
+    unfused = roofline(ops * numel, ops * 2 * numel * bytes_per_value, gpu)
+    fused = roofline(ops * numel, 2 * numel * bytes_per_value, gpu)
+    return {"numel": numel, "ops": ops, "unfused": unfused, "fused": fused, "speedup": unfused["seconds"] / fused["seconds"]}
+
+
+def tiled_matmul_traffic(n, tile, bytes_per_value=4):
+    values_loaded = 2 * n**3 // tile
+    return {
+        "tile": tile,
+        "bytes": values_loaded * bytes_per_value,
+        "intensity": 2 * n**3 / (values_loaded * bytes_per_value),
+    }
+
+
+def roofline_xy(intensity, flops_per_second):
+    return (
+        60 + (math.log2(intensity) + 4) * 40,
+        260 - (math.log10(flops_per_second / 1e12) + 1) * 70,
+    )
+
+
+def async_timeline(kernel_us, launch_us=5):
+    rows = []
+    cpu = 0
+    gpu_end = 0
+    for duration in kernel_us:
+        issued = cpu + launch_us
+        start = max(issued, gpu_end)
+        rows.append({"issued": issued, "start": start, "end": start + duration})
+        cpu = issued
+        gpu_end = start + duration
+    busy = sum(kernel_us)
+    return {
+        "rows": rows,
+        "launch_us": launch_us,
+        "cpu_done": cpu,
+        "total": gpu_end,
+        "busy": busy,
+        "utilization": busy / gpu_end,
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -6446,6 +6529,12 @@ def render(slug, render_template):
         "bm25_scores": bm25_scores,
         "bm25_saturation": bm25_saturation,
         "hybrid_example": hybrid_example,
+        "example_gpu": EXAMPLE_GPU,
+        "gpu_op_examples": gpu_op_examples,
+        "fusion_example": fusion_example,
+        "tiled_matmul_traffic": tiled_matmul_traffic,
+        "async_timeline": async_timeline,
+        "roofline_xy": roofline_xy,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
