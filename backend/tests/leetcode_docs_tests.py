@@ -1848,3 +1848,44 @@ def test_fenwick_trees_helpers_match_the_page():
     assert "<td class=\"num\">4</td><td class=\"num\"><code>0100</code></td><td class=\"num\">1..4</td><td class=\"num\">22</td><td class=\"num\">29</td><td class=\"num\">8</td>" in body
     assert "<strong>[3, 0, 2, 0, 1, 2, 0, 0]</strong>" in body
     assert "<td class=\"num\">1000</td><td class=\"num\">9</td><td class=\"num\">10</td><td class=\"num\">10</td>" in body
+
+
+def test_string_matching_helpers_match_the_page():
+    assert [row["lps"] for row in leetcode_docs.failure_table("abcabd")] == [0, 0, 0, 1, 2, 0]
+    assert leetcode_docs.failure_table("abcabcabc")[-1]["lps"] == 6
+    for word in ["aabaaab", "abababca", "aaaa", "abcab"]:
+        for row in leetcode_docs.failure_table(word):
+            prefix = word[:row["i"] + 1]
+            assert row["lps"] == max(k for k in range(len(prefix)) if prefix[:k] == prefix[len(prefix) - k:])
+
+    kmp = leetcode_docs.kmp_search_trace("abcabcabd", "abcabd")
+    assert [(s["before"], s["fallbacks"], s["after"]) for s in kmp["steps"]][4:] == [
+        (4, [], 5), (5, [2], 3), (3, [], 4), (4, [], 5), (5, [], 0),
+    ]
+    assert kmp["matches"] == [3] and kmp["comparisons"] == 10
+    assert leetcode_docs.naive_search_comparisons("abcabcabd", "abcabd") == {"comparisons": 14, "matches": [3]}
+    for text, pattern in [("aaaaa", "aa"), ("abababab", "abab"), ("xyz", "q"), ("abcabcabd", "abcabd")]:
+        expected = [i for i in range(len(text) - len(pattern) + 1) if text[i:i + len(pattern)] == pattern]
+        assert leetcode_docs.kmp_search_trace(text, pattern)["matches"] == expected
+        assert leetcode_docs.naive_search_comparisons(text, pattern)["matches"] == expected
+
+    costs = leetcode_docs.string_search_costs([[10, 3], [100, 10], [1000, 10], [1000, 100]])
+    assert [(r["naive"], r["kmp"]) for r in costs] == [(24, 18), (910, 191), (9910, 1991), (90100, 1901)]
+    assert all(r["kmp"] <= 2 * r["n"] for r in costs)
+
+    rk = leetcode_docs.rabin_karp_trace("bcabdadcab", "abd", 26, 11)
+    assert rk["target"] == 6 and rk["high"] == 5
+    assert [w["hash"] for w in rk["windows"]] == [1, 10, 6, 5, 6, 2, 0, 10]
+    assert rk["matches"] == [2] and rk["collisions"] == [4]
+    for w in rk["windows"]:
+        direct = 0
+        for ch in w["window"]:
+            direct = (direct * 26 + ord(ch) - ord("a") + 1) % 11
+        assert w["hash"] == direct
+
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/string-matching").get_data(as_text=True))
+    assert "<td class=\"num\">5</td><td><code>c</code></td><td class=\"num\">5</td><td class=\"num\">j &rarr; 2</td><td class=\"num\">3</td>" in body
+    assert "KMP makes 10 character comparisons and the naive method 14" in body
+    assert "<td class=\"num\">4</td><td><code>dad</code></td><td class=\"num\">6</td><td>hash hit, characters differ: collision</td>" in body
+    assert "<td class=\"num\">1000</td><td class=\"num\">100</td><td class=\"num\">90100</td><td class=\"num\">1901</td><td class=\"num\">2000</td>" in body
+    assert "Its last entry is 6, the border <code>abcabc</code>" in body

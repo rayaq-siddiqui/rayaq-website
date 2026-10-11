@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-11 (build run). 56 of 58 pages are ready. **The next run is a build run** continuing at `string-matching`.
+**Last updated:** 2026-10-11 (build run). 57 of 58 pages are ready. **The next run is a build run**: it builds `bitmask-dp`, the last queue item, and the run after that is the first audit run.
 
 ## The Routine
 
@@ -105,8 +105,8 @@ build once research is done.
 54. `interview-approach` ✓
 55. `segment-trees` ✓
 56. `fenwick-trees` ✓
-57. `string-matching` ← next
-58. `bitmask-dp`
+57. `string-matching` ✓
+58. `bitmask-dp` ← next
 
 ## Decisions
 
@@ -321,4 +321,10 @@ every ready page. Then built `fenwick-trees` the same way: `fenwick_tree_of`,
 `fenwick_prefix_trace`, `fenwick_update_trace`, `fenwick_count_smaller_trace` and
 `fenwick_costs`, each checked against brute force, with both diagrams drawn as bars over the
 positions each slot sums. A row key named `update` rendered as the dict method in Jinja; it is
-now `updates`. Next: `string-matching`.
+now `updates`. Last, built `string-matching`: `failure_table`, `kmp_search_trace`,
+`naive_search_comparisons`, `string_search_costs` and `rabin_karp_trace` (base 26, modulus
+11, small enough to show a collision), with KMP, Rabin–Karp and Z-array code, an alignment
+diagram of the KMP slide, and a rolling-hash diagram. Three of three queue items built.
+Coverage is unchanged at 100% on all four lists (Blind 75 75/75, Grind 169 169/169,
+NeetCode 150 150/150, NeetCode 250 250/250). Mobile check passed on `/`, `/leetcode` and
+every ready page. Next: `bitmask-dp`.

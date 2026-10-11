@@ -305,7 +305,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy", "kadanes-algorithm", "interval-merging", "sweep-line", "matrix-manipulation", "number-math", "bit-manipulation", "interview-approach", "segment-trees", "fenwick-trees"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy", "kadanes-algorithm", "interval-merging", "sweep-line", "matrix-manipulation", "number-math", "bit-manipulation", "interview-approach", "segment-trees", "fenwick-trees", "string-matching"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -7268,6 +7268,88 @@ def fenwick_costs(sizes):
     return rows
 
 
+def failure_table(pattern):
+    """KMP's failure function: for each prefix of the pattern, the length of its longest proper prefix that is also a suffix."""
+    lps = [0] * len(pattern)
+    length = 0
+    for i in range(1, len(pattern)):
+        while length and pattern[i] != pattern[length]:
+            length = lps[length - 1]
+        if pattern[i] == pattern[length]:
+            length += 1
+        lps[i] = length
+    return [{"i": i, "char": ch, "lps": lps[i], "border": pattern[:lps[i]]} for i, ch in enumerate(pattern)]
+
+
+def kmp_search_trace(text, pattern):
+    """One row per text character: j is how much of the pattern is matched before it, each fallback j = lps[j - 1] on a mismatch, and j after it."""
+    lps = [row["lps"] for row in failure_table(pattern)]
+    steps, matches, comparisons, j = [], [], 0, 0
+    for i, ch in enumerate(text):
+        before, fallbacks = j, []
+        while True:
+            comparisons += 1
+            if ch == pattern[j]:
+                j += 1
+                break
+            if j == 0:
+                break
+            j = lps[j - 1]
+            fallbacks.append(j)
+        match = None
+        if j == len(pattern):
+            match = i - j + 1
+            matches.append(match)
+            j = lps[j - 1]
+        steps.append({"i": i, "char": ch, "before": before, "fallbacks": fallbacks, "after": j, "match": match})
+    return {"steps": steps, "matches": matches, "comparisons": comparisons}
+
+
+def naive_search_comparisons(text, pattern):
+    """Character comparisons made by checking every start and stopping at the first mismatch."""
+    comparisons, matches = 0, []
+    for start in range(len(text) - len(pattern) + 1):
+        for k, ch in enumerate(pattern):
+            comparisons += 1
+            if text[start + k] != ch:
+                break
+        else:
+            matches.append(start)
+    return {"comparisons": comparisons, "matches": matches}
+
+
+def string_search_costs(cases):
+    """Comparisons for naive search against KMP on texts of n a's with a pattern of m - 1 a's then b, the naive method's worst case."""
+    rows = []
+    for n, m in cases:
+        text, pattern = "a" * n, "a" * (m - 1) + "b"
+        rows.append({"n": n, "m": m, "naive": naive_search_comparisons(text, pattern)["comparisons"],
+                     "kmp": kmp_search_trace(text, pattern)["comparisons"]})
+    return rows
+
+
+def rabin_karp_trace(text, pattern, base=26, mod=11):
+    """Rolling hashes of every window, letters valued a = 1 onward. A matching hash is only a candidate; comparing the characters tells a real match from a collision."""
+    m = len(pattern)
+    value = {ch: ord(ch) - ord("a") + 1 for ch in set(text + pattern)}
+    high = pow(base, m - 1, mod)
+    target = 0
+    for ch in pattern:
+        target = (target * base + value[ch]) % mod
+    windows, h = [], 0
+    for ch in text[:m]:
+        h = (h * base + value[ch]) % mod
+    for start in range(len(text) - m + 1):
+        if start:
+            h = ((h - value[text[start - 1]] * high) * base + value[text[start + m - 1]]) % mod
+        window = text[start:start + m]
+        windows.append({"start": start, "window": window, "hash": h,
+                        "candidate": h == target, "match": h == target and window == pattern})
+    return {"target": target, "windows": windows, "high": high,
+            "matches": [w["start"] for w in windows if w["match"]],
+            "collisions": [w["start"] for w in windows if w["candidate"] and not w["match"]]}
+
+
 def problem_url(slug):
     return f"https://leetcode.com/problems/{slug}/"
 
@@ -7603,6 +7685,11 @@ def render(slug, render_template):
         "fenwick_update_trace": fenwick_update_trace,
         "fenwick_count_smaller_trace": fenwick_count_smaller_trace,
         "fenwick_costs": fenwick_costs,
+        "failure_table": failure_table,
+        "kmp_search_trace": kmp_search_trace,
+        "naive_search_comparisons": naive_search_comparisons,
+        "string_search_costs": string_search_costs,
+        "rabin_karp_trace": rabin_karp_trace,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,
