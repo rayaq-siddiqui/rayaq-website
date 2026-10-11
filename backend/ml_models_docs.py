@@ -6257,6 +6257,183 @@ def master_weight_example(weight=1.0, update=1e-4, steps=100):
     }
 
 
+QUANT_EPS = 2.0**-23
+
+QUANT_RANGES = {
+    "qint8": (-128, 127),
+    "quint8": (0, 255),
+    "qint8 reduce_range": (-64, 63),
+    "quint8 reduce_range": (0, 127),
+    "int4": (-8, 7),
+}
+
+
+def affine_qparams(min_val, max_val, quant_min, quant_max):
+    min_neg = min(min_val, 0.0)
+    max_pos = max(max_val, 0.0)
+    scale = max((max_pos - min_neg) / (quant_max - quant_min), QUANT_EPS)
+    zero_point = quant_min - round(min_neg / scale)
+    return scale, min(max(zero_point, quant_min), quant_max)
+
+
+def symmetric_qparams(min_val, max_val, quant_min, quant_max):
+    bound = max(-min(min_val, 0.0), max(max_val, 0.0))
+    scale = max(bound / ((quant_max - quant_min) / 2), QUANT_EPS)
+    zero_point = 128 if (quant_min, quant_max) == (0, 255) else 0
+    return scale, zero_point
+
+
+def quantize_values(values, scale, zero_point, quant_min, quant_max):
+    return [min(max(round(v / scale) + zero_point, quant_min), quant_max) for v in values]
+
+
+def dequantize_values(codes, scale, zero_point):
+    return [(q - zero_point) * scale for q in codes]
+
+
+def fake_quantize(values, scale, zero_point, quant_min, quant_max):
+    unclamped = [round(v / scale) + zero_point for v in values]
+    codes = [min(max(q, quant_min), quant_max) for q in unclamped]
+    return {
+        "codes": codes,
+        "output": dequantize_values(codes, scale, zero_point),
+        "mask": [quant_min <= q <= quant_max for q in unclamped],
+    }
+
+
+def straight_through_grad(upstream, mask):
+    return [g if keep else 0.0 for g, keep in zip(upstream, mask)]
+
+
+def quantize_roundtrip(values, scheme="affine", dtype="quint8"):
+    quant_min, quant_max = QUANT_RANGES[dtype]
+    qparams = affine_qparams if scheme == "affine" else symmetric_qparams
+    scale, zero_point = qparams(min(values), max(values), quant_min, quant_max)
+    codes = quantize_values(values, scale, zero_point, quant_min, quant_max)
+    restored = dequantize_values(codes, scale, zero_point)
+    return {
+        "scale": scale,
+        "zero_point": zero_point,
+        "codes": codes,
+        "restored": restored,
+        "errors": [r - v for r, v in zip(restored, values)],
+        "max_error": max(abs(r - v) for r, v in zip(restored, values)),
+    }
+
+
+AFFINE_EXAMPLE = [-1.0, 0.0, 1.0, 2.0]
+
+ACTIVATION_EXAMPLE = [-0.62, 0.0, 0.35, 1.17, 2.48]
+
+FAKE_QUANT_EXAMPLE = {
+    "values": [0.0552, 0.9730, 0.3973, -1.0780],
+    "scale": 0.1,
+    "zero_point": 0,
+    "quant_min": 0,
+    "quant_max": 255,
+}
+
+CHANNEL_WEIGHTS = [
+    [0.12, -0.08, 0.05, -0.11],
+    [0.31, -0.27, 0.18, 0.02],
+    [2.40, -1.10, 0.65, -0.30],
+]
+
+
+def _rows_error(rows, restored):
+    return [
+        sum(abs(r - w) for r, w in zip(rest, row)) / sum(abs(w) for w in row)
+        for row, rest in zip(rows, restored)
+    ]
+
+
+def per_channel_example(weights=CHANNEL_WEIGHTS, dtype="qint8"):
+    quant_min, quant_max = QUANT_RANGES[dtype]
+    flat = [w for row in weights for w in row]
+    tensor_scale, _ = symmetric_qparams(min(flat), max(flat), quant_min, quant_max)
+    tensor_codes = [quantize_values(row, tensor_scale, 0, quant_min, quant_max) for row in weights]
+    tensor_rest = [dequantize_values(codes, tensor_scale, 0) for codes in tensor_codes]
+    channel_scales = [symmetric_qparams(min(row), max(row), quant_min, quant_max)[0] for row in weights]
+    channel_codes = [
+        quantize_values(row, s, 0, quant_min, quant_max) for row, s in zip(weights, channel_scales)
+    ]
+    channel_rest = [dequantize_values(c, s, 0) for c, s in zip(channel_codes, channel_scales)]
+    return {
+        "tensor_scale": tensor_scale,
+        "tensor_codes": tensor_codes,
+        "tensor_error": _rows_error(weights, tensor_rest),
+        "channel_scales": channel_scales,
+        "channel_codes": channel_codes,
+        "channel_error": _rows_error(weights, channel_rest),
+    }
+
+
+GROUP_ROW = [0.21, -0.15, 0.08, -0.26, 0.19, 1.85, -0.12, 0.04]
+
+
+def group_quantize(row, bits=4, group_size=None):
+    quant_max = 2 ** (bits - 1) - 1
+    group_size = group_size or len(row)
+    scales, restored = [], []
+    for start in range(0, len(row), group_size):
+        group = row[start : start + group_size]
+        scale = max(abs(v) for v in group) / quant_max
+        scales.append(scale)
+        codes = [min(max(round(v / scale), -quant_max - 1), quant_max) for v in group]
+        restored.extend(q * scale for q in codes)
+    error = sum(abs(r - v) for r, v in zip(restored, row)) / sum(abs(v) for v in row)
+    return {"scales": scales, "restored": restored, "error": error}
+
+
+def weight_bytes(params, bits, group_size=None, scale_bytes=2):
+    groups = params // group_size if group_size else 0
+    return params * bits / 8 + groups * scale_bytes
+
+
+def weight_memory_example(params=8e9):
+    rows = [
+        {"name": "fp16", "bits": 16, "group": None},
+        {"name": "int8, per channel", "bits": 8, "group": None},
+        {"name": "int4, group 128", "bits": 4, "group": 128},
+        {"name": "int4, group 32", "bits": 4, "group": 32},
+    ]
+    for row in rows:
+        row["bytes"] = weight_bytes(int(params), row["bits"], row["group"])
+        row["bits_per_weight"] = row["bytes"] * 8 / params
+    return {"params": params, "rows": rows}
+
+
+OUTLIER_ACTIVATIONS = [0.5, -0.3, 0.8, -0.6, 0.2, 60.0]
+OUTLIER_WEIGHTS = [0.4, 0.7, -0.5, 0.3, 0.9, 0.02]
+
+
+def absmax_quantize(values, quant_max=127):
+    scale = max(abs(v) for v in values) / quant_max
+    return [round(v / scale) * scale for v in values], scale
+
+
+def outlier_example(x=OUTLIER_ACTIVATIONS, w=OUTLIER_WEIGHTS, threshold=6.0):
+    exact = sum(a * b for a, b in zip(x, w))
+    naive_x, naive_scale = absmax_quantize(x)
+    naive = sum(a * b for a, b in zip(naive_x, w))
+    keep = [abs(a) >= threshold for a in x]
+    small = [a for a, k in zip(x, keep) if not k]
+    small_q, small_scale = absmax_quantize(small)
+    small_iter = iter(small_q)
+    mixed_x = [a if k else next(small_iter) for a, k in zip(x, keep)]
+    mixed = sum(a * b for a, b in zip(mixed_x, w))
+    return {
+        "exact": exact,
+        "naive_x": naive_x,
+        "naive_scale": naive_scale,
+        "naive": naive,
+        "mixed_x": mixed_x,
+        "mixed_scale": small_scale,
+        "mixed": mixed,
+        "outliers": sum(keep),
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -6708,6 +6885,21 @@ def render(slug, render_template):
         "grad_scaler_run": grad_scaler_run,
         "master_weight_example": master_weight_example,
         "log2": math.log2,
+        "quantize_roundtrip": quantize_roundtrip,
+        "affine_example": AFFINE_EXAMPLE,
+        "activation_example": ACTIVATION_EXAMPLE,
+        "fake_quant_example": FAKE_QUANT_EXAMPLE,
+        "fake_quantize": fake_quantize,
+        "straight_through_grad": straight_through_grad,
+        "per_channel_example": per_channel_example,
+        "channel_weights": CHANNEL_WEIGHTS,
+        "group_row": GROUP_ROW,
+        "group_quantize": group_quantize,
+        "weight_memory_example": weight_memory_example,
+        "outlier_example": outlier_example,
+        "quant_ranges": QUANT_RANGES,
+        "affine_qparams": affine_qparams,
+        "symmetric_qparams": symmetric_qparams,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

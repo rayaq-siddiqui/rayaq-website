@@ -2807,3 +2807,75 @@ def test_master_weights_keep_small_updates():
     assert example["bf16"] == 1.0
     assert example["fp32"] == pytest.approx(1.01, abs=1e-5)
     assert example["fp32_cast_fp16"] == 1.009765625
+
+
+def test_affine_qparams_match_the_pytorch_docstring_examples():
+    dynamic = ml_models_docs.quantize_roundtrip(ml_models_docs.AFFINE_EXAMPLE)
+    assert dynamic["scale"] == pytest.approx(0.011764705882352941)
+    assert dynamic["zero_point"] == 85
+    assert dynamic["codes"] == [0, 85, 170, 255]
+    assert ml_models_docs.quantize_values([-1.0, 0.0, 1.0, 2.0], 0.1, 10, 0, 255) == [0, 10, 20, 30]
+    assert ml_models_docs.affine_qparams(0.5, 2.0, 0, 255)[1] == 0
+    symmetric = ml_models_docs.quantize_roundtrip(
+        ml_models_docs.ACTIVATION_EXAMPLE, "symmetric", "qint8"
+    )
+    assert symmetric["zero_point"] == 0
+    assert symmetric["scale"] == pytest.approx(2.48 / 127.5)
+    assert ml_models_docs.symmetric_qparams(-1.0, 2.0, 0, 255)[1] == 128
+    affine = ml_models_docs.quantize_roundtrip(ml_models_docs.ACTIVATION_EXAMPLE)
+    assert affine["restored"][1] == 0.0
+    assert affine["max_error"] <= affine["scale"] / 2
+    assert symmetric["max_error"] > affine["max_error"]
+
+
+def test_fake_quantize_matches_the_docstring_and_masks_clamped_gradients():
+    example = ml_models_docs.FAKE_QUANT_EXAMPLE
+    result = ml_models_docs.fake_quantize(
+        example["values"],
+        example["scale"],
+        example["zero_point"],
+        example["quant_min"],
+        example["quant_max"],
+    )
+    assert result["output"] == pytest.approx([0.1, 1.0, 0.4, 0.0])
+    assert result["mask"] == [True, True, True, False]
+    assert ml_models_docs.straight_through_grad([0.5, -1.0, 2.0, 3.0], result["mask"]) == [
+        0.5,
+        -1.0,
+        2.0,
+        0.0,
+    ]
+    assert ml_models_docs.quantize_values([0.25, 0.75], 0.5, 0, 0, 255) == [0, 2]
+
+
+def test_per_channel_scales_rescue_small_rows():
+    example = ml_models_docs.per_channel_example()
+    assert example["tensor_scale"] == pytest.approx(2.40 / 127.5)
+    assert example["tensor_codes"][0] == [6, -4, 3, -6]
+    assert example["channel_codes"][0][0] == 127
+    assert example["tensor_error"][0] > 0.05
+    assert all(error < 0.01 for error in example["channel_error"])
+    assert example["channel_error"][2] == example["tensor_error"][2]
+
+
+def test_groups_shrink_int4_error_and_cost_a_fraction_of_a_bit():
+    row = ml_models_docs.GROUP_ROW
+    whole = ml_models_docs.group_quantize(row)
+    grouped = ml_models_docs.group_quantize(row, group_size=4)
+    int8 = ml_models_docs.group_quantize(row, bits=8)
+    assert whole["restored"][2] == 0.0
+    assert grouped["error"] < whole["error"] / 1.5
+    assert int8["error"] < grouped["error"]
+    memory = ml_models_docs.weight_memory_example()
+    bits = [row["bits_per_weight"] for row in memory["rows"]]
+    assert bits == [16, 8, 4.125, 4.5]
+    assert memory["rows"][0]["bytes"] == 16e9
+
+
+def test_one_outlier_wrecks_absmax_int8_until_it_is_split_out():
+    example = ml_models_docs.outlier_example()
+    assert example["exact"] == pytest.approx(0.79)
+    assert example["naive_x"][4] == 0.0
+    assert abs(example["naive"] - example["exact"]) / example["exact"] > 0.4
+    assert example["outliers"] == 1
+    assert abs(example["mixed"] - example["exact"]) / example["exact"] < 0.01
