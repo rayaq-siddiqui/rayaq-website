@@ -1485,6 +1485,20 @@ RANK_EXAMPLE = [[1, 2, 3], [2, 4, 6], [1, 0, 1]]
 
 CONDITION_EXAMPLE = {"a": [[1, 1], [1, 1.0001]], "b": [2, 2.0001], "nudged": [2, 2.0002]}
 
+MISSING_EXAMPLE = {
+    "columns": ["age", "income"],
+    "rows": [
+        [23, 38], [35, None], [None, 61], [41, 72],
+        [29, None], [None, 45], [52, 90], [38, None],
+    ],
+}
+
+ROUTING_EXAMPLE = {
+    "x": [1, 2, 3, 4, 5, 9, None, None],
+    "y": [1.0, 1.2, 0.8, 3.0, 3.2, 2.8, 1.1, 0.9],
+    "reg_lambda": 1.0,
+}
+
 SLOPE_EXAMPLE = {"x": 3, "steps": [1, 0.1, 0.01, 0.001]}
 
 BOWL_EXAMPLE = {"scale": [1, 3], "start": [3, 2], "lr": 0.1, "steps": 6, "unstable_lr": 0.4}
@@ -4760,6 +4774,240 @@ def relu_active_fraction(bias, scale=1.0, n=4000, seed=0):
     return sum(1 for _ in range(n) if rng.gauss(0.0, scale) + bias > 0) / n
 
 
+def _observed(column):
+    return [v for v in column if v is not None]
+
+
+def column_fill_values(column, fill_value=0):
+    seen = _observed(column)
+    return {
+        "missing": len(column) - len(seen),
+        "mean": sum(seen) / len(seen) if seen else None,
+        "median": _median(seen) if seen else None,
+        "constant": fill_value,
+    }
+
+
+def impute_column(column, strategy, fill_value=0):
+    value = column_fill_values(column, fill_value)[strategy]
+    return [value if v is None else v for v in column]
+
+
+def missing_indicator(column):
+    return [1 if v is None else 0 for v in column]
+
+
+def complete_rows(rows):
+    return [row for row in rows if all(v is not None for v in row)]
+
+
+def _ols(features, targets):
+    design = [[1.0] + list(row) for row in features]
+    cols = len(design[0])
+    gram = [[sum(r[i] * r[j] for r in design) for j in range(cols)] for i in range(cols)]
+    moments = [sum(r[i] * t for r, t in zip(design, targets)) for i in range(cols)]
+    return _solve_linear(gram, moments)
+
+
+def _ols_predict(weights, row):
+    return weights[0] + sum(w * v for w, v in zip(weights[1:], row))
+
+
+def _std(values):
+    mean = sum(values) / len(values)
+    return math.sqrt(sum((v - mean) ** 2 for v in values) / len(values))
+
+
+def _correlation(xs, ys):
+    mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+    sxy = sum((a - mx) * (b - my) for a, b in zip(xs, ys))
+    sxx = sum((a - mx) ** 2 for a in xs)
+    syy = sum((b - my) ** 2 for b in ys)
+    return sxy / math.sqrt(sxx * syy)
+
+
+def _missing_probability(mechanism, x, y):
+    if mechanism == "MCAR":
+        return 0.4
+    if mechanism == "MAR":
+        return 0.7 if x > 0 else 0.1
+    return 0.7 if y > 50 else 0.1
+
+
+def mechanism_rows(mechanism, n=4000, seed=11):
+    rng = random.Random(seed)
+    rows = []
+    for _ in range(n):
+        z1, z2 = rng.gauss(0, 1), rng.gauss(0, 1)
+        x = z1
+        y = 50 + 10 * (0.8 * z1 + 0.6 * z2)
+        missing = rng.random() < _missing_probability(mechanism, x, y)
+        rows.append((x, y, missing))
+    return rows
+
+
+def mechanism_estimates(mechanism, n=4000, seed=11):
+    rows = mechanism_rows(mechanism, n, seed)
+    xs = [x for x, _, _ in rows]
+    ys = [y for _, y, _ in rows]
+    kept = [(x, y) for x, y, missing in rows if not missing]
+    kept_ys = [y for _, y in kept]
+    cc_mean = sum(kept_ys) / len(kept_ys)
+    weights = _ols([[x] for x, _ in kept], kept_ys)
+    regression = [y if not missing else _ols_predict(weights, [x]) for x, y, missing in rows]
+    mean_filled = [y if not missing else cc_mean for _, y, missing in rows]
+    return {
+        "mechanism": mechanism,
+        "missing_share": 1 - len(kept) / n,
+        "true_mean": sum(ys) / n,
+        "complete_case_mean": cc_mean,
+        "regression_mean": sum(regression) / n,
+        "true_std": _std(ys),
+        "mean_imputed_std": _std(mean_filled),
+        "true_corr": _correlation(xs, ys),
+        "mean_imputed_corr": _correlation(xs, mean_filled),
+    }
+
+
+def iterative_rows(n=60, seed=4, missing_rate=0.25):
+    rng = random.Random(seed)
+    truth, observed = [], []
+    for _ in range(n):
+        z = rng.gauss(0, 1)
+        row = [z + 0.3 * rng.gauss(0, 1), 2 * z + 0.3 * rng.gauss(0, 1), -z + 0.3 * rng.gauss(0, 1)]
+        truth.append(row)
+        observed.append([None if rng.random() < missing_rate else v for v in row])
+    return truth, observed
+
+
+def iterative_impute(observed, max_iter=10, tol=1e-3):
+    n, d = len(observed), len(observed[0])
+    columns = [[row[j] for row in observed] for j in range(d)]
+    filled = [impute_column(column, "mean") for column in columns]
+    missing_share = [sum(v is None for v in column) / n for column in columns]
+    order = sorted(range(d), key=lambda j: missing_share[j])
+    scale = max(abs(v) for column in columns for v in column if v is not None)
+    rounds = []
+    for round_number in range(1, max_iter + 1):
+        previous = [list(column) for column in filled]
+        for j in order:
+            others = [k for k in range(d) if k != j]
+            train = [i for i in range(n) if columns[j][i] is not None]
+            weights = _ols([[filled[k][i] for k in others] for i in train], [columns[j][i] for i in train])
+            for i in range(n):
+                if columns[j][i] is None:
+                    filled[j][i] = _ols_predict(weights, [filled[k][i] for k in others])
+        change = max(abs(a - b) for new, old in zip(filled, previous) for a, b in zip(new, old))
+        rounds.append({"round": round_number, "change": change, "converged": change < tol * scale})
+        if change < tol * scale:
+            break
+    return {
+        "rows": [[filled[j][i] for j in range(d)] for i in range(n)],
+        "order": order,
+        "rounds": rounds,
+        "threshold": tol * scale,
+    }
+
+
+def imputation_rmse(truth, observed, imputed):
+    errors = [
+        (t - v) ** 2
+        for t_row, o_row, i_row in zip(truth, observed, imputed)
+        for t, o, v in zip(t_row, o_row, i_row)
+        if o is None
+    ]
+    return math.sqrt(sum(errors) / len(errors))
+
+
+def iterative_comparison(n=60, seed=4, missing_rate=0.25):
+    truth, observed = iterative_rows(n, seed, missing_rate)
+    d = len(observed[0])
+    columns = [impute_column([row[j] for row in observed], "mean") for j in range(d)]
+    mean_rows = [[columns[j][i] for j in range(d)] for i in range(n)]
+    result = iterative_impute(observed)
+    return {
+        "missing_cells": sum(v is None for row in observed for v in row),
+        "cells": n * d,
+        "mean_rmse": imputation_rmse(truth, observed, mean_rows),
+        "iterative_rmse": imputation_rmse(truth, observed, result["rows"]),
+        "rounds": result["rounds"],
+        "order": result["order"],
+        "threshold": result["threshold"],
+    }
+
+
+def indicator_rows(n, seed):
+    rng = random.Random(seed)
+    rows = []
+    for _ in range(n):
+        x = rng.gauss(0, 1)
+        y = 2 * x + rng.gauss(0, 0.5)
+        missing = rng.random() < (0.6 if y > 1 else 0.1)
+        rows.append((None if missing else x, y))
+    return rows
+
+
+def indicator_comparison(n_train=400, n_test=4000, seed=8):
+    train, test = indicator_rows(n_train, seed), indicator_rows(n_test, seed + 1)
+    fill = sum(x for x, _ in train if x is not None) / sum(x is not None for x, _ in train)
+
+    def features(x, with_indicator):
+        value = fill if x is None else x
+        return [value, 1.0 if x is None else 0.0] if with_indicator else [value]
+
+    result = {"fill": fill}
+    for name, flag in (("imputed", False), ("with_indicator", True)):
+        weights = _ols([features(x, flag) for x, _ in train], [y for _, y in train])
+        errors = [(_ols_predict(weights, features(x, flag)) - y) ** 2 for x, y in test]
+        result[name] = {"weights": weights, "mse": sum(errors) / len(errors)}
+    return result
+
+
+def _leaf_gain(g, h, reg_lambda):
+    return g * g / (h + reg_lambda)
+
+
+def missing_split_scan(xs, grads, hessians, reg_lambda=1.0):
+    present = sorted((x, g, h) for x, g, h in zip(xs, grads, hessians) if x is not None)
+    total_g, total_h = sum(grads), sum(hessians)
+    missing_g = total_g - sum(g for _, g, _ in present)
+    missing_h = total_h - sum(h for _, _, h in present)
+    parent = _leaf_gain(total_g, total_h, reg_lambda)
+    candidates = []
+    for i in range(1, len(present)):
+        if present[i][0] == present[i - 1][0]:
+            continue
+        gl = sum(g for _, g, _ in present[:i])
+        hl = sum(h for _, _, h in present[:i])
+        threshold = (present[i - 1][0] + present[i][0]) / 2
+        for direction, (lg, lh) in (("right", (gl, hl)), ("left", (gl + missing_g, hl + missing_h))):
+            rg, rh = total_g - lg, total_h - lh
+            candidates.append({
+                "threshold": threshold, "missing_go": direction,
+                "g_left": lg, "h_left": lh, "g_right": rg, "h_right": rh,
+                "loss_chg": _leaf_gain(lg, lh, reg_lambda) + _leaf_gain(rg, rh, reg_lambda) - parent,
+                "w_left": -lg / (lh + reg_lambda), "w_right": -rg / (rh + reg_lambda),
+            })
+    forward = [c for c in candidates if c["missing_go"] == "right"]
+    backward = [c for c in candidates if c["missing_go"] == "left"] if missing_h > 0 else []
+    best = None
+    for candidate in forward + backward[::-1]:
+        if best is None or candidate["loss_chg"] > best["loss_chg"]:
+            best = candidate
+    return {"parent": parent, "missing_g": missing_g, "missing_h": missing_h,
+            "candidates": candidates, "best": best}
+
+
+def routing_example(example=ROUTING_EXAMPLE):
+    grads = [-y for y in example["y"]]
+    hessians = [1.0] * len(grads)
+    native = missing_split_scan(example["x"], grads, hessians, example["reg_lambda"])
+    fill = column_fill_values(example["x"])["mean"]
+    imputed_x = impute_column(example["x"], "mean")
+    imputed = missing_split_scan(imputed_x, grads, hessians, example["reg_lambda"])
+    return {"native": native, "fill": fill, "imputed": imputed}
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -5128,6 +5376,17 @@ def render(slug, render_template):
         "unit_circle_image": unit_circle_image,
         "svd_stages": svd_stages,
         "lora_param_counts": lora_param_counts,
+        "missing_example": MISSING_EXAMPLE,
+        "routing_example_data": ROUTING_EXAMPLE,
+        "column_fill_values": column_fill_values,
+        "impute_column": impute_column,
+        "missing_indicator": missing_indicator,
+        "complete_rows": complete_rows,
+        "mechanism_estimates": mechanism_estimates,
+        "iterative_comparison": iterative_comparison,
+        "indicator_comparison": indicator_comparison,
+        "missing_split_scan": missing_split_scan,
+        "routing_example": routing_example,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

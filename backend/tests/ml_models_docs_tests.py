@@ -2271,3 +2271,83 @@ def test_templates_only_read_pin_keys_that_exist():
             source = handle.read()
         for library, key in re.findall(r"pins\.(\w+)\.(\w+)", source):
             assert key in ml_models_docs.PINS[library], (name, library, key)
+
+
+def test_fill_values_match_simple_imputer_statistics():
+    rows = ml_models_docs.MISSING_EXAMPLE["rows"]
+    age = ml_models_docs.column_fill_values([row[0] for row in rows])
+    income = ml_models_docs.column_fill_values([row[1] for row in rows])
+    assert (age["missing"], age["mean"], age["median"]) == (2, pytest.approx(36.3333333), 36.5)
+    assert (income["missing"], income["mean"], income["median"]) == (3, pytest.approx(61.2), 61)
+    assert age["constant"] == income["constant"] == 0
+    assert ml_models_docs.missing_indicator([row[1] for row in rows]) == [0, 1, 0, 0, 1, 0, 0, 1]
+    assert len(ml_models_docs.complete_rows(rows)) == 3
+
+
+def test_impute_column_keeps_observed_values():
+    column = [1, None, 5, None]
+    assert ml_models_docs.impute_column(column, "mean") == [1, 3, 5, 3]
+    assert ml_models_docs.impute_column(column, "constant", fill_value=-1) == [1, -1, 5, -1]
+
+
+def test_mechanisms_bias_complete_case_and_regression_imputation():
+    mcar, mar, mnar = (ml_models_docs.mechanism_estimates(m) for m in ("MCAR", "MAR", "MNAR"))
+    for result in (mcar, mar, mnar):
+        assert result["missing_share"] == pytest.approx(0.4, abs=0.02)
+    assert abs(mcar["complete_case_mean"] - mcar["true_mean"]) < 0.2
+    assert mar["true_mean"] - mar["complete_case_mean"] > 2.5
+    assert abs(mar["regression_mean"] - mar["true_mean"]) < 0.2
+    assert mnar["true_mean"] - mnar["regression_mean"] > 1.0
+    for result in (mcar, mar, mnar):
+        assert result["mean_imputed_std"] < 0.8 * result["true_std"]
+        assert result["mean_imputed_corr"] < result["true_corr"] - 0.15
+
+
+def test_iterative_impute_matches_the_round_robin_rule():
+    comparison = ml_models_docs.iterative_comparison()
+    rounds = comparison["rounds"]
+    assert len(rounds) == 9
+    assert all(not r["converged"] for r in rounds[:-1]) and rounds[-1]["converged"]
+    assert rounds[-1]["change"] < comparison["threshold"] <= rounds[-2]["change"]
+    assert comparison["order"] == [0, 1, 2]
+    assert comparison["iterative_rmse"] < 0.5 * comparison["mean_rmse"]
+
+
+def test_iterative_impute_keeps_observed_cells():
+    truth, observed = ml_models_docs.iterative_rows()
+    filled = ml_models_docs.iterative_impute(observed)["rows"]
+    for o_row, f_row in zip(observed, filled):
+        for o, f in zip(o_row, f_row):
+            if o is not None:
+                assert f == o
+
+
+def test_missing_indicator_helps_when_missingness_is_informative():
+    result = ml_models_docs.indicator_comparison()
+    assert result["with_indicator"]["mse"] < 0.7 * result["imputed"]["mse"]
+    assert result["with_indicator"]["weights"][2] > 1
+
+
+def test_routing_matches_xgboost_default_direction():
+    result = ml_models_docs.routing_example()
+    best = result["native"]["best"]
+    assert (best["threshold"], best["missing_go"]) == (3.5, "left")
+    assert best["loss_chg"] == pytest.approx(2.638888, abs=1e-5)
+    assert (best["w_left"], best["w_right"]) == (pytest.approx(5 / 6), pytest.approx(2.25))
+    assert result["fill"] == 4.0
+    imputed = result["imputed"]["best"]
+    assert imputed["loss_chg"] == pytest.approx(0.638888, abs=1e-5)
+    assert imputed["missing_go"] == "right"
+
+
+def test_routing_without_missing_values_sends_missing_right():
+    scan = ml_models_docs.missing_split_scan([1, 2, 3, 4], [-1, -1, -3, -3], [1, 1, 1, 1])
+    assert scan["missing_h"] == 0
+    assert {c["missing_go"] for c in scan["candidates"]} == {"left", "right"}
+    assert scan["best"]["missing_go"] == "right"
+
+
+def test_routing_ties_keep_the_forward_scan():
+    scan = ml_models_docs.missing_split_scan([1, 2, None], [-2, 2, 0], [1, 1, 1])
+    assert scan["candidates"][0]["loss_chg"] == pytest.approx(scan["candidates"][1]["loss_chg"])
+    assert scan["best"]["missing_go"] == "right"
