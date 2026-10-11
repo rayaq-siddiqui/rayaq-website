@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-09 (twenty-fourth run). Spec v2 widens the section from model architectures
+**Last updated:** 2026-10-11 (twenty-fifth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: queue items 1-35, the last being `activation-functions`. The next run builds
-`linear-algebra-toolkit` (queue item 36).
+format. Ready pages: queue items 1-36, the last being `linear-algebra-toolkit`. The next page is
+`missing-data` (queue item 37).
 
 ## Pins
 
@@ -302,146 +302,65 @@ and a `docs:` commit for this file. Pages built, in order: `tensors-and-shapes`,
 `optimizers`, `embeddings`, `attention`, `layernorm-and-residuals`. Pins were re-checked on each
 run and none moved. Per-page commit lists were dropped to keep this file short; `git log` has them.
 
-## Nineteenth run (2026-10-08) — transformer retrofit, training-loop, decoder-only-llm
+## Nineteenth to twenty-fourth runs (2026-10-08 to 2026-10-09) — condensed
+
+Same pattern as above: a tested-helpers commit, a page commit (page, `ready`, queue ✓) and a
+`docs:` commit per page. Pages built, in order: `transformer` (retrofit to §6), `training-loop`,
+`decoder-only-llm`, `decoding`, `kv-cache`, `learning-paradigms`, `generalization`,
+`data-splits`, `preprocessing`, `data-leakage`, `classification-metrics`, `cross-validation`,
+`decision-trees`, `gradient-boosting`, `overfitting`, `bias-variance`, `regularization`,
+`activation-functions`. Pins were re-checked each run and none moved. The line ranges each page
+links were verified in the pinned clones at build time and live in the page templates (grep
+`src(`, `skl(`, `xgb(`); per-run range lists were dropped here, and `git log -p` on this file has
+them.
+
+Findings worth keeping:
+
+- sklearn's `Entropy` criterion is in bits. The decision-tree helpers match a real scikit-learn
+  1.9.1 in a scratch venv (never added to requirements).
+- XGBoost's `loss_chg` has no ½ and compares with γ directly, so γ is on a different scale from
+  the paper's ½[...] − γ; `gradient-boosting` says so. The cross-check used XGBoost 3.2.0 (3.4.2
+  was not on the mirror); the gain and leaf formulas are unchanged between them.
+- In PyTorch 2.14.1 `AdamW` is `Adam` with `decoupled_weight_decay=True`; `regularization` links
+  the decay in `optim/adam.py` 416-428.
+- `overfitting` uses medians over 30 draws, since a degree-9 fit on 15 points sometimes explodes.
+  `bias-variance` uses odd degrees only and does not claim a strict variance ladder.
+
+Open gaps from these runs:
+
+- Paper references on every page were cited from memory and not opened (arxiv.org was
+  unreachable during the decoding run).
+- bf16-needs-no-scaler is checked only against the autocast docstring. `kv-cache` names no real
+  model's configuration. `kv-cache` mentions quantization as plain text until that page exists.
+- The end lines of the HistGradientBoosting regressor `__init__` and of
+  `_incremental_fit_estimator`, and the `Lasso` end line, were inferred, not checked.
+- The SwiGLU "hidden size reduced to 2/3" remark is from memory of common practice.
+
+## Twenty-fifth run (2026-10-11) — linear-algebra-toolkit
 
 | Commit | What |
 |---|---|
-| `ml-models: retrofit the transformer page to the section format` | `transformer` brought to §6; adds `#training-vs-inference` |
-| `ml-models: add tested training-loop helpers` / `build the training-loop page` | Schedule, GradScaler, memory and accumulation helpers; page, `ready`, queue ✓ |
-| `ml-models: add tested decoder-only helpers` | `decoder_param_count` (GPT-2 small = 124,439,808), `next_token_pairs`, `causal_prefix_check`, `sequence_nll`, `greedy_generate`, `generation_positions` |
-| `ml-models: build the decoder-only-llm page` | The page, `ready`, queue ✓ |
+| `3335843` `ml-models: add tested linear algebra helpers` | `jacobi_eigh`, `power_iteration`, one-sided Jacobi `svd`, `from_svd`, `low_rank_errors`, `matrix_rank`, `condition_number`, `perturbed_solve`, `unit_circle_image`, `svd_stages`, `lora_param_counts` with tests (Eckart–Young against 50 random rank-1 rivals) |
+| `24e436c` `ml-models: build the linear-algebra-toolkit page` | The page, `ready`, queue ✓ |
+| `6f0803f` `fix: show the pinned release in ml-models references` | 13 templates read `pins.X.version`, which is not a `PINS` key and rendered empty; now `pins.X.tag`, with a test that every `pins.X.<key>` a template reads exists |
 
-Pins re-checked: PyTorch v2.14.1, scikit-learn 1.9.1, XGBoost v3.4.2 are still the latest stable; none moved.
+Verified at PyTorch v2.14.1: `linalg/__init__.py` `eig` 474-582, `eigh` 642-763, `eigvalsh`
+765-834, `matrix_rank` 1263-1351, `svd` 1734-1886, `svdvals` 1888-1936, `cond` 1938-2054, `pinv`
+2056-2161, `qr` 2865-2966; `_lowrank.py` `get_approximate_basis` 11-82, `svd_lowrank` 85-146,
+`_svd_lowrank` 149-180, `pca_lowrank` 183-293; `nn/init.py` `orthogonal_` 672-720.
 
-Verified at PyTorch v2.14.1: `transformer.py` `TransformerEncoderLayer` 663-983 (`norm_first` branch 946-952), `TransformerEncoder` 320-556, `_generate_square_subsequent_mask` 29-42; `sparse.py` `Embedding` 14-266; `functional.py` `scaled_dot_product_attention` 6367-6406, `cross_entropy` 3478-3571.
+Verified at scikit-learn 1.9.1: `decomposition/_pca.py` `_fit_full`/`_fit_truncated` 544-694;
+`utils/extmath.py` `randomized_svd` 560-633.
 
-Gaps: bf16-needs-no-scaler is not verified beyond the autocast docstring; `SequentialLR` calls `_update_lr(0)` at a milestone rather than `step(0)`; the GPT-2 117M vs 124M naming is a paper claim not checkable in pinned source. The decoder-only page leaves `decoding` and `kv-cache` unlinked until those pages exist; link them when built.
+Finding: an SVD through the eigenvalues of AᵀA squares the condition number and gave rank 3 for a
+rank-2 matrix (σ₃ ≈ 4.9e-8); the one-sided Jacobi SVD gives rank 2. The page's Tradeoffs says so.
 
-## Twentieth run (2026-10-08) — decoding, kv-cache, learning-paradigms
+Pins checked with `git ls-remote --tags`: PyTorch v2.14.1, scikit-learn 1.9.1 and XGBoost v3.4.2
+are still the latest stable releases; no pin moved.
 
-| Commit | What |
-|---|---|
-| `ml-models: build the decoding page` | Helpers (`temperature_probs`, `top_k_filter`, `top_p_filter`, `repeat_penalty`, `constrained_probs`, `beam_search`, `speculative_step` and more) with tests, the page, `ready`, queue ✓ |
-| `ml-models: add kv-cache page` | `cached_decode`, `kv_cache_total_bytes`, `decode_attention_intensity`, `paged_allocation` with tests; the page, `ready`, queue ✓; links `decoding` and `kv-cache` from `decoder-only-llm` |
-| `ml-models: add learning-paradigms page` | `kmeans_run`, `nearest_labeled`, `cluster_then_label`, `prediction_accuracy`, `masked_pairs`, `bigram_next_token_loss` with tests; the page, `ready`, queue ✓ |
-
-Pins re-checked: PyTorch v2.14.1, scikit-learn 1.9.1, XGBoost v3.4.2; none moved.
-
-Verified at PyTorch v2.14.1: `distributions/categorical.py` 13-171 (init 13-82, `mode` 130-132, `sample` 144-149, `entropy` 159-163); `_torch_docs.py` `multinomial` 8088-8141, `topk` 11877-11921; `functional.py` `softmax` 2176-2216, `scaled_dot_product_attention` docstring 6367-6406 (`enable_gqa` repeat at 6395-6397, arg doc at 6501); `activation.py` `MultiheadAttention` 1090-1573 (no cache argument); `modules/loss.py` `NLLLoss` 136-274, `MSELoss` 567-632, `CrossEntropyLoss` 1200-1409.
-
-Verified at scikit-learn 1.9.1: `base.py` `BaseEstimator` 165-560, `ClassifierMixin` 561-630, `RegressorMixin` 631-718, `ClusterMixin` 719-772; `cluster/_kmeans.py` `KMeans.fit` 1432-1559.
-
-Gaps: arxiv.org was unreachable, so paper claims on the decoding page (nucleus, top-k, CTRL penalty, speculative sampling, constrained decoding) were not checked against the papers; the speculative expected-tokens formula is derived under an independence assumption and tested, not copied from the paper. The kv-cache page names no real model's configuration, since none could be verified. `kv-cache` mentions quantization as plain text until that page exists.
-
-## Twenty-first run (2026-10-08) — generalization, data-splits, preprocessing
-
-| Commit | What |
-|---|---|
-| `ml-models: add tested generalization helpers` / `build the generalization page` | Polynomial fit by normal equations, train/held-out/shifted error rows; page, `ready`, queue ✓ |
-| `ml-models: add tested data-split helpers` / `build the data-splits page` | Stratified allocation, chance of missing a class, group leakage count, nearest-in-time forecast error, accuracy standard error; page, `ready`, queue ✓ |
-| `ml-models: add tested preprocessing helpers` / `build the preprocessing page` | Column statistics, standardize/min-max, one-hot/ordinal, log10 column, pair distance; page, `ready`, queue ✓ |
-
-Pins re-checked with `git ls-remote --tags`: PyTorch v2.14.1, scikit-learn 1.9.1, XGBoost v3.4.2 are still the latest stable; none moved.
-
-Verified at scikit-learn 1.9.1: `model_selection/_split.py` `KFold` 437-532, `GroupKFold` 533-686, `StratifiedKFold` 687-891, `StratifiedGroupKFold` 892-1115, `TimeSeriesSplit` 1116-1329, `ShuffleSplit` 1982-2086, `GroupShuffleSplit` 2087-2232, `StratifiedShuffleSplit` 2233-2444, `train_test_split` 2797-2976; `model_selection/_validation.py` `cross_val_score` 512-669, `learning_curve` 1776-2113, `validation_curve` 2283-2516; `preprocessing/_data.py` `_handle_zeros_in_scale` 101-145, `MinMaxScaler` 305-630, `StandardScaler` 742-1189 (`transform` 1092-1136), `MaxAbsScaler` 1190-1457, `RobustScaler` 1552-1830, `PowerTransformer` 3264-3665; `preprocessing/_encoders.py` `OneHotEncoder` 474-1262, `OrdinalEncoder` 1263-1700.
-
-Gaps: the `train_test_split` `shuffle=False` line range is cited from reading the function, not a separate check of every branch; the data-splits and generalization papers (Belkin, Nakkiran, Roberts, Kaufman) are cited from memory and were not opened. `data-leakage` is plain text on these pages until it is built; link it then.
-
-## Twenty-second run (2026-10-09) — data-leakage, classification-metrics, cross-validation
-
-| Commit | What |
-|---|---|
-| `ml-models: add tested data-leakage helpers` / `build the data-leakage page` | Noise-feature selection on all rows versus train rows (100-seed average 0.729 versus 0.479), duplicate-lookup accuracy 0.7 versus 0.5, best-threshold rule 1.0 versus 0.6; page, `ready`, queue ✓ |
-| `ml-models: add tested classification-metrics helpers` / `build the classification-metrics page` | Threshold sweep, ROC AUC 0.875 (trapezoid and rank), AP 0.854, log loss 0.505, macro F1 0.362 vs micro 0.6; page, `ready`, queue ✓ |
-| `ml-models: add tested cross-validation helpers` / `build the cross-validation page` | k-fold, stratified, group and time-series splitters; 5-fold centroid CV 0.783 ± 0.075, repeated-shuffle spread 0.017; best-of-50 selection 0.677 versus nested 0.500; page, `ready`, queue ✓ |
-
-Verified at scikit-learn 1.9.1: `pipeline.py` `Pipeline` 93-1433 (`_fit` 516-576 with `clone` at 553, `fit` 582-653, `predict` 747-801); `model_selection/_split.py` `GroupKFold` 533-686, `TimeSeriesSplit` 1116-1327 (`gap` default 0), `train_test_split` 2797-2977; `metrics/_classification.py` `accuracy_score` 340-427, `confusion_matrix` 428-635, `f1_score` 1448-1642, `precision_score` 2498-2680, `recall_score` 2681-2854, `log_loss` 3321-3446, `_log_loss` 3449-3469; `model_selection/_split.py` `KFold` 437-532, `StratifiedKFold` 687-891, `StratifiedGroupKFold` 892-1115; `_validation.py` `cross_validate` 101-427, `cross_val_score` 512-667, `_fit_and_score` 670-934, `cross_val_predict` 1031-1285; `metrics/_ranking.py` `auc` 53-127, `average_precision_score` 128-311, `roc_auc_score` 511-747, `precision_recall_curve` 1059-1217, `roc_curve` 1218-1382.
-
-Pins checked this run with `git ls-remote --tags`: PyTorch v2.14.1, scikit-learn 1.9.1 and XGBoost v3.4.2 are still the latest stable releases; no pin moved.
-
-Gaps: the data-leakage references (Kaufman et al. 2012, Kapoor and Narayanan 2023, ESL section 7.10.2) and the classification-metrics references (Fawcett 2006, Davis and Goadrich 2006, Saito and Rehmsmeier 2015) and the cross-validation references (ESL ch. 7, Varma and Simon 2006, Cawley and Talbot 2010, Bengio and Grandvalet 2004) are cited from memory and were not opened. The checkout at the start of this run was a stale shallow clone; it was unshallowed and fast-forwarded before work began.
-
-## Twenty-third run (2026-10-09) — decision-trees
-
-| Commit | What |
-|---|---|
-| `ml-models: add tested decision-tree helpers` / `build the decision-trees page` | Gini and entropy (bits), split search, grown and pruned trees, cost-complexity path (alphas 0, 0.0463, 0.0992, 0.2480), depth sweep, noise-feature importance, regression split; page, `ready`, queue ✓ |
-
-Verified at scikit-learn 1.9.1: `tree/_classes.py` `BaseDecisionTree.__init__` 127-156, `_fit` 226-475 (builder choice 447-470), `predict` 501-550, `_prune_tree` 605-625, `cost_complexity_pruning_path` 627-665, `feature_importances_` 666-686, `DecisionTreeClassifier.__init__` 951-983, `fit` 985-1021, `predict_proba` 1023-1058, `DecisionTreeRegressor.__init__` 1328-1368; `_criterion.pyx` `impurity_improvement` 165-199, `Entropy` 532-602, `Gini` 605-688, `MSE` 922-1018; `_splitter.pyx` `node_split_best` 262-504; `_tree.pyx` `DepthFirstTreeBuilder` 126-339 (leaf rules 230-252), `compute_feature_importances` 1244-1281, `_cost_complexity_prune` 1623-1778; `_utils.pyx` `log` 64-65.
-
-sklearn's `Entropy` criterion is in bits (log base 2), not nats. The helpers were cross-checked against a real scikit-learn 1.9.1 in a scratch venv (never added to requirements): tree shape, root split, ccp path and entropy match. Importance on the noise demo differs from a single sklearn fit only through random tie-breaking between features. No offline outputs were needed.
-
-Pins checked with `git ls-remote --tags`: PyTorch v2.14.1, scikit-learn 1.9.1 and XGBoost v3.4.2 are still the latest stable releases; no pin moved.
-
-Gaps: the decision-trees references (Breiman et al. 1984, Quinlan 1986, ESL 9.2, Strobl et al. 2007) are cited from memory and were not opened.
-
-### Twenty-third run, page 2 — gradient-boosting
-
-| Commit | What |
-|---|---|
-| `ml-models: add tested gradient-boosting helpers` / `build the gradient-boosting page` | `boost_stumps`, `best_regression_stump`, `grow_regression_tree`, `boosting_curve` (noisy sine, lr 1.0 vs 0.1), `newton_scan` (XGBoost-convention `loss_chg`, λ, γ, `min_child_weight`); page, `ready`, queue ✓ |
-
-Verified at scikit-learn 1.9.1: `ensemble/_gb.py` `_init_raw_predictions` 94-133, `_update_terminal_regions` 136-271, `_fit_stage` 438-522, `_fit_stages` 831-961, `GradientBoostingRegressor.__init__` 2089-2136; `_hist_gradient_boosting/gradient_boosting.py` HistGradientBoosting regressor `__init__` 1646-1692 (approximate end), early-stopping `auto` at 534; `splitting.pyx` `_split_gain` 1089-1136, `_loss_from_value` 1138-1147, `compute_node_value` 1172-1198.
-
-Verified at XGBoost v3.4.2: `src/tree/param.h` `TrainParam` defaults 82-123, `ThresholdL1` 233-241, `CalcGainGivenWeight` 245-248, `CalcWeight` 252-264, `CalcGain` 266-281; `split_evaluator.h` `CalcSplitGain` 187-211; `hist/evaluate_splits.h` `EnumerateSplit` 204-264, `ApplyTreeSplit` 339-382; `driver.h` `IsValidExpandEntry` 30-47; `python-package/xgboost/training.py` `train` 53-209; `updater_quantile_hist.cc` `HistUpdater` from 408, root leaf at 520.
-
-Cross-checks: the helpers match scikit-learn 1.9.1 (stump thresholds, MSEs, staged test MSE) and XGBoost (split, `loss_chg`, leaf weights, γ and `min_child_weight` behavior). XGBoost 3.4.2 was not on the package mirror, so the check used 3.2.0 in a scratch venv; the gain and leaf formulas did not change between the two. Finding: the code's `loss_chg` has no ½ and compares with γ directly, so γ is on a different scale from the paper's ½[...] − γ; the page says so.
-
-Gaps: the gradient-boosting references (Friedman 2001, Chen and Guestrin 2016, Ke et al. 2017, ESL ch. 10) are cited from memory and were not opened. The end line of the HistGradientBoosting `__init__` range was not independently checked.
-
-### Twenty-third run, page 3 — overfitting
-
-| Commit | What |
-|---|---|
-| `ml-models: add tested overfitting helpers` / `build the overfitting page` | `poly_ridge_fit` (matches scikit-learn `Ridge` with a free intercept), median `polynomial_learning_curve`, `ridge_strength_sweep`, `memorization_demo`; page, `ready`, queue ✓ |
-
-Verified at scikit-learn 1.9.1: `model_selection/_validation.py` `learning_curve` 1776-2111, `_translate_train_sizes` 2114-2179, `_incremental_fit_estimator` 2182-2262 (end approximate), `validation_curve` 2283-2514; `tree/_classes.py` `DecisionTreeClassifier.__init__` 951-983 (from the decision-trees run).
-
-Learning-curve tables use medians over 30 draws because a degree-9 fit on 15 points occasionally explodes and would dominate a mean. The early-stopping example reuses `boosting_curve`. The page links no `regularization` page yet (not built); add the link when it is ready.
-
-Gaps: the references (ESL ch. 7, Zhang et al. 2017, Belkin et al. 2019) are cited from memory and were not opened. The end of `_incremental_fit_estimator` was not independently checked.
-
-## Twenty-fourth run (2026-10-09) — bias-variance
-
-| Commit | What |
-|---|---|
-| `ml-models: add tested bias-variance helper` / `build the bias-variance page` | `bias_variance_decomposition` (Monte Carlo bias², variance and noise over refitted training sets, with optional ridge and bagging); page, `ready`, queue ✓ |
-
-Verified at scikit-learn 1.9.1: `model_selection/_validation.py` `learning_curve` 1776-2111, `_translate_train_sizes` 2114-2179, `validation_curve` 2283-2514 (all from the overfitting run).
-
-The table uses odd degrees only: the sine is odd about x = 0.5, so degree 2 adds variance without reducing bias, and variance is not monotone between degrees 1 and 3 (0.030 vs 0.021 at 200 draws); the page says so rather than claiming a strict ladder.
-
-Pins checked with `git ls-remote --tags`: PyTorch v2.14.1, scikit-learn 1.9.1 and XGBoost v3.4.2 are still the latest stable releases; no pin moved.
-
-Gaps: the references (ESL 7.3, Geman et al. 1992, Belkin et al. 2019, Breiman 1996) are cited from memory and were not opened.
-
-### Twenty-fourth run, page 2 — regularization
-
-| Commit | What |
-|---|---|
-| `ml-models: add tested regularization helpers` / `build the regularization page` | `sparse_regression_data`, `penalized_fits` (OLS, ridge, lasso on 8 features, 3 informative), `lasso_sparsity_path`, `dropout_statistics` (inverted dropout, measured vs exact variance), `adam_weight_decay_comparison` (L2-in-gradient vs decoupled decay); page, `ready`, queue ✓, link added from `overfitting` |
-
-Verified at scikit-learn 1.9.1: `linear_model/_ridge.py` `_solve_cholesky` 215-235, `Ridge.fit` 1229-1263; `_coordinate_descent.py` `ElasticNet.fit` 1097-1294, `Lasso` 1329-1663 (class start 1329; end is the line before `LinearModelCV` at 1665).
-
-Verified at PyTorch v2.14.1: `nn/modules/dropout.py` `Dropout` 35-73; `nn/functional.py` `dropout` 1473-1498; `optim/adamw.py` `AdamW` 19-49. Finding: in 2.14.1 `AdamW` is `Adam` with `decoupled_weight_decay=True`, so the decay itself is in `optim/adam.py` 416-428 (single-tensor branch; the foreach path is at 688-698), and the page links that rather than `adamw.py` alone.
-
-The Adam comparison uses an alternating-sign gradient so the loss does not move the weight and only the decay does; a constant gradient made the L2 case misleading (Adam's second-moment memory of early large gradients shrinks later steps). The Adam update is a hand implementation of the standard bias-corrected rule and was not cross-checked against an installed PyTorch (none in the scratch venv).
-
-Gaps: the references (ESL 3.4 and 3.8, Tibshirani 1996, Srivastava et al. 2014, Loshchilov and Hutter 2019) are cited from memory and were not opened. `Lasso` end line inferred from the next class start.
-
-### Twenty-fourth run, page 3 — activation-functions
-
-| Commit | What |
-|---|---|
-| `ml-models: add tested activation helpers` / `build the activation-functions page` | `gelu_exact`, `gelu_tanh`, `silu`, `softplus`, `ACTIVATIONS`, `activation_table`, `numeric_slope`, `gelu_tanh_max_error`, `chain_gradient`, `glu_variants`, `relu_active_fraction`; page, `ready`, queue ✓ |
-
-Verified at PyTorch v2.14.1 (start and end lines read in the clone): `nn/modules/activation.py` `ReLU` 104-150, `Sigmoid` 337-361, `Tanh` 407-433, `SiLU` 436-483, `GLU` 737-775, `GELU` 778-823, `LeakyReLU` 875-930; `nn/functional.py` `relu` 1766-1788, `glu` 1791-1850, `leaky_relu` 1955-1976, `gelu` 2060-2077 (bound to the C++ kernel and documented in place), `tanh` 2339-2347, `sigmoid` 2350-2357, `silu` 2429-2451.
-
-Slopes in the tests are checked against finite differences. The GELU exact-vs-tanh gap is 0.000473 at x of about 2.7. The page's chain-gradient table ignores weight matrices, and says so.
-
-Pins checked with `git ls-remote --tags`: no pin moved (PyTorch v2.14.1, scikit-learn 1.9.1, XGBoost v3.4.2).
-
-Gaps: references (Hendrycks and Gimpel, Ramachandran et al., Dauphin et al., Shazeer, Glorot et al.) are cited from memory and were not opened. The "hidden size reduced to 2/3" SwiGLU remark is from memory of common practice, not checked against a specific model's code.
+Gaps: the references (Eckart and Young 1936, Trefethen and Bau, Strang, Halko et al. 2011, Saxe et
+al. 2014, Hu et al. 2021) are cited from memory and were not opened. The torch snippet's printed
+values come from the stdlib helpers, not from running torch.
 
 ## Queue
 
