@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-11 (twenty-fifth run). Spec v2 widens the section from model architectures
+**Last updated:** 2026-10-11 (twenty-sixth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: queue items 1-39, the last being `cnns`. The next page is
-`autoregressive-models` (queue item 40).
+format. Ready pages: queue items 1-42, the last being `nearest-neighbors`. The next page is
+`similarity-search` (queue item 43).
 
 ## Pins
 
@@ -46,13 +46,13 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (1 of 93 ready:
-      `transformer`, still in the v1 format).
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (42 of 93 ready, all
+      in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
 - [x] No ML package in either requirements file (tested). There is no offline data yet.
-- [x] Mobile at 390px: no horizontal page scroll on `/`, `/ml-models` or
-      `/ml-models/transformer` (checked in headless Chromium).
+- [x] Mobile at 390px: no horizontal page scroll on `/`, `/ml-models` or any ready page
+      (`check_mobile.js` in headless Chromium, every run).
 - [ ] The Routine has run at least once in maintenance mode.
 
 ## Decisions
@@ -202,6 +202,11 @@ The paths below are relative to `torch/nn/modules/` unless they give a fuller pa
 - `torch/autograd/gradcheck.py`: `gradcheck` 1999-2105 (`eps=1e-6`, `atol=1e-5`, `rtol=1e-3`), `_compute_numerical_gradient` 358-394. `clip_grad.py`: `clip_grad_norm_` 185-232. `module.py`: `zero_grad` 2957-2985. `torch/utils/checkpoint.py`: `checkpoint` 423-619.
 - `torch/optim/sgd.py` (optimizers): `SGD` 28-105, `_single_tensor_sgd` 322-380. `adam.py`: `Adam` 34-138, `_single_tensor_adam` 347-552 (decoupled decay 415-418, bias correction 528-546). `adamw.py`: `AdamW` 19-47. `rmsprop.py`: `_single_tensor_rmsprop` 265-341.
 - `torch/optim/optimizer.py`: `Optimizer` starts at 358; `state_dict` 700-791, `zero_grad` 1048-1110, `step` 1117-1124, `add_param_group` 1127-1180.
+- Autoregressive models: `conv.py` `Conv1d` 225-385; `torch/nn/functional.py` `pad` 5761-5849;
+  `torch/_torch_docs.py` `triu` 12183-12247; `categorical.py` `__init__` 56-85, `sample` 144-149,
+  `log_prob` 151-157.
+- Tokenization: `sparse.py` padding fill 179-186; `loss.py` `CrossEntropyLoss.__init__` 1385-1396
+  (`ignore_index=-100`).
 - `torch/nn/modules/sparse.py` (embeddings): `Embedding` 14-264 (`__init__` 134-177, `reset_parameters` 179-181, `forward` 188-197, `from_pretrained` 213-264); `EmbeddingBag` starts at 267. `torch/nn/functional.py`: `embedding` 2509-2621.
 
 ### scikit-learn 1.9.1 (start lines; check the end before linking a range)
@@ -229,7 +234,14 @@ Paths are under `sklearn/`.
 - `ensemble/_gb.py`: `GradientBoostingClassifier` 1145.
 - `ensemble/_hist_gradient_boosting/gradient_boosting.py`: `HistGradientBoostingClassifier` 1762.
 - `svm/_classes.py`: `SVC` 623.
-- `neighbors/_classification.py`: `KNeighborsClassifier` 44.
+- `neighbors/` (all verified, used by `nearest-neighbors`): `_classification.py`
+  `KNeighborsClassifier` 44-457 (`__init__` 198-219, `fit` 225-243, `predict` 245-312,
+  `predict_proba` 314-417); `_regression.py` `KNeighborsRegressor` 21-272 (`predict` 229-272);
+  `_unsupervised.py` `NearestNeighbors` 10-179; `_base.py` `VALID_METRICS` 59, `_get_weights`
+  74-117, `"auto"` algorithm choice 615-648, `kneighbors` 756-958; `_binary_tree.pxi.tp` size
+  comment 75-90, `n_levels`/`n_nodes` 870-877, `find_node_split_dim` 595-645, `_recursive_build`
+  1033-1083, `_query_single_depthfirst` 1603-1656; `_kd_tree.pyx.tp` `init_node` 73-121,
+  `min_rdist` 123-147; `_ball_tree.pyx.tp` `init_node` 86-145, `min_dist` 148-156.
 - `cluster/_kmeans.py`: `KMeans` 1191.
 - `decomposition/_pca.py`: `PCA` 113.
 - `model_selection/_split.py`: `KFold` 437, `GroupKFold` 533, `StratifiedKFold` 687,
@@ -318,101 +330,59 @@ Open gaps from these runs:
   `_incremental_fit_estimator`, and the `Lasso` end line, were inferred, not checked.
 - The SwiGLU "hidden size reduced to 2/3" remark is from memory of common practice.
 
-## Twenty-fifth run (2026-10-11) — linear-algebra-toolkit, missing-data, computation-graphs, cnns
+## Twenty-fifth run (2026-10-11) — condensed
+
+Built `linear-algebra-toolkit`, `missing-data`, `computation-graphs` and `cnns` (helpers commit,
+page commit and queue ✓ each), plus `6f0803f`, which fixed 13 templates that read the missing
+`pins.X.version` key and added a test for every `pins.X.<key>` a template reads. Ranges are under
+the pins above and in the templates; `git log -p` on this file has the per-page tables.
+
+Findings worth keeping:
+
+- An SVD through the eigenvalues of AᵀA squares the condition number and gave rank 3 for a
+  rank-2 matrix; the one-sided Jacobi SVD gives rank 2.
+- Cross-checked in a scratch venv (never in requirements): scikit-learn 1.9.1 imputers match the
+  missing-data helpers; XGBoost 3.2.0 (3.4.2 is not on the mirror) gives the page's split and
+  default direction; torch 2.14.1 matches the computation-graph nodes, order, gradients and
+  errors, and every cnns size, output, parameter count and the 435-pixel receptive field.
+- torchvision is not pinned, so ResNet-18 is described from its paper, not linked.
+
+## Twenty-sixth run (2026-10-11) — autoregressive-models, tokenization, nearest-neighbors
 
 | Commit | What |
 |---|---|
-| `3335843` `ml-models: add tested linear algebra helpers` | `jacobi_eigh`, `power_iteration`, one-sided Jacobi `svd`, `from_svd`, `low_rank_errors`, `matrix_rank`, `condition_number`, `perturbed_solve`, `unit_circle_image`, `svd_stages`, `lora_param_counts` with tests (Eckart–Young against 50 random rank-1 rivals) |
-| `24e436c` `ml-models: build the linear-algebra-toolkit page` | The page, `ready`, queue ✓ |
-| `6f0803f` `fix: show the pinned release in ml-models references` | 13 templates read `pins.X.version`, which is not a `PINS` key and rendered empty; now `pins.X.tag`, with a test that every `pins.X.<key>` a template reads exists |
+| `41393ab` `ml-models: add tested autoregressive helpers` | Chain-rule factors, Markov approximation, ancestral samples, table sizes, teacher forcing and an exposure-bias curve, causal 1-D convolution stacks, receptive fields and a causality check, WaveNet receptive fields, PixelCNN masks and dependencies, with seven tests |
+| `98de082` `ml-models: build the autoregressive-models page` | The page, `ready`, queue ✓ |
+| `164babf` `ml-models: add tested tokenization helpers` | BPE training and encoding on the Sennrich toy corpus, exact WordPiece likelihood gains, unigram segmentations and Viterbi, UTF-8 byte lengths, digit grouping, padded ids/mask/shifted targets, with six tests |
+| `c13df57` `ml-models: build the tokenization page` | The page, `ready`, queue ✓ |
+| `dec7943` `ml-models: add tested nearest-neighbors helpers` | Minkowski metrics, k-NN voting with sklearn's weights, the docstring examples, a k sweep, leave-one-out error, distance concentration, a KD tree with sklearn's sizing, widest-spread median split and depth-first pruning, the ball-tree bound, with six tests |
+| `a3ecf73` `ml-models: add the nearest-neighbors page` | The page, `ready`, queue ✓ |
 
-Verified at PyTorch v2.14.1: `linalg/__init__.py` `eig` 474-582, `eigh` 642-763, `eigvalsh`
-765-834, `matrix_rank` 1263-1351, `svd` 1734-1886, `svdvals` 1888-1936, `cond` 1938-2054, `pinv`
-2056-2161, `qr` 2865-2966; `_lowrank.py` `get_approximate_basis` 11-82, `svd_lowrank` 85-146,
-`_svd_lowrank` 149-180, `pca_lowrank` 183-293; `nn/init.py` `orthogonal_` 672-720.
+Ranges verified at the pins this run are listed above (PyTorch: autoregressive models,
+tokenization; scikit-learn: `neighbors/`).
 
-Verified at scikit-learn 1.9.1: `decomposition/_pca.py` `_fit_full`/`_fit_truncated` 544-694;
-`utils/extmath.py` `randomized_svd` 560-633.
+Findings worth keeping:
 
-Finding: an SVD through the eigenvalues of AᵀA squares the condition number and gave rank 3 for a
-rank-2 matrix (σ₃ ≈ 4.9e-8); the one-sided Jacobi SVD gives rank 2. The page's Tradeoffs says so.
+- On the BPE toy corpus, `e`+`s` and `s`+`t` tie at count 9; BPE takes `e`+`s` first, while
+  the WordPiece likelihood-gain criterion picks `s`+`t`. The tokenization page shows both.
+- The KD-tree example computes 4 of 16 distances for k = 1 and all 16 for k = 5, which is
+  the page's illustration of why `"auto"` falls back to brute force for k ≥ n/2.
+- Leave-one-out with k = 15 on a balanced 16-point set is wrong on every point (7 vs 8 votes).
 
 Pins checked with `git ls-remote --tags`: PyTorch v2.14.1, scikit-learn 1.9.1 and XGBoost v3.4.2
 are still the latest stable releases; no pin moved.
 
-Gaps: the references (Eckart and Young 1936, Trefethen and Bau, Strang, Halko et al. 2011, Saxe et
-al. 2014, Hu et al. 2021) are cited from memory and were not opened. The torch snippet's printed
-values come from the stdlib helpers, not from running torch.
+Gaps:
 
-### missing-data
-
-| Commit | What |
-|---|---|
-| `590aa67` `ml-models: add tested missing-data helpers` | `column_fill_values`, `impute_column`, `missing_indicator`, `complete_rows`, `mechanism_estimates` (MCAR/MAR/MNAR, n=4000), `iterative_impute`/`iterative_comparison` (round-robin OLS, sklearn's stopping rule), `indicator_comparison`, `missing_split_scan` (XGBoost's forward-then-backward order, ties keep missing right), `routing_example`, with nine tests |
-| `64c0ccc` `ml-models: build the missing-data page` | The page, `ready`, queue ✓ |
-
-Verified at scikit-learn 1.9.1: `impute/_base.py` `_BaseImputer` 95-168,
-`_concatenate_indicator` 137-156, `SimpleImputer` 171-784, `_dense_fit` 529-599, `transform`
-601-688, `MissingIndicator` 787-1149; `impute/_iterative.py` `IterativeImputer` 60-1002,
-`__init__` 314-352, `_impute_one_feature` 354-475, `_get_ordered_idx` 513-551,
-`_initial_imputation` 591-668, `fit_transform` 723-873 (stop rule 819-871);
-`_hist_gradient_boosting/splitting.pyx` scan dispatch 549-574, `sample_goes_left` 1149-1169;
-`grower.py` no-missing rule 546-552.
-
-Verified at XGBoost v3.4.2: `src/tree/hist/evaluate_splits.h` `SplitContainsMissingValues` 47-57,
-`EnumerateSplit` 200-264, dispatch 322-326; `src/tree/param.h` `NeedReplace` 410-430, `Update`
-450-476 (`default_left` in bit 31 of `sindex`).
-
-Cross-checks (scratch venv, scikit-learn 1.9.1 and XGBoost 3.2.0; 3.4.2 is not on the package
-mirror): `SimpleImputer` statistics and `MissingIndicator` match the helpers;
-`IterativeImputer(LinearRegression())` matches `iterative_impute` to 1.7e-15 with `n_iter_` 9;
-the XGBoost depth-1 dump is `[f0<4] missing=1, gain=2.63888741`, leaves 0.833333373 / 2.25, as
-the page states; trained without missing values the split defaults right; sklearn HGB picks
-threshold 3.5 with `missing_go_to_left=1`.
-
-Gaps: Rubin 1976, Little and Rubin, van Buuren and Groothuis-Oudshoorn 2011 and Chen and
-Guestrin 2016 are cited from memory and were not opened. The XGBoost cross-check ran 3.2.0, not
-the pinned 3.4.2; the linked split code is from the pin.
-
-### computation-graphs
-
-| Commit | What |
-|---|---|
-| `8f14d60` `ml-models: add tested computation-graph helpers` | `GraphNode`, `GraphTensor`, `Autograd` (mul, add, clamp, straight-through clamp, detach, hooks, `backward` with dependency counts, highest-`sequence_nr`-first ready queue, release and the backward-twice error), `graph_example`, `graph_controls`, with six tests |
-| `8a93c77` `ml-models: build the computation-graphs page` | The page, `ready`, queue ✓ |
-
-Verified at PyTorch v2.14.1: the autograd ranges listed under the PyTorch pin above.
-
-Cross-check: torch 2.14.1 (the pinned release, CPU run of the PyPI wheel in the scratch venv)
-gives the same nodes (`MulBackward0`, `AddBackward0`, `MulBackward0` with sequence numbers 0-2
-and the same `next_functions`), the same execution order (via node prehooks: loss Mul 1, Add 14,
-AccumulateGrad(b) 14, Mul 14, AccumulateGrad(w) 28), w.grad 28 and b.grad 14, the backward-twice
-message, every control row (retained 56/28, hook 14/7, detach 14/7, `ClampBackward1` 0/0,
-`StraightThroughClampBackward` 20/10), the `no_grad` result, the `register_hook` error and the
-"element 0 of tensors does not require grad" error the quiz quotes.
-
-Gaps: Paszke et al. 2017 and 2019, Baydin et al. 2018 and Bengio et al. 2013 are cited from
-memory and were not opened.
-
-### cnns
-
-| Commit | What |
-|---|---|
-| `6a7b9b1` `ml-models: add tested convolution helpers` | `conv_output_size`, `pool_output_size` (with `ceil_mode`), `pad2d`, `conv2d`, `pool2d`, `receptive_fields`, `conv_params`, `lenet_stack`, `resnet18_stack`, `stacking_comparison`, `resnet_receptive_fields`, `conv_example`, `output_size_rows`, with six tests |
-| `62d0869` `ml-models: build the cnns page` | The page, `ready`, queue ✓ |
-
-Verified at PyTorch v2.14.1: the `conv.py` and `pooling.py` ranges listed under the PyTorch pin
-above. torchvision is not pinned, so ResNet-18 is described from its paper and the page's own
-`BasicBlock`, not linked.
-
-Cross-check: torch 2.14.1 (CPU) gives the same edge-kernel outputs at all four settings, a
-random 3-channel convolution with stride, padding and dilation matching `conv2d`, the same max
-and average pooling, every output size including a `ceil_mode` sweep, LeNet's 61,706
-parameters, torchvision-style ResNet-18's 11,689,512 parameters and stage shapes, and a
-gradient-measured receptive field of 435 for a `layer4` output unit.
-
-Gaps: LeCun et al. 1998, Krizhevsky et al. 2012, Simonyan and Zisserman 2015, He et al. 2016,
-Dumoulin and Visin 2016 and Luo et al. 2016 are cited from memory and were not opened.
+- arxiv.org was unreachable again (DNS failure via WebFetch, 403 via curl), so every reference
+  on the three pages is cited from memory and was not opened. The GPT-2 report and the
+  pre-arXiv papers (Cover and Hart 1967, Bentley 1975, Friedman et al. 1977, Omohundro 1989,
+  Beyer et al. 1999, Schuster and Nakajima 2012) have no link.
+- WordPiece is described by the likelihood-gain criterion of its papers; no pinned library
+  implements WordPiece training, so there is no code to check it against.
+- No torch, scikit-learn cross-check ran this run; the numbers come from the stdlib helpers,
+  and the scikit-learn docstring outputs they reproduce are quoted from the pinned source.
+- Page commits exceed the 400-line guideline because each page template is one file.
 
 ## Queue
 
