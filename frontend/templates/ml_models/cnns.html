@@ -1,0 +1,526 @@
+{% set e = conv_example() %}
+{% set sizes = output_size_rows() %}
+{% set lenet = lenet_stack() %}
+{% set resnet = resnet18_stack() %}
+{% set stack = stacking_comparison() %}
+{% set rfs = resnet_receptive_fields() %}
+{% macro n(x) -%}{{ "{:,}".format(x) }}{%- endmacro %}
+{% macro shape(s) -%}[{{ s|join(", ") }}]{%- endmacro %}
+<header class="jj-header">
+  <h1>Convolutional networks</h1>
+  <p class="tagline">
+    A convolution slides one small set of weights across an image and takes a dot product at every position. That
+    single idea gives you parameter sharing, translation equivariance and a receptive field that grows with depth.
+    This page works through the arithmetic (kernels, stride, padding, dilation, channels, pooling and the
+    output-size formula) and then builds a LeNet-style and a ResNet-style network shape by shape.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A 224 × 224 colour image has {{ n(3 * 224 * 224) }} numbers. Feed it to a
+  <a href="{{ url_for('ml_models', slug='neurons-and-layers') }}">fully connected layer</a> with even
+  {{ n(stack.channels * 56 * 56) }} outputs and you need about {{ "%.1f"|format(3 * 224 * 224 * stack.channels * 56 * 56 / 1e9) }}
+  billion weights in the first layer alone. Worse, those weights learn nothing that transfers across the image: a
+  cat-ear detector in the top-left corner is a separate set of weights from the same detector one pixel to the
+  right, so the network needs to see ears at every position to learn them everywhere.
+</p>
+<p>
+  Images have structure a dense layer ignores. Nearby pixels belong together, and the same pattern means the same
+  thing wherever it appears. A good layer for images should look at small neighbourhoods and reuse its weights
+  at every position.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Take a 3 × 3 stencil of weights, a <strong>kernel</strong>. Lay it over the top-left corner of the image,
+  multiply each weight by the pixel under it and add the nine products: that is one output number. Slide the
+  stencil one pixel right and repeat. Sweep the whole image and you get a new grid of numbers, a
+  <strong>feature map</strong>, that is large wherever the image locally looks like the kernel.
+</p>
+<p>
+  A layer has many kernels, each producing its own map, so the output is a stack of maps: channels. The next layer's
+  kernels look at small neighbourhoods across <em>all</em> those channels, so they detect combinations of the first
+  layer's patterns: edges become corners, corners become textures, textures become parts. Every layer sees a
+  slightly larger region of the original image than the last, and downsampling (stride or pooling) makes that
+  region grow quickly. By the end, each number summarises a large part of the image, and a small classifier on top
+  reads off the answer.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="sliding-dot-product">Convolution as a sliding dot product</h3>
+<p>
+  For one input channel and one kernel <code>K</code> of size k × k, output position (i, j) is
+</p>
+<p class="ml-formula">out[i, j] = bias + Σ<sub>a</sub> Σ<sub>b</sub> K[a, b] · x[i·s + a·d, j·s + b·d]</p>
+<p>
+  where s is the stride and d the dilation (both 1 in the plain case). With several input channels the sum also
+  runs over every channel, so each kernel is a <code>C<sub>in</sub> × k × k</code> block and each output channel
+  has its own kernel and bias. Deep learning libraries compute this <em>cross-correlation</em>; the textbook
+  convolution flips the kernel first, which makes no difference when the kernel is learned.
+</p>
+<p>
+  A <code>Conv2d(C<sub>in</sub>, C<sub>out</sub>, k)</code> therefore has a weight of shape
+  <code>[C<sub>out</sub>, C<sub>in</sub>/groups, k, k]</code> and a bias of shape <code>[C<sub>out</sub>]</code>,
+  and maps <code>[N, C<sub>in</sub>, H, W]</code> to <code>[N, C<sub>out</sub>, H<sub>out</sub>, W<sub>out</sub>]</code>.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 250" role="img" aria-labelledby="cnn-slide-title cnn-slide-desc">
+    <title id="cnn-slide-title">A 3×3 kernel sliding over a 6×6 image</title>
+    <desc id="cnn-slide-desc">
+      Left, a 6 by 6 image whose left three columns are 3 and right three columns are 0. A 3 by 3 window starting at
+      column 1 is highlighted. Middle, the kernel with columns 1, 0, −1. Right, the 4 by 4 output: every row is
+      0, 9, 9, 0. The highlighted window produces the output at row 0, column 1, which is {{ e.term_sum }}.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <text x="98" y="22" font-weight="bold">input 6×6</text>
+      {% for row in e.image %}{% set i = loop.index0 %}{% for v in row %}
+      <rect x="{{ 20 + loop.index0 * 26 }}" y="{{ 34 + i * 26 }}" width="26" height="26" class="d-box {% if v %}ml-tensor{% endif %}"></rect>
+      <text x="{{ 33 + loop.index0 * 26 }}" y="{{ 51 + i * 26 }}">{{ v }}</text>
+      {% endfor %}{% endfor %}
+      <rect x="46" y="34" width="78" height="78" fill="none" class="ml-box-key" stroke-width="3"></rect>
+
+      <text x="235" y="110" font-size="18">⋆</text>
+
+      <text x="300" y="22" font-weight="bold">kernel 3×3</text>
+      {% for row in e.kernel %}{% set i = loop.index0 %}{% for v in row %}
+      <rect x="{{ 261 + loop.index0 * 26 }}" y="{{ 60 + i * 26 }}" width="26" height="26" class="d-box ml-weight"></rect>
+      <text x="{{ 274 + loop.index0 * 26 }}" y="{{ 77 + i * 26 }}">{{ v }}</text>
+      {% endfor %}{% endfor %}
+
+      <text x="375" y="110" font-size="18">=</text>
+
+      <text x="460" y="22" font-weight="bold">output 4×4</text>
+      {% for row in e.output %}{% set i = loop.index0 %}{% for v in row %}
+      <rect x="{{ 408 + loop.index0 * 26 }}" y="{{ 47 + i * 26 }}" width="26" height="26" class="d-box ml-op"></rect>
+      <text x="{{ 421 + loop.index0 * 26 }}" y="{{ 64 + i * 26 }}">{{ v }}</text>
+      {% endfor %}{% endfor %}
+      <rect x="434" y="47" width="26" height="26" fill="none" class="ml-box-key" stroke-width="3"></rect>
+
+      <text x="600" y="60" font-size="11" class="d-muted">out = ⌊(6 + 0 − 3)/1⌋ + 1</text>
+      <text x="600" y="76" font-size="11" class="d-muted">= 4 per side</text>
+      <text x="600" y="110" font-size="11" class="d-muted">9 weights, reused</text>
+      <text x="600" y="126" font-size="11" class="d-muted">at all 16 positions</text>
+
+      <text x="350" y="222" font-size="12">
+        highlighted: {% for k, v in e.terms %}{{ k }}·{{ v }}{% if not loop.last %} + {% endif %}{% endfor %} = {{ e.term_sum }}
+      </text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The kernel subtracts the right column of its window from the left one, so it responds only where bright meets dark: a vertical-edge detector. The flat regions give 0.</p>
+
+<h3 id="output-size">Stride, padding, dilation and the output size</h3>
+<ul>
+  <li><strong>Stride</strong> s moves the window s pixels at a time, so the output shrinks by about a factor s.</li>
+  <li><strong>Padding</strong> p adds p rows and columns of zeros (or reflected or replicated values,
+    <code>padding_mode</code>) around the input, so border pixels are covered as often as central ones and the
+    size can be preserved. <code>padding="same"</code> computes it for you when the stride is 1.</li>
+  <li><strong>Dilation</strong> d spaces the kernel's taps d pixels apart: a 3 × 3 kernel with d = 2 covers a
+    5 × 5 area with nine weights.</li>
+</ul>
+<p>Along each spatial dimension, PyTorch's <code>Conv2d</code> and <code>MaxPool2d</code> both give</p>
+<p class="ml-formula">H<sub>out</sub> = ⌊(H<sub>in</sub> + 2p − d·(k − 1) − 1) / s⌋ + 1</p>
+<p>
+  The floor means extra pixels that do not fill a final window are dropped. Pooling's <code>ceil_mode=True</code>
+  rounds up instead, keeping a partial last window as long as it starts inside the input.
+</p>
+
+<h3 id="channels">Channels, 1 × 1 convolutions and groups</h3>
+<p>
+  Each output channel looks at every input channel, so a 3 × 3 convolution from 64 to 128 channels has
+  128 × 64 × 3 × 3 = {{ n(128 * 64 * 9) }} weights. A <strong>1 × 1 convolution</strong> looks at one pixel
+  but all channels: it is a linear layer applied at every position, used to change the channel count cheaply.
+  <code>groups=g</code> splits the channels into g independent groups; with <code>groups=C<sub>in</sub></code> each
+  channel gets its own kernel (a depthwise convolution), which with a following 1 × 1 convolution is the
+  depthwise-separable block in MobileNet-style networks.
+</p>
+
+<h3 id="pooling">Pooling</h3>
+<p>
+  Pooling replaces each window by a summary with no weights: <code>MaxPool2d(2)</code> keeps the largest value in
+  each 2 × 2 block, <code>AvgPool2d(2)</code> the mean. The stride defaults to the kernel size, so windows do not
+  overlap and each side halves. Max pooling makes the output insensitive to small shifts of a feature inside its
+  window. <code>AdaptiveAvgPool2d(1)</code> averages each whole channel to one number whatever the input size,
+  which is how modern CNNs go from feature maps to a vector for the classifier ("global average pooling").
+</p>
+
+<h3 id="receptive-field">Receptive fields</h3>
+<p>
+  The receptive field of an output unit is the region of the input that can affect it. Track two numbers through the
+  layers: the receptive field r and the jump j (how many input pixels one step in this layer's output corresponds
+  to). Starting from r = 1, j = 1, each layer with kernel k, stride s and dilation d does
+</p>
+<p class="ml-formula">r ← r + (k − 1)·d·j &nbsp;&nbsp; j ← j·s</p>
+<p>
+  So a 3 × 3 layer adds 2j pixels: depth grows the field linearly, and each stride multiplies how fast later layers
+  grow it. Three stacked 3 × 3 convolutions see {{ stack.stacked_rf }} × {{ stack.stacked_rf }}, the same as one
+  7 × 7, with {{ n(stack.stacked_params) }} instead of {{ n(stack.single_params) }} weights at
+  {{ stack.channels }} channels and two extra nonlinearities in between. That observation from VGG is why nearly
+  every modern CNN uses 3 × 3 kernels. The theoretical field is an upper bound; the effective field, where the
+  gradient is large, is smaller and roughly Gaussian.
+</p>
+
+<h3 id="parameter-sharing">Parameter sharing and translation equivariance</h3>
+<p>
+  The same kernel is used at every position, so a convolution has
+  <code>C<sub>out</sub>·C<sub>in</sub>·k²</code> weights no matter how big the image is. Sharing also makes the layer
+  <strong>translation equivariant</strong>: shift the input and the feature map shifts by the same amount (exactly,
+  for stride 1 away from the borders). Pooling and the final global average then make the prediction roughly
+  <strong>invariant</strong> to where the object is. These are built-in assumptions, an inductive bias, which is why
+  CNNs learn from far less data than a model that has to discover locality on its own.
+</p>
+
+<h3 id="residual-blocks">Residual blocks</h3>
+<p>
+  Stacking more plain convolution layers eventually makes training error go <em>up</em>, not down: the deeper
+  network is harder to optimise even though it could copy the shallower one and add identity layers. ResNet fixes
+  this by having each block learn a correction to its input:
+</p>
+<p class="ml-formula">y = ReLU(F(x) + shortcut(x)) &nbsp;&nbsp; F = conv3×3 → BN → ReLU → conv3×3 → BN</p>
+<p>
+  If F learns nothing, the block passes x straight through, so extra depth cannot hurt, and the gradient has a
+  direct path back through every addition (see <a href="{{ url_for('ml_models', slug='layernorm-and-residuals') }}">normalization
+  and residuals</a>, where the transformer uses the same trick). When a block halves the resolution and doubles the
+  channels, x and F(x) no longer have the same shape, so the shortcut becomes a strided 1 × 1 convolution with
+  batch norm (the "downsample" path). The convolutions before a batch norm have <code>bias=False</code>, since the
+  norm's own shift makes a bias redundant.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 230" role="img" aria-labelledby="cnn-block-title cnn-block-desc">
+    <title id="cnn-block-title">A ResNet basic block with a downsampling shortcut</title>
+    <desc id="cnn-block-desc">
+      The input x of shape [64, 56, 56] goes along two paths. The main path is a 3 by 3 convolution with stride 2 to
+      128 channels, batch norm, ReLU, a second 3 by 3 convolution and batch norm, giving [128, 28, 28]. The shortcut is
+      a 1 by 1 convolution with stride 2 and batch norm, also giving [128, 28, 28]. The two are added and passed
+      through a ReLU. When the shapes already match, the shortcut is the identity.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      <rect x="10" y="90" width="80" height="40" rx="4" class="d-box ml-tensor"></rect>
+      <text x="50" y="108">x</text>
+      <text x="50" y="122" font-size="10">[64, 56, 56]</text>
+
+      {% set boxes = [("conv 3×3/2", "64→128", "ml-weight"), ("BN", "", "ml-op"), ("ReLU", "", "ml-op"), ("conv 3×3", "128→128", "ml-weight"), ("BN", "", "ml-op")] %}
+      {% for label, sub, cls in boxes %}
+      {% set bx = 110 + loop.index0 * 88 %}
+      <rect x="{{ bx }}" y="30" width="78" height="40" rx="4" class="d-box {{ cls }}"></rect>
+      <text x="{{ bx + 39 }}" y="{{ 48 if sub else 54 }}">{{ label }}</text>
+      {% if sub %}<text x="{{ bx + 39 }}" y="62" font-size="10" class="d-muted">{{ sub }}</text>{% endif %}
+      {% if not loop.last %}<path d="M{{ bx + 78 }} 50 h10" class="d-line" stroke-width="1.5"></path>{% endif %}
+      {% endfor %}
+
+      <rect x="250" y="150" width="150" height="40" rx="4" class="d-box ml-weight ml-dashed"></rect>
+      <text x="325" y="168">shortcut: conv 1×1/2 + BN</text>
+      <text x="325" y="182" font-size="10" class="d-muted">identity when shapes match</text>
+
+      <circle cx="580" cy="110" r="14" class="d-box ml-op"></circle>
+      <text x="580" y="115" font-size="14">+</text>
+      <rect x="610" y="90" width="80" height="40" rx="4" class="d-box ml-tensor"></rect>
+      <text x="650" y="108">ReLU → y</text>
+      <text x="650" y="122" font-size="10">[128, 28, 28]</text>
+
+      <g class="d-line" fill="none" stroke-width="1.5">
+        <path d="M90 100 L100 100 L100 50 L110 50"></path>
+        <path d="M90 120 L100 120 L100 170 L250 170"></path>
+        <path d="M540 50 L580 50 L580 96"></path>
+        <path d="M400 170 L580 170 L580 124"></path>
+        <path d="M594 110 L610 110"></path>
+      </g>
+      <text x="470" y="100" font-size="10" class="d-muted">F(x)</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The first block of ResNet-18's <code>layer2</code>. Its second block, and every block of <code>layer1</code>, keeps the shape and uses the identity shortcut.</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>nn.Conv2d</code></td>
+        <td><code>[N, C<sub>in</sub>, H, W]</code> → <code>[N, C<sub>out</sub>, H<sub>out</sub>, W<sub>out</sub>]</code></td>
+        <td>2-D cross-correlation; the docstring gives the output-size formula.</td>
+        <td><a href="{{ src('torch/nn/modules/conv.py', 388, 565) }}"><code>conv.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_ConvNd.__init__</code></td>
+        <td>checks <code>groups</code>, <code>padding="same"</code> only with stride 1</td>
+        <td>Shared constructor for every convolution.</td>
+        <td><a href="{{ src('torch/nn/modules/conv.py', 87, 180) }}"><code>conv.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>weight</code>, <code>bias</code></td>
+        <td><code>[C<sub>out</sub>, C<sub>in</sub>/groups, k, k]</code>, <code>[C<sub>out</sub>]</code></td>
+        <td>One kernel per output channel, shared over positions.</td>
+        <td><a href="{{ src('torch/nn/modules/conv.py', 161, 178) }}"><code>conv.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>padding="same"</code></td>
+        <td>total d·(k − 1), left gets the smaller half</td>
+        <td>Padding that keeps the size at stride 1.</td>
+        <td><a href="{{ src('torch/nn/modules/conv.py', 143, 155) }}"><code>conv.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>reset_parameters</code></td>
+        <td>Kaiming uniform, a = √5; bias U(±1/√fan_in)</td>
+        <td>Default initialisation.</td>
+        <td><a href="{{ src('torch/nn/modules/conv.py', 182, 201) }}"><code>conv.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>Conv2d._conv_forward</code></td>
+        <td>non-zero <code>padding_mode</code> pads first, then convolves with padding 0</td>
+        <td>Calls <code>F.conv2d</code>.</td>
+        <td><a href="{{ src('torch/nn/modules/conv.py', 546, 562) }}"><code>conv.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_MaxPoolNd</code></td>
+        <td><code>stride</code> defaults to <code>kernel_size</code></td>
+        <td>Shared pooling constructor.</td>
+        <td><a href="{{ src('torch/nn/modules/pooling.py', 43, 76) }}"><code>pooling.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.MaxPool2d</code></td>
+        <td><code>[N, C, H, W]</code> → <code>[N, C, H<sub>out</sub>, W<sub>out</sub>]</code>; <code>ceil_mode</code></td>
+        <td>Maximum over each window, no weights.</td>
+        <td><a href="{{ src('torch/nn/modules/pooling.py', 155, 232) }}"><code>pooling.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.AvgPool2d</code></td>
+        <td><code>count_include_pad</code>, <code>divisor_override</code></td>
+        <td>Mean over each window.</td>
+        <td><a href="{{ src('torch/nn/modules/pooling.py', 680, 787) }}"><code>pooling.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.AdaptiveAvgPool2d</code></td>
+        <td><code>output_size</code>, any input size</td>
+        <td>Global average pooling with <code>output_size=1</code>.</td>
+        <td><a href="{{ src('torch/nn/modules/pooling.py', 1477, 1514) }}"><code>pooling.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-edge">One kernel, four settings</h3>
+  <p>
+    The 6 × 6 image and edge kernel from the diagram. The highlighted output is the dot product of the kernel with the
+    window starting at row 0, column 1:
+    {% for k, v in e.terms %}{{ k }}·{{ v }}{% if not loop.last %} + {% endif %}{% endfor %} = {{ e.term_sum }}.
+    Changing the settings changes the output size exactly as the formula says:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Setting</th><th>Size</th><th>First row</th></tr></thead>
+      <tbody>
+        <tr><td>stride 1, no padding</td><td>{{ e.output|length }} × {{ e.output[0]|length }}</td><td>{{ e.output[0]|join(", ") }}</td></tr>
+        <tr><td>stride 1, padding 1</td><td>{{ e.padded|length }} × {{ e.padded[0]|length }}</td><td>{{ e.padded[0]|join(", ") }}</td></tr>
+        <tr><td>stride 2, padding 1</td><td>{{ e.strided|length }} × {{ e.strided[0]|length }}</td><td>{{ e.strided[0]|join(", ") }}</td></tr>
+        <tr><td>dilation 2, no padding</td><td>{{ e.dilated|length }} × {{ e.dilated[0]|length }}</td><td>{{ e.dilated[0]|join(", ") }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    With padding, the kernel also sees the zero border: at the left edge the window covers zeros on its left and
+    3s on its right, which reads as a dark-to-bright edge, −{{ -e.padded[1][0] }}. The edge you get depends on what
+    you pad with, which is why <code>padding_mode="reflect"</code> exists.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-pooling">Pooling a 4 × 4 map</h3>
+  <p>
+    Map rows: {% for row in e.pool_map %}[{{ row|join(", ") }}]{% if not loop.last %}, {% endif %}{% endfor %}. With
+    2 × 2 windows and stride 2: max pooling gives
+    {% for row in e.max_pool %}[{{ row|join(", ") }}]{% if not loop.last %}, {% endif %}{% endfor %}; average
+    pooling gives {% for row in e.avg_pool %}[{{ row|join(", ") }}]{% if not loop.last %}, {% endif %}{% endfor %}.
+    The 6 in the top-left window could move anywhere in that window and max pooling would still output 6.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-sizes">Output sizes</h3>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Layer</th><th>H<sub>in</sub></th><th>⌊(H + 2p − d(k − 1) − 1)/s⌋ + 1</th><th>H<sub>out</sub></th></tr></thead>
+      <tbody>
+        {% for r in sizes %}
+        <tr><td>{{ r.label }}</td><td>{{ r.n }}</td><td>⌊({{ r.n }} + {{ 2 * r.padding }} − {{ r.dilation * (r.kernel - 1) }} − 1)/{{ r.stride }}⌋ + 1</td><td>{{ r.out }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>3 × 3 with padding 1 keeps the size; adding stride 2 halves it. Those two settings make up most of a modern CNN.</p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-lenet">A LeNet-style stack</h3>
+  <p>A small classifier for 32 × 32 grayscale digits, in the shape of LeNet-5 (with ReLU and max pooling instead of the original's tanh and subsampling):</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Layer</th><th>Output shape</th><th>Parameters</th></tr></thead>
+      <tbody>
+        {% for r in lenet.rows %}
+        <tr><td><code>{{ r.layer }}</code></td><td>{{ shape(r.shape) }}</td><td>{{ n(r.params) }}</td></tr>
+        {% endfor %}
+        <tr><td><strong>Total</strong></td><td></td><td><strong>{{ n(lenet.total) }}</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The two convolutions hold {{ n(lenet.rows[1].params + lenet.rows[3].params) }} of the {{ n(lenet.total) }}
+    parameters; the first linear layer alone holds {{ n(lenet.rows[6].params) }}. Convolutions are cheap in
+    parameters and expensive in compute: the first one reuses its 156 weights at {{ 28 * 28 }} positions.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-resnet">ResNet-18, shape by shape</h3>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Stage</th><th>Output shape</th><th>Parameters</th></tr></thead>
+      <tbody>
+        <tr><td>input</td><td>[3, 224, 224]</td><td>0</td></tr>
+        {% for r in resnet.rows %}
+        <tr><td>{{ r.layer }}{% if r.downsample %} (first block downsamples){% endif %}</td><td>{{ shape(r.shape) }}</td><td>{{ n(r.params) }}</td></tr>
+        {% endfor %}
+        <tr><td><strong>Total</strong></td><td></td><td><strong>{{ n(resnet.total) }}</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Each stage halves the resolution and doubles the channels, so the work per layer stays roughly constant. The
+    total, {{ n(resnet.total) }}, is the published ResNet-18 size (batch norm's γ and β included, its running
+    statistics excluded). {{ (100 * resnet.rows[5].params / resnet.total)|round(0)|int }}% of the parameters sit
+    in <code>layer4</code>, where 512-channel 3 × 3 kernels cost {{ n(512 * 512 * 9) }} weights each, while the
+    spatial size there is only 7 × 7.
+  </p>
+  <p>
+    Receptive field: conv1 gives {{ rfs[0].size }}, the max pool {{ rfs[1].size }}, and after all sixteen 3 × 3
+    convolutions each output unit of <code>layer4</code> sees {{ rfs[-1].size }} × {{ rfs[-1].size }} input pixels
+    with a jump of {{ rfs[-1].jump }}. That is wider than the 224-pixel image, so every final unit can see the
+    whole image, and the global average pool combines 7 × 7 such views.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>A convolution in plain Python, the way the formula reads (the tested helper behind this page's numbers):</p>
+<pre><code>def conv2d(x, weight, bias=None, stride=1, padding=0, dilation=1):
+    # x: [C_in][H][W], weight: [C_out][C_in][k][k]
+    planes = [pad2d(plane, padding) for plane in x]
+    k = len(weight[0][0])
+    out_h = (len(x[0]) + 2 * padding - dilation * (k - 1) - 1) // stride + 1
+    out_w = (len(x[0][0]) + 2 * padding - dilation * (k - 1) - 1) // stride + 1
+    return [
+        [
+            [
+                (bias[o] if bias else 0) + sum(
+                    kernels[c][a][b] * planes[c][i * stride + a * dilation][j * stride + b * dilation]
+                    for c in range(len(x)) for a in range(k) for b in range(k)
+                )
+                for j in range(out_w)
+            ]
+            for i in range(out_h)
+        ]
+        for o, kernels in enumerate(weight)
+    ]
+</code></pre>
+
+<p>The same networks in PyTorch:</p>
+<pre><code>import torch
+from torch import nn
+import torch.nn.functional as F
+
+lenet = nn.Sequential(
+    nn.Conv2d(1, 6, 5), nn.ReLU(), nn.MaxPool2d(2),     # [N, 6, 14, 14]
+    nn.Conv2d(6, 16, 5), nn.ReLU(), nn.MaxPool2d(2),    # [N, 16, 5, 5]
+    nn.Flatten(),
+    nn.Linear(400, 120), nn.ReLU(),
+    nn.Linear(120, 84), nn.ReLU(),
+    nn.Linear(84, 10),
+)
+print(sum(p.numel() for p in lenet.parameters()))       # 61706
+
+
+class BasicBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, 3, stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, 3, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.shortcut = nn.Identity()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, 1, stride, bias=False),
+                nn.BatchNorm2d(out_channels),
+            )
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        return F.relu(out + self.shortcut(x))
+
+
+block = BasicBlock(64, 128, stride=2)
+print(block(torch.zeros(1, 64, 56, 56)).shape)          # torch.Size([1, 128, 28, 28])
+</code></pre>
+<p>
+  Stacking a 7 × 7 stride-2 stem, a 3 × 3 stride-2 max pool, four stages of two such blocks (64, 128, 256 and 512
+  channels), global average pooling and a 512 → 1000 linear layer gives exactly the {{ n(resnet.total) }}
+  parameters in the table. Real libraries compute convolutions with im2col plus a matrix multiply, Winograd or FFT
+  transforms, or cuDNN kernels picked per shape; the arithmetic is the same.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Inductive bias.</strong> Locality and weight sharing make CNNs data-efficient and fast, but they also limit what a layer can relate: two distant pixels only interact many layers up. Vision transformers drop the bias, need more data or pretraining, and win at scale.</li>
+  <li><strong>Downsampling.</strong> Stride and pooling grow the receptive field cheaply and cut compute, but throw away exact position. Dense prediction (segmentation, detection) adds it back with skip connections, dilation or upsampling.</li>
+  <li><strong>Kernel size.</strong> Stacked 3 × 3 kernels give the same field as one large kernel with fewer parameters and more nonlinearity; recent ConvNets bring back 7 × 7 depthwise kernels because they are cheap when depthwise.</li>
+  <li><strong>Padding</strong> keeps sizes tidy but tells the network where the border is, which slightly breaks translation equivariance.</li>
+  <li><strong>Stride versus pooling.</strong> A strided convolution learns how to downsample; max pooling is free and adds a little shift invariance. Modern networks mostly use strided convolutions after the stem.</li>
+  <li><strong>Batch norm</strong> in residual blocks makes deep CNNs trainable at high learning rates but ties the output to batch statistics; small-batch training often switches to group norm.</li>
+</ul>
+
+<h3 id="check-yourself">Check yourself</h3>
+
+<details class="ml-quiz">
+  <summary>What is the output size of <code>Conv2d(3, 64, kernel_size=7, stride=2, padding=3)</code> on a 224 × 224 image, and how many parameters does it have?</summary>
+  <p>⌊(224 + 6 − 6 − 1)/2⌋ + 1 = 112, so [N, 64, 112, 112]. Parameters: 64 × 3 × 7 × 7 + 64 = {{ n(64 * 3 * 49 + 64) }} (ResNet's stem has <code>bias=False</code>, so {{ n(64 * 3 * 49) }}).</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does a 1 × 1 convolution have parameters at all, if it looks at one pixel?</summary>
+  <p>It mixes channels: each output channel is a weighted sum of all C<sub>in</sub> input channels at that pixel, with C<sub>out</sub> × C<sub>in</sub> weights. It is a linear layer applied at every position.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Two stacked 3 × 3 convolutions with stride 1: what is the receptive field? And if the first has stride 2?</summary>
+  <p>Stride 1: 1 + 2 + 2 = 5. With stride 2 first: the first adds 2 (r = 3, j = 2), the second adds 2 × 2 = 4, so r = 7.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why can't the second block of a ResNet stage just add x to F(x) in the first block of that stage?</summary>
+  <p>In the first block the main path halves the resolution and doubles the channels, so F(x) and x have different shapes. The 1 × 1 stride-2 shortcut maps x to the new shape. Later blocks keep the shape and add x directly.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>LeCun, Bottou, Bengio and Haffner. <em>Gradient-Based Learning Applied to Document Recognition.</em> Proceedings of the IEEE, 1998 (LeNet-5).</li>
+  <li>Krizhevsky, Sutskever and Hinton. <em>ImageNet Classification with Deep Convolutional Neural Networks.</em> NeurIPS, 2012 (AlexNet).</li>
+  <li>Simonyan and Zisserman. <em>Very Deep Convolutional Networks for Large-Scale Image Recognition.</em> ICLR, 2015 (<a href="https://arxiv.org/abs/1409.1556">arXiv 1409.1556</a>; stacked 3 × 3 kernels).</li>
+  <li>He, Zhang, Ren and Sun. <em>Deep Residual Learning for Image Recognition.</em> CVPR, 2016 (<a href="https://arxiv.org/abs/1512.03385">arXiv 1512.03385</a>).</li>
+  <li>Dumoulin and Visin. <em>A guide to convolution arithmetic for deep learning.</em> 2016 (<a href="https://arxiv.org/abs/1603.07285">arXiv 1603.07285</a>).</li>
+  <li>Luo, Li, Urtasun and Zemel. <em>Understanding the Effective Receptive Field in Deep Convolutional Neural Networks.</em> NeurIPS, 2016 (<a href="https://arxiv.org/abs/1701.04128">arXiv 1701.04128</a>).</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/nn/modules/conv.py', 55, 222) }}"><code>torch/nn/modules/conv.py</code></a> (<code>_ConvNd</code>), <a href="{{ src('torch/nn/modules/conv.py', 388, 565) }}"><code>Conv2d</code></a>, <a href="{{ src('torch/nn/modules/pooling.py', 155, 232) }}"><code>torch/nn/modules/pooling.py</code></a>.</li>
+</ul>

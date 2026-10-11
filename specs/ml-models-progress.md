@@ -454,8 +454,8 @@ memory and were not opened.
 36. `linear-algebra-toolkit` ✓
 37. `missing-data` ✓
 38. `computation-graphs` ✓
-39. `cnns` ← next
-40. `autoregressive-models`
+39. `cnns` ✓
+40. `autoregressive-models` ← next
 41. `tokenization`
 42. `nearest-neighbors`
 43. `similarity-search`

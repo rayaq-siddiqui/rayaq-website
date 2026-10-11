@@ -706,7 +706,7 @@ PAGES = [
             "pytorch:torch/nn/modules/conv.py",
             "pytorch:torch/nn/modules/pooling.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "rnns-and-lstms",
