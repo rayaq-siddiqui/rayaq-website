@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-11 (build run). 57 of 58 pages are ready. **The next run is a build run**: it builds `bitmask-dp`, the last queue item, and the run after that is the first audit run.
+**Last updated:** 2026-10-11 (build run). All 58 pages are ready and the queue is empty. **The next run is the first audit run** (spec §8.1): it looks for one gap to fix, and if none remain it records "complete" and moves this Routine to weekly audits.
 
 ## The Routine
 
@@ -106,7 +106,7 @@ build once research is done.
 55. `segment-trees` ✓
 56. `fenwick-trees` ✓
 57. `string-matching` ✓
-58. `bitmask-dp` ← next
+58. `bitmask-dp` ✓
 
 ## Decisions
 
@@ -328,3 +328,17 @@ diagram of the KMP slide, and a rolling-hash diagram. Three of three queue items
 Coverage is unchanged at 100% on all four lists (Blind 75 75/75, Grind 169 169/169,
 NeetCode 150 150/150, NeetCode 250 250/250). Mobile check passed on `/`, `/leetcode` and
 every ready page. Next: `bitmask-dp`.
+
+### 2026-10-11 — build run (fifth)
+
+Built `bitmask-dp`, the last queue item (1 of 3; the queue ran out). Tested helpers in
+`leetcode_docs.py`: `assignment_dp_trace` (DP over job masks, with the greedy order it beats),
+`held_karp_of` (every reachable `(mask, last)` state, the closing legs and the tour),
+`submasks_of` and `bitmask_state_counts`, each checked against brute force over permutations or
+all masks. Two inline SVGs drawn from the helper output: the subset lattice with the cheapest
+path, and the Held–Karp tour beside the states it passes through. The page has no home
+problems by design; it lists Matchsticks to Square and Partition to K Equal Sum Subsets as
+"also uses" and eight off-list practice problems. `bit-manipulation` and `eulerian-paths` now
+link to it where they mention bitmask DP. Coverage is unchanged at 100% (Blind 75 75/75,
+Grind 169 169/169, NeetCode 150 150/150, NeetCode 250 250/250). Mobile check passed on `/`,
+`/leetcode` and every ready page. Next: the first audit run.
