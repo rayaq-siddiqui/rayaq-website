@@ -221,7 +221,7 @@ PAGES = [
             "pytorch:torch/distributions/distribution.py",
             "sklearn:sklearn/naive_bayes.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "entropy-and-kl",
