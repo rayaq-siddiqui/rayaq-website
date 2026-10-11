@@ -2351,3 +2351,60 @@ def test_routing_ties_keep_the_forward_scan():
     scan = ml_models_docs.missing_split_scan([1, 2, None], [-2, 2, 0], [1, 1, 1])
     assert scan["candidates"][0]["loss_chg"] == pytest.approx(scan["candidates"][1]["loss_chg"])
     assert scan["best"]["missing_go"] == "right"
+
+
+def test_graph_records_pytorch_node_names_and_edges():
+    result = ml_models_docs.graph_example()
+    assert [(n["tensor"], n["name"], n["next"]) for n in result["nodes"]] == [
+        ("a", "MulBackward0", ["AccumulateGrad", None]),
+        ("y", "AddBackward0", ["MulBackward0", "AccumulateGrad"]),
+        ("loss", "MulBackward0", ["AddBackward0", "AddBackward0"]),
+    ]
+    assert [n["sequence_nr"] for n in result["nodes"]] == [0, 1, 2]
+    assert result["leaf"] == {"x": True, "w": True, "b": True, "a": False, "y": False, "loss": False}
+    assert result["requires_grad"]["x"] is False
+
+
+def test_graph_backward_matches_the_chain_rule():
+    example = ml_models_docs.GRAPH_EXAMPLE
+    result = ml_models_docs.graph_example()
+    y = example["w"] * example["x"] + example["b"]
+    assert result["grads"] == {"x": None, "w": 2 * y * example["x"], "b": 2 * y, "a": None, "y": None}
+
+    def loss(w, b):
+        return (w * example["x"] + b) ** 2
+
+    h = 1e-6
+    assert result["grads"]["w"] == pytest.approx((loss(3 + h, 1) - loss(3 - h, 1)) / (2 * h), rel=1e-6)
+
+
+def test_graph_engine_runs_newest_ready_node_first():
+    trace = ml_models_docs.graph_example()["trace"]
+    assert [(t["name"], t["grad"]) for t in trace] == [
+        ("MulBackward0", 1.0), ("AddBackward0", 14.0), ("AccumulateGrad", 14.0),
+        ("MulBackward0", 14.0), ("AccumulateGrad", 28.0),
+    ]
+
+
+def test_graph_second_backward_fails_without_retain_graph():
+    message = ml_models_docs.graph_example()["second_backward"]
+    assert message.startswith("Trying to backward through the graph a second time")
+    assert "retain_graph=True" in message
+
+
+def test_graph_controls():
+    result = ml_models_docs.graph_controls()
+    assert result["retained"] == {"first": 28.0, "second": 56.0, "b": 28.0}
+    assert result["hooked"] == {"w": 14.0, "b": 7.0}
+    assert result["detached"] == {"w": 14.0, "b": 7.0, "value": 49.0}
+    assert result["no_grad"] == {"requires_grad": False, "grad_fn": None, "is_leaf": True}
+    assert result["clamps"]["clamp"]["w"] == 0.0
+    assert result["clamps"]["straight_through_clamp"] == {
+        "name": "StraightThroughClampBackward", "value": 25.0, "w": 20.0, "b": 10.0,
+    }
+
+
+def test_graph_hook_needs_requires_grad():
+    engine = ml_models_docs.Autograd()
+    with pytest.raises(RuntimeError, match="doesn't require gradient"):
+        engine.register_hook(engine.tensor(1.0), lambda g: g)

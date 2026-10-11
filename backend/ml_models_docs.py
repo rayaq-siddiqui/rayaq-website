@@ -5008,6 +5008,213 @@ def routing_example(example=ROUTING_EXAMPLE):
     return {"native": native, "fill": fill, "imputed": imputed}
 
 
+BACKWARD_TWICE_ERROR = (
+    "Trying to backward through the graph a second time (or directly access saved tensors after "
+    "they have already been freed). Saved intermediate values of the graph are freed when you call "
+    ".backward() or autograd.grad(). Specify retain_graph=True if you need to backward through the "
+    "graph a second time or if you need to access saved tensors after calling backward."
+)
+ACCUMULATE_SEQUENCE_NR = 2**64 - 1
+GRAPH_EXAMPLE = {"x": 2.0, "w": 3.0, "b": 1.0, "clamp_max": 5.0}
+
+
+class GraphNode:
+    def __init__(self, name, sequence_nr, next_functions, backward=None, saved=None, variable=None):
+        self.name = name
+        self.sequence_nr = sequence_nr
+        self.next_functions = tuple(next_functions)
+        self.backward = backward
+        self.saved = saved or {}
+        self.freed = False
+        self.variable = variable
+        self.prehooks = []
+
+
+class GraphTensor:
+    def __init__(self, value, requires_grad=False, grad_fn=None):
+        self.value = value
+        self.requires_grad = requires_grad
+        self.grad_fn = grad_fn
+        self.grad = None
+        self.accumulator = None
+
+    @property
+    def is_leaf(self):
+        return self.grad_fn is None
+
+
+class Autograd:
+    def __init__(self):
+        self.sequence_nr = 0
+        self.grad_enabled = True
+
+    def tensor(self, value, requires_grad=False):
+        return GraphTensor(value, requires_grad)
+
+    def _edge(self, tensor):
+        if not tensor.requires_grad:
+            return (None, 0)
+        if tensor.grad_fn is not None:
+            return (tensor.grad_fn, 0)
+        if tensor.accumulator is None:
+            tensor.accumulator = GraphNode("AccumulateGrad", ACCUMULATE_SEQUENCE_NR, (), variable=tensor)
+        return (tensor.accumulator, 0)
+
+    def record(self, name, inputs, value, backward, saved=None):
+        if not (self.grad_enabled and any(t.requires_grad for t in inputs)):
+            return GraphTensor(value)
+        node = GraphNode(name, self.sequence_nr, [self._edge(t) for t in inputs], backward, saved)
+        self.sequence_nr += 1
+        return GraphTensor(value, True, node)
+
+    def mul(self, a, b):
+        return self.record(
+            "MulBackward0", (a, b), a.value * b.value,
+            lambda g, s: (g * s["other"], g * s["self"]), {"self": a.value, "other": b.value},
+        )
+
+    def add(self, a, b):
+        return self.record("AddBackward0", (a, b), a.value + b.value, lambda g, s: (g, g))
+
+    def clamp(self, a, low, high):
+        return self.record(
+            "ClampBackward1", (a,), min(max(a.value, low), high),
+            lambda g, s: (g if low <= s["self"] <= high else 0.0,), {"self": a.value},
+        )
+
+    def straight_through_clamp(self, a, low, high):
+        return self.record("StraightThroughClampBackward", (a,), min(max(a.value, low), high), lambda g, s: (g,))
+
+    def detach(self, a):
+        return GraphTensor(a.value)
+
+    def register_hook(self, tensor, hook):
+        if not tensor.requires_grad:
+            raise RuntimeError("cannot register a hook on a tensor that doesn't require gradient")
+        node = tensor.grad_fn if tensor.grad_fn is not None else self._edge(tensor)[0]
+        node.prehooks.append(hook)
+
+    def backward(self, root, retain_graph=False):
+        if root.grad_fn is None:
+            raise RuntimeError("element 0 of tensors does not require grad and does not have a grad_fn")
+        dependencies, stack, seen = {}, [root.grad_fn], {root.grad_fn}
+        while stack:
+            node = stack.pop()
+            for following, _ in node.next_functions:
+                if following is None:
+                    continue
+                dependencies[following] = dependencies.get(following, 0) + 1
+                if following not in seen:
+                    seen.add(following)
+                    stack.append(following)
+        buffers, ready, trace = {root.grad_fn: 1.0}, [root.grad_fn], []
+        while ready:
+            ready.sort(key=lambda n: n.sequence_nr)
+            node = ready.pop()
+            grad = buffers.pop(node)
+            for hook in node.prehooks:
+                result = hook(grad)
+                grad = grad if result is None else result
+            trace.append({"name": node.name, "sequence_nr": node.sequence_nr, "grad": grad})
+            if node.variable is not None:
+                node.variable.grad = grad if node.variable.grad is None else node.variable.grad + grad
+                continue
+            if node.freed and node.saved:
+                raise RuntimeError(BACKWARD_TWICE_ERROR)
+            grads = node.backward(grad, node.saved)
+            if not retain_graph:
+                node.freed = True
+            for (following, _), g in zip(node.next_functions, grads):
+                if following is None:
+                    continue
+                buffers[following] = buffers.get(following, 0.0) + g
+                dependencies[following] -= 1
+                if dependencies[following] == 0:
+                    ready.append(following)
+        return trace
+
+
+def _example_graph(example=GRAPH_EXAMPLE):
+    engine = Autograd()
+    x = engine.tensor(example["x"])
+    w = engine.tensor(example["w"], requires_grad=True)
+    b = engine.tensor(example["b"], requires_grad=True)
+    a = engine.mul(w, x)
+    y = engine.add(a, b)
+    loss = engine.mul(y, y)
+    return engine, {"x": x, "w": w, "b": b, "a": a, "y": y, "loss": loss}
+
+
+def _node_label(node):
+    if node is None:
+        return None
+    if node.variable is not None:
+        return "AccumulateGrad"
+    return node.name
+
+
+def graph_example(example=GRAPH_EXAMPLE):
+    engine, t = _example_graph(example)
+    nodes = []
+    for key in ("a", "y", "loss"):
+        node = t[key].grad_fn
+        nodes.append({
+            "tensor": key,
+            "name": node.name,
+            "sequence_nr": node.sequence_nr,
+            "next": [_node_label(n) for n, _ in node.next_functions],
+        })
+    trace = engine.backward(t["loss"])
+    try:
+        engine.backward(t["loss"])
+        second = None
+    except RuntimeError as error:
+        second = str(error)
+    return {
+        "values": {key: tensor.value for key, tensor in t.items()},
+        "leaf": {key: tensor.is_leaf for key, tensor in t.items()},
+        "requires_grad": {key: tensor.requires_grad for key, tensor in t.items()},
+        "nodes": nodes,
+        "trace": trace,
+        "grads": {key: t[key].grad for key in ("x", "w", "b", "a", "y")},
+        "second_backward": second,
+    }
+
+
+def graph_controls(example=GRAPH_EXAMPLE):
+    engine, t = _example_graph(example)
+    engine.backward(t["loss"], retain_graph=True)
+    first = t["w"].grad
+    engine.backward(t["loss"], retain_graph=True)
+    retained = {"first": first, "second": t["w"].grad, "b": t["b"].grad}
+
+    engine, t = _example_graph(example)
+    engine.register_hook(t["y"], lambda g: g * 0.5)
+    engine.backward(t["loss"])
+    hooked = {"w": t["w"].grad, "b": t["b"].grad}
+
+    engine, t = _example_graph(example)
+    half = engine.mul(engine.detach(t["y"]), t["y"])
+    engine.backward(half)
+    detached = {"w": t["w"].grad, "b": t["b"].grad, "value": half.value}
+
+    engine, t = _example_graph(example)
+    engine.grad_enabled = False
+    frozen = engine.mul(t["w"], t["x"])
+    engine.grad_enabled = True
+    no_grad = {"requires_grad": frozen.requires_grad, "grad_fn": frozen.grad_fn, "is_leaf": frozen.is_leaf}
+
+    clamps = {}
+    for kind in ("clamp", "straight_through_clamp"):
+        engine, t = _example_graph(example)
+        clamped = getattr(engine, kind)(t["y"], 0.0, example["clamp_max"])
+        out = engine.mul(clamped, clamped)
+        engine.backward(out)
+        clamps[kind] = {"name": clamped.grad_fn.name, "value": out.value, "w": t["w"].grad, "b": t["b"].grad}
+
+    return {"retained": retained, "hooked": hooked, "detached": detached, "no_grad": no_grad, "clamps": clamps}
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -5387,6 +5594,9 @@ def render(slug, render_template):
         "indicator_comparison": indicator_comparison,
         "missing_split_scan": missing_split_scan,
         "routing_example": routing_example,
+        "graph_example": graph_example,
+        "graph_controls": graph_controls,
+        "graph_example_data": GRAPH_EXAMPLE,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
