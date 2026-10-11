@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-11 (twenty-fifth run). Spec v2 widens the section from model architectures
 to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: queue items 1-37, the last being `missing-data`. The next page is
-`computation-graphs` (queue item 38).
+format. Ready pages: queue items 1-38, the last being `computation-graphs`. The next page is
+`cnns` (queue item 39).
 
 ## Pins
 
@@ -193,6 +193,7 @@ The paths below are relative to `torch/nn/modules/` unless they give a fuller pa
 - `torch/nn/modules/container.py` (neurons-and-layers): `Sequential` 59-339 (`__init__` 115-122, `forward` 254-260); `ModuleList` 341-510; `ModuleDict` 511.
 - `torch/nn/modules/linear.py` (neurons-and-layers): `reset_parameters` 117-129, `forward` 130-135. `activation.py`: `ReLU` 104-152, `Sigmoid` 337, `Tanh` 407.
 - `torch/autograd/__init__.py` (backpropagation): `backward` 255-403, `grad` 434-621. `graph.py`: `_engine_run_backward` 1059-1083, the handoff to the C++ engine. `function.py`: `FunctionCtx.save_for_backward` 41-100, `_SingleLevelFunction.backward` 473-505, `Function` 555-655. `torch/_tensor.py`: `Tensor.backward` 566-625.
+- Autograd internals (computation-graphs): `graph.py` `Node` 58-194, `next_functions` 74-84, `Node.register_hook` 103-146, `register_prehook` 148-182, `saved_tensors_hooks` 273-355; `function.py` `mark_dirty` 158-193, `mark_non_differentiable` 204-234, `set_materialize_grads` 276-322, `once_differentiable` 678-726; `_tensor.py` `register_hook` 655-703, `register_post_accumulate_grad_hook` 705-765; `grad_mode.py` `no_grad` 22-86, `inference_mode` 213-302; `__init__.py` `retain_graph` default 389-390. C++: `csrc/autograd/engine.h` `CompareNodeTaskTime` 91-106; `engine.cpp` `ReadyQueue::push` 236-248, `evaluate_function` 1109-1286 (`release_variables` 1188-1190, dependency decrement 1229-1239), `compute_dependencies` 1301-1367; `functions/accumulate_grad.h` `AccumulateGrad` 43-308, `accumulateGrad` 180-300; `accumulate_grad.cpp` `UINT64_MAX` sequence number 88-91; `saved_variable.cpp` `ERR_BACKWARD_TWICE` 291-296 (check at 136).
 - `torch/autograd/gradcheck.py`: `gradcheck` 1999-2105 (`eps=1e-6`, `atol=1e-5`, `rtol=1e-3`), `_compute_numerical_gradient` 358-394. `clip_grad.py`: `clip_grad_norm_` 185-232. `module.py`: `zero_grad` 2957-2985. `torch/utils/checkpoint.py`: `checkpoint` 423-619.
 - `torch/optim/sgd.py` (optimizers): `SGD` 28-105, `_single_tensor_sgd` 322-380. `adam.py`: `Adam` 34-138, `_single_tensor_adam` 347-552 (decoupled decay 415-418, bias correction 528-546). `adamw.py`: `AdamW` 19-47. `rmsprop.py`: `_single_tensor_rmsprop` 265-341.
 - `torch/optim/optimizer.py`: `Optimizer` starts at 358; `state_dict` 700-791, `zero_grad` 1048-1110, `step` 1117-1124, `add_param_group` 1127-1180.
@@ -337,7 +338,7 @@ Open gaps from these runs:
   `_incremental_fit_estimator`, and the `Lasso` end line, were inferred, not checked.
 - The SwiGLU "hidden size reduced to 2/3" remark is from memory of common practice.
 
-## Twenty-fifth run (2026-10-11) — linear-algebra-toolkit, missing-data
+## Twenty-fifth run (2026-10-11) — linear-algebra-toolkit, missing-data, computation-graphs
 
 | Commit | What |
 |---|---|
@@ -392,6 +393,26 @@ threshold 3.5 with `missing_go_to_left=1`.
 Gaps: Rubin 1976, Little and Rubin, van Buuren and Groothuis-Oudshoorn 2011 and Chen and
 Guestrin 2016 are cited from memory and were not opened. The XGBoost cross-check ran 3.2.0, not
 the pinned 3.4.2; the linked split code is from the pin.
+
+### computation-graphs
+
+| Commit | What |
+|---|---|
+| `8f14d60` `ml-models: add tested computation-graph helpers` | `GraphNode`, `GraphTensor`, `Autograd` (mul, add, clamp, straight-through clamp, detach, hooks, `backward` with dependency counts, highest-`sequence_nr`-first ready queue, release and the backward-twice error), `graph_example`, `graph_controls`, with six tests |
+| `8a93c77` `ml-models: build the computation-graphs page` | The page, `ready`, queue ✓ |
+
+Verified at PyTorch v2.14.1: the autograd ranges listed under the PyTorch pin above.
+
+Cross-check: torch 2.14.1 (the pinned release, CPU run of the PyPI wheel in the scratch venv)
+gives the same nodes (`MulBackward0`, `AddBackward0`, `MulBackward0` with sequence numbers 0-2
+and the same `next_functions`), the same execution order (via node prehooks: loss Mul 1, Add 14,
+AccumulateGrad(b) 14, Mul 14, AccumulateGrad(w) 28), w.grad 28 and b.grad 14, the backward-twice
+message, every control row (retained 56/28, hook 14/7, detach 14/7, `ClampBackward1` 0/0,
+`StraightThroughClampBackward` 20/10), the `no_grad` result, the `register_hook` error and the
+"element 0 of tensors does not require grad" error the quiz quotes.
+
+Gaps: Paszke et al. 2017 and 2019, Baydin et al. 2018 and Bengio et al. 2013 are cited from
+memory and were not opened.
 
 ## Queue
 
