@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -6486,6 +6486,66 @@ def target_sum_states(nums, target):
     return {"states": states, "answer": states[-1].get(target, 0)}
 
 
+def jump_reach_trace(nums):
+    """Jump Game: reach[i] is the farthest index reachable using only positions 0..i, or None where position i itself was unreachable. can_finish says whether the last index is reachable."""
+    reach, trace = 0, []
+    for i, step in enumerate(nums):
+        if i > reach:
+            trace.append(None)
+            continue
+        reach = max(reach, i + step)
+        trace.append(reach)
+    return {"trace": trace, "can_finish": reach >= len(nums) - 1 if nums else True}
+
+
+def min_jumps_levels(nums):
+    """Jump Game II as a breadth-first search over index ranges. levels[k] is the (first, last) index range first reachable with k jumps; jumps is None when the end cannot be reached."""
+    n = len(nums)
+    if n <= 1:
+        return {"levels": [(0, 0)] if n else [], "jumps": 0}
+    levels, start, end = [(0, 0)], 0, 0
+    while end < n - 1:
+        farthest = max(i + nums[i] for i in range(start, end + 1))
+        if farthest <= end:
+            return {"levels": levels, "jumps": None}
+        start, end = end + 1, min(farthest, n - 1)
+        levels.append((start, end))
+    return {"levels": levels, "jumps": len(levels) - 1}
+
+
+def gas_station_trace(gas, cost):
+    """Gas Station: the running tank after each station when starting from the current candidate, restarting after any negative tank. Returns the start index (or -1), the tank after each station from the restart point, and the total surplus."""
+    total, tank, start = 0, 0, 0
+    tanks = []
+    for i, (g, c) in enumerate(zip(gas, cost)):
+        total += g - c
+        tank += g - c
+        tanks.append(tank)
+        if tank < 0:
+            tank, start = 0, i + 1
+    return {"start": start if total >= 0 else -1, "tanks": tanks, "total": total}
+
+
+def straights_groups(hand, group_size):
+    """Hand of Straights: always open a group at the smallest remaining card. Returns the groups formed, or None when some needed value is missing."""
+    if group_size <= 0 or len(hand) % group_size:
+        return None
+    counts = {}
+    for card in hand:
+        counts[card] = counts.get(card, 0) + 1
+    groups = []
+    for card in sorted(counts):
+        while counts[card]:
+            group = []
+            for value in range(card, card + group_size):
+                if counts.get(value, 0) == 0:
+                    return None
+                counts[value] -= 1
+                group.append(value)
+            groups.append(group)
+    return groups
+
+
 def problem_url(slug):
     return f"https://leetcode.com/problems/{slug}/"
 
@@ -6735,6 +6795,10 @@ def render(slug, render_template):
         "stone_game_diff_table": stone_game_diff_table,
         "stone_game_two_value": stone_game_two_value,
         "stock_cooldown_table": stock_cooldown_table,
+        "jump_reach_trace": jump_reach_trace,
+        "min_jumps_levels": min_jumps_levels,
+        "gas_station_trace": gas_station_trace,
+        "straights_groups": straights_groups,
         "stock_unlimited_states": stock_unlimited_states,
         "target_sum_states": target_sum_states,
         "edit_distance_table": edit_distance_table,

@@ -1305,3 +1305,84 @@ def test_state_machine_dp_helpers_match_the_page():
     assert "ends at 14, and adding up the rises also gives 14" in body
     assert "1, 2, 4, 7, 11, 13 distinct sums" in body
     assert "3 sign assignments land on the target" in body
+
+
+def test_greedy_helpers_match_the_page():
+    def can_reach(nums):
+        ok = [False] * len(nums)
+        ok[0] = True
+        for i, step in enumerate(nums):
+            if ok[i]:
+                for j in range(i + 1, min(len(nums), i + step + 1)):
+                    ok[j] = True
+        return ok[-1]
+
+    def fewest_jumps(nums):
+        best = [None] * len(nums)
+        best[0] = 0
+        for i, step in enumerate(nums):
+            if best[i] is None:
+                continue
+            for j in range(i + 1, min(len(nums), i + step + 1)):
+                if best[j] is None or best[j] > best[i] + 1:
+                    best[j] = best[i] + 1
+        return best[-1]
+
+    def brute_start(gas, cost):
+        n = len(gas)
+        for s in range(n):
+            tank = 0
+            for k in range(n):
+                tank += gas[(s + k) % n] - cost[(s + k) % n]
+                if tank < 0:
+                    break
+            else:
+                return s
+        return -1
+
+    def brute_straights(counts, size):
+        if not counts:
+            return True
+        low = min(counts)
+        for value in range(low, low + size):
+            if counts.get(value, 0) == 0:
+                return False
+        rest = dict(counts)
+        for value in range(low, low + size):
+            rest[value] -= 1
+            if not rest[value]:
+                del rest[value]
+        return brute_straights(rest, size)
+
+    jumps = [2, 3, 1, 1, 4, 2, 1, 1]
+    assert leetcode_docs.jump_reach_trace(jumps) == {"trace": [2, 4, 4, 4, 8, 8, 8, 8], "can_finish": True}
+    assert leetcode_docs.jump_reach_trace([3, 2, 1, 0, 4, 1])["can_finish"] is False
+    assert leetcode_docs.jump_reach_trace([3, 2, 1, 0, 4, 1])["trace"] == [3, 3, 3, 3, None, None]
+    levels = leetcode_docs.min_jumps_levels(jumps)
+    assert levels["levels"] == [(0, 0), (1, 2), (3, 4), (5, 7)] and levels["jumps"] == 3
+    assert leetcode_docs.min_jumps_levels([0, 1])["jumps"] is None
+    assert leetcode_docs.min_jumps_levels([5])["jumps"] == 0
+    for row in ([2, 3, 1, 1, 4], [1, 1, 1, 1], [4, 0, 0, 0, 1], [1, 2, 0, 1], [0], [2, 0, 0]):
+        assert leetcode_docs.jump_reach_trace(row)["can_finish"] == can_reach(row)
+        expected = fewest_jumps(row)
+        assert leetcode_docs.min_jumps_levels(row)["jumps"] == expected
+    station = leetcode_docs.gas_station_trace([3, 1, 2, 5, 4, 1], [4, 2, 2, 3, 3, 2])
+    assert station == {"start": 2, "tanks": [-1, -1, 0, 2, 3, 2], "total": 0}
+    for gas, cost in (([2, 5, 1, 3, 4, 2], [3, 3, 4, 2, 2, 4]), ([1, 2, 3], [3, 2, 1]), ([5], [4]), ([2, 3, 4], [3, 4, 3])):
+        assert leetcode_docs.gas_station_trace(gas, cost)["start"] == brute_start(gas, cost)
+    hand = [5, 1, 3, 2, 4, 3, 4, 6, 5]
+    assert leetcode_docs.straights_groups(hand, 3) == [[1, 2, 3], [3, 4, 5], [4, 5, 6]]
+    assert leetcode_docs.straights_groups([1, 2, 4, 5, 3, 3], 3) == [[1, 2, 3], [3, 4, 5]]
+    assert leetcode_docs.straights_groups([1, 2, 4], 3) is None and leetcode_docs.straights_groups([1, 2, 3, 4], 3) is None
+    for sample in ([1, 1, 2, 2, 3, 3], [1, 2, 3, 3, 4, 5], [1, 3, 5], [2, 2, 3, 3, 4, 4, 5, 5]):
+        counts = {}
+        for card in sample:
+            counts[card] = counts.get(card, 0) + 1
+        got = leetcode_docs.straights_groups(sample, 3) is not None
+        assert got == (len(sample) % 3 == 0 and brute_straights(counts, 3))
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/greedy").get_data(as_text=True))
+    assert "<code>2, 4, 4, 4, 8, 8, 8, 8</code>" in body
+    assert "the fewest jumps is 3" in body
+    assert "<code>-1, -1, 0, 2, 3, 2</code>" in body
+    assert "the starting station is 2" in body
+    assert "<code>1, 2, 3</code>; <code>3, 4, 5</code>; <code>4, 5, 6</code>" in body
