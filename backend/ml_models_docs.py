@@ -5390,6 +5390,184 @@ def resnet_receptive_fields():
     return receptive_fields(layers)
 
 
+AR_JOINT = {
+    (0, 0, 0): 0.30, (0, 0, 1): 0.05, (0, 1, 0): 0.05, (0, 1, 1): 0.10,
+    (1, 0, 0): 0.05, (1, 0, 1): 0.05, (1, 1, 0): 0.10, (1, 1, 1): 0.30,
+}
+AR_CORPUS = ["the cat sat .", "the cat ran .", "the dog sat ."]
+AR_SENTENCE = "the cat ran ."
+AR_CAUSAL_INPUT = [1, 2, 3, 4, 5, 6, 7, 8]
+AR_CAUSAL_KERNEL = [0.5, 0.5]
+AR_CAUSAL_DILATIONS = [1, 2, 4]
+
+
+def _marginal(joint, positions, values):
+    return sum(p for sequence, p in joint.items() if tuple(sequence[i] for i in positions) == values)
+
+
+def chain_rule_factors(joint):
+    length = len(next(iter(joint)))
+    rows = []
+    for sequence in sorted(joint):
+        factors = []
+        for t in range(length):
+            prefix = tuple(range(t))
+            factors.append(_marginal(joint, prefix + (t,), sequence[:t + 1]) / _marginal(joint, prefix, sequence[:t]))
+        rows.append({"sequence": sequence, "joint": joint[sequence], "factors": factors, "product": math.prod(factors)})
+    return rows
+
+
+def markov_approximation(joint):
+    approx = {}
+    for s in joint:
+        first = _marginal(joint, (0,), s[:1])
+        second = _marginal(joint, (0, 1), s[:2]) / first
+        third = _marginal(joint, (1, 2), s[1:]) / _marginal(joint, (1,), s[1:2])
+        approx[s] = first * second * third
+    kl = sum(p * math.log2(p / approx[s]) for s, p in joint.items() if p > 0)
+    return {"approx": approx, "kl_bits": kl}
+
+
+def ancestral_samples(joint, draws, seed):
+    rng = random.Random(seed)
+    counts = {s: 0 for s in joint}
+    for _ in range(draws):
+        prefix = ()
+        for t in range(len(next(iter(joint)))):
+            p_one = _marginal(joint, tuple(range(t + 1)), prefix + (1,)) / _marginal(joint, tuple(range(t)), prefix)
+            prefix += (1 if rng.random() < p_one else 0,)
+        counts[prefix] += 1
+    return {s: c / draws for s, c in counts.items()}
+
+
+def table_sizes(vocab, length):
+    return {
+        "joint": vocab ** length - 1,
+        "chain": sum(vocab ** t * (vocab - 1) for t in range(length)),
+        "markov": (vocab - 1) + (length - 1) * vocab * (vocab - 1),
+    }
+
+
+def teacher_forcing_example(corpus=AR_CORPUS, sentence=AR_SENTENCE):
+    counts = {}
+    for line in corpus:
+        tokens = ["<s>"] + line.split()
+        for before, after in zip(tokens, tokens[1:]):
+            counts.setdefault(before, {}).setdefault(after, 0)
+            counts[before][after] += 1
+    model = {b: {a: c / sum(row.values()) for a, c in row.items()} for b, row in counts.items()}
+    tokens = ["<s>"] + sentence.split()
+    rows = [
+        {"input": b, "target": a, "prob": model[b][a], "nll": -math.log(model[b][a])}
+        for b, a in zip(tokens, tokens[1:])
+    ]
+    total = sum(row["nll"] for row in rows)
+    gradient = {}
+    for line in corpus:
+        line_tokens = ["<s>"] + line.split()
+        for before, after in zip(line_tokens, line_tokens[1:]):
+            for token, p in model[before].items():
+                key = (before, token)
+                gradient[key] = gradient.get(key, 0.0) + p - (1 if token == after else 0)
+    return {
+        "model": model,
+        "rows": rows,
+        "inputs": tokens[:-1],
+        "targets": tokens[1:],
+        "total_nll": total,
+        "mean_nll": total / len(rows),
+        "perplexity": math.exp(total / len(rows)),
+        "max_gradient": max(abs(g) for g in gradient.values()),
+    }
+
+
+def exposure_bias_curve(vocab=4, accuracy=0.9, length=12):
+    offsets = [1.0] + [0.0] * (vocab - 1)
+    rows = []
+    for t in range(1, length + 1):
+        slip = (1 - accuracy) / (vocab - 1)
+        offsets = [
+            sum(offsets[(k - e) % vocab] * (accuracy if e == 0 else slip) for e in range(vocab))
+            for k in range(vocab)
+        ]
+        rows.append({"t": t, "teacher_forced": accuracy, "free_running": offsets[0], "all_correct": accuracy ** t})
+    return rows
+
+
+def causal_conv1d(x, kernel, dilation=1):
+    width = len(kernel)
+    padded = [0.0] * (dilation * (width - 1)) + list(x)
+    return [sum(kernel[j] * padded[t + j * dilation] for j in range(width)) for t in range(len(x))]
+
+
+def causal_stack(x, kernel=AR_CAUSAL_KERNEL, dilations=AR_CAUSAL_DILATIONS):
+    layers = [list(x)]
+    for dilation in dilations:
+        layers.append(causal_conv1d(layers[-1], kernel, dilation))
+    return layers
+
+
+def causal_receptive_field(kernel_size, dilations):
+    return 1 + sum((kernel_size - 1) * d for d in dilations)
+
+
+def causality_check(x=AR_CAUSAL_INPUT, changed=5, delta=100):
+    nudged = list(x)
+    nudged[changed] += delta
+    before, after = causal_stack(x)[-1], causal_stack(nudged)[-1]
+    first_changed = next(t for t in range(len(x)) if before[t] != after[t])
+    return {"before": before, "after": after, "changed": changed, "first_changed": first_changed}
+
+
+def wavenet_receptive_fields():
+    block = [2 ** i for i in range(10)]
+    return [
+        {"label": "one causal conv, kernel 2", "dilations": [1], "size": causal_receptive_field(2, [1])},
+        {"label": "10 layers, no dilation", "dilations": [1] * 10, "size": causal_receptive_field(2, [1] * 10)},
+        {"label": "10 layers, dilations 1, 2, …, 512", "dilations": block, "size": causal_receptive_field(2, block)},
+        {"label": "3 such blocks", "dilations": block * 3, "size": causal_receptive_field(2, block * 3)},
+    ]
+
+
+def pixelcnn_mask(kernel, mask_type):
+    centre = kernel // 2
+    return [
+        [1 if r < centre or (r == centre and (c < centre or (c == centre and mask_type == "B"))) else 0 for c in range(kernel)]
+        for r in range(kernel)
+    ]
+
+
+def pixelcnn_dependencies(layers, size=7, kernel=3):
+    target = (size - 2, size // 2)
+
+    def offsets(mask_type):
+        mask, centre = pixelcnn_mask(kernel, mask_type), kernel // 2
+        return [(r - centre, c - centre) for r in range(kernel) for c in range(kernel) if mask[r][c]]
+
+    seen = {target}
+    for mask_type in ["B"] * (layers - 1) + ["A"]:
+        seen = {
+            (r + dr, c + dc) for r, c in seen for dr, dc in offsets(mask_type)
+            if 0 <= r + dr < size and 0 <= c + dc < size
+        }
+    grid = []
+    for r in range(size):
+        row = []
+        for c in range(size):
+            if (r, c) == target:
+                row.append("target")
+            elif (r, c) in seen:
+                row.append("seen")
+            elif (r, c) > target:
+                row.append("future")
+            elif max(abs(r - target[0]), abs(c - target[1])) <= layers:
+                row.append("blind")
+            else:
+                row.append("far")
+        grid.append(row)
+    return {"grid": grid, "target": target, "seen": len(seen), "blind": sum(row.count("blind") for row in grid)}
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -5778,6 +5956,23 @@ def render(slug, render_template):
         "resnet18_stack": resnet18_stack,
         "stacking_comparison": stacking_comparison,
         "resnet_receptive_fields": resnet_receptive_fields,
+        "ar_joint": AR_JOINT,
+        "ar_corpus": AR_CORPUS,
+        "ar_causal_input": AR_CAUSAL_INPUT,
+        "ar_causal_kernel": AR_CAUSAL_KERNEL,
+        "ar_causal_dilations": AR_CAUSAL_DILATIONS,
+        "chain_rule_factors": chain_rule_factors,
+        "markov_approximation": markov_approximation,
+        "ancestral_samples": ancestral_samples,
+        "table_sizes": table_sizes,
+        "teacher_forcing_example": teacher_forcing_example,
+        "exposure_bias_curve": exposure_bias_curve,
+        "causal_stack": causal_stack,
+        "causal_receptive_field": causal_receptive_field,
+        "causality_check": causality_check,
+        "wavenet_receptive_fields": wavenet_receptive_fields,
+        "pixelcnn_mask": pixelcnn_mask,
+        "pixelcnn_dependencies": pixelcnn_dependencies,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

@@ -2459,3 +2459,71 @@ def test_resnet18_stack_matches_the_published_size():
     ]
     assert [row.get("downsample") for row in stack["rows"][2:6]] == [False, True, True, True]
     assert stack["total"] == 11_689_512
+
+
+def test_chain_rule_factors_rebuild_the_joint_exactly():
+    rows = ml_models_docs.chain_rule_factors(ml_models_docs.AR_JOINT)
+    assert len(rows) == 8
+    for row in rows:
+        assert row["product"] == pytest.approx(row["joint"])
+    first = {row["sequence"]: row["factors"] for row in rows}
+    assert first[(0, 0, 0)] == pytest.approx([0.5, 0.7, 6 / 7])
+    assert first[(1, 1, 1)] == pytest.approx([0.5, 0.8, 0.75])
+
+
+def test_markov_approximation_loses_information():
+    result = ml_models_docs.markov_approximation(ml_models_docs.AR_JOINT)
+    assert sum(result["approx"].values()) == pytest.approx(1.0)
+    assert result["kl_bits"] == pytest.approx(0.0394939, abs=1e-6)
+    assert ml_models_docs.table_sizes(2, 3) == {"joint": 7, "chain": 7, "markov": 5}
+    sizes = ml_models_docs.table_sizes(50_000, 3)
+    assert sizes["joint"] == sizes["chain"] == 50_000 ** 3 - 1
+
+
+def test_ancestral_samples_follow_the_joint():
+    frequencies = ml_models_docs.ancestral_samples(ml_models_docs.AR_JOINT, 1000, 0)
+    assert sum(frequencies.values()) == pytest.approx(1.0)
+    for sequence, p in ml_models_docs.AR_JOINT.items():
+        assert abs(frequencies[sequence] - p) < 0.05
+
+
+def test_teacher_forcing_counts_are_the_maximum_likelihood_fit():
+    example = ml_models_docs.teacher_forcing_example()
+    assert example["inputs"] == ["<s>", "the", "cat", "ran"]
+    assert example["targets"] == ["the", "cat", "ran", "."]
+    assert [row["prob"] for row in example["rows"]] == pytest.approx([1, 2 / 3, 0.5, 1])
+    assert example["total_nll"] == pytest.approx(math.log(3))
+    assert example["perplexity"] == pytest.approx(3 ** 0.25)
+    assert example["max_gradient"] < 1e-12
+
+
+def test_exposure_bias_free_running_accuracy_decays():
+    rows = ml_models_docs.exposure_bias_curve()
+    assert rows[0]["free_running"] == pytest.approx(0.9)
+    assert rows[1]["free_running"] == pytest.approx(0.81 + 0.1 * 0.1 / 3)
+    assert all(row["teacher_forced"] == 0.9 for row in rows)
+    assert all(a["free_running"] > b["free_running"] > 0.25 for a, b in zip(rows, rows[1:]))
+    assert all(row["free_running"] >= row["all_correct"] - 1e-12 for row in rows)
+
+
+def test_causal_convolution_never_reads_the_future():
+    check = ml_models_docs.causality_check()
+    assert check["first_changed"] == check["changed"]
+    assert check["before"][: check["changed"]] == check["after"][: check["changed"]]
+    assert ml_models_docs.causal_stack([1, 2, 3, 4, 5, 6, 7, 8])[-1][-1] == 4.5
+    assert ml_models_docs.causal_conv1d([1, 2, 3], [1, 10], dilation=2) == [10, 20, 31]
+    assert ml_models_docs.causal_receptive_field(2, [1, 2, 4]) == 8
+    sizes = [row["size"] for row in ml_models_docs.wavenet_receptive_fields()]
+    assert sizes == [2, 11, 1024, 3070]
+
+
+def test_pixelcnn_masks_and_blind_spot():
+    assert ml_models_docs.pixelcnn_mask(3, "A") == [[1, 1, 1], [1, 0, 0], [0, 0, 0]]
+    assert ml_models_docs.pixelcnn_mask(3, "B") == [[1, 1, 1], [1, 1, 0], [0, 0, 0]]
+    assert sum(map(sum, ml_models_docs.pixelcnn_mask(5, "A"))) == 12
+    result = ml_models_docs.pixelcnn_dependencies(3)
+    grid = result["grid"]
+    assert grid[5][3] == "target"
+    assert result["blind"] == 3
+    assert grid[3][6] == grid[4][5] == grid[4][6] == "blind"
+    assert all(cell == "far" for cell in grid[0])
