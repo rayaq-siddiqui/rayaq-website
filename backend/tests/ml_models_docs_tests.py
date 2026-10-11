@@ -2263,3 +2263,11 @@ def test_svd_stages_rotate_stretch_then_rotate_to_the_image():
     for stretched, image in zip(stages["stretched"], stages["image"]):
         rebuilt = [ml_models_docs.dot_product(row, stretched) for row in factors["U"]]
         assert rebuilt == pytest.approx(image)
+
+
+def test_templates_only_read_pin_keys_that_exist():
+    for name in os.listdir(TEMPLATES_DIR):
+        with open(os.path.join(TEMPLATES_DIR, name)) as handle:
+            source = handle.read()
+        for library, key in re.findall(r"pins\.(\w+)\.(\w+)", source):
+            assert key in ml_models_docs.PINS[library], (name, library, key)
