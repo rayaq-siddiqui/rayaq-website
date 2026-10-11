@@ -304,7 +304,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy", "kadanes-algorithm", "interval-merging", "sweep-line", "matrix-manipulation"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy", "kadanes-algorithm", "interval-merging", "sweep-line", "matrix-manipulation", "number-math"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -6788,6 +6788,150 @@ def set_zeroes_trace(matrix):
     return {"first_row": first_row, "first_col": first_col, "marked": marked, "result": grid}
 
 
+INT_MAX = 2 ** 31 - 1
+INT_MIN = -(2 ** 31)
+
+
+def reverse_digits_trace(x):
+    """Reverse Integer: peel the last digit off |x| and append it to the result, checking before each append that result * 10 + digit still fits the signed 32-bit range. Returns 0 on overflow, as the problem asks."""
+    sign = -1 if x < 0 else 1
+    limit = INT_MAX if sign > 0 else -INT_MIN
+    rest, result, rows = abs(x), 0, []
+    while rest:
+        rest, digit = divmod(rest, 10)
+        safe = result < limit // 10 or (result == limit // 10 and digit <= limit % 10)
+        rows.append({"digit": digit, "before": result, "rest": rest, "safe": safe,
+                     "after": result * 10 + digit if safe else None})
+        if not safe:
+            return {"rows": rows, "value": 0, "overflow": True, "limit": limit}
+        result = result * 10 + digit
+    return {"rows": rows, "value": sign * result, "overflow": False, "limit": limit}
+
+
+def palindrome_half_trace(x):
+    """Palindrome Number without strings: move digits from the end of x onto a reversed number until the reversed half is at least as long as what is left, then compare the halves (dropping the middle digit when the length is odd)."""
+    if x < 0 or (x % 10 == 0 and x != 0):
+        return {"rows": [], "is_palindrome": False, "early": True}
+    rest, half, rows = x, 0, []
+    while rest > half:
+        rest, digit = divmod(rest, 10)
+        half = half * 10 + digit
+        rows.append({"digit": digit, "rest": rest, "half": half})
+    return {"rows": rows, "is_palindrome": rest == half or rest == half // 10, "early": False}
+
+
+def binary_power_trace(base, exponent):
+    """Pow(x, n) by iterative square-and-multiply: read the exponent's bits from the lowest, squaring the running power of the base each step and multiplying it into the result when the bit is 1. A negative exponent inverts the base first."""
+    if exponent < 0:
+        base, exponent = 1 / base, -exponent
+    result, power, rows, multiplications = 1, base, [], 0
+    position = 0
+    while exponent:
+        bit = exponent & 1
+        if bit:
+            result *= power
+            multiplications += 1
+        rows.append({"position": position, "bit": bit, "power": power, "result": result})
+        exponent >>= 1
+        if exponent:
+            power *= power
+            multiplications += 1
+        position += 1
+    return {"rows": rows, "value": result, "multiplications": multiplications}
+
+
+def multiply_strings_trace(a, b):
+    """Multiply Strings with a positions array: digit i of a times digit j of b lands in slot i + j + 1, its carry in slot i + j. steps[k] records one digit product and the slots afterwards."""
+    slots = [0] * (len(a) + len(b))
+    steps = []
+    for i in range(len(a) - 1, -1, -1):
+        for j in range(len(b) - 1, -1, -1):
+            product = int(a[i]) * int(b[j])
+            total = product + slots[i + j + 1]
+            slots[i + j + 1] = total % 10
+            slots[i + j] += total // 10
+            steps.append({"i": i, "j": j, "product": product, "low": i + j + 1, "slots": slots[:]})
+    product = "".join(map(str, slots)).lstrip("0") or "0"
+    return {"steps": steps, "slots": slots, "product": product}
+
+
+def column_title_trace(number):
+    """Excel Sheet Column Title: bijective base 26 has digits 1..26 and no zero, so subtract one before each divmod to map the digit onto A..Z."""
+    rows, letters = [], []
+    while number:
+        shifted = number - 1
+        quotient, remainder = divmod(shifted, 26)
+        letter = chr(ord("A") + remainder)
+        rows.append({"number": number, "shifted": shifted, "remainder": remainder, "letter": letter, "next": quotient})
+        letters.append(letter)
+        number = quotient
+    return {"rows": rows, "title": "".join(reversed(letters))}
+
+
+def euclid_trace(a, b):
+    """Euclid's algorithm: gcd(a, b) = gcd(b, a mod b), stopping when the second number is 0."""
+    rows = []
+    while b:
+        rows.append({"a": a, "b": b, "remainder": a % b})
+        a, b = b, a % b
+    return {"rows": rows, "gcd": a}
+
+
+def gcd_of_strings_of(first, second):
+    """Greatest Common Divisor of Strings: a common divisor exists only when the two concatenation orders agree, and then the longest one has length gcd(len(first), len(second))."""
+    if first + second != second + first:
+        return ""
+    return first[:math.gcd(len(first), len(second))]
+
+
+def atoi_trace(text):
+    """String to Integer (atoi) as a state machine: skip leading spaces, read at most one sign, then digits, clamping to the 32-bit range and stopping at the first other character."""
+    rows, index, sign, value = [], 0, 1, 0
+    while index < len(text) and text[index] == " ":
+        rows.append({"char": " ", "state": "space", "value": 0})
+        index += 1
+    if index < len(text) and text[index] in "+-":
+        sign = -1 if text[index] == "-" else 1
+        rows.append({"char": text[index], "state": "sign", "value": 0})
+        index += 1
+    while index < len(text) and text[index].isdigit():
+        value = value * 10 + int(text[index])
+        clamped = value * sign > INT_MAX or value * sign < INT_MIN
+        rows.append({"char": text[index], "state": "clamp" if clamped else "digit", "value": sign * value})
+        if clamped:
+            return {"rows": rows, "value": INT_MAX if sign > 0 else INT_MIN}
+        index += 1
+    if index < len(text):
+        rows.append({"char": text[index], "state": "stop", "value": sign * value})
+    return {"rows": rows, "value": sign * value}
+
+
+ROMAN_VALUES = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+
+
+def roman_trace(text):
+    """Roman to Integer: a symbol worth less than the one after it is subtracted, every other symbol is added."""
+    rows, total = [], 0
+    for index, symbol in enumerate(text):
+        value = ROMAN_VALUES[symbol]
+        following = ROMAN_VALUES[text[index + 1]] if index + 1 < len(text) else 0
+        signed = -value if value < following else value
+        total += signed
+        rows.append({"symbol": symbol, "signed": signed, "total": total})
+    return {"rows": rows, "value": total}
+
+
+def plus_one_of(digits):
+    """Plus One: add from the last digit; a 9 becomes 0 and carries left, and only all nines grow a new leading 1."""
+    result = digits[:]
+    for index in range(len(result) - 1, -1, -1):
+        if result[index] < 9:
+            result[index] += 1
+            return result
+        result[index] = 0
+    return [1] + result
+
+
 def problem_url(slug):
     return f"https://leetcode.com/problems/{slug}/"
 
@@ -7089,6 +7233,16 @@ def render(slug, render_template):
         "pacific_atlantic_of": pacific_atlantic_of,
         "merge_strategy_costs": merge_strategy_costs,
         "smallest_range_trace": smallest_range_trace,
+        "reverse_digits_trace": reverse_digits_trace,
+        "palindrome_half_trace": palindrome_half_trace,
+        "binary_power_trace": binary_power_trace,
+        "multiply_strings_trace": multiply_strings_trace,
+        "column_title_trace": column_title_trace,
+        "euclid_trace": euclid_trace,
+        "gcd_of_strings_of": gcd_of_strings_of,
+        "atoi_trace": atoi_trace,
+        "roman_trace": roman_trace,
+        "plus_one_of": plus_one_of,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,

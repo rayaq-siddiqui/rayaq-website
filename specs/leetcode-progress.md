@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-11 (build run). 51 of 58 pages are ready. **The next run is a build run** continuing at `number-math`.
+**Last updated:** 2026-10-11 (build run). 52 of 58 pages are ready. **The next run is a build run** continuing at `bit-manipulation`.
 
 ## The Routine
 
@@ -40,9 +40,9 @@ weekly once the build is complete, and pushes straight to `main`. The phone chec
 | List | Problems with a ready home | Size |
 |---|---|---|
 | Blind 75 | 70 | 75 |
-| Grind 169 | 158 | 169 |
-| NeetCode 150 | 140 | 150 |
-| NeetCode 250 | 234 | 250 |
+| Grind 169 | 163 | 169 |
+| NeetCode 150 | 144 | 150 |
+| NeetCode 250 | 241 | 250 |
 
 ## Queue
 
@@ -100,8 +100,8 @@ build once research is done.
 49. `interval-merging` ✓
 50. `sweep-line` ✓
 51. `matrix-manipulation` ✓
-52. `number-math` ← next
-53. `bit-manipulation`
+52. `number-math` ✓
+53. `bit-manipulation` ← next
 54. `interview-approach`
 55. `segment-trees`
 56. `fenwick-trees`
@@ -293,3 +293,12 @@ belongs to the array-rotation page. The checkout was a shallow clone that looked
 fast-forwarded cleanly. Coverage: Blind 75 70/75, Grind 169 158/169, NeetCode 150 140/150,
 NeetCode 250 234/250. Mobile check passed on `/`, `/leetcode` and every ready page. Next:
 `number-math`.
+
+### 2026-10-11 — build run (third)
+
+Built `number-math` with tested helpers in `leetcode_docs.py` (reverse with the 32-bit check
+before the multiply, half-reversal palindrome, square-and-multiply, the multiply-strings slot
+array, bijective base 26, Euclid, atoi, Roman numerals, Plus One), each cross-checked against
+brute force, two inline SVGs and the full §6 format. Coverage: Blind 75 70/75, Grind 169
+163/169, NeetCode 150 144/150, NeetCode 250 241/250. Mobile check passed on `/`, `/leetcode`
+and every ready page. Next: `bit-manipulation`.

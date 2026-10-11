@@ -1,4 +1,5 @@
 import heapq
+import math
 import os
 import re
 
@@ -1566,3 +1567,100 @@ def test_matrix_manipulation_helpers_match_the_page():
     assert "<td>Result</td><td class=\"num\">0 0 3 4</td><td class=\"num\">0 0 0 0</td><td class=\"num\">0 0 0 0</td><td class=\"num\">0 0 15 16</td>" in body
     assert "3 &times; 2 matrix [1, 4], [2, 5], [3, 6]" in body
     assert "6 for n = 4" in body
+
+
+def test_number_math_helpers_match_the_page():
+    rev = leetcode_docs.reverse_digits_trace(-1230)
+    assert [(r["digit"], r["rest"], r["before"], r["after"]) for r in rev["rows"]] == [(0, 123, 0, 0), (3, 12, 0, 3), (2, 1, 3, 32), (1, 0, 32, 321)]
+    assert (rev["value"], rev["limit"]) == (-321, 2 ** 31)
+    over = leetcode_docs.reverse_digits_trace(1534236469)
+    assert over["overflow"] and over["value"] == 0
+    assert (over["rows"][-1]["digit"], over["rows"][-1]["before"], over["rows"][-1]["safe"]) == (1, 964632435, False)
+
+    def brute_reverse(x):
+        r = int(str(abs(x))[::-1]) * (-1 if x < 0 else 1)
+        return r if -2 ** 31 <= r <= 2 ** 31 - 1 else 0
+
+    for x in [0, 7, -7, 120, 2 ** 31 - 1, -2 ** 31, 1463847412, -1463847412, 1463847413, -1563847412, 8463847412, -8463847412, 2147483641]:
+        assert leetcode_docs.reverse_digits_trace(x)["value"] == brute_reverse(x)
+
+    pal = leetcode_docs.palindrome_half_trace(12321)
+    assert [(r["digit"], r["rest"], r["half"]) for r in pal["rows"]] == [(1, 1232, 1), (2, 123, 12), (3, 12, 123)]
+    assert pal["is_palindrome"]
+    even = leetcode_docs.palindrome_half_trace(1221)
+    assert (even["rows"][-1]["rest"], even["rows"][-1]["half"], len(even["rows"])) == (12, 12, 2)
+    for x in range(-20, 3000):
+        assert leetcode_docs.palindrome_half_trace(x)["is_palindrome"] == (str(x) == str(x)[::-1])
+
+    pw = leetcode_docs.binary_power_trace(3, 13)
+    assert [(r["position"], r["bit"], r["power"], r["result"]) for r in pw["rows"]] == [(0, 1, 3, 3), (1, 0, 9, 3), (2, 1, 81, 243), (3, 1, 6561, 1594323)]
+    assert (pw["value"], pw["multiplications"]) == (3 ** 13, 6)
+    assert leetcode_docs.binary_power_trace(2.0, -2)["value"] == 0.25
+    for base in [-3, 2, 5]:
+        for exponent in range(40):
+            assert leetcode_docs.binary_power_trace(base, exponent)["value"] == base ** exponent
+
+    mul = leetcode_docs.multiply_strings_trace("123", "45")
+    assert [s["product"] for s in mul["steps"]] == [15, 12, 10, 8, 5, 4]
+    assert (mul["slots"], mul["product"]) == ([0, 5, 5, 3, 5], "5535")
+    for a in ["0", "9", "99", "123", "1000", "987654321"]:
+        for b in ["0", "1", "45", "999", "123456789"]:
+            assert leetcode_docs.multiply_strings_trace(a, b)["product"] == str(int(a) * int(b))
+
+    col = leetcode_docs.column_title_trace(701)
+    assert col["title"] == "ZY" and [(r["shifted"], r["next"], r["remainder"], r["letter"]) for r in col["rows"]] == [(700, 26, 24, "Y"), (25, 0, 25, "Z")]
+
+    def column_number(title):
+        n = 0
+        for letter in title:
+            n = n * 26 + ord(letter) - ord("A") + 1
+        return n
+
+    for n in range(1, 20000):
+        assert column_number(leetcode_docs.column_title_trace(n)["title"]) == n
+    assert leetcode_docs.column_title_trace(26)["title"] == "Z"
+
+    eu = leetcode_docs.euclid_trace(6, 4)
+    assert eu["gcd"] == 2 and [(r["a"], r["b"], r["remainder"]) for r in eu["rows"]] == [(6, 4, 2), (4, 2, 0)]
+    for a in range(1, 60):
+        for b in range(1, 60):
+            assert leetcode_docs.euclid_trace(a, b)["gcd"] == math.gcd(a, b)
+    assert leetcode_docs.gcd_of_strings_of("ABABAB", "ABAB") == "AB"
+    assert leetcode_docs.gcd_of_strings_of("ABC", "AB") == ""
+
+    atoi = leetcode_docs.atoi_trace("   -042x7")
+    assert [r["state"] for r in atoi["rows"]] == ["space"] * 3 + ["sign", "digit", "digit", "digit", "stop"]
+    assert atoi["value"] == -42
+    clamp = leetcode_docs.atoi_trace("91283472332")
+    assert clamp["rows"][-1]["state"] == "clamp" and clamp["value"] == 2 ** 31 - 1
+    for text, expected in [("", 0), ("+", 0), ("+-1", 0), ("  12 3", 12), ("-91283472332", -2 ** 31), ("words 9", 0), ("2147483647", 2 ** 31 - 1), ("-2147483648", -2 ** 31)]:
+        assert leetcode_docs.atoi_trace(text)["value"] == expected
+
+    assert leetcode_docs.roman_trace("MCMXCIV")["value"] == 1994
+    assert [r["signed"] for r in leetcode_docs.roman_trace("MCMXCIV")["rows"]] == [1000, -100, 1000, -10, 100, -1, 5]
+
+    def to_roman(n):
+        out = ""
+        for value, symbols in [(1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"), (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")]:
+            while n >= value:
+                out, n = out + symbols, n - value
+        return out
+
+    for n in range(1, 4000):
+        assert leetcode_docs.roman_trace(to_roman(n))["value"] == n
+
+    assert leetcode_docs.plus_one_of([9, 9]) == [1, 0, 0] and leetcode_docs.plus_one_of([1, 2, 9]) == [1, 3, 0]
+    for n in range(0, 1200):
+        digits = [int(c) for c in str(n)]
+        assert leetcode_docs.plus_one_of(digits) == [int(c) for c in str(n + 1)]
+
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/number-math").get_data(as_text=True))
+    assert "<td class=\"num\">4</td><td class=\"num\">1</td><td class=\"num\">0</td><td class=\"num\">32</td><td>yes</td><td class=\"num\">321</td>" in body
+    assert "Putting the sign back gives <strong>-321</strong>" in body
+    assert "<td class=\"num\">964632435</td><td>no</td><td class=\"num\">&mdash;</td>" in body
+    assert "<td class=\"num\">3</td><td class=\"num\">1</td><td class=\"num\">6561</td><td class=\"num\">1594323</td>" in body
+    assert "6 multiplications give 3<sup>13</sup> = 1594323" in body
+    assert "<td class=\"num\">0 5 5 3 5</td>" in body and "<strong>5535</strong>" in body
+    assert "<td>ZY</td>" in body and "<td class=\"num\">1994</td>" in body
+    assert "<code>\"AB\"</code>" in body and "1 3 0 and 1 0 0" in body
+    assert "<td class=\"num\">-42</td>" in body and "<td class=\"num\">2147483647</td>" in body
