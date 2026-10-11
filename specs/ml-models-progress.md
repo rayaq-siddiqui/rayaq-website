@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-11 (twenty-seventh run). Spec v2 widens the section from model
+**Last updated:** 2026-10-11 (twenty-eighth run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-45, the last being `mixed-precision`. The next
-page is `quantization` (queue item 46).
+fixed page format. Ready pages: queue items 1-46, the last being `quantization`. The next
+page is `reinforcement-learning` (queue item 47).
 
 ## Pins
 
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (45 of 93 ready, all
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (46 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -115,7 +115,15 @@ file); this list keeps only what queued pages still need.
   `autocast_mode.h` `CastPolicy` 416-438, op lists 819-956; `autocast_mode.cpp` `cached_cast`
   122-157, CUDA registration 181-222; `torch/__init__.py` `set_float32_matmul_precision`
   1987-2050; `torch/headeronly/util/BFloat16.h` 100-114, `Float8_e4m3fn.h` 171-243,
-  `Float8_e5m2.h` 77-144. `quantization` will want `torch/ao/quantization/` (not yet read).
+  `Float8_e5m2.h` 77-144.
+- Quantization (used): `torch/ao/quantization/quantize.py` `prepare` 343-410,
+  `quantize_dynamic` 483-572, `prepare_qat` 574-604, `convert` 629-680; `qconfig.py` defaults
+  153-178; `observer.py` `_calculate_qparams` 348-430, `MinMaxObserver` 440-585,
+  `PerChannelMinMaxObserver` 686-896; `fake_quantize.py` `FakeQuantize` 128-329; `utils.py`
+  `calculate_qmin_qmax` 445-506, `DEPRECATION_WARNING` 818-829; `_torch_docs.py`
+  `fake_quantize_per_tensor_affine` 12353-12392, `quantize_per_tensor` 13807-13841,
+  `quantize_per_tensor_dynamic` 13843-13871; `QuantizedOpKernels.cpp`
+  `_fake_quantize_tensor_helper` 2655-2715; `FakeQuantPerTensorAffine.cpp` backward 121-134.
 - GPU execution (used): `torch/cuda/streams.py` `Stream` 17-133, `wait_event`/`wait_stream`
   48-77, `Event` 159-271, `elapsed_time` 234-243; `torch/cuda/__init__.py` `get_device_properties`
   787-803, `StreamContext`/`stream` 818-886, `synchronize` 1271-1281, `current_stream`/
@@ -171,12 +179,12 @@ Paths are under `sklearn/`.
 - `transformer` uses the v1 section layout and is exempt from the §6 order test until its
   retrofit (queue item 18).
 
-## First to twenty-sixth runs (2026-10-08 to 2026-10-11) — condensed
+## First to twenty-seventh runs (2026-10-08 to 2026-10-11) — condensed
 
 Runs 1-3 wrote the spec (v1, then v2), the registry, `LEARNING_PATH`, the §6 and queue tests,
 `check_mobile.js` and the Routine. Every run since adds, per page, a tested-helpers commit, a
 page commit (page, `ready`, queue ✓) and usually a `docs:` commit; items 1-42 were built in
-queue order. `6f0803f` fixed 13 templates that read a missing `pins.X.version` key. Pins never
+queue order (run 27: similarity-search, gpu-execution, mixed-precision). `6f0803f` fixed 13 templates that read a missing `pins.X.version` key. Pins never
 moved. The ranges each page links live in its template (grep `src(`, `skl(`, `xgb(`);
 `git log -p` on this file has every old commit table and range list.
 
@@ -191,6 +199,11 @@ Findings worth keeping:
   the one-sided Jacobi SVD is used. `overfitting` uses medians over 30 draws.
 - On the BPE toy corpus BPE and WordPiece pick different first merges; the KD-tree example
   scans 4 of 16 points for k = 1 and all 16 for k = 5.
+- `nn.CosineSimilarity`'s docstring shows max(‖x₁‖·‖x₂‖, ε) but `F.cosine_similarity`'s, which
+  it calls and the page follows, shows max(‖x₁‖, ε)·max(‖x₂‖, ε). scikit-learn's tree metrics
+  have no `cosine`, so `NearestNeighbors(metric="cosine")` is brute force only.
+- `gpu-execution` uses an invented, labelled example GPU (100 TFLOP/s, 2 TB/s) and an assumed
+  5 µs launch cost.
 
 Open gaps from these runs:
 
@@ -202,49 +215,35 @@ Open gaps from these runs:
 - The end lines of the HistGradientBoosting regressor `__init__`, `_incremental_fit_estimator`
   and `Lasso` were inferred. The SwiGLU "2/3 hidden size" remark is from memory.
 - Page commits exceed 400 lines because each template is one file.
+- `gpu-execution`'s memory hierarchy, tiling and tensor-core remarks come from general CUDA
+  knowledge; `mixed-precision`'s fp8 scaling recipes live outside the pins, its GradScaler
+  simulation follows the docstring (the `_amp_update_scale_` kernel was not read), and tf32's
+  Ampere availability is general knowledge. BM25 has no pinned implementation; the page uses
+  the Lucene idf variant and says so.
 
-## Twenty-seventh run (2026-10-11) — similarity-search, gpu-execution, mixed-precision
+## Twenty-eighth run (2026-10-11) — quantization, reinforcement-learning, bayes-rule
 
 | Commit | What |
 |---|---|
-| `7626d90` `ml-models: add tested similarity search helpers` | Metric agreement before and after normalizing, the 2 − 2cos identity, brute-force cost, Lucene BM25 and saturation, reciprocal rank fusion, with four tests |
-| `6057948` `ml-models: build the similarity-search page` | The page, `ready`, queue ✓ |
-| `cc36b43` `docs: record the similarity-search build` | This file, condensed |
-| `513a150` `ml-models: add tested gpu execution helpers` | Example-GPU roofline for matmul and elementwise ops, fusion traffic, tiled matmul traffic, launch timeline, chart coordinates, with three tests |
-| `125f5d9` `ml-models: build the gpu-execution page` | The page, `ready`, queue ✓ |
-| `0746aa5` `docs: record the gpu-execution build` | This file |
-| `a8bbbb4` `ml-models: add float format and loss scaling helpers` | Six float formats, round-to-nearest-even with fp8 saturation, bit strings, loss scaling, a GradScaler simulation and master-weight accumulation, with five tests (checked against `struct` and PyTorch's bf16 bit trick) |
-| `9a9b600` `ml-models: build the mixed-precision page` | The page, `ready`, queue ✓, older run sections condensed |
-
-Pins checked with `git ls-remote --tags`: PyTorch v2.14.1, scikit-learn 1.9.1 and XGBoost v3.4.2
-are still the latest stable releases; no pin moved.
+| `5f73534` `ml-models: add quantization worked-example helpers` | Affine and symmetric qparams, quantize/dequantize, fake quantization with its STE mask, per-channel scales, int4 groups, weight memory and an LLM.int8()-style outlier split, with five tests (checked against the PyTorch docstring examples) |
+| `744a3e2` `ml-models: add the quantization page template` | The page |
+| `6a0d758` `ml-models: publish the quantization page` | `ready`, queue ✓ |
 
 Findings worth keeping:
 
-- `nn.CosineSimilarity`'s docstring shows max(‖x₁‖·‖x₂‖, ε), while `F.cosine_similarity`'s
-  shows max(‖x₁‖, ε)·max(‖x₂‖, ε). The page follows the functional docstring, which the module
-  calls.
-- scikit-learn's tree metrics have no `cosine`, so `NearestNeighbors(metric="cosine")` is
-  brute force only; `"auto"` picks brute force above 15 features anyway.
-- The hybrid example's dense ranking is stated as an assumption on the page; only BM25 and the
-  fusion are computed.
-- `gpu-execution` uses an invented example GPU (100 TFLOP/s, 2 TB/s, ridge 50) and an assumed
-  5 µs launch cost, both labelled as such on the page, rather than any real card's datasheet.
+- In v2.14.1 only the `torch/ao/quantization/quantize.py` entry points (`quantize_dynamic`,
+  `prepare`, `convert`, `prepare_qat`) carry `@deprecated(DEPRECATION_WARNING)`, which points
+  to torchao and says removal in 2.10; they are still present in 2.14.1. `qconfig`, `observer`
+  and `fake_quantize` carry no deprecation. The page states exactly that.
+- The fake-quant kernel's gradient mask is computed on the unclamped code
+  (`quant_min <= round(x/s) + z <= quant_max`) and the backward returns `dY * mask`: the
+  straight-through estimator, zero where the value was clamped.
 
 Gaps:
 
-- References are cited from memory (arxiv.org unreachable in earlier runs; not retried).
-- `gpu-execution`: the memory hierarchy, tiling and tensor-core remarks come from general CUDA
-  knowledge (no pinned source covers them); the NVIDIA programming guide is cited without a link.
-  `Event.elapsed_time` needing `enable_timing=True` on both events is not stated in the pinned
-  docstring.
-- `mixed-precision`: fp8 is described from PyTorch's fp8 headers and the FP8 formats paper;
-  the per-tensor scaling recipes live outside the pins. The GradScaler simulation resets its
-  growth tracker after a skip, following the docstring's "consecutive"; the
-  `_amp_update_scale_` kernel was not read. tf32's Ampere availability and the IEEE 754
-  reference come from general knowledge, not a pinned source.
-- BM25 has no pinned implementation (none of the three pins ships it); the page uses the
-  Lucene idf variant from Robertson and Zaragoza and says so.
+- GPTQ, LLM.int8(), Jacob et al. and Bengio et al. are cited from memory (arxiv.org
+  unreachable through the proxy). None of the pins implements GPTQ or LLM.int8(); the page
+  describes them from the papers. HistogramObserver is described only by its docstring.
 
 ## Queue
 
