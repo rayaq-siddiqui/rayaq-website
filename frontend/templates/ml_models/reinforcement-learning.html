@@ -1,0 +1,557 @@
+{% set vi = value_iteration() %}
+{% set closed = chain_values_closed_form() %}
+{% set ql = q_learning() %}
+{% set adv = chain_advantages() %}
+{% set pg = reinforce_gradient([0.0, 0.0, 0.0]) %}
+{% set pg_base = reinforce_gradient([0.0, 0.0, 0.0], baseline=pg.expected) %}
+{% set train = bandit_training() %}
+{% set hand = q_update(0.5, 0.0, 0.8, 0.1) %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(x)|replace("-", "−") }}{%- endmacro %}
+{% macro sx(s) -%}{{ 110 + s * 160 }}{%- endmacro %}
+{% macro rx(r, x0) -%}{{ x0 + r * 130 }}{%- endmacro %}
+{% macro oy(v, base) -%}{{ base - v * 55 }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Reinforcement learning</h1>
+  <p class="tagline">
+    Learning from rewards instead of labels: Markov decision processes, returns and discounting, value
+    functions and the Bellman equation, Q-learning and DQN, the policy gradient (REINFORCE, derived),
+    actor–critic methods and PPO's clipped objective.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Supervised learning needs the right answer for every input. Many problems only say how well things went,
+  and only afterwards: a game is won or lost after hundreds of moves, a robot reaches the target or falls over,
+  a chatbot's reply is rated after it is written. Nobody can label which move was right. The learner has to try
+  actions, see what reward they lead to, and work out which earlier choices deserve the credit, all while the
+  data it sees depends on the choices it makes. <dfn>Reinforcement learning</dfn> (RL) is the set of methods
+  for that: learn a <dfn>policy</dfn>, a rule for picking actions, that maximizes the total reward collected
+  over time.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  An <dfn>agent</dfn> sees a state, picks an action, and the <dfn>environment</dfn> answers with a reward and
+  the next state. Two ideas carry almost every method. First, a state is worth the reward you can expect from
+  it onwards, and that worth can be written recursively: the reward now plus the (discounted) worth of where
+  you land. Learning those worths turns a delayed reward into an immediate signal for every step. Second, if a
+  sampled action turned out better than expected, make it more likely; if worse, less likely. Value-based
+  methods (Q-learning, DQN) follow the first idea; policy-gradient methods (REINFORCE, PPO) follow the second;
+  actor–critic methods use the first to make the second less noisy.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 190" role="img" aria-labelledby="rl-loop-title rl-loop-desc">
+    <title id="rl-loop-title">The agent–environment loop</title>
+    <desc id="rl-loop-desc">The agent, holding a policy π(a | s), sends an action a at time t to the environment. The environment returns the next state s at time t + 1 and a reward r at time t + 1 back to the agent, and the loop repeats until the episode ends.</desc>
+    <defs>
+      <marker id="rl-loop-fwd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--jj-green)"></path>
+      </marker>
+      <marker id="rl-loop-back" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--jj-amber)"></path>
+      </marker>
+    </defs>
+    <g font-size="12" text-anchor="middle">
+      <rect x="40" y="55" width="180" height="70" rx="4" class="ml-weight"></rect>
+      <text x="130" y="85">agent</text>
+      <text x="130" y="104" font-size="10" class="d-muted">policy π(a | s), maybe values V, Q</text>
+      <rect x="480" y="55" width="180" height="70" rx="4" class="d-box"></rect>
+      <text x="570" y="85">environment</text>
+      <text x="570" y="104" font-size="10" class="d-muted">p(s′, r | s, a), unknown</text>
+      <text x="350" y="42" fill="var(--jj-green)">action aₜ</text>
+      <text x="350" y="160" fill="var(--jj-amber)">next state sₜ₊₁, reward rₜ₊₁</text>
+    </g>
+    <polyline points="130,55 130,30 570,30 570,51" fill="none" stroke="var(--jj-green)" stroke-width="2" marker-end="url(#rl-loop-fwd)"></polyline>
+    <polyline points="570,125 570,170 130,170 130,129" fill="none" stroke="var(--jj-amber)" stroke-width="2" marker-end="url(#rl-loop-back)"></polyline>
+  </svg>
+</div>
+<p class="ml-caption">
+  The data an RL agent learns from is produced by its own actions, so changing the policy changes the data.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="mdps">MDPs, returns and discounting</h3>
+
+<p>
+  The standard model is a <dfn>Markov decision process</dfn> (MDP): states <var>s</var>, actions
+  <var>a</var>, a transition distribution <var>p</var>(<var>s</var>′, <var>r</var> | <var>s</var>, <var>a</var>)
+  and a discount factor γ ∈ [0, 1). "Markov" means the next state and reward depend only on the current state
+  and action, not on how the agent got there. A policy π(<var>a</var> | <var>s</var>) gives the probability of
+  each action in each state. From time <var>t</var>, the <dfn>return</dfn> is the discounted sum of future
+  rewards:
+</p>
+
+<p class="ml-formula">G<sub>t</sub> = r<sub>t+1</sub> + γ r<sub>t+2</sub> + γ² r<sub>t+3</sub> + … = r<sub>t+1</sub> + γ G<sub>t+1</sub></p>
+
+<p>
+  Discounting keeps the sum finite in endless tasks and prefers sooner rewards to later ones; a reward
+  <var>k</var> steps away counts γ<sup><var>k</var></sup> as much, so γ = {{ rl_gamma }} looks roughly
+  1/(1 − γ) = {{ (1 / (1 - rl_gamma))|round|int }} steps ahead. The goal is a policy that maximizes the expected return
+  <var>J</var>(π) = E[G<sub>0</sub>].
+</p>
+
+<h3 id="bellman">Value functions and the Bellman equation</h3>
+
+<p>
+  The <dfn>state value</dfn> V<sup>π</sup>(<var>s</var>) is the expected return from <var>s</var> when
+  following π; the <dfn>action value</dfn> Q<sup>π</sup>(<var>s</var>, <var>a</var>) is the expected return
+  after taking <var>a</var> in <var>s</var> and following π from then on. Because G<sub>t</sub> = r + γ
+  G<sub>t+1</sub>, both satisfy a one-step recursion, the <dfn>Bellman equation</dfn>:
+</p>
+
+<p class="ml-formula">Q<sup>π</sup>(s, a) = E[ r + γ V<sup>π</sup>(s′) ] &nbsp;&nbsp;&nbsp; V<sup>π</sup>(s) = Σ<sub>a</sub> π(a | s) Q<sup>π</sup>(s, a)</p>
+
+<p>
+  The best possible values satisfy the <dfn>Bellman optimality equation</dfn>, with a max in place of the
+  average over the policy:
+</p>
+
+<p class="ml-formula">Q*(s, a) = E[ r + γ max<sub>a′</sub> Q*(s′, a′) ] &nbsp;&nbsp;&nbsp; π*(s) = argmax<sub>a</sub> Q*(s, a)</p>
+
+<p>
+  Knowing Q* is enough to act optimally: pick the action with the highest value. When the transition
+  probabilities are known, <dfn>value iteration</dfn> finds V* by applying the right-hand side as an update,
+  over and over, to every state; with γ &lt; 1 each sweep shrinks the error by at least a factor γ, so it
+  converges to the unique fixed point. The worked example runs it on the chain below.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 230" role="img" aria-labelledby="rl-chain-title rl-chain-desc">
+    <title id="rl-chain-title">A slippery four-state chain and its optimal values</title>
+    <desc id="rl-chain-desc">States 0, 1, 2 and a terminal goal state 3 sit in a row. Moving right succeeds with probability {{ 1 - chain_slip }} and slips, leaving the agent where it is, with probability {{ chain_slip }}. Entering the goal pays reward 1; every other step pays 0. With discount {{ rl_gamma }}, the optimal values are V*(0) = {{ f(vi["values"][0]) }}, V*(1) = {{ f(vi["values"][1]) }} and V*(2) = {{ f(vi["values"][2]) }}.</desc>
+    <defs>
+      <marker id="rl-chain-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--jj-green)"></path>
+      </marker>
+      <marker id="rl-chain-slip" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--jj-amber)"></path>
+      </marker>
+    </defs>
+    <g font-size="12" text-anchor="middle">
+      {% for s in range(chain_states) %}
+      <rect x="{{ sx(s)|int - 40 }}" y="80" width="80" height="50" rx="6" class="{{ 'ml-heat' if s == chain_states - 1 else 'ml-tensor' }}"></rect>
+      <text x="{{ sx(s) }}" y="102">{{ "goal" if s == chain_states - 1 else "state " ~ s }}</text>
+      <text x="{{ sx(s) }}" y="120" font-size="10">{{ "terminal" if s == chain_states - 1 else "V* = " ~ f(vi["values"][s]) }}</text>
+      {% if s < chain_states - 1 %}
+      <path d="M{{ sx(s)|int - 18 }},80 C{{ sx(s)|int - 18 }},40 {{ sx(s)|int + 18 }},40 {{ sx(s)|int + 18 }},76" fill="none" stroke="var(--jj-amber)" stroke-width="1.5" marker-end="url(#rl-chain-slip)"></path>
+      <text x="{{ sx(s) }}" y="30" font-size="10" fill="var(--jj-amber)">slip {{ chain_slip }}</text>
+      <text x="{{ sx(s)|int + 80 }}" y="98" font-size="10" fill="var(--jj-green)">{{ 1 - chain_slip }}</text>
+      {% endif %}
+      {% endfor %}
+      <text x="{{ sx(chain_states - 1) }}" y="150" font-size="10">r = 1 on entering</text>
+      <text x="350" y="190" class="d-muted">"right" moves one state with probability {{ 1 - chain_slip }}; "left" moves back, with the same slip (state 0 stays put)</text>
+      <text x="350" y="210" class="d-muted">every step except entering the goal pays 0; discount γ = {{ rl_gamma }}</text>
+    </g>
+    {% for s in range(chain_states - 1) %}
+    <line x1="{{ sx(s)|int + 40 }}" y1="105" x2="{{ sx(s + 1)|int - 44 }}" y2="105" stroke="var(--jj-green)" stroke-width="2" marker-end="url(#rl-chain-arrow)"></line>
+    {% endfor %}
+  </svg>
+</div>
+<p class="ml-caption">
+  The values fall by more than γ per state away from the goal because each move can slip and cost a step.
+</p>
+
+<h3 id="q-learning">Q-learning and DQN</h3>
+
+<p>
+  Without a model of the environment, the expectation in the Bellman equation cannot be computed, but it can
+  be sampled. <dfn>Q-learning</dfn> keeps a table of estimates and, after each transition
+  (<var>s</var>, <var>a</var>, <var>r</var>, <var>s</var>′), nudges Q(<var>s</var>, <var>a</var>) toward a
+  one-sample Bellman target:
+</p>
+
+<p class="ml-formula">Q(s, a) ← Q(s, a) + α [ r + γ max<sub>a′</sub> Q(s′, a′) − Q(s, a) ]</p>
+
+<p>
+  The bracket is the <dfn>temporal-difference (TD) error</dfn>: how much better or worse the step went than
+  the current estimate predicted. The target uses the max over next actions whatever action the agent will
+  actually take next, so Q-learning is <dfn>off-policy</dfn>: it learns the greedy policy's values while
+  behaving differently, typically <dfn>ε-greedy</dfn> (a random action with probability ε, otherwise the best
+  one), which keeps it exploring. With every state–action pair visited often enough and a suitably decaying
+  α, the table converges to Q*.
+</p>
+
+<p>
+  Tables do not scale to images or large state spaces. <strong>DQN</strong> replaces the table with a neural
+  network Q<sub>θ</sub>(<var>s</var>, ·) that outputs one value per action, and trains it by regression on
+  the TD target. Naively this is unstable, because consecutive samples are correlated and the target moves
+  with every update. The DQN paper learned to play Atari games from pixels with two fixes: an
+  <dfn>experience replay</dfn> buffer of past transitions sampled at random in minibatches, and targets
+  computed from parameters held fixed while each update is made. The later Nature version made this a
+  separate <dfn>target network</dfn>, copied from the online network every <var>C</var> steps, and clipped
+  the error term, which amounts to a Huber loss (PyTorch's <code>nn.HuberLoss</code>).
+</p>
+
+<h3 id="policy-gradients">Policy gradients: REINFORCE, derived</h3>
+
+<p>
+  Value-based methods need a max over actions, which is awkward for continuous actions, and the policy they
+  produce is deterministic. Policy-gradient methods instead parameterize the policy directly,
+  π<sub>θ</sub>(<var>a</var> | <var>s</var>), for example a softmax over a network's logits, and do gradient
+  ascent on <var>J</var>(θ). The difficulty is that θ changes which actions are sampled, and you cannot
+  backpropagate through a random sample. The <dfn>log-derivative trick</dfn> gets around it. For one action
+  drawn from π<sub>θ</sub> with reward <var>R</var>(<var>a</var>):
+</p>
+
+<p class="ml-formula">∇<sub>θ</sub> E<sub>a∼π</sub>[R(a)] = Σ<sub>a</sub> R(a) ∇<sub>θ</sub>π<sub>θ</sub>(a) = Σ<sub>a</sub> π<sub>θ</sub>(a) R(a) ∇<sub>θ</sub> log π<sub>θ</sub>(a) = E<sub>a∼π</sub>[ R(a) ∇<sub>θ</sub> log π<sub>θ</sub>(a) ]</p>
+
+<p>
+  using ∇π = π ∇log π. The right-hand side is an expectation, so a sampled action gives an unbiased estimate
+  of the gradient, and it needs only the reward's value, not its derivative. For a whole trajectory, the
+  probability is a product of policy terms and environment terms; the environment terms do not depend on θ
+  and drop out of ∇log, leaving
+</p>
+
+<p class="ml-formula">∇<sub>θ</sub> J(θ) = E[ Σ<sub>t</sub> ∇<sub>θ</sub> log π<sub>θ</sub>(a<sub>t</sub> | s<sub>t</sub>) · G<sub>t</sub> ]</p>
+
+<p>
+  where each action is credited only with the return that follows it (rewards before <var>a</var><sub>t</sub>
+  cannot depend on it, and their terms average to zero). <dfn>REINFORCE</dfn> estimates this from sampled
+  episodes and takes a gradient step. For a softmax policy, ∇<sub>logits</sub> log π(<var>a</var>) is
+  one-hot(<var>a</var>) − π: raise the chosen action's logit, lower the rest in proportion to their
+  probability. In code, the surrogate loss −log π(<var>a</var> | <var>s</var>) · <var>G</var> has exactly this
+  gradient, which is how PyTorch's distributions documentation writes REINFORCE with
+  <code>Categorical.log_prob</code>.
+</p>
+
+<p>
+  The estimate is unbiased but very noisy. Subtracting a <dfn>baseline</dfn> <var>b</var>(<var>s</var>) from
+  <var>G</var><sub>t</sub> keeps it unbiased, because E[∇log π] = Σ ∇π = ∇ Σ π = ∇1 = 0, and can cut the
+  variance a lot (worked example below).
+</p>
+
+<h3 id="actor-critic">Actor–critic</h3>
+
+<p>
+  The best common baseline is the state's value. An <dfn>actor–critic</dfn> method learns a critic
+  V<sub>φ</sub>(<var>s</var>) alongside the actor π<sub>θ</sub>, and weights each log-probability by an
+  <dfn>advantage</dfn>, how much better the action did than the state's average. The simplest estimate is the
+  TD error:
+</p>
+
+<p class="ml-formula">A(s, a) ≈ δ = r + γ V<sub>φ</sub>(s′) − V<sub>φ</sub>(s) &nbsp;&nbsp;&nbsp; actor: ∇θ ∝ δ ∇<sub>θ</sub> log π<sub>θ</sub>(a | s) &nbsp;&nbsp;&nbsp; critic: minimize δ²</p>
+
+<p>
+  Using V(<var>s</var>′) instead of the full sampled return lowers variance further but adds bias wherever the
+  critic is wrong; methods such as generalized advantage estimation blend one-step and multi-step estimates to
+  trade the two off. The critic is trained by regression, like DQN's network, and the actor by the policy
+  gradient. Under the true values the advantages average to zero in every state, which is what makes them a
+  clean "better or worse than usual" signal.
+</p>
+
+<h3 id="ppo">PPO's clipped objective</h3>
+
+<p>
+  Policy gradients are on-policy: each batch of experience is valid for the policy that collected it, and one
+  gradient step uses it up. Taking several steps on the same batch, or one large step, can move the policy so
+  far that performance collapses. <strong>PPO</strong> (proximal policy optimization) collects a batch with
+  the current policy π<sub>old</sub>, then runs several epochs of minibatch updates on it, maximizing a
+  surrogate that stops rewarding moves too far from π<sub>old</sub>. With the probability ratio
+  ρ = π<sub>θ</sub>(<var>a</var> | <var>s</var>) / π<sub>old</sub>(<var>a</var> | <var>s</var>):
+</p>
+
+<p class="ml-formula">L<sup>CLIP</sup>(θ) = E[ min( ρ A, clip(ρ, 1 − ε, 1 + ε) A ) ]</p>
+
+<p>
+  with ε = {{ ppo_epsilon }} in the paper. For a good action (<var>A</var> &gt; 0) the objective grows with ρ
+  only up to 1 + ε, then goes flat, so there is no gradient pushing that action's probability further. For a
+  bad action (<var>A</var> &lt; 0) it stops at 1 − ε. The min makes the clip one-sided: if an update has
+  already moved the policy the wrong way (made a bad action more likely, or a good one less likely), the
+  unclipped term is the smaller one and its full gradient still applies. In practice the loss adds a value
+  loss for the critic and an entropy bonus, which keeps the policy from collapsing onto one action too early.
+  PPO is the RL algorithm behind RLHF (see
+  preference optimization, a later page).
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 250" role="img" aria-labelledby="rl-ppo-title rl-ppo-desc">
+    <title id="rl-ppo-title">PPO's clipped objective as a function of the probability ratio</title>
+    <desc id="rl-ppo-desc">Two plots of the objective against the ratio ρ from 0 to 2, with ε = {{ ppo_epsilon }}. Left, advantage +1: the objective equals ρ up to ρ = {{ 1 + ppo_epsilon }}, then stays flat at {{ 1 + ppo_epsilon }}; the unclipped line ρ continues upward, dashed. Right, advantage −1: the objective is flat at −{{ 1 - ppo_epsilon }} for ρ below {{ 1 - ppo_epsilon }}, then follows −ρ downward; the unclipped line −ρ is dashed where the objective is flat. Flat parts have zero gradient.</desc>
+    {% set breaks = [0.0, 1 - ppo_epsilon, 1 + ppo_epsilon, 2.0] %}
+    {% for panel in [{"a": 1.0, "x0": 60, "base": 190, "label": "A = +1 (good action)"}, {"a": -1.0, "x0": 390, "base": 60, "label": "A = −1 (bad action)"}] %}
+    <g font-size="11">
+      <line x1="{{ panel.x0 }}" y1="{{ panel.base }}" x2="{{ rx(2.0, panel.x0) }}" y2="{{ panel.base }}" class="d-line"></line>
+      <line x1="{{ panel.x0 }}" y1="{{ panel.base }}" x2="{{ panel.x0 }}" y2="{{ oy(2.0 * panel.a, panel.base) }}" class="d-line"></line>
+      {% for r in [0.0, 1.0, 2.0] %}
+      <text x="{{ rx(r, panel.x0) }}" y="{{ panel.base|int + (16 if panel.a > 0 else -6) }}" text-anchor="middle" class="d-muted">{{ r|int }}</text>
+      {% endfor %}
+      <text x="{{ rx(2.0, panel.x0)|float + 6 }}" y="{{ panel.base|int + 4 }}" class="d-muted">ρ</text>
+      {% for r in [1 - ppo_epsilon, 1 + ppo_epsilon] %}
+      <line x1="{{ rx(r, panel.x0) }}" y1="{{ oy(1.6 * panel.a, panel.base) }}" x2="{{ rx(r, panel.x0) }}" y2="{{ panel.base }}" class="d-line ml-dashed" stroke-width="0.8"></line>
+      {% endfor %}
+      <polyline points="{% for r in [0.0, 2.0] %}{{ rx(r, panel.x0) }},{{ oy(ppo_clip(r, panel.a).unclipped, panel.base) }} {% endfor %}" fill="none" stroke="var(--jj-muted)" stroke-width="1.5" stroke-dasharray="4 3"></polyline>
+      <polyline points="{% for r in breaks %}{{ rx(r, panel.x0) }},{{ oy(ppo_clip(r, panel.a).objective, panel.base) }} {% endfor %}" fill="none" stroke="var(--jj-green)" stroke-width="2.5"></polyline>
+      <text x="{{ rx(1.0, panel.x0) }}" y="236" text-anchor="middle">{{ panel.label }}</text>
+    </g>
+    {% endfor %}
+    <g font-size="10">
+      <text x="{{ rx(1 + ppo_epsilon, 60)|float + 6 }}" y="{{ oy(1 + ppo_epsilon, 190)|float + 16 }}" fill="var(--jj-green)">flat at {{ 1 + ppo_epsilon }}: no gradient</text>
+      <text x="{{ rx(0.02, 390) }}" y="{{ oy(-(1 - ppo_epsilon), 60)|float + 16 }}" fill="var(--jj-green)">flat at −{{ 1 - ppo_epsilon }}</text>
+      <text x="{{ rx(1.35, 390) }}" y="{{ oy(-1.1, 60) }}" class="d-muted">−ρ, full gradient</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">
+  Green: L<sup>CLIP</sup> for one sample; dashed grey: the unclipped ρA. Dotted verticals mark 1 − ε and 1 + ε.
+</p>
+
+<h3 id="pytorch-api">The PyTorch API</h3>
+
+<p>
+  PyTorch has no RL training loop of its own (libraries such as TorchRL build on it). What it provides are the
+  pieces: distributions to sample actions and score them, autograd for the surrogate losses, and the regression
+  losses for critics and Q-networks.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead>
+      <tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>Categorical</code></td>
+        <td><code>probs=None, logits=None</code> (exactly one); batch shape = all but the last dim</td>
+        <td>A discrete policy over <var>K</var> actions. Logits are normalized with <code>logsumexp</code>, probs by their sum.</td>
+        <td><a href="{{ src('torch/distributions/categorical.py', 13, 171) }}">categorical.py 13-171</a></td>
+      </tr>
+      <tr>
+        <td><code>Categorical.sample</code></td>
+        <td><code>sample_shape=()</code> → integer actions</td>
+        <td>Draws actions with <code>torch.multinomial</code> (with replacement); not differentiable.</td>
+        <td><a href="{{ src('torch/distributions/categorical.py', 144, 149) }}">categorical.py 144-149</a></td>
+      </tr>
+      <tr>
+        <td><code>Categorical.log_prob</code></td>
+        <td><code>value</code> (actions) → log π(<var>a</var>)</td>
+        <td>Gathers the normalized logit of each action; differentiable in the logits, so <code>-log_prob(a) * G</code> is the REINFORCE loss.</td>
+        <td><a href="{{ src('torch/distributions/categorical.py', 151, 157) }}">categorical.py 151-157</a></td>
+      </tr>
+      <tr>
+        <td><code>Categorical.entropy</code></td>
+        <td>→ batch shape</td>
+        <td>−Σ <var>p</var> log <var>p</var>, with logits clamped to the dtype's minimum; the entropy bonus in actor–critic and PPO losses.</td>
+        <td><a href="{{ src('torch/distributions/categorical.py', 159, 163) }}">categorical.py 159-163</a></td>
+      </tr>
+      <tr>
+        <td><code>logits_to_probs</code>, <code>probs_to_logits</code></td>
+        <td><code>(tensor, is_binary=False)</code></td>
+        <td>Softmax over the last dim, and the clamped log back.</td>
+        <td><a href="{{ src('torch/distributions/utils.py', 90, 99) }}">utils.py 90-99</a>, <a href="{{ src('torch/distributions/utils.py', 128, 138) }}">128-138</a></td>
+      </tr>
+      <tr>
+        <td><code>Distribution.sample</code>, <code>rsample</code></td>
+        <td><code>sample_shape</code></td>
+        <td>The base class's <code>sample</code> is <code>rsample</code> under <code>no_grad</code>; distributions with a reparameterized <code>rsample</code> (such as <code>Normal</code>) allow the pathwise gradient instead.</td>
+        <td><a href="{{ src('torch/distributions/distribution.py', 167, 181) }}">distribution.py 167-181</a></td>
+      </tr>
+      <tr>
+        <td>Score function in the docs</td>
+        <td>Δθ = α <var>r</var> ∇<sub>θ</sub> log π<sub>θ</sub>(<var>a</var> | <var>s</var>)</td>
+        <td>The package docstring's REINFORCE recipe with <code>Categorical</code>, and the pathwise alternative.</td>
+        <td><a href="{{ src('torch/distributions/__init__.py', 25, 71) }}">distributions/__init__.py 25-71</a></td>
+      </tr>
+      <tr>
+        <td><code>nn.HuberLoss</code></td>
+        <td><code>reduction="mean", delta=1.0</code></td>
+        <td>Squared error below <code>delta</code>, linear above it; the usual DQN regression loss. Equal to <code>SmoothL1Loss</code> when <code>delta=1</code>.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 1081, 1150) }}">loss.py 1081-1150</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p><strong>Returns.</strong> With γ = {{ rl_gamma }}, rewards [0, 0, 1] give returns G = [{{ discounted_returns([0, 0, 1])|map("round", 4)|join(", ") }}] (computed backwards, G<sub>t</sub> = r<sub>t+1</sub> + γ G<sub>t+1</sub>), and rewards [1, 1, 1, 1] give [{{ discounted_returns([1, 1, 1, 1])|map("round", 4)|join(", ") }}]. A reward three steps away is worth γ² = {{ f(rl_gamma ** 2, 2) }} of one received now.</p>
+</div>
+
+<div class="ml-worked">
+  <p><strong>Value iteration on the chain.</strong> Start from V = 0 and apply V(<var>s</var>) ← max<sub><var>a</var></sub> Σ <var>p</var> [<var>r</var> + γ V(<var>s</var>′)] to every state at once:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Sweep</th><th>V(0)</th><th>V(1)</th><th>V(2)</th></tr></thead>
+      <tbody>
+        {% for k in [0, 1, 2, 3, 5, 10, 60] %}
+        <tr><td>{{ k }}</td><td>{{ f(vi.history[k][0], 4) }}</td><td>{{ f(vi.history[k][1], 4) }}</td><td>{{ f(vi.history[k][2], 4) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Sweep 1 only rewards state 2, which reaches the goal with probability {{ 1 - chain_slip }}; the news spreads one
+    state per sweep. The fixed point can be checked by hand: in state 2, V = {{ 1 - chain_slip }} · 1 + {{ chain_slip }} · γ · V,
+    so V = {{ 1 - chain_slip }} / (1 − {{ f(chain_slip * rl_gamma, 2) }}) = {{ f(closed[2], 4) }}, and the same reasoning gives
+    V(1) = {{ f(closed[1], 4) }} and V(0) = {{ f(closed[0], 4) }}, matching the last row.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <p><strong>Q-learning without the model.</strong> One update by hand: Q(<var>s</var>, <var>a</var>) = 0.5, <var>r</var> = 0, max<sub><var>a</var>′</sub> Q(<var>s</var>′, <var>a</var>′) = 0.8, α = 0.1: target = 0 + {{ rl_gamma }} × 0.8 = {{ f(hand.target, 2) }}, TD error {{ f(hand.td_error, 2) }}, new Q = 0.5 + 0.1 × {{ f(hand.td_error, 2) }} = {{ f(hand.new, 3) }}.</p>
+  <p>Run on the chain for 500 episodes (α = 0.1, ε = 0.2, seeded), {{ ql.steps }} steps in all, the agent never sees the transition probabilities, yet:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>State</th><th>Q*(s, left)</th><th>Q*(s, right)</th><th>Learned Q(s, left)</th><th>Learned Q(s, right)</th></tr></thead>
+      <tbody>
+        {% for row in vi.q %}
+        <tr><td>{{ loop.index0 }}</td><td>{{ f(row.left) }}</td><td>{{ f(row.right) }}</td><td>{{ f(ql.q[loop.index0].left) }}</td><td>{{ f(ql.q[loop.index0].right) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>The greedy policy is "right" in every state, and no learned value is more than {{ f(ql.max_error) }} from Q*; with a constant α the estimates keep jittering around the fixed point instead of settling on it.</p>
+</div>
+
+<div class="ml-worked">
+  <p><strong>Advantages from the critic.</strong> In state 1 with the true values (V(1) = {{ f(adv.value, 4) }}), take "right":</p>
+  <ul>
+    {% for row in adv.rows %}
+    <li>With probability {{ row.probability }} it lands in state {{ row.next }}: δ = {{ row.reward|int }} + {{ rl_gamma }} × V({{ row.next }}) − V(1) = {{ f(row.td_error, 4) }}{% if row.td_error > 0 %}, better than expected{% else %}, worse than expected{% endif %}.</li>
+    {% endfor %}
+  </ul>
+  <p>The probability-weighted average is {{ f(adv.mean|abs, 4) }}: under the true values, the TD error says only whether this outcome was luckier or unluckier than the state's average.</p>
+</div>
+
+<div class="ml-worked">
+  <p><strong>REINFORCE on a three-armed bandit.</strong> One state, three actions with fixed rewards {{ bandit_rewards|map("int")|join(", ") }}, a softmax policy with all logits 0, so π = (1/3, 1/3, 1/3) and <var>J</var> = {{ f(pg.expected, 4) }}. The exact gradient with respect to the logits is π<sub><var>k</var></sub>(<var>R</var><sub><var>k</var></sub> − <var>J</var>) = [{{ pg.exact|map("round", 4)|join(", ")|replace("-", "−") }}]. Each sampled action gives a different estimate <var>R</var>(<var>a</var>)(one-hot(<var>a</var>) − π):</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Sampled action</th><th>Estimate, no baseline</th><th>Estimate, baseline <var>b</var> = <var>J</var></th></tr></thead>
+      <tbody>
+        {% for a in range(3) %}
+        <tr><td>{{ a }} (reward {{ bandit_rewards[a]|int }})</td><td>[{{ pg.samples[a]|map("round", 3)|join(", ")|replace("-", "−") }}]</td><td>[{{ pg_base.samples[a]|map("round", 3)|join(", ")|replace("-", "−") }}]</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Both columns average (weighted by π) to the exact gradient, so both are unbiased. Without a baseline every
+    estimate pushes up the sampled action, even the worst one, because all rewards are positive; the total
+    variance is {{ f(pg.variance, 3) }}. With <var>b</var> = <var>J</var> the worst action is pushed down, and the variance falls to
+    {{ f(pg_base.variance, 3) }}, {{ f(pg.variance / pg_base.variance, 0) }} times smaller. Five steps of exact gradient ascent with learning rate 1:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Step</th><th>π</th><th><var>J</var></th></tr></thead>
+      <tbody>
+        {% for row in train %}
+        <tr><td>{{ loop.index0 }}</td><td>({{ row.probs|map("round", 3)|join(", ") }})</td><td>{{ f(row.expected) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ml-worked">
+  <p><strong>PPO's clip, sample by sample</strong> (ε = {{ ppo_epsilon }}):</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th><var>A</var></th><th>ρ</th><th>ρA</th><th>clip(ρ)A</th><th>Objective</th><th>Gradient in ρ</th></tr></thead>
+      <tbody>
+        {% for a in [1.0, -1.0] %}
+        {% for r in ppo_ratios %}
+        {% set c = ppo_clip(r, a) %}
+        <tr><td>{{ "+1" if a > 0 else "−1" }}</td><td>{{ r }}</td><td>{{ f(c.unclipped, 1) }}</td><td>{{ f(c.clipped, 1) }}</td><td>{{ f(c.objective, 1) }}</td><td>{{ f(c.gradient, 0) if c.gradient else "0 (clipped)" }}</td></tr>
+        {% endfor %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Only two of the eight rows lose their gradient: a good action that is already {{ 1 + ppo_epsilon }}× or more as likely
+    as before, and a bad action already at {{ 1 - ppo_epsilon }}× or less. A good action that became less likely
+    (ρ = 0.5, <var>A</var> = +1) or a bad one that became more likely (ρ = 1.5, <var>A</var> = −1) keeps its full
+    gradient, which pulls the policy back.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+from torch.distributions import Categorical
+
+def discounted(rewards, gamma=0.99):
+    returns, g = [], 0.0
+    for r in reversed(rewards):
+        g = r + gamma * g
+        returns.append(g)
+    return torch.tensor(returns[::-1])
+
+# REINFORCE with a mean baseline; env is any environment with reset() and step().
+state, done, log_probs, rewards = env.reset(), False, [], []
+while not done:
+    dist = Categorical(logits=policy(state))
+    action = dist.sample()
+    log_probs.append(dist.log_prob(action))
+    state, reward, done = env.step(action.item())
+    rewards.append(reward)
+G = discounted(rewards)
+loss = -(torch.stack(log_probs) * (G - G.mean())).sum()
+loss.backward(); optimizer.step(); optimizer.zero_grad()
+
+# PPO: several epochs of minibatches from one batch collected with the old policy.
+def ppo_loss(policy, critic, states, actions, old_log_probs, returns, advantages,
+             clip_eps=0.2, value_coef=0.5, entropy_coef=0.01):
+    dist = Categorical(logits=policy(states))
+    ratio = torch.exp(dist.log_prob(actions) - old_log_probs)
+    clipped = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps)
+    policy_loss = -torch.min(ratio * advantages, clipped * advantages).mean()
+    value_loss = (critic(states).squeeze(-1) - returns).pow(2).mean()
+    return policy_loss + value_coef * value_loss - entropy_coef * dist.entropy().mean()
+
+# DQN: regress Q(s, a) on a target computed by a frozen copy of the network.
+q = q_net(s).gather(1, a.unsqueeze(1)).squeeze(1)
+with torch.no_grad():
+    target = r + gamma * (1 - done) * target_net(s_next).max(dim=1).values
+loss = torch.nn.HuberLoss()(q, target)</code></pre>
+
+<p>
+  The ratio is computed from log-probabilities, which is stabler than dividing probabilities.
+  <code>old_log_probs</code> and <code>advantages</code> are computed once when the batch is collected and must
+  carry no gradient; advantages are usually normalized to zero mean and unit variance per batch. The
+  coefficients shown are common defaults rather than values from the pinned source.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Value-based versus policy gradient.</strong> Q-learning and DQN are off-policy and reuse old data through replay, so they are sample-efficient, but they need a max over actions (discrete actions) and can diverge with function approximation. Policy gradients handle continuous actions and stochastic policies and optimize the objective directly, but are on-policy and noisy.</li>
+  <li><strong>Bias versus variance.</strong> Monte Carlo returns are unbiased but high-variance; bootstrapping from a learned value (TD targets, critics) cuts variance and adds bias wherever the value is wrong.</li>
+  <li><strong>Exploration versus exploitation.</strong> ε-greedy and entropy bonuses keep trying new actions at the cost of reward now; too little exploration converges to a poor policy, too much never uses what it learned.</li>
+  <li><strong>Discount.</strong> A larger γ values the long run but makes returns noisier and credit assignment harder; a smaller γ learns faster and is short-sighted.</li>
+  <li><strong>PPO's ε and epochs.</strong> A smaller clip range or fewer epochs is safer but squeezes less learning from each batch.</li>
+  <li><strong>Reward design.</strong> The agent optimizes exactly the reward given; a reward that is easy to game gets gamed, which is the reward-hacking problem in RLHF.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Why can REINFORCE use a reward that is not differentiable, such as a game score?</summary>
+  <p>The log-derivative trick moves the gradient onto log π<sub>θ</sub>(<var>a</var>), which is differentiable in θ; the reward only multiplies it as a number. Nothing is backpropagated through the reward or the environment.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does subtracting a baseline not bias the policy gradient?</summary>
+  <p>Its contribution is <var>b</var> · E[∇log π(<var>a</var>)] = <var>b</var> Σ<sub><var>a</var></sub> ∇π(<var>a</var>) = <var>b</var> ∇ Σ<sub><var>a</var></sub> π(<var>a</var>) = <var>b</var> ∇1 = 0, as long as <var>b</var> does not depend on the action.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Q-learning acts ε-greedily but its target uses max<sub><var>a</var>′</sub> Q(<var>s</var>′, <var>a</var>′). Which policy's values does it learn?</summary>
+  <p>The greedy policy's, which gives Q*: the target assumes the best action is taken next, whatever the behaviour policy actually does. That is what makes it off-policy, and why it can learn from a replay buffer of old experience.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Sutton and Barto. <em>Reinforcement Learning: An Introduction</em>, 2nd edition. MIT Press, 2018 (MDPs, Bellman equations, Q-learning, policy gradients).</li>
+  <li>Williams. <em>Simple Statistical Gradient-Following Algorithms for Connectionist Reinforcement Learning.</em> Machine Learning 8, 1992 (REINFORCE).</li>
+  <li>Mnih, Kavukcuoglu, Silver, Graves, Antonoglou, Wierstra and Riedmiller. <em>Playing Atari with Deep Reinforcement Learning.</em> 2013. <a href="https://arxiv.org/abs/1312.5602">arXiv:1312.5602</a> (DQN).</li>
+  <li>Schulman, Wolski, Dhariwal, Radford and Klimov. <em>Proximal Policy Optimization Algorithms.</em> 2017. <a href="https://arxiv.org/abs/1707.06347">arXiv:1707.06347</a>.</li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/distributions/categorical.py') }}"><code>torch/distributions/categorical.py</code></a>, <a href="{{ src('torch/distributions/__init__.py') }}"><code>torch/distributions/__init__.py</code></a>.</li>
+</ul>
