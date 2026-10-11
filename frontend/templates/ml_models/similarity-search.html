@@ -1,0 +1,449 @@
+{% set ex = search_example %}
+{% set agree = metric_agreement() %}
+{% set raw = agree.raw %}
+{% set unit = agree.normalized %}
+{% set one = brute_force_search_cost(1000000, 768) %}
+{% set half = brute_force_search_cost(1000000, 768, bytes_per_value=2) %}
+{% set batch = brute_force_search_cost(1000000, 768, queries=1000) %}
+{% set bm = bm25_scores() %}
+{% set sat = bm25_saturation() %}
+{% set hy = hybrid_example() %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(x) }}{%- endmacro %}
+{% macro px(v) -%}{{ f(30 + v[0] * 65, 1) }}{%- endmacro %}
+{% macro py(v) -%}{{ f(285 - v[1] * 65, 1) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Similarity search</h1>
+  <p class="tagline">
+    Given a query vector, return the stored vectors most like it. This page covers exact search by brute
+    force, the three similarity measures (dot product, cosine, Euclidean distance) and when they give the
+    same ranking, why embeddings are normalized, what brute force costs, BM25 as the keyword baseline, and
+    how hybrid search merges the two.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  An <a href="/ml-models/embeddings">embedding model</a> turns documents, images or products into vectors
+  so that related items land near each other. Retrieval then becomes a geometry question: which of the
+  <var>n</var> stored vectors are closest to the query vector? Answering it means picking a measure of
+  "closest", computing it against the stored set fast enough, and knowing when the plain old keyword
+  search it replaced still does better.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  A vector has a direction and a length. Cosine similarity looks only at direction (the angle between query
+  and document). The dot product looks at direction and length together, so a long vector can win even
+  when it points somewhat away. Euclidean (L2) distance looks at where the tip of the vector lands, so a
+  short vector near the query's tip wins. Three measures, three different rankings, until every vector is
+  scaled to length 1. Then length stops mattering and all three agree.
+</p>
+
+<p>
+  The diagram plots the query q = ({{ ex.query[0] }}, {{ ex.query[1] }}) and five documents. Their unit
+  versions sit on the dashed unit circle.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 320" role="img" aria-labelledby="sim-metric-title sim-metric-desc">
+    <title id="sim-metric-title">Five documents ranked by dot product, cosine and L2 distance</title>
+    <desc id="sim-metric-desc">Left: the query 1, 0.5 and documents A at 4, 1, B at 1, 1, C at 0.9, 0.3, D at 2, 2.4 and E at 0.2, 1, drawn as arrows from the origin, with their unit-length versions marked on a dashed unit circle. Right: the rankings. Dot product ranks A, D, B, C, E. Cosine ranks C, A, B, D, E. L2 distance ranks C, B, E, D, A. After normalizing every vector, all three rank C, A, B, D, E.</desc>
+    <path d="M30 285 H310 M30 285 V120" class="d-line"></path>
+    <path d="M95 285 A65 65 0 0 0 30 220" class="d-line ml-dashed"></path>
+    <text x="95" y="300" font-size="11" text-anchor="middle" class="d-muted ml-label">1</text>
+    {% for name, v in ex.documents.items() %}
+    {% set u = unit.rows[loop.index0].vector %}
+    <path d="M30 285 L{{ px(v) }} {{ py(v) }}" class="d-line"></path>
+    <circle cx="{{ px(v) }}" cy="{{ py(v) }}" r="5" class="d-box ml-tensor"></circle>
+    <rect x="{{ f(30 + u[0] * 65 - 3, 1) }}" y="{{ f(285 - u[1] * 65 - 3, 1) }}" width="6" height="6" class="d-box ml-op"></rect>
+    {% set off = {"A": (8, -6), "B": (8, -6), "C": (4, 18), "D": (8, -6), "E": (-14, -6)}[name] %}
+    <text x="{{ f(30 + v[0] * 65 + off[0], 1) }}" y="{{ f(285 - v[1] * 65 + off[1], 1) }}" font-size="13">{{ name }}</text>
+    {% endfor %}
+    <path d="M30 285 L{{ px(ex.query) }} {{ py(ex.query) }}" class="d-line d-accent" stroke-width="2.5"></path>
+    <circle cx="{{ px(ex.query) }}" cy="{{ py(ex.query) }}" r="5" class="d-box d-accent"></circle>
+    <text x="{{ f(30 + ex.query[0] * 65 + 10, 1) }}" y="{{ f(285 - ex.query[1] * 65 - 2, 1) }}" font-size="13" class="d-accent">q</text>
+    <text x="30" y="316" font-size="12" class="d-muted">Small squares: the unit-length versions.</text>
+    <text x="350" y="40" font-size="13" font-weight="600">Measure</text>
+    <text x="540" y="40" font-size="13" font-weight="600">Ranking</text>
+    {% set rows = [("dot product q·x", raw.by_dot), ("cosine", raw.by_cosine), ("L2 distance", raw.by_distance), ("any of them, unit vectors", unit.by_cosine)] %}
+    {% for label, order in rows %}
+    <rect x="340" y="{{ 56 + loop.index0 * 50 }}" width="340" height="38" rx="5" class="d-box {% if loop.last %}ml-tensor{% else %}ml-op{% endif %}"></rect>
+    <text x="350" y="{{ 80 + loop.index0 * 50 }}" font-size="13">{{ label }}</text>
+    <text x="540" y="{{ 80 + loop.index0 * 50 }}" font-size="14" font-weight="600">{{ order|join(" ") }}</text>
+    {% endfor %}
+    <text x="340" y="276" font-size="12" class="d-muted">Raw: the top results are A, C and C, and</text>
+    <text x="340" y="294" font-size="12" class="d-muted">the three orders all differ. Normalized: one order.</text>
+  </svg>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="three-measures">Three measures and when they agree</h3>
+
+<p>For a query <var>q</var> and a stored vector <var>x</var>:</p>
+
+<p class="ml-formula">dot(q, x) = Σ<sub>j</sub> q<sub>j</sub> x<sub>j</sub> &nbsp;&nbsp;&nbsp; cos(q, x) = q·x / (‖q‖ ‖x‖) &nbsp;&nbsp;&nbsp; L2(q, x) = ‖q − x‖</p>
+
+<p>Expanding the squared distance ties them together:</p>
+
+<p class="ml-formula">‖q − x‖² = ‖q‖² + ‖x‖² − 2 q·x</p>
+
+<ul>
+  <li><strong>Ranking by L2 is ranking by dot product only when every stored vector has the same length.</strong> ‖q‖² is the same for every candidate, so it never changes the order, but ‖x‖² does. A long vector pays a larger ‖x‖² penalty under L2 and gets a larger dot product, so the two measures pull opposite ways.</li>
+  <li><strong>Cosine is the dot product of the normalized vectors.</strong> On unit vectors ‖q‖ = ‖x‖ = 1, so cos(q, x) = q·x and ‖q − x‖² = 2 − 2 cos(q, x). Smallest distance, largest cosine and largest dot product are then the same item.</li>
+  <li><strong>Maximum inner product search (MIPS)</strong> is the name for ranking by raw dot product when lengths differ. Some retrievers train for it on purpose and let the length carry a "popularity" or "quality" signal. Then L2 and cosine indexes give the wrong answer.</li>
+</ul>
+
+<p>
+  That is why the usual recipe is to L2-normalize every embedding once at indexing time and the query at
+  search time (PyTorch's <code>F.normalize</code>, scikit-learn's <code>normalize</code>), then rank by dot
+  product. The search becomes one matrix-vector product, and the choice between cosine and L2 disappears.
+  Whether to normalize is a property of the model, not of the search: use the measure the embedding model
+  was trained with.
+</p>
+
+<h3 id="brute-force">Exact search by brute force</h3>
+
+<p>
+  Stack the <var>n</var> stored vectors as the rows of a matrix <var>X</var> of shape (<var>n</var>,
+  <var>d</var>). Scoring a query is <var>s</var> = <var>X</var><var>q</var>, a
+  <a href="/ml-models/matrix-multiplication">matrix-vector product</a> costing 2<var>nd</var> FLOPs. The top
+  <var>k</var> of <var>s</var> takes O(<var>n</var> log <var>k</var>) with a heap, or a partial selection
+  (<code>torch.topk</code>, <code>numpy.argpartition</code>). For a batch of <var>m</var> queries,
+  <var>X</var><var>Q</var><sup>T</sup> is a full matrix multiply. That is exact search: the answer is
+  correct by construction, and it is the ground truth that approximate indexes are graded against (their
+  recall@k).
+</p>
+
+<p>
+  L2 distance runs on the same matrix multiply. scikit-learn's <code>euclidean_distances</code> computes
+  −2<var>XY</var><sup>T</sup> + ‖<var>x</var>‖² + ‖<var>y</var>‖² and clamps negatives to zero; its docstring
+  warns that this expansion can suffer catastrophic cancellation. <code>torch.cdist</code> uses the same
+  matrix-multiply route for <var>p</var> = 2 once either side has more than 25 rows, unless
+  <code>compute_mode</code> says otherwise.
+</p>
+
+<p>
+  <code>NearestNeighbors</code> wraps the whole thing. With <code>algorithm="auto"</code> it picks brute
+  force when the data has more than 15 features, so for embeddings it is brute force in practice (the
+  trees from <a href="/ml-models/nearest-neighbors">nearest neighbors</a> stop pruning in high
+  dimensions). Its <code>metric="cosine"</code> works only with brute force.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead>
+      <tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>nn.PairwiseDistance</code></td>
+        <td><code>p=2.0, eps=1e-6, keepdim=False</code>; <code>(N, D), (N, D) → (N)</code></td>
+        <td>Row-by-row ‖x<sub>1</sub> − x<sub>2</sub> + ε‖<sub>p</sub>: matched pairs, not all pairs.</td>
+        <td><a href="{{ src('torch/nn/modules/distance.py', 10, 61) }}">distance.py 10-61</a></td>
+      </tr>
+      <tr>
+        <td><code>nn.CosineSimilarity</code></td>
+        <td><code>dim=1, eps=1e-8</code></td>
+        <td>Calls <code>F.cosine_similarity</code> along <code>dim</code>.</td>
+        <td><a href="{{ src('torch/nn/modules/distance.py', 64, 100) }}">distance.py 64-100</a></td>
+      </tr>
+      <tr>
+        <td><code>F.cosine_similarity</code></td>
+        <td>broadcast <code>x1, x2</code>; <code>dim</code> squeezed</td>
+        <td>x<sub>1</sub>·x<sub>2</sub> / (max(‖x<sub>1</sub>‖, ε) · max(‖x<sub>2</sub>‖, ε)): each norm is clamped on its own, so a zero vector gives 0, not NaN.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 5895, 5924) }}">functional.py 5895-5924</a></td>
+      </tr>
+      <tr>
+        <td><code>F.normalize</code></td>
+        <td><code>p=2.0, dim=1, eps=1e-12</code></td>
+        <td>v / max(‖v‖<sub>p</sub>, ε): scale each row to unit length before indexing.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 6096, 6130) }}">functional.py 6096-6130</a></td>
+      </tr>
+      <tr>
+        <td><code>torch.cdist</code></td>
+        <td><code>(P, M), (R, M) → (P, R)</code></td>
+        <td>All-pairs p-norm distance. For p = 2 it switches to the matrix-multiply expansion when P or R exceeds 25.</td>
+        <td><a href="{{ src('torch/functional.py', 1483, 1541) }}">functional.py 1483-1541</a></td>
+      </tr>
+      <tr>
+        <td><code>NearestNeighbors</code></td>
+        <td><code>n_neighbors=5, radius=1.0, algorithm="auto", leaf_size=30, metric="minkowski", p=2</code></td>
+        <td>Unsupervised neighbor search: <code>kneighbors</code> returns distances and indices, nearest first.</td>
+        <td><a href="{{ skl('sklearn/neighbors/_unsupervised.py', 10, 179) }}">_unsupervised.py 10-179</a></td>
+      </tr>
+      <tr>
+        <td><code>algorithm="auto"</code></td>
+        <td>d &gt; 15 → brute</td>
+        <td>Brute force for precomputed metrics, more than 15 features, or k ≥ n/2; otherwise a tree.</td>
+        <td><a href="{{ skl('sklearn/neighbors/_base.py', 615, 648) }}">_base.py 615-648</a></td>
+      </tr>
+      <tr>
+        <td><code>euclidean_distances</code></td>
+        <td><code>(n<sub>X</sub>, d), (n<sub>Y</sub>, d) → (n<sub>X</sub>, n<sub>Y</sub>)</code></td>
+        <td>−2XY<sup>T</sup> + XX + YY, clamped at 0, then a square root unless <code>squared=True</code>.</td>
+        <td><a href="{{ skl('sklearn/metrics/pairwise.py', 376, 427) }}">pairwise.py 376-427</a></td>
+      </tr>
+      <tr>
+        <td><code>cosine_similarity</code></td>
+        <td><code>(n<sub>X</sub>, d), (n<sub>Y</sub>, d) → (n<sub>X</sub>, n<sub>Y</sub>)</code></td>
+        <td>Normalize both sides, then one dot product: equivalent to <code>linear_kernel</code> on L2-normalized data.</td>
+        <td><a href="{{ skl('sklearn/metrics/pairwise.py', 1703, 1758) }}">pairwise.py 1703-1758</a></td>
+      </tr>
+      <tr>
+        <td><code>normalize</code></td>
+        <td><code>norm="l2", axis=1</code></td>
+        <td>Scale each row to unit norm (also <code>"l1"</code> and <code>"max"</code>).</td>
+        <td><a href="{{ skl('sklearn/preprocessing/_data.py', 1978, 2089) }}">_data.py 1978-2089</a></td>
+      </tr>
+      <tr>
+        <td><code>TfidfTransformer.fit</code></td>
+        <td><code>smooth_idf=True</code></td>
+        <td>idf(t) = ln((1 + n) / (1 + df(t))) + 1: the classic lexical weighting that BM25 refines.</td>
+        <td><a href="{{ skl('sklearn/feature_extraction/text.py', 1675, 1695) }}">text.py 1675-1695</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="bm25">BM25, the lexical baseline</h3>
+
+<p>
+  Before embeddings, search engines ranked documents by the query words they contain. BM25 (Okapi BM25)
+  is still the standard version, and still a hard baseline to beat on queries full of names, codes and
+  rare terms. For query terms <var>t</var>, a document <var>D</var> of length |<var>D</var>|, and an
+  average length avgdl over the <var>N</var> documents:
+</p>
+
+<p class="ml-formula">score(D, Q) = Σ<sub>t ∈ Q</sub> idf(t) · tf(t, D)·(k<sub>1</sub> + 1) / (tf(t, D) + k<sub>1</sub>·(1 − b + b·|D|/avgdl))</p>
+
+<p class="ml-formula">idf(t) = ln((N − df(t) + 0.5) / (df(t) + 0.5) + 1)</p>
+
+<ul>
+  <li><strong>idf</strong> rewards rare terms: a word in every document carries no information. The "+ 1" inside the log is Lucene's variant, which keeps idf positive even for terms in more than half the documents.</li>
+  <li><strong>Saturation, k<sub>1</sub></strong> (usually 1.2 to 2). The term-frequency factor rises from 1 at tf = 1 toward k<sub>1</sub> + 1 and never passes it, so the tenth "cat" adds far less than the second.</li>
+  <li><strong>Length normalization, b</strong> (usually 0.75). A long document contains more words by chance, so its term frequencies are discounted by |D|/avgdl. b = 0 turns this off, b = 1 normalizes fully.</li>
+</ul>
+
+<p>
+  BM25 needs no training and no GPU, runs from an inverted index (term → documents containing it), and is
+  exact about words. It is blind to meaning: "cats" does not match "cat" without stemming, and "kitten"
+  never does. Dense embeddings have the opposite profile.
+</p>
+
+<h3 id="hybrid">Hybrid search</h3>
+
+<p>
+  Hybrid search runs both retrievers and merges the results. Their scores live on different scales (BM25
+  is unbounded, cosine sits in [−1, 1]), so the simplest robust merge ignores scores and uses only ranks.
+  <strong>Reciprocal rank fusion</strong> (RRF) gives each document
+</p>
+
+<p class="ml-formula">RRF(d) = Σ<sub>r ∈ rankers</sub> 1 / (k + rank<sub>r</sub>(d)), &nbsp; k = 60</p>
+
+<p>
+  where a document a ranker did not return adds nothing for that ranker. The constant <var>k</var> damps
+  the advantage of the very top ranks, so a document both retrievers like beats one that only one
+  retriever puts first. The alternative is a weighted sum of normalized scores, which needs tuning, or a
+  learned reranker on top.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 300" role="img" aria-labelledby="sim-hybrid-title sim-hybrid-desc">
+    <title id="sim-hybrid-title">Hybrid search: a BM25 list and a dense list merged by reciprocal rank fusion</title>
+    <desc id="sim-hybrid-desc">The query "cat mat" goes to two retrievers. BM25 returns d1 with score 2.177 and d2 with score 0.945, and nothing else, because d3 and d4 share no word with the query. The dense retriever returns d3, d1, d2, d4. Reciprocal rank fusion with k equal to 60 gives d1 0.0325, d2 0.0320, d3 0.0164 and d4 0.0156, so the fused order is d1, d2, d3, d4.</desc>
+    <rect x="20" y="126" width="100" height="44" rx="6" class="d-box ml-op"></rect>
+    <text x="70" y="146" font-size="13" text-anchor="middle">query</text>
+    <text x="70" y="162" font-size="12" text-anchor="middle" class="d-muted">"{{ bm25_example.query }}"</text>
+    <path d="M120 140 L200 70 M120 156 L200 226" class="d-line"></path>
+    <rect x="200" y="20" width="200" height="110" rx="6" class="d-box ml-tensor"></rect>
+    <text x="300" y="40" font-size="13" text-anchor="middle" font-weight="600">BM25 (inverted index)</text>
+    {% for row in bm.rows if row.score > 0 %}
+    <text x="215" y="{{ 64 + loop.index0 * 20 }}" font-size="12">{{ loop.index }}. {{ row.name }}</text>
+    <text x="385" y="{{ 64 + loop.index0 * 20 }}" font-size="12" text-anchor="end">{{ f(row.score) }}</text>
+    {% endfor %}
+    <text x="215" y="120" font-size="11" class="d-muted">d3, d4: no shared word</text>
+    <rect x="200" y="170" width="200" height="110" rx="6" class="d-box ml-tensor"></rect>
+    <text x="300" y="190" font-size="13" text-anchor="middle" font-weight="600">Dense (embeddings)</text>
+    {% for name in hy.dense %}
+    <text x="215" y="{{ 212 + loop.index0 * 18 }}" font-size="12">{{ loop.index }}. {{ name }}</text>
+    {% endfor %}
+    <path d="M400 75 L480 140 M400 225 L480 160" class="d-line"></path>
+    <rect x="480" y="90" width="200" height="120" rx="6" class="d-box ml-op"></rect>
+    <text x="580" y="110" font-size="13" text-anchor="middle" font-weight="600">RRF, k = {{ hy.k }}</text>
+    {% for name in hy.ranking %}
+    <text x="495" y="{{ 134 + loop.index0 * 20 }}" font-size="12">{{ loop.index }}. {{ name }}</text>
+    <text x="665" y="{{ 134 + loop.index0 * 20 }}" font-size="12" text-anchor="end">{{ f(hy.scores[name], 4) }}</text>
+    {% endfor %}
+  </svg>
+</div>
+
+<p class="ml-caption">
+  The dense list is an assumed ranking for illustration (no embedding model runs on this site); the BM25
+  scores and the fused scores are computed from the formulas above.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p><strong>One query, three measures.</strong> q = ({{ ex.query[0] }}, {{ ex.query[1] }}), ‖q‖ = {{ f((ex.query[0] ** 2 + ex.query[1] ** 2) ** 0.5) }}:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Doc</th><th>Vector</th><th>‖x‖</th><th>q·x</th><th>cos</th><th>‖q − x‖</th></tr></thead>
+      <tbody>
+        {% for row in raw.rows %}
+        <tr><td>{{ row.name }}</td><td>({{ row.vector[0] }}, {{ row.vector[1] }})</td><td>{{ f(row.norm) }}</td><td>{{ f(row.dot) }}</td><td>{{ f(row.cosine) }}</td><td>{{ f(row.distance) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    A has the largest dot product only because it is long (‖A‖ = {{ f(raw.rows[0].norm) }}); by L2 it is
+    the farthest. C points almost exactly along q, so cosine puts it first, and it is also short enough to
+    sit near q's tip. E is close in L2 but points about 52° away (cos = {{ f(raw.rows[4].cosine) }}).
+  </p>
+</div>
+
+<div class="ml-worked">
+  <p><strong>After normalizing.</strong> Divide every vector by its length and recompute:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Doc</th><th>q̂·x̂ = cos</th><th>‖q̂ − x̂‖²</th><th>2 − 2 cos</th></tr></thead>
+      <tbody>
+        {% for row in unit.rows %}
+        <tr><td>{{ row.name }}</td><td>{{ f(row.dot) }}</td><td>{{ f(agree.identity[loop.index0].squared_distance, 4) }}</td><td>{{ f(agree.identity[loop.index0].two_minus_two_cos, 4) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The dot products now equal the cosines from the first table, the squared distances equal 2 − 2 cos, and
+    all three measures rank {{ unit.by_cosine|join(", ") }}.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <p><strong>What brute force costs.</strong> One million 768-dimensional embeddings:</p>
+  <ul>
+    <li>Index size: {{ "{:,}".format(one.index_bytes) }} bytes ({{ f(one.index_bytes / 1e9, 2) }} GB) in fp32, {{ f(half.index_bytes / 1e9, 2) }} GB in fp16.</li>
+    <li>One query: 2·n·d = {{ "{:,}".format(one.flops) }} FLOPs ({{ f(one.flops / 1e9, 2) }} GFLOP), and every byte of the index is read once: {{ one.intensity }} FLOP per byte. That is memory-bound. A GPU reading at 2 TB/s needs about {{ f(one.index_bytes / 2e12 * 1000, 1) }} ms just to stream the index.</li>
+    <li>A batch of 1,000 queries reads the same {{ f(batch.index_bytes / 1e9, 2) }} GB but does {{ f(batch.flops / 1e12, 3) }} TFLOP: {{ batch.intensity|int }} FLOP per byte. Batching turns the search into a matrix multiply, which is compute-bound and fast.</li>
+  </ul>
+  <p>Exact search is practical well into the millions, especially batched on a GPU. Approximate indexes earn their complexity at hundreds of millions of vectors or tight per-query latency budgets.</p>
+</div>
+
+<div class="ml-worked">
+  <p><strong>BM25 by hand.</strong> Four documents, query "cat mat", k<sub>1</sub> = 1.2, b = 0.75:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Doc</th><th>Text</th><th>|D|</th><th>cat</th><th>mat</th><th>Score</th></tr></thead>
+      <tbody>
+        {% for row in bm.rows %}
+        <tr><td>{{ row.name }}</td><td>{{ bm25_example.documents[row.name] }}</td><td>{{ row.length }}</td><td>{{ f(row.parts.cat) }}</td><td>{{ f(row.parts.mat) }}</td><td>{{ f(row.score) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    avgdl = {{ bm.avgdl }}. "cat" appears in 2 of 4 documents, so idf(cat) = ln(2.5/2.5 + 1) =
+    {{ f(bm.idf.cat) }}. "mat" appears in one, so idf(mat) = ln(3.5/1.5 + 1) = {{ f(bm.idf.mat) }}.
+    d2 says "cat" twice and earns {{ f(bm.rows[1].parts.cat) }} for it against d1's
+    {{ f(bm.rows[0].parts.cat) }}: more, but not twice as much, and d2 is longer than average. d1 wins on
+    the rare term "mat". d3 is about cats but scores 0, because "cats" is a different token.
+  </p>
+  <p>
+    Saturation with k<sub>1</sub> = 1.2 at average length:
+    {% for s in sat %}tf {{ s.tf }} → {{ f(s.weight) }}{% if not loop.last %}, {% endif %}{% endfor %}. The ceiling is k<sub>1</sub> + 1 = 2.2.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <p><strong>Fusing the lists.</strong> BM25 returns {{ hy.lexical|join(", ") }}. Suppose the embedding model ranks {{ hy.dense|join(", ") }}:</p>
+  <ul>
+    {% for name in hy.ranking %}
+    <li>{{ name }}: {{ f(hy.scores[name], 4) }}{% if name in hy.lexical %} (in both lists){% else %} (dense only){% endif %}</li>
+    {% endfor %}
+  </ul>
+  <p>
+    d1 = 1/61 + 1/62 tops the fused list: it ranks well in both. d2 (ranks 2 and 3) edges out d3 even
+    though the dense model put d3 first, because RRF rewards agreement. d3 still makes the top three,
+    which BM25 alone would never return.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+import torch.nn.functional as F
+
+# Index: n embeddings of dimension d, normalized once.
+X = F.normalize(embeddings, dim=1)          # (n, d), every row has norm 1
+
+def search(queries, k=10):
+    Q = F.normalize(queries, dim=1)         # (m, d)
+    scores = Q @ X.T                        # (m, n), cosine = dot on unit vectors
+    return scores.topk(k, dim=1)            # values and indices, each (m, k)
+
+# The same thing in scikit-learn.
+from sklearn.neighbors import NearestNeighbors
+nn = NearestNeighbors(n_neighbors=10, metric="cosine", algorithm="brute").fit(E)
+dist, ind = nn.kneighbors(E_query)          # cosine distance = 1 - cos
+
+# Reciprocal rank fusion of any number of ranked id lists.
+def rrf(rankings, k=60):
+    scores = {}
+    for ranking in rankings:
+        for rank, doc in enumerate(ranking, start=1):
+            scores[doc] = scores.get(doc, 0.0) + 1 / (k + rank)
+    return sorted(scores, key=scores.get, reverse=True)</code></pre>
+
+<p>
+  For indexes larger than one device's memory, split <var>X</var> into shards, take each shard's top
+  <var>k</var>, and merge: the global top <var>k</var> is always among the shards' top <var>k</var> lists.
+  Storing <var>X</var> in fp16 halves memory and bandwidth with negligible effect on the ranking. BM25
+  comes from a search library (Lucene, Elasticsearch, OpenSearch, or a small Python package), not from
+  PyTorch or scikit-learn; scikit-learn's <code>TfidfVectorizer</code> is the nearest built-in lexical
+  scorer.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Exact versus approximate.</strong> Brute force has perfect recall, no build step and trivial updates, but cost grows linearly with <var>n</var>. Approximate indexes cut the cost to roughly logarithmic or sublinear at the price of some recall and a build step.</li>
+  <li><strong>Measure.</strong> Use what the embedding model was trained with. Cosine (normalize, then dot) is the safe default; raw dot product keeps length as a signal; L2 on unnormalized vectors mixes length and direction in a way few models intend.</li>
+  <li><strong>Lexical versus dense.</strong> BM25 is exact about rare words, IDs and new vocabulary, needs no model, and explains itself. Dense retrieval handles paraphrase and synonyms but can miss exact matches and fails quietly out of domain. Hybrid search usually beats either alone.</li>
+  <li><strong>Fusion.</strong> RRF needs no score calibration and no tuning beyond <var>k</var>, but throws away score gaps. Weighted score fusion keeps them but needs per-collection normalization.</li>
+  <li><strong>Precision of the index.</strong> fp16 or int8 storage cuts memory and doubles or quadruples throughput on a memory-bound scan; near-ties can swap order.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>When do dot-product ranking and L2 ranking give the same order?</summary>
+  <p>When every stored vector has the same norm. ‖q − x‖² = ‖q‖² + ‖x‖² − 2q·x, and ‖q‖² is shared by all candidates, so if ‖x‖² is too, smaller distance means larger dot product.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why is a single brute-force query memory-bound but a batch of a thousand compute-bound?</summary>
+  <p>One query does 2 FLOPs for every value it reads from the index (0.5 FLOP per fp32 byte). A batch reuses each index value for every query in it, so FLOPs grow with the batch while bytes read stay the same.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does BM25 give d3 ("cats and dogs make good pets") a score of 0 for the query "cat mat"?</summary>
+  <p>BM25 matches tokens exactly. "cats" is not "cat" without a stemmer, and d3 has no "mat", so neither term contributes. A dense retriever can still rank it highly, which is the case hybrid search covers.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Robertson, Walker, Jones, Hancock-Beaulieu and Gatford. <em>Okapi at TREC-3.</em> TREC, 1994 (BM25).</li>
+  <li>Robertson and Zaragoza. <em>The Probabilistic Relevance Framework: BM25 and Beyond.</em> Foundations and Trends in Information Retrieval, 2009.</li>
+  <li>Cormack, Clarke and Büttcher. <em>Reciprocal Rank Fusion Outperforms Condorcet and Individual Rank Learning Methods.</em> SIGIR, 2009.</li>
+  <li>Karpukhin et al. <em>Dense Passage Retrieval for Open-Domain Question Answering.</em> EMNLP, 2020. <a href="https://arxiv.org/abs/2004.04906">arXiv:2004.04906</a>.</li>
+  <li>Johnson, Douze and Jégou. <em>Billion-scale similarity search with GPUs.</em> 2017. <a href="https://arxiv.org/abs/1702.08734">arXiv:1702.08734</a>.</li>
+  <li>Manning, Raghavan and Schütze. <em>Introduction to Information Retrieval.</em> Cambridge University Press, 2008: chapters 6 and 11.</li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/nn/modules/distance.py') }}"><code>distance.py</code></a>, <a href="{{ src('torch/nn/functional.py', 6096, 6130) }}"><code>F.normalize</code></a>, <a href="{{ src('torch/functional.py', 1483, 1541) }}"><code>torch.cdist</code></a>.</li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/neighbors/_unsupervised.py', 10, 179) }}"><code>NearestNeighbors</code></a>, <a href="{{ skl('sklearn/metrics/pairwise.py', 1703, 1758) }}"><code>cosine_similarity</code></a>, <a href="{{ skl('sklearn/metrics/pairwise.py', 268, 373) }}"><code>euclidean_distances</code></a>.</li>
+</ul>

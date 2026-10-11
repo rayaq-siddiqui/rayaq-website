@@ -1050,7 +1050,7 @@ PAGES = [
             "pytorch:torch/nn/modules/distance.py",
             "sklearn:sklearn/neighbors/_unsupervised.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "vector-indexes",
@@ -6442,6 +6442,7 @@ def render(slug, render_template):
         "search_example": SEARCH_EXAMPLE,
         "metric_agreement": metric_agreement,
         "brute_force_search_cost": brute_force_search_cost,
+        "bm25_example": BM25_EXAMPLE,
         "bm25_scores": bm25_scores,
         "bm25_saturation": bm25_saturation,
         "hybrid_example": hybrid_example,

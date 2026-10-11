@@ -428,8 +428,8 @@ Gaps:
 40. `autoregressive-models` ✓
 41. `tokenization` ✓
 42. `nearest-neighbors` ✓
-43. `similarity-search` ← next
-44. `gpu-execution`
+43. `similarity-search` ✓
+44. `gpu-execution` ← next
 45. `mixed-precision`
 46. `quantization`
 47. `reinforcement-learning`
