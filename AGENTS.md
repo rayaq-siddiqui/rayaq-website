@@ -275,6 +275,16 @@ Each call is one command over SSH — deliberately kept to single, auditable com
   for the owner's workflow. Successful pushes deploy through the existing CI/CD
   pipeline.
 
+- Cloud sessions often start from a shallow clone. Several Routines push to `main`
+  all day, so `origin/main` can move past the clone's history. When that happens,
+  `main` looks diverged ("ahead N, behind M", "no merge base", or a stop hook
+  reporting N unpushed commits) even though nothing local is unpushed. Before you
+  treat `main` as diverged, check `git rev-parse --is-shallow-repository`. If it
+  prints `true`, run `git fetch --unshallow origin main` and check
+  `git status -sb` again. Usually that shows `main` is only behind, and
+  `git pull --ff-only origin main` fixes it. Never force-push, reset, or merge
+  unrelated histories to "fix" a divergence you haven't confirmed on full history.
+
 - Every commit you create and push must include a `Co-Authored-By` trailer naming
   the model that contributed to it, not just the tool name (Claude Code or Codex).
   Use the actual model name and version available in the session and the
