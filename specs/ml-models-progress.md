@@ -480,8 +480,8 @@ Gaps: references (Hendrycks and Gimpel, Ramachandran et al., Dauphin et al., Sha
 33. `bias-variance` ✓
 34. `regularization` ✓
 35. `activation-functions` ✓
-36. `linear-algebra-toolkit` ← next
-37. `missing-data`
+36. `linear-algebra-toolkit` ✓
+37. `missing-data` ← next
 38. `computation-graphs`
 39. `cnns`
 40. `autoregressive-models`

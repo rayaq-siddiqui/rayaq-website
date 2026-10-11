@@ -155,7 +155,7 @@ PAGES = [
             "pytorch:torch/linalg/__init__.py",
             "pytorch:torch/_lowrank.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "derivatives-and-gradients",

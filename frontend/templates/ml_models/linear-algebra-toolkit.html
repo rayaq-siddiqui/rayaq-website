@@ -1,0 +1,586 @@
+{% set E = eigen_example.matrix %}
+{% set eig = jacobi_eigh(E) %}
+{% set trace = power_iteration(E, eigen_example.start, eigen_example.steps) %}
+{% set A = svd_example %}
+{% set geo = svd(A) %}
+{% set R = ratings_example.ratings %}
+{% set rf = svd(R) %}
+{% set R2 = from_svd(rf, 2) %}
+{% set errors = low_rank_errors(R) %}
+{% set rank_sv = svd(rank_example).S %}
+{% set ill = perturbed_solve(condition_example) %}
+{% set lora = lora_param_counts(4096, 4096, 8) %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(x) }}{%- endmacro %}
+{% macro vec(v, n=3) -%}[{% for x in v %}{{ f(x, n) }}{% if not loop.last %}, {% endif %}{% endfor %}]{%- endmacro %}
+{% macro mat(m) -%}[{% for row in m %}[{% for x in row %}{{ "%g"|format(x) }}{% if not loop.last %}, {% endif %}{% endfor %}]{% if not loop.last %}, {% endif %}{% endfor %}]{%- endmacro %}
+{% macro pct(x, n=1) -%}{{ ("%." ~ n ~ "f")|format(100 * x) }}%{%- endmacro %}
+<header class="jj-header">
+  <h1>Eigenvectors, SVD and low rank</h1>
+  <p class="tagline">
+    Every matrix is a rotation, a stretch along a few axes, and another rotation. This page
+    covers eigen-decomposition, the singular value decomposition and what it looks like,
+    rank and the best low-rank approximation (Eckart–Young), the condition number, and where
+    these show up in ML: PCA, LoRA, embeddings and initialization. Every number is computed
+    and every function is linked at {{ upstream.tag }}.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A weight matrix with 4096 × 4096 entries is 16.8 million numbers, but that count says little
+  about what the matrix does. Some questions need more. Which input directions does it
+  amplify, and which does it ignore? Can it be stored in far fewer numbers without changing its
+  behaviour much? Will solving with it amplify a rounding error into a wrong answer? A
+  <a href="{{ url_for('ml_models', slug='matrix-multiplication') }}">matrix product</a> is
+  easy to compute but hard to read.
+</p>
+<p>
+  Decompositions answer these questions. They rewrite a matrix as a product of simple pieces:
+  rotations, which keep lengths, and diagonal scalings, which you can read off. The same
+  pieces explain why PCA works, why fine-tuning with LoRA can update a 4096 × 4096 layer with
+  {{ "{:,}".format(lora.lora) }} parameters, and why some layers train badly.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Push every point of the unit circle through a 2 × 2 matrix and you get an ellipse. That is
+  true of every matrix. The ellipse's longest axis is the direction the matrix stretches most,
+  and its length is the largest <strong>singular value</strong> σ₁. Its shortest axis has
+  length σ₂. The input directions that land on those axes are the <strong>right singular
+  vectors</strong> v₁, v₂, and the directions of the axes themselves are the <strong>left
+  singular vectors</strong> u₁, u₂. So the matrix rotates v₁, v₂ onto the coordinate axes,
+  stretches by σ₁, σ₂, and rotates the result onto u₁, u₂: A = U Σ Vᵀ.
+</p>
+
+<div class="jj-diagram">
+  {% set cy = 160 %}
+  {% set big = 60 %}
+  {% set small = 9 %}
+  {% set stages = svd_stages(A, 72) %}
+  {% set u1 = geo.U|map(attribute=0)|list %}
+  {% set u2 = geo.U|map(attribute=1)|list %}
+  <svg viewBox="0 0 690 300" role="img" aria-labelledby="la-svd-title la-svd-desc">
+    <title id="la-svd-title">The SVD of A = {{ mat(A) }} as rotate, stretch, rotate</title>
+    <desc id="la-svd-desc">
+      Three panels. Left: the unit circle, with the right singular vectors
+      v1 = {{ vec(geo.Vh[0]) }} and v2 = {{ vec(geo.Vh[1]) }} drawn as arrows. Middle: after
+      Vᵀ and Σ the circle is an ellipse lined up with the axes, with half-lengths
+      σ1 = {{ f(geo.S[0]) }} and σ2 = {{ f(geo.S[1]) }}. Right: after U the ellipse is rotated so
+      its long axis points along u1 = {{ vec(u1) }}. This last ellipse is exactly where A sends
+      the unit circle. The left panel is drawn about seven times larger than the other two.
+    </desc>
+    <defs>
+      <marker id="la-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" class="d-muted"></path>
+      </marker>
+    </defs>
+    {% for cx, label in [(110, "x on the unit circle (enlarged)"), (345, "Σ Vᵀ x"), (580, "U Σ Vᵀ x = A x")] %}
+      <line x1="{{ cx - 90 }}" y1="{{ cy }}" x2="{{ cx + 90 }}" y2="{{ cy }}" class="d-line d-muted" stroke-width="0.6"></line>
+      <line x1="{{ cx }}" y1="{{ cy - 90 }}" x2="{{ cx }}" y2="{{ cy + 90 }}" class="d-line d-muted" stroke-width="0.6"></line>
+      <text x="{{ cx }}" y="290" font-size="12" text-anchor="middle" class="d-muted">{{ label }}</text>
+    {% endfor %}
+    <polyline points="{% for p in stages.circle %}{{ f(110 + big * p[0], 1) }},{{ f(cy - big * p[1], 1) }} {% endfor %}" class="d-line" fill="none" stroke-width="2"></polyline>
+    {% for v in geo.Vh %}
+      <line x1="110" y1="{{ cy }}" x2="{{ f(110 + big * v[0], 1) }}" y2="{{ f(cy - big * v[1], 1) }}" class="d-line" stroke-width="2" marker-end="url(#la-arrow)"></line>
+      <text x="{{ f(110 + (big + 16) * v[0] - 6, 1) }}" y="{{ f(cy - (big + 16) * v[1] + 5, 1) }}" font-size="13">v{{ loop.index }}</text>
+    {% endfor %}
+    <polyline points="{% for p in stages.stretched %}{{ f(345 + small * p[0], 1) }},{{ f(cy - small * p[1], 1) }} {% endfor %}" class="d-line" fill="none" stroke-width="2"></polyline>
+    <line x1="345" y1="{{ cy }}" x2="{{ f(345 + small * geo.S[0], 1) }}" y2="{{ cy }}" class="d-line" stroke-width="2" marker-end="url(#la-arrow)"></line>
+    <text x="{{ f(345 + small * geo.S[0] - 30, 1) }}" y="{{ cy - 8 }}" font-size="12">σ₁ = {{ f(geo.S[0], 2) }}</text>
+    <line x1="345" y1="{{ cy }}" x2="345" y2="{{ f(cy - small * geo.S[1], 1) }}" class="d-line" stroke-width="2" marker-end="url(#la-arrow)"></line>
+    <text x="350" y="{{ f(cy - small * geo.S[1] - 8, 1) }}" font-size="12">σ₂ = {{ f(geo.S[1], 2) }}</text>
+    <polyline points="{% for p in stages.image %}{{ f(580 + small * p[0], 1) }},{{ f(cy - small * p[1], 1) }} {% endfor %}" class="d-line" fill="none" stroke-width="2"></polyline>
+    {% for u, s in [(u1, geo.S[0]), (u2, geo.S[1])] %}
+      <line x1="580" y1="{{ cy }}" x2="{{ f(580 + small * s * u[0], 1) }}" y2="{{ f(cy - small * s * u[1], 1) }}" class="d-line" stroke-width="2" marker-end="url(#la-arrow)"></line>
+      <text x="{{ f(580 + (small * s + 14) * u[0] - 10, 1) }}" y="{{ f(cy - (small * s + 14) * u[1] + 5, 1) }}" font-size="12">σ{{ loop.index }}u{{ loop.index }}</text>
+    {% endfor %}
+    <line x1="195" y1="40" x2="270" y2="40" class="d-line" marker-end="url(#la-arrow)"></line>
+    <text x="232" y="32" font-size="12" text-anchor="middle">rotate by Vᵀ, stretch by Σ</text>
+    <line x1="425" y1="40" x2="500" y2="40" class="d-line" marker-end="url(#la-arrow)"></line>
+    <text x="462" y="32" font-size="12" text-anchor="middle">rotate by U</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  A = {{ mat(A) }} sends v₁ to σ₁u₁ and v₂ to σ₂u₂. Every matrix has this shape: a rotation (or
+  reflection), a stretch along the axes, and another rotation. Its largest stretch is
+  {{ f(geo.S[0]) }}, its smallest is {{ f(geo.S[1]) }}, and their ratio is
+  {{ f(condition_number(A), 1) }}.
+</p>
+
+<p>
+  An <strong>eigenvector</strong> is the special case where no rotation happens: the matrix
+  only stretches it, Av = λv. Symmetric matrices, such as covariances and Hessians, have a full
+  set of eigenvectors at right angles to each other, and for them the two decompositions
+  agree. Most other matrices, including nearly every weight matrix, rotate every direction
+  somewhat. The SVD is the tool that works for all of them.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="eigen-decomposition">Eigen-decomposition</h3>
+
+<p class="ml-formula">A v = λ v &nbsp;·&nbsp; symmetric A = Q Λ Qᵀ, &nbsp; QᵀQ = I</p>
+
+<p>
+  For a symmetric matrix S, the eigenvalues λᵢ are real, the eigenvectors can be chosen
+  orthonormal, and S = Σᵢ λᵢ qᵢqᵢᵀ is a sum of rank-one pieces. For S = {{ mat(E) }} the
+  eigenvalues are {{ f(eig["values"][0], 0) }} and {{ f(eig["values"][1], 0) }}, with
+  eigenvectors {{ vec(eig.vectors[0]) }} and {{ vec(eig.vectors[1]) }}. The matrix stretches
+  the diagonal direction by 3 and the anti-diagonal by 1.
+  <code>torch.linalg.eigh</code> handles symmetric (Hermitian) input, reads only one
+  triangle (<code>UPLO='L'</code> by default), and returns eigenvalues in
+  <em>ascending</em> order
+  (<a href="{{ src('torch/linalg/__init__.py', 642, 763) }}"><code>eigh</code></a>,
+  <a href="{{ src('torch/linalg/__init__.py', 765, 834) }}"><code>eigvalsh</code></a>).
+  <code>torch.linalg.eig</code> takes any square matrix and always returns complex output,
+  because a rotation has no real eigenvectors
+  (<a href="{{ src('torch/linalg/__init__.py', 474, 582) }}"><code>eig</code></a>).
+</p>
+<p>
+  Eigenvalues tell you how a matrix behaves when applied over and over. Aᵏv = λᵏv, so
+  directions with |λ| &gt; 1 blow up and those with |λ| &lt; 1 die out. That is the heart of
+  exploding and vanishing gradients in recurrent networks. Repeated multiplication also finds
+  the top eigenvector: <strong>power iteration</strong> multiplies a vector by A and
+  renormalizes it, and the component along the top eigenvector wins by a factor of λ₁/λ₂
+  each step.
+</p>
+
+<h3 id="svd">The singular value decomposition</h3>
+
+<p class="ml-formula">A = U Σ Vᵀ = Σᵢ σᵢ uᵢ vᵢᵀ, &nbsp; A: [m, n], σ₁ ≥ σ₂ ≥ … ≥ 0</p>
+
+<p>
+  U's columns are orthonormal in the output space and V's in the input space, and Σ is
+  diagonal. The singular values are the square roots of the eigenvalues of AᵀA, and the vᵢ
+  are its eigenvectors. That is a good way to think about the SVD but a bad way to compute it,
+  because forming AᵀA squares every singular value and loses small ones to rounding (see
+  <a href="#tradeoffs">Tradeoffs</a>). <code>torch.linalg.svd</code> returns
+  <code>(U, S, Vh)</code> with Vh = Vᵀ and S in <em>descending</em> order. By default
+  <code>full_matrices=True</code> pads U or Vh to square; pass <code>False</code> for the thin
+  version you almost always want
+  (<a href="{{ src('torch/linalg/__init__.py', 1734, 1886) }}"><code>svd</code></a>).
+  <code>svdvals</code> returns only S, and its gradients are always well defined
+  (<a href="{{ src('torch/linalg/__init__.py', 1888, 1936) }}"><code>svdvals</code></a>).
+  On CUDA the default driver is <code>gesvdj</code>, a Jacobi method, which falls back to the
+  QR-based <code>gesvd</code> if it fails.
+</p>
+
+<h3 id="rank">Rank and low-rank approximation</h3>
+
+<p>
+  The <strong>rank</strong> is the number of non-zero singular values: how many independent
+  directions the matrix can output. In floating point nothing is exactly zero, so
+  <code>torch.linalg.matrix_rank</code> counts singular values above
+  max(<code>atol</code>, <code>rtol</code> · σ₁). When neither tolerance is given,
+  <code>rtol</code> = ε · max(m, n), with ε the machine epsilon of the dtype
+  (<a href="{{ src('torch/linalg/__init__.py', 1263, 1351) }}"><code>matrix_rank</code></a>).
+</p>
+
+<p class="ml-formula">A<sub>k</sub> = Σ<sub>i≤k</sub> σᵢ uᵢ vᵢᵀ &nbsp;·&nbsp; ‖A − A<sub>k</sub>‖²<sub>F</sub> = Σ<sub>i&gt;k</sub> σᵢ² = min<sub>rank(B)≤k</sub> ‖A − B‖²<sub>F</sub></p>
+
+<p>
+  <strong>Eckart–Young</strong> says that cutting the SVD after k terms gives the best rank-k
+  approximation, in both the Frobenius and the spectral norm. The error is exactly the
+  singular values you dropped. A rank-k matrix stores k(m + n) numbers instead of mn, so when
+  the singular values fall off fast you can compress a lot and lose little. For very large
+  matrices, <code>torch.svd_lowrank</code> estimates only the top q singular triplets with a
+  randomized method (Halko, Martinsson and Tropp). It multiplies A by a random
+  [n, q] matrix, orthonormalizes the result with QR, refines it with <code>niter=2</code>
+  rounds of subspace iteration, and runs an exact SVD on the small q × n matrix QᵀA
+  (<a href="{{ src('torch/_lowrank.py', 11, 82) }}"><code>get_approximate_basis</code></a>,
+  <a href="{{ src('torch/_lowrank.py', 149, 180) }}"><code>_svd_lowrank</code></a>). Unlike
+  <code>linalg.svd</code>, it returns V, not Vᵀ
+  (<a href="{{ src('torch/_lowrank.py', 85, 146) }}"><code>svd_lowrank</code></a>).
+</p>
+
+<div class="jj-diagram">
+  {% set total = errors[0].error %}
+  <svg viewBox="0 0 680 270" role="img" aria-labelledby="la-spec-title la-spec-desc">
+    <title id="la-spec-title">Singular values of the ratings matrix and the share each rank keeps</title>
+    <desc id="la-spec-desc">
+      Left: four bars for the singular values of the 5 by 4 ratings matrix:
+      {% for s in rf.S %}{{ f(s, 2) }}{% if not loop.last %}, {% endif %}{% endfor %}. The first two are large and the last two
+      small. Right: one horizontal bar split into four segments, each the share of the squared
+      Frobenius norm, {{ f(total, 0) }}, that a singular value carries:
+      {% for s in rf.S %}{{ pct(s * s / total) }}{% if not loop.last %}, {% endif %}{% endfor %}. A rank-2 approximation
+      keeps {{ pct(errors[2].kept_share) }}.
+    </desc>
+    <line x1="40" y1="220" x2="300" y2="220" class="d-line d-muted"></line>
+    {% for s in rf.S %}
+      {% set h = s * 13 %}
+      <rect x="{{ 55 + loop.index0 * 60 }}" y="{{ f(220 - h, 1) }}" width="40" height="{{ f(h, 1) }}" class="d-box {{ 'ml-op' if loop.index0 < 2 else 'ml-weight' }}" stroke-width="1.5"></rect>
+      <text x="{{ 75 + loop.index0 * 60 }}" y="{{ f(214 - h, 1) }}" font-size="12" text-anchor="middle">{{ f(s, 2) }}</text>
+      <text x="{{ 75 + loop.index0 * 60 }}" y="238" font-size="13" text-anchor="middle">σ{{ loop.index }}</text>
+    {% endfor %}
+    <text x="170" y="262" font-size="12" text-anchor="middle" class="d-muted">singular values</text>
+    {% set ns = namespace(x=340) %}
+    {% for s in rf.S %}
+      {% set w = 320 * s * s / total %}
+      <rect x="{{ f(ns.x, 1) }}" y="90" width="{{ f(w, 1) }}" height="40" class="d-box {{ 'ml-op' if loop.index0 < 2 else 'ml-weight' }}" stroke-width="1"></rect>
+      {% if loop.index0 < 2 %}<text x="{{ f(ns.x + w / 2, 1) }}" y="115" font-size="12" text-anchor="middle">σ{{ loop.index }}²: {{ pct(s * s / total, 0) }}</text>{% endif %}
+      {% set ns.x = ns.x + w %}
+    {% endfor %}
+    <text x="500" y="70" font-size="13" text-anchor="middle">‖A‖²<tspan baseline-shift="sub" font-size="9">F</tspan> = Σ σᵢ² = {{ f(total, 0) }}</text>
+    {% for e in errors[1:4] %}
+      <text x="340" y="{{ 160 + loop.index0 * 22 }}" font-size="12">rank {{ e.k }}: error {{ f(e.error, 2) }}, keeps {{ pct(e.kept_share) }}</text>
+    {% endfor %}
+  </svg>
+</div>
+<p class="ml-caption">
+  Two singular values carry almost everything. The last two segments are too thin to label:
+  {{ pct(rf.S[2] ** 2 / total) }} and {{ pct(rf.S[3] ** 2 / total) }}. Each rank-k error equals the
+  sum of the σᵢ² it drops.
+</p>
+
+<h3 id="condition-number">The condition number</h3>
+
+<p class="ml-formula">κ(A) = σ<sub>max</sub> / σ<sub>min</sub> &nbsp;·&nbsp; ‖Δx‖/‖x‖ ≤ κ(A) · ‖Δb‖/‖b‖ &nbsp; for Ax = b</p>
+
+<p>
+  The condition number is the ratio of the ellipse's longest axis to its shortest. If κ is
+  10ᵏ, solving with A can lose about k digits: a relative change in b can grow by up to a factor
+  of κ in x. <code>torch.linalg.cond</code> computes it from the singular values when
+  <code>p=None</code>, the default, which gives the 2-norm
+  (<a href="{{ src('torch/linalg/__init__.py', 1938, 2054) }}"><code>cond</code></a>). For
+  optimization, the condition number of the loss's Hessian (λ<sub>max</sub>/λ<sub>min</sub>)
+  sets how slowly plain gradient descent zig-zags down a long narrow valley; see the
+  <a href="{{ url_for('ml_models', slug='linear-regression') }}">linear regression</a> page.
+  Normalizing features and layers mostly works by bringing this number down.
+</p>
+
+<h3 id="where-they-appear">Where they appear in ML</h3>
+
+<ul>
+  <li>
+    <strong>PCA</strong> is the SVD of the centred data matrix. The rows of Vᵀ are the
+    principal directions, and σᵢ² / (n − 1) is the variance along each one.
+    <code>torch.pca_lowrank</code> centres the columns and calls the randomized SVD
+    (<a href="{{ src('torch/_lowrank.py', 183, 293) }}"><code>pca_lowrank</code></a>).
+    scikit-learn's <code>PCA</code> with the full solver centres, calls an exact SVD, and sets
+    <code>explained_variance_ = S**2 / (n_samples - 1)</code>
+    (<a href="{{ skl('sklearn/decomposition/_pca.py', 544, 694) }}"><code>PCA._fit_full</code></a>).
+    Its randomized solver uses the same Halko algorithm as PyTorch
+    (<a href="{{ skl('sklearn/utils/extmath.py', 560, 633) }}"><code>_randomized_svd</code></a>).
+  </li>
+  <li>
+    <strong>LoRA</strong> fine-tunes a frozen weight W by learning a low-rank update
+    ΔW = BA with B: [d<sub>out</sub>, r] and A: [r, d<sub>in</sub>]. It relies on the bet
+    that the change fine-tuning needs has low rank, even though W itself does not.
+  </li>
+  <li>
+    <strong>Embeddings</strong> are low-rank factors. Truncating the SVD of a
+    user × item ratings matrix, or of a word co-occurrence matrix, gives each row and column a
+    short vector, and their dot products rebuild the table. The worked example below does this.
+    Matrix factorization for recommenders and classic word vectors such as LSA start here; see
+    <a href="{{ url_for('ml_models', slug='embeddings') }}">embeddings</a>.
+  </li>
+  <li>
+    <strong>Initialization.</strong> <code>nn.init.orthogonal_</code> fills a weight with a
+    random orthogonal matrix, so every singular value is 1 and signals keep their size through
+    deep linear stacks (Saxe et al.). It draws a Gaussian matrix, takes its QR factorization,
+    and fixes the signs using R's diagonal so the result is uniformly distributed
+    (<a href="{{ src('torch/nn/init.py', 672, 720) }}"><code>orthogonal_</code></a>,
+    <a href="{{ src('torch/linalg/__init__.py', 2865, 2966) }}"><code>linalg.qr</code></a>).
+  </li>
+  <li>
+    <strong>Least squares and the pseudo-inverse.</strong> A⁺ = V Σ⁺ Uᵀ inverts each non-zero
+    σᵢ and leaves the zeros at zero, which gives the minimum-norm least-squares solution
+    (<a href="{{ src('torch/linalg/__init__.py', 2056, 2161) }}"><code>pinv</code></a>).
+  </li>
+</ul>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 220" role="img" aria-labelledby="la-lora-title la-lora-desc">
+    <title id="la-lora-title">A LoRA update as a rank-r product next to a frozen weight</title>
+    <desc id="la-lora-desc">
+      A large square box W, 4096 by 4096 and frozen, holds {{ "{:,}".format(lora.full) }}
+      numbers. Next to it, a plus sign, then a tall thin box B, 4096 by 8, times a short wide
+      box A, 8 by 4096. Together B and A hold {{ "{:,}".format(lora.lora) }} trainable numbers,
+      {{ pct(lora.share, 2) }} of W, and their product is a 4096 by 4096 matrix of rank at
+      most 8.
+    </desc>
+    <rect x="30" y="20" width="170" height="170" rx="4" class="d-box ml-weight" stroke-width="2"></rect>
+    <text x="115" y="100" font-size="16" text-anchor="middle">W</text>
+    <text x="115" y="122" font-size="12" text-anchor="middle" class="d-muted">[4096, 4096], frozen</text>
+    <text x="115" y="210" font-size="12" text-anchor="middle" class="d-muted">{{ "{:,}".format(lora.full) }} numbers</text>
+    <text x="240" y="112" font-size="22" text-anchor="middle">+</text>
+    <rect x="285" y="20" width="22" height="170" rx="3" class="d-box ml-op" stroke-width="2"></rect>
+    <text x="296" y="210" font-size="12" text-anchor="middle">B</text>
+    <text x="330" y="112" font-size="18" text-anchor="middle">·</text>
+    <rect x="350" y="94" width="170" height="22" rx="3" class="d-box ml-op" stroke-width="2"></rect>
+    <text x="435" y="86" font-size="12" text-anchor="middle">A [8, 4096]</text>
+    <text x="350" y="150" font-size="12">B [4096, 8], A [8, 4096], trainable:</text>
+    <text x="350" y="170" font-size="12">{{ "{:,}".format(lora.lora) }} numbers, {{ pct(lora.share, 2) }} of W</text>
+    <text x="350" y="190" font-size="12" class="d-muted">rank(BA) ≤ 8</text>
+  </svg>
+</div>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Symmetric eigen-decomposition</td>
+        <td><code>[*, n, n]</code> → <code>(L [*, n], Q [*, n, n])</code>, <code>UPLO='L'</code></td>
+        <td>A = Q diag(L) Qᵀ; eigenvalues ascending.</td>
+        <td><a href="{{ src('torch/linalg/__init__.py', 642, 763) }}"><code>linalg.eigh</code></a></td>
+      </tr>
+      <tr>
+        <td>General eigen-decomposition</td>
+        <td><code>[*, n, n]</code> → complex <code>(L, V)</code></td>
+        <td>AV = V diag(L) for any square A; may be complex.</td>
+        <td><a href="{{ src('torch/linalg/__init__.py', 474, 582) }}"><code>linalg.eig</code></a></td>
+      </tr>
+      <tr>
+        <td>Singular value decomposition</td>
+        <td><code>[*, m, n]</code> → <code>(U, S, Vh)</code>, <code>full_matrices=True</code></td>
+        <td>A = U diag(S) Vh; S descending.</td>
+        <td><a href="{{ src('torch/linalg/__init__.py', 1734, 1886) }}"><code>linalg.svd</code></a></td>
+      </tr>
+      <tr>
+        <td>Singular values only</td>
+        <td><code>[*, m, n]</code> → <code>S [*, min(m, n)]</code></td>
+        <td>Cheaper, and its gradients are always defined.</td>
+        <td><a href="{{ src('torch/linalg/__init__.py', 1888, 1936) }}"><code>linalg.svdvals</code></a></td>
+      </tr>
+      <tr>
+        <td>Numerical rank</td>
+        <td><code>atol</code>, <code>rtol</code> (default ε·max(m, n))</td>
+        <td>Count of σᵢ above max(atol, rtol·σ₁).</td>
+        <td><a href="{{ src('torch/linalg/__init__.py', 1263, 1351) }}"><code>linalg.matrix_rank</code></a></td>
+      </tr>
+      <tr>
+        <td>Condition number</td>
+        <td><code>p=None</code> (2-norm)</td>
+        <td>σ₁/σₙ: how much solving can amplify error.</td>
+        <td><a href="{{ src('torch/linalg/__init__.py', 1938, 2054) }}"><code>linalg.cond</code></a></td>
+      </tr>
+      <tr>
+        <td>Randomized low-rank SVD</td>
+        <td><code>q=6</code>, <code>niter=2</code>, optional mean <code>M</code></td>
+        <td>Top-q (U, S, V) via a random sketch, QR and subspace iteration.</td>
+        <td><a href="{{ src('torch/_lowrank.py', 85, 146) }}"><code>svd_lowrank</code></a></td>
+      </tr>
+      <tr>
+        <td>Low-rank PCA</td>
+        <td><code>q=min(6, m, n)</code>, <code>center=True</code>, <code>niter=2</code></td>
+        <td>Centres the columns, then runs the randomized SVD.</td>
+        <td><a href="{{ src('torch/_lowrank.py', 183, 293) }}"><code>pca_lowrank</code></a></td>
+      </tr>
+      <tr>
+        <td>Pseudo-inverse</td>
+        <td><code>atol</code>, <code>rtol</code>, <code>hermitian</code></td>
+        <td>V Σ⁺ Uᵀ: the minimum-norm least-squares inverse.</td>
+        <td><a href="{{ src('torch/linalg/__init__.py', 2056, 2161) }}"><code>linalg.pinv</code></a></td>
+      </tr>
+      <tr>
+        <td>Orthogonal init</td>
+        <td><code>gain=1</code></td>
+        <td>A random orthogonal weight via QR; every σᵢ = gain.</td>
+        <td><a href="{{ src('torch/nn/init.py', 672, 720) }}"><code>nn.init.orthogonal_</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-power-iteration">Power iteration finds the top eigenvector</h3>
+  <p>
+    Start from x₀ = {{ eigen_example.start }} and repeatedly multiply by S = {{ mat(E) }},
+    rescaling to length 1. The estimate λ ≈ xᵀSx (the Rayleigh quotient) approaches
+    λ₁ = 3. Because S is symmetric, its error shrinks by (λ₂/λ₁)² = 1/9 per step.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Step</th><th>x</th><th>xᵀSx</th><th>3 − xᵀSx</th></tr></thead>
+      <tbody>
+        {% for step in trace %}
+        <tr><td>{{ loop.index }}</td><td>{{ vec(step.vector, 4) }}</td><td>{{ f(step.value, 6) }}</td><td>{{ "%.2e"|format(3 - step.value) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <h3 id="worked-svd">The SVD of a 2 × 2 by hand</h3>
+  <ol>
+    <li>A = {{ mat(A) }}. Then AᵀA = {{ mat([[25, 20], [20, 25]]) }}, with eigenvalues 45 and 5 and eigenvectors (1, 1)/√2 and (1, −1)/√2.</li>
+    <li>So σ₁ = √45 = {{ f(geo.S[0], 4) }}, σ₂ = √5 = {{ f(geo.S[1], 4) }}, v₁ = {{ vec(geo.Vh[0], 4) }} and v₂ = {{ vec(geo.Vh[1], 4) }}.</li>
+    <li>uᵢ = Avᵢ / σᵢ: Av₁ = (3, 9)/√2, so u₁ = (1, 3)/√10 = {{ vec(u1, 4) }}, and u₂ = {{ vec(u2, 4) }}.</li>
+    <li>Check: σ₁u₁v₁ᵀ + σ₂u₂v₂ᵀ = {{ mat(from_svd(geo)|map('map', 'round', 6)|map('list')|list) }}. The rank is 2 and κ = σ₁/σ₂ = {{ f(condition_number(A), 4) }}.</li>
+  </ol>
+
+  <h3 id="worked-low-rank">A ratings matrix at rank 2</h3>
+  <p>
+    Five people rate four films from 1 to 5. Two are action films and two are animated.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th></th>{% for film in ratings_example.films %}<th>{{ film }}</th>{% endfor %}<th></th>{% for film in ratings_example.films %}<th>{{ film }} (rank 2)</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for user in ratings_example.users %}{% set i = loop.index0 %}
+        <tr><td>{{ user }}</td>{% for x in R[i] %}<td>{{ x }}</td>{% endfor %}<td></td>{% for x in R2[i] %}<td>{{ f(x, 2) }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <ol>
+    <li>The singular values are {{ vec(rf.S, 3) }}, and ‖R‖²<sub>F</sub> = {{ f(errors[0].error, 0) }}, the sum of every rating squared.</li>
+    <li>
+      v₁ = {{ vec(rf.Vh[0], 2) }} is about equal on every film: an "overall rating" axis.
+      v₂ = {{ vec(rf.Vh[1], 2) }} is negative on the action films and positive on the animated
+      ones: a taste axis. Nobody labelled the films; the SVD found the two genres on its own.
+    </li>
+    <li>
+      Each user's row of U·Σ, cut to two columns, is a 2-number embedding. Eli, who rated
+      everything 3, gets {{ f(rf.U[4][1] * rf.S[1], 3) }} on the taste axis: no preference.
+    </li>
+    <li>
+      The rank-2 reconstruction differs from R by a squared error of {{ f(errors[2].error, 4) }},
+      and σ₃² + σ₄² = {{ f(rf.S[2] ** 2 + rf.S[3] ** 2, 4) }} — the same number, as Eckart–Young
+      says. It stores 2 · (5 + 4) = 18 numbers instead of 20, and on a million-by-million table
+      the same cut would save almost everything.
+    </li>
+  </ol>
+
+  <h3 id="worked-rank-and-condition">Rank and condition number</h3>
+  <ul>
+    <li>
+      {{ mat(rank_example) }} has a second row equal to twice the first. Its singular values are
+      {{ vec(rank_sv, 4) }}, so its rank is {{ matrix_rank(rank_example) }}: no matter the input,
+      the output lies in a plane.
+    </li>
+    <li>
+      A = {{ mat(condition_example.a) }} has κ = {{ "{:,.0f}".format(ill.cond) }}. Solving
+      Ax = {{ condition_example.b }} gives x = {{ vec(ill.x, 4) }}. Changing b to
+      {{ condition_example.nudged }}, a {{ "%.4f"|format(100 * ill.rhs_change) }}% change, gives
+      x = {{ vec(ill.x_nudged, 4) }}, a {{ f(100 * ill.x_change, 0) }}% change. The error grew
+      {{ "{:,.0f}".format(ill.amplification) }}-fold, within the bound of κ.
+    </li>
+  </ul>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code class="language-python">import torch
+
+S = torch.tensor([[2., 1.], [1., 2.]])
+L, Q = torch.linalg.eigh(S)              # L = tensor([1., 3.]), ascending
+Q @ torch.diag(L) @ Q.T                  # rebuilds S
+
+A = torch.tensor([[3., 0.], [4., 5.]])
+U, s, Vh = torch.linalg.svd(A)           # s = tensor([6.7082, 2.2361]), descending
+U @ torch.diag(s) @ Vh                   # rebuilds A; U and Vh are unique only up to sign
+torch.linalg.cond(A)                     # tensor(3.0000)
+torch.linalg.matrix_rank(torch.tensor([[1., 2., 3.], [2., 4., 6.], [1., 0., 1.]]))  # tensor(2)
+
+R = torch.tensor([[5., 4, 1, 1], [4, 5, 1, 2], [1, 1, 5, 4], [2, 1, 4, 5], [3, 3, 3, 3]])
+U, s, Vh = torch.linalg.svd(R, full_matrices=False)
+k = 2
+R2 = U[:, :k] @ torch.diag(s[:k]) @ Vh[:k]    # best rank-2 approximation
+((R - R2) ** 2).sum(), (s[k:] ** 2).sum()     # equal: Eckart–Young
+
+U, s, V = torch.svd_lowrank(R, q=2)           # randomized; note V, not Vh
+
+W = torch.empty(256, 512)
+torch.nn.init.orthogonal_(W)                  # every singular value is 1
+torch.linalg.svdvals(W).aminmax()</code></pre>
+
+<p>A one-sided Jacobi SVD from scratch. It applies plane rotations until every pair of columns is orthogonal:</p>
+
+<pre><code class="language-python">import math
+
+def svd(a, sweeps=60):                   # a: list of rows, len(a) >= len(a[0])
+    m, n = len(a), len(a[0])
+    cols = [[a[i][j] for i in range(m)] for j in range(n)]
+    v = [[float(i == j) for i in range(n)] for j in range(n)]
+    dot = lambda x, y: sum(p * q for p, q in zip(x, y))
+    for _ in range(sweeps):
+        for p in range(n - 1):
+            for q in range(p + 1, n):
+                alpha, beta, gamma = dot(cols[p], cols[p]), dot(cols[q], cols[q]), dot(cols[p], cols[q])
+                if abs(gamma) &lt; 1e-15 * math.sqrt(alpha * beta) or gamma == 0:
+                    continue
+                zeta = (beta - alpha) / (2 * gamma)
+                t = math.copysign(1, zeta) / (abs(zeta) + math.hypot(zeta, 1))
+                c = 1 / math.hypot(t, 1); s = c * t
+                for vecs in (cols, v):
+                    x, y = vecs[p], vecs[q]
+                    vecs[p] = [c * i - s * j for i, j in zip(x, y)]
+                    vecs[q] = [s * i + c * j for i, j in zip(x, y)]
+    sigma = [math.sqrt(dot(c, c)) for c in cols]          # column lengths are the σ's
+    u = [[x / s for x in c] for c, s in zip(cols, sigma)]  # assumes every σ &gt; 0
+    return u, sigma, v                                   # unsorted; sort by σ to match torch</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Don't form AᵀA.</strong> Its condition number is κ(A)², so a singular value of
+    1e-8 becomes an eigenvalue of 1e-16 and disappears into rounding. Computing the SVD of
+    {{ mat(rank_example) }} through AᵀA reports a third singular value near 5e-8, and so rank
+    3, where the direct SVD gives rank 2. Use <code>linalg.svd</code>,
+    <code>lstsq</code> or QR instead.
+  </li>
+  <li>
+    <strong>Cost.</strong> A full SVD of an m × n matrix (m ≥ n) costs O(mn²). That is fine
+    for a 4096 × 4096 layer and hopeless for a million × million table.
+    <code>svd_lowrank</code> costs roughly O(mnq) with q ≪ n, but its error depends on how
+    fast the spectrum decays. Use <code>q</code> a little above the rank you want and keep
+    <code>niter</code> at 2 or more.
+  </li>
+  <li>
+    <strong>Signs and gradients.</strong> Singular and eigen vectors are unique only up to
+    sign (or phase), so different hardware can return different ones. Gradients through U, V
+    or eigenvectors blow up when two singular values or eigenvalues are close. Differentiate
+    through <code>svdvals</code>/<code>eigvalsh</code> when you can.
+  </li>
+  <li>
+    <strong>Truncation throws information away.</strong> Eckart–Young minimizes squared
+    error, which counts every entry the same. It is not best for missing entries, which
+    real ratings tables are mostly made of, or for errors that matter more in some places.
+    That is why recommenders fit factors by gradient descent on the observed entries instead.
+  </li>
+  <li>
+    <strong>Low rank is a bet.</strong> LoRA assumes the update has low rank. If the task needs
+    a high-rank change, raising r helps up to a point, and full fine-tuning can still win.
+  </li>
+</ul>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="ml-quiz">
+  <summary>The singular values of a matrix are [10, 4, 0.1]. What is the squared error of its best rank-1 approximation, and its condition number?</summary>
+  <p>4² + 0.1² = 16.01, and κ = 10 / 0.1 = 100.</p>
+</details>
+<details class="ml-quiz">
+  <summary>How many trainable numbers does a rank-16 LoRA on a [4096, 11008] layer add?</summary>
+  <p>16 · (4096 + 11008) = {{ "{:,}".format(lora_param_counts(4096, 11008, 16).lora) }}, which is {{ pct(lora_param_counts(4096, 11008, 16).share, 2) }} of the layer's {{ "{:,}".format(lora_param_counts(4096, 11008, 16).full) }} weights.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does <code>torch.linalg.eig</code> return complex numbers for a real matrix?</summary>
+  <p>A real matrix can rotate every direction, as [[0, −1], [1, 0]] does, and then no real vector keeps its direction. Its eigenvalues are ±i. <code>eigh</code> stays real because symmetric matrices always have real eigenvalues.</p>
+</details>
+<details class="ml-quiz">
+  <summary>An orthogonally initialized layer has condition number 1. What does that mean for the signals passing through it?</summary>
+  <p>Every direction is stretched by the same factor (1, times the gain). No input direction is amplified or squashed relative to another, so stacking such layers neither explodes nor collapses the signal, at least before nonlinearities.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Eckart and Young. <em>The approximation of one matrix by another of lower rank.</em> Psychometrika 1, 211–218, 1936.</li>
+  <li>Trefethen and Bau. <em>Numerical Linear Algebra.</em> SIAM, 1997: lectures 4–5 on the SVD, 12 on conditioning.</li>
+  <li>Strang. <em>Introduction to Linear Algebra</em>, 6th ed., chapters 6–7. Wellesley-Cambridge Press, 2023.</li>
+  <li>Halko, Martinsson and Tropp. <em>Finding structure with randomness: probabilistic algorithms for constructing approximate matrix decompositions.</em> 2009. <a href="https://arxiv.org/abs/0909.4061">arXiv:0909.4061</a></li>
+  <li>Saxe, McClelland and Ganguli. <em>Exact solutions to the nonlinear dynamics of learning in deep linear neural networks.</em> 2013. <a href="https://arxiv.org/abs/1312.6120">arXiv:1312.6120</a></li>
+  <li>Hu et al. <em>LoRA: Low-Rank Adaptation of Large Language Models.</em> 2021. <a href="https://arxiv.org/abs/2106.09685">arXiv:2106.09685</a></li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/linalg/__init__.py', 1734, 1886) }}"><code>linalg.svd</code></a>, <a href="{{ src('torch/linalg/__init__.py', 642, 763) }}"><code>linalg.eigh</code></a>, <a href="{{ src('torch/_lowrank.py', 85, 146) }}"><code>svd_lowrank</code></a>. scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/decomposition/_pca.py', 544, 694) }}"><code>PCA</code></a>.</li>
+</ul>
