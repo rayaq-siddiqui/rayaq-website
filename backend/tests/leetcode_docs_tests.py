@@ -1807,3 +1807,44 @@ def test_segment_trees_helpers_match_the_page():
     assert "with <code>min</code> as the combining operation give <strong>2</strong>" in body
     assert "<td class=\"num\">100</td><td class=\"num\">199</td><td class=\"num\">253</td><td class=\"num\">400</td><td class=\"num\">27</td><td class=\"num\">28</td>" in body
     assert "Beyond the interview" in body
+
+
+def test_fenwick_trees_helpers_match_the_page():
+    nums = [5, 8, 6, 3, 2, 7, 2, 6]
+    tree = leetcode_docs.fenwick_tree_of(nums)
+    assert [(e["i"], e["lo"], e["hi"], e["value"]) for e in tree] == [
+        (1, 1, 1, 5), (2, 1, 2, 13), (3, 3, 3, 6), (4, 1, 4, 22),
+        (5, 5, 5, 2), (6, 5, 6, 9), (7, 7, 7, 2), (8, 1, 8, 39),
+    ]
+    for entry in tree:
+        assert entry["value"] == sum(nums[entry["lo"] - 1:entry["hi"]])
+        assert entry["binary"] == format(entry["i"], "04b")
+
+    p7 = leetcode_docs.fenwick_prefix_trace(nums, 7)
+    assert [(s["i"], s["running"], s["next"]) for s in p7["steps"]] == [(7, 2, 6), (6, 11, 4), (4, 33, 0)]
+    assert p7["total"] == 33 and leetcode_docs.fenwick_prefix_trace(nums, 2)["total"] == 13
+    for i in range(len(nums) + 1):
+        assert leetcode_docs.fenwick_prefix_trace(nums, i)["total"] == sum(nums[:i])
+
+    up = leetcode_docs.fenwick_update_trace(nums, 3, 7)
+    assert [(s["i"], s["old"], s["new"], s["next"]) for s in up["steps"]] == [(3, 6, 13, 4), (4, 22, 29, 8), (8, 39, 46, 16)]
+    assert up["nums"] == [5, 8, 13, 3, 2, 7, 2, 6] and up["changed"] == [3, 4, 8]
+    for i in range(1, len(nums) + 1):
+        trace = leetcode_docs.fenwick_update_trace(nums, i, 1)
+        assert [s["i"] for s in trace["steps"]] == trace["changed"] == [e["i"] for e in tree if e["lo"] <= i <= e["hi"]]
+
+    values = [3, 1, 4, 1, 5, 9, 2, 6]
+    cs = leetcode_docs.fenwick_count_smaller_trace(values)
+    assert cs["counts"] == [3, 0, 2, 0, 1, 2, 0, 0]
+    assert cs["counts"] == [sum(1 for later in values[i + 1:] if later < value) for i, value in enumerate(values)]
+    assert cs["ranks"] == {1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 9: 7}
+
+    costs = leetcode_docs.fenwick_costs([8, 13, 100, 1000])
+    assert [(r["prefix"], r["updates"], r["bits"]) for r in costs] == [(3, 4, 4), (3, 4, 4), (6, 7, 7), (9, 10, 10)]
+
+    body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/fenwick-trees").get_data(as_text=True))
+    assert "prefix(7) = t[7] + t[6] + t[4] = 2 + 9 + 22 = 33" in body
+    assert "the sum of positions 3 to 7 is 33 &minus; 13 = <strong>20</strong>" in body
+    assert "<td class=\"num\">4</td><td class=\"num\"><code>0100</code></td><td class=\"num\">1..4</td><td class=\"num\">22</td><td class=\"num\">29</td><td class=\"num\">8</td>" in body
+    assert "<strong>[3, 0, 2, 0, 1, 2, 0, 0]</strong>" in body
+    assert "<td class=\"num\">1000</td><td class=\"num\">9</td><td class=\"num\">10</td><td class=\"num\">10</td>" in body

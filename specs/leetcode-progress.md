@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-11 (build run). 55 of 58 pages are ready. **The next run is a build run** continuing at `fenwick-trees`.
+**Last updated:** 2026-10-11 (build run). 56 of 58 pages are ready. **The next run is a build run** continuing at `string-matching`.
 
 ## The Routine
 
@@ -104,8 +104,8 @@ build once research is done.
 53. `bit-manipulation` ✓
 54. `interview-approach` ✓
 55. `segment-trees` ✓
-56. `fenwick-trees` ← next
-57. `string-matching`
+56. `fenwick-trees` ✓
+57. `string-matching` ← next
 58. `bitmask-dp`
 
 ## Decisions
@@ -317,4 +317,8 @@ range by brute force, and `segment_tree_sizes` for the 4n and 4 log n bounds), t
 drawn from the helper output, and the full §6 format with the recursive, bottom-up and lazy
 trees. It is home to no list problems, so `_problems.html` now says so for *beyond* pages, and
 the page lists off-list practice problems instead. Mobile check passed on `/`, `/leetcode` and
-every ready page. Next: `fenwick-trees`.
+every ready page. Then built `fenwick-trees` the same way: `fenwick_tree_of`,
+`fenwick_prefix_trace`, `fenwick_update_trace`, `fenwick_count_smaller_trace` and
+`fenwick_costs`, each checked against brute force, with both diagrams drawn as bars over the
+positions each slot sums. A row key named `update` rendered as the dict method in Jinja; it is
+now `updates`. Next: `string-matching`.

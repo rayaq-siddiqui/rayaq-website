@@ -305,7 +305,7 @@ PAGES = [
           ["dp-fundamentals", "bit-manipulation"]),
 ]
 
-READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy", "kadanes-algorithm", "interval-merging", "sweep-line", "matrix-manipulation", "number-math", "bit-manipulation", "interview-approach", "segment-trees"}
+READY = {"complexity-analysis", "python-toolkit", "recursion", "hash-maps-and-sets", "counting-and-bucketing", "prefix-sums", "in-place-array-tricks", "two-pointers", "fixed-size-window", "variable-size-window", "stack", "monotonic-stack", "binary-search", "binary-search-on-answer", "linked-list-basics", "fast-slow-pointers", "linked-list-design", "tree-dfs", "tree-bfs", "binary-search-trees", "tree-construction", "tries", "heaps", "top-k-elements", "k-way-merge", "two-heaps", "quickselect", "subsets-and-permutations", "constraint-backtracking", "graph-traversal", "grid-graphs", "topological-sort", "union-find", "dijkstra", "bellman-ford", "minimum-spanning-trees", "eulerian-paths", "dp-fundamentals", "linear-dp", "knapsack-dp", "palindrome-dp", "longest-increasing-subsequence", "grid-dp", "string-dp", "interval-dp", "state-machine-dp", "greedy", "kadanes-algorithm", "interval-merging", "sweep-line", "matrix-manipulation", "number-math", "bit-manipulation", "interview-approach", "segment-trees", "fenwick-trees"}
 
 for _entry in PAGES:
     _entry["ready"] = _entry["slug"] in READY
@@ -7191,6 +7191,83 @@ def segment_tree_sizes(sizes):
     return rows
 
 
+def fenwick_tree_of(nums):
+    """A Fenwick tree over nums, 1-indexed: slot i stores the sum of the lowbit(i) values ending at position i."""
+    tree = [0] * (len(nums) + 1)
+    for i, value in enumerate(nums, 1):
+        j = i
+        while j < len(tree):
+            tree[j] += value
+            j += j & -j
+    return [
+        {"i": i, "binary": format(i, "b").zfill(len(nums).bit_length()), "lowbit": i & -i,
+         "lo": i - (i & -i) + 1, "hi": i, "value": tree[i]}
+        for i in range(1, len(tree))
+    ]
+
+
+def fenwick_prefix_trace(nums, i):
+    """prefix(i): add slot i, then strip its lowest set bit and repeat until i is 0. Each slot covers the block just left of the previous one."""
+    slots = {entry["i"]: entry for entry in fenwick_tree_of(nums)}
+    steps, total = [], 0
+    while i > 0:
+        total += slots[i]["value"]
+        steps.append({**slots[i], "running": total, "next": i - (i & -i)})
+        i -= i & -i
+    return {"steps": steps, "total": total}
+
+
+def fenwick_update_trace(nums, i, delta):
+    """add(i, delta): fix slot i, then add its lowest set bit to reach the next slot whose block also contains position i."""
+    before = {entry["i"]: entry for entry in fenwick_tree_of(nums)}
+    updated = list(nums)
+    updated[i - 1] += delta
+    after = {entry["i"]: entry for entry in fenwick_tree_of(updated)}
+    steps = []
+    while i <= len(nums):
+        steps.append({**before[i], "old": before[i]["value"], "new": after[i]["value"], "next": i + (i & -i)})
+        i += i & -i
+    changed = [j for j in before if before[j]["value"] != after[j]["value"]]
+    return {"steps": steps, "nums": updated, "changed": changed}
+
+
+def fenwick_count_smaller_trace(nums):
+    """For each element, how many later elements are smaller: walk from the right, ask the tree how many ranks below this one have been seen, then record this rank."""
+    ranks = {value: rank for rank, value in enumerate(sorted(set(nums)), 1)}
+    tree = [0] * (len(ranks) + 1)
+    rows, counts = [], [0] * len(nums)
+    for index in range(len(nums) - 1, -1, -1):
+        rank = ranks[nums[index]]
+        i, smaller = rank - 1, 0
+        while i > 0:
+            smaller += tree[i]
+            i -= i & -i
+        counts[index] = smaller
+        i = rank
+        while i < len(tree):
+            tree[i] += 1
+            i += i & -i
+        rows.append({"index": index, "value": nums[index], "rank": rank, "smaller": smaller,
+                     "seen": sorted(nums[index:])})
+    return {"ranks": ranks, "rows": rows, "counts": counts}
+
+
+def fenwick_costs(sizes):
+    """For each n, the most slots any prefix query or point update touches, found by trying every position, against the bit length of n."""
+    rows = []
+    for n in sizes:
+        prefix = max(bin(i).count("1") for i in range(1, n + 1))
+        update = 0
+        for i in range(1, n + 1):
+            steps, j = 0, i
+            while j <= n:
+                steps += 1
+                j += j & -j
+            update = max(update, steps)
+        rows.append({"n": n, "prefix": prefix, "updates": update, "bits": n.bit_length()})
+    return rows
+
+
 def problem_url(slug):
     return f"https://leetcode.com/problems/{slug}/"
 
@@ -7521,6 +7598,11 @@ def render(slug, render_template):
         "segment_query_trace": segment_query_trace,
         "segment_update_trace": segment_update_trace,
         "segment_tree_sizes": segment_tree_sizes,
+        "fenwick_tree_of": fenwick_tree_of,
+        "fenwick_prefix_trace": fenwick_prefix_trace,
+        "fenwick_update_trace": fenwick_update_trace,
+        "fenwick_count_smaller_trace": fenwick_count_smaller_trace,
+        "fenwick_costs": fenwick_costs,
         "coverage": coverage(),
         "problem_url": problem_url,
         "previous_page": previous,
