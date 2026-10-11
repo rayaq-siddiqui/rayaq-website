@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-11 (twenty-sixth run). Spec v2 widens the section from model architectures
-to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a fixed page
-format. Ready pages: queue items 1-42, the last being `nearest-neighbors`. The next page is
-`similarity-search` (queue item 43).
+**Last updated:** 2026-10-11 (twenty-seventh run). Spec v2 widens the section from model
+architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
+fixed page format. Ready pages: queue items 1-43, the last being `similarity-search`. The next
+page is `gpu-execution` (queue item 44).
 
 ## Pins
 
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (42 of 93 ready, all
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (43 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -92,156 +92,46 @@ None yet. Record each script here as script · command · output · seed · libr
 
 ### PyTorch v2.14.1
 
-The paths below are relative to `torch/nn/modules/` unless they give a fuller path.
+Ranges already cited by built pages live in their templates (and in `git log -p` on this
+file); this list keeps only what queued pages still need.
 
-- `transformer.py`
-  - Used by the transformer page as well: `TransformerEncoder.forward` layer loop 541-555,
-    encoder-layer fast path 917-942, `TransformerDecoderLayer.__init__` 1046-1061.
-  - `Transformer` 58-317. Constructor defaults 102-119: d_model 512, nhead 8, 6+6 layers,
-    dim_feedforward 2048, dropout 0.1, relu, eps 1e-5, `batch_first=False`, `norm_first=False`.
-  - `TransformerEncoder` 320-555.
-  - `TransformerDecoder` 558-660.
-  - `TransformerEncoderLayer` 663-982.
-  - `TransformerDecoderLayer` 985-1196.
-- `activation.py`
-  - `MultiheadAttention` 1090-1573, with `__init__` at 1163-1229.
-  - `in_proj_weight` 1207-1213, `in_proj_bias` 1215-1218, `out_proj` 1219-1221.
-  - `GELU` 778-823.
-- `torch/nn/functional.py`
-  - `scaled_dot_product_attention` docstring 6367-6540.
-  - `multi_head_attention_forward` 6664-7120.
-  - The head reshape in `multi_head_attention_forward` is at 6974; `relu` is at 1766.
-  - Start lines only: `embedding` 2509, `layer_norm` 2972, `rms_norm` 2998, `cross_entropy` 3478.
-- `normalization.py`
-  - `LayerNorm` 105-236, with `__init__` from 188 and its params up to 216.
-  - `GroupNorm` starts at 239.
-  - `RMSNorm` 343-436.
-- Attention ranges verified at the pin:
-  - `activation.py`: `MultiheadAttention` 1090-1573, `__init__` 1163-1231, `_reset_parameters` 1233-1247, `forward` 1256-1523 (fast-path checks 1327-1395), `merge_masks` 1525-1573.
-  - `functional.py`: `_in_projection_packed` 6217-6292, `_canonical_mask` 6612-6638, `multi_head_attention_forward` 6664-7120 (head reshape 6974-6991, need_weights branch 7050-7086, SDPA branch 7087-7120).
-  - `torch/nn/attention/__init__.py`: `SDPBackend` doc 40-56, `sdpa_kernel` 114-166.
-  - `bias.py`: `CausalVariant` 33-84, `CausalBias` 86-306, `causal_upper_left`/`causal_lower_right` 308-376.
-  - `flex_attention.py`: `BlockMask` 855-1694, `or_masks`/`and_masks` 1759-1785, `create_block_mask` 1967-2088, `flex_attention` 2365-2640.
-- Normalization ranges verified at the pin:
-  - `normalization.py`: `LayerNorm` 105-236, `GroupNorm` 239-340, `RMSNorm` 343-436.
-  - `batchnorm.py`: `_NormBase` 25-150, `_BatchNorm` 152-224.
-  - `functional.py`: `batch_norm` 2865-2926, `layer_norm` 2972-2996, `rms_norm` 2998-3013.
-  - `transformer.py`: `TransformerEncoderLayer` 663-982 (norm order 944-958, `_sa_block`/`_ff_block` 960-983); `dropout.py` `Dropout` 35-73.
-- `sparse.py`: `Embedding` 14-264, weight 164-168.
-- `linear.py`: `Linear` 53-147, weight and bias 104-114.
-- `dropout.py`: `Dropout` 35-73.
-- `loss.py`: `CrossEntropyLoss` 1200-1407.
-- `torch/optim/adamw.py`: `AdamW` 19-56. The docstring starts at 59, and the `adamw` function at 129.
-- `torch/optim/lr_scheduler.py`
-  - `CosineAnnealingLR` 1338-1475.
-  - Start lines only: `LambdaLR` 343, `LinearLR` 877, `SequentialLR` 1082, `OneCycleLR` 2285.
+- `torch/optim/lr_scheduler.py`: `CosineAnnealingLR` 1338-1475. Start lines only: `LambdaLR`
+  343, `LinearLR` 877, `SequentialLR` 1082, `OneCycleLR` 2285.
 - `torch/amp/autocast_mode.py`: `autocast` starts at 52.
 - `torch/amp/grad_scaler.py`: `GradScaler` starts at 53.
 - `torch/nn/utils/clip_grad.py`: `clip_grad_norm_` starts at 185.
-- `torch/nn/attention/bias.py`: start lines only for `CausalBias` 86, `causal_upper_left` 308 and
-  `causal_lower_right` 342.
-- `torch/nn/attention/flex_attention.py`: start lines only for `create_block_mask` 1967 and
-  `flex_attention` 2365.
-- `conv.py` (cnns): `_ConvNd` 55-222, `__init__` 87-180 (groups checks 105-110, `padding="same"`
-  stride check 116-119 and split 143-155, weight shape 161-174), `reset_parameters` 182-201,
-  `Conv2d` 388-565 (cross-correlation 395-403, shape formula 468-476, `_conv_forward` 546-562,
-  `forward` 564-565). `ConvTranspose2d` starts at 1012 (end unverified).
-- `pooling.py` (cnns): `_MaxPoolNd` 43-76 (stride defaults to `kernel_size` at 66), `MaxPool2d`
-  155-232 (formula 194-201, `forward` 222-232), `AvgPool2d` 680-787, `AdaptiveAvgPool2d` 1477-1514.
-- `container.py`: start lines only for `Sequential` 59 and `ModuleList` 341.
-- `torch/_tensor.py`: `Tensor` class starts at 102; `__len__` 1189-1203; `unflatten` 1353.
-- `torch/functional.py`: `broadcast_tensors` 47-76, `broadcast_shapes` 79-117, `einsum` 175-382.
-  Start lines only: `cdist` 1483, `norm` 1734.
-- `distance.py` (100 lines): `PairwiseDistance` 10-61, with `forward` at 57; `CosineSimilarity`
-  64-100. Its docstring clamps the product of the norms, while `F.cosine_similarity` (in
-  `torch/nn/functional.py` 5895-5924) clamps each norm; the function is what runs.
-  `pairwise_distance` starts at 5858 in `functional.py`.
-- `torch/linalg/__init__.py`: `vector_norm` 1491-1568; `matrix_norm` starts at 1570.
-- `torch/_torch_docs.py` (each range runs from `add_docstr(` to its closing `)`): `as_strided`
-  1019-1060, `broadcast_to` 1896-1916, `stack` 1918-1976, `permute` 8953-8971, `reshape`
-  9833-9863, `squeeze` 11063-11111, `transpose` 11942-11990, `unsqueeze` 12475-12504, `dot`
-  4134-4162, `vdot` 4164-4211, `inner` 5093-5152, `outer` 5154-5182. Start
-  lines of the `torch.X,` entry: `cat` 2532, `matmul` 7909, `tensor` 9583, `zeros` 12618.
-  Matrix ops: `matmul` 7908-7990, `mm` 7831-7887, `bmm` 1706-1762, `addmm` 592-665, `baddbmm`
-  1512-1581, `eye` 4380-4408, `inverse` 5606-5613 (an alias of `linalg.inv`), `t` 11507-11544.
-- `torch/linalg/__init__.py`: `inv` 214-292.
-- `torch/nn/functional.py`: `linear` 2382-2403 (docstring "y = xA^T + b").
-- `torch/nn/modules/linear.py`: `Linear` 53-147; `__init__` 96, `weight`/`bias` 104-114,
-  `reset_parameters` 117-128 (kaiming_uniform with a=√5, bias bound 1/√fan_in), `forward`
-  130-134 (calls `F.linear`).
-- `torch/_tensor_docs.py` (each range from `add_docstr_all(` to `)`): `contiguous` 1131-1144,
-  `is_contiguous` 2702-2714, `stride` 4963-4989, `view` 6041-6180, `expand` 6198-6249.
-  Autograd attributes: `grad` 6555-6563 ("accumulate (add)"), `retain_grad` 6595-6603,
-  `requires_grad` 6613-6624, `is_leaf` 6626-6666, `requires_grad_` 4125-4161.
-- `torch/autograd/__init__.py`: `backward` 255-403; `grad` 434-621 (its overloads start at 406).
-- `torch/_tensor.py`: `Tensor.backward` 566-625 (calls `torch.autograd.backward`);
-  `register_hook` starts at 655.
-- `torch/autograd/functional.py`: `jacobian` 587-853; `hessian` starts at 856.
-- `torch/autograd/grad_mode.py`: `no_grad` 22-86; `enable_grad` starts at 89.
-- `torch/autograd/function.py`: `FunctionCtx.save_for_backward` 41-100, `backward` 473-505
-  (ends with `vjp = backward`), `jvp` 531-553, `Function` 555-655 (docstring has the `Exp`
-  example).
-- `torch/autograd/functional.py`: `vjp` 271-363, `jvp` 366-476.
-- `torch/autograd/forward_ad.py`: `make_dual` 77-138; `dual_level` starts at 185.
-- `torch/distributions/normal.py`: `Normal` docstring 15-31; `__init__` 55-66; `sample` 77-80; `rsample` 82-85; `log_prob` 87-101; `cdf` 103-108; `icdf` 110-111; `entropy` starts at 113.
-- `torch/distributions/categorical.py`: `Categorical` with docstring 13-50; `__init__` 56-85; `sample` 144-149; `log_prob` 151-157; `entropy` 159-163.
-- `torch/distributions/bernoulli.py`: `Bernoulli` with docstring 20-40; `__init__` starts at 47; `sample` 116-119; `log_prob` 121-125; `entropy` 127-130.
-- `torch/distributions/normal.py` properties: `mean` 39-41, `mode` 43-45, `stddev` 47-49, `variance` 51-53 (each `@property` on the line before).
-- `torch/random.py`: `set_rng_state` 27-36; `get_rng_state` 39-46; `manual_seed` 49-59; `_manual_seed_impl` 62-86; `seed` starts at 89; `initial_seed` 144-150; `fork_rng` 156-239 (decorator at 156, def at 157).
-- `torch/distributions/kl.py`: `register_kl` starts at 51; `kl_divergence` 165-193; `_kl_bernoulli_bernoulli` 203-216; `_kl_categorical_categorical` 247-252; `_kl_normal_normal` 467-471 (each with its `@register_kl` decorator on the first line).
-- `torch/distributions/categorical.py`: `entropy` 159-163.
-- `torch/nn/functional.py`: `kl_div` 3401-3475; `cross_entropy` 3478-3569.
-- `torch/nn/modules/loss.py`: `KLDivLoss` 464-564; `CrossEntropyLoss` 1200-1407 (`forward` 1398-1407).
-- `torch/nn/modules/loss.py` (loss-functions): `_Loss` 42-50; `L1Loss` 66-133; `NLLLoss` 136-266; `MSELoss` 567-630; `BCEWithLogitsLoss` 719-844; `HingeEmbeddingLoss` 847-922; `SmoothL1Loss` 988-1078; `HuberLoss` 1081-1150; `CosineEmbeddingLoss` 1671-1740; `MarginRankingLoss` 1743-1807; `MultiMarginLoss` 1810-1903; `TripletMarginLoss` 1906-2013.
-- `torch/nn/functional.py` (loss-functions): `nll_loss` 3180-3244; `binary_cross_entropy_with_logits` 3634-3701; `huber_loss` 4107-4192; `l1_loss` 4195-4268; `mse_loss` 4271-4346; `margin_ranking_loss` 4349-4397; `multi_margin_loss` 4635-4696; `triplet_margin_loss` 5977-6016.
-- `torch/nn/modules/module.py` (neurons-and-layers): `class Module` 407, `__init__` 482-525; `register_buffer` 528; `register_parameter` 592-641; `add_module` 642-669; `_wrapped_call_impl` 1779-1786; `_call_impl` 1787-1921 (no-hook fast path 1788-1794), `__call__` 1922; `__setattr__` 1976-2080; `state_dict` 2199; `parameters` 2670-2698; `named_parameters` 2699-2730; `train` 2894; `eval` 2916; `zero_grad` 2957.
-- `torch/nn/modules/container.py` (neurons-and-layers): `Sequential` 59-339 (`__init__` 115-122, `forward` 254-260); `ModuleList` 341-510; `ModuleDict` 511.
-- `torch/nn/modules/linear.py` (neurons-and-layers): `reset_parameters` 117-129, `forward` 130-135. `activation.py`: `ReLU` 104-152, `Sigmoid` 337, `Tanh` 407.
-- `torch/autograd/__init__.py` (backpropagation): `backward` 255-403, `grad` 434-621. `graph.py`: `_engine_run_backward` 1059-1083, the handoff to the C++ engine. `function.py`: `FunctionCtx.save_for_backward` 41-100, `_SingleLevelFunction.backward` 473-505, `Function` 555-655. `torch/_tensor.py`: `Tensor.backward` 566-625.
-- Autograd internals (computation-graphs): `graph.py` `Node` 58-194, `next_functions` 74-84, `Node.register_hook` 103-146, `register_prehook` 148-182, `saved_tensors_hooks` 273-355; `function.py` `mark_dirty` 158-193, `mark_non_differentiable` 204-234, `set_materialize_grads` 276-322, `once_differentiable` 678-726; `_tensor.py` `register_hook` 655-703, `register_post_accumulate_grad_hook` 705-765; `grad_mode.py` `no_grad` 22-86, `inference_mode` 213-302; `__init__.py` `retain_graph` default 389-390. C++: `csrc/autograd/engine.h` `CompareNodeTaskTime` 91-106; `engine.cpp` `ReadyQueue::push` 236-248, `evaluate_function` 1109-1286 (`release_variables` 1188-1190, dependency decrement 1229-1239), `compute_dependencies` 1301-1367; `functions/accumulate_grad.h` `AccumulateGrad` 43-308, `accumulateGrad` 180-300; `accumulate_grad.cpp` `UINT64_MAX` sequence number 88-91; `saved_variable.cpp` `ERR_BACKWARD_TWICE` 291-296 (check at 136).
-- `torch/autograd/gradcheck.py`: `gradcheck` 1999-2105 (`eps=1e-6`, `atol=1e-5`, `rtol=1e-3`), `_compute_numerical_gradient` 358-394. `clip_grad.py`: `clip_grad_norm_` 185-232. `module.py`: `zero_grad` 2957-2985. `torch/utils/checkpoint.py`: `checkpoint` 423-619.
-- `torch/optim/sgd.py` (optimizers): `SGD` 28-105, `_single_tensor_sgd` 322-380. `adam.py`: `Adam` 34-138, `_single_tensor_adam` 347-552 (decoupled decay 415-418, bias correction 528-546). `adamw.py`: `AdamW` 19-47. `rmsprop.py`: `_single_tensor_rmsprop` 265-341.
-- `torch/optim/optimizer.py`: `Optimizer` starts at 358; `state_dict` 700-791, `zero_grad` 1048-1110, `step` 1117-1124, `add_param_group` 1127-1180.
-- Autoregressive models: `conv.py` `Conv1d` 225-385; `torch/nn/functional.py` `pad` 5761-5849;
-  `torch/_torch_docs.py` `triu` 12183-12247; `categorical.py` `__init__` 56-85, `sample` 144-149,
-  `log_prob` 151-157.
-- Tokenization: `sparse.py` padding fill 179-186; `loss.py` `CrossEntropyLoss.__init__` 1385-1396
-  (`ignore_index=-100`).
-- `torch/nn/modules/sparse.py` (embeddings): `Embedding` 14-264 (`__init__` 134-177, `reset_parameters` 179-181, `forward` 188-197, `from_pretrained` 213-264); `EmbeddingBag` starts at 267. `torch/nn/functional.py`: `embedding` 2509-2621.
+- `torch/nn/attention/bias.py`: `CausalBias` 86-306, `causal_upper_left`/`causal_lower_right`
+  308-376.
+- `torch/nn/attention/flex_attention.py`: `BlockMask` 855-1694, `create_block_mask` 1967-2088,
+  `flex_attention` starts at 2365.
+- `conv.py`: `ConvTranspose2d` starts at 1012 (end unverified); `Conv1d` 225-385.
+- `torch/linalg/__init__.py`: `inv` 214-292, `vector_norm` 1491-1568; `matrix_norm` starts at 1570.
+- `torch/_torch_docs.py` (from `add_docstr(` to `)`): `matmul` 7908-7990, `mm` 7831-7887,
+  `bmm` 1706-1762, `addmm` 592-665, `baddbmm` 1512-1581.
+- `torch/random.py`: `manual_seed` 49-59; `get_rng_state` 39-46; `set_rng_state` 27-36.
+- `torch/optim/optimizer.py`: `Optimizer` starts at 358; `state_dict` 700-791, `zero_grad`
+  1048-1110.
+- `torch/nn/modules/module.py`: `class Module` 407; `register_buffer` 528.
+- Similarity search: `distance.py` `PairwiseDistance` 10-61, `CosineSimilarity` 64-100;
+  `torch/nn/functional.py` `pairwise_distance` 5858-5865, `cosine_similarity` 5895-5924,
+  `normalize` 6096-6130; `torch/functional.py` `cdist` 1483-1541.
 
 ### scikit-learn 1.9.1 (start lines; check the end before linking a range)
 
 Paths are under `sklearn/`.
 
-- `linear_model/_base.py`: `LinearRegression` 519 (verified range 519-765; `fit` 654-760,
-  dense `linalg.lstsq` branch 751-755, `positive`/sparse branches 707-750),
-  `_preprocess_data` 113-220, `_set_intercept` 318-334.
-- `linear_model/_logistic.py`: `LogisticRegression` 974 (verified range 974-1637; `C` docstring
-  1023-1029, `l1_ratio` 1031-1047, solver table 1096-1153, `fit` 1333-1572, `predict_proba`
-  1573-1604), `_check_solver` 81-103, `_logistic_regression_path` 219-720 (lbfgs branch 580-606,
-  `l2_reg_strength = 1 / (C * sw_sum)` at 580), `LogisticRegressionCV` 1638.
-- `linear_model/_base.py` (classifiers): `LinearClassifierMixin` 360, `decision_function` 366-397,
-  `predict` 398-428, `_predict_proba_lr` 429-452.
-- `linear_model/_linear_loss.py`: `LinearModelLoss` 47 (`loss` 231-290), `l2_penalty` 226-229,
-  `gradient_hessian` 454-710. `sklearn/_loss/` is not in the sparse clone; cite these instead.
-- `linear_model/_glm/_newton_solver.py`: `NewtonSolver` 22-451, `NewtonCholeskySolver` 452-637.
-- `linear_model/_ridge.py`: `Ridge` 1022 (verified range 1022-1287), `_solve_cholesky` 215-234,
-  `_solve_svd` 299-309, `resolve_solver_for_numpy` 867-878.
-- `linear_model/_coordinate_descent.py`: `Lasso` 1329 (verified range 1329-1517), `ElasticNet` 884.
-- `linear_model/_cd_fast.pyx`: `enet_coordinate_descent` 243; soft-threshold update 439-452.
+- Linear models (`linear_model/`), used by the regression, classifier and regularization pages:
+  ranges live in those templates.
 - `tree/_classes.py`: `DecisionTreeClassifier` 699, `DecisionTreeRegressor` 1097.
 - `ensemble/_forest.py`: `RandomForestClassifier` 1174.
 - `ensemble/_gb.py`: `GradientBoostingClassifier` 1145.
 - `ensemble/_hist_gradient_boosting/gradient_boosting.py`: `HistGradientBoostingClassifier` 1762.
 - `svm/_classes.py`: `SVC` 623.
-- `neighbors/` (all verified, used by `nearest-neighbors`): `_classification.py`
-  `KNeighborsClassifier` 44-457 (`__init__` 198-219, `fit` 225-243, `predict` 245-312,
-  `predict_proba` 314-417); `_regression.py` `KNeighborsRegressor` 21-272 (`predict` 229-272);
-  `_unsupervised.py` `NearestNeighbors` 10-179; `_base.py` `VALID_METRICS` 59, `_get_weights`
-  74-117, `"auto"` algorithm choice 615-648, `kneighbors` 756-958; `_binary_tree.pxi.tp` size
-  comment 75-90, `n_levels`/`n_nodes` 870-877, `find_node_split_dim` 595-645, `_recursive_build`
-  1033-1083, `_query_single_depthfirst` 1603-1656; `_kd_tree.pyx.tp` `init_node` 73-121,
-  `min_rdist` 123-147; `_ball_tree.pyx.tp` `init_node` 86-145, `min_dist` 148-156.
+- `neighbors/`: all ranges live in the `nearest-neighbors` template.
+- Similarity search: `metrics/pairwise.py` `euclidean_distances` 268-373,
+  `_euclidean_distances` 376-427, `cosine_similarity` 1703-1758; `preprocessing/_data.py`
+  `normalize` 1978-2089; `feature_extraction/text.py` `TfidfTransformer` 1506, idf in `fit`
+  1675-1695.
 - `cluster/_kmeans.py`: `KMeans` 1191.
 - `decomposition/_pca.py`: `PCA` 113.
 - `model_selection/_split.py`: `KFold` 437, `GroupKFold` 533, `StratifiedKFold` 687,
@@ -250,8 +140,7 @@ Paths are under `sklearn/`.
   `learning_curve` 1776, `validation_curve` 2283.
 - `preprocessing/_data.py`: `StandardScaler` 742 (verified range 742-1189), `MinMaxScaler` 305, `RobustScaler` 1552.
 - `preprocessing/_encoders.py`: `OneHotEncoder` 474, `OrdinalEncoder` 1263.
-- `impute/_base.py`: `_BaseImputer` 95-168, `SimpleImputer` 171-784, `MissingIndicator` 787-1149
-  (all verified, used by `missing-data`); `impute/_iterative.py` `IterativeImputer` 60-1002.
+- `impute/`: ranges live in the `missing-data` template.
 - `pipeline.py`: `Pipeline` 93.
 - `calibration.py`: `CalibratedClassifierCV` 74, `calibration_curve` 1227.
 - `metrics/_ranking.py`: `roc_auc_score` 511, `precision_recall_curve` 1059.
@@ -274,27 +163,13 @@ Paths are under `sklearn/`.
 - `transformer` uses the v1 section layout and is exempt from the §6 order test until its
   retrofit (queue item 18).
 
-## First to third runs (2026-10-08) — condensed
+## First to eighteenth runs (2026-10-08) — condensed
 
-The first run wrote spec v1, the PyTorch pin and the scaffold (`ml_models_docs.py`, routes,
-base and index templates, CSS, JS, tests, the AGENTS.md entry and this file). The second added
-the upcoming-models list and the original `transformer` page with its attention table and
-parameter calculator in `ml_models.js`. The third widened the section to spec v2: the
-scikit-learn and XGBoost pins beside PyTorch (`PINS`, `pinned_url`), the twelve `AREAS` and every
-planned page, `LEARNING_PATH` and connections, the area-grouped nav and index, the §6 format and
-queue tests, `tools/ml_models/check_mobile.js`, and the Routine. `git log -- specs/ml-models.md
-backend/ml_models_docs.py` has the per-commit detail.
-
-## Fourth to eighteenth runs (2026-10-08) — condensed
-
-Each run followed the same pattern: a `ml-models: add tested <topic> helpers` commit (stdlib
-helpers plus their tests), a `ml-models: build the <slug> page` commit (page, `ready`, queue ✓),
-and a `docs:` commit for this file. Pages built, in order: `tensors-and-shapes`,
-`vectors-and-dot-products`, `matrix-multiplication`, `derivatives-and-gradients`, `chain-rule`,
-`probability-and-distributions`, `expectation-and-variance`, `entropy-and-kl`, `loss-functions`,
-`linear-regression`, `logistic-regression`, `neurons-and-layers`, `backpropagation`,
-`optimizers`, `embeddings`, `attention`, `layernorm-and-residuals`. Pins were re-checked on each
-run and none moved. Per-page commit lists were dropped to keep this file short; `git log` has them.
+Runs 1-3 wrote the spec (v1, then v2 with the scikit-learn and XGBoost pins, twelve `AREAS`,
+every planned page, `LEARNING_PATH`, the §6 format and queue tests, `check_mobile.js` and the
+Routine) and the scaffold. Runs 4-18 each added a tested-helpers commit, a page commit (page,
+`ready`, queue ✓) and a `docs:` commit, building in order: `tensors-and-shapes` through
+`layernorm-and-residuals` (queue items 1-17). Pins never moved. `git log` has the detail.
 
 ## Nineteenth to twenty-fourth runs (2026-10-08 to 2026-10-09) — condensed
 
@@ -330,59 +205,55 @@ Open gaps from these runs:
   `_incremental_fit_estimator`, and the `Lasso` end line, were inferred, not checked.
 - The SwiGLU "hidden size reduced to 2/3" remark is from memory of common practice.
 
-## Twenty-fifth run (2026-10-11) — condensed
+## Twenty-fifth and twenty-sixth runs (2026-10-11) — condensed
 
-Built `linear-algebra-toolkit`, `missing-data`, `computation-graphs` and `cnns` (helpers commit,
-page commit and queue ✓ each), plus `6f0803f`, which fixed 13 templates that read the missing
-`pins.X.version` key and added a test for every `pins.X.<key>` a template reads. Ranges are under
-the pins above and in the templates; `git log -p` on this file has the per-page tables.
+Same pattern: helpers commit, page commit (page, `ready`, queue ✓). Pages built, in order:
+`linear-algebra-toolkit`, `missing-data`, `computation-graphs`, `cnns`, `autoregressive-models`,
+`tokenization`, `nearest-neighbors`. `6f0803f` fixed 13 templates that read the missing
+`pins.X.version` key and added a test for every `pins.X.<key>` a template reads. Pins did not
+move. `git log -p` on this file has the per-run commit tables.
 
 Findings worth keeping:
 
 - An SVD through the eigenvalues of AᵀA squares the condition number and gave rank 3 for a
   rank-2 matrix; the one-sided Jacobi SVD gives rank 2.
-- Cross-checked in a scratch venv (never in requirements): scikit-learn 1.9.1 imputers match the
-  missing-data helpers; XGBoost 3.2.0 (3.4.2 is not on the mirror) gives the page's split and
-  default direction; torch 2.14.1 matches the computation-graph nodes, order, gradients and
-  errors, and every cnns size, output, parameter count and the 435-pixel receptive field.
-- torchvision is not pinned, so ResNet-18 is described from its paper, not linked.
+- Cross-checked in a scratch venv (never in requirements): scikit-learn 1.9.1 imputers,
+  XGBoost 3.2.0 (3.4.2 is not on the mirror) splits and default direction, torch 2.14.1
+  computation-graph nodes and every cnns size and the 435-pixel receptive field.
+- On the BPE toy corpus `e`+`s` and `s`+`t` tie at count 9; BPE takes `e`+`s`, WordPiece's
+  likelihood gain picks `s`+`t`. The KD-tree example scans 4 of 16 points for k = 1 and all 16
+  for k = 5. torchvision is not pinned, so ResNet-18 is described from its paper.
 
-## Twenty-sixth run (2026-10-11) — autoregressive-models, tokenization, nearest-neighbors
+Gaps from these runs: WordPiece training has no pinned implementation to check against; the
+pre-arXiv papers (Cover and Hart, Bentley, Friedman et al., Omohundro, Beyer et al., Schuster
+and Nakajima) and the GPT-2 report have no link; page commits exceed 400 lines because each
+template is one file.
+
+## Twenty-seventh run (2026-10-11) — similarity-search, gpu-execution, mixed-precision
 
 | Commit | What |
 |---|---|
-| `41393ab` `ml-models: add tested autoregressive helpers` | Chain-rule factors, Markov approximation, ancestral samples, table sizes, teacher forcing and an exposure-bias curve, causal 1-D convolution stacks, receptive fields and a causality check, WaveNet receptive fields, PixelCNN masks and dependencies, with seven tests |
-| `98de082` `ml-models: build the autoregressive-models page` | The page, `ready`, queue ✓ |
-| `164babf` `ml-models: add tested tokenization helpers` | BPE training and encoding on the Sennrich toy corpus, exact WordPiece likelihood gains, unigram segmentations and Viterbi, UTF-8 byte lengths, digit grouping, padded ids/mask/shifted targets, with six tests |
-| `c13df57` `ml-models: build the tokenization page` | The page, `ready`, queue ✓ |
-| `dec7943` `ml-models: add tested nearest-neighbors helpers` | Minkowski metrics, k-NN voting with sklearn's weights, the docstring examples, a k sweep, leave-one-out error, distance concentration, a KD tree with sklearn's sizing, widest-spread median split and depth-first pruning, the ball-tree bound, with six tests |
-| `a3ecf73` `ml-models: add the nearest-neighbors page` | The page, `ready`, queue ✓ |
-
-Ranges verified at the pins this run are listed above (PyTorch: autoregressive models,
-tokenization; scikit-learn: `neighbors/`).
-
-Findings worth keeping:
-
-- On the BPE toy corpus, `e`+`s` and `s`+`t` tie at count 9; BPE takes `e`+`s` first, while
-  the WordPiece likelihood-gain criterion picks `s`+`t`. The tokenization page shows both.
-- The KD-tree example computes 4 of 16 distances for k = 1 and all 16 for k = 5, which is
-  the page's illustration of why `"auto"` falls back to brute force for k ≥ n/2.
-- Leave-one-out with k = 15 on a balanced 16-point set is wrong on every point (7 vs 8 votes).
+| `7626d90` `ml-models: add tested similarity search helpers` | Metric agreement before and after normalizing, the 2 − 2cos identity, brute-force cost, Lucene BM25 and saturation, reciprocal rank fusion, with four tests |
+| `6057948` `ml-models: build the similarity-search page` | The page, `ready`, queue ✓ |
 
 Pins checked with `git ls-remote --tags`: PyTorch v2.14.1, scikit-learn 1.9.1 and XGBoost v3.4.2
 are still the latest stable releases; no pin moved.
 
+Findings worth keeping:
+
+- `nn.CosineSimilarity`'s docstring shows max(‖x₁‖·‖x₂‖, ε), while `F.cosine_similarity`'s
+  shows max(‖x₁‖, ε)·max(‖x₂‖, ε). The page follows the functional docstring, which the module
+  calls.
+- scikit-learn's tree metrics have no `cosine`, so `NearestNeighbors(metric="cosine")` is
+  brute force only; `"auto"` picks brute force above 15 features anyway.
+- The hybrid example's dense ranking is stated as an assumption on the page; only BM25 and the
+  fusion are computed.
+
 Gaps:
 
-- arxiv.org was unreachable again (DNS failure via WebFetch, 403 via curl), so every reference
-  on the three pages is cited from memory and was not opened. The GPT-2 report and the
-  pre-arXiv papers (Cover and Hart 1967, Bentley 1975, Friedman et al. 1977, Omohundro 1989,
-  Beyer et al. 1999, Schuster and Nakajima 2012) have no link.
-- WordPiece is described by the likelihood-gain criterion of its papers; no pinned library
-  implements WordPiece training, so there is no code to check it against.
-- No torch, scikit-learn cross-check ran this run; the numbers come from the stdlib helpers,
-  and the scikit-learn docstring outputs they reproduce are quoted from the pinned source.
-- Page commits exceed the 400-line guideline because each page template is one file.
+- References are cited from memory (arxiv.org unreachable in earlier runs; not retried).
+- BM25 has no pinned implementation (none of the three pins ships it); the page uses the
+  Lucene idf variant from Robertson and Zaragoza and says so.
 
 ## Queue
 
