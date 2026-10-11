@@ -231,6 +231,10 @@ Open gaps from these runs:
 | `8abe08e` `ml-models: add tested reinforcement learning helpers` | Discounted returns, value iteration and the closed form on a slippery four-state chain, a Q-update and seeded tabular Q-learning, TD-error advantages, exact REINFORCE gradients and variance with and without a baseline on a three-armed bandit, and PPO's clip, with five tests |
 | `6f8cb43` `ml-models: add the reinforcement learning page template` | The page |
 | `51a1295` `ml-models: publish the reinforcement learning page` | `ready`, queue ✓ |
+| `306747f` `ml-models: add tested bayes rule helpers` | A diagnostic test in natural frequencies with repeated positives, a coin's binomial likelihood (area 1/11 over θ) with MLE, MAP and the Beta posterior, one-feature ridge as a Gaussian-prior MAP, and smoothed multinomial naive Bayes in log space, with four tests |
+| `c9dbcc2` `ml-models: fix coloured svg text on three pages` | Green and amber SVG labels on derivatives-and-gradients, quantization and reinforcement-learning drew in the default colour; fills moved to inline styles |
+| `5cca008` `ml-models: add the bayes rule page` | The page |
+| `6e8cd71` `ml-models: publish the bayes rule page` | `ready`, queue ✓ |
 
 Findings worth keeping:
 
@@ -241,6 +245,10 @@ Findings worth keeping:
 - The fake-quant kernel's gradient mask is computed on the unclamped code
   (`quant_min <= round(x/s) + z <= quant_max`) and the backward returns `dY * mask`: the
   straight-through estimator, zero where the value was clamped.
+- `.jj-diagram svg text { fill: var(--jj-text) }` overrides an SVG `fill=` presentation
+  attribute (author CSS beats presentation attributes), so coloured diagram text must use
+  `style="fill: ..."`. Pins checked with `git ls-remote --tags`: v2.14.1, 1.9.1 and v3.4.2
+  are still the newest stable releases; no pin moved.
 
 Gaps:
 
@@ -254,6 +262,11 @@ Gaps:
   score-function docstring in `torch/distributions/__init__.py` and `nn.HuberLoss`. The PPO
   loss coefficients in the snippet are labelled as common defaults, not pinned values. The
   page names preference optimization in plain text until that page is ready.
+- Bayes rule: Bishop 2006, Murphy 2022 and Gigerenzer and Hoffrage 1995 are cited from
+  memory. The pinned source backs `Distribution.log_prob`, `Normal.log_prob`,
+  `Bernoulli.log_prob`, `GaussianNLLLoss`, ridge's objective docstring and scikit-learn's
+  naive Bayes; the Beta-binomial conjugacy and MAP-as-ridge are standard derivations shown on
+  the page, not pinned code.
 
 ## Queue
 
