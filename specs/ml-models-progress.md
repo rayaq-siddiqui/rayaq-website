@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-11 (twenty-seventh run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-43, the last being `similarity-search`. The next
-page is `gpu-execution` (queue item 44).
+fixed page format. Ready pages: queue items 1-44, the last being `gpu-execution`. The next
+page is `mixed-precision` (queue item 45).
 
 ## Pins
 
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (43 of 93 ready, all
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (44 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -112,6 +112,10 @@ file); this list keeps only what queued pages still need.
 - `torch/optim/optimizer.py`: `Optimizer` starts at 358; `state_dict` 700-791, `zero_grad`
   1048-1110.
 - `torch/nn/modules/module.py`: `class Module` 407; `register_buffer` 528.
+- GPU execution (used): `torch/cuda/streams.py` `Stream` 17-133, `wait_event`/`wait_stream`
+  48-77, `Event` 159-271, `elapsed_time` 234-243; `torch/cuda/__init__.py` `get_device_properties`
+  787-803, `StreamContext`/`stream` 818-886, `synchronize` 1271-1281, `current_stream`/
+  `default_stream` 1297-1330; `torch/__init__.py` `compile` 3045-3288 (modes 3103-3117).
 - Similarity search: `distance.py` `PairwiseDistance` 10-61, `CosineSimilarity` 64-100;
   `torch/nn/functional.py` `pairwise_distance` 5858-5865, `cosine_similarity` 5895-5924,
   `normalize` 6096-6130; `torch/functional.py` `cdist` 1483-1541.
@@ -235,6 +239,9 @@ template is one file.
 |---|---|
 | `7626d90` `ml-models: add tested similarity search helpers` | Metric agreement before and after normalizing, the 2 − 2cos identity, brute-force cost, Lucene BM25 and saturation, reciprocal rank fusion, with four tests |
 | `6057948` `ml-models: build the similarity-search page` | The page, `ready`, queue ✓ |
+| `cc36b43` `docs: record the similarity-search build` | This file, condensed |
+| `513a150` `ml-models: add tested gpu execution helpers` | Example-GPU roofline for matmul and elementwise ops, fusion traffic, tiled matmul traffic, launch timeline, chart coordinates, with three tests |
+| `125f5d9` `ml-models: build the gpu-execution page` | The page, `ready`, queue ✓ |
 
 Pins checked with `git ls-remote --tags`: PyTorch v2.14.1, scikit-learn 1.9.1 and XGBoost v3.4.2
 are still the latest stable releases; no pin moved.
@@ -248,10 +255,16 @@ Findings worth keeping:
   brute force only; `"auto"` picks brute force above 15 features anyway.
 - The hybrid example's dense ranking is stated as an assumption on the page; only BM25 and the
   fusion are computed.
+- `gpu-execution` uses an invented example GPU (100 TFLOP/s, 2 TB/s, ridge 50) and an assumed
+  5 µs launch cost, both labelled as such on the page, rather than any real card's datasheet.
 
 Gaps:
 
 - References are cited from memory (arxiv.org unreachable in earlier runs; not retried).
+- `gpu-execution`: the memory hierarchy, tiling and tensor-core remarks come from general CUDA
+  knowledge (no pinned source covers them); the NVIDIA programming guide is cited without a link.
+  `Event.elapsed_time` needing `enable_timing=True` on both events is not stated in the pinned
+  docstring.
 - BM25 has no pinned implementation (none of the three pins ships it); the page uses the
   Lucene idf variant from Robertson and Zaragoza and says so.
 
