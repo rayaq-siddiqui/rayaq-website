@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "889e5a68fc24f00b9dfa0fe58dc140c9f064f902",
-    "commit_date": "2026-10-10",
+    "commit": "05581760660a7d488e3c19d6aec6f6668822e94d",
+    "commit_date": "2026-10-11",
     "version": "0.46.0",
-    "analyzed_on": "2026-10-10",
+    "analyzed_on": "2026-10-11",
 }
 
 TOPICS = [
@@ -388,7 +388,7 @@ COMMANDS = [
         "category": 'Content and conflicts',
         "tier": 'A',
         "summary": 'Resolve conflicted files with an external merge tool',
-        "source": ('cli/src/commands/resolve.rs', 50),
+        "source": ('cli/src/commands/resolve.rs', 53),
     },
     {
         "command": 'file annotate',
@@ -1651,6 +1651,7 @@ COMMAND_PAGE_OVERRIDES = {
             "cli/src/merge_tools/external.rs",
             "cli/src/merge_tools/builtin.rs",
             "cli/src/config/merge_tools.toml",
+            "cli/src/description_util.rs",
             "lib/src/conflicts.rs",
             "cli/src/command_error.rs",
             "cli/src/cli_util.rs",
@@ -1850,6 +1851,8 @@ COMMAND_PAGE_OVERRIDES = {
         "sources": [
             "cli/src/commands/restore.rs",
             "lib/src/rewrite.rs",
+            "lib/src/merged_tree.rs",
+            "lib/src/filtered_tree_writer.rs",
             "lib/src/repo.rs",
             "cli/src/cli_util.rs",
         ],
