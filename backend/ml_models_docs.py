@@ -6591,6 +6591,113 @@ def ppo_clip(ratio, advantage, epsilon=PPO_EPSILON):
     }
 
 
+DIAGNOSTIC_POPULATION = 10000
+
+
+def diagnostic_test(prevalence=0.01, sensitivity=0.9, false_positive_rate=0.09, population=DIAGNOSTIC_POPULATION):
+    sick = prevalence * population
+    healthy = population - sick
+    true_positives = sensitivity * sick
+    false_positives = false_positive_rate * healthy
+    evidence = sensitivity * prevalence + false_positive_rate * (1 - prevalence)
+    return {
+        "sick": sick,
+        "healthy": healthy,
+        "true_positives": true_positives,
+        "false_negatives": sick - true_positives,
+        "false_positives": false_positives,
+        "true_negatives": healthy - false_positives,
+        "evidence": evidence,
+        "posterior": sensitivity * prevalence / evidence,
+    }
+
+
+def repeated_tests(prevalence=0.01, sensitivity=0.9, false_positive_rate=0.09, positives=3):
+    beliefs = [prevalence]
+    for _ in range(positives):
+        beliefs.append(diagnostic_test(beliefs[-1], sensitivity, false_positive_rate)["posterior"])
+    return beliefs
+
+
+COIN_HEADS = 7
+COIN_FLIPS = 10
+COIN_PRIOR = (5, 5)
+
+
+def binomial_likelihood(theta, heads=COIN_HEADS, flips=COIN_FLIPS):
+    return math.comb(flips, heads) * theta**heads * (1 - theta) ** (flips - heads)
+
+
+def beta_density(theta, a, b):
+    return theta ** (a - 1) * (1 - theta) ** (b - 1) * math.gamma(a + b) / (math.gamma(a) * math.gamma(b))
+
+
+def likelihood_area(heads=COIN_HEADS, flips=COIN_FLIPS, points=10000):
+    width = 1 / points
+    return sum(binomial_likelihood((i + 0.5) * width, heads, flips) for i in range(points)) * width
+
+
+def coin_estimates(heads=COIN_HEADS, flips=COIN_FLIPS, prior=COIN_PRIOR):
+    a, b = prior
+    return {
+        "mle": heads / flips,
+        "map": (heads + a - 1) / (flips + a + b - 2),
+        "posterior_mean": (heads + a) / (flips + a + b),
+        "posterior": (heads + a, flips - heads + b),
+    }
+
+
+def coin_curves(heads=COIN_HEADS, flips=COIN_FLIPS, prior=COIN_PRIOR, points=51):
+    a, b = prior
+    post_a, post_b = heads + a, flips - heads + b
+    grid = [i / (points - 1) for i in range(points)]
+    curves = {
+        "likelihood": [binomial_likelihood(t, heads, flips) for t in grid],
+        "prior": [beta_density(t, a, b) for t in grid],
+        "posterior": [beta_density(t, post_a, post_b) for t in grid],
+    }
+    scaled = {name: [v / max(values) for v in values] for name, values in curves.items()}
+    return {"theta": grid, **scaled}
+
+
+def ridge_map_1d(xs, ys, alpha):
+    return sum(x * y for x, y in zip(xs, ys)) / (sum(x * x for x in xs) + alpha)
+
+
+NB_VOCABULARY = ["free", "win", "meeting", "report"]
+NB_CLASSES = ["spam", "ham"]
+NB_DOCUMENTS = {"spam": 2, "ham": 3}
+NB_WORD_COUNTS = {"spam": [3, 2, 0, 1], "ham": [1, 0, 3, 4]}
+NB_MESSAGE = [1, 1, 1, 0]
+
+
+def _log_sum_exp(values):
+    finite = [v for v in values if v != -math.inf]
+    if not finite:
+        return -math.inf
+    top = max(finite)
+    return top + math.log(sum(math.exp(v - top) for v in finite))
+
+
+def naive_bayes_posterior(message=NB_MESSAGE, alpha=1.0, counts=None, documents=None):
+    counts = counts or NB_WORD_COUNTS
+    documents = documents or NB_DOCUMENTS
+    total_documents = sum(documents.values())
+    rows = {}
+    for name in NB_CLASSES:
+        smoothed = [c + alpha for c in counts[name]]
+        word_probs = [c / sum(smoothed) for c in smoothed]
+        prior = documents[name] / total_documents
+        joint = math.log(prior) + sum(
+            n * (math.log(p) if p > 0 else -math.inf) for n, p in zip(message, word_probs) if n
+        )
+        rows[name] = {"prior": prior, "word_probs": word_probs, "joint_log": joint}
+    evidence = _log_sum_exp([row["joint_log"] for row in rows.values()])
+    for row in rows.values():
+        row["posterior"] = None if evidence == -math.inf else math.exp(row["joint_log"] - evidence)
+    return rows
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -7074,6 +7181,23 @@ def render(slug, render_template):
         "ppo_epsilon": PPO_EPSILON,
         "ppo_ratios": PPO_RATIOS,
         "ppo_clip": ppo_clip,
+        "diagnostic_population": DIAGNOSTIC_POPULATION,
+        "diagnostic_test": diagnostic_test,
+        "repeated_tests": repeated_tests,
+        "coin_heads": COIN_HEADS,
+        "coin_flips": COIN_FLIPS,
+        "coin_prior": COIN_PRIOR,
+        "binomial_likelihood": binomial_likelihood,
+        "likelihood_area": likelihood_area,
+        "coin_estimates": coin_estimates,
+        "coin_curves": coin_curves,
+        "ridge_map_1d": ridge_map_1d,
+        "nb_vocabulary": NB_VOCABULARY,
+        "nb_classes": NB_CLASSES,
+        "nb_documents": NB_DOCUMENTS,
+        "nb_word_counts": NB_WORD_COUNTS,
+        "nb_message": NB_MESSAGE,
+        "naive_bayes_posterior": naive_bayes_posterior,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

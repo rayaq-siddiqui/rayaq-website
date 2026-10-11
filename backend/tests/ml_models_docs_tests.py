@@ -2938,3 +2938,54 @@ def test_ppo_clip_only_removes_the_gradient_in_the_greedy_direction():
     assert clip(1.5, -1.0)["objective"] == pytest.approx(-1.5)
     assert clip(1.5, -1.0)["gradient"] == -1.0
     assert clip(1.1, 1.0)["gradient"] == 1.0
+
+
+def test_diagnostic_test_posterior_matches_the_natural_frequencies():
+    result = ml_models_docs.diagnostic_test()
+    assert (result["sick"], result["true_positives"], result["false_positives"]) == pytest.approx((100, 90, 891))
+    assert result["posterior"] == pytest.approx(90 / 981)
+    assert result["true_positives"] / (result["true_positives"] + result["false_positives"]) == pytest.approx(
+        result["posterior"]
+    )
+    beliefs = ml_models_docs.repeated_tests()
+    assert beliefs[1] == pytest.approx(result["posterior"])
+    assert beliefs[2] == pytest.approx(100 / 199)
+    assert beliefs == sorted(beliefs)
+
+
+def test_likelihood_is_not_a_density_in_the_parameter():
+    total = sum(ml_models_docs.binomial_likelihood(0.7, heads, 10) for heads in range(11))
+    assert total == pytest.approx(1.0)
+    assert ml_models_docs.likelihood_area() == pytest.approx(1 / 11, rel=1e-6)
+    curves = ml_models_docs.coin_curves()
+    peak = curves["likelihood"].index(1.0)
+    assert curves["theta"][peak] == pytest.approx(0.7)
+
+
+def test_map_shrinks_toward_the_prior_and_fades_with_more_data():
+    small = ml_models_docs.coin_estimates()
+    assert small["mle"] == pytest.approx(0.7)
+    assert small["map"] == pytest.approx(11 / 18)
+    assert small["posterior"] == (12, 8)
+    large = ml_models_docs.coin_estimates(70, 100)
+    assert small["map"] < large["map"] < large["mle"]
+    laplace = ml_models_docs.coin_estimates(0, 3, (2, 2))
+    assert laplace["mle"] == 0.0
+    assert laplace["map"] == pytest.approx(1 / 5)
+    xs, ys = [1, 2, 3], [1, 3, 2]
+    assert ml_models_docs.ridge_map_1d(xs, ys, 0) == pytest.approx(13 / 14)
+    assert ml_models_docs.ridge_map_1d(xs, ys, 1) == pytest.approx(13 / 15)
+
+
+def test_naive_bayes_matches_the_multinomial_formula_and_smoothing_avoids_zeros():
+    rows = ml_models_docs.naive_bayes_posterior()
+    assert rows["spam"]["word_probs"] == pytest.approx([0.4, 0.3, 0.1, 0.2])
+    assert rows["ham"]["word_probs"] == pytest.approx([2 / 12, 1 / 12, 4 / 12, 5 / 12])
+    spam = 0.4 * 0.4 * 0.3 * 0.1
+    ham = 0.6 * (2 / 12) * (1 / 12) * (4 / 12)
+    assert rows["spam"]["posterior"] == pytest.approx(spam / (spam + ham))
+    assert rows["spam"]["posterior"] + rows["ham"]["posterior"] == pytest.approx(1.0)
+    raw = ml_models_docs.naive_bayes_posterior([1, 1, 0, 0], alpha=0.0)
+    assert raw["ham"]["joint_log"] == -math.inf
+    assert raw["spam"]["posterior"] == 1.0
+    assert ml_models_docs.naive_bayes_posterior(alpha=0.0)["spam"]["posterior"] is None
