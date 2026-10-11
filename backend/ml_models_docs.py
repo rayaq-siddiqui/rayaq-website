@@ -540,7 +540,7 @@ PAGES = [
             "sklearn:sklearn/neighbors/_unsupervised.py",
             "sklearn:sklearn/neighbors/_ball_tree.pyx.tp",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "clustering",

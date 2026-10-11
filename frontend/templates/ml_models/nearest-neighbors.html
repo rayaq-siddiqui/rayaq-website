@@ -1,0 +1,476 @@
+{% set q = knn_query %}
+{% set sweep = k_sweep() %}
+{% set uni = knn_classify(k=7) %}
+{% set wtd = knn_classify(k=5, weights="distance") %}
+{% set metrics = metric_table() %}
+{% set doc = docstring_examples() %}
+{% set loo = leave_one_out() %}
+{% set conc = distance_concentration() %}
+{% set edges = neighborhood_edge() %}
+{% set kd = kd_tree_build() %}
+{% set kq1 = kd_tree_query(k=1) %}
+{% set kq5 = kd_tree_query(k=5) %}
+{% set ball = ball_bound_example(label=0) %}
+{% set size16 = tree_size(16, 2) %}
+{% set size_big = tree_size(100000, 30) %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(x) }}{%- endmacro %}
+{% macro point(pt, extra="") -%}
+{% if pt[2] == 0 %}<circle cx="{{ (40 + pt[0] * 26) }}" cy="{{ (290 - pt[1] * 26) }}" r="6" class="d-box ml-tensor{{ extra }}"></circle>{% else %}<rect x="{{ (40 + pt[0] * 26) - 6 }}" y="{{ (290 - pt[1] * 26) - 6 }}" width="12" height="12" class="d-box ml-op{{ extra }}"></rect>{% endif %}
+{%- endmacro %}
+<header class="jj-header">
+  <h1>Nearest neighbors</h1>
+  <p class="tagline">
+    The simplest learner there is: keep every training point, and answer a question about a new point by
+    looking at the training points closest to it. This page covers the k-NN vote and its weights, the
+    choice of distance and of k, why distances stop meaning much in high dimensions, and how KD trees and
+    ball trees find neighbors without measuring against every point.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Most models compress the training set into parameters: a <a href="/ml-models/linear-regression">line</a>,
+  a <a href="/ml-models/decision-trees">tree</a>, a network. That compression is an assumption about the
+  shape of the answer. Sometimes we would rather not assume a shape at all and just say "points that look
+  alike should get alike labels". Nearest neighbors does exactly that. It needs a way to say what "look
+  alike" means (a distance), a rule to turn nearby labels into a prediction, and a way to find nearby
+  points fast once the training set has millions of rows.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  To label a new point, find the <var>k</var> training points closest to it and let them vote. With
+  <var>k</var> = 1 the prediction copies the single closest point, so the decision boundary bends around
+  every training example, noise included. Larger <var>k</var> averages over a wider neighborhood, giving
+  smoother boundaries but blurring small regions of the other class. This is the
+  <a href="/ml-models/bias-variance">bias-variance tradeoff</a> with one knob. Training is free (store the
+  data); all the work happens at prediction time.
+</p>
+
+<p>
+  The diagram shows 16 training points in two classes and a query at ({{ q[0] }}, {{ q[1] }}). Each
+  dashed circle encloses the <var>k</var> nearest points for one value of <var>k</var>, and the vote
+  changes as the circle grows.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 310" role="img" aria-labelledby="knn-vote-title knn-vote-desc">
+    <title id="knn-vote-title">The k-NN vote at one query for growing k</title>
+    <desc id="knn-vote-desc">Sixteen points: class 0 drawn as circles on the lower left, class 1 as squares on the upper right. A query point at 4.8, 5 sits between them. Dashed circles around it enclose the 1, 3, 5 and 7 nearest points. The table on the right lists the votes: k equal to 1 and 3 predict class 0, k equal to 5 predicts class 1, k equal to 7 and 9 predict class 0.</desc>
+    <rect x="{{ (40 + 0 * 26) }}" y="{{ (290 - 10 * 26) }}" width="260" height="260" class="d-box ml-dashed"></rect>
+    {% for k in [1, 3, 5, 7] %}
+    {% set r = knn_classify(k=k)["neighbors"][-1]["distance"] %}
+    <circle cx="{{ (40 + q[0] * 26) }}" cy="{{ (290 - q[1] * 26) }}" r="{{ f(r * 26, 1) }}" class="d-line ml-dashed"></circle>
+    {% set dir = {1: (1, 0), 3: (-0.7071, -0.7071), 5: (0.7071, 0.7071), 7: (0.7071, -0.7071)}[k] %}
+    <text x="{{ f((40 + q[0] * 26) + (r * 26 + 4) * dir[0], 1) }}" y="{{ f((290 - q[1] * 26) + (r * 26 + 4) * dir[1] + 4, 1) }}" font-size="11" text-anchor="{{ 'end' if dir[0] < 0 else 'start' }}" class="d-muted ml-label">k={{ k }}</text>
+    {% endfor %}
+    {% for pt in knn_points %}{{ point(pt) }}{% endfor %}
+    <path d="M{{ (40 + q[0] * 26) - 7 }} {{ (290 - q[1] * 26) }} H{{ (40 + q[0] * 26) + 7 }} M{{ (40 + q[0] * 26) }} {{ (290 - q[1] * 26) - 7 }} V{{ (290 - q[1] * 26) + 7 }}" class="d-line d-accent" stroke-width="2.5"></path>
+    <text x="{{ (40 + 0 * 26) }}" y="306" font-size="12" class="d-muted">x from 0 to 10, y from 0 to 10</text>
+    <circle cx="350" cy="40" r="6" class="d-box ml-tensor"></circle>
+    <text x="364" y="44" font-size="13">class 0</text>
+    <rect x="434" y="34" width="12" height="12" class="d-box ml-op"></rect>
+    <text x="452" y="44" font-size="13">class 1</text>
+    <path d="M523 40 H537 M530 33 V47" class="d-line d-accent" stroke-width="2.5"></path>
+    <text x="544" y="44" font-size="13">query</text>
+    <text x="350" y="86" font-size="13" font-weight="600">k</text>
+    <text x="400" y="86" font-size="13" font-weight="600">votes 0 : 1</text>
+    <text x="530" y="86" font-size="13" font-weight="600">prediction</text>
+    {% for row in sweep %}
+    <text x="350" y="{{ 112 + loop.index0 * 24 }}" font-size="13">{{ row.k }}</text>
+    <text x="400" y="{{ 112 + loop.index0 * 24 }}" font-size="13">{{ row.votes[0]|int }} : {{ row.votes[1]|int }}</text>
+    <text x="530" y="{{ 112 + loop.index0 * 24 }}" font-size="13">class {{ row.prediction }}</text>
+    {% endfor %}
+    <text x="350" y="250" font-size="12" class="d-muted">The answer flips twice as k grows:</text>
+    <text x="350" y="268" font-size="12" class="d-muted">the query sits on the class boundary.</text>
+  </svg>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="distance">Distance</h3>
+
+<p>
+  Almost everything uses the <strong>Minkowski</strong> distance with exponent <var>p</var>:
+</p>
+
+<p class="ml-formula">d<sub>p</sub>(a, b) = (Σ<sub>j</sub> |a<sub>j</sub> − b<sub>j</sub>|<sup>p</sup>)<sup>1/p</sup></p>
+
+<p>
+  <var>p</var> = 2 is Euclidean distance (scikit-learn's default, <code>metric="minkowski", p=2</code>),
+  <var>p</var> = 1 is Manhattan distance, and <var>p</var> → ∞ is Chebyshev distance, the largest
+  single-coordinate gap. For <var>p</var> ≥ 1 these are true metrics (the triangle inequality holds),
+  which is what lets trees prune. Each coordinate contributes on its own scale, so a feature measured in
+  thousands swamps one measured in fractions. That is why k-NN almost always sits behind
+  <a href="/ml-models/preprocessing">standardization</a>. For text and
+  <a href="/ml-models/embeddings">embeddings</a>, cosine distance on normalized vectors is more common.
+  It ranks neighbors the same way as Euclidean distance on unit vectors (see
+  <a href="/ml-models/vectors-and-dot-products">vectors and dot products</a>).
+</p>
+
+<h3 id="vote">Vote and weights</h3>
+
+<p>
+  Given the <var>k</var> nearest training points with labels <var>y<sub>i</sub></var> and distances
+  <var>d<sub>i</sub></var>, a classifier returns the label with the largest total weight, and a regressor
+  returns the weighted mean:
+</p>
+
+<p class="ml-formula">ŷ = argmax<sub>c</sub> Σ<sub>i</sub> w<sub>i</sub>·[y<sub>i</sub> = c] &nbsp;&nbsp;&nbsp; ŷ = Σ<sub>i</sub> w<sub>i</sub> y<sub>i</sub> / Σ<sub>i</sub> w<sub>i</sub></p>
+
+<p>
+  With <code>weights="uniform"</code>, every <var>w<sub>i</sub></var> = 1. With
+  <code>weights="distance"</code>, scikit-learn's <code>_get_weights</code> sets
+  <var>w<sub>i</sub></var> = 1/<var>d<sub>i</sub></var>. If the query lands exactly on one or more
+  training points, those points get weight 1 and the rest get 0, which avoids dividing by zero.
+  <code>predict_proba</code> returns each class's share of the total weight. When two labels tie on
+  uniform votes, <code>predict</code> takes the mode, which picks the class that sorts first. The docstring
+  also warns that when neighbors <var>k</var> and <var>k</var>+1 are equally far away but have different
+  labels, the result depends on the order of the training data.
+</p>
+
+<h3 id="search">Finding the neighbors</h3>
+
+<p>
+  Brute force measures the query against all <var>n</var> training points: O(<var>n</var>·<var>d</var>)
+  per query, and trivially parallel. Trees spend O(<var>n</var> log <var>n</var>) once, at fit time, so
+  that most queries can skip most of the data.
+</p>
+
+<ul>
+  <li>
+    A <strong>KD tree</strong> splits the node's points at the median of the dimension with the largest
+    spread (<code>find_node_split_dim</code>, then <code>partition_node_indices</code>), and stores each
+    node's bounding box. Nodes live in a flat array, and node <var>i</var>'s children are
+    2<var>i</var>+1 and 2<var>i</var>+2.
+  </li>
+  <li>
+    A <strong>ball tree</strong> uses the same splitting, but each node stores a centroid and a radius,
+    the largest distance from the centroid to any of the node's points. Its lower bound,
+    max(0, d(q, centroid) − radius), works for any true metric, not just axis-aligned ones.
+  </li>
+</ul>
+
+<p>
+  Before building, the tree fixes its depth: <code>n_levels = int(log2(max(1, (n − 1) / leaf_size)) + 1)</code>
+  and <code>n_nodes = 2**n_levels − 1</code>. Splitting at the median then leaves every leaf with between
+  <code>leaf_size</code> and 2·<code>leaf_size</code> points. The query is depth-first with a max-heap of
+  the best <var>k</var> distances so far. A node whose lower bound already exceeds the
+  <var>k</var>-th best distance is trimmed with all its points. A leaf is scanned point by point.
+  Otherwise the query visits the nearer child first, so the heap tightens early and prunes more.
+  Internally the KD tree compares "reduced" distances (squared Euclidean, which keeps the same order) to
+  skip square roots.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 310" role="img" aria-labelledby="knn-kd-title knn-kd-desc">
+    <title id="knn-kd-title">A KD tree query that scans one leaf and trims the other three</title>
+    <desc id="knn-kd-desc">Left: the 16 points are cut first at x equals 5, then the left half at y equals 4 and the right half at y equals 7, giving four leaf boxes of four points each. The query sits in the leaf box covering x 1 to 5 and y 4 to 6, which is highlighted. The other three leaf boxes are dashed. Right: the tree has root node 0, children 1 and 2, and leaves 3 to 6. Nodes 0, 1 and leaf 4 are visited. Leaf 3, node 2's leaves 5 and 6 are trimmed because their boxes are farther from the query than the nearest point found, at distance 1.02. Only 4 of 16 distances are computed.</desc>
+    <rect x="{{ (40 + 0 * 26) }}" y="{{ (290 - 10 * 26) }}" width="260" height="260" class="d-box ml-dashed"></rect>
+    {% for node in kd.nodes if node.leaf %}
+    {% set hit = node.index in kq1.leaves %}
+    <rect x="{{ (40 + node.lower[0] * 26) - 9 }}" y="{{ (290 - node.upper[1] * 26) - 9 }}" width="{{ (node.upper[0] - node.lower[0]) * 26 + 18 }}" height="{{ (node.upper[1] - node.lower[1]) * 26 + 18 }}" rx="4" class="{% if hit %}d-line d-accent{% else %}d-line ml-dashed{% endif %}"{% if hit %} stroke-width="2"{% endif %}></rect>
+    <text x="{{ (40 + node.lower[0] * 26) - 6 }}" y="{{ (290 - node.lower[1] * 26) + 21 if node.index == 3 else (290 - node.upper[1] * 26) - 12 }}" font-size="11" class="d-muted ml-label">leaf {{ node.index }}</text>
+    {% endfor %}
+    {% for node in kd.nodes if not node.leaf %}
+    {% if node.split_dim == 0 %}
+    <path d="M{{ (40 + node.split_value * 26) }} {{ (290 - node.upper[1] * 26) - 18 }} V{{ (290 - node.lower[1] * 26) + 18 }}" class="d-line" stroke-width="1.5"></path>
+    {% endif %}
+    {% endfor %}
+    {% for pt in knn_points %}{{ point(pt) }}{% endfor %}
+    <circle cx="{{ (40 + q[0] * 26) }}" cy="{{ (290 - q[1] * 26) }}" r="{{ f(kq1.neighbors[0].distance * 26, 1) }}" class="d-line ml-dashed"></circle>
+    <path d="M{{ (40 + q[0] * 26) - 7 }} {{ (290 - q[1] * 26) }} H{{ (40 + q[0] * 26) + 7 }} M{{ (40 + q[0] * 26) }} {{ (290 - q[1] * 26) - 7 }} V{{ (290 - q[1] * 26) + 7 }}" class="d-line d-accent" stroke-width="2.5"></path>
+    <text x="{{ (40 + 5 * 26) + 4 }}" y="{{ (290 - 0 * 26) - 4 }}" font-size="11" class="d-muted ml-label">x = 5</text>
+    {% set tx = {0: 520, 1: 430, 2: 610, 3: 385, 4: 475, 5: 565, 6: 655} %}
+    {% set ty = {0: 60, 1: 140, 2: 140, 3: 220, 4: 220, 5: 220, 6: 220} %}
+    {% for node in kd.nodes if node.index > 0 %}
+    {% set parent = (node.index - 1) // 2 %}
+    <path d="M{{ tx[parent] }} {{ ty[parent] + 18 }} L{{ tx[node.index] }} {{ ty[node.index] - 18 }}" class="d-line"></path>
+    {% endfor %}
+    {% for node in kd.nodes %}
+    {% set trimmed = node.index in kq1.trimmed %}
+    <rect x="{{ tx[node.index] - 38 }}" y="{{ ty[node.index] - 18 }}" width="76" height="36" rx="5" class="d-box {% if trimmed %}ml-dashed{% elif node.leaf %}ml-tensor{% else %}ml-op{% endif %}"></rect>
+    <text x="{{ tx[node.index] }}" y="{{ ty[node.index] - 2 }}" font-size="12" text-anchor="middle">{% if node.leaf %}leaf {{ node.index }}{% else %}node {{ node.index }}{% endif %}</text>
+    <text x="{{ tx[node.index] }}" y="{{ ty[node.index] + 12 }}" font-size="10" text-anchor="middle" class="d-muted">{% if trimmed %}trimmed{% elif node.leaf %}scanned 4{% else %}{{ "x" if node.split_dim == 0 else "y" }} at {{ node.split_value|int }}{% endif %}</text>
+    {% endfor %}
+    <text x="360" y="276" font-size="12" class="d-muted">k = 1: {{ kq1.scanned }} of {{ kq1.n_points }} distances computed;</text>
+    <text x="360" y="294" font-size="12" class="d-muted">nearest point at distance {{ f(kq1.neighbors[0].distance, 2) }}.</text>
+  </svg>
+</div>
+
+<p class="ml-caption">
+  The left half splits on <var>y</var> at 4 and the right half at 7, so each leaf box shown here is the
+  tight box around its own four points, which is what <code>init_node</code> stores and
+  <code>min_rdist</code> measures against.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead>
+      <tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>KNeighborsClassifier.__init__</code></td>
+        <td><code>n_neighbors=5, weights="uniform", algorithm="auto", leaf_size=30, p=2, metric="minkowski"</code></td>
+        <td>The defaults: five neighbors, equal votes, Euclidean distance, the search method picked at fit time.</td>
+        <td><a href="{{ skl('sklearn/neighbors/_classification.py', 198, 219) }}">_classification.py 198-219</a></td>
+      </tr>
+      <tr>
+        <td><code>fit</code> / <code>predict</code></td>
+        <td>X <code>(n, d)</code> → labels <code>(m,)</code></td>
+        <td>Fit stores the data (and builds a tree). Predict calls <code>kneighbors</code>, then takes the mode or the weighted mode of the neighbor labels.</td>
+        <td><a href="{{ skl('sklearn/neighbors/_classification.py', 225, 312) }}">_classification.py 225-312</a></td>
+      </tr>
+      <tr>
+        <td><code>predict_proba</code></td>
+        <td><code>(m, n_classes)</code></td>
+        <td>Each class's share of the (weighted) votes among the k neighbors.</td>
+        <td><a href="{{ skl('sklearn/neighbors/_classification.py', 314, 417) }}">_classification.py 314-417</a></td>
+      </tr>
+      <tr>
+        <td><code>KNeighborsRegressor.predict</code></td>
+        <td><code>(m,)</code> or <code>(m, n_outputs)</code></td>
+        <td>Mean of the neighbor targets, or their weighted sum divided by the sum of weights.</td>
+        <td><a href="{{ skl('sklearn/neighbors/_regression.py', 229, 272) }}">_regression.py 229-272</a></td>
+      </tr>
+      <tr>
+        <td><code>_get_weights</code></td>
+        <td>dist <code>(m, k)</code></td>
+        <td><code>"uniform"</code> gives no weights; <code>"distance"</code> gives 1/d, with exact matches getting weight 1 and the others 0.</td>
+        <td><a href="{{ skl('sklearn/neighbors/_base.py', 74, 117) }}">_base.py 74-117</a></td>
+      </tr>
+      <tr>
+        <td><code>algorithm="auto"</code></td>
+        <td>metric, d, k, n</td>
+        <td>Brute force if the metric is precomputed, d &gt; 15, or k ≥ n/2. Otherwise a KD tree when the metric allows it, else a ball tree.</td>
+        <td><a href="{{ skl('sklearn/neighbors/_base.py', 615, 648) }}">_base.py 615-648</a></td>
+      </tr>
+      <tr>
+        <td><code>kneighbors</code></td>
+        <td>→ dist, ind <code>(m, k)</code></td>
+        <td>The shared neighbor search behind every k-NN estimator and <code>NearestNeighbors</code>.</td>
+        <td><a href="{{ skl('sklearn/neighbors/_base.py', 756, 958) }}">_base.py 756-958</a></td>
+      </tr>
+      <tr>
+        <td><code>NearestNeighbors</code></td>
+        <td>unsupervised</td>
+        <td>The same search with no labels: return neighbors, for retrieval or as a building block.</td>
+        <td><a href="{{ skl('sklearn/neighbors/_unsupervised.py', 10, 179) }}">_unsupervised.py 10-179</a></td>
+      </tr>
+      <tr>
+        <td>Tree size</td>
+        <td><code>n_levels</code>, <code>n_nodes = 2**n_levels − 1</code></td>
+        <td>The depth is fixed before building, so leaves end up with between leaf_size and 2·leaf_size points.</td>
+        <td><a href="{{ skl('sklearn/neighbors/_binary_tree.pxi.tp', 870, 877) }}">_binary_tree.pxi.tp 870-877</a></td>
+      </tr>
+      <tr>
+        <td><code>find_node_split_dim</code></td>
+        <td>→ j</td>
+        <td>The dimension with the largest spread (max − min) among the node's points.</td>
+        <td><a href="{{ skl('sklearn/neighbors/_binary_tree.pxi.tp', 595, 645) }}">_binary_tree.pxi.tp 595-645</a></td>
+      </tr>
+      <tr>
+        <td><code>_recursive_build</code></td>
+        <td>node i → 2i+1, 2i+2</td>
+        <td>Stop at a leaf; otherwise partition at the median <code>n_mid = n_points / 2</code> and recurse.</td>
+        <td><a href="{{ skl('sklearn/neighbors/_binary_tree.pxi.tp', 1033, 1083) }}">_binary_tree.pxi.tp 1033-1083</a></td>
+      </tr>
+      <tr>
+        <td><code>_query_single_depthfirst</code></td>
+        <td>heap of k</td>
+        <td>Trim a node whose bound exceeds the heap's largest, scan a leaf, or visit the nearer child first.</td>
+        <td><a href="{{ skl('sklearn/neighbors/_binary_tree.pxi.tp', 1603, 1656) }}">_binary_tree.pxi.tp 1603-1656</a></td>
+      </tr>
+      <tr>
+        <td>KD <code>init_node</code> / <code>min_rdist</code></td>
+        <td>bounds <code>(2, n_nodes, d)</code></td>
+        <td>Per-node lower and upper corners, and the reduced distance from a point to that box.</td>
+        <td><a href="{{ skl('sklearn/neighbors/_kd_tree.pyx.tp', 73, 147) }}">_kd_tree.pyx.tp 73-147</a></td>
+      </tr>
+      <tr>
+        <td>Ball <code>init_node</code> / <code>min_dist</code></td>
+        <td>centroid <code>(d,)</code>, radius</td>
+        <td>Centroid is the mean of the node's points, radius the farthest one. The bound is max(0, d(q, c) − r).</td>
+        <td><a href="{{ skl('sklearn/neighbors/_ball_tree.pyx.tp', 86, 156) }}">_ball_tree.pyx.tp 86-156</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p><strong>One pair, four distances.</strong> From (0, 0) to (3, 4), the Minkowski distance shrinks as <var>p</var> grows:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Metric</th><th><var>p</var></th><th>Distance</th></tr></thead>
+      <tbody>
+        {% for m in metrics %}
+        <tr><td>{{ m.name }}</td><td>{{ "∞" if m.name == "chebyshev" else m.p }}</td><td>{{ f(m.distance) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>The neighbor order can change with <var>p</var>, so the metric is a modelling choice, not a detail.</p>
+</div>
+
+<div class="ml-worked">
+  <p><strong>The vote at ({{ q[0] }}, {{ q[1] }}).</strong> The seven nearest training points, closest first:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Rank</th><th>Point</th><th>Class</th><th>Distance</th><th>1/d</th></tr></thead>
+      <tbody>
+        {% for n in uni.neighbors %}
+        <tr><td>{{ loop.index }}</td><td>({{ n.point[0] }}, {{ n.point[1] }})</td><td>{{ n.label }}</td><td>{{ f(n.distance) }}</td><td>{{ f(1 / n.distance) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    With <var>k</var> = 5 and uniform weights the vote is {{ sweep[2].votes[0]|int }} to
+    {{ sweep[2].votes[1]|int }} for class 1. With distance weights it is
+    {{ f(wtd.votes[0]) }} to {{ f(wtd.votes[1]) }}, still class {{ wtd.prediction }}, so
+    <code>predict_proba</code> gives {{ f(wtd.proba[1]) }} for class 1 instead of
+    {{ f(sweep[2].votes[1] / 5) }}. At <var>k</var> = 7 two more class-0 points join and the uniform vote
+    becomes {{ uni.votes[0]|int }} to {{ uni.votes[1]|int }} for class {{ uni.prediction }}.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <p><strong>Matching scikit-learn's docstrings.</strong> With training inputs [0], [1], [2], [3] and labels 0, 0, 1, 1:</p>
+  <ul>
+    <li>A classifier with <var>k</var> = 3 predicts class {{ doc.predict_1_1 }} at 1.1. The neighbors are 1, 2 and 0, with labels 0, 1, 0.</li>
+    <li>At 0.9 the neighbors are 1, 0 and 2, so <code>predict_proba</code> is [{{ f(doc.proba_0_9[0]) }}, {{ f(doc.proba_0_9[1]) }}].</li>
+    <li>A regressor with <var>k</var> = 2 predicts {{ doc.regress_1_5 }} at 1.5, the mean of the targets 0 and 1.</li>
+  </ul>
+  <p>These are the outputs printed in the <code>KNeighborsClassifier</code> and <code>KNeighborsRegressor</code> docstrings.</p>
+</div>
+
+<div class="ml-worked">
+  <p><strong>Choosing <var>k</var>.</strong> Leave-one-out error on the 16 points: predict each point from the other 15.</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th><var>k</var></th><th>Errors</th><th>Error rate</th></tr></thead>
+      <tbody>
+        {% for row in loo %}
+        <tr><td>{{ row.k }}</td><td>{{ row.errors }} / 16</td><td>{{ f(row.error_rate) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    <var>k</var> = 1 overfits: two points near the boundary copy a neighbor from the other class. Errors are
+    lowest at 3 and 5. At <var>k</var> = 15 every point is wrong. With one point held out, its own class has
+    7 left and the other class has 8, so the vote always goes to the other class. A large <var>k</var>
+    turns k-NN into "predict the majority of the rest". In practice, pick <var>k</var> with
+    <a href="/ml-models/cross-validation">cross-validation</a>, and prefer odd <var>k</var> for two classes
+    to avoid ties.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <p><strong>The curse of dimensionality.</strong> Draw 200 uniform points in the unit cube [0, 1]<sup><var>d</var></sup> and one more as a query (fixed seed). Then compare the nearest and farthest distances:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th><var>d</var></th><th>Nearest</th><th>Farthest</th><th>Nearest / farthest</th></tr></thead>
+      <tbody>
+        {% for row in conc %}
+        <tr><td>{{ row.dim }}</td><td>{{ f(row.nearest) }}</td><td>{{ f(row.farthest) }}</td><td>{{ f(row.ratio) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    In one dimension the nearest point is over a thousand times closer than the farthest. In
+    {{ conc[-1].dim }} dimensions it is only {{ f(1 / conc[-1].ratio, 2) }} times closer, so "nearest"
+    barely means anything. Here is a second view. A sub-cube that holds 1% of uniform data needs edge
+    0.01<sup>1/<var>d</var></sup>:
+    {% for e in edges %}{{ f(e.edge, 2) }} for <var>d</var> = {{ e.dim }}{% if not loop.last %}, {% endif %}{% endfor %}.
+    In 100 dimensions the "local" neighborhood spans {{ (edges[-1].edge * 100)|round|int }}% of every
+    axis. k-NN works in high dimensions only when the data actually lies near a low-dimensional
+    structure, which is what learned embeddings try to produce.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <p><strong>The tree at work.</strong></p>
+  <ul>
+    <li>Size: with 16 points and <code>leaf_size=2</code>, <code>n_levels</code> = {{ size16.n_levels }} and <code>n_nodes</code> = {{ size16.n_nodes }}. That is four leaves of four points, within [2, 4]. With 100,000 points and the default <code>leaf_size=30</code>, it is {{ size_big.n_levels }} levels and {{ "{:,}".format(size_big.n_nodes) }} nodes.</li>
+    <li>Build: the root's points spread 8 along both axes, so the first dimension wins the tie. The root splits at <var>x</var> = {{ kd.nodes[0].split_value|int }}.</li>
+    <li>Query with <var>k</var> = 1: the search goes to node {{ kd.nodes[1].index }}, then leaf {{ kq1.leaves[0] }}, and finds point ({{ knn_points[kq1.neighbors[0].index][0] }}, {{ knn_points[kq1.neighbors[0].index][1] }}) at distance {{ f(kq1.neighbors[0].distance) }}. Leaves {{ kq1.trimmed|join(", ") }} are trimmed because their boxes are farther away than that. It computes {{ kq1.scanned }} of {{ kq1.n_points }} distances.</li>
+    <li>Query with <var>k</var> = 5: the fifth-best distance stays large, so no box can be ruled out and the tree scans all {{ kq5.scanned }} points. That is why <code>"auto"</code> uses brute force once <var>k</var> ≥ <var>n</var>/2.</li>
+    <li>Ball bound: the class-0 points have centroid ({{ f(ball.centroid[0]) }}, {{ f(ball.centroid[1]) }}) and radius {{ f(ball.radius) }}. That gives the query a lower bound of {{ f(ball.bound) }}, below the true nearest distance {{ f(ball.true_min) }}. It is a valid bound, but a loose one.</li>
+  </ul>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>from sklearn.model_selection import GridSearchCV
+from sklearn.neighbors import KNeighborsClassifier, KDTree
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+
+# Scale first: every feature contributes to the distance on its own scale.
+model = make_pipeline(StandardScaler(), KNeighborsClassifier())
+search = GridSearchCV(
+    model,
+    {"kneighborsclassifier__n_neighbors": [1, 3, 5, 7, 9, 15],
+     "kneighborsclassifier__weights": ["uniform", "distance"]},
+    cv=5,
+)
+search.fit(X_train, y_train)
+proba = search.predict_proba(X_test)        # (m, n_classes), vote shares
+
+# The tree on its own, for retrieval.
+tree = KDTree(X_train, leaf_size=30)
+dist, ind = tree.query(X_test[:3], k=5)     # each (3, 5), nearest first</code></pre>
+
+<p>
+  Fitting the scaler inside the pipeline keeps the test folds out of the means and variances (see
+  <a href="/ml-models/data-leakage">data leakage</a>). The tree is pure Cython with no learned parameters.
+  Its only choices are the metric and <code>leaf_size</code>, which trades tree depth against per-leaf
+  brute force. Larger <code>leaf_size</code> means a shallower tree and more scanning, smaller means
+  more pruning overhead. Results are identical either way.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>No training, slow prediction.</strong> Fit is cheap, but the model is the data: memory grows with <var>n</var>, and each query costs anywhere from O(log <var>n</var>) (a tree in low dimension) to O(<var>n</var>·<var>d</var>) (brute force).</li>
+  <li><strong>Flexible boundaries.</strong> k-NN can draw any shape of class region and adapts as data is added, but small <var>k</var> memorizes noise (<a href="/ml-models/overfitting">overfitting</a>) and large <var>k</var> washes out minority regions.</li>
+  <li><strong>Everything rides on the distance.</strong> Unscaled or irrelevant features distort neighborhoods. k-NN has no built-in feature selection, so one noisy column hurts every prediction.</li>
+  <li><strong>Exact trees fade with dimension.</strong> As distances concentrate, box and ball bounds stop ruling nodes out, which is why <code>"auto"</code> switches to brute force above 15 features. Embedding search at hundreds of dimensions and millions of vectors uses approximate indexes instead. They trade a little recall for orders of magnitude in speed.</li>
+  <li><strong>Calibration.</strong> <code>predict_proba</code> can only take values j/k with uniform weights, so with <var>k</var> = 5 every probability is a multiple of 0.2.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Why does k-NN need feature scaling while a decision tree does not?</summary>
+  <p>A tree compares one feature at a time against a threshold, so rescaling a feature just moves the threshold. k-NN adds all features into one distance, so a feature with a larger numeric range dominates that sum.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why can a KD tree prune when k = 1 but not when k = 5 in the worked example?</summary>
+  <p>A node is trimmed only when its box is farther away than the current k-th best distance. With k = 1 that distance is 1.02, and three leaf boxes lie beyond it. With k = 5 it is 2.33, which reaches into every box, so every leaf must be scanned.</p>
+</details>
+<details class="ml-quiz">
+  <summary>What does weights="distance" predict for a query that exactly matches a training point?</summary>
+  <p>The matching point (or points) gets weight 1 and every other neighbor gets weight 0, so the prediction is that point's label or target, not an average.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Cover and Hart. <em>Nearest Neighbor Pattern Classification.</em> IEEE Transactions on Information Theory, 1967.</li>
+  <li>Bentley. <em>Multidimensional Binary Search Trees Used for Associative Searching.</em> Communications of the ACM, 1975 (the KD tree).</li>
+  <li>Friedman, Bentley and Finkel. <em>An Algorithm for Finding Best Matches in Logarithmic Expected Time.</em> ACM Transactions on Mathematical Software, 1977.</li>
+  <li>Omohundro. <em>Five Balltree Construction Algorithms.</em> ICSI Technical Report, 1989.</li>
+  <li>Beyer, Goldstein, Ramakrishnan and Shaft. <em>When Is "Nearest Neighbor" Meaningful?</em> ICDT, 1999.</li>
+  <li>Hastie, Tibshirani and Friedman. <em>The Elements of Statistical Learning</em>, 2nd ed., Springer, 2009: section 2.5 (local methods in high dimensions) and chapter 13.</li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/neighbors/_classification.py', 44, 457) }}"><code>KNeighborsClassifier</code></a>, <a href="{{ skl('sklearn/neighbors/_regression.py', 21, 272) }}"><code>KNeighborsRegressor</code></a>, <a href="{{ skl('sklearn/neighbors/_unsupervised.py', 10, 179) }}"><code>NearestNeighbors</code></a>, <a href="{{ skl('sklearn/neighbors/_binary_tree.pxi.tp') }}"><code>_binary_tree.pxi.tp</code></a>.</li>
+</ul>
