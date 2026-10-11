@@ -2735,3 +2735,75 @@ def test_async_timeline_runs_ahead_of_the_gpu():
     assert long["cpu_done"] == 50
     assert long["total"] == 505
     assert long["rows"][1] == {"issued": 10, "start": 55, "end": 105}
+
+
+def test_float_formats_match_their_bit_layouts():
+    stats = {
+        fmt["name"]: ml_models_docs.float_format_stats(fmt)
+        for fmt in ml_models_docs.FLOAT_FORMATS
+    }
+    assert stats["fp32"]["max"] == pytest.approx(3.4028234663852886e38)
+    assert stats["fp16"]["max"] == 65504
+    assert stats["fp16"]["smallest_normal"] == 2.0**-14
+    assert stats["fp16"]["smallest_subnormal"] == 2.0**-24
+    assert stats["bf16"]["smallest_normal"] == stats["fp32"]["smallest_normal"]
+    assert stats["bf16"]["epsilon"] == 2.0**-7
+    assert stats["tf32"]["epsilon"] == stats["fp16"]["epsilon"]
+    assert stats["fp8 e4m3"]["max"] == 448
+    assert stats["fp8 e4m3"]["smallest_subnormal"] == 2.0**-9
+    assert stats["fp8 e5m2"]["max"] == 57344
+    for fmt in ml_models_docs.FLOAT_FORMATS:
+        if fmt["name"] != "tf32":
+            assert 1 + fmt["exponent"] + fmt["mantissa"] == fmt["bits"]
+
+
+def test_rounding_agrees_with_struct_and_the_bf16_bit_trick():
+    fp16 = ml_models_docs.find_float_format("fp16")
+    bf16 = ml_models_docs.find_float_format("bf16")
+    fp32 = ml_models_docs.find_float_format("fp32")
+    for value in [1 / 3, 0.1, -2.5, 1e-7, 5e-9, 65504, 65519.9, 65520, 70000.0, 3e-5]:
+        assert ml_models_docs.round_to_format(value, fp16) == ml_models_docs.fp16_struct_round(value)
+        assert ml_models_docs.round_to_format(value, bf16) == ml_models_docs.bf16_round_bits(value)
+        assert ml_models_docs.round_to_format(value, fp32) == ml_models_docs.struct.unpack(
+            "<f", ml_models_docs.struct.pack("<f", value)
+        )[0]
+    e4m3 = ml_models_docs.find_float_format("fp8 e4m3")
+    e5m2 = ml_models_docs.find_float_format("fp8 e5m2")
+    assert ml_models_docs.round_to_format(500.0, e4m3) == 448
+    assert ml_models_docs.round_to_format(61440.0, e5m2) == math.inf
+    assert ml_models_docs.float_bits(448, e4m3) == {
+        "value": 448,
+        "sign": "0",
+        "exponent": "1111",
+        "mantissa": "110",
+    }
+    assert ml_models_docs.float_bits(1 / 3, fp16)["mantissa"] == "0101010101"
+    assert ml_models_docs.float_bits(1e-7, fp16)["exponent"] == "00000"
+
+
+def test_loss_scaling_rescues_small_fp16_gradients():
+    fp16 = ml_models_docs.loss_scaling_example()
+    assert [row["plain"] for row in fp16["rows"][3:]] == [0.0, 0.0]
+    assert all(row["scaled_error"] < 1e-3 for row in fp16["rows"])
+    bf16 = ml_models_docs.loss_scaling_example(fmt_name="bf16")
+    assert all(row["plain"] > 0 for row in bf16["rows"])
+    assert all(row["plain_error"] < 2e-3 for row in bf16["rows"])
+
+
+def test_grad_scaler_backs_off_and_grows():
+    run = ml_models_docs.grad_scaler_run([0.6] * 12, growth_interval=3)
+    assert [row["overflow"] for row in run["rows"]] == [False, False, False, True] * 3
+    assert run["rows"][3]["scale"] == 2.0**17
+    assert run["rows"][4]["scale"] == 2.0**16
+    assert run["skipped"] == 3
+    steady = ml_models_docs.grad_scaler_run([0.6] * 100)
+    assert steady["skipped"] == 0
+    assert steady["final_scale"] == 2.0**16
+
+
+def test_master_weights_keep_small_updates():
+    example = ml_models_docs.master_weight_example()
+    assert example["fp16"] == 1.0
+    assert example["bf16"] == 1.0
+    assert example["fp32"] == pytest.approx(1.01, abs=1e-5)
+    assert example["fp32_cast_fp16"] == 1.009765625

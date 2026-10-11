@@ -6094,6 +6094,169 @@ def async_timeline(kernel_us, launch_us=5):
     }
 
 
+FLOAT_FORMATS = [
+    {"name": "fp32", "dtype": "torch.float32", "exponent": 8, "mantissa": 23, "bits": 32},
+    {"name": "tf32", "dtype": None, "exponent": 8, "mantissa": 10, "bits": 19},
+    {"name": "fp16", "dtype": "torch.float16", "exponent": 5, "mantissa": 10, "bits": 16},
+    {"name": "bf16", "dtype": "torch.bfloat16", "exponent": 8, "mantissa": 7, "bits": 16},
+    {
+        "name": "fp8 e4m3",
+        "dtype": "torch.float8_e4m3fn",
+        "exponent": 4,
+        "mantissa": 3,
+        "bits": 8,
+        "finite_only": True,
+    },
+    {"name": "fp8 e5m2", "dtype": "torch.float8_e5m2", "exponent": 5, "mantissa": 2, "bits": 8},
+]
+
+
+def find_float_format(name):
+    return next(fmt for fmt in FLOAT_FORMATS if fmt["name"] == name)
+
+
+def float_format_stats(fmt):
+    e, m = fmt["exponent"], fmt["mantissa"]
+    bias = 2 ** (e - 1) - 1
+    if fmt.get("finite_only"):
+        largest = (2 - 2 * 2.0**-m) * 2.0 ** (2**e - 1 - bias)
+    else:
+        largest = (2 - 2.0**-m) * 2.0 ** (2**e - 2 - bias)
+    smallest_normal = 2.0 ** (1 - bias)
+    return {
+        "bias": bias,
+        "max": largest,
+        "smallest_normal": smallest_normal,
+        "smallest_subnormal": smallest_normal * 2.0**-m,
+        "epsilon": 2.0**-m,
+        "digits": (m + 1) * math.log10(2),
+    }
+
+
+def round_to_format(x, fmt):
+    if x == 0 or not math.isfinite(x):
+        return x
+    stats = float_format_stats(fmt)
+    exponent = max(math.frexp(abs(x))[1] - 1, 1 - stats["bias"])
+    quantum = 2.0 ** (exponent - fmt["mantissa"])
+    rounded = round(abs(x) / quantum) * quantum
+    if rounded > stats["max"]:
+        rounded = stats["max"] if fmt.get("finite_only") else math.inf
+    return math.copysign(rounded, x)
+
+
+def float_bits(x, fmt):
+    rounded = round_to_format(x, fmt)
+    stats = float_format_stats(fmt)
+    e, m = fmt["exponent"], fmt["mantissa"]
+    sign = 1 if math.copysign(1, rounded) < 0 else 0
+    a = abs(rounded)
+    if a == 0:
+        field, fraction = 0, 0
+    elif a == math.inf:
+        field, fraction = 2**e - 1, 0
+    elif a < stats["smallest_normal"]:
+        field, fraction = 0, round(a / stats["smallest_subnormal"])
+    else:
+        exponent = math.frexp(a)[1] - 1
+        field = exponent + stats["bias"]
+        fraction = round((a / 2.0**exponent - 1) * 2**m)
+    return {
+        "value": rounded,
+        "sign": str(sign),
+        "exponent": format(field, f"0{e}b"),
+        "mantissa": format(fraction, f"0{m}b"),
+    }
+
+
+def bf16_round_bits(x):
+    bits = struct.unpack("<I", struct.pack("<f", x))[0]
+    rounding_bias = ((bits >> 16) & 1) + 0x7FFF
+    return struct.unpack("<f", struct.pack("<I", ((bits + rounding_bias) >> 16) << 16))[0]
+
+
+def fp16_struct_round(x):
+    try:
+        return struct.unpack("<e", struct.pack("<e", x))[0]
+    except (OverflowError, struct.error):
+        return math.copysign(math.inf, x)
+
+
+PRECISION_EXAMPLE = {"value": 1 / 3, "big": 70000.0, "tiny": 1e-8}
+
+GRADIENT_EXAMPLE = [3e-2, 4e-5, 2e-7, 5e-9, 1e-10]
+
+
+def loss_scaling_example(grads=GRADIENT_EXAMPLE, scale=2.0**16, fmt_name="fp16"):
+    fmt = find_float_format(fmt_name)
+    rows = []
+    for grad in grads:
+        plain = round_to_format(grad, fmt)
+        scaled = round_to_format(grad * scale, fmt)
+        recovered = scaled / scale
+        rows.append(
+            {
+                "grad": grad,
+                "plain": plain,
+                "plain_error": abs(plain - grad) / grad,
+                "scaled": scaled,
+                "recovered": recovered,
+                "scaled_error": abs(recovered - grad) / grad,
+            }
+        )
+    return {"scale": scale, "rows": rows}
+
+
+def grad_scaler_run(
+    max_grads,
+    init_scale=2.0**16,
+    growth_factor=2.0,
+    backoff_factor=0.5,
+    growth_interval=2000,
+    fmt_name="fp16",
+):
+    fmt = find_float_format(fmt_name)
+    scale = init_scale
+    tracker = 0
+    rows = []
+    for step, grad in enumerate(max_grads, start=1):
+        overflow = math.isinf(round_to_format(grad * scale, fmt))
+        used = scale
+        if overflow:
+            scale *= backoff_factor
+            tracker = 0
+        else:
+            tracker += 1
+            if tracker == growth_interval:
+                scale *= growth_factor
+                tracker = 0
+        rows.append({"step": step, "scale": used, "overflow": overflow, "next_scale": scale})
+    skipped = sum(row["overflow"] for row in rows)
+    return {"rows": rows, "skipped": skipped, "final_scale": scale}
+
+
+def accumulate_updates(weight, update, steps, fmt_name):
+    fmt = find_float_format(fmt_name)
+    value = round_to_format(weight, fmt)
+    for _ in range(steps):
+        value = round_to_format(value + update, fmt)
+    return value
+
+
+def master_weight_example(weight=1.0, update=1e-4, steps=100):
+    fp32 = accumulate_updates(weight, update, steps, "fp32")
+    return {
+        "weight": weight,
+        "update": update,
+        "steps": steps,
+        "fp16": accumulate_updates(weight, update, steps, "fp16"),
+        "bf16": accumulate_updates(weight, update, steps, "bf16"),
+        "fp32": fp32,
+        "fp32_cast_fp16": round_to_format(fp32, find_float_format("fp16")),
+        "fp16_spacing": 2.0 ** -find_float_format("fp16")["mantissa"],
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -6535,6 +6698,15 @@ def render(slug, render_template):
         "tiled_matmul_traffic": tiled_matmul_traffic,
         "async_timeline": async_timeline,
         "roofline_xy": roofline_xy,
+        "float_formats": FLOAT_FORMATS,
+        "find_float_format": find_float_format,
+        "float_format_stats": float_format_stats,
+        "round_to_format": round_to_format,
+        "float_bits": float_bits,
+        "precision_example": PRECISION_EXAMPLE,
+        "loss_scaling_example": loss_scaling_example,
+        "grad_scaler_run": grad_scaler_run,
+        "master_weight_example": master_weight_example,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
