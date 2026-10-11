@@ -1295,7 +1295,7 @@ PAGES = [
         "sources": [
             "pytorch:torch/distributions/categorical.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "time-series",
