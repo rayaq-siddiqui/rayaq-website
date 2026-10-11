@@ -228,6 +228,9 @@ Open gaps from these runs:
 | `5f73534` `ml-models: add quantization worked-example helpers` | Affine and symmetric qparams, quantize/dequantize, fake quantization with its STE mask, per-channel scales, int4 groups, weight memory and an LLM.int8()-style outlier split, with five tests (checked against the PyTorch docstring examples) |
 | `744a3e2` `ml-models: add the quantization page template` | The page |
 | `6a0d758` `ml-models: publish the quantization page` | `ready`, queue ✓ |
+| `8abe08e` `ml-models: add tested reinforcement learning helpers` | Discounted returns, value iteration and the closed form on a slippery four-state chain, a Q-update and seeded tabular Q-learning, TD-error advantages, exact REINFORCE gradients and variance with and without a baseline on a three-armed bandit, and PPO's clip, with five tests |
+| `6f8cb43` `ml-models: add the reinforcement learning page template` | The page |
+| `51a1295` `ml-models: publish the reinforcement learning page` | `ready`, queue ✓ |
 
 Findings worth keeping:
 
@@ -244,6 +247,13 @@ Gaps:
 - GPTQ, LLM.int8(), Jacob et al. and Bengio et al. are cited from memory (arxiv.org
   unreachable through the proxy). None of the pins implements GPTQ or LLM.int8(); the page
   describes them from the papers. HistogramObserver is described only by its docstring.
+- Reinforcement learning: PyTorch has no RL algorithm in the pin, so Q-learning, DQN
+  (replay, the target network from the 2015 Nature version), REINFORCE, actor-critic and PPO
+  are described from Sutton and Barto, Williams 1992, Mnih et al. 2013 and Schulman et al.
+  2017, all cited from memory. The pinned source backs only `Categorical`, the
+  score-function docstring in `torch/distributions/__init__.py` and `nn.HuberLoss`. The PPO
+  loss coefficients in the snippet are labelled as common defaults, not pinned values. The
+  page names preference optimization in plain text until that page is ready.
 
 ## Queue
 
