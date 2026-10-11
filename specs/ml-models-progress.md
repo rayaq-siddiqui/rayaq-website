@@ -400,8 +400,8 @@ values come from the stdlib helpers, not from running torch.
 34. `regularization` ✓
 35. `activation-functions` ✓
 36. `linear-algebra-toolkit` ✓
-37. `missing-data` ← next
-38. `computation-graphs`
+37. `missing-data` ✓
+38. `computation-graphs` ← next
 39. `cnns`
 40. `autoregressive-models`
 41. `tokenization`

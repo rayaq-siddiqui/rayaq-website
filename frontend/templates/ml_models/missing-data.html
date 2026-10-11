@@ -1,0 +1,569 @@
+{% set ex = missing_example %}
+{% set age_col = ex.rows|map(attribute=0)|list %}
+{% set income_col = ex.rows|map(attribute=1)|list %}
+{% set age_fill = column_fill_values(age_col) %}
+{% set income_fill = column_fill_values(income_col) %}
+{% set kept = complete_rows(ex.rows) %}
+{% set mcar = mechanism_estimates("MCAR") %}
+{% set mar = mechanism_estimates("MAR") %}
+{% set mnar = mechanism_estimates("MNAR") %}
+{% set iterative = iterative_comparison() %}
+{% set indicator = indicator_comparison() %}
+{% set routing = routing_example() %}
+{% set native = routing.native %}
+{% set best = native.best %}
+{% set imputed_best = routing.imputed.best %}
+{% set rx = routing_example_data %}
+{% macro f2(x) -%}{{ "%.2f"|format(x) }}{%- endmacro %}
+{% macro f3(x) -%}{{ "%.3f"|format(x) }}{%- endmacro %}
+{% macro cell(v) -%}{% if v is none %}<em>missing</em>{% else %}{{ v }}{% endif %}{%- endmacro %}
+<header class="jj-header">
+  <h1>Missing data</h1>
+  <p class="tagline">
+    Real tables have holes: a sensor drops out, a form field is skipped, a join finds no match. What you should do
+    about a hole depends on why it is there. This page covers the three missingness mechanisms (MCAR, MAR, MNAR),
+    deleting rows, filling with a mean, median or constant, iterative imputation, missing-indicator features, and
+    how gradient-boosted trees learn where to send missing values without filling them at all.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Most learners need a number in every cell. A linear model cannot multiply a weight by "unknown", and a distance
+  cannot be computed to a point with no coordinate. So something has to happen to each missing value before
+  training: drop the row, drop the column, guess a value, or use a model that has its own rule for missing input.
+</p>
+<p>
+  Every choice changes the data the model sees. Dropping rows can throw away most of a table and, worse, keep a
+  biased subset. Filling with the column mean keeps every row but shrinks the column's spread and its correlation
+  with everything else. And when the fact that a value is missing carries information (people with high incomes
+  skip the income question more often), every filling method erases that signal unless you keep it on purpose.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Ask one question first: <em>would the missing values, if you could see them, look like the ones you can see?</em>
+  If a value went missing by pure chance, the observed rows are a fair sample and almost any method is
+  unbiased. If it went missing because of something else you did observe (older people skip a question more),
+  the observed rows are skewed, but you can correct for it using that other column. If it went missing because of
+  its own value (high earners hide their income), the observed rows are skewed in a way the data cannot reveal.
+</p>
+<p>
+  Rubin named these three cases, and his labels are standard. Write M for the 0/1 indicator "this value is
+  missing", Y for the value itself and X for the other, observed columns.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 190" role="img" aria-labelledby="md-mech-title md-mech-desc">
+    <title id="md-mech-title">The three missingness mechanisms as arrows into the missing indicator</title>
+    <desc id="md-mech-desc">
+      Three panels, each with boxes for an observed column X, the value Y and the missing indicator M. In the
+      MCAR panel nothing points at M. In the MAR panel an arrow goes from X to M. In the MNAR panel an arrow goes
+      from Y to M. In all three panels an arrow goes from X to Y.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <text x="115" y="20" font-weight="bold">MCAR</text>
+      <text x="350" y="20" font-weight="bold">MAR</text>
+      <text x="585" y="20" font-weight="bold">MNAR</text>
+      <g>
+        <rect x="30" y="40" width="70" height="36" rx="4" class="d-box ml-tensor"></rect>
+        <text x="65" y="63">X</text>
+        <rect x="130" y="40" width="70" height="36" rx="4" class="d-box ml-weight"></rect>
+        <text x="165" y="63">Y</text>
+        <rect x="80" y="120" width="70" height="36" rx="4" class="d-box ml-op"></rect>
+        <text x="115" y="143">M</text>
+      </g>
+      <g>
+        <rect x="265" y="40" width="70" height="36" rx="4" class="d-box ml-tensor"></rect>
+        <text x="300" y="63">X</text>
+        <rect x="365" y="40" width="70" height="36" rx="4" class="d-box ml-weight"></rect>
+        <text x="400" y="63">Y</text>
+        <rect x="315" y="120" width="70" height="36" rx="4" class="d-box ml-op"></rect>
+        <text x="350" y="143">M</text>
+      </g>
+      <g>
+        <rect x="500" y="40" width="70" height="36" rx="4" class="d-box ml-tensor"></rect>
+        <text x="535" y="63">X</text>
+        <rect x="600" y="40" width="70" height="36" rx="4" class="d-box ml-weight"></rect>
+        <text x="635" y="63">Y</text>
+        <rect x="550" y="120" width="70" height="36" rx="4" class="d-box ml-op"></rect>
+        <text x="585" y="143">M</text>
+      </g>
+      <g class="d-line" fill="none" stroke-width="1.5">
+        <path d="M100 58 H130"></path>
+        <path d="M335 58 H365"></path>
+        <path d="M570 58 H600"></path>
+        <path d="M300 76 L335 120"></path>
+        <path d="M635 76 L600 120"></path>
+      </g>
+      <g class="d-line" stroke-width="1.5">
+        <path d="M335 120 l-9 -3 l5 -6 z"></path>
+        <path d="M600 120 l1 -9 l7 4 z"></path>
+      </g>
+      <text x="115" y="178" class="d-muted">M is pure chance</text>
+      <text x="350" y="178" class="d-muted">M depends on observed X</text>
+      <text x="585" y="178" class="d-muted">M depends on Y itself</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The mechanism is a statement about what M depends on. You can test some of the MAR arrow (does M vary with X?) but never the MNAR arrow, because Y is exactly what is missing.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="mechanisms">MCAR, MAR and MNAR</h3>
+<ul>
+  <li><strong>MCAR, missing completely at random.</strong> P(M = 1) does not depend on X or Y. A lab sample
+    dropped on the floor. The complete rows are a random subset, so deleting incomplete rows loses precision
+    but adds no bias.</li>
+  <li><strong>MAR, missing at random.</strong> P(M = 1) depends only on observed columns. Older patients skip a
+    survey item more, and age is recorded. The complete rows are biased, but within each value of X they are
+    still representative, so a method that conditions on X (regression imputation, iterative imputation,
+    a model that uses X) can undo the bias.</li>
+  <li><strong>MNAR, missing not at random.</strong> P(M = 1) depends on the missing value itself, even after
+    accounting for X. High earners leave income blank. No method that only looks at the observed data removes
+    the bias without an extra assumption about how M depends on Y; the honest options are to model that
+    assumption explicitly, collect more data, or report how sensitive the result is.</li>
+</ul>
+<p>
+  The names are confusing ("at random" in MAR does not mean random); remember them by what M depends on:
+  nothing, observed values, or unobserved values.
+</p>
+
+<h3 id="deletion">Deletion</h3>
+<p>
+  <strong>Listwise deletion</strong> (complete-case analysis) drops every row with any missing value. It is
+  unbiased under MCAR and simple, but the losses compound: with 10 columns each missing 10% of values
+  independently, only 0.9<sup>10</sup> ≈ 35% of rows survive. <strong>Dropping a column</strong> that is mostly
+  empty is often better than dropping the rows. <strong>Pairwise deletion</strong> uses whatever rows are complete
+  for each pair of columns, which keeps more data but can produce a covariance matrix that no single dataset
+  could have. Deletion also does not help at prediction time: a deployed model still gets rows with holes.
+</p>
+
+<h3 id="simple-imputation">Mean, median and constant imputation</h3>
+<p>
+  <strong>Univariate imputation</strong> fills each column with one number learned from that column's observed
+  values: the mean, the median (robust to outliers), the most frequent value (for categories), or a constant you
+  choose. In scikit-learn this is <code>SimpleImputer</code>; <code>fit</code> stores the per-column value in
+  <code>statistics_</code> and <code>transform</code> writes it into every missing cell. A column with no observed
+  values at all is dropped unless <code>keep_empty_features=True</code>.
+</p>
+<p>
+  It is fast and keeps every row, but it puts a spike of identical values at the center of the column. The
+  column's variance shrinks, its correlation with other columns is pulled toward zero, and any model fit on it
+  becomes overconfident because the filled cells look like real, certain observations. A constant outside the
+  normal range (−1 for a count, "missing" for a category) avoids the false center and lets trees isolate the
+  filled rows, at the cost of a value that linear models treat as real.
+</p>
+
+<h3 id="iterative-imputation">Iterative imputation</h3>
+<p>
+  <strong>Multivariate imputation</strong> predicts each missing cell from the other columns. scikit-learn's
+  <code>IterativeImputer</code>, modeled on the MICE procedure, does it round-robin:
+</p>
+<ol>
+  <li>Fill every hole with a simple imputation (the column mean by default).</li>
+  <li>For each column with missing values, in order of increasing missing fraction by default: fit a regressor
+    (default <code>BayesianRidge</code>) on the rows where that column is observed, using the current filled values
+    of all other columns as features, then overwrite that column's missing cells with its predictions.</li>
+  <li>After a full pass, compare with the previous pass. Stop when the largest change in any cell is below
+    <code>tol</code> times the largest absolute observed value, or after <code>max_iter</code> passes
+    (default 10).</li>
+</ol>
+<p>
+  It uses correlations between columns, so under MAR it can recover much of what mean imputation throws away.
+  The estimator is still marked experimental and must be enabled with
+  <code>from sklearn.experimental import enable_iterative_imputer</code>. With
+  <code>sample_posterior=True</code> it draws from the regressor's predictive distribution instead of using the
+  mean, which is how you build several imputed datasets for multiple imputation.
+  <code>KNNImputer</code> is the nearest-neighbor alternative: average the column over the k most similar rows.
+</p>
+
+<h3 id="indicators">Missing-indicator features</h3>
+<p>
+  If missingness itself predicts the target, keep it as a feature. For each column with holes, add a 0/1 column
+  that is 1 where the value was missing, then impute the original column as usual. A linear model can now learn a
+  separate offset for "was missing", and a tree can split on it directly. In scikit-learn,
+  <code>MissingIndicator</code> builds these columns and <code>add_indicator=True</code> on any imputer appends
+  them to its output. By default only columns that had missing values during <code>fit</code> get an indicator.
+</p>
+
+<h3 id="native-trees">How gradient-boosted trees route missing values</h3>
+<p>
+  A tree split asks "is x &lt; t?" and needs an answer for every row. XGBoost and scikit-learn's histogram
+  gradient boosting do not fill missing values. Instead, each split learns a <strong>default direction</strong>:
+  the side that missing rows go to.
+</p>
+<p>
+  The split search already scans the sorted non-missing values, keeping running sums of gradients G and hessians
+  H on each side. The missing rows' sums are whatever is left over: G<sub>missing</sub> = G<sub>node</sub> −
+  ΣG<sub>non-missing</sub>. XGBoost's histogram evaluator scans twice:
+</p>
+<ul>
+  <li>A <strong>forward scan</strong> accumulates bins from the left, so the right side is the node total minus the
+    left. Missing rows land on the right.</li>
+  <li>A <strong>backward scan</strong> accumulates from the right, so the left side is the remainder and missing
+    rows land on the left. It runs only when the node actually has missing values.</li>
+</ul>
+<p>
+  The candidate with the larger gain wins, and the split records its direction (XGBoost stores it in the top bit
+  of the split index). On a tie the forward scan's candidate stays, so missing goes right. If no missing values
+  were seen at a node during training, only the forward scan runs and missing values at prediction time go right.
+  scikit-learn's <code>HistGradientBoosting</code> follows the same two-scan scheme (its code cites algorithm 3 of
+  the XGBoost paper), but where no missing values were seen during training it sends them to the child with more
+  samples.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 260" role="img" aria-labelledby="md-route-title md-route-desc">
+    <title id="md-route-title">Choosing the default direction for missing values at one split</title>
+    <desc id="md-route-desc">
+      Eight rows on a number line by x, with two rows whose x is missing drawn in a separate box. The split
+      falls between x = 3 and x = 4. Option A sends the missing box right, with gain {{ f3(native.candidates[4].loss_chg) }}.
+      Option B sends it left, with gain {{ f3(best.loss_chg) }}. Option B is kept and the split stores "missing goes left".
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <line x1="40" y1="70" x2="470" y2="70" class="d-line" stroke-width="1"></line>
+      {% for x in rx.x %}{% if x is not none %}
+      {% set px = 40 + (x - 1) * 50 %}
+      <circle cx="{{ px }}" cy="70" r="11" class="d-box {% if x < 4 %}ml-tensor{% else %}ml-weight{% endif %}"></circle>
+      <text x="{{ px }}" y="74" font-size="10">{{ rx.y[loop.index0] }}</text>
+      <text x="{{ px }}" y="98" class="d-muted">x={{ x }}</text>
+      {% endif %}{% endfor %}
+      <line x1="165" y1="40" x2="165" y2="110" class="d-line ml-dashed" stroke-width="1.5"></line>
+      <text x="165" y="32">x &lt; 4 ?</text>
+      <rect x="530" y="45" width="140" height="50" rx="4" class="d-box ml-op"></rect>
+      <text x="600" y="64">x missing</text>
+      <text x="600" y="84" font-size="11">y = {{ rx.y[6] }}, {{ rx.y[7] }}</text>
+      <text x="40" y="20" text-anchor="start" class="d-muted">circle label: target y</text>
+
+      <rect x="40" y="140" width="300" height="100" rx="4" class="d-box"></rect>
+      <text x="190" y="162" font-weight="bold">A: forward scan, missing → right</text>
+      <text x="190" y="185">left {1, 2, 3}: G = {{ native.candidates[4].g_left }}, H = {{ native.candidates[4].h_left|int }}</text>
+      <text x="190" y="205">right {4, 5, 9, ?, ?}: G = {{ "%.1f"|format(native.candidates[4].g_right) }}, H = {{ native.candidates[4].h_right|int }}</text>
+      <text x="190" y="228">gain {{ f3(native.candidates[4].loss_chg) }}</text>
+
+      <rect x="370" y="140" width="300" height="100" rx="4" class="d-box ml-op"></rect>
+      <text x="520" y="162" font-weight="bold">B: backward scan, missing → left</text>
+      <text x="520" y="185">left {1, 2, 3, ?, ?}: G = {{ "%.1f"|format(best.g_left) }}, H = {{ best.h_left|int }}</text>
+      <text x="520" y="205">right {4, 5, 9}: G = {{ "%.1f"|format(best.g_right) }}, H = {{ best.h_right|int }}</text>
+      <text x="520" y="228" font-weight="bold">gain {{ f3(best.loss_chg) }}: kept</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Squared loss from a prediction of 0, so each row's gradient is −y and its hessian is 1; λ = {{ rx.reg_lambda }}. The missing rows' targets look like the low-x group's, and the backward scan finds that.</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>SimpleImputer</code></td>
+        <td><code>strategy="mean"</code> (or median, most_frequent, constant, a callable), <code>fill_value</code>, <code>add_indicator=False</code>; learns <code>statistics_</code> of shape (n_features,)</td>
+        <td>Univariate fill: one value per column.</td>
+        <td><a href="{{ skl('sklearn/impute/_base.py', 171, 784) }}"><code>_base.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>SimpleImputer._dense_fit</code></td>
+        <td>mean and median over a masked array; a callable strategy gets each column's observed values</td>
+        <td>How each statistic is computed, ignoring the missing cells.</td>
+        <td><a href="{{ skl('sklearn/impute/_base.py', 529, 599) }}"><code>_base.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>SimpleImputer.transform</code></td>
+        <td>drops all-missing columns unless <code>keep_empty_features</code>; appends indicators</td>
+        <td>Writes the stored statistic into each missing cell.</td>
+        <td><a href="{{ skl('sklearn/impute/_base.py', 601, 688) }}"><code>_base.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>MissingIndicator</code></td>
+        <td><code>features="missing-only"</code>; output (n_samples, n_features_with_missing) of booleans</td>
+        <td>The 0/1 "was missing" columns.</td>
+        <td><a href="{{ skl('sklearn/impute/_base.py', 787, 1149) }}"><code>_base.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_BaseImputer._concatenate_indicator</code></td>
+        <td>hstack of imputed X and indicator</td>
+        <td>How <code>add_indicator=True</code> appends the indicator columns.</td>
+        <td><a href="{{ skl('sklearn/impute/_base.py', 137, 156) }}"><code>_base.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>IterativeImputer</code></td>
+        <td><code>estimator=None</code> (BayesianRidge), <code>max_iter=10</code>, <code>tol=1e-3</code>, <code>initial_strategy="mean"</code>, <code>imputation_order="ascending"</code>, <code>sample_posterior=False</code></td>
+        <td>Round-robin multivariate imputation; experimental.</td>
+        <td><a href="{{ skl('sklearn/impute/_iterative.py', 60, 1002) }}"><code>_iterative.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>IterativeImputer._impute_one_feature</code></td>
+        <td>fit on rows where the column is observed; predict (or sample) for the rest; clip to <code>min_value</code>/<code>max_value</code></td>
+        <td>One step of the round-robin.</td>
+        <td><a href="{{ skl('sklearn/impute/_iterative.py', 354, 475) }}"><code>_iterative.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>IterativeImputer.fit_transform</code></td>
+        <td>stop when max |Δ| &lt; tol · max |observed|</td>
+        <td>The pass loop and its stopping rule.</td>
+        <td><a href="{{ skl('sklearn/impute/_iterative.py', 819, 873) }}"><code>_iterative.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>EnumerateSplit&lt;d_step&gt;</code></td>
+        <td>d_step = +1 (missing right) or −1 (missing left)</td>
+        <td>XGBoost's scan over a feature's histogram bins.</td>
+        <td><a href="{{ xgb('src/tree/hist/evaluate_splits.h', 200, 264) }}"><code>evaluate_splits.h</code></a></td>
+      </tr>
+      <tr>
+        <td>XGBoost scan dispatch</td>
+        <td>backward scan only if <code>SplitContainsMissingValues</code></td>
+        <td>When the second direction is tried.</td>
+        <td><a href="{{ xgb('src/tree/hist/evaluate_splits.h', 322, 326) }}"><code>evaluate_splits.h</code></a></td>
+      </tr>
+      <tr>
+        <td><code>SplitEntryContainer::Update</code></td>
+        <td><code>default_left</code> stored as bit 31 of <code>sindex</code>; strict &gt; on the same feature</td>
+        <td>Records the winning direction; ties keep the earlier candidate.</td>
+        <td><a href="{{ xgb('src/tree/param.h', 410, 476) }}"><code>param.h</code></a></td>
+      </tr>
+      <tr>
+        <td><code>HistGradientBoosting</code> split search</td>
+        <td>left-to-right scan, plus right-to-left if the feature has missing values</td>
+        <td>scikit-learn's version of the same rule.</td>
+        <td><a href="{{ skl('sklearn/ensemble/_hist_gradient_boosting/splitting.pyx', 549, 574) }}"><code>splitting.pyx</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-fill">Eight rows, two columns</h3>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Row</th><th>age</th><th>income (k)</th><th>age missing</th><th>income missing</th></tr></thead>
+      <tbody>
+        {% set age_flag = missing_indicator(age_col) %}
+        {% set income_flag = missing_indicator(income_col) %}
+        {% for row in ex.rows %}
+        <tr><td>{{ loop.index }}</td><td>{{ cell(row[0]) }}</td><td>{{ cell(row[1]) }}</td><td>{{ age_flag[loop.index0] }}</td><td>{{ income_flag[loop.index0] }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Age is missing in {{ age_fill.missing }} rows and income in {{ income_fill.missing }}. Listwise deletion keeps
+    only {{ kept|length }} of 8 rows. Mean imputation fills age with {{ f2(age_fill.mean) }} and income with
+    {{ f2(income_fill.mean) }}; median imputation uses {{ age_fill.median }} and {{ income_fill.median }}; constant
+    imputation uses {{ age_fill.constant }} unless you pass <code>fill_value</code>. These are the
+    <code>statistics_</code> that <code>SimpleImputer</code> 1.9.1 learns on this table, and with
+    <code>add_indicator=True</code> its output has four columns: the two filled ones, then the two indicator
+    columns above.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-mechanisms">The same column under three mechanisms</h3>
+  <p>
+    Simulate 4,000 rows: x is standard normal and y = 50 + 10(0.8x + 0.6ε), so y has mean 50, standard deviation
+    10 and correlation 0.8 with x. Hide about 40% of the y values three ways. MCAR: each with probability 0.4.
+    MAR: with probability 0.7 when x &gt; 0, otherwise 0.1. MNAR: 0.7 when y &gt; 50, otherwise 0.1. Then
+    estimate the mean of y by complete cases and by regression imputation (fit y on x on the complete rows,
+    predict the missing ones), and measure what mean imputation does to y's spread and its correlation with x.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Mechanism</th><th>Missing</th><th>True mean</th><th>Complete-case mean</th><th>Regression-imputed mean</th><th>Std after mean fill (true {{ f2(mcar.true_std) }})</th><th>Corr after mean fill (true {{ f2(mcar.true_corr) }})</th></tr></thead>
+      <tbody>
+        {% for r in [mcar, mar, mnar] %}
+        <tr><td>{{ r.mechanism }}</td><td>{{ "%.0f"|format(100 * r.missing_share) }}%</td><td>{{ f2(r.true_mean) }}</td><td>{{ f2(r.complete_case_mean) }}</td><td>{{ f2(r.regression_mean) }}</td><td>{{ f2(r.mean_imputed_std) }}</td><td>{{ f2(r.mean_imputed_corr) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Under MCAR both estimates are within {{ "%.2f"|format([(mcar.complete_case_mean - mcar.true_mean)|abs, (mcar.regression_mean - mcar.true_mean)|abs]|max) }} of the truth.
+    Under MAR the complete cases miss mostly high-x rows, so their mean is {{ f2(mar.true_mean - mar.complete_case_mean) }} too low; regression on x
+    repairs it to within {{ f2((mar.regression_mean - mar.true_mean)|abs) }}. Under MNAR regression on x helps only partly
+    and is still {{ f2(mnar.true_mean - mnar.regression_mean) }} too low, because the rows that went missing are high in y even for
+    their x. In every case filling with the mean shrinks the standard deviation by about a quarter and drops the
+    correlation from 0.80 to around 0.6.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-iterative">Iterative imputation, round by round</h3>
+  <p>
+    Three columns driven by one hidden factor z: a = z + noise, b = 2z + noise, c = −z + noise (noise standard
+    deviation 0.3), 60 rows, each cell hidden independently with probability 0.25, which leaves
+    {{ iterative.missing_cells }} of {{ iterative.cells }} cells missing. Start from column means, then regress
+    each column on the other two with ordinary least squares, in ascending order of missing fraction (columns
+    {{ iterative.order|map("string")|join(", ") }}). The stopping threshold is 10<sup>−3</sup> × max |observed| =
+    {{ "%.4f"|format(iterative.threshold) }}.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Pass</th><th>Largest change in any cell</th><th>Below threshold?</th></tr></thead>
+      <tbody>
+        {% for r in iterative.rounds %}
+        <tr><td>{{ r.round }}</td><td>{{ "%.4f"|format(r.change) }}</td><td>{{ "yes, stop" if r.converged else "no" }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    It stops after {{ iterative.rounds|length }} passes. Against the true hidden values, the root-mean-square
+    error of the filled cells is {{ f3(iterative.mean_rmse) }} for mean imputation and {{ f3(iterative.iterative_rmse) }}
+    for iterative imputation. <code>IterativeImputer(estimator=LinearRegression(), max_iter=10, tol=1e-3)</code>
+    from scikit-learn 1.9.1 gives the same filled values (largest difference 1.7 × 10<sup>−15</sup>) and the same
+    <code>n_iter_</code> of 9; the default <code>BayesianRidge</code> would shrink the coefficients slightly.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-indicator">When missingness is the signal</h3>
+  <p>
+    Let y = 2x + noise (standard deviation 0.5), and hide x with probability 0.6 when y &gt; 1, otherwise 0.1. Fit
+    a linear model on 400 training rows and score it on 4,000 fresh rows from the same process. Filling x with the
+    training mean ({{ f3(indicator.fill) }}) gives a test mean squared error of {{ f3(indicator.imputed.mse) }}.
+    Adding a missing indicator lowers it to {{ f3(indicator.with_indicator.mse) }}: the model learns an offset of
+    {{ f2(indicator.with_indicator.weights[2]) }} for "x was missing", because missing rows tend to have high y.
+    The slope on x is {{ f2(indicator.with_indicator.weights[1]) }} either way.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-routing">One split, missing values routed natively</h3>
+  <p>
+    Take the eight rows in the diagram above: x = {{ rx.x|map("string")|join(", ")|replace("None", "missing") }}, targets
+    y = {{ rx.y|join(", ") }}. Start from a prediction of 0 with squared loss, so each gradient is −y and each
+    hessian is 1, and use λ = 1. The node's own score is G²/(H + λ) = 14²/9 = {{ f3(native.parent) }}, and the missing
+    rows carry G = {{ "%.1f"|format(native.missing_g) }}, H = {{ native.missing_h|int }}.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Split between</th><th>Gain, missing → right</th><th>Gain, missing → left</th></tr></thead>
+      <tbody>
+        {% for i in range(0, native.candidates|length, 2) %}
+        {% set a = native.candidates[i] %}{% set b = native.candidates[i + 1] %}
+        <tr><td>x = {{ a.threshold }}</td><td>{{ f3(a.loss_chg) }}</td><td>{% if b.loss_chg == best.loss_chg %}<strong>{{ f3(b.loss_chg) }}</strong>{% else %}{{ f3(b.loss_chg) }}{% endif %}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The best split is at {{ best.threshold }} with missing values sent left, gain {{ f3(best.loss_chg) }}, left leaf
+    −G/(H + λ) = {{ f3(best.w_left) }} and right leaf {{ f3(best.w_right) }}. XGBoost 3.2.0 trained with
+    <code>max_depth=1</code>, <code>eta=1</code>, <code>base_score=0</code>, <code>min_child_weight=0</code> dumps
+    exactly this tree: <code>[f0&lt;4] missing=1, gain=2.63888741, leaf=0.833333373, leaf=2.25</code> (it writes
+    the threshold as a histogram cut, 4, rather than the midpoint).
+  </p>
+  <p>
+    Now fill x with its mean first. The mean of the observed x is {{ f2(routing.fill) }}, so both missing rows
+    become x = 4 and land with the high group. The best split is still between 3 and 4, but the two
+    low-target rows are stuck on the wrong side: gain {{ f3(imputed_best.loss_chg) }} instead of
+    {{ f3(best.loss_chg) }}. The native rule let the data decide where "unknown" belongs.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  Put the imputer inside a <code>Pipeline</code> so its statistics are learned from the training folds only
+  (see <a href="{{ url_for('ml_models', slug='data-leakage') }}">data leakage</a>), and add indicators when
+  missingness might matter:
+</p>
+<pre><code>import numpy as np
+from sklearn.pipeline import make_pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.experimental import enable_iterative_imputer  # noqa: F401
+from sklearn.impute import IterativeImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import HistGradientBoostingClassifier
+
+simple = make_pipeline(
+    SimpleImputer(strategy="median", add_indicator=True),
+    LogisticRegression(),
+)
+iterative = make_pipeline(
+    IterativeImputer(max_iter=10, tol=1e-3, random_state=0),
+    LogisticRegression(),
+)
+native = HistGradientBoostingClassifier()   # NaN allowed, no imputer
+# XGBoost: xgboost.XGBClassifier(missing=np.nan) learns a default direction per split
+</code></pre>
+
+<p>The split scan with a default direction, from scratch (the same rule as the worked example):</p>
+<pre><code>def score(g, h, lam):
+    return g * g / (h + lam)
+
+def best_split(xs, grads, hess, lam=1.0):
+    seen = sorted((x, g, h) for x, g, h in zip(xs, grads, hess) if x is not None)
+    G, H = sum(grads), sum(hess)
+    Gm = G - sum(g for _, g, _ in seen)          # missing rows' sums
+    Hm = H - sum(h for _, _, h in seen)
+    parent, best = score(G, H, lam), None
+    for i in range(1, len(seen)):
+        if seen[i][0] == seen[i - 1][0]:
+            continue
+        gl = sum(g for _, g, _ in seen[:i])
+        hl = sum(h for _, _, h in seen[:i])
+        sides = [("right", gl, hl)]               # forward scan
+        if Hm &gt; 0:
+            sides.append(("left", gl + Gm, hl + Hm))  # backward scan
+        for go, lg, lh in sides:
+            gain = score(lg, lh, lam) + score(G - lg, H - lh, lam) - parent
+            if best is None or gain &gt; best[0]:
+                best = (gain, (seen[i - 1][0] + seen[i][0]) / 2, go)
+    return best
+</code></pre>
+<p>
+  This visits candidates in a slightly different order from XGBoost (which finishes the whole forward scan
+  before the backward one), so on an exact tie between two different thresholds it can pick another one; the
+  tested helper <code>missing_split_scan</code> follows XGBoost's order.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Deletion or imputation?</strong> Deletion is defensible under MCAR with few missing rows. Otherwise it wastes data and, under MAR, biases the result. It also gives no answer for rows with holes at prediction time.</li>
+  <li><strong>Mean or median?</strong> The median is robust to skew and outliers; the mean is right for roughly symmetric columns. Both shrink variance and correlations, which matters most for linear models and for any analysis that reports uncertainty.</li>
+  <li><strong>Simple or iterative?</strong> Iterative imputation uses the other columns and does much better when columns are correlated, at the cost of one regression per column per pass, a dependence on the chosen regressor, and an estimator that scikit-learn still marks experimental.</li>
+  <li><strong>Single or multiple imputation?</strong> One filled dataset treats guesses as facts, so standard errors come out too small. Multiple imputation (several draws with <code>sample_posterior=True</code>, results pooled) is the standard fix when you need valid uncertainty, not just a good prediction.</li>
+  <li><strong>Indicators.</strong> Cheap and often helpful for prediction, but they let the model lean on how data was collected. If the collection process changes (a form field becomes mandatory), the indicator's meaning shifts under the model.</li>
+  <li><strong>Native handling.</strong> Gradient-boosted trees learn a direction per split, which is usually better than a blind fill and needs no preprocessing. The direction is fixed per split, so missing rows can never be split among themselves, and a feature with no missing values in training gets an arbitrary rule (right in XGBoost, the larger child in scikit-learn).</li>
+  <li><strong>No method fixes MNAR from the data alone.</strong> Model the mechanism explicitly, collect the reason for missingness, or run a sensitivity analysis over plausible shifts.</li>
+</ul>
+
+<h3 id="check-yourself">Check yourself</h3>
+
+<details class="ml-quiz">
+  <summary>Under which mechanism is complete-case analysis unbiased, and why?</summary>
+  <p>MCAR. Missingness does not depend on anything, so the complete rows are a random sample of all rows: fewer of them, but not a skewed set.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does mean imputation lower a column's correlation with other columns?</summary>
+  <p>Every filled cell sits at the same value no matter what the other columns say. Those cells add points that ignore the relationship, which pulls the correlation toward zero; in the worked example 0.80 falls to about 0.6.</p>
+</details>
+<details class="ml-quiz">
+  <summary>An XGBoost model trained on data with no missing values sees a NaN at prediction time. Where does it go?</summary>
+  <p>Right, at every split on that feature: only the forward scan ran during training, and that scan puts missing values on the right. scikit-learn's histogram boosting would send it to the child that had more training samples.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does the imputer belong inside the cross-validation pipeline?</summary>
+  <p>Its statistics (a mean, or a whole set of regressions for iterative imputation) are learned from data. Fitting them on all rows lets validation rows shape the values filled into training rows, which is leakage.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Rubin. <em>Inference and Missing Data.</em> Biometrika, 1976 (the MCAR/MAR/MNAR framework).</li>
+  <li>Little and Rubin. <em>Statistical Analysis with Missing Data</em>, 3rd ed. Wiley, 2019.</li>
+  <li>van Buuren and Groothuis-Oudshoorn. <em>mice: Multivariate Imputation by Chained Equations in R.</em> Journal of Statistical Software, 2011.</li>
+  <li>Chen and Guestrin. <em>XGBoost: A Scalable Tree Boosting System.</em> KDD 2016, section 3.4 (sparsity-aware split finding).</li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/impute/_base.py', 171, 784) }}"><code>SimpleImputer</code></a>, <a href="{{ skl('sklearn/impute/_base.py', 787, 1149) }}"><code>MissingIndicator</code></a>, <a href="{{ skl('sklearn/impute/_iterative.py', 60, 1002) }}"><code>IterativeImputer</code></a>, <a href="{{ skl('sklearn/ensemble/_hist_gradient_boosting/grower.py', 546, 552) }}">HistGradientBoosting's rule for features with no missing values</a>, <a href="{{ skl('sklearn/ensemble/_hist_gradient_boosting/splitting.pyx', 1149, 1169) }}"><code>sample_goes_left</code></a>.</li>
+  <li>XGBoost {{ pins.xgboost.tag }}: <a href="{{ xgb('src/tree/hist/evaluate_splits.h', 47, 57) }}"><code>SplitContainsMissingValues</code></a>, <a href="{{ xgb('src/tree/hist/evaluate_splits.h', 200, 264) }}"><code>EnumerateSplit</code></a>.</li>
+</ul>

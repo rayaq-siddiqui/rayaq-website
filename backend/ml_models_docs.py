@@ -367,7 +367,7 @@ PAGES = [
             "sklearn:sklearn/impute/_iterative.py",
             "xgboost:src/tree/hist/evaluate_splits.h",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "class-imbalance",
