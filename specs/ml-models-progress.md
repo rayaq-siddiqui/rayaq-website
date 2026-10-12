@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-11 (twenty-eighth run). Spec v2 widens the section from model
+**Last updated:** 2026-10-12 (twenty-ninth run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-48, the last being `bayes-rule`. The
-next page is `class-imbalance` (queue item 49).
+fixed page format. Ready pages: queue items 1-51, the last being `initialization`. The
+next page is `rnns-and-lstms` (queue item 52).
 
 ## Pins
 
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (48 of 93 ready, all
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (51 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -110,24 +110,8 @@ file); this list keeps only what queued pages still need.
 - `torch/optim/optimizer.py`: `Optimizer` starts at 358; `state_dict` 700-791, `zero_grad`
   1048-1110.
 - `torch/nn/modules/module.py`: `class Module` 407; `register_buffer` 528.
-- Mixed precision (used): `autocast_mode.py` `autocast` 52-307 (`_cast` 410-417);
-  `grad_scaler.py` `GradScaler` 53-159, `scale`/`unscale_` 193-374, `step`/`update` 375-559;
-  `autocast_mode.h` `CastPolicy` 416-438, op lists 819-956; `autocast_mode.cpp` `cached_cast`
-  122-157, CUDA registration 181-222; `torch/__init__.py` `set_float32_matmul_precision`
-  1987-2050; `torch/headeronly/util/BFloat16.h` 100-114, `Float8_e4m3fn.h` 171-243,
-  `Float8_e5m2.h` 77-144.
-- Quantization (used): `torch/ao/quantization/quantize.py` `prepare` 343-410,
-  `quantize_dynamic` 483-572, `prepare_qat` 574-604, `convert` 629-680; `qconfig.py` defaults
-  153-178; `observer.py` `_calculate_qparams` 348-430, `MinMaxObserver` 440-585,
-  `PerChannelMinMaxObserver` 686-896; `fake_quantize.py` `FakeQuantize` 128-329; `utils.py`
-  `calculate_qmin_qmax` 445-506, `DEPRECATION_WARNING` 818-829; `_torch_docs.py`
-  `fake_quantize_per_tensor_affine` 12353-12392, `quantize_per_tensor` 13807-13841,
-  `quantize_per_tensor_dynamic` 13843-13871; `QuantizedOpKernels.cpp`
-  `_fake_quantize_tensor_helper` 2655-2715; `FakeQuantPerTensorAffine.cpp` backward 121-134.
-- GPU execution (used): `torch/cuda/streams.py` `Stream` 17-133, `wait_event`/`wait_stream`
-  48-77, `Event` 159-271, `elapsed_time` 234-243; `torch/cuda/__init__.py` `get_device_properties`
-  787-803, `StreamContext`/`stream` 818-886, `synchronize` 1271-1281, `current_stream`/
-  `default_stream` 1297-1330; `torch/__init__.py` `compile` 3045-3288 (modes 3103-3117).
+- Mixed precision, quantization, GPU execution and initialization: ranges live in their
+  templates.
 - Similarity search: `distance.py` `PairwiseDistance` 10-61, `CosineSimilarity` 64-100;
   `torch/nn/functional.py` `pairwise_distance` 5858-5865, `cosine_similarity` 5895-5924,
   `normalize` 6096-6130; `torch/functional.py` `cdist` 1483-1541.
@@ -139,7 +123,8 @@ Paths are under `sklearn/`.
 - Linear models (`linear_model/`), used by the regression, classifier and regularization pages:
   ranges live in those templates.
 - `tree/_classes.py`: `DecisionTreeClassifier` 699, `DecisionTreeRegressor` 1097.
-- `ensemble/_forest.py`: `RandomForestClassifier` 1174.
+- `ensemble/_forest.py`, `_bagging.py`, `inspection/_permutation_importance.py`,
+  `tree/_splitter.pyx`: ranges live in the `random-forests` template.
 - `ensemble/_gb.py`: `GradientBoostingClassifier` 1145.
 - `ensemble/_hist_gradient_boosting/gradient_boosting.py`: `HistGradientBoostingClassifier` 1762.
 - `svm/_classes.py`: `SVC` 623.
@@ -179,12 +164,13 @@ Paths are under `sklearn/`.
 - `transformer` uses the v1 section layout and is exempt from the §6 order test until its
   retrofit (queue item 18).
 
-## First to twenty-seventh runs (2026-10-08 to 2026-10-11) — condensed
+## First to twenty-eighth runs (2026-10-08 to 2026-10-11) — condensed
 
 Runs 1-3 wrote the spec (v1, then v2), the registry, `LEARNING_PATH`, the §6 and queue tests,
 `check_mobile.js` and the Routine. Every run since adds, per page, a tested-helpers commit, a
 page commit (page, `ready`, queue ✓) and usually a `docs:` commit; items 1-42 were built in
-queue order (run 27: similarity-search, gpu-execution, mixed-precision). `6f0803f` fixed 13 templates that read a missing `pins.X.version` key. Pins never
+queue order (run 27: similarity-search, gpu-execution, mixed-precision; run 28:
+quantization, reinforcement-learning, bayes-rule). `6f0803f` fixed 13 templates that read a missing `pins.X.version` key. Pins never
 moved. The ranges each page links live in its template (grep `src(`, `skl(`, `xgb(`);
 `git log -p` on this file has every old commit table and range list.
 
@@ -204,6 +190,11 @@ Findings worth keeping:
   have no `cosine`, so `NearestNeighbors(metric="cosine")` is brute force only.
 - `gpu-execution` uses an invented, labelled example GPU (100 TFLOP/s, 2 TB/s) and an assumed
   5 µs launch cost.
+- In v2.14.1 only the `torch/ao/quantization/quantize.py` entry points carry
+  `@deprecated(DEPRECATION_WARNING)` (pointing to torchao); `qconfig`, `observer` and
+  `fake_quantize` do not. The fake-quant backward is `dY * mask` on the unclamped code (STE).
+- `.jj-diagram svg text { fill: var(--jj-text) }` beats an SVG `fill=` attribute, so coloured
+  diagram text must use `style="fill: ..."` (`c9dbcc2` fixed three pages).
 
 Open gaps from these runs:
 
@@ -220,53 +211,51 @@ Open gaps from these runs:
   simulation follows the docstring (the `_amp_update_scale_` kernel was not read), and tf32's
   Ampere availability is general knowledge. BM25 has no pinned implementation; the page uses
   the Lucene idf variant and says so.
+- Run 28: GPTQ, LLM.int8(), Jacob et al., Bengio et al., Sutton and Barto, Williams 1992, Mnih
+  et al., Schulman et al., Bishop, Murphy and Gigerenzer and Hoffrage are cited from memory.
+  No pin implements GPTQ, LLM.int8() or any RL algorithm; those pages describe them from the
+  papers and the pinned source backs only the distributions, losses and observers they link.
+  `reinforcement-learning` names preference optimization in plain text until that page is
+  ready.
 
-## Twenty-eighth run (2026-10-11) — quantization, reinforcement-learning, bayes-rule
+## Twenty-ninth run (2026-10-12) — class-imbalance, random-forests, initialization
 
 | Commit | What |
 |---|---|
-| `5f73534` `ml-models: add quantization worked-example helpers` | Affine and symmetric qparams, quantize/dequantize, fake quantization with its STE mask, per-channel scales, int4 groups, weight memory and an LLM.int8()-style outlier split, with five tests (checked against the PyTorch docstring examples) |
-| `744a3e2` `ml-models: add the quantization page template` | The page |
-| `6a0d758` `ml-models: publish the quantization page` | `ready`, queue ✓ |
-| `8abe08e` `ml-models: add tested reinforcement learning helpers` | Discounted returns, value iteration and the closed form on a slippery four-state chain, a Q-update and seeded tabular Q-learning, TD-error advantages, exact REINFORCE gradients and variance with and without a baseline on a three-armed bandit, and PPO's clip, with five tests |
-| `6f8cb43` `ml-models: add the reinforcement learning page template` | The page |
-| `51a1295` `ml-models: publish the reinforcement learning page` | `ready`, queue ✓ |
-| `306747f` `ml-models: add tested bayes rule helpers` | A diagnostic test in natural frequencies with repeated positives, a coin's binomial likelihood (area 1/11 over θ) with MLE, MAP and the Beta posterior, one-feature ridge as a Gaussian-prior MAP, and smoothed multinomial naive Bayes in log space, with four tests |
-| `c9dbcc2` `ml-models: fix coloured svg text on three pages` | Green and amber SVG labels on derivatives-and-gradients, quantization and reinforcement-learning drew in the default colour; fills moved to inline styles |
-| `5cca008` `ml-models: add the bayes rule page` | The page |
-| `6e8cd71` `ml-models: publish the bayes rule page` | `ready`, queue ✓ |
+| `3c3db73` `ml-models: add tested class imbalance helpers` | "Balanced" weights, balanced accuracy, a weighted 1-D logistic fit (plain, weighted, over/undersampled, threshold-moved), the undersampling correction and focal loss, with four tests |
+| `5f94521` `ml-models: add the class imbalance page` | The page, `ready`, queue ✓ |
+| `3e8380e` `ml-models: add tested random forest helpers` | Pure-Python Gini trees with sklearn's max_features loop and random thresholds, bagging, OOB accuracy, impurity and permutation importance, and a tree-correlation estimate over 20 training sets, with four tests |
+| `88afc59` `ml-models: add the random forests page` | The page, `ready`, queue ✓ |
+| `cc6a954` `ml-models: add tested weight initialization helpers` | `calculate_gain`, fans, Xavier/Kaiming stds, the `nn.Linear` default bound and a 20-layer forward/backward RMS trace under seven schemes, with three tests |
+| `45fb10c` `ml-models: add the weight initialization page` | The page, `ready`, queue ✓ |
 
 Findings worth keeping:
 
-- In v2.14.1 only the `torch/ao/quantization/quantize.py` entry points (`quantize_dynamic`,
-  `prepare`, `convert`, `prepare_qat`) carry `@deprecated(DEPRECATION_WARNING)`, which points
-  to torchao and says removal in 2.10; they are still present in 2.14.1. `qconfig`, `observer`
-  and `fake_quantize` carry no deprecation. The page states exactly that.
-- The fake-quant kernel's gradient mask is computed on the unclamped code
-  (`quant_min <= round(x/s) + z <= quant_max`) and the backward returns `dY * mask`: the
-  straight-through estimator, zero where the value was clamped.
-- `.jj-diagram svg text { fill: var(--jj-text) }` overrides an SVG `fill=` presentation
-  attribute (author CSS beats presentation attributes), so coloured diagram text must use
-  `style="fill: ..."`. Pins checked with `git ls-remote --tags`: v2.14.1, 1.9.1 and v3.4.2
-  are still the newest stable releases; no pin moved.
+- `nn.Linear`/`_ConvNd` call `kaiming_uniform_(a=math.sqrt(5))`: gain √(1/3), so the bound is
+  exactly 1/√fan_in (the source comment says so). In a plain ReLU stack that is a per-layer
+  E[h²] factor of 1/6, not Kaiming's 1. `nn.Embedding` uses N(0, 1). `trunc_normal_`'s a=−2,
+  b=2 are absolute cutoffs, not multiples of std.
+- sklearn's splitter keeps drawing features past `max_features` while every drawn feature is
+  constant; `ExtraTrees*` draw one uniform threshold per feature and default to
+  `bootstrap=False`; `RandomForestRegressor` defaults to `max_features=1.0` (its docstring
+  cites Geurts et al. for that). Forest `predict` averages probabilities (a soft vote).
+- In the forest demo, impurity importance gives continuous noise 16% and binary noise 3%
+  while permutation importance gives both about 0: the cardinality bias the docstring warns of.
+  Feature subsampling lowered tree correlation from 0.19 to 0.12.
+- At width 32, Kaiming's RMS still drifts to 0.43 over 20 layers (finite-width random walk);
+  tanh with gain 5/3 holds the forward RMS near 0.64 but grows the gradient to 4.3.
+- Pins checked with `git ls-remote --tags`: v2.14.1, 1.9.1 and v3.4.2 are still the newest
+  stable releases; no pin moved. arxiv.org is still unreachable through the proxy.
 
 Gaps:
 
-- GPTQ, LLM.int8(), Jacob et al. and Bengio et al. are cited from memory (arxiv.org
-  unreachable through the proxy). None of the pins implements GPTQ or LLM.int8(); the page
-  describes them from the papers. HistogramObserver is described only by its docstring.
-- Reinforcement learning: PyTorch has no RL algorithm in the pin, so Q-learning, DQN
-  (replay, the target network from the 2015 Nature version), REINFORCE, actor-critic and PPO
-  are described from Sutton and Barto, Williams 1992, Mnih et al. 2013 and Schulman et al.
-  2017, all cited from memory. The pinned source backs only `Categorical`, the
-  score-function docstring in `torch/distributions/__init__.py` and `nn.HuberLoss`. The PPO
-  loss coefficients in the snippet are labelled as common defaults, not pinned values. The
-  page names preference optimization in plain text until that page is ready.
-- Bayes rule: Bishop 2006, Murphy 2022 and Gigerenzer and Hoffrage 1995 are cited from
-  memory. The pinned source backs `Distribution.log_prob`, `Normal.log_prob`,
-  `Bernoulli.log_prob`, `GaussianNLLLoss`, ridge's objective docstring and scikit-learn's
-  naive Bayes; the Beta-binomial conjugacy and MAP-as-ridge are standard derivations shown on
-  the page, not pinned code.
+- Cited from memory: Lin et al. (focal loss), Chawla et al. (SMOTE), King and Zeng, Elkan,
+  Brodersen et al., Breiman 1996 and 2001 (the 2001 DOI is in sklearn's docstring), Geurts et
+  al. 2006 (title and volume in the docstring), Ho 1998, ESL chapter 15, Glorot and Bengio,
+  He et al., Saxe et al. (named in `init.py` docstrings) and GPT-2's 1/√N residual scaling.
+- `class-imbalance` names calibration in plain text until that page is ready.
+- `random-forests` (413 lines) is over the 400-line commit guideline because the template is
+  one file.
 
 ## Queue
 
