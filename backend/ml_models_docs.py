@@ -8436,6 +8436,174 @@ def distillation_example():
     }
 
 
+TIME_SERIES_EXAMPLE = {
+    "n": 96,
+    "period": 12,
+    "level": 100.0,
+    "slope": 0.5,
+    "amplitude": 10.0,
+    "phi": 0.6,
+    "noise": 2.0,
+    "seed": 7,
+    "n_splits": 4,
+    "test_size": 12,
+    "harmonics": 2,
+    "acf_lags": 24,
+    "kfold": 5,
+    "shuffle_seed": 3,
+}
+
+
+def seasonal_series(n, level, slope, amplitude, period, phi, noise, seed):
+    rng = random.Random(seed)
+    values = []
+    ar = 0.0
+    for t in range(n):
+        ar = phi * ar + rng.gauss(0, noise)
+        values.append(level + slope * t + amplitude * math.sin(2 * math.pi * t / period) + ar)
+    return values
+
+
+def centred_moving_average(values, period):
+    half = period // 2
+    out = [None] * len(values)
+    for t in range(half, len(values) - half):
+        if period % 2:
+            window = values[t - half:t + half + 1]
+        else:
+            window = [0.5 * values[t - half]] + values[t - half + 1:t + half] + [0.5 * values[t + half]]
+        out[t] = sum(window) / period
+    return out
+
+
+def classical_decomposition(values, period):
+    trend = centred_moving_average(values, period)
+    buckets = [[] for _ in range(period)]
+    for t, (y, level) in enumerate(zip(values, trend)):
+        if level is not None:
+            buckets[t % period].append(y - level)
+    raw = [sum(b) / len(b) for b in buckets]
+    shift = sum(raw) / period
+    indices = [r - shift for r in raw]
+    residual = [None if level is None else y - level - indices[t % period]
+                for t, (y, level) in enumerate(zip(values, trend))]
+    return {"trend": trend, "indices": indices, "residual": residual}
+
+
+def autocorrelation(values, lags):
+    n = len(values)
+    mean = sum(values) / n
+    centred = [v - mean for v in values]
+    denominator = sum(c * c for c in centred)
+    return [sum(centred[t] * centred[t + k] for t in range(n - k)) / denominator for k in range(1, lags + 1)]
+
+
+def time_series_split(n, n_splits, test_size=None, gap=0, max_train_size=None):
+    if n_splits + 1 > n:
+        raise ValueError("more folds than samples")
+    test_size = test_size if test_size is not None else n // (n_splits + 1)
+    if n - gap - test_size * n_splits <= 0:
+        raise ValueError("too many splits for the number of samples")
+    splits = []
+    for start in range(n - n_splits * test_size, n, test_size):
+        end = start - gap
+        first = end - max_train_size if max_train_size and max_train_size < end else 0
+        splits.append((list(range(first, end)), list(range(start, start + test_size))))
+    return splits
+
+
+def _least_squares(rows, targets):
+    width = len(rows[0])
+    gram = [[sum(r[i] * r[j] for r in rows) for j in range(width)] for i in range(width)]
+    moments = [sum(r[i] * y for r, y in zip(rows, targets)) for i in range(width)]
+    return _solve_linear(gram, moments)
+
+
+def fourier_features(t, n, period, harmonics):
+    row = [1.0, t / n]
+    for k in range(1, harmonics + 1):
+        angle = 2 * math.pi * k * t / period
+        row += [math.sin(angle), math.cos(angle)]
+    return row
+
+
+def forecast_models(values, train, test, period, harmonics):
+    n = len(values)
+    last = train[-1]
+    naive = [values[last]] * len(test)
+    seasonal = [values[t - period * ((t - last - 1) // period + 1)] for t in test]
+    weights = _least_squares([fourier_features(t, n, period, harmonics) for t in train], [values[t] for t in train])
+    fourier = [sum(w * x for w, x in zip(weights, fourier_features(t, n, period, harmonics))) for t in test]
+    lagged = [t for t in train if t >= period]
+    lag_weights = _least_squares([[1.0, t / n, values[t - period]] for t in lagged], [values[t] for t in lagged])
+    lag = [lag_weights[0] + lag_weights[1] * t / n + lag_weights[2] * values[t - period] for t in test]
+    return [
+        ("naive", naive),
+        ("seasonal naive", seasonal),
+        ("trend + Fourier", fourier),
+        ("trend + lag 12", lag),
+    ]
+
+
+def forecast_errors(values, train, test, predictions):
+    errors = [values[t] - p for t, p in zip(test, predictions)]
+    mae = sum(abs(e) for e in errors) / len(errors)
+    rmse = math.sqrt(sum(e * e for e in errors) / len(errors))
+    scale = sum(abs(values[t] - values[t - 1]) for t in train[1:]) / (len(train) - 1)
+    return {"mae": mae, "rmse": rmse, "mase": mae / scale, "scale": scale}
+
+
+def nearest_time_prediction(values, train, t):
+    return values[min(train, key=lambda s: (abs(s - t), s))]
+
+
+def nearest_time_mae(values, splits):
+    errors = [abs(values[t] - nearest_time_prediction(values, train, t)) for train, test in splits for t in test]
+    return sum(errors) / len(errors)
+
+
+@functools.lru_cache(maxsize=1)
+def time_series_example():
+    e = TIME_SERIES_EXAMPLE
+    values = seasonal_series(e["n"], e["level"], e["slope"], e["amplitude"], e["period"],
+                             e["phi"], e["noise"], e["seed"])
+    parts = classical_decomposition(values, e["period"])
+    residual = [r for r in parts["residual"] if r is not None]
+    splits = time_series_split(e["n"], e["n_splits"], e["test_size"])
+    folds = []
+    for train, test in splits:
+        models = forecast_models(values, train, test, e["period"], e["harmonics"])
+        folds.append({
+            "train": train,
+            "test": test,
+            "models": [{"name": name, "predictions": p, **forecast_errors(values, train, test, p)}
+                       for name, p in models],
+        })
+    names = [m["name"] for m in folds[0]["models"]]
+    summary = [{"name": name, **{key: sum(f["models"][i][key] for f in folds) / len(folds)
+                                 for key in ("mae", "rmse", "mase")}}
+               for i, name in enumerate(names)]
+    order = list(range(e["n"]))
+    random.Random(e["shuffle_seed"]).shuffle(order)
+    shuffled = [([order[i] for i in train], [order[i] for i in test]) for train, test in kfold_splits(e["n"], e["kfold"])]
+    return {
+        "values": values,
+        "trend": parts["trend"],
+        "indices": parts["indices"],
+        "residual": parts["residual"],
+        "acf": autocorrelation(values, e["acf_lags"]),
+        "residual_acf": autocorrelation(residual, e["acf_lags"]),
+        "band": 1.96 / math.sqrt(e["n"]),
+        "residual_band": 1.96 / math.sqrt(len(residual)),
+        "folds": folds,
+        "summary": summary,
+        "leakage": {
+            "shuffled": nearest_time_mae(values, shuffled),
+            "ordered": nearest_time_mae(values, splits),
+        },
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -8973,6 +9141,9 @@ def render(slug, render_template):
         "vector_index_settings": VECTOR_INDEX_EXAMPLE,
         "distillation_example": distillation_example,
         "distillation_settings": DISTILLATION_EXAMPLE,
+        "time_series_example": time_series_example,
+        "time_series_settings": TIME_SERIES_EXAMPLE,
+        "time_series_split": time_series_split,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

@@ -3561,3 +3561,62 @@ def test_distillation_example_soft_targets_beat_hard_labels():
     assert soft["agreement"] > hard["agreement"]
     assert teacher["nll"] < soft["nll"]
     assert hot["kl"] > soft["kl"]
+
+
+def test_time_series_split_matches_the_sklearn_docstring():
+    split = ml_models_docs.time_series_split
+    assert split(12, 3, test_size=2) == [
+        (list(range(6)), [6, 7]),
+        (list(range(8)), [8, 9]),
+        (list(range(10)), [10, 11]),
+    ]
+    assert [train for train, _ in split(12, 3, test_size=2, gap=2)] == [
+        list(range(4)), list(range(6)), list(range(8)),
+    ]
+    assert split(6, 5) == [(list(range(k + 1)), [k + 1]) for k in range(5)]
+    assert split(12, 3, max_train_size=3) == [([0, 1, 2], [3, 4, 5]), ([3, 4, 5], [6, 7, 8]), ([6, 7, 8], [9, 10, 11])]
+    with pytest.raises(ValueError):
+        split(5, 5)
+    with pytest.raises(ValueError):
+        split(12, 3, test_size=4)
+
+
+def test_classical_decomposition_recovers_a_pure_seasonal_pattern():
+    pattern = [3.0, -1.0, 0.5, -2.5]
+    values = [10 + 0.25 * t + pattern[t % 4] for t in range(24)]
+    parts = ml_models_docs.classical_decomposition(values, 4)
+    assert parts["indices"] == pytest.approx(pattern)
+    assert parts["trend"][:2] == [None, None] and parts["trend"][-2:] == [None, None]
+    assert parts["trend"][2:-2] == pytest.approx([10 + 0.25 * t for t in range(2, 22)])
+    assert all(abs(r) < 1e-9 for r in parts["residual"] if r is not None)
+
+
+def test_autocorrelation_sees_the_season():
+    values = [math.sin(2 * math.pi * t / 12) for t in range(120)]
+    acf = ml_models_docs.autocorrelation(values, 12)
+    assert acf[5] < -0.9 and acf[11] > 0.85
+    assert ml_models_docs.autocorrelation([1, 2, 3, 4], 1)[0] == pytest.approx(0.25)
+
+
+def test_forecast_errors_scale_by_in_sample_naive():
+    scores = ml_models_docs.forecast_errors([0, 2, 4, 6, 9, 12], [0, 1, 2, 3], [4, 5], [8, 14])
+    assert scores["scale"] == 2
+    assert scores["mae"] == 1.5 and scores["mase"] == 0.75
+    assert scores["rmse"] == pytest.approx(math.sqrt(2.5))
+
+
+def test_time_series_example_ranks_models_and_exposes_shuffled_leakage():
+    e = ml_models_docs.TIME_SERIES_EXAMPLE
+    x = ml_models_docs.time_series_example()
+    assert len(x["values"]) == e["n"] and len(x["folds"]) == e["n_splits"]
+    for fold in x["folds"]:
+        assert max(fold["train"]) < min(fold["test"])
+        assert len(fold["test"]) == e["test_size"]
+    assert sum(x["indices"]) == pytest.approx(0)
+    assert max(x["indices"]) > 0.7 * e["amplitude"]
+    by_name = {row["name"]: row for row in x["summary"]}
+    assert by_name["trend + Fourier"]["mase"] < 1 < by_name["seasonal naive"]["mase"] < by_name["naive"]["mase"]
+    assert by_name["trend + Fourier"]["mae"] <= by_name["trend + Fourier"]["rmse"]
+    assert x["residual_acf"][0] > x["residual_band"] > abs(x["residual_acf"][4])
+    assert x["leakage"]["ordered"] == pytest.approx(by_name["naive"]["mae"])
+    assert x["leakage"]["shuffled"] < 0.5 * x["leakage"]["ordered"]
