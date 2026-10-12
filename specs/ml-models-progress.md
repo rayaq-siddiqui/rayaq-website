@@ -285,8 +285,8 @@ Gaps:
 59. `time-series` ✓
 60. `regression-metrics` ✓
 61. `support-vector-machines` ✓
-62. `learning-rate-schedules` ← next
-63. `gans`
+62. `learning-rate-schedules` ✓
+63. `gans` ← next
 64. `encoder-only`
 65. `learning-to-rank`
 66. `data-loading-and-batching`

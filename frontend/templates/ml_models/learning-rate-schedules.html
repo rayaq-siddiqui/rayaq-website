@@ -1,0 +1,460 @@
+{% set ex = lr_example() %}
+{% set e = lr_settings %}
+{% set s = ex.schedules %}
+{% set oc = e.one_cycle %}
+{% set rt = ex.range %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(0.0 if x|abs < 0.5 * 10 ** (-n) else x)|replace("-", "−") }}{%- endmacro %}
+{% macro g(x) -%}{{ ('%g'|format(x))|replace("-", "−") }}{%- endmacro %}
+{% macro sx(t) -%}{{ '%.1f'|format(60 + t * 5.4) }}{%- endmacro %}
+{% macro sy(lr) -%}{{ '%.1f'|format(210 - lr * 1700) }}{%- endmacro %}
+{% macro ly(l) -%}{{ '%.1f'|format(30 + (1 - log10(l)) * 48) }}{%- endmacro %}
+{% macro rx(lr) -%}{{ '%.1f'|format(60 + (log10(lr) + 4) * 108) }}{%- endmacro %}
+{% set curves = [
+  ("constant", "", "constant 0.1"),
+  ("step", "var(--jj-amber)", "StepLR"),
+  ("exponential", "var(--jj-green)", "ExponentialLR"),
+  ("cosine", "var(--jj-violet)", "CosineAnnealingLR"),
+  ("warmup_cosine", "var(--jj-accent)", "warmup + cosine"),
+  ("one_cycle", "var(--jj-red)", "OneCycleLR"),
+] %}
+{% set loss_curves = [
+  ("constant", "", "constant 0.1"),
+  ("slow", "var(--jj-amber)", "constant 0.01"),
+  ("step", "var(--jj-green)", "StepLR"),
+  ("cosine", "var(--jj-violet)", "cosine"),
+  ("warmup_cosine", "var(--jj-accent)", "warmup + cosine"),
+] %}
+<header class="jj-header">
+  <h1>Learning-rate schedules</h1>
+  <p class="tagline">
+    The learning rate is the one hyperparameter that can, on its own, make training diverge, crawl or stall at a noisy plateau, and the best value changes as training goes on.
+    This page shows why a large rate early and a small rate late beats any constant, derives the noise floor of SGD exactly on a quadratic, and walks through PyTorch's step, exponential, cosine, warmup and one-cycle schedulers, how they compose and how an LR range test picks the peak.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Every optimizer on the <a href="/ml-models/optimizers">optimizers</a> page multiplies its update by a learning rate η. Set η too high and the loss oscillates or explodes; set it too low and training takes many times longer than it should. Between those, a fixed η still leaves a gap: with noisy minibatch gradients the parameters never settle at the minimum but jitter around it, and the size of the jitter is proportional to η.
+</p>
+<p>
+  So the right learning rate depends on where training is. Early on the parameters are far from any minimum and a large step makes fast progress. Late in training the remaining error is mostly gradient noise, and only a small step averages it away. Adaptive optimizers add a third phase: in the first few hundred steps their statistics are estimated from almost no data, and a full-size step can push the model somewhere it never recovers from. A schedule is a function from the step count to η that serves all three phases.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Picture a ball rolling into a valley while being shaken. A big step size crosses the valley quickly but the shaking keeps it bouncing near the bottom; a small step size bounces less but takes forever to get there. Starting big and shrinking the step does both: cover the distance while the step is large, then let the bouncing die down as the step shrinks. Every decay schedule (steps, an exponential, a cosine) is a different curve for that shrinking.
+</p>
+<p>
+  Warmup is the opposite move at the very beginning: start tiny and ramp up over a few hundred or thousand steps, so the first updates, made with a freshly initialised network and an optimizer that has seen almost no gradients, cannot do lasting damage. One-cycle combines both: warm up to a high peak, then anneal far below the starting value.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 260" role="img" aria-labelledby="lrs-shapes-title lrs-shapes-desc">
+    <title id="lrs-shapes-title">Six learning rate schedules over {{ e.steps }} steps</title>
+    <desc id="lrs-shapes-desc">
+      Learning rate on the vertical axis from 0 to {{ g(e.base_lr) }}, step 0 to {{ e.steps - 1 }} on the horizontal axis.
+      The constant schedule stays at {{ g(e.base_lr) }}. StepLR stays at {{ g(e.base_lr) }} until step {{ e.step_size - 1 }}, drops to {{ g(s.step[e.step_size]) }} at step {{ e.step_size }}, {{ g(s.step[2 * e.step_size]) }} at {{ 2 * e.step_size }} and {{ g(s.step[3 * e.step_size]) }} at {{ 3 * e.step_size }}.
+      ExponentialLR with gamma {{ g(e.exp_gamma) }} falls smoothly to {{ f(s.exponential[-1], 4) }}. CosineAnnealingLR follows half a cosine from {{ g(e.base_lr) }} to near 0, passing {{ f(s.cosine[50], 3) }} at step 50.
+      Warmup plus cosine rises linearly from {{ g(s.warmup_cosine[0]) }} to {{ g(e.base_lr) }} over {{ e.warmup }} steps, then follows a cosine over the remaining {{ e.steps - e.warmup }}.
+      OneCycleLR starts at {{ g(ex.one_cycle.initial) }}, rises along a cosine to {{ g(oc.max_lr) }} at step {{ ex.one_cycle.peak_step|int }}, then falls along a cosine to {{ g(ex.one_cycle.final) }}.
+    </desc>
+    <line x1="55" y1="{{ sy(0) }}" x2="610" y2="{{ sy(0) }}" class="d-line"></line>
+    <line x1="60" y1="30" x2="60" y2="{{ sy(0) }}" class="d-line"></line>
+    {% for lr in [0, 0.025, 0.05, 0.075, 0.1] %}
+    <text x="54" y="{{ '%.1f'|format(210 - lr * 1700 + 3) }}" font-size="10" text-anchor="end" class="d-muted">{{ g(lr) }}</text>
+    {% endfor %}
+    {% for t in [0, 10, 30, 60, 90] %}
+    <text x="{{ sx(t) }}" y="224" font-size="10" text-anchor="middle" class="d-muted">{{ t }}</text>
+    {% endfor %}
+    {% for key, color, label in curves %}
+    <polyline fill="none" stroke-width="2"{% if key == "constant" %} class="ml-dashed d-line"{% else %} style="stroke: {{ color }}"{% endif %} points="{% for lr in s[key] %}{{ sx(loop.index0) }},{{ sy(lr) }} {% endfor %}"></polyline>
+    {% endfor %}
+    <g font-size="11">
+      {% for key, color, label in curves %}
+      <text x="{{ 60 + (loop.index0 % 3) * 180 }}" y="{{ 240 + (loop.index0 // 3) * 15 }}"{% if key == "constant" %} class="d-muted"{% else %} style="fill: {{ color }}"{% endif %}>{{ label }}</text>
+      {% endfor %}
+      <text x="610" y="224" text-anchor="end" class="d-muted">step →</text>
+    </g>
+  </svg>
+  <p class="ml-caption">The schedules in the worked example, computed with closed forms that the tests hold equal to PyTorch's own step-by-step updates. Every decay ends far below where it starts; warmup and one-cycle also start low.</p>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="scheduler-api">What a scheduler is in PyTorch</h3>
+
+<p>
+  A scheduler in <code>torch.optim.lr_scheduler</code> owns an optimizer and rewrites each param group's <code>"lr"</code> entry. Its constructor stores the starting rate as <code>group["initial_lr"]</code>, copies those into <code>base_lrs</code>, and immediately calls <code>step()</code> once, which sets <code>last_epoch</code> to 0. Each later <code>step()</code> increments <code>last_epoch</code> and writes the new rate. Despite the name, <code>last_epoch</code> counts calls to <code>step()</code>: call it once per batch and every schedule length below is in batches.
+</p>
+<p>
+  The order matters. Since PyTorch 1.1 the loop is <code>optimizer.step()</code> then <code>scheduler.step()</code>; the constructor wraps <code>optimizer.step</code> so the first <code>scheduler.step()</code> can warn when it is called before any optimizer step, because that skips the first value of the schedule.
+</p>
+<p>
+  Most schedulers compute the next rate recursively from the current <code>group["lr"]</code>, so that several schedulers can modify the same rate in turn, and also have a <code>_get_closed_form_lr</code> used only when an explicit epoch is passed. The closed forms below are the ones this page computes with, and the tests check that they equal the recursions step for step to within {{ g(1e-12) }}.
+</p>
+
+<h3 id="decay-shapes">Decay shapes</h3>
+
+<p class="ml-formula">
+  StepLR: η<sub>t</sub> = η<sub>0</sub> · γ<sup>⌊t / step_size⌋</sup> &nbsp;&nbsp; ExponentialLR: η<sub>t</sub> = η<sub>0</sub> · γ<sup>t</sup><br>
+  CosineAnnealingLR: η<sub>t</sub> = η<sub>min</sub> + ½(η<sub>0</sub> − η<sub>min</sub>)(1 + cos(π t / T<sub>max</sub>))
+</p>
+<p>
+  StepLR (default γ = 0.1) and its sibling MultiStepLR, which decays at a list of milestones, are the schedules classic image classifiers were trained with: a long plateau at a high rate, then drops by ten. ExponentialLR shrinks by the same factor every step. The cosine spends longer near the top than a straight line would, falls fastest in the middle and flattens out near η<sub>min</sub>, without the discontinuities of step decay and with only one shape parameter, the length T<sub>max</sub>. CosineAnnealingWarmRestarts restarts the cosine every T<sub>0</sub> steps, optionally growing the period by T<sub>mult</sub>.
+</p>
+
+<h3 id="warmup">Linear warmup</h3>
+
+<p class="ml-formula">
+  LinearLR: η<sub>t</sub> = η<sub>0</sub> · (s + (e − s) · min(t, T) / T), defaults s = 1/3, e = 1, T = 5
+</p>
+<p>
+  LinearLR multiplies the base rate by a factor that moves linearly from <code>start_factor</code> to <code>end_factor</code> over <code>total_iters</code> steps and then holds. Used with a small start factor it is a warmup. Warmup became standard for two reasons. Large-batch SGD (Goyal et al., 2017) scales the rate with the batch size, and the scaled rate is too large for the first few epochs. Adam-family optimizers divide by the square root of a second-moment estimate built from a handful of gradients, so their first updates have a step size near η in every coordinate regardless of how small or noisy the gradient is (see <a href="#adam-start">the worked example</a>). Transformers trained with the original Post-LN layout are especially sensitive: Xiong et al. (2020) show the gradients near the output are large at initialisation, and Liu et al. (2020) trace the problem to the variance of Adam's adaptive rate in early steps, which RAdam corrects without a warmup.
+</p>
+
+<h3 id="one-cycle">One-cycle</h3>
+
+<p>
+  OneCycleLR (Smith and Topin) starts at <code>max_lr / div_factor</code> (default 25), anneals up to <code>max_lr</code> over the first <code>pct_start</code> of <code>total_steps</code> (default 30%), then anneals down to <code>initial_lr / final_div_factor</code> (default 10<sup>4</sup>), so it ends far below where it started. Each phase uses the cosine interpolation <code>end + (start − end)/2 · (cos(π·pct) + 1)</code> or a straight line with <code>anneal_strategy="linear"</code>. With <code>cycle_momentum=True</code> (the default) momentum, or Adam's β<sub>1</sub>, moves the opposite way between 0.95 and 0.85, so the effective step is not doubly amplified at the peak. It must be told <code>total_steps</code> in advance and raises an error if stepped past it.
+</p>
+
+<h3 id="feedback-and-composition">Plateaus and composition</h3>
+
+<p>
+  ReduceLROnPlateau is the one scheduler that watches the training rather than the clock: <code>step(metric)</code> counts epochs without improvement, and after <code>patience</code> (default 10) of them multiplies the rate by <code>factor</code> (default 0.1), floored at <code>min_lr</code>. SequentialLR runs a list of schedulers one after another, switching at <code>milestones</code>; at each switch it calls the next scheduler's <code>_update_lr(0)</code>, which restarts that scheduler from its base rate. ChainedScheduler instead steps every scheduler on every step, so their multiplicative effects stack. Warmup followed by cosine is <code>SequentialLR([LinearLR, CosineAnnealingLR], milestones=[warmup])</code> with the cosine's <code>T_max</code> set to the steps that remain.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>LRScheduler</code></td>
+        <td>optimizer, last_epoch=-1</td>
+        <td>Base class: stores <code>initial_lr</code> and <code>base_lrs</code>, wraps <code>optimizer.step</code> to detect call order, takes the initial step.</td>
+        <td><a href="{{ src('torch/optim/lr_scheduler.py', 95, 302) }}">lr_scheduler.py 95-302</a>, <code>__init__</code> <a href="{{ src('torch/optim/lr_scheduler.py', 119, 180) }}">119-180</a></td>
+      </tr>
+      <tr>
+        <td><code>step</code> / <code>_update_lr</code></td>
+        <td>epoch=None (deprecated)</td>
+        <td>Warns if called before <code>optimizer.step()</code>, increments <code>last_epoch</code>, writes <code>get_lr()</code> (or the closed form when an epoch is passed) into each group.</td>
+        <td><a href="{{ src('torch/optim/lr_scheduler.py', 238, 301) }}">238-301</a></td>
+      </tr>
+      <tr>
+        <td><code>LambdaLR</code></td>
+        <td>lr_lambda (function or list)</td>
+        <td>η<sub>t</sub> = η<sub>0</sub> · λ(t): any schedule written as a multiplier.</td>
+        <td><a href="{{ src('torch/optim/lr_scheduler.py', 343, 466) }}">343-466</a>, <code>get_lr</code> <a href="{{ src('torch/optim/lr_scheduler.py', 441, 466) }}">441-466</a></td>
+      </tr>
+      <tr>
+        <td><code>StepLR</code> / <code>MultiStepLR</code></td>
+        <td>step_size or milestones, gamma=0.1</td>
+        <td>Multiply by γ every <code>step_size</code> steps, or at each listed milestone.</td>
+        <td><a href="{{ src('torch/optim/lr_scheduler.py', 592, 676) }}">592-676</a>, closed form <a href="{{ src('torch/optim/lr_scheduler.py', 660, 676) }}">660-676</a>; <a href="{{ src('torch/optim/lr_scheduler.py', 679, 770) }}">679-770</a></td>
+      </tr>
+      <tr>
+        <td><code>LinearLR</code></td>
+        <td>start_factor=1/3, end_factor=1.0, total_iters=5</td>
+        <td>Linear ramp of the multiplier; the usual warmup.</td>
+        <td><a href="{{ src('torch/optim/lr_scheduler.py', 877, 1004) }}">877-1004</a>, recursion <a href="{{ src('torch/optim/lr_scheduler.py', 937, 980) }}">937-980</a>, closed form <a href="{{ src('torch/optim/lr_scheduler.py', 982, 1004) }}">982-1004</a></td>
+      </tr>
+      <tr>
+        <td><code>ExponentialLR</code></td>
+        <td>gamma</td>
+        <td>Multiply by γ every step.</td>
+        <td><a href="{{ src('torch/optim/lr_scheduler.py', 1007, 1079) }}">1007-1079</a></td>
+      </tr>
+      <tr>
+        <td><code>CosineAnnealingLR</code></td>
+        <td>T_max, eta_min=0.0</td>
+        <td>Half a cosine from η<sub>0</sub> to η<sub>min</sub> over T<sub>max</sub> steps. The recursion keeps going past T<sub>max</sub> and climbs back up.</td>
+        <td><a href="{{ src('torch/optim/lr_scheduler.py', 1338, 1475) }}">1338-1475</a>, <code>get_lr</code> <a href="{{ src('torch/optim/lr_scheduler.py', 1400, 1454) }}">1400-1454</a></td>
+      </tr>
+      <tr>
+        <td><code>CosineAnnealingWarmRestarts</code></td>
+        <td>T_0, T_mult=1, eta_min=0.0</td>
+        <td>Cosine that restarts at η<sub>0</sub> every T<sub>i</sub> steps, with T<sub>i</sub> multiplied by T<sub>mult</sub> after each restart (SGDR).</td>
+        <td><a href="{{ src('torch/optim/lr_scheduler.py', 2105, 2274) }}">2105-2274</a></td>
+      </tr>
+      <tr>
+        <td><code>OneCycleLR</code></td>
+        <td>max_lr, total_steps, pct_start=0.3, anneal_strategy="cos", div_factor=25, final_div_factor=1e4, three_phase=False, base_momentum=0.85, max_momentum=0.95</td>
+        <td>Warm up to <code>max_lr</code>, anneal to <code>initial_lr / final_div_factor</code>, with momentum cycled inversely.</td>
+        <td><a href="{{ src('torch/optim/lr_scheduler.py', 2285, 2606) }}">2285-2606</a>, phases <a href="{{ src('torch/optim/lr_scheduler.py', 2433, 2472) }}">2433-2472</a>, <code>get_lr</code> <a href="{{ src('torch/optim/lr_scheduler.py', 2546, 2606) }}">2546-2606</a></td>
+      </tr>
+      <tr>
+        <td><code>ReduceLROnPlateau</code></td>
+        <td>mode="min", factor=0.1, patience=10, threshold=1e-4, cooldown=0, min_lr=0</td>
+        <td>Cut the rate by <code>factor</code> after <code>patience</code> epochs without improvement in a monitored metric.</td>
+        <td><a href="{{ src('torch/optim/lr_scheduler.py', 1584, 1785) }}">1584-1785</a>, <code>step</code> <a href="{{ src('torch/optim/lr_scheduler.py', 1696, 1721) }}">1696-1721</a></td>
+      </tr>
+      <tr>
+        <td><code>SequentialLR</code></td>
+        <td>schedulers, milestones (one fewer)</td>
+        <td>Hand over from one scheduler to the next at each milestone, restarting the next one from its base rate.</td>
+        <td><a href="{{ src('torch/optim/lr_scheduler.py', 1082, 1235) }}">1082-1235</a>, <code>step</code> <a href="{{ src('torch/optim/lr_scheduler.py', 1186, 1196) }}">1186-1196</a></td>
+      </tr>
+      <tr>
+        <td><code>ChainedScheduler</code></td>
+        <td>schedulers</td>
+        <td>Step all schedulers every step, so their factors multiply.</td>
+        <td><a href="{{ src('torch/optim/lr_scheduler.py', 1478, 1581) }}">1478-1581</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>A training loop calls <code>scheduler.step()</code> once per epoch, but the CosineAnnealingLR was built with <code>T_max</code> equal to the total number of batches. What happens?</summary>
+  <p>The rate barely moves: after the whole run, <code>last_epoch</code> equals the number of epochs, a tiny fraction of <code>T_max</code>, so the rate stays near its starting value and never anneals. The schedule length and the place <code>step()</code> is called must use the same unit.</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    Every number here is exact arithmetic from stdlib helpers, with no sampling. The model is the simplest one where a learning rate matters: a loss L(w) = ½·h·w² with curvature h = {{ g(e.curvature) }}, started at w<sub>0</sub> = {{ g(e.w0) }}. Plain gradient descent updates w ← w − η·h·w = (1 − ηh)·w.
+  </p>
+
+  <h3 id="stability">The stability limit</h3>
+
+  <p>
+    Each step multiplies w by 1 − ηh. Its size below 1 is the speed of convergence; a negative factor means overshooting the minimum; a size above 1 means divergence. The fastest rate is η = 1/h = {{ g(1 / e.curvature) }}, and anything above 2/h = {{ g(2 / e.curvature) }} diverges.
+  </p>
+
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>η</th><th>1 − ηh</th><th>w<sub>1</sub>, w<sub>2</sub>, w<sub>3</sub></th><th>w<sub>{{ e.gd_steps }}</sub></th><th>Behaviour</th></tr></thead>
+      <tbody>
+        {% for run in ex.gd %}
+        <tr>
+          <td>{{ g(run.lr) }}</td>
+          <td>{{ f(run.factor, 2) }}</td>
+          <td>{{ f(run.w[1], 3) }}, {{ f(run.w[2], 3) }}, {{ f(run.w[3], 3) }}</td>
+          <td>{{ f(run.w[-1], 3) }}</td>
+          <td>{% if run.factor|abs > 1 %}diverges{% elif run.factor < 0 %}overshoots, converges{% elif run.factor == 0 %}exact in one step{% else %}slow, monotone{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <p>
+    A real network has many curvatures at once, and the largest one sets the limit 2/h<sub>max</sub> for the whole model while the smallest sets how slowly the flattest direction converges. That spread is why one constant rate cannot be both safe and fast.
+  </p>
+
+  <h3 id="noise-floor">Noise sets a floor, decay removes it</h3>
+
+  <p>
+    Now give each gradient additive noise of standard deviation σ = {{ g(e.noise) }}, as a minibatch gradient has. Write m<sub>t</sub> for the expected value of w<sub>t</sub>². The update w ← (1 − ηh)·w − η·ξ gives an exact recursion with no sampling:
+  </p>
+  <p class="ml-formula">
+    m<sub>t+1</sub> = (1 − η<sub>t</sub>h)² · m<sub>t</sub> + η<sub>t</sub>²σ², &nbsp; E[L<sub>t</sub>] = ½ · h · m<sub>t</sub><br>
+    constant η: E[L] → ησ² / (2(2 − ηh))
+  </p>
+  <p>
+    At η = {{ g(e.base_lr) }} the floor is {{ f(ex.floors.constant, 4) }}; at η = {{ g(e.slow_lr) }} it is ten times lower, {{ f(ex.floors.slow, 4) }}, but reaching it takes hundreds of steps. The table runs {{ e.steps }} steps of each schedule from the diagram above.
+  </p>
+
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Schedule</th><th>E[L] at step 10</th><th>step 30</th><th>step 60</th><th>step {{ e.steps }}</th></tr></thead>
+      <tbody>
+        {% for key, color, label in loss_curves + [("one_cycle", "", "OneCycleLR")] %}
+        <tr>
+          <td>{{ label }}</td>
+          {% for t in [10, 30, 60, e.steps] %}<td>{{ f(ex.runs[key][t], 4) }}</td>{% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="jj-diagram">
+    <svg viewBox="0 0 640 275" role="img" aria-labelledby="lrs-loss-title lrs-loss-desc">
+      <title id="lrs-loss-title">Expected loss of noisy gradient descent under five schedules, log scale</title>
+      <desc id="lrs-loss-desc">
+        Expected loss on a log scale from 10 down to 0.001 against step 0 to {{ e.steps }}. All curves start at {{ g(ex.runs.constant[0]) }}.
+        Constant {{ g(e.base_lr) }} drops fastest and flattens at its floor {{ f(ex.floors.constant, 4) }} by about step 30.
+        Constant {{ g(e.slow_lr) }} falls slowly and is still at {{ f(ex.runs.slow[-1], 3) }} at the end.
+        StepLR follows the constant curve until step {{ e.step_size }}, then drops to about {{ f(ex.runs.step[60], 3) }} and stays.
+        Cosine tracks the constant curve early and keeps falling to {{ f(ex.runs.cosine[-1], 4) }}.
+        Warmup plus cosine starts slower, at {{ f(ex.runs.warmup_cosine[10], 3) }} after 10 steps against {{ f(ex.runs.constant[10], 3) }}, then catches up and ends at {{ f(ex.runs.warmup_cosine[-1], 4) }}.
+      </desc>
+      <line x1="55" y1="{{ ly(0.001) }}" x2="610" y2="{{ ly(0.001) }}" class="d-line"></line>
+      <line x1="60" y1="25" x2="60" y2="{{ ly(0.001) }}" class="d-line"></line>
+      {% for l in [10, 1, 0.1, 0.01, 0.001] %}
+      <text x="54" y="{{ '%.1f'|format(33 + (1 - log10(l)) * 48) }}" font-size="10" text-anchor="end" class="d-muted">{{ g(l) }}</text>
+      {% endfor %}
+      {% for t in [0, 10, 30, 60, 100] %}
+      <text x="{{ sx(t) }}" y="237" font-size="10" text-anchor="middle" class="d-muted">{{ t }}</text>
+      {% endfor %}
+      <line x1="60" y1="{{ ly(ex.floors.constant) }}" x2="610" y2="{{ ly(ex.floors.constant) }}" class="d-muted ml-dashed" stroke="currentColor" stroke-width="1"></line>
+      <text x="606" y="{{ '%.1f'|format(30 + (1 - log10(ex.floors.constant)) * 48 - 4) }}" font-size="10" text-anchor="end" class="d-muted">floor at η = {{ g(e.base_lr) }}</text>
+      {% for key, color, label in loss_curves|reverse %}
+      <polyline fill="none" stroke-width="2"{% if key == "constant" %} class="ml-dashed d-line"{% else %} style="stroke: {{ color }}"{% endif %} points="{% for l in ex.runs[key] %}{{ sx(loop.index0) }},{{ ly(l) }} {% endfor %}"></polyline>
+      {% endfor %}
+      <g font-size="11">
+        {% for key, color, label in loss_curves %}
+        <text x="{{ 60 + (loop.index0 % 3) * 180 }}" y="{{ 255 + (loop.index0 // 3) * 15 }}"{% if key == "constant" %} class="d-muted"{% else %} style="fill: {{ color }}"{% endif %}>{{ label }}</text>
+        {% endfor %}
+      </g>
+    </svg>
+    <p class="ml-caption">The high constant rate reaches its noise floor quickly and stops; the low one has a lower floor but has not reached it. Every decay gets the early speed of the high rate and ends below its floor. Warmup costs a few steps on this problem because plain SGD on a quadratic has nothing for it to protect.</p>
+  </div>
+
+  <p>
+    Cosine ends lower than StepLR here because each tenfold drop leaves a rate too small to finish removing the error left by the phase before: at η = {{ g(s.step[2 * e.step_size]) }} a step shrinks m<sub>t</sub> by only {{ f(100 * (1 - (1 - s.step[2 * e.step_size] * e.curvature) ** 2), 1) }}%, so StepLR sits near {{ f(ex.runs.step[2 * e.step_size], 3) }} from step {{ 2 * e.step_size }} on, while the cosine passes through every rate in between. Neither is better in general; the point is that both beat every constant.
+  </p>
+
+  <h3 id="adam-start">Why Adam wants warmup</h3>
+
+  <p>
+    Adam's update is η · m̂ / (√v̂ + ε). On the first step both moment estimates are bias-corrected copies of one gradient, so m̂ / √v̂ = g / |g| = ±1 whatever the gradient's size. The helper runs three Adam steps at η = {{ g(e.adam_lr) }} on gradients that differ by a factor of {{ g(e.adam_grads[1] / e.adam_grads[0]) }}:
+  </p>
+
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Gradient</th><th>Step 1</th><th>Step 2</th><th>Step 3</th></tr></thead>
+      <tbody>
+        {% for run in ex.adam %}
+        <tr><td>{{ g(run.grad) }}</td>{% for u in run.updates %}<td>{{ '%.6f'|format(u) }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <p>
+    Every parameter moves by almost exactly η on each early step, including parameters whose gradients are pure noise. Later, v̂ averages many gradients and the step shrinks for noisy coordinates; at the start nothing does that, so a ramp from a small rate does it instead.
+  </p>
+
+  <h3 id="one-cycle-values">One-cycle in numbers</h3>
+
+  <p>
+    With max_lr = {{ g(oc.max_lr) }}, {{ e.steps }} total steps and the defaults, the first phase ends at step pct_start · total_steps − 1 = {{ ex.one_cycle.peak_step|int }}. The rate starts at {{ g(oc.max_lr) }} / {{ oc.div_factor|int }} = {{ g(ex.one_cycle.initial) }}, peaks at {{ g(s.one_cycle[29]) }} with momentum {{ f(ex.momentum[29], 2) }}, and ends at {{ g(ex.one_cycle.initial) }} / {{ g(oc.final_div_factor) }} = {{ g(ex.one_cycle.final) }} with momentum back at {{ f(ex.momentum[-1], 2) }}. Halfway down the second phase, at step 64, it is (0.1 + {{ g(ex.one_cycle.final) }}) / 2. On the noisy quadratic it ends at {{ f(ex.runs.one_cycle[-1], 4) }}, below the constant floor, despite spending the first steps near zero.
+  </p>
+
+  <h3 id="range-test">An LR range test</h3>
+
+  <p>
+    How large should the peak be? An LR range test (Smith, 2017) trains for a short run while raising η geometrically on every step, and plots the loss against η. Here the model has three directions with curvatures {% for h in e.range_curvatures %}{{ g(h) }}{% if not loop.last %}, {% endif %}{% endfor %}, starting at 1 in each, and η rises from {{ g(e.range_start) }} to {{ g(e.range_end) }} over {{ e.range_steps }} steps.
+  </p>
+
+  <div class="jj-diagram">
+    <svg viewBox="0 0 640 255" role="img" aria-labelledby="lrs-range-title lrs-range-desc">
+      <title id="lrs-range-title">LR range test: loss against a geometrically rising learning rate</title>
+      <desc id="lrs-range-desc">
+        Learning rate on a log axis from {{ g(e.range_start) }} to {{ g(e.range_end) }}; loss on a log axis from 10 to 0.001. The loss starts at {{ f(rt.rows[0][1], 2) }} and barely moves until η is about 0.001,
+        then falls steadily to a minimum of {{ '%.2g'|format(rt.rows[rt.best][1]) }} at η = {{ g(rt.rows[rt.best][0]|round(3)) }}, then shoots up past the starting loss at η = {{ f(rt.rows[rt.blowup][0], 2) }} and off the chart.
+        A dashed line marks the stable limit 2/h<sub>max</sub> = {{ g(rt.stable_limit) }} and another marks one tenth of the minimum's η, {{ g((rt.rows[rt.best][0] / 10)|round(3)) }}.
+      </desc>
+      <defs><clipPath id="lrs-range-clip"><rect x="60" y="25" width="550" height="195"></rect></clipPath></defs>
+      <line x1="55" y1="{{ ly(0.001) }}" x2="610" y2="{{ ly(0.001) }}" class="d-line"></line>
+      <line x1="60" y1="25" x2="60" y2="{{ ly(0.001) }}" class="d-line"></line>
+      {% for l in [10, 1, 0.1, 0.01, 0.001] %}
+      <text x="54" y="{{ '%.1f'|format(33 + (1 - log10(l)) * 48) }}" font-size="10" text-anchor="end" class="d-muted">{{ g(l) }}</text>
+      {% endfor %}
+      {% for lr in [0.0001, 0.001, 0.01, 0.1, 1, 10] %}
+      <text x="{{ rx(lr) }}" y="237" font-size="10" text-anchor="middle" class="d-muted">{{ g(lr) }}</text>
+      {% endfor %}
+      <line x1="{{ rx(rt.stable_limit) }}" y1="25" x2="{{ rx(rt.stable_limit) }}" y2="{{ ly(0.001) }}" class="ml-dashed" stroke-width="1.5" style="stroke: var(--jj-red)"></line>
+      <line x1="{{ rx(rt.rows[rt.best][0] / 10) }}" y1="25" x2="{{ rx(rt.rows[rt.best][0] / 10) }}" y2="{{ ly(0.001) }}" class="ml-dashed" stroke-width="1.5" style="stroke: var(--jj-green)"></line>
+      <g clip-path="url(#lrs-range-clip)">
+        <polyline fill="none" stroke-width="2.5" style="stroke: var(--jj-violet)" points="{% for lr, l in rt.rows %}{{ rx(lr) }},{{ ly([l, 1e4]|min) }} {% endfor %}"></polyline>
+      </g>
+      <circle cx="{{ rx(rt.rows[rt.best][0]) }}" cy="{{ ly(rt.rows[rt.best][1]) }}" r="4" style="fill: var(--jj-violet)"></circle>
+      <g font-size="11">
+        <text x="{{ '%.1f'|format(60 + (log10(rt.stable_limit) + 4) * 108 + 5) }}" y="38" style="fill: var(--jj-red)">2/h<tspan baseline-shift="sub" font-size="8">max</tspan> = {{ g(rt.stable_limit) }}</text>
+        <text x="{{ '%.1f'|format(60 + (log10(rt.rows[rt.best][0] / 10) + 4) * 108 - 5) }}" y="38" text-anchor="end" style="fill: var(--jj-green)">min / 10</text>
+        <text x="{{ '%.1f'|format(60 + (log10(rt.rows[rt.best][0]) + 4) * 108 - 8) }}" y="{{ '%.1f'|format(30 + (1 - log10(rt.rows[rt.best][1])) * 48 + 4) }}" text-anchor="end" style="fill: var(--jj-violet)">minimum</text>
+        <text x="610" y="252" text-anchor="end" class="d-muted">η (log scale) →</text>
+      </g>
+    </svg>
+    <p class="ml-caption">The loss bottoms out at η = {{ g(rt.rows[rt.best][0]|round(3)) }}, four times the stable limit of the stiffest direction, and explodes three steps later. The rule of thumb of one tenth of the minimum lands below the limit.</p>
+  </div>
+
+  <p>
+    The minimum sits past the stable limit {{ g(rt.stable_limit) }} because the test is cumulative: by the time η exceeds 0.25 the stiff direction has already been shrunk almost to zero by the earlier steps, so its growth takes a few more steps to show. That is why the curve's minimum is a ceiling, not a recommendation; practitioners take a peak rate several times smaller, here {{ g((rt.rows[rt.best][0] / 10)|round(3)) }}, which is safely stable for all three directions.
+  </p>
+
+  <h3 id="cosine-past-end">A cosine that runs past T<sub>max</sub></h3>
+
+  <p>
+    CosineAnnealingLR does not stop at T<sub>max</sub>. Stepping the recursion past it with T<sub>max</sub> = {{ e.steps }} gives η = {{ f(ex.cosine_past_end.at_end, 3) }} at step {{ e.steps }}, {{ f(ex.cosine_past_end.after, 3) }} at step {{ (1.5 * e.steps)|int }} and {{ f(ex.cosine_past_end.back, 3) }} at step {{ 2 * e.steps }}: the rate rises back to the start along the second half of the cosine period. A run longer than T<sub>max</sub> gets a surprise warm restart at the end of training.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+
+model = ...
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.1)
+
+total_steps = epochs * len(train_loader)
+warmup = int(0.02 * total_steps)
+scheduler = torch.optim.lr_scheduler.SequentialLR(
+    optimizer,
+    schedulers=[
+        torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, total_iters=warmup),
+        torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps - warmup),
+    ],
+    milestones=[warmup],
+)
+
+for epoch in range(epochs):
+    for x, y in train_loader:
+        loss = loss_fn(model(x), y)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        scheduler.step()   # after optimizer.step(), once per batch
+
+checkpoint = {"model": model.state_dict(), "optimizer": optimizer.state_dict(),
+              "scheduler": scheduler.state_dict()}
+
+# One-cycle instead:
+# scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=1e-3, total_steps=total_steps)</code></pre>
+
+<p>
+  The schedule is part of the training state: resuming from a checkpoint without <code>scheduler.state_dict()</code> restarts the warmup and the cosine. The <a href="/ml-models/training-loop">training loop</a> page places this call in a full loop, and <a href="/ml-models/mixed-precision">mixed precision</a> adds a grad scaler that can skip an optimizer step while the scheduler still advances.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Step decay</strong> is easy to reason about and resumes cleanly, but needs the milestones tuned to the run length, and each drop causes a sudden change in the loss that can be mistaken for an improvement in the model.</li>
+  <li><strong>Cosine</strong> has a single length parameter and no discontinuities, which is why it is a common default in modern training, but it commits to a total length up front: stopping early leaves the rate high, training longer needs a new schedule.</li>
+  <li><strong>Warmup</strong> costs a small fraction of training and removes a common source of early divergence for adaptive optimizers and large batches. Too short a warmup gives no protection; for SGD at moderate batch size it is often unnecessary.</li>
+  <li><strong>One-cycle</strong> reaches good results in short runs and fixes the momentum schedule too, but needs <code>total_steps</code> exactly and a sensible <code>max_lr</code>, usually from a range test.</li>
+  <li><strong>ReduceLROnPlateau</strong> needs no knowledge of the run length but depends on a noisy validation metric and on <code>patience</code>, and cannot be put inside SequentialLR or ChainedScheduler.</li>
+  <li><strong>The peak rate</strong> matters far more than the shape. A schedule tuned at one batch size usually needs its peak re-tuned at another.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Two runs use the same cosine schedule; one stops at 60% of <code>T_max</code>. Why is its final loss often clearly worse than a run planned for that length?</summary>
+  <p>At 60% of the cosine the rate is still {{ f(100 * s.cosine[60] / e.base_lr, 0) }}% of its peak, so the parameters are still bouncing at the noise level of a high rate, as the constant curve does in the loss figure above. A run planned for the shorter length would have annealed to near zero and averaged that noise away.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<p>
+  The rate being scheduled is the step size of the update rules on the <a href="/ml-models/optimizers">optimizers</a> page, and the stability limit 2/h is the same bound as on <a href="/ml-models/derivatives-and-gradients">derivatives and gradients</a>. Warmup matters most for the <a href="/ml-models/transformer">transformer</a>, whose <a href="/ml-models/layernorm-and-residuals">layer norm placement</a> decides how fragile the first steps are, and the <a href="/ml-models/training-loop">training loop</a> shows where <code>scheduler.step()</code> sits.
+</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Smith. <em>Cyclical Learning Rates for Training Neural Networks.</em> WACV, 2017 (<a href="https://arxiv.org/abs/1506.01186">arXiv 1506.01186</a>; the LR range test).</li>
+  <li>Loshchilov and Hutter. <em>SGDR: Stochastic Gradient Descent with Warm Restarts.</em> ICLR, 2017 (<a href="https://arxiv.org/abs/1608.03983">arXiv 1608.03983</a>).</li>
+  <li>Goyal, Dollár, Girshick, Noordhuis, Wesolowski, Kyrola, Tulloch, Jia and He. <em>Accurate, Large Minibatch SGD: Training ImageNet in 1 Hour.</em> 2017 (<a href="https://arxiv.org/abs/1706.02677">arXiv 1706.02677</a>; linear scaling and gradual warmup).</li>
+  <li>Vaswani, Shazeer, Parmar, Uszkoreit, Jones, Gomez, Kaiser and Polosukhin. <em>Attention Is All You Need.</em> NeurIPS, 2017 (<a href="https://arxiv.org/abs/1706.03762">arXiv 1706.03762</a>; warmup then inverse square root decay).</li>
+  <li>Smith and Topin. <em>Super-Convergence: Very Fast Training of Neural Networks Using Large Learning Rates.</em> 2017 (<a href="https://arxiv.org/abs/1708.07120">arXiv 1708.07120</a>; one-cycle).</li>
+  <li>Liu, Jiang, He, Chen, Liu, Gao and Han. <em>On the Variance of the Adaptive Learning Rate and Beyond.</em> ICLR, 2020 (<a href="https://arxiv.org/abs/1908.03265">arXiv 1908.03265</a>; RAdam).</li>
+  <li>Xiong, Yang, He, Zheng, Zheng, Xing, Zhang, Lan, Wang and Liu. <em>On Layer Normalization in the Transformer Architecture.</em> ICML, 2020 (<a href="https://arxiv.org/abs/2002.04745">arXiv 2002.04745</a>).</li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/optim/lr_scheduler.py') }}"><code>torch/optim/lr_scheduler.py</code></a>.</li>
+</ul>

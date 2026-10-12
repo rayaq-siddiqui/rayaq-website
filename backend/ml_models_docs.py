@@ -679,7 +679,7 @@ PAGES = [
         "sources": [
             "pytorch:torch/optim/lr_scheduler.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "training-loop",
