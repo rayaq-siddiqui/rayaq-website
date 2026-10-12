@@ -3608,7 +3608,7 @@ def test_forecast_errors_scale_by_in_sample_naive():
 def test_time_series_example_ranks_models_and_exposes_shuffled_leakage():
     e = ml_models_docs.TIME_SERIES_EXAMPLE
     x = ml_models_docs.time_series_example()
-    assert len(x["values"]) == e["n"] and len(x["folds"]) == e["n_splits"]
+    assert len(x["series"]) == e["n"] and len(x["folds"]) == e["n_splits"]
     for fold in x["folds"]:
         assert max(fold["train"]) < min(fold["test"])
         assert len(fold["test"]) == e["test_size"]
@@ -3620,3 +3620,8 @@ def test_time_series_example_ranks_models_and_exposes_shuffled_leakage():
     assert x["residual_acf"][0] > x["residual_band"] > abs(x["residual_acf"][4])
     assert x["leakage"]["ordered"] == pytest.approx(by_name["naive"]["mae"])
     assert x["leakage"]["shuffled"] < 0.5 * x["leakage"]["ordered"]
+    assert by_name["trend + Fourier"]["mae"] < x["leakage"]["shuffled"] < by_name["trend + lag 12"]["mae"]
+    assert by_name["seasonal naive"]["mae"] < by_name["naive"]["mae"]
+    assert any(f["models"][1]["mae"] > f["models"][0]["mae"] for f in x["folds"])
+    assert len(x["shuffled_test"]) == e["n"] // e["kfold"] + 1
+    assert x["true_indices"][3] == pytest.approx(e["amplitude"])

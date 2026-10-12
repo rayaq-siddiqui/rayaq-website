@@ -1,0 +1,383 @@
+{% set ex = time_series_example() %}
+{% set e = time_series_settings %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(0.0 if x|abs < 0.5 * 10 ** (-n) else x)|replace("-", "−") }}{%- endmacro %}
+{% macro v(xs, n=3) -%}({% for x in xs %}{{ f(x, n) }}{% if not loop.last %}, {% endif %}{% endfor %}){%- endmacro %}
+{% set lo = ex.series|min - 3 %}
+{% set hi = ex.series|max + 3 %}
+{% macro px(t) -%}{{ '%.1f'|format(40 + t * 6) }}{%- endmacro %}
+{% macro py(y) -%}{{ '%.1f'|format(200 - (y - lo) / (hi - lo) * 180) }}{%- endmacro %}
+{% set last = ex.folds[-1] %}
+{% set by = {} %}{% for row in ex.summary %}{% set _ = by.update({row.name: row}) %}{% endfor %}
+<header class="jj-header">
+  <h1>Time series</h1>
+  <p class="tagline">
+    A time series is data whose order is part of the meaning: this month depends on last month, and the model will be used on months that have not happened yet.
+    This page splits a series into trend, seasonality and noise, reads its autocorrelation, builds lag and calendar features, and shows why only time-ordered validation gives an honest score.
+    It closes with where ARIMA, gradient boosting on lags and LSTMs fit in.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Sales, server load, energy demand, sensor readings and prices all arrive as one value per time step, and the question is almost always the same: what will the next few values be?
+  Two things make this different from the rows-and-columns problems on the rest of this site. The rows are not independent, since neighbouring values are similar, and the future is not drawn from the same shuffled pool as the past.
+  A model can only use what was known at the moment of the forecast, and it is judged on a stretch of time it never saw.
+</p>
+<p>
+  Ignoring either fact produces models that look excellent in a notebook and fail in production. The standard <a href="/ml-models/cross-validation">cross-validation</a> recipe shuffles rows, which lets the model peek at the days on either side of each test day.
+  Features computed over the whole series, such as a mean or a scaler, carry information backwards from the future, which is a form of <a href="/ml-models/data-leakage">data leakage</a>.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Most business and physical series are a few simple pieces added together: a slow <em>trend</em>, a repeating <em>seasonal</em> pattern with a known period (12 for monthly data with a yearly cycle, 7 for daily data with a weekly one) and a <em>remainder</em> that is noisy but not independent, because a shock this month fades over the next few.
+  Forecasting is mostly about finding those pieces and carrying them forward. A model that captures the trend and the season leaves only the remainder, and the best it can do there is use how quickly shocks fade.
+</p>
+<p>
+  The validation rule follows from how the model will be used: train on everything up to a point in time, test on what comes after, and repeat for several cut-off points. That is all <code>TimeSeriesSplit</code> does.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 250" role="img" aria-labelledby="ts-series-title ts-series-desc">
+    <title id="ts-series-title">A monthly series with its trend and a forecast for the last year</title>
+    <desc id="ts-series-desc">
+      {{ e.n }} monthly values built from level {{ e.level }}, a trend of {{ e.slope }} per month, a 12-month sine of amplitude {{ e.amplitude }} and AR(1) noise with coefficient {{ e.phi }}.
+      The 2×12 centred moving average follows the trend and is undefined for the first and last six months. The trend plus Fourier model, fitted on months 0 to {{ last.train[-1] }}, forecasts months {{ last.test[0] }} to {{ last.test[-1] }} with mean absolute error {{ f(last.models[2].mae, 2) }}.
+    </desc>
+    <rect x="{{ px(last.test[0] - 0.5) }}" y="15" width="{{ 6 * e.test_size }}" height="190" class="d-box ml-op" opacity="0.35"></rect>
+    <line x1="35" y1="205" x2="620" y2="205" class="d-line"></line>
+    {% for year in range(0, e.n + 1, 12) %}
+    <text x="{{ px(year) }}" y="220" font-size="10" text-anchor="middle" class="d-muted">{{ year }}</text>
+    {% endfor %}
+    <polyline fill="none" stroke-width="1.5" style="stroke: var(--jj-accent)" points="{% for y in ex.series %}{{ px(loop.index0) }},{{ py(y) }} {% endfor %}"></polyline>
+    <polyline fill="none" stroke-width="2" class="d-line" points="{% for y in ex.trend %}{% if y is not none %}{{ px(loop.index0) }},{{ py(y) }} {% endif %}{% endfor %}"></polyline>
+    <polyline fill="none" stroke-width="2" class="ml-dashed" style="stroke: var(--jj-violet)" points="{% for y in last.models[2].predictions %}{{ px(last.test[loop.index0]) }},{{ py(y) }} {% endfor %}"></polyline>
+    <g font-size="11">
+      <text x="45" y="238" style="fill: var(--jj-accent)">observed</text>
+      <text x="125" y="238">2×12 moving average (trend)</text>
+      <text x="320" y="238" style="fill: var(--jj-violet)">trend + Fourier forecast</text>
+      <text x="505" y="238" class="d-muted">month →</text>
+    </g>
+  </svg>
+  <p class="ml-caption">The worked example's series. The shaded band is the last test year. The forecast was fitted only on the months to its left.</p>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="decomposition">Classical decomposition</h3>
+
+<p>The additive model writes each value as y<sub>t</sub> = T<sub>t</sub> + S<sub>t</sub> + R<sub>t</sub>, trend plus season plus remainder. With period m, classical decomposition estimates them in three steps:</p>
+<ol>
+  <li><strong>Trend.</strong> A centred moving average over one full period cancels the season. For even m the window has m + 1 points with the two ends weighted ½, the "2×m-MA":
+    <span class="ml-formula">T̂<sub>t</sub> = (½y<sub>t−6</sub> + y<sub>t−5</sub> + … + y<sub>t+5</sub> + ½y<sub>t+6</sub>) / 12</span>
+    It is undefined for the first and last m/2 points.</li>
+  <li><strong>Season.</strong> Average the detrended values y<sub>t</sub> − T̂<sub>t</sub> separately for each position in the cycle (every January, every February, …), then shift the m averages so they sum to zero.</li>
+  <li><strong>Remainder.</strong> R̂<sub>t</sub> = y<sub>t</sub> − T̂<sub>t</sub> − Ŝ<sub>t</sub>.</li>
+</ol>
+<p>
+  If the seasonal swing grows with the level, the multiplicative model y = T × S × R applies instead, or the additive one on log y. STL (Cleveland et al., 1990) replaces the moving averages with loess smoothers, which handles the ends of the series and lets the season change slowly over time.
+</p>
+
+<h3 id="autocorrelation">Autocorrelation</h3>
+
+<p>The sample autocorrelation at lag k measures how much the series resembles itself shifted by k steps:</p>
+<p class="ml-formula">r<sub>k</sub> = Σ<sub>t=1..n−k</sub> (y<sub>t</sub> − ȳ)(y<sub>t+k</sub> − ȳ) / Σ<sub>t=1..n</sub> (y<sub>t</sub> − ȳ)²</p>
+<p>
+  For white noise, about 95% of the r<sub>k</sub> fall inside ±1.96/√n. A slowly decaying ACF means a trend; a bump at lag m means a season; a remainder whose ACF is still outside the band at small lags means there is short-term structure a model can still use.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 250" role="img" aria-labelledby="ts-acf-title ts-acf-desc">
+    <title id="ts-acf-title">Autocorrelation of the series and of its remainder</title>
+    <desc id="ts-acf-desc">
+      Two bar charts for lags 1 to {{ e.acf_lags }}. The raw series has autocorrelation {{ f(ex.acf[0], 2) }} at lag 1, falls to {{ f(ex.acf[5], 2) }} at lag 6 and rises again to {{ f(ex.acf[11], 2) }} at lag 12, never leaving the positive side because of the trend.
+      The remainder after decomposition has {{ f(ex.residual_acf[0], 2) }} at lag 1, outside the band ±{{ f(ex.residual_band, 2) }}, and is small after that.
+    </desc>
+    {% for series in [(ex.acf, ex.band, 20, "observed series"), (ex.residual_acf, ex.residual_band, 330, "remainder")] %}
+    {% set x0 = series[2] %}
+    <g font-size="10">
+      <text x="{{ x0 + 140 }}" y="18" text-anchor="middle" font-size="11">{{ series[3] }}</text>
+      <rect x="{{ x0 + 10 }}" y="{{ '%.1f'|format(120 - series[1] * 90) }}" width="{{ e.acf_lags * 11 }}" height="{{ '%.1f'|format(series[1] * 180) }}" class="d-box ml-op" opacity="0.4"></rect>
+      <line x1="{{ x0 + 8 }}" y1="120" x2="{{ x0 + 12 + e.acf_lags * 11 }}" y2="120" class="d-line"></line>
+      <line x1="{{ x0 + 8 }}" y1="30" x2="{{ x0 + 8 }}" y2="210" class="d-line"></line>
+      <text x="{{ x0 + 4 }}" y="34" text-anchor="end">1</text>
+      <text x="{{ x0 + 4 }}" y="124" text-anchor="end">0</text>
+      <text x="{{ x0 + 4 }}" y="214" text-anchor="end">−1</text>
+      {% for r in series[0] %}
+      {% set h = r * 90 %}
+      <rect x="{{ x0 + 11 + loop.index0 * 11 }}" y="{{ '%.1f'|format(120 - h if h > 0 else 120) }}" width="8" height="{{ '%.1f'|format(h|abs) }}" class="d-box {{ 'ml-weight' if loop.index % 12 == 0 else 'ml-tensor' }}"></rect>
+      {% if loop.index in [1, 6, 12, 24] %}<text x="{{ x0 + 15 + loop.index0 * 11 }}" y="228" text-anchor="middle" class="d-muted">{{ loop.index }}</text>{% endif %}
+      {% endfor %}
+    </g>
+    {% endfor %}
+    <text x="320" y="245" font-size="11" text-anchor="middle" class="d-muted">lag (months). Shaded: ±1.96/√n. Lags 12 and 24 highlighted.</text>
+  </svg>
+  <p class="ml-caption">Left: the trend keeps every lag positive and the season adds a wave with period 12. Right: what decomposition leaves is close to noise, except at lag 1, where the AR(1) shocks still carry over.</p>
+</div>
+
+<h3 id="features">Turning a series into a table</h3>
+
+<p>
+  Most machine learning models need rows of features and a target. A forecast at time t for horizon h may use only values up to t, so the usual features are:
+</p>
+<ul>
+  <li><strong>Lags:</strong> y<sub>t</sub>, y<sub>t−1</sub>, …, and the seasonal lag y<sub>t+h−m</sub>, whenever h ≤ m.</li>
+  <li><strong>Rolling statistics</strong> over past windows (mean, max, standard deviation), computed so that the window ends at t, never after it.</li>
+  <li><strong>Calendar features:</strong> a time index for the trend and the month, weekday or holiday flags for the season. Fourier terms sin(2πkt/m), cos(2πkt/m) for k = 1…K encode a smooth season with 2K columns instead of m − 1 dummies.</li>
+  <li><strong>Known future inputs</strong> such as planned promotions or the weather forecast, which are available at forecast time.</li>
+</ul>
+<p>
+  For several steps ahead there are two main strategies. A <em>recursive</em> model predicts one step, feeds that prediction back in as a lag, and repeats, so its errors compound. A <em>direct</em> model is trained separately for each horizon h, using only features known at t. The "trend + lag 12" model below is direct for every h ≤ 12, because y<sub>t−12</sub> is always in the past.
+</p>
+
+<h3 id="arima">Classical models</h3>
+
+<p>
+  An autoregressive model AR(p) predicts y<sub>t</sub> = c + φ<sub>1</sub>y<sub>t−1</sub> + … + φ<sub>p</sub>y<sub>t−p</sub> + ε<sub>t</sub>. A moving-average model MA(q) uses past noise terms instead: y<sub>t</sub> = c + ε<sub>t</sub> + θ<sub>1</sub>ε<sub>t−1</sub> + … + θ<sub>q</sub>ε<sub>t−q</sub>.
+  Both assume the series is <em>stationary</em>, meaning its mean and autocorrelations do not drift over time. ARIMA(p, d, q) differences the series d times (y<sub>t</sub> − y<sub>t−1</sub>) to remove a trend first, and seasonal ARIMA adds seasonal differences y<sub>t</sub> − y<sub>t−m</sub> and seasonal AR and MA terms.
+  Box and Jenkins set out the iterative recipe still used for these models: identify p, d and q from the autocorrelations, estimate the coefficients, then check that the residuals look like noise. Exponential smoothing (simple, Holt's trend, Holt-Winters seasonal) is the other classical family: forecasts are weighted averages of the past with weights that decay geometrically.
+  Neither is in PyTorch or scikit-learn; they live in statistics packages.
+</p>
+
+<h3 id="validation">Time-ordered validation</h3>
+
+<p>
+  <code>TimeSeriesSplit(n_splits, test_size, gap, max_train_size)</code> places n_splits test blocks of test_size consecutive samples at the end of the data. The first starts at n − n_splits × test_size, and each training set is everything before its test block.
+  <code>gap</code> drops that many samples between training and test, for features whose windows would otherwise straddle the boundary. <code>max_train_size</code> turns the growing window into a sliding one.
+  Unlike <code>KFold</code>, there is no shuffle option. The class assumes the samples are equally spaced and already in time order.
+</p>
+{% set demo = time_series_split(12, 3, 2) %}
+{% set demo_gap = time_series_split(12, 3, 2, 2) %}
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 230" role="img" aria-labelledby="ts-folds-title ts-folds-desc">
+    <title id="ts-folds-title">TimeSeriesSplit folds compared with shuffled K-fold</title>
+    <desc id="ts-folds-desc">
+      Four rows for TimeSeriesSplit on {{ e.n }} months with test_size {{ e.test_size }}: test blocks start at months {{ ex.folds|map(attribute="test")|map("first")|join(", ") }}, and each training block is every month before them.
+      Below, the first fold of the worked example's shuffled {{ e.kfold }}-fold cross-validation, whose test months are scattered among training months, so every test month has a training month next to it.
+    </desc>
+    <g font-size="11">
+      {% for fold in ex.folds %}
+      {% set yy = 22 + loop.index0 * 32 %}
+      <text x="12" y="{{ yy + 15 }}">fold {{ loop.index }}</text>
+      <rect x="{{ '%.1f'|format(70 + fold.train[0] * 5.8) }}" y="{{ yy }}" width="{{ '%.1f'|format(5.8 * fold.train|length) }}" height="20" class="d-box ml-tensor"></rect>
+      <rect x="{{ '%.1f'|format(70 + fold.test[0] * 5.8) }}" y="{{ yy }}" width="{{ '%.1f'|format(5.8 * fold.test|length) }}" height="20" class="d-box ml-weight" style="fill: var(--jj-violet)" fill-opacity="0.6"></rect>
+      {% endfor %}
+      <text x="12" y="187">K-fold</text>
+      <rect x="70" y="172" width="{{ '%.1f'|format(5.8 * e.n) }}" height="20" class="d-box ml-tensor"></rect>
+      {% for t in ex.shuffled_test %}
+      <rect x="{{ '%.1f'|format(70 + t * 5.8) }}" y="172" width="5.8" height="20" style="fill: var(--jj-violet)" fill-opacity="0.6"></rect>
+      {% endfor %}
+      <text x="70" y="218" class="d-muted">outlined: train, filled: test. The K-fold row is the first fold of the worked example's shuffled split.</text>
+    </g>
+  </svg>
+  <p class="ml-caption">TimeSeriesSplit always tests on the future. Shuffled K-fold interleaves training and test months.</p>
+</div>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>TimeSeriesSplit</code></td>
+        <td>n_splits=5, max_train_size=None, test_size=None, gap=0</td>
+        <td>Growing-window, time-ordered folds. test_size defaults to n_samples // (n_splits + 1).</td>
+        <td><a href="{{ skl('sklearn/model_selection/_split.py', 1116, 1327) }}">_split.py 1116-1327</a>, parameters <a href="{{ skl('sklearn/model_selection/_split.py', 1145, 1164) }}">1145-1164</a></td>
+      </tr>
+      <tr>
+        <td><code>TimeSeriesSplit._split</code></td>
+        <td>X (n_samples, n_features)</td>
+        <td>Test blocks start at range(n − n_splits·test_size, n, test_size), train_end = test_start − gap, and the error checks for too many splits.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_split.py', 1275, 1327) }}">_split.py 1275-1327</a></td>
+      </tr>
+      <tr>
+        <td><code>TimeSeriesSplit.__init__</code></td>
+        <td>passes shuffle=False to the base class</td>
+        <td>No shuffling, by construction.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_split.py', 1239, 1243) }}">_split.py 1239-1243</a></td>
+      </tr>
+      <tr>
+        <td><code>KFold</code></td>
+        <td>n_splits=5, shuffle=False, random_state=None</td>
+        <td>Contiguous folds by default; with shuffle=True, test samples are scattered through time.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_split.py', 437, 530) }}">_split.py 437-530</a></td>
+      </tr>
+      <tr>
+        <td><code>nn.LSTM(batch_first)</code></td>
+        <td>default False</td>
+        <td>With True, input and output are (N, L, H) instead of (L, N, H); hidden and cell states keep (layers, N, H).</td>
+        <td><a href="{{ src('torch/nn/modules/rnn.py', 876, 879) }}">rnn.py 876-879</a></td>
+      </tr>
+      <tr>
+        <td><code>nn.LSTM</code> inputs</td>
+        <td>input (N, L, H<sub>in</sub>), optional (h<sub>0</sub>, c<sub>0</sub>) each (D·num_layers, N, H)</td>
+        <td>A batch of N windows of L past steps with H<sub>in</sub> features each. States default to zeros.</td>
+        <td><a href="{{ src('torch/nn/modules/rnn.py', 886, 912) }}">rnn.py 886-912</a></td>
+      </tr>
+      <tr>
+        <td><code>nn.LSTM</code> outputs</td>
+        <td>output (N, L, D·H<sub>out</sub>), (h<sub>n</sub>, c<sub>n</sub>)</td>
+        <td>A forecasting head usually reads output[:, −1] or h<sub>n</sub>[−1], the state after the last observed step.</td>
+        <td><a href="{{ src('torch/nn/modules/rnn.py', 914, 929) }}">rnn.py 914-929</a></td>
+      </tr>
+      <tr>
+        <td><code>LSTM.forward</code></td>
+        <td>input, hx=None</td>
+        <td>Handles packed, batched and unbatched input, then calls the fused LSTM kernel.</td>
+        <td><a href="{{ src('torch/nn/modules/rnn.py', 1081, 1203) }}">rnn.py 1081-1203</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The scikit-learn docstring's own example, 12 samples with n_splits=3 and test_size=2, gives training sets ending at {{ demo|map(attribute="0")|map("last")|join(", ") }} and test blocks {% for _, test in demo %}{{ test|join("–") }}{% if not loop.last %}, {% endif %}{% endfor %}.
+  With gap=2 the training sets shrink to end at {{ demo_gap|map(attribute="0")|map("last")|join(", ") }}. This page's <code>time_series_split</code> helper reproduces both and is tested against them.
+</p>
+
+<details class="ml-quiz">
+  <summary>Why does TimeSeriesSplit have no shuffle parameter while KFold does?</summary>
+  <p>Shuffling would put training samples after test samples, so the model would be scored on the past using the future. The point of the splitter is that every test block comes strictly after its training block (and after the gap).</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>The series.</strong> {{ e.n }} months, y<sub>t</sub> = {{ e.level }} + {{ e.slope }}t + {{ e.amplitude }} sin(2πt/12) + u<sub>t</sub>, where u<sub>t</sub> = {{ e.phi }}u<sub>t−1</sub> + ε<sub>t</sub> and ε<sub>t</sub> ~ N(0, {{ e.noise }}²), drawn with seed {{ e.seed }}.
+    The first twelve values are {{ v(ex.series[:12], 1) }}.
+  </p>
+
+  <p><strong>Decomposition.</strong> Seasonal indices from the 2×12 moving average, month 0 first. They sum to zero.</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Month</th>{% for i in range(12) %}<th>{{ i }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        <tr><td>Ŝ</td>{% for s in ex.indices %}<td>{{ f(s, 2) }}</td>{% endfor %}</tr>
+        <tr><td>true {{ e.amplitude }} sin(2πt/12)</td>{% for s in ex.true_indices %}<td>{{ f(s, 2) }}</td>{% endfor %}</tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The estimates are close to the true seasonal shape but not exact: each month's index averages only {{ (e.n - 12) // 12 }} detrended values, and the AR(1) noise does not average out over so few.
+    The remainder's lag-1 autocorrelation is {{ f(ex.residual_acf[0], 2) }}, outside ±{{ f(ex.residual_band, 2) }}, so it is not white noise. The noise process used φ = {{ e.phi }}, but the remainder is not that noise itself: the moving average and the seasonal averages absorb part of it, so its autocorrelation need not equal φ.
+  </p>
+
+  <p>
+    <strong>Four forecasters, four folds.</strong> TimeSeriesSplit with n_splits={{ e.n_splits }} and test_size={{ e.test_size }}. Each model is fitted on the training months and forecasts the whole next year at once, horizons 1 to 12.
+    MASE divides the MAE by the in-sample MAE of the one-step naive forecast, mean |y<sub>t</sub> − y<sub>t−1</sub>| over the training months, so a value below 1 beats that benchmark.
+  </p>
+  <ul>
+    <li><strong>naive</strong>: every month equals the last training value.</li>
+    <li><strong>seasonal naive</strong>: every month equals the same month one year earlier.</li>
+    <li><strong>trend + Fourier</strong>: least squares on [1, t/n] plus {{ e.harmonics }} sine–cosine pairs, {{ 2 + 2 * e.harmonics }} columns.</li>
+    <li><strong>trend + lag 12</strong>: least squares on [1, t/n, y<sub>t−12</sub>], a direct model.</li>
+  </ul>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Model</th>{% for fold in ex.folds %}<th>MAE, test {{ fold.test[0] }}–{{ fold.test[-1] }}</th>{% endfor %}<th>Mean MAE</th><th>Mean RMSE</th><th>Mean MASE</th></tr></thead>
+      <tbody>
+        {% for row in ex.summary %}
+        {% set i = loop.index0 %}
+        <tr><td>{{ row.name }}</td>{% for fold in ex.folds %}<td>{{ f(fold.models[i].mae, 2) }}</td>{% endfor %}<td>{{ f(row.mae, 2) }}</td><td>{{ f(row.rmse, 2) }}</td><td>{{ f(row.mase, 2) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Seasonal naive beats naive on average ({{ f(by["seasonal naive"].mae, 2) }} against {{ f(by["naive"].mae, 2) }}) but not on every fold, because it repeats last year's level and misses about {{ f(12 * e.slope, 0) }} units of yearly growth.
+    Trend + Fourier wins with MASE {{ f(by["trend + Fourier"].mase, 2) }}: its form matches how the data were made. The lag-12 model learns the season from data rather than assuming a sine, which costs it here ({{ f(by["trend + lag 12"].mae, 2) }}) because y<sub>t−12</sub> carries last year's noise into every forecast.
+    The per-fold spread is part of the result. Looking only at the last fold would hide that the ranking of the two naive methods flips from fold to fold.
+  </p>
+
+  <p>
+    <strong>Leakage from shuffling.</strong> A deliberately useless model: predict y<sub>t</sub> as the training value at the nearest month. Scored two ways on the same data:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Validation</th><th>MAE of nearest-month model</th></tr></thead>
+      <tbody>
+        <tr><td>shuffled {{ e.kfold }}-fold (seed {{ e.shuffle_seed }})</td><td>{{ f(ex.leakage.shuffled, 2) }}</td></tr>
+        <tr><td>TimeSeriesSplit, {{ e.n_splits }} × {{ e.test_size }}</td><td>{{ f(ex.leakage.ordered, 2) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Shuffled K-fold scores it at {{ f(ex.leakage.shuffled, 2) }}, better than every forecaster above except trend + Fourier, because the month next to each test month is almost always in the training set.
+    Under TimeSeriesSplit the nearest training month is always the last one, so the model becomes the naive forecast and scores exactly its {{ f(ex.leakage.ordered, 2) }}. Only the second number says anything about next year.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import pandas as pd
+from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.model_selection import TimeSeriesSplit, cross_val_score
+
+df = pd.DataFrame({"y": y}, index=pd.period_range("2017-01", periods=len(y), freq="M"))
+for lag in (1, 2, 12):
+    df[f"lag_{lag}"] = df["y"].shift(lag)            # only past values
+df["roll_mean_3"] = df["y"].shift(1).rolling(3).mean()   # window ends at t - 1
+df["month"] = df.index.month
+df = df.dropna()
+
+X, target = df.drop(columns="y"), df["y"]
+cv = TimeSeriesSplit(n_splits=4, test_size=12, gap=0)
+scores = cross_val_score(HistGradientBoostingRegressor(), X, target, cv=cv,
+                         scoring="neg_mean_absolute_error")
+# lag_1 makes this a one-step-ahead model. For a 12-month horizon use only lags >= 12,
+# or forecast recursively and feed predictions back into lag_1.
+
+
+import torch
+from torch import nn
+
+class WindowForecaster(nn.Module):
+    def __init__(self, hidden=32, horizon=12):
+        super().__init__()
+        self.lstm = nn.LSTM(input_size=1, hidden_size=hidden, batch_first=True)
+        self.head = nn.Linear(hidden, horizon)       # direct: all horizons at once
+
+    def forward(self, window):                       # window: (N, L, 1), scaled
+        output, (h_n, c_n) = self.lstm(window)       # output: (N, L, hidden)
+        return self.head(output[:, -1])              # (N, horizon)</code></pre>
+
+<p>
+  The pandas <code>shift</code> calls are where leakage is usually introduced or prevented: every feature for row t must be computable at t. The scaler for the LSTM's inputs, like any preprocessing, is fitted on the training fold only.
+  Tree ensembles such as <a href="/ml-models/gradient-boosting">gradient boosting</a> cannot extrapolate a trend beyond the range of targets they were trained on, so a common pattern is to difference or detrend first and model what remains.
+  An <a href="/ml-models/rnns-and-lstms">LSTM</a> reads a fixed window of L past steps; with <code>batch_first=True</code> the batch of windows is (N, L, features).
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Simple baselines first.</strong> Naive and seasonal naive forecasts cost nothing and are hard to beat on short or noisy series. MASE against a naive benchmark makes "better than trivial" a number.</li>
+  <li><strong>Classical versus learned.</strong> ARIMA and exponential smoothing fit one series with a handful of parameters and give prediction intervals. Gradient boosting and neural models need many related series or long histories to pay off, and they can share what they learn across series.</li>
+  <li><strong>Growing versus sliding windows.</strong> A growing window (the default) uses all history. <code>max_train_size</code> keeps only recent data, which helps when the process changes over time and hurts when it does not.</li>
+  <li><strong>The gap.</strong> If a feature uses a window of w past steps, or the target is aggregated over a future window, set <code>gap</code> so no training row overlaps the test period.</li>
+  <li><strong>Few, correlated folds.</strong> Later folds share most of their training data and test on adjacent periods, so fold scores are not independent and their spread understates the true uncertainty.</li>
+  <li><strong>Is K-fold ever fine?</strong> Bergmeir and Benítez (2012) compared validation schemes on synthetic and real series and recommended blocked cross-validation (contiguous folds, no shuffle) as the standard. Shuffled folds remain wrong for models like the nearest-month one above, which can read neighbours of the test points.</li>
+  <li><strong>Metrics.</strong> MAE is in the series' units, RMSE punishes large misses, and percentage errors such as MAPE explode near zero. MASE (Hyndman and Koehler, 2006) is scale-free and comparable across series.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>A model uses a 7-day rolling mean of y ending at day t as a feature, and is evaluated on day t + 1 with TimeSeriesSplit and gap=0. Is there leakage?</summary>
+  <p>No: the window ends at t, which is before the target at t + 1, and TimeSeriesSplit keeps every test day after every training day. There would be leakage if the rolling mean were centred on t, or computed with the window ending at t + 1, since then it would contain the target.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Box and Jenkins. <em>Time Series Analysis: Forecasting and Control.</em> Holden-Day, 1970.</li>
+  <li>Cleveland, Cleveland, McRae and Terpenning. <em>STL: A Seasonal-Trend Decomposition Procedure Based on Loess.</em> Journal of Official Statistics 6, 3–73, 1990.</li>
+  <li>Hyndman and Koehler. <em>Another look at measures of forecast accuracy.</em> International Journal of Forecasting 22(4), 679–688, 2006. <a href="https://doi.org/10.1016/j.ijforecast.2006.03.001">doi:10.1016/j.ijforecast.2006.03.001</a></li>
+  <li>Bergmeir and Benítez. <em>On the use of cross-validation for time series predictor evaluation.</em> Information Sciences, 2012. <a href="https://doi.org/10.1016/j.ins.2011.12.028">doi:10.1016/j.ins.2011.12.028</a></li>
+  <li>Hyndman and Athanasopoulos. <em>Forecasting: Principles and Practice</em>, 3rd edition. OTexts, 2021. <a href="https://otexts.com/fpp3/">otexts.com/fpp3</a></li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/model_selection/_split.py') }}"><code>sklearn/model_selection/_split.py</code></a>. PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/nn/modules/rnn.py') }}"><code>torch/nn/modules/rnn.py</code></a>.</li>
+</ul>

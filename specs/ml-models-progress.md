@@ -288,8 +288,8 @@ Gaps:
 56. `clustering` ✓
 57. `vector-indexes` ✓
 58. `distillation` ✓
-59. `time-series` ← next
-60. `regression-metrics`
+59. `time-series` ✓
+60. `regression-metrics` ← next
 61. `support-vector-machines`
 62. `learning-rate-schedules`
 63. `gans`

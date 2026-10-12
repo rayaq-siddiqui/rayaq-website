@@ -1311,7 +1311,7 @@ PAGES = [
             "sklearn:sklearn/model_selection/_split.py",
             "pytorch:torch/nn/modules/rnn.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "causal-inference",
@@ -8587,7 +8587,7 @@ def time_series_example():
     random.Random(e["shuffle_seed"]).shuffle(order)
     shuffled = [([order[i] for i in train], [order[i] for i in test]) for train, test in kfold_splits(e["n"], e["kfold"])]
     return {
-        "values": values,
+        "series": values,
         "trend": parts["trend"],
         "indices": parts["indices"],
         "residual": parts["residual"],
@@ -8597,6 +8597,8 @@ def time_series_example():
         "residual_band": 1.96 / math.sqrt(len(residual)),
         "folds": folds,
         "summary": summary,
+        "true_indices": [e["amplitude"] * math.sin(2 * math.pi * k / e["period"]) for k in range(e["period"])],
+        "shuffled_test": sorted(shuffled[0][1]),
         "leakage": {
             "shuffled": nearest_time_mae(values, shuffled),
             "ordered": nearest_time_mae(values, splits),
