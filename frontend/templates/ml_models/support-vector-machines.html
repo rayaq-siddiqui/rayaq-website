@@ -1,0 +1,467 @@
+{% set ex = svm_example() %}
+{% set e = svm_settings %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(0.0 if x|abs < 0.5 * 10 ** (-n) else x)|replace("-", "−") }}{%- endmacro %}
+{% macro v(xs, n=3) -%}({% for x in xs %}{{ f(x, n) }}{% if not loop.last %}, {% endif %}{% endfor %}){%- endmacro %}
+{% macro idx(ks) -%}{% for k in ks %}P{{ k + 1 }}{% if not loop.last %}, {% endif %}{% endfor %}{%- endmacro %}
+{% macro g(x) -%}{{ '%g'|format(x) }}{%- endmacro %}
+{% macro pct(x) -%}{{ '%.0f'|format(100 * x) }}%{%- endmacro %}
+{% set hard = ex.fits[0] %}
+{% set soft = ex.fits[2] %}
+{% set mid = ex.fits[1] %}
+{% set out_hard = ex.with_outlier[0] %}
+{% set out_soft = ex.with_outlier[2] %}
+{% set kt = ex.kernel_trick %}
+{% set sc = ex.scaling %}
+{% macro lx(m) -%}{{ '%.1f'|format(60 + (m + 2) * 110) }}{%- endmacro %}
+{% macro ly(l) -%}{{ '%.1f'|format(200 - l * 45) }}{%- endmacro %}
+{% macro rx(x) -%}{{ '%.1f'|format(40 + (x + 4) * 70) }}{%- endmacro %}
+{% macro ry(s) -%}{{ '%.1f'|format(120 - s * 35) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Support vector machines</h1>
+  <p class="tagline">
+    A support vector machine draws the separating line that stays as far as possible from both classes, lets a few points break the rule at a price set by C, and through a kernel can draw curved boundaries while solving only for one weight per training point.
+    This page solves small SVMs exactly with a stdlib SMO solver, checks them against scikit-learn, and shows the margin, the hinge loss, the role of C, kernels and why the features must be scaled.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Two classes of points can often be split by many different lines. <a href="/ml-models/logistic-regression">Logistic regression</a> picks the one that maximises the likelihood, which keeps moving every point a little further from the line. A different question is which line will make the fewest mistakes on new points that land near the boundary. A line that grazes a training point leaves no room for error, while one that sits in the middle of the gap tolerates noise on both sides.
+</p>
+<p>
+  Real data adds two complications. Some points sit on the wrong side of any line, so the method must allow violations at a cost. And many classes are not separated by a line at all: points inside a ring belong to one class and points outside to the other. Support vector machines handle the margin and both complications with a single convex optimisation problem, which has one global optimum and a solution that depends only on a few training points.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  A linear classifier predicts sign(w·x + b). The value y(w·x + b) is the functional margin of a point: positive when the point is on its correct side, larger the further it is. Scaling w and b does not move the line, so fix the scale by asking the closest points to have functional margin exactly 1. The two lines w·x + b = ±1 then bound an empty strip of width 2/‖w‖, and making the strip as wide as possible means making ‖w‖ as small as possible.
+</p>
+<p>
+  When the strip cannot be empty, each point pays a hinge loss max(0, 1 − y(w·x + b)): nothing once it is outside the strip on its correct side, and a cost growing linearly as it moves into the strip or across the line. C sets the exchange rate between a wider strip and those payments. Points that end up exactly on the strip's edge, inside it, or on the wrong side are the support vectors; every other point could be deleted without changing the answer.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 250" role="img" aria-labelledby="svm-loss-title svm-loss-desc">
+    <title id="svm-loss-title">Hinge, squared hinge and 0-1 loss as functions of the margin</title>
+    <desc id="svm-loss-desc">
+      The margin m = y·f(x) runs from −2 to 3 on the horizontal axis. The 0-1 loss is 1 for m below 0 and 0 above. The hinge loss max(0, 1 − m) is a straight line reaching 0 at m = 1 and stays 0 after; at m = −1 it is {{ f(hinge(-1), 0) }}.
+      The squared hinge, LinearSVC's default, is the hinge squared: smooth at m = 1 and {{ f(hinge(-1) ** 2, 0) }} at m = −1. Both hinge losses keep charging points with 0 &lt; m &lt; 1, which are correct but inside the margin.
+    </desc>
+    <defs><clipPath id="svm-loss-clip"><rect x="55" y="15" width="560" height="190"></rect></clipPath></defs>
+    <line x1="50" y1="200" x2="615" y2="200" class="d-line"></line>
+    <line x1="{{ lx(0) }}" y1="15" x2="{{ lx(0) }}" y2="205" class="d-line ml-dashed"></line>
+    <line x1="{{ lx(1) }}" y1="15" x2="{{ lx(1) }}" y2="205" class="d-muted ml-dashed" stroke="currentColor" stroke-width="1"></line>
+    {% for m in [-2, -1, 0, 1, 2, 3] %}
+    <text x="{{ lx(m) }}" y="216" font-size="10" text-anchor="middle" class="d-muted">{{ f(m, 0) }}</text>
+    {% endfor %}
+    {% for l in [1, 2, 3, 4] %}
+    <text x="44" y="{{ '%.1f'|format(203 - l * 45) }}" font-size="10" text-anchor="end" class="d-muted">{{ l }}</text>
+    {% endfor %}
+    <g clip-path="url(#svm-loss-clip)">
+      <polyline fill="none" stroke-width="2" class="ml-dashed" style="stroke: var(--jj-amber)" points="{% for i in range(-20, 31) %}{% set m = i / 10 %}{{ lx(m) }},{{ ly(hinge(m) ** 2) }} {% endfor %}"></polyline>
+      <polyline fill="none" stroke-width="2.5" style="stroke: var(--jj-violet)" points="{% for i in range(-20, 31) %}{% set m = i / 10 %}{{ lx(m) }},{{ ly(hinge(m)) }} {% endfor %}"></polyline>
+      <polyline fill="none" stroke-width="2" class="d-line" points="{{ lx(-2) }},{{ ly(1) }} {{ lx(0) }},{{ ly(1) }} {{ lx(0) }},{{ ly(0) }} {{ lx(3) }},{{ ly(0) }}"></polyline>
+    </g>
+    <g font-size="11">
+      <text x="60" y="238" style="fill: var(--jj-violet)">hinge max(0, 1 − m)</text>
+      <text x="200" y="238" style="fill: var(--jj-amber)">squared hinge</text>
+      <text x="310" y="238">0-1 loss</text>
+      <text x="{{ '%.1f'|format(60 + 3 * 110 + 6) }}" y="28" class="d-muted">m = 1</text>
+      <text x="610" y="238" text-anchor="end" class="d-muted">m = y·f(x) →</text>
+    </g>
+  </svg>
+  <p class="ml-caption">Loss per point against its margin. The hinge is a convex upper bound on the 0-1 loss that stays positive until m = 1, which turns the "keep a margin" goal into a problem with one optimum.</p>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="primal">The soft-margin primal</h3>
+
+<p class="ml-formula">
+  minimise over w, b: &nbsp; ½‖w‖² + C Σᵢ max(0, 1 − yᵢ(w·xᵢ + b)) &nbsp;&nbsp; with yᵢ ∈ {−1, +1}
+</p>
+<p>
+  The first term widens the margin, the second charges each violation. With slack variables ξᵢ this is the quadratic program: minimise ½‖w‖² + C Σ ξᵢ subject to yᵢ(w·xᵢ + b) ≥ 1 − ξᵢ and ξᵢ ≥ 0. As C → ∞ every ξᵢ is forced to 0 when that is possible, giving the hard-margin SVM. Divide by C and the objective is the average hinge loss plus an L2 penalty of strength 1/(2C): the same shape as regularised logistic regression with the log loss swapped for the hinge, which is why scikit-learn's <code>SGDClassifier(loss="hinge")</code> trains a linear SVM.
+</p>
+
+<h3 id="dual">The dual and the support vectors</h3>
+
+<p class="ml-formula">
+  maximise over α: &nbsp; Σᵢ αᵢ − ½ Σᵢ Σⱼ αᵢ αⱼ yᵢ yⱼ K(xᵢ, xⱼ) &nbsp;&nbsp; subject to 0 ≤ αᵢ ≤ C, &nbsp; Σᵢ αᵢ yᵢ = 0<br>
+  w = Σᵢ αᵢ yᵢ xᵢ &nbsp;&nbsp; f(x) = Σᵢ αᵢ yᵢ K(xᵢ, x) + b
+</p>
+<p>
+  The Lagrange dual has one variable per training point and touches the data only through dot products, written K(xᵢ, xⱼ) = xᵢ·xⱼ for the linear SVM. The optimality (KKT) conditions sort the points into three groups:
+</p>
+<ul>
+  <li><strong>αᵢ = 0</strong>: margin yᵢf(xᵢ) ≥ 1, outside the strip. The point has no influence on the solution.</li>
+  <li><strong>0 &lt; αᵢ &lt; C</strong>: margin exactly 1, on the edge of the strip. These free support vectors fix b: b = yᵢ − Σⱼ αⱼ yⱼ K(xⱼ, xᵢ) for any of them.</li>
+  <li><strong>αᵢ = C</strong>: margin ≤ 1, inside the strip or misclassified. Bounded support vectors pay hinge loss; no single point can pull harder than C.</li>
+</ul>
+<p>
+  At the optimum the primal and dual objectives are equal (strong duality holds because the problem is convex with linear constraints), so the duality gap is a stopping test.
+</p>
+
+<h3 id="kernels">Kernels</h3>
+
+<p>
+  Because the dual and the decision function need only K(xᵢ, xⱼ), any function that is an inner product φ(x)·φ(x′) in some feature space can replace the dot product. The SVM then finds a maximum-margin hyperplane in that space, which is a curved boundary in the original one, without ever computing φ. Mercer's condition (K is symmetric and every Gram matrix is positive semidefinite) is what guarantees such a φ exists and keeps the dual concave. The kernels libsvm implements:
+</p>
+<p class="ml-formula">
+  linear: x·x′ &nbsp;&nbsp; polynomial: (γ x·x′ + coef0)<sup>degree</sup> &nbsp;&nbsp; RBF: exp(−γ ‖x − x′‖²) &nbsp;&nbsp; sigmoid: tanh(γ x·x′ + coef0)
+</p>
+<p>
+  The polynomial kernel with degree 2 and coef0 = 1 in one dimension is (x x′ + 1)² = x²x′² + 2xx′ + 1 = φ(x)·φ(x′) with φ(x) = (x², √2 x, 1): a line in that space is a parabola in x. The RBF kernel corresponds to an infinite-dimensional φ. Its γ is an inverse squared length scale: a point influences the decision only within roughly 1/√γ of itself. The sigmoid kernel is not positive semidefinite for all parameters, so it is rarely the right choice.
+</p>
+
+<h3 id="solver">Solving the dual: SMO</h3>
+
+<p>
+  The dual is a quadratic program with n variables and an n × n kernel matrix, too big to hand to a generic QP solver for large n. Sequential minimal optimisation (Platt, 1998) updates two αs at a time, the smallest set that can move while keeping Σ αᵢyᵢ = 0, and the two-variable problem has a closed-form solution clipped to the box [0, C]. It keeps the gradient of the dual, picks the pair that most violates the optimality conditions, updates, and stops when the largest violation is below the tolerance (scikit-learn's <code>tol</code>, default 1e-3).
+</p>
+<p>
+  This page's helper uses the first-order rule: the maximal violating pair. libsvm, which scikit-learn's <code>SVC</code> wraps, picks the second index with second-order information (Fan, Chen and Lin, 2005), shrinks variables that are stuck at a bound, and caches kernel rows (<code>cache_size</code>, in MB). Both reach the same optimum; the second-order rule needs fewer iterations. Each step costs a kernel row, so training is between O(n²) and O(n³) and the scikit-learn documentation advises other estimators beyond a few tens of thousands of samples.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>SVC</code></td>
+        <td>C=1.0, kernel="rbf", degree=3, gamma="scale", coef0=0.0, tol=1e-3, cache_size=200, class_weight, max_iter=-1, decision_function_shape="ovr"</td>
+        <td>Kernel SVM classifier wrapping libsvm. Multiclass is trained one-vs-one; the "ovr" shape only reshapes the decision values.</td>
+        <td><a href="{{ skl('sklearn/svm/_classes.py', 623, 912) }}">_classes.py 623-912</a>, C <a href="{{ skl('sklearn/svm/_classes.py', 648, 653) }}">648-653</a>, <code>__init__</code> <a href="{{ skl('sklearn/svm/_classes.py', 876, 912) }}">876-912</a></td>
+      </tr>
+      <tr>
+        <td><code>gamma</code></td>
+        <td>"scale" (default), "auto" or a float</td>
+        <td>"scale" is 1 / (n_features · X.var()), the variance taken over every entry of X at once; "auto" is 1 / n_features.</td>
+        <td><a href="{{ skl('sklearn/svm/_classes.py', 668, 678) }}">_classes.py 668-678</a>, computed in <a href="{{ skl('sklearn/svm/_base.py', 268, 283) }}">_base.py 268-283</a></td>
+      </tr>
+      <tr>
+        <td><code>probability</code></td>
+        <td>bool, deprecated in 1.9</td>
+        <td>Platt scaling fit by internal 5-fold CV; will be removed in 1.11 in favour of <code>CalibratedClassifierCV(SVC(), ensemble=False)</code>.</td>
+        <td><a href="{{ skl('sklearn/svm/_classes.py', 687, 696) }}">_classes.py 687-696</a></td>
+      </tr>
+      <tr>
+        <td><code>BaseLibSVM.fit</code></td>
+        <td>X (n_samples, n_features), y, sample_weight</td>
+        <td>Validates, resolves gamma, calls libsvm, and for binary problems flips the signs of <code>intercept_</code> and <code>dual_coef_</code> so positive scores mean <code>classes_[1]</code>.</td>
+        <td><a href="{{ skl('sklearn/svm/_base.py', 168, 325) }}">_base.py 168-325</a>, sign flip <a href="{{ skl('sklearn/svm/_base.py', 294, 302) }}">294-302</a></td>
+      </tr>
+      <tr>
+        <td><code>dual_coef_</code>, <code>support_vectors_</code>, <code>coef_</code></td>
+        <td>(n_classes − 1, n_SV), (n_SV, n_features), (1, n_features)</td>
+        <td><code>dual_coef_</code> holds αᵢyᵢ for the support vectors only. <code>coef_</code> = <code>dual_coef_ @ support_vectors_</code> = w, available for the linear kernel only.</td>
+        <td><a href="{{ skl('sklearn/svm/_classes.py', 772, 775) }}">_classes.py 772-775</a>, <a href="{{ skl('sklearn/svm/_base.py', 686, 710) }}">_base.py 686-710</a></td>
+      </tr>
+      <tr>
+        <td><code>decision_function</code></td>
+        <td>X → (n_samples,) for two classes</td>
+        <td>Σ αᵢyᵢK(xᵢ, x) + b for each row; the sign is the prediction.</td>
+        <td><a href="{{ skl('sklearn/svm/_base.py', 795, 825) }}">_base.py 795-825</a></td>
+      </tr>
+      <tr>
+        <td><code>Kernel::k_function</code></td>
+        <td>kernel_type, degree, gamma, coef0</td>
+        <td>libsvm's linear, polynomial, RBF and sigmoid kernels, exactly the formulas above.</td>
+        <td><a href="{{ skl('sklearn/svm/src/libsvm/svm.cpp', 452, 529) }}">svm.cpp 452-529</a></td>
+      </tr>
+      <tr>
+        <td><code>Solver::Solve</code>, <code>select_working_set</code></td>
+        <td>Q matrix, box [0, C], eps = tol</td>
+        <td>SMO with gradient maintenance and shrinking; the working set uses second-order gain for the second index.</td>
+        <td><a href="{{ skl('sklearn/svm/src/libsvm/svm.cpp', 666, 943) }}">svm.cpp 666-943</a>, <a href="{{ skl('sklearn/svm/src/libsvm/svm.cpp', 946, 1043) }}">946-1043</a></td>
+      </tr>
+      <tr>
+        <td><code>calculate_rho</code></td>
+        <td>free αs</td>
+        <td>The intercept (libsvm stores ρ = −b) averaged over free support vectors, or the midpoint of the feasible range if there are none.</td>
+        <td><a href="{{ skl('sklearn/svm/src/libsvm/svm.cpp', 1126, 1162) }}">svm.cpp 1126-1162</a></td>
+      </tr>
+      <tr>
+        <td><code>solve_c_svc</code></td>
+        <td>Cp, Cn, per-sample weights W</td>
+        <td>The C-SVC dual. Each point's upper bound is its sample weight times the class's C, which is how <code>class_weight</code> and <code>sample_weight</code> act.</td>
+        <td><a href="{{ skl('sklearn/svm/src/libsvm/svm.cpp', 1600, 1647) }}">svm.cpp 1600-1647</a></td>
+      </tr>
+      <tr>
+        <td><code>rbf_kernel</code>, <code>polynomial_kernel</code></td>
+        <td>X, Y, gamma (default 1 / n_features), degree, coef0</td>
+        <td>NumPy versions of the same kernels, for building a Gram matrix by hand or passing <code>kernel="precomputed"</code>.</td>
+        <td><a href="{{ skl('sklearn/metrics/pairwise.py', 1583, 1627) }}">pairwise.py 1583-1627</a>, <a href="{{ skl('sklearn/metrics/pairwise.py', 1454, 1503) }}">1454-1503</a></td>
+      </tr>
+      <tr>
+        <td><code>LinearSVC</code></td>
+        <td>penalty="l2", loss="squared_hinge", dual="auto", C=1.0, fit_intercept, intercept_scaling=1</td>
+        <td>liblinear's linear SVM: scales to many samples, defaults to the squared hinge, and penalises the intercept like a weight, so results differ slightly from <code>SVC(kernel="linear")</code>.</td>
+        <td><a href="{{ skl('sklearn/svm/_classes.py', 44, 364) }}">_classes.py 44-364</a>, loss <a href="{{ skl('sklearn/svm/_classes.py', 68, 72) }}">68-72</a>, intercept_scaling <a href="{{ skl('sklearn/svm/_classes.py', 114, 128) }}">114-128</a></td>
+      </tr>
+      <tr>
+        <td><code>SGDClassifier</code></td>
+        <td>loss="hinge" (default), alpha=1e-4</td>
+        <td>A linear SVM trained by stochastic subgradient descent on the primal; alpha plays the role of 1/(n·C).</td>
+        <td><a href="{{ skl('sklearn/linear_model/_stochastic_gradient.py', 1267, 1270) }}">_stochastic_gradient.py 1267-1270</a>, loss table <a href="{{ skl('sklearn/linear_model/_stochastic_gradient.py', 522, 526) }}">522-526</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>Deleting a training point leaves an SVM's line exactly where it was. What do you know about that point?</summary>
+  <p>Its α was 0: it was outside the margin on its correct side and was not a support vector. Deleting a support vector, by contrast, generally moves the solution, because the remaining points no longer pin the strip in place.</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    Eight points in two dimensions, four per class:
+    {% for p in e.points %}P{{ loop.index }} = {{ v(p, 1) }} ({{ "+1" if e.labels[loop.index0] > 0 else "−1" }}){% if not loop.last %}, {% endif %}{% endfor %}.
+    The numbers below come from an exact SMO solver run to a tolerance of {{ g(e.tol) }}, and match scikit-learn {{ pins.sklearn.tag }}'s <code>SVC(kernel="linear")</code> to every printed digit.
+  </p>
+
+  <h3 id="c-sweep">How C trades margin for violations</h3>
+
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>C</th><th>w</th><th>b</th><th>Margin 2/‖w‖</th><th>Support vectors</th><th>At α = C</th><th>Σ hinge</th><th>Primal = dual</th></tr></thead>
+      <tbody>
+        {% for fit in ex.fits %}
+        <tr>
+          <td>{{ g(fit.C) }}</td>
+          <td>{{ v(fit.w, 4) }}</td>
+          <td>{{ f(fit.b, 4) }}</td>
+          <td>{{ f(fit.width, 4) }}</td>
+          <td>{{ idx(fit.support) }}</td>
+          <td>{{ idx(fit.bounded) if fit.bounded else "none" }}</td>
+          <td>{{ f(fit.hinge_total, 4) }}</td>
+          <td>{{ f(fit.primal, 5) }} = {{ f(fit.dual, 5) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <p>
+    At C = {{ g(hard.C) }} the data are separable and the solution is the hard margin: P4 {{ v(e.points[3], 1) }} and P5 {{ v(e.points[4], 1) }} sit exactly on the strip's edges with α = {{ f(hard.alpha[3], 0) }}, so w = α(y₅x₅ + y₄x₄) = (3.5 − 2.5, 3 − 2) = {{ v(hard.w, 0) }} and the strip is 2/√2 = {{ f(hard.width, 4) }} wide. The objective is ½‖w‖² = {{ f(hard.primal, 0) }}.
+  </p>
+  <p>
+    At C = {{ g(mid.C) }} the same two points can no longer reach α = 1, so both sit at the bound α = C = {{ g(mid.C) }}. The line keeps its direction and position, w halves to {{ v(mid.w, 2) }}, and the strip doubles to {{ f(mid.width, 4) }}: P4 and P5 now sit inside it with margin {{ f(mid.margins[3], 1) }}, paying a total hinge loss of {{ f(mid.hinge_total, 0) }}. Check the primal: ½ · {{ f(mid.w[0] ** 2 + mid.w[1] ** 2, 1) }} + {{ g(mid.C) }} · {{ f(mid.hinge_total, 0) }} = {{ f(mid.primal, 2) }}.
+  </p>
+  <p>
+    At C = {{ g(soft.C) }} violations are cheap. The strip widens to {{ f(soft.width, 4) }}, it now touches {{ soft.support|length }} support vectors, and the line tilts to w = {{ v(soft.w, 4) }}. More support vectors means the answer averages over more of the data, which is the variance-reducing effect of a small C.
+  </p>
+
+  <div class="jj-diagram">
+    <svg viewBox="0 0 640 320" role="img" aria-labelledby="svm-margin-title svm-margin-desc">
+      <title id="svm-margin-title">The maximum-margin line at C = {{ g(hard.C) }} and C = {{ g(soft.C) }}</title>
+      <desc id="svm-margin-desc">
+        Two panels show the same eight points. Left, C = {{ g(hard.C) }}: the solid line x₁ + x₂ = 5.5 with dashed margin lines through P4 (2.5, 2) and P5 (3.5, 3), strip width {{ f(hard.width, 3) }}, two support vectors circled.
+        Right, C = {{ g(soft.C) }}: the line tilts to w = {{ v(soft.w, 3) }}, the dashed margin lines move out to a strip of width {{ f(soft.width, 3) }}, and {{ soft.support|length }} points are circled as support vectors, several of them inside the strip.
+      </desc>
+      {% for panel in [hard, soft] %}
+      {% set ox = 40 if loop.first else 345 %}
+      {% set cid = "svm-panel-" ~ loop.index %}
+      <defs><clipPath id="{{ cid }}"><rect x="{{ ox }}" y="22" width="{{ 5.5 * 50 }}" height="{{ 5.5 * 45 }}"></rect></clipPath></defs>
+      <line x1="{{ ox }}" y1="270" x2="{{ ox + 275 }}" y2="270" class="d-line"></line>
+      <line x1="{{ ox }}" y1="270" x2="{{ ox }}" y2="22" class="d-line"></line>
+      {% for t in [1, 2, 3, 4, 5] %}
+      <text x="{{ ox + t * 50 }}" y="283" font-size="10" text-anchor="middle" class="d-muted">{{ t }}</text>
+      <text x="{{ ox - 6 }}" y="{{ 273 - t * 45 }}" font-size="10" text-anchor="end" class="d-muted">{{ t }}</text>
+      {% endfor %}
+      <g clip-path="url(#{{ cid }})">
+        {% for c in [-1, 0, 1] %}
+        {% set ya = (c - panel.b) / panel.w[1] %}
+        {% set yb = (c - panel.b - panel.w[0] * 5.5) / panel.w[1] %}
+        <line x1="{{ ox }}" y1="{{ '%.1f'|format(270 - ya * 45) }}" x2="{{ ox + 275 }}" y2="{{ '%.1f'|format(270 - yb * 45) }}" stroke-width="{{ 2 if c == 0 else 1.5 }}" {% if c == 0 %}class="d-line"{% else %}class="ml-dashed" style="stroke: var(--jj-accent)"{% endif %}></line>
+        {% endfor %}
+      </g>
+      {% for p in e.points %}
+      {% set px = ox + p[0] * 50 %}
+      {% set py = 270 - p[1] * 45 %}
+      {% if e.labels[loop.index0] > 0 %}
+      <circle cx="{{ px }}" cy="{{ py }}" r="5" style="fill: var(--jj-violet)"></circle>
+      {% else %}
+      <rect x="{{ px - 5 }}" y="{{ py - 5 }}" width="10" height="10" style="fill: var(--jj-amber)"></rect>
+      {% endif %}
+      {% if loop.index0 in panel.support %}
+      <circle cx="{{ px }}" cy="{{ py }}" r="10" fill="none" stroke-width="1.5" style="stroke: var(--jj-red)"></circle>
+      {% endif %}
+      <text x="{{ px + 9 }}" y="{{ py - 8 }}" font-size="10" class="d-muted">P{{ loop.index }}</text>
+      {% endfor %}
+      <text x="{{ ox + 137 }}" y="306" font-size="11" text-anchor="middle">C = {{ g(panel.C) }}, margin {{ f(panel.width, 2) }}, {{ panel.support|length }} SVs</text>
+      {% endfor %}
+    </svg>
+    <p class="ml-caption">Violet circles are +1, amber squares −1, red rings mark support vectors. The dashed lines are w·x + b = ±1. Points outside the strip on their own side have α = 0 and could be removed.</p>
+  </div>
+
+  <h3 id="outlier">One mislabelled point</h3>
+
+  <p>
+    Add P9 = {{ v(e.outlier, 1) }} labelled +1, deep among the −1 points. No line separates the data any more, so even a large C cannot give a hard margin.
+  </p>
+
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>C</th><th>w</th><th>b</th><th>Margin 2/‖w‖</th><th>P9's margin y·f</th><th>P9's α</th><th>Support vectors</th><th>Primal</th></tr></thead>
+      <tbody>
+        {% for fit in ex.with_outlier %}
+        <tr>
+          <td>{{ g(fit.C) }}</td>
+          <td>{{ v(fit.w, 4) }}</td>
+          <td>{{ f(fit.b, 4) }}</td>
+          <td>{{ f(fit.width, 4) }}</td>
+          <td>{{ f(fit.margins[8], 4) }}</td>
+          <td>{{ f(fit.alpha[8], 3) }}</td>
+          <td>{{ idx(fit.support) }}</td>
+          <td>{{ f(fit.primal, 4) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <p>
+    At C = {{ g(out_hard.C) }} the outlier stays misclassified (margin {{ f(out_hard.margins[8], 2) }}) but pulls with the maximum force α = C. The line swings to w = {{ v(out_hard.w, 2) }} and the strip narrows from {{ f(hard.width, 3) }} to {{ f(out_hard.width, 3) }}: one bad label has reshaped the boundary for everyone, and the objective jumps from {{ f(hard.primal, 0) }} to {{ f(out_hard.primal, 2) }}. At C = {{ g(out_soft.C) }} the outlier still sits at α = C, but C is now small, so its pull is limited and the line, w = {{ v(out_soft.w, 4) }}, points almost the same way as without it. A small C is a robustness setting: no point can contribute more than C to w.
+  </p>
+
+  <h3 id="ring">A ring that no line separates</h3>
+
+  <p>
+    In one dimension, put +1 at x ∈ {−1, −0.5, 0, 0.5, 1} and −1 at x ∈ {±2, ±2.5, ±3}: the +1 class sits inside |x| &lt; {{ e.ring_radius }}. A threshold on x can only split left from right, so the linear SVM with C = {{ g(e.ring_c) }} gives up: w = {{ f(ex.linear_ring.w[0], 0) }}, every point is a support vector, and it labels everything −1 for {{ pct(ex.linear_ring.accuracy) }} accuracy. Kernels fix this.
+  </p>
+
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Kernel</th><th>Support vectors</th><th>b</th><th>Train accuracy</th><th>f(x) at x = {{ f(e.far, 0) }}</th></tr></thead>
+      <tbody>
+        <tr><td>linear</td><td>{{ ex.linear_ring.support|length }}</td><td>{{ f(ex.linear_ring.b, 4) }}</td><td>{{ pct(ex.linear_ring.accuracy) }}</td><td>{{ f(ex.linear_ring.b, 4) }}</td></tr>
+        <tr><td>polynomial, (x·x′ + 1)²</td><td>{{ ex.poly.alpha|select(">", e.tol)|list|length }}</td><td>{{ f(ex.poly.b, 4) }}</td><td>{{ pct(ex.poly.accuracy) }}</td><td>grows like −x²</td></tr>
+        {% for r in ex.rbf %}
+        <tr><td>RBF, γ = {{ g(r.gamma) }}</td><td>{{ r.support }}</td><td>{{ f(r.model.b, 4) }}</td><td>{{ pct(r.accuracy) }}</td><td>{{ f(r.far, 4) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <p>
+    The polynomial kernel's decision values at the eleven points are {{ v(ex.poly.scores, 2) }}: a downward parabola in x, positive only near zero. In the lifted space φ(x) = (x², √2 x, 1) that parabola is a plane. Check the trick on x = 1 and x′ = 2: (1 · 2 + 1)² = {{ f(kt.kernel, 0) }}, and φ(1)·φ(2) = {{ v(kt.lifted_a, 3) }} · {{ v(kt.lifted_b, 3) }} = 4 + 4 + 1 = {{ f(kt.explicit, 0) }}.
+  </p>
+  <p>
+    All three RBF models fit the training points perfectly, but they disagree away from them. With γ = {{ g(ex.rbf[2].gamma) }} each point's influence dies within about 1/√10 ≈ 0.3, every point becomes a support vector, and at x = {{ f(e.far, 0) }} the score has decayed to the intercept b = {{ f(ex.rbf[2].far, 4) }}: the model has memorised the points and has nothing to say away from them. Its ripples between neighbouring points are the same symptom. With γ = {{ g(ex.rbf[0].gamma) }} only {{ ex.rbf[0].support }} support vectors are needed and the curve is smooth. Large γ, like large C, means low bias and high variance.
+  </p>
+
+  <div class="jj-diagram">
+    <svg viewBox="0 0 640 290" role="img" aria-labelledby="svm-rbf-title svm-rbf-desc">
+      <title id="svm-rbf-title">RBF decision functions on the one-dimensional ring for three values of gamma</title>
+      <desc id="svm-rbf-desc">
+        The horizontal axis is x from −4 to 4, the vertical axis the decision value f(x). Eleven training points sit on the zero line, +1 between −1 and 1 and −1 at ±2 to ±3.
+        γ = {{ g(ex.rbf[0].gamma) }} gives a smooth bump peaking at {{ f(ex.rbf[0].scores[5], 2) }} at x = 0 and falling to {{ f(ex.rbf[0].far, 2) }} at x = 6. γ = {{ g(ex.rbf[1].gamma) }} is flatter and crosses zero near ±1.5.
+        γ = {{ g(ex.rbf[2].gamma) }} hugs ±1 across each cluster with small ripples between neighbouring points, and falls back to b = {{ f(ex.rbf[2].model.b, 2) }} beyond the data.
+      </desc>
+      <line x1="40" y1="{{ ry(0) }}" x2="600" y2="{{ ry(0) }}" class="d-line"></line>
+      {% for s in [-3, -2, -1, 1] %}
+      <line x1="40" y1="{{ ry(s) }}" x2="600" y2="{{ ry(s) }}" class="d-muted" stroke="currentColor" stroke-opacity="0.2"></line>
+      <text x="34" y="{{ '%.1f'|format(123 - s * 35) }}" font-size="10" text-anchor="end" class="d-muted">{{ f(s, 0) }}</text>
+      {% endfor %}
+      {% for x in [-4, -3, -2, -1, 0, 1, 2, 3, 4] %}
+      <text x="{{ rx(x) }}" y="262" font-size="10" text-anchor="middle" class="d-muted">{{ f(x, 0) }}</text>
+      {% endfor %}
+      {% set colours = ["var(--jj-violet)", "var(--jj-accent)", "var(--jj-red)"] %}
+      {% for r in ex.rbf %}
+      <polyline fill="none" stroke-width="2" style="stroke: {{ colours[loop.index0] }}" points="{% for x, s in r.curve %}{{ rx(x) }},{{ ry(s) }} {% endfor %}"></polyline>
+      {% endfor %}
+      {% for x in e.ring %}
+      {% if ex.ring_labels[loop.index0] > 0 %}
+      <circle cx="{{ rx(x) }}" cy="{{ ry(0) }}" r="5" style="fill: var(--jj-violet)"></circle>
+      {% else %}
+      <rect x="{{ '%.1f'|format(40 + (x + 4) * 70 - 5) }}" y="{{ '%.1f'|format(120 - 5) }}" width="10" height="10" style="fill: var(--jj-amber)"></rect>
+      {% endif %}
+      {% endfor %}
+      <g font-size="11">
+        {% for r in ex.rbf %}
+        <text x="{{ 60 + loop.index0 * 120 }}" y="282" style="fill: {{ colours[loop.index0] }}">γ = {{ g(r.gamma) }}, {{ r.support }} SVs</text>
+        {% endfor %}
+        <text x="600" y="282" text-anchor="end" class="d-muted">x →</text>
+      </g>
+    </svg>
+    <p class="ml-caption">Decision value f(x) for three RBF widths, C = {{ g(e.ring_c) }}. Every model classifies the eleven training points correctly; they differ in what they say between and beyond them.</p>
+  </div>
+
+  <h3 id="scaling">Why the features must be scaled</h3>
+
+  <p>
+    Take three points with one feature in [0, 1] and one in the thousands: {% for p in e.scaling_points %}{{ v(p, 1) }}{% if not loop.last %}, {% endif %}{% endfor %}. On the raw data <code>gamma="scale"</code> gives γ = {{ '%.3g'|format(sc.gamma_raw) }}, because the variance of all entries is dominated by the large feature.
+    The first two points differ by the whole range of the small feature, yet their RBF similarity is {{ f(sc.kernel_raw_near, 7) }}, indistinguishable from identical points, while the first and third get {{ f(sc.kernel_raw_far, 4) }}. The small feature is invisible to the kernel.
+    After standardising each column, γ = {{ f(sc.gamma_standardized, 2) }} and both pairs have similarity {{ f(sc.kernel_std_near, 4) }}: each feature now counts once. <code>gamma="scale"</code> rescales γ by one global variance; it cannot fix features measured in different units, so SVMs go in a pipeline after a scaler.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC, LinearSVC
+from sklearn.linear_model import SGDClassifier
+from sklearn.model_selection import GridSearchCV
+
+X = [[1, 1], [2, 1], [1, 2.5], [2.5, 2], [3.5, 3], [4.5, 3], [3, 4.5], [4, 4.5]]
+y = [-1, -1, -1, -1, 1, 1, 1, 1]
+
+hard = SVC(kernel="linear", C=100).fit(X, y)
+hard.coef_, hard.intercept_      # [[1, 1]], [-5.5]
+hard.support_                    # [3, 4]: P4 and P5
+hard.dual_coef_                  # [[-1, 1]]: alpha_i * y_i
+
+# Kernel SVMs need scaled inputs; search C and gamma together on a log grid.
+model = make_pipeline(StandardScaler(), SVC(kernel="rbf"))
+search = GridSearchCV(model, {"svc__C": [0.1, 1, 10, 100],
+                              "svc__gamma": ["scale", 0.01, 0.1, 1]}, cv=5)
+
+# Many samples, linear boundary: liblinear or SGD on the primal.
+linear = make_pipeline(StandardScaler(), LinearSVC(C=1.0))
+sgd = make_pipeline(StandardScaler(), SGDClassifier(loss="hinge", alpha=1e-4))</code></pre>
+
+<p>
+  <code>SVC</code> outputs scores, not probabilities. For calibrated probabilities wrap it in <code>CalibratedClassifierCV</code>; the old <code>probability=True</code> flag is deprecated in {{ pins.sklearn.tag }}. For regression the same machinery with an ε-insensitive loss is <code>SVR</code>.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Scale.</strong> Kernel SVM training needs the kernel matrix, in pieces, so time grows between n² and n³ and memory with the cache. Beyond tens of thousands of samples use <code>LinearSVC</code>, <code>SGDClassifier</code>, or an approximate feature map (<code>Nystroem</code>, <code>RBFSampler</code>) followed by a linear model.</li>
+  <li><strong>Prediction cost.</strong> Each prediction evaluates the kernel against every support vector. Small C and large γ make many support vectors and slow predictions.</li>
+  <li><strong>C and γ.</strong> Both control flexibility and they interact, so tune them together on a logarithmic grid with <a href="/ml-models/cross-validation">cross-validation</a>.</li>
+  <li><strong>Preprocessing.</strong> The kernel compares raw distances, so unscaled features silently drop out, as the scaling example shows.</li>
+  <li><strong>Scores, not probabilities.</strong> The decision value is a distance-like score. Calibrate it if you need probabilities, and use <code>class_weight</code> for imbalanced classes.</li>
+  <li><strong>Against other models.</strong> On small to medium tabular data, gradient-boosted trees usually need less preprocessing and tuning. On images, text and audio, learned features from neural networks replaced hand-picked kernels. SVMs remain strong for small, high-dimensional problems such as text with many sparse features, and the margin and kernel ideas reappear across the field.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Your RBF SVM gets 100% training accuracy, 70% validation accuracy, and nearly every training point is a support vector. What do you change?</summary>
+  <p>It is overfitting: each point has become its own bump. Lower γ so each support vector influences a wider region, lower C so violations are cheaper, and check that the features were standardised. A support vector fraction near 100% with high γ is the same symptom as the γ = 10 ring model above.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<p>
+  The hinge loss sits beside the log loss on the <a href="/ml-models/loss-functions">loss functions</a> page, and the primal is regularised empirical risk as in <a href="/ml-models/regularization">regularization</a>. The dual comes from Lagrange multipliers, the constrained version of the stationarity condition on <a href="/ml-models/derivatives-and-gradients">derivatives and gradients</a>. Scoring by similarity to stored examples returns in <a href="/ml-models/attention">attention</a>, where the similarity is a dot product of learned features, and <a href="/ml-models/gradient-boosting">gradient boosting</a> is the usual alternative on tabular data.
+</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Cortes and Vapnik. <em>Support-Vector Networks.</em> Machine Learning 20, 273–297, 1995. <a href="https://doi.org/10.1007/BF00994018">doi:10.1007/BF00994018</a></li>
+  <li>Boser, Guyon and Vapnik. <em>A Training Algorithm for Optimal Margin Classifiers.</em> COLT, 144–152, 1992. <a href="https://doi.org/10.1145/130385.130401">doi:10.1145/130385.130401</a></li>
+  <li>Platt. <em>Sequential Minimal Optimization: A Fast Algorithm for Training Support Vector Machines.</em> Microsoft Research MSR-TR-98-14, 1998. <a href="https://www.microsoft.com/en-us/research/publication/sequential-minimal-optimization-a-fast-algorithm-for-training-support-vector-machines/">microsoft.com/research</a></li>
+  <li>Fan, Chen and Lin. <em>Working Set Selection Using Second Order Information for Training Support Vector Machines.</em> Journal of Machine Learning Research 6, 1889–1918, 2005. <a href="https://www.jmlr.org/papers/v6/fan05a.html">jmlr.org/papers/v6/fan05a</a></li>
+  <li>Chang and Lin. <em>LIBSVM: A Library for Support Vector Machines.</em> ACM Transactions on Intelligent Systems and Technology 2(3), 27:1–27:27, 2011. <a href="https://doi.org/10.1145/1961189.1961199">doi:10.1145/1961189.1961199</a></li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/svm/_classes.py') }}"><code>sklearn/svm/_classes.py</code></a>, <a href="{{ skl('sklearn/svm/_base.py') }}"><code>sklearn/svm/_base.py</code></a>, <a href="{{ skl('sklearn/svm/src/libsvm/svm.cpp') }}"><code>sklearn/svm/src/libsvm/svm.cpp</code></a>.</li>
+</ul>

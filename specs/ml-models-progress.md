@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-12 (thirty-second run). Spec v2 widens the section from model
+**Last updated:** 2026-10-12 (thirty-third run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-60, the last being `regression-metrics`. The
-next page is `support-vector-machines` (queue item 61).
+fixed page format. Ready pages: queue items 1-61, the last being `support-vector-machines`. The
+next page is `learning-rate-schedules` (queue item 62).
 
 ## Pins
 
@@ -284,8 +284,8 @@ Gaps:
 58. `distillation` ✓
 59. `time-series` ✓
 60. `regression-metrics` ✓
-61. `support-vector-machines` ← next
-62. `learning-rate-schedules`
+61. `support-vector-machines` ✓
+62. `learning-rate-schedules` ← next
 63. `gans`
 64. `encoder-only`
 65. `learning-to-rank`

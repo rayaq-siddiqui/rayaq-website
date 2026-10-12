@@ -529,7 +529,7 @@ PAGES = [
             "sklearn:sklearn/svm/_classes.py",
             "sklearn:sklearn/svm/_base.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "nearest-neighbors",
