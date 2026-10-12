@@ -25,6 +25,9 @@ FORMAT_SECTIONS = [
     "references",
 ]
 SIGNALS_HEADER = "<th>Signal</th><th>Pattern</th><th>Why</th>"
+# No page teaches B-trees (6.2) or max flow (6.4), so citing either is a wrong section number.
+ALGS4_SECTIONS = {f"{chapter}.{section}" for chapter, count in ((1, 5), (2, 5), (3, 5), (4, 4), (5, 5), (6, 6)) for section in range(1, count + 1)} - {"6.2", "6.4"}
+SEDGEWICK_CITATION = re.compile(r"<li>Sedgewick and Wayne,(.*?)</li>", re.S)
 QUEUE_LINE = re.compile(r"^\d+\. `([a-z0-9-]+)`(.*)$", re.M)
 
 
@@ -179,6 +182,19 @@ def test_ready_page_follows_the_format(url):
     for author in ("Cormen", "Skiena", "Sedgewick", "NeetCode"):
         assert author in references, (url, author)
     assert 3 <= body.count('class="lc-quiz"') <= 4, url
+
+
+@pytest.mark.parametrize("url", ready_urls())
+def test_sedgewick_citations_name_real_sections(url):
+    body = app_module.app.test_client().get(url).get_data(as_text=True)
+    references = body.split('<h2 id="references"', 1)[1]
+    citations = SEDGEWICK_CITATION.findall(references)
+    assert citations, url
+    for citation in citations:
+        sections = re.findall(r"\b(\d\.\d)\b", citation)
+        assert sections or re.search(r"chapter \d", citation), (url, citation)
+        for section in sections:
+            assert section in ALGS4_SECTIONS, (url, section)
 
 
 @pytest.mark.parametrize("url", ["/leetcode"] + ready_urls())
