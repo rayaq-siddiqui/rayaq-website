@@ -1,4 +1,7 @@
+import ast
+import builtins
 import heapq
+import html
 import itertools
 import math
 import os
@@ -29,6 +32,14 @@ SIGNALS_HEADER = "<th>Signal</th><th>Pattern</th><th>Why</th>"
 ALGS4_SECTIONS = {f"{chapter}.{section}" for chapter, count in ((1, 5), (2, 5), (3, 5), (4, 4), (5, 5), (6, 6)) for section in range(1, count + 1)} - {"6.2", "6.4"}
 SEDGEWICK_CITATION = re.compile(r"<li>Sedgewick and Wayne,(.*?)</li>", re.S)
 QUEUE_LINE = re.compile(r"^\d+\. `([a-z0-9-]+)`(.*)$", re.M)
+# Placeholders a page's code leaves to the reader on purpose: the recursion skeleton's steps,
+# the toolkit's cheat-sheet variables, LeetCode's own Node class, and a loop fragment.
+CODE_PLACEHOLDERS = {
+    "recursion": {"is_base_case", "base_answer", "shrink", "combine"},
+    "python-toolkit": {"start", "distance", "existing_list", "sorted_list", "x", "lo", "hi", "people", "nums", "words", "a", "b"},
+    "graph-traversal": {"Node"},
+    "bitmask-dp": {"mask", "visit"},
+}
 
 
 def page_slugs():
@@ -182,6 +193,26 @@ def test_ready_page_follows_the_format(url):
     for author in ("Cormen", "Skiena", "Sedgewick", "NeetCode"):
         assert author in references, (url, author)
     assert 3 <= body.count('class="lc-quiz"') <= 4, url
+
+
+@pytest.mark.parametrize("url", ready_urls())
+def test_page_code_parses_and_imports_what_it_uses(url):
+    body = app_module.app.test_client().get(url).get_data(as_text=True)
+    blocks = re.findall(r"<pre><code>(.*?)</code></pre>", body, re.S)
+    assert blocks, url
+    tree = ast.parse("\n\n".join(html.unescape(re.sub(r"<[^>]+>", "", block)) for block in blocks))
+    bound, used = set(dir(builtins)), set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            (used if isinstance(node.ctx, ast.Load) else bound).add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.arg):
+            bound.add(node.arg)
+        elif isinstance(node, ast.alias):
+            bound.add((node.asname or node.name).split(".")[0])
+    missing = used - bound - CODE_PLACEHOLDERS.get(url.rsplit("/", 1)[1], set())
+    assert not missing, (url, sorted(missing))
 
 
 @pytest.mark.parametrize("url", ready_urls())
