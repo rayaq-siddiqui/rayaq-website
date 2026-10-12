@@ -1,0 +1,383 @@
+{% set ex = position_example() %}
+{% set e = position_settings %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(0.0 if x|abs < 0.5 * 10 ** (-n) else x)|replace("-", "−") }}{%- endmacro %}
+{% macro vec(v, n=3) -%}({% for x in v %}{{ f(x, n) }}{% if not loop.last %}, {% endif %}{% endfor %}){%- endmacro %}
+<header class="jj-header">
+  <h1>Positional encoding</h1>
+  <p class="tagline">
+    Attention compares every token with every other token, but on its own it has no idea which came first.
+    This page shows why, then builds the three main fixes from their formulas: the original sinusoidal encoding, learned position tables, and rotary embeddings (RoPE), which most open LLMs use today,
+    plus ALiBi, which skips embeddings entirely and biases the attention scores instead. Every number below is computed, and every claim about PyTorch links the lines that back it.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  "The dog bit the man" and "the man bit the dog" contain the same words. A model that cannot tell them apart is useless for language, yet that is exactly what plain <a href="/ml-models/attention">attention</a> is.
+  Each token's output is a weighted average of value vectors, with weights from query–key dot products. Shuffle the input tokens and every output is shuffled the same way, with identical values: attention is <em>permutation-equivariant</em>.
+  The <a href="/ml-models/embeddings">embedding</a> table does not help either, because it gives "dog" the same vector wherever it appears.
+</p>
+<p>
+  So order has to be injected. The question is how: add a position signal to each token's vector, learn one, or change the attention scores themselves so they depend on how far apart two tokens are.
+  The choice decides whether a model can read sequences longer than it was trained on, how its KV cache works, and how many parameters position costs.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Think of a wall of clocks, each hand turning at a different speed. The fastest hand goes round every few steps, the slowest takes thousands. Read all the hands at once and you know exactly what time it is, and two nearby moments have similar readings.
+  The sinusoidal encoding is that wall of clocks: each pair of dimensions is one hand, a sine and a cosine at its own speed, and the reading is added to the token's embedding.
+</p>
+<p>
+  A learned table is the bluntest fix: give each slot 0, 1, 2, … its own trainable vector, like seat numbers in a theatre. It works, but there are no seats past the last row, so it cannot handle longer inputs.
+</p>
+<p>
+  Rotary embeddings use the clocks differently. Instead of <em>adding</em> a reading, they <em>turn</em> the query and key vectors by an angle proportional to their position. When a query at position m meets a key at position n, both have been turned, and the dot product only sees the difference between the two turns: n − m.
+  Attention then naturally asks "how far back is this word?" rather than "which absolute slot is it in?". ALiBi asks the same question more bluntly: it subtracts a penalty proportional to distance from each attention score, so far-away tokens get less weight.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 290" role="img" aria-labelledby="pe-curves-title pe-curves-desc">
+    <title id="pe-curves-title">Sinusoidal encoding: one sine wave per frequency pair</title>
+    <desc id="pe-curves-desc">
+      Four sine curves over positions 0 to {{ e.curve_positions }}, for a {{ e.curve_dims }}-dimensional encoding. Pair 0 has frequency 1 and oscillates fastest, with a period of about 6.3 positions.
+      Pairs {{ e.curve_pairs[1] }}, {{ e.curve_pairs[2] }} and {{ e.curve_pairs[3] }} have frequencies {% for c in ex.curves[1:] %}{{ f(c.freq) }}{% if not loop.last %}, {% endif %}{% endfor %}, so they oscillate progressively slower.
+      Reading the value of every curve at a position gives that position's encoding, and nearby positions give similar readings.
+    </desc>
+    <g font-size="12">
+      {% for c in ex.curves %}
+      {% set cy = 45 + loop.index0 * 62 %}
+      <path d="M80 {{ cy }} L600 {{ cy }}" class="d-line" fill="none" stroke-opacity="0.35"></path>
+      <path d="{% for p, v in c.points %}{{ 'M' if loop.first else 'L' }}{{ '%.1f'|format(80 + p * 13) }} {{ '%.1f'|format(cy - v * 22) }} {% endfor %}" fill="none" stroke-width="2" style="stroke: var({{ ['--jj-accent', '--jj-violet', '--jj-amber', '--jj-red'][loop.index0] }})"></path>
+      <text x="8" y="{{ cy - 4 }}">pair {{ c.pair }}</text>
+      <text x="8" y="{{ cy + 12 }}" class="d-muted">ω = {{ f(c.freq) }}</text>
+      {% endfor %}
+      <path d="M80 270 L600 270" class="d-line" fill="none"></path>
+      {% for p in [0, 10, 20, 30, 40] %}
+      <path d="M{{ 80 + p * 13 }} 270 L{{ 80 + p * 13 }} 275" class="d-line" fill="none"></path>
+      <text x="{{ 80 + p * 13 }}" y="287" text-anchor="middle" class="d-muted">{{ p }}</text>
+      {% endfor %}
+      <text x="610" y="274" class="d-muted">pos</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Each pair of dimensions is a clock hand at its own speed; the sine is shown, and the cosine partner is the same curve shifted a quarter turn.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="why-order-is-lost">Why attention ignores order</h3>
+<p>
+  Let X be the n × d matrix of token vectors and P any n × n permutation matrix. Self-attention computes softmax(XW<sub>Q</sub>(XW<sub>K</sub>)ᵀ/√d<sub>k</sub>) XW<sub>V</sub>. Replacing X by PX permutes the rows and columns of the score matrix together, and softmax works row by row, so
+</p>
+<p class="ml-formula">Attention(PX) = P · Attention(X)</p>
+<p>
+  The outputs move with the inputs and nothing else changes. A causal mask breaks the symmetry partly, since a token can count how many tokens it may see, and Haviv et al. found causal language models without any position signal still learn some positional information that way. Every mainstream architecture adds an explicit signal anyway.
+</p>
+
+<h3 id="sinusoidal">Sinusoidal encoding</h3>
+<p>Vaswani et al. add a fixed vector to each token embedding (which they first scale by √d):</p>
+<p class="ml-formula">PE(pos, 2i) = sin(pos · ω<sub>i</sub>) &nbsp;&nbsp; PE(pos, 2i+1) = cos(pos · ω<sub>i</sub>) &nbsp;&nbsp; ω<sub>i</sub> = 10000<sup>−2i/d</sup></p>
+<p>
+  The wavelengths 2π/ω<sub>i</sub> form a geometric progression from 2π up to nearly 10000 · 2π. The paper chose sinusoids over a learned table, which it found performed about the same, hoping for two properties. The first is exact:
+  for any fixed offset k, each (sin, cos) pair at pos + k is the pair at pos rotated by the angle k·ω<sub>i</sub>, by the angle-addition identities:
+</p>
+<p class="ml-formula">[ sin((pos+k)ω) , cos((pos+k)ω) ] = [ [cos kω, sin kω], [−sin kω, cos kω] ] · [ sin(pos·ω) , cos(pos·ω) ]</p>
+<p>
+  So PE(pos + k) is a linear function of PE(pos) that depends only on k, which the paper hoped would let attention learn relative offsets. A consequence is that PE(p) · PE(q) = Σ<sub>i</sub> cos(ω<sub>i</sub>(p − q)) depends only on the distance between the positions.
+  The second hope, extrapolating to longer sequences than seen in training, did not hold up well: Press et al. measured sinusoidal models degrading quickly past their training length.
+  Because the signal is added to the token vector, query–key products mix content and position terms, and the content terms see absolute position.
+</p>
+
+<h3 id="learned">Learned absolute positions</h3>
+<p>
+  BERT and GPT-2 instead learn a second embedding table with one row per position, <code>nn.Embedding(max_positions, d)</code>, and add row t to the token at position t. It costs max_positions × d parameters, {{ "{:,}".format(ex.gpt2_table) }} for GPT-2 small's 1,024 × 768 table,
+  and positions past max_positions simply do not exist. Its rows are free to learn whatever the data rewards, which is why it matched sinusoids in the original paper.
+</p>
+
+<h3 id="rope">Rotary position embedding (RoPE)</h3>
+<p>
+  Su et al. leave the token vectors alone and rotate the <em>queries and keys</em> inside every attention layer. Split a head's d<sub>k</sub> dimensions into d<sub>k</sub>/2 pairs and rotate pair i of the vector at position m by the angle m·θ<sub>i</sub>, with θ<sub>i</sub> = base<sup>−2i/d<sub>k</sub></sup> (base 10000 in the paper):
+</p>
+<p class="ml-formula">RoPE(x, m)<sub>2i, 2i+1</sub> = [ [cos mθ<sub>i</sub>, −sin mθ<sub>i</sub>], [sin mθ<sub>i</sub>, cos mθ<sub>i</sub>] ] · [ x<sub>2i</sub> , x<sub>2i+1</sub> ]</p>
+<p>
+  Write R<sub>m</sub> for that block-diagonal rotation. Rotations are orthogonal, so R<sub>m</sub>ᵀ R<sub>n</sub> = R<sub>n−m</sub>, and the attention score becomes
+</p>
+<p class="ml-formula">(R<sub>m</sub> q)ᵀ (R<sub>n</sub> k) = qᵀ R<sub>m</sub>ᵀ R<sub>n</sub> k = qᵀ R<sub>n−m</sub> k</p>
+<p>
+  The score depends on the content of q and k and on the offset n − m only, never on m or n alone. Rotation preserves length, so RoPE changes no vector's norm, and it adds no parameters. Values are not rotated, so the output mixes content only.
+  Because each key is rotated by its own position once, a <a href="/ml-models/kv-cache">KV cache</a> stores keys already rotated and never touches them again.
+  Some implementations pair dimension i with dimension i + d<sub>k</sub>/2 instead of 2i with 2i + 1; that is the same method on a fixed permutation of the dimensions, but weights trained with one layout need the same layout at inference.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 260" role="img" aria-labelledby="pe-rope-title pe-rope-desc">
+    <title id="pe-rope-title">RoPE rotates a query and a key; the angle between them depends only on their offset</title>
+    <desc id="pe-rope-desc">
+      Two panels show the first dimension pair of the worked example's query and key, with rotation speed θ = 1 radian per position. Left: the query at position {{ ex.rope_rows[1].m }} and the key at position {{ ex.rope_rows[1].n }}.
+      Right: the same query at position {{ ex.rope_rows[2].m }} and key at position {{ ex.rope_rows[2].n }}. The vectors point in different absolute directions in the two panels, but the angle between query and key is the same, because both pairs are 3 positions apart.
+    </desc>
+    <g font-size="12">
+      {% for row in [ex.rope_rows[1], ex.rope_rows[2]] %}
+      {% set ox = 160 + loop.index0 * 320 %}
+      <circle cx="{{ ox }}" cy="125" r="90" fill="none" class="d-line" stroke-opacity="0.35"></circle>
+      <path d="M{{ ox - 100 }} 125 L{{ ox + 100 }} 125 M{{ ox }} 25 L{{ ox }} 225" class="d-line" fill="none" stroke-opacity="0.35"></path>
+      <path d="M{{ ox }} 125 L{{ '%.1f'|format(ox + row.q[0] * 70) }} {{ '%.1f'|format(125 - row.q[1] * 70) }}" stroke-width="3" style="stroke: var(--jj-accent)"></path>
+      <path d="M{{ ox }} 125 L{{ '%.1f'|format(ox + row.k[0] * 70) }} {{ '%.1f'|format(125 - row.k[1] * 70) }}" stroke-width="3" style="stroke: var(--jj-violet)"></path>
+      <text x="{{ '%.1f'|format(ox + row.q[0] * 82) }}" y="{{ '%.1f'|format(129 - row.q[1] * 82) }}" text-anchor="middle" style="fill: var(--jj-accent)">q@{{ row.m }}</text>
+      <text x="{{ '%.1f'|format(ox + row.k[0] * 82) }}" y="{{ '%.1f'|format(129 - row.k[1] * 82) }}" text-anchor="middle" style="fill: var(--jj-violet)">k@{{ row.n }}</text>
+      <text x="{{ ox }}" y="248" text-anchor="middle" class="d-muted">m = {{ row.m }}, n = {{ row.n }}: score {{ f(row.score) }}</text>
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Shifting both positions by the same amount spins the whole picture; the angle between q and k, and so their dot product, stays put.</p>
+
+<h3 id="alibi">ALiBi: a bias, not an embedding</h3>
+<p>
+  Press, Smith and Lewis add no position vector at all. Each head h gets a fixed slope s<sub>h</sub>, and before the softmax the score of query i against key j ≤ i is lowered in proportion to the distance:
+</p>
+<p class="ml-formula">score<sub>ij</sub> = q<sub>i</sub> · k<sub>j</sub> / √d<sub>k</sub> − s<sub>h</sub> · (i − j)</p>
+<p>
+  The slopes are not learned. For 8 heads they are the geometric sequence 1/2, 1/4, …, 1/256; in general, for a power-of-two head count H, the sequence starts at 2<sup>−8/H</sup> and has that same ratio. Steep heads look locally; gentle heads see far back.
+  The paper's headline result is training on short sequences and evaluating on longer ones with little loss, since a longer distance just means a larger penalty. In PyTorch it is a float <code>attn_mask</code> for <code>scaled_dot_product_attention</code>, which adds it to the scores, or a <code>score_mod</code> in FlexAttention.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead>
+      <tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>nn.Embedding(max_positions, d)</code></td>
+        <td>weight (max_positions, d), initialized N(0, 1)</td>
+        <td>A learned absolute position table; index it with <code>torch.arange(T)</code> and add to the token embeddings.</td>
+        <td><a href="{{ src('torch/nn/modules/sparse.py', 134, 177) }}">sparse.py 134-177</a>, <a href="{{ src('torch/nn/modules/sparse.py', 179, 181) }}">179-181</a></td>
+      </tr>
+      <tr>
+        <td><code>Embedding.forward</code> → <code>F.embedding</code></td>
+        <td>indices (*) → (*, d)</td>
+        <td>A row lookup; positions past the table raise an index error rather than extrapolating.</td>
+        <td><a href="{{ src('torch/nn/modules/sparse.py', 188, 197) }}">sparse.py 188-197</a>, <a href="{{ src('torch/nn/functional.py', 2509, 2621) }}">functional.py 2509-2621</a></td>
+      </tr>
+      <tr>
+        <td><code>F.scaled_dot_product_attention</code></td>
+        <td>q (N, …, H<sub>q</sub>, L, E), k (N, …, H, S, E); attn_mask broadcastable to (N, …, H<sub>q</sub>, L, S)</td>
+        <td>A float mask is added to the scaled scores before softmax: the hook for ALiBi or any relative bias. RoPE is applied to q and k before the call.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 6376, 6403) }}">functional.py 6376-6403</a>, <a href="{{ src('torch/nn/functional.py', 6490, 6493) }}">6490-6493</a></td>
+      </tr>
+      <tr>
+        <td><code>flex_attention(…, score_mod)</code></td>
+        <td>score_mod(score, batch, head, q_idx, k_idx) → score</td>
+        <td>Per-score callback with the query and key indices, so a position bias can be computed on the fly instead of materialized as an L × S mask.</td>
+        <td><a href="{{ src('torch/nn/attention/flex_attention.py', 2386, 2403) }}">flex_attention.py 2386-2403</a>, <a href="{{ src('torch/nn/attention/flex_attention.py', 138, 138) }}">138</a></td>
+      </tr>
+      <tr>
+        <td><code>nn.Transformer</code></td>
+        <td>d_model 512, nhead 8 by default</td>
+        <td>A reference encoder–decoder that takes already-embedded inputs: it contains no embedding table and no positional encoding.</td>
+        <td><a href="{{ src('torch/nn/modules/transformer.py', 58, 317) }}">transformer.py 58-317</a></td>
+      </tr>
+      <tr>
+        <td>Sinusoidal PE, RoPE</td>
+        <td>(max_len, d) buffer; (T, d<sub>k</sub>/2) angles, no parameters</td>
+        <td>Not in PyTorch's <code>nn</code>; built from tensor ops as in the snippet below.</td>
+        <td>Papers: Vaswani et al.; Su et al.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>RoPE rotates queries and keys. Why not the values too?</summary>
+  <p>The relative-offset property comes from the dot product q·k, where the two rotations cancel down to R<sub>n−m</sub>. Values never enter a dot product with each other; rotating them would just stamp absolute position onto the output vectors, which is what RoPE was designed to avoid.</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>Sinusoidal encodings, d = {{ e.d_model }}.</strong> The four frequencies are ω = {% for w in ex.freqs %}{{ f(w) }}{% if not loop.last %}, {% endif %}{% endfor %}, wavelengths {% for l in ex.wavelengths %}{{ "{:,.1f}".format(l) }}{% if not loop.last %}, {% endif %}{% endfor %} positions.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>pos</th>{% for i in range(e.d_model // 2) %}<th>sin ω<sub>{{ i }}</sub></th><th>cos ω<sub>{{ i }}</sub></th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for row in ex.table %}
+        <tr><td>{{ row.pos }}</td>{% for x in row.pe %}<td>{{ f(x) }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Only the first pair changes much between neighbours; the last pair barely moves until positions in the thousands. Rotating each pair of PE({{ ex.shift_from }}) by −{{ e.offset }}·ω<sub>i</sub> gives {{ vec(ex.shifted) }}, exactly PE({{ ex.shift_from + e.offset }}) in the table.
+    The dot product PE(0) · PE(k), which equals PE(p) · PE(p + k) for every p, falls from {{ f(ex.similarity[0].value) }} as the offset grows, though not monotonically:
+    {% for s in ex.similarity %}k = {{ s.offset }}: {{ f(s.value) }}{% if not loop.last %}; {% endif %}{% endfor %}.
+  </p>
+  <p>
+    <strong>RoPE on one head, d<sub>k</sub> = 4.</strong> To keep the angles visible, use base {{ f(e.rope_base, 0) }}, so θ = {% for t in ex.rope_freqs %}{{ f(t, 1) }}{% if not loop.last %}, {% endif %}{% endfor %} radians per position. Take q = {{ vec(e.query, 1) }} and k = {{ vec(e.key, 1) }}, whose plain dot product is {{ f(ex.plain_score) }}.
+    Place the pair 3 positions apart at different absolute positions:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>m</th><th>n</th><th>R<sub>m</sub> q</th><th>R<sub>n</sub> k</th><th>RoPE score</th><th>Score with added sinusoids</th></tr></thead>
+      <tbody>
+        {% for r in ex.rope_rows %}
+        <tr><td>{{ r.m }}</td><td>{{ r.n }}</td><td>{{ vec(r.q) }}</td><td>{{ vec(r.k) }}</td><td>{{ f(r.score, 4) }}</td><td>{{ f(r.absolute, 4) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The rotated vectors are different on every row, but the RoPE score is {{ f(ex.rope_rows[0].score, 4) }} every time. Adding a sinusoidal encoding to q and k instead (same frequencies) gives a different score on every row, because the cross terms between content and position see absolute positions.
+    Holding m = 0 and moving the key, the RoPE score as a function of the offset is
+    {% for r in ex.rope_offsets %}{{ r.offset }}: {{ f(r.score) }}{% if not loop.last %}; {% endif %}{% endfor %}. At offset 0 it is the plain dot product.
+  </p>
+  <p>
+    <strong>ALiBi with {{ e.alibi_heads }} heads.</strong> The slopes are {% for s in ex.slopes %}{{ f(s, 5 if s < 0.01 else 4 if s < 0.1 else 3) }}{% if not loop.last %}, {% endif %}{% endfor %}. A query at the last of {{ e.alibi_length }} positions has raw scores {{ vec(e.alibi_scores, 1) }} against keys 0 to {{ e.alibi_length - 1 }}. After the bias and softmax:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Head</th><th>Slope</th>{% for j in range(e.alibi_length) %}<th>key {{ j }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for r in ex.alibi_rows %}
+        <tr><td>{{ r.head if r.head else "no bias" }}</td><td>{{ f(r.slope, 5 if r.slope < 0.01 else 3) if r.head else "—" }}</td>{% for w in r.weights %}<td>{{ f(w) }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Head 1 puts {{ f(ex.alibi_rows[1].weights[-1]) }} of its weight on the current token and only {{ f(ex.alibi_rows[1].weights[0]) }} on the oldest one, even though key 0's raw score is second highest. Head {{ e.alibi_heads }}'s slope is so gentle that its weights stay within 0.01 of the unbiased ones.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 300" role="img" aria-labelledby="pe-alibi-title pe-alibi-desc">
+    <title id="pe-alibi-title">ALiBi bias matrix for head 1, slope {{ f(ex.slopes[0], 1) }}</title>
+    <desc id="pe-alibi-desc">
+      A {{ e.alibi_length }} by {{ e.alibi_length }} grid of the bias added to each query–key score. Rows are query positions and columns key positions. The diagonal is 0; each step to the left subtracts another {{ f(ex.slopes[0], 1) }}, down to {{ f(ex.bias[-1][0], 1) }} in the bottom-left corner.
+      The upper triangle is masked out by causality. Darker cells mean a larger penalty.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      {% for row in ex.bias %}
+      {% set i = loop.index0 %}
+      <text x="150" y="{{ 64 + i * 38 }}" class="d-muted">q{{ i }}</text>
+      {% for b in row %}
+      {% set j = loop.index0 %}
+      {% if b is none %}
+      <rect x="{{ 170 + j * 52 }}" y="{{ 42 + i * 38 }}" width="50" height="36" rx="4" class="d-box ml-dashed" fill-opacity="0.1"></rect>
+      <text x="{{ 195 + j * 52 }}" y="{{ 64 + i * 38 }}" class="d-muted">masked</text>
+      {% else %}
+      <rect x="{{ 170 + j * 52 }}" y="{{ 42 + i * 38 }}" width="50" height="36" rx="4" style="fill: var(--jj-red); fill-opacity: {{ '%.2f'|format(0.08 + (-b) / 3.0) }}"></rect>
+      <text x="{{ 195 + j * 52 }}" y="{{ 64 + i * 38 }}">{{ f(b, 1) }}</text>
+      {% endif %}
+      {% endfor %}
+      {% endfor %}
+      {% for j in range(e.alibi_length) %}
+      <text x="{{ 195 + j * 52 }}" y="32" class="d-muted">k{{ j }}</text>
+      {% endfor %}
+      <text x="320" y="290" class="d-muted">bias = −slope × (i − j), added to the score before softmax; no position vectors anywhere</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The same matrix shape serves every head; only the slope changes, from 1/2 for head 1 down to 1/256 for head 8.</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+def sinusoidal_table(max_len, d, base=10000.0):            # (max_len, d), no parameters
+    pos = torch.arange(max_len).float()[:, None]
+    freq = base ** (-torch.arange(0, d, 2).float() / d)     # (d/2,)
+    pe = torch.zeros(max_len, d)
+    pe[:, 0::2] = torch.sin(pos * freq)
+    pe[:, 1::2] = torch.cos(pos * freq)
+    return pe
+
+learned = nn.Embedding(1024, 768)                           # GPT-2-style table: x = tok + learned(arange(T))
+
+def rope_angles(seq_len, head_dim, base=10000.0):
+    freq = base ** (-torch.arange(0, head_dim, 2).float() / head_dim)
+    angles = torch.outer(torch.arange(seq_len).float(), freq)   # (T, head_dim/2)
+    return angles.cos(), angles.sin()
+
+def apply_rope(x, cos, sin):                                # x: (B, H, T, head_dim)
+    x1, x2 = x[..., 0::2], x[..., 1::2]                     # the (2i, 2i+1) pairs
+    out = torch.stack((x1 * cos - x2 * sin, x1 * sin + x2 * cos), dim=-1)
+    return out.flatten(-2)                                  # back to (B, H, T, head_dim)
+
+def alibi_bias(n_heads, T):                                 # (H, T, T), for a power-of-two n_heads
+    slopes = torch.tensor([2 ** (-8 * (h + 1) / n_heads) for h in range(n_heads)])
+    i = torch.arange(T)[:, None]
+    j = torch.arange(T)[None, :]
+    bias = -slopes[:, None, None] * (i - j)
+    return bias.masked_fill(j &gt; i, float("-inf"))           # causal mask folded in
+
+B, H, T, Dh = 2, 8, 16, 64
+q, k, v = (torch.randn(B, H, T, Dh) for _ in range(3))
+cos, sin = rope_angles(T, Dh)
+out_rope = F.scaled_dot_product_attention(apply_rope(q, cos, sin), apply_rope(k, cos, sin), v, is_causal=True)
+out_alibi = F.scaled_dot_product_attention(q, k, v, attn_mask=alibi_bias(H, T))  # float mask is added</code></pre>
+
+<p>
+  <code>apply_rope</code> rotates the pairs exactly as the formula above; with a KV cache, slice <code>cos</code> and <code>sin</code> at the new token's position and rotate only the new query and key.
+  The ALiBi mask is a float tensor, so <code>scaled_dot_product_attention</code> adds it to the scores (its reference implementation, linked in the table, does <code>attn_bias = attn_mask + attn_bias</code>); a boolean mask would instead mean keep-or-drop.
+  For long sequences, a FlexAttention <code>score_mod</code> such as <code>lambda score, b, h, q_idx, kv_idx: score - slope[h] * (q_idx - kv_idx)</code> computes the same bias without materializing an L × S tensor.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Method</th><th>Where it acts</th><th>Parameters</th><th>Relative by construction</th><th>Longer than training</th></tr></thead>
+    <tbody>
+      <tr><td>Sinusoidal</td><td>added to the input once</td><td>0</td><td>only PE·PE; content cross terms are absolute</td><td>defined, but quality drops (Press et al.)</td></tr>
+      <tr><td>Learned absolute</td><td>added to the input once</td><td>max_len × d</td><td>no</td><td>undefined past max_len</td></tr>
+      <tr><td>RoPE</td><td>q and k in every layer</td><td>0</td><td>yes, q·k depends on n − m</td><td>degrades without rescaling; position interpolation and YaRN extend it</td></tr>
+      <tr><td>ALiBi</td><td>attention scores in every layer</td><td>0 (fixed slopes)</td><td>yes</td><td>the paper's design goal</td></tr>
+      <tr><td>Learned relative bias (Shaw et al., T5)</td><td>attention scores</td><td>per bucket and head</td><td>yes</td><td>far offsets share a bucket</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<ul>
+  <li><strong>Default choice today.</strong> RoPE dominates open decoder LLMs (the Llama 3 report is one example) because it is relative, parameter-free, cache-friendly and works with fused attention kernels, since it only touches q and k before the kernel.</li>
+  <li><strong>Extending RoPE's context.</strong> Past the trained length, the low-frequency pairs reach angles never seen in training. Position interpolation (Chen et al.) scales positions down so they stay inside the trained range, then fine-tunes briefly; YaRN (Peng et al.) rescales frequency bands differently. Raising the base, as some long-context models do, slows every rotation.</li>
+  <li><strong>ALiBi's bias toward recency</strong> is built in: every head penalizes distance, so it suits tasks where nearby context matters most, and it materializes or computes a bias per score, which some fused kernels support only through a mask.</li>
+  <li><strong>Learned tables</strong> are simple and fine for fixed-length inputs (image patches, a fixed context window), but cost parameters and cannot generalize past their last row.</li>
+  <li><strong>Common bugs.</strong> Mixing the interleaved and split-half RoPE layouts between training and inference; applying RoPE to values; forgetting to offset positions by the cache length during generation; adding positions after, rather than before, the first layer.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>A model was trained with a learned position table of 2,048 rows. What happens at token 2,049, and what would happen with ALiBi?</summary>
+  <p>With the table, the lookup fails: there is no row 2,048 (counting from 0), so you must truncate or extend the table and fine-tune. With ALiBi there is nothing to look up; the bias for distance 2,048 is just −slope × 2,048, a larger penalty of the same form the model already uses.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<p>
+  The <a href="/ml-models/transformer">Transformer</a> page shows where the encoding enters the original model, the <a href="/ml-models/decoder-only-llm">decoder-only LLM</a> page counts GPT-2's learned position table among its parameters,
+  and the <a href="/ml-models/kv-cache">KV cache</a> page explains why RoPE'd keys are stored after rotation.
+</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Vaswani et al. <em>Attention Is All You Need.</em> NeurIPS 2017. <a href="https://arxiv.org/abs/1706.03762">arXiv:1706.03762</a></li>
+  <li>Su, Lu, Pan, Murtadha, Wen and Liu. <em>RoFormer: Enhanced Transformer with Rotary Position Embedding.</em> 2021. <a href="https://arxiv.org/abs/2104.09864">arXiv:2104.09864</a></li>
+  <li>Press, Smith and Lewis. <em>Train Short, Test Long: Attention with Linear Biases Enables Input Length Extrapolation.</em> ICLR 2022. <a href="https://arxiv.org/abs/2108.12409">arXiv:2108.12409</a></li>
+  <li>Shaw, Uszkoreit and Vaswani. <em>Self-Attention with Relative Position Representations.</em> NAACL 2018. <a href="https://arxiv.org/abs/1803.02155">arXiv:1803.02155</a></li>
+  <li>Raffel et al. <em>Exploring the Limits of Transfer Learning with a Unified Text-to-Text Transformer.</em> JMLR 2020. <a href="https://arxiv.org/abs/1910.10683">arXiv:1910.10683</a></li>
+  <li>Devlin, Chang, Lee and Toutanova. <em>BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding.</em> NAACL 2019. <a href="https://arxiv.org/abs/1810.04805">arXiv:1810.04805</a></li>
+  <li>Haviv, Ram, Press, Izsak and Levy. <em>Transformer Language Models without Positional Encodings Still Learn Positional Information.</em> Findings of EMNLP 2022. <a href="https://arxiv.org/abs/2203.16634">arXiv:2203.16634</a></li>
+  <li>Chen, Wong, Chen and Tian. <em>Extending Context Window of Large Language Models via Positional Interpolation.</em> 2023. <a href="https://arxiv.org/abs/2306.15595">arXiv:2306.15595</a></li>
+  <li>Peng, Quesnelle, Fan and Shippole. <em>YaRN: Efficient Context Window Extension of Large Language Models.</em> ICLR 2024. <a href="https://arxiv.org/abs/2309.00071">arXiv:2309.00071</a></li>
+  <li>Llama Team. <em>The Llama 3 Herd of Models.</em> 2024. <a href="https://arxiv.org/abs/2407.21783">arXiv:2407.21783</a></li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/nn/modules/sparse.py', 14, 264) }}"><code>torch/nn/modules/sparse.py</code></a>, <a href="{{ src('torch/nn/functional.py', 6367, 6540) }}"><code>scaled_dot_product_attention</code></a>, <a href="{{ src('torch/nn/attention/flex_attention.py', 2365, 2640) }}"><code>flex_attention</code></a>, <a href="{{ src('torch/nn/modules/transformer.py', 58, 317) }}"><code>torch/nn/modules/transformer.py</code></a>.</li>
+</ul>

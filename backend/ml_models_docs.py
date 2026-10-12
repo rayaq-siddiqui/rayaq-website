@@ -930,7 +930,7 @@ PAGES = [
             "pytorch:torch/nn/functional.py",
             "pytorch:torch/nn/modules/transformer.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "attention",
