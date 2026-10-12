@@ -1,0 +1,316 @@
+{% set ex = init_example() %}
+{% set by = {} %}
+{% for s in ex.schemes %}{% set _ = by.update({s.key: s}) %}{% endfor %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(x)|replace("-", "−") }}{%- endmacro %}
+{% macro g(x) -%}{{ ("%.2g"|format(x))|replace("e-0", "e−")|replace("e+0", "e")|replace("e-", "e−")|replace("e+", "e") }}{%- endmacro %}
+{% macro lx(l) -%}{{ "%.1f"|format(70 + l / ex.depth * 480) }}{%- endmacro %}
+{% macro ly(v) -%}{% set e = [[(log10(v) if v > 0 else -6), -6]|max, 6]|min %}{{ "%.1f"|format(130 - e / 6 * 100) }}{%- endmacro %}
+{% set n = 256 %}
+<header class="jj-header">
+  <h1>Weight initialization</h1>
+  <p class="tagline">
+    Before the first gradient step, every weight in a network is a random number, and the scale of those numbers decides whether a signal
+    survives twenty layers or turns into zeros or overflow. This page derives the variance rule behind Xavier and Kaiming initialization,
+    shows what PyTorch actually does by default, and measures it on a deep network.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A deep network multiplies its input by one weight matrix after another, with an <a href="/ml-models/activation-functions">activation function</a> in between.
+  If each layer makes its output a little larger than its input, say by a factor of 1.5, twenty layers make it 1.5²⁰ ≈ 3300 times larger. If each makes it a little smaller, the signal fades to nothing.
+  <a href="/ml-models/backpropagation">Backpropagation</a> multiplies by the same matrices on the way back, so the gradients suffer the same fate: the early layers get gradients that are vanishingly small or enormous,
+  and training stalls or diverges before it starts.
+</p>
+<p>
+  We cannot set the weights to zero either. If all weights in a layer start equal, every unit computes the same function and gets the same gradient, so they stay equal forever.
+  The weights must be random to break the symmetry, and their scale must keep the signal's size roughly constant from layer to layer.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  A unit adds up <var>n</var> inputs, each multiplied by a random weight. Sums of <var>n</var> independent random terms have variance proportional to <var>n</var>,
+  so a layer with 1000 inputs produces outputs about √1000 ≈ 32 times larger than a layer with one input, for the same weight scale. To cancel that, scale the weights by 1/√<var>n</var>.
+  Then correct for what the activation does: ReLU zeroes half its inputs, which halves the average squared value, so multiply the variance back up by 2. That is Kaiming initialization: weight variance 2/<var>n</var>.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 220" role="img" aria-labelledby="init-flow-title init-flow-desc">
+    <title id="init-flow-title">How variance moves through one layer</title>
+    <desc id="init-flow-desc">
+      The input h with mean square E[h squared] enters a linear layer with fan_in n and weight variance Var(w). The pre-activation z has variance n times Var(w) times E[h squared].
+      ReLU keeps half of a symmetric z, so the output's mean square is half of Var(z). Setting n Var(w) divided by 2 equal to 1 gives Var(w) = 2 / n.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <rect x="20" y="70" width="130" height="60" rx="6" class="d-box ml-tensor"></rect>
+      <text x="85" y="95">input h</text>
+      <text x="85" y="113" class="d-muted">E[h²] = q</text>
+      <path d="M150 100 L200 100" class="d-line" fill="none"></path>
+      <rect x="200" y="70" width="150" height="60" rx="6" class="d-box ml-weight"></rect>
+      <text x="275" y="95">z = W h</text>
+      <text x="275" y="113" class="d-muted">n inputs, Var(w)</text>
+      <path d="M350 100 L400 100" class="d-line" fill="none"></path>
+      <rect x="400" y="70" width="120" height="60" rx="6" class="d-box ml-op"></rect>
+      <text x="460" y="95">ReLU</text>
+      <text x="460" y="113" class="d-muted">keeps half</text>
+      <path d="M520 100 L560 100" class="d-line" fill="none"></path>
+      <rect x="560" y="70" width="120" height="60" rx="6" class="d-box ml-tensor"></rect>
+      <text x="620" y="95">output h′</text>
+      <text x="620" y="113" class="d-muted">E[h′²] = q′</text>
+      <text x="275" y="160">Var(z) = n · Var(w) · q</text>
+      <text x="540" y="160">q′ = Var(z) / 2</text>
+      <text x="350" y="195" style="fill: var(--jj-green)">q′ = q  ⇔  Var(w) = 2 / n</text>
+      <text x="350" y="40" class="d-muted">per-layer factor: q′ / q = n · Var(w) / 2</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The whole page in one line: keep the per-layer factor at 1.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="forward-variance">Forward pass</h3>
+<p>
+  Take one pre-activation <var>z</var> = Σ<sub><var>i</var>=1..<var>n</var></sub> <var>w</var><sub><var>i</var></sub> <var>h</var><sub><var>i</var></sub>, with the weights independent of the inputs, zero-mean and of variance Var(<var>w</var>).
+  Each term has mean zero and, using the rules from <a href="/ml-models/expectation-and-variance">expectation and variance</a>, variance Var(<var>w</var>) · E[<var>h</var>²]. The terms are uncorrelated, so
+</p>
+<p class="ml-formula">Var(z) = n · Var(w) · E[h²]</p>
+<p>
+  It is E[<var>h</var>²], not Var(<var>h</var>), because ReLU outputs are not zero-mean. Now <var>z</var> is symmetric around zero, and ReLU keeps the positive half, so E[relu(<var>z</var>)²] = Var(<var>z</var>)/2. Chaining the two,
+</p>
+<p class="ml-formula">E[h′²] = (n · Var(w) / 2) · E[h²] &nbsp;&nbsp;&nbsp; ⇒ &nbsp;&nbsp;&nbsp; after L layers: E[h<sub>L</sub>²] = Π<sub>l</sub> (n<sub>l</sub> Var(w<sub>l</sub>) / 2) · E[h<sub>0</sub>²]</p>
+<p>
+  A product of <var>L</var> factors is stable only if each factor is 1, which gives He et al.'s condition Var(<var>w</var>) = 2/<var>n</var><sub>in</sub>. For an activation that is close to the identity near zero, like tanh, the ReLU factor ½ is replaced by about 1, which gives Var(<var>w</var>) = 1/<var>n</var><sub>in</sub>.
+</p>
+
+<h3 id="backward-variance">Backward pass</h3>
+<p>
+  The gradient with respect to a layer's input is <var>W</var><sup>⊤</sup> times the gradient at its output, times the activation's slope. The same argument now sums over the <var>n</var><sub>out</sub> units the input feeds, and ReLU's slope is 1 for half of them and 0 for the rest:
+</p>
+<p class="ml-formula">Var(∂L/∂h) = (n<sub>out</sub> · Var(w) / 2) · Var(∂L/∂h′)</p>
+<p>
+  So the backward pass wants Var(<var>w</var>) = 2/<var>n</var><sub>out</sub>. When a layer is square the two agree; when it is not, you pick one (<code>mode="fan_in"</code> or <code>"fan_out"</code> in PyTorch).
+  Glorot and Bengio, deriving for activations in their linear regime, split the difference by using the average of the two fans, Var(<var>w</var>) = 2/(<var>n</var><sub>in</sub> + <var>n</var><sub>out</sub>).
+</p>
+
+<h3 id="schemes">The named schemes</h3>
+<p>
+  A uniform distribution on [−<var>a</var>, <var>a</var>] has variance <var>a</var>²/3, so each scheme comes in a normal and a uniform flavour with bound <var>a</var> = √3 · std. PyTorch writes every scheme as a <em>gain</em> divided by the square root of a fan:
+</p>
+<ul>
+  <li><strong>Xavier / Glorot</strong>: std = gain · √(2 / (fan_in + fan_out)); uniform bound gain · √(6 / (fan_in + fan_out)).</li>
+  <li><strong>Kaiming / He</strong>: std = gain / √fan, with fan = fan_in by default; uniform bound gain · √(3 / fan).</li>
+  <li><strong>Gains</strong> from <code>calculate_gain</code>: 1 for linear, convolution and sigmoid; 5/3 for tanh; √2 for ReLU; √(2 / (1 + slope²)) for leaky ReLU (slope 0.01 by default); 3/4 for SELU, a value the source says was found empirically.</li>
+  <li><strong>Fans</strong>: for a weight of shape (out, in, k₁, k₂, …), fan_in = in · k₁k₂… and fan_out = out · k₁k₂…, so a 3×3 convolution with 64 input channels has fan_in 576. Note that a <code>Linear</code> weight is stored as (out_features, in_features).</li>
+</ul>
+
+<h3 id="pytorch-default">What PyTorch does by default</h3>
+<p>
+  <code>nn.Linear.reset_parameters</code> calls <code>kaiming_uniform_(weight, a=math.sqrt(5))</code>. With the default <code>nonlinearity="leaky_relu"</code> and slope √5, the gain is √(2 / (1 + 5)) = √(1/3), so
+</p>
+<p class="ml-formula">bound = √3 · gain / √fan_in = √3 · √(1/3) / √fan_in = 1 / √fan_in &nbsp;&nbsp;&nbsp; (fan_in = 64: {{ f(linear_default_bound(64)) }})</p>
+<p>
+  The source comment says exactly this, and the class docstring documents the weights as U(−√<var>k</var>, √<var>k</var>) with <var>k</var> = 1/in_features. The bias uses the same bound. The convolution layers (<code>_ConvNd</code>) do the same.
+  The weight variance is 1/(3 fan_in), so in a plain ReLU stack the per-layer factor is fan_in · 1/(3 fan_in) / 2 = 1/6: the default is <em>not</em> Kaiming for ReLU, and the signal shrinks layer by layer.
+  Modern networks mostly get away with it because <a href="/ml-models/layernorm-and-residuals">normalization layers and residual connections</a> re-establish the scale at every block. <code>nn.Embedding</code> uses <code>normal_</code>, N(0, 1).
+</p>
+
+<h3 id="other-schemes">Orthogonal, truncated and residual scaling</h3>
+<ul>
+  <li><strong>Orthogonal</strong> (<code>orthogonal_</code>, Saxe et al.): draw a Gaussian matrix, take its QR decomposition, fix the signs of <var>Q</var>'s columns by the signs of <var>R</var>'s diagonal (so <var>Q</var> is uniformly distributed), and multiply by <code>gain</code>. Every singular value is exactly 1, so a deep <em>linear</em> network preserves the norm of every input exactly, not just on average. It is common for recurrent weight matrices, which are applied many times.</li>
+  <li><strong>Truncated normal</strong> (<code>trunc_normal_(mean=0, std=1, a=−2, b=2)</code>): redraws values outside [<var>a</var>, <var>b</var>], to avoid rare huge weights. The cutoffs are absolute values, not multiples of <code>std</code>; with <code>std=0.02</code> the defaults truncate nothing in practice.</li>
+  <li><strong>Residual scaling</strong>: in a residual network <var>x</var> + <var>f</var>(<var>x</var>), each block adds variance, so the stream grows with depth. GPT-2 scaled the weights of the layers feeding the residual stream by 1/√<var>N</var>, with <var>N</var> the number of residual layers, so their sum stays about the same size.</li>
+</ul>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead>
+      <tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Gain</td>
+        <td><code>calculate_gain(nonlinearity, param=None)</code> → float</td>
+        <td>1, 5/3, √2, √(2/(1+slope²)) or 3/4 by activation.</td>
+        <td><a href="{{ src('torch/nn/init.py', 173, 244) }}">init.py 173-244</a></td>
+      </tr>
+      <tr>
+        <td>Fans</td>
+        <td><code>_calculate_fan_in_and_fan_out(tensor)</code>, tensor (out, in, *k)</td>
+        <td>fan_in = in · Πk, fan_out = out · Πk; needs ≥ 2 dimensions.</td>
+        <td><a href="{{ src('torch/nn/init.py', 458, 476) }}">init.py 458-476</a></td>
+      </tr>
+      <tr>
+        <td>Xavier</td>
+        <td><code>xavier_uniform_(tensor, gain=1.0)</code>, <code>xavier_normal_</code></td>
+        <td>std = gain · √(2/(fan_in + fan_out)); uniform bound √3 · std.</td>
+        <td><a href="{{ src('torch/nn/init.py', 479, 509) }}">init.py 479-509</a>, <a href="{{ src('torch/nn/init.py', 512, 540) }}">512-540</a></td>
+      </tr>
+      <tr>
+        <td>Kaiming</td>
+        <td><code>kaiming_uniform_(tensor, a=0, mode="fan_in", nonlinearity="leaky_relu")</code>, <code>kaiming_normal_</code></td>
+        <td>std = gain / √fan; <code>a</code> is the leaky-ReLU slope passed to the gain.</td>
+        <td><a href="{{ src('torch/nn/init.py', 554, 616) }}">init.py 554-616</a>, <a href="{{ src('torch/nn/init.py', 619, 669) }}">619-669</a>, <a href="{{ src('torch/nn/init.py', 543, 551) }}">543-551</a></td>
+      </tr>
+      <tr>
+        <td>Orthogonal</td>
+        <td><code>orthogonal_(tensor, gain=1)</code>, trailing dims flattened</td>
+        <td>QR of a Gaussian matrix, sign-corrected by diag(R), times gain.</td>
+        <td><a href="{{ src('torch/nn/init.py', 672, 720) }}">init.py 672-720</a></td>
+      </tr>
+      <tr>
+        <td>Truncated normal</td>
+        <td><code>trunc_normal_(tensor, mean=0.0, std=1.0, a=−2.0, b=2.0)</code></td>
+        <td>N(mean, std²) with values outside [a, b] redrawn.</td>
+        <td><a href="{{ src('torch/nn/init.py', 301, 334) }}">init.py 301-334</a></td>
+      </tr>
+      <tr>
+        <td>Linear default</td>
+        <td><code>nn.Linear(in, out)</code>: weight (out, in), bias (out,)</td>
+        <td><code>kaiming_uniform_(a=√5)</code> = U(±1/√in); bias U(±1/√in).</td>
+        <td><a href="{{ src('torch/nn/modules/linear.py', 117, 128) }}">linear.py 117-128</a>, <a href="{{ src('torch/nn/modules/linear.py', 53, 80) }}">53-80</a></td>
+      </tr>
+      <tr>
+        <td>Convolution default</td>
+        <td><code>_ConvNd.reset_parameters</code></td>
+        <td>Same <code>kaiming_uniform_(a=√5)</code> and bias bound as Linear.</td>
+        <td><a href="{{ src('torch/nn/modules/conv.py', 182, 201) }}">conv.py 182-201</a></td>
+      </tr>
+      <tr>
+        <td>Embedding default</td>
+        <td><code>nn.Embedding(num, dim)</code>: weight (num, dim)</td>
+        <td><code>normal_</code>, N(0, 1); the padding row is zeroed.</td>
+        <td><a href="{{ src('torch/nn/modules/sparse.py', 179, 181) }}">sparse.py 179-181</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>A 3×3 convolution maps 128 channels to 256. What is the Kaiming-normal std for ReLU with the default mode, and with mode="fan_out"?</summary>
+  <p>fan_in = 128 · 9 = 1152, so std = √2 / √1152 = 1/24 ≈ 0.0417. fan_out = 256 · 9 = 2304, so std = √2 / √2304 ≈ 0.0295.</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>One layer by hand.</strong> A ReLU layer with fan_in {{ n }} and inputs with E[<var>h</var>²] = 1. Kaiming gives Var(<var>w</var>) = 2/{{ n }}, std {{ f(kaiming_std(n, "relu"), 4) }}.
+    Then Var(<var>z</var>) = {{ n }} · (2/{{ n }}) · 1 = 2, and ReLU keeps half: E[<var>h</var>′²] = 1. With PyTorch's default, Var(<var>w</var>) = 1/(3 · {{ n }}), so Var(<var>z</var>) = 1/3 and E[<var>h</var>′²] = 1/6 ≈ {{ f(relu_moment_factor(n, linear_default_bound(n) ** 2 / 3)) }}.
+    With Xavier, Var(<var>w</var>) = 2/({{ n }} + {{ n }}) = 1/{{ n }}, and the factor is {{ f(relu_moment_factor(n, xavier_std(n, n) ** 2)) }}.
+  </p>
+  <p>
+    <strong>A deep network.</strong> A batch of 16 Gaussian inputs goes through {{ ex.depth }} layers, each {{ ex.width }} units wide with no bias. At the top, a random Gaussian gradient is fed back through the same layers.
+    The table shows the root mean square (RMS) of the activations and of the gradients, and the per-layer factor the derivation predicts for E[<var>h</var>²].
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Scheme</th><th>Weight std</th><th>Predicted factor per layer</th><th>Activation RMS, layer 0 → {{ ex.depth }}</th><th>Gradient RMS, layer {{ ex.depth }} → 0</th></tr></thead>
+      <tbody>
+        {% for s in ex.schemes %}
+        {% set r = s.result %}
+        <tr>
+          <td>{{ s.label }}{% if s.activation == "tanh" %}{% else %}, ReLU{% endif %}</td>
+          <td>{{ f(r.std, 4) }}</td>
+          <td>{% if s.activation == "relu" %}{{ g(relu_moment_factor(ex.width, r.std ** 2)) }}{% else %}≈ {{ g(ex.width * r.std ** 2) }} near 0{% endif %}</td>
+          <td>{{ g(r.forward[0]) }} → {{ g(r.forward[-1]) }}</td>
+          <td>{{ g(r.backward[-1]) }} → {{ g(r.backward[0]) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <ul>
+    <li>With ReLU, every scheme but Kaiming moves the signal geometrically, by about the predicted factor per layer in E[<var>h</var>²] (the square root of it in RMS): N(0, 0.01²) kills it, N(0, 1) blows it up by more than eleven orders of magnitude, and even PyTorch's default and Xavier lose a factor of a thousand or more in twenty layers.</li>
+    <li>The gradients mirror the activations because the layers are square: the backward factor n<sub>out</sub> · Var(<var>w</var>) / 2 equals the forward one, so whatever shrinks the forward signal shrinks the backward one too.</li>
+    <li>Kaiming stays in range, but it still drifts to {{ g(by["kaiming"].result.forward[-1]) }}. The predicted factor is an average; at width {{ ex.width }}, each layer's actual factor is random, and the log of the RMS does a random walk whose spread grows with depth/width. Wider layers drift less.</li>
+    <li>tanh is gentler: it is linear near zero and saturates for large inputs, so Xavier slowly fades (to {{ g(by["tanh-xavier"].result.forward[-1]) }}) while gain 5/3 holds the activations near {{ g(by["tanh-gain"].result.forward[-1]) }}. The same gain makes the gradient grow toward the input, to {{ g(by["tanh-gain"].result.backward[0]) }}, because on the way back the 5/3 gain more than makes up for tanh's slopes below 1.</li>
+  </ul>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 270" role="img" aria-labelledby="init-depth-title init-depth-desc">
+    <title id="init-depth-title">Activation RMS by layer for five ReLU initializations</title>
+    <desc id="init-depth-desc">
+      Log-scale plot of activation RMS from layer 0 to layer {{ ex.depth }} in a {{ ex.width }}-wide ReLU network. The N(0, 1) line rises off the top of the chart around layer 10, the N(0, 0.01 squared) line falls off the bottom within five layers,
+      PyTorch's default and Xavier slope steadily downward, and Kaiming stays within an order of magnitude of 1, ending at {{ g(by["kaiming"].result.forward[-1]) }}. Values beyond 10 to the plus or minus 6 are clipped.
+    </desc>
+    <g font-size="12">
+      <path d="M70 30 L70 230 L550 230" class="d-line" fill="none"></path>
+      {% for e in [-6, -4, -2, 0, 2, 4, 6] %}
+      <text x="62" y="{{ "%.1f"|format(130 - e / 6 * 100 + 4) }}" text-anchor="end" class="d-muted">10{{ ["⁻⁶", "⁻⁴", "⁻²", "⁰", "²", "⁴", "⁶"][loop.index0] }}</text>
+      {% endfor %}
+      <path d="M70 130 L550 130" class="d-line ml-dashed" fill="none"></path>
+      {% for l in [0, 5, 10, 15, 20] %}<text x="{{ lx(l) }}" y="248" text-anchor="middle" class="d-muted">{{ l }}</text>{% endfor %}
+      <text x="310" y="265" text-anchor="middle" class="d-muted">layer</text>
+      {% set colours = {"small": "var(--jj-red)", "pytorch": "var(--jj-amber)", "xavier": "var(--jj-violet)", "kaiming": "var(--jj-green)", "large": "var(--jj-accent)"} %}
+      {% set labels = {"small": "N(0, 0.01²)", "pytorch": "nn.Linear default", "xavier": "Xavier", "kaiming": "Kaiming", "large": "N(0, 1)"} %}
+      {% for key in ["large", "kaiming", "xavier", "pytorch", "small"] %}
+      <path d="M{% for v in by[key].result.forward %}{% if not loop.first %} L{% endif %}{{ lx(loop.index0) }},{{ ly(v) }}{% endfor %}" fill="none" stroke="{{ colours[key] }}" stroke-width="2"></path>
+      <text x="560" y="{{ 70 + loop.index0 * 22 }}" style="fill: {{ colours[key] }}">{{ labels[key] }}</text>
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Each scheme is a straight line on a log scale with slope log(factor)/2; only a factor of 1 is flat.</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import math
+import torch.nn as nn
+
+def init_weights(module):
+    if isinstance(module, (nn.Linear, nn.Conv2d)):
+        nn.init.kaiming_normal_(module.weight, mode="fan_in", nonlinearity="relu")
+        if module.bias is not None:
+            nn.init.zeros_(module.bias)
+
+model = nn.Sequential(*[m for _ in range(20) for m in (nn.Linear(512, 512), nn.ReLU())])
+model.apply(init_weights)            # visits every submodule
+
+# tanh layers: Xavier with the tanh gain
+nn.init.xavier_uniform_(tanh_layer.weight, gain=nn.init.calculate_gain("tanh"))
+
+# recurrent weights: orthogonal
+nn.init.orthogonal_(rnn.weight_hh_l0)
+
+# GPT-2-style: scale the projections that write into the residual stream
+n_residual_layers = 2 * len(blocks)   # attention and MLP each add to the stream
+for block in blocks:
+    for proj in (block.attn_out, block.mlp_out):
+        proj.weight.data /= math.sqrt(n_residual_layers)</code></pre>
+
+<p>
+  The functions end in <code>_</code> because they fill the tensor in place, under <code>torch.no_grad()</code>, and return it. They take an optional <code>generator</code> for reproducible draws.
+  When you load pretrained weights, initialization only matters for the layers you add.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Match the activation.</strong> Kaiming for ReLU-family, Xavier (with the right gain) for tanh and linear layers. The derivations assume zero-mean, independent weights and inputs; they are a starting point, not a guarantee.</li>
+  <li><strong>fan_in or fan_out.</strong> fan_in keeps activations stable, fan_out keeps gradients stable. For square layers they agree. Otherwise, choosing one leaves the other pass off by Π n<sub>l+1</sub>/n<sub>l</sub>, which telescopes to the ratio of the last width to the first, so neither choice compounds with depth.</li>
+  <li><strong>Normalization makes it less critical.</strong> With <a href="/ml-models/layernorm-and-residuals">LayerNorm or BatchNorm</a> after each layer the activation scale is reset every block, which is why the PyTorch default rarely causes trouble in modern models. Plain deep stacks without normalization are where initialization decides whether training works at all.</li>
+  <li><strong>Average, not exact.</strong> The variance rule holds on average over random weights. Narrow layers fluctuate, as the worked example shows; orthogonal initialization removes that fluctuation for linear maps.</li>
+  <li><strong>Scale still interacts with the optimizer.</strong> The <a href="/ml-models/optimizers">optimizer</a> and learning rate decide how far weights move from the starting point; a good initialization only gives them a well-scaled place to start.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Why can't all weights start at the same nonzero value, say 0.01?</summary>
+  <p>Every unit in a layer would compute the same output and receive the same gradient, so they would stay identical through training: the layer would behave like a single unit. Random initialization breaks this symmetry.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Glorot and Bengio. <em>Understanding the difficulty of training deep feedforward neural networks.</em> AISTATS 2010.</li>
+  <li>He, Zhang, Ren and Sun. <em>Delving Deep into Rectifiers: Surpassing Human-Level Performance on ImageNet Classification.</em> ICCV 2015. <a href="https://arxiv.org/abs/1502.01852">arXiv:1502.01852</a></li>
+  <li>Saxe, McClelland and Ganguli. <em>Exact solutions to the nonlinear dynamics of learning in deep linear neural networks.</em> 2013. <a href="https://arxiv.org/abs/1312.6120">arXiv:1312.6120</a></li>
+  <li>Radford et al. <em>Language Models are Unsupervised Multitask Learners</em> (GPT-2), 2019, section 2.3 (residual scaling).</li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/nn/init.py') }}"><code>torch/nn/init.py</code></a>, <a href="{{ src('torch/nn/modules/linear.py') }}"><code>torch/nn/modules/linear.py</code></a>.</li>
+</ul>

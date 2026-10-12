@@ -635,7 +635,7 @@ PAGES = [
             "pytorch:torch/nn/init.py",
             "pytorch:torch/nn/modules/linear.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "layernorm-and-residuals",
@@ -7089,7 +7089,7 @@ INIT_SCHEMES = [
     {"key": "small", "label": "N(0, 0.01²)", "activation": "relu", "dist": "normal", "std": lambda n: 0.01},
     {"key": "pytorch", "label": "nn.Linear default, U(±1/√n)", "activation": "relu", "dist": "uniform", "std": lambda n: linear_default_bound(n) / math.sqrt(3.0)},
     {"key": "xavier", "label": "Xavier, gain 1", "activation": "relu", "dist": "normal", "std": lambda n: xavier_std(n, n)},
-    {"key": "kaiming", "label": "Kaiming, ReLU", "activation": "relu", "dist": "normal", "std": lambda n: kaiming_std(n, "relu")},
+    {"key": "kaiming", "label": "Kaiming, gain √2", "activation": "relu", "dist": "normal", "std": lambda n: kaiming_std(n, "relu")},
     {"key": "large", "label": "N(0, 1)", "activation": "relu", "dist": "normal", "std": lambda n: 1.0},
     {"key": "tanh-xavier", "label": "tanh, Xavier gain 1", "activation": "tanh", "dist": "normal", "std": lambda n: xavier_std(n, n)},
     {"key": "tanh-gain", "label": "tanh, gain 5/3", "activation": "tanh", "dist": "normal", "std": lambda n: xavier_std(n, n, 5.0 / 3)},

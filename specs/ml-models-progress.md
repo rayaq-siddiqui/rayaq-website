@@ -320,8 +320,8 @@ Gaps:
 48. `bayes-rule` ✓
 49. `class-imbalance` ✓
 50. `random-forests` ✓
-51. `initialization` ← next
-52. `rnns-and-lstms`
+51. `initialization` ✓
+52. `rnns-and-lstms` ← next
 53. `autoencoders`
 54. `variational-autoencoders`
 55. `positional-encoding`
