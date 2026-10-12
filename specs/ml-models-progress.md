@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-12 (twenty-ninth run). Spec v2 widens the section from model
+**Last updated:** 2026-10-12 (thirtieth run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-51, the last being `initialization`. The
-next page is `rnns-and-lstms` (queue item 52).
+fixed page format. Ready pages: queue items 1-54, the last being `variational-autoencoders`. The
+next page is `positional-encoding` (queue item 55).
 
 ## Pins
 
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (51 of 93 ready, all
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (54 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -57,32 +57,23 @@ and push small commits to `main`. The phone check before each push is
 
 ## Decisions
 
-- **Spec v2 (2026-10-08).** At the owner's request, `/ml-models` became the place to learn or
-  refresh anything in ML, for beginners and experts. The spec gained the 12 areas, levels, the
-  learning path, the §6 page format (Problem · Intuition · Mechanics · Worked example ·
-  Implementation · Tradeoffs · Connections · References) and a 93-page inventory.
-- **Multiple pins (supersedes "PyTorch-only links").** Code links go to pinned PyTorch,
-  scikit-learn and XGBoost releases, through `pinned_url` and the `src`/`skl`/`xgb`/`pinned`
-  template helpers. Papers are cited for ideas no library implements. Reference repositories
-  such as nanoGPT or Hugging Face are still not linked.
-- **Prerequisite-first queue.** §5.13's order is expanded so every page's prerequisites come
-  before it (inserted depth-first). `test_progress_queue_lists_every_page_after_its_prerequisites`
-  checks the queue below.
-- **Connections come from the registry.** Pages include `ml_models/_connections.html` in their
-  `connections` section; it renders "Read first" and "Read next" from `connections(slug)`.
-- **Navigation.** The nav groups pages by area in collapsible groups and opens the current
-  page's area. The breadcrumb names the area and level. The footer credits every pin.
-- **Homepage card.** At the owner's request (2026-10-08), `/` links to `/ml-models`, after the
-  jj internals card and before jj-dojo (tested in `app_tests.py`).
-- **Layout reuses `jj.css`.** It is linked, never edited. Section styles live in `ml_models.css`.
-- **`ml_models.js` is progressive enhancement only.** `data-ml-steps` figures become
-  one-at-a-time sliders, and the transformer page's attention table and parameter calculator
-  are live. Every page reads in full without JS.
-- **Upcoming models list.** The index keeps `UPCOMING_MODELS`, four tiers of notable models
-  with their papers, marking the ones that map to a registered page.
-- **Interactive transformer page.** Its worked numbers come from `attention_weights` and
-  `transformer_param_count` in `ml_models_docs.py`, not from torch. Keep these when
-  retrofitting it to §6.
+- **Spec v2 (2026-10-08).** At the owner's request `/ml-models` became the place to learn or
+  refresh anything in ML: 12 areas, levels, the learning path, the §6 page format and a
+  93-page inventory.
+- **Multiple pins.** Code links go to pinned PyTorch, scikit-learn and XGBoost releases through
+  `pinned_url` and the `src`/`skl`/`xgb`/`pinned` helpers; papers are cited for ideas no library
+  implements. Reference repositories (nanoGPT, Hugging Face) are not linked.
+- **Prerequisite-first queue**, checked by `test_progress_queue_lists_every_page_after_its_prerequisites`.
+- **Connections** come from the registry via `ml_models/_connections.html` (`connections(slug)`).
+- **Navigation** groups pages by area in collapsible groups; the breadcrumb names area and
+  level; the footer credits every pin. `/` links to `/ml-models` after the jj internals card
+  (owner's request, tested in `app_tests.py`).
+- **Layout reuses `jj.css`**, linked and never edited; section styles live in `ml_models.css`.
+  `ml_models.js` is progressive enhancement only (`data-ml-steps` sliders, the transformer
+  page's live table and calculator).
+- **`UPCOMING_MODELS`** on the index lists four tiers of notable models with their papers.
+- **The transformer page's** numbers come from `attention_weights` and
+  `transformer_param_count`, not torch.
 
 ## Offline data (`tools/ml_models/` → `frontend/static/ml_models/`)
 
@@ -102,7 +93,7 @@ file); this list keeps only what queued pages still need.
   308-376.
 - `torch/nn/attention/flex_attention.py`: `BlockMask` 855-1694, `create_block_mask` 1967-2088,
   `flex_attention` starts at 2365.
-- `conv.py`: `ConvTranspose2d` starts at 1012 (end unverified); `Conv1d` 225-385.
+- `conv.py`: `Conv1d` 225-385 (`ConvTranspose2d` is cited in `autoencoders`).
 - `torch/linalg/__init__.py`: `inv` 214-292, `vector_norm` 1491-1568; `matrix_norm` starts at 1570.
 - `torch/_torch_docs.py` (from `add_docstr(` to `)`): `matmul` 7908-7990, `mm` 7831-7887,
   `bmm` 1706-1762, `addmm` 592-665, `baddbmm` 1512-1581.
@@ -164,98 +155,72 @@ Paths are under `sklearn/`.
 - `transformer` uses the v1 section layout and is exempt from the §6 order test until its
   retrofit (queue item 18).
 
-## First to twenty-eighth runs (2026-10-08 to 2026-10-11) — condensed
+## First to twenty-ninth runs (2026-10-08 to 2026-10-12) — condensed
 
 Runs 1-3 wrote the spec (v1, then v2), the registry, `LEARNING_PATH`, the §6 and queue tests,
 `check_mobile.js` and the Routine. Every run since adds, per page, a tested-helpers commit, a
-page commit (page, `ready`, queue ✓) and usually a `docs:` commit; items 1-42 were built in
-queue order (run 27: similarity-search, gpu-execution, mixed-precision; run 28:
-quantization, reinforcement-learning, bayes-rule). `6f0803f` fixed 13 templates that read a missing `pins.X.version` key. Pins never
-moved. The ranges each page links live in its template (grep `src(`, `skl(`, `xgb(`);
-`git log -p` on this file has every old commit table and range list.
+page commit (page, `ready`, queue ✓) and usually a `docs:` commit; items 1-51 were built in
+queue order (run 28: quantization, reinforcement-learning, bayes-rule; run 29:
+class-imbalance, random-forests, initialization). `6f0803f` fixed 13 templates that read a
+missing `pins.X.version` key. Pins never moved. The ranges each page links live in its template
+(grep `src(`, `skl(`, `xgb(`); `git log -p` on this file has every old commit table and range list.
 
-Findings worth keeping:
+Findings worth keeping (details in each page and in `git log -p` on this file):
 
-- sklearn's `Entropy` criterion is in bits. XGBoost's `loss_chg` has no ½, so γ is on a
-  different scale from the paper's; `gradient-boosting` says so. In PyTorch 2.14.1 `AdamW` is
-  `Adam` with `decoupled_weight_decay=True`.
+- sklearn's `Entropy` criterion is in bits; XGBoost's `loss_chg` has no ½. `AdamW` is `Adam`
+  with `decoupled_weight_decay=True`. `nn.Linear` uses `kaiming_uniform_(a=math.sqrt(5))`,
+  a bound of exactly 1/√fan_in.
 - Cross-checks ran in scratch venvs, never in requirements: scikit-learn 1.9.1, torch 2.14.1,
-  and XGBoost 3.2.0 (3.4.2 is not on the mirror; the formulas used are unchanged).
-- An SVD through the eigenvalues of AᵀA squared the condition number and gave the wrong rank;
-  the one-sided Jacobi SVD is used. `overfitting` uses medians over 30 draws.
-- On the BPE toy corpus BPE and WordPiece pick different first merges; the KD-tree example
-  scans 4 of 16 points for k = 1 and all 16 for k = 5.
-- `nn.CosineSimilarity`'s docstring shows max(‖x₁‖·‖x₂‖, ε) but `F.cosine_similarity`'s, which
-  it calls and the page follows, shows max(‖x₁‖, ε)·max(‖x₂‖, ε). scikit-learn's tree metrics
-  have no `cosine`, so `NearestNeighbors(metric="cosine")` is brute force only.
-- `gpu-execution` uses an invented, labelled example GPU (100 TFLOP/s, 2 TB/s) and an assumed
-  5 µs launch cost.
-- In v2.14.1 only the `torch/ao/quantization/quantize.py` entry points carry
-  `@deprecated(DEPRECATION_WARNING)` (pointing to torchao); `qconfig`, `observer` and
-  `fake_quantize` do not. The fake-quant backward is `dY * mask` on the unclamped code (STE).
+  XGBoost 3.2.0 (3.4.2 is not on the mirror; the formulas used are unchanged).
+- Use the one-sided Jacobi SVD (eigenvalues of AᵀA squared the condition number).
 - `.jj-diagram svg text { fill: var(--jj-text) }` beats an SVG `fill=` attribute, so coloured
-  diagram text must use `style="fill: ..."` (`c9dbcc2` fixed three pages).
+  diagram text must use `style="fill: ..."`.
 
 Open gaps from these runs:
 
-- Paper references were cited from memory (arxiv.org was unreachable); pre-arXiv papers
-  (Cover and Hart, Bentley, Friedman et al., Omohundro, Beyer et al., Schuster and Nakajima)
-  and the GPT-2 report have no link.
-- `kv-cache` names no real model's configuration and mentions quantization as plain text
-  until that page exists. WordPiece training has no pinned implementation to check against.
+- Every paper reference so far was cited from memory (arxiv.org is unreachable through the
+  proxy); pre-arXiv papers and the GPT-2 report have no link. Each page's references list
+  is the full set to re-check once arxiv is reachable.
+- No pin implements WordPiece training, BM25, GPTQ, LLM.int8() or any RL algorithm; those pages
+  follow the papers. `gpu-execution`'s hardware remarks (on an invented, labelled example GPU),
+  `mixed-precision`'s fp8 recipes and the SwiGLU "2/3 hidden size" remark are general knowledge.
 - The end lines of the HistGradientBoosting regressor `__init__`, `_incremental_fit_estimator`
-  and `Lasso` were inferred. The SwiGLU "2/3 hidden size" remark is from memory.
+  and `Lasso` were inferred.
+- `kv-cache` (quantization), `reinforcement-learning` (preference optimization) and
+  `class-imbalance` (calibration) name those pages in plain text until they are ready.
 - Page commits exceed 400 lines because each template is one file.
-- `gpu-execution`'s memory hierarchy, tiling and tensor-core remarks come from general CUDA
-  knowledge; `mixed-precision`'s fp8 scaling recipes live outside the pins, its GradScaler
-  simulation follows the docstring (the `_amp_update_scale_` kernel was not read), and tf32's
-  Ampere availability is general knowledge. BM25 has no pinned implementation; the page uses
-  the Lucene idf variant and says so.
-- Run 28: GPTQ, LLM.int8(), Jacob et al., Bengio et al., Sutton and Barto, Williams 1992, Mnih
-  et al., Schulman et al., Bishop, Murphy and Gigerenzer and Hoffrage are cited from memory.
-  No pin implements GPTQ, LLM.int8() or any RL algorithm; those pages describe them from the
-  papers and the pinned source backs only the distributions, losses and observers they link.
-  `reinforcement-learning` names preference optimization in plain text until that page is
-  ready.
 
-## Twenty-ninth run (2026-10-12) — class-imbalance, random-forests, initialization
+## Thirtieth run (2026-10-12) — rnns-and-lstms, autoencoders, variational-autoencoders
 
 | Commit | What |
 |---|---|
-| `3c3db73` `ml-models: add tested class imbalance helpers` | "Balanced" weights, balanced accuracy, a weighted 1-D logistic fit (plain, weighted, over/undersampled, threshold-moved), the undersampling correction and focal loss, with four tests |
-| `5f94521` `ml-models: add the class imbalance page` | The page, `ready`, queue ✓ |
-| `3e8380e` `ml-models: add tested random forest helpers` | Pure-Python Gini trees with sklearn's max_features loop and random thresholds, bagging, OOB accuracy, impurity and permutation importance, and a tree-correlation estimate over 20 training sets, with four tests |
-| `88afc59` `ml-models: add the random forests page` | The page, `ready`, queue ✓ |
-| `cc6a954` `ml-models: add tested weight initialization helpers` | `calculate_gain`, fans, Xavier/Kaiming stds, the `nn.Linear` default bound and a 20-layer forward/backward RMS trace under seven schemes, with three tests |
-| `45fb10c` `ml-models: add the weight initialization page` | The page, `ready`, queue ✓ |
+| `67956c9` `ml-models: add tested rnn and lstm helpers` | Elman RNN, LSTM and GRU traces in PyTorch's gate order, exact memory gradients, a `pack_sequence` mirror, the `RNNBase` parameter count and a seq2seq attention step, with tests |
+| `1463970` `ml-models: add the rnns-and-lstms page` | The page, `ready`, queue ✓ |
+| `a5f70c7` `ml-models: add tested autoencoder helpers` | A linear autoencoder trained by gradient descent and compared with PCA, a denoising map and conv/transpose-conv output shapes, with tests |
+| `23f132d` `ml-models: add the autoencoders page` | The page, `ready`, queue ✓ |
+| `2441db8` `ml-models: add tested variational autoencoder helpers` | Normal log-density and KL, a linear-Gaussian model's exact evidence, posterior and ELBO, reparameterization vs score-function gradients and per-unit code KL, with tests |
+| `b336261` `ml-models: add the variational-autoencoders page` | The page, `normal_curve` and its test, the autoencoders link, `ready`, queue ✓ |
 
 Findings worth keeping:
 
-- `nn.Linear`/`_ConvNd` call `kaiming_uniform_(a=math.sqrt(5))`: gain √(1/3), so the bound is
-  exactly 1/√fan_in (the source comment says so). In a plain ReLU stack that is a per-layer
-  E[h²] factor of 1/6, not Kaiming's 1. `nn.Embedding` uses N(0, 1). `trunc_normal_`'s a=−2,
-  b=2 are absolute cutoffs, not multiples of std.
-- sklearn's splitter keeps drawing features past `max_features` while every drawn feature is
-  constant; `ExtraTrees*` draw one uniform threshold per feature and default to
-  `bootstrap=False`; `RandomForestRegressor` defaults to `max_features=1.0` (its docstring
-  cites Geurts et al. for that). Forest `predict` averages probabilities (a soft vote).
-- In the forest demo, impurity importance gives continuous noise 16% and binary noise 3%
-  while permutation importance gives both about 0: the cardinality bias the docstring warns of.
-  Feature subsampling lowered tree correlation from 0.19 to 0.12.
-- At width 32, Kaiming's RMS still drifts to 0.43 over 20 layers (finite-width random walk);
-  tanh with gain 5/3 holds the forward RMS near 0.64 but grows the gradient to 4.3.
+- A linear autoencoder's trained encoder and decoder differ from each other, but their product
+  matches uuᵀ, the projection onto PCA's top component.
+- `ConvTranspose2d`'s `output_padding` only selects among the output sizes a stride allows
+  (7 → 13 or 14 at stride 2); it adds no values the docstring does not describe.
+- `Normal.sample` runs under `torch.no_grad()`; `rsample` returns `loc + eps * scale`, so only
+  `rsample` carries gradients. `Independent` plus `kl_divergence` sums the KL over latent
+  dimensions.
+- In the worked example the ELBO gap equals the KL to the exact posterior N(1.2, 0.447²), and
+  the score-function gradient's std is about 2.1× the reparameterized one's (3.412 vs 1.614).
 - Pins checked with `git ls-remote --tags`: v2.14.1, 1.9.1 and v3.4.2 are still the newest
   stable releases; no pin moved. arxiv.org is still unreachable through the proxy.
 
 Gaps:
 
-- Cited from memory: Lin et al. (focal loss), Chawla et al. (SMOTE), King and Zeng, Elkan,
-  Brodersen et al., Breiman 1996 and 2001 (the 2001 DOI is in sklearn's docstring), Geurts et
-  al. 2006 (title and volume in the docstring), Ho 1998, ESL chapter 15, Glorot and Bengio,
-  He et al., Saxe et al. (named in `init.py` docstrings) and GPT-2's 1/√N residual scaling.
-- `class-imbalance` names calibration in plain text until that page is ready.
-- `random-forests` (413 lines) is over the 400-line commit guideline because the template is
-  one file.
+- All three pages' references were cited from memory (arxiv still unreachable), from Elman
+  and Hochreiter–Schmidhuber through Kingma–Welling and Rombach et al.
+- Sparse autoencoders for LLM interpretability and latent diffusion's perceptual and
+  adversarial autoencoder losses are from general knowledge. The page commits exceed 400 lines.
 
 ## Queue
 
