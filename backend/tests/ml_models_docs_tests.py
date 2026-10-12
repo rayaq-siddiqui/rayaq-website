@@ -3221,3 +3221,56 @@ def test_conv_autoencoder_shapes_round_trip_28_by_28():
     assert rows[0]["shape"] == rows[-1]["shape"] == (1, 28, 28)
     assert [r["shape"] for r in rows if r.get("code")] == [(16,)]
     assert sum(r["params"] for r in rows) == 160 + 4640 + 25104 + 26656 + 4624 + 145
+
+
+def _integrate(fn, low=-12.0, high=12.0, steps=24000):
+    width = (high - low) / steps
+    return sum(fn(low + (i + 0.5) * width) for i in range(steps)) * width
+
+
+def test_normal_kl_matches_pytorch_closed_form_and_numeric_integral():
+    for p_loc, p_scale, q_loc, q_scale in [(1.0, 0.5, 0.0, 1.0), (-0.3, 2.0, 0.7, 1.5), (2.0, 1.0, 2.0, 1.0)]:
+        numeric = _integrate(lambda z: math.exp(ml_models_docs.normal_log_prob(z, p_loc, p_scale)) * (
+            ml_models_docs.normal_log_prob(z, p_loc, p_scale) - ml_models_docs.normal_log_prob(z, q_loc, q_scale)))
+        assert ml_models_docs.normal_kl(p_loc, p_scale, q_loc, q_scale) == pytest.approx(numeric, abs=1e-6)
+    assert ml_models_docs.normal_kl(2.0, 1.0, 2.0, 1.0) == 0.0
+    for mu, logvar in [(0.0, 0.0), (1.2, -2.0), (-0.4, 0.7)]:
+        assert ml_models_docs.standard_normal_kl(mu, logvar) == pytest.approx(
+            ml_models_docs.normal_kl(mu, math.exp(0.5 * logvar), 0.0, 1.0))
+
+
+def test_elbo_gap_is_the_kl_to_the_exact_posterior():
+    e = ml_models_docs.VAE_EXAMPLE
+    w, s, x = e["weight"], e["noise"], e["x"]
+    evidence = _integrate(lambda z: math.exp(ml_models_docs.normal_log_prob(x, w * z, s) + ml_models_docs.normal_log_prob(z, 0.0, 1.0)))
+    assert ml_models_docs.linear_gaussian_evidence(x, w, s) == pytest.approx(math.log(evidence), abs=1e-9)
+    ex = ml_models_docs.vae_example()
+    for row in ex["rows"]:
+        assert row["elbo"] <= ex["evidence"] + 1e-12
+        assert row["gap"] == pytest.approx(row["posterior_kl"], abs=1e-12)
+        loc, scale = row["loc"], row["scale"]
+        expected = _integrate(lambda z: math.exp(ml_models_docs.normal_log_prob(z, loc, scale)) * ml_models_docs.normal_log_prob(x, w * z, s))
+        assert row["reconstruction"] == pytest.approx(expected, abs=1e-6)
+    assert ex["rows"][-1]["gap"] == pytest.approx(0.0, abs=1e-12)
+    assert ex["posterior"] == pytest.approx((1.2, math.sqrt(0.2)))
+
+
+def test_reparameterized_gradient_is_unbiased_with_lower_variance():
+    ex = ml_models_docs.vae_example()
+    g = ex["gradients"]
+    n = ml_models_docs.VAE_EXAMPLE["samples"]
+    assert g["exact"] == pytest.approx(-1.0)
+    for name in ["reparam", "score"]:
+        assert abs(g[name]["mean"] - g["exact"]) < 3 * g[name]["std"] / math.sqrt(n)
+    assert g["reparam"]["std"] == pytest.approx(2 * ml_models_docs.VAE_EXAMPLE["sigma"], rel=0.05)
+    assert g["reparam"]["std"] < g["score"]["std"] / 2
+
+
+def test_vae_code_kl_flags_collapsed_units():
+    ex = ml_models_docs.vae_example()
+    kls = [c["kl"] for c in ex["code"]]
+    assert kls[2] == 0.0
+    assert kls[3] < 1e-3
+    assert kls[0] > 1.0
+    assert ex["code_kl"] == pytest.approx(sum(kls))
+    assert [b["penalty"] for b in ex["betas"]] == pytest.approx([b * ex["code_kl"] for b in ml_models_docs.VAE_EXAMPLE["betas"]])

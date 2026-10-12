@@ -7440,6 +7440,101 @@ def autoencoder_example():
     }
 
 
+VAE_EXAMPLE = {
+    "weight": 2.0,
+    "noise": 1.0,
+    "x": 3.0,
+    "guesses": [(0.0, 1.0), (1.0, 0.5), (1.5, 0.2)],
+    "target": 1.0,
+    "mu": 0.5,
+    "sigma": 0.8,
+    "samples": 1000,
+    "seed": 11,
+    "code_mu": [1.2, -0.4, 0.0, 0.02],
+    "code_logvar": [-2.0, -0.5, 0.0, -0.01],
+    "betas": [0.5, 1.0, 4.0],
+}
+
+
+def normal_log_prob(value, loc, scale):
+    return -((value - loc) ** 2) / (2 * scale ** 2) - math.log(scale) - math.log(math.sqrt(2 * math.pi))
+
+
+def normal_kl(p_loc, p_scale, q_loc, q_scale):
+    var_ratio = (p_scale / q_scale) ** 2
+    t1 = ((p_loc - q_loc) / q_scale) ** 2
+    return 0.5 * (var_ratio + t1 - 1 - math.log(var_ratio))
+
+
+def standard_normal_kl(mu, logvar):
+    return 0.5 * (math.exp(logvar) + mu ** 2 - 1 - logvar)
+
+
+def linear_gaussian_evidence(x, weight, noise):
+    return normal_log_prob(x, 0.0, math.sqrt(weight ** 2 + noise ** 2))
+
+
+def linear_gaussian_posterior(x, weight, noise):
+    total = weight ** 2 + noise ** 2
+    return weight * x / total, math.sqrt(noise ** 2 / total)
+
+
+def linear_gaussian_elbo(x, weight, noise, q_loc, q_scale):
+    expected = -0.5 * math.log(2 * math.pi * noise ** 2) - ((x - weight * q_loc) ** 2 + weight ** 2 * q_scale ** 2) / (2 * noise ** 2)
+    kl = normal_kl(q_loc, q_scale, 0.0, 1.0)
+    return {"reconstruction": expected, "kl": kl, "elbo": expected - kl}
+
+
+def gradient_estimators(mu, sigma, target, samples, seed):
+    rng = random.Random(seed)
+    reparam = []
+    score = []
+    for _ in range(samples):
+        eps = rng.gauss(0.0, 1.0)
+        z = mu + sigma * eps
+        value = (z - target) ** 2
+        reparam.append(2 * (z - target))
+        score.append(value * eps / sigma)
+
+    def summary(xs):
+        mean = sum(xs) / len(xs)
+        var = sum((x - mean) ** 2 for x in xs) / (len(xs) - 1)
+        return {"mean": mean, "std": math.sqrt(var)}
+
+    return {"exact": 2 * (mu - target), "reparam": summary(reparam), "score": summary(score)}
+
+
+def vae_example():
+    e = VAE_EXAMPLE
+    w, s, x = e["weight"], e["noise"], e["x"]
+    post_loc, post_scale = linear_gaussian_posterior(x, w, s)
+    evidence = linear_gaussian_evidence(x, w, s)
+    rows = []
+    for loc, scale in list(e["guesses"]) + [(post_loc, post_scale)]:
+        parts = linear_gaussian_elbo(x, w, s, loc, scale)
+        rows.append({
+            "loc": loc,
+            "scale": scale,
+            **parts,
+            "gap": evidence - parts["elbo"],
+            "posterior_kl": normal_kl(loc, scale, post_loc, post_scale),
+        })
+    code = []
+    for mu, logvar in zip(e["code_mu"], e["code_logvar"]):
+        code.append({"mu": mu, "logvar": logvar, "sigma": math.exp(0.5 * logvar), "kl": standard_normal_kl(mu, logvar)})
+    code_kl = sum(c["kl"] for c in code)
+    return {
+        "posterior": (post_loc, post_scale),
+        "evidence": evidence,
+        "marginal_scale": math.sqrt(w ** 2 + s ** 2),
+        "rows": rows,
+        "gradients": gradient_estimators(e["mu"], e["sigma"], e["target"], e["samples"], e["seed"]),
+        "code": code,
+        "code_kl": code_kl,
+        "betas": [{"beta": b, "penalty": b * code_kl} for b in e["betas"]],
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -7966,6 +8061,8 @@ def render(slug, render_template):
         "padded_waste": padded_waste,
         "autoencoder_example": autoencoder_example,
         "autoencoder_settings": AUTOENCODER_EXAMPLE,
+        "vae_example": vae_example,
+        "vae_settings": VAE_EXAMPLE,
         "conv_transpose_output_size": conv_transpose_output_size,
     }
     content = render_template(template, **context)
