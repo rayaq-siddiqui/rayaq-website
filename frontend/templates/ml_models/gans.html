@@ -1,0 +1,499 @@
+{% set ex = gan_example() %}
+{% set e = gan_settings %}
+{% set gens = ex.generators %}
+{% set one = gens[2] %}
+{% set dr = e.dirac %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(0.0 if x|abs < 0.5 * 10 ** (-n) else x)|replace("-", "−") }}{%- endmacro %}
+{% macro g(x) -%}{{ ('%g'|format(x))|replace("-", "−") }}{%- endmacro %}
+{% macro kl(x) -%}{% if x > 1e300 %}∞{% else %}{{ f(x, 4) }}{% endif %}{%- endmacro %}
+{% macro bx(i) -%}{{ 70 + i * 66 }}{%- endmacro %}
+{% macro by(p) -%}{{ '%.1f'|format(200 - p * 250) }}{%- endmacro %}
+{% macro dy(p) -%}{{ '%.1f'|format(200 - p * 150) }}{%- endmacro %}
+{% macro ax(a) -%}{{ '%.1f'|format(60 + (a + 6) * 52) }}{%- endmacro %}
+{% macro ay(v) -%}{{ '%.1f'|format(200 - v * 160) }}{%- endmacro %}
+{% macro px(t) -%}{{ '%.1f'|format(320 + t * 42) }}{%- endmacro %}
+{% macro py(p) -%}{{ '%.1f'|format(150 - p * 42) }}{%- endmacro %}
+{% set dirac_curves = [
+  ("minimax", "var(--jj-red)", "minimax, simultaneous GD"),
+  ("non_saturating", "var(--jj-amber)", "non-saturating"),
+  ("r1", "var(--jj-green)", "minimax + R1 penalty"),
+] %}
+<header class="jj-header">
+  <h1>Generative adversarial networks</h1>
+  <p class="tagline">
+    A GAN trains a generator to turn noise into samples by pitting it against a discriminator that tries to tell those samples from real data, with no likelihood ever written down.
+    This page derives the optimal discriminator and the Jensen–Shannon objective on a discrete example, shows why the original generator loss saturates, why training can circle forever instead of converging, and how DCGAN, Wasserstein critics, gradient penalties, spectral norm and FID fit into PyTorch.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A generative model should produce new samples that look like the training data: images, audio, molecules. The <a href="/ml-models/variational-autoencoders">variational autoencoder</a> does this by maximising a bound on the log-likelihood, and the <a href="/ml-models/autoregressive-models">autoregressive models</a> by factorising the likelihood exactly. Both need a density they can evaluate, and for images both pay for it: a VAE's Gaussian decoder averages over plausible outputs and blurs them, and an autoregressive model generates one pixel or token at a time.
+</p>
+<p>
+  The question a GAN asks instead is whether a network could be trained to produce samples directly, in one forward pass from random noise, judged only by whether they can be told apart from real ones. There is no formula for "looks real", so a second network learns one: the discriminator. The generator's loss is whatever the discriminator currently thinks of its samples, which makes training a two-player game rather than the minimisation of a fixed function, and most of what is hard about GANs follows from that.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  A forger and a detective. The detective is shown a mix of real banknotes and forgeries and learns what gives the forgeries away. The forger never sees a real note; it only learns, through the detective's verdict, which direction would have made a forgery more convincing. Each improves against the other, and if the game ends well the forgeries are indistinguishable and the detective can do no better than guess, outputting ½ for everything.
+</p>
+<p>
+  Two failure modes are already visible in the story. If the detective becomes too good too fast, its verdict on every forgery is "certainly fake" and says nothing about how to improve, so the forger stops learning. And the forger can fool a detective by perfecting one kind of note and never producing the others: this is <em>mode collapse</em>, and nothing in the detective's job of judging one sample at a time directly forbids it.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 265" role="img" aria-labelledby="gan-disc-title gan-disc-desc">
+    <title id="gan-disc-title">Data distribution, a one-mode generator and the optimal discriminator over eight bins</title>
+    <desc id="gan-disc-desc">
+      Eight bins on the horizontal axis. The data distribution has two modes: probabilities {% for p in e.data %}{{ g(p) }}{% if not loop.last %}, {% endif %}{% endfor %}.
+      The one-mode generator puts {% for p in one.p %}{{ g(p) }}{% if not loop.last %}, {% endif %}{% endfor %}, covering only the first mode.
+      Dots show the optimal discriminator D* = p_data / (p_data + p_g): {% for d in one.disc %}{% if d is none %}undefined{% else %}{{ f(d, 2) }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}.
+      It is one third on the covered mode, where the generator puts twice as much mass as the data, and 1 on the dropped mode, where only real samples appear.
+    </desc>
+    <line x1="55" y1="200" x2="590" y2="200" class="d-line"></line>
+    <line x1="60" y1="40" x2="60" y2="200" class="d-line"></line>
+    <line x1="590" y1="50" x2="590" y2="200" class="d-line"></line>
+    {% for p in [0, 0.2, 0.4, 0.6] %}
+    <text x="54" y="{{ '%.1f'|format(200 - p * 250 + 3) }}" font-size="10" text-anchor="end" class="d-muted">{{ g(p) }}</text>
+    {% endfor %}
+    {% for d in [0, 0.5, 1] %}
+    <text x="595" y="{{ '%.1f'|format(200 - d * 150 + 3) }}" font-size="10" class="d-muted">{{ g(d) }}</text>
+    {% endfor %}
+    <line x1="60" y1="{{ dy(0.5) }}" x2="590" y2="{{ dy(0.5) }}" class="d-line ml-dashed" stroke-width="1"></line>
+    {% for i in range(8) %}
+    <rect x="{{ bx(i) }}" y="{{ by(e.data[i]) }}" width="24" height="{{ '%.1f'|format(e.data[i] * 250) }}" style="fill: var(--jj-violet)" opacity="0.75"></rect>
+    <rect x="{{ 70 + i * 66 + 26 }}" y="{{ by(one.p[i]) }}" width="24" height="{{ '%.1f'|format(one.p[i] * 250) }}" style="fill: var(--jj-amber)" opacity="0.75"></rect>
+    <text x="{{ 70 + i * 66 + 25 }}" y="214" font-size="10" text-anchor="middle" class="d-muted">{{ i }}</text>
+    {% if one.disc[i] is not none %}
+    <circle cx="{{ 70 + i * 66 + 25 }}" cy="{{ dy(one.disc[i]) }}" r="4.5" style="fill: var(--jj-red)"></circle>
+    {% endif %}
+    {% endfor %}
+    <g font-size="11">
+      <text x="60" y="34" class="d-muted">probability</text>
+      <text x="590" y="40" text-anchor="end" style="fill: var(--jj-red)">D*(x), right axis</text>
+      <text x="70" y="240" style="fill: var(--jj-violet)">data p_data</text>
+      <text x="220" y="240" style="fill: var(--jj-amber)">generator p_g (one mode)</text>
+      <text x="420" y="240" style="fill: var(--jj-red)">● optimal discriminator</text>
+      <text x="70" y="256" class="d-muted">bins 0 and 4 have no mass under either, so D* is undefined there</text>
+    </g>
+  </svg>
+  <p class="ml-caption">The optimal discriminator is a likelihood ratio in disguise. Where the generator overproduces, D* drops below ½; on the mode it drops, D* is exactly 1, the signal that should push mass back there, but the generator only receives gradients at its own samples, all of which sit in the first mode.</p>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="the-game">The minimax game</h3>
+
+<p>
+  A generator G maps a noise vector z ~ p<sub>z</sub> (usually a standard normal) to a sample G(z); the samples have some distribution p<sub>g</sub> that is never written down. A discriminator D maps a sample to the probability that it is real. Goodfellow et al. defined the game
+</p>
+<p class="ml-formula">
+  min<sub>G</sub> max<sub>D</sub> V(D, G) = 𝔼<sub>x~p<sub>data</sub></sub>[log D(x)] + 𝔼<sub>z~p<sub>z</sub></sub>[log(1 − D(G(z)))]
+</p>
+<p>
+  The discriminator's half is ordinary binary cross-entropy, as on the <a href="/ml-models/loss-functions">loss functions</a> page and in <a href="/ml-models/logistic-regression">logistic regression</a>: real samples labelled 1, generated samples labelled 0. Training alternates one or more gradient steps on D with one step on G, each using a minibatch of real data and a minibatch of noise; the generator's gradient flows back through D into G by ordinary <a href="/ml-models/backpropagation">backpropagation</a>, with D's weights held fixed for that step.
+</p>
+
+<h3 id="optimal-discriminator">The optimal discriminator and Jensen–Shannon</h3>
+
+<p>
+  For a fixed generator, V is maximised pointwise. At each x the discriminator chooses y = D(x) to maximise p<sub>data</sub>(x) log y + p<sub>g</sub>(x) log(1 − y), and setting the derivative to zero gives
+</p>
+<p class="ml-formula">
+  D*(x) = p<sub>data</sub>(x) / (p<sub>data</sub>(x) + p<sub>g</sub>(x))
+  <br>
+  V(D*, G) = −log 4 + 2 · JS(p<sub>data</sub> ‖ p<sub>g</sub>)
+</p>
+<p>
+  where JS is the Jensen–Shannon divergence, the average <a href="/ml-models/entropy-and-kl">KL divergence</a> of each distribution from their mixture M = (p<sub>data</sub> + p<sub>g</sub>)/2. JS is zero only when the two distributions are equal, so against a perfect discriminator the generator's best move is p<sub>g</sub> = p<sub>data</sub>, where D* = ½ everywhere and V = −log 4 ≈ −{{ f(ex.log4, 4) }}. Unlike KL, JS is symmetric and bounded by log 2, and that bound is both a strength (it stays finite when supports differ) and, below, the source of a weakness.
+</p>
+
+<h3 id="non-saturating">The non-saturating generator loss</h3>
+
+<p>
+  Early in training the generator's samples are poor and D rejects them confidently. Write D(x) = σ(a) with a the discriminator's logit. The generator's term log(1 − σ(a)) has derivative −σ(a) with respect to a, which goes to zero exactly when D is confident the sample is fake (a ≪ 0): the loss <em>saturates</em> where the generator most needs a signal. Goodfellow et al. therefore train G to maximise log D(G(z)) instead, whose derivative is 1 − σ(a), near 1 in the same region. This <em>non-saturating</em> loss has the same fixed point, and it is what almost every implementation uses: <code>BCEWithLogitsLoss</code> on D's logits for the fakes, with the target label set to 1.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 262" role="img" aria-labelledby="gan-sat-title gan-sat-desc">
+    <title id="gan-sat-title">Generator gradient magnitude against the discriminator's logit for the two losses</title>
+    <desc id="gan-sat-desc">
+      Horizontal axis: the discriminator logit a on a generated sample, from −6 (confidently fake) to 4 (believed real). Vertical axis: the magnitude of the generator loss's derivative with respect to a, from 0 to 1.
+      The minimax loss log(1 − σ(a)) has gradient magnitude σ(a): {% for r in ex.saturation %}{{ f(r.d, 4) }} at a = {{ g(r.logit) }}{% if not loop.last %}, {% endif %}{% endfor %}.
+      The non-saturating loss −log σ(a) has gradient magnitude 1 − σ(a): {% for r in ex.saturation %}{{ f(-r.non_saturating, 4) }} at a = {{ g(r.logit) }}{% if not loop.last %}, {% endif %}{% endfor %}.
+      The curves cross at a = 0 with value ½.
+    </desc>
+    <line x1="55" y1="200" x2="590" y2="200" class="d-line"></line>
+    <line x1="{{ ax(-6) }}" y1="30" x2="{{ ax(-6) }}" y2="200" class="d-line"></line>
+    <line x1="{{ ax(0) }}" y1="30" x2="{{ ax(0) }}" y2="200" class="d-line ml-dashed" stroke-width="1"></line>
+    {% for v in [0, 0.5, 1] %}
+    <text x="54" y="{{ '%.1f'|format(200 - v * 160 + 3) }}" font-size="10" text-anchor="end" class="d-muted">{{ g(v) }}</text>
+    {% endfor %}
+    {% for a in [-6, -4, -2, 0, 2, 4] %}
+    <text x="{{ ax(a) }}" y="214" font-size="10" text-anchor="middle" class="d-muted">{{ g(a) }}</text>
+    {% endfor %}
+    <polyline fill="none" stroke-width="2.5" style="stroke: var(--jj-red)" points="{% for r in ex.saturation_curve %}{{ ax(r.logit) }},{{ ay(r.d) }} {% endfor %}"></polyline>
+    <polyline fill="none" stroke-width="2.5" style="stroke: var(--jj-green)" points="{% for r in ex.saturation_curve %}{{ ax(r.logit) }},{{ ay(-r.non_saturating) }} {% endfor %}"></polyline>
+    <g font-size="11">
+      <text x="60" y="230" class="d-muted">← D sure it is fake</text>
+      <text x="580" y="230" text-anchor="end" class="d-muted">D fooled →</text>
+      <text x="60" y="250" style="fill: var(--jj-green)">non-saturating −log D(G(z)): 1 − σ(a)</text>
+      <text x="340" y="250" style="fill: var(--jj-red)">minimax log(1 − D(G(z))): σ(a)</text>
+      <text x="{{ ax(0) }}" y="24" text-anchor="middle" class="d-muted">a = 0, D = ½</text>
+    </g>
+  </svg>
+  <p class="ml-caption">Gradient each loss sends back through the discriminator's logit. The minimax loss gives almost nothing where the generator is losing; the non-saturating loss gives almost nothing where it is already winning, which is the right way round.</p>
+</div>
+
+<h3 id="architectures">Generators, discriminators and DCGAN</h3>
+
+<p>
+  Any differentiable networks will do, but image GANs became reliable with the conventions of DCGAN (Radford et al.): a generator made of transposed <a href="/ml-models/cnns">convolutions</a> that grow a 1×1 latent to an image, a convolutional discriminator with strided convolutions instead of pooling, batch normalisation in both (except the generator's output and the discriminator's input), ReLU in the generator with a <code>Tanh</code> output so pixels lie in [−1, 1], LeakyReLU with slope 0.2 in the discriminator, weights drawn from N(0, 0.02), and Adam with learning rate 2·10<sup>−4</sup> and β<sub>1</sub> = 0.5. A transposed convolution's output size is
+</p>
+<p class="ml-formula">
+  H<sub>out</sub> = (H<sub>in</sub> − 1) · stride − 2 · padding + dilation · (kernel − 1) + output_padding + 1
+</p>
+<p>
+  so kernel 4, stride 2, padding 1 exactly doubles the size, and kernel 4, stride 1, padding 0 turns 1×1 into 4×4: {% for s in ex.dcgan_sizes %}{{ s }}{% if not loop.last %} → {% endif %}{% endfor %} in DCGAN's five layers.
+</p>
+
+<h3 id="wasserstein">Wasserstein critics and Lipschitz constraints</h3>
+
+<p>
+  JS has a blind spot. If p<sub>data</sub> and p<sub>g</sub> do not overlap, which is typical early on when both live on thin low-dimensional sets inside pixel space, then JS = log 2 no matter how far apart they are, and a perfect discriminator's gradient carries no information about which direction is closer. Arjovsky et al. replaced it with the Wasserstein-1 (earth mover's) distance, the least total mass × distance needed to move one distribution onto the other, which shrinks smoothly as the generator approaches the data. By Kantorovich–Rubinstein duality
+</p>
+<p class="ml-formula">
+  W<sub>1</sub>(p<sub>data</sub>, p<sub>g</sub>) = sup<sub>‖f‖<sub>L</sub> ≤ 1</sub> 𝔼<sub>p<sub>data</sub></sub>[f(x)] − 𝔼<sub>p<sub>g</sub></sub>[f(x)]
+</p>
+<p>
+  so a <em>critic</em> f with no sigmoid, constrained to be 1-Lipschitz, is trained to maximise the gap in mean scores and the generator to minimise it. The constraint is the hard part. WGAN clipped every weight to a small box, which works poorly; WGAN-GP (Gulrajani et al.) instead adds λ(‖∇<sub>x̂</sub>f(x̂)‖ − 1)² at random interpolations x̂ between real and fake samples, with λ = 10 and several critic steps per generator step; computing that penalty needs the gradient of an output with respect to an input, kept in the graph so it can itself be differentiated: <code>torch.autograd.grad(..., create_graph=True)</code>. Spectral normalisation (Miyato et al.) bounds the Lipschitz constant layer by layer instead, dividing each weight matrix by its largest singular value, estimated with one power iteration per forward pass.
+</p>
+
+<h3 id="convergence">Convergence and regularisation</h3>
+
+<p>
+  Gradient descent on a game is not gradient descent on a loss. Mescheder et al. made this concrete with the <em>Dirac-GAN</em>: real data is a single point at 0, the generator is a single point θ, and the discriminator is D(x) = σ(ψx). The only equilibrium is θ = ψ = 0, but near it the two players' updates rotate around it rather than descending into it, and simultaneous gradient steps of any fixed size spiral outward. The paper shows that unregularised GANs, and also WGAN and WGAN-GP, are not guaranteed to converge on this example, and that adding the <em>R1</em> penalty γ/2 · 𝔼<sub>p<sub>data</sub></sub>‖∇<sub>x</sub>D(x)‖², a zero-centred gradient penalty on real data only, makes it converge. R1 and spectral normalisation are the stabilisers most later image GANs use, along with separate learning rates for D and G (the two time-scale update rule of Heusel et al.).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>BCEWithLogitsLoss</code></td>
+        <td>weight=None, reduction="mean", pos_weight=None; input = logits, target ∈ [0, 1]</td>
+        <td>Sigmoid and binary cross-entropy in one, using the log-sum-exp form so confident logits do not overflow. The discriminator loss (targets 1 and 0) and the non-saturating generator loss (target 1 on fakes).</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 719, 844) }}">loss.py 719-844</a>, forward <a href="{{ src('torch/nn/modules/loss.py', 836, 844) }}">836-844</a></td>
+      </tr>
+      <tr>
+        <td><code>BCELoss</code></td>
+        <td>input = probabilities</td>
+        <td>The same loss on probabilities after an explicit <code>Sigmoid</code>; clamps its log outputs at −100, so a saturated discriminator gives a bounded but uninformative loss. Less stable than the logits version.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 633, 716) }}">633-716</a>, forward <a href="{{ src('torch/nn/modules/loss.py', 710, 716) }}">710-716</a></td>
+      </tr>
+      <tr>
+        <td><code>torch.autograd.grad</code></td>
+        <td>outputs, inputs, grad_outputs=None, retain_graph=None, create_graph=False</td>
+        <td>Gradient of outputs with respect to chosen inputs, returned rather than accumulated into <code>.grad</code>. With <code>create_graph=True</code> the result is itself differentiable, which R1 and WGAN-GP penalties need; <code>retain_graph</code> defaults to <code>create_graph</code>.</td>
+        <td><a href="{{ src('torch/autograd/__init__.py', 434, 621) }}">autograd/__init__.py 434-621</a></td>
+      </tr>
+      <tr>
+        <td><code>ConvTranspose2d</code></td>
+        <td>in_channels, out_channels, kernel_size, stride=1, padding=0, output_padding=0, dilation=1; (N, C<sub>in</sub>, H, W) → (N, C<sub>out</sub>, H<sub>out</sub>, W<sub>out</sub>)</td>
+        <td>The generator's upsampling layer: the gradient of a convolution with respect to its input, used as a layer. Docstring gives the H<sub>out</sub> formula above.</td>
+        <td><a href="{{ src('torch/nn/modules/conv.py', 1012, 1207) }}">conv.py 1012-1207</a>, H<sub>out</sub> <a href="{{ src('torch/nn/modules/conv.py', 1085, 1092) }}">1085-1092</a>, forward <a href="{{ src('torch/nn/modules/conv.py', 1169, 1207) }}">1169-1207</a></td>
+      </tr>
+      <tr>
+        <td><code>LeakyReLU</code></td>
+        <td>negative_slope=1e-2, inplace=False</td>
+        <td>Keeps a small gradient for negative inputs so the discriminator passes signal back for every sample; DCGAN sets the slope to 0.2.</td>
+        <td><a href="{{ src('torch/nn/modules/activation.py', 875, 930) }}">activation.py 875-930</a></td>
+      </tr>
+      <tr>
+        <td><code>Tanh</code></td>
+        <td>none</td>
+        <td>Generator output nonlinearity, matching images scaled to [−1, 1].</td>
+        <td><a href="{{ src('torch/nn/modules/activation.py', 407, 433) }}">407-433</a></td>
+      </tr>
+      <tr>
+        <td><code>init.normal_</code></td>
+        <td>tensor, mean=0.0, std=1.0</td>
+        <td>Fills a tensor in place from N(mean, std²); DCGAN calls it with std 0.02 on every convolution weight.</td>
+        <td><a href="{{ src('torch/nn/init.py', 274, 298) }}">init.py 274-298</a></td>
+      </tr>
+      <tr>
+        <td><code>parametrizations.spectral_norm</code></td>
+        <td>module, name="weight", n_power_iterations=1, eps=1e-12, dim=None (1 for transposed convolutions, else 0)</td>
+        <td>Registers a parametrization so the layer always uses W / σ(W), bounding each layer's Lipschitz constant by 1.</td>
+        <td><a href="{{ src('torch/nn/utils/parametrizations.py', 535, 636) }}">parametrizations.py 535-636</a></td>
+      </tr>
+      <tr>
+        <td><code>_SpectralNorm</code></td>
+        <td>buffers u, v</td>
+        <td>Reshapes the weight to a matrix, runs the power iteration in training mode only, and divides by σ = uᵀWv.</td>
+        <td><a href="{{ src('torch/nn/utils/parametrizations.py', 403, 532) }}">403-532</a>, forward <a href="{{ src('torch/nn/utils/parametrizations.py', 512, 527) }}">512-527</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  PyTorch has no GAN class or GAN loss: a GAN is two ordinary modules, two optimizers and the loop that alternates them, which is why the table is a list of building blocks.
+</p>
+
+<details class="ml-quiz">
+  <summary>The discriminator ends with <code>nn.Sigmoid()</code> and the loss is <code>BCELoss</code>. Late in a run the generator loss sits at exactly 100 and stops moving. What happened?</summary>
+  <p>The discriminator saturated: its probability on fakes underflowed to 0, log 0 was clamped to −100 by <code>BCELoss</code>, and the clamp has zero gradient, so nothing flows back to G. Using raw logits with <code>BCEWithLogitsLoss</code> keeps a finite gradient (1 − σ(a) with the non-saturating target), and a gradient penalty or spectral norm keeps D from becoming that confident.</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    Everything below is computed by stdlib helpers in <code>ml_models_docs.py</code> and checked by the test suite, on an eight-bin data distribution with two modes, {% for p in e.data %}{{ g(p) }}{% if not loop.last %}, {% endif %}{% endfor %}.
+  </p>
+
+  <h3 id="value-and-divergences">The value at the optimal discriminator</h3>
+  <p>
+    For each candidate generator the helper computes D* bin by bin, evaluates V(D*, G) directly, and compares it with −log 4 + 2·JS; the tests also nudge each D* value up and down and check V falls, confirming it is the maximum. Forward KL is KL(p<sub>data</sub> ‖ p<sub>g</sub>), what maximum likelihood minimises; reverse KL is KL(p<sub>g</sub> ‖ p<sub>data</sub>); W<sub>1</sub> treats the bins as points one unit apart.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Generator</th><th>p<sub>g</sub></th><th>V(D*, G)</th><th>JS</th><th>KL(data ‖ g)</th><th>KL(g ‖ data)</th><th>W<sub>1</sub></th></tr></thead>
+      <tbody>
+        {% for gen in gens %}
+        <tr>
+          <td>{{ gen.name }}</td>
+          <td>{% for p in gen.p %}{{ g(p) }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+          <td>{{ f(gen.value, 4) }}</td>
+          <td>{{ f(gen.js, 4) }}</td>
+          <td>{{ kl(gen.kl_forward) }}</td>
+          <td>{{ kl(gen.kl_reverse) }}</td>
+          <td>{{ f(gen.w1, 2) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The matched generator reaches V = −log 4 with D* = ½ wherever there is mass. The one-mode generator, which drops half the data, has infinite forward KL, so maximum likelihood would rule it out entirely, while JS gives it a finite {{ f(one.js, 4) }}: worse than the broad generator's {{ f(gens[1].js, 4) }}, but bounded by log 2 ≈ {{ f(ex.points[0].js, 4) }} like every JS value. Its reverse KL is exactly log 2: every generated sample is twice as likely under p<sub>g</sub> as under p<sub>data</sub>. The broad generator is the mirror image, finite forward KL but infinite reverse KL because it puts mass where the data has none. JS is symmetric and sits between the two. The non-saturating generator loss leans the other way: Arjovsky and Bottou show that against the optimal discriminator its gradient is the gradient of KL(p<sub>g</sub> ‖ p<sub>data</sub>) − 2·JS, a reverse KL that forgives dropped modes and punishes mass off the data. That is one way to see why GANs tend towards sharp samples that may miss modes, while likelihood models cover every mode and blur.
+  </p>
+
+  <h3 id="disjoint-supports">Disjoint supports</h3>
+  <p>
+    Put all the data at x = 0 and all the generator's mass at x = θ. For every θ ≠ 0 the two never overlap:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>θ</th>{% for pt in ex.points %}<th>{{ g(pt.shift) }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        <tr><td>JS</td>{% for pt in ex.points %}<td>{{ f(pt.js, 4) }}</td>{% endfor %}</tr>
+        <tr><td>W<sub>1</sub></td>{% for pt in ex.points %}<td>{{ g(pt.w1) }}</td>{% endfor %}</tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    JS is log 2 at every distance, so its gradient with respect to θ is zero; W<sub>1</sub> = |θ| and points straight back to the data. That is the whole argument for Wasserstein critics in one row.
+  </p>
+
+  <h3 id="saturation-numbers">Saturation in numbers</h3>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Logit a</th><th>D = σ(a)</th><th>∂/∂a log(1 − D)</th><th>∂/∂a (−log D)</th></tr></thead>
+      <tbody>
+        {% for r in ex.saturation %}
+        <tr><td>{{ g(r.logit) }}</td><td>{{ f(r.d, 4) }}</td><td>{{ f(r.minimax, 4) }}</td><td>{{ f(r.non_saturating, 4) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    At a = {{ g(ex.saturation[0].logit) }}, a sample D is sure is fake, the minimax loss passes back {{ f(-ex.saturation[0].minimax, 4) }}, about {{ f(ex.saturation[0].non_saturating / ex.saturation[0].minimax, 0) }} times smaller than the non-saturating loss. Both derivatives are negative, so a descent step on either loss raises a, towards "real"; they differ only in how hard they push. Their difference is always 1 − 2σ(a), zero at a = 0.
+  </p>
+
+  <h3 id="dirac-gan">The Dirac-GAN, simulated</h3>
+  <p>
+    Starting from θ = {{ g(dr.theta) }}, ψ = {{ g(dr.psi) }}, both players take simultaneous gradient steps of size {{ g(dr.lr) }}: ψ ← ψ − h·θσ(ψθ) for the discriminator, and for the generator either θ ← θ + h·ψσ(ψθ) (minimax) or θ ← θ + h·ψσ(−ψθ) (non-saturating). The R1 run adds γψ with γ = {{ g(dr.r1_gamma) }} to the discriminator's gradient, the derivative of γ/2 · ψ², since ∇<sub>x</sub> of the logit ψx is ψ. Distance from the equilibrium after each number of steps:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Run</th>{% for t in e.dirac_marks %}<th>step {{ t }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for key, color, label in dirac_curves %}
+        <tr><td>{{ label }}</td>{% for r in ex.dirac[key].marks %}<td>{{ f(r, 3) }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The minimax run moves further away at every checkpoint, as the paper predicts for simultaneous steps. The non-saturating run is not a fix: it shrinks at first, is still circling the equilibrium at a radius of {{ f(ex.dirac.non_saturating.marks[-1], 2) }} at step {{ e.dirac_marks[-1] }}, and in a ten-times-longer run levels off above 0.4 rather than reaching it. Only the R1 run converges, to within 10<sup>−9</sup> by step {{ e.dirac_marks[-1] }}. The penalty damps ψ, so the discriminator cannot keep growing a slope that the generator then overshoots.
+  </p>
+
+  <div class="jj-diagram">
+    <svg viewBox="0 0 640 315" role="img" aria-labelledby="gan-dirac-title gan-dirac-desc">
+      <title id="gan-dirac-title">Dirac-GAN trajectories in the generator–discriminator parameter plane</title>
+      <desc id="gan-dirac-desc">
+        Horizontal axis: generator position θ; vertical axis: discriminator slope ψ; both from −3 to 3, with the equilibrium at the origin. All three runs start at ({{ g(dr.theta) }}, {{ g(dr.psi) }}) and take {{ dr.steps }} simultaneous gradient steps of size {{ g(dr.lr) }}.
+        The minimax run spirals outward, reaching distance {{ f(ex.dirac.minimax.marks[-1], 2) }} from the origin.
+        The non-saturating run spirals inward at first and then settles onto a loop of radius about {{ f(ex.dirac.non_saturating.marks[-1], 2) }}.
+        The R1-regularised run dips below the θ axis and spirals tightly into the origin.
+      </desc>
+      <line x1="{{ px(-3.3) }}" y1="{{ py(0) }}" x2="{{ px(3.3) }}" y2="{{ py(0) }}" class="d-line"></line>
+      <line x1="{{ px(0) }}" y1="{{ py(3.3) }}" x2="{{ px(0) }}" y2="{{ py(-3.3) }}" class="d-line"></line>
+      {% for t in [-3, -2, -1, 1, 2, 3] %}
+      <text x="{{ px(t) }}" y="{{ '%.1f'|format(150 + 14) }}" font-size="10" text-anchor="middle" class="d-muted">{{ g(t) }}</text>
+      <text x="{{ '%.1f'|format(320 - 6) }}" y="{{ '%.1f'|format(150 - t * 42 + 3) }}" font-size="10" text-anchor="end" class="d-muted">{{ g(t) }}</text>
+      {% endfor %}
+      {% for key, color, label in dirac_curves %}
+      <polyline fill="none" stroke-width="{% if key == 'r1' %}2.5{% else %}1.6{% endif %}" style="stroke: {{ color }}" points="{% for t, p in ex.dirac[key].path %}{% if loop.index0 % 4 == 0 or loop.last %}{{ px(t) }},{{ py(p) }} {% endif %}{% endfor %}"></polyline>
+      {% endfor %}
+      <circle cx="{{ px(dr.theta) }}" cy="{{ py(dr.psi) }}" r="4" class="d-line" style="fill: var(--jj-violet)"></circle>
+      <circle cx="{{ px(0) }}" cy="{{ py(0) }}" r="3.5" style="fill: var(--jj-green)"></circle>
+      <g font-size="11">
+        <text x="{{ px(3.3) }}" y="{{ py(-26 / 42) }}" text-anchor="end" class="d-muted">θ (generator)</text>
+        <text x="{{ px(6 / 42) }}" y="{{ py(3.3 - 10 / 42) }}" class="d-muted">ψ (discriminator)</text>
+        <text x="{{ px(dr.theta + 7 / 42) }}" y="{{ py(dr.psi + 6 / 42) }}" style="fill: var(--jj-violet)">start</text>
+        {% for key, color, label in dirac_curves %}
+        <text x="20" y="{{ 30 + loop.index0 * 15 }}" style="fill: {{ color }}">{{ label }}</text>
+        {% endfor %}
+      </g>
+    </svg>
+    <p class="ml-caption">Every fourth step of each run. Without a penalty the players chase each other around the equilibrium; the R1 penalty turns the rotation into a spiral that ends there.</p>
+  </div>
+
+  <h3 id="fid-numbers">Fréchet distance</h3>
+  <p>
+    The Fréchet Inception Distance (Heusel et al.) fits a Gaussian to the features of real images and another to generated ones, using the 2048-dimensional pooled activations of an Inception-v3 network, and reports
+  </p>
+  <p class="ml-formula">
+    FID = ‖μ<sub>r</sub> − μ<sub>g</sub>‖² + Tr(Σ<sub>r</sub> + Σ<sub>g</sub> − 2(Σ<sub>r</sub>Σ<sub>g</sub>)<sup>1/2</sup>)
+  </p>
+  <p>
+    In two dimensions Tr(Σ<sub>r</sub>Σ<sub>g</sub>)<sup>1/2</sup> has the closed form √(tr(Σ<sub>r</sub>Σ<sub>g</sub>) + 2√(det Σ<sub>r</sub> det Σ<sub>g</sub>)), which the helper uses (cross-checked against a matrix square root). Against a standard normal "real" distribution:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Generated</th><th>μ<sub>g</sub></th><th>Σ<sub>g</sub></th><th>FID</th></tr></thead>
+      <tbody>
+        {% for r in ex.fid %}
+        <tr><td>{{ r.name }}</td><td>({{ g(r.mu[0]) }}, {{ g(r.mu[1]) }})</td><td>[[{{ g(r.cov[0][0]) }}, {{ g(r.cov[0][1]) }}], [{{ g(r.cov[1][0]) }}, {{ g(r.cov[1][1]) }}]]</td><td>{{ f(r.fid, 4) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    A collapsed generator, half the spread in each direction, scores worse than a mean shift of half a standard deviation, so FID does penalise lost diversity, unlike a score of sample quality alone. Its weakness is sample size: two independent sets of samples from the <em>same</em> standard normal give
+    {% for r in ex.fid_sampled %}FID {{ f(r.fid, 4) }} with {{ r.n }} samples each{% if not loop.last %}, {% endif %}{% endfor %}. The estimate is biased upward and the bias shrinks as the sample grows, so FIDs are only comparable at the same sample count (50,000 is the common choice) and the same feature extractor.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  A DCGAN for 64×64 RGB images, trained with the non-saturating loss and an R1 penalty on real images. The discriminator ends in a logit, not a probability, so the loss is <code>BCEWithLogitsLoss</code>.
+</p>
+
+<pre><code>import torch
+from torch import nn
+
+nz, ngf, ndf = 100, 64, 64
+
+def up(c_in, c_out, stride=2, padding=1):
+    return [nn.ConvTranspose2d(c_in, c_out, 4, stride, padding, bias=False),
+            nn.BatchNorm2d(c_out), nn.ReLU(True)]
+
+def down(c_in, c_out, norm=True):
+    layers = [nn.Conv2d(c_in, c_out, 4, 2, 1, bias=False)]
+    if norm:
+        layers.append(nn.BatchNorm2d(c_out))
+    return layers + [nn.LeakyReLU(0.2, True)]
+
+G = nn.Sequential(                       # (N, nz, 1, 1) -> (N, 3, 64, 64)
+    *up(nz, ngf * 8, stride=1, padding=0),           # 4x4
+    *up(ngf * 8, ngf * 4), *up(ngf * 4, ngf * 2),    # 8x8, 16x16
+    *up(ngf * 2, ngf),                               # 32x32
+    nn.ConvTranspose2d(ngf, 3, 4, 2, 1, bias=False), # 64x64
+    nn.Tanh(),
+)
+D = nn.Sequential(                       # (N, 3, 64, 64) -> (N, 1) logits
+    *down(3, ndf, norm=False), *down(ndf, ndf * 2),
+    *down(ndf * 2, ndf * 4), *down(ndf * 4, ndf * 8),
+    nn.Conv2d(ndf * 8, 1, 4, 1, 0, bias=False), nn.Flatten(),
+)
+
+def init_weights(m):
+    if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
+        nn.init.normal_(m.weight, 0.0, 0.02)
+
+G.apply(init_weights)
+D.apply(init_weights)
+bce = nn.BCEWithLogitsLoss()
+opt_g = torch.optim.Adam(G.parameters(), lr=2e-4, betas=(0.5, 0.999))
+opt_d = torch.optim.Adam(D.parameters(), lr=2e-4, betas=(0.5, 0.999))
+
+def train_step(real, gamma=10.0):
+    z = torch.randn(real.size(0), nz, 1, 1)
+    fake = G(z)
+
+    real = real.requires_grad_(True)
+    logit_real, logit_fake = D(real), D(fake.detach())
+    loss_d = (bce(logit_real, torch.ones_like(logit_real))
+              + bce(logit_fake, torch.zeros_like(logit_fake)))
+    grad, = torch.autograd.grad(logit_real.sum(), real, create_graph=True)
+    r1 = grad.pow(2).flatten(1).sum(1).mean()
+    opt_d.zero_grad()
+    (loss_d + gamma / 2 * r1).backward()
+    opt_d.step()
+
+    logit = D(fake)                          # non-saturating: label fakes real
+    loss_g = bce(logit, torch.ones_like(logit))
+    opt_g.zero_grad()
+    loss_g.backward()
+    opt_g.step()
+    return loss_d.item(), loss_g.item()</code></pre>
+
+<p>
+  <code>fake.detach()</code> keeps the discriminator's loss from reaching G. The generator step still backpropagates through D, which also leaves gradients in D's parameters; they are harmless because <code>opt_d.zero_grad()</code> clears them before D's next update. For a Wasserstein critic, drop the BCE and read D's output as an unbounded score: the critic loss is <code>f(fake).mean() - f(real).mean()</code> plus the gradient penalty at interpolates, the generator loss is <code>-f(fake).mean()</code>, and batch norm in the critic is replaced (Gulrajani et al. suggest layer norm) because the penalty is defined per sample. Spectral norm is one call per layer: <code>torch.nn.utils.parametrizations.spectral_norm(nn.Conv2d(...))</code>.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Sharp, fast samples.</strong> One forward pass per sample and no pixel-wise likelihood that rewards averaging, so GAN images are sharp and generation is far cheaper than iterative samplers. The same objective gives no likelihood to evaluate, compare or use for anomaly scores.</li>
+  <li><strong>Mode collapse.</strong> The generator can cover part of the data well and ignore the rest; the reverse-KL-like behaviour in the worked example is the mild form. Minibatch statistics in the discriminator, gradient penalties and larger discriminators reduce it, but none rules it out.</li>
+  <li><strong>Unstable training.</strong> A game has no loss that decreases; D and G losses oscillate, and neither one tracks sample quality. Regularisers (R1, spectral norm), balanced learning rates and checkpoint selection by FID are standard, and training still needs more tuning than a likelihood model.</li>
+  <li><strong>Evaluation.</strong> FID is the default but depends on the Inception network, the sample count and preprocessing, and it compresses quality and diversity into one number. Precision and recall for generative models separate the two.</li>
+  <li><strong>Conditioning and editing.</strong> Class labels or text can be fed to both networks (conditional GANs), and a well-trained generator's latent space supports smooth interpolation and editing, which likelihood models do not offer as directly.</li>
+  <li><strong>Where they are used now.</strong> For general text-to-image generation, diffusion models have largely replaced GANs on diversity and training stability. Adversarial losses survive as components: the discriminator loss in the decoders of image and audio tokenizers, super-resolution, and distilling slow samplers into few-step ones.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Generated samples look good, but every sample in a batch is a near-copy of the same image. The discriminator loss is low and steady. What is going on, and why does the discriminator not fix it?</summary>
+  <p>Mode collapse. Each discriminator judgement is about one sample, and a single convincing image passes each judgement. By the time D learns to reject that image, G moves to another single mode, and the pair can cycle. Showing the discriminator batch-level statistics, for example a minibatch standard deviation feature, gives it a way to detect missing diversity; FID on a held-out batch catches it in evaluation because the covariance term grows.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<p>
+  The discriminator is a <a href="/ml-models/logistic-regression">logistic regression</a> on learned features, trained with the binary cross-entropy from <a href="/ml-models/loss-functions">loss functions</a>, and the generator learns entirely through <a href="/ml-models/backpropagation">backpropagation</a> into that classifier. The divergences in the worked example are the ones on <a href="/ml-models/entropy-and-kl">entropy and KL</a>. The <a href="/ml-models/variational-autoencoders">variational autoencoder</a> is the likelihood-based alternative with the opposite failure mode (blur rather than dropped modes), and the <a href="/ml-models/autoencoders">autoencoder</a> page covers the decoder that a generator resembles. The architecture is built from <a href="/ml-models/cnns">convolutional networks</a> and <a href="/ml-models/activation-functions">activation functions</a>, initialised as on <a href="/ml-models/initialization">initialization</a>, and trained with the Adam settings explained on <a href="/ml-models/optimizers">optimizers</a>.
+</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Goodfellow, Pouget-Abadie, Mirza, Xu, Warde-Farley, Ozair, Courville and Bengio. <em>Generative Adversarial Nets.</em> NeurIPS, 2014 (<a href="https://arxiv.org/abs/1406.2661">arXiv 1406.2661</a>; the game, D*, the JS result and the non-saturating loss).</li>
+  <li>Radford, Metz and Chintala. <em>Unsupervised Representation Learning with Deep Convolutional Generative Adversarial Networks.</em> ICLR, 2016 (<a href="https://arxiv.org/abs/1511.06434">arXiv 1511.06434</a>; DCGAN).</li>
+  <li>Arjovsky and Bottou. <em>Towards Principled Methods for Training Generative Adversarial Networks.</em> ICLR, 2017 (<a href="https://arxiv.org/abs/1701.04862">arXiv 1701.04862</a>; disjoint supports and saturation).</li>
+  <li>Arjovsky, Chintala and Bottou. <em>Wasserstein Generative Adversarial Networks.</em> ICML, 2017 (<a href="https://arxiv.org/abs/1701.07875">arXiv 1701.07875</a>).</li>
+  <li>Gulrajani, Ahmed, Arjovsky, Dumoulin and Courville. <em>Improved Training of Wasserstein GANs.</em> NeurIPS, 2017 (<a href="https://arxiv.org/abs/1704.00028">arXiv 1704.00028</a>; WGAN-GP).</li>
+  <li>Heusel, Ramsauer, Unterthiner, Nessler and Hochreiter. <em>GANs Trained by a Two Time-Scale Update Rule Converge to a Local Nash Equilibrium.</em> NeurIPS, 2017 (<a href="https://arxiv.org/abs/1706.08500">arXiv 1706.08500</a>; TTUR and FID).</li>
+  <li>Miyato, Kataoka, Koyama and Yoshida. <em>Spectral Normalization for Generative Adversarial Networks.</em> ICLR, 2018 (<a href="https://arxiv.org/abs/1802.05957">arXiv 1802.05957</a>).</li>
+  <li>Mescheder, Geiger and Nowozin. <em>Which Training Methods for GANs do actually Converge?</em> ICML, 2018 (<a href="https://arxiv.org/abs/1801.04406">arXiv 1801.04406</a>; the Dirac-GAN and R1).</li>
+  <li>Chong and Forsyth. <em>Effectively Unbiased FID and Inception Score and Where to Find Them.</em> CVPR, 2020 (<a href="https://arxiv.org/abs/1911.07023">arXiv 1911.07023</a>; FID's sample-size bias).</li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/nn/modules/loss.py') }}"><code>torch/nn/modules/loss.py</code></a>, <a href="{{ src('torch/autograd/__init__.py') }}"><code>torch/autograd/__init__.py</code></a>, <a href="{{ src('torch/nn/utils/parametrizations.py') }}"><code>torch/nn/utils/parametrizations.py</code></a>.</li>
+</ul>

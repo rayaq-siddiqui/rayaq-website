@@ -849,7 +849,7 @@ PAGES = [
             "pytorch:torch/nn/modules/loss.py",
             "pytorch:torch/autograd/__init__.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "diffusion-models",
