@@ -310,8 +310,8 @@ Gaps:
 49. `class-imbalance` ✓
 50. `random-forests` ✓
 51. `initialization` ✓
-52. `rnns-and-lstms` ← next
-53. `autoencoders`
+52. `rnns-and-lstms` ✓
+53. `autoencoders` ← next
 54. `variational-autoencoders`
 55. `positional-encoding`
 56. `clustering`

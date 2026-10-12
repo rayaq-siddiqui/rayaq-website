@@ -720,7 +720,7 @@ PAGES = [
             "pytorch:torch/nn/modules/rnn.py",
             "pytorch:torch/nn/utils/rnn.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "transformer",

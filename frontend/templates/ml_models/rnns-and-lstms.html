@@ -1,0 +1,427 @@
+{% set ex = rnn_example() %}
+{% set e = rnn_example_data %}
+{% set mem = {} %}
+{% for c in ex.memory %}{% set _ = mem.update({c.key: c}) %}{% endfor %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(x)|replace("-", "−") }}{%- endmacro %}
+{% macro v(xs, n=3) -%}({% for x in xs %}{{ f(x, n) }}{% if not loop.last %}, {% endif %}{% endfor %}){%- endmacro %}
+{% macro g(x) -%}{{ ("%.2g"|format(x))|replace("e-0", "e−")|replace("e+0", "e")|replace("e-", "e−")|replace("e+", "e") }}{%- endmacro %}
+{% macro tx(t) -%}{{ "%.1f"|format(70 + (t - 1) / 29 * 460) }}{%- endmacro %}
+{% macro gy(x) -%}{% set e10 = [log10(x) if x > 0 else -16, -16]|max %}{{ "%.1f"|format(30 + (-e10) / 16 * 200) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>RNNs and LSTMs</h1>
+  <p class="tagline">
+    A recurrent network reads a sequence one step at a time and carries a hidden state forward, so the same weights handle a sequence of any length.
+    This page builds the plain recurrence, shows why its gradients vanish over long distances, derives the LSTM and GRU gates that fix it,
+    and follows PyTorch's <code>nn.RNN</code>, <code>nn.LSTM</code>, <code>nn.GRU</code> and packed sequences down to their parameter shapes.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Text, audio, sensor readings and clicks arrive as sequences, and their lengths vary. A feed-forward network from <a href="/ml-models/neurons-and-layers">neurons and layers</a> takes a fixed-size input,
+  so it would need a separate weight for every position and could never see a longer sequence than it was built for. We want one function that consumes the sequence an element at a time,
+  remembers what matters about the past in a fixed-size vector, and is trained with the same <a href="/ml-models/backpropagation">backpropagation</a> as everything else.
+</p>
+<p>
+  The plain recurrent network does exactly that, but its memory is short: the gradient that tells step 1 how it affected the loss at step 30 is a product of 29 per-step factors, and it usually vanishes or explodes.
+  The LSTM's gated, additive cell state is the classic fix. Before the <a href="/ml-models/transformer">Transformer</a>, encoder-decoder LSTMs with <a href="/ml-models/attention">attention</a> were the state of the art in machine translation, and attention itself was invented to help them.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Unroll the loop and an RNN is a very deep feed-forward network with one layer per time step, all layers sharing the same weights. Information from step 1 reaches step <var>T</var> only by passing through <var>T</var> − 1 copies of that layer,
+  each multiplying it by the recurrent weight and squashing it through tanh. That is a game of telephone: the message fades unless every relay repeats it at full volume.
+</p>
+<p>
+  An LSTM adds a second, separate line, the <em>cell state</em> <var>c</var>, that does not pass through a weight matrix or a squashing function from step to step. Each step only scales it by a <em>forget gate</em> between 0 and 1 and adds new content through an <em>input gate</em>.
+  If the forget gate stays near 1, the cell carries information, and gradient, across many steps nearly unchanged. Learning when to keep, write and read the cell is the whole trick.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 230" role="img" aria-labelledby="rnn-unroll-title rnn-unroll-desc">
+    <title id="rnn-unroll-title">An RNN unrolled over three time steps</title>
+    <desc id="rnn-unroll-desc">
+      Inputs x1, x2 and x3 enter from below into three copies of the same cell. Each cell receives the previous hidden state from the left, computes h_t = tanh(W_ih x_t + W_hh h_(t-1) + b), and passes h_t to the right and up as the output.
+      The same weights W_ih and W_hh are used in every copy. The backward pass travels right to left along the hidden-state arrows, multiplying by W_hh and the tanh slope at each step.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <text x="40" y="92" class="d-muted">h₀ = 0</text>
+      {% for t in [1, 2, 3] %}
+      {% set x0 = 90 + (t - 1) * 200 %}
+      <rect x="{{ x0 }}" y="75" width="160" height="50" rx="6" class="d-box ml-weight"></rect>
+      <text x="{{ x0 + 80 }}" y="98">tanh(W<tspan baseline-shift="sub" font-size="9">ih</tspan>x + W<tspan baseline-shift="sub" font-size="9">hh</tspan>h + b)</text>
+      <text x="{{ x0 + 80 }}" y="115" class="d-muted">same weights</text>
+      <rect x="{{ x0 + 55 }}" y="175" width="50" height="30" rx="6" class="d-box ml-tensor"></rect>
+      <text x="{{ x0 + 80 }}" y="195">x{{ ["₁", "₂", "₃"][t - 1] }}</text>
+      <path d="M{{ x0 + 80 }} 175 L{{ x0 + 80 }} 125" class="d-line" fill="none"></path>
+      <path d="M{{ x0 + 80 }} 75 L{{ x0 + 80 }} 45" class="d-line" fill="none"></path>
+      <text x="{{ x0 + 80 }}" y="35">h{{ ["₁", "₂", "₃"][t - 1] }} = output</text>
+      <path d="M{{ x0 - 40 }} 100 L{{ x0 }} 100" class="d-line" fill="none"></path>
+      {% endfor %}
+      <path d="M650 100 L690 100" class="d-line" fill="none"></path>
+      <path d="M630 150 L110 150" class="d-line ml-dashed" fill="none"></path>
+      <text x="270" y="168" style="fill: var(--jj-red)">gradient: × W<tspan baseline-shift="sub" font-size="9">hh</tspan>ᵀ · tanh′ per step</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">One cell, reused at every step. Backprop through time runs the dashed path, and each step multiplies by the same Jacobian.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="recurrence">The recurrence</h3>
+<p>
+  PyTorch's <code>nn.RNN</code> computes, for each step <var>t</var>,
+</p>
+<p class="ml-formula">h<sub>t</sub> = tanh(x<sub>t</sub> W<sub>ih</sub><sup>⊤</sup> + b<sub>ih</sub> + h<sub>t−1</sub> W<sub>hh</sub><sup>⊤</sup> + b<sub>hh</sub>)</p>
+<p>
+  with <code>nonlinearity="relu"</code> as the alternative to tanh. The two bias vectors always appear as a sum, so one would do; the source keeps the second "for CuDNN compatibility". The output at each step is <var>h<sub>t</sub></var> itself,
+  and a model reads off a prediction with a <a href="/ml-models/neurons-and-layers">linear layer</a> on top: from every step for tagging, or from the last one for classifying the whole sequence.
+  Stacking (<code>num_layers</code>) feeds layer <var>k</var>'s outputs as layer <var>k</var>+1's inputs. A <code>bidirectional</code> RNN runs a second copy right to left and concatenates the two states, so each output sees the whole sequence.
+</p>
+
+<h3 id="bptt">Backprop through time and vanishing gradients</h3>
+<p>
+  Training unrolls the loop and applies the <a href="/ml-models/chain-rule">chain rule</a> along the unrolled graph; this is <em>backpropagation through time</em> (BPTT). The gradient from step <var>T</var> back to step <var>k</var> is a product of Jacobians:
+</p>
+<p class="ml-formula">∂h<sub>T</sub> / ∂h<sub>k</sub> = Π<sub>t=k+1..T</sub> diag(1 − h<sub>t</sub>²) · W<sub>hh</sub></p>
+<p>
+  Each factor has the same <var>W<sub>hh</sub></var>. If its largest singular value times the tanh slope is below 1, the product shrinks geometrically with the distance <var>T</var> − <var>k</var>; if it is above 1 it can grow geometrically.
+  Since tanh′ ≤ 1, a large <var>W<sub>hh</sub></var> does not reliably help: it pushes the units into saturation, where the slope is near 0. Bengio, Simard and Frasconi (1994) showed this tension is fundamental for learning long-range dependencies by gradient descent.
+  Exploding gradients are tamed by <em>gradient clipping</em> (Pascanu et al., 2013), rescaling the gradient when its norm passes a threshold. Vanishing gradients need a change of architecture.
+  In practice long sequences are also cut into chunks, carrying the hidden state across chunks but stopping the gradient at each boundary (<em>truncated BPTT</em>).
+</p>
+
+<h3 id="lstm">LSTM gates, derived</h3>
+<p>
+  To keep a gradient alive, we want a state whose step-to-step Jacobian is close to the identity. The simplest such update is additive, <var>c<sub>t</sub></var> = <var>c<sub>t−1</sub></var> + (new content), so ∂<var>c<sub>t</sub></var>/∂<var>c<sub>t−1</sub></var> = 1:
+  Hochreiter and Schmidhuber's "constant error carousel". A pure sum never forgets and lets everything in, so each part gets a learned, data-dependent gate, a <a href="/ml-models/logistic-regression">sigmoid</a> between 0 and 1. The forget gate was added by Gers, Schmidhuber and Cummins (2000). PyTorch's LSTM:
+</p>
+<p class="ml-formula">
+  i<sub>t</sub> = σ(W<sub>ii</sub>x<sub>t</sub> + b<sub>ii</sub> + W<sub>hi</sub>h<sub>t−1</sub> + b<sub>hi</sub>) &nbsp; input gate<br>
+  f<sub>t</sub> = σ(W<sub>if</sub>x<sub>t</sub> + b<sub>if</sub> + W<sub>hf</sub>h<sub>t−1</sub> + b<sub>hf</sub>) &nbsp; forget gate<br>
+  g<sub>t</sub> = tanh(W<sub>ig</sub>x<sub>t</sub> + b<sub>ig</sub> + W<sub>hg</sub>h<sub>t−1</sub> + b<sub>hg</sub>) &nbsp; candidate<br>
+  o<sub>t</sub> = σ(W<sub>io</sub>x<sub>t</sub> + b<sub>io</sub> + W<sub>ho</sub>h<sub>t−1</sub> + b<sub>ho</sub>) &nbsp; output gate<br>
+  c<sub>t</sub> = f<sub>t</sub> ⊙ c<sub>t−1</sub> + i<sub>t</sub> ⊙ g<sub>t</sub> &nbsp;&nbsp;&nbsp; h<sub>t</sub> = o<sub>t</sub> ⊙ tanh(c<sub>t</sub>)
+</p>
+<p>
+  The direct path from <var>c<sub>t−1</sub></var> to <var>c<sub>t</sub></var> has Jacobian diag(<var>f<sub>t</sub></var>): no weight matrix, no squashing. Over many steps it multiplies by Π <var>f<sub>t</sub></var>, which stays near 1 for as long as the network keeps its forget gates open.
+  The gates also depend on <var>h<sub>t−1</sub></var>, which depends on <var>c<sub>t−1</sub></var>, so there are indirect paths too; the worked example measures the full derivative.
+  The four gates' weights are stored stacked: <code>weight_ih_l0</code> is (W<sub>ii</sub>|W<sub>if</sub>|W<sub>ig</sub>|W<sub>io</sub>), shape (4·hidden_size, input_size), so one matrix multiply computes all four.
+  PyTorch initializes every LSTM weight and bias from U(−1/√hidden, 1/√hidden), forget bias included. Jozefowicz, Zaremba and Sutskever (2015) recommend setting the forget-gate bias to 1 or more; in PyTorch you do it by hand.
+  With <code>proj_size</code> &gt; 0, <var>h<sub>t</sub></var> is multiplied by a learned <var>W<sub>hr</sub></var> to a smaller size (Sak et al., 2014), while <var>c<sub>t</sub></var> keeps <code>hidden_size</code>.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 280" role="img" aria-labelledby="lstm-cell-title lstm-cell-desc">
+    <title id="lstm-cell-title">Inside an LSTM cell</title>
+    <desc id="lstm-cell-desc">
+      The cell state c runs straight across the top: c_(t-1) is multiplied by the forget gate f, then the product of input gate i and candidate g is added, giving c_t.
+      Below, the previous hidden state h_(t-1) and input x_t feed four parallel blocks: three sigmoids for f, i and o, and one tanh for g. The new hidden state h_t is o times tanh of c_t.
+      The top line has no weight matrix and no squashing, which is why gradients survive along it.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <path d="M40 50 L660 50" stroke="var(--jj-green)" stroke-width="3" fill="none"></path>
+      <text x="40" y="38" text-anchor="start">c<tspan baseline-shift="sub" font-size="9">t−1</tspan></text>
+      <text x="660" y="38" text-anchor="end">c<tspan baseline-shift="sub" font-size="9">t</tspan></text>
+      <circle cx="200" cy="50" r="14" class="d-box ml-op"></circle><text x="200" y="54">×</text>
+      <circle cx="360" cy="50" r="14" class="d-box ml-op"></circle><text x="360" y="54">+</text>
+      <circle cx="320" cy="110" r="14" class="d-box ml-op"></circle><text x="320" y="114">×</text>
+      {% set gates = [["f", "σ", 200], ["i", "σ", 290], ["g", "tanh", 350], ["o", "σ", 470]] %}
+      {% for name, fn, x in gates %}
+      <rect x="{{ x - 28 }}" y="160" width="56" height="34" rx="6" class="d-box ml-weight"></rect>
+      <text x="{{ x }}" y="181">{{ fn }}</text>
+      <text x="{{ x + 38 }}" y="152" class="d-muted">{{ name }}</text>
+      {% endfor %}
+      <path d="M200 160 L200 64" class="d-line" fill="none"></path>
+      <path d="M290 160 L290 125 L308 116" class="d-line" fill="none"></path>
+      <path d="M350 160 L350 125 L332 116" class="d-line" fill="none"></path>
+      <path d="M320 96 L352 62" class="d-line" fill="none"></path>
+      <path d="M100 240 L100 220 L470 220 L470 194" class="d-line" fill="none"></path>
+      <path d="M200 220 L200 194 M290 220 L290 194 M350 220 L350 194" class="d-line" fill="none"></path>
+      <text x="60" y="250" text-anchor="start">[h<tspan baseline-shift="sub" font-size="9">t−1</tspan>, x<tspan baseline-shift="sub" font-size="9">t</tspan>]</text>
+      <rect x="540" y="90" width="60" height="30" rx="6" class="d-box ml-weight"></rect>
+      <text x="570" y="110">tanh</text>
+      <path d="M570 50 L570 90" class="d-line" fill="none"></path>
+      <circle cx="570" cy="177" r="14" class="d-box ml-op"></circle><text x="570" y="181">×</text>
+      <path d="M570 120 L570 163" class="d-line" fill="none"></path>
+      <path d="M498 177 L556 177" class="d-line" fill="none"></path>
+      <path d="M584 177 L660 177" class="d-line" fill="none"></path>
+      <text x="660" y="168" text-anchor="end">h<tspan baseline-shift="sub" font-size="9">t</tspan></text>
+      <text x="470" y="80" style="fill: var(--jj-green)">∂c<tspan baseline-shift="sub" font-size="9">t</tspan>/∂c<tspan baseline-shift="sub" font-size="9">t−1</tspan> = f (direct path)</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The green line is the cell state: one multiply by f and one add per step.</p>
+
+<h3 id="gru">GRU</h3>
+<p>
+  The gated recurrent unit (Cho et al., 2014) merges the cell and hidden state and uses two gates, a reset gate <var>r</var> and an update gate <var>z</var>:
+</p>
+<p class="ml-formula">
+  r<sub>t</sub> = σ(W<sub>ir</sub>x<sub>t</sub> + b<sub>ir</sub> + W<sub>hr</sub>h<sub>t−1</sub> + b<sub>hr</sub>) &nbsp;&nbsp;
+  z<sub>t</sub> = σ(W<sub>iz</sub>x<sub>t</sub> + b<sub>iz</sub> + W<sub>hz</sub>h<sub>t−1</sub> + b<sub>hz</sub>)<br>
+  n<sub>t</sub> = tanh(W<sub>in</sub>x<sub>t</sub> + b<sub>in</sub> + r<sub>t</sub> ⊙ (W<sub>hn</sub>h<sub>t−1</sub> + b<sub>hn</sub>)) &nbsp;&nbsp;
+  h<sub>t</sub> = (1 − z<sub>t</sub>) ⊙ n<sub>t</sub> + z<sub>t</sub> ⊙ h<sub>t−1</sub>
+</p>
+<p>
+  The last line is an interpolation, so ∂<var>h<sub>t</sub></var>/∂<var>h<sub>t−1</sub></var> contains diag(<var>z<sub>t</sub></var>) on its direct path: the update gate plays the forget gate's role. A GRU has three gate blocks instead of four, so 3/4 of an LSTM's parameters at the same size,
+  and in comparisons the two usually perform similarly. The PyTorch docs note that its <var>n<sub>t</sub></var> applies <var>r<sub>t</sub></var> <em>after</em> multiplying by <var>W<sub>hn</sub></var>, unlike the original paper's <var>W<sub>hn</sub></var>(<var>r<sub>t</sub></var> ⊙ <var>h<sub>t−1</sub></var>), "on purpose for efficiency": all three hidden-side products then come from one matrix multiply.
+</p>
+
+<h3 id="seq2seq">Sequence to sequence, and attention as the bridge</h3>
+<p>
+  For translation, an <em>encoder</em> RNN reads the source sentence and a <em>decoder</em> RNN, started from the encoder's final state, generates the target one token at a time, feeding each output back in as the next input (Sutskever, Vinyals and Le, 2014).
+  The whole source must squeeze through one fixed-size vector, and quality dropped on long sentences. Bahdanau, Cho and Bengio (2014) let the decoder, at every step, score <em>all</em> encoder states against its current state, turn the scores into weights with a softmax, and read their weighted average, the <em>context vector</em>.
+  That is <a href="/ml-models/attention">attention</a>. The Transformer kept the attention and dropped the recurrence, which removed the sequential dependency that stops an RNN from processing all positions of a sequence in parallel during training.
+</p>
+
+<h3 id="packed">Padding and packed sequences</h3>
+<p>
+  A batch holds sequences of different lengths. Padding them to the longest wastes compute on the padding and, worse, runs the recurrence through padding, so the "last" hidden state of a short sequence is polluted.
+  A <code>PackedSequence</code> stores only real elements, time step by time step: at each step it holds the elements of every sequence still running, with sequences sorted from longest to shortest. <code>batch_sizes[t]</code> is how many sequences are still running at step <var>t</var>, so the kernel just processes a shrinking batch.
+  <code>pack_padded_sequence</code> builds it from a padded tensor plus lengths, <code>pad_packed_sequence</code> undoes it, and with <code>enforce_sorted=False</code> the sort is done for you and recorded in <code>sorted_indices</code>/<code>unsorted_indices</code> so the outputs come back in your order.
+  The RNN then returns <code>h_n</code> at each sequence's true last step.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead>
+      <tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Gate size</td>
+        <td>LSTM 4H, GRU 3H, RNN H</td>
+        <td>Rows of each weight matrix: one block per gate, stacked.</td>
+        <td><a href="{{ src('torch/nn/modules/rnn.py', 158, 167) }}">rnn.py 158-167</a></td>
+      </tr>
+      <tr>
+        <td><code>weight_ih_l{k}</code>, <code>weight_hh_l{k}</code></td>
+        <td>(gate_size, input_size or D·H), (gate_size, H)</td>
+        <td>Input and recurrent weights for layer <var>k</var>; layer <var>k</var> &gt; 0 takes D·H inputs.</td>
+        <td><a href="{{ src('torch/nn/modules/rnn.py', 171, 183) }}">rnn.py 171-183</a></td>
+      </tr>
+      <tr>
+        <td><code>bias_ih_l{k}</code>, <code>bias_hh_l{k}</code></td>
+        <td>(gate_size,) each</td>
+        <td>Two biases that only ever appear as a sum; the second is for CuDNN.</td>
+        <td><a href="{{ src('torch/nn/modules/rnn.py', 184, 187) }}">rnn.py 184-187</a></td>
+      </tr>
+      <tr>
+        <td><code>weight_hr_l{k}</code>, <code>_reverse</code> suffix</td>
+        <td>(proj_size, H); reverse direction gets its own set</td>
+        <td>LSTM projection; names are formatted per layer and direction.</td>
+        <td><a href="{{ src('torch/nn/modules/rnn.py', 188, 210) }}">rnn.py 188-210</a></td>
+      </tr>
+      <tr>
+        <td>Initialization</td>
+        <td>U(−1/√H, 1/√H) for every parameter</td>
+        <td>No special forget bias, no orthogonal recurrent weights by default.</td>
+        <td><a href="{{ src('torch/nn/modules/rnn.py', 308, 311) }}">rnn.py 308-311</a></td>
+      </tr>
+      <tr>
+        <td>LSTM equations</td>
+        <td>input (L, N, H<sub>in</sub>); h<sub>0</sub>, c<sub>0</sub> (D·num_layers, N, H)</td>
+        <td>i, f, g, o gates, cell and hidden update; zeros if no state is passed.</td>
+        <td><a href="{{ src('torch/nn/modules/rnn.py', 836, 846) }}">rnn.py 836-846</a>, <a href="{{ src('torch/nn/modules/rnn.py', 1081, 1203) }}">1081-1203</a></td>
+      </tr>
+      <tr>
+        <td>GRU equations</td>
+        <td>3 gate blocks: r, z, n</td>
+        <td>PyTorch applies r after W<sub>hn</sub>h, on purpose for efficiency.</td>
+        <td><a href="{{ src('torch/nn/modules/rnn.py', 1212, 1220) }}">rnn.py 1212-1220</a>, <a href="{{ src('torch/nn/modules/rnn.py', 1306, 1324) }}">1306-1324</a></td>
+      </tr>
+      <tr>
+        <td>Cells</td>
+        <td><code>RNNCell</code>, <code>LSTMCell</code>, <code>GRUCell</code>(input_size, hidden_size)</td>
+        <td>One time step, for writing your own loop (e.g. a decoder).</td>
+        <td><a href="{{ src('torch/nn/modules/rnn.py', 1484, 1539) }}">rnn.py 1484-1539</a>, <a href="{{ src('torch/nn/modules/rnn.py', 1661, 1768) }}">1661-1768</a></td>
+      </tr>
+      <tr>
+        <td><code>PackedSequence</code></td>
+        <td>data (ΣL, *), batch_sizes (max L,), int64 on CPU</td>
+        <td>Real elements only, step-major; data <code>abc</code>, <code>x</code> → <code>axbc</code>, batch_sizes [2, 1, 1].</td>
+        <td><a href="{{ src('torch/nn/utils/rnn.py', 39, 60) }}">utils/rnn.py 39-60</a></td>
+      </tr>
+      <tr>
+        <td>Packing</td>
+        <td><code>pack_padded_sequence(input, lengths, batch_first=False, enforce_sorted=True)</code></td>
+        <td>Padded tensor + lengths → PackedSequence; <code>pad_packed_sequence</code> inverts it.</td>
+        <td><a href="{{ src('torch/nn/utils/rnn.py', 258, 324) }}">utils/rnn.py 258-324</a>, <a href="{{ src('torch/nn/utils/rnn.py', 327, 402) }}">327-402</a></td>
+      </tr>
+      <tr>
+        <td>Padding and lists</td>
+        <td><code>pad_sequence(sequences, batch_first=False, padding_value=0.0, padding_side="right")</code>, <code>pack_sequence</code></td>
+        <td>List of variable-length tensors → padded tensor or PackedSequence.</td>
+        <td><a href="{{ src('torch/nn/utils/rnn.py', 405, 470) }}">utils/rnn.py 405-470</a>, <a href="{{ src('torch/nn/utils/rnn.py', 522, 558) }}">522-558</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>How many parameters does <code>nn.LSTM(10, 20, num_layers=2)</code> have? And the same as a GRU?</summary>
+  <p>Layer 0: 4·20·10 + 4·20·20 + 2·80 = 2560. Layer 1 takes the 20-dim outputs: 4·20·20 + 4·20·20 + 2·80 = 3360. Total {{ rnn_param_count("LSTM", 10, 20, 2) }}. A GRU uses 3 blocks instead of 4, so {{ rnn_param_count("GRU", 10, 20, 2) }}, exactly 3/4.</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>An RNN by hand.</strong> Input size 1, hidden size 2, inputs x = {{ v(e.xs, 1) }}, W<sub>ih</sub> = {{ v(e.w_ih|map("first")|list, 1) }}ᵀ, W<sub>hh</sub> = [[{{ f(e.w_hh[0][0], 1) }}, {{ f(e.w_hh[0][1], 1) }}], [{{ f(e.w_hh[1][0], 1) }}, {{ f(e.w_hh[1][1], 1) }}]], combined bias b<sub>ih</sub> + b<sub>hh</sub> = {{ v(e.b, 1) }}, h<sub>0</sub> = 0.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>t</th><th>x<sub>t</sub></th><th>W<sub>ih</sub>x<sub>t</sub></th><th>W<sub>hh</sub>h<sub>t−1</sub></th><th>pre-activation</th><th>h<sub>t</sub> = tanh(·)</th></tr></thead>
+      <tbody>
+        {% for s in ex.rnn %}
+        <tr><td>{{ loop.index }}</td><td>{{ f(s.x[0], 1) }}</td><td>{{ v(s.from_x) }}</td><td>{{ v(s.from_h) }}</td><td>{{ v(s.pre) }}</td><td>{{ v(s.h) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    <strong>An LSTM by hand.</strong> A scalar LSTM (hidden size 1) on the same inputs. Weights (W<sub>x</sub>, W<sub>h</sub>, b) per gate:
+    {% for k in ["i", "f", "g", "o"] %}{% set w = lstm_example_weights[k] %}{{ k }} ({{ f(w.wx, 1) }}, {{ f(w.wh, 1) }}, {{ f(w.b, 1) }}){% if not loop.last %}, {% endif %}{% endfor %}. The forget bias of 1 is the Jozefowicz et al. recommendation.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>t</th><th>x<sub>t</sub></th><th>i</th><th>f</th><th>g</th><th>o</th><th>c<sub>t</sub> = f·c<sub>t−1</sub> + i·g</th><th>h<sub>t</sub> = o·tanh(c<sub>t</sub>)</th></tr></thead>
+      <tbody>
+        {% for s in ex.lstm %}
+        <tr><td>{{ loop.index }}</td><td>{{ f(s.x, 1) }}</td><td>{{ f(s.i) }}</td><td>{{ f(s.f) }}</td><td>{{ f(s.g) }}</td><td>{{ f(s.o) }}</td><td>{{ f(s.f) }}·{{ f(s.c_prev) }} + {{ f(s.i) }}·{{ f(s.g) }} = {{ f(s.c) }}</td><td>{{ f(s.h) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    At step 3 the input turns negative, so the candidate g is negative and the cell drops to {{ f(ex.lstm[2].c) }}, but the forget gate keeps {{ f(ex.lstm[2].f) }} of the old cell, which is why it does not go negative.
+    A GRU on the same inputs (W<sub>x</sub>, W<sub>h</sub>: r {{ f(gru_example_weights.r.wx, 1) }}, {{ f(gru_example_weights.r.wh, 1) }}; z {{ f(gru_example_weights.z.wx, 1) }}, {{ f(gru_example_weights.z.wh, 1) }}; n {{ f(gru_example_weights.n.wx, 1) }}, {{ f(gru_example_weights.n.wh, 1) }}; biases 0) gives
+    h = {{ v(ex.gru|map(attribute="h")|list) }}; at step 2, z = {{ f(ex.gru[1].z) }}, so it keeps {{ f(ex.gru[1].z) }} of h<sub>1</sub> and takes {{ f(1 - ex.gru[1].z) }} of the candidate n = {{ f(ex.gru[1].n) }}.
+  </p>
+  <p>
+    <strong>Attention over the encoder states.</strong> Treat the three RNN states as an encoder and use the last one, {{ v(ex.rnn[-1].h) }}, as the decoder's query. Dot-product scores {{ v(ex.attention.scores) }}, softmax weights {{ v(ex.attention.weights) }},
+    context vector {{ v(ex.attention.context) }}. The decoder reads a blend of every step instead of only the last state.
+  </p>
+  <p>
+    <strong>How far does a gradient reach?</strong> Feed x<sub>1</sub> = 1 and then 29 zeros, and compute the exact derivative of the state at step <var>t</var> with respect to the state at step 1, forward-mode through every path.
+    For a scalar RNN h<sub>t</sub> = tanh(w h<sub>t−1</sub>), each step multiplies the derivative by w(1 − h<sub>t</sub>²). For the scalar LSTM above, it is ∂c<sub>t</sub>/∂c<sub>1</sub>, including the paths through the gates.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Model</th><th>t = 5</th><th>t = 10</th><th>t = 20</th><th>t = 30</th><th>Direct path Π f at t = 30</th></tr></thead>
+      <tbody>
+        {% for c in ex.memory %}
+        <tr><td>{{ c.label }}</td>{% for t in [5, 10, 20, 30] %}<td>{{ g(c.trace[t - 1].grad) }}</td>{% endfor %}<td>{% if c.kind == "lstm" %}{{ g(c.trace[-1].direct) }}{% else %}–{% endif %}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <ul>
+    <li>w = 0.5 shrinks the derivative by at most 0.5 per step. w = 2 looks like it should explode, but the state saturates near h = {{ f(mem["rnn-large"].trace[-1].h) }}, where 1 − h² ≈ {{ f(1 - mem["rnn-large"].trace[-1].h ** 2) }}, so each step multiplies by about {{ f(2 * (1 - mem["rnn-large"].trace[-1].h ** 2)) }} and the gradient vanishes fastest of all: {{ g(mem["rnn-large"].trace[-1].grad) }}.</li>
+    <li>w = 0.95 lasts longest of the RNNs ({{ g(mem["rnn-near-one"].trace[-1].grad) }} at step 30) because the state decays toward 0, where tanh is linear and the factor approaches 0.95. That keeps the gradient only by forgetting the content: h<sub>30</sub> = {{ f(mem["rnn-near-one"].trace[-1].h) }}.</li>
+    <li>The LSTM with forget bias 0 has f ≈ {{ f(mem["lstm-0"].trace[-1].f) }} and does no better than an RNN. With forget bias 3, f ≈ {{ f(mem["lstm-3"].trace[-1].f) }}, the direct path keeps {{ g(mem["lstm-3"].trace[-1].direct) }} after 29 steps, and the full derivative is {{ g(mem["lstm-3"].trace[-1].grad) }}, smaller than the direct path alone: in this example the indirect paths through the gates have the opposite sign.</li>
+  </ul>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 280" role="img" aria-labelledby="rnn-memory-title rnn-memory-desc">
+    <title id="rnn-memory-title">Gradient magnitude against distance in time</title>
+    <desc id="rnn-memory-desc">
+      Log-scale plot of the derivative of the state at step t with respect to the state at step 1, for t from 1 to 30. The RNN with w = 2 and the LSTM with forget bias 0 fall fastest and leave the chart below 10 to the minus 16 or near it.
+      The RNN with w = 0.5 falls steadily to about {{ g(mem["rnn-small"].trace[-1].grad) }}. The RNN with w = 0.95 and the LSTM with forget bias 3 stay above 10 to the minus 3, ending at {{ g(mem["rnn-near-one"].trace[-1].grad) }} and {{ g(mem["lstm-3"].trace[-1].grad) }}. Values below 10 to the minus 16 are clipped.
+    </desc>
+    <g font-size="12">
+      <path d="M70 30 L70 230 L530 230" class="d-line" fill="none"></path>
+      {% for p in [0, -4, -8, -12, -16] %}
+      <text x="62" y="{{ "%.1f"|format(30 + (-p) / 16 * 200 + 4) }}" text-anchor="end" class="d-muted">10{{ ["⁰", "⁻⁴", "⁻⁸", "⁻¹²", "⁻¹⁶"][loop.index0] }}</text>
+      {% endfor %}
+      {% for t in [1, 10, 20, 30] %}<text x="{{ tx(t) }}" y="248" text-anchor="middle" class="d-muted">{{ t }}</text>{% endfor %}
+      <text x="300" y="268" text-anchor="middle" class="d-muted">time step t</text>
+      {% set colours = {"rnn-small": "var(--jj-amber)", "rnn-near-one": "var(--jj-violet)", "rnn-large": "var(--jj-red)", "lstm-0": "var(--jj-accent)", "lstm-3": "var(--jj-green)"} %}
+      {% for c in ex.memory %}
+      <path d="M{% for p in c.trace %}{% if not loop.first %} L{% endif %}{{ tx(p.t) }},{{ gy(p.grad) }}{% endfor %}" fill="none" stroke="{{ colours[c.key] }}" stroke-width="2"></path>
+      <text x="545" y="{{ 60 + loop.index0 * 22 }}" style="fill: {{ colours[c.key] }}">{{ c.label }}</text>
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Only a forget gate held near 1 keeps both the content and the gradient alive across thirty steps.</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+import torch.nn as nn
+from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_sequence
+
+class Tagger(nn.Module):
+    def __init__(self, vocab, dim=64, hidden=128, n_tags=10):
+        super().__init__()
+        self.embed = nn.Embedding(vocab, dim, padding_idx=0)
+        self.lstm = nn.LSTM(dim, hidden, num_layers=2, batch_first=True,
+                            dropout=0.1, bidirectional=True)
+        self.out = nn.Linear(2 * hidden, n_tags)
+        for name, p in self.lstm.named_parameters():
+            if name.startswith("bias_ih"):     # gate order i, f, g, o
+                p.data[hidden:2 * hidden] = 1.0
+            elif name.startswith("bias_hh"):
+                p.data[hidden:2 * hidden] = 0.0
+
+    def forward(self, tokens, lengths):      # tokens (N, L) padded with 0
+        x = self.embed(tokens)
+        packed = pack_padded_sequence(x, lengths.cpu(), batch_first=True,
+                                      enforce_sorted=False)
+        out, (h_n, c_n) = self.lstm(packed)  # h_n: (2 layers * 2 directions, N, hidden)
+        out, _ = pad_packed_sequence(out, batch_first=True)
+        return self.out(out)                 # (N, L, n_tags)
+
+seqs = [torch.tensor([5, 2, 9]), torch.tensor([7, 1]), torch.tensor([3])]
+tokens = pad_sequence(seqs, batch_first=True)          # (3, 3), zeros as padding
+lengths = torch.tensor([len(s) for s in seqs])
+model = Tagger(vocab=10)
+loss = model(tokens, lengths).sum()
+loss.backward()
+torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # tame exploding gradients</code></pre>
+
+<p>
+  Pass <code>lengths</code> on the CPU: <code>batch_sizes</code> is always a CPU int64 tensor. <code>batch_first=True</code> applies to <code>input</code> and <code>output</code> but not to <code>h_n</code> and <code>c_n</code>, which stay (D·num_layers, N, H).
+  For a bidirectional LSTM, <code>out[:, -1]</code> is not the same as <code>h_n</code>: the reverse direction's final state is at time step 0. Dropout here applies between the two layers only; PyTorch warns if you set it with <code>num_layers=1</code>.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Sequential by nature.</strong> Step <var>t</var> needs step <var>t</var> − 1, so training cannot be parallelized across time the way a <a href="/ml-models/transformer">Transformer</a> can. On modern accelerators that, more than accuracy, is why Transformers replaced RNNs for large models.</li>
+  <li><strong>Constant memory at inference.</strong> An RNN's state is a fixed-size vector, whatever the context length, while a Transformer's <a href="/ml-models/kv-cache">KV cache</a> grows with every token. That is the appeal that state space models and other modern linear recurrences revisit.</li>
+  <li><strong>LSTM versus GRU.</strong> GRUs have three gate blocks to the LSTM's four and are a little cheaper; in most comparisons neither wins consistently. Start with an LSTM, set the forget bias, and try a GRU if speed matters.</li>
+  <li><strong>Memory is still finite.</strong> Gates slow the decay but do not remove it, and everything must pass through a fixed-size state. Attention over the encoder states sidesteps the bottleneck.</li>
+  <li><strong>Packing versus padding.</strong> Packing is correct and saves compute on uneven lengths, but costs a sort and some bookkeeping. With similar lengths (bucketed batches), padding plus a mask is simpler.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Why doesn't making W<sub>hh</sub> large fix vanishing gradients in a tanh RNN?</summary>
+  <p>Each backward step multiplies by W<sub>hh</sub> times the tanh slope 1 − h². Large weights drive h toward ±1, where the slope is near 0, so the product still shrinks. The worked example's w = 2 RNN vanishes fastest of all.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Elman. <em>Finding Structure in Time.</em> Cognitive Science, 1990.</li>
+  <li>Werbos. <em>Backpropagation Through Time: What It Does and How to Do It.</em> Proceedings of the IEEE, 1990.</li>
+  <li>Bengio, Simard and Frasconi. <em>Learning Long-Term Dependencies with Gradient Descent is Difficult.</em> IEEE Transactions on Neural Networks, 1994.</li>
+  <li>Hochreiter and Schmidhuber. <em>Long Short-Term Memory.</em> Neural Computation, 1997.</li>
+  <li>Gers, Schmidhuber and Cummins. <em>Learning to Forget: Continual Prediction with LSTM.</em> Neural Computation, 2000.</li>
+  <li>Pascanu, Mikolov and Bengio. <em>On the difficulty of training Recurrent Neural Networks.</em> ICML 2013. <a href="https://arxiv.org/abs/1211.5063">arXiv:1211.5063</a></li>
+  <li>Cho et al. <em>Learning Phrase Representations using RNN Encoder-Decoder for Statistical Machine Translation.</em> EMNLP 2014. <a href="https://arxiv.org/abs/1406.1078">arXiv:1406.1078</a></li>
+  <li>Sutskever, Vinyals and Le. <em>Sequence to Sequence Learning with Neural Networks.</em> NeurIPS 2014. <a href="https://arxiv.org/abs/1409.3215">arXiv:1409.3215</a></li>
+  <li>Bahdanau, Cho and Bengio. <em>Neural Machine Translation by Jointly Learning to Align and Translate.</em> 2014. <a href="https://arxiv.org/abs/1409.0473">arXiv:1409.0473</a></li>
+  <li>Sak, Senior and Beaufays. <em>Long Short-Term Memory Based Recurrent Neural Network Architectures for Large Vocabulary Speech Recognition.</em> 2014. <a href="https://arxiv.org/abs/1402.1128">arXiv:1402.1128</a></li>
+  <li>Jozefowicz, Zaremba and Sutskever. <em>An Empirical Exploration of Recurrent Network Architectures.</em> ICML 2015.</li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/nn/modules/rnn.py') }}"><code>torch/nn/modules/rnn.py</code></a>, <a href="{{ src('torch/nn/utils/rnn.py') }}"><code>torch/nn/utils/rnn.py</code></a>.</li>
+</ul>
