@@ -7141,6 +7141,190 @@ def init_example(width=32, depth=20):
     }
 
 
+RNN_EXAMPLE = {
+    "xs": [1.0, 0.5, -1.0],
+    "w_ih": [[0.5], [-0.3]],
+    "w_hh": [[0.8, -0.2], [0.4, 0.6]],
+    "b": [0.0, 0.1],
+}
+
+LSTM_EXAMPLE = {
+    "i": {"wx": 0.6, "wh": 0.2, "b": 0.0},
+    "f": {"wx": 0.3, "wh": 0.1, "b": 1.0},
+    "g": {"wx": 1.0, "wh": -0.5, "b": 0.0},
+    "o": {"wx": 0.4, "wh": 0.3, "b": 0.0},
+}
+
+GRU_EXAMPLE = {
+    "r": {"wx": 0.5, "wh": 0.4, "b": 0.0},
+    "z": {"wx": 0.7, "wh": -0.3, "b": 0.0},
+    "n": {"wx": 1.0, "wh": 0.6, "b": 0.0},
+}
+
+
+def rnn_forward(xs, w_ih, w_hh, b, h0=None):
+    h = list(h0) if h0 is not None else [0.0] * len(w_hh)
+    steps = []
+    for x in xs:
+        x = x if isinstance(x, list) else [x]
+        from_x = [sum(w * v for w, v in zip(row, x)) for row in w_ih]
+        from_h = [sum(w * v for w, v in zip(row, h)) for row in w_hh]
+        pre = [a + c + bias for a, c, bias in zip(from_x, from_h, b)]
+        h = [math.tanh(p) for p in pre]
+        steps.append({"x": x, "from_x": from_x, "from_h": from_h, "pre": pre, "h": h})
+    return steps
+
+
+def lstm_step(x, h, c, weights):
+    pre = {k: w["wx"] * x + w["wh"] * h + w["b"] for k, w in weights.items()}
+    i, f, o = sigmoid(pre["i"]), sigmoid(pre["f"]), sigmoid(pre["o"])
+    g = math.tanh(pre["g"])
+    c_new = f * c + i * g
+    h_new = o * math.tanh(c_new)
+    return {"pre": pre, "i": i, "f": f, "g": g, "o": o, "c": c_new, "h": h_new}
+
+
+def lstm_forward(xs, weights, h0=0.0, c0=0.0):
+    h, c, steps = h0, c0, []
+    for x in xs:
+        s = lstm_step(x, h, c, weights)
+        steps.append(dict(s, x=x, h_prev=h, c_prev=c))
+        h, c = s["h"], s["c"]
+    return steps
+
+
+def gru_step(x, h, weights):
+    r = sigmoid(weights["r"]["wx"] * x + weights["r"]["wh"] * h + weights["r"]["b"])
+    z = sigmoid(weights["z"]["wx"] * x + weights["z"]["wh"] * h + weights["z"]["b"])
+    n = math.tanh(weights["n"]["wx"] * x + r * (weights["n"]["wh"] * h) + weights["n"]["b"])
+    return {"r": r, "z": z, "n": n, "h": (1 - z) * n + z * h}
+
+
+def gru_forward(xs, weights, h0=0.0):
+    h, steps = h0, []
+    for x in xs:
+        s = gru_step(x, h, weights)
+        steps.append(dict(s, x=x, h_prev=h))
+        h = s["h"]
+    return steps
+
+
+def rnn_memory_gradient(w, steps=30, u=1.0, b=0.0):
+    h = math.tanh(u * 1.0 + b)
+    dh = 1.0
+    out = [{"t": 1, "h": h, "grad": dh}]
+    for t in range(2, steps + 1):
+        h = math.tanh(w * h + b)
+        dh = (1 - h * h) * w * dh
+        out.append({"t": t, "h": h, "grad": dh})
+    return out
+
+
+def lstm_memory_gradient(forget_bias, steps=30, weights=None):
+    weights = {k: dict(v) for k, v in (weights or LSTM_EXAMPLE).items()}
+    weights["f"]["b"] = forget_bias
+    first = lstm_step(1.0, 0.0, 0.0, weights)
+    h, c = first["h"], first["c"]
+    dh, dc = 0.0, 1.0
+    direct = 1.0
+    out = [{"t": 1, "c": c, "grad": dc, "direct": direct, "f": first["f"]}]
+    for t in range(2, steps + 1):
+        s = lstm_step(0.0, h, c, weights)
+        da = {k: weights[k]["wh"] * dh for k in weights}
+        di = s["i"] * (1 - s["i"]) * da["i"]
+        df = s["f"] * (1 - s["f"]) * da["f"]
+        do = s["o"] * (1 - s["o"]) * da["o"]
+        dg = (1 - s["g"] ** 2) * da["g"]
+        dc_new = df * c + s["f"] * dc + di * s["g"] + s["i"] * dg
+        tc = math.tanh(s["c"])
+        dh = do * tc + s["o"] * (1 - tc * tc) * dc_new
+        dc = dc_new
+        direct *= s["f"]
+        h, c = s["h"], s["c"]
+        out.append({"t": t, "c": c, "grad": dc, "direct": direct, "f": s["f"]})
+    return out
+
+
+RNN_MEMORY_CASES = [
+    {"key": "rnn-small", "label": "RNN, w = 0.5", "kind": "rnn", "value": 0.5},
+    {"key": "rnn-near-one", "label": "RNN, w = 0.95", "kind": "rnn", "value": 0.95},
+    {"key": "rnn-large", "label": "RNN, w = 2", "kind": "rnn", "value": 2.0},
+    {"key": "lstm-0", "label": "LSTM, forget bias 0", "kind": "lstm", "value": 0.0},
+    {"key": "lstm-3", "label": "LSTM, forget bias 3", "kind": "lstm", "value": 3.0},
+]
+
+
+def memory_gradient_example(steps=30):
+    out = []
+    for case in RNN_MEMORY_CASES:
+        if case["kind"] == "rnn":
+            trace = rnn_memory_gradient(case["value"], steps)
+        else:
+            trace = lstm_memory_gradient(case["value"], steps)
+        out.append(dict(case, trace=trace))
+    return out
+
+
+def rnn_param_count(mode, input_size, hidden_size, num_layers=1, bias=True, bidirectional=False, proj_size=0):
+    gate_size = {"LSTM": 4, "GRU": 3, "RNN_TANH": 1, "RNN_RELU": 1}[mode] * hidden_size
+    directions = 2 if bidirectional else 1
+    real_hidden = proj_size if proj_size > 0 else hidden_size
+    total = 0
+    for layer in range(num_layers):
+        layer_input = input_size if layer == 0 else real_hidden * directions
+        per_direction = gate_size * layer_input + gate_size * real_hidden
+        if bias:
+            per_direction += 2 * gate_size
+        if proj_size > 0:
+            per_direction += proj_size * hidden_size
+        total += per_direction * directions
+    return total
+
+
+def pack_sequences(sequences, enforce_sorted=True):
+    lengths = [len(s) for s in sequences]
+    if enforce_sorted:
+        if lengths != sorted(lengths, reverse=True):
+            raise ValueError("sequences must be sorted by decreasing length")
+        order = None
+        ordered = list(sequences)
+    else:
+        order = sorted(range(len(sequences)), key=lambda k: -lengths[k])
+        ordered = [sequences[k] for k in order]
+    batch_sizes = [sum(1 for s in ordered if len(s) > t) for t in range(len(ordered[0]))]
+    data = [s[t] for t in range(len(batch_sizes)) for s in ordered[: batch_sizes[t]]]
+    unsorted = None
+    if order is not None:
+        unsorted = [0] * len(order)
+        for position, k in enumerate(order):
+            unsorted[k] = position
+    return {"data": data, "batch_sizes": batch_sizes, "sorted_indices": order, "unsorted_indices": unsorted}
+
+
+def padded_waste(lengths):
+    return {"padded": len(lengths) * max(lengths), "packed": sum(lengths)}
+
+
+def seq2seq_attention(encoder_states, query):
+    scores = [sum(a * b for a, b in zip(s, query)) for s in encoder_states]
+    weights = softmax_probs(scores)
+    context = [sum(w * s[d] for w, s in zip(weights, encoder_states)) for d in range(len(query))]
+    return {"scores": scores, "weights": weights, "context": context}
+
+
+def rnn_example():
+    e = RNN_EXAMPLE
+    rnn = rnn_forward(e["xs"], e["w_ih"], e["w_hh"], e["b"])
+    states = [s["h"] for s in rnn]
+    return {
+        "rnn": rnn,
+        "lstm": lstm_forward(e["xs"], LSTM_EXAMPLE),
+        "gru": gru_forward(e["xs"], GRU_EXAMPLE),
+        "attention": seq2seq_attention(states, states[-1]),
+        "memory": memory_gradient_example(),
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -7658,6 +7842,13 @@ def render(slug, render_template):
         "uniform_bound": uniform_bound,
         "linear_default_bound": linear_default_bound,
         "relu_moment_factor": relu_moment_factor,
+        "rnn_example": rnn_example,
+        "rnn_example_data": RNN_EXAMPLE,
+        "lstm_example_weights": LSTM_EXAMPLE,
+        "gru_example_weights": GRU_EXAMPLE,
+        "rnn_param_count": rnn_param_count,
+        "pack_sequences": pack_sequences,
+        "padded_waste": padded_waste,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

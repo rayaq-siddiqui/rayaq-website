@@ -3123,3 +3123,67 @@ def test_kaiming_keeps_a_deep_relu_net_in_range_while_others_vanish_or_explode()
     assert 0.2 < results["kaiming"]["backward"][0] < 5
     assert results["small"]["backward"][0] < 1e-20
     assert 0.2 < last["tanh-gain"] < 2 and last["tanh-xavier"] < last["tanh-gain"]
+
+
+def test_rnn_param_count_matches_rnnbase_layout():
+    assert ml_models_docs.rnn_param_count("LSTM", 10, 20, 2) == 5920
+    assert ml_models_docs.rnn_param_count("GRU", 10, 20, 2) == 4440
+    assert ml_models_docs.rnn_param_count("RNN_TANH", 10, 20, 2) == 1480
+    assert ml_models_docs.rnn_param_count("LSTM", 10, 20, 1, bias=False) == 80 * 30
+    assert ml_models_docs.rnn_param_count("LSTM", 10, 20, 2, bidirectional=True) == 2 * 2560 + 2 * (80 * 40 + 80 * 20 + 160)
+    assert ml_models_docs.rnn_param_count("LSTM", 10, 20, 1, proj_size=5) == 80 * 10 + 80 * 5 + 160 + 5 * 20
+
+
+def test_pack_sequences_matches_pytorch_docstring_examples():
+    packed = ml_models_docs.pack_sequences([[1, 2, 3], [4, 5], [6]])
+    assert packed["data"] == [1, 4, 6, 2, 5, 3]
+    assert packed["batch_sizes"] == [3, 2, 1]
+    unsorted = ml_models_docs.pack_sequences([[1, 2], [3], [4, 5, 6]], enforce_sorted=False)
+    assert unsorted["data"] == [4, 1, 3, 5, 2, 6]
+    assert unsorted["batch_sizes"] == [3, 2, 1]
+    assert unsorted["sorted_indices"] == [2, 0, 1]
+    assert unsorted["unsorted_indices"] == [1, 2, 0]
+    assert ml_models_docs.pack_sequences([list("abc"), ["x"]])["data"] == list("axbc")
+    with pytest.raises(ValueError):
+        ml_models_docs.pack_sequences([[1], [2, 3]])
+
+
+def test_rnn_lstm_and_gru_steps_follow_the_pytorch_equations():
+    e = ml_models_docs.rnn_example()
+    first = e["rnn"][0]
+    assert first["h"] == pytest.approx([math.tanh(0.5), math.tanh(-0.2)])
+    s = e["lstm"][0]
+    assert s["f"] == pytest.approx(ml_models_docs.sigmoid(1.3))
+    assert s["c"] == pytest.approx(s["i"] * s["g"])
+    assert s["h"] == pytest.approx(s["o"] * math.tanh(s["c"]))
+    later = e["lstm"][1]
+    assert later["c"] == pytest.approx(later["f"] * s["c"] + later["i"] * later["g"])
+    g = e["gru"][1]
+    h_prev = e["gru"][0]["h"]
+    assert g["n"] == pytest.approx(math.tanh(0.5 + g["r"] * 0.6 * h_prev))
+    assert g["h"] == pytest.approx((1 - g["z"]) * g["n"] + g["z"] * h_prev)
+    att = e["attention"]
+    assert sum(att["weights"]) == pytest.approx(1.0)
+    assert att["weights"][-1] == max(att["weights"])
+
+
+def test_memory_gradients_vanish_for_rnns_and_survive_with_a_large_forget_bias():
+    memory = {c["key"]: c["trace"] for c in ml_models_docs.memory_gradient_example()}
+    assert abs(memory["rnn-small"][-1]["grad"]) < 1e-8
+    assert abs(memory["rnn-large"][-1]["grad"]) < 1e-20
+    assert abs(memory["lstm-0"][-1]["grad"]) < 1e-11
+    assert memory["lstm-3"][-1]["grad"] > 1e-3
+    assert memory["lstm-3"][-1]["direct"] > 0.2
+
+    h = 1e-6
+    base = ml_models_docs.lstm_memory_gradient(3.0, 10)
+    weights = {k: dict(v) for k, v in ml_models_docs.LSTM_EXAMPLE.items()}
+    weights["f"]["b"] = 3.0
+    first = ml_models_docs.lstm_step(1.0, 0.0, 0.0, weights)
+    c = first["c"] + h
+    hh = first["h"]
+    for _ in range(9):
+        s = ml_models_docs.lstm_step(0.0, hh, c, weights)
+        hh, c = s["h"], s["c"]
+    finite = (c - base[-1]["c"]) / h
+    assert finite == pytest.approx(base[-1]["grad"], rel=1e-4)
