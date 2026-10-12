@@ -9040,6 +9040,146 @@ def lr_schedule_example():
     }
 
 
+GAN_EXAMPLE = {
+    "data": [0.0, 0.1, 0.3, 0.1, 0.0, 0.1, 0.3, 0.1],
+    "generators": [
+        ("matched", [0.0, 0.1, 0.3, 0.1, 0.0, 0.1, 0.3, 0.1]),
+        ("broad", [0.125] * 8),
+        ("one mode", [0.0, 0.2, 0.6, 0.2, 0.0, 0.0, 0.0, 0.0]),
+        ("shifted", [0.0, 0.0, 0.1, 0.3, 0.1, 0.0, 0.1, 0.4]),
+    ],
+    "logits": [-6.0, -3.0, 0.0, 3.0],
+    "point_shifts": [0.5, 1.0, 2.0, 4.0],
+    "dirac": {"theta": 1.0, "psi": 1.0, "lr": 0.1, "steps": 1000, "r1_gamma": 1.0},
+    "dirac_marks": [0, 100, 300, 1000],
+    "fid_cases": [
+        ("identical", [0.0, 0.0], [[1.0, 0.0], [0.0, 1.0]]),
+        ("mean shifted", [0.5, 0.0], [[1.0, 0.0], [0.0, 1.0]]),
+        ("collapsed", [0.0, 0.0], [[0.25, 0.0], [0.0, 0.25]]),
+        ("correlated", [0.0, 0.0], [[1.0, 0.8], [0.8, 1.0]]),
+    ],
+    "fid_sample_sizes": [20, 200, 2000],
+    "fid_seed": 7,
+    "dcgan": {"latent": 100, "layers": [(4, 1, 0), (4, 2, 1), (4, 2, 1), (4, 2, 1), (4, 2, 1)]},
+}
+
+
+def conv_transpose_out(size, kernel, stride=1, padding=0, output_padding=0, dilation=1):
+    return (size - 1) * stride - 2 * padding + dilation * (kernel - 1) + output_padding + 1
+
+
+def gan_optimal_discriminator(p_data, p_gen):
+    return [d / (d + g) if d + g > 0 else None for d, g in zip(p_data, p_gen)]
+
+
+def gan_value(p_data, p_gen, disc):
+    total = 0.0
+    for d, g, prob in zip(p_data, p_gen, disc):
+        if d > 0:
+            total += d * math.log(prob)
+        if g > 0:
+            total += g * math.log(1 - prob)
+    return total
+
+
+def js_divergence(p, q):
+    m = [(a + b) / 2 for a, b in zip(p, q)]
+    return (kl_divergence(p, m, math.e) + kl_divergence(q, m, math.e)) / 2
+
+
+def wasserstein_1d(p, q, spacing=1.0):
+    total, cdf_p, cdf_q = 0.0, 0.0, 0.0
+    for a, b in zip(p[:-1], q[:-1]):
+        cdf_p += a
+        cdf_q += b
+        total += abs(cdf_p - cdf_q) * spacing
+    return total
+
+
+def gan_generator_gradients(logit):
+    d = sigmoid(logit)
+    return {"logit": logit, "d": d, "minimax": -d, "non_saturating": d - 1}
+
+
+def dirac_gan(theta, psi, lr, steps, generator="minimax", r1_gamma=0.0):
+    path = [(theta, psi)]
+    for _ in range(steps):
+        grad_psi = theta * sigmoid(psi * theta) + r1_gamma * psi
+        if generator == "minimax":
+            grad_theta = -psi * sigmoid(psi * theta)
+        else:
+            grad_theta = -psi * sigmoid(-psi * theta)
+        theta, psi = theta - lr * grad_theta, psi - lr * grad_psi
+        path.append((theta, psi))
+    return path
+
+
+def frechet_distance_2d(mu1, cov1, mu2, cov2):
+    product = [[sum(cov1[i][k] * cov2[k][j] for k in range(2)) for j in range(2)] for i in range(2)]
+    det1 = cov1[0][0] * cov1[1][1] - cov1[0][1] * cov1[1][0]
+    det2 = cov2[0][0] * cov2[1][1] - cov2[0][1] * cov2[1][0]
+    trace_sqrt = math.sqrt(product[0][0] + product[1][1] + 2 * math.sqrt(det1 * det2))
+    mean_term = sum((a - b) ** 2 for a, b in zip(mu1, mu2))
+    return mean_term + cov1[0][0] + cov1[1][1] + cov2[0][0] + cov2[1][1] - 2 * trace_sqrt
+
+
+def gan_mean_and_covariance(points):
+    n = len(points)
+    mu = [sum(p[i] for p in points) / n for i in range(2)]
+    cov = [[sum((p[i] - mu[i]) * (p[j] - mu[j]) for p in points) / (n - 1) for j in range(2)]
+           for i in range(2)]
+    return mu, cov
+
+
+@functools.lru_cache(maxsize=None)
+def gan_example():
+    e = GAN_EXAMPLE
+    data = e["data"]
+    generators = []
+    for name, gen in e["generators"]:
+        disc = gan_optimal_discriminator(data, gen)
+        generators.append({
+            "name": name,
+            "p": gen,
+            "disc": disc,
+            "value": gan_value(data, gen, disc),
+            "js": js_divergence(data, gen),
+            "kl_forward": kl_divergence(data, gen, math.e),
+            "kl_reverse": kl_divergence(gen, data, math.e),
+            "w1": wasserstein_1d(data, gen),
+        })
+    points = [{"shift": s, "js": js_divergence([1.0, 0.0], [0.0, 1.0]), "w1": s} for s in e["point_shifts"]]
+    d = e["dirac"]
+    dirac = {}
+    for kind, generator, gamma in (("minimax", "minimax", 0.0),
+                                   ("non_saturating", "non_saturating", 0.0),
+                                   ("r1", "minimax", d["r1_gamma"])):
+        path = dirac_gan(d["theta"], d["psi"], d["lr"], d["steps"], generator, gamma)
+        radius = [math.hypot(t, p) for t, p in path]
+        dirac[kind] = {"path": path, "radius": radius, "marks": [radius[i] for i in e["dirac_marks"]]}
+    rng = random.Random(e["fid_seed"])
+    real_mu, real_cov = e["fid_cases"][0][1], e["fid_cases"][0][2]
+    sampled = []
+    for n in e["fid_sample_sizes"]:
+        a = [(rng.gauss(0, 1), rng.gauss(0, 1)) for _ in range(n)]
+        b = [(rng.gauss(0, 1), rng.gauss(0, 1)) for _ in range(n)]
+        sampled.append({"n": n, "fid": frechet_distance_2d(*gan_mean_and_covariance(a),
+                                                           *gan_mean_and_covariance(b))})
+    return {
+        "generators": generators,
+        "points": points,
+        "saturation": [gan_generator_gradients(a) for a in e["logits"]],
+        "saturation_curve": [gan_generator_gradients(i / 4) for i in range(-24, 17)],
+        "dcgan_sizes": list(itertools.accumulate(e["dcgan"]["layers"],
+                                                 lambda size, layer: conv_transpose_out(size, *layer), initial=1)),
+        "dirac": dirac,
+        "fid": [{"name": name, "mu": mu, "cov": cov, "fid": frechet_distance_2d(real_mu, real_cov, mu, cov)}
+                for name, mu, cov in e["fid_cases"]],
+        "fid_sampled": sampled,
+        "log4": math.log(4),
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -9588,6 +9728,8 @@ def render(slug, render_template):
         "hinge": hinge,
         "lr_example": lr_schedule_example,
         "lr_settings": LR_SCHEDULE_EXAMPLE,
+        "gan_example": gan_example,
+        "gan_settings": GAN_EXAMPLE,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

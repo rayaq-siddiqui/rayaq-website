@@ -3765,3 +3765,64 @@ def test_lr_gd_rates_and_range_test_show_the_stability_limit():
 def test_adam_first_steps_move_by_the_learning_rate_whatever_the_gradient():
     for run in ml_models_docs.lr_schedule_example()["adam"]:
         assert run["updates"] == pytest.approx([1e-3] * 3, rel=1e-3)
+
+
+def test_gan_optimal_discriminator_turns_the_value_into_jensen_shannon():
+    x = ml_models_docs.gan_example()
+    data = ml_models_docs.GAN_EXAMPLE["data"]
+    for g in x["generators"]:
+        assert g["value"] == pytest.approx(-math.log(4) + 2 * g["js"])
+        for i, prob in enumerate(g["disc"]):
+            if prob is not None and 0.01 < prob < 0.99:
+                for step in (-0.01, 0.01):
+                    nudged = g["disc"][:i] + [prob + step] + g["disc"][i + 1:]
+                    assert ml_models_docs.gan_value(data, g["p"], nudged) < g["value"]
+    matched = x["generators"][0]
+    assert matched["js"] == 0 and set(matched["disc"]) == {None, 0.5}
+    assert all(0 <= g["js"] <= math.log(2) for g in x["generators"])
+
+
+def test_gan_divergences_differ_on_dropped_modes_and_disjoint_supports():
+    by_name = {g["name"]: g for g in ml_models_docs.gan_example()["generators"]}
+    assert by_name["one mode"]["kl_forward"] == math.inf
+    assert by_name["one mode"]["kl_reverse"] == pytest.approx(math.log(2))
+    assert by_name["broad"]["kl_forward"] < math.inf and by_name["broad"]["kl_reverse"] == math.inf
+    assert by_name["one mode"]["w1"] == pytest.approx(2.0) and by_name["broad"]["w1"] == pytest.approx(0.6)
+    for point in ml_models_docs.gan_example()["points"]:
+        assert point["js"] == pytest.approx(math.log(2)) and point["w1"] == point["shift"]
+
+
+def test_gan_saturating_generator_gradient_vanishes_when_d_rejects_fakes():
+    rows = {r["logit"]: r for r in ml_models_docs.gan_example()["saturation"]}
+    assert abs(rows[-6.0]["minimax"]) < 0.003 and abs(rows[-6.0]["non_saturating"]) > 0.99
+    assert rows[0.0]["minimax"] == rows[0.0]["non_saturating"] == -0.5
+    for r in rows.values():
+        assert r["minimax"] - r["non_saturating"] == pytest.approx(1 - 2 * r["d"])
+
+
+def test_dirac_gan_spirals_out_unless_r1_regularized():
+    dirac = ml_models_docs.gan_example()["dirac"]
+    minimax = dirac["minimax"]["marks"]
+    assert minimax == sorted(minimax) and minimax[-1] > 2.7
+    assert 0.4 < dirac["non_saturating"]["marks"][-1] < 0.5
+    assert dirac["r1"]["marks"][-1] < 1e-9
+    assert dirac["minimax"]["radius"][1] > dirac["minimax"]["radius"][0]
+    d = ml_models_docs.GAN_EXAMPLE["dirac"]
+    theta, psi = ml_models_docs.dirac_gan(d["theta"], d["psi"], d["lr"], 10 * d["steps"], "non_saturating")[-1]
+    assert 0.4 < math.hypot(theta, psi) < 0.45
+
+
+def test_frechet_distance_matches_closed_forms_and_shrinks_with_samples():
+    fid = {r["name"]: r["fid"] for r in ml_models_docs.gan_example()["fid"]}
+    assert fid["identical"] == pytest.approx(0, abs=1e-12)
+    assert fid["mean shifted"] == pytest.approx(0.25)
+    assert fid["collapsed"] == pytest.approx(0.5)
+    assert fid["correlated"] == pytest.approx(4 - 2 * (math.sqrt(1.8) + math.sqrt(0.2)))
+    sampled = [r["fid"] for r in ml_models_docs.gan_example()["fid_sampled"]]
+    assert sampled == sorted(sampled, reverse=True) and sampled[-1] < 0.01
+
+
+def test_dcgan_transposed_convolutions_grow_one_pixel_to_sixty_four():
+    assert ml_models_docs.gan_example()["dcgan_sizes"] == [1, 4, 8, 16, 32, 64]
+    assert ml_models_docs.conv_transpose_out(4, 3, 2, 1) == 7
+    assert ml_models_docs.conv_transpose_out(4, 3, 2, 1, output_padding=1) == 8
