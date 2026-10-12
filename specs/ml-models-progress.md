@@ -289,8 +289,8 @@ Gaps:
 57. `vector-indexes` ✓
 58. `distillation` ✓
 59. `time-series` ✓
-60. `regression-metrics` ← next
-61. `support-vector-machines`
+60. `regression-metrics` ✓
+61. `support-vector-machines` ← next
 62. `learning-rate-schedules`
 63. `gans`
 64. `encoder-only`

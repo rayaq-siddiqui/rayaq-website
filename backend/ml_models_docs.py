@@ -421,7 +421,7 @@ PAGES = [
         "sources": [
             "sklearn:sklearn/metrics/_regression.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "calibration",
@@ -9253,6 +9253,7 @@ def render(slug, render_template):
         "time_series_settings": TIME_SERIES_EXAMPLE,
         "time_series_split": time_series_split,
         "regression_metrics_example": regression_metrics_example,
+        "pinball_loss": pinball_loss,
         "regression_metrics_settings": REGRESSION_METRICS_EXAMPLE,
     }
     content = render_template(template, **context)

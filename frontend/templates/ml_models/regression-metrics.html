@@ -1,0 +1,398 @@
+{% set ex = regression_metrics_example() %}
+{% set e = regression_metrics_settings %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(0.0 if x|abs < 0.5 * 10 ** (-n) else x)|replace("-", "−") }}{%- endmacro %}
+{% macro v(xs, n=3) -%}({% for x in xs %}{{ f(x, n) }}{% if not loop.last %}, {% endif %}{% endfor %}){%- endmacro %}
+{% macro pct(x) -%}{{ '%.1f'|format(100 * x) }}%{%- endmacro %}
+{% set by = {} %}{% for row in ex.models %}{% set _ = by.update({row.name: row}) %}{% endfor %}
+{% set steady = by["steady"] %}
+{% set spiky = by["spiky"] %}
+{% set biased = ex.models[2] %}
+{% set cmean = by["constant mean"] %}
+{% set cmedian = by["constant median"] %}
+{% set best = {} %}{% for name, c in ex.constants %}{% set _ = best.update({loop.index0: c}) %}{% endfor %}
+{% macro lx(r) -%}{{ '%.1f'|format(60 + (r + 2) * 130) }}{%- endmacro %}
+{% macro ly(l) -%}{{ '%.1f'|format(200 - l * 45) }}{%- endmacro %}
+{% set grid = range(-20, 21) %}
+{% macro tx(t) -%}{{ '%.1f'|format(40 + (t - 10) * 12.5) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Regression metrics</h1>
+  <p class="tagline">
+    A regression model outputs a number, and a metric turns a list of misses into one score. Different metrics reward different models: one punishes the rare huge miss, another the many small ones, a third only asks whether the predictions move with the target.
+    This page computes MAE, RMSE, median absolute error, R², explained variance, MAPE and the pinball loss on one small dataset, shows the ranking flip between them, and ties each metric to the single prediction it rewards.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A house-price model, a delivery-time model and a demand forecast each produce a column of predictions next to a column of true values. To compare two models, tune hyperparameters or decide whether a model is good enough to ship, those two columns have to become one number.
+  There are many ways to do that, and they disagree. A model can win on mean absolute error and lose on root mean squared error, look strong on R² for one test set and weak on another with the same errors, or score perfectly on explained variance while every prediction is off by the same amount.
+</p>
+<p>
+  The choice is not cosmetic. Each metric is minimised by a different prediction, so picking the metric picks what the model is pushed towards, the mean, the median or a quantile. The question to ask is what a miss costs the people who use the prediction.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Every metric on this page starts from the residual r = y − ŷ and applies a penalty to it. Squaring makes a miss of 4 cost sixteen times a miss of 1, so one big miss can dominate the score. The absolute value treats every unit of error the same. The pinball loss charges the two sides differently, so under-predicting can be made nine times as costly as over-predicting.
+  The penalty shape is also what makes each metric prefer a particular summary of the data, the same link the <a href="/ml-models/loss-functions">loss functions</a> page draws for training.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 250" role="img" aria-labelledby="rm-loss-title rm-loss-desc">
+    <title id="rm-loss-title">Penalty per residual for squared, absolute, Huber and pinball losses</title>
+    <desc id="rm-loss-desc">
+      Residual r = y − ŷ from −2 to 2 on the horizontal axis. Squared error r² grows fastest away from zero. Absolute error |r| is a V. Huber with δ = 1 is quadratic inside ±1 and linear outside.
+      The pinball loss with α = {{ e.quantile }} costs {{ f(pinball_loss([2], [0], e.quantile), 1) }} at r = 2 (an under-prediction) but only {{ f(pinball_loss([-2], [0], e.quantile), 1) }} at r = −2 (an over-prediction).
+    </desc>
+    <line x1="50" y1="200" x2="600" y2="200" class="d-line"></line>
+    <line x1="{{ lx(0) }}" y1="15" x2="{{ lx(0) }}" y2="205" class="d-line ml-dashed"></line>
+    {% for r in [-2, -1, 0, 1, 2] %}
+    <text x="{{ lx(r) }}" y="216" font-size="10" text-anchor="middle" class="d-muted">{{ f(r, 0) }}</text>
+    {% endfor %}
+    {% for l in [1, 2, 3, 4] %}
+    <text x="44" y="{{ '%.1f'|format(203 - l * 45) }}" font-size="10" text-anchor="end" class="d-muted">{{ l }}</text>
+    {% endfor %}
+    <polyline fill="none" stroke-width="2" style="stroke: var(--jj-red)" points="{% for i in grid %}{% set r = i / 10 %}{{ lx(r) }},{{ ly(r * r) }} {% endfor %}"></polyline>
+    <polyline fill="none" stroke-width="2" class="d-line" points="{% for i in grid %}{% set r = i / 10 %}{{ lx(r) }},{{ ly(r|abs) }} {% endfor %}"></polyline>
+    <polyline fill="none" stroke-width="2" class="ml-dashed" style="stroke: var(--jj-accent)" points="{% for i in grid %}{% set r = i / 10 %}{{ lx(r) }},{{ ly(huber(r, 1.0)) }} {% endfor %}"></polyline>
+    <polyline fill="none" stroke-width="2.5" style="stroke: var(--jj-violet)" points="{% for i in grid %}{% set r = i / 10 %}{{ lx(r) }},{{ ly(pinball_loss([r], [0], e.quantile)) }} {% endfor %}"></polyline>
+    <g font-size="11">
+      <text x="60" y="238" style="fill: var(--jj-red)">squared r²</text>
+      <text x="150" y="238">absolute |r|</text>
+      <text x="240" y="238" style="fill: var(--jj-accent)">Huber, δ = 1</text>
+      <text x="340" y="238" style="fill: var(--jj-violet)">pinball, α = {{ e.quantile }}</text>
+      <text x="470" y="238" class="d-muted">r = y − ŷ →</text>
+    </g>
+  </svg>
+  <p class="ml-caption">Penalty per residual. Positive r means the prediction was too low. The pinball line is steep on the right and nearly flat on the left.</p>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="error-metrics">Error metrics in the target's units</h3>
+
+<p class="ml-formula">
+  MAE = (1/N) Σ |yᵢ − ŷᵢ| &nbsp;&nbsp; MSE = (1/N) Σ (yᵢ − ŷᵢ)² &nbsp;&nbsp; RMSE = √MSE<br>
+  MedAE = median |yᵢ − ŷᵢ| &nbsp;&nbsp; max error = max |yᵢ − ŷᵢ|
+</p>
+<p>
+  MAE and RMSE are in the same units as the target, so "off by 2.9 on average" is something a stakeholder can read. RMSE is never smaller than MAE, and the gap between them grows with how uneven the errors are: equal-sized misses give RMSE = MAE, one large miss among small ones gives RMSE far above MAE.
+  The median absolute error ignores the largest half of the misses entirely, and the max error looks only at the worst one. Lower is better for all of them, and none has a natural scale, so a value means something only next to a baseline.
+</p>
+
+<h3 id="r2">R² and explained variance</h3>
+
+<p class="ml-formula">
+  R² = 1 − Σ (yᵢ − ŷᵢ)² / Σ (yᵢ − ȳ)² &nbsp;&nbsp; explained variance = 1 − Var(y − ŷ) / Var(y)
+</p>
+<p>
+  R², the coefficient of determination, compares the model's squared error with that of the best constant prediction, the mean of the test targets. A score of 1 is perfect, 0 means no better than predicting ȳ for every row, and anything worse than that is negative; there is no lower bound.
+  Because the denominator is the spread of the test targets, the same errors give a lower R² on a test set whose targets vary less. R² is a property of the model and the data together, not of the model alone.
+</p>
+<p>
+  Explained variance subtracts the mean residual before squaring, so a constant offset costs nothing: a model that is always 5 too high but moves exactly with the target scores 1.
+  When the mean residual is zero the two scores are equal, which is why they agree on most models.
+</p>
+
+<h3 id="percentage">Percentage errors</h3>
+
+<p class="ml-formula">MAPE = (1/N) Σ |yᵢ − ŷᵢ| / max(|yᵢ|, ε)</p>
+<p>
+  MAPE makes errors comparable across series of different sizes, but it divides by the target, which has two side effects. Targets near zero blow it up (scikit-learn's ε is the float64 machine epsilon, so a zero target gives an enormous but finite term).
+  And it is not symmetric: predicting 150 when the truth is 100 costs {{ pct(ex.over_under.over) }}, while predicting 100 when the truth is 150 costs {{ pct(ex.over_under.under) }}. For positive targets and predictions, an under-prediction can cost at most 100%, while an over-prediction has no limit, so a model tuned for MAPE learns to aim low.
+  scikit-learn returns MAPE as a fraction, not multiplied by 100.
+</p>
+<p>
+  Mean squared log error, (1/N) Σ (log(1 + yᵢ) − log(1 + ŷᵢ))², is the other relative metric: it scores ratios rather than differences and is meant for targets that grow exponentially. scikit-learn computes it with <code>log1p</code> and raises a <code>ValueError</code> for any value at or below −1, where the log is undefined.
+</p>
+
+<h3 id="pinball">Pinball (quantile) loss</h3>
+
+<p class="ml-formula">
+  pinball<sub>α</sub>(y, ŷ) = α (y − ŷ) if y ≥ ŷ, otherwise (1 − α)(ŷ − y)
+</p>
+<p>
+  The pinball loss is the asymmetric absolute error behind quantile regression (Koenker and Bassett, 1978). With α = 0.5 it is half the absolute error. With α = 0.9 a miss below the target costs 0.9 per unit and a miss above costs 0.1, so the best prediction sits where about 90% of the targets are below it: the 0.9 quantile.
+  It is the metric for a prediction that is meant to be an upper or lower bound, such as stock to hold so that demand is covered nine days in ten.
+</p>
+
+<h3 id="best-constant">What each metric rewards</h3>
+
+<p>
+  The cleanest way to see what a metric wants is to ask which single number c, predicted for every row, minimises it. Squared error is minimised by the mean, absolute error by any median, the pinball loss by the α-quantile.
+  Gneiting (2011) makes the general point: a point forecast should be scored with a function that is consistent for the summary it is meant to report, the mean for squared error and quantiles for pinball losses. Scoring a median forecast with RMSE, or a mean forecast with MAE, penalises the model for doing what it was asked.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 230" role="img" aria-labelledby="rm-const-title rm-const-desc">
+    <title id="rm-const-title">The twelve targets and the constant that minimises each metric</title>
+    <desc id="rm-const-desc">
+      Twelve targets from {{ e.targets|min }} to {{ e.targets|max }} on a number line. The constant that minimises squared error is the mean, {{ f(best[0].low, 1) }}.
+      Absolute error is minimised by every value from {{ f(best[1].low, 0) }} to {{ f(best[1].high, 0) }}, the interval between the two middle targets. Pinball loss with α = {{ e.quantile }} is minimised at {{ f(best[2].low, 0) }}, and MAPE at {{ f(best[3].low, 0) }}, below the median.
+    </desc>
+    <line x1="35" y1="120" x2="615" y2="120" class="d-line"></line>
+    {% for t in range(10, 60, 5) %}
+    <text x="{{ tx(t) }}" y="140" font-size="10" text-anchor="middle" class="d-muted">{{ t }}</text>
+    {% endfor %}
+    {% set seen = {} %}
+    {% for t in e.targets %}
+    {% set k = seen.get(t, 0) %}{% set _ = seen.update({t: k + 1}) %}
+    <circle cx="{{ tx(t) }}" cy="{{ 110 - 12 * k }}" r="5" style="fill: var(--jj-accent)"></circle>
+    {% endfor %}
+    <rect x="{{ tx(best[1].low) }}" y="114" width="{{ '%.1f'|format((best[1].high - best[1].low) * 12.5) }}" height="12" class="d-box ml-weight" opacity="0.8"></rect>
+    <line x1="{{ tx(best[0].low) }}" y1="60" x2="{{ tx(best[0].low) }}" y2="130" stroke-width="2" style="stroke: var(--jj-red)"></line>
+    <line x1="{{ tx(best[2].low) }}" y1="60" x2="{{ tx(best[2].low) }}" y2="130" stroke-width="2" style="stroke: var(--jj-violet)"></line>
+    <line x1="{{ tx(best[3].low) }}" y1="125" x2="{{ tx(best[3].low) }}" y2="175" stroke-width="2" class="d-line ml-dashed"></line>
+    <g font-size="11">
+      <text x="{{ tx(best[0].low) }}" y="52" text-anchor="middle" style="fill: var(--jj-red)">MSE: mean {{ f(best[0].low, 1) }}</text>
+      <text x="{{ tx(best[1].low + 0.3) }}" y="164">MAE: any c in [{{ f(best[1].low, 0) }}, {{ f(best[1].high, 0) }}]</text>
+      <text x="{{ tx(best[2].low) }}" y="52" text-anchor="middle" style="fill: var(--jj-violet)">pinball α = {{ e.quantile }}: {{ f(best[2].low, 0) }}</text>
+      <text x="{{ tx(best[3].low) }}" y="190" text-anchor="middle">MAPE: {{ f(best[3].low, 0) }}</text>
+      <text x="615" y="215" text-anchor="end" class="d-muted">targets ●, stacked where repeated</text>
+    </g>
+  </svg>
+  <p class="ml-caption">Best constant prediction per metric, found by a grid search in steps of {{ e.grid_step }} over the target range. The box on the axis is the whole flat minimum of MAE.</p>
+</div>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>mean_absolute_error</code></td>
+        <td>y_true, y_pred (n_samples,) or (n_samples, n_outputs); sample_weight, multioutput</td>
+        <td>Weighted mean of |y − ŷ| per output, then averaged across outputs.</td>
+        <td><a href="{{ skl('sklearn/metrics/_regression.py', 225, 308) }}">_regression.py 225-308</a></td>
+      </tr>
+      <tr>
+        <td><code>mean_pinball_loss</code></td>
+        <td>alpha=0.5</td>
+        <td>α·diff where diff = y − ŷ ≥ 0, (α − 1)·diff otherwise.</td>
+        <td><a href="{{ skl('sklearn/metrics/_regression.py', 320, 408) }}">_regression.py 320-408</a>, formula <a href="{{ skl('sklearn/metrics/_regression.py', 390, 393) }}">390-393</a></td>
+      </tr>
+      <tr>
+        <td><code>mean_absolute_percentage_error</code></td>
+        <td>ε = float64 machine epsilon</td>
+        <td>|ŷ − y| / max(|y|, ε), returned as a fraction.</td>
+        <td><a href="{{ skl('sklearn/metrics/_regression.py', 419, 513) }}">_regression.py 419-513</a>, ε <a href="{{ skl('sklearn/metrics/_regression.py', 494, 497) }}">494-497</a></td>
+      </tr>
+      <tr>
+        <td><code>mean_squared_error</code>, <code>root_mean_squared_error</code></td>
+        <td>sample_weight, multioutput</td>
+        <td>MSE; RMSE takes the square root per output before averaging outputs.</td>
+        <td><a href="{{ skl('sklearn/metrics/_regression.py', 524, 605) }}">_regression.py 524-605</a>, <a href="{{ skl('sklearn/metrics/_regression.py', 616, 690) }}">616-690</a></td>
+      </tr>
+      <tr>
+        <td><code>mean_squared_log_error</code></td>
+        <td>values must be &gt; −1</td>
+        <td>MSE of log1p(y) against log1p(ŷ); ValueError for any value ≤ −1.</td>
+        <td><a href="{{ skl('sklearn/metrics/_regression.py', 701, 779) }}">_regression.py 701-779</a>, check <a href="{{ skl('sklearn/metrics/_regression.py', 767, 767) }}">767</a></td>
+      </tr>
+      <tr>
+        <td><code>median_absolute_error</code></td>
+        <td>multioutput</td>
+        <td>Median of |y − ŷ| per output.</td>
+        <td><a href="{{ skl('sklearn/metrics/_regression.py', 869, 944) }}">_regression.py 869-944</a></td>
+      </tr>
+      <tr>
+        <td><code>_assemble_fraction_of_explained_deviance</code></td>
+        <td>numerator, denominator, force_finite</td>
+        <td>1 − num/den, with a zero numerator scored 1.0 and a zero denominator otherwise scored 0.0 instead of nan or −inf.</td>
+        <td><a href="{{ skl('sklearn/metrics/_regression.py', 946, 994) }}">_regression.py 946-994</a></td>
+      </tr>
+      <tr>
+        <td><code>explained_variance_score</code></td>
+        <td>force_finite=True</td>
+        <td>Numerator subtracts the mean residual before squaring, so a constant offset is free.</td>
+        <td><a href="{{ skl('sklearn/metrics/_regression.py', 1009, 1141) }}">_regression.py 1009-1141</a>, terms <a href="{{ skl('sklearn/metrics/_regression.py', 1121, 1130) }}">1121-1130</a></td>
+      </tr>
+      <tr>
+        <td><code>r2_score</code></td>
+        <td>force_finite=True</td>
+        <td>Σ w(y − ŷ)² over Σ w(y − ȳ)²; fewer than two samples warns and returns nan.</td>
+        <td><a href="{{ skl('sklearn/metrics/_regression.py', 1157, 1319) }}">_regression.py 1157-1319</a>, terms <a href="{{ skl('sklearn/metrics/_regression.py', 1304, 1308) }}">1304-1308</a></td>
+      </tr>
+      <tr>
+        <td><code>max_error</code></td>
+        <td>single output only</td>
+        <td>Largest |y − ŷ|.</td>
+        <td><a href="{{ skl('sklearn/metrics/_regression.py', 1328, 1363) }}">_regression.py 1328-1363</a></td>
+      </tr>
+      <tr>
+        <td><code>nn.HuberLoss</code></td>
+        <td>delta=1.0, reduction="mean"</td>
+        <td>The training-side loss between MSE and MAE, shown in the first figure.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 1081, 1150) }}">loss.py 1081-1150</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>A model's R² on the test set is −0.3. What does that say?</summary>
+  <p>Its squared error is 30% larger than that of predicting the test set's own mean for every row. That is worse than the simplest baseline, often a sign of a distribution shift between training and test data, a broken pipeline, or a model that extrapolates badly.</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>The data.</strong> {{ e.targets|length }} targets, y = {{ v(e.targets, 0) }}, mean {{ f(ex.mean, 1) }}, median {{ f(ex.median, 0) }}.
+    Five prediction columns are scored against them:
+  </p>
+  <ul>
+    <li><strong>steady</strong>: every prediction off by 2 to 4, ŷ = {{ v(steady.predictions, 0) }}.</li>
+    <li><strong>spiky</strong>: eleven predictions within 0.5 and one miss of 20 on the largest target, ŷ = {{ v(spiky.predictions, 1) }}.</li>
+    <li><strong>{{ biased.name }}</strong>: the true value plus {{ e.bias }}, every time.</li>
+    <li><strong>constant mean</strong> and <strong>constant median</strong>: {{ f(ex.mean, 1) }} or {{ f(ex.median, 0) }} for every row.</li>
+  </ul>
+
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Model</th><th>MAE</th><th>RMSE</th><th>MedAE</th><th>Max</th><th>MAPE</th><th>R²</th><th>Expl. var.</th><th>Pinball α = {{ e.quantile }}</th></tr></thead>
+      <tbody>
+        {% for row in ex.models %}
+        <tr>
+          <td>{{ row.name }}</td>
+          <td>{{ f(row.mae) }}</td>
+          <td>{{ f(row.rmse) }}</td>
+          <td>{{ f(row.medae, 2) }}</td>
+          <td>{{ f(row.max_error, 1) }}</td>
+          <td>{{ pct(row.mape) }}</td>
+          <td>{{ f(row.r2) }}</td>
+          <td>{{ f(row.explained_variance) }}</td>
+          <td>{{ f(row.pinball) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="jj-diagram">
+    <svg viewBox="0 0 640 230" role="img" aria-labelledby="rm-res-title rm-res-desc">
+      <title id="rm-res-title">Residuals of the steady and spiky models</title>
+      <desc id="rm-res-desc">
+        One bar per target, height proportional to y − ŷ. The steady model's residuals range from −4 to 4, with MAE {{ f(steady.mae, 2) }} and RMSE {{ f(steady.rmse, 2) }}.
+        The spiky model's residuals are within 0.5 except a single residual of 20 on the last target, giving a lower MAE of {{ f(spiky.mae, 2) }} but a higher RMSE of {{ f(spiky.rmse, 2) }}.
+      </desc>
+      {% for row, base, colour in [(steady, 75, "var(--jj-accent)"), (spiky, 185, "var(--jj-violet)")] %}
+      <line x1="90" y1="{{ base }}" x2="620" y2="{{ base }}" class="d-line"></line>
+      <text x="10" y="{{ base - 4 }}" font-size="11" style="fill: {{ colour }}">{{ row.name }}</text>
+      <text x="10" y="{{ base + 10 }}" font-size="10" class="d-muted">MAE {{ f(row.mae, 2) }}</text>
+      <text x="10" y="{{ base + 23 }}" font-size="10" class="d-muted">RMSE {{ f(row.rmse, 2) }}</text>
+      {% for p in row.predictions %}
+      {% set r = e.targets[loop.index0] - p %}
+      {% set h = (r * 4)|abs %}
+      <rect x="{{ 100 + loop.index0 * 43 }}" y="{{ '%.1f'|format(base - r * 4 if r > 0 else base) }}" width="30" height="{{ '%.1f'|format(h if h > 0 else 0.5) }}" style="fill: {{ colour }}"></rect>
+      {% endfor %}
+      {% endfor %}
+      <text x="620" y="222" font-size="10" text-anchor="end" class="d-muted">bars above the line: prediction too low (4 px per unit)</text>
+    </svg>
+    <p class="ml-caption">The same twelve targets. MAE prefers the spiky model, RMSE the steady one.</p>
+  </div>
+
+  <p>
+    <strong>The ranking flips.</strong> The spiky model has the lower MAE ({{ f(spiky.mae) }} against {{ f(steady.mae) }}) and a far lower median absolute error ({{ f(spiky.medae, 2) }} against {{ f(steady.medae, 2) }}), but its one miss of {{ f(spiky.max_error, 0) }} squares to {{ f(spiky.max_error ** 2, 0) }}, so its RMSE is {{ f(spiky.rmse) }} against {{ f(steady.rmse) }} and its R² is {{ f(spiky.r2) }} against {{ f(steady.r2) }}.
+    Which model is better depends on whether one large miss is worse than many small ones, which is a question about the application, not about the numbers.
+  </p>
+  <p>
+    <strong>R² of the baselines.</strong> Predicting the mean, {{ f(ex.mean, 1) }}, gives R² = {{ f(cmean.r2) }} exactly, by definition. Predicting the median gives R² = {{ f(cmedian.r2) }}: negative, although its MAE of {{ f(cmedian.mae) }} beats the mean's {{ f(cmean.mae) }}.
+    Explained variance is {{ f(cmean.explained_variance) }} for both, since a constant prediction cannot move with the target.
+  </p>
+  <p>
+    <strong>Same errors, different R².</strong> Shrinking the targets halfway towards their mean, y′ = {{ f(ex.mean, 1) }} + {{ e.shrink }}(y − {{ f(ex.mean, 1) }}) = {{ v(ex.narrow, 2) }}, and adding the steady model's exact errors, leaves MAE at {{ f(ex.narrow_scores.mae) }} and RMSE at {{ f(ex.narrow_scores.rmse) }}, but R² falls from {{ f(steady.r2) }} to {{ f(ex.narrow_scores.r2) }} because the denominator shrank.
+  </p>
+  <p>
+    <strong>The offset that explained variance cannot see.</strong> The {{ biased.name }} model has explained variance {{ f(biased.explained_variance) }} and R² {{ f(biased.r2) }}. Its mean residual is {{ f(biased.mean_error, 1) }}, and only R² charges for it.
+    The same model has the lowest pinball loss at α = {{ e.quantile }}, {{ f(biased.pinball) }}, because every miss is an over-prediction, charged at only {{ f(1 - e.quantile, 1) }} per unit.
+  </p>
+  <p><strong>Best constants.</strong> The grid search behind the second figure:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Metric</th><th>Best constant</th><th>Loss there</th></tr></thead>
+      <tbody>
+        {% for name, c in ex.constants %}
+        <tr>
+          <td>{{ name }}</td>
+          <td>{% if c.high - c.low > e.grid_step / 2 %}any c in [{{ f(c.low, 2) }}, {{ f(c.high, 2) }}]{% else %}{{ f(c.low, 2) }}{% endif %}</td>
+          <td>{{ f(c.loss) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Squared error lands on the mean, absolute error on the whole interval between the 6th and 7th sorted targets, and pinball at α = {{ e.quantile }} on {{ f(best[2].low, 0) }}, the 11th of the 12 targets. MAPE lands on {{ f(best[3].low, 0) }}, below the median of {{ f(ex.median, 0) }}: the asymmetry from the Mechanics section, at work on real numbers.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>from sklearn.metrics import (
+    mean_absolute_error, root_mean_squared_error, median_absolute_error,
+    max_error, mean_absolute_percentage_error, r2_score,
+    explained_variance_score, mean_pinball_loss,
+)
+
+y_true = [12, 14, 15, 15, 17, 18, 20, 22, 25, 31, 38, 55]
+y_pred = [12.5, 13.5, 15, 15.5, 16.5, 18, 20.5, 21.5, 25, 31.5, 37.5, 35]
+
+for name, metric in [
+    ("MAE", mean_absolute_error),
+    ("RMSE", root_mean_squared_error),
+    ("MedAE", median_absolute_error),
+    ("max", max_error),
+    ("MAPE", mean_absolute_percentage_error),
+    ("R2", r2_score),
+    ("explained var.", explained_variance_score),
+]:
+    print(f"{name:15s}{metric(y_true, y_pred):.3f}")
+
+print(mean_pinball_loss(y_true, y_pred, alpha=0.9))
+
+# Use the same metric for model selection:
+# GridSearchCV(..., scoring="neg_root_mean_squared_error")</code></pre>
+
+<p>
+  The <code>y_pred</code> above is the spiky model, so the printed values match its row in the worked example. scikit-learn metrics take <code>(y_true, y_pred)</code> in that order, which matters for the asymmetric ones (MAPE, pinball, MSLE) and for R², whose denominator comes from <code>y_true</code>.
+  Scoring strings for search and cross-validation are negated where lower is better, so "higher is better" holds everywhere: <code>neg_mean_absolute_error</code>, <code>neg_root_mean_squared_error</code>, while <code>r2</code> is used as is.
+</p>
+<p>
+  On the training side, the loss should match the metric where it can: <code>nn.MSELoss</code> for RMSE, <code>nn.L1Loss</code> for MAE, <code>nn.HuberLoss</code> in between, and the pinball loss (a two-line custom loss in PyTorch) for quantiles. <a href="/ml-models/gradient-boosting">Gradient boosting</a> libraries offer squared, absolute and quantile objectives.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>MAE or RMSE.</strong> If cost grows with the square of the miss, or the mean is the quantity being forecast, use RMSE. If every unit of error costs the same, or outliers in the target are noise, use MAE. Reporting both shows how uneven the errors are.</li>
+  <li><strong>R² across datasets.</strong> R² depends on the test targets' variance, so it cannot compare models evaluated on different data. Compare errors in units, or against a fixed baseline, instead.</li>
+  <li><strong>R² on small or shifted test sets.</strong> R² measures against the test set's own mean, which a deployed model never knows. A "model" that predicted that mean would score 0 without having learned anything.</li>
+  <li><strong>Explained variance.</strong> It hides a systematic offset. Use it only together with the mean residual, or use R².</li>
+  <li><strong>Percentage errors.</strong> MAPE favours under-prediction and breaks near zero. For series compared across scales, MASE (Hyndman and Koehler, 2006; see <a href="/ml-models/time-series">time series</a>) avoids both problems.</li>
+  <li><strong>Quantiles and intervals.</strong> A pinball loss at one α scores one quantile. Two quantile models (say 0.1 and 0.9) give an interval, judged by how often it covers the target and how wide it is.</li>
+  <li><strong>Validation.</strong> Any metric is only as good as the split it is computed on; see <a href="/ml-models/cross-validation">cross-validation</a>.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>A team trains with MSE loss but reports MAE to stakeholders. What can go wrong?</summary>
+  <p>The model is pushed towards the conditional mean while the metric rewards the conditional median. On skewed targets these differ, so a model chosen for the lowest training loss may not have the lowest MAE, and an MAE-trained model may score better on the reported number. Match the training loss, the model-selection metric and the reported metric where you can.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<p>
+  <a href="/ml-models/linear-regression">Linear regression</a> minimises the squared error behind RMSE and R². <a href="/ml-models/classification-metrics">Classification metrics</a> are the same question for labels instead of numbers.
+</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Koenker and Bassett. <em>Regression Quantiles.</em> Econometrica 46(1), 33–50, 1978. <a href="https://doi.org/10.2307/1913643">doi:10.2307/1913643</a></li>
+  <li>Hyndman and Koehler. <em>Another look at measures of forecast accuracy.</em> International Journal of Forecasting 22(4), 679–688, 2006. <a href="https://doi.org/10.1016/j.ijforecast.2006.03.001">doi:10.1016/j.ijforecast.2006.03.001</a></li>
+  <li>Gneiting. <em>Making and Evaluating Point Forecasts.</em> Journal of the American Statistical Association, 746–762, 2011. <a href="https://doi.org/10.1198/jasa.2011.r10138">doi:10.1198/jasa.2011.r10138</a></li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/metrics/_regression.py') }}"><code>sklearn/metrics/_regression.py</code></a>. PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/nn/modules/loss.py') }}"><code>torch/nn/modules/loss.py</code></a>.</li>
+</ul>
