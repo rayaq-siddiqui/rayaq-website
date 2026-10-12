@@ -1065,7 +1065,7 @@ PAGES = [
         "sources": [
             "sklearn:sklearn/cluster/_kmeans.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "learning-to-rank",

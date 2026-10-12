@@ -1,0 +1,413 @@
+{% set ex = vector_index_example() %}
+{% set e = vector_index_settings %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(0.0 if x|abs < 0.5 * 10 ** (-n) else x)|replace("-", "−") }}{%- endmacro %}
+{% macro pt(p, n=2) -%}({{ f(p[0], n) }}, {{ f(p[1], n) }}){%- endmacro %}
+{% macro vec(v, n=2) -%}({% for x in v %}{{ f(x, n) }}{% if not loop.last %}, {% endif %}{% endfor %}){%- endmacro %}
+{% macro gb(x) -%}{{ f(x / 1e9, 1) }} GB{%- endmacro %}
+{% set cell_colors = ["--jj-accent", "--jj-violet", "--jj-amber", "--jj-green", "--jj-red"] %}
+{% set plane = ex.plane %}
+{% set ivf = ex.ivf.rows %}
+{% set hnsw = ex.hnsw.rows %}
+{% set pq = ex.pq.rows %}
+{% set demo = ex.pq.demo %}
+{% set s = e.scale %}
+{% set flat_bytes = e.dim * 4 %}
+<header class="jj-header">
+  <h1>Vector indexes</h1>
+  <p class="tagline">
+    Exact nearest-neighbour search compares the query with every stored vector, which stops being affordable somewhere around millions of vectors per query per second. Vector indexes trade a little recall for orders of magnitude less work.
+    This page builds the three ideas behind almost every production index, inverted files (IVF) over k-means cells, product quantization (PQ) and HNSW graphs, runs them on the same {{ ex.n }} vectors, and measures recall against cost and memory.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  <a href="/ml-models/similarity-search">Similarity search</a> turns retrieval into "find the k stored vectors closest to this query vector". Done exactly, that is a matrix-vector product over the whole collection: for {{ "{:,}".format(s.n) }} vectors of {{ s.dim }} float32 values it reads {{ gb(ex.scale.flat) }} of memory per query.
+  A retrieval system behind a chat assistant or a recommender has to answer in milliseconds, for many queries at once, often on machines that cannot hold that much RAM.
+</p>
+<p>
+  <em>Approximate</em> nearest-neighbour (ANN) search gives up the guarantee of the exact top k. Its quality is measured by <strong>recall@k</strong>, the fraction of the true k nearest neighbours that the index returns.
+  Every index design is a point in a three-way trade between recall, latency (how many vectors a query touches) and memory (how many bytes each vector costs), plus how long the index takes to build and whether it can accept new vectors.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  There are two ways to do less work per query, and production indexes combine them.
+</p>
+<ul>
+  <li>
+    <strong>Look at fewer vectors.</strong> Partition the space so a query only searches the regions near it (IVF: "check the post office districts nearest your address"), or link every vector to its neighbours so a query can walk toward its answer (HNSW: "ask for directions, hopping from person to person, with a few long-distance express routes on top").
+  </li>
+  <li>
+    <strong>Make each vector cheaper.</strong> Replace a vector of floats with a short code that still lets you estimate distances (PQ: describe a face as "nose type 13, eyes type 5, mouth type 1" from small catalogues of each part).
+  </li>
+</ul>
+<p>
+  Both introduce misses: the true neighbour may sit just across a partition boundary, the walk may stop at a local minimum, the codes may blur two vectors together. Each method has a knob that buys recall back with more work: <code>nprobe</code>, <code>ef</code>, or the number of candidates re-ranked with exact distances.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 330" role="img" aria-labelledby="vi-ivf-title vi-ivf-desc">
+    <title id="vi-ivf-title">An IVF index with five k-means cells and a query near a cell boundary</title>
+    <desc id="vi-ivf-desc">
+      {{ plane.points|length }} points in a 10 by 10 square, coloured by the k-means cell they belong to, with crosses at the {{ plane.centroids|length }} centroids. The query at {{ pt(plane.query) }} is marked with a square.
+      Its nearest centroid is {{ pt(plane.centroids[plane.probe1.probed[0]]) }}, but its true nearest neighbour {{ pt(plane.points[plane.nearest]) }}, inside the dashed circle, belongs to the neighbouring cell with centroid {{ pt(plane.centroids[plane.probe2.probed[1]]) }}.
+      Searching one cell returns {{ pt(plane.points[plane.probe1.ids[0]]) }} instead; searching two cells finds the true neighbour.
+    </desc>
+    <g font-size="12">
+      <rect x="20" y="10" width="300" height="300" rx="6" class="d-box" fill-opacity="0.04"></rect>
+      {% set q = plane.query %}
+      {% set nn = plane.points[plane.nearest] %}
+      {% set r = ((q[0] - nn[0]) ** 2 + (q[1] - nn[1]) ** 2) ** 0.5 %}
+      <circle cx="{{ '%.1f'|format(20 + q[0] * 30) }}" cy="{{ '%.1f'|format(310 - q[1] * 30) }}" r="{{ '%.1f'|format(r * 30) }}" class="d-line ml-dashed" fill="none"></circle>
+      {% for p in plane.points %}
+      <circle cx="{{ '%.1f'|format(20 + p[0] * 30) }}" cy="{{ '%.1f'|format(310 - p[1] * 30) }}" r="4" style="fill: var({{ cell_colors[plane.labels[loop.index0]] }})"></circle>
+      {% endfor %}
+      {% for c in plane.centroids %}
+      {% set cx = 20 + c[0] * 30 %}
+      {% set cy = 310 - c[1] * 30 %}
+      <path d="M{{ '%.1f'|format(cx - 7) }} {{ '%.1f'|format(cy - 7) }} L{{ '%.1f'|format(cx + 7) }} {{ '%.1f'|format(cy + 7) }} M{{ '%.1f'|format(cx - 7) }} {{ '%.1f'|format(cy + 7) }} L{{ '%.1f'|format(cx + 7) }} {{ '%.1f'|format(cy - 7) }}" stroke-width="3" fill="none" style="stroke: var({{ cell_colors[loop.index0] }})"></path>
+      {% endfor %}
+      <rect x="{{ '%.1f'|format(14 + q[0] * 30) }}" y="{{ '%.1f'|format(304 - q[1] * 30) }}" width="12" height="12" class="d-box ml-op"></rect>
+      <text x="340" y="40">query {{ pt(q) }}</text>
+      <text x="340" y="64" class="d-muted">nprobe = 1: search the nearest cell only</text>
+      <text x="340" y="82">→ returns {{ pt(plane.points[plane.probe1.ids[0]]) }}, a miss</text>
+      <text x="340" y="82" dy="18" class="d-muted">({{ plane.probe1.distances }} distances: {{ plane.centroids|length }} centroids + {{ plane.probe1.distances - plane.centroids|length }} points)</text>
+      <text x="340" y="134" class="d-muted">nprobe = 2: add the second-nearest cell</text>
+      <text x="340" y="152">→ returns {{ pt(nn) }}, the true neighbour</text>
+      <text x="340" y="170" class="d-muted">({{ plane.probe2.distances }} distances, against {{ plane.points|length }} for brute force)</text>
+      <text x="340" y="214">× centroid · ■ query</text>
+      <text x="340" y="232" class="d-muted">dashed circle: distance to the true neighbour</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The query is closer to one centroid but its nearest neighbour lives in the next cell. IVF's misses are always of this kind, and nprobe is how many cells you search to catch them.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="ivf">IVF: inverted lists over k-means cells</h3>
+<p>
+  An inverted file index (IVF) trains <a href="/ml-models/clustering">k-means</a> with <code>nlist</code> centroids on a sample of the data, the <em>coarse quantizer</em>, and stores each vector in the list of its nearest centroid. The cells are the Voronoi regions of the centroids.
+  A query computes its distance to all nlist centroids, picks the <code>nprobe</code> nearest, and scans only those lists exactly. With balanced lists the work per query is about nlist + nprobe · n / nlist distances, minimized near nlist ≈ √n; production systems with a billion vectors use tens of thousands of lists or more.
+</p>
+<p>
+  Recall rises with nprobe and reaches the exact answer when nprobe = nlist. Lists are never perfectly balanced, since dense regions get bigger cells, so latency varies by query. New vectors can be added by assigning them to a cell, but if the data drifts the centroids go stale and the index needs retraining.
+</p>
+
+<h3 id="pq">Product quantization</h3>
+<p>
+  Jégou, Douze and Schmid split each d-dimensional vector into m sub-vectors of d/m dimensions and train a separate k-means codebook of k<sub>s</sub> centroids for each slot. A vector is stored as m centroid ids, m · log₂ k<sub>s</sub> bits: with the usual k<sub>s</sub> = 256, one byte per slot.
+  The m codebooks together describe k<sub>s</sub><sup>m</sup> possible reconstructions (256⁸ ≈ 1.8 × 10¹⁹ with 8 bytes) while storing only m · k<sub>s</sub> centroids.
+</p>
+<p>
+  Search uses <strong>asymmetric distance computation</strong> (ADC): the query stays exact. For each slot j, precompute a table of the squared distance from the query's j-th sub-vector to all k<sub>s</sub> centroids. The estimated distance to any stored code is then m table lookups and additions:
+</p>
+<p class="ml-formula">d̂(q, x)² = Σ<sub>j=1..m</sub> T<sub>j</sub>[code<sub>j</sub>(x)] ,  T<sub>j</sub>[c] = ‖q<sup>(j)</sup> − μ<sub>j,c</sub>‖²</p>
+<p>
+  That is exactly the squared distance from q to x's reconstruction, so the error comes only from quantizing x. Because the estimates are biased and noisy, systems fetch the top R candidates by d̂ and <strong>re-rank</strong> them with exact distances, when the full vectors are available somewhere (on disk, say).
+  IVF-PQ combines both ideas: PQ-encode the <em>residual</em> x − centroid within each cell, which has smaller spread than x itself, so the same bytes buy more accuracy. Optimized PQ rotates the space first to balance the variance across slots, and scalar quantization (int8 or 4-bit per value) is the simpler alternative when memory pressure is milder.
+</p>
+
+<h3 id="hnsw">HNSW graphs</h3>
+<p>
+  Malkov and Yashunin's hierarchical navigable small world graph links every vector to a few near neighbours and searches by greedy walking: from an entry point, repeatedly move to whichever neighbour is closest to the query.
+  A flat graph needs many hops to cross the dataset, so HNSW stacks layers like a skip list. Each inserted vector draws a top level ℓ = ⌊−ln(U) · m<sub>L</sub>⌋ with U uniform in (0, 1] and m<sub>L</sub> = 1/ln M, so each layer has about 1/M as many nodes as the one below; it appears in every layer from ℓ down to 0.
+</p>
+<ul>
+  <li>
+    <strong>Search:</strong> start at the single entry point on the top layer, walk greedily to the closest node, drop to the next layer and continue from there. On layer 0 run a best-first search that keeps the <code>ef</code> closest nodes seen so far and stops when the nearest unexpanded candidate is farther than the worst of them; return the best k.
+  </li>
+  <li>
+    <strong>Insert:</strong> search for the new vector itself with <code>ef_construction</code> candidates on each of its layers, connect it to up to M of them, and add the reverse links, pruning any neighbour list that grows past M (2M on layer 0).
+  </li>
+  <li>
+    <strong>Neighbour selection heuristic:</strong> take candidates nearest first, and keep one only if it is closer to the new node than to every neighbour already kept. That skips redundant links into a cluster you already reach and keeps links that point in new directions, which is what lets greedy walks escape between clusters.
+  </li>
+</ul>
+<p>
+  Search cost grows roughly logarithmically with n. HNSW gives the best recall for a given latency on most in-memory benchmarks, at the price of storing full vectors plus about 2M links per node, a build that does an ef_construction search per insert, and deletes that need tombstones or repair.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 330" role="img" aria-labelledby="vi-hnsw-title vi-hnsw-desc">
+    <title id="vi-hnsw-title">An HNSW graph on the same points: upper layer and layer 0, with a greedy search route</title>
+    <desc id="vi-hnsw-desc">
+      Left: the {{ plane.layers[1]|length }} points that reached layer 1 or higher, with their layer-1 links; larger dots reached layer 2 or higher. The search for the query at {{ pt(plane.query) }} enters at {{ pt(plane.points[plane.entry]) }}, the only point on the top layer, and hops greedily through the upper layers to {{ pt(plane.points[plane.nearest]) }}.
+      Right: layer 0, where all {{ plane.points|length }} points have up to {{ 2 * e.plane_hnsw_m }} links each; the search finishes here and confirms {{ pt(plane.points[plane.nearest]) }} is the nearest neighbour, after {{ plane.route.distances }} distance computations in total.
+    </desc>
+    <g font-size="12">
+      {% set route = [] %}
+      {% for hops in plane.route.path %}{% for h in hops %}{% if not route or route[-1] != h %}{% set _ = route.append(h) %}{% endif %}{% endfor %}{% endfor %}
+      {% for panel in [1, 0] %}
+      {% set ox = 10 + loop.index0 * 320 %}
+      {% set layer = plane.layers[panel] %}
+      <rect x="{{ ox }}" y="10" width="300" height="300" rx="6" class="d-box" fill-opacity="0.04"></rect>
+      {% for node, links in layer.items() %}
+      {% for nb in links %}{% if nb > node or node not in plane.layers[panel][nb] %}
+      {% set a = plane.points[node] %}{% set b = plane.points[nb] %}
+      <line x1="{{ '%.1f'|format(ox + a[0] * 30) }}" y1="{{ '%.1f'|format(310 - a[1] * 30) }}" x2="{{ '%.1f'|format(ox + b[0] * 30) }}" y2="{{ '%.1f'|format(310 - b[1] * 30) }}" class="d-line" stroke-opacity="0.35"></line>
+      {% endif %}{% endfor %}
+      {% endfor %}
+      {% for node in layer %}
+      {% set p = plane.points[node] %}
+      <circle cx="{{ '%.1f'|format(ox + p[0] * 30) }}" cy="{{ '%.1f'|format(310 - p[1] * 30) }}" r="{{ 6 if plane.levels[node] >= 2 else 4 }}" class="d-box ml-tensor"></circle>
+      {% endfor %}
+      {% if panel == 1 %}
+      <polyline points="{% for h in route %}{{ '%.1f'|format(ox + plane.points[h][0] * 30) }},{{ '%.1f'|format(310 - plane.points[h][1] * 30) }} {% endfor %}" fill="none" stroke-width="3" style="stroke: var(--jj-accent)"></polyline>
+      {% endif %}
+      {% set nn = plane.points[plane.nearest] %}
+      <circle cx="{{ '%.1f'|format(ox + nn[0] * 30) }}" cy="{{ '%.1f'|format(310 - nn[1] * 30) }}" r="7" fill="none" stroke-width="2" style="stroke: var(--jj-accent)"></circle>
+      <rect x="{{ '%.1f'|format(ox - 6 + plane.query[0] * 30) }}" y="{{ '%.1f'|format(304 - plane.query[1] * 30) }}" width="12" height="12" class="d-box ml-op"></rect>
+      <text x="{{ ox + 150 }}" y="326" text-anchor="middle" class="d-muted">{{ "layers ≥ 1 (" ~ layer|length ~ " nodes) with the route" if panel == 1 else "layer 0 (all " ~ layer|length ~ " nodes)" }}</text>
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The upper layers are sparse, so a few long hops cover most of the distance; layer 0 is dense and only has to polish the answer. Greedy routing here reached the true neighbour, but on harder data it can stall, which is what a larger ef protects against.</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead>
+      <tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Coarse quantizer (IVF)</td>
+        <td>nlist centroids (nlist, d); lists of ids</td>
+        <td>k-means on a training sample; each vector goes to its nearest centroid's list. scikit-learn's <code>KMeans</code> is the same algorithm a vector library runs to train it.</td>
+        <td><a href="{{ skl('sklearn/cluster/_kmeans.py', 1191, 1561) }}">_kmeans.py 1191-1561</a></td>
+      </tr>
+      <tr>
+        <td>Assigning to a cell or a code</td>
+        <td>X (n, d), centroids (k, d) → labels (n,)</td>
+        <td>Nearest-centroid assignment, used for adding vectors to IVF lists, for choosing which lists to probe, and for PQ encoding of each slot.</td>
+        <td><a href="{{ skl('sklearn/cluster/_kmeans.py', 1071, 1104) }}">KMeans.predict 1071-1104</a>, <a href="{{ skl('sklearn/cluster/_kmeans.py', 761, 832) }}">_labels_inertia 761-832</a></td>
+      </tr>
+      <tr>
+        <td>Seeding</td>
+        <td>k-means++, 2 + ⌊ln k⌋ local trials</td>
+        <td>Spreads the starting centroids so cells and codebooks cover the data.</td>
+        <td><a href="{{ skl('sklearn/cluster/_kmeans.py', 180, 283) }}">_kmeans.py 180-283</a></td>
+      </tr>
+      <tr>
+        <td>Training on large samples</td>
+        <td>batch_size 1024; <code>partial_fit</code></td>
+        <td>Mini-batch k-means updates centroids from small batches, for training sets too big for full Lloyd iterations.</td>
+        <td><a href="{{ skl('sklearn/cluster/_kmeans.py', 1680, 2320) }}">MiniBatchKMeans 1680-2320</a></td>
+      </tr>
+      <tr>
+        <td>PQ codebooks</td>
+        <td>m codebooks (k<sub>s</sub>, d/m); codes (n, m) of log₂ k<sub>s</sub> bits</td>
+        <td>One k-means per slot of the split vector; ADC tables (m, k<sub>s</sub>) per query.</td>
+        <td>Jégou et al. 2011; trained with <a href="{{ skl('sklearn/cluster/_kmeans.py', 1191, 1561) }}">KMeans</a></td>
+      </tr>
+      <tr>
+        <td>HNSW graph</td>
+        <td>M links per node (2M on layer 0), m<sub>L</sub> = 1/ln M, ef_construction, ef</td>
+        <td>Layered proximity graph searched greedily from the top.</td>
+        <td>Malkov and Yashunin 2018 (no pinned library implements it)</td>
+      </tr>
+      <tr>
+        <td>Exact baseline</td>
+        <td>algorithm "auto", "ball_tree", "kd_tree" or "brute"</td>
+        <td>Ground truth for recall, and the right answer for small collections. Trees prune well only in low dimensions.</td>
+        <td><a href="{{ skl('sklearn/neighbors/_unsupervised.py', 10, 179) }}">NearestNeighbors 10-179</a>, <a href="{{ skl('sklearn/neighbors/_base.py', 756, 959) }}">kneighbors 756-959</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>Why does PQ split the vector into slots instead of running one k-means with a huge number of centroids?</summary>
+  <p>To get the same number of distinct reconstructions from one codebook you would need k<sub>s</sub><sup>m</sup> centroids, about 1.8 × 10¹⁹ for 8 one-byte slots: impossible to train, store or search. Splitting makes the codebook a Cartesian product of m small ones, so training is m small k-means runs, storage is m · k<sub>s</sub> centroids, and a query's distance tables cost m · k<sub>s</sub> sub-distances.</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>Data.</strong> {{ ex.n }} vectors in {{ e.dim }} dimensions, drawn around {{ e.groups }} random centres with standard deviation {{ e.spread }} per coordinate (real embeddings are clustered too), plus {{ e.queries }} queries from the same distribution. Ground truth is the exact top {{ e.k }} by Euclidean distance, which costs {{ ex.n }} distances per query.
+    Recall below is recall@{{ e.k }} averaged over the queries, and cost is distance computations per query, the main term in latency for these indexes.
+  </p>
+
+  <p><strong>IVF</strong> with nlist = {{ e.nlist }}. The lists hold between {{ ex.ivf.sizes[0] }} and {{ ex.ivf.sizes[-1] }} vectors: cells over dense regions are big.</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>nprobe</th><th>Recall@{{ e.k }}</th><th>Distances per query</th><th>Fraction of brute force</th></tr></thead>
+      <tbody>
+        {% for r in ivf %}
+        <tr><td>{{ r.nprobe }}</td><td>{{ f(r.recall) }}</td><td>{{ f(r.distances, 1) }}</td><td>{{ f(r.distances / ex.n, 2) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    One cell finds {{ f(ivf[0].recall * 100, 1) }}% of the neighbours with {{ f(ivf[0].distances / ex.n * 100, 0) }}% of the work; {{ ivf[3].nprobe }} cells find {{ f(ivf[3].recall * 100, 1) }}%. Probing all {{ e.nlist }} is exact but costs more than brute force, since it adds the centroid distances.
+  </p>
+
+  <p>
+    <strong>Product quantization</strong> with k<sub>s</sub> = {{ e.pq_ks }} centroids per slot (4 bits each). The float32 vectors take {{ flat_bytes }} bytes each.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>m slots</th><th>Dims per slot</th><th>Bytes per vector</th><th>Compression</th><th>Mean squared reconstruction error</th><th>Recall, PQ only</th><th>Re-rank top {{ e.rerank[0] }}</th><th>Re-rank top {{ e.rerank[1] }}</th></tr></thead>
+      <tbody>
+        {% for r in pq %}
+        <tr><td>{{ r.m }}</td><td>{{ r.sub }}</td><td>{{ f(r.bytes, 0) }}</td><td>{{ f(flat_bytes / r.bytes, 0) }}×</td><td>{{ f(r.error) }}</td><td>{{ f(r.recall[0]) }}</td><td>{{ f(r.recall[e.rerank[0]]) }}</td><td>{{ f(r.recall[e.rerank[1]]) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    More slots means smaller sub-vectors, lower reconstruction error and better ranking, for more bytes. PQ alone ranks badly at {{ f(flat_bytes / pq[1].bytes, 0) }}× compression ({{ f(pq[1].recall[0]) }}), but its top {{ e.rerank[1] }} candidates contain {{ f(pq[1].recall[e.rerank[1]] * 100, 1) }}% of the true neighbours, so re-ranking those {{ e.rerank[1] }} with exact distances recovers them.
+  </p>
+  <p>
+    <strong>One ADC estimate</strong> with m = 4: the query's nearest stored vector, ({{ f(demo.vector[0], 2) }}, {{ f(demo.vector[1], 2) }}, …, {{ f(demo.vector[-1], 2) }}), is stored as the code {{ demo.code|join(" · ") }}, two bytes. The query's four tables give
+    {% for t in demo.terms %}T<sub>{{ loop.index }}</sub>[{{ demo.code[loop.index0] }}] = {{ f(t) }}{% if not loop.last %}, {% endif %}{% endfor %}, which sum to d̂² = {{ f(demo.approx) }}. The exact squared distance is {{ f(demo.exact) }}: the estimate is off by {{ f(demo.approx - demo.exact) }} because the code's reconstruction is not the vector.
+  </p>
+
+  <p>
+    <strong>HNSW</strong> with M = {{ e.hnsw_m }} and ef_construction = {{ e.ef_construction }}. The layers hold {% for n in ex.hnsw.layer_sizes %}{{ n }}{% if not loop.last %}, {% endif %}{% endfor %} nodes from the bottom up, close to the expected ratio of 1/M = 1/{{ e.hnsw_m }} per layer; layer-0 nodes keep {{ f(ex.hnsw.links0, 1) }} links on average. Building it took {{ "{:,}".format(ex.hnsw.build_distances) }} distance computations.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>ef</th><th>Recall@{{ e.k }}</th><th>Distances per query</th><th>Fraction of brute force</th></tr></thead>
+      <tbody>
+        {% for r in hnsw %}
+        <tr><td>{{ r.ef }}</td><td>{{ f(r.recall) }}</td><td>{{ f(r.distances, 1) }}</td><td>{{ f(r.distances / ex.n, 2) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    At ef = {{ hnsw[1].ef }} HNSW touches {{ f(hnsw[1].distances, 0) }} vectors per query, about the same as IVF's nprobe = {{ ivf[2].nprobe }} ({{ f(ivf[2].distances, 0) }}), and finds {{ f(hnsw[1].recall * 100, 1) }}% of the neighbours against IVF's {{ f(ivf[2].recall * 100, 1) }}%; ef = {{ hnsw[-1].ef }} is exact on these queries at {{ f(hnsw[-1].distances / ex.n * 100, 0) }}% of the brute-force work.
+    The gap grows with n, because HNSW's cost grows roughly with log n and IVF's with √n.
+  </p>
+
+  <p>
+    <strong>At scale.</strong> For {{ "{:,}".format(s.n) }} vectors of {{ s.dim }} dimensions: flat float32 storage needs {{ gb(ex.scale.flat) }}; IVF-Flat adds 8-byte ids for {{ gb(ex.scale.ivf_flat) }}; HNSW with M = {{ s.hnsw_m }} adds about {{ f(2 * s.hnsw_m + s.hnsw_m / (s.hnsw_m - 1), 1) }} four-byte links per vector for {{ gb(ex.scale.hnsw_flat) }}; IVF-PQ with m = {{ s.pq_m }} one-byte slots needs {{ gb(ex.scale.ivf_pq) }}, small enough for one machine, or a GPU.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 300" role="img" aria-labelledby="vi-curve-title vi-curve-desc">
+    <title id="vi-curve-title">Recall against distance computations per query for IVF and HNSW</title>
+    <desc id="vi-curve-desc">
+      A line chart with distance computations per query on the horizontal axis, from 0 to {{ ex.n }}, and recall@{{ e.k }} on the vertical axis, from 0.6 to 1.0. The IVF curve rises from {{ f(ivf[0].recall) }} at {{ f(ivf[0].distances, 0) }} distances to {{ f(ivf[-2].recall) }} at {{ f(ivf[-2].distances, 0) }}.
+      The HNSW curve lies above and to the left, from {{ f(hnsw[0].recall) }} at {{ f(hnsw[0].distances, 0) }} distances to {{ f(hnsw[-1].recall) }} at {{ f(hnsw[-1].distances, 0) }}. A vertical dashed line marks brute force at {{ ex.n }} distances.
+    </desc>
+    <g font-size="12">
+      {% set x0, y0, w, h = 70, 250, 540, 220 %}
+      {% macro px(d) -%}{{ '%.1f'|format(x0 + d / ex.n * w) }}{%- endmacro %}
+      {% macro py(r) -%}{{ '%.1f'|format(y0 - (r - 0.6) / 0.4 * h) }}{%- endmacro %}
+      <line x1="{{ x0 }}" y1="{{ y0 }}" x2="{{ x0 + w }}" y2="{{ y0 }}" class="d-line"></line>
+      <line x1="{{ x0 }}" y1="{{ y0 }}" x2="{{ x0 }}" y2="{{ y0 - h }}" class="d-line"></line>
+      {% for t in [0.6, 0.7, 0.8, 0.9, 1.0] %}
+      <text x="{{ x0 - 8 }}" y="{{ py(t) }}" dy="4" text-anchor="end" class="d-muted">{{ "%.1f"|format(t) }}</text>
+      {% endfor %}
+      {% for t in [0, 200, 400, 600, 800] %}
+      <text x="{{ px(t) }}" y="{{ y0 + 18 }}" text-anchor="middle" class="d-muted">{{ t }}</text>
+      {% endfor %}
+      <line x1="{{ px(ex.n) }}" y1="{{ y0 }}" x2="{{ px(ex.n) }}" y2="{{ y0 - h }}" class="d-line ml-dashed"></line>
+      <text x="{{ px(ex.n) }}" y="{{ y0 - h - 6 }}" text-anchor="end" class="d-muted">brute force</text>
+      <polyline points="{% for r in ivf[:-1] %}{{ px(r.distances) }},{{ py(r.recall) }} {% endfor %}" fill="none" stroke-width="2.5" style="stroke: var(--jj-violet)"></polyline>
+      {% for r in ivf[:-1] %}<circle cx="{{ px(r.distances) }}" cy="{{ py(r.recall) }}" r="4" style="fill: var(--jj-violet)"></circle>{% endfor %}
+      <polyline points="{% for r in hnsw %}{{ px(r.distances) }},{{ py(r.recall) }} {% endfor %}" fill="none" stroke-width="2.5" style="stroke: var(--jj-accent)"></polyline>
+      {% for r in hnsw %}<circle cx="{{ px(r.distances) }}" cy="{{ py(r.recall) }}" r="4" style="fill: var(--jj-accent)"></circle>{% endfor %}
+      <text x="{{ px(ivf[-2].distances) }}" y="{{ py(ivf[-2].recall) }}" dx="8" dy="16" style="fill: var(--jj-violet)">IVF, nprobe {{ ivf[0].nprobe }}–{{ ivf[-2].nprobe }}</text>
+      <text x="{{ px(hnsw[-1].distances) }}" y="{{ py(hnsw[-1].recall) }}" dx="8" dy="16" style="fill: var(--jj-accent)">HNSW, ef {{ hnsw[0].ef }}–{{ hnsw[-1].ef }}</text>
+      <text x="{{ x0 + w / 2 }}" y="{{ y0 + 40 }}" text-anchor="middle">distance computations per query</text>
+      <text x="18" y="{{ y0 - h / 2 }}" transform="rotate(-90 18 {{ y0 - h / 2 }})" text-anchor="middle">recall@{{ e.k }}</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Benchmarks of real indexes draw exactly this plot, usually with queries per second instead of distance counts, and compare curves rather than single points: a method is better only if it is higher at the same cost.</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import numpy as np
+from sklearn.cluster import KMeans
+
+def build_ivf_pq(X, nlist=1024, m=16, ks=256, seed=0):
+    coarse = KMeans(nlist, n_init=1, random_state=seed).fit(X)    # coarse quantizer
+    cell = coarse.labels_
+    R = X - coarse.cluster_centers_[cell]                         # residuals
+    d = X.shape[1] // m
+    books = [KMeans(ks, n_init=1, random_state=seed).fit(R[:, j*d:(j+1)*d]) for j in range(m)]
+    codes = np.stack([b.labels_ for b in books], 1).astype(np.uint8)   # (n, m), 1 byte per slot
+    lists = [np.flatnonzero(cell == c) for c in range(nlist)]
+    return coarse, books, codes, lists
+
+def search(q, coarse, books, codes, lists, k=10, nprobe=16):
+    d = len(q) // len(books)
+    near = np.argsort(((coarse.cluster_centers_ - q) ** 2).sum(1))[:nprobe]
+    ids, est = [], []
+    for c in near:
+        r = q - coarse.cluster_centers_[c]                        # query residual for this cell
+        T = np.stack([((b.cluster_centers_ - r[j*d:(j+1)*d]) ** 2).sum(1)
+                      for j, b in enumerate(books)])              # ADC tables (m, ks)
+        cand = lists[c]
+        est.append(T[np.arange(len(books)), codes[cand]].sum(1))  # m lookups per vector
+        ids.append(cand)
+    ids, est = np.concatenate(ids), np.concatenate(est)
+    top = np.argsort(est)[:k]                                     # re-rank here if raw vectors are kept
+    return ids[top], est[top]</code></pre>
+
+<p>
+  In practice you use a library: FAISS (<code>IndexIVFFlat</code>, <code>IndexIVFPQ</code>, <code>IndexHNSWFlat</code>, with <code>nprobe</code> and <code>efSearch</code> as the search knobs), hnswlib, ScaNN, or a vector database built on one of them. The sketch above is what they do, minus the SIMD, batching and memory layout that make it fast.
+  Tune with a held-out query set and exact ground truth: fix the recall you need (0.9 or 0.95 at k = 10 is common), then pick the cheapest setting that reaches it.
+</p>
+<ul>
+  <li><strong>IVF:</strong> nlist around √n to 16√n, trained on 30 to 256 points per centroid; then raise nprobe until recall is met.</li>
+  <li><strong>PQ:</strong> m sets bytes per vector; d/m between 2 and 8 dimensions per slot works well; k<sub>s</sub> = 256 keeps codes byte-aligned. Re-rank if you can afford to keep or fetch raw vectors.</li>
+  <li><strong>HNSW:</strong> M = 16 to 64 (higher for high-dimensional data and high recall), ef_construction 100 to 500 (build time for graph quality), then ef ≥ k raised until recall is met. ef can change per query; M and ef_construction cannot without a rebuild.</li>
+</ul>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Index</th><th>Memory per vector</th><th>Query work</th><th>Build</th><th>Updates</th><th>Best for</th></tr></thead>
+    <tbody>
+      <tr><td>Flat (brute force)</td><td>4d bytes</td><td>all n, but perfectly regular and GPU-friendly</td><td>none</td><td>trivial</td><td>up to about a million vectors, or exact ground truth</td></tr>
+      <tr><td>IVF-Flat</td><td>4d + id</td><td>nlist + nprobe · n/nlist</td><td>k-means</td><td>add easily; retrain on drift</td><td>large sets with a recall/latency dial</td></tr>
+      <tr><td>IVF-PQ</td><td>m bytes + id</td><td>same, with table lookups</td><td>k-means + m codebooks</td><td>add easily; retrain on drift</td><td>billions of vectors in RAM or on a GPU</td></tr>
+      <tr><td>HNSW</td><td>4d + about 8M bytes of links</td><td>about log n hops × M</td><td>an ef_construction search per insert</td><td>inserts fine; deletes awkward</td><td>low-latency, high-recall search that fits in RAM</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<ul>
+  <li><strong>Recall is not the end goal.</strong> Retrieval feeds a re-ranker or a language model; a recall drop from 0.99 to 0.95 often changes end-task quality very little, while halving latency or memory changes the bill a lot. Measure the end task.</li>
+  <li><strong>Filters break assumptions.</strong> "Nearest neighbours where language = fr" can leave a graph walk stranded among filtered-out nodes or empty most probed cells; systems pre-filter, post-filter with a larger k, or build filter-aware indexes.</li>
+  <li><strong>Distance choice matters.</strong> For cosine similarity, normalize vectors and use inner product or Euclidean distance, which then rank identically (see <a href="/ml-models/similarity-search">similarity search</a>).</li>
+  <li><strong>Disk-based graphs</strong> (DiskANN and relatives) keep compressed vectors in RAM and the graph plus full vectors on SSD, for collections too big for HNSW in memory.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Your HNSW index meets its recall target in testing, but recall drops in production after a month of inserts and deletes. What are likely causes?</summary>
+  <p>Deletes are usually tombstones: deleted nodes still sit in the graph and take up ef slots and hops, and if many neighbours of a region are deleted, live nodes can become hard to reach. The query distribution may also have drifted toward regions where the graph was built with fewer or worse links. Fixes: raise ef, periodically rebuild or repair the graph, and keep monitoring recall against exact search on a sample of live queries.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<p>
+  <a href="/ml-models/clustering">Clustering</a> supplies IVF's cells and PQ's codebooks; <a href="/ml-models/similarity-search">similarity search</a> defines the metrics and the exact baseline; <a href="/ml-models/nearest-neighbors">nearest neighbours</a> covers k-NN as a model and the tree indexes that work in low dimensions.
+</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Malkov and Yashunin. <em>Efficient and Robust Approximate Nearest Neighbor Search Using Hierarchical Navigable Small World Graphs.</em> IEEE TPAMI 2018. <a href="https://arxiv.org/abs/1603.09320">arXiv:1603.09320</a></li>
+  <li>Jégou, Douze and Schmid. <em>Product Quantization for Nearest Neighbor Search.</em> IEEE TPAMI 2011. <a href="https://doi.org/10.1109/TPAMI.2010.57">doi:10.1109/TPAMI.2010.57</a></li>
+  <li>Sivic and Zisserman. <em>Video Google: A Text Retrieval Approach to Object Matching in Videos.</em> ICCV 2003 (inverted files over k-means visual words).</li>
+  <li>Ge, He, Ke and Sun. <em>Optimized Product Quantization.</em> IEEE TPAMI 2014.</li>
+  <li>Johnson, Douze and Jégou. <em>Billion-Scale Similarity Search with GPUs.</em> 2017. <a href="https://arxiv.org/abs/1702.08734">arXiv:1702.08734</a></li>
+  <li>Subramanya, Devvrit, Kadekodi, Krishnaswamy and Simhadri. <em>DiskANN: Fast Accurate Billion-point Nearest Neighbor Search on a Single Node.</em> NeurIPS 2019.</li>
+  <li>Aumüller, Bernhardsson and Faithfull. <em>ANN-Benchmarks: A Benchmarking Tool for Approximate Nearest Neighbor Algorithms.</em> Information Systems 2020. <a href="https://arxiv.org/abs/1807.05614">arXiv:1807.05614</a></li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/cluster/_kmeans.py', 1191, 1561) }}"><code>KMeans</code></a>, <a href="{{ skl('sklearn/cluster/_kmeans.py', 1680, 2320) }}"><code>MiniBatchKMeans</code></a>, <a href="{{ skl('sklearn/neighbors/_unsupervised.py', 10, 179) }}"><code>NearestNeighbors</code></a>.</li>
+</ul>

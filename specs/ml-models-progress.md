@@ -280,8 +280,8 @@ Gaps:
 54. `variational-autoencoders` ✓
 55. `positional-encoding` ✓
 56. `clustering` ✓
-57. `vector-indexes` ← next
-58. `distillation`
+57. `vector-indexes` ✓
+58. `distillation` ← next
 59. `time-series`
 60. `regression-metrics`
 61. `support-vector-machines`
