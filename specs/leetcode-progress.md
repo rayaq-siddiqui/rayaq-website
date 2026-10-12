@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-11 (build run). All 58 pages are ready and the queue is empty. **The next run is the first audit run** (spec §8.1): it looks for one gap to fix, and if none remain it records "complete" and moves this Routine to weekly audits.
+**Last updated:** 2026-10-12 (audit run). All 58 pages are ready and the queue is empty. This audit found and fixed one gap (textbook references), so the Routine stays on its 5-hour schedule. **The next run is another audit run** (spec §8.1): it fixes one gap, and if none remain it records "complete" and moves this Routine to weekly audits.
 
 ## The Routine
 
@@ -139,6 +139,12 @@ build once research is done.
 - **Pull before every change (2026-10-09, owner).** The Routine runs `git pull --rebase
   origin main` before it starts each page or any other development, not only at the start of a
   run, and re-reads this file if anything came in.
+
+- **Audit checks (2026-10-12).** Audit runs render every ready page and check internal links and
+  `#anchors`, problem link format, home and "also uses" problems, the quiz count and the
+  references. Spec §6's textbook list (CLRS, Skiena, Sedgewick & Wayne) is read as all three per
+  page, and `test_ready_page_follows_the_format` now enforces it. Sedgewick & Wayne section
+  numbers were checked against the `Section x.y` headers in the algs4 sources on GitHub.
 
 ## Known gaps and questions for the owner
 
@@ -342,3 +348,16 @@ problems by design; it lists Matchsticks to Square and Partition to K Equal Sum 
 link to it where they mention bitmask DP. Coverage is unchanged at 100% (Blind 75 75/75,
 Grind 169 169/169, NeetCode 150 150/150, NeetCode 250 250/250). Mobile check passed on `/`,
 `/leetcode` and every ready page. Next: the first audit run.
+
+### 2026-10-12 — audit run
+
+First audit run. Rendered all 58 ready pages and the index and checked internal links and anchors,
+problem links, home and "also uses" problems, quiz counts, SVGs and references. One gap: eight
+pages cited only two of spec §6's three textbooks, and two Sedgewick & Wayne citations named
+unrelated sections (`longest-increasing-subsequence` cited 6.4, which covers max flow;
+`constraint-backtracking` cited a "6.1 of the companion text"). Added the missing citations and
+replaced the two wrong ones, and extended the format test to require all three textbooks, NeetCode
+and 3–4 quiz questions on every ready page. No content or helpers changed. Coverage is unchanged at
+100% (Blind 75 75/75, Grind 169 169/169, NeetCode 150 150/150, NeetCode 250 250/250). pytest green
+(653 passed); the phone check passed on `/`, `/leetcode` and every ready page. Because this run found a
+gap, the schedule stays at every 5 hours. Next: another audit run.
