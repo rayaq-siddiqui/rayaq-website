@@ -7545,6 +7545,131 @@ def vae_example():
     }
 
 
+
+POSITION_EXAMPLE = {
+    "d_model": 8,
+    "base": 10000.0,
+    "positions": [0, 1, 2, 5, 20],
+    "offset": 3,
+    "query": [1.0, 0.5, -0.5, 1.0],
+    "key": [0.5, 1.0, 1.0, 0.5],
+    "rope_base": 100.0,
+    "pairs": [(0, 3), (2, 5), (10, 13), (40, 43)],
+    "score_offsets": [0, 1, 2, 4, 8, 16],
+    "alibi_heads": 8,
+    "alibi_length": 6,
+    "alibi_scores": [0.8, 0.1, 0.5, 0.9, 0.3, 0.6],
+    "curve_dims": 64,
+    "curve_pairs": [0, 2, 4, 8],
+    "curve_positions": 40,
+}
+
+
+def sinusoidal_frequencies(d_model, base=10000.0):
+    return [base ** (-2 * i / d_model) for i in range(d_model // 2)]
+
+
+def sinusoidal_encoding(position, d_model, base=10000.0):
+    out = []
+    for w in sinusoidal_frequencies(d_model, base):
+        out += [math.sin(position * w), math.cos(position * w)]
+    return out
+
+
+def rotate_pairs(vec, angles):
+    out = []
+    for i, a in enumerate(angles):
+        x, y = vec[2 * i], vec[2 * i + 1]
+        out += [x * math.cos(a) - y * math.sin(a), x * math.sin(a) + y * math.cos(a)]
+    return out
+
+
+def shift_encoding(encoding, offset, d_model, base=10000.0):
+    return rotate_pairs(encoding, [-offset * w for w in sinusoidal_frequencies(d_model, base)])
+
+
+def _dot(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+
+def sinusoidal_similarity(p, q, d_model, base=10000.0):
+    return _dot(sinusoidal_encoding(p, d_model, base), sinusoidal_encoding(q, d_model, base))
+
+
+def rope(vec, position, base=10000.0):
+    return rotate_pairs(vec, [position * w for w in sinusoidal_frequencies(len(vec), base)])
+
+
+def rope_score(query, key, m, n, base=10000.0):
+    return _dot(rope(query, m, base), rope(key, n, base))
+
+
+def alibi_slopes(heads):
+    start = 2 ** (-8 / heads)
+    return [start ** (i + 1) for i in range(heads)]
+
+
+def alibi_bias(length, slope):
+    return [[-slope * (i - j) + 0.0 if j <= i else None for j in range(length)] for i in range(length)]
+
+
+def alibi_weights(scores, slope):
+    last = len(scores) - 1
+    return softmax_probs([s - slope * (last - j) for j, s in enumerate(scores)])
+
+
+def learned_position_params(max_positions, d_model):
+    return max_positions * d_model
+
+
+def position_example():
+    e = POSITION_EXAMPLE
+    d, base = e["d_model"], e["base"]
+    freqs = sinusoidal_frequencies(d, base)
+    table = [{"pos": p, "pe": sinusoidal_encoding(p, d, base)} for p in e["positions"]]
+    shift_from = e["positions"][2]
+    shifted = shift_encoding(sinusoidal_encoding(shift_from, d, base), e["offset"], d, base)
+    direct = sinusoidal_encoding(shift_from + e["offset"], d, base)
+    q, k, rb = e["query"], e["key"], e["rope_base"]
+    rope_rows = []
+    for m, n in e["pairs"]:
+        rope_rows.append({
+            "m": m, "n": n,
+            "q": rope(q, m, rb), "k": rope(k, n, rb),
+            "score": rope_score(q, k, m, n, rb),
+            "absolute": _dot([a + b for a, b in zip(q, sinusoidal_encoding(m, 4, rb))],
+                             [a + b for a, b in zip(k, sinusoidal_encoding(n, 4, rb))]),
+        })
+    slopes = alibi_slopes(e["alibi_heads"])
+    scores = e["alibi_scores"]
+    return {
+        "freqs": freqs,
+        "wavelengths": [2 * math.pi / w for w in freqs],
+        "table": table,
+        "shift_from": shift_from,
+        "shifted": shifted,
+        "direct": direct,
+        "similarity": [{"offset": k, "value": sinusoidal_similarity(0, k, d, base)} for k in e["score_offsets"]],
+        "rope_freqs": sinusoidal_frequencies(4, rb),
+        "rope_rows": rope_rows,
+        "rope_offsets": [{"offset": n, "score": rope_score(q, k, 0, n, rb)} for n in e["score_offsets"]],
+        "plain_score": _dot(q, k),
+        "slopes": slopes,
+        "bias": alibi_bias(e["alibi_length"], slopes[0]),
+        "alibi_rows": [
+            {"head": None, "slope": 0.0, "weights": softmax_probs(scores)},
+            {"head": 1, "slope": slopes[0], "weights": alibi_weights(scores, slopes[0])},
+            {"head": 3, "slope": slopes[2], "weights": alibi_weights(scores, slopes[2])},
+            {"head": e["alibi_heads"], "slope": slopes[-1], "weights": alibi_weights(scores, slopes[-1])},
+        ],
+        "curves": [
+            {"pair": i, "freq": sinusoidal_frequencies(e["curve_dims"], base)[i],
+             "points": [(p / 2, math.sin(p / 2 * sinusoidal_frequencies(e["curve_dims"], base)[i])) for p in range(2 * e["curve_positions"] + 1)]}
+            for i in e["curve_pairs"]
+        ],
+        "gpt2_table": learned_position_params(1024, 768),
+    }
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -8074,6 +8199,8 @@ def render(slug, render_template):
         "vae_example": vae_example,
         "vae_settings": VAE_EXAMPLE,
         "conv_transpose_output_size": conv_transpose_output_size,
+        "position_example": position_example,
+        "position_settings": POSITION_EXAMPLE,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

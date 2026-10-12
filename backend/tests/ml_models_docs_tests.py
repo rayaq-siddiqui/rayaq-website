@@ -3281,3 +3281,72 @@ def test_normal_curve_samples_the_density():
     assert [z for z, _ in curve] == pytest.approx([-3, -2, -1, 0, 1, 2, 3])
     assert curve[3][1] == pytest.approx(1 / math.sqrt(2 * math.pi))
     assert curve[0][1] == pytest.approx(curve[-1][1])
+
+
+def test_sinusoidal_encoding_follows_the_paper_formula():
+    d, base = 8, 10000.0
+    assert ml_models_docs.sinusoidal_frequencies(d, base) == pytest.approx([1.0, 0.1, 0.01, 0.001])
+    for pos in [0, 1, 7, 33]:
+        pe = ml_models_docs.sinusoidal_encoding(pos, d, base)
+        for i in range(d // 2):
+            assert pe[2 * i] == pytest.approx(math.sin(pos / base ** (2 * i / d)))
+            assert pe[2 * i + 1] == pytest.approx(math.cos(pos / base ** (2 * i / d)))
+    wavelengths = [2 * math.pi / w for w in ml_models_docs.sinusoidal_frequencies(512, base)]
+    assert wavelengths[0] == pytest.approx(2 * math.pi)
+    assert 0.9 * 10000 * 2 * math.pi < wavelengths[-1] < 10000 * 2 * math.pi
+
+
+def test_shifting_a_sinusoidal_encoding_is_a_fixed_rotation():
+    d = 16
+    for pos in [0, 3, 50]:
+        for offset in [1, 4, -2]:
+            shifted = ml_models_docs.shift_encoding(ml_models_docs.sinusoidal_encoding(pos, d), offset, d)
+            assert shifted == pytest.approx(ml_models_docs.sinusoidal_encoding(pos + offset, d), abs=1e-12)
+    e = ml_models_docs.position_example()
+    assert e["shifted"] == pytest.approx(e["direct"], abs=1e-12)
+
+
+def test_sinusoidal_similarity_depends_only_on_the_offset():
+    d = 8
+    freqs = ml_models_docs.sinusoidal_frequencies(d)
+    for k in [0, 1, 5, 12]:
+        expected = sum(math.cos(w * k) for w in freqs)
+        for p in [0, 9, 100]:
+            assert ml_models_docs.sinusoidal_similarity(p, p + k, d) == pytest.approx(expected)
+    assert ml_models_docs.sinusoidal_similarity(0, 0, d) == pytest.approx(d / 2)
+
+
+def test_rope_rotates_without_changing_length_and_scores_depend_on_offset():
+    q, k = [1.0, 0.5, -0.5, 1.0], [0.5, 1.0, 1.0, 0.5]
+    assert ml_models_docs.rope(q, 0, 100.0) == pytest.approx(q)
+    for pos in [1, 6, 41]:
+        rotated = ml_models_docs.rope(q, pos, 100.0)
+        assert sum(x * x for x in rotated) == pytest.approx(sum(x * x for x in q))
+    for m, n in [(0, 3), (7, 10), (100, 103), (5, 2)]:
+        assert ml_models_docs.rope_score(q, k, m, n, 100.0) == pytest.approx(
+            sum(a * b for a, b in zip(q, ml_models_docs.rope(k, n - m, 100.0))))
+    e = ml_models_docs.position_example()
+    scores = [r["score"] for r in e["rope_rows"]]
+    assert scores == pytest.approx([scores[0]] * len(scores), abs=1e-12)
+    absolute = [r["absolute"] for r in e["rope_rows"]]
+    assert max(absolute) - min(absolute) > 1.0
+    assert e["rope_offsets"][0]["score"] == pytest.approx(e["plain_score"])
+
+
+def test_alibi_slopes_and_biases_follow_the_paper():
+    assert ml_models_docs.alibi_slopes(8) == pytest.approx([2.0 ** -(i + 1) for i in range(8)])
+    sixteen = ml_models_docs.alibi_slopes(16)
+    assert sixteen[0] == pytest.approx(2 ** -0.5)
+    assert sixteen[-1] == pytest.approx(2.0 ** -8)
+    bias = ml_models_docs.alibi_bias(4, 0.5)
+    assert bias[3] == [-1.5, -1.0, -0.5, 0.0]
+    assert bias[0][1:] == [None, None, None]
+    flat = ml_models_docs.alibi_weights([0.0] * 5, 0.5)
+    assert flat == sorted(flat)
+    assert sum(flat) == pytest.approx(1.0)
+    e = ml_models_docs.position_example()
+    plain, steep, mid, gentle = e["alibi_rows"]
+    assert plain["weights"] == pytest.approx(ml_models_docs.softmax_probs(ml_models_docs.POSITION_EXAMPLE["alibi_scores"]))
+    assert gentle["weights"] == pytest.approx(plain["weights"], abs=0.01)
+    assert steep["weights"][-1] > 2 * plain["weights"][-1]
+    assert ml_models_docs.learned_position_params(1024, 768) == 786432
