@@ -555,7 +555,7 @@ PAGES = [
             "sklearn:sklearn/cluster/_dbscan.py",
             "sklearn:sklearn/mixture/_gaussian_mixture.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "pca",
@@ -7927,6 +7927,7 @@ def cluster_example():
     sil = silhouette_samples(pts, final["labels"])
     return {
         "points": pts,
+        "ln_n": math.log(len(pts)),
         "truth": truth,
         "with_outliers": with_outliers,
         "bad": bad,

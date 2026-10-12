@@ -1,0 +1,409 @@
+{% set ex = cluster_example() %}
+{% set e = cluster_settings %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(0.0 if x|abs < 0.5 * 10 ** (-n) else x)|replace("-", "−") }}{%- endmacro %}
+{% macro pt(p, n=2) -%}({{ f(p[0], n) }}, {{ f(p[1], n) }}){%- endmacro %}
+{% set colors = ["--jj-accent", "--jj-violet", "--jj-amber"] %}
+{% set bad = ex.bad %}
+{% set good = ex.good %}
+{% set final = ex.final %}
+<header class="jj-header">
+  <h1>Clustering</h1>
+  <p class="tagline">
+    Clustering finds groups in data that nobody labelled. This page builds the three workhorses from scratch on one small dataset: k-means (Lloyd's algorithm, k-means++ seeding, inertia), DBSCAN (density, core points and noise) and Gaussian mixtures (soft assignments fitted by EM),
+    then shows how to choose the number of clusters and how to tell whether a clustering is any good. Every number is computed, and the scikit-learn links point at the code that does the same thing.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  You have customer records, documents or embedding vectors and no labels. You want to know whether they fall into natural groups, how many, and which point belongs where, so you can segment customers, deduplicate near-copies, compress a dataset into a few representatives, or build the coarse partitions that a vector index searches.
+</p>
+<p>
+  "Natural groups" is not one well-defined thing, which is why there are several algorithms. Should a group be a compact ball around a centre, a dense region of any shape, or a bump in a probability density? Should every point belong somewhere, or can some be noise? Can a point belong partly to two groups?
+  And with no labels to score against, how do you even know you got it right? Each algorithm below answers these questions differently.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  <strong>k-means</strong> is the "post offices" picture: place k offices so that the total squared walking distance from every house to its nearest office is as small as possible. Alternate two easy steps: every house goes to its nearest office, then every office moves to the middle of its houses. Repeat until nothing moves.
+  It always finds compact, roughly round groups, even when the data has none.
+</p>
+<p>
+  <strong>DBSCAN</strong> is the "crowds" picture: a point standing in a crowd (enough neighbours within a fixed radius) is a core point, crowds that touch merge into one cluster, people at the edge of a crowd join it, and loners are noise. It finds groups of any shape and refuses to force outliers into a cluster, but needs one density scale for the whole dataset.
+</p>
+<p>
+  A <strong>Gaussian mixture</strong> is the "overlapping spotlights" picture: the data was drawn from k bell-shaped blobs, each with its own centre, shape and size. A point between two spotlights is lit by both, so it belongs, say, 70% to one and 30% to the other. That is a soft version of k-means that also learns each cluster's spread and orientation.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 300" role="img" aria-labelledby="cl-starts-title cl-starts-desc">
+    <title id="cl-starts-title">k-means from a bad start and from k-means++ seeding</title>
+    <desc id="cl-starts-desc">
+      Two scatter plots of the same {{ ex.points|length }} points, which come from three blobs: bottom left, bottom right and top middle. Left: Lloyd's algorithm started with one centre in the bottom-left blob and two in the top blob.
+      It converges with the two bottom blobs merged under one centre at {{ pt(bad[-1].centers[0]) }} and the top blob split in two; inertia {{ f(bad[-1].inertia, 1) }}.
+      Right: started from k-means++ seeds, it finds one centre per blob; inertia {{ f(final.inertia, 1) }}. Crosses mark the final centres and colours mark the assigned cluster.
+    </desc>
+    <g font-size="12">
+      {% for run in [bad[-1], final] %}
+      {% set ox = 20 + loop.index0 * 320 %}
+      <rect x="{{ ox }}" y="10" width="290" height="250" rx="6" class="d-box" fill-opacity="0.04"></rect>
+      {% for p in ex.points %}
+      <circle cx="{{ '%.1f'|format(ox + 10 + p[0] * 30) }}" cy="{{ '%.1f'|format(255 - p[1] * 28) }}" r="4" style="fill: var({{ colors[run.labels[loop.index0]] }})"></circle>
+      {% endfor %}
+      {% for c in run.centers %}
+      {% set cx = ox + 10 + c[0] * 30 %}
+      {% set cy = 255 - c[1] * 28 %}
+      <path d="M{{ '%.1f'|format(cx - 7) }} {{ '%.1f'|format(cy - 7) }} L{{ '%.1f'|format(cx + 7) }} {{ '%.1f'|format(cy + 7) }} M{{ '%.1f'|format(cx - 7) }} {{ '%.1f'|format(cy + 7) }} L{{ '%.1f'|format(cx + 7) }} {{ '%.1f'|format(cy - 7) }}" stroke-width="3" class="d-line" fill="none"></path>
+      {% endfor %}
+      <text x="{{ ox + 145 }}" y="280" text-anchor="middle">{{ "bad start: stuck" if loop.first else "k-means++ start" }}</text>
+      <text x="{{ ox + 145 }}" y="296" text-anchor="middle" class="d-muted">inertia {{ f(run.inertia, 1) }}</text>
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Both runs are fixed points of Lloyd's algorithm: no point wants to switch centre and no centre wants to move. Only one is the good answer, which is why the starting centres matter.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="kmeans">k-means and Lloyd's algorithm</h3>
+<p>Given points x<sub>1</sub> … x<sub>n</sub> and a number k, k-means looks for centres μ<sub>1</sub> … μ<sub>k</sub> minimizing the <em>inertia</em>, the within-cluster sum of squares:</p>
+<p class="ml-formula">inertia = Σ<sub>i</sub> min<sub>j</sub> ‖x<sub>i</sub> − μ<sub>j</sub>‖²</p>
+<p>
+  Finding the exact minimum is NP-hard, so everyone uses Lloyd's algorithm, a local search with two steps:
+</p>
+<ol>
+  <li><strong>Assign:</strong> give each point the label of its nearest centre (a <a href="/ml-models/nearest-neighbors">nearest-neighbour</a> query against k points).</li>
+  <li><strong>Update:</strong> move each centre to the mean of its points, the position that minimizes that cluster's squared distances.</li>
+</ol>
+<p>
+  Each step can only lower the inertia or leave it unchanged, and there are finitely many ways to label the points, so the loop stops at a fixed point. That is a <em>local</em> minimum: the picture above shows one with inertia seven times the best.
+  Each iteration costs O(n·k·d). scikit-learn stops when the centres' total squared shift falls below <code>tol</code> times the data's mean per-feature variance, or after <code>max_iter</code> = 300 rounds; an empty cluster gets re-seeded with a far-away point.
+  Its <code>algorithm="elkan"</code> option gives the same answer faster on some data by using the triangle inequality to skip distance computations.
+</p>
+
+<h3 id="kmeans-plusplus">k-means++ seeding</h3>
+<p>
+  Arthur and Vassilvitskii pick starting centres one at a time: the first uniformly at random, then each next centre with probability proportional to D(x)², the squared distance from x to its nearest already-chosen centre:
+</p>
+<p class="ml-formula">P(choose x) = D(x)² / Σ<sub>x′</sub> D(x′)²</p>
+<p>
+  Points far from every current centre, likely in an uncovered cluster, are favoured, while outliers are only occasionally picked because they are few. The seeding alone is guaranteed to be within O(log k) of the optimal inertia in expectation, and Lloyd's iterations then improve it.
+  scikit-learn uses a greedy variant: at each step it draws 2 + ⌊ln k⌋ candidates and keeps the one that lowers the inertia most. Because restarts are still cheap insurance, <code>KMeans</code> runs <code>n_init</code> seedings and keeps the lowest inertia; with k-means++ the default <code>n_init="auto"</code> means one run, with random seeding ten.
+</p>
+
+<h3 id="choosing-k">Choosing k</h3>
+<p>
+  Inertia always falls as k grows (k = n gives zero), so it cannot choose k by itself. Three common tools:
+</p>
+<ul>
+  <li><strong>Elbow:</strong> plot inertia against k and look for the point where adding a cluster stops paying off much. Simple, but the elbow is often vague.</li>
+  <li><strong>Silhouette:</strong> for each point, a = mean distance to the other points in its own cluster, b = mean distance to the points of the nearest other cluster, and s = (b − a) / max(a, b). s is near 1 for a well-placed point, near 0 on a boundary, negative if it is probably in the wrong cluster; a point alone in its cluster gets 0. Pick the k with the highest mean s.</li>
+  <li><strong>BIC for mixtures:</strong> BIC = −2 · log-likelihood + p · ln n, where p counts free parameters. More components raise the likelihood but pay ln n per parameter; pick the lowest BIC.</li>
+</ul>
+<p>
+  Domain knowledge beats all three. If you need 5 customer segments for 5 sales teams, k is 5. The worked example below shows the three criteria agreeing, which happens when the clusters really are separate blobs; on real data they often disagree.
+</p>
+
+<h3 id="dbscan">DBSCAN</h3>
+<p>
+  Ester, Kriegel, Sander and Xu define clusters by density with two parameters: a radius ε (<code>eps</code>) and a count <code>min_samples</code>.
+</p>
+<ul>
+  <li>A <strong>core point</strong> has at least min_samples points, itself included, within distance ε.</li>
+  <li>A <strong>border point</strong> is not core but lies within ε of a core point.</li>
+  <li><strong>Noise</strong> is everything else, labelled −1.</li>
+</ul>
+<p>
+  A cluster is a maximal set of core points connected through ε-neighbourhoods, plus their border points. scikit-learn computes every point's ε-neighbourhood with a radius query, marks the core points, then runs a depth-first search from each unlabelled core point, expanding only through core points.
+  There is no k: the number of clusters falls out of the density. Clusters can have any shape. The catch is the single ε: clusters of very different densities cannot all be captured at once, and memory can grow as O(n²) when ε is large. HDBSCAN (in <code>sklearn.cluster</code>) varies the density threshold to fix that.
+  A border point within ε of two clusters' core points goes to whichever cluster the search reaches first.
+</p>
+
+<h3 id="gmm">Gaussian mixtures and EM</h3>
+<p>A Gaussian mixture models the data's density as a weighted sum of k Gaussians with weights π<sub>j</sub>, means μ<sub>j</sub> and covariances Σ<sub>j</sub>:</p>
+<p class="ml-formula">p(x) = Σ<sub>j</sub> π<sub>j</sub> · N(x; μ<sub>j</sub>, Σ<sub>j</sub>)</p>
+<p>
+  Maximizing the likelihood directly is awkward because each point's cluster is unknown. Expectation–maximization (Dempster, Laird and Rubin) alternates two steps, the soft analogue of Lloyd's:
+</p>
+<ol>
+  <li><strong>E-step:</strong> compute each point's <em>responsibilities</em>, the posterior probability of each component, r<sub>ij</sub> = π<sub>j</sub> N(x<sub>i</sub>; μ<sub>j</sub>, Σ<sub>j</sub>) / Σ<sub>l</sub> π<sub>l</sub> N(x<sub>i</sub>; μ<sub>l</sub>, Σ<sub>l</sub>), in log space for stability.</li>
+  <li><strong>M-step:</strong> re-estimate each component from responsibility-weighted points: N<sub>j</sub> = Σ<sub>i</sub> r<sub>ij</sub>, π<sub>j</sub> = N<sub>j</sub>/n, μ<sub>j</sub> = Σ<sub>i</sub> r<sub>ij</sub> x<sub>i</sub> / N<sub>j</sub>, Σ<sub>j</sub> = Σ<sub>i</sub> r<sub>ij</sub>(x<sub>i</sub> − μ<sub>j</sub>)(x<sub>i</sub> − μ<sub>j</sub>)ᵀ / N<sub>j</sub>, plus a small <code>reg_covar</code> on the diagonal so a collapsing component cannot reach zero variance.</li>
+</ol>
+<p>
+  Each round never lowers the log-likelihood, and like Lloyd's it stops at a local optimum. scikit-learn initializes the responsibilities from a k-means run by default and stops when the mean log-likelihood changes by less than <code>tol</code> = 10⁻³.
+  With a full covariance per component in d dimensions, the parameter count is k·d(d+1)/2 + k·d + (k − 1); <code>covariance_type</code> can be <code>"diag"</code>, <code>"tied"</code> or <code>"spherical"</code> to cut it.
+  k-means is the limit of a mixture with equal weights and shared spherical covariances shrinking to zero, where responsibilities harden to 0 or 1.
+</p>
+
+<h3 id="evaluating">Evaluating a clustering</h3>
+<p>
+  With no ground truth, use <em>internal</em> scores that reward tight, well-separated clusters: the silhouette above, the Davies–Bouldin index (lower is better) or the Calinski–Harabasz score (higher is better). All of them favour round, convex clusters, so they will rate DBSCAN's correct answer on curved data poorly.
+  When labels exist for a sample, use <em>external</em> scores. The adjusted Rand index (ARI) counts pairs of points that both clusterings put together or apart, corrected so a random labelling scores about 0 and an identical one scores 1, whatever the cluster names; normalized mutual information is the information-theoretic alternative.
+  Finally, look at the clusters: plot them, read samples from each, and check whether they are stable across seeds and subsamples.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead>
+      <tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>KMeans</code></td>
+        <td>n_clusters 8, init "k-means++", n_init "auto", max_iter 300, tol 1e-4; cluster_centers_ (k, d), labels_ (n,), inertia_</td>
+        <td>The estimator. <code>fit</code> runs n_init seedings and keeps the lowest inertia.</td>
+        <td><a href="{{ skl('sklearn/cluster/_kmeans.py', 1191, 1561) }}">_kmeans.py 1191-1561</a>, <a href="{{ skl('sklearn/cluster/_kmeans.py', 1502, 1538) }}">1502-1538</a></td>
+      </tr>
+      <tr>
+        <td><code>_kmeans_plusplus</code></td>
+        <td>n_local_trials = 2 + ⌊ln k⌋</td>
+        <td>Greedy k-means++: sample candidates by D², keep the one that lowers the potential most.</td>
+        <td><a href="{{ skl('sklearn/cluster/_kmeans.py', 180, 283) }}">_kmeans.py 180-283</a></td>
+      </tr>
+      <tr>
+        <td><code>_kmeans_single_lloyd</code>, <code>lloyd_iter_chunked_dense</code></td>
+        <td>X (n, d), centers (k, d) → labels, inertia, centers</td>
+        <td>Lloyd's loop; one Cython pass does the assign and the update, and the loop stops when the squared centre shift is within tolerance.</td>
+        <td><a href="{{ skl('sklearn/cluster/_kmeans.py', 630, 760) }}">_kmeans.py 630-760</a>, <a href="{{ skl('sklearn/cluster/_k_means_lloyd.pyx', 23, 165) }}">_k_means_lloyd.pyx 23-165</a></td>
+      </tr>
+      <tr>
+        <td><code>_tolerance</code>, <code>_inertia_dense</code></td>
+        <td>tol × mean(var(X, axis=0)); Σ w<sub>i</sub>‖x<sub>i</sub> − μ<sub>label</sub>‖²</td>
+        <td>The scale-aware stopping threshold and the weighted inertia.</td>
+        <td><a href="{{ skl('sklearn/cluster/_kmeans.py', 285, 294) }}">_kmeans.py 285-294</a>, <a href="{{ skl('sklearn/cluster/_k_means_common.pyx', 94, 124) }}">_k_means_common.pyx 94-124</a></td>
+      </tr>
+      <tr>
+        <td><code>DBSCAN.fit</code>, <code>dbscan_inner</code></td>
+        <td>eps 0.5, min_samples 5 (self included); labels_ with −1 for noise, core_sample_indices_</td>
+        <td>Radius-neighbour query, core test <code>n_neighbors &gt;= min_samples</code>, then a depth-first search that expands only through core points.</td>
+        <td><a href="{{ skl('sklearn/cluster/_dbscan.py', 397, 476) }}">_dbscan.py 397-476</a>, <a href="{{ skl('sklearn/cluster/_dbscan_inner.pyx', 11, 41) }}">_dbscan_inner.pyx 11-41</a></td>
+      </tr>
+      <tr>
+        <td><code>GaussianMixture</code></td>
+        <td>n_components 1, covariance_type "full", tol 1e-3, reg_covar 1e-6, max_iter 100, init_params "kmeans"; weights_ (k,), means_ (k, d), covariances_ (k, d, d)</td>
+        <td>The mixture estimator; <code>predict_proba</code> returns responsibilities.</td>
+        <td><a href="{{ skl('sklearn/mixture/_gaussian_mixture.py', 556, 1005) }}">_gaussian_mixture.py 556-1005</a></td>
+      </tr>
+      <tr>
+        <td><code>_e_step</code>, <code>_m_step</code>, EM loop</td>
+        <td>log_resp (n, k)</td>
+        <td>E-step via log-sum-exp; M-step via <code>_estimate_gaussian_parameters</code>; the loop stops when the lower bound changes by less than tol.</td>
+        <td><a href="{{ skl('sklearn/mixture/_base.py', 314, 333) }}">_base.py 314-333</a>, <a href="{{ skl('sklearn/mixture/_gaussian_mixture.py', 883, 901) }}">_gaussian_mixture.py 883-901</a>, <a href="{{ skl('sklearn/mixture/_base.py', 251, 292) }}">_base.py 251-292</a></td>
+      </tr>
+      <tr>
+        <td><code>_n_parameters</code>, <code>bic</code></td>
+        <td>full: k·d(d+1)/2 + k·d + k − 1</td>
+        <td>−2 · score · n + p · ln n, lower is better.</td>
+        <td><a href="{{ skl('sklearn/mixture/_gaussian_mixture.py', 945, 980) }}">_gaussian_mixture.py 945-980</a></td>
+      </tr>
+      <tr>
+        <td><code>silhouette_samples</code>, <code>silhouette_score</code>, <code>adjusted_rand_score</code></td>
+        <td>X (n, d), labels (n,) → (n,) or float</td>
+        <td>(b − a)/max(a, b) per point, 0 for singletons; the mean; pair-counting agreement with chance correction.</td>
+        <td><a href="{{ skl('sklearn/metrics/cluster/_unsupervised.py', 211, 323) }}">_unsupervised.py 211-323</a>, <a href="{{ skl('sklearn/metrics/cluster/_unsupervised.py', 59, 146) }}">59-146</a>, <a href="{{ skl('sklearn/metrics/cluster/_supervised.py', 360, 472) }}">_supervised.py 360-472</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>Why does the k-means update step use the mean, and not, say, the median?</summary>
+  <p>Because the objective is squared Euclidean distance, and the point minimizing Σ‖x − μ‖² over a set is exactly its mean (set the gradient 2Σ(μ − x) to zero). Minimizing plain distances instead would call for the geometric median, and absolute distances per coordinate for the coordinate-wise median: that is k-medians, a different algorithm that is less sensitive to outliers.</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>Data.</strong> {{ ex.points|length }} points, {{ e.per_blob }} drawn from each of three Gaussian blobs centred at {% for c in e.centers %}{{ pt(c, 1) }}{% if not loop.last %}, {% endif %}{% endfor %} with standard deviation {{ e.spread }}, rounded to one decimal (seed {{ e.seed }}).
+    DBSCAN also gets the two outliers {% for o in e.outliers %}{{ pt(o, 1) }}{% if not loop.last %} and {% endif %}{% endfor %}.
+  </p>
+  <p>
+    <strong>Lloyd from a bad start.</strong> Start with centres at points {% for i in e.bad_init %}{{ i }} {{ pt(ex.points[i], 1) }}{% if not loop.last %}, {% endif %}{% endfor %}: one in the bottom-left blob and two in the top blob.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Iteration</th><th>Centre 1</th><th>Centre 2</th><th>Centre 3</th><th>Inertia</th></tr></thead>
+      <tbody>
+        {% for h in bad %}
+        <tr><td>{{ loop.index0 }}</td>{% for c in h.centers %}<td>{{ pt(c) }}</td>{% endfor %}<td>{{ f(h.inertia, 2) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The first assignment sends all 24 bottom points to centre 1, which moves to {{ pt(bad[1].centers[0]) }}, halfway between the two bottom blobs. The two top centres split the top blob. Inertia falls every round and settles at {{ f(bad[-1].inertia, 2) }}: a fixed point, and a poor one. Its ARI against the true blobs is {{ f(ex.ari_bad) }}.
+  </p>
+  <p>
+    <strong>k-means++ from point {{ e.plusplus_first }}.</strong> With the first centre at {{ pt(ex.points[e.plusplus_first], 1) }}, the points in the far blobs have the largest D²; the bottom-left blob's points have D² below 4 and together get only {{ f(ex.plusplus.steps[0].probs[:e.per_blob]|sum) }} of the probability.
+    Drawing u = {{ e.plusplus_draws[0] }} picks point {{ ex.plusplus.steps[0].pick }} {{ pt(ex.points[ex.plusplus.steps[0].pick], 1) }} (its own probability {{ f(ex.plusplus.steps[0].probs[ex.plusplus.steps[0].pick]) }}); with D² now measured to the nearer of two centres, u = {{ e.plusplus_draws[1] }} picks point {{ ex.plusplus.steps[1].pick }} {{ pt(ex.points[ex.plusplus.steps[1].pick], 1) }}.
+    One seed lands in each blob, and Lloyd's algorithm needs {{ good|length - 1 }} update{{ "s" if good|length > 2 else "" }} to reach inertia {{ f(final.inertia, 2) }}, with centres {% for c in final.centers %}{{ pt(c) }}{% if not loop.last %}, {% endif %}{% endfor %} and ARI {{ f(ex.ari_kmeans) }}.
+  </p>
+  <p><strong>Choosing k.</strong> Best of {{ e.seeds }} k-means++ runs for each k, and a full-covariance mixture initialized from it:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>k</th><th>Inertia</th><th>Mean silhouette</th><th>Mixture parameters</th><th>Mean log-likelihood</th><th>BIC</th></tr></thead>
+      <tbody>
+        {% for r in ex.sweep %}
+        <tr><td>{{ r.k }}</td><td>{{ f(r.inertia, 1) }}</td><td>{{ f(r.silhouette) if r.silhouette is not none else "—" }}</td><td>{{ r.params }}</td><td>{{ f(r.log_likelihood) }}</td><td>{{ f(r.bic, 1) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Inertia drops by {{ f(ex.sweep[1].inertia - ex.sweep[2].inertia, 1) }} from k = 2 to 3 but only {{ f(ex.sweep[2].inertia - ex.sweep[3].inertia, 1) }} from 3 to 4: a sharp elbow at 3. The silhouette peaks at k = {{ ex.best_k_silhouette }} and the BIC bottoms out at k = {{ ex.best_k_bic }}, even though the log-likelihood keeps rising: the extra 6 parameters per component cost 6 · ln {{ ex.points|length }} = {{ f(6 * ex.ln_n, 1) }} BIC each.
+    At k = 3 the clusters' mean silhouettes are {% for s in ex.silhouette_by_cluster %}{{ f(s) }}{% if not loop.last %}, {% endif %}{% endfor %}, and the worst single point scores {{ f(ex.silhouette_samples|min) }}.
+  </p>
+  <p>
+    <strong>Gaussian mixture.</strong> EM started from the bad k-means labels climbs from a mean log-likelihood of {{ f(ex.em.log_likelihoods[0]) }} to {{ f(ex.em.log_likelihood) }} and stops there, another local optimum. Started from the good labels, it reaches {{ f(ex.gmm.log_likelihood) }}.
+    Here is what the good mixture says about three new points, next to the hard k-means answer:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Point</th><th>k-means cluster</th><th>P(bottom left)</th><th>P(top)</th><th>P(bottom right)</th></tr></thead>
+      <tbody>
+        {% for q in ex.queries %}
+        <tr><td>{{ pt(q.point, 1) }}</td><td>{{ ["bottom left", "top", "bottom right"][q.kmeans] }}</td>{% for p in q.proba %}<td>{{ f(p) }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    {{ pt(ex.queries[1].point, 1) }} is nearer the bottom-left centre, so k-means assigns it there with full confidence; the mixture gives the bottom-right blob {{ f(ex.queries[1].proba[2]) }} because that blob is wider along x (variance {{ f(ex.gmm.covs[2][0][0]) }} against {{ f(ex.gmm.covs[0][0][0]) }}).
+  </p>
+  <p>
+    <strong>DBSCAN</strong> with ε = {{ e.eps }} and min_samples = {{ e.min_samples }} on all {{ ex.with_outliers|length }} points finds {{ (ex.dbscan.labels|max) + 1 }} clusters with {{ ex.dbscan.kinds|select("equalto", "core")|list|length }} core points, {{ ex.dbscan.kinds|select("equalto", "border")|list|length }} border points and {{ ex.dbscan.kinds|select("equalto", "noise")|list|length }} noise points: both outliers, and point 7 {{ pt(ex.points[7], 1) }}, the bottom-left blob's straggler, with only {{ ex.dbscan.neighbors[7] }} point within ε (itself).
+    Against the true blobs its ARI is {{ f(ex.ari_dbscan) }}, the gap being that one straggler.
+  </p>
+  <p>
+    <strong>Curved clusters.</strong> On two interleaved half-circles of {{ e.moon_points }} points each, the best of {{ e.seeds }} k-means runs cuts straight across both (ARI {{ f(ex.moons_kmeans.ari) }}), while DBSCAN with ε = {{ e.moons_eps }} and min_samples = {{ e.moons_min_samples }} follows each arc (ARI {{ f(ex.moons_dbscan.ari) }}).
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 300" role="img" aria-labelledby="cl-dbscan-title cl-dbscan-desc">
+    <title id="cl-dbscan-title">DBSCAN core, border and noise points, and k-means against DBSCAN on curved clusters</title>
+    <desc id="cl-dbscan-desc">
+      Left: the {{ ex.with_outliers|length }} points clustered by DBSCAN with ε = {{ e.eps }}. Filled dots are core points, hollow dots are border points and red crosses are noise, including the two far outliers. A dashed circle of radius ε surrounds one core point.
+      Right, top: two interleaved half-circles split by k-means, which draws a straight boundary and mixes the arcs. Right, bottom: the same points split by DBSCAN, which assigns each arc to its own cluster.
+    </desc>
+    <g font-size="12">
+      <rect x="10" y="10" width="300" height="270" rx="6" class="d-box" fill-opacity="0.04"></rect>
+      {% for p in ex.with_outliers %}
+      {% set x = 20 + p[0] * 30 %}
+      {% set y = 270 - p[1] * 28 %}
+      {% set kind = ex.dbscan.kinds[loop.index0] %}
+      {% if kind == "noise" %}
+      <path d="M{{ '%.1f'|format(x - 5) }} {{ '%.1f'|format(y - 5) }} L{{ '%.1f'|format(x + 5) }} {{ '%.1f'|format(y + 5) }} M{{ '%.1f'|format(x - 5) }} {{ '%.1f'|format(y + 5) }} L{{ '%.1f'|format(x + 5) }} {{ '%.1f'|format(y - 5) }}" stroke-width="2" fill="none" style="stroke: var(--jj-red)"></path>
+      {% elif kind == "core" %}
+      <circle cx="{{ '%.1f'|format(x) }}" cy="{{ '%.1f'|format(y) }}" r="4" style="fill: var({{ colors[ex.dbscan.labels[loop.index0]] }})"></circle>
+      {% else %}
+      <circle cx="{{ '%.1f'|format(x) }}" cy="{{ '%.1f'|format(y) }}" r="4" fill="none" stroke-width="2" style="stroke: var({{ colors[ex.dbscan.labels[loop.index0]] }})"></circle>
+      {% endif %}
+      {% endfor %}
+      {% set c0 = ex.points[23] %}
+      <ellipse cx="{{ '%.1f'|format(20 + c0[0] * 30) }}" cy="{{ '%.1f'|format(270 - c0[1] * 28) }}" rx="{{ e.eps * 30 }}" ry="{{ e.eps * 28 }}" class="d-line ml-dashed" fill="none"></ellipse>
+      <text x="160" y="296" text-anchor="middle" class="d-muted">filled core · hollow border · × noise</text>
+      {% for panel in [ex.moons_kmeans, ex.moons_dbscan] %}
+      {% set oy = 10 + loop.index0 * 140 %}
+      <rect x="330" y="{{ oy }}" width="300" height="130" rx="6" class="d-box" fill-opacity="0.04"></rect>
+      {% for p in ex.moons %}
+      {% set lab = panel.labels[loop.index0] %}
+      <circle cx="{{ '%.1f'|format(420 + p[0] * 34) }}" cy="{{ '%.1f'|format(oy + 85 - p[1] * 34) }}" r="4" style="fill: var({{ colors[lab] if lab >= 0 else '--jj-red' }})"></circle>
+      {% endfor %}
+      <text x="340" y="{{ oy + 18 }}">{{ "k-means, k = 2" if loop.first else "DBSCAN" }}</text>
+      <text x="340" y="{{ oy + 34 }}" class="d-muted">ARI {{ f(panel.ari, 2) }}</text>
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">DBSCAN never had to be told how many clusters there were, and it left the outliers out instead of dragging a centre toward them.</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import numpy as np
+from sklearn.cluster import KMeans, DBSCAN
+from sklearn.mixture import GaussianMixture
+from sklearn.metrics import silhouette_score, adjusted_rand_score
+from sklearn.preprocessing import StandardScaler
+
+X = StandardScaler().fit_transform(X_raw)         # distances need comparable feature scales
+
+for k in range(2, 8):
+    km = KMeans(n_clusters=k, n_init="auto", random_state=0).fit(X)
+    gm = GaussianMixture(n_components=k, covariance_type="full", random_state=0).fit(X)
+    print(k, km.inertia_, silhouette_score(X, km.labels_), gm.bic(X))
+
+km = KMeans(n_clusters=3, n_init="auto", random_state=0).fit(X)
+db = DBSCAN(eps=0.3, min_samples=5).fit(X)        # label -1 = noise
+gm = GaussianMixture(n_components=3, random_state=0).fit(X)
+soft = gm.predict_proba(X)                        # (n, 3) responsibilities
+
+if y_sample is not None:                          # labels for a sample, if you have them
+    print(adjusted_rand_score(y_sample, km.labels_[sample_idx]))
+
+def lloyd(X, centers, iters=100):                 # the algorithm itself, in NumPy
+    for _ in range(iters):
+        d2 = ((X[:, None, :] - centers[None]) ** 2).sum(-1)    # (n, k)
+        labels = d2.argmin(1)
+        new = np.array([X[labels == j].mean(0) if (labels == j).any() else centers[j]
+                        for j in range(len(centers))])
+        if np.allclose(new, centers):
+            break
+        centers = new
+    return labels, centers, d2.min(1).sum()        # inertia</code></pre>
+
+<p>
+  Scale the features first: k-means and DBSCAN use raw Euclidean distance, so a feature measured in thousands drowns out one measured in fractions (see <a href="/ml-models/preprocessing">feature preprocessing</a>). A common way to set DBSCAN's ε is to sort every point's distance to its min_samples-th nearest neighbour and pick the distance where that curve bends upward.
+  For millions of points, <code>MiniBatchKMeans</code> updates centres from small random batches at some cost in inertia.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Method</th><th>Needs k?</th><th>Cluster shape</th><th>Noise</th><th>Assignment</th><th>Cost</th></tr></thead>
+    <tbody>
+      <tr><td>k-means</td><td>yes</td><td>convex, similar sizes (Voronoi cells)</td><td>every point assigned; outliers pull centres</td><td>hard</td><td>O(n·k·d) per iteration</td></tr>
+      <tr><td>DBSCAN</td><td>no (ε, min_samples)</td><td>any shape, one density</td><td>labelled −1</td><td>hard</td><td>a radius query per point; up to O(n²) memory</td></tr>
+      <tr><td>Gaussian mixture</td><td>yes (BIC helps)</td><td>ellipses of any orientation</td><td>every point assigned, with a likelihood</td><td>soft</td><td>O(n·k·d²) per iteration, plus d×d inversions</td></tr>
+      <tr><td>Hierarchical (agglomerative)</td><td>no (cut the tree)</td><td>depends on the linkage</td><td>no</td><td>hard, with a dendrogram</td><td>O(n²) memory or more</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<ul>
+  <li><strong>k-means</strong> is the default for speed and simplicity and for "compress into k representatives" jobs such as colour quantization and the coarse quantizer of a vector index, where convex cells are exactly what you want.</li>
+  <li><strong>DBSCAN</strong> suits spatial data and anomaly detection, where noise matters and the shapes are irregular. In high dimensions distances concentrate, so a good ε is hard to find; reduce dimensions first (with PCA, say).</li>
+  <li><strong>Gaussian mixtures</strong> give probabilities and a density you can sample from or use for anomaly scores, but full covariances need many points per component and can collapse onto a few points without <code>reg_covar</code>.</li>
+  <li><strong>All of them find clusters in random noise.</strong> Check stability across seeds and subsamples, and prefer a clustering that serves a decision over one that merely scores well.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>You run k-means with k = 3 on data that is really one big round blob. What do you get, and which criterion warns you?</summary>
+  <p>You get three wedge-shaped pieces of the blob, because Lloyd's algorithm always returns k groups. Inertia drops smoothly with no elbow, the silhouette scores are low (points near the cuts are close to two centres), and a mixture's BIC prefers one component, since extra components add parameters without explaining much more.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<p>
+  <a href="/ml-models/nearest-neighbors">Nearest neighbours</a> supplies k-means' assign step and DBSCAN's radius queries; vector indexes use k-means to partition embeddings for IVF and to build product-quantization codebooks; PCA is the usual step before clustering high-dimensional data.
+</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Lloyd. <em>Least Squares Quantization in PCM.</em> IEEE Transactions on Information Theory 1982. <a href="https://doi.org/10.1109/TIT.1982.1056489">doi:10.1109/TIT.1982.1056489</a></li>
+  <li>Arthur and Vassilvitskii. <em>k-means++: The Advantages of Careful Seeding.</em> SODA 2007.</li>
+  <li>Ester, Kriegel, Sander and Xu. <em>A Density-Based Algorithm for Discovering Clusters in Large Spatial Databases with Noise.</em> KDD 1996.</li>
+  <li>Dempster, Laird and Rubin. <em>Maximum Likelihood from Incomplete Data via the EM Algorithm.</em> Journal of the Royal Statistical Society B 1977.</li>
+  <li>Rousseeuw. <em>Silhouettes: a Graphical Aid to the Interpretation and Validation of Cluster Analysis.</em> Journal of Computational and Applied Mathematics 1987. <a href="https://doi.org/10.1016/0377-0427(87)90125-7">doi:10.1016/0377-0427(87)90125-7</a></li>
+  <li>Hubert and Arabie. <em>Comparing Partitions.</em> Journal of Classification 1985. <a href="https://doi.org/10.1007/BF01908075">doi:10.1007/BF01908075</a></li>
+  <li>Schwarz. <em>Estimating the Dimension of a Model.</em> Annals of Statistics 1978. <a href="https://doi.org/10.1214/aos/1176344136">doi:10.1214/aos/1176344136</a></li>
+  <li>Campello, Moulavi and Sander. <em>Density-Based Clustering Based on Hierarchical Density Estimates.</em> PAKDD 2013.</li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/cluster/_kmeans.py', 1191, 1561) }}"><code>KMeans</code></a>, <a href="{{ skl('sklearn/cluster/_dbscan.py', 201, 514) }}"><code>DBSCAN</code></a>, <a href="{{ skl('sklearn/mixture/_gaussian_mixture.py', 556, 1005) }}"><code>GaussianMixture</code></a>, <a href="{{ skl('sklearn/metrics/cluster/_unsupervised.py', 59, 146) }}"><code>silhouette_score</code></a>.</li>
+</ul>
