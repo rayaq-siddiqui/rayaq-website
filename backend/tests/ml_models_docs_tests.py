@@ -3350,3 +3350,68 @@ def test_alibi_slopes_and_biases_follow_the_paper():
     assert gentle["weights"] == pytest.approx(plain["weights"], abs=0.01)
     assert steep["weights"][-1] > 2 * plain["weights"][-1]
     assert ml_models_docs.learned_position_params(1024, 768) == 786432
+
+
+def test_lloyd_never_increases_inertia_and_stops_at_a_fixed_point():
+    e = ml_models_docs.cluster_example()
+    for history in (e["bad"], e["good"]):
+        inertias = [h["inertia"] for h in history]
+        assert all(b <= a + 1e-12 for a, b in zip(inertias, inertias[1:]))
+        last = history[-1]
+        assert ml_models_docs.assign_labels(e["points"], last["centers"]) == last["labels"]
+        for c, center in enumerate(last["centers"]):
+            members = [p for p, l in zip(e["points"], last["labels"]) if l == c]
+            assert center == pytest.approx(tuple(sum(v) / len(members) for v in zip(*members)))
+    assert e["bad"][-1]["inertia"] > 5 * e["good"][-1]["inertia"]
+    assert e["ari_bad"] < 0.5
+    assert e["ari_kmeans"] == pytest.approx(1.0)
+
+
+def test_kmeans_plusplus_samples_proportional_to_squared_distance():
+    points = [(0.0, 0.0), (1.0, 0.0), (3.0, 0.0)]
+    chosen, steps = ml_models_docs.kmeans_plusplus(points, 2, 0, [0.5])
+    assert steps[0]["probs"] == pytest.approx([0.0, 0.1, 0.9])
+    assert chosen == [0, 2]
+    chosen, _ = ml_models_docs.kmeans_plusplus(points, 2, 0, [0.05])
+    assert chosen == [0, 1]
+    e = ml_models_docs.cluster_example()
+    assert len(set(e["truth"][i] for i in e["plusplus"]["chosen"])) == 3
+
+
+def test_silhouette_and_bic_choose_the_generating_k():
+    points = [(0.0, 0.0), (0.0, 1.0), (4.0, 0.0)]
+    s = ml_models_docs.silhouette_samples(points, [0, 0, 1])
+    assert s[0] == pytest.approx((4.0 - 1.0) / 4.0)
+    assert s[2] == 0.0
+    e = ml_models_docs.cluster_example()
+    inertias = [r["inertia"] for r in e["sweep"]]
+    assert inertias == sorted(inertias, reverse=True)
+    assert e["best_k_silhouette"] == 3
+    assert e["best_k_bic"] == 3
+    assert [r["params"] for r in e["sweep"]] == [5, 11, 17, 23, 29]
+
+
+def test_dbscan_marks_core_border_and_noise_like_sklearn():
+    points = [(0.0, 0.0), (0.5, 0.0), (1.0, 0.0), (1.9, 0.0), (5.0, 5.0)]
+    result = ml_models_docs.dbscan(points, 1.0, 3)
+    assert result["neighbors"] == [3, 3, 4, 2, 1]
+    assert result["kinds"] == ["core", "core", "core", "border", "noise"]
+    assert result["labels"] == [0, 0, 0, 0, -1]
+    e = ml_models_docs.cluster_example()
+    assert e["dbscan"]["labels"][-2:] == [-1, -1]
+    assert e["moons_dbscan"]["ari"] == pytest.approx(1.0)
+    assert e["moons_kmeans"]["ari"] < 0.3
+
+
+def test_gmm_em_climbs_and_gives_soft_assignments():
+    e = ml_models_docs.cluster_example()
+    lls = e["em"]["log_likelihoods"] + [e["em"]["log_likelihood"]]
+    assert all(b >= a - 1e-9 for a, b in zip(lls, lls[1:]))
+    assert e["gmm"]["log_likelihood"] > e["em"]["log_likelihood"]
+    assert sum(e["gmm"]["weights"]) == pytest.approx(1.0)
+    for q in e["queries"]:
+        assert sum(q["proba"]) == pytest.approx(1.0)
+    assert 0.2 < max(e["queries"][1]["proba"]) < 0.8
+    assert ml_models_docs.gmm_n_parameters(3, 2) == 17
+    assert ml_models_docs.adjusted_rand_index([0, 0, 1, 1], [1, 1, 0, 0]) == pytest.approx(1.0)
+    assert ml_models_docs.adjusted_rand_index([0, 0, 1, 1], [0, 1, 0, 1]) == pytest.approx(-0.5)

@@ -7670,6 +7670,287 @@ def position_example():
         "gpt2_table": learned_position_params(1024, 768),
     }
 
+CLUSTER_EXAMPLE = {
+    "centers": [(2.0, 2.0), (7.0, 2.5), (4.5, 7.0)],
+    "spread": 0.7,
+    "per_blob": 12,
+    "seed": 4,
+    "outliers": [(9.2, 8.6), (0.6, 8.8)],
+    "bad_init": [0, 25, 30],
+    "plusplus_first": 0,
+    "plusplus_draws": [0.62, 0.35],
+    "k_range": [1, 2, 3, 4, 5],
+    "seeds": 10,
+    "eps": 1.0,
+    "min_samples": 4,
+    "moon_points": 10,
+    "moons_eps": 1.0,
+    "moons_min_samples": 3,
+    "gmm_iterations": 100,
+    "em_iterations": 8,
+    "queries": [(2.5, 2.5), (4.1, 2.2), (3.5, 5.0)],
+    "reg_covar": 1e-6,
+}
+
+
+def blob_points(centers, spread, per_blob, seed):
+    rng = random.Random(seed)
+    return [(round(rng.gauss(cx, spread), 1), round(rng.gauss(cy, spread), 1))
+            for cx, cy in centers for _ in range(per_blob)]
+
+
+def moon_points(n):
+    upper = [(2 * math.cos(math.pi * i / (n - 1)), 2 * math.sin(math.pi * i / (n - 1))) for i in range(n)]
+    lower = [(2 - 2 * math.cos(math.pi * i / (n - 1)), 1 - 2 * math.sin(math.pi * i / (n - 1))) for i in range(n)]
+    return upper + lower
+
+
+def _sq_dist(a, b):
+    return sum((x - y) ** 2 for x, y in zip(a, b))
+
+
+def assign_labels(points, centers):
+    return [min(range(len(centers)), key=lambda c: _sq_dist(p, centers[c])) for p in points]
+
+
+def kmeans_inertia(points, centers, labels):
+    return sum(_sq_dist(p, centers[c]) for p, c in zip(points, labels))
+
+
+def lloyd(points, centers, max_iter=100):
+    centers = [tuple(c) for c in centers]
+    history = []
+    for _ in range(max_iter):
+        labels = assign_labels(points, centers)
+        history.append({"centers": centers, "labels": labels, "inertia": kmeans_inertia(points, centers, labels)})
+        new_centers = []
+        for c in range(len(centers)):
+            members = [p for p, l in zip(points, labels) if l == c]
+            if members:
+                new_centers.append(tuple(sum(v) / len(members) for v in zip(*members)))
+            else:
+                new_centers.append(centers[c])
+        if new_centers == centers:
+            break
+        centers = new_centers
+    return history
+
+
+def kmeans_plusplus(points, k, first, draws):
+    chosen = [first]
+    steps = []
+    for u in draws[: k - 1]:
+        d2 = [min(_sq_dist(p, points[c]) for c in chosen) for p in points]
+        total = sum(d2)
+        target, running, pick = u * total, 0.0, len(points) - 1
+        for i, d in enumerate(d2):
+            running += d
+            if running > target:
+                pick = i
+                break
+        steps.append({"d2": d2, "probs": [d / total for d in d2], "pick": pick})
+        chosen.append(pick)
+    return chosen, steps
+
+
+def best_of_kmeans(points, k, seeds):
+    best = None
+    for seed in range(seeds):
+        rng = random.Random(seed)
+        first = rng.randrange(len(points))
+        chosen, _ = kmeans_plusplus(points, k, first, [rng.random() for _ in range(k - 1)])
+        run = lloyd(points, [points[i] for i in chosen])[-1]
+        if best is None or run["inertia"] < best["inertia"] - 1e-12:
+            best = run
+    return best
+
+
+def silhouette_samples(points, labels):
+    clusters = sorted(set(labels))
+    if len(clusters) < 2:
+        return [0.0] * len(points)
+    scores = []
+    for i, p in enumerate(points):
+        mean_to = {}
+        for c in clusters:
+            others = [math.sqrt(_sq_dist(p, q)) for j, q in enumerate(points) if labels[j] == c and j != i]
+            mean_to[c] = sum(others) / len(others) if others else 0.0
+        own = [j for j in range(len(points)) if labels[j] == labels[i] and j != i]
+        if not own:
+            scores.append(0.0)
+            continue
+        a = mean_to[labels[i]]
+        b = min(v for c, v in mean_to.items() if c != labels[i])
+        scores.append((b - a) / max(a, b))
+    return scores
+
+
+def silhouette_score(points, labels):
+    s = silhouette_samples(points, labels)
+    return sum(s) / len(s)
+
+
+def dbscan(points, eps, min_samples):
+    n = len(points)
+    neighborhoods = [[j for j in range(n) if _sq_dist(points[i], points[j]) <= eps ** 2] for i in range(n)]
+    core = [len(nb) >= min_samples for nb in neighborhoods]
+    labels = [-1] * n
+    label = 0
+    for i in range(n):
+        if labels[i] != -1 or not core[i]:
+            continue
+        stack = [i]
+        while stack:
+            v = stack.pop()
+            if labels[v] != -1:
+                continue
+            labels[v] = label
+            if core[v]:
+                stack.extend(w for w in neighborhoods[v] if labels[w] == -1)
+        label += 1
+    kinds = ["core" if core[i] else "border" if labels[i] != -1 else "noise" for i in range(n)]
+    return {"labels": labels, "kinds": kinds, "neighbors": [len(nb) for nb in neighborhoods]}
+
+
+def _gauss2_logpdf(x, mean, cov):
+    a, b, d = cov[0][0], cov[0][1], cov[1][1]
+    det = a * d - b * b
+    dx, dy = x[0] - mean[0], x[1] - mean[1]
+    maha = (d * dx * dx - 2 * b * dx * dy + a * dy * dy) / det
+    return -0.5 * (maha + math.log(det) + 2 * math.log(2 * math.pi))
+
+
+def gmm_e_step(points, weights, means, covs):
+    resp, total = [], 0.0
+    for p in points:
+        logs = [math.log(w) + _gauss2_logpdf(p, m, c) for w, m, c in zip(weights, means, covs)]
+        norm = _log_sum_exp(logs)
+        total += norm
+        resp.append([math.exp(l - norm) for l in logs])
+    return resp, total / len(points)
+
+
+def gmm_m_step(points, resp, reg_covar=1e-6):
+    k, n = len(resp[0]), len(points)
+    weights, means, covs = [], [], []
+    for c in range(k):
+        r = [row[c] for row in resp]
+        nk = sum(r)
+        mx = sum(ri * p[0] for ri, p in zip(r, points)) / nk
+        my = sum(ri * p[1] for ri, p in zip(r, points)) / nk
+        sxx = sum(ri * (p[0] - mx) ** 2 for ri, p in zip(r, points)) / nk + reg_covar
+        syy = sum(ri * (p[1] - my) ** 2 for ri, p in zip(r, points)) / nk + reg_covar
+        sxy = sum(ri * (p[0] - mx) * (p[1] - my) for ri, p in zip(r, points)) / nk
+        weights.append(nk / n)
+        means.append((mx, my))
+        covs.append(((sxx, sxy), (sxy, syy)))
+    return weights, means, covs
+
+
+def gmm_fit(points, labels, iterations, reg_covar=1e-6):
+    k = max(labels) + 1
+    resp = [[1.0 if l == c else 0.0 for c in range(k)] for l in labels]
+    weights, means, covs = gmm_m_step(points, resp, reg_covar)
+    log_likelihoods = []
+    for _ in range(iterations):
+        resp, ll = gmm_e_step(points, weights, means, covs)
+        log_likelihoods.append(ll)
+        weights, means, covs = gmm_m_step(points, resp, reg_covar)
+    resp, ll = gmm_e_step(points, weights, means, covs)
+    return {"weights": weights, "means": means, "covs": covs, "resp": resp,
+            "log_likelihoods": log_likelihoods, "log_likelihood": ll}
+
+
+def gmm_predict_proba(model, point):
+    logs = [math.log(w) + _gauss2_logpdf(point, m, c) for w, m, c in zip(model["weights"], model["means"], model["covs"])]
+    norm = _log_sum_exp(logs)
+    return [math.exp(l - norm) for l in logs]
+
+
+def gmm_n_parameters(k, d=2):
+    return int(k * d * (d + 1) / 2 + k * d + k - 1)
+
+
+def gmm_bic(mean_log_likelihood, n, k, d=2):
+    return -2 * mean_log_likelihood * n + gmm_n_parameters(k, d) * math.log(n)
+
+
+def adjusted_rand_index(a, b):
+    def comb2(x):
+        return x * (x - 1) / 2
+    n = len(a)
+    pairs = {}
+    for x, y in zip(a, b):
+        pairs[(x, y)] = pairs.get((x, y), 0) + 1
+    rows, cols = {}, {}
+    for (x, y), v in pairs.items():
+        rows[x] = rows.get(x, 0) + v
+        cols[y] = cols.get(y, 0) + v
+    index = sum(comb2(v) for v in pairs.values())
+    sum_rows = sum(comb2(v) for v in rows.values())
+    sum_cols = sum(comb2(v) for v in cols.values())
+    expected = sum_rows * sum_cols / comb2(n)
+    best = (sum_rows + sum_cols) / 2
+    if best == expected:
+        return 1.0
+    return (index - expected) / (best - expected)
+
+
+def cluster_example():
+    e = CLUSTER_EXAMPLE
+    pts = blob_points(e["centers"], e["spread"], e["per_blob"], e["seed"])
+    truth = [i // e["per_blob"] for i in range(len(pts))]
+    bad = lloyd(pts, [pts[i] for i in e["bad_init"]])
+    chosen, pp_steps = kmeans_plusplus(pts, 3, e["plusplus_first"], e["plusplus_draws"])
+    good = lloyd(pts, [pts[i] for i in chosen])
+    final = good[-1]
+    sweep = []
+    for k in e["k_range"]:
+        run = best_of_kmeans(pts, k, e["seeds"])
+        fit = gmm_fit(pts, run["labels"], e["gmm_iterations"], e["reg_covar"])
+        sweep.append({
+            "k": k,
+            "inertia": run["inertia"],
+            "silhouette": silhouette_score(pts, run["labels"]) if k > 1 else None,
+            "params": gmm_n_parameters(k),
+            "log_likelihood": fit["log_likelihood"],
+            "bic": gmm_bic(fit["log_likelihood"], len(pts), k),
+        })
+    with_outliers = pts + list(e["outliers"])
+    db = dbscan(with_outliers, e["eps"], e["min_samples"])
+    em = gmm_fit(pts, bad[-1]["labels"], e["em_iterations"], e["reg_covar"])
+    gmm = gmm_fit(pts, final["labels"], e["gmm_iterations"], e["reg_covar"])
+    moons = moon_points(e["moon_points"])
+    moons_truth = [0] * e["moon_points"] + [1] * e["moon_points"]
+    moons_km = best_of_kmeans(moons, 2, e["seeds"])
+    moons_db = dbscan(moons, e["moons_eps"], e["moons_min_samples"])
+    sil = silhouette_samples(pts, final["labels"])
+    return {
+        "points": pts,
+        "truth": truth,
+        "with_outliers": with_outliers,
+        "bad": bad,
+        "plusplus": {"chosen": chosen, "steps": pp_steps},
+        "good": good,
+        "final": final,
+        "sweep": sweep,
+        "best_k_silhouette": max((s for s in sweep if s["silhouette"] is not None), key=lambda s: s["silhouette"])["k"],
+        "best_k_bic": min(sweep, key=lambda s: s["bic"])["k"],
+        "dbscan": db,
+        "ari_kmeans": adjusted_rand_index(truth, final["labels"]),
+        "ari_bad": adjusted_rand_index(truth, bad[-1]["labels"]),
+        "ari_dbscan": adjusted_rand_index(truth, db["labels"][: len(pts)]),
+        "silhouette_samples": sil,
+        "silhouette_by_cluster": [sum(v for v, l in zip(sil, final["labels"]) if l == c) / final["labels"].count(c) for c in range(3)],
+        "em": em,
+        "gmm": gmm,
+        "queries": [{"point": q, "kmeans": assign_labels([q], final["centers"])[0], "proba": gmm_predict_proba(gmm, q)} for q in e["queries"]],
+        "moons": moons,
+        "moons_kmeans": {"labels": moons_km["labels"], "ari": adjusted_rand_index(moons_truth, moons_km["labels"])},
+        "moons_dbscan": {"labels": moons_db["labels"], "kinds": moons_db["kinds"], "ari": adjusted_rand_index(moons_truth, moons_db["labels"])},
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -8201,6 +8482,8 @@ def render(slug, render_template):
         "conv_transpose_output_size": conv_transpose_output_size,
         "position_example": position_example,
         "position_settings": POSITION_EXAMPLE,
+        "cluster_example": cluster_example,
+        "cluster_settings": CLUSTER_EXAMPLE,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
