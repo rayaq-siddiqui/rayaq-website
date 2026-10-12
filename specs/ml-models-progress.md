@@ -318,8 +318,8 @@ Gaps:
 46. `quantization` ✓
 47. `reinforcement-learning` ✓
 48. `bayes-rule` ✓
-49. `class-imbalance` ← next
-50. `random-forests`
+49. `class-imbalance` ✓
+50. `random-forests` ← next
 51. `initialization`
 52. `rnns-and-lstms`
 53. `autoencoders`

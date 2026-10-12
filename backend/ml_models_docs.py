@@ -381,7 +381,7 @@ PAGES = [
             "sklearn:sklearn/utils/class_weight.py",
             "pytorch:torch/nn/modules/loss.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "cross-validation",

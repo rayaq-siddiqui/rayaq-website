@@ -1,0 +1,390 @@
+{% set par = accuracy_paradox() %}
+{% set ex = imbalance_example() %}
+{% set focal = focal_table() %}
+{% set gammas = [0.0, 0.5, 1.0, 2.0, 5.0] %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(x)|replace("-", "−") }}{%- endmacro %}
+{% macro pct(x, n=1) -%}{{ ("%." ~ n ~ "f")|format(100 * x) }}%{%- endmacro %}
+{% macro dx(x) -%}{{ "%.1f"|format(80 + (x + 3) * 70) }}{%- endmacro %}
+{% macro dy(p) -%}{{ "%.1f"|format(200 - p * 150) }}{%- endmacro %}
+{% macro fx(p) -%}{{ "%.1f"|format(70 + p * 520) }}{%- endmacro %}
+{% macro fy(v) -%}{{ "%.1f"|format(220 - (v if v < 2.5 else 2.5) * 76) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Class imbalance</h1>
+  <p class="tagline">
+    When one class is rare, a model can score 99% accuracy by never predicting it. This page shows why accuracy misleads,
+    then the four fixes and how they relate: class weights, resampling, moving the decision threshold, and focal loss,
+    plus the metrics to report instead.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Fraud, disease, machine failure, a click on an ad: the cases you most want to find are usually rare. Take a dataset of
+  1,000 transactions with 10 frauds. A model that answers "not fraud" every time is right on {{ pct(par.accuracy, 0) }} of them, and it finds
+  none of the frauds. Its recall is {{ f(par.recall, 0) }}.
+</p>
+<p>
+  The training loss has the same blind spot. Cross-entropy averages over examples, so the 990 easy negatives outvote the
+  10 positives, and the cheapest way to lower the loss is to push every prediction toward "negative". The model can
+  still rank the frauds above most legitimate transactions, yet at the default 0.5 cutoff it flags few of them. The data is not wrong. The loss and the
+  threshold were set up for a balanced world.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Picture a jury of 1,000 voices where 990 always say "innocent". To hear the other 10, you can make each of them louder (<strong>class weights</strong>),
+  invite more of them or fewer of the others (<strong>oversampling</strong> or <strong>undersampling</strong>), or lower the bar for a
+  "guilty" verdict (<strong>threshold moving</strong>). A fourth option quiets the voices that are already sure of themselves, so the uncertain ones
+  carry the decision (<strong>focal loss</strong>).
+</p>
+<p>
+  The first three do nearly the same thing to a well-specified model: they shift its decision boundary toward the majority class.
+  They differ in what they cost and in what happens to the predicted probabilities. Whatever you choose, judge it with metrics that look at
+  the rare class directly: recall, precision, the precision–recall curve, balanced accuracy.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 250" role="img" aria-labelledby="ci-scale-title ci-scale-desc">
+    <title id="ci-scale-title">Balanced class weights equalize the total weight of each class</title>
+    <desc id="ci-scale-desc">
+      Left, two bars of raw counts: 990 negatives and 10 positives. Right, the same classes after scikit-learn's balanced weights,
+      {{ f(par.weights[0], 3) }} per negative and {{ f(par.weights[1], 0) }} per positive, so each class totals 500.
+    </desc>
+    <g font-size="13" text-anchor="middle">
+      <text x="170" y="22" font-weight="bold">Raw counts (weight 1 each)</text>
+      <rect x="90" y="{{ 210 - 990 * 0.17 }}" width="60" height="{{ 990 * 0.17 }}" class="d-box ml-tensor"></rect>
+      <text x="120" y="{{ 202 - 990 * 0.17 }}">990</text>
+      <rect x="190" y="{{ 210 - 10 * 0.17 }}" width="60" height="{{ 10 * 0.17 }}" class="d-box ml-op"></rect>
+      <text x="220" y="{{ 202 - 10 * 0.17 }}">10</text>
+      <text x="120" y="230" class="d-muted">negatives</text>
+      <text x="220" y="230" class="d-muted">positives</text>
+      <path d="M320 120 L380 120" class="d-line" stroke-width="2" fill="none"></path>
+      <path d="M372 114 L380 120 L372 126" class="d-line" stroke-width="2" fill="none"></path>
+      <text x="350" y="105" class="d-muted">× weight</text>
+      <text x="530" y="22" font-weight="bold">Weighted totals</text>
+      <rect x="450" y="{{ 210 - par.weighted_totals[0] * 0.17 }}" width="60" height="{{ par.weighted_totals[0] * 0.17 }}" class="d-box ml-tensor"></rect>
+      <text x="480" y="{{ 202 - par.weighted_totals[0] * 0.17 }}">990 × {{ f(par.weights[0], 3) }}</text>
+      <rect x="550" y="{{ 210 - par.weighted_totals[1] * 0.17 }}" width="60" height="{{ par.weighted_totals[1] * 0.17 }}" class="d-box ml-op"></rect>
+      <text x="580" y="{{ 202 - par.weighted_totals[1] * 0.17 }}">10 × {{ f(par.weights[1], 0) }}</text>
+      <text x="480" y="230" class="d-muted">= {{ f(par.weighted_totals[0], 0) }}</text>
+      <text x="580" y="230" class="d-muted">= {{ f(par.weighted_totals[1], 0) }}</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The "balanced" heuristic gives each class the same total say in the loss.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="why-accuracy-misleads">Why accuracy misleads</h3>
+<p>
+  Accuracy is (TP + TN) / <var>n</var>. With positive rate π, the constant "negative" classifier scores 1 − π, so every accuracy number has to be read against that
+  floor. Better summaries for a rare positive class (see <a href="/ml-models/classification-metrics">classification metrics</a>):
+</p>
+<ul>
+  <li><strong>Recall and precision</strong> of the rare class, and F1 or F<sub>β</sub> to combine them with a stated preference.</li>
+  <li><strong>Balanced accuracy</strong>, the mean of per-class recalls. The constant classifier scores 0.5 however rare the class is. scikit-learn's version equals accuracy with class-balanced sample weights.</li>
+  <li><strong>Average precision</strong> (area under the precision–recall curve). Its chance level is π, not 0.5, so it shows a rare-class ranker's quality where ROC AUC can look excellent while precision is poor.</li>
+  <li><strong>Per-class confusion matrices</strong> and cost-weighted error, when you know what each mistake costs.</li>
+</ul>
+
+<h3 id="class-weights">Class weights</h3>
+<p>Give each example a weight <var>s</var><sub>i</sub> that depends on its class and minimize the weighted loss:</p>
+<p class="ml-formula">L(θ) = Σ<sub>i</sub> s<sub>y<sub>i</sub></sub> · ℓ(f<sub>θ</sub>(x<sub>i</sub>), y<sub>i</sub>) &nbsp;&nbsp;&nbsp; balanced: s<sub>c</sub> = n / (K · n<sub>c</sub>)</p>
+<p>
+  With <var>K</var> classes and <var>n</var><sub><var>c</var></sub> examples in class <var>c</var>, the "balanced" weights make every class's weights sum to <var>n</var>/<var>K</var>.
+  scikit-learn exposes this as <code>class_weight="balanced"</code> on most classifiers and multiplies it with any <code>sample_weight</code>.
+  PyTorch's <code>CrossEntropyLoss(weight=…)</code> takes one weight per class; with <code>reduction="mean"</code> it divides by the <em>sum of the weights</em> of the batch's targets,
+  not by the batch size. <code>BCEWithLogitsLoss(pos_weight=p)</code> multiplies only the positive term, −[p·y log σ(x) + (1 − y) log(1 − σ(x))], and its docstring
+  suggests <var>p</var> = negatives / positives. XGBoost's <code>scale_pos_weight</code> is the same idea for boosted trees, with the same suggested value.
+</p>
+
+<h3 id="resampling">Resampling</h3>
+<ul>
+  <li><strong>Random oversampling</strong> repeats minority examples. Repeating each positive <var>k</var> times gives exactly the same loss as weighting it by <var>k</var>, so for a loss-minimizing model the two coincide. Duplicates do not add information, and models that can memorize (deep trees, large networks) overfit them.</li>
+  <li><strong>Random undersampling</strong> drops majority examples. Training is cheaper and the boundary moves the same way, but information is thrown away; repeating it over several subsamples and averaging (an ensemble) recovers some of it.</li>
+  <li><strong>SMOTE</strong> creates synthetic positives by interpolating between a positive and one of its positive nearest neighbours. It needs meaningful distances, so it suits low-dimensional numeric features better than text or images. It is not in scikit-learn itself.</li>
+  <li><strong>Sampling in a data loader.</strong> PyTorch's <code>WeightedRandomSampler</code> draws indices with probability proportional to per-sample weights (by default with replacement). Weighting each example by 1/<var>n</var><sub><var>c</var></sub> makes each class equally likely per draw: here a positive share of {{ pct(par.sampler_positive_share, 0) }}.</li>
+</ul>
+<p>Resample only the training split, inside each cross-validation fold. Resampling before the split puts copies of the same example on both sides, which is <a href="/ml-models/data-leakage">leakage</a>.</p>
+
+<h3 id="threshold-moving">Threshold moving and costs</h3>
+<p>
+  A probabilistic classifier separates two decisions: estimating <var>p</var> = P(<var>y</var> = 1 | <var>x</var>), and acting on it. If a false positive costs
+  <var>c</var><sub>FP</sub> and a false negative <var>c</var><sub>FN</sub>, predicting positive is cheaper in expectation when (1 − <var>p</var>)·<var>c</var><sub>FP</sub> &lt; <var>p</var>·<var>c</var><sub>FN</sub>, that is when
+</p>
+<p class="ml-formula">p &gt; t* = c<sub>FP</sub> / (c<sub>FP</sub> + c<sub>FN</sub>)</p>
+<p>
+  The default 0.5 assumes equal costs. Weighting positives by <var>w</var> is the same as multiplying their cost by <var>w</var>; for a logistic model it adds roughly log <var>w</var>
+  to the logit, which is equivalent to keeping the unweighted model and moving the threshold to 1/(1 + <var>w</var>). scikit-learn's <code>FixedThresholdClassifier</code> sets a cutoff by hand,
+  and <code>TunedThresholdClassifierCV</code> picks the one that maximizes a metric (balanced accuracy by default) across cross-validation folds. Threshold moving keeps the
+  probabilities calibrated; weighting and resampling do not.
+</p>
+
+<h3 id="prior-correction">Correcting probabilities after resampling</h3>
+<p>
+  Keeping a fraction β of the negatives multiplies the odds of the positive class by 1/β, by Bayes' rule: the likelihoods are unchanged and only the prior ratio moves.
+  Undo it by multiplying the odds back by β:
+</p>
+<p class="ml-formula">odds(p) = β · odds(p<sub>s</sub>) &nbsp;&nbsp;⇒&nbsp;&nbsp; p = β p<sub>s</sub> / (β p<sub>s</sub> − p<sub>s</sub> + 1)</p>
+<p>
+  The same correction with β = <var>s</var><sub>0</sub>/<var>s</var><sub>1</sub> applies to a class-weighted model. Do this when downstream code needs real probabilities: expected cost, a risk score shown to a person, or a calibration check.
+</p>
+
+<h3 id="focal-loss">Focal loss</h3>
+<p>
+  Lin et al. (2017) proposed focal loss for dense object detection, where a detector scores around 10<sup>5</sup> candidate boxes per image and almost all are easy background. Writing
+  <var>p</var><sub>t</sub> for the probability the model gives the true class,
+</p>
+<p class="ml-formula">FL(p<sub>t</sub>) = −α<sub>t</sub> (1 − p<sub>t</sub>)<sup>γ</sup> log p<sub>t</sub></p>
+<p>
+  With γ = 0 and α<sub>t</sub> = 1 it is cross-entropy. The factor (1 − <var>p</var><sub>t</sub>)<sup>γ</sup> shrinks the loss of examples the model already gets right, whatever their class, so
+  the gradient concentrates on hard examples. α<sub>t</sub> is an ordinary class weight. The paper's best setting was γ = 2 with α = 0.25 for the rare class, lower than you might
+  expect, because the focusing term already down-weights the many easy negatives. PyTorch has no focal-loss module at {{ pins.pytorch.tag }}; it is a few lines on top of
+  <code>binary_cross_entropy_with_logits</code> (below).
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 680 280" role="img" aria-labelledby="ci-focal-title ci-focal-desc">
+    <title id="ci-focal-title">Focal loss against the true-class probability for five values of gamma</title>
+    <desc id="ci-focal-desc">
+      Five curves of loss against p_t from 0.05 to 0.99. The top curve, gamma 0, is cross-entropy. As gamma grows the curves drop toward zero
+      for p_t above about 0.5 while staying high near p_t equal to 0. At p_t = 0.9, gamma 2 gives {{ f(focal[4].ratios[3], 2) }} of the cross-entropy loss.
+    </desc>
+    <g font-size="12">
+      <path d="M70 30 L70 220 L590 220" class="d-line" fill="none"></path>
+      {% for v in [0, 0.5, 1.0, 1.5, 2.0, 2.5] %}<text x="62" y="{{ fy(v)|float + 4 }}" text-anchor="end" class="d-muted">{{ v }}</text>{% endfor %}
+      {% for p in [0, 0.25, 0.5, 0.75, 1.0] %}<text x="{{ fx(p) }}" y="238" text-anchor="middle" class="d-muted">{{ p }}</text>{% endfor %}
+      <text x="330" y="262" text-anchor="middle" class="d-muted">p<tspan baseline-shift="sub" font-size="9">t</tspan>, probability of the true class</text>
+      {% set colours = ["var(--jj-text)", "var(--jj-accent)", "var(--jj-violet)", "var(--jj-green)", "var(--jj-amber)"] %}
+      {% for g in gammas %}
+      <path d="M{% for i in range(5, 100) %}{% set p = i / 100 %}{% if not loop.first %} L{% endif %}{{ fx(p) }},{{ fy(focal_loss(p, g)) }}{% endfor %}" fill="none" stroke="{{ colours[loop.index0] }}" stroke-width="2"></path>
+      <text x="610" y="{{ 40 + loop.index0 * 20 }}" style="fill: {{ colours[loop.index0] }}">γ = {{ g }}</text>
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Raising γ leaves hard examples (left) almost untouched and silences easy ones (right).</p>
+
+<h3 id="library">In the libraries</h3>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead>
+      <tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Balanced class weights</td>
+        <td><code>compute_class_weight(class_weight, *, classes, y, sample_weight=None)</code> → (n_classes,)</td>
+        <td><code>n_samples / (n_classes * np.bincount(y))</code>; the docstring cites King and Zeng (2001).</td>
+        <td><a href="{{ skl('sklearn/utils/class_weight.py', 21, 122) }}">class_weight.py 21-122</a></td>
+      </tr>
+      <tr>
+        <td>Per-sample weights</td>
+        <td><code>compute_sample_weight(class_weight, y, *, indices=None)</code> → (n_samples,)</td>
+        <td>Expands class weights to one weight per row; <code>indices</code> computes "balanced" on a bootstrap subsample.</td>
+        <td><a href="{{ skl('sklearn/utils/class_weight.py', 125, 250) }}">class_weight.py 125-250</a></td>
+      </tr>
+      <tr>
+        <td>Classifier option</td>
+        <td><code>LogisticRegression(class_weight=None)</code></td>
+        <td>A dict or <code>"balanced"</code>, multiplied with <code>sample_weight</code> in <code>fit</code>.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_logistic.py', 1077, 1089) }}">_logistic.py 1077-1089</a></td>
+      </tr>
+      <tr>
+        <td>Per-tree weights</td>
+        <td><code>RandomForestClassifier(class_weight="balanced_subsample")</code></td>
+        <td>Recomputes the balanced weights on each tree's bootstrap sample.</td>
+        <td><a href="{{ skl('sklearn/ensemble/_forest.py', 1327, 1351) }}">_forest.py 1327-1351</a>, <a href="{{ skl('sklearn/ensemble/_forest.py', 150, 160) }}">150-160</a></td>
+      </tr>
+      <tr>
+        <td>Class-weighted cross-entropy</td>
+        <td><code>CrossEntropyLoss(weight=None, …, label_smoothing=0.0)</code>; <code>weight</code> (C,)</td>
+        <td><var>l</var><sub><var>n</var></sub> = −<var>w</var><sub><var>y</var><sub><var>n</var></sub></sub> log softmax; the mean divides by Σ <var>w</var><sub><var>y</var><sub><var>n</var></sub></sub>.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 1200, 1407) }}">loss.py 1200-1407</a></td>
+      </tr>
+      <tr>
+        <td>Positive-class weight</td>
+        <td><code>BCEWithLogitsLoss(weight=None, …, pos_weight=None)</code>; <code>pos_weight</code> (C,)</td>
+        <td>Scales the <var>y</var> log σ(<var>x</var>) term; <var>p</var> &gt; 1 raises recall. Docstring: 100 positives and 300 negatives → 3.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 719, 846) }}">loss.py 719-846</a></td>
+      </tr>
+      <tr>
+        <td>Weighted sampling</td>
+        <td><code>WeightedRandomSampler(weights, num_samples, replacement=True, generator=None)</code></td>
+        <td>Draws <code>num_samples</code> indices with <code>torch.multinomial(weights, …)</code>; weights need not sum to 1.</td>
+        <td><a href="{{ src('torch/utils/data/sampler.py', 213, 283) }}">sampler.py 213-283</a></td>
+      </tr>
+      <tr>
+        <td>Balanced accuracy</td>
+        <td><code>balanced_accuracy_score(y_true, y_pred, *, sample_weight=None, adjusted=False)</code></td>
+        <td>Mean of diag(C) / row sums of the confusion matrix; <code>adjusted</code> rescales chance to 0.</td>
+        <td><a href="{{ skl('sklearn/metrics/_classification.py', 2845, 2947) }}">_classification.py 2845-2947</a></td>
+      </tr>
+      <tr>
+        <td>Fixed threshold</td>
+        <td><code>FixedThresholdClassifier(estimator, *, threshold="auto", pos_label=None, response_method="auto")</code></td>
+        <td><code>"auto"</code> is 0.5 on <code>predict_proba</code> and 0 on <code>decision_function</code>.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_classification_threshold.py', 208, 401) }}">_classification_threshold.py 208-401</a></td>
+      </tr>
+      <tr>
+        <td>Tuned threshold</td>
+        <td><code>TunedThresholdClassifierCV(estimator, *, scoring="balanced_accuracy", thresholds=100, cv=None, …)</code></td>
+        <td>Scores 100 evenly spaced cutoffs on each fold, averages, and keeps the argmax as <code>best_threshold_</code>.</td>
+        <td><a href="{{ skl('sklearn/model_selection/_classification_threshold.py', 704, 821) }}">_classification_threshold.py 704-821</a></td>
+      </tr>
+      <tr>
+        <td>Boosted trees</td>
+        <td><code>scale_pos_weight</code> [default=1]</td>
+        <td>Balances positive and negative weights; suggested value Σ negatives / Σ positives.</td>
+        <td><a href="{{ xgb('doc/parameter.rst', 193, 195) }}">parameter.rst 193-195</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>The accuracy floor.</strong> 990 negatives and 10 positives. Always predicting "negative": accuracy {{ f(par.accuracy, 2) }}, recall {{ f(par.recall, 0) }},
+    balanced accuracy {{ f(par.balanced_accuracy, 2) }}. Balanced weights: 1000 / (2 × 990) = {{ f(par.weights[0], 4) }} per negative and 1000 / (2 × 10) = {{ f(par.weights[1], 0) }} per positive.
+    <code>pos_weight</code> = 990 / 10 = {{ f(par.pos_weight, 0) }}.
+  </p>
+  <p>
+    <strong>A one-feature model.</strong> {{ ex.ys|length - ex.ys|sum }} negatives sit at evenly spaced quantiles of N(0, 1) and {{ ex.ys|sum }} positives at quantiles of N(2, 1),
+    so π = {{ f(ex.prior, 2) }}. Each logistic regression below is fit by Newton's method to convergence (no penalty) and scored on the same 200 points:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Model</th><th>w</th><th>b</th><th>Threshold</th><th>Cut at x</th><th>TP / FP / FN</th><th>Precision</th><th>Recall</th><th>Accuracy</th><th>Balanced acc.</th></tr></thead>
+      <tbody>
+        {% for key, label in [("plain", "Unweighted"), ("weighted", "Balanced weights (1 : 9)"), ("oversampled", "Positives repeated 9×"), ("undersampled", "Every 9th negative kept"), ("moved", "Unweighted, threshold π")] %}
+        {% set r = ex[key] %}
+        <tr>
+          <td>{{ label }}</td><td>{{ f(r.w) }}</td><td>{{ f(r.b) }}</td><td>{{ f(r.threshold, 2) }}</td><td>{{ f(r.cut) }}</td>
+          <td>{{ r.counts[0] }} / {{ r.counts[1] }} / {{ r.counts[2] }}</td><td>{{ f(r.precision) }}</td><td>{{ f(r.recall, 2) }}</td><td>{{ f(r.accuracy) }}</td><td>{{ f(r.balanced_accuracy) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <ul>
+    <li>The unweighted model has the best accuracy, {{ f(ex.plain.accuracy, 2) }}, and finds {{ ex.plain.counts[0] }} of 20 positives. Its average precision is {{ f(ex.average_precision) }} against a chance level of {{ f(ex.prior, 2) }}: it ranks well, but its 0.5 cutoff sits at <var>x</var> = {{ f(ex.plain.cut, 2) }}.</li>
+    <li>Balanced weights and 9× oversampling give the same fit to every printed digit, as the algebra says. The slope barely moves ({{ f(ex.plain.w) }} → {{ f(ex.weighted.w) }}); the intercept rises by {{ f(ex.intercept_shift) }}, close to log 9 = {{ f(ex.log_weight_ratio) }}. Recall goes from {{ f(ex.plain.recall, 2) }} to {{ f(ex.weighted.recall, 2) }} and precision falls from {{ f(ex.plain.precision, 2) }} to {{ f(ex.weighted.precision, 2) }}.</li>
+    <li>Moving the unweighted model's threshold to π = 1/(1 + 9) = {{ f(ex.moved.threshold, 2) }} puts the cut at <var>x</var> = {{ f(ex.moved.cut) }}, next to the weighted model's {{ f(ex.weighted.cut) }}, without refitting.</li>
+    <li>Undersampling to {{ ex.kept_negatives }} negatives (β = {{ f(ex.kept_fraction, 4) }}) lands in the same place. At <var>x</var> = {{ f(ex.probe, 0) }} it predicts {{ f(ex.probe_under) }}; the correction β<var>p</var><sub>s</sub> / (β<var>p</var><sub>s</sub> − <var>p</var><sub>s</sub> + 1) gives {{ f(ex.probe_corrected) }}, close to the full-data model's {{ f(ex.probe_plain) }}.</li>
+  </ul>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 260" role="img" aria-labelledby="ci-cuts-title ci-cuts-desc">
+    <title id="ci-cuts-title">Two logistic fits on imbalanced one-feature data and their decision cuts</title>
+    <desc id="ci-cuts-desc">
+      180 negatives as hollow circles along the bottom and 20 positives as filled circles along the top, plotted against x from −3 to 5.
+      The unweighted sigmoid crosses 0.5 at x = {{ f(ex.plain.cut, 2) }}; the class-weighted sigmoid crosses it at x = {{ f(ex.weighted.cut, 2) }}, about where the unweighted
+      model crosses its moved threshold of 0.1.
+    </desc>
+    <g font-size="12">
+      <path d="M80 50 L80 200 L640 200" class="d-line" fill="none"></path>
+      {% for v in [0, 0.5, 1] %}<text x="72" y="{{ dy(v)|float + 4 }}" text-anchor="end" class="d-muted">{{ v }}</text>{% endfor %}
+      {% for x in [-3, -2, -1, 0, 1, 2, 3, 4, 5] %}<text x="{{ dx(x) }}" y="218" text-anchor="middle" class="d-muted">{{ x }}</text>{% endfor %}
+      <path d="M80 {{ dy(0.5) }} L640 {{ dy(0.5) }}" class="d-line ml-dashed" fill="none" stroke-width="1"></path>
+      <path d="M80 {{ dy(0.1) }} L640 {{ dy(0.1) }}" class="d-line ml-dashed" fill="none" stroke-width="1"></path>
+      <text x="645" y="{{ dy(0.5)|float + 4 }}" class="d-muted">0.5</text>
+      <text x="645" y="{{ dy(0.1)|float + 4 }}" class="d-muted">π</text>
+      {% for i in range(ex.xs|length) %}{% set x = ex.xs[i] %}{% set y = ex.ys[i] %}{% if -3 <= x <= 5 %}
+      {% if y %}<circle cx="{{ dx(x) }}" cy="42" r="3.5" style="fill: var(--jj-green)"></circle>{% else %}<circle cx="{{ dx(x) }}" cy="{{ 228 + (i % 3) * 7 }}" r="2.5" fill="none" stroke="var(--jj-red)" stroke-width="1"></circle>{% endif %}{% endif %}
+      {% endfor %}
+      <path d="M{% for i in range(81) %}{% set x = -3 + i / 10 %}{% if not loop.first %} L{% endif %}{{ dx(x) }},{{ dy(sigmoid(ex.plain.w * x + ex.plain.b)) }}{% endfor %}" fill="none" stroke="var(--jj-accent)" stroke-width="2"></path>
+      <path d="M{% for i in range(81) %}{% set x = -3 + i / 10 %}{% if not loop.first %} L{% endif %}{{ dx(x) }},{{ dy(sigmoid(ex.weighted.w * x + ex.weighted.b)) }}{% endfor %}" fill="none" stroke="var(--jj-amber)" stroke-width="2"></path>
+      <path d="M{{ dx(ex.plain.cut) }} 50 L{{ dx(ex.plain.cut) }} 200" fill="none" stroke="var(--jj-accent)" stroke-width="1.5"></path>
+      <path d="M{{ dx(ex.weighted.cut) }} 50 L{{ dx(ex.weighted.cut) }} 200" fill="none" stroke="var(--jj-amber)" stroke-width="1.5"></path>
+      <text x="{{ dx(ex.plain.cut)|float + 6 }}" y="64" style="fill: var(--jj-accent)">unweighted, 0.5</text>
+      <text x="{{ dx(ex.weighted.cut)|float - 6 }}" y="64" text-anchor="end" style="fill: var(--jj-amber)">weighted (≈ threshold π)</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Weighting shifts the curve left by about log 9 / w; moving the threshold reads the old curve lower. Both cut near x = 1.</p>
+
+<details class="ml-quiz">
+  <summary>Focal loss at p<sub>t</sub> = 0.9: what fraction of the cross-entropy loss is left for γ = 2?</summary>
+  <p>(1 − 0.9)² = {{ f(focal[4].ratios[3], 2) }}, so {{ f(focal[4].losses[3], 4) }} instead of {{ f(focal[4].losses[0], 4) }}. At p<sub>t</sub> = 0.1 the factor is 0.81, so hard examples keep most of their loss.</p>
+</details>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, WeightedRandomSampler
+
+counts = torch.bincount(train_labels)                 # e.g. tensor([990, 10])
+class_w = counts.sum() / (len(counts) * counts)       # sklearn's "balanced"
+loss_fn = torch.nn.CrossEntropyLoss(weight=class_w.float())
+bce = torch.nn.BCEWithLogitsLoss(pos_weight=counts[0] / counts[1])
+
+sample_w = (1.0 / counts.float())[train_labels]       # or: rebalance batches instead
+loader = DataLoader(train_ds, batch_size=64,
+                    sampler=WeightedRandomSampler(sample_w, len(sample_w)))
+
+def focal_loss(logits, targets, gamma=2.0, alpha=0.25):
+    ce = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+    p_t = torch.exp(-ce)                                # probability of the true class
+    alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
+    return (alpha_t * (1 - p_t) ** gamma * ce).mean()
+
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import TunedThresholdClassifierCV
+
+clf = LogisticRegression(class_weight="balanced").fit(X_train, y_train)
+tuned = TunedThresholdClassifierCV(LogisticRegression(), scoring="f1").fit(X_train, y_train)
+tuned.best_threshold_</code></pre>
+
+<p>
+  Use one remedy at a time: a weighted loss on a rebalanced loader counts the correction twice. <code>exp(−ce)</code> recovers <var>p</var><sub>t</sub> from the per-example
+  BCE, which is −log <var>p</var><sub>t</sub>, without a separate sigmoid. The focal loss follows Lin et al.'s equation; <code>alpha=0.25</code> and <code>gamma=2.0</code> are the paper's chosen values, not a library default.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Do you need a fix at all?</strong> A model that ranks well (high average precision) only needs its threshold set for your costs. Strong learners such as gradient boosting often rank well on imbalanced data without reweighting.</li>
+  <li><strong>Threshold moving</strong> is cheap, needs no retraining and keeps probabilities calibrated; tune it on validation data. It cannot help a model that never learned to separate the classes.</li>
+  <li><strong>Class weights</strong> change what the model learns, which matters when capacity is limited or regularization would otherwise flatten the minority. They distort probabilities (correct as above) and make the loss noisier: a few heavily weighted examples dominate each batch.</li>
+  <li><strong>Oversampling</strong> equals weighting for a fixed loss but costs more compute and invites memorization; <strong>undersampling</strong> is cheap and throws data away. SMOTE adds synthetic points that may be implausible and needs a sensible distance.</li>
+  <li><strong>Focal loss</strong> targets the "many easy negatives" case of dense detection; on ordinary tabular imbalance plain weighting is usually as good and simpler. It also miscalibrates probabilities.</li>
+  <li><strong>Evaluation pitfalls.</strong> Never resample the validation or test set; report metrics at the true base rate. Use stratified splits so every fold has positives (<a href="/ml-models/cross-validation">cross-validation</a>). With very few positives, the metric itself is noisy: 20 positives move recall in steps of 0.05.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>A balanced-weighted model predicts 0.6 for a case. Is the real probability 0.6?</summary>
+  <p>No. Weighting positives by <var>w</var> relative to negatives inflates the odds by about <var>w</var>. Divide the odds by <var>w</var>: with <var>w</var> = 9, odds 1.5 become 1/6, a probability near 0.14.</p>
+</details>
+<details class="ml-quiz">
+  <summary>A false negative costs 50 times a false positive. What threshold on a calibrated probability minimizes expected cost?</summary>
+  <p>t* = c<sub>FP</sub> / (c<sub>FP</sub> + c<sub>FN</sub>) = 1/51 ≈ 0.02.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<p>
+  The weighted loss is the <a href="/ml-models/loss-functions">cross-entropy</a> with per-class multipliers; threshold moving is Bayes' decision rule from <a href="/ml-models/bayes-rule">Bayes' rule</a>
+  with costs; the probability correction is the same prior-ratio update.
+</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>King and Zeng. <em>Logistic Regression in Rare Events Data.</em> Political Analysis 9(2), 2001 (cited by scikit-learn for the "balanced" heuristic). <a href="https://doi.org/10.1093/oxfordjournals.pan.a004868">doi:10.1093/oxfordjournals.pan.a004868</a></li>
+  <li>Lin, Goyal, Girshick, He and Dollár. <em>Focal Loss for Dense Object Detection.</em> ICCV 2017. <a href="https://arxiv.org/abs/1708.02002">arXiv:1708.02002</a></li>
+  <li>Chawla, Bowyer, Hall and Kegelmeyer. <em>SMOTE: Synthetic Minority Over-sampling Technique.</em> JAIR 16, 2002. <a href="https://arxiv.org/abs/1106.1813">arXiv:1106.1813</a></li>
+  <li>Elkan. <em>The Foundations of Cost-Sensitive Learning.</em> IJCAI 2001 (the cost threshold and rebalancing by prior ratio).</li>
+  <li>Brodersen, Ong, Stephan and Buhmann. <em>The Balanced Accuracy and Its Posterior Distribution.</em> ICPR 2010 (cited by scikit-learn's <code>balanced_accuracy_score</code>).</li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/utils/class_weight.py') }}"><code>sklearn/utils/class_weight.py</code></a>, <a href="{{ skl('sklearn/model_selection/_classification_threshold.py') }}"><code>_classification_threshold.py</code></a>, <a href="{{ skl('sklearn/metrics/_classification.py', 2845, 2947) }}"><code>balanced_accuracy_score</code></a>.</li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/nn/modules/loss.py') }}"><code>torch/nn/modules/loss.py</code></a>, <a href="{{ src('torch/utils/data/sampler.py', 213, 283) }}"><code>torch/utils/data/sampler.py</code></a>.</li>
+  <li>XGBoost {{ pins.xgboost.tag }}: <a href="{{ xgb('doc/parameter.rst', 193, 195) }}"><code>doc/parameter.rst</code></a>.</li>
+</ul>
