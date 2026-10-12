@@ -171,6 +171,8 @@ def test_ready_page_follows_the_format(url):
     assert len(svgs) >= 2, url
     for svg in svgs:
         assert 'role="img"' in svg and "<title" in svg and "<desc" in svg, url
+    worked = body.split('<h2 id="worked-example"', 1)[1].split('<h2 id="implementation"', 1)[0]
+    assert "<table" in worked, url
     references = body.split('<h2 id="references"', 1)[1]
     for author in ("Cormen", "Skiena", "Sedgewick", "NeetCode"):
         assert author in references, (url, author)
