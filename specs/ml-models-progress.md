@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-12 (thirty-third run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-61, the last being `support-vector-machines`. The
-next page is `learning-rate-schedules` (queue item 62).
+fixed page format. Ready pages: queue items 1-63, the last being `gans`. The next page is
+`encoder-only` (queue item 64).
 
 ## Pins
 
@@ -86,14 +86,12 @@ None yet. Record each script here as script · command · output · seed · libr
 Ranges already cited by built pages live in their templates (and in `git log -p` on this
 file); this list keeps only what queued pages still need.
 
-- `torch/optim/lr_scheduler.py`: `CosineAnnealingLR` 1338-1475. Start lines only: `LambdaLR`
-  343, `LinearLR` 877, `SequentialLR` 1082, `OneCycleLR` 2285.
 - `torch/nn/utils/clip_grad.py`: `clip_grad_norm_` starts at 185.
 - `torch/nn/attention/bias.py`: `CausalBias` 86-306, `causal_upper_left`/`causal_lower_right`
   308-376.
 - `torch/nn/attention/flex_attention.py`: `BlockMask` 855-1694, `create_block_mask` 1967-2088,
   `flex_attention` starts at 2365.
-- `conv.py`: `Conv1d` 225-385 (`ConvTranspose2d` is cited in `autoencoders`).
+- `conv.py`: `Conv1d` 225-385 (`ConvTranspose2d` is cited in `autoencoders` and `gans`).
 - `torch/linalg/__init__.py`: `inv` 214-292, `vector_norm` 1491-1568; `matrix_norm` starts at 1570.
 - `torch/_torch_docs.py` (from `add_docstr(` to `)`): `matmul` 7908-7990, `mm` 7831-7887,
   `bmm` 1706-1762, `addmm` 592-665, `baddbmm` 1512-1581.
@@ -115,7 +113,8 @@ Paths are under `sklearn/`.
   `tree/_splitter.pyx`: ranges live in the `random-forests` template.
 - `ensemble/_gb.py`: `GradientBoostingClassifier` 1145.
 - `ensemble/_hist_gradient_boosting/gradient_boosting.py`: `HistGradientBoostingClassifier` 1762.
-- `svm/_classes.py`: `SVC` 623.
+- `svm/` and `metrics/pairwise.py` kernels: ranges live in the `support-vector-machines`
+  template.
 - `decomposition/_pca.py`: `PCA` 113.
 - `model_selection/_split.py`: `KFold` 437, `GroupKFold` 533, `StratifiedKFold` 687,
   `TimeSeriesSplit` 1116, `train_test_split` 2797.
@@ -145,14 +144,15 @@ Paths are under `sklearn/`.
 - `transformer` uses the v1 section layout and is exempt from the §6 order test until its
   retrofit (queue item 18).
 
-## First to thirty-first runs (2026-10-08 to 2026-10-12) — condensed
+## First to thirty-second runs (2026-10-08 to 2026-10-12) — condensed
 
 Runs 1-3 wrote the spec (v1, then v2), the registry, `LEARNING_PATH`, the §6 and queue tests,
 `check_mobile.js` and the Routine. Every run since adds, per page, a tested-helpers commit, a
 page commit (page, `ready`, queue ✓) and usually a `docs:` commit; items 1-51 were built in
 queue order (run 28: quantization, reinforcement-learning, bayes-rule; run 29:
 class-imbalance, random-forests, initialization; run 30: rnns-and-lstms, autoencoders,
-variational-autoencoders; run 31: positional-encoding, clustering, vector-indexes). `6f0803f` fixed 13 templates that read a
+variational-autoencoders; run 31: positional-encoding, clustering, vector-indexes; run 32:
+distillation, time-series, regression-metrics). `6f0803f` fixed 13 templates that read a
 missing `pins.X.version` key. Pins never moved. The ranges each page links live in its template
 (grep `src(`, `skl(`, `xgb(`); `git log -p` on this file has every old commit table and range list.
 
@@ -169,6 +169,11 @@ Findings worth keeping (details in each page and in `git log -p` on this file):
 - The vector-index example is `lru_cache`d (about 1.7 s); PQ re-ranking only helps when R > k.
 - `.jj-diagram svg text { fill: var(--jj-text) }` beats an SVG `fill=` attribute, so coloured
   diagram text must use `style="fill: ..."`.
+- Jinja: a context dict key named `values`, `items` or `keys` resolves to the dict method;
+  macros return Markup, so do arithmetic before calling them, never on their output.
+- Time series: trend + Fourier wins (MASE 0.73); shuffled K-fold flatters a 1-NN-in-time model
+  (3.53 vs 8.21). Regression metrics: the spiky model wins MAE and loses RMSE; MAPE's best
+  constant sits below the median.
 
 Open gaps from these runs:
 
@@ -185,42 +190,57 @@ Open gaps from these runs:
 - No pin implements IVF, PQ or HNSW; those follow the papers. `pca` appears as plain text on
   `clustering` until it is ready.
 - Page commits exceed 400 lines because each template is one file.
+- Run 32: Hinton–Vinyals–Dean's T² remark was confirmed only through secondary quotes;
+  Gneiting 2011 is cited only for consistent scoring functions. No pin implements ARIMA, STL
+  or MASE; those follow the papers and FPP3.
 
-## Thirty-second run (2026-10-12) — distillation, time-series, regression-metrics
+## Thirty-third run (2026-10-12) — support-vector-machines, learning-rate-schedules, gans
 
 | Commit | What |
 |---|---|
-| `f4e0baf` `ml-models: add distillation helpers and tests` | Temperature softmax, the hard plus T²-scaled soft loss and its gradient, the 1/T² decay and logit-matching limit, a students-from-labels-or-soft-targets demo, with tests |
-| `32c52d8` `ml-models: build the knowledge distillation page` | The page, `ready`, queue ✓ |
-| `4d4f637` `ml-models: add time series helpers and tests` | Seeded trend + season + AR(1) series, classical decomposition, ACF, a `TimeSeriesSplit` mirror (gap, max_train_size, both errors), four forecasters with MAE/RMSE/MASE, a shuffled-K-fold leakage demo, with tests |
-| `13fa4ed` `ml-models: build the time series page` | The page, `ready`, queue ✓ |
-| `5fe505a` `ml-models: add regression metrics helpers and tests` | `regression_scores` (sklearn `force_finite` semantics), `pinball_loss`, best constants by grid search, five-model example, with tests |
-| `fc6caf3` `ml-models: build the regression metrics page` | The page, `pinball_loss` in the render context, `ready`, queue ✓ |
+| `4038256` `ml-models: add tested support vector machine helpers` | A deterministic SMO solver (maximal-violating-pair working set, as in libsvm), linear/RBF/polynomial kernels, hinge loss, `gamma='scale'`, hard and soft margins, an outlier at three C, a 1-D ring, a scaling demo, with tests |
+| `d4603af` `ml-models: build the support vector machines page` | The page, `ready`, queue ✓ |
+| `7696dbf` `ml-models: add tested learning rate schedule helpers` | Closed-form step/exponential/cosine/warmup/one-cycle schedules, a recursive `get_lr` simulator the tests hold equal to them, noisy-SGD expected loss on a quadratic, GD at four rates, an LR range test, Adam's first steps |
+| `ec993db` `ml-models: build the learning rate schedules page` | The page, `ready`, queue ✓ |
+| `c289d64` `ml-models: add gan worked-example helpers` | Optimal discriminator and value on an eight-bin two-mode distribution, JS, both KLs and W1 for four generators, disjoint supports, minimax vs non-saturating gradients, Dirac-GAN runs, the 2×2 Fréchet distance and its sample-size bias, ConvTranspose2d sizes, with tests |
+| `ae3cbd5` `ml-models: add generative adversarial networks page` | The page, `ready`, queue ✓ |
 
-Ranges verified this run (scikit-learn `metrics/_regression.py`, `TimeSeriesSplit`, PyTorch
-`KLDivLoss` and `HuberLoss`) are linked from the three templates.
+Ranges verified this run are linked from the three templates: scikit-learn `svm/_base.py`,
+`svm/_classes.py`, `svm/src/libsvm/svm.cpp`, `metrics/pairwise.py` kernels and the SGD hinge
+loss; PyTorch `torch/optim/lr_scheduler.py` (every scheduler in the component table);
+`BCELoss` 633-716, `BCEWithLogitsLoss` 719-844, `autograd.grad` 434-621, `ConvTranspose2d`
+1012-1207, `LeakyReLU` 875-930, `Tanh` 407-433, `init.normal_` 274-298, `spectral_norm`
+535-636 and `_SpectralNorm` 403-532.
 
 Findings worth keeping:
 
-- On the time-series example, trend + Fourier wins (MASE 0.73) over lag-12 (1.05), seasonal
-  naive (1.87) and naive (2.36); shuffled K-fold scores a 1-NN-in-time model 3.53 against
-  8.21 on ordered splits.
-- On the regression example the spiky model wins MAE (2.00 vs 2.92) and loses RMSE (5.79 vs
-  3.01); the constant median scores R² −0.142; halving the target spread with the same
-  errors drops R² from 0.936 to 0.746; MAPE's best constant (17) sits below the median (19).
-- Jinja: a context dict key named `values`, `items` or `keys` resolves to the dict method;
-  macros return Markup, so do arithmetic before calling them, never on their output.
+- The SVM helpers' coefficients, intercepts and support sets match scikit-learn 1.9.1 `SVC`
+  (scratch venv); the tests pin those values and check primal = dual.
+- Learning rates: cosine beats step decay on the noisy quadratic; the range test's best rate is
+  1.0 on curvatures 0.5/2/8 and blows up three steps later; Adam's first steps move by
+  ≈ lr whatever the gradient scale, which is the case for warmup.
+- Dirac-GAN at step 0.1 from (1, 1): minimax simultaneous GD spirals out (radius 2.76 at
+  step 1000); the non-saturating loss shrinks, then orbits at ≈ 0.44 (checked to 10,000
+  steps); R1 with γ = 1 converges. A first WGAN-GP simulation with a linear critic stalled at
+  a spurious point created by the kink of |ψ| at 0, so the page states WGAN-GP's
+  non-convergence only as Mescheder et al.'s result.
+- FID helper cross-checked against `scipy.linalg.sqrtm` in the scratch venv.
+- `rendered_pages` caches each page for the life of the process: restart the app before
+  re-screenshotting an edited template.
 - Pins checked with `git ls-remote --tags`: v2.14.1, 1.9.1 and v3.4.2 are still the newest
   stable releases; no pin moved.
 
 Gaps:
 
-- References cited from memory (arxiv unreachable): Hinton–Vinyals–Dean (the T² remark was
-  confirmed only through secondary quotes), Box–Jenkins, Cleveland et al. (STL),
-  Bergmeir–Benítez, Hyndman–Koehler, Koenker–Bassett and Gneiting 2011 (cited only for
-  consistent scoring functions; its stance on MAPE was not verified, so the page does not
-  state one).
-- No pin implements ARIMA, STL or MASE; those follow the papers and FPP3.
+- References cited from memory (arxiv unreachable): Platt (SMO), Cortes–Vapnik, Fan–Chen–Lin,
+  Smith, SGDR, Goyal et al., Smith–Topin, RAdam, Xiong et al., Goodfellow et al., DCGAN,
+  Arjovsky–Bottou (including the KL(p_g‖p_data) − 2·JS gradient result), WGAN, WGAN-GP,
+  Heusel et al., Miyato et al., Mescheder et al. and Chong–Forsyth.
+- No torch cross-check was run for the schedulers; the closed forms are held equal to a
+  simulator of the pinned recursions instead.
+- No pin implements a GAN, a Wasserstein critic, R1 or FID; those follow the papers. The
+  "diffusion models largely replaced GANs" remark is general knowledge; `diffusion-models` is
+  not linked until it is ready.
 
 ## Queue
 
