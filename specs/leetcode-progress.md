@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-12 (third audit run). All 58 pages are ready and the queue is empty. This audit found and fixed one gap (brute-force baselines in Complexity and tradeoffs), so the Routine stays on its 5-hour schedule. **The next run is another audit run** (spec §8.1): it fixes one gap, and if none remain it records "complete" and moves this Routine to weekly audits.
+**Last updated:** 2026-10-12 (fourth audit run). All 58 pages are ready and the queue is empty. This audit found and fixed one gap (Sedgewick & Wayne citations naming the wrong sections), so the Routine stays on its 5-hour schedule. **The next run is another audit run** (spec §8.1): it fixes one gap, and if none remain it records "complete" and moves this Routine to weekly audits.
 
 ## The Routine
 
@@ -153,6 +153,11 @@ build once research is done.
   given only under Problem does not count. `test_ready_page_follows_the_format` now enforces it.
   Pages whose "also uses" list is empty show none: the list is built from `PROBLEMS`, and no
   problem's `patterns` names them.
+- **Sedgewick & Wayne sections (2026-10-12).** Every Sedgewick & Wayne citation names a section
+  (or chapter) of the 4th edition, and never 6.2 (B-trees) or 6.4 (max flow), which no page
+  teaches. Section titles were checked against the `Section x.y` headers in the algs4 sources
+  (`FordFulkerson.java` is 6.4, `BTree.java` 6.2, `AcyclicSP.java` 4.4, `NFA.java` 5.4,
+  `LongestCommonSubstring.java` 6.3). `test_sedgewick_citations_name_real_sections` enforces it.
 
 ## Known gaps and questions for the owner
 
@@ -397,3 +402,21 @@ unchanged at 100% (Blind 75 75/75, Grind 169 169/169, NeetCode 150 150/150, Neet
 250/250). pytest green (676 passed); every ready page returns 200 and the phone check passed on
 `/`, `/leetcode` and every ready page. Because this run found a gap, the schedule stays at every
 5 hours. Next: another audit run.
+
+### 2026-10-12 — audit run (fourth)
+
+Fourth audit run. Checked the parts of spec §6 the tests did not yet cover (code-free intuition,
+variations and edge cases, SVG colours, the roadmap credit, the *beyond* note, original papers),
+then every Sedgewick & Wayne citation against the algs4 sources. One gap: ten pages cited
+sections that do not cover their topic or no section at all. `grid-dp`, `interval-dp`,
+`state-machine-dp` and `string-dp` cited section 6.4 (max flow), `knapsack-dp` cited 6.4 as
+"reductions", `linear-dp` cited 6.2 (B-trees) as "recurrences", `dp-fundamentals` cited an online
+DP chapter the book does not have, `subsets-and-permutations` cited 2.3 (quicksort) for
+permutations, and `greedy` and `variable-size-window` named no section. Each now cites the
+section that applies (4.4 acyclic shortest paths for the DP pages, plus 5.4, 6.3 or 1.1 where
+relevant; 4.1 for backtracking; 4.3 and 4.4 for greedy; 1.4 for amortized analysis), and a new
+test checks every citation. No content or helpers changed. Coverage is unchanged at 100%
+(Blind 75 75/75, Grind 169 169/169, NeetCode 150 150/150, NeetCode 250 250/250). pytest green
+(748 passed); every ready page returns 200 and the phone check passed on `/`, `/leetcode` and
+every ready page. Because this run found a gap, the schedule stays at every 5 hours. Next:
+another audit run.
