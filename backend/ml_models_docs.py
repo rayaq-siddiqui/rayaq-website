@@ -8712,6 +8712,160 @@ def regression_metrics_example():
     }
 
 
+SVM_EXAMPLE = {
+    "points": [(1.0, 1.0), (2.0, 1.0), (1.0, 2.5), (2.5, 2.0), (3.5, 3.0), (4.5, 3.0), (3.0, 4.5), (4.0, 4.5)],
+    "labels": [-1, -1, -1, -1, 1, 1, 1, 1],
+    "outlier": (2.0, 2.0),
+    "c_values": [100.0, 0.5, 0.1],
+    "ring": [-3.0, -2.5, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 2.5, 3.0],
+    "ring_radius": 1.5,
+    "gammas": [0.1, 1.0, 10.0],
+    "far": 6.0,
+    "ring_c": 10.0,
+    "scaling_points": [(0.2, 1000.0), (0.8, 1000.0), (0.2, 3000.0)],
+    "tol": 1e-9,
+}
+
+
+def linear_kernel(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+
+def rbf_kernel(a, b, gamma):
+    return math.exp(-gamma * sum((x - y) ** 2 for x, y in zip(a, b)))
+
+
+def poly_kernel(a, b, gamma=1.0, coef0=1.0, degree=2):
+    return (gamma * linear_kernel(a, b) + coef0) ** degree
+
+
+def svm_smo(points, labels, C, kernel, tol=1e-9, max_iter=100000):
+    n = len(points)
+    K = [[kernel(a, b) for b in points] for a in points]
+    alpha = [0.0] * n
+    grad = [-1.0] * n
+    iterations = 0
+    while iterations < max_iter:
+        up = [t for t in range(n) if (labels[t] == 1 and alpha[t] < C) or (labels[t] == -1 and alpha[t] > 0)]
+        low = [t for t in range(n) if (labels[t] == -1 and alpha[t] < C) or (labels[t] == 1 and alpha[t] > 0)]
+        i = max(up, key=lambda t: -labels[t] * grad[t])
+        j = min(low, key=lambda t: -labels[t] * grad[t])
+        gap = -labels[i] * grad[i] + labels[j] * grad[j]
+        if gap < tol:
+            break
+        eta = max(K[i][i] + K[j][j] - 2 * K[i][j], 1e-12)
+        step = gap / eta
+        for index, sign in ((i, labels[i]), (j, -labels[j])):
+            room = C - alpha[index] if sign > 0 else alpha[index]
+            step = min(step, room)
+        alpha[i] += labels[i] * step
+        alpha[j] -= labels[j] * step
+        for k in range(n):
+            grad[k] += step * labels[k] * (K[k][i] - K[k][j])
+        iterations += 1
+    free = [k for k in range(n) if 1e-9 < alpha[k] < C - 1e-9]
+    if free:
+        b = sum(-labels[k] * grad[k] for k in free) / len(free)
+    else:
+        b = (-labels[i] * grad[i] - labels[j] * grad[j]) / 2
+    dual = sum(alpha) - 0.5 * sum(alpha[a] * alpha[c] * labels[a] * labels[c] * K[a][c]
+                                  for a in range(n) for c in range(n))
+    return {"alpha": alpha, "b": b, "iterations": iterations, "dual": dual, "gap": gap}
+
+
+def svm_decision(points, labels, model, kernel, x):
+    return sum(a * y * kernel(p, x) for a, y, p in zip(model["alpha"], labels, points) if a > 0) + model["b"]
+
+
+def hinge(margin):
+    return max(0.0, 1 - margin)
+
+
+def svm_linear_fit(points, labels, C, tol=1e-9):
+    model = svm_smo(points, labels, C, linear_kernel, tol)
+    w = [sum(a * y * p[d] for a, y, p in zip(model["alpha"], labels, points)) for d in range(len(points[0]))]
+    norm = math.sqrt(sum(v * v for v in w))
+    margins = [y * (linear_kernel(w, p) + model["b"]) for p, y in zip(points, labels)]
+    hinge_total = sum(hinge(m) for m in margins)
+    return {
+        **model,
+        "C": C,
+        "w": w,
+        "width": 2 / norm,
+        "margins": margins,
+        "support": [k for k, a in enumerate(model["alpha"]) if a > 1e-7],
+        "bounded": [k for k, a in enumerate(model["alpha"]) if a > C - 1e-7],
+        "hinge_total": hinge_total,
+        "primal": 0.5 * norm * norm + C * hinge_total,
+    }
+
+
+def gamma_scale(points):
+    values = [v for p in points for v in p]
+    mean = sum(values) / len(values)
+    variance = sum((v - mean) ** 2 for v in values) / len(values)
+    return 1.0 / (len(points[0]) * variance) if variance != 0 else 1.0
+
+
+@functools.lru_cache(maxsize=1)
+def svm_example():
+    e = SVM_EXAMPLE
+    points, labels = e["points"], e["labels"]
+    fits = [svm_linear_fit(points, labels, C, e["tol"]) for C in e["c_values"]]
+    with_outlier = [svm_linear_fit(points + [e["outlier"]], labels + [1], C, e["tol"]) for C in e["c_values"]]
+    ring = [(x,) for x in e["ring"]]
+    ring_labels = [1 if abs(x) < e["ring_radius"] else -1 for x in e["ring"]]
+    linear_ring = svm_linear_fit(ring, ring_labels, e["ring_c"], e["tol"])
+    poly = svm_smo(ring, ring_labels, e["ring_c"], poly_kernel, e["tol"])
+    rbf = []
+    for gamma in e["gammas"]:
+        kernel = functools.partial(rbf_kernel, gamma=gamma)
+        model = svm_smo(ring, ring_labels, e["ring_c"], kernel, e["tol"])
+        scores = [svm_decision(ring, ring_labels, model, kernel, p) for p in ring]
+        rbf.append({
+            "gamma": gamma,
+            "model": model,
+            "scores": scores,
+            "accuracy": sum((s > 0) == (y > 0) for s, y in zip(scores, ring_labels)) / len(ring),
+            "support": sum(1 for a in model["alpha"] if a > 1e-7),
+            "far": svm_decision(ring, ring_labels, model, kernel, (e["far"],)),
+            "curve": [(x / 10, svm_decision(ring, ring_labels, model, kernel, (x / 10,))) for x in range(-40, 41)],
+        })
+    poly_scores = [svm_decision(ring, ring_labels, poly, poly_kernel, p) for p in ring]
+    a, b = (1.0,), (2.0,)
+    lifted = lambda x: (x[0] ** 2, math.sqrt(2) * x[0], 1.0)
+    scaled = e["scaling_points"]
+    columns = list(zip(*scaled))
+    stds = [statistics.pstdev(c) for c in columns]
+    standardized = [tuple((v - statistics.fmean(c)) / s for v, c, s in zip(p, columns, stds)) for p in scaled]
+
+    def distance_share(p, q):
+        parts = [(x - y) ** 2 for x, y in zip(p, q)]
+        return parts[0] / sum(parts)
+
+    return {
+        "fits": fits,
+        "with_outlier": with_outlier,
+        "ring_labels": ring_labels,
+        "linear_ring": {**linear_ring, "accuracy": sum(m > 0 for m in linear_ring["margins"]) / len(ring)},
+        "poly": {**poly, "scores": poly_scores,
+                 "accuracy": sum((s > 0) == (y > 0) for s, y in zip(poly_scores, ring_labels)) / len(ring)},
+        "rbf": rbf,
+        "kernel_trick": {"kernel": poly_kernel(a, b), "explicit": linear_kernel(lifted(a), lifted(b)),
+                         "lifted_a": lifted(a), "lifted_b": lifted(b)},
+        "scaling": {
+            "gamma_raw": gamma_scale(scaled),
+            "gamma_standardized": gamma_scale(standardized),
+            "standardized": standardized,
+            "share_raw": distance_share(scaled[0], scaled[1]),
+            "kernel_raw_near": rbf_kernel(scaled[0], scaled[1], gamma_scale(scaled)),
+            "kernel_raw_far": rbf_kernel(scaled[0], scaled[2], gamma_scale(scaled)),
+            "kernel_std_near": rbf_kernel(standardized[0], standardized[1], gamma_scale(standardized)),
+            "kernel_std_far": rbf_kernel(standardized[0], standardized[2], gamma_scale(standardized)),
+        },
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -9255,6 +9409,9 @@ def render(slug, render_template):
         "regression_metrics_example": regression_metrics_example,
         "pinball_loss": pinball_loss,
         "regression_metrics_settings": REGRESSION_METRICS_EXAMPLE,
+        "svm_example": svm_example,
+        "svm_settings": SVM_EXAMPLE,
+        "hinge": hinge,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

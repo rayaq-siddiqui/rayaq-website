@@ -3671,3 +3671,49 @@ def test_regression_metrics_example_shows_each_pitfall():
     assert x["narrow_scores"]["mae"] == pytest.approx(steady["mae"])
     assert x["narrow_scores"]["r2"] < steady["r2"]
     assert x["over_under"] == pytest.approx({"over": 0.5, "under": 1 / 3})
+
+
+def test_svm_smo_finds_the_hard_margin_on_two_points():
+    fit = ml_models_docs.svm_linear_fit([(0.0, 0.0), (2.0, 0.0)], [-1, 1], 100.0)
+    assert fit["w"] == pytest.approx([1.0, 0.0])
+    assert fit["b"] == pytest.approx(-1.0)
+    assert fit["width"] == pytest.approx(2.0)
+    assert fit["alpha"] == pytest.approx([0.5, 0.5])
+
+
+def test_svm_example_matches_sklearn_and_closes_the_duality_gap():
+    x = ml_models_docs.svm_example()
+    hard, half, soft = x["fits"]
+    assert hard["w"] == pytest.approx([1.0, 1.0]) and hard["b"] == pytest.approx(-5.5)
+    assert hard["support"] == [3, 4] and hard["bounded"] == []
+    assert half["w"] == pytest.approx([0.5, 0.5]) and half["width"] == pytest.approx(2 * hard["width"])
+    assert soft["w"] == pytest.approx([0.45853659, 0.42682927]) and soft["b"] == pytest.approx(-2.34390244)
+    assert soft["support"] == [1, 2, 3, 4, 5, 6]
+    for fit in x["fits"] + x["with_outlier"]:
+        assert fit["primal"] == pytest.approx(fit["dual"], abs=1e-6)
+        assert sum(a * y for a, y in zip(fit["alpha"], ml_models_docs.SVM_EXAMPLE["labels"] + [1])) == pytest.approx(0, abs=1e-9)
+        assert all(-1e-12 <= a <= fit["C"] + 1e-12 for a in fit["alpha"])
+    strict = x["with_outlier"][0]
+    assert strict["w"] == pytest.approx([0.5, 1.5]) and strict["b"] == pytest.approx(-5.25)
+    assert strict["margins"][-1] < 0 and strict["bounded"] == [8]
+    assert x["with_outlier"][-1]["width"] > x["with_outlier"][0]["width"]
+
+
+def test_svm_kernels_separate_the_ring_and_rbf_decays_to_the_intercept():
+    x = ml_models_docs.svm_example()
+    assert x["linear_ring"]["accuracy"] < 0.6 and x["poly"]["accuracy"] == 1
+    assert x["poly"]["scores"][0] == pytest.approx(-13 / 3)
+    assert x["kernel_trick"]["kernel"] == pytest.approx(x["kernel_trick"]["explicit"]) == pytest.approx(9)
+    small, mid, large = x["rbf"]
+    assert [r["support"] for r in x["rbf"]] == [4, 7, 11]
+    assert small["far"] == pytest.approx(-2.79258169, abs=1e-6)
+    assert large["far"] == pytest.approx(large["model"]["b"], abs=1e-9)
+    assert ml_models_docs.rbf_kernel((0, 0), (1, 1), 0.5) == pytest.approx(math.exp(-1))
+
+
+def test_svm_scaling_shows_gamma_scale_cannot_fix_mixed_units():
+    s = ml_models_docs.svm_example()["scaling"]
+    assert s["gamma_raw"] == pytest.approx(4.3915289194983095e-07)
+    assert s["gamma_standardized"] == pytest.approx(0.5)
+    assert s["kernel_raw_near"] > 0.9999 and s["kernel_raw_far"] < 0.2
+    assert s["kernel_std_near"] == pytest.approx(s["kernel_std_far"])
