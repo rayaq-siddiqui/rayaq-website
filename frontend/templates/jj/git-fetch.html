@@ -16,8 +16,8 @@
   In short: jj picks the remotes (from <code>--remote</code>, <code>--all-remotes</code>,
   <code>git.fetch</code>, the only remote, or <code>origin</code>). For each remote it builds a
   bookmark expression and a tag expression, and turns them into forced Git refspecs. It shells out to
-  <code>git fetch --porcelain --prune --no-write-fetch-head --no-tags</code>, dropping and retrying
-  refspecs the remote doesn't have. It then diffs the Git refs against the view and imports the
+  <code>git fetch --porcelain --prune --no-write-fetch-head --refmap= --no-tags</code>, dropping and
+  retrying refspecs the remote doesn't have. It then diffs the Git refs against the view and imports the
   changes. Tracked remote bookmarks are merged into local ones. Commits no longer reachable from any
   ref are abandoned, and remotely rewritten commits get synthetic predecessors. All of this is one
   operation, <code>fetch from git remote(s) &lt;names&gt;</code>.
@@ -25,7 +25,7 @@
 
 <p>
   The command is <a href="{{ src(cmd, 131, 264) }}"><code>cmd_git_fetch</code></a>. Most of the work
-  happens in jj-lib's <a href="{{ src(git, 3255, 3409) }}"><code>GitFetch</code></a> and the shared
+  happens in jj-lib's <a href="{{ src(git, 3257, 3410) }}"><code>GitFetch</code></a> and the shared
   import code in <a href="{{ src(git, 630, 782) }}"><code>import_refs_inner</code></a>. Remote bookmarks
   and their tracking state live in the view (<a href="{{ url_for('jj', slug='view') }}">view page</a>).
   Abandoning and rebasing descendants is the usual rewrite machinery, run when the transaction
@@ -88,7 +88,7 @@
       exist and failing if none match. It starts a transaction and, per remote, builds a bookmark and
       tag expression from flags, config or Git's refspecs, expanding them into forced refspecs.
       GitFetch::fetch runs git fetch for each remote, retrying without refspecs whose source is
-      missing and pruning those branches. GitFetch::import_refs diffs Git refs against the view and
+      missing and deleting their local refs. GitFetch::import_refs diffs Git refs against the view and
       runs import_refs_inner: import the new heads, update remote refs and merge tracked ones into
       local bookmarks, abandon unreachable commits, record synthetic predecessors. The stats are
       printed, missing branches warned about, and tx.finish records the operation and rebases
@@ -111,19 +111,19 @@
       <text x="32" y="166" class="d-muted" font-size="11">bookmarks: --branch | fetch-bookmarks | Git refspecs</text>
       <text x="32" y="183" class="d-muted" font-size="11">tags: --tag | fetch-tags | all</text></a>
 
-      <a href="{{ src(git, 2966, 3020) }}"><rect class="d-box" x="390" y="110" width="350" height="94" rx="6"></rect>
+      <a href="{{ src(git, 2968, 3022) }}"><rect class="d-box" x="390" y="110" width="350" height="94" rx="6"></rect>
       <text x="402" y="131">expand_fetch_refspecs</text>
       <text x="402" y="149" class="d-muted" font-size="11">+refs/heads/G:refs/remotes/R/G</text>
       <text x="402" y="166" class="d-muted" font-size="11">+refs/tags/G:refs/jj/remote-tags/R/G</text>
       <text x="402" y="183" class="d-muted" font-size="11">negative patterns → ^refs/heads/G</text></a>
 
-      <a href="{{ src(git, 3282, 3359) }}"><rect class="d-box" x="20" y="228" width="720" height="84" rx="6"></rect>
+      <a href="{{ src(git, 3284, 3360) }}"><rect class="d-box" x="20" y="228" width="720" height="84" rx="6"></rect>
       <text x="32" y="249">GitFetch::fetch, once per remote (git subprocess)</text>
-      <text x="32" y="267" class="d-muted" font-size="11">git fetch --porcelain --prune --no-write-fetch-head --no-tags -- R &lt;refspecs&gt;</text>
-      <text x="32" y="285" class="d-muted" font-size="11">remote lacks a source ref → drop that refspec and retry; remember the branch to prune</text>
-      <text x="32" y="302" class="d-muted" font-size="11">rejected updates → error; git branch --remotes --delete the missing branches</text></a>
+      <text x="32" y="267" class="d-muted" font-size="11">git fetch --porcelain --prune --no-write-fetch-head --refmap= --no-tags -- R &lt;refspecs&gt;</text>
+      <text x="32" y="285" class="d-muted" font-size="11">remote lacks a source ref → drop that refspec, delete its destination ref, retry</text>
+      <text x="32" y="302" class="d-muted" font-size="11">rejected updates → error</text></a>
 
-      <a href="{{ src(git, 3375, 3408) }}"><rect class="d-box" x="20" y="336" width="720" height="102" rx="6"></rect>
+      <a href="{{ src(git, 3376, 3409) }}"><rect class="d-box" x="20" y="336" width="720" height="102" rx="6"></rect>
       <text x="32" y="357">GitFetch::import_refs → diff_refs_to_import (fetched patterns only) → import_refs_inner</text>
       <text x="32" y="376" class="d-muted" font-size="11">import new head commits into the backend and index; add them as visible heads</text>
       <text x="32" y="394" class="d-muted" font-size="11">set each remote ref; tracked → merge_local_bookmark / merge_local_tag (base = old tracked target)</text>
@@ -184,33 +184,35 @@
 
 <h3 id="refspecs">Refspecs</h3>
 <p>
-  <a href="{{ src(git, 3041, 3141) }}"><code>split_into_positive_negative_patterns</code></a> requires each
+  <a href="{{ src(git, 3043, 3143) }}"><code>split_into_positive_negative_patterns</code></a> requires each
   expression to be <code>(p1 | p2 | …) ~ (n1 | …)</code>: at most one union of positive patterns,
   minus unions of negative ones. Each pattern must convert to a Git glob containing none of
   <code>: ^ ? [ ]</code> (<a href="{{ src(git, 2905) }}">source</a>,
-  <a href="{{ src(git, 3022, 3029) }}"><code>pattern_to_refspec_glob</code></a>). Positive patterns
+  <a href="{{ src(git, 3024, 3031) }}"><code>pattern_to_refspec_glob</code></a>). Positive patterns
   become <em>forced</em> refspecs into jj's namespaces. Negative ones become <code>^refs/…</code>
   exclusions. Without <code>fetch-bookmarks</code>, the remote's Git refspecs are reused if they have
   the shape <code>+refs/heads/X:refs/remotes/&lt;remote&gt;/X</code>. Anything else is skipped with a
-  warning (<a href="{{ src(git, 3166, 3253) }}"><code>load_default_fetch_bookmarks</code></a>).
+  warning (<a href="{{ src(git, 3168, 3255) }}"><code>load_default_fetch_bookmarks</code></a>).
 </p>
 
 <h3 id="missing-refs">Missing remote refs</h3>
 <p>
   <code>git fetch</code> fails as a whole when one explicit source ref doesn't exist, and reports only
-  one at a time. So <a href="{{ src(git, 3311, 3340) }}"><code>fetch</code></a> loops: run git, drop the
-  failing refspec, and retry. A branch that disappeared upstream is then removed locally with
-  <code>git branch --remotes --delete</code>, because <code>--prune</code> doesn't prune refs whose
-  refspec failed (<a href="{{ src(git, 3349, 3351) }}">source</a>,
-  <a href="{{ src(sub, 202, 222) }}"><code>spawn_branch_prune</code></a>). If no refspecs are left,
-  nothing is fetched from that remote.
+  one at a time. So <a href="{{ src(git, 3313, 3345) }}"><code>fetch</code></a> loops: run git, drop the
+  failing refspec, and retry. <code>--prune</code> doesn't delete a ref named explicitly by a refspec,
+  so when a refspec is dropped jj deletes its destination ref itself through gix, which is how a
+  branch that disappeared upstream goes away locally. A failed deletion is
+  <code>Failed to prune stale refs</code>. If no refspecs are left, nothing is fetched from that
+  remote. <code>--refmap=</code> stops Git from also updating refs through the remote's configured
+  <code>remote.&lt;name&gt;.fetch</code> mappings, so only the refspecs jj passed are applied
+  (<a href="{{ src(sub, 176, 196) }}"><code>spawn_fetch</code></a>).
 </p>
 
 <h3 id="import">Import</h3>
 <p>
   The import only considers refs matching what was fetched from each remote, so
   <code>--branch a1</code> doesn't notice that <code>a2</code> was deleted upstream
-  (<a href="{{ src(git, 3382, 3401) }}">source</a>). <a href="{{ src(git, 903, 1020) }}"><code>diff_refs_to_import</code></a>
+  (<a href="{{ src(git, 3383, 3402) }}">source</a>). <a href="{{ src(git, 903, 1020) }}"><code>diff_refs_to_import</code></a>
   compares the Git refs with the view. A known ref missing from Git becomes an update to
   <em>absent</em>.
 </p>
@@ -240,11 +242,12 @@
       <tr><td><code>No git remotes to fetch from</code></td><td>The remote selection matched no configured remote.</td><td><a href="{{ src(cmd, 171, 173) }}">fetch.rs</a></td></tr>
       <tr><td><code>Warning: No matching remotes for names: …</code></td><td>Exact remote names that don't exist.</td><td><a href="{{ src(cmd, 158, 170) }}">fetch.rs</a></td></tr>
       <tr><td><code>Warning: No matching branches found on any specified/configured remote: …</code></td><td>An exact <code>--branch</code> name that exists on none of the remotes, before or after the fetch.</td><td><a href="{{ src(cmd, 293, 322) }}">fetch.rs</a></td></tr>
-      <tr><td><code>Warning: Ignored refspec `…` from `…`: &lt;reason&gt;</code></td><td>A Git-configured refspec jj can't use: fetch-only, non-forced, not under <code>refs/heads/</code>, not into <code>refs/remotes/&lt;remote&gt;/</code>, or renaming.</td><td><a href="{{ src(git, 3207, 3253) }}">git.rs</a></td></tr>
-      <tr><td><code>Invalid branch pattern provided. When fetching, branch names and globs may not contain the characters …</code></td><td>A pattern with <code>: ^ ? [ ]</code>, or one that isn't a glob.</td><td><a href="{{ src(git, 2959, 2963) }}">git.rs</a></td></tr>
-      <tr><td><code>Cannot use `&amp;` for positive expressions</code>, and the other two shape errors</td><td>An expression that isn't a union minus unions.</td><td><a href="{{ src(git, 3031, 3039) }}">git.rs</a></td></tr>
-      <tr><td><code>Failed to update refs: …</code></td><td>Git rejected a ref update. Remote refs are forced, so this is rare.</td><td><a href="{{ src(git, 3342, 3347) }}">git.rs</a></td></tr>
-      <tr><td><code>No git remote named '…'</code></td><td>The remote disappeared from Git config between selection and fetch.</td><td><a href="{{ src(git, 3301, 3304) }}">git.rs</a></td></tr>
+      <tr><td><code>Warning: Ignored refspec `…` from `…`: &lt;reason&gt;</code></td><td>A Git-configured refspec jj can't use: fetch-only, non-forced, not under <code>refs/heads/</code>, not into <code>refs/remotes/&lt;remote&gt;/</code>, or renaming.</td><td><a href="{{ src(git, 3209, 3255) }}">git.rs</a></td></tr>
+      <tr><td><code>Invalid branch pattern provided. When fetching, branch names and globs may not contain the characters …</code></td><td>A pattern with <code>: ^ ? [ ]</code>, or one that isn't a glob.</td><td><a href="{{ src(git, 2961, 2965) }}">git.rs</a></td></tr>
+      <tr><td><code>Cannot use `&amp;` for positive expressions</code>, and the other two shape errors</td><td>An expression that isn't a union minus unions.</td><td><a href="{{ src(git, 3033, 3041) }}">git.rs</a></td></tr>
+      <tr><td><code>Failed to update refs: …</code></td><td>Git rejected a ref update. Remote refs are forced, so this is rare.</td><td><a href="{{ src(git, 3347, 3352) }}">git.rs</a></td></tr>
+      <tr><td><code>Failed to prune stale refs</code></td><td>Deleting the local ref of a refspec the remote no longer has failed.</td><td><a href="{{ src(git, 2915, 2916) }}">git.rs</a></td></tr>
+      <tr><td><code>No git remote named '…'</code></td><td>The remote disappeared from Git config between selection and fetch.</td><td><a href="{{ src(git, 3303, 3306) }}">git.rs</a></td></tr>
       <tr><td><code>Warning: Failed to import some Git refs:</code></td><td>Refs whose targets couldn't be imported. Refs under the reserved <code>git</code> remote name add a hint to rename the remote.</td><td><a href="{{ src(gu, 269, 294) }}">git_util.rs</a></td></tr>
       <tr><td><code>--no-integrate-operation is not respected</code></td><td>That global flag was passed.</td><td><a href="{{ src(cmd, 137, 141) }}">fetch.rs</a></td></tr>
     </tbody>

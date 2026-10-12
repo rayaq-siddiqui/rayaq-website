@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "05581760660a7d488e3c19d6aec6f6668822e94d",
-    "commit_date": "2026-10-11",
+    "commit": "86b7e2e80b8e541a6aee2972a077428b7d1d4e18",
+    "commit_date": "2026-10-12",
     "version": "0.46.0",
-    "analyzed_on": "2026-10-11",
+    "analyzed_on": "2026-10-12",
 }
 
 TOPICS = [
@@ -49,7 +49,7 @@ TOPICS = [
         "summary": "The Commit object field by field, content-addressed commit IDs versus stable change IDs, and how commits are built and signed.",
         "sources": [
             "core/src/backend.rs",
-            "lib/src/commit.rs",
+            "core/src/commit.rs",
             "lib/src/commit_builder.rs",
             "lib/src/signing_factory.rs",
             "lib/src/settings.rs",
@@ -66,10 +66,10 @@ TOPICS = [
         "summary": "Tree objects, the TreeValue variants, merged trees and tree diffs, and copy tracking.",
         "sources": [
             "core/src/backend.rs",
-            "lib/src/merged_tree.rs",
-            "lib/src/merged_tree_builder.rs",
-            "lib/src/tree.rs",
-            "lib/src/copies.rs",
+            "core/src/merged_tree.rs",
+            "core/src/merged_tree_builder.rs",
+            "core/src/tree.rs",
+            "core/src/copies.rs",
             "docs/design/copy-tracking.md",
         ],
         "ready": True,
@@ -83,7 +83,7 @@ TOPICS = [
             "core/src/merge.rs",
             "core/src/conflict_labels.rs",
             "lib/src/conflicts.rs",
-            "lib/src/tree_merge.rs",
+            "core/src/tree_merge.rs",
             "core/src/files.rs",
             "docs/technical/conflicts.md",
         ],
@@ -155,7 +155,7 @@ TOPICS = [
         "kind": "topic",
         "summary": "Index segments, the change-ID index, the changed-path index, and short ID prefixes.",
         "sources": [
-            "lib/src/index.rs",
+            "core/src/index.rs",
             "lib/src/index_store.rs",
             "lib/src/default_index/",
             "lib/src/id_prefix.rs",
@@ -170,7 +170,7 @@ TOPICS = [
         "summary": "From revset text to evaluated commits: grammar, expression tree, symbol resolution and evaluation.",
         "sources": [
             "lib/src/revset.rs",
-            "lib/src/revset_backend.rs",
+            "core/src/revset_backend.rs",
             "dsl/src/revset_parser.rs",
             "dsl/src/revset.pest",
             "lib/src/default_index/revset_engine.rs",
@@ -187,7 +187,7 @@ TOPICS = [
         "summary": "The Backend trait, the Store caching layer, and the Git and simple backends.",
         "sources": [
             "core/src/backend.rs",
-            "lib/src/store.rs",
+            "core/src/store.rs",
             "lib/src/git_backend.rs",
             "lib/src/simple_backend.rs",
             "lib/src/secret_backend.rs",
@@ -1196,7 +1196,7 @@ COMMAND_PAGE_OVERRIDES = {
             "cli/src/commands/unsign.rs",
             "lib/src/settings.rs",
             "lib/src/commit_builder.rs",
-            "lib/src/commit.rs",
+            "core/src/commit.rs",
             "lib/src/revset.rs",
         ],
         "ready": True,
@@ -1580,7 +1580,7 @@ COMMAND_PAGE_OVERRIDES = {
         "title": "How jj file list works",
         "sources": [
             "cli/src/commands/file/list.rs",
-            "lib/src/merged_tree.rs",
+            "core/src/merged_tree.rs",
             "cli/src/commit_templater.rs",
             "cli/src/config/templates.toml",
             "lib/src/fileset.rs",
@@ -1594,7 +1594,7 @@ COMMAND_PAGE_OVERRIDES = {
             "cli/src/commands/file/search.rs",
             "core/src/str_util.rs",
             "lib/src/conflicts.rs",
-            "lib/src/merged_tree.rs",
+            "core/src/merged_tree.rs",
             "lib/src/fileset.rs",
             "core/src/fileset_backend.rs",
         ],
@@ -1605,7 +1605,7 @@ COMMAND_PAGE_OVERRIDES = {
         "sources": [
             "cli/src/commands/file/show.rs",
             "lib/src/conflicts.rs",
-            "lib/src/merged_tree.rs",
+            "core/src/merged_tree.rs",
             "core/src/file_util.rs",
             "core/src/fileset_backend.rs",
         ],
@@ -1625,7 +1625,7 @@ COMMAND_PAGE_OVERRIDES = {
         "sources": [
             "cli/src/commands/file/delete.rs",
             "cli/src/cli_util.rs",
-            "lib/src/merged_tree_builder.rs",
+            "core/src/merged_tree_builder.rs",
             "lib/src/repo.rs",
             "cli/tests/test_file_delete_command.rs",
         ],
@@ -1675,7 +1675,7 @@ COMMAND_PAGE_OVERRIDES = {
             "cli/src/merge_tools/external.rs",
             "cli/src/merge_tools/diff_working_copies.rs",
             "cli/src/merge_tools/builtin.rs",
-            "lib/src/rewrite.rs",
+            "core/src/commit.rs",
             "lib/src/repo.rs",
             "cli/src/cli_util.rs",
         ],
@@ -1686,7 +1686,7 @@ COMMAND_PAGE_OVERRIDES = {
         "sources": [
             "cli/src/commands/revert.rs",
             "cli/src/cli_util.rs",
-            "lib/src/merged_tree.rs",
+            "core/src/merged_tree.rs",
             "cli/src/config/templates.toml",
         ],
         "ready": True,
@@ -1851,8 +1851,8 @@ COMMAND_PAGE_OVERRIDES = {
         "sources": [
             "cli/src/commands/restore.rs",
             "lib/src/rewrite.rs",
-            "lib/src/merged_tree.rs",
-            "lib/src/filtered_tree_writer.rs",
+            "core/src/merged_tree.rs",
+            "core/src/filtered_tree_writer.rs",
             "lib/src/repo.rs",
             "cli/src/cli_util.rs",
         ],
@@ -1950,7 +1950,7 @@ COMMAND_PAGE_OVERRIDES = {
         "sources": [
             "cli/src/commands/new.rs",
             "cli/src/cli_util.rs",
-            "lib/src/rewrite.rs",
+            "core/src/commit.rs",
             "lib/src/repo.rs",
             "lib/src/commit_builder.rs",
             "cli/src/description_util.rs",
@@ -1963,6 +1963,7 @@ COMMAND_PAGE_OVERRIDES = {
         "title": "How jj fix works",
         "sources": [
             "lib/src/fix.rs",
+            "core/src/commit.rs",
             "cli/src/commands/fix.rs",
             "cli/src/config/revsets.toml",
             "docs/config.md",
@@ -1985,7 +1986,7 @@ COMMAND_PAGE_OVERRIDES = {
         "sources": [
             "cli/src/commands/show.rs",
             "cli/src/diff_util.rs",
-            "lib/src/commit.rs",
+            "core/src/commit.rs",
             "lib/src/rewrite.rs",
             "cli/src/cli_util.rs",
         ],
@@ -1996,7 +1997,7 @@ COMMAND_PAGE_OVERRIDES = {
         "sources": [
             "cli/src/commands/diff.rs",
             "cli/src/diff_util.rs",
-            "lib/src/rewrite.rs",
+            "core/src/commit.rs",
             "lib/src/revset.rs",
             "cli/src/cli_util.rs",
             "cli/src/revset_util.rs",
