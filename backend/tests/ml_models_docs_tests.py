@@ -3415,3 +3415,78 @@ def test_gmm_em_climbs_and_gives_soft_assignments():
     assert ml_models_docs.gmm_n_parameters(3, 2) == 17
     assert ml_models_docs.adjusted_rand_index([0, 0, 1, 1], [1, 1, 0, 0]) == pytest.approx(1.0)
     assert ml_models_docs.adjusted_rand_index([0, 0, 1, 1], [0, 1, 0, 1]) == pytest.approx(-0.5)
+
+
+def test_ivf_recall_rises_with_nprobe_and_probing_every_list_is_exact():
+    s = ml_models_docs.VECTOR_INDEX_EXAMPLE
+    e = ml_models_docs.vector_index_example()
+    assert sum(e["ivf"]["sizes"]) == s["n"]
+    rows = e["ivf"]["rows"]
+    recalls = [r["recall"] for r in rows]
+    assert recalls == sorted(recalls)
+    assert rows[0]["recall"] < 0.8
+    assert rows[-1]["nprobe"] == s["nlist"]
+    assert rows[-1]["recall"] == 1.0
+    assert rows[-1]["distances"] == s["nlist"] + s["n"]
+    plane = e["plane"]
+    assert plane["probe1"]["ids"] != [plane["nearest"]]
+    assert plane["probe2"]["ids"] == [plane["nearest"]]
+
+
+def test_pq_asymmetric_distance_is_distance_to_the_reconstruction():
+    data = [(0.0, 0.0, 1.0, 1.0), (1.0, 0.0, 0.0, 1.0), (0.0, 1.0, 1.0, 0.0), (1.0, 1.0, 0.0, 0.0)]
+    pq = ml_models_docs.pq_train(data, 2, 2, 0, 10)
+    q = (0.2, 0.9, 0.4, 0.1)
+    tables = ml_models_docs.pq_tables(pq, q)
+    for v in data:
+        code = ml_models_docs.pq_encode(pq, v)
+        approx = sum(tables[j][c] for j, c in enumerate(code))
+        assert approx == pytest.approx(ml_models_docs._dist2(q, ml_models_docs.pq_decode(pq, code)))
+    e = ml_models_docs.vector_index_example()
+    demo = e["pq"]["demo"]
+    assert demo["approx"] == pytest.approx(ml_models_docs._dist2(demo["query"], demo["decoded"]))
+    rows = e["pq"]["rows"]
+    assert [r["bytes"] for r in rows] == [1.0, 2.0, 4.0]
+    assert [r["error"] for r in rows] == sorted((r["error"] for r in rows), reverse=True)
+    for r in rows:
+        assert r["recall"][0] <= r["recall"][30] <= r["recall"][100]
+    assert [r["recall"][0] for r in rows] == sorted(r["recall"][0] for r in rows)
+
+
+def test_hnsw_layers_nest_respect_degree_caps_and_recall_rises_with_ef():
+    s = ml_models_docs.VECTOR_INDEX_EXAMPLE
+    data, _ = ml_models_docs.vector_dataset(200, 4, 4, 0.5, 1, 0)
+    index = ml_models_docs.hnsw_build(data, 4, 20, 1)
+    layers = index["layers"]
+    assert len(layers[0]) == len(data)
+    for upper, lower in zip(layers[1:], layers):
+        assert set(upper) <= set(lower)
+    for level, layer in enumerate(layers):
+        cap = 8 if level == 0 else 4
+        assert all(len(links) <= cap and node not in links for node, links in layer.items())
+        assert all(nb in layer for links in layer.values() for nb in links)
+    q = (0.1, -0.2, 0.3, 0.0)
+    exact = ml_models_docs.exact_knn(data, q, 5)
+    assert ml_models_docs.hnsw_search(index, data, q, 5, len(data))["ids"] == exact
+    e = ml_models_docs.vector_index_example()
+    rows = e["hnsw"]["rows"]
+    recalls = [r["recall"] for r in rows]
+    costs = [r["distances"] for r in rows]
+    assert recalls == sorted(recalls) and costs == sorted(costs)
+    assert recalls[0] < 0.95 and recalls[-1] == 1.0
+    assert costs[-1] < s["n"] / 2
+    sizes = e["hnsw"]["layer_sizes"]
+    assert sizes[0] == s["n"] and sizes == sorted(sizes, reverse=True)
+    assert e["plane"]["route"]["ids"] == [e["plane"]["nearest"]]
+
+
+def test_vector_index_memory_counts_bytes_per_vector():
+    m = ml_models_docs.vector_index_memory(1000, 128, 16, 16, 8)
+    assert m["flat"] == 1000 * 128 * 4
+    assert m["ivf_flat"] == m["flat"] + 1000 * 8
+    assert m["ivf_pq"] == 1000 * 16 + 1000 * 8
+    assert m["hnsw_flat"] == pytest.approx(m["flat"] + 1000 * (32 + 16 / 15) * 4)
+    scale = ml_models_docs.vector_index_example()["scale"]
+    assert scale["flat"] == 307_200_000_000
+    assert scale["ivf_pq"] == 10_400_000_000
+    assert ml_models_docs.recall_at_k([1, 2, 3, 9], [1, 2, 3, 4]) == 0.75

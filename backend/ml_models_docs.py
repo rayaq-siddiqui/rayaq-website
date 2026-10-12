@@ -1,3 +1,5 @@
+import functools
+import heapq
 import itertools
 import math
 import random
@@ -7952,6 +7954,334 @@ def cluster_example():
     }
 
 
+VECTOR_INDEX_EXAMPLE = {
+    "n": 800,
+    "dim": 16,
+    "groups": 16,
+    "spread": 0.6,
+    "seed": 7,
+    "queries": 40,
+    "k": 10,
+    "nlist": 28,
+    "nprobes": [1, 2, 4, 8, 28],
+    "pq_m": [2, 4, 8],
+    "pq_ks": 16,
+    "rerank": [30, 100],
+    "hnsw_m": 8,
+    "ef_construction": 40,
+    "efs": [10, 20, 40, 80],
+    "kmeans_iterations": 15,
+    "plane_points": 45,
+    "plane_seed": 3,
+    "plane_nlist": 5,
+    "plane_hnsw_m": 3,
+    "scale": {"n": 100_000_000, "dim": 768, "hnsw_m": 32, "pq_m": 96, "pq_bits": 8},
+}
+
+
+def _dist2(a, b):
+    return math.dist(a, b) ** 2
+
+
+def vector_dataset(n, dim, groups, spread, seed, queries):
+    rng = random.Random(seed)
+    centers = [[rng.uniform(-1, 1) for _ in range(dim)] for _ in range(groups)]
+
+    def draw():
+        c = centers[rng.randrange(groups)]
+        return tuple(round(rng.gauss(x, spread), 3) for x in c)
+
+    return [draw() for _ in range(n)], [draw() for _ in range(queries)]
+
+
+def exact_knn(data, q, k):
+    return sorted(range(len(data)), key=lambda i: (_dist2(q, data[i]), i))[:k]
+
+
+def recall_at_k(found, truth):
+    return len(set(found) & set(truth)) / len(truth)
+
+
+def _nearest_center(p, centers):
+    best, best_d = 0, None
+    for c, center in enumerate(centers):
+        d = _dist2(p, center)
+        if best_d is None or d < best_d:
+            best, best_d = c, d
+    return best
+
+
+def train_kmeans(points, k, seed, iterations):
+    rng = random.Random(seed)
+    centers = [points[rng.randrange(len(points))]]
+    d2 = [_dist2(p, centers[0]) for p in points]
+    while len(centers) < k:
+        target, running, pick = rng.random() * sum(d2), 0.0, len(points) - 1
+        for i, d in enumerate(d2):
+            running += d
+            if running > target:
+                pick = i
+                break
+        centers.append(points[pick])
+        d2 = [min(d, _dist2(p, points[pick])) for d, p in zip(d2, points)]
+    labels = None
+    for _ in range(iterations):
+        new_labels = [_nearest_center(p, centers) for p in points]
+        if new_labels == labels:
+            break
+        labels = new_labels
+        for c in range(k):
+            members = [p for p, l in zip(points, labels) if l == c]
+            if members:
+                centers[c] = tuple(sum(v) / len(members) for v in zip(*members))
+    return centers
+
+
+def ivf_build(data, nlist, seed, iterations):
+    centroids = train_kmeans(data, nlist, seed, iterations)
+    lists = [[] for _ in centroids]
+    for i, v in enumerate(data):
+        lists[_nearest_center(v, centroids)].append(i)
+    return {"centroids": centroids, "lists": lists}
+
+
+def ivf_search(index, data, q, k, nprobe):
+    centroids = index["centroids"]
+    probed = sorted(range(len(centroids)), key=lambda c: (_dist2(q, centroids[c]), c))[:nprobe]
+    candidates = [i for c in probed for i in index["lists"][c]]
+    ids = sorted(candidates, key=lambda i: (_dist2(q, data[i]), i))[:k]
+    return {"ids": ids, "probed": probed, "distances": len(centroids) + len(candidates)}
+
+
+def pq_train(data, m, ks, seed, iterations):
+    sub = len(data[0]) // m
+    books = [train_kmeans([v[j * sub:(j + 1) * sub] for v in data], ks, seed + j, iterations) for j in range(m)]
+    return {"m": m, "sub": sub, "ks": ks, "codebooks": books}
+
+
+def pq_encode(pq, v):
+    s = pq["sub"]
+    return tuple(_nearest_center(v[j * s:(j + 1) * s], pq["codebooks"][j]) for j in range(pq["m"]))
+
+
+def pq_decode(pq, code):
+    return tuple(x for j, c in enumerate(code) for x in pq["codebooks"][j][c])
+
+
+def pq_tables(pq, q):
+    s = pq["sub"]
+    return [[_dist2(q[j * s:(j + 1) * s], word) for word in pq["codebooks"][j]] for j in range(pq["m"])]
+
+
+def pq_search(pq, codes, data, q, k, rerank=0):
+    tables = pq_tables(pq, q)
+    approx = [sum(tables[j][c] for j, c in enumerate(code)) for code in codes]
+    order = sorted(range(len(codes)), key=lambda i: (approx[i], i))
+    if rerank:
+        return sorted(order[:rerank], key=lambda i: (_dist2(q, data[i]), i))[:k]
+    return order[:k]
+
+
+def _hnsw_select(data, candidates, M):
+    chosen = []
+    for d, c in sorted(candidates):
+        if all(_dist2(data[c], data[s]) > d for s in chosen):
+            chosen.append(c)
+            if len(chosen) == M:
+                break
+    return chosen
+
+
+def _hnsw_layer_search(data, graph, q, entries, ef, counter, trace=None):
+    visited = set(entries)
+    candidates = [(_dist2(q, data[e]), e) for e in entries]
+    counter[0] += len(entries)
+    best = [(-d, e) for d, e in candidates]
+    heapq.heapify(candidates)
+    heapq.heapify(best)
+    while candidates:
+        d, c = heapq.heappop(candidates)
+        if d > -best[0][0]:
+            break
+        if trace is not None:
+            trace.append(c)
+        for nb in graph[c]:
+            if nb in visited:
+                continue
+            visited.add(nb)
+            dn = _dist2(q, data[nb])
+            counter[0] += 1
+            if len(best) < ef or dn < -best[0][0]:
+                heapq.heappush(candidates, (dn, nb))
+                heapq.heappush(best, (-dn, nb))
+                if len(best) > ef:
+                    heapq.heappop(best)
+    return sorted((-d, e) for d, e in best)
+
+
+def hnsw_build(data, M, ef_construction, seed):
+    rng = random.Random(seed)
+    m_l = 1 / math.log(M)
+    layers, levels, entry, counter = [], [], None, [0]
+    for i, v in enumerate(data):
+        level = int(-math.log(1 - rng.random()) * m_l)
+        levels.append(level)
+        while len(layers) <= level:
+            layers.append({})
+        for layer in layers[:level + 1]:
+            layer[i] = []
+        if entry is None:
+            entry = i
+            continue
+        top = levels[entry]
+        entries = [entry]
+        for l in range(top, level, -1):
+            entries = [_hnsw_layer_search(data, layers[l], v, entries, 1, counter)[0][1]]
+        for l in range(min(level, top), -1, -1):
+            found = _hnsw_layer_search(data, layers[l], v, entries, ef_construction, counter)
+            cap = 2 * M if l == 0 else M
+            layers[l][i] = _hnsw_select(data, found, M)
+            for nb in layers[l][i]:
+                links = layers[l][nb] + [i]
+                if len(links) > cap:
+                    links = _hnsw_select(data, [(_dist2(data[nb], data[x]), x) for x in links], cap)
+                layers[l][nb] = links
+            entries = [e for _, e in found]
+        if level > top:
+            entry = i
+    return {"layers": layers, "levels": levels, "entry": entry, "M": M, "build_distances": counter[0]}
+
+
+def hnsw_search(index, data, q, k, ef, trace=False):
+    counter, entries, path = [0], [index["entry"]], []
+    for layer in reversed(index["layers"][1:]):
+        hops = [] if trace else None
+        entries = [_hnsw_layer_search(data, layer, q, entries, 1, counter, hops)[0][1]]
+        path.append(hops)
+    hops = [] if trace else None
+    found = _hnsw_layer_search(data, index["layers"][0], q, entries, max(ef, k), counter, hops)
+    path.append(hops)
+    return {"ids": [e for _, e in found[:k]], "distances": counter[0], "path": path}
+
+
+def vector_index_memory(n, dim, hnsw_m, pq_m, pq_bits, id_bytes=8, float_bytes=4, link_bytes=4):
+    vectors = n * dim * float_bytes
+    code = n * pq_m * pq_bits // 8
+    links = n * (2 * hnsw_m + hnsw_m / (hnsw_m - 1)) * link_bytes
+    return {
+        "flat": vectors,
+        "ivf_flat": vectors + n * id_bytes,
+        "ivf_pq": code + n * id_bytes,
+        "hnsw_flat": vectors + links,
+    }
+
+
+def _mean(values):
+    return sum(values) / len(values)
+
+
+@functools.lru_cache(maxsize=1)
+def vector_index_example():
+    e = VECTOR_INDEX_EXAMPLE
+    k, it = e["k"], e["kmeans_iterations"]
+    data, queries = vector_dataset(e["n"], e["dim"], e["groups"], e["spread"], e["seed"], e["queries"])
+    truth = [exact_knn(data, q, k) for q in queries]
+
+    ivf = ivf_build(data, e["nlist"], e["seed"], it)
+    ivf_rows = []
+    for nprobe in e["nprobes"]:
+        runs = [ivf_search(ivf, data, q, k, nprobe) for q in queries]
+        ivf_rows.append({
+            "nprobe": nprobe,
+            "recall": _mean([recall_at_k(r["ids"], t) for r, t in zip(runs, truth)]),
+            "distances": _mean([r["distances"] for r in runs]),
+        })
+
+    pq_rows, pq4 = [], None
+    for m in e["pq_m"]:
+        pq = pq_train(data, m, e["pq_ks"], e["seed"], it)
+        codes = [pq_encode(pq, v) for v in data]
+        if m == 4:
+            pq4 = (pq, codes)
+        error = _mean([_dist2(v, pq_decode(pq, c)) for v, c in zip(data, codes)])
+        row = {"m": m, "sub": pq["sub"], "bytes": m * math.log2(e["pq_ks"]) / 8, "error": error, "recall": {}}
+        for rerank in [0] + e["rerank"]:
+            row["recall"][rerank] = _mean([recall_at_k(pq_search(pq, codes, data, q, k, rerank), t)
+                                           for q, t in zip(queries, truth)])
+        pq_rows.append(row)
+
+    pq, codes = pq4
+    q0, v0 = queries[0], data[truth[0][0]]
+    tables = pq_tables(pq, q0)
+    code0 = codes[truth[0][0]]
+    pq_demo = {
+        "vector": v0,
+        "query": q0,
+        "code": code0,
+        "decoded": pq_decode(pq, code0),
+        "terms": [tables[j][c] for j, c in enumerate(code0)],
+        "approx": sum(tables[j][c] for j, c in enumerate(code0)),
+        "exact": _dist2(q0, v0),
+        "sub": pq["sub"],
+        "ks": pq["ks"],
+    }
+
+    hnsw = hnsw_build(data, e["hnsw_m"], e["ef_construction"], e["seed"])
+    hnsw_rows = []
+    for ef in e["efs"]:
+        runs = [hnsw_search(hnsw, data, q, k, ef) for q in queries]
+        hnsw_rows.append({
+            "ef": ef,
+            "recall": _mean([recall_at_k(r["ids"], t) for r, t in zip(runs, truth)]),
+            "distances": _mean([r["distances"] for r in runs]),
+        })
+    layer_sizes = [len(layer) for layer in hnsw["layers"]]
+    links0 = _mean([len(v) for v in hnsw["layers"][0].values()])
+
+    rng = random.Random(e["plane_seed"])
+    plane = [(round(rng.uniform(0.5, 9.5), 1), round(rng.uniform(0.5, 9.5), 1)) for _ in range(e["plane_points"])]
+    plane_ivf = ivf_build(plane, e["plane_nlist"], e["plane_seed"], it)
+    plane_labels = [next(c for c, l in enumerate(plane_ivf["lists"]) if i in l) for i in range(len(plane))]
+    plane_query = None
+    for gx in range(4, 37):
+        for gy in range(4, 37):
+            q = (gx / 4, gy / 4)
+            nn = exact_knn(plane, q, 1)
+            if ivf_search(plane_ivf, plane, q, 1, 1)["ids"] != nn and ivf_search(plane_ivf, plane, q, 1, 2)["ids"] == nn:
+                plane_query = q
+                break
+        if plane_query:
+            break
+    plane_hnsw = hnsw_build(plane, e["plane_hnsw_m"], 10, e["plane_seed"])
+    plane_route = hnsw_search(plane_hnsw, plane, plane_query, 1, 1, trace=True)
+
+    return {
+        "n": len(data),
+        "truth_distances": len(data),
+        "ivf": {"rows": ivf_rows, "sizes": sorted(len(l) for l in ivf["lists"])},
+        "pq": {"rows": pq_rows, "demo": pq_demo},
+        "hnsw": {"rows": hnsw_rows, "layer_sizes": layer_sizes, "links0": links0,
+                 "build_distances": hnsw["build_distances"]},
+        "plane": {
+            "points": plane,
+            "labels": plane_labels,
+            "centroids": plane_ivf["centroids"],
+            "query": plane_query,
+            "nearest": exact_knn(plane, plane_query, 1)[0],
+            "probe1": ivf_search(plane_ivf, plane, plane_query, 1, 1),
+            "probe2": ivf_search(plane_ivf, plane, plane_query, 1, 2),
+            "levels": plane_hnsw["levels"],
+            "layers": plane_hnsw["layers"],
+            "entry": plane_hnsw["entry"],
+            "route": plane_route,
+        },
+        "scale": vector_index_memory(**{
+            "n": e["scale"]["n"], "dim": e["scale"]["dim"], "hnsw_m": e["scale"]["hnsw_m"],
+            "pq_m": e["scale"]["pq_m"], "pq_bits": e["scale"]["pq_bits"],
+        }),
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -8485,6 +8815,8 @@ def render(slug, render_template):
         "position_settings": POSITION_EXAMPLE,
         "cluster_example": cluster_example,
         "cluster_settings": CLUSTER_EXAMPLE,
+        "vector_index_example": vector_index_example,
+        "vector_index_settings": VECTOR_INDEX_EXAMPLE,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
