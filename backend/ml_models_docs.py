@@ -749,7 +749,7 @@ PAGES = [
             "pytorch:torch/nn/modules/linear.py",
             "pytorch:torch/nn/modules/conv.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "graph-neural-networks",

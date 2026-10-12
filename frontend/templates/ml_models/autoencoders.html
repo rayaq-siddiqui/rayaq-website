@@ -1,0 +1,351 @@
+{% set ex = autoencoder_example() %}
+{% set e = autoencoder_settings %}
+{% set t = ex.trained %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(0.0 if x|abs < 0.5 * 10 ** (-n) else x)|replace("-", "−") }}{%- endmacro %}
+{% macro v(xs, n=3) -%}({% for x in xs %}{{ f(x, n) }}{% if not loop.last %}, {% endif %}{% endfor %}){%- endmacro %}
+{% macro m(a, n=3) -%}[[{{ f(a[0][0], n) }}, {{ f(a[0][1], n) }}], [{{ f(a[1][0], n) }}, {{ f(a[1][1], n) }}]]{%- endmacro %}
+{% macro px(x) -%}{{ "%.1f"|format(300 + 48 * x) }}{%- endmacro %}
+{% macro py(y) -%}{{ "%.1f"|format(175 - 48 * y) }}{%- endmacro %}
+{% macro shape(s) -%}{% if s is string %}{{ s }}{% else %}{{ s|join("×") }}{% endif %}{%- endmacro %}
+<header class="jj-header">
+  <h1>Autoencoders</h1>
+  <p class="tagline">
+    An autoencoder learns to copy its input through a narrow bottleneck, so the only way to succeed is to find a compact code that keeps what matters.
+    This page shows that a linear autoencoder rediscovers PCA, why denoising and sparsity keep a wide autoencoder from learning the identity,
+    and how PyTorch's <code>Conv2d</code>, <code>ConvTranspose2d</code> and <code>MSELoss</code> fit together in a convolutional one.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Most data has far fewer degrees of freedom than coordinates. A 28×28 digit has 784 pixels, but the set of images that look like digits is a thin sliver of that space:
+  stroke thickness, slant, style. We often have plenty of unlabeled examples and want a short description of each one, to compress it, to remove noise, to spot an input that does not fit, or to give a later model better features than raw pixels.
+</p>
+<p>
+  There is no label to supervise that description. An autoencoder uses the input itself as the target, which makes this a self-supervised problem in the sense of <a href="/ml-models/learning-paradigms">learning paradigms</a>:
+  learn an encoder that maps x to a code z, a decoder that maps z back to x̂, and train both so that x̂ is close to x. The interesting part is everything that stops the network from cheating.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Imagine describing a photo to a friend over a phone line that only carries sixteen numbers, and they have to redraw it. You cannot send pixels, so you agree on a vocabulary: where the object is, how big, what tilt.
+  The encoder and decoder learn that vocabulary together, and because the line is narrow, the vocabulary must capture the directions in which the data actually varies. Noise and rare details are the first things dropped.
+</p>
+<p>
+  If the line were as wide as the image, the pair could agree to send the pixels unchanged and learn nothing. Every useful autoencoder therefore has some constraint: a narrow bottleneck (<em>undercomplete</em>),
+  corrupted inputs it must clean up (<em>denoising</em>), or a penalty that keeps most code units silent (<em>sparse</em>). The constraint is what turns copying into learning.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 230" role="img" aria-labelledby="ae-arch-title ae-arch-desc">
+    <title id="ae-arch-title">Encoder, bottleneck and decoder</title>
+    <desc id="ae-arch-desc">
+      An input x with 784 values enters an encoder that narrows through layers to a code z with 16 values, the bottleneck. A decoder widens it back to a reconstruction x-hat with 784 values.
+      The loss compares x-hat with the original x, for example mean squared error, and its gradient trains both the encoder and the decoder.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <rect x="10" y="40" width="60" height="130" rx="6" class="d-box ml-tensor"></rect>
+      <text x="40" y="100">x</text>
+      <text x="40" y="118" class="d-muted">784</text>
+      <path d="M85 40 L215 85 L215 125 L85 170 Z" class="d-box ml-weight"></path>
+      <text x="150" y="102">encoder</text>
+      <text x="150" y="118" class="d-muted">f(x)</text>
+      <rect x="230" y="80" width="56" height="50" rx="6" class="d-box ml-tensor"></rect>
+      <text x="258" y="102" style="fill: var(--jj-violet)">z</text>
+      <text x="258" y="118" class="d-muted">16</text>
+      <text x="258" y="150" class="d-muted">bottleneck</text>
+      <path d="M301 85 L431 40 L431 170 L301 125 Z" class="d-box ml-weight"></path>
+      <text x="366" y="102">decoder</text>
+      <text x="366" y="118" class="d-muted">g(z)</text>
+      <rect x="446" y="40" width="60" height="130" rx="6" class="d-box ml-tensor"></rect>
+      <text x="476" y="100">x̂</text>
+      <text x="476" y="118" class="d-muted">784</text>
+      <path d="M70 105 L85 105 M215 105 L230 105 M286 105 L301 105 M431 105 L446 105" class="d-line" fill="none"></path>
+      <rect x="524" y="80" width="100" height="50" rx="6" class="d-box ml-op"></rect>
+      <text x="574" y="102">loss</text>
+      <text x="574" y="118" class="d-muted">‖x̂ − x‖²</text>
+      <path d="M506 105 L524 105" class="d-line" fill="none"></path>
+      <path d="M40 170 L40 205 L574 205 L574 130" class="d-line ml-dashed" fill="none"></path>
+      <text x="300" y="222" class="d-muted">the input is also the target</text>
+      <path d="M574 80 L574 20 L150 20 L150 52" class="d-line ml-dashed" fill="none" style="stroke: var(--jj-red)"></path>
+      <path d="M366 20 L366 52" class="d-line ml-dashed" fill="none" style="stroke: var(--jj-red)"></path>
+      <text x="258" y="14" style="fill: var(--jj-red)">gradient trains both halves</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The bottleneck forces a short code; the loss needs no label because the input is its own target.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="objective">The objective</h3>
+<p>
+  An encoder f<sub>θ</sub> and a decoder g<sub>φ</sub> are trained to minimize the average reconstruction loss over the data:
+</p>
+<p class="ml-formula">z = f<sub>θ</sub>(x), &nbsp; x̂ = g<sub>φ</sub>(z), &nbsp; L(θ, φ) = (1/N) Σ<sub>n</sub> ℓ(x<sub>n</sub>, g<sub>φ</sub>(f<sub>θ</sub>(x<sub>n</sub>)))</p>
+<p>
+  For real-valued data ℓ is squared error, PyTorch's <code>MSELoss</code>, which averages over every element by default. For pixels scaled to [0, 1] binary cross-entropy is common, with a sigmoid at the decoder's output or, more stably, <code>BCEWithLogitsLoss</code> on the raw outputs.
+  Both are the negative log-likelihood of the input under a Gaussian or Bernoulli decoder, the same correspondence as in <a href="/ml-models/loss-functions">loss functions</a>. Training is an ordinary <a href="/ml-models/training-loop">training loop</a> in which the target is the batch itself.
+</p>
+
+<h3 id="linear-pca">A linear autoencoder is PCA</h3>
+<p>
+  Take centred data, a linear encoder z = Ex with E of shape (k, d), a linear decoder x̂ = Dz with D of shape (d, k), k &lt; d, and squared error. The reconstruction is x̂ = DEx, a matrix of rank at most k,
+  and the best rank-k map in squared error is the orthogonal projection onto the top k eigenvectors of the data's second-moment matrix Σ = (1/N) Σ<sub>n</sub> x<sub>n</sub>x<sub>n</sub>ᵀ. That is exactly PCA.
+  Baldi and Hornik showed that this loss has no local minima other than the global one: every other critical point is a saddle, so gradient descent reaches the PCA subspace.
+</p>
+<p>
+  The minimum loss is the variance the code throws away. With error averaged over d coordinates, it is (λ<sub>k+1</sub> + … + λ<sub>d</sub>)/d. But the learned E and D are not the eigenvectors themselves:
+  any invertible A gives the same product (DA⁻¹)(AE), so the encoder rows can be any basis of the subspace, scaled and mixed. The <em>product</em> DE is unique, the factors are not. Non-linear encoders and decoders
+  can follow curved data that PCA cannot, which is the reason to use a neural autoencoder at all (Hinton and Salakhutdinov's 2006 deep autoencoders beat PCA on images and documents this way).
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 600 340" role="img" aria-labelledby="ae-pca-title ae-pca-desc">
+    <title id="ae-pca-title">A trained linear autoencoder projects onto the principal direction</title>
+    <desc id="ae-pca-desc">
+      Forty centred two-dimensional points form an elongated cloud. A line through the origin marks the top eigenvector of their second-moment matrix.
+      Each point's reconstruction by the trained one-unit linear autoencoder lies on that line, joined to the original point by a short residual segment perpendicular to the line.
+      The residuals are the error the bottleneck cannot avoid: the variance along the second eigenvector.
+    </desc>
+    <g font-size="12">
+      <path d="M{{ px(-3.4) }} {{ py(0) }} L{{ px(3.4) }} {{ py(0) }} M{{ px(0) }} {{ py(-3.3) }} L{{ px(0) }} {{ py(3.3) }}" class="d-line d-muted" fill="none" stroke-opacity="0.4"></path>
+      <path d="M{{ px(-3.6 * ex.top[0]) }} {{ py(-3.6 * ex.top[1]) }} L{{ px(3.6 * ex.top[0]) }} {{ py(3.6 * ex.top[1]) }}" class="d-line" fill="none" style="stroke: var(--jj-violet)" stroke-width="2"></path>
+      {% for p in ex.points %}{% set q = ex.projections[loop.index0] %}
+      <path d="M{{ px(p[0]) }} {{ py(p[1]) }} L{{ px(q[0]) }} {{ py(q[1]) }}" class="d-line" fill="none" style="stroke: var(--jj-red)" stroke-width="1"></path>
+      {% endfor %}
+      {% for p in ex.points %}
+      <circle cx="{{ px(p[0]) }}" cy="{{ py(p[1]) }}" r="3.5" style="fill: var(--jj-accent)"></circle>
+      {% endfor %}
+      {% for q in ex.projections %}
+      <circle cx="{{ px(q[0]) }}" cy="{{ py(q[1]) }}" r="2.5" style="fill: var(--jj-violet)"></circle>
+      {% endfor %}
+      <text x="{{ px(3.6 * ex.top[0]) }}" y="{{ "%.1f"|format(175 - 48 * 3.6 * ex.top[1] - 8) }}" text-anchor="end" style="fill: var(--jj-violet)">top eigenvector u</text>
+      <circle cx="20" cy="300" r="3.5" style="fill: var(--jj-accent)"></circle><text x="30" y="304">x (data)</text>
+      <circle cx="20" cy="320" r="2.5" style="fill: var(--jj-violet)"></circle><text x="30" y="324">x̂ = D·(E·x)</text>
+      <path d="M400 300 L420 300" class="d-line" style="stroke: var(--jj-red)"></path><text x="426" y="304">residual x − x̂</text>
+      <text x="400" y="324" class="d-muted">MSE {{ f(ex.trained.history[-1], 4) }} = λ₂/2</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The one-unit code can only say "how far along u"; everything perpendicular to u is lost, and that loss is exactly PCA's.</p>
+
+<h3 id="identity">Why a wide autoencoder learns nothing, and three fixes</h3>
+<p>
+  If the code is as wide as the input, E = D = I is a perfect solution, and a large enough non-linear network can approximate it whatever the code size. Three standard constraints rule it out:
+</p>
+<ul>
+  <li><strong>Undercomplete.</strong> Make the code smaller than the input, as above. Simple, but the right size is a guess and too small loses detail.</li>
+  <li><strong>Denoising.</strong> Corrupt the input (Gaussian noise, or masking a fraction of entries) and train x̂ = g(f(x̃)) to match the <em>clean</em> x. The identity now scores badly, because it reproduces the noise.
+    For a linear map and Gaussian noise of variance σ², the best map is Σ(Σ + σ²I)⁻¹: in each eigendirection it multiplies by λ/(λ + σ²), keeping directions with a lot of signal and shrinking the weak ones. Vincent et al. (2008) introduced the idea; masked language and image models are its descendants.</li>
+  <li><strong>Sparse.</strong> Allow a wide code but add a penalty, such as λ·Σ|z<sub>j</sub>| (an L1 penalty from <a href="/ml-models/regularization">regularization</a>) or a KL divergence pulling each unit's average activation toward a small target, so each input uses only a few units.
+    Sparse autoencoders on a model's activations are a current tool for finding interpretable features inside large language models.</li>
+</ul>
+
+<h3 id="conv">Convolutional autoencoders and output_padding</h3>
+<p>
+  For images the encoder is a stack of strided <a href="/ml-models/cnns">convolutions</a> and the decoder mirrors it with transposed convolutions, which map each input position to a k×k patch of the output, summing where patches overlap.
+  A <code>Conv2d</code> has output size ⌊(H + 2p − d(k − 1) − 1)/s⌋ + 1, and a <code>ConvTranspose2d</code> with the same arguments has (H − 1)s − 2p + d(k − 1) + output_padding + 1, so they invert each other's <em>shapes</em> (not their values).
+  With stride 2 the floor makes Conv2d map both 13 and 14 to 7, so going back is ambiguous: k = 3, s = 2, p = 1 gives {{ conv_transpose_output_size(7, 3, 2, 1, 0) }} from 7, and <code>output_padding=1</code> picks {{ conv_transpose_output_size(7, 3, 2, 1, 1) }}.
+  PyTorch's docs stress that output_padding only selects the output shape and adds no zeros. Alternatively, pass <code>output_size</code> to <code>forward</code>. Transposed convolutions with stride that does not divide the kernel can leave checkerboard artifacts; upsampling then an ordinary convolution is a common alternative.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead>
+      <tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>nn.Linear</code></td>
+        <td>weight (out, in), bias (out,), U(−√k, √k), k = 1/in</td>
+        <td>y = xAᵀ + b: a linear encoder or decoder layer.</td>
+        <td><a href="{{ src('torch/nn/modules/linear.py', 53, 80) }}">linear.py 53-80</a>, <a href="{{ src('torch/nn/modules/linear.py', 117, 134) }}">117-134</a></td>
+      </tr>
+      <tr>
+        <td><code>nn.Conv2d</code></td>
+        <td>weight (C<sub>out</sub>, C<sub>in</sub>/groups, k<sub>0</sub>, k<sub>1</sub>); H<sub>out</sub> = ⌊(H<sub>in</sub> + 2p − d(k − 1) − 1)/s + 1⌋</td>
+        <td>Strided convolution that downsamples in the encoder.</td>
+        <td><a href="{{ src('torch/nn/modules/conv.py', 468, 490) }}">conv.py 468-490</a>, <a href="{{ src('torch/nn/modules/conv.py', 564, 566) }}">564-566</a></td>
+      </tr>
+      <tr>
+        <td><code>nn.ConvTranspose2d</code> shape note</td>
+        <td><code>output_padding</code>: size added to one side of the output, default 0</td>
+        <td>Same arguments as a Conv2d invert its shapes; output_padding resolves stride ambiguity and adds no zeros.</td>
+        <td><a href="{{ src('torch/nn/modules/conv.py', 1053, 1063) }}">conv.py 1053-1063</a>, <a href="{{ src('torch/nn/modules/conv.py', 778, 830) }}">778-830</a></td>
+      </tr>
+      <tr>
+        <td><code>nn.ConvTranspose2d</code> shapes</td>
+        <td>weight (C<sub>in</sub>, C<sub>out</sub>/groups, k<sub>0</sub>, k<sub>1</sub>); H<sub>out</sub> = (H<sub>in</sub> − 1)s − 2p + d(k − 1) + output_padding + 1</td>
+        <td>Upsampling layer in the decoder; note in and out channels are swapped in the weight.</td>
+        <td><a href="{{ src('torch/nn/modules/conv.py', 1083, 1100) }}">conv.py 1083-1100</a></td>
+      </tr>
+      <tr>
+        <td><code>ConvTranspose2d.forward</code></td>
+        <td><code>forward(input, output_size=None)</code></td>
+        <td>Computes output_padding from a requested output_size, then calls <code>F.conv_transpose2d</code>.</td>
+        <td><a href="{{ src('torch/nn/modules/conv.py', 1169, 1207) }}">conv.py 1169-1207</a></td>
+      </tr>
+      <tr>
+        <td><code>nn.Flatten</code>, <code>nn.Unflatten</code></td>
+        <td>Flatten(start_dim=1); Unflatten(dim, sizes)</td>
+        <td>Bridge between the convolutional feature map and the dense code.</td>
+        <td><a href="{{ src('torch/nn/modules/flatten.py', 12, 55) }}">flatten.py 12-55</a>, <a href="{{ src('torch/nn/modules/flatten.py', 64, 130) }}">64-130</a></td>
+      </tr>
+      <tr>
+        <td><code>nn.MSELoss</code></td>
+        <td>reduction='mean' over every element</td>
+        <td>Gaussian reconstruction loss for real-valued inputs.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 567, 630) }}">loss.py 567-630</a></td>
+      </tr>
+      <tr>
+        <td><code>nn.BCELoss</code>, <code>nn.BCEWithLogitsLoss</code></td>
+        <td>targets in [0, 1]; the latter takes logits</td>
+        <td>Bernoulli reconstruction loss for pixels in [0, 1]; the logits version is the numerically stable one.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 633, 716) }}">loss.py 633-716</a>, <a href="{{ src('torch/nn/modules/loss.py', 719, 845) }}">719-845</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>A linear autoencoder with a 1-unit code reaches the PCA loss. Will its encoder weights equal the top eigenvector u?</summary>
+  <p>Not in general. Only the product DE = uuᵀ is determined: scaling E by a and D by 1/a gives the same reconstructions. In the worked example below the encoder is {{ v(t.encoder) }} and the decoder {{ v(t.decoder) }}, different vectors, both parallel to u = {{ v(ex.top) }}.</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>Training a linear autoencoder.</strong> {{ e.count }} centred points in 2-D, spread {{ f(e.spread, 1) }} along {{ v(e.direction, 1) }} plus noise of standard deviation {{ f(e.noise, 1) }} (seed {{ e.seed }}), shown in the figure above.
+    Their second-moment matrix is Σ = {{ m(ex.moment) }}, with eigenvalues λ₁ = {{ f(ex.eigenvalues[1], 4) }} and λ₂ = {{ f(ex.eigenvalues[0], 4) }}, and top eigenvector u = {{ v(ex.top, 4) }}.
+  </p>
+  <p>
+    The autoencoder has a 1-unit code: z = e·x, x̂ = d·z, with e and d both 2-vectors, loss = mean over points and both coordinates of (x − x̂)². It starts from e = {{ v(t.start[0]) }}, d = {{ v(t.start[1]) }} and runs full-batch gradient descent with learning rate {{ e.lr }}.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Step</th><th>Reconstruction MSE</th></tr></thead>
+      <tbody>
+        {% for s in [0, 5, 10, 25, 50, 100, e.steps] %}
+        <tr><td>{{ s }}</td><td>{{ f(t.history[s], 5) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    For scale, a code that says nothing (e = 0) scores the total variance per coordinate, (λ₁ + λ₂)/2 = {{ f(ex.total_mse, 4) }}. Training ends at {{ f(t.history[-1], 5) }}, and PCA's minimum is λ₂/2 = {{ f(ex.pca_mse, 5) }}.
+    The learned e = {{ v(t.encoder, 4) }} and d = {{ v(t.decoder, 4) }} differ, but d has cosine {{ f(ex.cosine, 6) }} with u, and the product d·eᵀ = {{ m(ex.product) }} matches uuᵀ = [[{{ f(ex.top[0] * ex.top[0]) }}, {{ f(ex.top[0] * ex.top[1]) }}], [{{ f(ex.top[1] * ex.top[0]) }}, {{ f(ex.top[1] * ex.top[1]) }}]] to three decimals.
+  </p>
+  <p>
+    <strong>Denoising shrinks weak directions.</strong> If instead the 2-unit linear autoencoder sees x + noise and must output x, the best map is Σ(Σ + σ²I)⁻¹, which scales each eigendirection by λ/(λ + σ²):
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>σ</th><th>Optimal map</th><th>Scale along u (λ₁)</th><th>Scale along the weak direction (λ₂)</th></tr></thead>
+      <tbody>
+        {% for d in ex.denoise %}
+        <tr><td>{{ f(d.sigma, 1) }}</td><td>{{ m(d.map) }}</td><td>{{ f(d.shrink[1]) }}</td><td>{{ f(d.shrink[0]) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    With no noise the identity is optimal and nothing is learned. With σ = 0.5 the weak direction is already scaled to {{ f(ex.denoise[1].shrink[0]) }}; at σ = 2 to {{ f(ex.denoise[2].shrink[0]) }}, close to a projection onto u. The code is as wide as the input, yet noise alone made the map discard the direction that carries little signal.
+  </p>
+  <p>
+    <strong>Shapes through a convolutional autoencoder</strong> for 1×28×28 images with a 16-number code, as built in the implementation below:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Layer</th><th>Output shape</th><th>Parameters</th></tr></thead>
+      <tbody>
+        {% for r in ex.shapes %}
+        <tr><td>{% if r.code %}<strong>{{ r.layer }}</strong>{% else %}{{ r.layer }}{% endif %}</td><td>{{ shape(r.shape) }}</td><td>{{ r.params if r.params else "—" }}</td></tr>
+        {% endfor %}
+        <tr><td>Total</td><td></td><td>{{ ex.shapes|sum(attribute="params") }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Without <code>output_padding=1</code>, the first transposed convolution would produce 13×13 instead of 14×14 and the output would be 25×25, not 28×28.
+  </p>
+</div>
+<p class="ml-caption">Gradient descent finds PCA's subspace but not PCA's basis; denoising finds a soft version of the same subspace without any bottleneck.</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+import torch.nn as nn
+
+class ConvAutoencoder(nn.Module):
+    def __init__(self, code=16):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(1, 16, 3, stride=2, padding=1), nn.ReLU(),    # 16x14x14
+            nn.Conv2d(16, 32, 3, stride=2, padding=1), nn.ReLU(),   # 32x7x7
+            nn.Flatten(),
+            nn.Linear(32 * 7 * 7, code),
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(code, 32 * 7 * 7), nn.ReLU(),
+            nn.Unflatten(1, (32, 7, 7)),
+            nn.ConvTranspose2d(32, 16, 3, stride=2, padding=1, output_padding=1), nn.ReLU(),
+            nn.ConvTranspose2d(16, 1, 3, stride=2, padding=1, output_padding=1),  # logits
+        )
+
+    def forward(self, x):
+        return self.decoder(self.encoder(x))
+
+model = ConvAutoencoder()
+opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+loss_fn = nn.BCEWithLogitsLoss()        # pixels in [0, 1]
+
+for x, _ in loader:                     # labels are ignored
+    noisy = (x + 0.3 * torch.randn_like(x)).clamp(0, 1)   # drop for a plain autoencoder
+    loss = loss_fn(model(noisy), x)     # the target is the clean input
+    opt.zero_grad()
+    loss.backward()
+    opt.step()
+
+with torch.no_grad():
+    codes = model.encoder(x)            # (N, 16) features for search, clustering, anomalies
+    images = torch.sigmoid(model(x))</code></pre>
+
+<p>
+  The worked example's table counts a sigmoid output, so its parameter total equals this model's. For anomaly detection, train on normal data only and flag inputs whose reconstruction error is far above the training distribution;
+  but check, because autoencoders sometimes reconstruct unfamiliar inputs well. To reuse the encoder as features for a classifier, freeze it or fine-tune it with a small head and keep the <a href="/ml-models/data-splits">data splits</a> clean.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Autoencoder versus PCA.</strong> If the data is close to a linear subspace, PCA gives the same answer in closed form with ordered, orthogonal components. A neural autoencoder pays off only when the structure is curved, and costs training, tuning and an arbitrary basis.</li>
+  <li><strong>Code size.</strong> Too small and reconstructions blur; too large and, without another constraint, the network copies. Denoising and sparsity let you choose a generous size safely.</li>
+  <li><strong>Blurry outputs.</strong> Squared error is minimized by the average of plausible outputs, so fine detail is smoothed away. Perceptual or adversarial losses sharpen results at the cost of stability.</li>
+  <li><strong>Not a generator.</strong> A plain autoencoder's code space has holes: decoding a random z, or the midpoint of two codes, often gives garbage because nothing shaped the space between training codes. Variational autoencoders, the next page in this area, add exactly that shaping.</li>
+  <li><strong>Features without labels.</strong> Reconstruction is a cheap, label-free objective, but low reconstruction error does not guarantee codes that are useful for a downstream task; contrastive or masked objectives often give better features.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Why does adding noise to the input stop a wide linear autoencoder from learning the identity?</summary>
+  <p>The identity reproduces the noise exactly, so its loss is the full noise variance. Scaling a direction by λ/(λ + σ²) trades a little bias for less noise, and wins whenever σ &gt; 0. Weak directions have small λ, so they are shrunk most.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Bourlard and Kamp. <em>Auto-association by multilayer perceptrons and singular value decomposition.</em> Biological Cybernetics, 1988.</li>
+  <li>Baldi and Hornik. <em>Neural networks and principal component analysis: Learning from examples without local minima.</em> Neural Networks, 1989.</li>
+  <li>Hinton and Salakhutdinov. <em>Reducing the Dimensionality of Data with Neural Networks.</em> Science, 2006.</li>
+  <li>Vincent, Larochelle, Bengio and Manzagol. <em>Extracting and Composing Robust Features with Denoising Autoencoders.</em> ICML 2008.</li>
+  <li>Ng. <em>Sparse autoencoder.</em> CS294A lecture notes, Stanford, 2011.</li>
+  <li>Dumoulin and Visin. <em>A guide to convolution arithmetic for deep learning.</em> 2016. <a href="https://arxiv.org/abs/1603.07285">arXiv:1603.07285</a></li>
+  <li>Odena, Dumoulin and Olah. <em>Deconvolution and Checkerboard Artifacts.</em> Distill, 2016. <a href="https://distill.pub/2016/deconv-checkerboard/">distill.pub/2016/deconv-checkerboard</a></li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/nn/modules/conv.py') }}"><code>torch/nn/modules/conv.py</code></a>, <a href="{{ src('torch/nn/modules/linear.py') }}"><code>torch/nn/modules/linear.py</code></a>, <a href="{{ src('torch/nn/modules/loss.py') }}"><code>torch/nn/modules/loss.py</code></a>.</li>
+</ul>

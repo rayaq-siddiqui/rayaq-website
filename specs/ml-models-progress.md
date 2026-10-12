@@ -311,8 +311,8 @@ Gaps:
 50. `random-forests` ✓
 51. `initialization` ✓
 52. `rnns-and-lstms` ✓
-53. `autoencoders` ← next
-54. `variational-autoencoders`
+53. `autoencoders` ✓
+54. `variational-autoencoders` ← next
 55. `positional-encoding`
 56. `clustering`
 57. `vector-indexes`
