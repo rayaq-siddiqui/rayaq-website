@@ -3625,3 +3625,49 @@ def test_time_series_example_ranks_models_and_exposes_shuffled_leakage():
     assert any(f["models"][1]["mae"] > f["models"][0]["mae"] for f in x["folds"])
     assert len(x["shuffled_test"]) == e["n"] // e["kfold"] + 1
     assert x["true_indices"][3] == pytest.approx(e["amplitude"])
+
+
+def test_regression_scores_match_hand_checked_values():
+    scores = ml_models_docs.regression_scores([1, 2, 3, 4], [2, 2, 2, 6])
+    assert scores["mae"] == 1 and scores["mse"] == 1.5
+    assert scores["rmse"] == pytest.approx(math.sqrt(1.5))
+    assert scores["medae"] == 1 and scores["max_error"] == 2
+    assert scores["r2"] == pytest.approx(1 - 6 / 5)
+    assert scores["explained_variance"] == pytest.approx(1 - 5 / 5)
+    assert scores["mape"] == pytest.approx((1 + 0 + 1 / 3 + 0.5) / 4)
+    assert ml_models_docs.regression_scores([3, 3], [3, 3])["r2"] == 1
+    assert ml_models_docs.regression_scores([3, 3], [2, 4])["r2"] == 0
+
+
+def test_pinball_loss_charges_misses_by_side():
+    assert ml_models_docs.pinball_loss([10], [8], 0.9) == pytest.approx(1.8)
+    assert ml_models_docs.pinball_loss([10], [12], 0.9) == pytest.approx(0.2)
+    assert ml_models_docs.pinball_loss([1, 5], [3, 3], 0.5) == pytest.approx(1)
+
+
+def test_best_constants_are_mean_median_and_quantile():
+    x = ml_models_docs.regression_metrics_example()
+    y = sorted(ml_models_docs.REGRESSION_METRICS_EXAMPLE["targets"])
+    best = dict(x["constants"])
+    squared, absolute = best["squared error (MSE)"], best["absolute error (MAE)"]
+    pinball, percentage = best["pinball, α = 0.9"], best["percentage error (MAPE)"]
+    assert squared["low"] == pytest.approx(x["mean"]) and squared["high"] == pytest.approx(x["mean"])
+    assert (absolute["low"], absolute["high"]) == pytest.approx((y[5], y[6]))
+    assert pinball["low"] == pytest.approx(y[10]) == pytest.approx(pinball["high"])
+    assert percentage["high"] < absolute["low"]
+
+
+def test_regression_metrics_example_shows_each_pitfall():
+    x = ml_models_docs.regression_metrics_example()
+    rows = {row["name"]: row for row in x["models"]}
+    steady, spiky = rows["steady"], rows["spiky"]
+    assert spiky["mae"] < steady["mae"] and spiky["rmse"] > steady["rmse"]
+    assert spiky["medae"] < steady["medae"] and spiky["max_error"] > steady["max_error"]
+    assert rows["constant mean"]["r2"] == pytest.approx(0)
+    assert rows["constant median"]["r2"] < 0 < rows["constant median"]["mae"] < rows["constant mean"]["mae"]
+    biased = rows["biased +5"]
+    assert biased["explained_variance"] == pytest.approx(1) and biased["r2"] < 1
+    assert biased["pinball"] < min(row["pinball"] for row in x["models"] if row is not biased)
+    assert x["narrow_scores"]["mae"] == pytest.approx(steady["mae"])
+    assert x["narrow_scores"]["r2"] < steady["r2"]
+    assert x["over_under"] == pytest.approx({"over": 0.5, "under": 1 / 3})

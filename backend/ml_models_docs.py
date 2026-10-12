@@ -8606,6 +8606,112 @@ def time_series_example():
     }
 
 
+REGRESSION_METRICS_EXAMPLE = {
+    "targets": [12, 14, 15, 15, 17, 18, 20, 22, 25, 31, 38, 55],
+    "steady_errors": [3, -2, 4, -3, 2, -4, 3, -2, 4, -3, 2, -3],
+    "spiky_errors": [0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, -0.5, -20],
+    "bias": 5,
+    "shrink": 0.5,
+    "quantile": 0.9,
+    "grid_step": 0.01,
+}
+
+
+def pinball_loss(targets, predictions, alpha):
+    total = 0.0
+    for y, p in zip(targets, predictions):
+        diff = y - p
+        total += alpha * diff if diff >= 0 else (alpha - 1) * diff
+    return total / len(targets)
+
+
+def regression_scores(targets, predictions):
+    n = len(targets)
+    errors = [y - p for y, p in zip(targets, predictions)]
+    mean_y = sum(targets) / n
+    mean_error = sum(errors) / n
+    total = sum((y - mean_y) ** 2 for y in targets)
+    sse = sum(e * e for e in errors)
+    eps = 2.0 ** -52
+
+    def fraction_explained(residual):
+        if residual == 0:
+            return 1.0
+        return 0.0 if total == 0 else 1 - residual / total
+
+    return {
+        "mae": sum(abs(e) for e in errors) / n,
+        "mse": sse / n,
+        "rmse": math.sqrt(sse / n),
+        "medae": median([abs(e) for e in errors]),
+        "max_error": max(abs(e) for e in errors),
+        "mape": sum(abs(e) / max(abs(y), eps) for e, y in zip(errors, targets)) / n,
+        "r2": fraction_explained(sse),
+        "explained_variance": fraction_explained(sum((e - mean_error) ** 2 for e in errors)),
+        "mean_error": mean_error,
+    }
+
+
+def best_constant(targets, loss, step):
+    lo, hi = min(targets), max(targets)
+    count = int(round((hi - lo) / step))
+    grid = [lo + i * step for i in range(count + 1)]
+    values = [loss([c] * len(targets)) for c in grid]
+    best = min(values)
+    winners = [c for c, value in zip(grid, values) if value <= best + 1e-9]
+    return {"low": winners[0], "high": winners[-1], "loss": best}
+
+
+@functools.lru_cache(maxsize=1)
+def regression_metrics_example():
+    e = REGRESSION_METRICS_EXAMPLE
+    y = e["targets"]
+    n = len(y)
+    mean_y = sum(y) / n
+    steady = [t + err for t, err in zip(y, e["steady_errors"])]
+    spiky = [t + err for t, err in zip(y, e["spiky_errors"])]
+    biased = [t + e["bias"] for t in y]
+    models = [
+        ("steady", steady),
+        ("spiky", spiky),
+        ("biased +" + str(e["bias"]), biased),
+        ("constant mean", [mean_y] * n),
+        ("constant median", [median(y)] * n),
+    ]
+    rows = [{"name": name, "predictions": p, **regression_scores(y, p),
+             "pinball": pinball_loss(y, p, e["quantile"])} for name, p in models]
+    narrow = [mean_y + e["shrink"] * (t - mean_y) for t in y]
+    narrow_steady = [t + err for t, err in zip(narrow, e["steady_errors"])]
+
+    def squared(p):
+        return sum((t - c) ** 2 for t, c in zip(y, p)) / n
+
+    def absolute(p):
+        return sum(abs(t - c) for t, c in zip(y, p)) / n
+
+    def percentage(p):
+        return sum(abs(t - c) / t for t, c in zip(y, p)) / n
+
+    constants = [
+        ("squared error (MSE)", best_constant(y, squared, e["grid_step"])),
+        ("absolute error (MAE)", best_constant(y, absolute, e["grid_step"])),
+        ("pinball, \u03b1 = " + str(e["quantile"]), best_constant(y, lambda p: pinball_loss(y, p, e["quantile"]), e["grid_step"])),
+        ("percentage error (MAPE)", best_constant(y, percentage, e["grid_step"])),
+    ]
+    return {
+        "mean": mean_y,
+        "median": median(y),
+        "models": rows,
+        "narrow": narrow,
+        "narrow_scores": regression_scores(narrow, narrow_steady),
+        "constants": constants,
+        "over_under": {
+            "over": regression_scores([100], [150])["mape"],
+            "under": regression_scores([150], [100])["mape"],
+        },
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -9146,6 +9252,8 @@ def render(slug, render_template):
         "time_series_example": time_series_example,
         "time_series_settings": TIME_SERIES_EXAMPLE,
         "time_series_split": time_series_split,
+        "regression_metrics_example": regression_metrics_example,
+        "regression_metrics_settings": REGRESSION_METRICS_EXAMPLE,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
