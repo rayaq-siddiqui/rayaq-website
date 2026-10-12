@@ -834,7 +834,7 @@ PAGES = [
             "pytorch:torch/distributions/normal.py",
             "pytorch:torch/distributions/kl.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "gans",
@@ -7504,6 +7504,11 @@ def gradient_estimators(mu, sigma, target, samples, seed):
     return {"exact": 2 * (mu - target), "reparam": summary(reparam), "score": summary(score)}
 
 
+def normal_curve(loc, scale, low, high, steps=60):
+    width = (high - low) / steps
+    return [(low + i * width, math.exp(normal_log_prob(low + i * width, loc, scale))) for i in range(steps + 1)]
+
+
 def vae_example():
     e = VAE_EXAMPLE
     w, s, x = e["weight"], e["noise"], e["x"]
@@ -7532,6 +7537,11 @@ def vae_example():
         "code": code,
         "code_kl": code_kl,
         "betas": [{"beta": b, "penalty": b * code_kl} for b in e["betas"]],
+        "curves": {
+            "prior": normal_curve(0.0, 1.0, -3.0, 3.5),
+            "posterior": normal_curve(post_loc, post_scale, -3.0, 3.5),
+            "guess": normal_curve(e["guesses"][1][0], e["guesses"][1][1], -3.0, 3.5),
+        },
     }
 
 

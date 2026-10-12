@@ -1,0 +1,354 @@
+{% set ex = vae_example() %}
+{% set e = vae_settings %}
+{% set gr = ex.gradients %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(0.0 if x|abs < 0.5 * 10 ** (-n) else x)|replace("-", "−") }}{%- endmacro %}
+{% macro cx(z) -%}{{ "%.1f"|format(70 + (z + 3.0) / 6.5 * 480) }}{%- endmacro %}
+{% macro cy(d) -%}{{ "%.1f"|format(220 - d * 200) }}{%- endmacro %}
+{% macro curve(points) -%}{% for z, d in points %}{{ "M" if loop.first else "L" }}{{ cx(z) }} {{ cy(d) }} {% endfor %}{%- endmacro %}
+<header class="jj-header">
+  <h1>Variational autoencoders</h1>
+  <p class="tagline">
+    A variational autoencoder turns an autoencoder into a generative model: the encoder outputs a distribution over codes, the decoder a distribution over data, and both are trained by maximizing a lower bound on the data's likelihood.
+    This page derives that bound, the ELBO, works it out exactly on a model small enough to solve by hand, shows why the reparameterization trick makes it trainable,
+    and follows <code>torch.distributions.Normal</code> and <code>kl_divergence</code> down to the closed-form KL.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A plain <a href="/ml-models/autoencoders">autoencoder</a> compresses well but cannot generate: decode a random code and you usually get garbage, because nothing decided what the space between training codes should mean.
+  We want a model we can <em>sample</em> from. Pick a simple distribution p(z) for a hidden code, say a standard normal, and a decoder p<sub>θ</sub>(x | z) that turns a code into data. Sampling is then easy: draw z, decode.
+</p>
+<p>
+  Training is the hard part. Maximum likelihood needs p<sub>θ</sub>(x) = ∫ p<sub>θ</sub>(x | z) p(z) dz, an integral over every possible code, which has no closed form once the decoder is a neural network. The posterior p<sub>θ</sub>(z | x), which code explains this x,
+  needs that same integral through <a href="/ml-models/bayes-rule">Bayes' rule</a>. Kingma and Welling's answer (and, independently, Rezende, Mohamed and Wierstra's) was to learn an encoder that approximates the posterior and to optimize a bound that only needs samples from it.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  The encoder no longer outputs one code but a small cloud: a mean and a spread. The decoder must reconstruct x from any point in the cloud, so nearby codes are forced to decode to similar data. A second term pulls every cloud toward the standard normal prior,
+  so the clouds of all training examples overlap and tile the space with no gaps. Reconstruction wants the clouds small and far apart; the prior term wants them wide and centred. The balance is a smooth, densely used code space, and then a fresh draw from the prior lands somewhere the decoder knows.
+</p>
+<p>
+  The trick that makes this trainable is to move the randomness out of the way of the gradient: instead of sampling z from N(μ, σ²), sample ε from N(0, 1) and compute z = μ + σε. Now z is a differentiable function of μ and σ, and <a href="/ml-models/backpropagation">backpropagation</a> flows straight through.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 250" role="img" aria-labelledby="vae-arch-title vae-arch-desc">
+    <title id="vae-arch-title">A VAE forward pass with the reparameterization trick</title>
+    <desc id="vae-arch-desc">
+      The input x enters the encoder, which outputs a mean mu and a log-variance for each latent dimension. Noise epsilon is drawn from a standard normal off to the side.
+      The code is z = mu + sigma times epsilon, which the decoder turns into a reconstruction. The loss has two parts: a reconstruction term comparing the output with x, and a KL term comparing N(mu, sigma squared) with the prior N(0, 1).
+      Gradients flow back through z into mu and sigma, and through them into the encoder; the noise epsilon receives no gradient.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <rect x="10" y="85" width="50" height="60" rx="6" class="d-box ml-tensor"></rect>
+      <text x="35" y="119">x</text>
+      <path d="M75 70 L165 95 L165 135 L75 160 Z" class="d-box ml-weight"></path>
+      <text x="120" y="119">encoder</text>
+      <rect x="185" y="65" width="70" height="36" rx="6" class="d-box ml-tensor"></rect>
+      <text x="220" y="88">μ</text>
+      <rect x="185" y="129" width="70" height="36" rx="6" class="d-box ml-tensor"></rect>
+      <text x="220" y="152">log σ²</text>
+      <rect x="290" y="190" width="80" height="36" rx="6" class="d-box ml-op ml-dashed"></rect>
+      <text x="330" y="213">ε ~ N(0, I)</text>
+      <rect x="290" y="92" width="80" height="46" rx="6" class="d-box ml-op"></rect>
+      <text x="330" y="112" style="fill: var(--jj-violet)">z = μ + σ·ε</text>
+      <text x="330" y="128" class="d-muted">sample</text>
+      <path d="M60 115 L75 115 M165 100 L185 83 M165 130 L185 147 M255 83 L290 108 M255 147 L290 122 M330 190 L330 138" class="d-line" fill="none"></path>
+      <path d="M390 75 L480 50 L480 180 L390 155 Z" class="d-box ml-weight"></path>
+      <text x="435" y="119">decoder</text>
+      <path d="M370 115 L390 115" class="d-line" fill="none"></path>
+      <rect x="500" y="85" width="50" height="60" rx="6" class="d-box ml-tensor"></rect>
+      <text x="525" y="119">x̂</text>
+      <path d="M480 115 L500 115" class="d-line" fill="none"></path>
+      <rect x="560" y="85" width="72" height="60" rx="6" class="d-box ml-op"></rect>
+      <text x="596" y="111">recon.</text>
+      <text x="596" y="127" class="d-muted">−log p(x|z)</text>
+      <path d="M550 115 L560 115" class="d-line" fill="none"></path>
+      <rect x="160" y="12" width="120" height="36" rx="6" class="d-box ml-op"></rect>
+      <text x="220" y="35">KL(q ‖ N(0, I))</text>
+      <path d="M220 65 L220 48" class="d-line" fill="none"></path>
+      <path d="M288 98 L262 78 M288 132 L262 152 M200 70 L172 92 M200 160 L172 138" class="d-line ml-dashed" fill="none" style="stroke: var(--jj-red)"></path>
+      <text x="440" y="236" style="fill: var(--jj-red)">gradient reaches μ and σ, never ε</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The noise is an input, not a node to differentiate through, so the sample is a deterministic function of what the encoder outputs.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="elbo">The ELBO, derived</h3>
+<p>
+  For any distribution q(z) over codes, multiply and divide inside the integral and apply Jensen's inequality (log of an average is at least the average of the log):
+</p>
+<p class="ml-formula">log p(x) = log 𝔼<sub>q(z)</sub>[ p(x | z) p(z) / q(z) ] ≥ 𝔼<sub>q(z)</sub>[ log p(x | z) ] − KL(q(z) ‖ p(z)) = ELBO</p>
+<p>
+  The first term is a reconstruction score: decode codes drawn from q and measure how likely x is. The second keeps q close to the prior, measured by the <a href="/ml-models/entropy-and-kl">KL divergence</a>. The bound is not loose by an unknown amount; expanding p(x | z) p(z) = p(z | x) p(x) gives an exact identity:
+</p>
+<p class="ml-formula">log p(x) = ELBO(q) + KL(q(z) ‖ p(z | x))</p>
+<p>
+  So raising the ELBO over q pushes q toward the true posterior, and the gap is exactly how far it still is. A VAE amortizes this: instead of fitting a separate q for every x, an encoder network outputs q<sub>φ</sub>(z | x) = N(μ<sub>φ</sub>(x), diag σ<sub>φ</sub>²(x)),
+  and the encoder φ and decoder θ are trained together to maximize the average ELBO over the data. Raising it either tightens the bound (better encoder) or raises log p(x) itself (better decoder).
+</p>
+
+<h3 id="kl">The KL term in closed form</h3>
+<p>
+  For two one-dimensional normals the KL has a closed form, which is what PyTorch's registered <code>_kl_normal_normal</code> computes:
+</p>
+<p class="ml-formula">KL(N(μ<sub>p</sub>, σ<sub>p</sub>²) ‖ N(μ<sub>q</sub>, σ<sub>q</sub>²)) = ½ [ (σ<sub>p</sub>/σ<sub>q</sub>)² + ((μ<sub>p</sub> − μ<sub>q</sub>)/σ<sub>q</sub>)² − 1 − log (σ<sub>p</sub>/σ<sub>q</sub>)² ]</p>
+<p>
+  Against the standard normal prior and with the encoder predicting log σ² (so σ is always positive), it is ½ (σ² + μ² − 1 − log σ²) per dimension, summed over the independent latent dimensions. It is zero only when μ = 0 and σ = 1, that is, when the code says nothing about x.
+  Predicting log σ² rather than σ is the usual choice because it is unconstrained and well-behaved near zero variance.
+</p>
+
+<h3 id="reparam">The reparameterization trick</h3>
+<p>
+  The reconstruction term 𝔼<sub>q</sub>[log p(x | z)] has no closed form for a neural decoder, so it is estimated with samples, usually one per example. We need its gradient with respect to the encoder, but a sample from N(μ, σ²) is not a differentiable function of μ and σ.
+  Writing z = μ + σ ⊙ ε with ε ~ N(0, I) fixes that: ∂z/∂μ = 1 and ∂z/∂σ = ε. PyTorch makes the distinction explicit: <code>Normal.rsample</code> returns <code>loc + eps * scale</code> with a fresh standard normal ε and keeps the graph, while <code>sample</code> runs under <code>torch.no_grad()</code>.
+  <code>has_rsample = True</code> advertises that a distribution supports it. The alternative, the score-function (REINFORCE) estimator f(z) ∇ log q(z), works for any distribution, including discrete ones, but its variance is typically far higher, as the worked example shows.
+</p>
+
+<h3 id="variants">β-VAE, posterior collapse and latent diffusion</h3>
+<ul>
+  <li><strong>β-VAE.</strong> Higgins et al. weight the KL term by β: loss = reconstruction + β · KL. With β &gt; 1 the code is pushed harder toward the factorized prior, which tends to give more disentangled, individually interpretable latent dimensions at the cost of blurrier reconstructions. β &lt; 1 does the reverse.</li>
+  <li><strong>Posterior collapse.</strong> If the decoder is powerful enough to model x without the code (an autoregressive decoder over text, say), the cheapest optimum sets q(z | x) = p(z) for every x: KL is zero and z is ignored. Individual dimensions can collapse too; they show up as units with μ ≈ 0, σ ≈ 1 and KL ≈ 0. KL annealing (start β near 0 and raise it) and free bits (no penalty below a per-dimension KL floor) are the usual remedies.</li>
+  <li><strong>Blurriness.</strong> A Gaussian decoder with fixed variance makes the reconstruction term a squared error, which favours averaged outputs. VAE samples are smooth rather than sharp.</li>
+  <li><strong>Latent diffusion.</strong> Stable Diffusion and its relatives first train an autoencoder with a small KL penalty (plus perceptual and adversarial losses) to map images to a smaller latent grid, then run diffusion in that latent space. The VAE does the compression; the diffusion model does the generating.</li>
+</ul>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead>
+      <tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>Normal(loc, scale)</code></td>
+        <td>loc real, scale positive; broadcast together; batch_shape = loc.size()</td>
+        <td>Diagonal Gaussian over each latent dimension; <code>has_rsample = True</code>.</td>
+        <td><a href="{{ src('torch/distributions/normal.py', 15, 37) }}">normal.py 15-37</a>, <a href="{{ src('torch/distributions/normal.py', 55, 65) }}">55-65</a></td>
+      </tr>
+      <tr>
+        <td><code>Normal.sample</code>, <code>Normal.rsample</code></td>
+        <td>sample_shape + batch_shape</td>
+        <td><code>sample</code> under no_grad; <code>rsample</code> returns <code>loc + eps * scale</code>, differentiable in loc and scale.</td>
+        <td><a href="{{ src('torch/distributions/normal.py', 77, 85) }}">normal.py 77-85</a></td>
+      </tr>
+      <tr>
+        <td><code>_standard_normal</code></td>
+        <td>ε of the extended shape</td>
+        <td>Draws the noise with <code>torch.empty(...).normal_()</code>.</td>
+        <td><a href="{{ src('torch/distributions/utils.py', 62, 73) }}">utils.py 62-73</a></td>
+      </tr>
+      <tr>
+        <td><code>Normal.log_prob</code>, <code>entropy</code></td>
+        <td>−(v − μ)²/(2σ²) − log σ − log √(2π); ½ + ½ log 2π + log σ</td>
+        <td>Gaussian decoder log-likelihood; entropy of q.</td>
+        <td><a href="{{ src('torch/distributions/normal.py', 87, 101) }}">normal.py 87-101</a>, <a href="{{ src('torch/distributions/normal.py', 113, 114) }}">113-114</a></td>
+      </tr>
+      <tr>
+        <td><code>kl_divergence(p, q)</code></td>
+        <td>result of shape batch_shape</td>
+        <td>Looks up the most specific registered pair and memoizes it; raises NotImplementedError otherwise.</td>
+        <td><a href="{{ src('torch/distributions/kl.py', 51, 60) }}">kl.py 51-60</a>, <a href="{{ src('torch/distributions/kl.py', 165, 193) }}">165-193</a></td>
+      </tr>
+      <tr>
+        <td><code>_kl_normal_normal</code></td>
+        <td>½(var_ratio + t1 − 1 − log var_ratio)</td>
+        <td>The closed-form Gaussian KL used for the VAE's prior term.</td>
+        <td><a href="{{ src('torch/distributions/kl.py', 467, 471) }}">kl.py 467-471</a></td>
+      </tr>
+      <tr>
+        <td><code>Independent(base, 1)</code></td>
+        <td>moves the last batch dim into event_shape</td>
+        <td>Turns per-dimension Normals into one diagonal Gaussian, so <code>log_prob</code> and KL sum over latent dimensions.</td>
+        <td><a href="{{ src('torch/distributions/independent.py', 18, 60) }}">independent.py 18-60</a>, <a href="{{ src('torch/distributions/independent.py', 120, 122) }}">120-122</a>, <a href="{{ src('torch/distributions/kl.py', 944, 949) }}">kl.py 944-949</a></td>
+      </tr>
+      <tr>
+        <td><code>Distribution.sample</code>, <code>rsample</code></td>
+        <td>base class</td>
+        <td><code>sample</code> defaults to <code>rsample</code> under no_grad; <code>rsample</code> raises unless a subclass implements it.</td>
+        <td><a href="{{ src('torch/distributions/distribution.py', 167, 181) }}">distribution.py 167-181</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>An encoder outputs μ = 0 and log σ² = 0 for one latent dimension on every input. What is that dimension's KL, and what does it tell you?</summary>
+  <p>½(1 + 0 − 1 − 0) = 0. The posterior equals the prior whatever the input, so the dimension carries no information about x: it has collapsed. The decoder ignores it, and the KL term has no reason to change that.</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>An ELBO you can check by hand.</strong> Take a one-dimensional latent-variable model with a linear decoder: z ~ N(0, 1), x | z ~ N({{ f(e.weight, 1) }}·z, {{ f(e.noise, 1) }}²). Everything is Gaussian, so the integrals a VAE has to approximate are exact here.
+    The evidence is x ~ N(0, {{ f(e.weight, 1) }}² + {{ f(e.noise, 1) }}²) = N(0, {{ f(ex.marginal_scale) }}²), so for the observation x = {{ f(e.x, 1) }}, log p(x) = {{ f(ex.evidence, 4) }}.
+    The true posterior is N(wx/(w² + s²), s²/(w² + s²)) = N({{ f(ex.posterior[0]) }}, {{ f(ex.posterior[1]) }}²).
+  </p>
+  <p>
+    The reconstruction term has a closed form too: 𝔼<sub>q</sub>[log p(x | z)] = −½ log(2πs²) − ((x − w·m)² + w²v²)/(2s²) for q = N(m, v²). For four choices of q:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>q(z)</th><th>𝔼<sub>q</sub>[log p(x|z)]</th><th>KL(q ‖ p(z))</th><th>ELBO</th><th>log p(x) − ELBO</th><th>KL(q ‖ p(z|x))</th></tr></thead>
+      <tbody>
+        {% for r in ex.rows %}
+        <tr>
+          <td>N({{ f(r.loc) }}, {{ f(r.scale) }}²){% if loop.first %} prior{% elif loop.last %} posterior{% endif %}</td>
+          <td>{{ f(r.reconstruction, 4) }}</td><td>{{ f(r.kl, 4) }}</td><td>{{ f(r.elbo, 4) }}</td><td>{{ f(r.gap, 4) }}</td><td>{{ f(r.posterior_kl, 4) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The last two columns agree on every row, which is the identity log p(x) = ELBO + KL(q ‖ p(z | x)). Using the prior as q costs nothing in KL but reconstructs badly. The narrow guess N({{ f(ex.rows[2].loc) }}, {{ f(ex.rows[2].scale) }}²) reconstructs best of all,
+    but pays {{ f(ex.rows[2].kl, 4) }} in KL and ends with a worse ELBO than N({{ f(ex.rows[1].loc) }}, {{ f(ex.rows[1].scale) }}²). Only the true posterior closes the gap to zero, and its ELBO equals log p(x) exactly.
+  </p>
+  <p>
+    <strong>Two gradient estimators.</strong> Estimate ∂/∂μ 𝔼[(z − {{ f(e.target, 1) }})²] for z ~ N({{ f(e.mu, 1) }}, {{ f(e.sigma, 1) }}²). The exact answer is 2(μ − {{ f(e.target, 1) }}) = {{ f(gr.exact) }}. With {{ e.samples }} draws (seed {{ e.seed }}):
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Estimator</th><th>Per-sample estimate</th><th>Mean</th><th>Standard deviation</th></tr></thead>
+      <tbody>
+        <tr><td>Reparameterization</td><td>2(μ + σε − c)</td><td>{{ f(gr.reparam.mean) }}</td><td>{{ f(gr.reparam.std) }}</td></tr>
+        <tr><td>Score function</td><td>(z − c)² · ε/σ</td><td>{{ f(gr.score.mean) }}</td><td>{{ f(gr.score.std) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Both are unbiased, but the score-function estimate is about {{ "%.1f"|format(gr.score.std / gr.reparam.std) }} times noisier per sample, so it needs roughly {{ "%.0f"|format((gr.score.std / gr.reparam.std) ** 2) }} times as many samples for the same precision. Reparameterization uses the derivative of f; the score function only uses its value.
+  </p>
+  <p>
+    <strong>The KL term on one code.</strong> An encoder outputs, for a four-dimensional latent:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Dimension</th><th>μ</th><th>log σ²</th><th>σ</th><th>½(σ² + μ² − 1 − log σ²)</th></tr></thead>
+      <tbody>
+        {% for c in ex.code %}
+        <tr><td>{{ loop.index }}</td><td>{{ f(c.mu, 2) }}</td><td>{{ f(c.logvar, 2) }}</td><td>{{ f(c.sigma) }}</td><td>{{ f(c.kl, 4) }}</td></tr>
+        {% endfor %}
+        <tr><td>Sum</td><td></td><td></td><td></td><td>{{ f(ex.code_kl, 4) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Dimension 1 carries information (a confident, off-centre code); dimensions 3 and 4 are at or near the prior and have collapsed. With β = {% for b in ex.betas %}{{ f(b.beta, 1) }}{% if not loop.last %}, {% endif %}{% endfor %} the KL penalty is {% for b in ex.betas %}{{ f(b.penalty) }}{% if not loop.last %}, {% endif %}{% endfor %}, which is what the reconstruction term must outweigh for the code to stay informative.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 270" role="img" aria-labelledby="vae-post-title vae-post-desc">
+    <title id="vae-post-title">Prior, true posterior and an approximate posterior for x = {{ f(e.x, 1) }}</title>
+    <desc id="vae-post-desc">
+      Three bell curves over the latent z from −3 to 3.5. The prior N(0, 1) is wide and centred at zero. The true posterior N({{ f(ex.posterior[0]) }}, {{ f(ex.posterior[1]) }} squared) is narrower and centred at {{ f(ex.posterior[0]) }}.
+      The approximate posterior N({{ f(ex.rows[1].loc) }}, {{ f(ex.rows[1].scale) }} squared) sits close to the true posterior; its ELBO falls short of log p(x) by exactly its KL to the true posterior, {{ f(ex.rows[1].gap, 4) }}.
+    </desc>
+    <g font-size="12">
+      <path d="M70 220 L550 220" class="d-line" fill="none"></path>
+      {% for z in [-3, -2, -1, 0, 1, 2, 3] %}
+      <path d="M{{ cx(z) }} 220 L{{ cx(z) }} 225" class="d-line" fill="none"></path>
+      <text x="{{ cx(z) }}" y="240" text-anchor="middle" class="d-muted">{{ z|replace("-", "−") }}</text>
+      {% endfor %}
+      <text x="560" y="224" class="d-muted">z</text>
+      <path d="{{ curve(ex.curves.prior) }}" fill="none" stroke-width="2" style="stroke: var(--jj-accent)"></path>
+      <path d="{{ curve(ex.curves.posterior) }}" fill="none" stroke-width="2" style="stroke: var(--jj-violet)"></path>
+      <path d="{{ curve(ex.curves.guess) }}" fill="none" stroke-width="2" stroke-dasharray="6 4" style="stroke: var(--jj-amber)"></path>
+      <path d="M{{ cx(ex.posterior[0]) }} 220 L{{ cx(ex.posterior[0]) }} 30" class="d-line ml-dashed" fill="none" stroke-opacity="0.5"></path>
+      <path d="M465 40 L490 40" stroke-width="2" style="stroke: var(--jj-accent)"></path><text x="497" y="44">prior p(z)</text>
+      <path d="M465 60 L490 60" stroke-width="2" style="stroke: var(--jj-violet)"></path><text x="497" y="64">posterior p(z | x)</text>
+      <path d="M465 80 L490 80" stroke-width="2" stroke-dasharray="6 4" style="stroke: var(--jj-amber)"></path><text x="497" y="84">q = N({{ f(ex.rows[1].loc, 1) }}, {{ f(ex.rows[1].scale, 1) }}²)</text>
+      <text x="497" y="104" class="d-muted">gap {{ f(ex.rows[1].gap, 4) }}</text>
+      <text x="320" y="262" text-anchor="middle" class="d-muted">log p(x) = {{ f(ex.evidence, 4) }}; observing x = {{ f(e.x, 1) }} pulls the code to the right and narrows it</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The ELBO's gap is the KL between the dashed q and the true posterior; a VAE's encoder is trained to shrink it for every x at once.</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.distributions import Normal, Independent, kl_divergence
+
+class VAE(nn.Module):
+    def __init__(self, d_in=784, hidden=400, latent=16):
+        super().__init__()
+        self.enc = nn.Sequential(nn.Linear(d_in, hidden), nn.ReLU())
+        self.mu = nn.Linear(hidden, latent)
+        self.logvar = nn.Linear(hidden, latent)
+        self.dec = nn.Sequential(nn.Linear(latent, hidden), nn.ReLU(), nn.Linear(hidden, d_in))
+
+    def forward(self, x):
+        h = self.enc(x)
+        mu, logvar = self.mu(h), self.logvar(h)
+        q = Independent(Normal(mu, torch.exp(0.5 * logvar)), 1)   # event_shape (latent,)
+        z = q.rsample()                                           # mu + sigma * eps, keeps the graph
+        return self.dec(z), q
+
+def loss_fn(logits, x, q, beta=1.0):
+    recon = F.binary_cross_entropy_with_logits(logits, x, reduction="none").sum(-1)  # -log p(x|z)
+    prior = Independent(Normal(torch.zeros_like(q.mean), torch.ones_like(q.mean)), 1)
+    kl = kl_divergence(q, prior)                                  # closed form, summed over latent dims
+    # same as 0.5 * (logvar.exp() + mu**2 - 1 - logvar).sum(-1)
+    return (recon + beta * kl).mean()                             # negative ELBO per example
+
+model = VAE()
+opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+for x, _ in loader:
+    x = x.view(x.size(0), -1)                                     # pixels in [0, 1]
+    logits, q = model(x)
+    loss = loss_fn(logits, x, q)
+    opt.zero_grad()
+    loss.backward()
+    opt.step()
+
+with torch.no_grad():
+    samples = torch.sigmoid(model.dec(torch.randn(64, 16)))       # generate from the prior</code></pre>
+
+<p>
+  Sum the reconstruction over pixels and the KL over latent dimensions before averaging over the batch. Averaging the reconstruction over pixels (the default <code>reduction="mean"</code>) silently shrinks it by a factor of 784 relative to the KL, which acts like a huge β and is a common cause of collapse.
+  <code>Independent(..., 1)</code> does that summing for both <code>log_prob</code> and <code>kl_divergence</code>. To report log p(x) rather than the bound, use importance sampling with several draws from q.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Likelihood and a smooth latent space versus sharpness.</strong> VAEs give a lower bound on likelihood, stable training and an encoder for free, but samples are blurrier than those of GANs and diffusion models, which is why modern image generators use a VAE only for compression.</li>
+  <li><strong>Amortization gap.</strong> One encoder serves every x, so even at the optimum its q can be worse than the best Gaussian for a particular x. More expressive posteriors (normalizing flows) or a few refinement steps per example shrink the gap.</li>
+  <li><strong>The Gaussian assumption.</strong> A diagonal Gaussian q cannot represent correlated or multimodal posteriors; the ELBO then underestimates log p(x) by at least that mismatch.</li>
+  <li><strong>β is a real knob.</strong> Higher β gives more structured, disentangled codes and worse reconstructions; lower β the reverse. The right setting depends on whether you want samples, features or compression.</li>
+  <li><strong>Discrete latents need other tools.</strong> Reparameterization needs a continuous z. Discrete codes use the score-function estimator, a continuous relaxation, or vector quantization with a straight-through gradient.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Why not just maximize the reconstruction term and drop the KL?</summary>
+  <p>Then the encoder can shrink σ toward 0 and spread the μs apart, which turns the model back into a plain autoencoder: excellent reconstructions, but codes from the prior land in regions the decoder never saw, so sampling fails. The KL term is what makes p(z) a good place to sample from.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Kingma and Welling. <em>Auto-Encoding Variational Bayes.</em> ICLR 2014. <a href="https://arxiv.org/abs/1312.6114">arXiv:1312.6114</a></li>
+  <li>Rezende, Mohamed and Wierstra. <em>Stochastic Backpropagation and Approximate Inference in Deep Generative Models.</em> ICML 2014. <a href="https://arxiv.org/abs/1401.4082">arXiv:1401.4082</a></li>
+  <li>Williams. <em>Simple Statistical Gradient-Following Algorithms for Connectionist Reinforcement Learning.</em> Machine Learning, 1992.</li>
+  <li>Higgins et al. <em>β-VAE: Learning Basic Visual Concepts with a Constrained Variational Framework.</em> ICLR 2017.</li>
+  <li>Bowman et al. <em>Generating Sentences from a Continuous Space.</em> CoNLL 2016. <a href="https://arxiv.org/abs/1511.06349">arXiv:1511.06349</a></li>
+  <li>Kingma et al. <em>Improved Variational Inference with Inverse Autoregressive Flow.</em> NeurIPS 2016. <a href="https://arxiv.org/abs/1606.04934">arXiv:1606.04934</a></li>
+  <li>Cremer, Li and Duvenaud. <em>Inference Suboptimality in Variational Autoencoders.</em> ICML 2018. <a href="https://arxiv.org/abs/1801.03558">arXiv:1801.03558</a></li>
+  <li>Kingma and Welling. <em>An Introduction to Variational Autoencoders.</em> Foundations and Trends in Machine Learning, 2019. <a href="https://arxiv.org/abs/1906.02691">arXiv:1906.02691</a></li>
+  <li>Rombach, Blattmann, Lorenz, Esser and Ommer. <em>High-Resolution Image Synthesis with Latent Diffusion Models.</em> CVPR 2022. <a href="https://arxiv.org/abs/2112.10752">arXiv:2112.10752</a></li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/distributions/normal.py') }}"><code>torch/distributions/normal.py</code></a>, <a href="{{ src('torch/distributions/kl.py') }}"><code>torch/distributions/kl.py</code></a>, <a href="{{ src('torch/distributions/independent.py') }}"><code>torch/distributions/independent.py</code></a>.</li>
+</ul>

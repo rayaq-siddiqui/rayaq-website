@@ -3274,3 +3274,10 @@ def test_vae_code_kl_flags_collapsed_units():
     assert kls[0] > 1.0
     assert ex["code_kl"] == pytest.approx(sum(kls))
     assert [b["penalty"] for b in ex["betas"]] == pytest.approx([b * ex["code_kl"] for b in ml_models_docs.VAE_EXAMPLE["betas"]])
+
+
+def test_normal_curve_samples_the_density():
+    curve = ml_models_docs.normal_curve(0.0, 1.0, -3.0, 3.0, steps=6)
+    assert [z for z, _ in curve] == pytest.approx([-3, -2, -1, 0, 1, 2, 3])
+    assert curve[3][1] == pytest.approx(1 / math.sqrt(2 * math.pi))
+    assert curve[0][1] == pytest.approx(curve[-1][1])
