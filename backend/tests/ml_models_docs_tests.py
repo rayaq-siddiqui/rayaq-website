@@ -3187,3 +3187,37 @@ def test_memory_gradients_vanish_for_rnns_and_survive_with_a_large_forget_bias()
         hh, c = s["h"], s["c"]
     finite = (c - base[-1]["c"]) / h
     assert finite == pytest.approx(base[-1]["grad"], rel=1e-4)
+
+
+def test_linear_autoencoder_learns_the_pca_subspace():
+    e = ml_models_docs.autoencoder_example()
+    history = e["trained"]["history"]
+    assert history[-1] == pytest.approx(e["pca_mse"], rel=1e-4)
+    assert history[0] > history[10] > history[-1]
+    assert e["cosine"] == pytest.approx(1.0, abs=1e-6)
+    top = e["top"]
+    for i in range(2):
+        for j in range(2):
+            assert e["product"][i][j] == pytest.approx(top[i] * top[j], abs=1e-3)
+    assert e["pca_mse"] < e["total_mse"]
+
+
+def test_denoising_map_shrinks_each_principal_direction():
+    e = ml_models_docs.autoencoder_example()
+    clean, mild, heavy = e["denoise"]
+    assert clean["map"][0][0] == pytest.approx(1.0) and clean["map"][0][1] == pytest.approx(0.0, abs=1e-12)
+    lam = e["eigenvalues"]
+    assert mild["shrink"] == pytest.approx([lam[0] / (lam[0] + 0.25), lam[1] / (lam[1] + 0.25)])
+    top = e["top"]
+    mapped = [sum(heavy["map"][i][j] * top[j] for j in range(2)) for i in range(2)]
+    assert mapped == pytest.approx([heavy["shrink"][1] * t for t in top])
+
+
+def test_conv_autoencoder_shapes_round_trip_28_by_28():
+    assert ml_models_docs.conv_transpose_output_size(7, 3, stride=2, padding=1, output_padding=1) == 14
+    assert ml_models_docs.conv_transpose_output_size(7, 3, stride=2, padding=1) == 13
+    assert ml_models_docs.conv_transpose_output_size(14, 4, stride=2, padding=1) == 28
+    rows = ml_models_docs.conv_autoencoder_shapes()
+    assert rows[0]["shape"] == rows[-1]["shape"] == (1, 28, 28)
+    assert [r["shape"] for r in rows if r.get("code")] == [(16,)]
+    assert sum(r["params"] for r in rows) == 160 + 4640 + 25104 + 26656 + 4624 + 145

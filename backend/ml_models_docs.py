@@ -7325,6 +7325,121 @@ def rnn_example():
     }
 
 
+AUTOENCODER_EXAMPLE = {"count": 40, "seed": 7, "direction": [0.8, 0.6], "spread": 2.0, "noise": 0.4, "lr": 0.05, "steps": 1000, "noise_levels": [0.0, 0.5, 2.0]}
+
+
+def autoencoder_points(count, seed, direction, spread, noise):
+    rng = random.Random(seed)
+    ux, uy = direction
+    raw = []
+    for _ in range(count):
+        t = rng.gauss(0.0, spread)
+        s = rng.gauss(0.0, noise)
+        raw.append([t * ux - s * uy, t * uy + s * ux])
+    mean = [sum(p[k] for p in raw) / count for k in range(2)]
+    return [[p[0] - mean[0], p[1] - mean[1]] for p in raw]
+
+
+def second_moment(points):
+    n = len(points)
+    return [[sum(p[i] * p[j] for p in points) / n for j in range(2)] for i in range(2)]
+
+
+def reconstruction_mse(points, encoder, decoder):
+    total = 0.0
+    for p in points:
+        z = encoder[0] * p[0] + encoder[1] * p[1]
+        total += (p[0] - decoder[0] * z) ** 2 + (p[1] - decoder[1] * z) ** 2
+    return total / (2 * len(points))
+
+
+def train_linear_autoencoder(points, lr, steps, seed=0):
+    rng = random.Random(seed)
+    encoder = [rng.uniform(-0.5, 0.5) for _ in range(2)]
+    decoder = [rng.uniform(-0.5, 0.5) for _ in range(2)]
+    n = len(points)
+    history = [reconstruction_mse(points, encoder, decoder)]
+    start = (list(encoder), list(decoder))
+    for _ in range(steps):
+        grad_e = [0.0, 0.0]
+        grad_d = [0.0, 0.0]
+        for p in points:
+            z = encoder[0] * p[0] + encoder[1] * p[1]
+            r = [p[0] - decoder[0] * z, p[1] - decoder[1] * z]
+            back = decoder[0] * r[0] + decoder[1] * r[1]
+            for k in range(2):
+                grad_d[k] -= z * r[k] / n
+                grad_e[k] -= back * p[k] / n
+        encoder = [w - lr * g for w, g in zip(encoder, grad_e)]
+        decoder = [w - lr * g for w, g in zip(decoder, grad_d)]
+        history.append(reconstruction_mse(points, encoder, decoder))
+    return {"start": start, "encoder": encoder, "decoder": decoder, "history": history}
+
+
+def denoising_linear_map(moment, noise_variance):
+    shifted = [[moment[i][j] + (noise_variance if i == j else 0.0) for j in range(2)] for i in range(2)]
+    return matmul(moment, inverse_2x2(shifted))
+
+
+def conv_transpose_output_size(n, kernel, stride=1, padding=0, output_padding=0, dilation=1):
+    return (n - 1) * stride - 2 * padding + dilation * (kernel - 1) + output_padding + 1
+
+
+def conv_autoencoder_shapes(latent=16):
+    rows = []
+    c, h = 1, 28
+    rows.append({"layer": "input", "shape": (c, h, h), "params": 0})
+    for out in (16, 32):
+        h = conv_output_size(h, 3, stride=2, padding=1)
+        rows.append({"layer": f"Conv2d({c}, {out}, 3, stride=2, padding=1) + ReLU", "shape": (out, h, h), "params": conv_params(c, out, 3)})
+        c = out
+    flat = c * h * h
+    rows.append({"layer": "Flatten", "shape": (flat,), "params": 0})
+    rows.append({"layer": f"Linear({flat}, {latent})", "shape": (latent,), "params": flat * latent + latent, "code": True})
+    rows.append({"layer": f"Linear({latent}, {flat}) + ReLU", "shape": (flat,), "params": latent * flat + flat})
+    rows.append({"layer": f"Unflatten(1, ({c}, {h}, {h}))", "shape": (c, h, h), "params": 0})
+    for out in (16, 1):
+        h = conv_transpose_output_size(h, 3, stride=2, padding=1, output_padding=1)
+        act = " + ReLU" if out > 1 else " + Sigmoid"
+        rows.append({"layer": f"ConvTranspose2d({c}, {out}, 3, stride=2, padding=1, output_padding=1){act}", "shape": (out, h, h), "params": conv_params(c, out, 3)})
+        c = out
+    return rows
+
+
+def autoencoder_example():
+    e = AUTOENCODER_EXAMPLE
+    points = autoencoder_points(e["count"], e["seed"], e["direction"], e["spread"], e["noise"])
+    moment = second_moment(points)
+    eig = jacobi_eigh(moment)
+    top = eig["vectors"][1]
+    trained = train_linear_autoencoder(points, e["lr"], e["steps"])
+    enc, dec = trained["encoder"], trained["decoder"]
+    dec_norm = math.hypot(*dec)
+    product = [[dec[i] * enc[j] for j in range(2)] for i in range(2)]
+    projections = []
+    for p in points:
+        z = enc[0] * p[0] + enc[1] * p[1]
+        projections.append([dec[0] * z, dec[1] * z])
+    denoise = []
+    for sigma in e["noise_levels"]:
+        var = sigma ** 2
+        denoise.append({"sigma": sigma, "map": denoising_linear_map(moment, var), "shrink": [lam / (lam + var) for lam in eig["values"]]})
+    return {
+        "points": points,
+        "projections": projections,
+        "moment": moment,
+        "eigenvalues": eig["values"],
+        "top": top,
+        "trained": trained,
+        "product": product,
+        "cosine": abs(dec[0] * top[0] + dec[1] * top[1]) / dec_norm,
+        "pca_mse": eig["values"][0] / 2,
+        "total_mse": (eig["values"][0] + eig["values"][1]) / 2,
+        "denoise": denoise,
+        "shapes": conv_autoencoder_shapes(),
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -7849,6 +7964,9 @@ def render(slug, render_template):
         "rnn_param_count": rnn_param_count,
         "pack_sequences": pack_sequences,
         "padded_waste": padded_waste,
+        "autoencoder_example": autoencoder_example,
+        "autoencoder_settings": AUTOENCODER_EXAMPLE,
+        "conv_transpose_output_size": conv_transpose_output_size,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
