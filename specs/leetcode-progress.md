@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-12 (fourth audit run). All 58 pages are ready and the queue is empty. This audit found and fixed one gap (Sedgewick & Wayne citations naming the wrong sections), so the Routine stays on its 5-hour schedule. **The next run is another audit run** (spec §8.1): it fixes one gap, and if none remain it records "complete" and moves this Routine to weekly audits.
+**Last updated:** 2026-10-12 (fifth audit run). All 58 pages are ready and the queue is empty. This audit found and fixed one gap (page code that used names it never imported), so the Routine stays on its 5-hour schedule. **The next run is another audit run** (spec §8.1): it fixes one gap, and if none remain it records "complete" and moves this Routine to weekly audits.
 
 ## The Routine
 
@@ -158,6 +158,12 @@ build once research is done.
   teaches. Section titles were checked against the `Section x.y` headers in the algs4 sources
   (`FordFulkerson.java` is 6.4, `BTree.java` 6.2, `AcyclicSP.java` 4.4, `NFA.java` 5.4,
   `LongestCommonSubstring.java` 6.3). `test_sedgewick_citations_name_real_sections` enforces it.
+
+- **Runnable page code (2026-10-12).** Every ready page's `<pre><code>` blocks, joined in page
+  order, must parse and import or define every name they use, so a reader can copy them. The only
+  exceptions are deliberate placeholders listed in `CODE_PLACEHOLDERS` (the recursion skeleton's
+  steps, the toolkit's cheat-sheet variables, LeetCode's own `Node` class in Clone Graph, and the
+  submask-loop fragment). `test_page_code_parses_and_imports_what_it_uses` enforces it.
 
 ## Known gaps and questions for the owner
 
@@ -420,3 +426,16 @@ test checks every citation. No content or helpers changed. Coverage is unchanged
 (748 passed); every ready page returns 200 and the phone check passed on `/`, `/leetcode` and
 every ready page. Because this run found a gap, the schedule stays at every 5 hours. Next:
 another audit run.
+
+### 2026-10-12 — audit run (fifth)
+
+Fifth audit run. Extracted every ready page's code blocks and checked them with a static
+undefined-name pass. All 97 blocks parse. One gap: two pages' code raised `NameError` when
+copied. `bitmask-dp`'s assignment and travelling-salesman templates used `math.inf` without
+`import math`, and `longest-increasing-subsequence`'s non-decreasing variation called
+`bisect_right` while the page imported only `bisect_left`. Each block now imports what it uses,
+and a new test fails on any unbound name outside a short placeholder list. No prose or helpers
+changed. Coverage is unchanged at 100% (Blind 75 75/75, Grind 169 169/169, NeetCode 150 150/150,
+NeetCode 250 250/250). pytest green (820 passed); every ready page returns 200 and the phone check
+passed on `/`, `/leetcode` and every ready page. Because this run found a gap, the schedule stays
+at every 5 hours. Next: another audit run.
