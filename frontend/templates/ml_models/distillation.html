@@ -1,0 +1,391 @@
+{% set ex = distillation_example() %}
+{% set e = distillation_settings %}
+{% set l = ex.loss %}
+{% set s = ex.summary %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(0.0 if x|abs < 0.5 * 10 ** (-n) else x)|replace("-", "−") }}{%- endmacro %}
+{% macro v(xs, n=3) -%}({% for x in xs %}{{ f(x, n) }}{% if not loop.last %}, {% endif %}{% endfor %}){%- endmacro %}
+{% macro pct(x) -%}{{ "%.1f"|format(100 * x) }}%{%- endmacro %}
+<header class="jj-header">
+  <h1>Knowledge distillation</h1>
+  <p class="tagline">
+    Distillation trains a small student to copy a large teacher's full output distribution instead of only the right answer.
+    This page shows what a temperature does to a softmax, why the soft-target term is multiplied by T², how a student trained on soft targets beats one trained on the same fifteen labels,
+    and how the same idea becomes token-level, sequence-level and on-policy distillation for language models.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  The model that wins on accuracy is rarely the one you can afford to serve. Ensembles, very deep networks and large language models cost memory, latency and money on every request,
+  while the device or the budget only allows something several times smaller. Training the small model from scratch on the original labels usually leaves a gap.
+</p>
+<p>
+  The large model already knows more than the labels say. For a photo of a cat, the label is just "cat", but a good classifier also says it looks a little like a dog and almost nothing like a car.
+  Distillation asks how to move that knowledge into the small model: train it to match the teacher's outputs, not only the one-hot targets. Bucilă, Caruana and Niculescu-Mizil did this in 2006 to compress large ensembles into small neural nets;
+  Hinton, Vinyals and Dean named it <em>distillation</em> in 2015 and built it around a softmax temperature, which this page is mostly about.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  A one-hot label carries at most log₂ K bits per example and says nothing about which wrong answers are nearly right. The teacher's probabilities say how similar this input is to every class, which is information about the shape of the function the teacher learned.
+  A student that matches those probabilities on an input learns, from that one input, roughly what the teacher would have learned from many nearby labelled examples.
+</p>
+<p>
+  The catch is that a confident teacher hides most of this in tiny numbers: 0.0003 for "car" looks the same as 0 to a cross-entropy loss. Dividing the logits by a temperature T &gt; 1 before the softmax spreads the probability out,
+  so the ratios between the wrong classes, the "dark knowledge", become large enough to matter. The ranking never changes; only how loudly the teacher states it.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 270" role="img" aria-labelledby="kd-temp-title kd-temp-desc">
+    <title id="kd-temp-title">The same teacher logits softened by four temperatures</title>
+    <desc id="kd-temp-desc">
+      Four groups of bars, one per temperature T = {{ e.temperatures|join(", ") }}, each showing the teacher's probabilities for {{ e.classes|join(", ") }} from logits {{ v(e.teacher, 1) }}.
+      At T = 1 the probabilities are {{ v(ex.softened[0].probs) }}. At T = 8 they are {{ v(ex.softened[-1].probs) }}. The order of the classes never changes, but the entropy rises from {{ f(ex.softened[0].entropy, 2) }} to {{ f(ex.softened[-1].entropy, 2) }} bits.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      <line x1="30" y1="215" x2="625" y2="215" class="d-line"></line>
+      {% for row in ex.softened %}
+      {% set gx = 45 + loop.index0 * 148 %}
+      {% for p in row.probs %}
+      {% set h = p * 170 %}
+      <rect x="{{ gx + loop.index0 * 30 }}" y="{{ '%.1f'|format(215 - h) }}" width="24" height="{{ '%.1f'|format(h) }}" class="d-box {{ 'ml-tensor' if loop.first else 'ml-weight' }}"></rect>
+      <text x="{{ gx + loop.index0 * 30 + 12 }}" y="{{ '%.1f'|format(209 - h) }}" font-size="9">{{ f(p, 2) }}</text>
+      <text x="{{ gx + loop.index0 * 30 + 12 }}" y="229" font-size="9" class="d-muted">{{ e.classes[loop.index0] }}</text>
+      {% endfor %}
+      <text x="{{ gx + 57 }}" y="248">T = {{ row.temperature }}</text>
+      <text x="{{ gx + 57 }}" y="263" class="d-muted">H = {{ f(row.entropy, 2) }} bits</text>
+      {% endfor %}
+    </g>
+  </svg>
+  <p class="ml-caption">The teacher's logits {{ v(e.teacher, 1) }} for one image of a cat, divided by T before the softmax. Higher T shows how much more "dog" and "fox" the image is than "car".</p>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="temperature">Temperature softmax</h3>
+
+<p>Given logits z, the teacher's softened distribution and the student's (logits v) are</p>
+<p class="ml-formula">p<sub>i</sub>(T) = exp(z<sub>i</sub>/T) / Σ<sub>j</sub> exp(z<sub>j</sub>/T), &nbsp; q<sub>i</sub>(T) = exp(v<sub>i</sub>/T) / Σ<sub>j</sub> exp(v<sub>j</sub>/T)</p>
+<p>
+  T = 1 is the ordinary softmax; T → ∞ tends to the uniform distribution and T → 0 to the one-hot argmax. Dividing by T does not change which logit is largest, so the teacher's prediction is the same at every temperature.
+</p>
+
+<h3 id="loss">The distillation loss</h3>
+
+<p>The student is trained on a weighted sum of the usual cross-entropy with the label y, at T = 1, and a KL divergence between the softened distributions:</p>
+<p class="ml-formula">L = α · CE(y, q(1)) + (1 − α) · T² · KL(p(T) ‖ q(T))</p>
+<p>
+  The teacher is frozen; only the student's logits v receive gradients. KL(p ‖ q) and the cross-entropy H(p, q) differ by H(p), which does not depend on the student, so either can be used; KL is zero when the student matches, which makes it easier to read.
+  At test time the student uses its ordinary softmax, T = 1.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 335" role="img" aria-labelledby="kd-flow-title kd-flow-desc">
+    <title id="kd-flow-title">Teacher, student and the two loss terms</title>
+    <desc id="kd-flow-desc">
+      One input x goes to a frozen teacher and to the student. The teacher's logits z are divided by T and passed through a softmax to give soft targets p(T).
+      The student's logits v go two ways: divided by T and softmaxed to give q(T), compared with p(T) by a KL divergence scaled by T squared; and softmaxed at T = 1 to give q(1), compared with the label y by cross-entropy.
+      The two terms are mixed with weights 1 − α and α, and only the student is updated by the gradient.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <rect x="10" y="125" width="60" height="44" rx="6" class="d-box ml-tensor"></rect>
+      <text x="40" y="152">x</text>
+      <rect x="110" y="35" width="120" height="50" rx="6" class="d-box ml-weight"></rect>
+      <text x="170" y="57">teacher</text>
+      <text x="170" y="73" class="d-muted">frozen</text>
+      <rect x="110" y="205" width="120" height="50" rx="6" class="d-box ml-weight"></rect>
+      <text x="170" y="227">student</text>
+      <text x="170" y="243" class="d-muted">trained</text>
+      <path d="M70 140 L110 62" class="d-line"></path>
+      <path d="M70 155 L110 228" class="d-line"></path>
+      <rect x="265" y="35" width="120" height="50" rx="6" class="d-box ml-op"></rect>
+      <text x="325" y="57">softmax(z / T)</text>
+      <text x="325" y="73" style="fill: var(--jj-violet)">p(T)</text>
+      <rect x="265" y="160" width="120" height="44" rx="6" class="d-box ml-op"></rect>
+      <text x="325" y="179">softmax(v / T)</text>
+      <text x="325" y="195" style="fill: var(--jj-violet)">q(T)</text>
+      <rect x="265" y="240" width="120" height="44" rx="6" class="d-box ml-op"></rect>
+      <text x="325" y="259">softmax(v)</text>
+      <text x="325" y="275">q(1)</text>
+      <path d="M230 60 L265 60" class="d-line"></path>
+      <path d="M230 222 L265 182" class="d-line"></path>
+      <path d="M230 238 L265 262" class="d-line"></path>
+      <rect x="420" y="95" width="120" height="50" rx="6" class="d-box ml-op"></rect>
+      <text x="480" y="117">T² · KL(p ‖ q)</text>
+      <text x="480" y="133" class="d-muted">soft term</text>
+      <path d="M385 60 L420 110" class="d-line"></path>
+      <path d="M385 182 L420 130" class="d-line"></path>
+      <rect x="420" y="225" width="120" height="50" rx="6" class="d-box ml-op"></rect>
+      <text x="480" y="247">CE(y, q)</text>
+      <text x="480" y="263" class="d-muted">hard term</text>
+      <path d="M385 262 L420 250" class="d-line"></path>
+      <text x="480" y="210" class="d-muted">label y</text>
+      <path d="M480 214 L480 225" class="d-line ml-dashed"></path>
+      <rect x="570" y="160" width="62" height="50" rx="6" class="d-box ml-tensor"></rect>
+      <text x="601" y="182">L</text>
+      <text x="601" y="198" class="d-muted" font-size="10">mix α</text>
+      <path d="M540 120 L570 175" class="d-line"></path>
+      <path d="M540 250 L570 195" class="d-line"></path>
+      <path d="M601 210 L601 305 L170 305 L170 255" class="d-line ml-dashed"></path>
+      <text x="385" y="324" style="fill: var(--jj-red)" font-size="11">gradient reaches the student only</text>
+    </g>
+  </svg>
+  <p class="ml-caption">The teacher can run once ahead of time and its logits be stored; the student needs both terms only during training.</p>
+</div>
+
+<h3 id="t-squared">Why multiply by T²</h3>
+
+<p>The gradient of the KL term with respect to a student logit is short:</p>
+<p class="ml-formula">∂ KL(p(T) ‖ q(T)) / ∂v<sub>i</sub> = (q<sub>i</sub>(T) − p<sub>i</sub>(T)) / T</p>
+<p>
+  One factor 1/T comes from the chain rule through v/T. The other comes from the softening itself: as T grows both distributions approach uniform, and for logits with mean zero
+  q<sub>i</sub> − p<sub>i</sub> ≈ (v<sub>i</sub> − z<sub>i</sub>) / (N T) over N classes. Together the gradient falls like 1/T², so without correction raising T would quietly turn the soft term off.
+  Multiplying the loss by T², as Hinton, Vinyals and Dean recommend, keeps the soft and hard terms in roughly the same proportion whatever T is.
+</p>
+<p>
+  The same approximation shows what very high temperatures do: T² times the gradient tends to (v<sub>i</sub> − z<sub>i</sub>)/N, the gradient of matching the logits themselves with a squared error.
+  Ba and Caruana trained shallow students exactly that way, regressing the teacher's logits with an L2 loss, so logit matching is the high-temperature limit of distillation.
+</p>
+
+<h3 id="features">Matching more than outputs</h3>
+
+<p>
+  The teacher's hidden layers are knowledge too. FitNets (Romero et al.) trains a deeper, thinner student using the teacher's intermediate representations as <em>hints</em>: because the student's hidden layer is narrower, a small regressor maps it onto the teacher's, and the two are matched with a squared error. DistilBERT combines three terms during pretraining: masked language modelling, distillation on the output distribution, and a cosine loss aligning the student's and teacher's hidden states.
+  Any such feature loss needs a projection when widths differ, and a choice of which layers to pair.
+</p>
+
+<h3 id="language-models">Distilling language models</h3>
+
+<p>
+  A language model's output at each position is already a distribution over the vocabulary, so <strong>token-level</strong> (word-level) distillation is the loss above summed over positions, with teacher-forced inputs from a fixed dataset.
+  It requires teacher and student to share a tokenizer, otherwise the two distributions are over different sets.
+</p>
+<p>
+  <strong>Sequence-level</strong> distillation (Kim and Rush) instead runs the teacher's beam search and trains the student with ordinary cross-entropy on the teacher's output sequences, approximating the teacher's distribution over whole sequences by its mode.
+  Fine-tuning a small model on text a larger model generated is this method, and it works across tokenizers.
+</p>
+<p>
+  Both train the student on sequences it did not produce, while at inference it conditions on its own earlier tokens; small errors lead it into prefixes it never saw in training.
+  <strong>On-policy</strong> distillation samples sequences from the student and has the teacher score every token of them: GKD (Agarwal et al.) frames this as training on self-generated mistakes, and MiniLLM (Gu et al.) minimizes the reverse KL, KL(q ‖ p), with an on-policy optimization.
+</p>
+<p>
+  The direction of the KL matters when the student is too small to match everywhere. Forward KL(p ‖ q), the classical choice, is large wherever the teacher has mass and the student does not, so the student spreads to cover every mode, including putting mass between them.
+  Reverse KL(q ‖ p) is large wherever the student puts mass the teacher does not, so the student is pushed onto the teacher's main modes and may ignore small ones: mode-seeking. MiniLLM uses it to stop the student overestimating regions where the teacher assigns low probability.
+</p>
+
+<h3 id="pytorch">The pieces in PyTorch</h3>
+
+<p>
+  PyTorch has no distillation module; it is built from <code>log_softmax</code> and <code>KLDivLoss</code>. <code>KLDivLoss</code> takes the student's <em>log</em>-probabilities as input and the teacher's probabilities as target (or log-probabilities with <code>log_target=True</code>).
+  Its default reduction <code>"mean"</code> averages over every element, which is not the KL; <code>kl_div</code> warns about it and recommends <code>"batchmean"</code>, which sums and divides by the batch size.
+  <code>CrossEntropyLoss</code> also accepts class probabilities as the target, which gives H(p, q): the same gradient as KL.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead>
+      <tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>F.softmax</code>, <code>F.log_softmax</code></td>
+        <td>logits (B, K), dim=−1</td>
+        <td>Turn z/T into p(T) or log q(T); log_softmax is the stable way to get log-probabilities.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 2176, 2216) }}">functional.py 2176-2216</a>, <a href="{{ src('torch/nn/functional.py', 2293, 2324) }}">2293-2324</a></td>
+      </tr>
+      <tr>
+        <td><code>nn.KLDivLoss</code></td>
+        <td>input log q (B, K), target p (B, K), reduction="mean", log_target=False</td>
+        <td>Σ p (log p − log q). Use reduction="batchmean" for the true KL per example.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 464, 564) }}">loss.py 464-564</a></td>
+      </tr>
+      <tr>
+        <td><code>F.kl_div</code></td>
+        <td>same, plus the "mean" warning</td>
+        <td>"batchmean" reduces with "sum", then divides by input.size(0).</td>
+        <td><a href="{{ src('torch/nn/functional.py', 3401, 3475) }}">functional.py 3401-3475</a>, <a href="{{ src('torch/nn/functional.py', 3456, 3475) }}">3456-3475</a></td>
+      </tr>
+      <tr>
+        <td><code>nn.CrossEntropyLoss</code></td>
+        <td>input logits (B, K), target class indices (B,) or probabilities (B, K), label_smoothing=0.0</td>
+        <td>The hard term, and with probability targets the soft term up to the constant H(p).</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 1200, 1407) }}">loss.py 1200-1407</a>, <a href="{{ src('torch/nn/modules/loss.py', 1336, 1344) }}">1336-1344</a></td>
+      </tr>
+      <tr>
+        <td><code>nn.MSELoss</code></td>
+        <td>input and target of the same shape</td>
+        <td>Logit matching (the T → ∞ limit) and FitNets-style hint losses on hidden features.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 567, 630) }}">loss.py 567-630</a></td>
+      </tr>
+      <tr>
+        <td><code>nn.CosineEmbeddingLoss</code></td>
+        <td>x1, x2 (B, D), y = ±1, margin=0</td>
+        <td>A direction-only alignment of student and teacher hidden states, as in DistilBERT's cosine term.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 1671, 1740) }}">loss.py 1671-1740</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>If the student is trained at T = 4, why does it use T = 1 at test time, and does that change its prediction?</summary>
+  <p>Temperature only rescales logits, so the argmax, and therefore the predicted class, is the same at every T. T = 1 is used because the cross-entropy term trains the student's ordinary softmax to give calibrated probabilities; T = 4 was only a lens for reading the teacher's small probabilities during training.</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>Softening the teacher.</strong> Teacher logits {{ v(e.teacher, 1) }} over ({{ e.classes|join(", ") }}), true class {{ e.classes[e.label] }}. Entropy in bits.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>T</th>{% for c in e.classes %}<th>p({{ c }})</th>{% endfor %}<th>Entropy</th></tr></thead>
+      <tbody>
+        {% for row in ex.softened %}
+        <tr><td>{{ row.temperature }}</td>{% for p in row.probs %}<td>{{ f(p, 4) }}</td>{% endfor %}<td>{{ f(row.entropy) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    At T = 1, "car" gets {{ f(ex.softened[0].probs[3], 4) }}: the teacher's view that this cat is {{ "%.0f"|format(ex.softened[0].probs[1] / ex.softened[0].probs[3]) }} times more dog than car is in the data, but a cross-entropy against these targets would barely feel it. At T = 4 the same ratio is spelled out as {{ f(ex.softened[2].probs[1], 3) }} against {{ f(ex.softened[2].probs[3], 3) }}.
+  </p>
+
+  <p>
+    <strong>One loss evaluation.</strong> A student with logits v = {{ v(e.student, 1) }}, T = {{ e.kd_temperature }}, α = {{ e.alpha }}. Logs are natural here.
+  </p>
+  <ul>
+    <li>q(1) = {{ v(l.q) }}, so the hard term is −ln {{ f(l.q[e.label], 4) }} = {{ f(l.hard, 4) }}.</li>
+    <li>q(T) = {{ v(l.q_t) }} against p(T) = {{ v(l.p_t) }}: KL = {{ f(l.soft, 4) }}, and T² · KL = {{ f(e.kd_temperature ** 2 * l.soft, 4) }}.</li>
+    <li>L = {{ e.alpha }} × {{ f(l.hard, 4) }} + {{ 1 - e.alpha }} × {{ f(e.kd_temperature ** 2 * l.soft, 4) }} = {{ f(l.loss, 4) }}.</li>
+    <li>Gradient of the hard term q(1) − y = {{ v(l.hard_gradient) }}; of the raw KL (q(T) − p(T))/T = {{ v(l.soft_gradient, 4) }}; of L, α(q − y) + (1 − α)T(q(T) − p(T)) = {{ v(l.gradient) }}.</li>
+  </ul>
+  <p>
+    The hard term only pushes "cat" up and every other class down in proportion to the student's own probabilities. The soft term pushes "car" down hardest, {{ f(l.soft_gradient[3], 4) }} versus {{ f(l.soft_gradient[1], 4) }} for "dog", because it is the one class the student rates far above what the teacher does.
+  </p>
+
+  <p>
+    <strong>The 1/T² decay.</strong> Same logits, centred to mean zero, soft term only. The approximation predicts T² · gradient → (v − z)/N = {{ v(ex.scaling.limit) }}.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>T</th><th>‖∂KL/∂v‖</th><th>T² · ∂KL/∂v</th></tr></thead>
+      <tbody>
+        {% for row in ex.scaling.rows %}
+        <tr><td>{{ row.temperature }}</td><td>{{ f(row.raw_norm, 5) }}</td><td>{{ v(row.scaled) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Each doubling of T divides the raw gradient by close to four ({{ f(ex.scaling.rows[-2].raw_norm / ex.scaling.rows[-1].raw_norm, 2) }} from T = {{ ex.scaling.rows[-2].temperature }} to {{ ex.scaling.rows[-1].temperature }}), while the scaled gradient settles towards logit matching.
+  </p>
+
+  <p>
+    <strong>Training a student.</strong> Three classes in 2-D, Gaussian with means {% for m in e.means %}{{ v(m, 1) }}{% if not loop.last %}, {% endif %}{% endfor %} and standard deviations {{ e.spreads|join(", ") }}, equally likely.
+    The teacher is the exact Bayes posterior, whose logits are quadratic in x because the spreads differ. The student is softmax regression, linear in x, so it cannot copy the teacher exactly.
+    Each student sees only {{ e.train }} labelled points and the teacher's logits on those same points, starts from zero and runs {{ e.steps }} full-batch gradient steps at learning rate {{ e.lr }}. Scores are on {{ e.test }} fresh points, averaged over seeds {{ e.seeds|join(", ") }}.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Model</th><th>Train NLL</th><th>Test NLL</th><th>Test accuracy</th><th>Agrees with teacher</th><th>KL(teacher ‖ model)</th></tr></thead>
+      <tbody>
+        <tr><td>teacher (Bayes posterior)</td><td>–</td><td>{{ f(s.teacher.nll) }}</td><td>{{ pct(s.teacher.accuracy) }}</td><td>{{ pct(s.teacher.agreement) }}</td><td>{{ f(s.teacher.kl) }}</td></tr>
+        {% for st in s.students %}
+        <tr>
+          <td>{% if st.alpha == 1 %}hard labels only{% else %}α = {{ st.alpha }}, T = {{ st.temperature }}{% endif %}</td>
+          <td>{{ f(st.train_nll) }}</td><td>{{ f(st.nll) }}</td><td>{{ pct(st.accuracy) }}</td><td>{{ pct(st.agreement) }}</td><td>{{ f(st.kl) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% set hard = s.students[0] %}{% set soft = s.students[1] %}{% set hot = s.students[3] %}
+  <p>
+    On labels alone the student fits its fifteen points well (train NLL {{ f(hard.train_nll) }}) and generalizes badly (test NLL {{ f(hard.nll) }}): nothing stops its weights growing until it is overconfident.
+    Pure soft targets at T = 1 give test NLL {{ f(soft.nll) }} and accuracy {{ pct(soft.accuracy) }} against {{ pct(hard.accuracy) }}, from the same inputs, because each point now says how much it belongs to every class.
+    Not every setting helps equally: here T = 4 does worse than T = 1 (KL to the teacher {{ f(hot.kl) }} against {{ f(soft.kl) }}). High T approaches logit matching, and a linear student matching quadratic logits everywhere spends its capacity on the scores of classes that do not affect predictions.
+    T and α are hyperparameters to tune, not constants. Per seed:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Seed</th><th>Class counts</th>{% for st in s.students %}<th>{% if st.alpha == 1 %}hard{% else %}α {{ st.alpha }}, T {{ st.temperature }}{% endif %} test NLL</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for run in ex.runs %}
+        <tr><td>{{ run.seed }}</td><td>{{ run.counts|join(" / ") }}</td>{% for st in run.students %}<td>{{ f(st.nll) }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+import torch.nn.functional as F
+
+def distillation_loss(student_logits, teacher_logits, labels, T=4.0, alpha=0.5):
+    hard = F.cross_entropy(student_logits, labels)
+    soft = F.kl_div(
+        F.log_softmax(student_logits / T, dim=-1),
+        F.log_softmax(teacher_logits / T, dim=-1),
+        reduction="batchmean",          # "mean" would also divide by the class count
+        log_target=True,
+    )
+    return alpha * hard + (1 - alpha) * T * T * soft
+
+teacher.eval()
+for x, y in loader:
+    with torch.no_grad():               # the teacher is never updated
+        teacher_logits = teacher(x)
+    loss = distillation_loss(student(x), teacher_logits, y)
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+# Token-level distillation for a language model: flatten (batch, seq, vocab)
+# to (batch * seq, vocab) and drop padded positions before calling the same loss.</code></pre>
+
+<p>
+  This is the formula the worked example evaluates in plain Python. Passing log-probabilities with <code>log_target=True</code> avoids taking the log of a teacher probability that underflowed to zero.
+  When the teacher is expensive, its logits are often computed once and stored; for large vocabularies only the top few per position are kept, which truncates the soft target and should be renormalized.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Teacher cost.</strong> Every training example needs a teacher forward pass, either online or precomputed and stored. Precomputed logits fix any data augmentation in place; online teachers cost compute at every step.</li>
+  <li><strong>Temperature and α.</strong> Low T ignores dark knowledge, high T approaches logit matching and asks the student to reproduce scores that do not affect predictions. The worked example's best setting was the lowest T; on other problems it differs.</li>
+  <li><strong>Fidelity is not accuracy.</strong> Stanton et al. find that students often fail to match their teachers' predictive distributions even when they have the capacity to, largely because of optimization, and that closer matching does not always improve the student's generalization.</li>
+  <li><strong>The transfer set.</strong> Soft targets can label unlabeled or synthetic inputs, as Bucilă et al. did by generating extra points; the student only learns the teacher's function where the transfer set has inputs.</li>
+  <li><strong>Labels still matter.</strong> The hard term corrects the teacher where it is wrong; with α = 0 the student inherits every teacher mistake and bias.</li>
+  <li><strong>Language models.</strong> Token-level KD needs a shared tokenizer and full (or top-k) distributions; sequence-level KD needs only generated text but transfers less per example; on-policy methods cost a student sampling step and a teacher scoring pass per update.</li>
+  <li><strong>Alternatives.</strong> <a href="/ml-models/quantization">Quantization</a> and pruning shrink the same model instead of training a new one, and they combine with distillation.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>A student is trained only with the soft term at T = 1. Is that the same as training on the teacher's predicted labels?</summary>
+  <p>No. The teacher's argmax gives each example one class, like any other label. The soft term keeps the full distribution. In the worked example the T = 1 soft student reaches test NLL {{ f(soft.nll) }} from the same fifteen inputs where labels gave {{ f(hard.nll) }}.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Bucilă, Caruana and Niculescu-Mizil. <em>Model Compression.</em> KDD 2006.</li>
+  <li>Ba and Caruana. <em>Do Deep Nets Really Need to be Deep?</em> NIPS 2014. <a href="https://arxiv.org/abs/1312.6184">arXiv:1312.6184</a></li>
+  <li>Hinton, Vinyals and Dean. <em>Distilling the Knowledge in a Neural Network.</em> NIPS 2014 Deep Learning Workshop. <a href="https://arxiv.org/abs/1503.02531">arXiv:1503.02531</a></li>
+  <li>Romero, Ballas, Kahou, Chassang, Gatta and Bengio. <em>FitNets: Hints for Thin Deep Nets.</em> ICLR 2015. <a href="https://arxiv.org/abs/1412.6550">arXiv:1412.6550</a></li>
+  <li>Kim and Rush. <em>Sequence-Level Knowledge Distillation.</em> EMNLP 2016. <a href="https://arxiv.org/abs/1606.07947">arXiv:1606.07947</a></li>
+  <li>Sanh, Debut, Chaumond and Wolf. <em>DistilBERT, a distilled version of BERT: smaller, faster, cheaper and lighter.</em> 2019. <a href="https://arxiv.org/abs/1910.01108">arXiv:1910.01108</a></li>
+  <li>Stanton, Izmailov, Kirichenko, Alemi and Wilson. <em>Does Knowledge Distillation Really Work?</em> NeurIPS 2021. <a href="https://arxiv.org/abs/2106.05945">arXiv:2106.05945</a></li>
+  <li>Gu, Dong, Wei and Huang. <em>MiniLLM: Knowledge Distillation of Large Language Models.</em> 2023 (later versions retitled <em>MiniLLM: On-Policy Distillation of Large Language Models</em>). <a href="https://arxiv.org/abs/2306.08543">arXiv:2306.08543</a></li>
+  <li>Agarwal, Vieillard, Zhou, Stanczyk, Ramos, Geist and Bachem. <em>On-Policy Distillation of Language Models: Learning from Self-Generated Mistakes.</em> ICLR 2024. <a href="https://arxiv.org/abs/2306.13649">arXiv:2306.13649</a></li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/nn/modules/loss.py') }}"><code>torch/nn/modules/loss.py</code></a>, <a href="{{ src('torch/nn/functional.py') }}"><code>torch/nn/functional.py</code></a>.</li>
+</ul>
