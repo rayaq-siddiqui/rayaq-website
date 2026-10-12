@@ -7043,6 +7043,104 @@ def tree_correlation(max_features, bootstrap=True, random_thresholds=False, n_se
     return {"sigma2": sigma2, "rho": between / total, "within": within / n_points, "between": between / n_points}
 
 
+def init_gain(nonlinearity, param=None):
+    if nonlinearity in ("linear", "sigmoid"):
+        return 1.0
+    if nonlinearity == "tanh":
+        return 5.0 / 3
+    if nonlinearity == "relu":
+        return math.sqrt(2.0)
+    if nonlinearity == "leaky_relu":
+        slope = 0.01 if param is None else param
+        return math.sqrt(2.0 / (1 + slope ** 2))
+    if nonlinearity == "selu":
+        return 3.0 / 4
+    raise ValueError(nonlinearity)
+
+
+def fan_in_and_fan_out(shape):
+    receptive = 1
+    for s in shape[2:]:
+        receptive *= s
+    return shape[1] * receptive, shape[0] * receptive
+
+
+def xavier_std(fan_in, fan_out, gain=1.0):
+    return gain * math.sqrt(2.0 / (fan_in + fan_out))
+
+
+def kaiming_std(fan, nonlinearity="leaky_relu", a=0):
+    return init_gain(nonlinearity, a) / math.sqrt(fan)
+
+
+def uniform_bound(std):
+    return math.sqrt(3.0) * std
+
+
+def linear_default_bound(fan_in):
+    return uniform_bound(kaiming_std(fan_in, "leaky_relu", math.sqrt(5)))
+
+
+def relu_moment_factor(fan_in, weight_var):
+    return fan_in * weight_var / 2
+
+
+INIT_SCHEMES = [
+    {"key": "small", "label": "N(0, 0.01²)", "activation": "relu", "dist": "normal", "std": lambda n: 0.01},
+    {"key": "pytorch", "label": "nn.Linear default, U(±1/√n)", "activation": "relu", "dist": "uniform", "std": lambda n: linear_default_bound(n) / math.sqrt(3.0)},
+    {"key": "xavier", "label": "Xavier, gain 1", "activation": "relu", "dist": "normal", "std": lambda n: xavier_std(n, n)},
+    {"key": "kaiming", "label": "Kaiming, ReLU", "activation": "relu", "dist": "normal", "std": lambda n: kaiming_std(n, "relu")},
+    {"key": "large", "label": "N(0, 1)", "activation": "relu", "dist": "normal", "std": lambda n: 1.0},
+    {"key": "tanh-xavier", "label": "tanh, Xavier gain 1", "activation": "tanh", "dist": "normal", "std": lambda n: xavier_std(n, n)},
+    {"key": "tanh-gain", "label": "tanh, gain 5/3", "activation": "tanh", "dist": "normal", "std": lambda n: xavier_std(n, n, 5.0 / 3)},
+]
+
+
+def _rms(rows):
+    total = sum(v * v for row in rows for v in row)
+    return math.sqrt(total / sum(len(row) for row in rows))
+
+
+def deep_signal(scheme, width=32, depth=20, batch=16, seed=0):
+    rng = random.Random(seed)
+    std = scheme["std"](width)
+    bound = math.sqrt(3.0) * std
+
+    def draw():
+        return rng.uniform(-bound, bound) if scheme["dist"] == "uniform" else rng.gauss(0.0, std)
+
+    weights = [[[draw() for _ in range(width)] for _ in range(width)] for _ in range(depth)]
+    tanh = scheme["activation"] == "tanh"
+    h = [[rng.gauss(0.0, 1.0) for _ in range(width)] for _ in range(batch)]
+    forward = [_rms(h)]
+    slopes = []
+    for w in weights:
+        z = [[sum(wi * xi for wi, xi in zip(row, x)) for row in w] for x in h]
+        if tanh:
+            h = [[math.tanh(v) for v in r] for r in z]
+            slopes.append([[1 - math.tanh(v) ** 2 for v in r] for r in z])
+        else:
+            h = [[v if v > 0 else 0.0 for v in r] for r in z]
+            slopes.append([[1.0 if v > 0 else 0.0 for v in r] for r in z])
+        forward.append(_rms(h))
+    g = [[rng.gauss(0.0, 1.0) for _ in range(width)] for _ in range(batch)]
+    backward = [_rms(g)]
+    for w, slope in zip(reversed(weights), reversed(slopes)):
+        dz = [[gi * si for gi, si in zip(gr, sr)] for gr, sr in zip(g, slope)]
+        g = [[sum(w[i][j] * d[i] for i in range(width)) for j in range(width)] for d in dz]
+        backward.append(_rms(g))
+    backward.reverse()
+    return {"std": std, "forward": forward, "backward": backward}
+
+
+def init_example(width=32, depth=20):
+    return {
+        "width": width,
+        "depth": depth,
+        "schemes": [dict(s, result=deep_signal(s, width, depth)) for s in INIT_SCHEMES],
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -7553,6 +7651,13 @@ def render(slug, render_template):
         "forest_features": FOREST_FEATURES,
         "averaged_variance": averaged_variance,
         "bootstrap_oob_fraction": bootstrap_oob_fraction,
+        "init_example": init_example,
+        "init_gain": init_gain,
+        "xavier_std": xavier_std,
+        "kaiming_std": kaiming_std,
+        "uniform_bound": uniform_bound,
+        "linear_default_bound": linear_default_bound,
+        "relu_moment_factor": relu_moment_factor,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

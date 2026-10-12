@@ -3095,3 +3095,31 @@ def test_feature_subsampling_lowers_tree_correlation():
     assert ml_models_docs.averaged_variance(forest["rho"], forest["sigma2"], 100) < ml_models_docs.averaged_variance(
         bagged["rho"], bagged["sigma2"], 100
     )
+
+
+def test_init_gains_and_fans_match_pytorch():
+    assert ml_models_docs.init_gain("relu") == math.sqrt(2.0)
+    assert ml_models_docs.init_gain("tanh") == 5.0 / 3
+    assert ml_models_docs.init_gain("leaky_relu") == math.sqrt(2.0 / (1 + 0.01 ** 2))
+    assert ml_models_docs.fan_in_and_fan_out((30, 20)) == (20, 30)
+    assert ml_models_docs.fan_in_and_fan_out((16, 3, 5, 5)) == (75, 400)
+    assert math.isclose(ml_models_docs.uniform_bound(ml_models_docs.xavier_std(20, 30)), math.sqrt(6 / 50))
+
+
+def test_linear_default_init_is_uniform_one_over_sqrt_fan_in():
+    for fan_in in (1, 20, 64, 4096):
+        assert math.isclose(ml_models_docs.linear_default_bound(fan_in), 1 / math.sqrt(fan_in))
+    var = ml_models_docs.linear_default_bound(64) ** 2 / 3
+    assert math.isclose(ml_models_docs.relu_moment_factor(64, var), 1 / 6)
+    assert math.isclose(ml_models_docs.relu_moment_factor(64, ml_models_docs.kaiming_std(64, "relu") ** 2), 1.0)
+
+
+def test_kaiming_keeps_a_deep_relu_net_in_range_while_others_vanish_or_explode():
+    results = {s["key"]: s["result"] for s in ml_models_docs.init_example()["schemes"]}
+    last = {k: r["forward"][-1] for k, r in results.items()}
+    assert 0.2 < last["kaiming"] < 5
+    assert last["small"] < 1e-20 < 1e8 < last["large"]
+    assert last["pytorch"] < last["xavier"] < 1e-2
+    assert 0.2 < results["kaiming"]["backward"][0] < 5
+    assert results["small"]["backward"][0] < 1e-20
+    assert 0.2 < last["tanh-gain"] < 2 and last["tanh-xavier"] < last["tanh-gain"]
