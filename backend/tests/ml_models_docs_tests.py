@@ -2989,3 +2989,56 @@ def test_naive_bayes_matches_the_multinomial_formula_and_smoothing_avoids_zeros(
     assert raw["ham"]["joint_log"] == -math.inf
     assert raw["spam"]["posterior"] == 1.0
     assert ml_models_docs.naive_bayes_posterior(alpha=0.0)["spam"]["posterior"] is None
+
+
+def test_balanced_class_weights_match_the_sklearn_formula_and_equalize_class_totals():
+    assert ml_models_docs.balanced_class_weights([2, 4]) == pytest.approx([1.5, 0.75])
+    paradox = ml_models_docs.accuracy_paradox()
+    assert paradox["accuracy"] == pytest.approx(0.99)
+    assert paradox["recall"] == 0.0
+    assert paradox["balanced_accuracy"] == pytest.approx(0.5)
+    assert paradox["weights"] == pytest.approx([1000 / 1980, 50.0])
+    assert paradox["weighted_totals"] == pytest.approx([500.0, 500.0])
+    assert paradox["pos_weight"] == pytest.approx(99.0)
+    assert paradox["sampler_positive_share"] == pytest.approx(0.5)
+    assert ml_models_docs.balanced_accuracy(1, 1, 1, 3) == pytest.approx(0.625)
+
+
+def test_class_weights_oversampling_and_threshold_moving_agree_on_the_toy_data():
+    example = ml_models_docs.imbalance_example()
+    assert len(example["xs"]) == 200 and sum(example["ys"]) == 20
+    plain, weighted = example["plain"], example["weighted"]
+    assert example["oversampled"]["w"] == pytest.approx(weighted["w"])
+    assert example["oversampled"]["b"] == pytest.approx(weighted["b"])
+    assert weighted["recall"] > plain["recall"]
+    assert weighted["precision"] < plain["precision"]
+    assert plain["accuracy"] > weighted["accuracy"]
+    assert plain["balanced_accuracy"] < weighted["balanced_accuracy"]
+    assert example["intercept_shift"] == pytest.approx(example["log_weight_ratio"], abs=0.02)
+    assert example["moved"]["cut"] == pytest.approx(weighted["cut"], abs=0.02)
+    assert example["kept_negatives"] == 20
+    assert example["probe_corrected"] == pytest.approx(example["probe_plain"], abs=0.01)
+    for name in ("plain", "weighted", "undersampled", "moved"):
+        report = example[name]
+        assert sum(report["counts"]) == 200
+        assert ml_models_docs.sigmoid(report["w"] * report["cut"] + report["b"]) == pytest.approx(report["threshold"])
+
+
+def test_undersampling_correction_inverts_the_odds_change():
+    p, beta = 0.1, 0.25
+    odds = p / (1 - p)
+    p_sampled = (odds / beta) / (1 + odds / beta)
+    assert ml_models_docs.undersample_correction(p_sampled, beta) == pytest.approx(p)
+    assert ml_models_docs.undersample_correction(0.3, 1.0) == pytest.approx(0.3)
+
+
+def test_focal_loss_reduces_to_cross_entropy_and_downweights_easy_examples():
+    assert ml_models_docs.focal_loss(0.3, gamma=0.0) == pytest.approx(-math.log(0.3))
+    assert ml_models_docs.focal_loss(0.9, gamma=2.0) == pytest.approx(0.01 * -math.log(0.9))
+    assert ml_models_docs.focal_loss(0.9, gamma=2.0, alpha_t=0.25) == pytest.approx(0.0025 * -math.log(0.9))
+    rows = ml_models_docs.focal_table()
+    for row in rows:
+        assert row["ratios"][0] == pytest.approx(1.0)
+        assert row["losses"] == sorted(row["losses"], reverse=True)
+    easy, hard = rows[-1], rows[0]
+    assert easy["ratios"][3] < hard["ratios"][3]

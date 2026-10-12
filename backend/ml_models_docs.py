@@ -2,6 +2,7 @@ import itertools
 import math
 import random
 import re
+import statistics
 import struct
 
 PINS = {
@@ -6698,6 +6699,135 @@ def naive_bayes_posterior(message=NB_MESSAGE, alpha=1.0, counts=None, documents=
     return rows
 
 
+IMBALANCE_POPULATION = {"negatives": 990, "positives": 10}
+IMBALANCE_DATA = {"negatives": 180, "positives": 20, "negative_mean": 0.0, "positive_mean": 2.0, "keep_every": 9}
+
+
+def balanced_class_weights(counts):
+    total = sum(counts)
+    return [total / (len(counts) * count) for count in counts]
+
+
+def balanced_accuracy(tp, fp, fn, tn):
+    return (tp / (tp + fn) + tn / (tn + fp)) / 2
+
+
+def accuracy_paradox(population=IMBALANCE_POPULATION):
+    negatives, positives = population["negatives"], population["positives"]
+    tp, fp, fn, tn = 0, 0, positives, negatives
+    weights = balanced_class_weights([negatives, positives])
+    return {
+        "accuracy": (tp + tn) / (negatives + positives),
+        "recall": tp / (tp + fn),
+        "balanced_accuracy": balanced_accuracy(tp, fp, fn, tn),
+        "weights": weights,
+        "weighted_totals": [weights[0] * negatives, weights[1] * positives],
+        "pos_weight": negatives / positives,
+        "sampler_positive_share": (positives * (1 / positives)) / (positives * (1 / positives) + negatives * (1 / negatives)),
+    }
+
+
+def imbalance_data(spec=IMBALANCE_DATA):
+    unit = statistics.NormalDist()
+    def quantiles(n, mean):
+        return [mean + unit.inv_cdf((i + 0.5) / n) for i in range(n)]
+    xs = quantiles(spec["negatives"], spec["negative_mean"]) + quantiles(spec["positives"], spec["positive_mean"])
+    ys = [0] * spec["negatives"] + [1] * spec["positives"]
+    return xs, ys
+
+
+def weighted_logistic_1d(xs, ys, weights=None, iterations=30):
+    weights = weights or [1.0] * len(xs)
+    w, b = 0.0, 0.0
+    for _ in range(iterations):
+        probs = [sigmoid(w * x + b) for x in xs]
+        g = [sum(s * (p - t) * x for s, p, t, x in zip(weights, probs, ys, xs)),
+             sum(s * (p - t) for s, p, t in zip(weights, probs, ys))]
+        h = [[sum(s * p * (1 - p) * x * x for s, p, x in zip(weights, probs, xs)),
+              sum(s * p * (1 - p) * x for s, p, x in zip(weights, probs, xs))],
+             [sum(s * p * (1 - p) * x for s, p, x in zip(weights, probs, xs)),
+              sum(s * p * (1 - p) for s, p in zip(weights, probs))]]
+        dw, db = solve_linear(h, g)
+        w, b = w - dw, b - db
+    return w, b
+
+
+def _threshold_report(xs, ys, w, b, threshold):
+    scores = [sigmoid(w * x + b) for x in xs]
+    tp, fp, fn, tn = confusion_counts(ys, scores, threshold)
+    precision, recall, f1 = precision_recall_f1(tp, fp, fn)
+    return {
+        "w": w,
+        "b": b,
+        "threshold": threshold,
+        "cut": (math.log(threshold / (1 - threshold)) - b) / w,
+        "counts": (tp, fp, fn, tn),
+        "accuracy": (tp + tn) / len(ys),
+        "balanced_accuracy": balanced_accuracy(tp, fp, fn, tn),
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+    }
+
+
+def undersample_correction(p, kept_fraction):
+    return kept_fraction * p / (kept_fraction * p - p + 1)
+
+
+def imbalance_example(spec=IMBALANCE_DATA):
+    xs, ys = imbalance_data(spec)
+    negatives, positives = spec["negatives"], spec["positives"]
+    weights = balanced_class_weights([negatives, positives])
+    sample_weights = [weights[y] for y in ys]
+    plain = weighted_logistic_1d(xs, ys)
+    weighted = weighted_logistic_1d(xs, ys, sample_weights)
+    oversampled_xs = xs + [x for x, y in zip(xs, ys) if y == 1] * (negatives // positives - 1)
+    oversampled_ys = ys + [1] * (positives * (negatives // positives - 1))
+    oversampled = weighted_logistic_1d(oversampled_xs, oversampled_ys)
+    keep = spec["keep_every"]
+    under_xs = [x for i, x in enumerate(xs[:negatives]) if i % keep == keep // 2] + xs[negatives:]
+    under_ys = [0] * (len(under_xs) - positives) + [1] * positives
+    under = weighted_logistic_1d(under_xs, under_ys)
+    prior = positives / (negatives + positives)
+    kept_fraction = (len(under_xs) - positives) / negatives
+    probe = spec["positive_mean"] / 2
+    under_p = sigmoid(under[0] * probe + under[1])
+    return {
+        "xs": xs,
+        "ys": ys,
+        "weights": weights,
+        "plain": _threshold_report(xs, ys, *plain, 0.5),
+        "weighted": _threshold_report(xs, ys, *weighted, 0.5),
+        "oversampled": _threshold_report(xs, ys, *oversampled, 0.5),
+        "undersampled": _threshold_report(xs, ys, *under, 0.5),
+        "moved": _threshold_report(xs, ys, *plain, prior),
+        "prior": prior,
+        "intercept_shift": weighted[1] - plain[1],
+        "log_weight_ratio": math.log(weights[1] / weights[0]),
+        "average_precision": average_precision(ys, [sigmoid(plain[0] * x + plain[1]) for x in xs]),
+        "kept_negatives": len(under_xs) - positives,
+        "kept_fraction": kept_fraction,
+        "probe": probe,
+        "probe_plain": sigmoid(plain[0] * probe + plain[1]),
+        "probe_under": under_p,
+        "probe_corrected": undersample_correction(under_p, kept_fraction),
+    }
+
+
+FOCAL_PROBS = [0.1, 0.3, 0.5, 0.7, 0.9, 0.99]
+
+
+def focal_loss(p_t, gamma=2.0, alpha_t=1.0):
+    return -alpha_t * (1 - p_t) ** gamma * math.log(p_t)
+
+
+def focal_table(probs=FOCAL_PROBS, gammas=(0.0, 0.5, 1.0, 2.0, 5.0)):
+    return [
+        {"p": p, "losses": [focal_loss(p, g) for g in gammas], "ratios": [focal_loss(p, g) / focal_loss(p, 0.0) for g in gammas]}
+        for p in probs
+    ]
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -7198,6 +7328,10 @@ def render(slug, render_template):
         "nb_word_counts": NB_WORD_COUNTS,
         "nb_message": NB_MESSAGE,
         "naive_bayes_posterior": naive_bayes_posterior,
+        "accuracy_paradox": accuracy_paradox,
+        "imbalance_example": imbalance_example,
+        "focal_table": focal_table,
+        "focal_loss": focal_loss,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
