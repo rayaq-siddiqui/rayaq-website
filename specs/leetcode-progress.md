@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-12 (audit run). All 58 pages are ready and the queue is empty. This audit found and fixed one gap (textbook references), so the Routine stays on its 5-hour schedule. **The next run is another audit run** (spec §8.1): it fixes one gap, and if none remain it records "complete" and moves this Routine to weekly audits.
+**Last updated:** 2026-10-12 (second audit run). All 58 pages are ready and the queue is empty. This audit found and fixed one gap (worked-example step tables), so the Routine stays on its 5-hour schedule. **The next run is another audit run** (spec §8.1): it fixes one gap, and if none remain it records "complete" and moves this Routine to weekly audits.
 
 ## The Routine
 
@@ -145,6 +145,9 @@ build once research is done.
   references. Spec §6's textbook list (CLRS, Skiena, Sedgewick & Wayne) is read as all three per
   page, and `test_ready_page_follows_the_format` now enforces it. Sedgewick & Wayne section
   numbers were checked against the `Section x.y` headers in the algs4 sources on GitHub.
+- **Worked-example tables (2026-10-12).** Spec §6's "traced step by step in a table" is read as
+  an HTML `<table>` inside the `worked-example` section; an SVG drawn as a grid elsewhere on the
+  page does not count. `test_ready_page_follows_the_format` now enforces it.
 
 ## Known gaps and questions for the owner
 
@@ -361,3 +364,17 @@ and 3–4 quiz questions on every ready page. No content or helpers changed. Cov
 100% (Blind 75 75/75, Grind 169 169/169, NeetCode 150 150/150, NeetCode 250 250/250). pytest green
 (653 passed); the phone check passed on `/`, `/leetcode` and every ready page. Because this run found a
 gap, the schedule stays at every 5 hours. Next: another audit run.
+
+### 2026-10-12 — audit run (second)
+
+Second audit run. Checked every ready page's sections against spec §6 beyond what the format test
+covered. One gap: fourteen pages (`bellman-ford`, `minimum-spanning-trees`, `eulerian-paths`,
+`dp-fundamentals`, `linear-dp`, `knapsack-dp`, `longest-increasing-subsequence`, `palindrome-dp`,
+`grid-dp`, `string-dp`, `interval-dp`, `state-machine-dp`, `greedy`, `kadanes-algorithm`) traced
+their worked example only in prose and in an SVG under Mechanics, with no table in the Worked
+example section; the `bellman-ford` prose even referred to a table that was missing. Each now has
+a step table bound to its existing tested helper's output, and the format test requires one on
+every ready page. No helpers changed. Coverage is unchanged at 100% (Blind 75 75/75, Grind 169
+169/169, NeetCode 150 150/150, NeetCode 250 250/250). pytest green (664 passed); every ready page
+returns 200 and the phone check passed on `/`, `/leetcode` and every ready page. Because this run
+found a gap, the schedule stays at every 5 hours. Next: another audit run.
