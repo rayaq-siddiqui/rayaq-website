@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-12 (thirty-first run). Spec v2 widens the section from model
+**Last updated:** 2026-10-12 (thirty-second run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-57, the last being `vector-indexes`. The
-next page is `distillation` (queue item 58).
+fixed page format. Ready pages: queue items 1-60, the last being `regression-metrics`. The
+next page is `support-vector-machines` (queue item 61).
 
 ## Pins
 
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (54 of 93 ready, all
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (60 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -103,33 +103,19 @@ file); this list keeps only what queued pages still need.
 - `torch/nn/modules/module.py`: `class Module` 407; `register_buffer` 528.
 - Mixed precision, quantization, GPU execution and initialization: ranges live in their
   templates.
-- Similarity search: `distance.py` `PairwiseDistance` 10-61, `CosineSimilarity` 64-100;
-  `torch/nn/functional.py` `pairwise_distance` 5858-5865, `cosine_similarity` 5895-5924,
-  `normalize` 6096-6130; `torch/functional.py` `cdist` 1483-1541.
 
 ### scikit-learn 1.9.1 (start lines; check the end before linking a range)
 
 Paths are under `sklearn/`.
 
-- Linear models (`linear_model/`), used by the regression, classifier and regularization pages:
-  ranges live in those templates.
+- Linear models, `neighbors/`, `cluster/`, similarity search,
+  `metrics/_regression.py` and `impute/`: ranges live in the templates that use them.
 - `tree/_classes.py`: `DecisionTreeClassifier` 699, `DecisionTreeRegressor` 1097.
 - `ensemble/_forest.py`, `_bagging.py`, `inspection/_permutation_importance.py`,
   `tree/_splitter.pyx`: ranges live in the `random-forests` template.
 - `ensemble/_gb.py`: `GradientBoostingClassifier` 1145.
 - `ensemble/_hist_gradient_boosting/gradient_boosting.py`: `HistGradientBoostingClassifier` 1762.
 - `svm/_classes.py`: `SVC` 623.
-- `neighbors/`: all ranges live in the `nearest-neighbors` template.
-- Similarity search: `metrics/pairwise.py` `euclidean_distances` 268-373,
-  `_euclidean_distances` 376-427, `cosine_similarity` 1703-1758; `preprocessing/_data.py`
-  `normalize` 1978-2089; `feature_extraction/text.py` `TfidfTransformer` 1506, idf in `fit`
-  1675-1695.
-- `cluster/_kmeans.py`: `_kmeans_plusplus` 180-283, `_labels_inertia` 761-832,
-  `KMeans.predict` 1071-1104, `KMeans` 1191-1561 (`fit` 1432-1561), `MiniBatchKMeans`
-  1680-2320 (end of file). DBSCAN, GaussianMixture and metrics ranges live in the
-  `clustering` template.
-- `neighbors/_unsupervised.py` `NearestNeighbors` 10-179; `neighbors/_base.py` `kneighbors`
-  756-959.
 - `decomposition/_pca.py`: `PCA` 113.
 - `model_selection/_split.py`: `KFold` 437, `GroupKFold` 533, `StratifiedKFold` 687,
   `TimeSeriesSplit` 1116, `train_test_split` 2797.
@@ -137,7 +123,6 @@ Paths are under `sklearn/`.
   `learning_curve` 1776, `validation_curve` 2283.
 - `preprocessing/_data.py`: `StandardScaler` 742 (verified range 742-1189), `MinMaxScaler` 305, `RobustScaler` 1552.
 - `preprocessing/_encoders.py`: `OneHotEncoder` 474, `OrdinalEncoder` 1263.
-- `impute/`: ranges live in the `missing-data` template.
 - `pipeline.py`: `Pipeline` 93.
 - `calibration.py`: `CalibratedClassifierCV` 74, `calibration_curve` 1227.
 - `metrics/_ranking.py`: `roc_auc_score` 511, `precision_recall_curve` 1059.
@@ -160,14 +145,14 @@ Paths are under `sklearn/`.
 - `transformer` uses the v1 section layout and is exempt from the §6 order test until its
   retrofit (queue item 18).
 
-## First to thirtieth runs (2026-10-08 to 2026-10-12) — condensed
+## First to thirty-first runs (2026-10-08 to 2026-10-12) — condensed
 
 Runs 1-3 wrote the spec (v1, then v2), the registry, `LEARNING_PATH`, the §6 and queue tests,
 `check_mobile.js` and the Routine. Every run since adds, per page, a tested-helpers commit, a
 page commit (page, `ready`, queue ✓) and usually a `docs:` commit; items 1-51 were built in
 queue order (run 28: quantization, reinforcement-learning, bayes-rule; run 29:
 class-imbalance, random-forests, initialization; run 30: rnns-and-lstms, autoencoders,
-variational-autoencoders). `6f0803f` fixed 13 templates that read a
+variational-autoencoders; run 31: positional-encoding, clustering, vector-indexes). `6f0803f` fixed 13 templates that read a
 missing `pins.X.version` key. Pins never moved. The ranges each page links live in its template
 (grep `src(`, `skl(`, `xgb(`); `git log -p` on this file has every old commit table and range list.
 
@@ -181,6 +166,7 @@ Findings worth keeping (details in each page and in `git log -p` on this file):
 - Use the one-sided Jacobi SVD (eigenvalues of AᵀA squared the condition number).
 - A linear autoencoder's encoder·decoder product matches PCA's projection uuᵀ; only
   `Normal.rsample` carries gradients (`sample` runs under `no_grad`).
+- The vector-index example is `lru_cache`d (about 1.7 s); PQ re-ranking only helps when R > k.
 - `.jj-diagram svg text { fill: var(--jj-text) }` beats an SVG `fill=` attribute, so coloured
   diagram text must use `style="fill: ..."`.
 
@@ -196,37 +182,45 @@ Open gaps from these runs:
   and `Lasso` were inferred.
 - `kv-cache` (quantization), `reinforcement-learning` (preference optimization) and
   `class-imbalance` (calibration) name those pages in plain text until they are ready.
+- No pin implements IVF, PQ or HNSW; those follow the papers. `pca` appears as plain text on
+  `clustering` until it is ready.
 - Page commits exceed 400 lines because each template is one file.
 
-## Thirty-first run (2026-10-12) — positional-encoding, clustering, vector-indexes
+## Thirty-second run (2026-10-12) — distillation, time-series, regression-metrics
 
 | Commit | What |
 |---|---|
-| `31314b5` `ml-models: add tested positional encoding helpers` | Sinusoidal encoding and its shift rotation, RoPE pair by pair with offset-only scores, ALiBi slopes and biases, learned-table size, with tests |
-| `c42adca` `ml-models: add the positional encoding page` | The page, the transformer link, `ready`, queue ✓ |
-| `e1c1ebe` `ml-models: add tested clustering helpers` | Lloyd's algorithm, k-means++, silhouette, DBSCAN as sklearn labels it, 2-D Gaussian mixture EM with BIC, adjusted Rand index, with tests |
-| `ba25dc9` `ml-models: add the clustering page` | The page, `ln_n` for the BIC text, `ready`, queue ✓ |
-| `9967d96` `ml-models: add tested vector index helpers` | IVF, PQ with ADC and re-ranking, HNSW with the selection heuristic, recall@k and a memory model on 800 clustered 16-d vectors, with tests |
-| `902218c` `ml-models: add the vector indexes page` | The page, clustering links to it, `ready`, queue ✓ |
+| `f4e0baf` `ml-models: add distillation helpers and tests` | Temperature softmax, the hard plus T²-scaled soft loss and its gradient, the 1/T² decay and logit-matching limit, a students-from-labels-or-soft-targets demo, with tests |
+| `32c52d8` `ml-models: build the knowledge distillation page` | The page, `ready`, queue ✓ |
+| `4d4f637` `ml-models: add time series helpers and tests` | Seeded trend + season + AR(1) series, classical decomposition, ACF, a `TimeSeriesSplit` mirror (gap, max_train_size, both errors), four forecasters with MAE/RMSE/MASE, a shuffled-K-fold leakage demo, with tests |
+| `13fa4ed` `ml-models: build the time series page` | The page, `ready`, queue ✓ |
+| `5fe505a` `ml-models: add regression metrics helpers and tests` | `regression_scores` (sklearn `force_finite` semantics), `pinball_loss`, best constants by grid search, five-model example, with tests |
+| `fc6caf3` `ml-models: build the regression metrics page` | The page, `pinball_loss` in the render context, `ready`, queue ✓ |
+
+Ranges verified this run (scikit-learn `metrics/_regression.py`, `TimeSeriesSplit`, PyTorch
+`KLDivLoss` and `HuberLoss`) are linked from the three templates.
 
 Findings worth keeping:
 
-- The vector-index example is cached with `lru_cache` (about 1.7 s); the O(n·k²) k-means++
-  seeding was rewritten incrementally and distances use `math.dist`.
-- PQ re-ranking only helps when R > k: re-ranking the top 10 for k = 10 changes nothing.
-- On the example, HNSW at ef = 20 reaches recall 0.98 at about the same cost as IVF at
-  nprobe = 4 (0.915); probing all IVF lists costs more than brute force.
+- On the time-series example, trend + Fourier wins (MASE 0.73) over lag-12 (1.05), seasonal
+  naive (1.87) and naive (2.36); shuffled K-fold scores a 1-NN-in-time model 3.53 against
+  8.21 on ordered splits.
+- On the regression example the spiky model wins MAE (2.00 vs 2.92) and loses RMSE (5.79 vs
+  3.01); the constant median scores R² −0.142; halving the target spread with the same
+  errors drops R² from 0.936 to 0.746; MAPE's best constant (17) sits below the median (19).
+- Jinja: a context dict key named `values`, `items` or `keys` resolves to the dict method;
+  macros return Markup, so do arithmetic before calling them, never on their output.
 - Pins checked with `git ls-remote --tags`: v2.14.1, 1.9.1 and v3.4.2 are still the newest
   stable releases; no pin moved.
 
 Gaps:
 
-- References on all three pages were cited from memory (arxiv still unreachable): Vaswani,
-  Su (RoPE), Press (ALiBi), Lloyd, Arthur–Vassilvitskii, Ester (DBSCAN), Jégou (PQ),
-  Malkov–Yashunin (HNSW), Johnson (Faiss GPU), DiskANN and ANN-Benchmarks.
-- No pin implements IVF, PQ or HNSW; those follow the papers. FAISS and hnswlib are named in
-  prose only. `pca` appears as plain text on `clustering` until it is ready.
-- The page commits exceed 400 lines.
+- References cited from memory (arxiv unreachable): Hinton–Vinyals–Dean (the T² remark was
+  confirmed only through secondary quotes), Box–Jenkins, Cleveland et al. (STL),
+  Bergmeir–Benítez, Hyndman–Koehler, Koenker–Bassett and Gneiting 2011 (cited only for
+  consistent scoring functions; its stance on MAPE was not verified, so the page does not
+  state one).
+- No pin implements ARIMA, STL or MASE; those follow the papers and FPP3.
 
 ## Queue
 
