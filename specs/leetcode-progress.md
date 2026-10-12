@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-12 (second audit run). All 58 pages are ready and the queue is empty. This audit found and fixed one gap (worked-example step tables), so the Routine stays on its 5-hour schedule. **The next run is another audit run** (spec §8.1): it fixes one gap, and if none remain it records "complete" and moves this Routine to weekly audits.
+**Last updated:** 2026-10-12 (third audit run). All 58 pages are ready and the queue is empty. This audit found and fixed one gap (brute-force baselines in Complexity and tradeoffs), so the Routine stays on its 5-hour schedule. **The next run is another audit run** (spec §8.1): it fixes one gap, and if none remain it records "complete" and moves this Routine to weekly audits.
 
 ## The Routine
 
@@ -148,6 +148,11 @@ build once research is done.
 - **Worked-example tables (2026-10-12).** Spec §6's "traced step by step in a table" is read as
   an HTML `<table>` inside the `worked-example` section; an SVG drawn as a grid elsewhere on the
   page does not count. `test_ready_page_follows_the_format` now enforces it.
+- **Brute-force baselines (2026-10-12).** Spec §6's "the brute-force baseline" is read as an
+  explicit mention (brute force, naive or baseline) inside the `tradeoffs` section; a baseline
+  given only under Problem does not count. `test_ready_page_follows_the_format` now enforces it.
+  Pages whose "also uses" list is empty show none: the list is built from `PROBLEMS`, and no
+  problem's `patterns` names them.
 
 ## Known gaps and questions for the owner
 
@@ -378,3 +383,17 @@ every ready page. No helpers changed. Coverage is unchanged at 100% (Blind 75 75
 169/169, NeetCode 150 150/150, NeetCode 250 250/250). pytest green (664 passed); every ready page
 returns 200 and the phone check passed on `/`, `/leetcode` and every ready page. Because this run
 found a gap, the schedule stays at every 5 hours. Next: another audit run.
+
+### 2026-10-12 — audit run (third)
+
+Third audit run. Checked every ready page for the §6 rules the format test did not yet cover:
+the header summary, `<pre><code>` templates, variations and edge cases, SVG containers, the
+"also uses" list, the *beyond* note and the brute-force baseline. One gap: seven pages did not
+name a brute-force baseline in Complexity and tradeoffs (`stack`, `recursion` and
+`matrix-manipulation` had none; `python-toolkit`, `sweep-line`, `segment-trees` and
+`fenwick-trees` compared against naive approaches without naming the baseline). Each now states
+it, and the format test requires it on every ready page. No helpers changed. Coverage is
+unchanged at 100% (Blind 75 75/75, Grind 169 169/169, NeetCode 150 150/150, NeetCode 250
+250/250). pytest green (676 passed); every ready page returns 200 and the phone check passed on
+`/`, `/leetcode` and every ready page. Because this run found a gap, the schedule stays at every
+5 hours. Next: another audit run.
