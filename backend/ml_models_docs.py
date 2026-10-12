@@ -6828,6 +6828,221 @@ def focal_table(probs=FOCAL_PROBS, gammas=(0.0, 0.5, 1.0, 2.0, 5.0)):
     ]
 
 
+FOREST_DATA = {"n_train": 100, "n_test": 400, "noise": 0.1, "train_seed": 11, "test_seed": 12}
+FOREST_FEATURES = ["x₀", "x₁", "noise, continuous", "noise, binary"]
+FOREST_METHODS = {
+    "bagging": {"max_features": 4, "bootstrap": True, "random_thresholds": False},
+    "forest": {"max_features": 2, "bootstrap": True, "random_thresholds": False},
+    "extra": {"max_features": 2, "bootstrap": False, "random_thresholds": True},
+}
+
+
+def forest_rows(n, seed, noise=0.1):
+    rng = random.Random(seed)
+    rows = []
+    for _ in range(n):
+        x = (rng.random(), rng.random(), rng.random(), float(rng.randint(0, 1)))
+        y = int(x[0] + x[1] > 1.0)
+        if rng.random() < noise:
+            y = 1 - y
+        rows.append((x, y))
+    return rows
+
+
+def _gini_two(n_pos, n):
+    p = n_pos / n
+    return 2.0 * p * (1.0 - p)
+
+
+def _best_threshold(rows, feature):
+    order = sorted(rows, key=lambda r: r[0][feature])
+    n = len(order)
+    total_pos = sum(y for _, y in order)
+    left_pos = 0
+    best = None
+    for i in range(1, n):
+        left_pos += order[i - 1][1]
+        lo, hi = order[i - 1][0][feature], order[i][0][feature]
+        if hi <= lo:
+            continue
+        weighted = (i * _gini_two(left_pos, i) + (n - i) * _gini_two(total_pos - left_pos, n - i)) / n
+        if best is None or weighted < best[0] - 1e-12:
+            best = (weighted, lo / 2.0 + hi / 2.0)
+    return best
+
+
+def _random_threshold(rows, feature, lo, hi, rng):
+    threshold = rng.uniform(lo, hi)
+    if threshold == hi:
+        threshold = lo
+    left = [y for x, y in rows if x[feature] <= threshold]
+    n = len(rows)
+    left_pos, right_pos = sum(left), sum(y for _, y in rows) - sum(left)
+    n_left = len(left)
+    weighted = (n_left * _gini_two(left_pos, n_left) + (n - n_left) * _gini_two(right_pos, n - n_left)) / n
+    return weighted, threshold
+
+
+def grow_forest_tree(rows, rng, max_features, random_thresholds=False):
+    n = len(rows)
+    n_pos = sum(y for _, y in rows)
+    node = {"n": n, "value": n_pos / n, "impurity": _gini_two(n_pos, n), "feature": None}
+    if n < 2 or n_pos in (0, n):
+        return node
+    best = None
+    visited = 0
+    for feature in rng.sample(range(len(rows[0][0])), len(rows[0][0])):
+        if visited >= max_features and best is not None:
+            break
+        visited += 1
+        values = [x[feature] for x, _ in rows]
+        lo, hi = min(values), max(values)
+        if hi <= lo:
+            continue
+        if random_thresholds:
+            weighted, threshold = _random_threshold(rows, feature, lo, hi, rng)
+        else:
+            weighted, threshold = _best_threshold(rows, feature)
+        if best is None or weighted < best[0] - 1e-12:
+            best = (weighted, threshold, feature)
+    if best is None:
+        return node
+    _, threshold, feature = best
+    node.update(feature=feature, threshold=threshold)
+    node["left"] = grow_forest_tree([r for r in rows if r[0][feature] <= threshold], rng, max_features, random_thresholds)
+    node["right"] = grow_forest_tree([r for r in rows if r[0][feature] > threshold], rng, max_features, random_thresholds)
+    return node
+
+
+def forest_tree_predict(node, x):
+    while node["feature"] is not None:
+        node = node["left"] if x[node["feature"]] <= node["threshold"] else node["right"]
+    return node["value"]
+
+
+def forest_tree_importances(node, n_features):
+    totals = [0.0] * n_features
+    stack = [node]
+    while stack:
+        nd = stack.pop()
+        if nd["feature"] is None:
+            continue
+        totals[nd["feature"]] += (
+            nd["n"] * nd["impurity"] - nd["left"]["n"] * nd["left"]["impurity"] - nd["right"]["n"] * nd["right"]["impurity"]
+        )
+        stack += [nd["left"], nd["right"]]
+    norm = sum(totals)
+    return [t / norm for t in totals] if norm > 0 else totals
+
+
+def fit_forest(rows, n_trees, max_features, bootstrap=True, random_thresholds=False, seed=0):
+    rng = random.Random(seed)
+    n = len(rows)
+    trees = []
+    for _ in range(n_trees):
+        indices = [rng.randrange(n) for _ in range(n)] if bootstrap else list(range(n))
+        tree = grow_forest_tree([rows[i] for i in indices], rng, max_features, random_thresholds)
+        trees.append({"tree": tree, "in_bag": set(indices)})
+    return trees
+
+
+def forest_proba(trees, x):
+    return sum(forest_tree_predict(t["tree"], x) for t in trees) / len(trees)
+
+
+def forest_accuracy(trees, rows):
+    return sum(int(forest_proba(trees, x) > 0.5) == y for x, y in rows) / len(rows)
+
+
+def oob_accuracy(trees, rows):
+    correct = scored = 0
+    for i, (x, y) in enumerate(rows):
+        votes = [forest_tree_predict(t["tree"], x) for t in trees if i not in t["in_bag"]]
+        if votes:
+            scored += 1
+            correct += int(sum(votes) / len(votes) > 0.5) == y
+    return correct / scored if scored else 0.0
+
+
+def impurity_importances(trees, n_features):
+    per_tree = [forest_tree_importances(t["tree"], n_features) for t in trees if t["tree"]["feature"] is not None]
+    mean = [sum(col) / len(per_tree) for col in zip(*per_tree)]
+    total = sum(mean)
+    return [m / total for m in mean]
+
+
+def permutation_importances(trees, rows, n_repeats=5, seed=0):
+    rng = random.Random(seed)
+    baseline = forest_accuracy(trees, rows)
+    out = []
+    for feature in range(len(rows[0][0])):
+        drops = []
+        for _ in range(n_repeats):
+            column = [x[feature] for x, _ in rows]
+            rng.shuffle(column)
+            permuted = [(x[:feature] + (v,) + x[feature + 1:], y) for (x, y), v in zip(rows, column)]
+            drops.append(baseline - forest_accuracy(trees, permuted))
+        out.append({"mean": sum(drops) / n_repeats, "std": statistics.pstdev(drops)})
+    return {"baseline": baseline, "features": out}
+
+
+def bootstrap_oob_fraction(n):
+    return (1.0 - 1.0 / n) ** n
+
+
+def averaged_variance(rho, sigma2, n_trees):
+    return rho * sigma2 + (1.0 - rho) * sigma2 / n_trees
+
+
+def forest_example(spec=FOREST_DATA, n_trees=100):
+    train = forest_rows(spec["n_train"], spec["train_seed"], spec["noise"])
+    test = forest_rows(spec["n_test"], spec["test_seed"], spec["noise"])
+    single = fit_forest(train, 1, 4, bootstrap=False, seed=1)
+    out = {
+        "train": train, "test": test,
+        "single": {"train_accuracy": forest_accuracy(single, train), "test_accuracy": forest_accuracy(single, test)},
+        "n_trees": n_trees,
+    }
+    for name, m in FOREST_METHODS.items():
+        trees = fit_forest(train, n_trees, m["max_features"], m["bootstrap"], m["random_thresholds"], seed=2)
+        curve = []
+        sums = [0.0] * len(test)
+        for b, t in enumerate(trees, 1):
+            sums = [s + forest_tree_predict(t["tree"], x) for s, (x, _) in zip(sums, test)]
+            curve.append(sum(int(s / b > 0.5) == y for s, (_, y) in zip(sums, test)) / len(test))
+        out[name] = {
+            "test_accuracy": curve[-1],
+            "curve": curve,
+            "train_accuracy": forest_accuracy(trees, train),
+            "oob_accuracy": oob_accuracy(trees, train) if m["bootstrap"] else None,
+            "mean_oob_fraction": sum(1 - len(t["in_bag"]) / len(train) for t in trees) / n_trees if m["bootstrap"] else None,
+            "tree_accuracy": sum(forest_accuracy([t], test) for t in trees) / n_trees,
+        }
+        if name == "forest":
+            out[name]["impurity"] = impurity_importances(trees, len(FOREST_FEATURES))
+            out[name]["permutation"] = permutation_importances(trees, test)
+    return out
+
+
+def tree_correlation(max_features, bootstrap=True, random_thresholds=False, n_sets=20, n_trees=20, n_points=100):
+    points = [x for x, _ in forest_rows(n_points, 99)]
+    by_set = []
+    for s in range(n_sets):
+        train = forest_rows(FOREST_DATA["n_train"], 500 + s, FOREST_DATA["noise"])
+        trees = fit_forest(train, n_trees, max_features, bootstrap, random_thresholds, seed=700 + s)
+        by_set.append([[forest_tree_predict(t["tree"], x) for x in points] for t in trees])
+    total = between = within = 0.0
+    for j in range(n_points):
+        all_preds = [tree[j] for trees in by_set for tree in trees]
+        means = [sum(tree[j] for tree in trees) / n_trees for trees in by_set]
+        within_j = sum(statistics.pvariance([tree[j] for tree in trees]) for trees in by_set) / n_sets
+        total += statistics.pvariance(all_preds)
+        within += within_j
+        between += max(statistics.pvariance(means) - within_j / n_trees, 0.0)
+    sigma2 = total / n_points
+    return {"sigma2": sigma2, "rho": between / total, "within": within / n_points, "between": between / n_points}
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -7332,6 +7547,12 @@ def render(slug, render_template):
         "imbalance_example": imbalance_example,
         "focal_table": focal_table,
         "focal_loss": focal_loss,
+        "forest_example": forest_example,
+        "tree_correlation": tree_correlation,
+        "forest_methods": FOREST_METHODS,
+        "forest_features": FOREST_FEATURES,
+        "averaged_variance": averaged_variance,
+        "bootstrap_oob_fraction": bootstrap_oob_fraction,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

@@ -3042,3 +3042,56 @@ def test_focal_loss_reduces_to_cross_entropy_and_downweights_easy_examples():
         assert row["losses"] == sorted(row["losses"], reverse=True)
     easy, hard = rows[-1], rows[0]
     assert easy["ratios"][3] < hard["ratios"][3]
+
+
+def test_forest_tree_splits_with_gini_and_respects_max_features():
+    rows = [((0.0, 5.0), 0), ((1.0, 5.0), 0), ((2.0, 5.0), 1), ((3.0, 5.0), 1)]
+    tree = ml_models_docs.grow_forest_tree(rows, ml_models_docs.random.Random(0), max_features=1)
+    assert tree["feature"] == 0 and tree["threshold"] == pytest.approx(1.5)
+    assert [ml_models_docs.forest_tree_predict(tree, x) for x, _ in rows] == [0, 0, 1, 1]
+    assert ml_models_docs.forest_tree_importances(tree, 2) == [1.0, 0.0]
+    extra = ml_models_docs.grow_forest_tree(rows, ml_models_docs.random.Random(3), 2, random_thresholds=True)
+    assert all(ml_models_docs.forest_tree_predict(extra, x) == y for x, y in rows)
+
+
+def test_bootstrap_leaves_about_a_third_out_of_bag():
+    assert ml_models_docs.bootstrap_oob_fraction(100) == pytest.approx(0.366, abs=1e-3)
+    assert ml_models_docs.bootstrap_oob_fraction(10**6) == pytest.approx(math.exp(-1), abs=1e-6)
+    rows = ml_models_docs.forest_rows(50, 1)
+    trees = ml_models_docs.fit_forest(rows, 40, 2, seed=4)
+    fraction = sum(1 - len(t["in_bag"]) / 50 for t in trees) / 40
+    assert fraction == pytest.approx(0.364, abs=0.03)
+    whole = ml_models_docs.fit_forest(rows, 3, 2, bootstrap=False, seed=4)
+    assert all(len(t["in_bag"]) == 50 for t in whole)
+
+
+def test_averaging_trees_beats_one_tree_and_oob_tracks_test_accuracy():
+    example = ml_models_docs.forest_example()
+    assert example["single"]["train_accuracy"] == 1.0
+    for name in ml_models_docs.FOREST_METHODS:
+        report = example[name]
+        assert len(report["curve"]) == example["n_trees"]
+        assert report["test_accuracy"] > example["single"]["test_accuracy"]
+        assert report["test_accuracy"] > report["tree_accuracy"]
+        if report["oob_accuracy"] is not None:
+            assert report["oob_accuracy"] == pytest.approx(report["test_accuracy"], abs=0.05)
+            assert report["mean_oob_fraction"] == pytest.approx(0.366, abs=0.02)
+    forest = example["forest"]
+    assert sum(forest["impurity"]) == pytest.approx(1.0)
+    noise = forest["permutation"]["features"][2:]
+    signal = forest["permutation"]["features"][:2]
+    assert min(f["mean"] for f in signal) > 10 * max(f["mean"] for f in noise)
+    assert forest["impurity"][2] > forest["impurity"][3]
+
+
+def test_feature_subsampling_lowers_tree_correlation():
+    methods = ml_models_docs.FOREST_METHODS
+    bagged = ml_models_docs.tree_correlation(**methods["bagging"])
+    forest = ml_models_docs.tree_correlation(**methods["forest"])
+    assert 0 < forest["rho"] < bagged["rho"] < 1
+    for c in (bagged, forest):
+        assert ml_models_docs.averaged_variance(c["rho"], c["sigma2"], 1) == pytest.approx(c["sigma2"])
+        assert ml_models_docs.averaged_variance(c["rho"], c["sigma2"], 10**9) == pytest.approx(c["rho"] * c["sigma2"])
+    assert ml_models_docs.averaged_variance(forest["rho"], forest["sigma2"], 100) < ml_models_docs.averaged_variance(
+        bagged["rho"], bagged["sigma2"], 100
+    )
