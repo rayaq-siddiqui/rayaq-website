@@ -171,6 +171,10 @@ def test_ready_page_follows_the_format(url):
     assert len(svgs) >= 2, url
     for svg in svgs:
         assert 'role="img"' in svg and "<title" in svg and "<desc" in svg, url
+    references = body.split('<h2 id="references"', 1)[1]
+    for author in ("Cormen", "Skiena", "Sedgewick", "NeetCode"):
+        assert author in references, (url, author)
+    assert 3 <= body.count('class="lc-quiz"') <= 4, url
 
 
 @pytest.mark.parametrize("url", ["/leetcode"] + ready_urls())
