@@ -3490,3 +3490,74 @@ def test_vector_index_memory_counts_bytes_per_vector():
     assert scale["flat"] == 307_200_000_000
     assert scale["ivf_pq"] == 10_400_000_000
     assert ml_models_docs.recall_at_k([1, 2, 3, 9], [1, 2, 3, 4]) == 0.75
+
+
+def test_temperature_softmax_flattens_but_keeps_the_ranking():
+    teacher = ml_models_docs.DISTILLATION_EXAMPLE["teacher"]
+    previous = None
+    for t in [1, 2, 4, 8]:
+        probs = ml_models_docs.temperature_softmax(teacher, t)
+        assert math.isclose(sum(probs), 1.0)
+        assert probs == sorted(probs, reverse=True)
+        h = ml_models_docs.entropy(probs)
+        if previous is not None:
+            assert h > previous
+        previous = h
+    assert ml_models_docs.temperature_softmax(teacher, 1) == ml_models_docs.softmax_probs(teacher)
+
+
+def test_kd_loss_gradient_matches_finite_differences():
+    e = ml_models_docs.DISTILLATION_EXAMPLE
+    out = ml_models_docs.kd_loss(e["student"], e["teacher"], e["label"], e["kd_temperature"], e["alpha"])
+    assert math.isclose(out["loss"], e["alpha"] * out["hard"] + (1 - e["alpha"]) * e["kd_temperature"] ** 2 * out["soft"])
+    assert out["soft"] > 0
+    h = 1e-6
+    for i in range(len(e["student"])):
+        up, down = list(e["student"]), list(e["student"])
+        up[i] += h
+        down[i] -= h
+        numeric = (ml_models_docs.kd_loss(up, e["teacher"], e["label"], e["kd_temperature"], e["alpha"])["loss"]
+                   - ml_models_docs.kd_loss(down, e["teacher"], e["label"], e["kd_temperature"], e["alpha"])["loss"]) / (2 * h)
+        assert math.isclose(out["gradient"][i], numeric, abs_tol=1e-6)
+    assert math.isclose(sum(out["gradient"]), 0.0, abs_tol=1e-12)
+
+
+def test_kd_soft_gradient_shrinks_as_one_over_t_squared():
+    e = ml_models_docs.DISTILLATION_EXAMPLE
+    scaling = ml_models_docs.kd_gradient_scaling(e["student"], e["teacher"], e["scaling_temperatures"])
+    rows = scaling["rows"]
+    for a, b in zip(rows, rows[1:]):
+        assert b["raw_norm"] < a["raw_norm"]
+    last = rows[-1]
+    assert all(abs(s - l) < 0.06 for s, l in zip(last["scaled"], scaling["limit"]))
+    ratio = rows[-2]["raw_norm"] / rows[-1]["raw_norm"]
+    assert 3.8 < ratio < 4.2
+
+
+def test_gaussian_teacher_is_the_bayes_posterior():
+    e = ml_models_docs.DISTILLATION_EXAMPLE
+    x = (0.3, -0.2)
+    logits = ml_models_docs.gaussian_teacher_logits(x, e["means"], e["spreads"])
+    densities = [math.exp(-((x[0] - m[0]) ** 2 + (x[1] - m[1]) ** 2) / (2 * s * s)) / (2 * math.pi * s * s)
+                 for m, s in zip(e["means"], e["spreads"])]
+    posterior = [d / sum(densities) for d in densities]
+    for a, b in zip(ml_models_docs.softmax_probs(logits), posterior):
+        assert math.isclose(a, b)
+
+
+def test_distillation_example_soft_targets_beat_hard_labels():
+    ex = ml_models_docs.distillation_example()
+    e = ml_models_docs.DISTILLATION_EXAMPLE
+    assert len(ex["runs"]) == len(e["seeds"])
+    for run in ex["runs"]:
+        assert sum(run["counts"]) == e["train"]
+    hard, soft, mixed, hot = ex["summary"]["students"]
+    teacher = ex["summary"]["teacher"]
+    assert (hard["alpha"], hard["temperature"]) == (1.0, 1)
+    assert teacher["agreement"] == 1.0 and teacher["kl"] == 0.0
+    assert hard["train_nll"] < soft["train_nll"]
+    assert soft["nll"] < mixed["nll"] < hard["nll"]
+    assert soft["accuracy"] > hard["accuracy"]
+    assert soft["agreement"] > hard["agreement"]
+    assert teacher["nll"] < soft["nll"]
+    assert hot["kl"] > soft["kl"]

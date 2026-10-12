@@ -8282,6 +8282,160 @@ def vector_index_example():
     }
 
 
+DISTILLATION_EXAMPLE = {
+    "classes": ["cat", "dog", "fox", "car"],
+    "teacher": [6.0, 3.5, 2.5, -2.0],
+    "student": [2.0, 1.5, 0.0, 0.5],
+    "label": 0,
+    "temperatures": [1, 2, 4, 8],
+    "alpha": 0.5,
+    "kd_temperature": 4,
+    "scaling_temperatures": [1, 2, 4, 8, 16, 32],
+    "means": [(0.0, 1.2), (-1.0, -0.7), (1.0, -0.7)],
+    "spreads": [0.6, 1.4, 1.0],
+    "train": 15,
+    "test": 3000,
+    "seeds": [1, 2, 3, 4, 5],
+    "lr": 0.5,
+    "steps": 400,
+    "students": [(1.0, 1), (0.0, 1), (0.5, 2), (0.0, 4)],
+}
+
+
+def temperature_softmax(logits, temperature):
+    return softmax_probs([z / temperature for z in logits])
+
+
+def kd_loss(student, teacher, label, temperature, alpha):
+    q = softmax_probs(student)
+    q_t = temperature_softmax(student, temperature)
+    p_t = temperature_softmax(teacher, temperature)
+    hard = -math.log(q[label])
+    soft = sum(p * math.log(p / s) for p, s in zip(p_t, q_t))
+    gradient = [alpha * (q[i] - (i == label)) + (1 - alpha) * temperature * (q_t[i] - p_t[i])
+                for i in range(len(student))]
+    return {
+        "q": q, "q_t": q_t, "p_t": p_t, "hard": hard, "soft": soft,
+        "loss": alpha * hard + (1 - alpha) * temperature ** 2 * soft,
+        "hard_gradient": [q[i] - (i == label) for i in range(len(student))],
+        "soft_gradient": [(q_t[i] - p_t[i]) / temperature for i in range(len(student))],
+        "gradient": gradient,
+    }
+
+
+def _centred(values):
+    mean = _mean(values)
+    return [v - mean for v in values]
+
+
+def kd_gradient_scaling(student, teacher, temperatures):
+    student, teacher = _centred(student), _centred(teacher)
+    n = len(student)
+    rows = []
+    for t in temperatures:
+        raw = kd_loss(student, teacher, 0, t, 0.0)["soft_gradient"]
+        rows.append({
+            "temperature": t,
+            "raw": raw,
+            "raw_norm": math.sqrt(sum(g * g for g in raw)),
+            "scaled": [g * t * t for g in raw],
+        })
+    return {"rows": rows, "limit": [(v - z) / n for v, z in zip(student, teacher)]}
+
+
+def gaussian_teacher_logits(x, means, spreads):
+    return [-((x[0] - m[0]) ** 2 + (x[1] - m[1]) ** 2) / (2 * s * s) - 2 * math.log(s)
+            for m, s in zip(means, spreads)]
+
+
+def draw_gaussian_classes(rng, n, means, spreads):
+    points = []
+    for _ in range(n):
+        k = rng.randrange(len(means))
+        points.append(((rng.gauss(means[k][0], spreads[k]), rng.gauss(means[k][1], spreads[k])), k))
+    return points
+
+
+def _linear_logits(weights, bias, x):
+    return [w[0] * x[0] + w[1] * x[1] + b for w, b in zip(weights, bias)]
+
+
+def train_kd_student(data, targets, alpha, temperature, lr, steps):
+    k = len(targets[0])
+    weights, bias = [[0.0, 0.0] for _ in range(k)], [0.0] * k
+    for _ in range(steps):
+        grad_w, grad_b = [[0.0, 0.0] for _ in range(k)], [0.0] * k
+        for (x, y), teacher in zip(data, targets):
+            g = kd_loss(_linear_logits(weights, bias, x), teacher, y, temperature, alpha)["gradient"]
+            for i in range(k):
+                grad_w[i][0] += g[i] * x[0]
+                grad_w[i][1] += g[i] * x[1]
+                grad_b[i] += g[i]
+        for i in range(k):
+            weights[i][0] -= lr * grad_w[i][0] / len(data)
+            weights[i][1] -= lr * grad_w[i][1] / len(data)
+            bias[i] -= lr * grad_b[i] / len(data)
+    return weights, bias
+
+
+def _argmax(values):
+    return max(range(len(values)), key=values.__getitem__)
+
+
+def evaluate_kd(logits_fn, test, teacher_fn):
+    nll = correct = agree = kl = 0.0
+    for x, y in test:
+        q, p = softmax_probs(logits_fn(x)), softmax_probs(teacher_fn(x))
+        nll -= math.log(q[y])
+        correct += _argmax(q) == y
+        agree += _argmax(q) == _argmax(p)
+        kl += sum(a * math.log(a / b) for a, b in zip(p, q))
+    n = len(test)
+    return {"nll": nll / n, "accuracy": correct / n, "agreement": agree / n, "kl": kl / n}
+
+
+@functools.lru_cache(maxsize=1)
+def distillation_example():
+    e = DISTILLATION_EXAMPLE
+    teacher, student, label = e["teacher"], e["student"], e["label"]
+    softened = [{"temperature": t, "probs": temperature_softmax(teacher, t),
+                 "entropy": entropy(temperature_softmax(teacher, t))} for t in e["temperatures"]]
+    loss = kd_loss(student, teacher, label, e["kd_temperature"], e["alpha"])
+
+    def teacher_fn(x):
+        return gaussian_teacher_logits(x, e["means"], e["spreads"])
+
+    runs = []
+    for seed in e["seeds"]:
+        rng = random.Random(seed)
+        train = draw_gaussian_classes(rng, e["train"], e["means"], e["spreads"])
+        test = draw_gaussian_classes(rng, e["test"], e["means"], e["spreads"])
+        targets = [teacher_fn(x) for x, _ in train]
+        row = {"seed": seed, "counts": [sum(y == k for _, y in train) for k in range(len(e["means"]))],
+               "teacher": evaluate_kd(teacher_fn, test, teacher_fn), "students": []}
+        for alpha, t in e["students"]:
+            w, b = train_kd_student(train, targets, alpha, t, e["lr"], e["steps"])
+            scores = evaluate_kd(lambda x, w=w, b=b: _linear_logits(w, b, x), test, teacher_fn)
+            scores["train_nll"] = evaluate_kd(lambda x, w=w, b=b: _linear_logits(w, b, x), train, teacher_fn)["nll"]
+            row["students"].append(scores)
+        runs.append(row)
+
+    metrics = ["nll", "accuracy", "agreement", "kl", "train_nll"]
+    summary = {
+        "teacher": {m: _mean([r["teacher"][m] for r in runs]) for m in metrics[:-1]},
+        "students": [{"alpha": a, "temperature": t,
+                      **{m: _mean([r["students"][i][m] for r in runs]) for m in metrics}}
+                     for i, (a, t) in enumerate(e["students"])],
+    }
+    return {
+        "softened": softened,
+        "loss": loss,
+        "scaling": kd_gradient_scaling(student, teacher, e["scaling_temperatures"]),
+        "runs": runs,
+        "summary": summary,
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -8817,6 +8971,8 @@ def render(slug, render_template):
         "cluster_settings": CLUSTER_EXAMPLE,
         "vector_index_example": vector_index_example,
         "vector_index_settings": VECTOR_INDEX_EXAMPLE,
+        "distillation_example": distillation_example,
+        "distillation_settings": DISTILLATION_EXAMPLE,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")
