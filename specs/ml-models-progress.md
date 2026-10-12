@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-12 (thirtieth run). Spec v2 widens the section from model
+**Last updated:** 2026-10-12 (thirty-first run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-54, the last being `variational-autoencoders`. The
-next page is `positional-encoding` (queue item 55).
+fixed page format. Ready pages: queue items 1-57, the last being `vector-indexes`. The
+next page is `distillation` (queue item 58).
 
 ## Pins
 
@@ -124,7 +124,12 @@ Paths are under `sklearn/`.
   `_euclidean_distances` 376-427, `cosine_similarity` 1703-1758; `preprocessing/_data.py`
   `normalize` 1978-2089; `feature_extraction/text.py` `TfidfTransformer` 1506, idf in `fit`
   1675-1695.
-- `cluster/_kmeans.py`: `KMeans` 1191.
+- `cluster/_kmeans.py`: `_kmeans_plusplus` 180-283, `_labels_inertia` 761-832,
+  `KMeans.predict` 1071-1104, `KMeans` 1191-1561 (`fit` 1432-1561), `MiniBatchKMeans`
+  1680-2320 (end of file). DBSCAN, GaussianMixture and metrics ranges live in the
+  `clustering` template.
+- `neighbors/_unsupervised.py` `NearestNeighbors` 10-179; `neighbors/_base.py` `kneighbors`
+  756-959.
 - `decomposition/_pca.py`: `PCA` 113.
 - `model_selection/_split.py`: `KFold` 437, `GroupKFold` 533, `StratifiedKFold` 687,
   `TimeSeriesSplit` 1116, `train_test_split` 2797.
@@ -155,13 +160,14 @@ Paths are under `sklearn/`.
 - `transformer` uses the v1 section layout and is exempt from the §6 order test until its
   retrofit (queue item 18).
 
-## First to twenty-ninth runs (2026-10-08 to 2026-10-12) — condensed
+## First to thirtieth runs (2026-10-08 to 2026-10-12) — condensed
 
 Runs 1-3 wrote the spec (v1, then v2), the registry, `LEARNING_PATH`, the §6 and queue tests,
 `check_mobile.js` and the Routine. Every run since adds, per page, a tested-helpers commit, a
 page commit (page, `ready`, queue ✓) and usually a `docs:` commit; items 1-51 were built in
 queue order (run 28: quantization, reinforcement-learning, bayes-rule; run 29:
-class-imbalance, random-forests, initialization). `6f0803f` fixed 13 templates that read a
+class-imbalance, random-forests, initialization; run 30: rnns-and-lstms, autoencoders,
+variational-autoencoders). `6f0803f` fixed 13 templates that read a
 missing `pins.X.version` key. Pins never moved. The ranges each page links live in its template
 (grep `src(`, `skl(`, `xgb(`); `git log -p` on this file has every old commit table and range list.
 
@@ -173,6 +179,8 @@ Findings worth keeping (details in each page and in `git log -p` on this file):
 - Cross-checks ran in scratch venvs, never in requirements: scikit-learn 1.9.1, torch 2.14.1,
   XGBoost 3.2.0 (3.4.2 is not on the mirror; the formulas used are unchanged).
 - Use the one-sided Jacobi SVD (eigenvalues of AᵀA squared the condition number).
+- A linear autoencoder's encoder·decoder product matches PCA's projection uuᵀ; only
+  `Normal.rsample` carries gradients (`sample` runs under `no_grad`).
 - `.jj-diagram svg text { fill: var(--jj-text) }` beats an SVG `fill=` attribute, so coloured
   diagram text must use `style="fill: ..."`.
 
@@ -190,37 +198,35 @@ Open gaps from these runs:
   `class-imbalance` (calibration) name those pages in plain text until they are ready.
 - Page commits exceed 400 lines because each template is one file.
 
-## Thirtieth run (2026-10-12) — rnns-and-lstms, autoencoders, variational-autoencoders
+## Thirty-first run (2026-10-12) — positional-encoding, clustering, vector-indexes
 
 | Commit | What |
 |---|---|
-| `67956c9` `ml-models: add tested rnn and lstm helpers` | Elman RNN, LSTM and GRU traces in PyTorch's gate order, exact memory gradients, a `pack_sequence` mirror, the `RNNBase` parameter count and a seq2seq attention step, with tests |
-| `1463970` `ml-models: add the rnns-and-lstms page` | The page, `ready`, queue ✓ |
-| `a5f70c7` `ml-models: add tested autoencoder helpers` | A linear autoencoder trained by gradient descent and compared with PCA, a denoising map and conv/transpose-conv output shapes, with tests |
-| `23f132d` `ml-models: add the autoencoders page` | The page, `ready`, queue ✓ |
-| `2441db8` `ml-models: add tested variational autoencoder helpers` | Normal log-density and KL, a linear-Gaussian model's exact evidence, posterior and ELBO, reparameterization vs score-function gradients and per-unit code KL, with tests |
-| `b336261` `ml-models: add the variational-autoencoders page` | The page, `normal_curve` and its test, the autoencoders link, `ready`, queue ✓ |
+| `31314b5` `ml-models: add tested positional encoding helpers` | Sinusoidal encoding and its shift rotation, RoPE pair by pair with offset-only scores, ALiBi slopes and biases, learned-table size, with tests |
+| `c42adca` `ml-models: add the positional encoding page` | The page, the transformer link, `ready`, queue ✓ |
+| `e1c1ebe` `ml-models: add tested clustering helpers` | Lloyd's algorithm, k-means++, silhouette, DBSCAN as sklearn labels it, 2-D Gaussian mixture EM with BIC, adjusted Rand index, with tests |
+| `ba25dc9` `ml-models: add the clustering page` | The page, `ln_n` for the BIC text, `ready`, queue ✓ |
+| `9967d96` `ml-models: add tested vector index helpers` | IVF, PQ with ADC and re-ranking, HNSW with the selection heuristic, recall@k and a memory model on 800 clustered 16-d vectors, with tests |
+| `902218c` `ml-models: add the vector indexes page` | The page, clustering links to it, `ready`, queue ✓ |
 
 Findings worth keeping:
 
-- A linear autoencoder's trained encoder and decoder differ from each other, but their product
-  matches uuᵀ, the projection onto PCA's top component.
-- `ConvTranspose2d`'s `output_padding` only selects among the output sizes a stride allows
-  (7 → 13 or 14 at stride 2); it adds no values the docstring does not describe.
-- `Normal.sample` runs under `torch.no_grad()`; `rsample` returns `loc + eps * scale`, so only
-  `rsample` carries gradients. `Independent` plus `kl_divergence` sums the KL over latent
-  dimensions.
-- In the worked example the ELBO gap equals the KL to the exact posterior N(1.2, 0.447²), and
-  the score-function gradient's std is about 2.1× the reparameterized one's (3.412 vs 1.614).
+- The vector-index example is cached with `lru_cache` (about 1.7 s); the O(n·k²) k-means++
+  seeding was rewritten incrementally and distances use `math.dist`.
+- PQ re-ranking only helps when R > k: re-ranking the top 10 for k = 10 changes nothing.
+- On the example, HNSW at ef = 20 reaches recall 0.98 at about the same cost as IVF at
+  nprobe = 4 (0.915); probing all IVF lists costs more than brute force.
 - Pins checked with `git ls-remote --tags`: v2.14.1, 1.9.1 and v3.4.2 are still the newest
-  stable releases; no pin moved. arxiv.org is still unreachable through the proxy.
+  stable releases; no pin moved.
 
 Gaps:
 
-- All three pages' references were cited from memory (arxiv still unreachable), from Elman
-  and Hochreiter–Schmidhuber through Kingma–Welling and Rombach et al.
-- Sparse autoencoders for LLM interpretability and latent diffusion's perceptual and
-  adversarial autoencoder losses are from general knowledge. The page commits exceed 400 lines.
+- References on all three pages were cited from memory (arxiv still unreachable): Vaswani,
+  Su (RoPE), Press (ALiBi), Lloyd, Arthur–Vassilvitskii, Ester (DBSCAN), Jégou (PQ),
+  Malkov–Yashunin (HNSW), Johnson (Faiss GPU), DiskANN and ANN-Benchmarks.
+- No pin implements IVF, PQ or HNSW; those follow the papers. FAISS and hnswlib are named in
+  prose only. `pca` appears as plain text on `clustering` until it is ready.
+- The page commits exceed 400 lines.
 
 ## Queue
 
