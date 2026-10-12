@@ -1,0 +1,410 @@
+{% set ex = forest_example() %}
+{% set cb = tree_correlation(4, True, False) %}
+{% set cf = tree_correlation(2, True, False) %}
+{% set ce = tree_correlation(2, False, True) %}
+{% set fo = ex.forest %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(x)|replace("-", "−") }}{%- endmacro %}
+{% macro pct(x, n=1) -%}{{ ("%." ~ n ~ "f")|format(100 * x) }}%{%- endmacro %}
+{% macro ax(b) -%}{{ "%.1f"|format(70 + (b - 1) / 99 * 520) }}{%- endmacro %}
+{% macro ay(a) -%}{{ "%.1f"|format(220 - (a - 0.65) / 0.27 * 180) }}{%- endmacro %}
+{% macro vx(b) -%}{{ "%.1f"|format(70 + (b - 1) / 49 * 520) }}{%- endmacro %}
+{% macro vy(v) -%}{{ "%.1f"|format(220 - v / 0.18 * 180) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Random forests</h1>
+  <p class="tagline">
+    One deep decision tree memorizes its training set and changes a lot when the data changes. A random forest grows hundreds of
+    them on resampled data, gives each split only a random handful of features, and averages the votes. This page derives why that works,
+    and covers out-of-bag error, the two kinds of feature importance, and extremely randomized trees.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A fully grown <a href="/ml-models/decision-trees">decision tree</a> has low bias: it can carve the feature space into as many boxes as there are training points.
+  It pays for that with high variance. Move a few training points and the first split can change, and with it everything below.
+  In the example on this page one such tree scores {{ f(ex.single.train_accuracy, 2) }} on its training data and {{ f(ex.single.test_accuracy) }} on fresh data.
+</p>
+<p>
+  The <a href="/ml-models/bias-variance">bias–variance decomposition</a> says the expected error is bias² plus variance plus noise. If we could average many trees, each fit
+  to a different sample from the same distribution, the bias would stay the same and the variance would shrink. We only have one training set, so we need a way to
+  make many different trees from it, and those trees need to disagree with each other for the average to help.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Ask one expert and you get their quirks along with their knowledge. Ask a hundred experts who trained on overlapping but different material, and whose quirks
+  point in different directions, and the quirks cancel while the shared knowledge adds up. But if all hundred studied the same textbook, they share the same quirks, and averaging
+  removes little.
+</p>
+<p>
+  A random forest manufactures that diversity in two ways. <strong>Bagging</strong> (bootstrap aggregating) trains each tree on a bootstrap sample: <var>n</var> rows drawn with replacement from the
+  <var>n</var> training rows. <strong>Feature subsampling</strong> lets each split consider only a random subset of the features, so a single strong feature cannot dominate the top of every tree.
+  The rows each tree never saw give a free validation set, the <strong>out-of-bag</strong> sample.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 270" role="img" aria-labelledby="rf-flow-title rf-flow-desc">
+    <title id="rf-flow-title">How a random forest is trained and how it predicts</title>
+    <desc id="rf-flow-desc">
+      The training set of n rows feeds B bootstrap samples, each drawn with replacement and each leaving about 37 percent of rows out of bag.
+      Each sample grows one tree, and at every split the tree looks at only max_features randomly chosen features. To predict, every tree gives a class probability
+      and the forest averages them.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <rect x="20" y="110" width="110" height="50" rx="6" class="d-box ml-tensor"></rect>
+      <text x="75" y="132">training set</text>
+      <text x="75" y="149" class="d-muted">n rows, p features</text>
+      {% for i in range(3) %}
+      {% set y = 30 + i * 85 %}
+      <path d="M130 135 L190 {{ y + 25 }}" class="d-line" fill="none"></path>
+      <rect x="190" y="{{ y }}" width="130" height="50" rx="6" class="d-box ml-op"></rect>
+      <text x="255" y="{{ y + 21 }}">bootstrap {{ ["1", "2", "B"][i] }}</text>
+      <text x="255" y="{{ y + 38 }}" class="d-muted">n draws, ≈37% left out</text>
+      <path d="M320 {{ y + 25 }} L360 {{ y + 25 }}" class="d-line" fill="none"></path>
+      <rect x="360" y="{{ y }}" width="150" height="50" rx="6" class="d-box ml-weight"></rect>
+      <text x="435" y="{{ y + 21 }}">tree {{ ["1", "2", "B"][i] }}</text>
+      <text x="435" y="{{ y + 38 }}" class="d-muted">each split: max_features</text>
+      <path d="M510 {{ y + 25 }} L560 135" class="d-line" fill="none"></path>
+      {% endfor %}
+      <text x="255" y="198" class="d-muted">⋮</text>
+      <rect x="560" y="110" width="120" height="50" rx="6" class="d-box ml-tensor"></rect>
+      <text x="620" y="132">average</text>
+      <text x="620" y="149" class="d-muted">mean of P(y | x)</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Two sources of randomness, rows per tree and features per split, then one average.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="why-averaging-works">Why averaging reduces variance</h3>
+<p>
+  Treat the prediction of tree <var>b</var> at a point <var>x</var> as a random variable <var>T</var><sub><var>b</var></sub> (random over the training set and the tree's own resampling). The trees are identically
+  distributed, each with variance σ², and any two have correlation ρ, because they were grown from the same training set. The variance of their average is
+</p>
+<p class="ml-formula">Var(1/B · Σ<sub>b</sub> T<sub>b</sub>) = (1/B²)[B σ² + B(B − 1) ρ σ²] = ρ σ² + (1 − ρ) σ² / B</p>
+<p>
+  The second term vanishes as <var>B</var> grows; the first does not. More trees can only bring the variance down to ρσ², so the way to go further is to make ρ smaller without
+  raising σ² or the bias too much. That is exactly what feature subsampling does. Adding trees never makes the expected error worse; past a point it just stops helping, so
+  <code>n_estimators</code> is a compute budget, not a knob that overfits.
+</p>
+
+<h3 id="bagging">Bagging</h3>
+<p>
+  A bootstrap sample draws <var>n</var> row indices uniformly with replacement. A given row is missed by one draw with probability 1 − 1/<var>n</var>, so by all of them with probability
+</p>
+<p class="ml-formula">(1 − 1/n)<sup>n</sup> → e<sup>−1</sup> ≈ 0.368 &nbsp;&nbsp;&nbsp; (n = 100: {{ f(bootstrap_oob_fraction(100), 4) }})</p>
+<p>
+  Each tree therefore sees about 63% of the distinct rows, some of them several times. scikit-learn does not copy the rows: <code>_parallel_build_trees</code> turns the drawn
+  indices into counts with <code>np.bincount</code> and passes them to the tree as <code>sample_weight</code>, which gives the same splits. <code>max_samples</code> draws fewer rows per tree.
+  The general <code>BaggingClassifier</code> wraps any estimator and can also subsample features once per estimator (random subspaces) instead of once per split.
+</p>
+
+<h3 id="feature-subsampling">Feature subsampling</h3>
+<p>
+  At every node, the splitter shuffles the features and evaluates them one at a time until it has visited <code>max_features</code> of them, then keeps the best split found. If every
+  feature drawn so far is constant in that node it keeps drawing, so a split is found whenever one exists. Defaults at {{ pins.sklearn.tag }}:
+</p>
+<ul>
+  <li><code>RandomForestClassifier</code>: <code>max_features="sqrt"</code>, √<var>p</var> features per split, with <code>bootstrap=True</code> and <code>n_estimators=100</code>.</li>
+  <li><code>RandomForestRegressor</code>: <code>max_features=1.0</code>, all features, which makes it plain bagged trees. The docstring notes that Breiman suggested <var>p</var>/3 and that
+    Geurts et al. later found using all features works as well empirically.</li>
+  <li><code>max_features=None</code> (or <var>p</var>) on a classifier turns feature subsampling off and gives bagging.</li>
+</ul>
+<p>
+  Smaller <code>max_features</code> lowers ρ but each tree gets weaker (σ² and bias rise), so it is the forest's main tuning knob. The trees are grown to full depth by default
+  (<code>max_depth=None</code>, <code>min_samples_leaf=1</code>): low bias, and averaging is left to deal with the variance.
+</p>
+
+<h3 id="prediction">Prediction</h3>
+<p>
+  scikit-learn's classifier averages the trees' class probabilities (each leaf's class fractions) and predicts the argmax, a "soft" vote. Breiman's paper used a majority vote of hard labels;
+  with fully grown trees whose leaves are mostly pure the two rarely differ. The regressor averages the trees' predictions.
+</p>
+
+<h3 id="out-of-bag">Out-of-bag error</h3>
+<p>
+  For each training row, average only the trees whose bootstrap sample did not contain it, about 37% of them, and score that prediction. Each row is predicted by models that never saw it,
+  so the out-of-bag (OOB) score estimates test performance without a held-out set or cross-validation. scikit-learn computes it with <code>oob_score=True</code>; it regenerates each
+  tree's unsampled indices from the tree's saved random state, averages their <code>predict_proba</code>, and stores <code>oob_score_</code> (accuracy by default) and
+  <code>oob_decision_function_</code>. It requires <code>bootstrap=True</code>, and warns when some rows were in every tree's sample.
+</p>
+
+<h3 id="feature-importance">Feature importance</h3>
+<ul>
+  <li><strong>Impurity importance</strong> (<code>feature_importances_</code>, "Gini importance"): for each split, the node's weighted impurity minus its children's, summed per feature, normalized per tree, averaged over trees and normalized to sum to 1.
+    It is free, but it is measured on training data, and a feature with many distinct values offers many thresholds to overfit with. The scikit-learn docstring warns about exactly this and points to permutation importance.</li>
+  <li><strong>Permutation importance</strong> (<code>sklearn.inspection.permutation_importance</code>): score the fitted model on a dataset (preferably held out), shuffle one column, score again; the importance is the drop, averaged over
+    <code>n_repeats=5</code> shuffles by default. It works for any model and measures what the model relies on for <em>these</em> predictions. Two correlated features can share the credit, so each looks less important than it is.</li>
+</ul>
+
+<h3 id="extra-trees">Extremely randomized trees</h3>
+<p>
+  Geurts, Ernst and Wehenkel (2006) push randomization further. For each of the <code>max_features</code> candidate features, the splitter draws <em>one</em> threshold uniformly between that
+  feature's minimum and maximum in the node, and keeps the best of these random splits. <code>ExtraTreesClassifier</code> also defaults to <code>bootstrap=False</code>, so every tree sees the whole training set and
+  the randomness comes only from the splits. Training is faster (no sorting to find thresholds), ρ falls further, and each tree is a bit worse; in practice extra trees and random forests are often
+  close, and which wins depends on the data.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead>
+      <tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Random forest</td>
+        <td><code>RandomForestClassifier(n_estimators=100, *, criterion="gini", max_depth=None, max_features="sqrt", bootstrap=True, oob_score=False, max_samples=None, …)</code></td>
+        <td>Bagged best-split trees with per-split feature sampling.</td>
+        <td><a href="{{ skl('sklearn/ensemble/_forest.py', 1174, 1573) }}">_forest.py 1174-1573</a></td>
+      </tr>
+      <tr>
+        <td>Bootstrap indices</td>
+        <td><code>_generate_sample_indices(random_state, n_samples, n_samples_bootstrap, sample_weight)</code> → (n_samples_bootstrap,)</td>
+        <td><code>randint(0, n_samples, n_samples_bootstrap)</code>, or a weighted draw if <code>sample_weight</code> is given.</td>
+        <td><a href="{{ skl('sklearn/ensemble/_forest.py', 95, 113) }}">_forest.py 95-113</a></td>
+      </tr>
+      <tr>
+        <td>Out-of-bag rows</td>
+        <td><code>_generate_unsampled_indices(…)</code></td>
+        <td>Regenerates the bootstrap, keeps rows with <code>bincount == 0</code>.</td>
+        <td><a href="{{ skl('sklearn/ensemble/_forest.py', 116, 129) }}">_forest.py 116-129</a></td>
+      </tr>
+      <tr>
+        <td>Tree fitting</td>
+        <td><code>_parallel_build_trees(tree, bootstrap, X, y, sample_weight, …)</code></td>
+        <td>Bootstrap counts become the tree's <code>sample_weight</code>; <code>"balanced_subsample"</code> reweights per tree.</td>
+        <td><a href="{{ skl('sklearn/ensemble/_forest.py', 132, 179) }}">_forest.py 132-179</a></td>
+      </tr>
+      <tr>
+        <td>Sample count</td>
+        <td><code>_get_n_samples_bootstrap(n_samples, max_samples, sample_weight)</code></td>
+        <td><code>None</code> → <var>n</var>; int as given; float as a fraction of <var>n</var> (or of the weight total).</td>
+        <td><a href="{{ skl('sklearn/ensemble/_bootstrap.py', 10, 69) }}">_bootstrap.py 10-69</a></td>
+      </tr>
+      <tr>
+        <td>OOB predictions</td>
+        <td><code>_compute_oob_predictions(X, y)</code> → (n_samples, n_classes, n_outputs)</td>
+        <td>Sums each tree's <code>predict_proba</code> on its unsampled rows and divides by the count per row.</td>
+        <td><a href="{{ skl('sklearn/ensemble/_forest.py', 540, 600) }}">_forest.py 540-600</a>, <a href="{{ skl('sklearn/ensemble/_forest.py', 786, 808) }}">786-808</a></td>
+      </tr>
+      <tr>
+        <td>Forest prediction</td>
+        <td><code>predict_proba(X)</code> → (n_samples, n_classes)</td>
+        <td>Mean of the trees' class probabilities; <code>predict</code> takes the argmax.</td>
+        <td><a href="{{ skl('sklearn/ensemble/_forest.py', 921, 967) }}">_forest.py 921-967</a>, <a href="{{ skl('sklearn/ensemble/_forest.py', 882, 919) }}">882-919</a></td>
+      </tr>
+      <tr>
+        <td>Impurity importance</td>
+        <td><code>feature_importances_</code> → (n_features,)</td>
+        <td>Mean of per-tree importances over non-stump trees, renormalized to sum to 1.</td>
+        <td><a href="{{ skl('sklearn/ensemble/_forest.py', 627, 660) }}">_forest.py 627-660</a></td>
+      </tr>
+      <tr>
+        <td>Split search</td>
+        <td><code>node_split_best</code> / <code>node_split_random</code></td>
+        <td>Fisher–Yates draw of up to <code>max_features</code> features; best threshold, or one uniform threshold per feature.</td>
+        <td><a href="{{ skl('sklearn/tree/_splitter.pyx', 262, 504) }}">_splitter.pyx 262-504</a>, <a href="{{ skl('sklearn/tree/_splitter.pyx', 507, 736) }}">507-736</a></td>
+      </tr>
+      <tr>
+        <td>Extra trees</td>
+        <td><code>ExtraTreesClassifier(n_estimators=100, *, max_features="sqrt", bootstrap=False, …)</code></td>
+        <td>Random-threshold trees on the full training set.</td>
+        <td><a href="{{ skl('sklearn/ensemble/_forest.py', 1961, 2346) }}">_forest.py 1961-2346</a></td>
+      </tr>
+      <tr>
+        <td>Generic bagging</td>
+        <td><code>BaggingClassifier(estimator=None, n_estimators=10, *, max_samples=None, max_features=1.0, bootstrap=True, bootstrap_features=False, …)</code></td>
+        <td>Rows and features drawn once per estimator: pasting, bagging, random subspaces or random patches.</td>
+        <td><a href="{{ skl('sklearn/ensemble/_bagging.py', 683, 1189) }}">_bagging.py 683-1189</a>, <a href="{{ skl('sklearn/ensemble/_bagging.py', 64, 95) }}">64-95</a></td>
+      </tr>
+      <tr>
+        <td>Permutation importance</td>
+        <td><code>permutation_importance(estimator, X, y, *, scoring=None, n_repeats=5, …, max_samples=1.0)</code></td>
+        <td><code>importances = baseline_score − permuted_score</code>, with mean and std over repeats.</td>
+        <td><a href="{{ skl('sklearn/inspection/_permutation_importance.py', 114, 313) }}">_permutation_importance.py 114-313</a>, <a href="{{ skl('sklearn/inspection/_permutation_importance.py', 31, 111) }}">31-111</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <p>
+    <strong>Data.</strong> {{ ex.train|length }} training and {{ ex.test|length }} test rows with four features: <var>x</var><sub>0</sub> and <var>x</var><sub>1</sub> uniform on [0, 1], a continuous noise feature,
+    and a binary noise feature. The label is 1 when <var>x</var><sub>0</sub> + <var>x</var><sub>1</sub> &gt; 1, flipped for 10% of rows, so no model can beat about 0.90 on average.
+    A diagonal boundary is awkward for axis-aligned trees, which must approximate it with a staircase.
+  </p>
+  <p>
+    <strong>Models.</strong> One fully grown tree on all the data; then {{ ex.n_trees }} fully grown trees each for bagging (all 4 features per split), a random forest (2 = √4 features per split), and extra trees
+    (2 features, random thresholds, no bootstrap). The code is the pure-Python version of the steps above, deterministic from fixed seeds.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Model</th><th>Train accuracy</th><th>Test accuracy</th><th>Mean single-tree test accuracy</th><th>OOB accuracy</th></tr></thead>
+      <tbody>
+        <tr><td>One tree</td><td>{{ f(ex.single.train_accuracy) }}</td><td>{{ f(ex.single.test_accuracy) }}</td><td>—</td><td>—</td></tr>
+        {% for key, label in [("bagging", "Bagging, max_features 4"), ("forest", "Random forest, max_features 2"), ("extra", "Extra trees, max_features 2")] %}
+        {% set r = ex[key] %}
+        <tr><td>{{ label }}</td><td>{{ f(r.train_accuracy) }}</td><td>{{ f(r.test_accuracy) }}</td><td>{{ f(r.tree_accuracy) }}</td><td>{% if r.oob_accuracy is not none %}{{ f(r.oob_accuracy) }}{% else %}— (no bootstrap){% endif %}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <ul>
+    <li>Every ensemble beats the single tree by about 5 points even though its own trees are individually worse: the forest's trees average {{ f(fo.tree_accuracy) }} on the test set, below the single tree's {{ f(ex.single.test_accuracy) }}, because each saw only ~63% of the rows and a random half of the features per split.</li>
+    <li>The forest's trees left out {{ pct(fo.mean_oob_fraction) }} of rows on average, against the formula's {{ pct(bootstrap_oob_fraction(100)) }}. Its OOB accuracy, {{ f(fo.oob_accuracy) }}, is within a few points of the test accuracy, {{ f(fo.test_accuracy) }}, computed without touching the test set. It runs slightly low because each OOB prediction averages only about 37 trees.</li>
+    <li>With this little data the three ensembles finish within about one point of each other; at 400 test rows one point is 4 predictions, so the ranking among them is not meaningful here.</li>
+  </ul>
+  <p>
+    <strong>Correlation.</strong> To measure ρ and σ², the same recipe was rerun on 20 fresh training sets of {{ ex.train|length }} rows, 20 trees each, scored at 100 fixed points.
+    σ² is the variance of a single tree's predicted probability over all 400 trees; ρσ² is the part that comes from the training set, the variance of the per-set average with the within-set part removed.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Recipe</th><th>σ² (one tree)</th><th>ρ</th><th>ρσ² (B → ∞)</th><th>Variance at B = 10</th><th>Variance at B = 100</th></tr></thead>
+      <tbody>
+        {% for label, c in [("Bagging, max_features 4", cb), ("Random forest, max_features 2", cf), ("Extra trees, max_features 2", ce)] %}
+        <tr><td>{{ label }}</td><td>{{ f(c.sigma2, 4) }}</td><td>{{ f(c.rho) }}</td><td>{{ f(c.rho * c.sigma2, 4) }}</td><td>{{ f(averaged_variance(c.rho, c.sigma2, 10), 4) }}</td><td>{{ f(averaged_variance(c.rho, c.sigma2, 100), 4) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Restricting each split to 2 features raises a single tree's variance from {{ f(cb.sigma2, 3) }} to {{ f(cf.sigma2, 3) }} but cuts the correlation from {{ f(cb.rho, 2) }} to {{ f(cf.rho, 2) }}, and the
+    floor ρσ² falls from {{ f(cb.rho * cb.sigma2, 4) }} to {{ f(cf.rho * cf.sigma2, 4) }}. With 20 training sets these estimates are rough, but the direction is the point: decorrelation buys more than the weaker trees cost.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 270" role="img" aria-labelledby="rf-curve-title rf-curve-desc">
+    <title id="rf-curve-title">Test accuracy against the number of trees</title>
+    <desc id="rf-curve-desc">
+      Test accuracy of bagging, a random forest and extra trees as trees are added one at a time, from 1 to {{ ex.n_trees }}. All three start near 0.7 with one tree,
+      climb steeply over the first ten trees and level off near 0.8, above the single full tree's {{ f(ex.single.test_accuracy) }} and below the noise ceiling of 0.9.
+    </desc>
+    <g font-size="12">
+      <path d="M70 40 L70 220 L590 220" class="d-line" fill="none"></path>
+      {% for a in [0.7, 0.75, 0.8, 0.85, 0.9] %}<text x="62" y="{{ ay(a)|float + 4 }}" text-anchor="end" class="d-muted">{{ a }}</text>{% endfor %}
+      {% for b in [1, 25, 50, 75, 100] %}<text x="{{ ax(b) }}" y="238" text-anchor="middle" class="d-muted">{{ b }}</text>{% endfor %}
+      <text x="330" y="258" text-anchor="middle" class="d-muted">number of trees B</text>
+      <path d="M70 {{ ay(0.9) }} L590 {{ ay(0.9) }}" class="d-line ml-dashed" fill="none"></path>
+      <text x="586" y="{{ ay(0.9)|float - 6 }}" text-anchor="end" class="d-muted">noise ceiling ≈ 0.9</text>
+      <path d="M70 {{ ay(ex.single.test_accuracy) }} L590 {{ ay(ex.single.test_accuracy) }}" class="d-line ml-dashed" fill="none"></path>
+      <text x="586" y="{{ ay(ex.single.test_accuracy)|float + 14 }}" text-anchor="end" class="d-muted">one full tree</text>
+      {% set colours = {"bagging": "var(--jj-violet)", "forest": "var(--jj-green)", "extra": "var(--jj-amber)"} %}
+      {% for key, label in [("bagging", "bagging"), ("forest", "random forest"), ("extra", "extra trees")] %}
+      <path d="M{% for a in ex[key].curve %}{% if not loop.first %} L{% endif %}{{ ax(loop.index) }},{{ ay(a) }}{% endfor %}" fill="none" stroke="{{ colours[key] }}" stroke-width="2"></path>
+      <text x="600" y="{{ 120 + loop.index0 * 18 }}" style="fill: {{ colours[key] }}">{{ label }}</text>
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Most of the gain comes from the first 10–20 trees; after that the curves flatten instead of overfitting.</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 270" role="img" aria-labelledby="rf-var-title rf-var-desc">
+    <title id="rf-var-title">Variance of the averaged prediction against the number of trees</title>
+    <desc id="rf-var-desc">
+      Two curves of rho sigma squared plus one minus rho times sigma squared over B, for B from 1 to 50, using the measured values. Bagging starts at {{ f(cb.sigma2, 3) }}
+      and flattens toward {{ f(cb.rho * cb.sigma2, 3) }}; the random forest starts higher at {{ f(cf.sigma2, 3) }} but crosses below by B = 2 and flattens toward {{ f(cf.rho * cf.sigma2, 3) }}.
+    </desc>
+    <g font-size="12">
+      <path d="M70 40 L70 220 L590 220" class="d-line" fill="none"></path>
+      {% for v in [0, 0.05, 0.1, 0.15] %}<text x="62" y="{{ vy(v)|float + 4 }}" text-anchor="end" class="d-muted">{{ v }}</text>{% endfor %}
+      {% for b in [1, 10, 20, 30, 40, 50] %}<text x="{{ vx(b) }}" y="238" text-anchor="middle" class="d-muted">{{ b }}</text>{% endfor %}
+      <text x="330" y="258" text-anchor="middle" class="d-muted">number of trees B</text>
+      {% for c, colour, label in [(cb, "var(--jj-violet)", "bagging"), (cf, "var(--jj-green)", "random forest")] %}
+      <path d="M{% for b in range(1, 51) %}{% if not loop.first %} L{% endif %}{{ vx(b) }},{{ vy(averaged_variance(c.rho, c.sigma2, b)) }}{% endfor %}" fill="none" stroke="{{ colour }}" stroke-width="2"></path>
+      <path d="M70 {{ vy(c.rho * c.sigma2) }} L590 {{ vy(c.rho * c.sigma2) }}" fill="none" stroke="{{ colour }}" stroke-width="1" stroke-dasharray="4 4"></path>
+      <text x="600" y="{{ vy(c.rho * c.sigma2)|float + (4 if loop.first else 14) }}" style="fill: {{ colour }}">{{ label }}: ρσ²</text>
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Adding trees removes the (1 − ρ)σ²/B term; only a smaller ρ lowers the floor.</p>
+
+<h3 id="importance-example">Importance on the same forest</h3>
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Feature</th><th>Impurity importance (training data)</th><th>Permutation importance (test data, 5 repeats)</th></tr></thead>
+    <tbody>
+      {% for name in forest_features %}
+      {% set p = fo.permutation.features[loop.index0] %}
+      <tr><td>{{ name }}</td><td>{{ f(fo.impurity[loop.index0]) }}</td><td>{{ f(p.mean) }} ± {{ f(p.std) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  The forest's test accuracy is {{ f(fo.permutation.baseline) }}. Shuffling <var>x</var><sub>0</sub> drops it by {{ f(fo.permutation.features[0].mean, 2) }}, while shuffling either noise feature barely moves it. Impurity importance
+  still gives the continuous noise feature {{ pct(fo.impurity[2]) }} of the total, because fully grown trees keep splitting on it to purify their last leaves in the training data. The binary noise feature has a single
+  threshold to offer and gets {{ pct(fo.impurity[3]) }}. That is the high-cardinality bias the scikit-learn docstring warns about.
+</p>
+
+<details class="ml-quiz">
+  <summary>Trees in a forest have pairwise correlation 0.3 and variance 0.2 each. What is the variance of an average of 100 of them, and of infinitely many?</summary>
+  <p>0.3 × 0.2 + 0.7 × 0.2 / 100 = 0.0614; the limit is ρσ² = 0.06. Going from 100 trees to infinitely many removes only 0.0014.</p>
+</details>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
+from sklearn.inspection import permutation_importance
+
+forest = RandomForestClassifier(
+    n_estimators=500,        # more trees: slower, never worse in expectation
+    max_features="sqrt",     # the main knob: smaller = less correlated trees
+    min_samples_leaf=1,      # raise it for smoother probabilities and smaller trees
+    oob_score=True,          # free generalization estimate (needs bootstrap=True)
+    n_jobs=-1, random_state=0,
+).fit(X_train, y_train)
+
+forest.oob_score_                      # accuracy on out-of-bag rows
+forest.oob_decision_function_          # (n_samples, n_classes) OOB probabilities
+forest.feature_importances_            # impurity-based, from training data
+
+result = permutation_importance(forest, X_val, y_val, n_repeats=10, random_state=0)
+result.importances_mean, result.importances_std
+
+extra = ExtraTreesClassifier(n_estimators=500, random_state=0).fit(X_train, y_train)</code></pre>
+
+<p>
+  Trees are independent, so <code>n_jobs=-1</code> fits them in parallel across cores. The forest keeps every tree in memory; on large data, fully grown trees have about as many leaves as rows, so
+  <code>min_samples_leaf</code>, <code>max_depth</code> or <code>max_samples</code> are the levers for model size.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Strong default.</strong> Random forests need little tuning and no feature scaling, and (at {{ pins.sklearn.tag }}) handle missing values natively. They are a standard first baseline on tabular data.</li>
+  <li><strong>Versus gradient boosting.</strong> A forest averages deep, independent trees to reduce variance; <a href="/ml-models/gradient-boosting">gradient boosting</a> adds shallow trees one after another to reduce bias. Tuned boosting usually wins on accuracy, but needs more tuning and can overfit with too many rounds, which a forest cannot.</li>
+  <li><strong>No extrapolation.</strong> Each tree predicts an average of training targets, so a regression forest's output is bounded by the training targets' range. Trends outside the training range are lost.</li>
+  <li><strong>Size and latency.</strong> Hundreds of deep trees can take hundreds of megabytes and many node lookups per prediction, where a linear model takes one dot product.</li>
+  <li><strong>Probabilities.</strong> Averaged leaf fractions are smoother than a single tree's, but they tend to avoid the extremes 0 and 1; calibrate them if you need real probabilities.</li>
+  <li><strong>Interpretability.</strong> One tree can be read; a forest cannot. Use permutation importance on held-out data rather than impurity importance, and keep in mind that correlated features split the credit.</li>
+  <li><strong>OOB caveats.</strong> The OOB score uses fewer trees per row than the full forest, so it is slightly pessimistic for small forests, and it is not available without bootstrap (the extra-trees default).</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Why does a random forest with max_features = p (all features) usually do worse than with √p, even though each tree is better?</summary>
+  <p>With all features, every tree tends to pick the same strong features near the root, so the trees are highly correlated and averaging removes little variance: the ρσ² floor stays high. Subsampling features decorrelates them.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Breiman. <em>Bagging Predictors.</em> Machine Learning 24(2), 123–140, 1996. <a href="https://doi.org/10.1007/BF00058655">doi:10.1007/BF00058655</a></li>
+  <li>Breiman. <em>Random Forests.</em> Machine Learning 45(1), 5–32, 2001. <a href="https://doi.org/10.1023/A:1010933404324">doi:10.1023/A:1010933404324</a></li>
+  <li>Geurts, Ernst and Wehenkel. <em>Extremely Randomized Trees.</em> Machine Learning 63(1), 3–42, 2006. <a href="https://doi.org/10.1007/s10994-006-6226-1">doi:10.1007/s10994-006-6226-1</a></li>
+  <li>Ho. <em>The Random Subspace Method for Constructing Decision Forests.</em> IEEE TPAMI 20(8), 1998.</li>
+  <li>Hastie, Tibshirani and Friedman. <em>The Elements of Statistical Learning</em>, 2nd ed., chapter 15 (the ρσ² + (1 − ρ)σ²/B argument).</li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/ensemble/_forest.py') }}"><code>sklearn/ensemble/_forest.py</code></a>, <a href="{{ skl('sklearn/ensemble/_bagging.py') }}"><code>_bagging.py</code></a>, <a href="{{ skl('sklearn/tree/_splitter.pyx') }}"><code>sklearn/tree/_splitter.pyx</code></a>, <a href="{{ skl('sklearn/inspection/_permutation_importance.py') }}"><code>_permutation_importance.py</code></a>.</li>
+</ul>

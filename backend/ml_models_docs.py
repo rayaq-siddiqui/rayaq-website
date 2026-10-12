@@ -498,7 +498,7 @@ PAGES = [
             "sklearn:sklearn/ensemble/_forest.py",
             "sklearn:sklearn/ensemble/_bagging.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "gradient-boosting",
