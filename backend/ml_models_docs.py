@@ -8866,6 +8866,180 @@ def svm_example():
     }
 
 
+LR_SCHEDULE_EXAMPLE = {
+    "base_lr": 0.1,
+    "steps": 100,
+    "step_size": 30,
+    "step_gamma": 0.1,
+    "exp_gamma": 0.96,
+    "warmup": 10,
+    "warmup_start": 0.01,
+    "one_cycle": {"max_lr": 0.1, "pct_start": 0.3, "div_factor": 25.0, "final_div_factor": 1e4,
+                  "base_momentum": 0.85, "max_momentum": 0.95},
+    "curvature": 2.0,
+    "noise": 1.0,
+    "w0": 3.0,
+    "slow_lr": 0.01,
+    "gd_lrs": [0.05, 0.5, 0.9, 1.05],
+    "gd_steps": 10,
+    "range_curvatures": [0.5, 2.0, 8.0],
+    "range_start": 1e-4,
+    "range_end": 10.0,
+    "range_steps": 51,
+    "adam_grads": [1e-4, 10.0],
+    "adam_lr": 1e-3,
+}
+
+
+def lr_step_decay(base_lr, t, step_size, gamma):
+    return base_lr * gamma ** (t // step_size)
+
+
+def lr_exponential(base_lr, t, gamma):
+    return base_lr * gamma**t
+
+
+def lr_cosine(base_lr, t, t_max, eta_min=0.0):
+    return eta_min + (base_lr - eta_min) * (1 + math.cos(math.pi * t / t_max)) / 2
+
+
+def lr_linear(base_lr, t, start_factor, end_factor, total_iters):
+    return base_lr * (start_factor + (end_factor - start_factor) * min(total_iters, t) / total_iters)
+
+
+def lr_warmup_cosine(base_lr, t, warmup, total, start_factor, eta_min=0.0):
+    if t < warmup:
+        return lr_linear(base_lr, t, start_factor, 1.0, warmup)
+    return lr_cosine(base_lr, t - warmup, total - warmup, eta_min)
+
+
+def lr_one_cycle(t, total_steps, max_lr, pct_start=0.3, div_factor=25.0, final_div_factor=1e4,
+                 base_momentum=0.85, max_momentum=0.95):
+    initial = max_lr / div_factor
+    phases = [(pct_start * total_steps - 1, initial, max_lr, max_momentum, base_momentum),
+              (total_steps - 1, max_lr, initial / final_div_factor, base_momentum, max_momentum)]
+    start = 0.0
+    for i, (end, lr0, lr1, m0, m1) in enumerate(phases):
+        if t <= end or i == len(phases) - 1:
+            pct = (t - start) / (end - start)
+            anneal = lambda a, b: b + (a - b) / 2 * (math.cos(math.pi * pct) + 1)
+            return anneal(lr0, lr1), anneal(m0, m1)
+        start = end
+
+
+def lr_recursive(kind, base_lr, steps, **kw):
+    lrs = [base_lr * kw["start_factor"] if kind == "linear" else base_lr]
+    for t in range(1, steps):
+        lr = lrs[-1]
+        if kind == "step":
+            lr = lr * kw["gamma"] if t % kw["step_size"] == 0 else lr
+        elif kind == "exponential":
+            lr = lr * kw["gamma"]
+        elif kind == "cosine":
+            t_max, eta_min = kw["t_max"], kw.get("eta_min", 0.0)
+            if (t - 1 - t_max) % (2 * t_max) == 0:
+                lr = lr + (base_lr - eta_min) * (1 - math.cos(math.pi / t_max)) / 2
+            else:
+                lr = ((1 + math.cos(math.pi * t / t_max)) / (1 + math.cos(math.pi * (t - 1) / t_max))
+                      * (lr - eta_min) + eta_min)
+        elif kind == "linear":
+            sf, ef, n = kw["start_factor"], kw["end_factor"], kw["total_iters"]
+            if t <= n:
+                lr = lr * (1.0 + (ef - sf) / (n * sf + (t - 1) * (ef - sf)))
+        lrs.append(lr)
+    return lrs
+
+
+def noisy_quadratic_loss(lrs, curvature, noise, w0):
+    second_moment = w0 * w0
+    losses = [curvature * second_moment / 2]
+    for lr in lrs:
+        second_moment = (1 - lr * curvature) ** 2 * second_moment + (lr * noise) ** 2
+        losses.append(curvature * second_moment / 2)
+    return losses
+
+
+def noise_floor(lr, curvature, noise):
+    return lr * noise**2 / (2 * (2 - lr * curvature))
+
+
+def gd_quadratic(lr, curvature, w0, steps):
+    w = [w0]
+    for _ in range(steps):
+        w.append(w[-1] * (1 - lr * curvature))
+    return w
+
+
+def lr_range_test(curvatures, start, end, steps, w0=1.0):
+    ratio = (end / start) ** (1 / (steps - 1))
+    w = [w0] * len(curvatures)
+    rows = []
+    for i in range(steps):
+        lr = start * ratio**i
+        w = [x * (1 - lr * h) for x, h in zip(w, curvatures)]
+        rows.append((lr, sum(h * x * x / 2 for h, x in zip(curvatures, w))))
+    return rows
+
+
+@functools.lru_cache(maxsize=None)
+def lr_schedule_example():
+    e = LR_SCHEDULE_EXAMPLE
+    base, n = e["base_lr"], e["steps"]
+    oc = e["one_cycle"]
+    schedules = {
+        "constant": [base] * n,
+        "step": [lr_step_decay(base, t, e["step_size"], e["step_gamma"]) for t in range(n)],
+        "exponential": [lr_exponential(base, t, e["exp_gamma"]) for t in range(n)],
+        "cosine": [lr_cosine(base, t, n) for t in range(n)],
+        "warmup_cosine": [lr_warmup_cosine(base, t, e["warmup"], n, e["warmup_start"]) for t in range(n)],
+        "one_cycle": [lr_one_cycle(t, n, **oc)[0] for t in range(n)],
+    }
+    momentum = [lr_one_cycle(t, n, **oc)[1] for t in range(n)]
+    recursion = {
+        "step": lr_recursive("step", base, n, step_size=e["step_size"], gamma=e["step_gamma"]),
+        "exponential": lr_recursive("exponential", base, n, gamma=e["exp_gamma"]),
+        "cosine": lr_recursive("cosine", base, n, t_max=n),
+        "linear": lr_recursive("linear", base, e["warmup"] + 5, start_factor=e["warmup_start"],
+                               end_factor=1.0, total_iters=e["warmup"]),
+    }
+    closed_linear = [lr_linear(base, t, e["warmup_start"], 1.0, e["warmup"]) for t in range(e["warmup"] + 5)]
+    recursion_error = max(
+        max(abs(a - b) for a, b in zip(recursion[k], schedules[k])) for k in ("step", "exponential", "cosine"))
+    recursion_error = max(recursion_error, max(abs(a - b) for a, b in zip(recursion["linear"], closed_linear)))
+    past_end = lr_recursive("cosine", base, 2 * n + 1, t_max=n)
+    h, sigma, w0 = e["curvature"], e["noise"], e["w0"]
+    runs = {name: noisy_quadratic_loss(schedules[name], h, sigma, w0)
+            for name in ("constant", "step", "cosine", "warmup_cosine", "one_cycle")}
+    runs["slow"] = noisy_quadratic_loss([e["slow_lr"]] * n, h, sigma, w0)
+    gd = [{"lr": lr, "factor": 1 - lr * h, "w": gd_quadratic(lr, h, w0, e["gd_steps"])} for lr in e["gd_lrs"]]
+    rows = lr_range_test(e["range_curvatures"], e["range_start"], e["range_end"], e["range_steps"])
+    best = min(range(len(rows)), key=lambda i: rows[i][1])
+    blowup = next(i for i in range(best, len(rows)) if rows[i][1] > rows[0][1])
+    adam = []
+    for g in e["adam_grads"]:
+        state, p, updates = {}, [0.0], []
+        for _ in range(3):
+            before = p[0]
+            p = optimizer_step("adam", p, [g], state, {"lr": e["adam_lr"]})
+            updates.append(before - p[0])
+        adam.append({"grad": g, "updates": updates})
+    return {
+        "schedules": schedules,
+        "momentum": momentum,
+        "recursion_error": recursion_error,
+        "linear": closed_linear,
+        "cosine_past_end": {"at_end": past_end[n], "after": past_end[n + n // 2], "back": past_end[2 * n]},
+        "runs": runs,
+        "floors": {"constant": noise_floor(base, h, sigma), "slow": noise_floor(e["slow_lr"], h, sigma)},
+        "gd": gd,
+        "range": {"rows": rows, "best": best, "blowup": blowup, "stable_limit": 2 / max(e["range_curvatures"])},
+        "adam": adam,
+        "one_cycle": {"initial": oc["max_lr"] / oc["div_factor"],
+                      "final": oc["max_lr"] / oc["div_factor"] / oc["final_div_factor"],
+                      "peak_step": oc["pct_start"] * n - 1},
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -9412,6 +9586,8 @@ def render(slug, render_template):
         "svm_example": svm_example,
         "svm_settings": SVM_EXAMPLE,
         "hinge": hinge,
+        "lr_example": lr_schedule_example,
+        "lr_settings": LR_SCHEDULE_EXAMPLE,
     }
     content = render_template(template, **context)
     intro, separator, body = content.partition("</header>")

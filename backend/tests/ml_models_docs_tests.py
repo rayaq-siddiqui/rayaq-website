@@ -3717,3 +3717,51 @@ def test_svm_scaling_shows_gamma_scale_cannot_fix_mixed_units():
     assert s["gamma_standardized"] == pytest.approx(0.5)
     assert s["kernel_raw_near"] > 0.9999 and s["kernel_raw_far"] < 0.2
     assert s["kernel_std_near"] == pytest.approx(s["kernel_std_far"])
+
+
+def test_lr_closed_forms_match_the_pytorch_recursions():
+    x = ml_models_docs.lr_schedule_example()
+    assert x["recursion_error"] < 1e-12
+    s = x["schedules"]
+    assert s["step"][29] == pytest.approx(0.1) and s["step"][30] == pytest.approx(0.01) and s["step"][99] == pytest.approx(1e-4)
+    assert s["exponential"][1] == pytest.approx(0.096)
+    assert s["cosine"][50] == pytest.approx(0.05)
+    assert s["warmup_cosine"][0] == pytest.approx(0.001) and s["warmup_cosine"][10] == pytest.approx(0.1)
+    assert x["cosine_past_end"] == pytest.approx({"at_end": 0.0, "after": 0.05, "back": 0.1})
+
+
+def test_lr_one_cycle_follows_the_two_phase_cosine():
+    x = ml_models_docs.lr_schedule_example()
+    lrs, momentum = x["schedules"]["one_cycle"], x["momentum"]
+    assert lrs[0] == pytest.approx(0.004) and lrs[29] == pytest.approx(0.1) and max(lrs) == lrs[29]
+    assert lrs[99] == pytest.approx(4e-7)
+    assert momentum[0] == pytest.approx(0.95) and momentum[29] == pytest.approx(0.85) and momentum[99] == pytest.approx(0.95)
+    assert ml_models_docs.lr_one_cycle(64, 100, 0.1)[0] == pytest.approx((0.1 + 4e-7) / 2)
+
+
+def test_lr_decay_beats_both_constant_rates_on_the_noisy_quadratic():
+    x = ml_models_docs.lr_schedule_example()
+    runs, floors = x["runs"], x["floors"]
+    assert floors["constant"] == pytest.approx(1 / 36)
+    assert runs["constant"][-1] == pytest.approx(floors["constant"], rel=1e-6)
+    assert runs["slow"][-1] > 5 * runs["constant"][-1]
+    for name in ("step", "cosine", "warmup_cosine", "one_cycle"):
+        assert runs[name][-1] < runs["constant"][-1] / 2
+    assert runs["cosine"][-1] < runs["step"][-1]
+    assert runs["warmup_cosine"][10] > runs["constant"][10]
+
+
+def test_lr_gd_rates_and_range_test_show_the_stability_limit():
+    x = ml_models_docs.lr_schedule_example()
+    factors = [g["factor"] for g in x["gd"]]
+    assert factors == pytest.approx([0.9, 0.0, -0.8, -1.1])
+    assert abs(x["gd"][-1]["w"][-1]) > abs(x["gd"][-1]["w"][0])
+    r = x["range"]
+    assert r["rows"][r["best"]][0] == pytest.approx(1.0)
+    assert r["rows"][r["blowup"]][1] > r["rows"][0][1] and r["blowup"] == r["best"] + 3
+    assert r["stable_limit"] == 0.25 and r["rows"][r["best"]][0] / 10 < r["stable_limit"]
+
+
+def test_adam_first_steps_move_by_the_learning_rate_whatever_the_gradient():
+    for run in ml_models_docs.lr_schedule_example()["adam"]:
+        assert run["updates"] == pytest.approx([1e-3] * 3, rel=1e-3)
