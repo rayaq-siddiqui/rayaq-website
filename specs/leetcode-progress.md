@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-13 (owner decision after the sixth audit run). All 58 pages are ready and the queue is empty. The owner asked for weekly audits now. **The next run is an audit run** (spec §8.1). Before any other work, it moves this Routine to weekly: `update_trigger` on `trig_01XkmtUwbN1iL5esk5KeGRPa` with `CRON_TZ=America/Los_Angeles 14 4 * * 2`. It does this whether or not the audit finds a gap.
+**Last updated:** 2026-10-13 (seventh audit run). All 58 pages are ready and the queue is empty. This audit found and fixed one gap (factual errors in page prose). The owner asked for weekly audits whether or not an audit finds a gap, but this session also had no `update_trigger` tool, so the schedule is still every 5 hours (see Known gaps). **The next run is an audit run** (spec §8.1). Before any other work, it moves this Routine to weekly: `update_trigger` on `trig_01XkmtUwbN1iL5esk5KeGRPa` with `CRON_TZ=America/Los_Angeles 14 4 * * 2`.
 
 ## The Routine
 
@@ -176,13 +176,18 @@ build once research is done.
   even when an audit finds and fixes a gap. The sixth audit's session had no tool that edits
   Routine schedules, so the next run makes the change (see Known gaps).
 
+- **Prose is fact-checked (2026-10-13).** Audit runs also read every ready page's prose, quiz answers,
+  captions, complexity claims, citations and home-problem insights against the rendered values and
+  the literature. A false statement is a gap even when the code and tables are right. Captions that
+  describe example values bind them from the helper rather than restating numbers by hand.
+
 ## Known gaps and questions for the owner
 
 - **Schedule not yet weekly (2026-10-13).** The owner asked for weekly audits, but the session that
   recorded the request had no `update_trigger` tool. The next run calls `update_trigger` on
   `trig_01XkmtUwbN1iL5esk5KeGRPa` with `CRON_TZ=America/Los_Angeles 14 4 * * 2` and clears this
   gap. If it can't, the owner can change the schedule by hand under the Routine's settings at
-  claude.ai/code.
+  claude.ai/code. The seventh audit's session had no `update_trigger` tool either.
 
 ## Run log
 
@@ -471,3 +476,26 @@ Coverage is unchanged at 100% (Blind 75 75/75, Grind 169 169/169, NeetCode 150 1
 NeetCode 250 250/250). pytest green (837 passed); every ready page returns 200 and the phone check
 passed on `/`, `/leetcode` and every ready page. Because this run found a gap, the schedule stays
 at every 5 hours. Next: another audit run.
+
+### 2026-10-13 — audit run (seventh)
+
+Seventh audit run. Every ready page's prose was fact-checked against its rendered values and the
+literature (quiz answers, captions, complexity claims, citations, home-problem insights). One gap:
+false statements on 20 pages. Examples: `binary-search-trees` showed a "passes the parent check"
+tree that actually failed the parent check (now 5 → 4, 6 → 3, 7, where 3 fails (5, 6)); `bellman-ford`
+said Dijkstra would fail on a graph it gets right; `fast-slow-pointers` said speed 3 could miss
+forever; `linear-dp` captioned the wrong column and called Stone Game III O(n²); `grid-dp` suggested
+Dijkstra for negative costs; `interval-dp` said the first player always wins the even-pile game (it
+never loses); `string-matching` missed the zero-border case of the repetition test;
+`variable-size-window` quoted the wrong index in a quiz and stated the "shortest" invariant
+off by one; `number-math` gave ⌈log₁₀ x⌉ for the digit count and said CPython uses FFT
+multiplication. It also fixed caption colours (`fixed-size-window`, `interval-dp`), counts
+(`union-find`, `hash-maps-and-sets`, `complexity-analysis`), the heap-layout note in `tree-bfs`,
+the 435 insight (touching intervals), the `dijkstra` edge-direction caption, and citations in
+`fixed-size-window`, `linked-list-design`, `k-way-merge`, `tries`, `greedy` and `kadanes-algorithm`.
+A new test binds the fixed captions to helper output. No helpers changed. Coverage is unchanged
+at 100% (Blind 75 75/75, Grind 169 169/169, NeetCode 150 150/150, NeetCode 250 250/250). pytest
+green; every ready page returns 200 and the phone check passed on `/`, `/leetcode` and every ready
+page. Per the owner's decision the Routine should now be weekly, but this session had no
+`update_trigger` tool either, so the schedule gap stays open. Next: another audit run, which
+moves the schedule first.
