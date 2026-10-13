@@ -3826,3 +3826,81 @@ def test_dcgan_transposed_convolutions_grow_one_pixel_to_sixty_four():
     assert ml_models_docs.gan_example()["dcgan_sizes"] == [1, 4, 8, 16, 32, 64]
     assert ml_models_docs.conv_transpose_out(4, 3, 2, 1) == 7
     assert ml_models_docs.conv_transpose_out(4, 3, 2, 1, output_padding=1) == 8
+
+
+def test_encoder_param_count_matches_bert_base_and_the_decoder_block():
+    counts = ml_models_docs.encoder_param_count(30000, 512, 2, 768, 12)
+    assert counts["d_ff"] == 3072
+    assert counts["embeddings"] == 30000 * 768 + 512 * 768 + 2 * 768 + 2 * 768
+    assert counts["per_block"] == ml_models_docs.decoder_param_count(30000, 512, 768, 12)["per_block"]
+    assert counts["per_block"] == ml_models_docs.transformer_param_count(768, 1, 0, 3072)["encoder_layer"]
+    assert counts["total"] == counts["embeddings"] + 12 * counts["per_block"] == 108_490_752
+    large = ml_models_docs.encoder_param_count(30000, 512, 2, 1024, 24)
+    assert large["total"] == 333_557_760
+
+
+def test_bert_inputs_mark_segments_positions_and_padding():
+    pair = ml_models_docs.bert_inputs(["the", "cat"], ["it"], 8)
+    assert pair["tokens"] == ["[CLS]", "the", "cat", "[SEP]", "it", "[SEP]", "[PAD]", "[PAD]"]
+    assert pair["segments"] == [0, 0, 0, 0, 1, 1, 0, 0]
+    assert pair["positions"] == list(range(8))
+    assert pair["padding"] == [False] * 6 + [True] * 2
+    assert pair["real"] == 6
+    cut = ml_models_docs.bert_inputs(["a", "b", "c", "d"], None, 4)
+    assert cut["tokens"] == ["[CLS]", "a", "b", "[SEP]"] and cut["padding"] == [False] * 4
+
+
+def test_mlm_corrupt_labels_only_chosen_positions_and_never_specials():
+    tokens = ml_models_docs.bert_inputs(["w%d" % i for i in range(40)])["tokens"]
+    result = ml_models_docs.mlm_corrupt(tokens, 0.15, (0.8, 0.1, 0.1), ["x", "y"], ml_models_docs.random.Random(0))
+    assert len(result["chosen"]) == 6
+    for i, label in enumerate(result["labels"]):
+        if i in result["chosen"]:
+            assert label == tokens[i] and tokens[i] not in ("[CLS]", "[SEP]")
+        else:
+            assert label == ml_models_docs.IGNORE_INDEX and result["inputs"][i] == tokens[i]
+    for i, action in result["actions"].items():
+        assert (result["inputs"][i] == "[MASK]") == (action == "mask")
+        if action == "keep":
+            assert result["inputs"][i] == tokens[i]
+
+
+def test_mlm_corruption_rates_follow_the_80_10_10_split():
+    e = ml_models_docs.ENCODER_EXAMPLE
+    rates = ml_models_docs.mlm_corruption_rates(100000, 0.15, (0.8, 0.1, 0.1), e["mask_vocab"], e["mask_seed"])
+    assert rates["selected"] == 15000
+    assert abs(rates["fractions"]["mask"] - 0.12) < 0.003
+    assert abs(rates["fractions"]["random"] - 0.015) < 0.002
+    assert abs(rates["fractions"]["keep"] - 0.015) < 0.002
+    assert rates["changed"] < rates["fractions"]["mask"] + rates["fractions"]["random"]
+
+
+def test_masked_lm_loss_averages_only_labelled_positions():
+    out = ml_models_docs.masked_lm_loss([9.0, 1.0, 9.0, 3.0], [-100, "cat", -100, "mat"])
+    assert out == {"kept": 2, "loss": 2.0}
+
+
+def test_padding_mask_makes_padded_attention_match_the_unpadded_sequence():
+    check = ml_models_docs.padding_attention_check(ml_models_docs.ATTENTION_EXAMPLE, 3, [0.0, 0.0], [0.0, 0.0])
+    assert check["masked_gap"] < 1e-12
+    assert check["unmasked_gap"] > 0.1
+    assert all(w > 0 for w in check["pad_weight"])
+    assert all(row[3] == 0.0 for row in check["masked"]["weights"][:3])
+
+
+def test_fill_in_needs_both_sides_to_resolve_the_blank():
+    e = ml_models_docs.ENCODER_EXAMPLE
+    scores = ml_models_docs.fill_in_scores(tuple(e["fill_corpus"]), tuple(e["fill_test"]), e["fill_alpha"])
+    assert scores["accuracy"]["both"] == 1.0
+    assert scores["nll"]["both"] < scores["nll"]["left"] and scores["nll"]["both"] < scores["nll"]["right"]
+    for row in scores["rows"]:
+        assert abs(row["left"] - 3 / 7) < 1e-12 and abs(row["right"] - 3 / 7) < 1e-12
+        assert abs(row["both"] - 0.6) < 1e-12
+
+
+def test_encoder_example_contrasts_bidirectional_and_causal_attention():
+    example = ml_models_docs.encoder_example()
+    assert example["prefix"]["causal_gap"] < 1e-12 < example["prefix"]["bidirectional_gap"]
+    assert all(w > 0 for row in example["bidirectional"]["weights"] for w in row)
+    assert [c["counts"]["total"] for c in example["configs"]] == [108_490_752, 333_557_760]
+    assert example["batch"][1]["padding"].count(True) == 7

@@ -9180,6 +9180,215 @@ def gan_example():
     }
 
 
+BERT_CONFIGS = [
+    {"name": "BERT-base", "vocab": 30000, "positions": 512, "segments": 2, "d_model": 768, "layers": 12, "heads": 12, "reported": "110M"},
+    {"name": "BERT-large", "vocab": 30000, "positions": 512, "segments": 2, "d_model": 1024, "layers": 24, "heads": 16, "reported": "340M"},
+]
+
+ENCODER_EXAMPLE = {
+    "sentence_a": ["the", "cat", "sat", "on", "the", "mat"],
+    "sentence_b": ["it", "was", "warm"],
+    "mask_rate": 0.15,
+    "mask_split": (0.8, 0.1, 0.1),
+    "mask_seed": 3,
+    "mask_vocab": ["the", "cat", "sat", "on", "mat", "it", "was", "warm", "dog", "ran"],
+    "mask_sample_tokens": 100000,
+    "fill_corpus": [
+        ("a", "p", "x"), ("a", "q", "y"), ("b", "q", "x"),
+        ("b", "r", "y"), ("c", "p", "z"), ("c", "r", "z"),
+    ],
+    "fill_test": [("a", "p", "z"), ("a", "q", "y"), ("b", "q", "x"), ("b", "r", "z"), ("c", "p", "x"), ("c", "r", "y")],
+    "fill_alpha": 0.5,
+}
+
+IGNORE_INDEX = -100
+
+
+def encoder_param_count(vocab, positions, segments, d_model, layers, d_ff=None):
+    d_ff = 4 * d_model if d_ff is None else d_ff
+    block = transformer_param_count(d_model, 1, 0, d_ff)
+    attention, feed_forward, layer_norm = block["attention"], block["feed_forward"], block["layer_norm"]
+    token_table = vocab * d_model
+    position_table = positions * d_model
+    segment_table = segments * d_model
+    embeddings = token_table + position_table + segment_table + layer_norm
+    per_block = attention + feed_forward + 2 * layer_norm
+    blocks = layers * per_block
+    return {
+        "d_ff": d_ff,
+        "token_table": token_table,
+        "position_table": position_table,
+        "segment_table": segment_table,
+        "embedding_norm": layer_norm,
+        "embeddings": embeddings,
+        "attention": attention,
+        "feed_forward": feed_forward,
+        "layer_norm": layer_norm,
+        "per_block": per_block,
+        "blocks": blocks,
+        "total": embeddings + blocks,
+    }
+
+
+def bert_inputs(sentence_a, sentence_b=None, length=None):
+    tokens = ["[CLS]"] + list(sentence_a) + ["[SEP]"]
+    segments = [0] * len(tokens)
+    if sentence_b:
+        tokens += list(sentence_b) + ["[SEP]"]
+        segments += [1] * (len(sentence_b) + 1)
+    real = len(tokens)
+    length = real if length is None else length
+    if length < real:
+        tokens, segments, real = tokens[:length - 1] + ["[SEP]"], segments[:length], length
+    pad = length - real
+    return {
+        "tokens": tokens + ["[PAD]"] * pad,
+        "segments": segments + [0] * pad,
+        "positions": list(range(length)),
+        "padding": [False] * real + [True] * pad,
+        "real": real,
+    }
+
+
+def mlm_corrupt(tokens, rate, split, vocab, rng, special=("[CLS]", "[SEP]", "[PAD]")):
+    candidates = [i for i, token in enumerate(tokens) if token not in special]
+    count = max(1, round(rate * len(candidates)))
+    chosen = sorted(rng.sample(candidates, count))
+    inputs, labels, actions = list(tokens), [IGNORE_INDEX] * len(tokens), {}
+    for i in chosen:
+        labels[i] = tokens[i]
+        draw = rng.random()
+        if draw < split[0]:
+            inputs[i], actions[i] = "[MASK]", "mask"
+        elif draw < split[0] + split[1]:
+            inputs[i], actions[i] = rng.choice(vocab), "random"
+        else:
+            actions[i] = "keep"
+    return {"inputs": inputs, "labels": labels, "chosen": chosen, "actions": actions}
+
+
+def mlm_corruption_rates(n, rate, split, vocab, seed):
+    rng = random.Random(seed)
+    tokens = [rng.choice(vocab) for _ in range(n)]
+    result = mlm_corrupt(tokens, rate, split, vocab, rng)
+    counts = {"mask": 0, "random": 0, "keep": 0}
+    for action in result["actions"].values():
+        counts[action] += 1
+    changed = sum(a != b for a, b in zip(result["inputs"], tokens))
+    return {
+        "n": n,
+        "selected": len(result["chosen"]),
+        "fractions": {key: value / n for key, value in counts.items()},
+        "unchanged_random": counts["random"] - sum(
+            1 for i, a in result["actions"].items() if a == "random" and result["inputs"][i] != tokens[i]),
+        "changed": changed / n,
+    }
+
+
+def masked_lm_loss(position_losses, labels):
+    kept = [loss for loss, label in zip(position_losses, labels) if label != IGNORE_INDEX]
+    return {"kept": len(kept), "loss": sum(kept) / len(kept)}
+
+
+def padding_attention_check(example, keep, pad_key, pad_value):
+    q, k, v = example["queries"][:keep], example["keys"][:keep], example["values"][:keep]
+    alone = scaled_attention(q, k, v)
+    pad_query = [0.0] * len(q[0])
+    padded_q, padded_k, padded_v = q + [pad_query], k + [pad_key], v + [pad_value]
+    mask = key_padding_additive([False] * keep + [True], keep + 1)
+    masked = scaled_attention(padded_q, padded_k, padded_v, bias=mask)
+    unmasked = scaled_attention(padded_q, padded_k, padded_v)
+    gap = lambda a, b: max(abs(x - y) for row_a, row_b in zip(a, b) for x, y in zip(row_a, row_b))
+    return {
+        "alone": alone,
+        "masked": masked,
+        "unmasked": unmasked,
+        "masked_gap": gap(alone["outputs"], masked["outputs"][:keep]),
+        "unmasked_gap": gap(alone["outputs"], unmasked["outputs"][:keep]),
+        "pad_weight": [row[keep] for row in unmasked["weights"][:keep]],
+    }
+
+
+def fill_in_model(corpus, alpha):
+    middles = sorted({m for _, m, _ in corpus})
+    rights = sorted({r for _, _, r in corpus} | {r for r, _, _ in corpus})
+    left_counts, right_counts, middle_counts = {}, {}, {}
+    for left, middle, right in corpus:
+        left_counts[(left, middle)] = left_counts.get((left, middle), 0) + 1
+        right_counts[(middle, right)] = right_counts.get((middle, right), 0) + 1
+        middle_counts[middle] = middle_counts.get(middle, 0) + 1
+
+    def given_left(left):
+        raw = [left_counts.get((left, m), 0) + alpha for m in middles]
+        total = sum(raw)
+        return [value / total for value in raw]
+
+    def right_given(middle, right):
+        return (right_counts.get((middle, right), 0) + alpha) / (middle_counts[middle] + alpha * len(rights))
+
+    def given_both(left, right):
+        raw = [p * right_given(m, right) for p, m in zip(given_left(left), middles)]
+        total = sum(raw)
+        return [value / total for value in raw]
+
+    def given_right(right):
+        prior = [middle_counts[m] / len(corpus) for m in middles]
+        raw = [p * right_given(m, right) for p, m in zip(prior, middles)]
+        total = sum(raw)
+        return [value / total for value in raw]
+
+    return {"middles": middles, "left": given_left, "right": given_right, "both": given_both}
+
+
+def fill_in_scores(corpus, test, alpha):
+    model = fill_in_model(corpus, alpha)
+    middles = model["middles"]
+    rows, totals = [], {"left": 0.0, "right": 0.0, "both": 0.0}
+    hits = {"left": 0, "right": 0, "both": 0}
+    for left, middle, right in test:
+        target = middles.index(middle)
+        dists = {"left": model["left"](left), "right": model["right"](right), "both": model["both"](left, right)}
+        row = {"sentence": (left, middle, right)}
+        for key, dist in dists.items():
+            row[key] = dist[target]
+            row[key + "_guess"] = middles[max(range(len(dist)), key=lambda j: dist[j])]
+            totals[key] += -math.log(dist[target])
+            hits[key] += row[key + "_guess"] == middle
+        rows.append(row)
+    n = len(test)
+    return {
+        "middles": middles,
+        "rows": rows,
+        "nll": {key: value / n for key, value in totals.items()},
+        "accuracy": {key: value / n for key, value in hits.items()},
+    }
+
+
+@functools.lru_cache(maxsize=None)
+def encoder_example():
+    e = ENCODER_EXAMPLE
+    first = bert_inputs(e["sentence_a"], e["sentence_b"])
+    second = bert_inputs(e["sentence_a"][:3], None)
+    width = max(first["real"], second["real"])
+    batch = [bert_inputs(e["sentence_a"], e["sentence_b"], width), bert_inputs(e["sentence_a"][:3], None, width)]
+    corrupted = mlm_corrupt(first["tokens"], e["mask_rate"], e["mask_split"], e["mask_vocab"], random.Random(e["mask_seed"]))
+    rates = mlm_corruption_rates(e["mask_sample_tokens"], e["mask_rate"], e["mask_split"], e["mask_vocab"], e["mask_seed"])
+    attention = ATTENTION_EXAMPLE
+    return {
+        "configs": [dict(c, counts=encoder_param_count(c["vocab"], c["positions"], c["segments"], c["d_model"], c["layers"]))
+                    for c in BERT_CONFIGS],
+        "pair": first,
+        "batch": batch,
+        "corrupted": corrupted,
+        "rates": rates,
+        "bidirectional": attention_weights(attention),
+        "causal": attention_weights(attention, causal=True),
+        "prefix": causal_prefix_check(attention, 3),
+        "padding": padding_attention_check(attention, 3, [0.0, 0.0], [0.0, 0.0]),
+        "fill": fill_in_scores(tuple(e["fill_corpus"]), tuple(e["fill_test"]), e["fill_alpha"]),
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -9209,6 +9418,7 @@ def render(slug, render_template):
         "previous_page": previous,
         "next_page": following,
         "upcoming": UPCOMING_MODELS,
+        "encoder_example": encoder_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,
         "multihead_example": MULTIHEAD_EXAMPLE,
