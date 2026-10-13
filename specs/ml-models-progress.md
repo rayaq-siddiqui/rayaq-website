@@ -144,17 +144,17 @@ Paths are under `sklearn/`.
 - `transformer` uses the v1 section layout and is exempt from the §6 order test until its
   retrofit (queue item 18).
 
-## First to thirty-fourth runs (2026-10-08 to 2026-10-13) — condensed
+## First to thirty-fifth runs (2026-10-08 to 2026-10-13) — condensed
 
 Runs 1-3 wrote the spec (v1, then v2), the registry, `LEARNING_PATH`, the §6 and queue tests,
 `check_mobile.js` and the Routine. Every run since adds, per page, a tested-helpers commit, a
-page commit (page, `ready`, queue ✓) and usually a `docs:` commit; items 1-66 were built in
+page commit (page, `ready`, queue ✓) and usually a `docs:` commit; items 1-69 were built in
 queue order (run 28: quantization, reinforcement-learning, bayes-rule; run 29:
 class-imbalance, random-forests, initialization; run 30: rnns-and-lstms, autoencoders,
 variational-autoencoders; run 31: positional-encoding, clustering, vector-indexes; run 32:
 distillation, time-series, regression-metrics; run 33: support-vector-machines,
 learning-rate-schedules, gans; run 34: encoder-only, learning-to-rank,
-data-loading-and-batching). `6f0803f` fixed 13 templates that read a
+data-loading-and-batching; run 35: model-serving, causal-inference, calibration). `6f0803f` fixed 13 templates that read a
 missing `pins.X.version` key. Pins never moved. The ranges each page links live in its template
 (grep `src(`, `skl(`, `xgb(`); `git log -p` on this file has every old commit table and range list.
 
@@ -173,6 +173,9 @@ Findings worth keeping (details in each page and in `git log -p` on this file):
   a new `pack_sequences` shadowed the RNN page's helper; `a6aae02` renamed it).
 - Jinja: a context dict key named `values`, `items` or `keys` resolves to the dict method;
   macros return Markup, so do arithmetic before calling them, never on their output.
+
+- sklearn's `_SigmoidCalibration` predicts `expit(-(a_*T + b_))` (negative stored slope);
+  `_TemperatureScaling` optimizes log β in [−10, 10].
 
 Open gaps from these runs:
 
@@ -197,37 +200,38 @@ Open gaps from these runs:
   or MASE; those follow the papers and FPP3.
 - Run 34: no pin implements sequence packing with masks or a bucketing sampler; the
   data-loading worker timeline is an idealized model, labelled as such.
+- Run 35: no pin implements a serving system, ECE, propensity weighting, DiD or uplift;
+  `model-serving`'s figures come from an invented, labelled model. Its references (Rubin,
+  Rosenbaum & Rubin, Guo et al., Platt, Zadrozny & Elkan, …) were cited from memory.
 
-## Thirty-fifth run (2026-10-13) — model-serving, causal-inference, calibration
+## Thirty-sixth run (2026-10-13) — graph-neural-networks, diffusion-models, pretraining
 
 | Commit | What |
 |---|---|
-| `f1d31b1`, `67970a7` | Tested serving helpers (batch cost model, dynamic batching simulator, nearest-rank percentiles, static vs continuous decode batching); the `model-serving` page, `ready`, queue ✓ |
-| `0a247cd`, `91a6c8d` | Tested causal helpers (potential outcomes, randomization enumeration, stratification, Horvitz–Thompson and Hájek IPW, propensity fit, difference-in-differences, uplift); the `causal-inference` page, `ready`, queue ✓ |
-| `cbb3b38` `ml-models: add tested calibration helpers` | Reliability bins/ECE/MCE matching `calibration_curve`'s right-closed uniform bins, Brier, Platt with smoothed targets, temperature scaling by Newton on β, isotonic PAV, logit-inflation losses |
-| `a0c640d` `ml-models: add the calibration page` | The page, `ready`, queue ✓ |
-| `29c3693` `ml-models: link class-imbalance to the calibration page` | The prior-correction paragraph now links `calibration` |
+| `3350663`, `0558afe` | Tested GNN helpers; the `graph-neural-networks` page, `ready`, queue ✓ |
+| `511b6ac`, `7597f25` | Tested diffusion helpers (schedules, ᾱ curves, DDPM/DDIM steps, guidance tilt); the `diffusion-models` page, `ready`, queue ✓ |
+| `fa1e049` `ml-models: add pretraining and scaling-law helpers` | Span corruption, MLM counts, 6ND from one linear layer, 12Ld² params, Kaplan and Chinchilla laws with the closed-form optimum, isoFLOP curves, mixture epochs, MinHash/LSH, exact-match emergence |
+| `89eb2b1` `ml-models: add the pretraining page` | The page, `ready`, queue ✓ |
 
 Findings worth keeping:
 
-- sklearn's `_SigmoidCalibration` predicts `expit(-(a_*T + b_))`, so its stored slope is
-  negative for a good model. `_TemperatureScaling` (method `"temperature"`, new in 1.8)
-  optimizes log β in [−10, 10] and turns probabilities back into logits with `log(p + eps)`.
-  `ensemble="auto"` means `False` only for a `FrozenEstimator`.
-- On calibration's 20-point example Platt's smoothed targets shrink harder than temperature
-  scaling (ECE 0.072 vs 0.033); in-sample isotonic reaches ECE 0 and changes AUC through ties.
+- Chinchilla's published Approach 3 constants (E 1.69, A 406.4, B 410.7, α .34, β .28) in the
+  closed form give about 32B params / 3.0T tokens at Chinchilla's budget, not 70B: the fit's
+  a = β/(α+β) = 0.45 sits below Approaches 1-2 (≈ 0.5). The isoFLOP valley is flat (70B loses
+  0.007 nats), and the 20-tokens rule recovers 70B / 1.4T exactly. The page says all three.
+- 6ND gives Chinchilla 5.9e23 vs Gopher 5.0e23; the paper's finer FLOP count puts both at one
+  budget. The page notes the difference.
 - Pins checked with `git ls-remote --tags`: v2.14.1, 1.9.1 and v3.4.2 are still the newest
   stable releases; no pin moved.
 
 Gaps:
 
-- References cited from memory (arxiv unreachable): Rubin 1974, Rosenbaum & Rubin 1983,
-  Horvitz & Thompson 1952, Card & Krueger 1994; Guo et al. 2017 (arXiv 1706.04599), Platt 2000,
-  Zadrozny & Elkan 2002, Niculescu-Mizil & Caruana 2005, Brier 1950. Pearl 2009 and Radcliffe
-  & Surry 2011 were verified by web search.
-- `model-serving`'s latency and cost figures come from an invented, labelled model; no pin
-  implements a serving system. No pin implements ECE, propensity weighting, DiD or uplift
-  models; those follow the papers.
+- References cited from memory (arxiv unreachable): Kaplan 2001.08361, Hoffmann 2203.15556,
+  Devlin 1810.04805, Raffel 1910.10683, Muennighoff 2305.16264, Wei 2206.07682, Schaeffer
+  2304.15004, Broder 1997; the GNN and diffusion pages' papers likewise.
+- No pin implements a GNN library, a diffusion sampler, MinHash or a scaling-law fit; those
+  follow the papers. The H100 peak (989 TFLOP/s dense BF16) and Llama 3 8B's 15T tokens are
+  general knowledge, as are the illustrative mixture weights (labelled as such).
 
 ## Queue
 
