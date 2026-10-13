@@ -4094,3 +4094,77 @@ def test_uplift_targeting_beats_targeting_likely_responders():
     assert uplift["by_response"]["incremental"] == pytest.approx(-80)
     assert uplift["by_uplift"]["incremental"] == pytest.approx(220)
     assert uplift["everyone"] == pytest.approx(130)
+
+
+def test_reliability_bins_match_calibration_curve_binning():
+    report = ml_models_docs.calibration_example()["original"]
+
+    counts = [b["count"] for b in report["bins"]]
+    assert counts == [5, 2, 2, 3, 8]
+    assert [b["accuracy"] for b in report["bins"]] == pytest.approx([0.2, 0.5, 0.5, 2 / 3, 0.75])
+    assert [b["confidence"] for b in report["bins"]] == pytest.approx([0.09, 0.325, 0.525, 0.7, 0.935])
+    assert report["ece"] == pytest.approx(0.1265)
+    assert report["mce"] == pytest.approx(0.185)
+    edge = ml_models_docs.reliability_bins([0.2, 0.2001], [0, 1], 5)["rows"]
+    assert edge[0]["count"] == 1 and edge[1]["count"] == 1
+
+
+def test_brier_and_log_loss_reward_calibration_and_discrimination():
+    example = ml_models_docs.calibration_example()
+
+    assert ml_models_docs.brier_score([1, 0], [0.8, 0.4]) == pytest.approx((0.04 + 0.16) / 2)
+    assert example["constant"]["ece"] == 0
+    assert example["constant"]["auc"] == 0.5
+    assert example["original"]["brier"] < example["constant"]["brier"]
+    assert example["original"]["log_loss"] < example["constant"]["log_loss"]
+
+
+def test_platt_scaling_uses_smoothed_targets_and_keeps_the_ranking():
+    example = ml_models_docs.calibration_example()
+    platt = example["platt"]
+
+    assert platt["target_positive"] == pytest.approx(12 / 13)
+    assert platt["target_negative"] == pytest.approx(1 / 11)
+    assert 0 < platt["a"] < 1
+    assert example["platt_report"]["auc"] == example["original"]["auc"]
+    assert example["platt_report"]["ece"] < example["original"]["ece"]
+    assert example["platt_report"]["log_loss"] < example["original"]["log_loss"]
+
+
+def test_temperature_scaling_minimizes_log_loss_and_softens_overconfidence():
+    example = ml_models_docs.calibration_example()
+    temperature = example["temperature"]
+    labels = example["example"]["labels"]
+
+    assert temperature["temperature"] > 1
+    gradient = sum((p - y) * z for p, y, z in zip(temperature["probabilities"], labels, example["logits"]))
+    assert gradient == pytest.approx(0, abs=1e-9)
+    assert example["temperature_report"]["accuracy"] == example["original"]["accuracy"]
+    assert example["temperature_report"]["auc"] == example["original"]["auc"]
+    assert example["temperature_report"]["ece"] < example["platt_report"]["ece"]
+    maps = example["maps"]
+    assert [m["temperature"] for m in maps] == sorted(m["temperature"] for m in maps)
+    assert all(abs(m["temperature"] - 0.5) <= abs(m["p"] - 0.5) for m in maps)
+
+
+def test_isotonic_pav_pools_violators_into_a_monotone_step_function():
+    example = ml_models_docs.calibration_example()
+    isotonic = example["isotonic"]
+    values = [s["value"] for s in isotonic["steps"]]
+
+    assert values == sorted(values)
+    assert values == pytest.approx([0, 1 / 3, 0.5, 5 / 7, 1])
+    assert sum(s["weight"] for s in isotonic["steps"]) == 20
+    assert isotonic["merges"] == 9
+    assert example["isotonic_report"]["ece"] == pytest.approx(0)
+    assert example["isotonic_report"]["auc"] != example["original"]["auc"]
+
+
+def test_scaling_logits_shrinks_correct_loss_and_grows_wrong_loss():
+    rows = ml_models_docs.calibration_example()["overconfidence"]
+
+    correct = [r["correct"] for r in rows]
+    wrong = [r["wrong"] for r in rows]
+    assert correct == sorted(correct, reverse=True)
+    assert wrong == sorted(wrong)
+    assert all(w == pytest.approx(r["logit"] + c) for r, c, w in zip(rows, correct, wrong))

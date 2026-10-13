@@ -9947,6 +9947,201 @@ def causal_example():
     }
 
 
+CALIBRATION_EXAMPLE = {
+    "probabilities": [
+        0.05, 0.05, 0.10, 0.10, 0.15,
+        0.30, 0.35,
+        0.50, 0.55,
+        0.65, 0.70, 0.75,
+        0.85, 0.90, 0.90, 0.95, 0.95, 0.95, 0.99, 0.99,
+    ],
+    "labels": [
+        0, 0, 1, 0, 0,
+        1, 0,
+        1, 0,
+        1, 0, 1,
+        1, 1, 0, 1, 1, 0, 1, 1,
+    ],
+    "n_bins": 5,
+    "margin": 2.0,
+    "scales": [1, 2, 4, 8],
+}
+
+
+def reliability_bins(probabilities, labels, n_bins):
+    inner = [i / n_bins for i in range(1, n_bins)]
+    bins = [{"lo": i / n_bins, "hi": (i + 1) / n_bins, "probs": [], "labels": []} for i in range(n_bins)]
+    for p, y in zip(probabilities, labels):
+        index = sum(1 for edge in inner if edge < p)
+        bins[index]["probs"].append(p)
+        bins[index]["labels"].append(y)
+    total = len(probabilities)
+    rows = []
+    for b in bins:
+        count = len(b["probs"])
+        confidence = sum(b["probs"]) / count if count else None
+        accuracy = sum(b["labels"]) / count if count else None
+        rows.append({
+            "lo": b["lo"],
+            "hi": b["hi"],
+            "count": count,
+            "positives": sum(b["labels"]),
+            "confidence": confidence,
+            "accuracy": accuracy,
+            "gap": abs(accuracy - confidence) if count else None,
+            "share": count / total,
+        })
+    filled = [r for r in rows if r["count"]]
+    return {
+        "rows": rows,
+        "ece": sum(r["share"] * r["gap"] for r in filled),
+        "mce": max(r["gap"] for r in filled),
+    }
+
+
+def brier_score(labels, probabilities):
+    return sum((p - y) ** 2 for y, p in zip(labels, probabilities)) / len(labels)
+
+
+def calibration_report(labels, probabilities, n_bins):
+    bins = reliability_bins(probabilities, labels, n_bins)
+    return {
+        "bins": bins["rows"],
+        "ece": bins["ece"],
+        "mce": bins["mce"],
+        "brier": brier_score(labels, probabilities),
+        "log_loss": binary_log_loss(labels, probabilities),
+        "auc": rank_auc(labels, probabilities),
+        "accuracy": sum((p > 0.5) == (y == 1) for y, p in zip(labels, probabilities)) / len(labels),
+    }
+
+
+def logit(p):
+    return math.log(p / (1 - p))
+
+
+def platt_scaling(scores, labels, iterations=25):
+    positives = sum(labels)
+    negatives = len(labels) - positives
+    hi = (positives + 1) / (positives + 2)
+    lo = 1 / (negatives + 2)
+    targets = [hi if y == 1 else lo for y in labels]
+    a, b = 1.0, 0.0
+    for _ in range(iterations):
+        ga = gb = haa = hab = hbb = 0.0
+        for s, t in zip(scores, targets):
+            p = sigmoid(a * s + b)
+            r = p - t
+            w = p * (1 - p)
+            ga += r * s
+            gb += r
+            haa += w * s * s
+            hab += w * s
+            hbb += w
+        det = haa * hbb - hab * hab
+        a -= (hbb * ga - hab * gb) / det
+        b -= (haa * gb - hab * ga) / det
+    return {
+        "a": a,
+        "b": b,
+        "target_positive": hi,
+        "target_negative": lo,
+        "probabilities": [sigmoid(a * s + b) for s in scores],
+    }
+
+
+def temperature_scaling(logits, labels, iterations=25):
+    beta = 1.0
+    for _ in range(iterations):
+        grad = hess = 0.0
+        for z, y in zip(logits, labels):
+            p = sigmoid(beta * z)
+            grad += (p - y) * z
+            hess += p * (1 - p) * z * z
+        beta -= grad / hess
+    return {
+        "beta": beta,
+        "temperature": 1 / beta,
+        "probabilities": [sigmoid(beta * z) for z in logits],
+    }
+
+
+def isotonic_pav(probabilities, labels):
+    grouped = {}
+    for p, y in zip(probabilities, labels):
+        grouped.setdefault(p, []).append(y)
+    blocks = [
+        {"xs": [x], "total": sum(ys), "weight": len(ys)}
+        for x, ys in sorted(grouped.items())
+    ]
+    merges = 0
+    stack = []
+    for block in blocks:
+        stack.append(block)
+        while len(stack) > 1 and stack[-2]["total"] / stack[-2]["weight"] >= stack[-1]["total"] / stack[-1]["weight"]:
+            top = stack.pop()
+            below = stack.pop()
+            stack.append({
+                "xs": below["xs"] + top["xs"],
+                "total": below["total"] + top["total"],
+                "weight": below["weight"] + top["weight"],
+            })
+            merges += 1
+    steps = [
+        {"lo": b["xs"][0], "hi": b["xs"][-1], "value": b["total"] / b["weight"], "weight": b["weight"]}
+        for b in stack
+    ]
+    lookup = {x: s["value"] for s, b in zip(steps, stack) for x in b["xs"]}
+    return {
+        "unique": [
+            {"x": x, "mean": sum(ys) / len(ys), "weight": len(ys)} for x, ys in sorted(grouped.items())
+        ],
+        "steps": steps,
+        "merges": merges,
+        "probabilities": [lookup[p] for p in probabilities],
+    }
+
+
+def overconfidence_losses(margin, scales):
+    return [
+        {"scale": k, "logit": margin * k, "correct": -math.log(sigmoid(margin * k)), "wrong": -math.log(sigmoid(-margin * k))}
+        for k in scales
+    ]
+
+
+@functools.lru_cache(maxsize=None)
+def calibration_example():
+    e = CALIBRATION_EXAMPLE
+    probs, labels, n_bins = e["probabilities"], e["labels"], e["n_bins"]
+    logits = [logit(p) for p in probs]
+    base_rate = sum(labels) / len(labels)
+    platt = platt_scaling(logits, labels)
+    temperature = temperature_scaling(logits, labels)
+    isotonic = isotonic_pav(probs, labels)
+    return {
+        "example": e,
+        "logits": logits,
+        "base_rate": base_rate,
+        "original": calibration_report(labels, probs, n_bins),
+        "constant": calibration_report(labels, [base_rate] * len(labels), n_bins),
+        "platt": platt,
+        "platt_report": calibration_report(labels, platt["probabilities"], n_bins),
+        "temperature": temperature,
+        "temperature_report": calibration_report(labels, temperature["probabilities"], n_bins),
+        "isotonic": isotonic,
+        "isotonic_report": calibration_report(labels, isotonic["probabilities"], n_bins),
+        "overconfidence": overconfidence_losses(e["margin"], e["scales"]),
+        "maps": [
+            {
+                "p": p,
+                "platt": sigmoid(platt["a"] * logit(p) + platt["b"]),
+                "temperature": sigmoid(temperature["beta"] * logit(p)),
+            }
+            for p in [i / 40 for i in range(1, 40)]
+        ],
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -9981,6 +10176,7 @@ def render(slug, render_template):
         "data_example": data_example,
         "serving_example": serving_example,
         "causal_example": causal_example,
+        "calibration_example": calibration_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,
         "multihead_example": MULTIHEAD_EXAMPLE,
