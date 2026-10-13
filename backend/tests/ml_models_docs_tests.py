@@ -4310,3 +4310,61 @@ def test_guidance_tilt_tracks_the_guided_sampler():
     assert ml_models_docs.guidance_tilt(0.7, 0.5, 1.0) == pytest.approx(0.49 / 0.58)
     for row in ml_models_docs.diffusion_example()["guidance"]:
         assert row["plus"] == pytest.approx(row["tilt"], abs=0.01)
+
+
+def test_span_corruption_reproduces_the_t5_example_and_mlm_splits_its_picks():
+    ex = ml_models_docs.pretraining_example()
+    assert " ".join(ex["span"]["inputs"]) == "Thank you <X> me to your party <Y> week ."
+    assert " ".join(ex["span"]["targets"]) == "<X> for inviting <Y> last <Z>"
+    assert ex["causal_targets"] == len(ex["tokens"]) - 1
+    mlm = ex["mlm"]
+    assert mlm["chosen"] == pytest.approx(76.8)
+    assert mlm["mask"] + mlm["random"] + mlm["kept"] == pytest.approx(mlm["chosen"])
+
+
+def test_training_flops_are_six_per_parameter_per_token():
+    lin = ml_models_docs.linear_layer_flops(3, 5, 7)
+    assert lin["forward"] == 2 * 3 * 5 * 7 and lin["total"] == 6 * lin["params"] * 3
+    ex = ml_models_docs.pretraining_example()
+    assert ex["params"]["non_embedding"] == 12 * 32 * 4096 ** 2
+    assert ex["forward"]["attention_share"] == pytest.approx(1 / 13)
+
+
+def test_chinchilla_closed_form_is_the_minimum_on_the_compute_budget():
+    c = ml_models_docs.PRETRAINING_EXAMPLE["chinchilla"]
+    for compute in (1e21, 5.88e23, 1e25):
+        opt = ml_models_docs.chinchilla_optimal(compute, c)
+        assert 6 * opt["n"] * opt["d"] == pytest.approx(compute)
+        for scale in (0.8, 1.25):
+            n = opt["n"] * scale
+            assert ml_models_docs.chinchilla_loss(n, compute / (6 * n), c) > opt["loss"]
+
+
+def test_chinchilla_beats_gopher_and_the_rule_of_thumb_recovers_70b():
+    ex = ml_models_docs.pretraining_example()
+    chin, gopher = ex["trained"]
+    assert chin["loss"] < gopher["loss"]
+    for curve in ex["isoflop"]:
+        assert min(p["loss"] for p in curve["points"]) == pytest.approx(curve["optimal"]["loss"])
+    assert chin["rule"]["n"] == pytest.approx(70e9) and chin["rule"]["d"] == pytest.approx(1.4e12)
+    assert ex["kaplan"]["tenfold_n"] * ex["kaplan"]["tenfold_d"] == pytest.approx(10)
+    assert ex["days"] == pytest.approx(5.88e23 / (989e12 * 0.4 * 1000) / 86400)
+
+
+def test_minhash_estimates_jaccard_and_lsh_has_the_expected_threshold():
+    ex = ml_models_docs.pretraining_example()
+    near = ex["pairs"][0]
+    assert near["exact"] == pytest.approx(12 / 14)
+    assert near["estimate"] == pytest.approx(near["exact"], abs=0.1)
+    assert all(p["exact"] == 0 and p["estimate"] == 0 for p in ex["pairs"][1:])
+    assert ml_models_docs.lsh_candidate_probability(ex["threshold"], 16, 8) == pytest.approx(1 - (1 - 1 / 16) ** 16)
+    ps = [r["p"] for r in ex["curve"]]
+    assert ps == sorted(ps)
+
+
+def test_mixture_spends_the_budget_and_exact_match_is_a_power_of_per_token_accuracy():
+    ex = ml_models_docs.pretraining_example()
+    assert sum(m["tokens"] for m in ex["mixture"]) == pytest.approx(1.4e12)
+    assert ex["mixture"][-1]["epochs"] == pytest.approx(3.5)
+    for row in ex["emergence"]:
+        assert row["exact"] == pytest.approx(row["per_token"] ** 10)

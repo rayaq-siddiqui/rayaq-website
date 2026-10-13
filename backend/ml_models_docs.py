@@ -1,4 +1,5 @@
 import functools
+import hashlib
 import heapq
 import itertools
 import math
@@ -10509,6 +10510,181 @@ def diffusion_example():
     }
 
 
+PRETRAINING_EXAMPLE = {
+    "sentence": "Thank you for inviting me to your party last week .",
+    "spans": [[2, 4], [8, 9]],
+    "sentinels": ["<X>", "<Y>", "<Z>"],
+    "mlm": {"length": 512, "rate": 0.15, "split": [0.8, 0.1, 0.1]},
+    "model": {"layers": 32, "d_model": 4096, "vocab": 32000, "context": 4096},
+    "linear": {"tokens": 4096, "fan_in": 4096, "fan_out": 16384},
+    "kaplan": {"alpha_n": 0.076, "n_c": 8.8e13, "alpha_d": 0.095, "d_c": 5.4e13, "n_exponent": 0.73},
+    "chinchilla": {"e": 1.69, "a": 406.4, "b": 410.7, "alpha": 0.34, "beta": 0.28},
+    "trained": [["Chinchilla", 70e9, 1.4e12], ["Gopher", 280e9, 300e9]],
+    "budgets": [1e20, 1e21, 1e22, 1e23, 1e24, 1e25],
+    "isoflop_budgets": [1e21, 1e22, 1e23, 1e24],
+    "tokens_per_param": 20,
+    "gpu": {"peak": 989e12, "mfu": 0.4, "count": 1000},
+    "mixture": [["Web", 3.0e12, 0.70], ["Code", 4.0e11, 0.14], ["Books", 6.0e10, 0.06],
+                ["Papers", 5.0e10, 0.05], ["Wikipedia", 2.0e10, 0.05]],
+    "docs": [
+        "the cat sat on the mat and looked out of the window at the rain",
+        "the cat sat on the mat and looked out of the window at the snow",
+        "a dog ran across the park chasing a red ball in the sun",
+    ],
+    "shingle": 3,
+    "hashes": 128,
+    "bands": 16,
+    "similarities": [0.3, 0.5, 0.7, 0.8, 0.9],
+    "per_token": [0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99],
+    "answer_tokens": 10,
+}
+
+
+def span_corrupt(tokens, spans, sentinels):
+    inputs, targets, prev = [], [], 0
+    for k, (start, end) in enumerate(spans):
+        inputs += tokens[prev:start] + [sentinels[k]]
+        targets += [sentinels[k]] + tokens[start:end]
+        prev = end
+    inputs += tokens[prev:]
+    targets.append(sentinels[len(spans)])
+    return inputs, targets
+
+
+def mlm_counts(length, rate, split):
+    chosen = length * rate
+    return {"chosen": chosen, "mask": chosen * split[0], "random": chosen * split[1], "kept": chosen * split[2]}
+
+
+def linear_layer_flops(tokens, fan_in, fan_out):
+    mac = tokens * fan_in * fan_out
+    return {"params": fan_in * fan_out, "forward": 2 * mac, "grad_input": 2 * mac, "grad_weight": 2 * mac,
+            "total": 6 * mac, "per_param_token": 6 * mac / (tokens * fan_in * fan_out)}
+
+
+def transformer_params(layers, d_model, vocab):
+    return {"attention": 4 * d_model ** 2, "mlp": 8 * d_model ** 2, "per_layer": 12 * d_model ** 2,
+            "non_embedding": 12 * layers * d_model ** 2, "embedding": vocab * d_model}
+
+
+def kaplan_forward_flops(non_embedding, layers, context, d_model):
+    weights, attention = 2 * non_embedding, 2 * layers * context * d_model
+    return {"weights": weights, "attention": attention, "total": weights + attention,
+            "attention_share": attention / (weights + attention)}
+
+
+def kaplan_loss_n(n, k):
+    return (k["n_c"] / n) ** k["alpha_n"]
+
+
+def kaplan_loss_d(d, k):
+    return (k["d_c"] / d) ** k["alpha_d"]
+
+
+def chinchilla_loss(n, d, c):
+    return c["e"] + c["a"] / n ** c["alpha"] + c["b"] / d ** c["beta"]
+
+
+def chinchilla_optimal(compute, c):
+    a = c["beta"] / (c["alpha"] + c["beta"])
+    b = c["alpha"] / (c["alpha"] + c["beta"])
+    g = (c["alpha"] * c["a"] / (c["beta"] * c["b"])) ** (1 / (c["alpha"] + c["beta"]))
+    n = g * (compute / 6) ** a
+    d = (compute / 6) ** b / g
+    return {"n": n, "d": d, "a": a, "b": b, "ratio": d / n, "loss": chinchilla_loss(n, d, c)}
+
+
+def tokens_per_param_split(compute, ratio):
+    n = math.sqrt(compute / (6 * ratio))
+    return {"n": n, "d": ratio * n}
+
+
+def training_days(compute, peak, mfu, count):
+    return compute / (peak * mfu * count) / 86400
+
+
+def mixture_epochs(sources, budget):
+    return [{"name": name, "size": size, "weight": weight, "tokens": weight * budget,
+             "epochs": weight * budget / size} for name, size, weight in sources]
+
+
+def word_shingles(text, k):
+    words = text.split()
+    return {" ".join(words[i:i + k]) for i in range(len(words) - k + 1)}
+
+
+def jaccard(a, b):
+    return len(a & b) / len(a | b)
+
+
+def minhash_signature(shingles, count):
+    return [min(int.from_bytes(hashlib.blake2b(f"{i}:{s}".encode(), digest_size=8).digest(), "big")
+                for s in shingles) for i in range(count)]
+
+
+def minhash_estimate(sig_a, sig_b):
+    return sum(1 for x, y in zip(sig_a, sig_b) if x == y) / len(sig_a)
+
+
+def lsh_candidate_probability(similarity, bands, rows):
+    return 1 - (1 - similarity ** rows) ** bands
+
+
+@functools.lru_cache(maxsize=None)
+def pretraining_example():
+    e = PRETRAINING_EXAMPLE
+    tokens = e["sentence"].split()
+    inputs, targets = span_corrupt(tokens, e["spans"], e["sentinels"])
+    m = e["model"]
+    params = transformer_params(m["layers"], m["d_model"], m["vocab"])
+    forward = kaplan_forward_flops(params["non_embedding"], m["layers"], m["context"], m["d_model"])
+    k, c = e["kaplan"], e["chinchilla"]
+    trained = []
+    for name, n, d in e["trained"]:
+        compute = 6 * n * d
+        trained.append({"name": name, "n": n, "log_n": math.log10(n), "d": d, "compute": compute, "ratio": d / n,
+                        "loss": chinchilla_loss(n, d, c), "optimal": chinchilla_optimal(compute, c),
+                        "rule": tokens_per_param_split(compute, e["tokens_per_param"])})
+    budgets = [{"compute": b, "optimal": chinchilla_optimal(b, c),
+                "rule": tokens_per_param_split(b, e["tokens_per_param"])} for b in e["budgets"]]
+    shingles = [word_shingles(d, e["shingle"]) for d in e["docs"]]
+    sigs = [minhash_signature(s, e["hashes"]) for s in shingles]
+    rows = e["hashes"] // e["bands"]
+    pairs = [{"pair": [i, j], "exact": jaccard(shingles[i], shingles[j]), "estimate": minhash_estimate(sigs[i], sigs[j]),
+              "candidate": lsh_candidate_probability(jaccard(shingles[i], shingles[j]), e["bands"], rows)}
+             for i, j in itertools.combinations(range(len(shingles)), 2)]
+    g = e["gpu"]
+    return {
+        "example": e,
+        "tokens": tokens,
+        "span": {"inputs": inputs, "targets": targets, "corrupted": sum(b - a for a, b in e["spans"])},
+        "causal_targets": len(tokens) - 1,
+        "mlm": mlm_counts(**e["mlm"]),
+        "linear": linear_layer_flops(**e["linear"]),
+        "params": params,
+        "forward": forward,
+        "kaplan": {"double_n": 2 ** -k["alpha_n"], "double_d": 2 ** -k["alpha_d"],
+                   "loss_n": kaplan_loss_n(params["non_embedding"], k),
+                   "tenfold_n": 10 ** k["n_exponent"], "tenfold_d": 10 ** (1 - k["n_exponent"])},
+        "chinchilla": {"tenfold_n": 10 ** (c["beta"] / (c["alpha"] + c["beta"])),
+                       "tenfold_d": 10 ** (c["alpha"] / (c["alpha"] + c["beta"]))},
+        "trained": trained,
+        "budgets": budgets,
+        "isoflop": [{"compute": b, "optimal": chinchilla_optimal(b, c),
+                     "points": [{"n": n, "log_n": math.log10(n), "loss": chinchilla_loss(n, b / (6 * n), c)}
+                                for n in (chinchilla_optimal(b, c)["n"] * 10 ** (x / 10) for x in range(-12, 13))]}
+                    for b in e["isoflop_budgets"]],
+        "days": training_days(trained[0]["compute"], g["peak"], g["mfu"], g["count"]),
+        "mixture": mixture_epochs(e["mixture"], e["trained"][0][2]),
+        "shingles": [len(s) for s in shingles],
+        "rows": rows,
+        "threshold": (1 / e["bands"]) ** (1 / rows),
+        "pairs": pairs,
+        "curve": [{"s": s, "p": lsh_candidate_probability(s, e["bands"], rows)} for s in e["similarities"]],
+        "emergence": [{"per_token": p, "exact": p ** e["answer_tokens"]} for p in e["per_token"]],
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -10546,6 +10722,7 @@ def render(slug, render_template):
         "calibration_example": calibration_example,
         "gnn_example": gnn_example,
         "diffusion_example": diffusion_example,
+        "pretraining_example": pretraining_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,
         "multihead_example": MULTIHEAD_EXAMPLE,
