@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-12 (fifth audit run). All 58 pages are ready and the queue is empty. This audit found and fixed one gap (page code that used names it never imported), so the Routine stays on its 5-hour schedule. **The next run is another audit run** (spec §8.1): it fixes one gap, and if none remain it records "complete" and moves this Routine to weekly audits.
+**Last updated:** 2026-10-13 (sixth audit run). All 58 pages are ready and the queue is empty. This audit found and fixed one gap (page code that gave wrong answers when run), so the Routine stays on its 5-hour schedule. **The next run is another audit run** (spec §8.1): it fixes one gap, and if none remain it records "complete" and moves this Routine to weekly audits.
 
 ## The Routine
 
@@ -164,6 +164,12 @@ build once research is done.
   exceptions are deliberate placeholders listed in `CODE_PLACEHOLDERS` (the recursion skeleton's
   steps, the toolkit's cheat-sheet variables, LeetCode's own `Node` class in Clone Graph, and the
   submask-loop fragment). `test_page_code_parses_and_imports_what_it_uses` enforces it.
+
+- **Page code gives right answers (2026-10-13).** Audit runs also execute every ready page's code
+  and compare each function against an independent brute force on random inputs (within the
+  problem's real constraints). A function whose answer is wrong is a gap. Pages state the input
+  assumptions they rely on (for example, distinct values in rotated-array search). Functions
+  that were wrong get a regression test that runs the page's own code (`run_page_code`).
 
 ## Known gaps and questions for the owner
 
@@ -437,5 +443,22 @@ copied. `bitmask-dp`'s assignment and travelling-salesman templates used `math.i
 and a new test fails on any unbound name outside a short placeholder list. No prose or helpers
 changed. Coverage is unchanged at 100% (Blind 75 75/75, Grind 169 169/169, NeetCode 150 150/150,
 NeetCode 250 250/250). pytest green (820 passed); every ready page returns 200 and the phone check
+passed on `/`, `/leetcode` and every ready page. Because this run found a gap, the schedule stays
+at every 5 hours. Next: another audit run.
+
+### 2026-10-13 — audit run (sixth)
+
+Sixth audit run. Every ready page's code was run against an independent brute force: about 280
+functions and classes across 58 pages, on random and edge-case inputs. Two functions were wrong.
+`linked-list-design`'s `copy_random_list` built its copies with the LRU cache's `Node`. That
+class has `__slots__` and no `random` field, and its first argument is `key`, so the function
+raised `AttributeError` on any non-empty list. It now uses its own `RandomNode`.
+`graph-traversal`'s `ladder_length` and its helper `word_ladder_of` added the target word to the
+graph even when the word list did not contain it. Word Ladder requires the target to be in the list,
+so the function returned 5 instead of 0 on such inputs. Both now draw nodes only from the
+word list. The worked example now puts "dog" in its word list, and the page explains why. The
+displayed values (7 and 2 words dequeued) did not change. New tests run each page's own code.
+Coverage is unchanged at 100% (Blind 75 75/75, Grind 169 169/169, NeetCode 150 150/150,
+NeetCode 250 250/250). pytest green (837 passed); every ready page returns 200 and the phone check
 passed on `/`, `/leetcode` and every ready page. Because this run found a gap, the schedule stays
 at every 5 hours. Next: another audit run.
