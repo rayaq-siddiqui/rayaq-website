@@ -1,0 +1,623 @@
+{% set ex = pretraining_example() %}
+{% set cfg = ex.example %}
+{% set cc = cfg.chinchilla %}
+{% set kc = cfg.kaplan %}
+{% set chin = ex.trained[0] %}
+{% set gopher = ex.trained[1] %}
+{% set m = cfg.model %}
+{% macro n(x, d=2) -%}{{ ("%." ~ d ~ "f")|format(x) }}{%- endmacro %}
+{% macro pct(x, d=1) -%}{{ ("%." ~ d ~ "f")|format(100 * x) }}%{%- endmacro %}
+{% macro sci(x, d=2) -%}{% set p = (("%." ~ d ~ "e")|format(x)).split("e") %}{{ p[0] }} × 10<sup>{{ p[1]|int }}</sup>{%- endmacro %}
+{% macro bn(x, d=0) -%}{{ ("%." ~ d ~ "f")|format(x / 1e9) }}B{%- endmacro %}
+{% macro tn(x, d=2) -%}{{ ("%." ~ d ~ "f")|format(x / 1e12) }}T{%- endmacro %}
+<header class="jj-header">
+  <h1>Pretraining and scaling laws</h1>
+  <p class="tagline">
+    Before a language model can follow instructions it reads trillions of tokens and learns to predict them. This page covers the
+    three pretraining objectives, how the training data is mixed and deduplicated, why training costs about 6 FLOPs per
+    parameter per token, the Kaplan and Chinchilla scaling laws, how to size a model for a compute budget, and why "emergent"
+    abilities need care.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A <a href="/ml-models/decoder-only-llm">decoder-only language model</a> is a stack of transformer blocks with a next-token
+  head. Its architecture is settled in a page; what makes it useful is <strong>pretraining</strong>: running it over a huge
+  unlabelled corpus with a self-supervised objective, so that the targets come from the text itself and no human labels are needed.
+  Everything later, <em>fine-tuning</em>, preference training and prompting, starts from the weights pretraining produces.
+</p>
+<p>
+  Pretraining is also by far the most expensive step: months on thousands of accelerators. Before spending that, a team must
+  decide how big the model should be, how many tokens to train it on, and what text those tokens come from. Getting the split
+  between parameters and tokens wrong wastes a large share of the budget, and the only way to decide it in advance is to measure
+  how loss falls on small runs and extrapolate. Those measurements are the <strong>scaling laws</strong>.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Predicting the next word of arbitrary text well requires knowing grammar, facts, arithmetic, code and how arguments go, so a
+  model that gets good at it learns all of those as a side effect. The loss is just <a href="/ml-models/loss-functions">cross-entropy</a>
+  on the next token, averaged over every position of every document.
+</p>
+<p>
+  That loss falls smoothly and predictably as the model, the data and the compute grow, following a power law: each tenfold
+  increase buys roughly the same fractional improvement. Because it is so regular, a few small training runs can predict the loss
+  of a run a thousand times larger. The open question is how to spend a fixed budget. A bigger model learns more per token but
+  costs more per token; at a fixed number of FLOPs, more parameters means fewer tokens. There is a best size for every budget,
+  and the two landmark papers on it disagree about where it is.
+</p>
+
+<div class="jj-diagram">
+  {% set bx = 92 %}
+  {% set bw = 52 %}
+  {% set step = 56 %}
+  {% set masked = [cfg.spans[0][0], cfg.spans[1][0]] %}
+  <svg viewBox="0 0 720 330" role="img" aria-labelledby="pre-obj-title pre-obj-desc">
+    <title id="pre-obj-title">Three pretraining objectives on one sentence</title>
+    <desc id="pre-obj-desc">
+      The sentence "{{ ex.tokens|join(" ") }}" as {{ ex.tokens|length }} tokens, three ways. Causal LM: every token is input and the
+      target under each position is the next token, {{ ex.causal_targets }} targets in all. Masked LM: "{{ ex.tokens[masked[0]] }}" and
+      "{{ ex.tokens[masked[1]] }}" are replaced by a mask token and are the only targets, and the model sees words on both sides.
+      Span corruption: the spans "for inviting" and "last" are each replaced by one sentinel, giving the input
+      "{{ ex.span.inputs|join(" ") }}", and the target is "{{ ex.span.targets|join(" ") }}".
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      <text x="8" y="30" text-anchor="start" font-weight="600">causal LM</text>
+      {% for t in ex.tokens %}
+        <rect x="{{ bx + loop.index0 * step }}" y="38" width="{{ bw }}" height="24" rx="4" class="d-box"></rect>
+        <text x="{{ bx + loop.index0 * step + bw / 2 }}" y="54">{{ t }}</text>
+        {% if not loop.last %}
+          <text x="{{ bx + loop.index0 * step + bw / 2 }}" y="80" style="fill:var(--jj-accent)">{{ ex.tokens[loop.index] }}</text>
+        {% endif %}
+      {% endfor %}
+      <text x="8" y="54" text-anchor="start" class="d-muted">input</text>
+      <text x="8" y="80" text-anchor="start" style="fill:var(--jj-accent)">target</text>
+
+      <text x="8" y="116" text-anchor="start" font-weight="600">masked LM</text>
+      {% for t in ex.tokens %}
+        {% set hit = loop.index0 in masked %}
+        <rect x="{{ bx + loop.index0 * step }}" y="124" width="{{ bw }}" height="24" rx="4" class="d-box"{% if hit %} style="stroke:var(--jj-amber)"{% endif %}></rect>
+        <text x="{{ bx + loop.index0 * step + bw / 2 }}" y="140"{% if hit %} style="fill:var(--jj-amber)"{% endif %}>{% if hit %}[MASK]{% else %}{{ t }}{% endif %}</text>
+        {% if hit %}<text x="{{ bx + loop.index0 * step + bw / 2 }}" y="166" style="fill:var(--jj-accent)">{{ t }}</text>{% endif %}
+      {% endfor %}
+      <text x="8" y="140" text-anchor="start" class="d-muted">input</text>
+      <text x="8" y="166" text-anchor="start" style="fill:var(--jj-accent)">target</text>
+
+      <text x="8" y="204" text-anchor="start" font-weight="600">span corruption</text>
+      {% for t in ex.span.inputs %}
+        {% set sent = t in cfg.sentinels %}
+        <rect x="{{ bx + loop.index0 * step }}" y="212" width="{{ bw }}" height="24" rx="4" class="d-box"{% if sent %} style="stroke:var(--jj-amber)"{% endif %}></rect>
+        <text x="{{ bx + loop.index0 * step + bw / 2 }}" y="228"{% if sent %} style="fill:var(--jj-amber)"{% endif %}>{{ t }}</text>
+      {% endfor %}
+      {% for t in ex.span.targets %}
+        {% set sent = t in cfg.sentinels %}
+        <rect x="{{ bx + loop.index0 * step }}" y="250" width="{{ bw }}" height="24" rx="4" class="d-box"{% if sent %} style="stroke:var(--jj-amber)"{% endif %}></rect>
+        <text x="{{ bx + loop.index0 * step + bw / 2 }}" y="266" style="fill:var({% if sent %}--jj-amber{% else %}--jj-accent{% endif %})">{{ t }}</text>
+      {% endfor %}
+      <text x="8" y="228" text-anchor="start" class="d-muted">encoder in</text>
+      <text x="8" y="266" text-anchor="start" style="fill:var(--jj-accent)">decoder out</text>
+      <text x="360" y="306" class="d-muted">causal: {{ ex.causal_targets }} targets · masked: 15% of positions · span: {{ ex.span.corrupted }} corrupted tokens, a {{ ex.span.targets|length }}-token target</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="objectives">Pretraining objectives</h3>
+<p>
+  <strong>Causal language modelling</strong> is what GPT-style models use. Under a causal attention mask, position i sees tokens 1…i
+  and predicts token i + 1, so one forward pass over n tokens yields n − 1 training targets, every token but the first. The loss
+  is the mean cross-entropy over them; its exponential is the perplexity. Because the model only ever looks left, the same
+  network generates text one token at a time with no change.
+</p>
+<p>
+  <strong>Masked language modelling</strong> is BERT's objective for <a href="/ml-models/encoder-only">encoder-only</a> models.
+  15% of positions are picked; of those, 80% are replaced by a [MASK] token, 10% by a random token and 10% left unchanged, so that
+  the model cannot rely on [MASK] appearing at fine-tuning time. The loss covers only the picked positions. The model sees both
+  sides of every gap, which gives better representations for classification and retrieval, but it learns from only 15% of the
+  tokens it reads and cannot generate text left to right.
+</p>
+<p>
+  <strong>Span corruption</strong> is T5's objective for encoder-decoder models. Contiguous spans covering about 15% of tokens are
+  each replaced by one sentinel token; the decoder outputs each sentinel followed by the tokens it hid. With an average span length
+  of 3, inputs and targets are both shorter than the original text, which makes the objective cheap. Later work such as UL2 mixes
+  several such denoisers with causal LM; today's largest models almost all use plain causal LM because one objective then serves
+  both pretraining and generation.
+</p>
+
+<h3 id="data">Data mixtures and deduplication</h3>
+<p>
+  A pretraining corpus is a <strong>mixture</strong> of sources: filtered web crawl, code, books, scientific papers, encyclopedias,
+  forums. Each gets a sampling weight, chosen by small ablation runs, and the weight times the token budget sets how many times
+  each source is read. Small high-quality sources are typically upweighted and so repeated for several epochs while the web is
+  not even read once. Muennighoff and colleagues found that repeating data up to about 4 epochs is almost as good as fresh data,
+  with returns falling quickly after that.
+</p>
+<p>
+  Web text is full of duplicates: mirrors, boilerplate, templated pages. Duplicates waste compute, increase memorization of the
+  repeated text, and leak test sets into training. <strong>Exact deduplication</strong> hashes each document, or each long
+  substring, and drops repeats. <strong>Near-duplicate</strong> detection uses MinHash: split each document into overlapping
+  word n-grams (shingles) and measure similarity as the Jaccard index |A ∩ B| / |A ∪ B| of the shingle sets. For a random hash
+  function, the probability that two sets have the same minimum hash equals their Jaccard index, so k hash functions give a
+  k-number <em>signature</em> whose agreement rate estimates the similarity. Comparing every pair is still quadratic, so
+  <strong>locality-sensitive hashing</strong> cuts each signature into b bands of r rows and only compares documents that match
+  exactly on some band. A pair with similarity s becomes a candidate with probability 1 − (1 − s<sup>r</sup>)<sup>b</sup>, an
+  S-shaped curve whose threshold sits near (1/b)<sup>1/r</sup>. Quality filters (language ID, heuristics, classifiers trained
+  to spot reference-quality text) and removal of personal data and benchmark text run alongside.
+</p>
+
+<h3 id="compute">Compute: C ≈ 6 · N · D, derived</h3>
+<p>
+  Almost all of a transformer's arithmetic is matrix multiplication by its weights. Take one linear layer with a weight W of
+  shape f<sub>in</sub> × f<sub>out</sub> applied to D tokens. Multiplying an (D × f<sub>in</sub>) input by W takes
+  D · f<sub>in</sub> · f<sub>out</sub> multiply-adds, which is 2 · D · f<sub>in</sub> · f<sub>out</sub> FLOPs: 2 FLOPs per
+  parameter per token in the forward pass. <a href="/ml-models/backpropagation">Backpropagation</a> needs two more products of the
+  same size: the gradient with respect to the input, ∂L/∂X = ∂L/∂Y · Wᵀ, to pass back to the previous layer, and the gradient with
+  respect to the weight, ∂L/∂W = Xᵀ · ∂L/∂Y, for the update. That is 4 more FLOPs per parameter per token, 6 in total. Summed
+  over every weight matrix:
+</p>
+<div class="ml-formula">C ≈ 6 · N · D FLOPs (N parameters, D training tokens)</div>
+<p>
+  Kaplan and colleagues add the attention scores, which multiply activations by activations rather than by weights: about
+  2 · n<sub>layer</sub> · n<sub>ctx</sub> · d<sub>model</sub> extra forward FLOPs per token, small next to 2N unless the context is
+  much longer than d<sub>model</sub>. Embedding lookups are not multiplications and are usually excluded from N, as is the
+  optimizer's elementwise update. The formula ignores activation recomputation (which adds another forward pass) and counts
+  useful work only; dividing it by hardware peak gives a lower bound on time, and the achieved fraction of peak is the model
+  FLOPs utilization, or <strong>MFU</strong>.
+</p>
+<p>
+  For a GPT-style block with model width d, attention has four d × d projections (Q, K, V, output), 4d<sup>2</sup> parameters, and
+  an MLP with hidden width 4d has 8d<sup>2</sup>: about <strong>12 · n<sub>layer</sub> · d<sup>2</sup></strong> non-embedding
+  parameters in all.
+</p>
+
+<h3 id="kaplan">The Kaplan scaling laws</h3>
+<p>
+  Kaplan and colleagues (OpenAI, 2020) trained models from under a million to over a billion parameters and found that test loss
+  follows a power law in each resource when the others are not the bottleneck:
+</p>
+<div class="ml-formula">L(N) = (N_c / N)^{α_N}, α_N ≈ {{ kc.alpha_n }}, N_c ≈ {{ sci(kc.n_c, 1) }} &nbsp;&nbsp; L(D) = (D_c / D)^{α_D}, α_D ≈ {{ kc.alpha_d }}, D_c ≈ {{ sci(kc.d_c, 1) }}</div>
+<p>
+  with N counting non-embedding parameters, D in tokens and L in nats per token on their WebText2 data. The shape of the
+  architecture (depth versus width) mattered far less than N. Fitting how the best model for each compute budget grows, they found
+  that model size should grow much faster than data, N<sub>opt</sub> ∝ C<sup>{{ kc.n_exponent }}</sup>, so most of any extra
+  compute should go into a bigger model trained on relatively few more tokens. GPT-3, with 175B parameters trained on about 300B
+  tokens, followed that advice.
+</p>
+
+<h3 id="chinchilla">The Chinchilla scaling laws</h3>
+<p>
+  Hoffmann and colleagues (DeepMind, 2022) trained over 400 models from 70M to 16B parameters and reached a different answer. One
+  key difference: Kaplan's runs used a learning-rate schedule of the same length regardless of how many tokens a run would
+  actually use, which understates what small models reach on long training. Chinchilla tuned the
+  <a href="/ml-models/learning-rate-schedules">cosine schedule</a> to each run's length, and used three methods to locate the best
+  size. The third fits one formula for loss as a function of both N and D:
+</p>
+<div class="ml-formula">L(N, D) = E + A / N^α + B / D^β, E = {{ cc.e }}, A = {{ cc.a }}, B = {{ cc.b }}, α = {{ cc.alpha }}, β = {{ cc.beta }}</div>
+<p>
+  E is the irreducible loss of the data, the entropy of text that no model can remove; the other two terms are the penalties for
+  a finite model and finite data. To find the best size for a budget, substitute D = C/(6N) and set the derivative with respect to
+  N to zero. That gives αA/N<sup>α</sup> = βB/D<sup>β</sup>, and solving:
+</p>
+<div class="ml-formula">N_opt = G · (C/6)^a, D_opt = G⁻¹ · (C/6)^b, a = β/(α + β), b = α/(α + β), G = (αA / (βB))^{1/(α+β)}</div>
+<p>
+  With the fitted values, a = {{ n(ex.budgets[0].optimal.a, 2) }} and b = {{ n(ex.budgets[0].optimal.b, 2) }}; the other two methods
+  gave a and b both close to 0.5. Either way, parameters and tokens should grow at about the same rate, roughly equally for each
+  tenfold more compute. The widely used summary is about <strong>{{ cfg.tokens_per_param }} tokens per parameter</strong>, which
+  turns C = 6 · N · {{ cfg.tokens_per_param }}N into N = √(C / {{ 6 * cfg.tokens_per_param }}). By that measure GPT-3 and Gopher
+  were far too large for their data, and Chinchilla, at 70B parameters on 1.4T tokens with the budget of 280B-parameter Gopher,
+  beat it on almost every benchmark.
+</p>
+
+<h3 id="beyond-compute-optimal">Beyond compute-optimal</h3>
+<p>
+  Chinchilla-optimal minimizes training compute for a target loss, but a deployed model's cost is dominated by
+  <a href="/ml-models/model-serving">inference</a>, which scales with N and the number of tokens served. A smaller model trained on
+  far more tokens than 20 per parameter costs more to train but less to run, so current open models are deliberately
+  "over-trained": Llama 3's 8B model was trained on over 15T tokens, close to 2,000 tokens per parameter. Loss keeps falling with
+  more data, just more slowly than the compute-optimal recipe would buy.
+</p>
+
+<h3 id="emergence">Emergent abilities, and caveats</h3>
+<p>
+  Wei and colleagues catalogued tasks where small models score at chance and, past some scale, accuracy jumps: multi-digit
+  arithmetic, some reasoning benchmarks. They called these <strong>emergent abilities</strong>, abilities that cannot be predicted
+  by extrapolating smaller models. Schaeffer, Miranda and Koyejo argued that many of these jumps come from the metric, not the model.
+  Exact-match accuracy gives credit only if every token of the answer is right, so with per-token accuracy p and a k-token
+  answer it behaves like p<sup>k</sup>: a smooth rise in p looks like a sudden jump. Measured with a continuous metric such as
+  per-token log-likelihood, the same models improve smoothly. Some capabilities do appear abruptly on any metric, and small
+  benchmarks add noise, so the honest summary is: the loss is predictable, specific downstream abilities much less so, and a
+  claimed jump should be checked against a smoother metric before it is believed.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>nn.CrossEntropyLoss(weight=None, ignore_index=-100, reduction="mean", label_smoothing=0.0)</code></td><td>logits (B·T, V), targets (B·T,)</td><td>The pretraining loss for every objective: mean −log p of the target token</td><td><a href="{{ src('torch/nn/modules/loss.py', 1200, 1409) }}">loss.py</a></td></tr>
+      <tr><td><code>F.cross_entropy(input, target, ..., ignore_index=-100, reduction="mean", label_smoothing=0.0)</code></td><td>same</td><td>The functional form used inside most training loops</td><td><a href="{{ src('torch/nn/functional.py', 3478, 3571) }}">functional.py</a></td></tr>
+      <tr><td><code>ignore_index</code></td><td>default −100</td><td>Positions with this target add nothing to the loss: padding, and every unmasked position in masked LM</td><td><a href="{{ src('torch/nn/modules/loss.py', 1385, 1396) }}">loss.py</a></td></tr>
+      <tr><td><code>torch.triu(input, diagonal=0)</code></td><td>(T, T)</td><td>Builds the causal mask that hides future tokens</td><td><a href="{{ src('torch/_torch_docs.py', 12183, 12247) }}">_torch_docs.py</a></td></tr>
+      <tr><td><code>torch.bernoulli(input, *, generator)</code></td><td>same shape as input probabilities</td><td>Picks the 15% of positions to mask, and the 80/10/10 split</td><td><a href="{{ src('torch/_torch_docs.py', 1583, 1639) }}">_torch_docs.py</a></td></tr>
+      <tr><td><code>torch.multinomial(input, num_samples, replacement=False)</code></td><td>(num_samples,) indices</td><td>Draws which source each training sequence comes from, by mixture weight</td><td><a href="{{ src('torch/_torch_docs.py', 8088, 8141) }}">_torch_docs.py</a></td></tr>
+      <tr><td>Non-embedding parameters N</td><td>≈ 12 · n<sub>layer</sub> · d<sup>2</sup></td><td>The N in the scaling laws and in C ≈ 6ND</td><td>Kaplan et al., Table 1</td></tr>
+      <tr><td>Compute C</td><td>FLOPs ≈ 6 · N · D</td><td>Forward 2N, backward 4N per token</td><td>Kaplan et al., Table 1</td></tr>
+      <tr><td>Chinchilla fit</td><td>E, A, B, α, β = {{ cc.e }}, {{ cc.a }}, {{ cc.b }}, {{ cc.alpha }}, {{ cc.beta }}</td><td>Predicted loss for any N and D</td><td>Hoffmann et al., Approach 3</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="ml-caption">
+  PyTorch {{ pins.pytorch.tag }} supplies the loss and the sampling operations; data pipelines, deduplication and scaling-law fits
+  live in separate tools.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-objectives">How many targets each objective gets</h3>
+  <p>
+    On the {{ ex.tokens|length }}-token sentence in the diagram, causal LM trains on {{ ex.causal_targets }} targets. Span corruption
+    hides {{ ex.span.corrupted }} tokens in two spans and produces a {{ ex.span.inputs|length }}-token input and a
+    {{ ex.span.targets|length }}-token target. For masked LM on a {{ cfg.mlm.length }}-token sequence, {{ pct(cfg.mlm.rate, 0) }}
+    means {{ n(ex.mlm.chosen, 1) }} positions on average: {{ n(ex.mlm.mask, 2) }} become [MASK], {{ n(ex.mlm.random, 2) }} a random
+    token and {{ n(ex.mlm.kept, 2) }} stay as they are. A causal model gets {{ cfg.mlm.length - 1 }} targets from the same sequence,
+    about {{ n((cfg.mlm.length - 1) / ex.mlm.chosen, 1) }} times as many, which is part of why causal LM won for large models.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-flops">Six FLOPs per parameter per token</h3>
+  <p>
+    One MLP up-projection with f<sub>in</sub> = {{ cfg.linear.fan_in }} and f<sub>out</sub> = {{ cfg.linear.fan_out }} has
+    {{ "{:,}".format(ex.linear.params) }} weights. On a batch of {{ cfg.linear.tokens }} tokens:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Product</th><th>Shapes</th><th>FLOPs</th></tr></thead>
+      <tbody>
+        <tr><td>Forward Y = XW</td><td>({{ cfg.linear.tokens }} × {{ cfg.linear.fan_in }}) · ({{ cfg.linear.fan_in }} × {{ cfg.linear.fan_out }})</td><td>{{ sci(ex.linear.forward, 3) }}</td></tr>
+        <tr><td>∂L/∂X = ∂L/∂Y · Wᵀ</td><td>({{ cfg.linear.tokens }} × {{ cfg.linear.fan_out }}) · ({{ cfg.linear.fan_out }} × {{ cfg.linear.fan_in }})</td><td>{{ sci(ex.linear.grad_input, 3) }}</td></tr>
+        <tr><td>∂L/∂W = Xᵀ · ∂L/∂Y</td><td>({{ cfg.linear.fan_in }} × {{ cfg.linear.tokens }}) · ({{ cfg.linear.tokens }} × {{ cfg.linear.fan_out }})</td><td>{{ sci(ex.linear.grad_weight, 3) }}</td></tr>
+        <tr><td><strong>Total</strong></td><td></td><td><strong>{{ sci(ex.linear.total, 3) }}</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The total divided by parameters times tokens is exactly {{ n(ex.linear.per_param_token, 0) }}. For a whole GPT-style model with
+    {{ m.layers }} layers and d<sub>model</sub> = {{ m.d_model }}, 12 · {{ m.layers }} · {{ m.d_model }}<sup>2</sup> gives
+    N = {{ bn(ex.params.non_embedding, 2) }} non-embedding parameters, plus {{ bn(ex.params.embedding, 3) }} in a
+    {{ "{:,}".format(m.vocab) }}-token embedding. Per token the forward pass is 2N = {{ sci(ex.forward.weights, 3) }} FLOPs
+    through the weights and 2 · {{ m.layers }} · {{ m.context }} · {{ m.d_model }} = {{ sci(ex.forward.attention, 3) }} for attention
+    at a {{ m.context }}-token context, {{ pct(ex.forward.attention_share) }} of the forward total.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-chinchilla">Sizing a model for Chinchilla's budget</h3>
+  <p>
+    Chinchilla trained N = {{ bn(chin.n) }} parameters on D = {{ tn(chin.d, 1) }} tokens: C = 6 · {{ sci(chin.n, 1) }} ·
+    {{ sci(chin.d, 1) }} = {{ sci(chin.compute) }} FLOPs. Gopher's {{ bn(gopher.n) }} parameters on {{ bn(gopher.d) }} tokens give
+    {{ sci(gopher.compute) }} by the same count; the paper's more careful FLOP count puts both at the same budget. The
+    {{ cfg.tokens_per_param }}-tokens rule recovers Chinchilla exactly: √({{ sci(chin.compute) }} / {{ 6 * cfg.tokens_per_param }}) =
+    {{ bn(chin.rule.n) }} parameters, {{ tn(chin.rule.d, 1) }} tokens.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Model</th><th>N</th><th>D</th><th>Tokens per parameter</th><th>C = 6ND</th><th>Fitted L(N, D)</th></tr></thead>
+      <tbody>
+        {% for t in ex.trained %}
+          <tr><td>{{ t.name }}</td><td>{{ bn(t.n) }}</td><td>{{ tn(t.d, 1) }}</td><td>{{ n(t.ratio, 1) }}</td><td>{{ sci(t.compute) }}</td><td>{{ n(t.loss, 4) }}</td></tr>
+        {% endfor %}
+        <tr><td>Approach 3 optimum at Chinchilla's C</td><td>{{ bn(chin.optimal.n, 1) }}</td><td>{{ tn(chin.optimal.d, 2) }}</td><td>{{ n(chin.optimal.ratio, 1) }}</td><td>{{ sci(chin.compute) }}</td><td>{{ n(chin.optimal.loss, 4) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The fitted law predicts Gopher's loss {{ n(gopher.loss - chin.loss, 3) }} nats higher than Chinchilla's while using slightly less
+    compute by this count: Gopher pays a big model's cost with too few tokens, and its data term B/D<sup>β</sup> dominates.
+    Plugging the published constants into the closed form gives a smaller optimum still, {{ bn(chin.optimal.n) }} parameters on
+    {{ tn(chin.optimal.d, 1) }} tokens, because this fit's a = {{ n(chin.optimal.a, 2) }} is below the other two methods' 0.5. The
+    predicted gain over Chinchilla's actual choice is only {{ n(chin.loss - chin.optimal.loss, 4) }} nats: the loss is very flat
+    near the optimum, which is why a rule of thumb works.
+  </p>
+  <p>
+    Across budgets the fitted optimum drifts toward more tokens per parameter, while the rule keeps 20:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>C (FLOPs)</th><th>Approach 3 N<sub>opt</sub></th><th>D<sub>opt</sub></th><th>Tokens per parameter</th><th>20-tokens N</th><th>20-tokens D</th><th>Predicted loss</th></tr></thead>
+      <tbody>
+        {% for b in ex.budgets %}
+          <tr><td>{{ sci(b.compute, 0) }}</td><td>{{ bn(b.optimal.n, 1) }}</td><td>{{ tn(b.optimal.d, 3) }}</td><td>{{ n(b.optimal.ratio, 0) }}</td><td>{{ bn(b.rule.n, 1) }}</td><td>{{ tn(b.rule.d, 3) }}</td><td>{{ n(b.optimal.loss, 3) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Each tenfold more compute multiplies the optimal N by 10<sup>a</sup> = {{ n(ex.chinchilla.tenfold_n, 2) }} and D by
+    10<sup>b</sup> = {{ n(ex.chinchilla.tenfold_d, 2) }} under this fit. Kaplan's N ∝ C<sup>{{ kc.n_exponent }}</sup> would put
+    {{ n(ex.kaplan.tenfold_n, 2) }}× into the model and only {{ n(ex.kaplan.tenfold_d, 2) }}× into the data. Under Kaplan's L(N),
+    doubling N multiplies loss by 2<sup>−{{ kc.alpha_n }}</sup> = {{ n(ex.kaplan.double_n, 4) }}, a {{ pct(1 - ex.kaplan.double_n) }}
+    cut, and doubling D by 2<sup>−{{ kc.alpha_d }}</sup> = {{ n(ex.kaplan.double_d, 4) }}.
+  </p>
+  <p>
+    At {{ cfg.gpu.count }} GPUs with a dense BF16 peak of {{ n(cfg.gpu.peak / 1e12, 0) }} TFLOP/s each (an H100 SXM) and
+    {{ pct(cfg.gpu.mfu, 0) }} MFU, Chinchilla's {{ sci(chin.compute) }} FLOPs take {{ n(ex.days, 1) }} days.
+  </p>
+</div>
+
+{% set sx0 = 90 %}
+{% set sy0 = 270 %}
+{% set dec = 135 %}
+{% set ly = 287.5 %}
+{% set lmin = 1.85 %}
+{% set colors = ["--jj-muted", "--jj-green", "--jj-accent", "--jj-amber"] %}
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 330" role="img" aria-labelledby="pre-iso-title pre-iso-desc">
+    <title id="pre-iso-title">IsoFLOP curves from the Chinchilla fit</title>
+    <desc id="pre-iso-desc">
+      Model size N on a log axis from 10⁸ to 10¹² parameters, and predicted loss from 1.85 to 2.65. Four U-shaped curves, one per
+      compute budget from 10²¹ to 10²⁴ FLOPs, each with every N trained on D = C/(6N) tokens. Each curve's minimum is marked: about
+      {% for c in ex.isoflop %}{{ bn(c.optimal.n, 1) }} at loss {{ n(c.optimal.loss, 3) }}{% if not loop.last %}, {% endif %}{% endfor %}.
+      The minima move right and down as compute grows. Chinchilla and Gopher, whose budgets of about 5–6 × 10²³ fall between
+      the two lowest curves, are marked as squares: Chinchilla at 70B and loss {{ n(chin.loss, 3) }}, within
+      {{ n(chin.loss - chin.optimal.loss, 3) }} of its budget's minimum, and Gopher at 280B and loss {{ n(gopher.loss, 3) }}, far to the right.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      <line x1="{{ sx0 }}" y1="{{ sy0 }}" x2="{{ sx0 + 4 * dec }}" y2="{{ sy0 }}" class="d-line"></line>
+      <line x1="{{ sx0 }}" y1="{{ sy0 }}" x2="{{ sx0 }}" y2="{{ sy0 - 0.8 * ly }}" class="d-line"></line>
+      {% for k in range(5) %}
+        <text x="{{ sx0 + k * dec }}" y="{{ sy0 + 16 }}" class="d-muted">10{{ ["⁸", "⁹", "¹⁰", "¹¹", "¹²"][k] }}</text>
+      {% endfor %}
+      {% for v in [1.9, 2.1, 2.3, 2.5] %}
+        <text x="{{ sx0 - 8 }}" y="{{ "%.1f"|format(sy0 - (v - lmin) * ly + 4) }}" text-anchor="end" class="d-muted">{{ v }}</text>
+      {% endfor %}
+      <text x="{{ sx0 + 2 * dec }}" y="{{ sy0 + 34 }}" class="d-muted">parameters N (log scale), each trained on D = C / 6N tokens</text>
+      <text x="{{ sx0 - 44 }}" y="{{ sy0 - 0.4 * ly }}" class="d-muted" transform="rotate(-90 {{ sx0 - 44 }} {{ sy0 - 0.4 * ly }})">predicted loss</text>
+      {% for c in ex.isoflop %}
+        {% set col = colors[loop.index0] %}
+        <polyline fill="none" class="d-line" style="stroke:var({{ col }});stroke-width:2" points="{% for p in c.points if p.loss <= 2.65 and p.log_n >= 8 and p.log_n <= 12 %}{{ "%.1f,%.1f"|format(sx0 + (p.log_n - 8) * dec, sy0 - (p.loss - lmin) * ly) }} {% endfor %}"></polyline>
+        {% set o = c.points[12] %}
+        <circle cx="{{ "%.1f"|format(sx0 + (o.log_n - 8) * dec) }}" cy="{{ "%.1f"|format(sy0 - (o.loss - lmin) * ly) }}" r="4" style="fill:var({{ col }})"></circle>
+      {% endfor %}
+      {% for t in ex.trained %}
+        {% set tx = sx0 + (t.log_n - 8) * dec %}
+        {% set ty = sy0 - (t.loss - lmin) * ly %}
+        <rect x="{{ "%.1f"|format(tx - 4) }}" y="{{ "%.1f"|format(ty - 4) }}" width="8" height="8" style="fill:var(--jj-text)"></rect>
+        <text x="{{ "%.1f"|format(tx + 8) }}" y="{{ "%.1f"|format(ty + (14 if loop.first else -8)) }}" text-anchor="start">{{ t.name }}</text>
+      {% endfor %}
+      <g text-anchor="start">
+        {% for c in ex.isoflop %}
+          <line x1="636" y1="{{ 50 + loop.index0 * 22 }}" x2="656" y2="{{ 50 + loop.index0 * 22 }}" class="d-line" style="stroke:var({{ colors[loop.index0] }});stroke-width:2"></line>
+          <text x="662" y="{{ 54 + loop.index0 * 22 }}">10{{ ["²¹", "²²", "²³", "²⁴"][loop.index0] }}</text>
+        {% endfor %}
+        <text x="636" y="148" class="d-muted">FLOPs</text>
+      </g>
+    </g>
+  </svg>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-mixture">A mixture and its epochs</h3>
+  <p>
+    An illustrative mixture spending Chinchilla's {{ tn(cfg.trained[0][2], 1) }}-token budget over five sources:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Source</th><th>Available tokens</th><th>Weight</th><th>Tokens trained</th><th>Epochs</th></tr></thead>
+      <tbody>
+        {% for s in ex.mixture %}
+          <tr><td>{{ s.name }}</td><td>{{ bn(s.size) }}</td><td>{{ n(s.weight) }}</td><td>{{ bn(s.tokens) }}</td><td>{{ n(s.epochs, 2) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The web supplies {{ pct(ex.mixture[0].weight, 0) }} of training tokens yet only a third of it is ever read, while Wikipedia,
+    at {{ pct(ex.mixture[-1].weight, 0) }} of the mix, is read {{ n(ex.mixture[-1].epochs, 1) }} times, close to the roughly
+    4-epoch point where repetition stops being nearly as good as new data.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-minhash">Finding near-duplicates with MinHash</h3>
+  <p>
+    Three short documents, split into word {{ cfg.shingle }}-grams:
+  </p>
+  <ol>
+    {% for d in cfg.docs %}<li>"{{ d }}" ({{ ex.shingles[loop.index0] }} shingles)</li>{% endfor %}
+  </ol>
+  {% set near = ex.pairs[0] %}
+  <p>
+    Documents 1 and 2 differ in the last word, which changes one shingle each: they share 12 of 14 distinct shingles, a Jaccard
+    similarity of {{ n(near.exact, 4) }}. With {{ cfg.hashes }} hash functions (BLAKE2b keyed by the function's index), the two
+    signatures agree in {{ (near.estimate * cfg.hashes)|round|int }} places, an estimate of {{ n(near.estimate, 4) }}. Document 3
+    shares no shingle with either, and its signature agrees with theirs nowhere. Cutting the signatures into {{ cfg.bands }} bands of
+    {{ ex.rows }} rows gives a threshold near (1/{{ cfg.bands }})<sup>1/{{ ex.rows }}</sup> = {{ n(ex.threshold, 3) }}; the
+    chance that a pair becomes a candidate is:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Jaccard s</th>{% for r in ex.curve %}<th>{{ r.s }}</th>{% endfor %}<th>{{ n(near.exact, 3) }} (docs 1, 2)</th></tr></thead>
+      <tbody>
+        <tr><td>1 − (1 − s<sup>{{ ex.rows }}</sup>)<sup>{{ cfg.bands }}</sup></td>{% for r in ex.curve %}<td>{{ n(r.p, 4) }}</td>{% endfor %}<td>{{ n(near.candidate, 4) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Pairs above about 0.8 are almost always caught and pairs below 0.5 almost never compared, and each document only has to be
+    hashed into {{ cfg.bands }} buckets instead of compared with every other.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-emergence">A smooth metric that looks emergent</h3>
+  <p>
+    Seven models whose per-token accuracy on a task rises evenly, scored by exact match on a {{ cfg.answer_tokens }}-token answer
+    (all tokens right, treated as independent):
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Model</th>{% for r in ex.emergence %}<th>{{ loop.index }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        <tr><td>Per-token accuracy p</td>{% for r in ex.emergence %}<td>{{ n(r.per_token) }}</td>{% endfor %}</tr>
+        <tr><td>Exact match p<sup>{{ cfg.answer_tokens }}</sup></td>{% for r in ex.emergence %}<td>{{ n(r.exact, 3) }}</td>{% endfor %}</tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The first four models score {{ pct(ex.emergence[3].exact) }} or less on exact match, then the score climbs to
+    {{ pct(ex.emergence[-1].exact, 0) }}: on a log-scale size axis this reads as an ability switching on, though nothing about the
+    model changed abruptly.
+  </p>
+</div>
+
+{% set ex0 = 100 %}
+{% set ey0 = 270 %}
+{% set ew = 480 %}
+{% set eh = 220 %}
+{% set em = ex.emergence|length - 1 %}
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 320" role="img" aria-labelledby="pre-em-title pre-em-desc">
+    <title id="pre-em-title">Per-token accuracy against exact match</title>
+    <desc id="pre-em-desc">
+      Seven models on the horizontal axis and score from 0 to 1 on the vertical axis. Per-token accuracy rises in a nearly straight
+      line from {{ n(ex.emergence[0].per_token) }} to {{ n(ex.emergence[-1].per_token) }}. Exact match on a {{ cfg.answer_tokens }}-token
+      answer stays near zero for the first four models and then rises steeply to {{ n(ex.emergence[-1].exact) }}.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      <line x1="{{ ex0 }}" y1="{{ ey0 }}" x2="{{ ex0 + ew }}" y2="{{ ey0 }}" class="d-line"></line>
+      <line x1="{{ ex0 }}" y1="{{ ey0 }}" x2="{{ ex0 }}" y2="{{ ey0 - eh }}" class="d-line"></line>
+      {% for v in [0, 0.5, 1] %}
+        <text x="{{ ex0 - 8 }}" y="{{ ey0 - v * eh + 4 }}" text-anchor="end" class="d-muted">{{ v }}</text>
+      {% endfor %}
+      {% for r in ex.emergence %}
+        <text x="{{ ex0 + loop.index0 / em * ew }}" y="{{ ey0 + 16 }}" class="d-muted">{{ loop.index }}</text>
+      {% endfor %}
+      <text x="{{ ex0 + ew / 2 }}" y="{{ ey0 + 34 }}" class="d-muted">model, smallest to largest</text>
+      <polyline fill="none" class="d-line" style="stroke:var(--jj-accent);stroke-width:2" points="{% for r in ex.emergence %}{{ "%.1f,%.1f"|format(ex0 + loop.index0 / em * ew, ey0 - r.per_token * eh) }} {% endfor %}"></polyline>
+      <polyline fill="none" class="d-line" style="stroke:var(--jj-amber);stroke-width:2" points="{% for r in ex.emergence %}{{ "%.1f,%.1f"|format(ex0 + loop.index0 / em * ew, ey0 - r.exact * eh) }} {% endfor %}"></polyline>
+      {% for r in ex.emergence %}
+        <circle cx="{{ "%.1f"|format(ex0 + loop.index0 / em * ew) }}" cy="{{ "%.1f"|format(ey0 - r.per_token * eh) }}" r="3.5" style="fill:var(--jj-accent)"></circle>
+        <circle cx="{{ "%.1f"|format(ex0 + loop.index0 / em * ew) }}" cy="{{ "%.1f"|format(ey0 - r.exact * eh) }}" r="3.5" style="fill:var(--jj-amber)"></circle>
+      {% endfor %}
+      <g text-anchor="start">
+        <line x1="600" y1="60" x2="624" y2="60" class="d-line" style="stroke:var(--jj-accent);stroke-width:2"></line>
+        <text x="630" y="64">per token</text>
+        <line x1="600" y1="84" x2="624" y2="84" class="d-line" style="stroke:var(--jj-amber);stroke-width:2"></line>
+        <text x="630" y="88">exact match</text>
+      </g>
+    </g>
+  </svg>
+</div>
+
+<details class="ml-quiz">
+  <summary>You have a fixed budget of 10<sup>22</sup> FLOPs. About how large a model should you train, and on how many tokens?</summary>
+  <p>By the 20-tokens rule, N = √(10<sup>22</sup> / 120) ≈ {{ bn(ex.budgets[2].rule.n, 1) }} parameters on about
+    {{ bn(ex.budgets[2].rule.d) }} tokens. The Approach 3 fit says {{ bn(ex.budgets[2].optimal.n, 1) }} on
+    {{ bn(ex.budgets[2].optimal.d) }}; the loss differs little between them. If the model will serve heavy traffic, go smaller and
+    train longer.</p>
+</details>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  The causal-LM loss with padding ignored, masked-LM corruption, and the sizing arithmetic. <code>model</code> is any decoder that
+  returns logits of shape (B, T, V).
+</p>
+<pre><code>import math
+import torch
+import torch.nn.functional as F
+
+def causal_lm_loss(model, tokens, pad_id):
+    logits = model(tokens[:, :-1])                       # position i predicts token i + 1
+    targets = tokens[:, 1:].masked_fill(tokens[:, 1:] == pad_id, -100)
+    return F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1), ignore_index=-100)
+
+def mask_for_mlm(tokens, mask_id, vocab_size, rate=0.15, generator=None):
+    labels = tokens.clone()
+    picked = torch.bernoulli(torch.full(tokens.shape, rate), generator=generator).bool()
+    labels[~picked] = -100                               # loss only on picked positions
+    roll = torch.rand(tokens.shape, generator=generator)
+    inputs = tokens.clone()
+    inputs[picked &amp; (roll &lt; 0.8)] = mask_id
+    swap = picked &amp; (roll &gt;= 0.8) &amp; (roll &lt; 0.9)
+    inputs[swap] = torch.randint(vocab_size, tokens.shape, generator=generator)[swap]
+    return inputs, labels                                # the last 10% keep their token
+
+def chinchilla_size(compute, tokens_per_param=20):
+    n = math.sqrt(compute / (6 * tokens_per_param))
+    return n, tokens_per_param * n
+
+print(chinchilla_size(6 * 70e9 * 1.4e12))               # (7e10, 1.4e12)</code></pre>
+<p>
+  Real pretraining code packs documents end to end into fixed-length sequences separated by an end-of-text token rather than
+  padding, so almost no positions are wasted; the attention mask may also stop tokens attending across document boundaries. The
+  loss is usually computed in float32 even under <a href="/ml-models/mixed-precision">mixed precision</a>, because the softmax over
+  a large vocabulary is sensitive to rounding. A scaling-law study trains a ladder of small models at several budgets, fits the
+  curves, and only then commits to the large run.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Causal vs masked vs span objectives.</strong> Causal LM learns from every token and generates natively; masked LM gives
+    bidirectional representations suited to classification and retrieval but learns from 15% of tokens; span corruption is cheap
+    per token and suits encoder-decoder models for translation and summarization.</li>
+  <li><strong>Compute-optimal vs inference-optimal.</strong> Chinchilla sizing minimizes training cost for a given loss; a model that
+    will serve billions of tokens is cheaper overall if it is smaller and trained far longer.</li>
+  <li><strong>Repeating data.</strong> High-quality data is finite. A few epochs over it costs little; many epochs mean diminishing
+    returns and more memorization, which pushes teams toward better filtering and synthetic data.</li>
+  <li><strong>Deduplication strength.</strong> Aggressive near-dedup removes boilerplate and test leakage but can also remove
+    legitimately similar documents such as licences and standard code; the band and row settings choose where to cut.</li>
+  <li><strong>Trusting a fit.</strong> Scaling laws are fits on one data distribution, tokenizer and architecture; the constants do not
+    transfer, the exponents only roughly, and Kaplan and Chinchilla reached different allocations from different training choices.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Why does the backward pass cost about twice the forward pass?</summary>
+  <p>For every weight matrix it does two matrix products of the forward's size: one for the gradient with respect to the layer's
+    input, passed back to earlier layers, and one for the gradient with respect to the weight, used in the update. 2N forward plus
+    4N backward is the 6N in C ≈ 6ND.</p>
+</details>
+<details class="ml-quiz">
+  <summary>A paper shows a capability that jumps from 0% to 60% between two model sizes. What would you check?</summary>
+  <p>Whether the metric is all-or-nothing, such as exact match on a multi-token answer. Score the same models with per-token
+    log-likelihood or partial credit; if that improves smoothly, the jump is a property of the metric. Also check the benchmark's
+    size, since a few dozen questions make large jumps by chance.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why do masked-LM labels use −100 at unpicked positions?</summary>
+  <p><code>CrossEntropyLoss</code> and <code>F.cross_entropy</code> default to <code>ignore_index=-100</code>: targets with that value
+    contribute nothing to the loss or its gradient, and the mean is taken over the remaining positions only.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Kaplan, McCandlish, Henighan, Brown, Chess, Child, Gray, Radford, Wu and Amodei. <em>Scaling Laws for Neural Language Models.</em> 2020.
+    <a href="https://arxiv.org/abs/2001.08361">arXiv:2001.08361</a></li>
+  <li>Hoffmann, Borgeaud, Mensch et al. <em>Training Compute-Optimal Large Language Models.</em> NeurIPS 2022.
+    <a href="https://arxiv.org/abs/2203.15556">arXiv:2203.15556</a></li>
+  <li>Devlin, Chang, Lee and Toutanova. <em>BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding.</em> NAACL 2019.
+    <a href="https://arxiv.org/abs/1810.04805">arXiv:1810.04805</a></li>
+  <li>Raffel, Shazeer, Roberts et al. <em>Exploring the Limits of Transfer Learning with a Unified Text-to-Text Transformer.</em> JMLR 2020.
+    <a href="https://arxiv.org/abs/1910.10683">arXiv:1910.10683</a></li>
+  <li>Muennighoff, Rush, Barak et al. <em>Scaling Data-Constrained Language Models.</em> NeurIPS 2023.
+    <a href="https://arxiv.org/abs/2305.16264">arXiv:2305.16264</a></li>
+  <li>Wei, Tay, Bommasani et al. <em>Emergent Abilities of Large Language Models.</em> TMLR 2022.
+    <a href="https://arxiv.org/abs/2206.07682">arXiv:2206.07682</a></li>
+  <li>Schaeffer, Miranda and Koyejo. <em>Are Emergent Abilities of Large Language Models a Mirage?</em> NeurIPS 2023.
+    <a href="https://arxiv.org/abs/2304.15004">arXiv:2304.15004</a></li>
+  <li>Broder. <em>On the Resemblance and Containment of Documents.</em> Compression and Complexity of Sequences, 1997.</li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/nn/modules/loss.py', 1200, 1409) }}"><code>nn.CrossEntropyLoss</code></a>,
+    <a href="{{ src('torch/nn/functional.py', 3478, 3571) }}"><code>F.cross_entropy</code></a>,
+    <a href="{{ src('torch/_torch_docs.py', 1583, 1639) }}"><code>torch.bernoulli</code></a>,
+    <a href="{{ src('torch/_torch_docs.py', 8088, 8141) }}"><code>torch.multinomial</code></a>.</li>
+</ul>
