@@ -10142,6 +10142,183 @@ def calibration_example():
     }
 
 
+GNN_EXAMPLE = {
+    "nodes": ["A", "B", "C", "D", "E"],
+    "edges": [(0, 1), (0, 2), (1, 2), (2, 3), (3, 4)],
+    "features": [[1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [0.0, 2.0], [2.0, 0.0]],
+    "weight": [[0.5, -1.0], [1.0, 0.5]],
+    "gat_weight": [[1.0, 0.0], [0.5, 1.0]],
+    "gat_attention": [0.5, -1.0, 1.0, -1.0],
+    "gat_slope": 0.2,
+    "sage_weight": [[1.0, 0.0, 0.5, 0.5], [0.0, 1.0, -0.5, 1.0]],
+    "focus": 2,
+    "depths": [0, 1, 2, 4, 8, 16, 32],
+    "second_graph": {"nodes": 3, "edges": [(0, 1), (1, 2), (0, 2)], "features": [[1.0, 1.0], [0.0, 3.0], [2.0, 2.0]]},
+}
+
+
+def adjacency_matrix(n, edges):
+    a = [[0] * n for _ in range(n)]
+    for i, j in edges:
+        a[i][j] = a[j][i] = 1
+    return a
+
+
+def gcn_propagation(n, edges):
+    a = adjacency_matrix(n, edges)
+    a_tilde = [[a[i][j] + (1 if i == j else 0) for j in range(n)] for i in range(n)]
+    degrees = [sum(row) for row in a_tilde]
+    norm = [[a_tilde[i][j] / math.sqrt(degrees[i] * degrees[j]) for j in range(n)] for i in range(n)]
+    return {"adjacency": a, "self_loops": a_tilde, "degrees": degrees, "normalized": norm}
+
+
+def directed_edge_index(edges, self_loops=True, n=None):
+    sources, targets = [], []
+    for i, j in edges:
+        sources += [i, j]
+        targets += [j, i]
+    if self_loops:
+        for v in range(n):
+            sources.append(v)
+            targets.append(v)
+    return sources, targets
+
+
+def index_add_rows(n, index, rows):
+    out = [[0.0] * len(rows[0]) for _ in range(n)]
+    for target, row in zip(index, rows):
+        out[target] = [o + r for o, r in zip(out[target], row)]
+    return out
+
+
+def gcn_message_passing(features, edges, weight):
+    n = len(features)
+    transformed = matmul(features, weight)
+    sources, targets = directed_edge_index(edges, True, n)
+    degrees = [0] * n
+    for t in targets:
+        degrees[t] += 1
+    coefficients = [1 / math.sqrt(degrees[s] * degrees[t]) for s, t in zip(sources, targets)]
+    messages = [[c * x for x in transformed[s]] for s, c in zip(sources, coefficients)]
+    return {
+        "transformed": transformed,
+        "sources": sources,
+        "targets": targets,
+        "coefficients": coefficients,
+        "aggregated": index_add_rows(n, targets, messages),
+    }
+
+
+def leaky_relu_scalar(x, slope):
+    return x if x >= 0 else slope * x
+
+
+def gat_node(features, edges, weight, attention, slope, node):
+    n = len(features)
+    z = matmul(features, weight)
+    neighbours = sorted({node} | {j for i, j in edges if i == node} | {i for i, j in edges if j == node})
+    half = len(z[0])
+    scores = [
+        leaky_relu_scalar(dot_product(attention[:half], z[node]) + dot_product(attention[half:], z[j]), slope)
+        for j in neighbours
+    ]
+    alpha = softmax_probs(scores)
+    out = [sum(a * z[j][k] for a, j in zip(alpha, neighbours)) for k in range(half)]
+    return {"z": z, "neighbours": neighbours, "scores": scores, "alpha": alpha, "output": out, "n": n}
+
+
+def sage_node(features, edges, weight, node):
+    neighbours = sorted({j for i, j in edges if i == node} | {i for i, j in edges if j == node})
+    mean = [sum(features[j][k] for j in neighbours) / len(neighbours) for k in range(len(features[0]))]
+    concat = features[node] + mean
+    pre = [dot_product(row, concat) for row in weight]
+    activated = relu(pre)
+    length = vector_norm(activated)
+    return {
+        "neighbours": neighbours,
+        "mean": mean,
+        "concat": concat,
+        "pre": pre,
+        "activated": activated,
+        "output": [x / length for x in activated] if length else activated,
+    }
+
+
+def oversmoothing(features, edges, depths):
+    n = len(features)
+    prop = gcn_propagation(n, edges)
+    limit = [math.sqrt(d) for d in prop["degrees"]]
+    rows = []
+    h, step = [list(r) for r in features], 0
+    for depth in depths:
+        while step < depth:
+            h = matmul(prop["normalized"], h)
+            step += 1
+        cosines = [cosine_similarity(h[i], h[j]) for i in range(n) for j in range(i + 1, n)]
+        scaled = [[x / s for x in row] for row, s in zip(h, limit)]
+        spread = max(vector_norm([a - b for a, b in zip(scaled[i], scaled[j])]) for i in range(n) for j in range(i + 1, n))
+        rows.append({"depth": depth, "features": h, "min_cosine": min(cosines), "spread": spread})
+    return {"rows": rows, "limit_direction": limit}
+
+
+def batch_graphs(graphs):
+    features, sources, targets, batch, offsets = [], [], [], [], []
+    for g, graph in enumerate(graphs):
+        offset = len(features)
+        offsets.append(offset)
+        features += [list(r) for r in graph["features"]]
+        for i, j in graph["edges"]:
+            sources.append(i + offset)
+            targets.append(j + offset)
+        batch += [g] * len(graph["features"])
+    sums = index_add_rows(len(graphs), batch, features)
+    counts = [batch.count(g) for g in range(len(graphs))]
+    return {
+        "features": features,
+        "sources": sources,
+        "targets": targets,
+        "batch": batch,
+        "offsets": offsets,
+        "sum_pool": sums,
+        "mean_pool": [[x / c for x in row] for row, c in zip(sums, counts)],
+    }
+
+
+def gcn_layer_params(f_in, f_out, bias=True):
+    return f_in * f_out + (f_out if bias else 0)
+
+
+@functools.lru_cache(maxsize=None)
+def gnn_example():
+    e = GNN_EXAMPLE
+    n, x = len(e["nodes"]), e["features"]
+    prop = gcn_propagation(n, e["edges"])
+    ax = matmul(prop["normalized"], x)
+    axw = matmul(ax, e["weight"])
+    mp = gcn_message_passing(x, e["edges"], e["weight"])
+    second = e["second_graph"]
+    return {
+        "example": e,
+        "prop": prop,
+        "ax": ax,
+        "axw": axw,
+        "gcn": [relu(row) for row in axw],
+        "mp": mp,
+        "gat": gat_node(x, e["edges"], e["gat_weight"], e["gat_attention"], e["gat_slope"], e["focus"]),
+        "sage": sage_node(x, e["edges"], e["sage_weight"], e["focus"]),
+        "smooth": oversmoothing(x, e["edges"], tuple(e["depths"])),
+        "batch": batch_graphs([
+            {"features": x, "edges": e["edges"]},
+            {"features": second["features"], "edges": second["edges"]},
+        ]),
+        "params": {
+            "gcn": gcn_layer_params(2, 2),
+            "sage": gcn_layer_params(4, 2, bias=False),
+            "gat": gcn_layer_params(2, 2, bias=False) + len(e["gat_attention"]),
+        },
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -10177,6 +10354,7 @@ def render(slug, render_template):
         "serving_example": serving_example,
         "causal_example": causal_example,
         "calibration_example": calibration_example,
+        "gnn_example": gnn_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,
         "multihead_example": MULTIHEAD_EXAMPLE,

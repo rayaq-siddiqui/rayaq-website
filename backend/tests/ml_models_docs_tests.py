@@ -4168,3 +4168,71 @@ def test_scaling_logits_shrinks_correct_loss_and_grows_wrong_loss():
     assert correct == sorted(correct, reverse=True)
     assert wrong == sorted(wrong)
     assert all(w == pytest.approx(r["logit"] + c) for r, c, w in zip(rows, correct, wrong))
+
+
+def test_gcn_normalization_adds_self_loops_and_is_symmetric():
+    prop = ml_models_docs.gnn_example()["prop"]
+    norm = prop["normalized"]
+
+    assert prop["degrees"] == [3, 3, 4, 3, 2]
+    assert all(norm[i][j] == pytest.approx(norm[j][i]) for i in range(5) for j in range(5))
+    assert norm[2][3] == pytest.approx(1 / math.sqrt(12))
+    assert norm[0][4] == 0
+    assert all(norm[i][i] == pytest.approx(1 / d) for i, d in enumerate(prop["degrees"]))
+
+
+def test_gcn_message_passing_with_index_add_matches_the_matrix_form():
+    example = ml_models_docs.gnn_example()
+
+    assert len(example["mp"]["sources"]) == 2 * len(example["example"]["edges"]) + 5
+    for row, expected in zip(example["mp"]["aggregated"], example["axw"]):
+        assert row == pytest.approx(expected)
+    assert example["ax"][0] == pytest.approx(example["ax"][1])
+    assert example["gcn"] == [[max(0, v) for v in row] for row in example["axw"]]
+
+
+def test_index_add_rows_matches_the_torch_docstring_example():
+    out = ml_models_docs.index_add_rows(5, [0, 4, 2], [[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+
+    assert out == [[1, 2, 3], [0, 0, 0], [7, 8, 9], [0, 0, 0], [4, 5, 6]]
+
+
+def test_gat_attention_is_a_softmax_over_the_neighbourhood_with_leaky_relu():
+    gat = ml_models_docs.gnn_example()["gat"]
+
+    assert gat["neighbours"] == [0, 1, 2, 3]
+    assert sum(gat["alpha"]) == pytest.approx(1)
+    assert gat["scores"] == pytest.approx([0.75, -0.15, 0.25, -0.25])
+    assert gat["output"] == pytest.approx(
+        [sum(a * gat["z"][j][k] for a, j in zip(gat["alpha"], gat["neighbours"])) for k in range(2)]
+    )
+
+
+def test_graphsage_concatenates_self_with_the_neighbour_mean_and_normalizes():
+    sage = ml_models_docs.gnn_example()["sage"]
+
+    assert sage["neighbours"] == [0, 1, 3]
+    assert sage["mean"] == pytest.approx([1 / 3, 1])
+    assert sage["concat"] == pytest.approx([1, 1, 1 / 3, 1])
+    assert ml_models_docs.vector_norm(sage["output"]) == pytest.approx(1)
+
+
+def test_repeated_propagation_oversmooths_toward_the_degree_direction():
+    rows = ml_models_docs.gnn_example()["smooth"]["rows"]
+
+    cosines = [r["min_cosine"] for r in rows]
+    spreads = [r["spread"] for r in rows]
+    assert cosines == sorted(cosines)
+    assert spreads == sorted(spreads, reverse=True)
+    assert cosines[-1] == pytest.approx(1, abs=1e-6)
+    assert spreads[-1] < 1e-3
+
+
+def test_batching_graphs_offsets_edges_and_pools_per_graph():
+    batch = ml_models_docs.gnn_example()["batch"]
+
+    assert batch["offsets"] == [0, 5]
+    assert batch["batch"] == [0] * 5 + [1] * 3
+    assert batch["sources"][-3:] == [5, 6, 5] and batch["targets"][-3:] == [6, 7, 7]
+    assert batch["mean_pool"][0] == pytest.approx([0.8, 0.8])
+    assert batch["mean_pool"][1] == pytest.approx([1, 2])
