@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-13 (sixth audit run). All 58 pages are ready and the queue is empty. This audit found and fixed one gap (page code that gave wrong answers when run), so the Routine stays on its 5-hour schedule. **The next run is another audit run** (spec §8.1): it fixes one gap, and if none remain it records "complete" and moves this Routine to weekly audits.
+**Last updated:** 2026-10-13 (owner decision after the sixth audit run). All 58 pages are ready and the queue is empty. The owner asked for weekly audits now. **The next run is an audit run** (spec §8.1). Before any other work, it moves this Routine to weekly: `update_trigger` on `trig_01XkmtUwbN1iL5esk5KeGRPa` with `CRON_TZ=America/Los_Angeles 14 4 * * 2`. It does this whether or not the audit finds a gap.
 
 ## The Routine
 
@@ -171,9 +171,18 @@ build once research is done.
   assumptions they rely on (for example, distinct values in rotated-array search). Functions
   that were wrong get a regression test that runs the page's own code (`run_page_code`).
 
+- **Weekly audits now (2026-10-13, owner).** All 58 pages are ready, so the owner moved the
+  Routine from every 5 hours to weekly audits (Tuesdays 04:14 America/Los_Angeles). This applies
+  even when an audit finds and fixes a gap. The sixth audit's session had no tool that edits
+  Routine schedules, so the next run makes the change (see Known gaps).
+
 ## Known gaps and questions for the owner
 
-- None open.
+- **Schedule not yet weekly (2026-10-13).** The owner asked for weekly audits, but the session that
+  recorded the request had no `update_trigger` tool. The next run calls `update_trigger` on
+  `trig_01XkmtUwbN1iL5esk5KeGRPa` with `CRON_TZ=America/Los_Angeles 14 4 * * 2` and clears this
+  gap. If it can't, the owner can change the schedule by hand under the Routine's settings at
+  claude.ai/code.
 
 ## Run log
 
