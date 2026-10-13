@@ -1,0 +1,509 @@
+{% set ex = encoder_example() %}
+{% set base = ex.configs[0] %}
+{% set large = ex.configs[1] %}
+{% set c = base.counts %}
+{% set pair = ex.pair %}
+{% set short = ex.batch[1] %}
+{% set cor = ex.corrupted %}
+{% set rates = ex.rates %}
+{% set fill = ex.fill %}
+{% set att = attention_example %}
+{% set pad = ex.padding %}
+{% macro f(x) -%}{{ "{:,}".format(x) }}{%- endmacro %}
+{% macro pct(x, total) -%}{{ "%.1f"|format(100 * x / total) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Encoder-only models</h1>
+  <p class="tagline">
+    BERT and its descendants read a whole sentence at once, every token looking both left and
+    right, and turn it into one vector per token. They can't write text, but for classifying,
+    tagging, matching and searching they were the default for years and are still the cheapest
+    strong option. This page shows what changes when the causal mask is removed, how masked-language
+    pre-training replaces next-token prediction, counts BERT-base's {{ f(c.total) }} parameters,
+    and builds one in PyTorch {{ upstream.tag }}.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Many language tasks are about <em>understanding</em> a piece of text that already exists: is this
+  review positive, which words in this sentence are names, does this passage answer that question,
+  are these two sentences paraphrases. For all of them the whole input is available up front, so
+  there is no reason to hide the end of the sentence from its beginning. The word "bank" in
+  "she sat on the bank of the river" is only resolved by words that come <em>after</em> it.
+</p>
+<p>
+  A <a href="/ml-models/decoder-only-llm">decoder-only</a> model can't use that right-hand
+  context: its causal mask exists so it can generate. We want the opposite trade, a model whose
+  every output vector is built from the entire input, plus a way to pre-train it on unlabelled
+  text, because labelled data for each task is scarce. Next-token prediction doesn't work as that
+  pre-training task once every token can see every other token: the answer would be sitting in
+  the input.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Think of a cloze test: a paragraph with some words blanked out, and you fill each blank using
+  everything around it. An encoder-only model is trained on exactly that. Hide some tokens, let
+  every position attend to every other position, and ask the model to recover the hidden ones.
+  To do it well it has to build, at every position, a vector that summarises the word in its full
+  context, and those vectors are what you keep and fine-tune for downstream tasks.
+</p>
+<p>
+  The architecture is the encoder half of the <a href="/ml-models/transformer">Transformer</a>,
+  unchanged: no causal mask, no cross-attention. Only two things are new, both about the input:
+  a learned <em>segment</em> embedding so that one sequence can hold two sentences, and special
+  tokens: <code>[CLS]</code> at the front, whose final vector stands for the whole input, and
+  <code>[SEP]</code> after each sentence.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 300" role="img" aria-labelledby="enc-input-title enc-input-desc">
+    <title id="enc-input-title">BERT's input: three embeddings summed per token</title>
+    <desc id="enc-input-desc">
+      The sentence pair "{{ ex.pair.tokens|join(" ") }}" laid out as {{ pair.real }} tokens. Under each token
+      are three rows: its token embedding, its segment embedding (A for the first sentence including the
+      first [SEP], B for the second) and its position embedding, numbered 0 to {{ pair.real - 1 }}. The three
+      vectors are added and then normalized with LayerNorm before the first encoder block.
+    </desc>
+    {% set cw = 54 %}
+    <g font-size="11" text-anchor="middle">
+      <text x="24" y="44" text-anchor="start" class="d-muted">token</text>
+      <text x="24" y="104" text-anchor="start" class="d-muted">segment</text>
+      <text x="24" y="164" text-anchor="start" class="d-muted">position</text>
+      {% for t in pair.tokens %}
+        {% set x = 76 + loop.index0 * cw %}
+        <rect x="{{ x }}" y="26" width="{{ cw - 4 }}" height="28" rx="4" class="d-box ml-tensor"></rect>
+        <text x="{{ x + (cw - 4) / 2 }}" y="44">{{ t }}</text>
+        <text x="{{ x + (cw - 4) / 2 }}" y="76" class="d-muted">+</text>
+        <rect x="{{ x }}" y="86" width="{{ cw - 4 }}" height="28" rx="4" class="d-box {{ 'ml-op' if pair.segments[loop.index0] == 0 else 'ml-dashed' }}"></rect>
+        <text x="{{ x + (cw - 4) / 2 }}" y="104">{{ "A" if pair.segments[loop.index0] == 0 else "B" }}</text>
+        <text x="{{ x + (cw - 4) / 2 }}" y="136" class="d-muted">+</text>
+        <rect x="{{ x }}" y="146" width="{{ cw - 4 }}" height="28" rx="4" class="d-box"></rect>
+        <text x="{{ x + (cw - 4) / 2 }}" y="164">{{ pair.positions[loop.index0] }}</text>
+      {% endfor %}
+      <rect x="200" y="206" width="320" height="30" rx="6" class="d-box ml-op"></rect>
+      <text x="360" y="226">sum → LayerNorm → dropout   [B, {{ pair.real }}, {{ base.d_model }}]</text>
+      <rect x="200" y="256" width="320" height="30" rx="6" class="d-box ml-dashed"></rect>
+      <text x="360" y="276">{{ base.layers }} encoder blocks, no causal mask</text>
+    </g>
+    <g class="d-line" fill="none" stroke-width="1.5">
+      <path d="M360 182 V206"></path><path d="M360 236 V256"></path>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">
+  Segment A covers <code>[CLS]</code>, the first sentence and its <code>[SEP]</code>; segment B covers
+  the second sentence and the final <code>[SEP]</code>. A single-sentence input uses segment A
+  throughout.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="bidirectional">Bidirectional attention: delete the mask</h3>
+
+<p>
+  Self-attention is the same computation as on the <a href="/ml-models/attention">attention</a>
+  page; the only difference from a decoder is that no −∞ is added above the diagonal. Here are the
+  attention weights for the four-token example ({{ att.tokens|join(", ") }}) both ways:
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 270" role="img" aria-labelledby="enc-mask-title enc-mask-desc">
+    <title id="enc-mask-title">Attention weights with and without the causal mask</title>
+    <desc id="enc-mask-desc">
+      Two four by four grids of attention weights for the tokens {{ att.tokens|join(", ") }}, queries as rows and
+      keys as columns. On the left, the encoder: every cell has a nonzero weight, so the first token
+      attends to all four. On the right, the decoder: cells above the diagonal are zero and the first
+      token attends only to itself with weight 1. The last row is the same in both grids.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      {% for side in [("encoder (bidirectional)", ex.bidirectional.weights, 40), ("decoder (causal)", ex.causal.weights, 380)] %}
+        <text x="{{ side[2] + 150 }}" y="22">{{ side[0] }}</text>
+        {% for t in att.tokens %}<text x="{{ side[2] + 70 + loop.index0 * 58 + 26 }}" y="44" class="d-muted">{{ t }}</text>{% endfor %}
+        {% for row in side[1] %}
+          {% set r = loop.index0 %}
+          <text x="{{ side[2] + 34 }}" y="{{ 52 + r * 50 + 30 }}" class="d-muted">{{ att.tokens[r] }}</text>
+          {% for w in row %}
+            <rect x="{{ side[2] + 70 + loop.index0 * 58 }}" y="{{ 52 + r * 50 }}" width="52" height="44" rx="4" class="{{ 'd-box ml-op' if w > 0 else 'd-box ml-dashed' }}"></rect>
+            <text x="{{ side[2] + 70 + loop.index0 * 58 + 26 }}" y="{{ 52 + r * 50 + 27 }}" {% if w == 0 %}class="d-muted"{% endif %}>{{ "%.2f"|format(w) }}</text>
+          {% endfor %}
+        {% endfor %}
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">
+  Rows sum to 1 in both grids. Only the last token's row is identical, because it is the one
+  position that already sees everything under the causal mask.
+</p>
+
+<p>
+  The price is the property decoders rely on. Drop the last token and rerun: with the causal mask
+  the first three outputs don't move at all (gap {{ "%.1f"|format(ex.prefix.causal_gap) }}); without it they change by up to
+  {{ "%.2f"|format(ex.prefix.bidirectional_gap) }}. Every encoder output depends on the whole input, so you can't
+  append a token and reuse earlier work, and you can't generate left to right. That is the trade:
+  richer per-token vectors, no generation.
+</p>
+
+<h3 id="padding">Padding and the key padding mask</h3>
+
+<p>
+  A batch holds sequences of different lengths, so shorter ones are filled with <code>[PAD]</code>
+  to a common width. In our batch the pair has {{ pair.real }} tokens and the single sentence
+  {{ short.tokens[:short.real]|join(" ") }} has {{ short.real }}, followed by {{ pair.real - short.real }} pads. Pads
+  must be invisible: no real token should attend to them. PyTorch takes a
+  <code>src_key_padding_mask</code> of shape [B, T] in which <code>True</code> means "ignore this key"
+  (<a href="{{ src('torch/nn/modules/activation.py', 1285, 1289) }}">documented on
+  <code>MultiheadAttention</code></a>); internally a boolean mask becomes a float mask with −∞ at
+  the ignored keys
+  (<a href="{{ src('torch/nn/functional.py', 6612, 6638) }}"><code>_canonical_mask</code></a>).
+</p>
+<p>
+  The check: take the first three tokens of the attention example, append a pad whose key and value
+  are zero, and attend. With the pad masked, the three real outputs equal the outputs of the
+  three-token sequence alone, gap {{ "%.1f"|format(pad.masked_gap) }}. Without the mask the pad still
+  takes attention weight {% for w in pad.pad_weight %}{{ "%.3f"|format(w) }}{% if not loop.last %}, {% endif %}{% endfor %} from the
+  three real rows (a zero key scores 0, which is not −∞) and the outputs move by up to
+  {{ "%.2f"|format(pad.unmasked_gap) }}. Forgetting the padding mask doesn't crash; it quietly makes a sentence's
+  vectors depend on how long its batch-mates were.
+</p>
+<p>
+  The pad's own row still gets computed (here it averages the three real tokens), so it produces
+  some vector; nothing downstream should read it. When <code>TransformerEncoder</code> runs in
+  inference mode with a padding mask it can take a fast path that packs the batch into a nested
+  tensor, skipping pads entirely, and then unpacks with zeros at the padded positions
+  (<a href="{{ src('torch/nn/modules/transformer.py', 531, 550) }}">lines 531-550</a>), so pad outputs
+  differ between training and evaluation. Another reason to never use them.
+</p>
+
+<h3 id="mlm">Masked language modelling</h3>
+
+<p>
+  BERT's pre-training picks 15% of the token positions (implementations skip
+  <code>[CLS]</code>, <code>[SEP]</code> and pads) and asks the model to predict the original token at each. Of the
+  chosen positions, 80% are replaced by <code>[MASK]</code>, 10% by a random token and 10% are left
+  as they are. The mix exists because <code>[MASK]</code> never appears at fine-tuning time: if it
+  were the only corruption, the model could learn that only <code>[MASK]</code> positions need a good
+  representation. Random and unchanged tokens force it to keep every position's vector honest.
+</p>
+<p>
+  The loss is cross-entropy over the vocabulary, but only at chosen positions. Every other label is
+  set to −100, the default <code>ignore_index</code> of
+  <a href="{{ src('torch/nn/modules/loss.py', 1200, 1409) }}"><code>CrossEntropyLoss</code></a>
+  (<a href="{{ src('torch/nn/modules/loss.py', 1389, 1389) }}">line 1389</a>); ignored targets
+  contribute nothing, and the mean is taken over the rest
+  (<a href="{{ src('torch/nn/modules/loss.py', 1278, 1281) }}">lines 1278-1281</a>).
+</p>
+<p>
+  BERT also had a second objective, <em>next sentence prediction</em>: the <code>[CLS]</code> vector
+  classifies whether sentence B really followed sentence A (half the pairs) or was drawn at random.
+  It is why the input has segments. Later work such as RoBERTa reported that dropping it didn't
+  hurt, and most successors pre-train with masked tokens alone.
+</p>
+
+<h3 id="block">The block, post-norm</h3>
+
+<p>
+  BERT keeps the original Transformer's order: x ← LayerNorm(x + Attention(x)), then
+  x ← LayerNorm(x + FFN(x)). That is PyTorch's default, <code>norm_first=False</code>
+  (<a href="{{ src('torch/nn/modules/transformer.py', 745, 755) }}">lines 745-755</a> list the
+  defaults; <a href="{{ src('torch/nn/modules/transformer.py', 945, 957) }}">lines 945-957</a> are
+  the two branches). Because every block ends in a LayerNorm, no final norm is needed, unlike the
+  pre-norm decoder. The feed-forward width is 4 × d with GELU, which PyTorch's layer accepts as
+  <code>activation="gelu"</code>
+  (<a href="{{ src('torch/nn/modules/transformer.py', 1204, 1210) }}">lines 1204-1210</a>); the
+  layer's default is ReLU.
+</p>
+
+<h3 id="heads">Using the outputs</h3>
+
+<p>
+  The encoder returns a [B, T, d] tensor. Fine-tuning adds one small layer on top, chosen by the
+  task: a classifier on the <code>[CLS]</code> vector for sentence or sentence-pair labels; a
+  classifier on every token's vector for tagging (named entities, parts of speech); two vectors that
+  score each token as the start or end of an answer span for extractive question answering. The
+  whole model is then trained end to end for a few epochs at a small learning rate. For
+  <a href="/ml-models/embeddings">embeddings</a> and search, a pooled vector (the
+  <code>[CLS]</code> vector, or the mean of the non-pad token vectors) represents the whole text.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>nn.Embedding</code> (tokens)</td>
+        <td><code>[{{ base.vocab }}, {{ base.d_model }}]</code>; {{ f(c.token_table) }} params</td>
+        <td>Token id → vector. <code>padding_idx</code> keeps the pad row at zero and never updates it.</td>
+        <td><a href="{{ src('torch/nn/modules/sparse.py', 14, 266) }}"><code>sparse.py</code></a> (<a href="{{ src('torch/nn/modules/sparse.py', 23, 27) }}">23-27</a>)</td>
+      </tr>
+      <tr>
+        <td><code>nn.Embedding</code> (positions)</td>
+        <td><code>[{{ base.positions }}, {{ base.d_model }}]</code>; {{ f(c.position_table) }} params</td>
+        <td>One learned vector per position; caps the input at {{ base.positions }} tokens.</td>
+        <td><a href="{{ src('torch/nn/modules/sparse.py', 188, 197) }}"><code>sparse.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.Embedding</code> (segments)</td>
+        <td><code>[{{ base.segments }}, {{ base.d_model }}]</code>; {{ f(c.segment_table) }} params</td>
+        <td>Sentence A or B.</td>
+        <td><a href="{{ src('torch/nn/modules/sparse.py', 14, 266) }}"><code>sparse.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.LayerNorm</code> (embeddings)</td>
+        <td><code>[{{ base.d_model }}]</code> × 2; {{ f(c.embedding_norm) }} params</td>
+        <td>Normalizes the summed embedding before the first block.</td>
+        <td><a href="{{ src('torch/nn/modules/normalization.py', 105, 238) }}"><code>normalization.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>TransformerEncoderLayer</code> (<code>norm_first=False</code>)</td>
+        <td><code>d_model={{ base.d_model }}</code>, <code>nhead={{ base.heads }}</code>, <code>dim_feedforward={{ c.d_ff }}</code>; {{ f(c.per_block) }} params each</td>
+        <td>A post-norm block: attention, add, norm; feed-forward, add, norm.</td>
+        <td><a href="{{ src('torch/nn/modules/transformer.py', 663, 983) }}"><code>transformer.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>TransformerEncoder(layer, {{ base.layers }})</code></td>
+        <td>{{ base.layers }} copies; <code>src_key_padding_mask</code> <code>[B, T]</code> bool</td>
+        <td>Runs the blocks; <code>True</code> in the mask marks pads.</td>
+        <td><a href="{{ src('torch/nn/modules/transformer.py', 320, 556) }}"><code>transformer.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>MultiheadAttention</code></td>
+        <td><code>key_padding_mask</code> <code>[B, S]</code></td>
+        <td>Binary: <code>True</code> ignores the key. Float: added to the scores.</td>
+        <td><a href="{{ src('torch/nn/modules/activation.py', 1090, 1575) }}"><code>activation.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>F.cross_entropy(…, ignore_index=-100)</code></td>
+        <td>logits <code>[B·T, {{ base.vocab }}]</code>, labels <code>[B·T]</code></td>
+        <td>Masked-LM loss averaged over the chosen positions only.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 3478, 3571) }}"><code>functional.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-mlm">Corrupting one sentence pair</h3>
+  <p>
+    The pair has {{ pair.real }} tokens, {{ pair.real - 3 }} of them ordinary words. 15% of
+    {{ pair.real - 3 }} rounds to {{ cor.chosen|length }}, so one position is chosen (position {{ cor.chosen[0] }},
+    "{{ pair.tokens[cor.chosen[0]] }}"), and the draw sends it down the 80% branch:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Position</th>{% for t in pair.tokens %}<th>{{ loop.index0 }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        <tr><td>Original</td>{% for t in pair.tokens %}<td>{{ t }}</td>{% endfor %}</tr>
+        <tr><td>Segment</td>{% for s in pair.segments %}<td>{{ "A" if s == 0 else "B" }}</td>{% endfor %}</tr>
+        <tr><td>Model input</td>{% for t in cor.inputs %}<td>{% if loop.index0 in cor.chosen %}<strong>{{ t }}</strong>{% else %}{{ t }}{% endif %}</td>{% endfor %}</tr>
+        <tr><td>Label</td>{% for l in cor.labels %}<td>{% if l == -100 %}<span class="d-muted">−100</span>{% else %}<strong>{{ l }}</strong>{% endif %}</td>{% endfor %}</tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Eleven of twelve positions carry no loss. That is the efficiency cost of masked language
+    modelling: a decoder gets {{ pair.real - 1 }} training signals from this sequence, the encoder one.
+  </p>
+  <p>
+    Over {{ f(rates.n) }} tokens with the same rule and a ten-word vocabulary, {{ f(rates.selected) }} were
+    chosen; {{ "%.2f"|format(100 * rates.fractions.mask) }}% of all tokens became <code>[MASK]</code>,
+    {{ "%.2f"|format(100 * rates.fractions.random) }}% a random word and {{ "%.2f"|format(100 * rates.fractions.keep) }}% stayed but
+    still carried a label, close to 12%, 1.5% and 1.5%. {{ rates.unchanged_random }} random replacements
+    happened to draw the original word (a one-in-ten chance here, rare with a real vocabulary), so
+    {{ "%.2f"|format(100 * rates.changed) }}% of the input actually differed from the text.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-fill">Why both sides of the blank help</h3>
+  <p>
+    A three-word toy language: a left word from {a, b, c}, a middle from {{ "{" }}{{ fill.middles|join(", ") }}{{ "}" }}, a right word from
+    {x, y, z}. Six training sentences are chosen so that each left word is followed by two possible
+    middles and each right word is preceded by two. A model sees a test sentence with the middle
+    blanked and scores the true middle three ways (counts with add-½ smoothing): from the left
+    word only, from the right word only, or from both, using P(m | l, r) ∝ P(m | l) · P(r | m).
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Test sentence</th><th>P(true | left)</th><th>P(true | right)</th><th>P(true | both)</th><th>Best guess, both</th></tr></thead>
+      <tbody>
+        {% for row in fill.rows %}
+        <tr><td>{{ row.sentence[0] }} _ {{ row.sentence[2] }} (true {{ row.sentence[1] }})</td><td>{{ "%.3f"|format(row.left) }}</td><td>{{ "%.3f"|format(row.right) }}</td><td>{{ "%.3f"|format(row["both"]) }}</td><td>{{ row.both_guess }}</td></tr>
+        {% endfor %}
+        <tr><td><strong>Mean loss −ln P</strong></td><td>{{ "%.4f"|format(fill.nll.left) }}</td><td>{{ "%.4f"|format(fill.nll.right) }}</td><td>{{ "%.4f"|format(fill.nll["both"]) }}</td><td></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Each side alone leaves two middles tied at {{ "%.3f"|format(fill.rows[0].left) }}, a coin flip; together they
+    pick the right one every time with probability {{ "%.1f"|format(fill.rows[0]["both"]) }}, and the loss drops from
+    {{ "%.3f"|format(fill.nll.left) }} to {{ "%.3f"|format(fill.nll["both"]) }}. A left-to-right model only ever has
+    the first column. Four of the six test sentences never occur in training, and they are resolved just
+    as well: the model combines two pieces of evidence rather than recalling whole sentences.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-params">Counting BERT-base and BERT-large</h3>
+  <p>
+    Counts come from <code>encoder_param_count</code>, which the tests check against the
+    decoder's per-block count: the block is the same; only the embeddings and the final norm differ.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Part</th><th>Formula</th>{% for cfg in ex.configs %}<th>{{ cfg.name }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        <tr><td>Width d, layers L, heads</td><td></td>{% for cfg in ex.configs %}<td>{{ cfg.d_model }}, {{ cfg.layers }}, {{ cfg.heads }}</td>{% endfor %}</tr>
+        <tr><td>Token table</td><td>V × d</td>{% for cfg in ex.configs %}<td>{{ f(cfg.counts.token_table) }}</td>{% endfor %}</tr>
+        <tr><td>Position table</td><td>{{ base.positions }} × d</td>{% for cfg in ex.configs %}<td>{{ f(cfg.counts.position_table) }}</td>{% endfor %}</tr>
+        <tr><td>Segment table</td><td>2 × d</td>{% for cfg in ex.configs %}<td>{{ f(cfg.counts.segment_table) }}</td>{% endfor %}</tr>
+        <tr><td>Embedding LayerNorm</td><td>2·d</td>{% for cfg in ex.configs %}<td>{{ f(cfg.counts.embedding_norm) }}</td>{% endfor %}</tr>
+        <tr><td>Attention, per block</td><td>4·d² + 4·d</td>{% for cfg in ex.configs %}<td>{{ f(cfg.counts.attention) }}</td>{% endfor %}</tr>
+        <tr><td>Feed-forward, per block</td><td>2·d·4d + 4d + d</td>{% for cfg in ex.configs %}<td>{{ f(cfg.counts.feed_forward) }}</td>{% endfor %}</tr>
+        <tr><td>Two LayerNorms, per block</td><td>2 × (2·d)</td>{% for cfg in ex.configs %}<td>{{ f(2 * cfg.counts.layer_norm) }}</td>{% endfor %}</tr>
+        <tr><td>All blocks</td><td>L × block</td>{% for cfg in ex.configs %}<td>{{ f(cfg.counts.blocks) }}</td>{% endfor %}</tr>
+        <tr><td><strong>Total</strong></td><td>embeddings + blocks</td>{% for cfg in ex.configs %}<td><strong>{{ f(cfg.counts.total) }}</strong></td>{% endfor %}</tr>
+        <tr><td>Reported in the paper</td><td></td>{% for cfg in ex.configs %}<td>{{ cfg.reported }}</td>{% endfor %}</tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The formula gives {{ "%.1f"|format(c.total / 1e6) }}M and {{ "%.1f"|format(large.counts.total / 1e6) }}M against the
+    rounded 110M and 340M in the paper; the vocabulary is "30,000" there too, and the released
+    checkpoints add task heads on top of the encoder. Embeddings are {{ pct(c.embeddings, c.total) }}% of
+    BERT-base and {{ pct(large.counts.embeddings, large.counts.total) }}% of BERT-large: as models widen,
+    the blocks take over.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+from torch import nn
+import torch.nn.functional as F
+
+class Encoder(nn.Module):
+    def __init__(self, vocab=30000, positions=512, d=768, layers=12, heads=12, pad_id=0):
+        super().__init__()
+        self.tok = nn.Embedding(vocab, d, padding_idx=pad_id)
+        self.pos = nn.Embedding(positions, d)
+        self.seg = nn.Embedding(2, d)
+        self.norm = nn.LayerNorm(d)
+        self.drop = nn.Dropout(0.1)
+        block = nn.TransformerEncoderLayer(
+            d, heads, dim_feedforward=4 * d, dropout=0.1,
+            activation="gelu", batch_first=True,          # norm_first=False: post-norm
+        )
+        self.blocks = nn.TransformerEncoder(block, layers)
+        self.mlm = nn.Linear(d, vocab)
+        self.pad_id = pad_id
+
+    def forward(self, ids, segments):                    # both [B, T]
+        T = ids.size(1)
+        pos = torch.arange(T, device=ids.device)
+        x = self.drop(self.norm(self.tok(ids) + self.pos(pos) + self.seg(segments)))
+        pad = ids == self.pad_id                         # True = ignore this key
+        return self.blocks(x, src_key_padding_mask=pad)  # [B, T, d]
+
+def mask_tokens(ids, special, vocab, mask_id, rate=0.15):
+    labels = ids.clone()
+    chosen = (torch.rand(ids.shape) &lt; rate) &amp; ~special
+    labels[~chosen] = -100                               # ignored by cross_entropy
+    roll = torch.rand(ids.shape)
+    inputs = ids.clone()
+    inputs[chosen &amp; (roll &lt; 0.8)] = mask_id
+    swap = chosen &amp; (roll &gt;= 0.8) &amp; (roll &lt; 0.9)
+    inputs[swap] = torch.randint(vocab, (int(swap.sum()),))
+    return inputs, labels                                # the last 10% stay as they are
+
+model = Encoder()
+ids = torch.randint(5, 30000, (2, 12))
+special = torch.zeros_like(ids, dtype=torch.bool)
+special[:, 0] = True                                     # the [CLS] slot
+inputs, labels = mask_tokens(ids, special, 30000, mask_id=4)
+hidden = model(inputs, torch.zeros_like(ids))
+loss = F.cross_entropy(model.mlm(hidden).reshape(-1, 30000), labels.reshape(-1))
+cls_vector = hidden[:, 0]                                # [B, d], for a classifier head</code></pre>
+
+<p>
+  Things to know. <code>padding_idx</code> zeroes the pad row at construction
+  (<a href="{{ src('torch/nn/modules/sparse.py', 179, 186) }}">lines 179-186</a>) and stops it from
+  updating. The encoder takes the padding mask as <code>src_key_padding_mask</code>, converted with
+  <code>_canonical_mask</code> (<a href="{{ src('torch/nn/modules/transformer.py', 433, 439) }}">lines
+  433-439</a>); a sequence's real tokens should come first, which the fast path checks when
+  <code>mask_check=True</code>. Selection here is a coin flip per token, so the count varies around
+  15%; the page's helper instead samples an exact count. A real pipeline also never draws
+  <code>[CLS]</code>, <code>[SEP]</code> or pads, which is what <code>special</code> is for.
+  Fine-tuning replaces <code>self.mlm</code> with a head for the task, often reading
+  <code>hidden[:, 0]</code>.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Encoder-only versus decoder-only.</strong> For the same size, a bidirectional encoder
+    usually gives better vectors for classification, tagging and retrieval, and a whole input is
+    processed in one parallel pass. It can't generate, and it can't reuse work when the input
+    grows by one token. Decoders trade some understanding per parameter for one model that does
+    every task as text, which is why they took over once models became large.
+  </li>
+  <li>
+    <strong>Sample efficiency.</strong> Only about 15% of positions carry a loss, against nearly 100%
+    for next-token prediction. Variants such as ELECTRA score every position (was this token
+    replaced?) to recover the signal.
+  </li>
+  <li>
+    <strong>The <code>[MASK]</code> mismatch.</strong> Pre-training inputs contain a token fine-tuning
+    inputs never do. The 80/10/10 split softens it; it doesn't remove it.
+  </li>
+  <li>
+    <strong>Length.</strong> A learned table of {{ base.positions }} positions is a hard cap, and full
+    attention costs grow with T². Long documents get split into windows.
+  </li>
+  <li>
+    <strong>Pitfalls.</strong> A missing padding mask (outputs depend on batch-mates), reading pad
+    outputs, labelling unmasked positions instead of −100 (the model learns to copy), and using the
+    raw <code>[CLS]</code> vector of a model that was never fine-tuned as a sentence embedding, which
+    often works poorly without training for that purpose.
+  </li>
+</ul>
+
+<h3 id="check-yourself">Check yourself</h3>
+
+<details class="ml-quiz">
+  <summary>Why can't an encoder be trained by plain next-token prediction?</summary>
+  <p>Every position attends to every other, so the next token is in the input; the model would learn to copy it. Hiding the target tokens is what makes the task non-trivial.</p>
+</details>
+<details class="ml-quiz">
+  <summary>A key has score 0 and isn't masked. Does it get attention?</summary>
+  <p>Yes. Softmax gives every finite score a positive weight; in the padding check an unmasked zero-key pad took up to {{ "%.3f"|format(pad.pad_weight[0]) }} of a row. Only −∞ gives weight 0.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does BERT leave 10% of the chosen tokens unchanged?</summary>
+  <p>So the model can't assume a visible token is always correct and stop building a good vector for it; at fine-tuning time there are no <code>[MASK]</code> tokens at all.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Where does BERT-base's count differ from GPT-2 small's, block for block?</summary>
+  <p>Nowhere: both have width 768 and the same block of {{ f(c.per_block) }} parameters. The differences are the embeddings (vocabulary, segments, embedding LayerNorm) and the missing final LayerNorm.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Devlin, Chang, Lee and Toutanova. <em>BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding.</em> NAACL, 2019 (<a href="https://arxiv.org/abs/1810.04805">arXiv 1810.04805</a>).</li>
+  <li>Liu et al. <em>RoBERTa: A Robustly Optimized BERT Pretraining Approach.</em> 2019 (<a href="https://arxiv.org/abs/1907.11692">arXiv 1907.11692</a>).</li>
+  <li>Clark, Luong, Le and Manning. <em>ELECTRA: Pre-training Text Encoders as Discriminators Rather Than Generators.</em> ICLR, 2020 (<a href="https://arxiv.org/abs/2003.10555">arXiv 2003.10555</a>).</li>
+  <li>Vaswani et al. <em>Attention Is All You Need.</em> NeurIPS, 2017 (<a href="https://arxiv.org/abs/1706.03762">arXiv 1706.03762</a>).</li>
+  <li>Hendrycks and Gimpel. <em>Gaussian Error Linear Units (GELUs).</em> 2016 (<a href="https://arxiv.org/abs/1606.08415">arXiv 1606.08415</a>).</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/nn/modules/transformer.py', 320, 983) }}"><code>transformer.py</code></a>, <a href="{{ src('torch/nn/modules/activation.py', 1090, 1575) }}"><code>activation.py</code></a>, <a href="{{ src('torch/nn/modules/sparse.py', 14, 266) }}"><code>sparse.py</code></a>, <a href="{{ src('torch/nn/modules/loss.py', 1200, 1409) }}"><code>loss.py</code></a>, <a href="{{ src('torch/nn/functional.py', 6612, 6638) }}"><code>functional.py</code></a>.</li>
+</ul>

@@ -307,8 +307,8 @@ Gaps:
 61. `support-vector-machines` ✓
 62. `learning-rate-schedules` ✓
 63. `gans` ✓
-64. `encoder-only` ← next
-65. `learning-to-rank`
+64. `encoder-only` ✓
+65. `learning-to-rank` ← next
 66. `data-loading-and-batching`
 67. `model-serving`
 68. `causal-inference`
