@@ -1323,7 +1323,7 @@ PAGES = [
         "sources": [
             "sklearn:sklearn/linear_model/_logistic.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "online-learning",

@@ -1,0 +1,530 @@
+{% set ex = causal_example() %}
+{% set cfg = ex.example %}
+{% set po = ex.po %}
+{% set st = ex.strat %}
+{% set did = ex.did %}
+{% set up = ex.uplift %}
+{% macro n(x, d=2) -%}{{ ("%." ~ d ~ "f")|format(x) }}{%- endmacro %}
+{% macro pct(x, d=1) -%}{{ ("%." ~ d ~ "f")|format(x * 100) }}%{%- endmacro %}
+{% macro pp(x) -%}{{ "%+.1f"|format(x * 100) }} points{%- endmacro %}
+<header class="jj-header">
+  <h1>Causal inference</h1>
+  <p class="tagline">
+    A model that predicts well can still be useless for deciding what to do: predicting who recovers is not the
+    same as knowing whether the drug made them recover. This page sets out potential outcomes, confounding and
+    causal graphs, why randomized experiments work, how propensity scores and inverse weighting rescue
+    observational data, difference-in-differences, and uplift modeling, with every number worked by hand.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A hospital records {{ st.total }} patients. Of those who got a new treatment, {{ pct(st.naive_treated) }}
+  recovered; of those who didn't, {{ pct(st.naive_control) }}. The treatment looks harmful, by
+  {{ "%.1f"|format(-st.naive * 100) }} points. Yet within the mild cases it raises recovery from
+  {{ pct(st.rows[0].control_rate, 0) }} to {{ pct(st.rows[0].treated_rate, 0) }}, and within the severe cases from
+  {{ pct(st.rows[1].control_rate, 0) }} to {{ pct(st.rows[1].treated_rate, 0) }}. Both groups gain ten points, so
+  how can the total lose eight?
+</p>
+<p>
+  Because doctors gave the treatment mostly to severe cases: {{ pct(st.rows[1].propensity, 0) }} of severe patients
+  got it, against {{ pct(st.rows[0].propensity, 0) }} of mild ones, and severe patients recover less whatever they
+  receive. The treated group is sicker, and the comparison mixes the drug's effect with the difference in who got
+  it. This is Simpson's paradox, and it is the everyday condition of observational data.
+</p>
+<p>
+  Supervised learning answers "given what I see, what will happen?" Decisions need "what would happen if I
+  <em>did</em> this?" A classifier trained on this hospital's records would correctly learn that treated patients
+  recover less often, and a policy built on it would withhold a treatment that helps everyone. Causal inference is
+  the set of assumptions and estimators that get from data to the second question.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Imagine each patient has two possible futures: the outcome if treated, Y(1), and the outcome if not, Y(0). The
+  effect of the treatment on that patient is Y(1) − Y(0). We only ever see one of the two, the one matching what
+  actually happened. Every causal question is a missing-data problem: fill in the futures that didn't happen.
+</p>
+<p>
+  Comparing treated with untreated people fills each group's missing future with the other group's observed one.
+  That is only fair if the groups were alike before treatment. A <strong>confounder</strong> is something that
+  affects both who gets treated and the outcome, here severity, and it makes the groups unlike. There are two
+  ways out. Make the groups alike by assigning treatment at random (an experiment). Or measure the confounders
+  and compare like with like: within each severity level, or by reweighting people so that the treated and
+  untreated groups have the same mix of severity.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 250" role="img" aria-labelledby="ci-dag-title ci-dag-desc">
+    <title id="ci-dag-title">The confounded treatment as a causal graph, and three basic shapes</title>
+    <desc id="ci-dag-desc">
+      Left: severity Z points to treatment T and to recovery Y, and T points to Y. The path T to Y is the causal effect;
+      the path T, back through Z, to Y is a backdoor path that carries confounding. Adjusting for Z blocks it. Right, three
+      small graphs: a confounder Z with arrows into X and Y, which should be adjusted for; a mediator M on the path X to M to Y,
+      which should not be adjusted for when estimating the total effect; and a collider C with arrows from X and Y into it,
+      which must not be adjusted for, because conditioning on it creates a spurious association.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <circle cx="160" cy="50" r="24" class="d-box ml-weight"></circle>
+      <text x="160" y="54">Z</text>
+      <text x="160" y="16" class="d-muted">severity</text>
+      <circle cx="70" cy="180" r="24" class="d-box ml-op"></circle>
+      <text x="70" y="184">T</text>
+      <text x="70" y="226" class="d-muted">treatment</text>
+      <circle cx="250" cy="180" r="24" class="d-box ml-tensor"></circle>
+      <text x="250" y="184">Y</text>
+      <text x="250" y="226" class="d-muted">recovery</text>
+      <line x1="146" y1="70" x2="84" y2="160" class="d-line"></line>
+      <polygon points="84,160 86,148 94,153" class="d-line"></polygon>
+      <line x1="174" y1="70" x2="236" y2="160" class="d-line ml-dashed"></line>
+      <polygon points="236,160 226,153 234,148" class="d-line"></polygon>
+      <line x1="94" y1="180" x2="226" y2="180" class="d-line"></line>
+      <polygon points="226,180 216,175 216,185" class="d-line"></polygon>
+      <text x="160" y="198" class="ml-label" style="fill:var(--jj-green)">causal effect</text>
+      <text x="160" y="112" class="ml-label" style="fill:var(--jj-red)">backdoor: T ← Z → Y</text>
+
+      <g font-size="11">
+        {% for g in [("confounder: adjust", 330), ("mediator: don't, for the total effect", 460), ("collider: never", 590)] %}
+          <text x="{{ g[1] + 60 }}" y="30" class="ml-label">{{ g[0] }}</text>
+        {% endfor %}
+        <circle cx="390" cy="70" r="16" class="d-box ml-weight"></circle><text x="390" y="74">Z</text>
+        <circle cx="345" cy="160" r="16" class="d-box ml-op"></circle><text x="345" y="164">X</text>
+        <circle cx="435" cy="160" r="16" class="d-box ml-tensor"></circle><text x="435" y="164">Y</text>
+        <line x1="381" y1="84" x2="353" y2="146" class="d-line"></line>
+        <line x1="399" y1="84" x2="427" y2="146" class="d-line"></line>
+
+        <circle cx="475" cy="160" r="16" class="d-box ml-op"></circle><text x="475" y="164">X</text>
+        <circle cx="520" cy="90" r="16" class="d-box ml-weight"></circle><text x="520" y="94">M</text>
+        <circle cx="565" cy="160" r="16" class="d-box ml-tensor"></circle><text x="565" y="164">Y</text>
+        <line x1="484" y1="146" x2="511" y2="104" class="d-line"></line>
+        <line x1="529" y1="104" x2="556" y2="146" class="d-line"></line>
+
+        <circle cx="605" cy="90" r="16" class="d-box ml-op"></circle><text x="605" y="94">X</text>
+        <circle cx="695" cy="90" r="16" class="d-box ml-tensor"></circle><text x="695" y="94">Y</text>
+        <circle cx="650" cy="170" r="16" class="d-box ml-weight"></circle><text x="650" y="174">C</text>
+        <line x1="613" y1="104" x2="642" y2="156" class="d-line"></line>
+        <line x1="687" y1="104" x2="658" y2="156" class="d-line"></line>
+        <text x="520" y="226" class="d-muted">arrows point from cause to effect</text>
+      </g>
+    </g>
+  </svg>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="potential-outcomes">Potential outcomes</h3>
+<p>
+  For unit <var>i</var> with treatment T<sub>i</sub> ∈ {0, 1}, the potential outcomes are Y<sub>i</sub>(0) and
+  Y<sub>i</sub>(1) and we observe Y<sub>i</sub> = T<sub>i</sub>Y<sub>i</sub>(1) + (1 − T<sub>i</sub>)Y<sub>i</sub>(0).
+  The quantities of interest are averages, because individual effects are never observed:
+</p>
+<div class="ml-formula">ATE = E[Y(1) − Y(0)],  ATT = E[Y(1) − Y(0) | T = 1]</div>
+<p>
+  The naive comparison splits exactly into the effect on the treated plus a bias term:
+</p>
+<div class="ml-formula">E[Y | T=1] − E[Y | T=0] = ATT + (E[Y(0) | T=1] − E[Y(0) | T=0])</div>
+<p>
+  The bracket is <strong>selection bias</strong>: how different the treated were from the untreated before
+  treatment. It vanishes when treatment is independent of the potential outcomes. This framework, with the
+  assumption that one unit's treatment doesn't change another's outcome (no interference), is usually credited
+  to Neyman and Rubin.
+</p>
+
+<h3 id="dags">Confounding and causal graphs</h3>
+<p>
+  A causal graph (a DAG) draws an arrow from each variable to the variables it directly affects. Pearl's
+  <em>backdoor criterion</em> says which variables to adjust for: a set Z is enough if it blocks every path from T
+  to Y that starts with an arrow <em>into</em> T, and contains nothing caused by T. Then, within levels of Z,
+  treatment is as good as random, and
+</p>
+<div class="ml-formula">E[Y | do(T = t)] = Σ<sub>z</sub> P(Z = z) · E[Y | T = t, Z = z]</div>
+<p>
+  The <code>do</code> means "set T to t by intervention", as opposed to "observe T = t". The graph also says what
+  <em>not</em> to adjust for. Conditioning on a mediator removes part of the effect you want to measure;
+  conditioning on a collider (a common effect of T and Y, like "was admitted to hospital") opens a path that wasn't
+  there and manufactures an association. More variables is not automatically safer.
+</p>
+<p>
+  The potential-outcomes version of the same assumption is <strong>unconfoundedness</strong>: (Y(0), Y(1)) is
+  independent of T given Z. It comes with <strong>overlap</strong> (positivity): every kind of unit must have some
+  chance of each treatment, 0 &lt; P(T = 1 | Z = z) &lt; 1. No data can test unconfoundedness; it is a claim that
+  every confounder was measured, defended with domain knowledge.
+</p>
+
+<h3 id="experiments">Randomized experiments</h3>
+<p>
+  Random assignment makes T independent of everything about the unit, measured or not, so selection bias is zero
+  in expectation and the difference in means estimates the ATE without any model. Any one randomization can still
+  be unlucky; the estimate has variance, which is why experiments report confidence intervals and why larger
+  samples help. An A/B test is the same design with a product change as the treatment. Stratifying the
+  randomization on known strong predictors (block randomization) reduces the unlucky draws.
+</p>
+
+<h3 id="propensity">Propensity scores and inverse weighting</h3>
+<p>
+  When there are many confounders, comparing within every combination of their values runs out of data. Rosenbaum
+  and Rubin (1983) showed that the <strong>propensity score</strong> e(z) = P(T = 1 | Z = z) is enough: if
+  treatment is unconfounded given Z, it is unconfounded given e(Z), a single number. In practice e is estimated
+  with a classifier, very often <a href="/ml-models/logistic-regression">logistic regression</a>.
+</p>
+<p>
+  <strong>Inverse propensity weighting</strong> (IPW) weights each treated unit by 1/e and each untreated unit by
+  1/(1 − e). A treated patient from a group where treatment was rare stands in for the many similar patients who
+  weren't treated. The weighted sample is a pseudo-population in which treatment no longer depends on Z:
+</p>
+<div class="ml-formula">ATE<sub>IPW</sub> = (1/N) Σ<sub>i</sub> [ T<sub>i</sub>Y<sub>i</sub> / e(Z<sub>i</sub>) − (1 − T<sub>i</sub>)Y<sub>i</sub> / (1 − e(Z<sub>i</sub>)) ]</div>
+<p>
+  This is the Horvitz–Thompson form. The Hájek form divides each weighted sum by the sum of its weights instead of
+  N, which is more stable when weights are large. Propensities near 0 or 1 give huge weights and a noisy
+  estimate; that is the overlap assumption failing in practice, and common responses are trimming units with
+  extreme scores or clipping the weights. A propensity model is judged by whether it <em>balances</em> the
+  covariates after weighting, not by its accuracy: a propensity model that predicts treatment perfectly is a sign
+  of no overlap, not a good model.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Term</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Y(0), Y(1)</td><td>two numbers per unit, one observed</td><td>Potential outcomes without and with treatment</td><td>Rubin 1974; Pearl 2009</td></tr>
+      <tr><td>ATE / ATT</td><td>scalar</td><td>Average effect over everyone / over the treated</td><td>Pearl 2009</td></tr>
+      <tr><td>e(z)</td><td>P(T=1 | Z=z) ∈ (0, 1)</td><td>Propensity score; fitted by a classifier</td><td>Rosenbaum and Rubin 1983</td></tr>
+      <tr><td><code>LogisticRegression</code></td><td><code>C=1.0</code>, <code>l1_ratio=0.0</code>, <code>solver="lbfgs"</code></td><td>A common propensity model; L2-penalized by default</td><td><a href="{{ skl('sklearn/linear_model/_logistic.py', 1277, 1308) }}">_logistic.py</a></td></tr>
+      <tr><td><code>C</code></td><td>float, <code>np.inf</code> = no penalty</td><td>Inverse regularization strength; the penalty shrinks propensities toward the base rate</td><td><a href="{{ skl('sklearn/linear_model/_logistic.py', 1023, 1026) }}">_logistic.py</a></td></tr>
+      <tr><td><code>fit(X, y, sample_weight)</code></td><td><code>sample_weight</code> of shape (n_samples,)</td><td>Fits the propensity model; also how IPW weights enter a weighted outcome model</td><td><a href="{{ skl('sklearn/linear_model/_logistic.py', 1333, 1572) }}">_logistic.py</a></td></tr>
+      <tr><td><code>predict_proba(X)[:, 1]</code></td><td>(n_samples,)</td><td>The estimated propensity of each unit</td><td><a href="{{ skl('sklearn/linear_model/_logistic.py', 1573, 1603) }}">_logistic.py</a></td></tr>
+      <tr><td>1/e, 1/(1−e)</td><td>one weight per unit</td><td>IPW weights; huge when e is near 0 or 1</td><td>Horvitz and Thompson 1952</td></tr>
+      <tr><td>DiD</td><td>(post − pre)<sub>treated</sub> − (post − pre)<sub>control</sub></td><td>Effect under parallel trends</td><td>Card and Krueger 1994</td></tr>
+      <tr><td>uplift(x)</td><td>P(Y | T=1, x) − P(Y | T=0, x)</td><td>Conditional effect, used to choose whom to treat</td><td>Radcliffe and Surry 2011</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="did">Difference-in-differences</h3>
+<p>
+  Sometimes treatment hits a whole group at once: a policy in one city, a feature launched in one country. Comparing
+  the group before and after mixes the effect with whatever else changed over time; comparing it with another group
+  after mixes the effect with the groups' standing difference. Difference-in-differences subtracts both:
+</p>
+<div class="ml-formula">DiD = (Ȳ<sub>treated, post</sub> − Ȳ<sub>treated, pre</sub>) − (Ȳ<sub>control, post</sub> − Ȳ<sub>control, pre</sub>)</div>
+<p>
+  The assumption is <strong>parallel trends</strong>: without treatment, the treated group would have changed by the
+  same amount as the control group. It can't be checked after treatment, but several pre-treatment periods that
+  move in parallel make it believable, and diverging pre-trends are a warning. Card and Krueger's study of a
+  minimum-wage rise in New Jersey, with neighbouring Pennsylvania as the control, is the classic example.
+</p>
+
+<h3 id="uplift">Uplift modeling</h3>
+<p>
+  Marketing and retention teams ask a per-person question: whose behaviour will the action <em>change</em>? A
+  response model predicts who buys if contacted, which picks people who would buy anyway ("sure things") and even
+  people the contact puts off ("sleeping dogs"). An uplift model predicts the conditional effect
+  P(Y | T=1, x) − P(Y | T=0, x) and targets the "persuadables". It is trained on randomized data: the simplest
+  version (a T-learner) fits one model on the treated group and one on the control group and subtracts their
+  predictions. It is evaluated with uplift or Qini curves: sort people by predicted uplift and plot the incremental
+  outcome as more of them are treated.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-potential">Eight units with both futures visible</h3>
+  <p>
+    In a simulation we can write down both potential outcomes. Z = 1 marks a severe case; the treatment raises
+    everyone's score, by {{ po.effects|min }} to {{ po.effects|max }} points.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Unit</th><th>Z</th><th>Y(0)</th><th>Y(1)</th><th>Effect</th><th>T</th><th>Observed Y</th></tr></thead>
+      <tbody>
+        {% for u in cfg.units %}
+          <tr><td>{{ loop.index }}</td><td>{{ u.z }}</td><td>{{ u.y0 if not u.t else "(" ~ u.y0 ~ ")" }}</td><td>{{ u.y1 if u.t else "(" ~ u.y1 ~ ")" }}</td><td>{{ po.effects[loop.index0] }}</td><td>{{ u.t }}</td><td>{{ po.observed[loop.index0] }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Bracketed values are the ones nobody would ever see. The true ATE is {{ n(po.ate, 1) }}. Three of the four
+    treated units are severe cases, and the naive difference in observed means is {{ n(po.naive, 1) }}: the
+    treatment looks useless. The decomposition shows why: the effect on the treated is {{ n(po.att, 1) }}, and
+    selection bias, E[Y(0) | T=1] − E[Y(0) | T=0], is {{ n(po.selection_bias, 1) }}, cancelling it exactly.
+  </p>
+  <p>
+    Now assign treatment at random instead: choose 4 of the 8 units to treat, every choice equally likely. There are
+    {{ ex.randomized.count }} possible choices. Their difference-in-means estimates range from
+    {{ n(ex.randomized.min, 1) }} to {{ n(ex.randomized.max, 1) }} (standard deviation {{ n(ex.randomized.std) }}),
+    but their average is exactly {{ n(ex.randomized.mean, 1) }}, the true ATE. That is what "unbiased" means: no single
+    experiment is guaranteed right, but the design has no systematic error.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-ipw">Adjusting the hospital data</h3>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Severity</th><th>Patients</th><th>Treated</th><th>Recovered if treated</th><th>Recovered if not</th><th>Effect</th><th>e(z)</th></tr></thead>
+      <tbody>
+        {% for r in st.rows %}
+          {% set s = cfg.strata[loop.index0] %}
+          <tr><td>{{ r.name }}</td><td>{{ r.size }}</td><td>{{ s.treated }}</td><td>{{ s.treated_recovered }}/{{ s.treated }} = {{ pct(r.treated_rate, 0) }}</td><td>{{ s.control_recovered }}/{{ s.control }} = {{ pct(r.control_rate, 0) }}</td><td>{{ pp(r.effect) }}</td><td>{{ n(r.propensity) }}</td></tr>
+        {% endfor %}
+        <tr><td><strong>All</strong></td><td>{{ st.total }}</td><td>{{ cfg.strata|sum(attribute="treated") }}</td><td>{{ pct(st.naive_treated) }}</td><td>{{ pct(st.naive_control) }}</td><td>{{ pp(st.naive) }}</td><td></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    <strong>Adjustment.</strong> Average the within-stratum effects, weighted by how common each stratum is:
+    {{ n(st.rows[0].share, 3) }} × {{ n(st.rows[0].effect) }} + {{ n(st.rows[1].share, 3) }} × {{ n(st.rows[1].effect) }} =
+    {{ n(st.adjusted) }}, a gain of ten points, against the naive loss of {{ "%.1f"|format(-st.naive * 100) }}.
+  </p>
+  <p>
+    <strong>Inverse weighting.</strong> Mild patients were treated with probability {{ n(st.rows[0].propensity) }}, so
+    each treated mild patient gets weight 1/{{ n(st.rows[0].propensity) }} = {{ n(ex.ipw.weights[0].treated) }} and each
+    untreated one 1/{{ n(1 - st.rows[0].propensity) }} = {{ n(ex.ipw.weights[0].control) }}; severe patients the other way
+    round. The {{ cfg.strata[0].treated }} treated mild patients now count as
+    {{ "%.0f"|format(ex.ipw.weights[0].pseudo_treated) }}, and the {{ cfg.strata[0].control }} untreated as
+    {{ "%.0f"|format(ex.ipw.weights[0].pseudo_control) }}: in the pseudo-population, both arms have the full
+    {{ st.rows[0].size }} mild and {{ st.rows[1].size }} severe patients, so severity no longer predicts treatment. The
+    Horvitz–Thompson estimate is
+  </p>
+  <div class="ml-formula">(180·4 + 150·{{ n(ex.ipw.weights[1].treated, 3) }} − 480·{{ n(ex.ipw.weights[0].control, 3) }} − 40·4) / {{ st.total }} = {{ n(ex.ipw.horvitz_thompson) }}</div>
+  <p>
+    the same {{ n(ex.ipw.horvitz_thompson) }} as adjustment, and so is the Hájek estimate. With a single discrete
+    confounder, IPW with stratum frequencies as propensities and stratified adjustment are algebraically the same
+    estimator; they differ when the propensity comes from a model over many covariates.
+  </p>
+  <p>
+    <strong>Fitting the propensity.</strong> A logistic regression of T on Z with no penalty (Newton's method on all
+    {{ st.total }} rows) converges to intercept {{ n(ex.fit.bias, 4) }} = log(1/3) and slope {{ n(ex.fit.weight, 4) }},
+    which give back exactly {{ n(ex.fit.propensities[0]) }} and {{ n(ex.fit.propensities[1]) }}, and the same estimate,
+    {{ n(ex.fit_ipw.horvitz_thompson) }}. With scikit-learn's default penalty, C = 1, the slope shrinks to
+    {{ n(ex.regularized.weight, 4) }}, the propensities move toward each other
+    ({{ n(ex.regularized.propensities[0], 4) }} and {{ n(ex.regularized.propensities[1], 4) }}), and the estimate drops
+    to {{ n(ex.regularized_ipw.horvitz_thompson, 4) }}. Small here, but a penalty tuned for prediction is a bias in a
+    propensity model; fit it with <code>C=np.inf</code> or check balance after weighting.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 240" role="img" aria-labelledby="ci-ipw-title ci-ipw-desc">
+    <title id="ci-ipw-title">The hospital data before and after inverse propensity weighting</title>
+    <desc id="ci-ipw-desc">
+      Bars show how many patients each arm holds per severity level. Before weighting, the treated arm is
+      {{ cfg.strata[0].treated }} mild and {{ cfg.strata[1].treated }} severe, and the untreated arm {{ cfg.strata[0].control }}
+      mild and {{ cfg.strata[1].control }} severe, so the treated arm is mostly severe. After weighting, both arms are
+      {{ st.rows[0].size }} mild and {{ st.rows[1].size }} severe, the same mix as the whole population.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      {% set k = 0.18 %}
+      {% for panel in [("observed", 0), ("weighted by 1/e and 1/(1−e)", 1)] %}
+        {% set px = 40 + panel[1] * 350 %}
+        <text x="{{ px + 140 }}" y="20" class="ml-label">{{ panel[0] }}</text>
+        {% for arm in ["treated", "untreated"] %}
+          {% set y = 40 + loop.index0 * 80 %}
+          <text x="{{ px }}" y="{{ y + 22 }}" text-anchor="start">{{ arm }}</text>
+          {% if panel[1] == 0 %}
+            {% set mild = cfg.strata[0].treated if arm == "treated" else cfg.strata[0].control %}
+            {% set severe = cfg.strata[1].treated if arm == "treated" else cfg.strata[1].control %}
+          {% else %}
+            {% set mild = st.rows[0].size %}
+            {% set severe = st.rows[1].size %}
+          {% endif %}
+          <rect x="{{ px + 70 }}" y="{{ y + 8 }}" width="{{ mild * k }}" height="22" class="d-box ml-tensor"></rect>
+          <rect x="{{ px + 70 + mild * k }}" y="{{ y + 8 }}" width="{{ severe * k }}" height="22" class="d-box ml-op"></rect>
+          <text x="{{ px + 70 + mild * k / 2 }}" y="{{ y + 48 }}" class="d-muted">{{ mild }}</text>
+          <text x="{{ px + 70 + mild * k + severe * k / 2 }}" y="{{ y + 48 }}" class="d-muted">{{ severe }}</text>
+        {% endfor %}
+      {% endfor %}
+      <rect x="230" y="208" width="14" height="12" class="d-box ml-tensor"></rect>
+      <text x="275" y="218">mild</text>
+      <rect x="320" y="208" width="14" height="12" class="d-box ml-op"></rect>
+      <text x="368" y="218">severe</text>
+    </g>
+  </svg>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-did">Difference-in-differences on four periods</h3>
+  <p>
+    A city launches a programme after period {{ cfg.did_first_post }}; a similar city does not. Weekly averages of the
+    outcome:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Period</th>{% for v in cfg.did_treated %}<th>{{ loop.index }}{{ " (post)" if loop.index0 >= cfg.did_first_post else "" }}</th>{% endfor %}<th>Pre mean</th><th>Post mean</th><th>Change</th></tr></thead>
+      <tbody>
+        <tr><td>Treated city</td>{% for v in cfg.did_treated %}<td>{{ v }}</td>{% endfor %}<td>{{ n(did.pre_treated, 0) }}</td><td>{{ n(did.post_treated, 0) }}</td><td>{{ "%+.0f"|format(did.before_after) }}</td></tr>
+        <tr><td>Control city</td>{% for v in cfg.did_control %}<td>{{ v }}</td>{% endfor %}<td>{{ n(did.pre_control, 0) }}</td><td>{{ n(did.post_control, 0) }}</td><td>{{ "%+.0f"|format(did.post_control - did.pre_control) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Before-after in the treated city says {{ "%+.0f"|format(did.before_after) }}; comparing the cities after says
+    {{ "%+.0f"|format(did.post_gap) }}. Both are wrong. The control city rose by
+    {{ n(did.post_control - did.pre_control, 0) }} without the programme, so DiD = {{ n(did.before_after, 0) }} −
+    {{ n(did.post_control - did.pre_control, 0) }} = {{ n(did.effect, 0) }}. Before the launch both cities rose by the
+    same {{ cfg.did_treated[1] - cfg.did_treated[0] }} per period (pre-trend gap {{ did.pre_trend_gap }}), which is the
+    evidence for parallel trends. The counterfactual treated series, what the city would have shown without the
+    programme, is {{ did.counterfactual|map("int")|join(", ") }}.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 260" role="img" aria-labelledby="ci-did-title ci-did-desc">
+    <title id="ci-did-title">Difference-in-differences: observed and counterfactual trends</title>
+    <desc id="ci-did-desc">
+      Outcome against period for both cities. The control city goes {{ cfg.did_control|join(", ") }}. The treated city goes
+      {{ cfg.did_treated|join(", ") }}, running parallel to the control before the launch line and jumping after it. A dashed
+      line continues the treated city's path with the control city's changes, {{ did.counterfactual|map("int")|join(", ") }}; the
+      vertical gap between the observed and the dashed line after the launch is the estimated effect, {{ n(did.effect, 0) }}.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      {% set x0 = 100 %}
+      {% set dx = 160 %}
+      {% macro yv(v) -%}{{ 230 - (v - 30) * 5 }}{%- endmacro %}
+      <line x1="{{ x0 - 20 }}" y1="230" x2="{{ x0 + 3 * dx + 40 }}" y2="230" class="d-line"></line>
+      <line x1="{{ x0 + 1.5 * dx }}" y1="30" x2="{{ x0 + 1.5 * dx }}" y2="230" class="d-line ml-dashed"></line>
+      <text x="{{ x0 + 1.5 * dx }}" y="22" class="d-muted">programme starts</text>
+      {% for i in range(4) %}
+        <text x="{{ x0 + i * dx }}" y="248" class="d-muted">period {{ i + 1 }}</text>
+      {% endfor %}
+      {% for series, cls, label in [(cfg.did_treated, "fill:var(--jj-amber)", "treated"), (cfg.did_control, "fill:var(--jj-accent)", "control"), (did.counterfactual, "fill:var(--jj-muted)", "counterfactual")] %}
+        {% for v in series %}
+          {% if not loop.last %}
+            <line x1="{{ x0 + loop.index0 * dx }}" y1="{{ yv(v) }}" x2="{{ x0 + loop.index * dx }}" y2="{{ yv(series[loop.index]) }}" class="d-line{{ ' ml-dashed' if label == 'counterfactual' else '' }}"></line>
+          {% endif %}
+          {% if label != "counterfactual" or loop.index0 >= cfg.did_first_post %}
+            <circle cx="{{ x0 + loop.index0 * dx }}" cy="{{ yv(v) }}" r="4" style="{{ cls }}"></circle>
+          {% endif %}
+        {% endfor %}
+        <text x="{{ x0 + 3 * dx + 10 }}" y="{{ yv(series[-1])|float + 4 }}" text-anchor="start" style="{{ cls }}">{{ label }}</text>
+      {% endfor %}
+      <line x1="{{ x0 + 3 * dx - 12 }}" y1="{{ yv(cfg.did_treated[-1]) }}" x2="{{ x0 + 3 * dx - 12 }}" y2="{{ yv(did.counterfactual[-1]) }}" class="d-line"></line>
+      <text x="{{ x0 + 3 * dx - 50 }}" y="{{ (yv(cfg.did_treated[-1])|float + yv(did.counterfactual[-1])|float) / 2 + 4 }}" class="ml-label" style="fill:var(--jj-green)">effect {{ n(did.effect, 0) }}</text>
+    </g>
+  </svg>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-uplift">Response model against uplift model</h3>
+  <p>
+    A randomized campaign test gives purchase rates with and without a discount in four customer segments of
+    {{ cfg.segments[0].size }} each. The budget covers {{ cfg.target_segments }} segments.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Segment</th><th>Buys if contacted</th><th>Buys anyway</th><th>Uplift</th><th>Extra purchases</th></tr></thead>
+      <tbody>
+        {% for r in up.rows %}
+          <tr><td>{{ r.name }}</td><td>{{ pct(r.treated_rate, 0) }}</td><td>{{ pct(r.control_rate, 0) }}</td><td>{{ pp(r.uplift) }}</td><td>{{ "%+.0f"|format(r.incremental) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    A response model ranks by "buys if contacted" and picks {{ up.by_response.names|join(" and ") }}: segment B are sure
+    things who mostly buy anyway, and segment D are sleeping dogs whom the contact puts off. Net effect:
+    {{ "%+.0f"|format(up.by_response.incremental) }} purchases. Ranking by uplift picks
+    {{ up.by_uplift.names|join(" and ") }} for {{ "%+.0f"|format(up.by_uplift.incremental) }}, more than contacting all
+    four segments ({{ "%+.0f"|format(up.everyone) }}).
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  Inverse propensity weighting with scikit-learn, with the checks that matter: an unpenalized propensity model,
+  overlap, and covariate balance after weighting. <code>X</code> holds the measured confounders, <code>t</code> the
+  0/1 treatment and <code>y</code> the outcome.
+</p>
+<pre><code>import numpy as np
+from sklearn.linear_model import LogisticRegression
+
+def ipw_ate(X, t, y, clip=0.01):
+    model = LogisticRegression(C=np.inf, max_iter=1000).fit(X, t)
+    e = model.predict_proba(X)[:, 1]
+    print("propensity range", e[t == 1].min(), e[t == 0].max())   # overlap check
+    e = np.clip(e, clip, 1 - clip)
+    w = np.where(t == 1, 1 / e, 1 / (1 - e))
+
+    treated = np.sum(w * t * y) / np.sum(w * t)                   # Hajek form
+    control = np.sum(w * (1 - t) * y) / np.sum(w * (1 - t))
+
+    def smd(weights):                                             # standardized mean difference
+        m1 = np.average(X[t == 1], axis=0, weights=weights[t == 1])
+        m0 = np.average(X[t == 0], axis=0, weights=weights[t == 0])
+        return (m1 - m0) / np.sqrt((X[t == 1].var(axis=0) + X[t == 0].var(axis=0)) / 2)
+
+    return treated - control, smd(np.ones_like(w)), smd(w)        # balance before / after</code></pre>
+<p>
+  A common rule of thumb treats an absolute standardized mean difference under about 0.1 after weighting as
+  balanced. Clipping trades a little bias for much lower variance. For better estimates, combine an outcome model
+  with the propensity model (doubly robust estimation), which stays consistent if either model is right. A T-learner
+  for uplift is two classifiers: fit one on <code>X[t == 1]</code>, one on <code>X[t == 0]</code>, and subtract their
+  <code>predict_proba</code> outputs.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Experiment vs observational study.</strong> Randomization removes confounding, measured or not, but
+    costs time and money and is sometimes unethical or impossible. Observational methods use existing data but rest on
+    an untestable claim that every confounder was measured.</li>
+  <li><strong>Adjustment vs weighting.</strong> Stratifying is transparent but runs out of data as covariates
+    multiply. Propensity methods compress the covariates into one number but depend on that model, and extreme weights
+    make them noisy.</li>
+  <li><strong>What to adjust for.</strong> Adjusting for confounders removes bias; adjusting for mediators or colliders
+    adds it. Throwing every available column into the model is not safe.</li>
+  <li><strong>DiD.</strong> Handles unmeasured confounders that are constant over time, but only under parallel trends,
+    and only with comparable control groups.</li>
+  <li><strong>Uplift vs response.</strong> Uplift models answer the right question but need randomized data, and the
+    difference of two noisy predictions is noisier than either.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Treated patients recover less often overall, yet better in every severity group. Which number should drive the decision?</summary>
+  <p>The within-group comparison, here, because severity is a confounder: it causes both treatment and recovery. The
+    answer depends on the graph, not the numbers; if the grouping variable were caused by the treatment (a mediator),
+    the overall comparison would be the right one.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why can't you check unconfoundedness from the data?</summary>
+  <p>It is a statement about potential outcomes, half of which are never observed. An unmeasured confounder leaves no
+    trace in the measured columns. Sensitivity analysis asks how strong such a confounder would have to be to change
+    the conclusion.</p>
+</details>
+<details class="ml-quiz">
+  <summary>A propensity model reaches 0.99 AUC at predicting treatment. Is that good?</summary>
+  <p>It is a warning. It means treated and untreated units barely overlap, so weights explode and the effect is
+    estimated from a handful of units, or from extrapolation.</p>
+</details>
+<details class="ml-quiz">
+  <summary>In the DiD example, what would a +4 per period pre-trend in the treated city (against +2 in the control) do?</summary>
+  <p>It would break parallel trends. DiD would credit the programme with the treated city's faster underlying growth,
+    overstating the effect.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Pearl. <em>Causal Inference in Statistics: An Overview.</em> Statistics Surveys 3, 96–146, 2009.
+    <a href="https://doi.org/10.1214/09-SS057">doi:10.1214/09-SS057</a></li>
+  <li>Rubin. <em>Estimating Causal Effects of Treatments in Randomized and Nonrandomized Studies.</em> Journal of
+    Educational Psychology, 1974. (Potential outcomes.)</li>
+  <li>Rosenbaum and Rubin. <em>The Central Role of the Propensity Score in Observational Studies for Causal
+    Effects.</em> Biometrika, 1983.</li>
+  <li>Horvitz and Thompson. <em>A Generalization of Sampling Without Replacement from a Finite Universe.</em> Journal of
+    the American Statistical Association, 1952. (The inverse-probability estimator.)</li>
+  <li>Card and Krueger. <em>Minimum Wages and Employment: A Case Study of the Fast-Food Industry in New Jersey and
+    Pennsylvania.</em> American Economic Review, 1994.</li>
+  <li>Radcliffe and Surry. <em>Real-World Uplift Modelling with Significance-Based Uplift Trees.</em> Stochastic
+    Solutions white paper, 2011. <a href="https://stochasticsolutions.com/pdf/sig-based-up-trees.pdf">PDF</a></li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/linear_model/_logistic.py', 974, 1637) }}"><code>LogisticRegression</code></a>,
+    <a href="{{ skl('sklearn/linear_model/_logistic.py', 1333, 1572) }}"><code>fit</code></a>,
+    <a href="{{ skl('sklearn/linear_model/_logistic.py', 1573, 1603) }}"><code>predict_proba</code></a>.</li>
+</ul>
