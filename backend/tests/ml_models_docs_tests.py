@@ -4617,3 +4617,59 @@ def test_online_bandit_runs_share_rewards_across_policies():
     b = ml_models_docs.ol_bandit_run("greedy", [0.2, 0.8], 50, 3, 0.1)
     assert a == b
     assert sum(a["counts"]) == 50
+
+
+def test_uncertainty_epistemic_grows_outside_the_training_range():
+    probes = {row["x"]: row for row in ml_models_docs.uncertainty_example()["probes"]}
+    inside = [probes[x] for x in (-2.5, -1.0, 0.5)]
+    assert all(row["aleatoric"] > 10 * row["epistemic"] for row in inside)
+    assert probes[3.0]["epistemic"] > probes[2.0]["epistemic"] > 20 * probes[0.5]["epistemic"]
+    for row in probes.values():
+        assert row["total"] == pytest.approx(row["aleatoric"] + row["epistemic"])
+    data = ml_models_docs.UNCERTAINTY_EXAMPLE["data"]
+    for x in (-2.5, 0.5):
+        assert math.sqrt(probes[x]["aleatoric"]) == pytest.approx(ml_models_docs.unc_noise_sd(x, data), rel=0.15)
+
+
+def test_uncertainty_bootstrap_ci_brackets_the_mean_and_matches_the_normal_interval():
+    boot = ml_models_docs.uncertainty_example()["bootstrap"]
+    assert boot["lo"] < boot["mean"] < boot["hi"]
+    assert boot["boot_se"] == pytest.approx(boot["se"], rel=0.1)
+    assert boot["lo"] == pytest.approx(boot["normal_lo"], abs=0.01)
+    assert boot["hi"] == pytest.approx(boot["normal_hi"], abs=0.01)
+
+
+def test_uncertainty_dropout_samples_are_scaled_and_unbiased():
+    e = ml_models_docs.UNCERTAINTY_EXAMPLE["dropout"]
+    ex = ml_models_docs.uncertainty_example()
+    for shown in ex["dropout_shown"]:
+        expected = sum(w * h * m for w, h, m in zip(e["weights"], e["hidden"], shown["mask"])) / (1 - e["p"])
+        assert shown["output"] == pytest.approx(expected)
+    final = ex["mc"][-1]
+    assert final["mean"] == pytest.approx(ex["dropout_deterministic"], abs=3 * ex["dropout_sd"] / math.sqrt(final["samples"]))
+    assert final["sd"] == pytest.approx(ex["dropout_sd"], rel=0.05)
+
+
+def test_uncertainty_conformal_quantile_uses_the_corrected_rank():
+    assert ml_models_docs.unc_conformal_rank(9, 0.2) == 8
+    assert ml_models_docs.unc_conformal_rank(200, 0.1) == 181
+    assert ml_models_docs.unc_conformal_q([0.3, 0.1, 0.2], 0.1) == math.inf
+    ex = ml_models_docs.uncertainty_example()
+    assert ex["small_q"] == ex["small_sorted"][7]
+    assert ex["guarantee_hi"] == pytest.approx(181 / 201)
+
+
+def test_uncertainty_conformal_coverage_is_marginal_not_conditional():
+    ex = ml_models_docs.uncertainty_example()
+    assert ex["coverage"]["all"] == pytest.approx(0.9, abs=0.02)
+    assert ex["coverage"]["left"] > 0.95 and ex["coverage"]["right"] < 0.85
+    normalized = ex["coverage_normalized"]
+    assert abs(normalized["left"] - normalized["right"]) < ex["coverage"]["left"] - ex["coverage"]["right"]
+    assert ex["repeat_mean"] == pytest.approx(ex["guarantee_hi"], abs=3 * ex["repeat_sd"] / math.sqrt(200))
+    assert sum(ex["histogram"]) == ml_models_docs.UNCERTAINTY_EXAMPLE["conformal"]["repeats"]
+
+
+def test_uncertainty_plot_points_stay_inside_the_frame():
+    ex = ml_models_docs.uncertainty_example()
+    for points in [ex["points"], ex["truth_points"], ex["band"], *ex["member_points"]]:
+        assert all(60 <= x <= 660 and 30 <= y <= 200 for x, y in points)

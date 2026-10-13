@@ -11292,6 +11292,200 @@ def online_example():
     }
 
 
+UNCERTAINTY_EXAMPLE = {
+    "data": {"n_train": 200, "n_cal": 200, "n_test": 2000, "lo": -3.0, "hi": 1.0,
+             "noise_lo": 0.1, "noise_hi": 0.5, "seed": 3},
+    "degree": 3,
+    "members": 5,
+    "probes": [-2.5, -1.0, 0.5, 2.0, 3.0],
+    "plot": {"x_lo": -3.0, "x_hi": 3.0, "y_lo": -3.0, "y_hi": 2.0, "step": 0.1, "shown_points": 60},
+    "bootstrap": {"n_test": 40, "resamples": 2000, "level": 0.95, "seed": 9},
+    "dropout": {"hidden": [0.9, -0.4, 1.3, 0.2, -1.1, 0.7, 0.5, -0.8],
+                "weights": [0.6, 0.3, -0.5, 0.8, 0.4, -0.7, 0.9, 0.2],
+                "p": 0.2, "samples": [10, 100, 1000], "shown": 3, "seed": 4},
+    "conformal": {"alpha": 0.1, "split_at": -1.0, "small_n": 9, "small_alpha": 0.2,
+                  "repeats": 200, "repeat_test": 500, "seed": 21, "bins": [0.76 + 0.02 * i for i in range(10)]},
+}
+
+
+def unc_noise_sd(x, data):
+    return data["noise_lo"] + (data["noise_hi"] - data["noise_lo"]) * (x - data["lo"]) / (data["hi"] - data["lo"])
+
+
+def unc_sample(n, data, rng):
+    points = []
+    for _ in range(n):
+        x = rng.uniform(data["lo"], data["hi"])
+        points.append((x, math.sin(x) + rng.gauss(0.0, unc_noise_sd(x, data))))
+    return points
+
+
+def unc_poly(coef, x):
+    return sum(c * x**k for k, c in enumerate(coef))
+
+
+def unc_fit_member(points, degree):
+    coef = _least_squares([[x**k for k in range(degree + 1)] for x, _ in points], [y for _, y in points])
+    a, b = _least_squares([[1.0, x] for x, _ in points], [abs(y - unc_poly(coef, x)) for x, y in points])
+    half_normal = math.sqrt(2 / math.pi)
+    return {"mean": coef, "scale": (a / half_normal, b / half_normal)}
+
+
+def unc_predict(member, x):
+    a, b = member["scale"]
+    return unc_poly(member["mean"], x), max(a + b * x, 1e-3)
+
+
+def unc_ensemble(points, degree, members, rng):
+    ensemble = []
+    for _ in range(members):
+        ensemble.append(unc_fit_member([points[rng.randrange(len(points))] for _ in points], degree))
+    return ensemble
+
+
+def unc_decompose(ensemble, x):
+    predictions = [unc_predict(member, x) for member in ensemble]
+    means = [mu for mu, _ in predictions]
+    mean = sum(means) / len(means)
+    aleatoric = sum(sd * sd for _, sd in predictions) / len(predictions)
+    epistemic = sum((mu - mean) ** 2 for mu in means) / len(means)
+    return {"x": x, "means": means, "sds": [sd for _, sd in predictions], "mean": mean, "truth": math.sin(x),
+            "aleatoric": aleatoric, "epistemic": epistemic, "total": aleatoric + epistemic}
+
+
+def unc_quantile(values, q):
+    ordered = sorted(values)
+    position = q * (len(ordered) - 1)
+    lo = int(position)
+    hi = min(lo + 1, len(ordered) - 1)
+    return ordered[lo] + (ordered[hi] - ordered[lo]) * (position - lo)
+
+
+def unc_bootstrap_ci(values, resamples, level, rng):
+    n = len(values)
+    stats = [sum(values[rng.randrange(n)] for _ in range(n)) / n for _ in range(resamples)]
+    mean = sum(values) / n
+    se = math.sqrt(sum((v - mean) ** 2 for v in values) / (n - 1)) / math.sqrt(n)
+    stats_mean = sum(stats) / resamples
+    tail = (1 - level) / 2
+    return {"mean": mean, "lo": unc_quantile(stats, tail), "hi": unc_quantile(stats, 1 - tail), "se": se,
+            "boot_se": math.sqrt(sum((s - stats_mean) ** 2 for s in stats) / (resamples - 1)),
+            "normal_lo": mean - 1.96 * se, "normal_hi": mean + 1.96 * se}
+
+
+def unc_dropout_samples(hidden, weights, p, count, rng):
+    outputs, masks = [], []
+    for _ in range(count):
+        mask = [0 if rng.random() < p else 1 for _ in hidden]
+        masks.append(mask)
+        outputs.append(sum(w * h * m / (1 - p) for w, h, m in zip(weights, hidden, mask)))
+    return outputs, masks
+
+
+def unc_dropout_variance(hidden, weights, p):
+    return p / (1 - p) * sum((w * h) ** 2 for w, h in zip(weights, hidden))
+
+
+def unc_conformal_rank(n, alpha):
+    return math.ceil((n + 1) * (1 - alpha))
+
+
+def unc_conformal_q(scores, alpha):
+    k = unc_conformal_rank(len(scores), alpha)
+    return sorted(scores)[k - 1] if k <= len(scores) else math.inf
+
+
+def unc_coverage(model, points, q, normalized=False, split_at=None):
+    hits = []
+    for x, y in points:
+        mu, sd = unc_predict(model, x)
+        hits.append((x, abs(y - mu) <= q * (sd if normalized else 1.0)))
+    result = {"all": sum(h for _, h in hits) / len(hits)}
+    if split_at is not None:
+        left = [h for x, h in hits if x < split_at]
+        right = [h for x, h in hits if x >= split_at]
+        result.update({"left": sum(left) / len(left), "right": sum(right) / len(right)})
+    return result
+
+
+def unc_xy(x, y, plot, x0=60, width=600, y0=200, height=170):
+    y = min(max(y, plot["y_lo"]), plot["y_hi"])
+    return (round(x0 + width * (x - plot["x_lo"]) / (plot["x_hi"] - plot["x_lo"]), 1),
+            round(y0 - height * (y - plot["y_lo"]) / (plot["y_hi"] - plot["y_lo"]), 1))
+
+
+@functools.lru_cache(maxsize=None)
+def uncertainty_example():
+    e = UNCERTAINTY_EXAMPLE
+    data, plot, c, b, dr = e["data"], e["plot"], e["conformal"], e["bootstrap"], e["dropout"]
+    rng = random.Random(data["seed"])
+    train = unc_sample(data["n_train"], data, rng)
+    cal = unc_sample(data["n_cal"], data, rng)
+    test = unc_sample(data["n_test"], data, rng)
+    model = unc_fit_member(train, e["degree"])
+    ensemble = unc_ensemble(train, e["degree"], e["members"], random.Random(data["seed"] + 1))
+    grid = [round(plot["x_lo"] + plot["step"] * i, 10)
+            for i in range(int(round((plot["x_hi"] - plot["x_lo"]) / plot["step"])) + 1)]
+    decomposed = [unc_decompose(ensemble, x) for x in grid]
+    errors = [abs(y - unc_predict(model, x)[0]) for x, y in test[:b["n_test"]]]
+    scores = [abs(y - unc_predict(model, x)[0]) for x, y in cal]
+    q = unc_conformal_q(scores, c["alpha"])
+    normalized_scores = [abs(y - unc_predict(model, x)[0]) / unc_predict(model, x)[1] for x, y in cal]
+    q_normalized = unc_conformal_q(normalized_scores, c["alpha"])
+    repeat_rng = random.Random(c["seed"])
+    coverages = []
+    for _ in range(c["repeats"]):
+        cal_r = unc_sample(data["n_cal"], data, repeat_rng)
+        test_r = unc_sample(c["repeat_test"], data, repeat_rng)
+        q_r = unc_conformal_q([abs(y - unc_predict(model, x)[0]) for x, y in cal_r], c["alpha"])
+        coverages.append(unc_coverage(model, test_r, q_r)["all"])
+    coverage_mean = sum(coverages) / len(coverages)
+    edges = c["bins"] + [c["bins"][-1] + 0.02]
+    histogram = [sum(lo <= v < hi for v in coverages) for lo, hi in zip(edges, edges[1:])]
+    small = scores[:c["small_n"]]
+    outputs, masks = unc_dropout_samples(dr["hidden"], dr["weights"], dr["p"], max(dr["samples"]), random.Random(dr["seed"]))
+    mc = []
+    for count in dr["samples"]:
+        head = outputs[:count]
+        m = sum(head) / count
+        mc.append({"samples": count, "mean": m, "sd": math.sqrt(sum((v - m) ** 2 for v in head) / (count - 1))})
+    rank = unc_conformal_rank(data["n_cal"], c["alpha"])
+    return {
+        "example": e,
+        "model": model,
+        "ensemble": ensemble,
+        "probes": [unc_decompose(ensemble, x) for x in e["probes"]],
+        "points": [unc_xy(x, y, plot) for x, y in train[:plot["shown_points"]]],
+        "truth_points": [unc_xy(x, math.sin(x), plot) for x in grid],
+        "member_points": [[unc_xy(x, unc_predict(m, x)[0], plot) for x in grid] for m in ensemble],
+        "band": [unc_xy(r["x"], r["mean"] + 2 * math.sqrt(r["total"]), plot) for r in decomposed]
+                + [unc_xy(r["x"], r["mean"] - 2 * math.sqrt(r["total"]), plot) for r in reversed(decomposed)],
+        "train_edge": unc_xy(data["hi"], 0.0, plot)[0],
+        "bootstrap": unc_bootstrap_ci(errors, b["resamples"], b["level"], random.Random(b["seed"])),
+        "dropout_deterministic": sum(w * h for w, h in zip(dr["weights"], dr["hidden"])),
+        "dropout_sd": math.sqrt(unc_dropout_variance(dr["hidden"], dr["weights"], dr["p"])),
+        "dropout_shown": [{"mask": m, "output": o} for m, o in zip(masks[:dr["shown"]], outputs[:dr["shown"]])],
+        "mc": mc,
+        "q": q,
+        "rank": rank,
+        "guarantee_hi": rank / (data["n_cal"] + 1),
+        "coverage": unc_coverage(model, test, q, split_at=c["split_at"]),
+        "q_normalized": q_normalized,
+        "coverage_normalized": unc_coverage(model, test, q_normalized, normalized=True, split_at=c["split_at"]),
+        "small_scores": small,
+        "small_sorted": sorted(small),
+        "small_rank": unc_conformal_rank(len(small), c["small_alpha"]),
+        "small_q": unc_conformal_q(small, c["small_alpha"]),
+        "repeat_mean": coverage_mean,
+        "repeat_sd": math.sqrt(sum((v - coverage_mean) ** 2 for v in coverages) / (len(coverages) - 1)),
+        "repeat_p05": unc_quantile(coverages, 0.05),
+        "repeat_p95": unc_quantile(coverages, 0.95),
+        "repeat_below": sum(v < 1 - c["alpha"] for v in coverages),
+        "histogram": histogram,
+        "histogram_edges": edges,
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -11327,6 +11521,7 @@ def render(slug, render_template):
         "accumulation_example": accumulation_example,
         "latency_example": latency_example,
         "online_example": online_example,
+        "uncertainty_example": uncertainty_example,
         "data_example": data_example,
         "serving_example": serving_example,
         "causal_example": causal_example,
