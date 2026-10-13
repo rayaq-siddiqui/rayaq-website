@@ -862,7 +862,7 @@ PAGES = [
             "pytorch:torch/nn/functional.py",
             "pytorch:torch/random.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "diffusion-unet",
@@ -10407,6 +10407,12 @@ def guided_eps(xt, alpha_bar, prior_plus, weight):
     return (1 + weight) * cond - weight * uncond
 
 
+def guidance_tilt(prior_plus, uncond_plus, weight):
+    plus = prior_plus ** (1 + weight) / uncond_plus ** weight
+    minus = (1 - prior_plus) ** (1 + weight) / (1 - uncond_plus) ** weight
+    return plus / (plus + minus)
+
+
 def ddim_timesteps(steps, count):
     stride = steps // count
     return list(range(steps - 1, -1, -stride))[:count]
@@ -10481,7 +10487,8 @@ def diffusion_example():
         finals = [ddim_sample(x, ab_lin, ts50, lambda xt, ab, w=w: guided_eps(xt, ab, e["prior_plus"], w))[-1] for x in grid]
         plus = sum(1 for v in finals if v > 0) / len(finals)
         guidance.append({"weight": w, "scale": 1 + w, "plus": plus, "mean": sum(finals) / len(finals),
-                         "max_abs": max(abs(v) for v in finals)})
+                         "max_abs": max(abs(v) for v in finals),
+                         "tilt": guidance_tilt(e["prior_plus"], 0.5, w)})
     rng = random.Random(e["ddpm_seed"])
     samples = [ddpm_sample(rng.gauss(0.0, 1.0), linear, ab_lin, two_point_eps, rng) for _ in range(e["ddpm_samples"])]
     plus = [v for v in samples if v > 0]
@@ -10490,6 +10497,8 @@ def diffusion_example():
     return {
         "example": e,
         "schedule": schedule,
+        "curve": [{"t": t, "linear": ab_lin[t - 1] if t else 1.0, "cosine": ab_cos[t - 1] if t else 1.0}
+                  for t in range(0, T + 1, 25)],
         "iterated": {"mean": mean, "variance": var, "closed_mean": math.sqrt(ab_lin[-1]) * e["x0"], "closed_variance": 1 - ab_lin[-1]},
         "posterior": {"t": t_mid + 1, "xt": xt_mid, "eps_mean": eps_mean, **post},
         "denoise": denoise,

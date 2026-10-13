@@ -1,0 +1,600 @@
+{% set ex = diffusion_example() %}
+{% set cfg = ex.example %}
+{% set post = ex.posterior %}
+{% set it = ex.iterated %}
+{% set ddim10 = ex.ddim[0] %}
+{% set ddim50 = ex.ddim[1] %}
+{% set lat = ex.latent %}
+{% set mid = ex.schedule[5] %}
+{% macro n(x, d=2) -%}{{ ("%." ~ d ~ "f")|format(x) }}{%- endmacro %}
+{% macro pct(x, d=1) -%}{{ ("%." ~ d ~ "f")|format(100 * x) }}%{%- endmacro %}
+<header class="jj-header">
+  <h1>Diffusion models</h1>
+  <p class="tagline">
+    A diffusion model learns to make data by learning to remove noise. This page builds the forward process that turns data into
+    noise in closed form, derives the noise-prediction loss from the ELBO, compares the linear and cosine schedules, samples with
+    DDPM and DDIM, steers samples with classifier-free guidance, and moves the whole thing into a compressed latent space, all
+    worked with an exact denoiser on a one-dimensional dataset.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A generative model has to turn simple randomness into samples that look like the data. A
+  <a href="/ml-models/variational-autoencoders">VAE</a> does it in one decoder pass from a learned latent, and its samples tend to
+  be blurry because the decoder is trained with a simple per-pixel likelihood. A <a href="/ml-models/gans">GAN</a> does it in one
+  generator pass and gets sharp samples, but trains as an unstable two-player game that can drop whole modes of the data. An
+  <a href="/ml-models/autoregressive-models">autoregressive model</a> is exact and stable but makes one value at a time.
+</p>
+<p>
+  Diffusion models split the hard jump from noise to data into a long chain of small, easy steps. Each step only has to remove a
+  little noise, which is a plain regression problem with a fixed target, so training is a single stable mean-squared-error loss
+  with no adversary. The cost moves to sampling: making one sample runs the network once per step, tens to a thousand times.
+  This trade, stable training and excellent samples for slow generation, is why diffusion became the standard for images, audio
+  and video.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Take a photo and add a little Gaussian noise. Do it again, and again, a thousand times, each time shrinking the image slightly
+  so the values stay bounded. Nothing of the photo is left at the end: it is indistinguishable from a draw of pure noise. This
+  <strong>forward process</strong> needs no learning, and because every step is Gaussian, the noisy image after any number of
+  steps can be written directly as a mix of the original and one draw of noise.
+</p>
+<p>
+  Now run the film backwards. If a network can look at a noisy image and say which noise was added, subtracting a little of that
+  noise gives a slightly cleaner image. Starting from pure noise and repeating this a thousand times walks a sample back to
+  something that looks like data. The network never has to imagine a whole image at once; at high noise it only decides the rough
+  layout, at low noise only fine texture.
+</p>
+<p>
+  Training is then self-supervised: pick a real image, pick a noise level, add the noise, and ask the network to predict it. The
+  loss is the squared error between the noise it guessed and the noise that was actually added.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 220" role="img" aria-labelledby="diff-chain-title diff-chain-desc">
+    <title id="diff-chain-title">The forward and reverse chains</title>
+    <desc id="diff-chain-desc">
+      Five boxes left to right: x0, the data; x1; x t minus 1; x t; and x T, pure noise. Arrows along the top run left to right and
+      are labelled q, the fixed forward process that adds noise: q of x t given x t minus 1 is a Gaussian with mean the square root
+      of 1 minus beta t times x t minus 1 and variance beta t. A dashed arrow jumps from x0 directly to x t, labelled the closed form.
+      Arrows along the bottom run right to left and are labelled p theta, the learned reverse process, which predicts the noise and
+      removes some of it.
+    </desc>
+    {% set boxes = [(40, "x₀", "data"), (170, "x₁", ""), (330, "xₜ₋₁", ""), (460, "xₜ", ""), (600, 'x<tspan font-size="10" dy="4">T</tspan>', "noise")] %}
+    <g font-size="12" text-anchor="middle">
+      {% for b in boxes %}
+        <rect x="{{ b[0] }}" y="80" width="80" height="44" rx="6" class="d-box"></rect>
+        <text x="{{ b[0] + 40 }}" y="107" font-size="14">{{ b[1]|safe }}</text>
+        {% if b[2] %}<text x="{{ b[0] + 40 }}" y="144" class="d-muted">{{ b[2] }}</text>{% endif %}
+      {% endfor %}
+      <text x="290" y="107" class="d-muted">…</text>
+      <text x="560" y="107" class="d-muted">…</text>
+      {% for a in [(120, 170), (250, 280), (410, 460), (540, 600)] %}
+        <line x1="{{ a[0] }}" y1="90" x2="{{ a[1] - 4 }}" y2="90" class="d-line" style="stroke:var(--jj-amber)"></line>
+        <polygon points="{{ a[1] }},90 {{ a[1] - 8 }},86 {{ a[1] - 8 }},94" style="fill:var(--jj-amber)"></polygon>
+        <line x1="{{ a[1] }}" y1="114" x2="{{ a[0] + 4 }}" y2="114" class="d-line" style="stroke:var(--jj-accent)"></line>
+        <polygon points="{{ a[0] }},114 {{ a[0] + 8 }},110 {{ a[0] + 8 }},118" style="fill:var(--jj-accent)"></polygon>
+      {% endfor %}
+      <text x="435" y="70" style="fill:var(--jj-amber)">q(xₜ | xₜ₋₁) = N(√(1−βₜ) xₜ₋₁, βₜ I)</text>
+      <path d="M 80 78 Q 290 10 500 78" fill="none" class="d-line ml-dashed" style="stroke:var(--jj-amber)"></path>
+      <text x="200" y="34" style="fill:var(--jj-amber)">closed form: xₜ = √ᾱₜ x₀ + √(1−ᾱₜ) ε</text>
+      <text x="360" y="180" style="fill:var(--jj-accent)">p_θ(xₜ₋₁ | xₜ): predict ε with ε_θ(xₜ, t), remove a little of it</text>
+      <text x="360" y="200" class="d-muted">forward: fixed, no parameters · reverse: learned, one network shared by every t</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="forward-process">The forward process in closed form</h3>
+<p>
+  Fix T steps and a <strong>noise schedule</strong> β<sub>1</sub>, …, β<sub>T</sub>, small numbers between 0 and 1. Each step
+  scales the previous value down and adds fresh Gaussian noise:
+</p>
+<div class="ml-formula">q(xₜ | xₜ₋₁) = N(√(1 − βₜ) · xₜ₋₁, βₜ I)</div>
+<p>
+  Write α<sub>t</sub> = 1 − β<sub>t</sub> and ᾱ<sub>t</sub> = α<sub>1</sub>α<sub>2</sub>⋯α<sub>t</sub>. Then the distribution after
+  t steps, given the data, is one Gaussian:
+</p>
+<div class="ml-formula">q(xₜ | x₀) = N(√ᾱₜ · x₀, (1 − ᾱₜ) I), so xₜ = √ᾱₜ · x₀ + √(1 − ᾱₜ) · ε with ε ~ N(0, I)</div>
+<p>
+  The proof is by induction, using <a href="/ml-models/expectation-and-variance">how means and variances move</a> under scaling and
+  adding independent noise. The mean is multiplied by √α<sub>t</sub> at each step, so after t steps it is √ᾱ<sub>t</sub>x<sub>0</sub>.
+  The variance follows v<sub>t</sub> = α<sub>t</sub>v<sub>t−1</sub> + β<sub>t</sub>; if v<sub>t−1</sub> = 1 − ᾱ<sub>t−1</sub>, then
+  v<sub>t</sub> = α<sub>t</sub> − ᾱ<sub>t</sub> + 1 − α<sub>t</sub> = 1 − ᾱ<sub>t</sub>. The factor √(1 − β<sub>t</sub>) is what
+  keeps the total variance at 1 when the data has variance 1: signal variance ᾱ<sub>t</sub> plus noise variance 1 − ᾱ<sub>t</sub>.
+  Training never runs the chain; it jumps straight to any t with one draw of ε.
+</p>
+<p>
+  The amount of signal left is measured by the <strong>signal-to-noise ratio</strong> SNR(t) = ᾱ<sub>t</sub>/(1 − ᾱ<sub>t</sub>),
+  which falls from very large at t = 1 to almost zero at t = T. A schedule is good if x<sub>T</sub> is close enough to N(0, I) that
+  sampling can start there, and if the steps in between spread the work evenly.
+</p>
+
+<h3 id="objective">The ε-prediction objective and the ELBO</h3>
+<p>
+  The reverse model is a chain of Gaussians p<sub>θ</sub>(x<sub>t−1</sub> | x<sub>t</sub>) = N(μ<sub>θ</sub>(x<sub>t</sub>, t),
+  σ<sub>t</sub><sup>2</sup> I) starting from p(x<sub>T</sub>) = N(0, I). Like a <a href="/ml-models/variational-autoencoders">VAE</a>,
+  with x<sub>1</sub>, …, x<sub>T</sub> as latents and the forward process as a fixed encoder, it is trained by minimizing a bound
+  on −log p<sub>θ</sub>(x<sub>0</sub>):
+</p>
+<div class="ml-formula">L = E_q[ L_T + Σ_{t&gt;1} L_{t−1} + L_0 ], L_{t−1} = KL( q(xₜ₋₁ | xₜ, x₀) ‖ p_θ(xₜ₋₁ | xₜ) )</div>
+<p>
+  L<sub>T</sub> has no parameters, and L<sub>0</sub> is a reconstruction term for the last step. The middle terms compare the model
+  with a distribution that is easy to write down: given both the noisy x<sub>t</sub> and the clean x<sub>0</sub>, the previous step
+  is Gaussian by Bayes' rule,
+</p>
+<div class="ml-formula">q(xₜ₋₁ | xₜ, x₀) = N(μ̃ₜ, β̃ₜ I), μ̃ₜ = (√ᾱₜ₋₁ βₜ / (1 − ᾱₜ)) x₀ + (√αₜ (1 − ᾱₜ₋₁) / (1 − ᾱₜ)) xₜ, β̃ₜ = ((1 − ᾱₜ₋₁) / (1 − ᾱₜ)) βₜ</div>
+<p>
+  Substitute x<sub>0</sub> = (x<sub>t</sub> − √(1 − ᾱ<sub>t</sub>) ε)/√ᾱ<sub>t</sub> from the closed form and the mean simplifies to a
+  function of x<sub>t</sub> and the noise alone:
+</p>
+<div class="ml-formula">μ̃ₜ = (1/√αₜ) · (xₜ − (βₜ / √(1 − ᾱₜ)) · ε)</div>
+<p>
+  So give μ<sub>θ</sub> the same form with a network ε<sub>θ</sub>(x<sub>t</sub>, t) in place of ε. Both Gaussians have the same
+  fixed variance, and the <a href="/ml-models/entropy-and-kl">KL divergence</a> between two Gaussians with equal variance is their
+  squared mean difference over 2σ<sup>2</sup>:
+</p>
+<div class="ml-formula">L_{t−1} = (βₜ² / (2σₜ² αₜ (1 − ᾱₜ))) · ‖ε − ε_θ(xₜ, t)‖² + const</div>
+<p>
+  Every ELBO term is a weighted noise-prediction error. Ho, Jain and Abbeel found that dropping the weight trains better
+  samples, giving the loss everyone uses:
+</p>
+<div class="ml-formula">L_simple = E_{t ~ U{1..T}, x₀, ε} ‖ε − ε_θ(√ᾱₜ x₀ + √(1 − ᾱₜ) ε, t)‖²</div>
+<p>
+  The weight in front is largest at small t, where the noise is tiny and predicting it is easy; L<sub>simple</sub> sets every weight
+  to 1, which spends relatively more of the training on the large-t steps that decide global structure. It is also a
+  <a href="/ml-models/loss-functions">mean squared error</a> against a target that has unit variance at every t, which keeps
+  the network's output scale the same across noise levels. Because a squared error is minimized by the conditional mean, the best
+  possible ε<sub>θ</sub> is E[ε | x<sub>t</sub>], equivalently the best guess of the clean data, E[x<sub>0</sub> | x<sub>t</sub>].
+</p>
+
+<h3 id="schedules">Noise schedules</h3>
+<p>
+  The original DDPM schedule is <strong>linear</strong>: β grows evenly from 10<sup>−4</sup> to 0.02 over T = 1000 steps. Nichol and
+  Dhariwal noticed that this destroys the signal too early: by the middle of the chain the image is already almost pure noise, so
+  many steps are spent where there is little to learn. Their <strong>cosine</strong> schedule defines ᾱ directly,
+</p>
+<div class="ml-formula">ᾱₜ = f(t) / f(0), f(t) = cos²( ((t/T + s) / (1 + s)) · π/2 ), s = {{ cfg.cosine_offset }}</div>
+<p>
+  with β<sub>t</sub> = 1 − ᾱ<sub>t</sub>/ᾱ<sub>t−1</sub> clipped at 0.999 so the last step is not exactly 1. The small offset s keeps
+  β tiny near t = 0. The cosine curve falls slowly at both ends and roughly linearly in between, so the SNR declines evenly. Later
+  work reparameterizes the schedule entirely by SNR, and models trained with one schedule can be sampled with different step
+  counts, which is where DDIM comes in.
+</p>
+
+<h3 id="ddpm-sampling">DDPM sampling</h3>
+<p>
+  To sample, draw x<sub>T</sub> ~ N(0, I) and apply the learned reverse step T times:
+</p>
+<div class="ml-formula">xₜ₋₁ = (1/√αₜ) · (xₜ − (βₜ / √(1 − ᾱₜ)) · ε_θ(xₜ, t)) + σₜ z, z ~ N(0, I), no noise at the last step</div>
+<p>
+  DDPM uses σ<sub>t</sub><sup>2</sup> = β<sub>t</sub> or β̃<sub>t</sub>, which the paper found to give similar results. Every
+  step injects fresh noise, so the sampler is stochastic and must take all T steps: the reverse Gaussians are only accurate when
+  each step is small. A thousand network evaluations per sample is the main cost of DDPM.
+</p>
+
+<h3 id="ddim-sampling">DDIM sampling</h3>
+<p>
+  Song, Meng and Ermon showed that the same trained network fits a whole family of non-Markovian forward processes that share the
+  marginals q(x<sub>t</sub> | x<sub>0</sub>), and the deterministic member of that family can skip steps. At each step, use the
+  predicted noise to estimate the clean data, then re-noise that estimate to an earlier, less noisy level t′ using the
+  <em>same</em> predicted noise:
+</p>
+<div class="ml-formula">x̂₀ = (xₜ − √(1 − ᾱₜ) · ε_θ(xₜ, t)) / √ᾱₜ, xₜ′ = √ᾱₜ′ · x̂₀ + √(1 − ᾱₜ′) · ε_θ(xₜ, t)</div>
+<p>
+  With no fresh noise, the map from x<sub>T</sub> to x<sub>0</sub> is deterministic: the same starting noise gives the same sample,
+  and nearby starting noises give similar samples, so the starting noise behaves like a latent code that can be interpolated. The
+  step sequence t, t′, … can be any decreasing subsequence of 1…T, often 20 to 100 steps, with no retraining. DDIM also has a knob η
+  that adds back a fraction of DDPM's noise; η = 0 is the deterministic sampler and η = 1 recovers DDPM. Many later samplers treat
+  this update as a step of an ordinary differential equation solver.
+</p>
+
+<h3 id="guidance">Classifier-free guidance</h3>
+<p>
+  A conditional model ε<sub>θ</sub>(x<sub>t</sub>, t, c) takes a class label or a text embedding c. To make samples follow c more
+  strongly, Ho and Salimans train one network to be both conditional and unconditional: during training, c is replaced by a null
+  token ∅ for a small random fraction of examples. At sampling time the network runs twice per step and the two predictions are
+  extrapolated:
+</p>
+<div class="ml-formula">ε̃ = (1 + w) · ε_θ(xₜ, t, c) − w · ε_θ(xₜ, t, ∅)</div>
+<p>
+  w = 0 is the plain conditional model. Larger w pushes away from what the unconditional model predicts, toward what is specific to
+  c. In score terms the guided model follows p(x<sub>t</sub> | c)<sup>1+w</sup> / p(x<sub>t</sub>)<sup>w</sup>, which is
+  proportional to p(x<sub>t</sub> | c) · p(c | x<sub>t</sub>)<sup>w</sup>: the conditional distribution sharpened by an implicit
+  classifier. Samples become more typical of c and less diverse. Many libraries write the same rule as
+  ε<sub>∅</sub> + s · (ε<sub>c</sub> − ε<sub>∅</sub>) with scale s = 1 + w, so a "guidance scale of 7.5" means w = 6.5.
+</p>
+
+<h3 id="latent-diffusion">Latent diffusion</h3>
+<p>
+  Running a large network a thousand times per sample over every pixel is expensive. Rombach and colleagues first train an
+  <a href="/ml-models/autoencoders">autoencoder</a> that compresses an image to a smaller latent, with a perceptual and adversarial
+  loss so that the decoded image keeps its detail, and then train the diffusion model on the latents instead of the pixels. Every
+  formula above is unchanged; x<sub>0</sub> is now the encoder's output, and the decoder runs once at the end. With a downsampling
+  factor of {{ cfg.latent.factor }} and {{ cfg.latent.latent_channels }} latent channels, a {{ cfg.latent.height }} ×
+  {{ cfg.latent.width }} RGB image becomes a {{ lat.latent_shape|join(" × ") }} latent, {{ n(lat.ratio, 0) }} times fewer values.
+  Text conditioning enters the denoiser through cross-<a href="/ml-models/attention">attention</a> from the latent to the text
+  encoder's token embeddings. This is the design of Stable Diffusion.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Schedule β, ᾱ</td><td>(T,), T = {{ cfg.steps }}; linear β from {{ cfg.beta_start }} to {{ cfg.beta_end }}</td><td>How much noise each step adds, and how much signal is left</td><td>DDPM paper; cosine: Improved DDPM paper</td></tr>
+      <tr><td><code>torch.linspace(start, end, steps)</code></td><td>(steps,)</td><td>The linear β schedule</td><td><a href="{{ src('torch/_torch_docs.py', 6241, 6287) }}">_torch_docs.py</a></td></tr>
+      <tr><td><code>torch.cumprod(input, dim, *, dtype=None, out=None)</code></td><td>same shape as input</td><td>ᾱ<sub>t</sub> as the running product of 1 − β</td><td><a href="{{ src('torch/_torch_docs.py', 3521, 3558) }}">_torch_docs.py</a></td></tr>
+      <tr><td><code>torch.randint(low=0, high, size, *, generator=None)</code></td><td>(B,) step indices</td><td>One random t per training example</td><td><a href="{{ src('torch/_torch_docs.py', 9392, 9438) }}">_torch_docs.py</a></td></tr>
+      <tr><td><code>torch.randn_like(input, *, generator=None, dtype=None)</code></td><td>same shape as x<sub>0</sub></td><td>The noise ε the network learns to predict</td><td><a href="{{ src('torch/_torch_docs.py', 9527, 9551) }}">_torch_docs.py</a></td></tr>
+      <tr><td><code>torch.randn(*size, *, generator=None)</code></td><td>(B, C, H, W)</td><td>The starting noise x<sub>T</sub> for sampling</td><td><a href="{{ src('torch/_torch_docs.py', 9471, 9525) }}">_torch_docs.py</a></td></tr>
+      <tr><td>Denoiser ε<sub>θ</sub>(x<sub>t</sub>, t, c)</td><td>output shaped like x<sub>t</sub></td><td>Predicts the added noise; usually a U-Net or a transformer, with t as an embedding</td><td>DDPM paper</td></tr>
+      <tr><td><code>F.mse_loss(input, target, reduction="mean", weight=None)</code></td><td>scalar</td><td>L<sub>simple</sub>: the squared error between predicted and true noise</td><td><a href="{{ src('torch/nn/functional.py', 4271, 4346) }}">functional.py</a></td></tr>
+      <tr><td><code>torch.manual_seed(seed)</code></td><td>returns a <code>torch.Generator</code></td><td>Seeds every device, so DDIM samples are reproducible from a seed</td><td><a href="{{ src('torch/random.py', 49, 59) }}">random.py</a></td></tr>
+      <tr><td><code>torch.random.fork_rng(devices=None, enabled=True)</code></td><td>context manager</td><td>Samples with a fixed seed without disturbing the global random state</td><td><a href="{{ src('torch/random.py', 157, 239) }}">random.py</a></td></tr>
+      <tr><td>Guidance weight w</td><td>scalar, often 1 to 10</td><td>Two network calls per step, mixed as (1 + w)ε<sub>c</sub> − wε<sub>∅</sub></td><td>Classifier-Free Guidance paper</td></tr>
+      <tr><td>Latent autoencoder</td><td>3 × {{ cfg.latent.height }} × {{ cfg.latent.width }} → {{ lat.latent_shape|join(" × ") }}</td><td>Diffusion runs on the latent; the decoder maps back once</td><td>Latent Diffusion paper</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="ml-caption">
+  PyTorch {{ pins.pytorch.tag }} has no diffusion modules; libraries such as Hugging Face Diffusers build schedulers and pipelines
+  from these tensor and random-number operations.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  All numbers use T = {{ cfg.steps }} steps. The schedule part follows one data value x<sub>0</sub> = {{ n(cfg.x0, 0) }} and one
+  noise draw ε = {{ cfg.eps }}. The sampling part uses a dataset small enough that the perfect denoiser can be written in closed
+  form, so every sample below is what an ideally trained network would produce.
+</p>
+
+<div class="ml-worked">
+  <h3 id="worked-schedule">Two schedules, side by side</h3>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>t</th><th>β<sub>t</sub> (linear)</th><th>ᾱ<sub>t</sub> linear</th><th>ᾱ<sub>t</sub> cosine</th><th>SNR linear</th><th>SNR cosine</th><th>x<sub>t</sub> (linear)</th><th>ELBO weight</th></tr></thead>
+      <tbody>
+        {% for r in ex.schedule %}
+          <tr><td>{{ r.t }}</td><td>{{ n(r.beta, 6) }}</td><td>{{ "%.4g"|format(r.linear) }}</td><td>{{ "%.4g"|format(r.cosine) }}</td><td>{{ "%.4g"|format(r.snr_linear) }}</td><td>{{ "%.4g"|format(r.snr_cosine) }}</td><td>{{ n(r.xt, 4) }}</td><td>{% if r.weight is none %}L₀ term{% else %}{{ n(r.weight, 4) }}{% endif %}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Under the linear schedule the SNR falls below 1 just after t = 250 and is {{ n(mid.snr_linear, 3) }} at t = 500: the second
+    half of the chain is almost all noise. The cosine schedule keeps the SNR at {{ n(mid.snr_cosine, 3) }} at t = 500, close to an
+    even split. Both end near pure noise: ᾱ<sub>1000</sub> is {{ "%.3g"|format(ex.schedule[-1].linear) }} for linear and
+    {{ "%.3g"|format(ex.schedule[-1].cosine) }} for cosine.
+  </p>
+  <p>
+    The x<sub>t</sub> column is √ᾱ<sub>t</sub> · 1 + √(1 − ᾱ<sub>t</sub>) · ({{ cfg.eps }}). At t = 500 that is
+    √{{ n(mid.linear, 4) }} − 0.5 · √{{ n(1 - mid.linear, 4) }} = {{ n(mid.xt, 4) }}: the value has crossed zero and is mostly the
+    noise. To check the closed form, running all {{ cfg.steps }} one-step updates on the mean and variance gives mean
+    {{ n(it.mean, 6) }} and variance {{ n(it.variance, 6) }}; the closed form gives √ᾱ<sub>1000</sub> = {{ n(it.closed_mean, 6) }}
+    and 1 − ᾱ<sub>1000</sub> = {{ n(it.closed_variance, 6) }}.
+  </p>
+  <p>
+    The last column is the ELBO weight β<sub>t</sub><sup>2</sup>/(2σ<sub>t</sub><sup>2</sup>α<sub>t</sub>(1 − ᾱ<sub>t</sub>)) with
+    σ<sub>t</sub><sup>2</sup> = β<sub>t</sub>. It is {{ n(ex.schedule[1].weight, 4) }} at t = 10 and about
+    {{ n(ex.schedule[4].weight, 4) }} at t = 250, so the true ELBO counts the near-clean steps over ten times as much as the middle
+    ones. L<sub>simple</sub> replaces every weight by 1.
+  </p>
+</div>
+
+{% set px0 = 80 %}
+{% set py0 = 260 %}
+{% set pw = 560 %}
+{% set ph = 220 %}
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 320" role="img" aria-labelledby="diff-sched-title diff-sched-desc">
+    <title id="diff-sched-title">ᾱ over the chain for the linear and cosine schedules</title>
+    <desc id="diff-sched-desc">
+      The step t from 0 to {{ cfg.steps }} on the horizontal axis and ᾱ t, the fraction of signal variance left, from 0 to 1 on the
+      vertical axis. Both curves start at 1. The linear schedule's curve drops fast, passing {{ n(ex.schedule[4].linear) }} at t = 250
+      and {{ n(mid.linear) }} at t = 500, and is near zero for the whole second half. The cosine schedule's curve falls slowly at
+      first, passes {{ n(mid.cosine) }} at t = 500, and reaches zero only at the very end.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      <line x1="{{ px0 }}" y1="{{ py0 }}" x2="{{ px0 + pw }}" y2="{{ py0 }}" class="d-line"></line>
+      <line x1="{{ px0 }}" y1="{{ py0 }}" x2="{{ px0 }}" y2="{{ py0 - ph }}" class="d-line"></line>
+      {% for t in [0, 250, 500, 750, 1000] %}
+        <text x="{{ px0 + t / cfg.steps * pw }}" y="{{ py0 + 16 }}" class="d-muted">{{ t }}</text>
+      {% endfor %}
+      {% for v in [0, 0.5, 1] %}
+        <text x="{{ px0 - 8 }}" y="{{ py0 - v * ph + 4 }}" text-anchor="end" class="d-muted">{{ v }}</text>
+      {% endfor %}
+      <line x1="{{ px0 }}" y1="{{ py0 - 0.5 * ph }}" x2="{{ px0 + pw }}" y2="{{ py0 - 0.5 * ph }}" class="d-line ml-dashed"></line>
+      <text x="{{ px0 + pw / 2 }}" y="{{ py0 + 34 }}" class="d-muted">step t</text>
+      <text x="{{ px0 - 40 }}" y="{{ py0 - ph / 2 }}" class="d-muted" transform="rotate(-90 {{ px0 - 40 }} {{ py0 - ph / 2 }})">ᾱₜ (signal left)</text>
+      <polyline fill="none" class="d-line" style="stroke:var(--jj-amber);stroke-width:2" points="{% for c in ex.curve %}{{ "%.1f,%.1f"|format(px0 + c.t / cfg.steps * pw, py0 - c.linear * ph) }} {% endfor %}"></polyline>
+      <polyline fill="none" class="d-line" style="stroke:var(--jj-accent);stroke-width:2" points="{% for c in ex.curve %}{{ "%.1f,%.1f"|format(px0 + c.t / cfg.steps * pw, py0 - c.cosine * ph) }} {% endfor %}"></polyline>
+      <g text-anchor="start">
+        <line x1="470" y1="60" x2="500" y2="60" class="d-line" style="stroke:var(--jj-amber);stroke-width:2"></line>
+        <text x="508" y="64">linear β, {{ cfg.beta_start }} → {{ cfg.beta_end }}</text>
+        <line x1="470" y1="84" x2="500" y2="84" class="d-line" style="stroke:var(--jj-accent);stroke-width:2"></line>
+        <text x="508" y="88">cosine, s = {{ cfg.cosine_offset }}</text>
+        <text x="{{ px0 + 0.5 * pw + 6 }}" y="{{ py0 - mid.linear * ph - 6 }}" class="d-muted">{{ n(mid.linear, 3) }}</text>
+        <text x="{{ px0 + 0.5 * pw + 6 }}" y="{{ py0 - mid.cosine * ph - 6 }}" class="d-muted">{{ n(mid.cosine, 3) }}</text>
+      </g>
+    </g>
+  </svg>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-posterior">One posterior step, two ways</h3>
+  <p>
+    At t = {{ post.t }} with the linear schedule, x<sub>t</sub> = {{ n(post.xt, 4) }} from x<sub>0</sub> = 1 and ε = {{ cfg.eps }}.
+    The posterior coefficients are √ᾱ<sub>t−1</sub>β<sub>t</sub>/(1 − ᾱ<sub>t</sub>) = {{ n(post.coef_x0, 5) }} on x<sub>0</sub> and
+    √α<sub>t</sub>(1 − ᾱ<sub>t−1</sub>)/(1 − ᾱ<sub>t</sub>) = {{ n(post.coef_xt, 5) }} on x<sub>t</sub>, so
+  </p>
+  <div class="ml-formula">μ̃ = {{ n(post.coef_x0, 5) }} · 1 + {{ n(post.coef_xt, 5) }} · ({{ n(post.xt, 5) }}) = {{ n(post.mean, 5) }}</div>
+  <p>
+    The ε form, (x<sub>t</sub> − β<sub>t</sub>/√(1 − ᾱ<sub>t</sub>) · ε)/√α<sub>t</sub>, gives {{ n(post.eps_mean, 5) }}, the same
+    number. A network that predicts ε exactly therefore lands on the true posterior mean. The posterior variance β̃<sub>t</sub> =
+    {{ n(post.variance, 6) }} is just under β<sub>t</sub> = {{ n(mid.beta, 6) }}, which is why DDPM found the two choices of
+    σ<sub>t</sub><sup>2</sup> nearly interchangeable for T = 1000.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-denoiser">A dataset with an exact denoiser</h3>
+  <p>
+    Let the data be x<sub>0</sub> = −1 or +1 with equal probability. Given x<sub>t</sub>, Bayes' rule on the two Gaussians
+    N(±√ᾱ<sub>t</sub>, 1 − ᾱ<sub>t</sub>) gives log odds 2√ᾱ<sub>t</sub>x<sub>t</sub>/(1 − ᾱ<sub>t</sub>) for +1, so the best
+    possible prediction of the clean value is
+  </p>
+  <div class="ml-formula">E[x₀ | xₜ] = tanh(√ᾱₜ · xₜ / (1 − ᾱₜ)), ε̂ = (xₜ − √ᾱₜ · E[x₀ | xₜ]) / √(1 − ᾱₜ)</div>
+  <p>
+    This is exactly what minimizing L<sub>simple</sub> converges to with unlimited capacity and data. For a noisy value
+    x<sub>t</sub> = 0.5 at different steps:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>t</th><th>ᾱ<sub>t</sub></th><th>E[x<sub>0</sub> | x<sub>t</sub> = 0.5]</th><th>ε̂</th></tr></thead>
+      <tbody>
+        {% for d in ex.denoise %}
+          <tr><td>{{ d.t }}</td><td>{{ "%.4g"|format(d.alpha_bar) }}</td><td>{{ n(d.x0_hat, 4) }}</td><td>{{ n(d.eps_hat, 4) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    At t = 1000 the value says almost nothing about the data, so the best guess of x<sub>0</sub> is near the data mean 0 and the
+    predicted noise is the whole value. By t = 100 the guess is {{ n(ex.denoise[-1].x0_hat, 4) }}: the value 0.5 is far closer to
+    √ᾱ<sub>t</sub> · 1 than to −√ᾱ<sub>t</sub>. The prediction is a blurry average at high noise and sharpens as t falls, which is
+    the coarse-to-fine behaviour of real image diffusion.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-ddpm">DDPM: a thousand stochastic steps</h3>
+  <p>
+    Running the DDPM sampler with this exact ε̂ and σ<sub>t</sub><sup>2</sup> = β<sub>t</sub>, from {{ ex.ddpm.count }} draws of
+    x<sub>T</sub> ~ N(0, 1) with seed {{ cfg.ddpm_seed }}, puts {{ pct(ex.ddpm.plus) }} of the samples at +1 and the rest at −1,
+    every one within {{ "%.0e"|format(ex.ddpm.max_error) }} of a data point. The model reproduces the data distribution, at the cost
+    of {{ cfg.steps }} network calls per sample.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-ddim">DDIM: ten deterministic steps</h3>
+  <p>
+    DDIM with {{ ddim10.count }} steps visits t = {% for t in ddim10.timesteps %}{{ t + 1 }}{% if not loop.last %}, {% endif %}{% endfor %},
+    then jumps to clean data. Five starting values, each run once:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>x<sub>T</sub></th><th>after 5 steps</th><th>after 9 steps</th><th>{{ ddim10.count }}-step result</th><th>{{ ddim50.count }}-step result</th></tr></thead>
+      <tbody>
+        {% for p in ddim10.paths %}
+          <tr><td>{{ n(p[0], 1) }}</td><td>{{ n(p[5], 4) }}</td><td>{{ n(p[9], 4) }}</td><td>{{ n(p[-1], 6) }}</td><td>{{ n(ddim50.paths[loop.index0][-1], 6) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Each start lands on the data point on its own side, within 10<sup>−5</sup> after only {{ ddim10.count }} network calls, and the
+    same start always gives the same result. The paths hardly move for most of the steps, while the noise still dominates, and
+    commit only in the last few. The start x<sub>T</sub> = 0 sits exactly on the boundary between the two modes and stays at 0, the
+    average of the data, which is not a data point; that start has probability zero, but in high dimensions the same averaging is
+    what makes samplers with too few steps blurry.
+  </p>
+</div>
+
+{% set gx0 = 80 %}
+{% set gy0 = 160 %}
+{% set gw = 520 %}
+{% set gs = 70 %}
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 320" role="img" aria-labelledby="diff-ddim-title diff-ddim-desc">
+    <title id="diff-ddim-title">Ten-step DDIM trajectories</title>
+    <desc id="diff-ddim-desc">
+      The DDIM step from 0 to {{ ddim10.count }} on the horizontal axis and the value from −1.5 to 1.5 on the vertical axis, with dashed
+      lines at the data points −1 and +1. Five trajectories start at −1.5, −0.5, 0, 0.5 and 1.5. The ones starting at ±1.5 and ±0.5
+      stay almost flat for six steps, then bend in the last three or four steps onto the data point on their own side, ±0.5 first dipping
+      slightly toward zero. The trajectory starting at 0 stays at 0.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      <line x1="{{ gx0 }}" y1="{{ gy0 + 1.6 * gs }}" x2="{{ gx0 + gw }}" y2="{{ gy0 + 1.6 * gs }}" class="d-line"></line>
+      <line x1="{{ gx0 }}" y1="{{ gy0 + 1.6 * gs }}" x2="{{ gx0 }}" y2="{{ gy0 - 1.6 * gs }}" class="d-line"></line>
+      {% for v in [-1, 1] %}
+        <line x1="{{ gx0 }}" y1="{{ gy0 - v * gs }}" x2="{{ gx0 + gw }}" y2="{{ gy0 - v * gs }}" class="d-line ml-dashed"></line>
+      {% endfor %}
+      {% for v in [-1.5, -1, 0, 1, 1.5] %}
+        <text x="{{ gx0 - 8 }}" y="{{ gy0 - v * gs + 4 }}" text-anchor="end" class="d-muted">{{ v }}</text>
+      {% endfor %}
+      {% for k in range(ddim10.count + 1) %}
+        <text x="{{ gx0 + k / ddim10.count * gw }}" y="{{ gy0 + 1.6 * gs + 16 }}" class="d-muted">{{ k }}</text>
+      {% endfor %}
+      <text x="{{ gx0 + gw / 2 }}" y="{{ gy0 + 1.6 * gs + 34 }}" class="d-muted">DDIM step (t = 1000 → clean)</text>
+      {% for p in ddim10.paths %}
+        <polyline fill="none" class="d-line" style="stroke:var(--jj-accent);stroke-width:2" points="{% for v in p %}{{ "%.1f,%.1f"|format(gx0 + loop.index0 / ddim10.count * gw, gy0 - v * gs) }} {% endfor %}"></polyline>
+        <circle cx="{{ gx0 }}" cy="{{ "%.1f"|format(gy0 - p[0] * gs) }}" r="3.5" style="fill:var(--jj-amber)"></circle>
+        <circle cx="{{ gx0 + gw }}" cy="{{ "%.1f"|format(gy0 - p[-1] * gs) }}" r="3.5" style="fill:var(--jj-accent)"></circle>
+      {% endfor %}
+      <g text-anchor="start">
+        <text x="{{ gx0 + gw + 12 }}" y="{{ gy0 - gs + 4 }}">data +1</text>
+        <text x="{{ gx0 + gw + 12 }}" y="{{ gy0 + 4 }}" class="d-muted">boundary</text>
+        <text x="{{ gx0 + gw + 12 }}" y="{{ gy0 + gs + 4 }}">data −1</text>
+      </g>
+    </g>
+  </svg>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-guidance">Guidance on a biased condition</h3>
+  <p>
+    Add a condition c whose data is +1 with probability {{ cfg.prior_plus }} and −1 otherwise; the unconditional data stays 50/50.
+    Both exact denoisers are known (the conditional one adds ½ log({{ cfg.prior_plus }}/{{ n(1 - cfg.prior_plus, 1) }}) inside the
+    tanh). Each row runs {{ cfg.grid }} evenly spread quantiles of N(0, 1) through {{ ddim50.count }}-step DDIM with the guided
+    ε̃ = (1 + w)ε<sub>c</sub> − wε<sub>∅</sub>:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>w</th><th>scale 1 + w</th><th>samples at +1</th><th>mean sample</th><th>p<sub>c</sub><sup>1+w</sup>/p<sub>∅</sub><sup>w</sup>, normalized</th></tr></thead>
+      <tbody>
+        {% for g in ex.guidance %}
+          <tr><td>{{ n(g.weight, 0) }}</td><td>{{ n(g.scale, 0) }}</td><td>{{ pct(g.plus, 2) }}</td><td>{{ n(g.mean, 3) }}</td><td>{{ pct(g.tilt) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Without guidance the samples follow the condition's own {{ pct(cfg.prior_plus, 0) }}. With w = 1 they are
+    {{ pct(ex.guidance[1].plus, 2) }} at +1 and with w = 3 {{ pct(ex.guidance[2].plus, 2) }}, close to the sharpened distribution
+    p<sub>c</sub><sup>1+w</sup>/p<sub>∅</sub><sup>w</sup> in the last column. Guidance has not produced better samples of the
+    condition; it has produced samples that are more of the condition than the condition's data is. On images that shows up as
+    cleaner, more prototypical pictures with less variety, and at high w as oversaturated colours.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-latent">How much latent diffusion saves</h3>
+  <p>
+    A {{ cfg.latent.height }} × {{ cfg.latent.width }} × {{ cfg.latent.channels }} image has {{ "{:,}".format(lat.pixels) }} values.
+    With downsampling factor {{ cfg.latent.factor }} and {{ cfg.latent.latent_channels }} channels the latent is
+    {{ lat.latent_shape|join(" × ") }} = {{ "{:,}".format(lat.latents) }} values, {{ n(lat.ratio, 0) }} times fewer, and every one of
+    the denoiser's tens of calls per sample runs at that size. Self-attention, which costs the square of the number of positions,
+    gains more still: 64 × 64 = 4,096 positions instead of 262,144.
+  </p>
+</div>
+
+<details class="ml-quiz">
+  <summary>Why can training sample a random t for each example instead of running the chain?</summary>
+  <p>Because q(x<sub>t</sub> | x<sub>0</sub>) is a single Gaussian with mean √ᾱ<sub>t</sub>x<sub>0</sub> and variance 1 − ᾱ<sub>t</sub>.
+    One draw of ε gives x<sub>t</sub> for any t directly, and the loss for that t is one term of the ELBO's sum, so a random t per example
+    is an unbiased estimate of the whole sum.</p>
+</details>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  Training with label dropout for guidance, and a guided DDIM sampler, for any denoiser called as
+  <code>model(x, t, labels)</code>. Labels are class indices, with one extra index reserved as the null label ∅.
+</p>
+<pre><code>import torch
+import torch.nn.functional as F
+
+T = 1000
+betas = torch.linspace(1e-4, 0.02, T)
+alpha_bars = torch.cumprod(1 - betas, dim=0)
+
+def training_loss(model, x0, labels, null_label, p_uncond=0.1):
+    t = torch.randint(0, T, (x0.size(0),))
+    eps = torch.randn_like(x0)
+    ab = alpha_bars[t].view(-1, *[1] * (x0.dim() - 1))       # broadcast over C, H, W
+    xt = ab.sqrt() * x0 + (1 - ab).sqrt() * eps
+    drop = torch.rand(x0.size(0)) &lt; p_uncond                 # train the unconditional model too
+    labels = torch.where(drop, torch.full_like(labels, null_label), labels)
+    return F.mse_loss(model(xt, t, labels), eps)
+
+@torch.no_grad()
+def ddim_sample(model, shape, labels, null_label, steps=50, w=3.0, generator=None):
+    ts = list(range(T - 1, -1, -(T // steps)))[:steps]
+    x = torch.randn(shape, generator=generator)
+    null = torch.full_like(labels, null_label)
+    for k, t in enumerate(ts):
+        ab = alpha_bars[t]
+        ab_next = alpha_bars[ts[k + 1]] if k + 1 &lt; len(ts) else torch.tensor(1.0)
+        tt = torch.full((shape[0],), t)
+        eps = (1 + w) * model(x, tt, labels) - w * model(x, tt, null)
+        x0_hat = (x - (1 - ab).sqrt() * eps) / ab.sqrt()
+        x = ab_next.sqrt() * x0_hat + (1 - ab_next).sqrt() * eps
+    return x</code></pre>
+<p>
+  Indices here run from 0 to T − 1, one less than the page's t. Real samplers usually clip x̂<sub>0</sub> to the data range or
+  rescale it, batch the conditional and unconditional calls into one forward pass of twice the batch, and pass a
+  <code>torch.Generator</code> so a seed reproduces a sample. The <code>T // steps</code> stride is one of several spacings;
+  libraries also offer evenly spaced and "trailing" spacings that include t = T exactly. Some models predict
+  v = √ᾱ<sub>t</sub>ε − √(1 − ᾱ<sub>t</sub>)x<sub>0</sub> instead of ε (Salimans and Ho's progressive distillation), which behaves
+  better when SNR is near zero; the sampler converts it back to ε and x̂<sub>0</sub>.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Versus GANs and VAEs.</strong> Diffusion trains with one stable regression loss and covers all the modes of the data;
+    GANs train adversarially and can drop modes but sample in one pass; VAEs sample in one pass and give a likelihood bound but are
+    blurrier. Diffusion pays with tens to a thousand network calls per sample.</li>
+  <li><strong>DDPM vs DDIM.</strong> DDPM's injected noise can correct earlier errors and gives the best quality at many steps;
+    DDIM is deterministic, reproducible, invertible to a latent and good at 20 to 100 steps, but degrades faster at very few
+    steps. Distillation and consistency models push to a handful of steps by training a new network.</li>
+  <li><strong>Schedule.</strong> Linear is the original and fine at 1000 steps; cosine spends steps more evenly and helps at low
+    resolution and with few sampling steps. At high resolution the same schedule leaves more signal (neighbouring pixels share it),
+    so large models shift the schedule toward more noise.</li>
+  <li><strong>Guidance strength.</strong> Higher w gives samples that match the prompt better and look cleaner, at the cost of
+    diversity and, at high w, saturation and artifacts. It doubles the cost of every step.</li>
+  <li><strong>Pixel vs latent.</strong> Latent diffusion is many times cheaper and is the default for large images, but the
+    autoencoder caps fine detail such as small text and faces, and is one more model to train.</li>
+  <li><strong>Likelihood.</strong> L<sub>simple</sub> gives better samples than the true ELBO; models trained for likelihood need
+    the weights back, learned variances or a different parameterization.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Your DDIM sampler gives the same image every time for the same prompt. Bug?</summary>
+  <p>No: with η = 0 DDIM is deterministic given x<sub>T</sub>, so the same seed gives the same image. Variety comes from the starting
+    noise; draw a fresh x<sub>T</sub> (a new seed) for each sample.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does classifier-free guidance need label dropout during training?</summary>
+  <p>The guided prediction needs an unconditional ε<sub>θ</sub>(x<sub>t</sub>, t, ∅) as well as the conditional one. Dropping the label
+    for a fraction of examples trains the same network to make both predictions, so no separate unconditional model or classifier
+    is needed.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Training loss is flat and low but samples are pure noise. What is a likely cause?</summary>
+  <p>A mismatch between training and sampling: a different schedule, t indexed from 0 in one place and 1 in the other, or a model
+    trained to predict x<sub>0</sub> or v used as if it predicted ε. The noise-prediction loss can look healthy while the sampler
+    applies the wrong formula at every step.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Ho, Jain and Abbeel. <em>Denoising Diffusion Probabilistic Models.</em> NeurIPS 2020.
+    <a href="https://arxiv.org/abs/2006.11239">arXiv:2006.11239</a></li>
+  <li>Song, Meng and Ermon. <em>Denoising Diffusion Implicit Models.</em> ICLR 2021.
+    <a href="https://arxiv.org/abs/2010.02502">arXiv:2010.02502</a></li>
+  <li>Ho and Salimans. <em>Classifier-Free Diffusion Guidance.</em> 2022.
+    <a href="https://arxiv.org/abs/2207.12598">arXiv:2207.12598</a></li>
+  <li>Nichol and Dhariwal. <em>Improved Denoising Diffusion Probabilistic Models.</em> ICML 2021.
+    <a href="https://arxiv.org/abs/2102.09672">arXiv:2102.09672</a></li>
+  <li>Rombach, Blattmann, Lorenz, Esser and Ommer. <em>High-Resolution Image Synthesis with Latent Diffusion Models.</em> CVPR 2022.
+    <a href="https://arxiv.org/abs/2112.10752">arXiv:2112.10752</a></li>
+  <li>Sohl-Dickstein, Weiss, Maheswaranathan and Ganguli. <em>Deep Unsupervised Learning using Nonequilibrium Thermodynamics.</em>
+    ICML 2015. <a href="https://arxiv.org/abs/1503.03585">arXiv:1503.03585</a></li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/nn/functional.py', 4271, 4346) }}"><code>F.mse_loss</code></a>,
+    <a href="{{ src('torch/_torch_docs.py', 9527, 9551) }}"><code>torch.randn_like</code></a>,
+    <a href="{{ src('torch/_torch_docs.py', 3521, 3558) }}"><code>torch.cumprod</code></a>,
+    <a href="{{ src('torch/random.py', 49, 59) }}"><code>torch.manual_seed</code></a>,
+    <a href="{{ src('torch/random.py', 157, 239) }}"><code>torch.random.fork_rng</code></a>.</li>
+</ul>

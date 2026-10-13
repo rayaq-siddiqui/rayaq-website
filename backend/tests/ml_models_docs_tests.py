@@ -4247,6 +4247,9 @@ def test_diffusion_schedules_match_the_ddpm_endpoints_and_decrease():
         assert bars[-1] < 1e-4
     rows = ml_models_docs.diffusion_example()["schedule"]
     assert all(r["cosine"] > r["linear"] for r in rows[1:-1])
+    curve = ml_models_docs.diffusion_example()["curve"]
+    assert curve[0] == {"t": 0, "linear": 1.0, "cosine": 1.0} and curve[-1]["t"] == 1000
+    assert curve[-1]["linear"] == pytest.approx(rows[-1]["linear"])
 
 
 def test_diffusion_closed_form_matches_iterating_the_one_step_noise():
@@ -4300,3 +4303,10 @@ def test_latent_diffusion_compresses_a_512_image_48_times():
 
     assert latent["latent_shape"] == [4, 64, 64]
     assert latent["ratio"] == 48
+
+
+def test_guidance_tilt_tracks_the_guided_sampler():
+    assert ml_models_docs.guidance_tilt(0.7, 0.5, 0.0) == pytest.approx(0.7)
+    assert ml_models_docs.guidance_tilt(0.7, 0.5, 1.0) == pytest.approx(0.49 / 0.58)
+    for row in ml_models_docs.diffusion_example()["guidance"]:
+        assert row["plus"] == pytest.approx(row["tilt"], abs=0.01)
