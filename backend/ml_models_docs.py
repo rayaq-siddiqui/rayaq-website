@@ -10855,6 +10855,132 @@ def collab_example():
     }
 
 
+GRAD_ACCUM_EXAMPLE = {
+    "params": (0.5, 0.0),
+    "sequences": (
+        ((1.0, 2.2), (2.0, 4.1)),
+        ((3.0, 5.8), (1.0, 1.9), (2.0, 4.3), (4.0, 8.2), (0.5, 0.9), (3.0, 6.1)),
+        ((2.0, 3.8),),
+        ((1.0, 2.0), (4.0, 7.9), (2.5, 5.2)),
+        ((3.5, 7.1), (1.5, 2.8), (2.0, 4.0), (0.5, 1.2), (3.0, 5.9)),
+        ((1.0, 2.3), (2.0, 3.9)),
+        ((4.0, 8.1), (2.0, 4.2), (1.0, 1.8), (3.0, 6.0)),
+        ((2.5, 4.9),),
+    ),
+    "micro_batch": 2,
+    "max_norm": 10.0,
+    "bn_feature": (1.0, 3.0, 2.0, 6.0, 4.0, 0.0, 5.0, 3.0),
+    "bn_momentum": 0.1,
+    "ddp": {"params": 1.3e9, "bytes": 4, "world": 8, "accum": 8, "micro_batch": 4, "seq_len": 2048},
+}
+
+
+def ga_token_grad(params, token):
+    w, b = params
+    x, y = token
+    err = w * x + b - y
+    return 0.5 * err * err, (err * x, err)
+
+
+def ga_sum(params, sequences):
+    loss, gw, gb, count = 0.0, 0.0, 0.0, 0
+    for seq in sequences:
+        for token in seq:
+            l, (dw, db) = ga_token_grad(params, token)
+            loss, gw, gb, count = loss + l, gw + dw, gb + db, count + 1
+    return {"loss": loss, "grad": (gw, gb), "tokens": count}
+
+
+def ga_micro_batches(sequences, size):
+    return [sequences[i:i + size] for i in range(0, len(sequences), size)]
+
+
+def ga_accumulate(params, sequences, size, normalize):
+    micro = ga_micro_batches(sequences, size)
+    total_tokens = sum(len(seq) for seq in sequences)
+    loss, gw, gb, rows = 0.0, 0.0, 0.0, []
+    for batch in micro:
+        part = ga_sum(params, batch)
+        if normalize == "per_micro_mean":
+            scale = 1 / (part["tokens"] * len(micro))
+        elif normalize == "total_tokens":
+            scale = 1 / total_tokens
+        elif normalize == "none":
+            scale = 1 / part["tokens"]
+        else:
+            raise ValueError(normalize)
+        loss += part["loss"] * scale
+        gw += part["grad"][0] * scale
+        gb += part["grad"][1] * scale
+        rows.append({"tokens": part["tokens"], "scale": scale,
+                     "grad": (part["grad"][0] * scale, part["grad"][1] * scale)})
+    return {"loss": loss, "grad": (gw, gb), "micro": rows}
+
+
+def ga_clip_comparison(params, sequences, size, max_norm):
+    acc = ga_accumulate(params, sequences, size, "total_tokens")
+    after = clip_by_global_norm(list(acc["grad"]), max_norm)
+    gw, gb = 0.0, 0.0
+    each = []
+    for row in acc["micro"]:
+        k = len(acc["micro"])
+        clipped = clip_by_global_norm([g * k for g in row["grad"]], max_norm)
+        each.append(clipped)
+        gw += clipped["grads"][0] / k
+        gb += clipped["grads"][1] / k
+    return {"after": after, "per_micro": each, "per_micro_grad": (gw, gb)}
+
+
+def ga_batch_norm_stats(feature, size, momentum):
+    full = {"mean": _mean(feature), "var": _variance(feature)}
+    micro = []
+    for i in range(0, len(feature), size):
+        chunk = feature[i:i + size]
+        micro.append({"values": list(chunk), "mean": _mean(chunk), "var": _variance(chunk)})
+    running_once = running_stats_update(0.0, 1.0, list(feature), momentum)
+    mean, var = 0.0, 1.0
+    for row in micro:
+        mean, var = running_stats_update(mean, var, row["values"], momentum)
+    return {
+        "full": full,
+        "micro": micro,
+        "running_once": running_once,
+        "running_micro": (mean, var),
+        "effective_momentum": 1 - (1 - momentum) ** len(micro),
+    }
+
+
+def ga_allreduce_bytes(params, bytes_per, world, accum, no_sync):
+    payload = params * bytes_per
+    per_reduce = 2 * (world - 1) / world * payload
+    reduces = 1 if no_sync else accum
+    return {"payload": payload, "per_reduce": per_reduce, "reduces": reduces, "total": per_reduce * reduces}
+
+
+@functools.lru_cache(maxsize=None)
+def accumulation_example():
+    e = GRAD_ACCUM_EXAMPLE
+    params, seqs, size = e["params"], e["sequences"], e["micro_batch"]
+    full = ga_sum(params, seqs)
+    full_mean = {"loss": full["loss"] / full["tokens"],
+                 "grad": tuple(g / full["tokens"] for g in full["grad"]), "tokens": full["tokens"]}
+    d = e["ddp"]
+    return {
+        "sequences": seqs,
+        "lengths": [len(s) for s in seqs],
+        "full": full_mean,
+        "naive": ga_accumulate(params, seqs, size, "per_micro_mean"),
+        "exact": ga_accumulate(params, seqs, size, "total_tokens"),
+        "unscaled": ga_accumulate(params, seqs, size, "none"),
+        "clip": ga_clip_comparison(params, seqs, size, e["max_norm"]),
+        "bn": ga_batch_norm_stats(e["bn_feature"], size, e["bn_momentum"]),
+        "ddp_every": ga_allreduce_bytes(d["params"], d["bytes"], d["world"], d["accum"], False),
+        "ddp_no_sync": ga_allreduce_bytes(d["params"], d["bytes"], d["world"], d["accum"], True),
+        "global_batch": d["micro_batch"] * d["accum"] * d["world"],
+        "global_tokens": d["micro_batch"] * d["accum"] * d["world"] * d["seq_len"],
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -10887,6 +11013,7 @@ def render(slug, render_template):
         "encoder_example": encoder_example,
         "ltr_example": ltr_example,
         "collab_example": collab_example,
+        "accumulation_example": accumulation_example,
         "data_example": data_example,
         "serving_example": serving_example,
         "causal_example": causal_example,

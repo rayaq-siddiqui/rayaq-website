@@ -4427,3 +4427,48 @@ def test_implicit_confidence_and_factor_table_size():
     assert ex["scale_params"] == 70_400_000
     assert ex["scale_bytes"] == pytest.approx(281.6e6)
     assert ex["scale_cells"] / ex["scale_params"] > 1000
+
+
+def test_accumulating_summed_losses_over_total_tokens_matches_the_full_batch():
+    ex = ml_models_docs.accumulation_example()
+    assert ex["full"]["tokens"] == sum(ex["lengths"]) == 24
+    assert ex["exact"]["grad"] == pytest.approx(ex["full"]["grad"])
+    assert ex["exact"]["loss"] == pytest.approx(ex["full"]["loss"])
+    assert [m["tokens"] for m in ex["exact"]["micro"]] == [8, 4, 7, 5]
+    assert ex["naive"]["grad"][0] != pytest.approx(ex["full"]["grad"][0], rel=1e-3)
+    assert ex["unscaled"]["grad"] == pytest.approx([4 * g for g in ex["naive"]["grad"]])
+
+
+def test_equal_token_micro_batches_make_the_naive_average_exact():
+    params = ml_models_docs.GRAD_ACCUM_EXAMPLE["params"]
+    seqs = [((1.0, 2.0), (2.0, 3.0)), ((3.0, 7.0), (0.5, 1.0)), ((2.0, 5.0), (1.0, 1.0))]
+    full = ml_models_docs.ga_sum(params, seqs)
+    naive = ml_models_docs.ga_accumulate(params, seqs, 1, "per_micro_mean")
+    assert naive["grad"] == pytest.approx([g / full["tokens"] for g in full["grad"]])
+
+
+def test_clipping_must_wait_for_the_last_micro_batch():
+    ex = ml_models_docs.accumulation_example()
+    clip = ex["clip"]
+    assert not clip["after"]["clipped"]
+    assert clip["after"]["grads"] == pytest.approx(list(ex["full"]["grad"]))
+    assert [c["clipped"] for c in clip["per_micro"]] == [True, False, False, False]
+    assert math.hypot(*clip["per_micro_grad"]) < clip["after"]["total_norm"]
+
+
+def test_batch_norm_sees_micro_batch_statistics_and_updates_running_stats_k_times():
+    bn = ml_models_docs.accumulation_example()["bn"]
+    assert bn["full"] == {"mean": 3.0, "var": 3.5}
+    assert [m["mean"] for m in bn["micro"]] == [2.0, 4.0, 2.0, 4.0]
+    assert bn["running_once"][0] == pytest.approx(0.3)
+    assert bn["effective_momentum"] == pytest.approx(1 - 0.9 ** 4)
+    assert bn["running_micro"][0] > bn["running_once"][0]
+
+
+def test_no_sync_cuts_all_reduce_traffic_by_the_accumulation_factor():
+    ex = ml_models_docs.accumulation_example()
+    every, once = ex["ddp_every"], ex["ddp_no_sync"]
+    assert every["payload"] == pytest.approx(5.2e9)
+    assert every["per_reduce"] == pytest.approx(2 * 7 / 8 * 5.2e9)
+    assert every["total"] == pytest.approx(8 * once["total"])
+    assert ex["global_batch"] == 256 and ex["global_tokens"] == 524_288
