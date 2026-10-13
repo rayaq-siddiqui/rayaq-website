@@ -1246,7 +1246,7 @@ PAGES = [
             "pytorch:torch/export/__init__.py",
             "pytorch:torch/serialization.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "latency-and-throughput",

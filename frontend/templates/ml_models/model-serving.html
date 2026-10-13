@@ -1,0 +1,563 @@
+{% set ex = serving_example() %}
+{% set cfg = ex.example %}
+{% set st = ex.static %}
+{% set co = ex.continuous %}
+{% macro n(x, d=1) -%}{{ ("%." ~ d ~ "f")|format(x) }}{%- endmacro %}
+{% macro pct(x) -%}{{ "%.0f"|format(x * 100) }}%{%- endmacro %}
+<header class="jj-header">
+  <h1>Model serving</h1>
+  <p class="tagline">
+    A trained model is a file of weights and a Python class. Serving it means answering requests from other
+    programs, fast and cheaply, for months. This page covers how a PyTorch model is saved and loaded safely,
+    the difference between running it eagerly, compiled and exported, how dynamic and continuous batching trade
+    a little latency for a lot of throughput, when a CPU beats a GPU, and a checklist for putting a model behind
+    an endpoint.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Training ends with a <code>state_dict</code> and the code that built the model. A serving system has
+  different goals from a training loop:
+</p>
+<ul>
+  <li><strong>Latency.</strong> A user waits for each answer. What matters is not the mean but the tail: the
+    90th or 99th percentile request.</li>
+  <li><strong>Throughput and cost.</strong> Hardware is billed by the hour, so the number of requests answered
+    per second per device decides what serving costs.</li>
+  <li><strong>Portability.</strong> The serving process may not be the training environment: a different
+    machine, a C++ binary, a phone. The model has to survive leaving its Python source behind.</li>
+  <li><strong>Safety and stability.</strong> Loading a file must not run arbitrary code, and the same input must
+    give the same output today and next month.</li>
+</ul>
+<p>
+  The tension is between the first two. Sixteen requests arrive over {{ cfg.arrivals[-1] }} ms at a model that
+  takes {{ cfg.fixed_ms }} ms of fixed overhead plus {{ cfg.per_item_ms }} ms per item. Run them one at a time
+  and the queue grows: the mean request waits {{ n(ex.policies[0].mean_ms, 2) }} ms and the last finishes at
+  {{ ex.policies[0].makespan_ms }} ms. Group them into batches and the same hardware averages
+  {{ n(ex.policies[1].mean_ms, 2) }} ms. Batching is the main lever in serving, and choosing how to batch is
+  most of the design.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  There are two things to ship: the <strong>weights</strong> (tensors) and the <strong>program</strong> (what to
+  compute with them). PyTorch offers three ways to carry the program:
+</p>
+<ul>
+  <li><strong>Eager.</strong> Ship the Python class, load the weights into it, call it. Every operation is
+    dispatched one at a time from Python. Simple, flexible, and the slowest per call.</li>
+  <li><strong>Compiled.</strong> Still Python, but <code>torch.compile</code> captures the model into graphs at
+    run time and generates fused kernels for them (see <a href="/ml-models/gpu-execution#torch-compile">GPU
+    execution</a>). Faster, but the first calls pay for compilation and new input shapes can recompile.</li>
+  <li><strong>Exported.</strong> <code>torch.export</code> traces the model ahead of time into a single graph of
+    ATen operators with no Python control flow left in it. The result is a file that can be loaded without the
+    model's source, and AOTInductor can compile it into a shared library that runs without Python at all.</li>
+</ul>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 270" role="img" aria-labelledby="sv-paths-title sv-paths-desc">
+    <title id="sv-paths-title">Three ways to carry a model from training to serving</title>
+    <desc id="sv-paths-desc">
+      A trained nn.Module with its state_dict feeds three paths. Eager: the Python class plus torch.load of the weights,
+      run operator by operator in the Python process. Compiled: torch.compile wraps the module and captures graphs on the
+      first calls, then runs generated kernels, still inside Python, recompiling on new shapes. Exported: torch.export
+      traces once ahead of time into an ExportedProgram of ATen operators, saved as a .pt2 file; it can be loaded back with
+      torch.export.load, or compiled by AOTInductor into a package that runs from C++ without Python.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      <rect x="20" y="110" width="130" height="50" rx="8" class="d-box ml-weight"></rect>
+      <text x="85" y="132">nn.Module</text>
+      <text x="85" y="148" class="d-muted">+ state_dict</text>
+
+      <line x1="150" y1="125" x2="200" y2="45" class="d-line"></line>
+      <line x1="150" y1="135" x2="200" y2="135" class="d-line"></line>
+      <line x1="150" y1="145" x2="200" y2="225" class="d-line"></line>
+
+      <text x="250" y="22" class="ml-label" style="fill:var(--jj-muted)">eager</text>
+      <rect x="200" y="28" width="150" height="36" rx="6" class="d-box ml-op"></rect>
+      <text x="275" y="44">model class + torch.load</text>
+      <text x="275" y="58" class="d-muted">weights_only=True</text>
+      <line x1="350" y1="46" x2="400" y2="46" class="d-line"></line>
+      <rect x="400" y="28" width="300" height="36" rx="6" class="d-box ml-dashed"></rect>
+      <text x="550" y="44">Python process: one dispatch per op</text>
+      <text x="550" y="58" class="d-muted">flexible, debuggable, most overhead</text>
+
+      <text x="250" y="110" class="ml-label" style="fill:var(--jj-amber)">compiled</text>
+      <rect x="200" y="117" width="150" height="36" rx="6" class="d-box ml-op"></rect>
+      <text x="275" y="133">torch.compile(model)</text>
+      <text x="275" y="147" class="d-muted">capture on first call</text>
+      <line x1="350" y1="135" x2="400" y2="135" class="d-line"></line>
+      <rect x="400" y="117" width="300" height="36" rx="6" class="d-box ml-dashed"></rect>
+      <text x="550" y="133">Python process: fused generated kernels</text>
+      <text x="550" y="147" class="d-muted">warm-up cost, guards, recompiles on new shapes</text>
+
+      <text x="250" y="197" class="ml-label" style="fill:var(--jj-green)">exported</text>
+      <rect x="200" y="205" width="150" height="40" rx="6" class="d-box ml-op"></rect>
+      <text x="275" y="222">torch.export(model, args)</text>
+      <text x="275" y="237" class="d-muted">ahead of time, one graph</text>
+      <line x1="350" y1="225" x2="400" y2="225" class="d-line"></line>
+      <rect x="400" y="205" width="130" height="40" rx="6" class="d-box ml-tensor"></rect>
+      <text x="465" y="222">ExportedProgram</text>
+      <text x="465" y="237" class="d-muted">ATen ops, .pt2</text>
+      <line x1="530" y1="215" x2="570" y2="195" class="d-line"></line>
+      <line x1="530" y1="235" x2="570" y2="250" class="d-line"></line>
+      <rect x="570" y="178" width="130" height="30" rx="6" class="d-box ml-dashed"></rect>
+      <text x="635" y="197">torch.export.load</text>
+      <rect x="570" y="235" width="130" height="30" rx="6" class="d-box ml-dashed"></rect>
+      <text x="635" y="254">AOTInductor: no Python</text>
+    </g>
+  </svg>
+</div>
+
+<p>
+  The second idea is batching. A GPU computing one row costs nearly the same as computing a dozen, because
+  most of the time goes to fixed overhead: launching kernels and reading the weights from memory. So the server
+  holds requests briefly and runs them together. A <strong>dynamic batcher</strong> collects requests until the
+  batch is full or the oldest has waited long enough. For text generation, where a request is many decode steps
+  long and requests finish at different times, a <strong>continuous batcher</strong> lets a new request take a
+  finished one's place at the next step instead of waiting for the whole batch to finish.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="weights">Weights: saving and loading safely</h3>
+<p>
+  <code>torch.save(obj, f)</code> writes a zip archive: tensor storages as raw byte files, and a pickle that
+  describes how to rebuild <code>obj</code> around them. The usual thing to save is
+  <code>model.state_dict()</code>, a dict from parameter names to tensors, rather than the model object, so
+  loading doesn't depend on the class being importable under the same name.
+</p>
+<p>
+  Pickle is a small program: unpickling can call any importable function, so loading an untrusted pickle can
+  run arbitrary code. <code>torch.load</code> therefore defaults to <code>weights_only=True</code> (when no
+  custom <code>pickle_module</code> is passed), which uses a restricted unpickler that only rebuilds tensors,
+  primitive types and an allowlist of safe classes. Two other arguments matter for serving:
+  <code>map_location</code> moves storages to a different device as they load (a GPU checkpoint onto a CPU
+  server), and <code>mmap=True</code> maps the file into memory instead of reading it, so a large checkpoint
+  can be loaded without holding two copies.
+</p>
+
+<h3 id="eager-compiled-exported">Eager, compiled, exported</h3>
+<p>
+  In eager mode, Python runs <code>forward</code> line by line and each operator goes through the dispatcher
+  separately. For a large model on a big batch, the kernels dominate and the overhead is noise; for a small
+  model or batch size 1, the Python and launch overhead can be most of the time.
+</p>
+<p>
+  <code>torch.compile(model)</code> returns a wrapper. On the first call TorchDynamo reads the Python bytecode,
+  captures the tensor operations into a graph (breaking it where it meets something it can't trace), records
+  <em>guards</em> (the input shapes, dtypes and Python values the graph assumed), and hands the graph to a
+  backend, by default Inductor, which generates fused kernels. Later calls check the guards and reuse the
+  compiled code; a failed guard triggers a recompile, and after
+  <code>torch._dynamo.config.recompile_limit</code> recompiles (8 by default) that frame falls back to eager.
+  <code>mode="reduce-overhead"</code> adds CUDA graphs, which replay a recorded sequence of kernel launches
+  with one call, aimed squarely at small-batch serving. <code>dynamic=True</code> asks for shape-generic code up
+  front instead of specializing and recompiling.
+</p>
+<p>
+  <code>torch.export.export(mod, args)</code> instead traces once, ahead of time, and requires the whole model
+  to become one graph: no graph breaks. Data-dependent Python control flow is not allowed (use
+  <code>torch.cond</code> for branches that must stay in the graph). By default (<code>strict=False</code>)
+  it traces by running the Python code with fake tensors; <code>strict=True</code> traces through TorchDynamo
+  instead. The result, an <code>ExportedProgram</code>, holds the graph in the functional ATen operator set,
+  the parameters and buffers, a signature saying which graph inputs are parameters and which are user
+  inputs, and range constraints on symbolic dimensions.
+</p>
+
+<h3 id="dynamic-shapes">Dynamic shapes in export</h3>
+<p>
+  By default export specializes on the example input's shapes: export with a batch of 4 and the program
+  accepts only batches of 4. A server needs variable batch size and often variable sequence length, declared
+  with <code>dynamic_shapes</code>: a <code>Dim("batch", min=1, max=64)</code> names a symbolic size with a
+  range, and the hints <code>Dim.AUTO</code>, <code>Dim.DYNAMIC</code> and <code>Dim.STATIC</code> let export
+  infer or fix a dimension. Export then checks the model's code against the declared ranges, and the loaded
+  module checks inputs against them at call time (<code>ExportedProgram.module(check_guards=True)</code>).
+  <code>torch.export.save</code> writes the program to a <code>.pt2</code> archive; its docstring warns that
+  the format is under active development and saved files may not load in newer PyTorch releases, and
+  <code>torch.export.load</code> uses pickle, so the same rule applies: never load one from an untrusted
+  source.
+</p>
+
+<h3 id="inference-mode">Inference mode and eval</h3>
+<p>
+  Two switches belong around every serving call. <code>model.eval()</code> (which is
+  <code>model.train(False)</code>) changes what layers <em>compute</em>: dropout becomes the identity and batch
+  norm uses its running statistics instead of the batch's. <code>torch.inference_mode()</code> changes what
+  autograd <em>records</em>: like <code>no_grad</code> it builds no graph, and it also skips view tracking and
+  version-counter bumps, so tensors cost a little less. Tensors created inside can't be used in autograd
+  later. Forgetting <code>eval()</code> is a correctness bug (outputs change with the batch); forgetting
+  inference mode only wastes memory and time.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>torch.save</code></td><td><code>obj, f, pickle_protocol</code></td><td>Zip archive: tensor storages plus a pickle describing the object</td><td><a href="{{ src('torch/serialization.py', 944, 1018) }}">serialization.py</a></td></tr>
+      <tr><td><code>torch.load</code></td><td><code>map_location</code>, <code>weights_only</code>, <code>mmap</code></td><td>Restricted unpickler by default; move storages to another device; memory-map large files</td><td><a href="{{ src('torch/serialization.py', 1315, 1647) }}">serialization.py</a></td></tr>
+      <tr><td><code>_default_to_weights_only</code></td><td><code>pickle_module is None</code> → <code>True</code></td><td>Why <code>weights_only=None</code> means safe loading</td><td><a href="{{ src('torch/serialization.py', 89, 91) }}">serialization.py</a></td></tr>
+      <tr><td><code>torch.compile</code></td><td><code>fullgraph=False</code>, <code>dynamic=None</code>, <code>backend="inductor"</code>, <code>mode</code></td><td>Just-in-time graph capture and kernel generation, guarded, recompiles on new shapes</td><td><a href="{{ src('torch/__init__.py', 3045, 3289) }}">__init__.py</a></td></tr>
+      <tr><td><code>torch.export.export</code></td><td><code>mod, args, kwargs, dynamic_shapes, strict=False</code></td><td>Ahead-of-time trace to one graph of functional ATen ops</td><td><a href="{{ src('torch/export/__init__.py', 59, 260) }}">export/__init__.py</a></td></tr>
+      <tr><td><code>Dim</code></td><td><code>Dim(name, min=, max=)</code>, <code>AUTO</code>/<code>DYNAMIC</code>/<code>STATIC</code></td><td>A symbolic dimension and its allowed range</td><td><a href="{{ src('torch/export/dynamic_shapes.py', 109, 256) }}">dynamic_shapes.py</a></td></tr>
+      <tr><td><code>ExportedProgram.module</code></td><td><code>check_guards=True</code></td><td>A callable <code>GraphModule</code> that checks inputs against the shape constraints</td><td><a href="{{ src('torch/export/exported_program.py', 1479, 1502) }}">exported_program.py</a></td></tr>
+      <tr><td><code>torch.export.save</code> / <code>load</code></td><td><code>.pt2</code> archive</td><td>Serialize an <code>ExportedProgram</code>; load uses pickle</td><td><a href="{{ src('torch/export/__init__.py', 266, 335) }}">save</a>, <a href="{{ src('torch/export/__init__.py', 338, 489) }}">load</a></td></tr>
+      <tr><td><code>aoti_compile_and_package</code></td><td><code>exported_program, package_path</code></td><td>AOTInductor: compile an exported program into a package loadable without Python</td><td><a href="{{ src('torch/_inductor/__init__.py', 64, 166) }}">_inductor/__init__.py</a></td></tr>
+      <tr><td><code>aoti_load_package</code></td><td><code>path, run_single_threaded, device_index</code></td><td>Load that package back as a callable</td><td><a href="{{ src('torch/_inductor/__init__.py', 257, 287) }}">_inductor/__init__.py</a></td></tr>
+      <tr><td><code>inference_mode</code></td><td>context manager, thread-local</td><td>No autograd graph, no view tracking or version counters</td><td><a href="{{ src('torch/autograd/grad_mode.py', 213, 301) }}">grad_mode.py</a></td></tr>
+      <tr><td><code>Module.eval</code></td><td><code>train(False)</code></td><td>Dropout off, batch norm on running statistics</td><td><a href="{{ src('torch/nn/modules/module.py', 2916, 2932) }}">module.py</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="dynamic-batching">Dynamic batching</h3>
+<p>
+  Model one batch's cost as a fixed part plus a per-item part:
+</p>
+<div class="ml-formula">latency(B) = c<sub>fixed</sub> + B · c<sub>item</sub>,  throughput(B) = B / latency(B)</div>
+<p>
+  Throughput rises toward 1/c<sub>item</sub> as B grows, and the larger c<sub>fixed</sub> is compared with
+  c<sub>item</sub>, the bigger the batch needed to get there. A dynamic batcher has two knobs: the largest batch
+  it will form, and the longest it will make the oldest queued request wait. When the device frees up it starts
+  a batch as soon as either the queue holds a full batch or the oldest request's deadline passes, whichever
+  comes first, and takes everything that has arrived by then up to the maximum. Clipper (Crankshaw et al.,
+  2017) built a serving system around this idea, tuning the maximum batch size adaptively per model to meet a
+  latency target.
+</p>
+<p>
+  Waiting is a bet. At light load, a short wait collects requests that would otherwise run in near-empty
+  batches. At heavy load the queue fills batches on its own, and any deliberate wait only adds latency. The
+  worked example shows the second case.
+</p>
+
+<h3 id="continuous-batching">Continuous batching for generation</h3>
+<p>
+  An autoregressive model produces one token per request per forward pass, and requests need different
+  numbers of tokens. With <em>static</em> batching, the batch runs until its longest request finishes; slots
+  whose requests finished early sit idle, and new requests wait for the whole batch. Orca (Yu et al., OSDI 2022)
+  introduced <em>iteration-level scheduling</em>: the scheduler revisits the batch after every decode step,
+  removes finished requests and admits waiting ones into the free slots. This is now called continuous
+  batching. It needs a <a href="/ml-models/kv-cache">KV cache</a> that can grow and shrink per request;
+  vLLM's PagedAttention (Kwon et al., SOSP 2023) stores the cache in fixed-size blocks for exactly this reason,
+  so a finished request's memory goes straight back to the pool.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 250" role="img" aria-labelledby="sv-slots-title sv-slots-desc">
+    <title id="sv-slots-title">Static and continuous batching of the same eight decode requests</title>
+    <desc id="sv-slots-desc">
+      Each column is one decode step and each row one of {{ cfg.decode_slots }} batch slots; a filled cell is a slot generating a
+      token, an empty cell is idle. Static batching takes {{ st.steps }} steps: after the first batch's short requests finish,
+      steps 4 to 8 run only the longest request with three idle slots, and the second batch starts only at step 9.
+      Continuous batching admits a waiting request into each slot as soon as it frees, takes {{ co.steps }} steps and keeps
+      {{ pct(co.utilization) }} of slot-steps busy, against {{ pct(st.utilization) }} for static.
+    </desc>
+    <g font-size="10" text-anchor="middle">
+      {% set cw = 36 %}
+      {% for panel in [("static", st, 20), ("continuous", co, 140)] %}
+        {% set y0 = panel[2] %}
+        <text x="10" y="{{ y0 + 8 }}" text-anchor="start" class="ml-label">{{ panel[0] }}: {{ panel[1].steps }} steps, {{ pct(panel[1].utilization) }} busy</text>
+        {% for row in panel[1].timeline %}
+          {% set x = 100 + row.step * cw %}
+          {% for slot in range(cfg.decode_slots) %}
+            {% set y = y0 + 16 + slot * 20 %}
+            {% if slot < row.active|length %}
+              <rect x="{{ x }}" y="{{ y }}" width="{{ cw - 4 }}" height="16" rx="3" class="d-box ml-tensor"></rect>
+              <text x="{{ x + (cw - 4) / 2 }}" y="{{ y + 12 }}">r{{ row.active[slot] }}</text>
+            {% else %}
+              <rect x="{{ x }}" y="{{ y }}" width="{{ cw - 4 }}" height="16" rx="3" class="d-box ml-dashed"></rect>
+            {% endif %}
+          {% endfor %}
+        {% endfor %}
+        {% for slot in range(cfg.decode_slots) %}
+          <text x="80" y="{{ y0 + 28 + slot * 20 }}" text-anchor="end" class="d-muted">slot {{ slot }}</text>
+        {% endfor %}
+      {% endfor %}
+      {% for s in range(st.steps) %}
+        <text x="{{ 100 + s * cw + (cw - 4) / 2 }}" y="246" class="d-muted">{{ s }}</text>
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">
+  Requests are numbered r0 to r{{ cfg.decode_requests|length - 1 }}; each row lists the requests running at that step,
+  packed into the first slots for readability. Real schedulers keep a request in the slot it was admitted to.
+</p>
+
+<h3 id="cpu-gpu">CPU versus GPU</h3>
+<p>
+  The same cost model explains when a CPU is the right server. A CPU has small fixed overhead per call and a
+  large per-item cost; a GPU has a larger fixed cost (kernel launches, a host-to-device copy) and a tiny
+  per-item cost. At batch size 1 the CPU can win outright; the GPU's advantage appears only once batches are
+  large enough to amortize its fixed cost, which in turn needs enough traffic to fill those batches. Small
+  models (linear models, gradient-boosted trees, small MLPs) at modest traffic often serve best on CPU, where
+  instances are cheap and plentiful. Large networks, and anything generating tokens, belong on accelerators,
+  where the batching machinery above is what makes them affordable. <a href="/ml-models/quantization">Quantization</a>
+  shrinks the per-item cost on both.
+</p>
+
+<h3 id="checklist">A serving checklist</h3>
+<ul>
+  <li><strong>Artifact.</strong> Save a <code>state_dict</code> or an exported program, record the PyTorch version
+    and the preprocessing that produced the inputs, and load with <code>weights_only=True</code>.</li>
+  <li><strong>Mode.</strong> <code>model.eval()</code> once at load; <code>torch.inference_mode()</code> around every
+    call.</li>
+  <li><strong>Shapes.</strong> Decide which dimensions vary and declare them (<code>Dim</code> in export,
+    <code>dynamic=True</code> or bucketed sizes for compile). Warm up every shape bucket before taking traffic so no
+    user pays for compilation.</li>
+  <li><strong>Parity.</strong> Compare served outputs with the eager model on a fixed set of inputs, within a
+    tolerance that allows for kernel and precision differences.</li>
+  <li><strong>Batching.</strong> Choose a maximum batch from the latency budget and the cost curve; add a wait only if
+    traffic is light enough that batches would otherwise be small.</li>
+  <li><strong>Measure the tail.</strong> Track p50, p90 and p99 latency, queue length, batch-size distribution and
+    device utilization. <span class="jj-nav-pending">Latency and throughput</span> covers the measurement.</li>
+  <li><strong>Watch the inputs.</strong> Log input statistics and prediction distributions so drift shows up
+    (<span class="jj-nav-pending">Monitoring and drift</span>).</li>
+  <li><strong>Roll out safely.</strong> Version the model, shadow or canary a new version against the old one, and keep
+    the old one loadable for rollback.</li>
+</ul>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-batching">Four batching policies on one arrival trace</h3>
+  <p>
+    Sixteen requests arrive at {{ cfg.arrivals|join(", ") }} ms (roughly one every 1.5 ms). One batch of B items
+    takes {{ cfg.fixed_ms }} + {{ cfg.per_item_ms }}·B ms. Latency is finish time minus arrival time. The cost model
+    is invented to make the arithmetic visible; real devices have the same shape of curve but their own constants.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Policy</th><th>Batch sizes</th><th>Mean (ms)</th><th>p50</th><th>p90</th><th>Max</th><th>All done (ms)</th><th>Requests/s</th></tr></thead>
+      <tbody>
+        {% for p in ex.policies %}
+          <tr><td>{{ p.name }}</td><td>{% if p.max_batch == 1 %}{{ p.batches|length }} × 1{% else %}{{ p.batches|map(attribute="size")|join(", ") }}{% endif %}</td><td>{{ n(p.mean_ms, 2) }}</td><td>{{ p.p50_ms }}</td><td>{{ p.p90_ms }}</td><td>{{ p.max_ms }}</td><td>{{ p.makespan_ms }}</td><td>{{ n(p.per_second, 0) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    One at a time, each request costs {{ cfg.fixed_ms + cfg.per_item_ms }} ms but they arrive every 1.5 ms on
+    average, so the queue keeps growing and the 90th percentile waits {{ ex.policies[0].p90_ms }} ms. A batcher
+    with no wait takes whatever has queued when the device frees: the first request runs alone (nothing else has
+    arrived), then the backlog fills batches of 4 until the queue drains. Mean latency drops to {{ n(ex.policies[1].mean_ms, 2) }} ms
+    and throughput more than doubles.
+  </p>
+  <p>
+    Adding a 3 ms wait makes the first batch hold until the 3 ms deadline and run the three requests that have
+    arrived by then, but the device sits idle for those 3 ms, and that delay pushes every later batch back: mean latency rises to
+    {{ n(ex.policies[2].mean_ms, 2) }} ms. Under this load the wait buys nothing. Raising the maximum to 8 lets the
+    batcher absorb the backlog in bigger batches ({{ ex.policies[3].batches|map(attribute="size")|join(", ") }}) and
+    gives the best mean, {{ n(ex.policies[3].mean_ms, 2) }} ms, and the best throughput.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 230" role="img" aria-labelledby="sv-batch-title sv-batch-desc">
+    <title id="sv-batch-title">When each policy runs its batches</title>
+    <desc id="sv-batch-desc">
+      Time runs left to right, six pixels per millisecond. The top row marks the sixteen arrivals. Below it, one lane per
+      policy shows each batch as a box from its start to its end, labelled with its size. One at a time runs sixteen
+      back-to-back boxes ending at {{ ex.policies[0].makespan_ms }} ms. Up to 4 with no wait ends at {{ ex.policies[1].makespan_ms }} ms,
+      up to 4 with a 3 ms wait at {{ ex.policies[2].makespan_ms }} ms, and up to 8 with a 3 ms wait at {{ ex.policies[3].makespan_ms }} ms.
+    </desc>
+    <g font-size="10" text-anchor="middle">
+      {% set x0 = 130 %}
+      {% set k = 6 %}
+      <text x="4" y="24" text-anchor="start" class="d-muted">arrivals</text>
+      {% for a in cfg.arrivals %}
+        <line x1="{{ x0 + a * k }}" y1="14" x2="{{ x0 + a * k }}" y2="28" class="d-line"></line>
+      {% endfor %}
+      {% for p in ex.policies %}
+        {% set y = 44 + loop.index0 * 40 %}
+        <text x="4" y="{{ y + 16 }}" text-anchor="start">{% if p.max_batch == 1 %}one at a time{% else %}≤ {{ p.max_batch }}, wait {{ p.max_wait_ms }} ms{% endif %}</text>
+        {% for b in p.batches %}
+          <rect x="{{ x0 + b.start * k }}" y="{{ y }}" width="{{ (b.end - b.start) * k - 1 }}" height="24" rx="3" class="d-box {{ 'ml-op' if b.size > 1 else 'ml-tensor' }}"></rect>
+          {% if b.size > 1 %}<text x="{{ x0 + (b.start + b.end) / 2 * k }}" y="{{ y + 16 }}">{{ b.size }}</text>{% endif %}
+        {% endfor %}
+      {% endfor %}
+      <line x1="{{ x0 }}" y1="206" x2="{{ x0 + 96 * k }}" y2="206" class="d-line"></line>
+      {% for t in [0, 24, 48, 72, 96] %}
+        <text x="{{ x0 + t * k }}" y="222" class="d-muted">{{ t }} ms</text>
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-devices">CPU against GPU on the same cost model</h3>
+  <p>
+    Two invented devices: a CPU at {{ cfg.devices[0].fixed_ms }} + {{ cfg.devices[0].per_item_ms }}·B ms and a GPU at
+    {{ cfg.devices[1].fixed_ms }} + {{ cfg.devices[1].per_item_ms }}·B ms.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Batch</th>{% for d in ex.devices %}<th>{{ d.name }} latency (ms)</th><th>{{ d.name }} items/s</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for size in cfg.cost_sizes %}
+          {% set i = loop.index0 %}
+          <tr><td>{{ size }}</td>{% for d in ex.devices %}<td>{{ n(d.costs[i].latency_ms, 2) }}</td><td>{{ n(d.costs[i].per_second, 0) }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    At batch size 1 the CPU answers in {{ n(ex.devices[0].costs[0].latency_ms, 2) }} ms against the GPU's
+    {{ n(ex.devices[1].costs[0].latency_ms, 2) }}, and serves more requests per second. The CPU's throughput is capped
+    near 1/{{ cfg.devices[0].per_item_ms }} ms = 500 items/s whatever the batch; the GPU's keeps climbing, reaching
+    {{ n(ex.devices[1].costs[-1].per_second, 0) }} items/s at batch {{ cfg.cost_sizes[-1] }} with latency still only
+    {{ n(ex.devices[1].costs[-1].latency_ms, 1) }} ms. The GPU pays off only when traffic fills its batches.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-continuous">Static against continuous batching</h3>
+  <p>
+    Eight generation requests, as (arrival step, tokens to generate):
+    {% for r in cfg.decode_requests %}r{{ loop.index0 }} ({{ r[0] }}, {{ r[1] }}){{ ", " if not loop.last else "" }}{% endfor %},
+    and {{ cfg.decode_slots }} batch slots. Each step generates one token for every running request.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Scheduling</th><th>Finish step per request</th><th>Mean latency (steps)</th><th>Total steps</th><th>Slot use</th></tr></thead>
+      <tbody>
+        <tr><td>Static</td><td>{{ st.finish|join(", ") }}</td><td>{{ n(st.mean_steps, 3) }}</td><td>{{ st.steps }}</td><td>{{ st.tokens }} / ({{ st.busy_steps }} × {{ cfg.decode_slots }}) = {{ pct(st.utilization) }}</td></tr>
+        <tr><td>Continuous</td><td>{{ co.finish|join(", ") }}</td><td>{{ n(co.mean_steps, 3) }}</td><td>{{ co.steps }}</td><td>{{ co.tokens }} / ({{ co.busy_steps }} × {{ cfg.decode_slots }}) = {{ pct(co.utilization) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Both generate the same {{ st.tokens }} tokens. Static batching runs r0 to r3 together until r1's 9 tokens are done,
+    so from step 4 three slots idle while r4 to r7 wait. Continuous batching starts r4 the step after r3 finishes, and
+    so on, finishing in {{ co.steps }} steps instead of {{ st.steps }} and cutting mean latency from
+    {{ n(st.mean_steps, 3) }} to {{ n(co.mean_steps, 3) }} steps. The first four requests are unaffected: the gain is
+    entirely in not making later requests wait for the slowest one.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  Export a model once with a dynamic batch dimension, save it, and serve it from a process that never imports the
+  model's class. The batcher is a minimal version of the policy above: block for the first request, then keep
+  collecting until the batch is full or the deadline passes.
+</p>
+<pre><code>import queue, threading, time
+import torch
+from torch.export import Dim
+
+# offline, in the training environment
+model.eval()
+example = (torch.randn(4, 128),)
+ep = torch.export.export(model, example,
+                         dynamic_shapes={"x": {0: Dim("batch", min=1, max=64)}})
+torch.export.save(ep, "model.pt2")
+# optional: a package that runs without Python
+# torch._inductor.aoti_compile_and_package(ep, package_path="model_aoti.pt2")
+
+# serving process
+served = torch.export.load("model.pt2").module()   # trusted file only: load uses pickle
+
+requests = queue.Queue()                           # items: (input tensor [128], reply queue)
+
+def batcher(max_batch=32, max_wait_s=0.003):
+    while True:
+        batch = [requests.get()]
+        deadline = time.monotonic() + max_wait_s
+        while len(batch) &lt; max_batch:
+            left = deadline - time.monotonic()
+            if left &lt;= 0:
+                break
+            try:
+                batch.append(requests.get(timeout=left))
+            except queue.Empty:
+                break
+        x = torch.stack([item for item, _ in batch])
+        with torch.inference_mode():
+            y = served(x)
+        for (_, reply), out in zip(batch, y):
+            reply.put(out)
+
+threading.Thread(target=batcher, daemon=True).start()
+
+def predict(features):
+    reply = queue.Queue(maxsize=1)
+    requests.put((features, reply))
+    return reply.get()</code></pre>
+<p>
+  For plain weights the safe load is
+  <code>model.load_state_dict(torch.load("weights.pt", map_location="cpu", weights_only=True))</code>. Production
+  servers (TorchServe, Triton, vLLM, and others) add what this sketch leaves out: per-request timeouts, back-pressure
+  when the queue is too long, multiple model replicas, metrics, and for generation, continuous batching over a paged
+  KV cache.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Eager vs compiled vs exported.</strong> Eager is the easiest to debug and change. Compile is a one-line
+    speedup that stays in Python but adds warm-up time and recompiles. Export gives a portable, Python-free artifact
+    but demands a single graph with no data-dependent Python control flow, which can mean rewriting parts of the model.</li>
+  <li><strong>Batch size.</strong> Larger batches raise throughput and lower cost per request, but every request in a
+    batch waits for the whole batch, so latency rises with it.</li>
+  <li><strong>Batching wait.</strong> A wait fills batches at light load and only adds latency at heavy load. Many
+    systems keep it at a few milliseconds or tune it adaptively.</li>
+  <li><strong>Static vs dynamic shapes.</strong> Specialized shapes give the fastest kernels and CUDA graphs but need a
+    graph per shape; dynamic shapes give one graph that is somewhat slower. Padding inputs to a few bucket sizes is a
+    common middle ground.</li>
+  <li><strong>CPU vs GPU.</strong> CPUs win on small models, low traffic and strict per-request latency; GPUs win when
+    the model is large and traffic fills batches.</li>
+  <li><strong>Portability.</strong> The exported <code>.pt2</code> format is still evolving and may not load in a newer
+    PyTorch, so keep the training code and weights to re-export from.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>A served model's outputs change depending on which other requests share its batch. What is the likely bug?</summary>
+  <p>The model was not put in <code>eval()</code> mode, so batch norm normalizes with the current batch's statistics
+    (and dropout may be active). Call <code>model.eval()</code> before exporting or serving.</p>
+</details>
+<details class="ml-quiz">
+  <summary>The first few requests after each deploy take seconds; later ones take milliseconds. Why, and what fixes it?</summary>
+  <p><code>torch.compile</code> captures and compiles on the first call for each new input shape. Send warm-up requests
+    covering every shape bucket before the instance joins the load balancer, or ship an AOTInductor package compiled
+    ahead of time.</p>
+</details>
+<details class="ml-quiz">
+  <summary>An exported model works with batch size 4 and fails for every other batch size. What was missed?</summary>
+  <p>Export specializes on the example input's shapes unless told otherwise. Declare the batch dimension in
+    <code>dynamic_shapes</code>, for example <code>{"x": {0: Dim("batch", min=1, max=64)}}</code>.</p>
+</details>
+<details class="ml-quiz">
+  <summary>In the worked example, adding a 3 ms wait made latency worse. When would it help?</summary>
+  <p>At light load, when requests arrive slower than the device can run them. Then the queue is usually empty when the
+    device frees, and without a wait almost every batch has one request. A short wait collects a few more and spends the
+    fixed cost once for all of them.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Crankshaw, Wang, Zhou, Franklin, Gonzalez and Stoica. <em>Clipper: A Low-Latency Online Prediction Serving
+    System.</em> NSDI 2017. <a href="https://www.usenix.org/conference/nsdi17/technical-sessions/presentation/crankshaw">usenix.org</a>
+    (Adaptive dynamic batching under a latency target.)</li>
+  <li>Yu, Jeong, Kim, Kim and Chun. <em>Orca: A Distributed Serving System for Transformer-Based Generative
+    Models.</em> OSDI 2022. <a href="https://www.usenix.org/conference/osdi22/presentation/yu">usenix.org</a>
+    (Iteration-level scheduling, now called continuous batching.)</li>
+  <li>Kwon, Li, Zhuang, Sheng, Zheng, Yu, Gonzalez, Zhang and Stoica. <em>Efficient Memory Management for Large Language
+    Model Serving with PagedAttention.</em> SOSP 2023. <a href="https://arxiv.org/abs/2309.06180">arXiv:2309.06180</a></li>
+  <li>Ansel et al. <em>PyTorch 2: Faster Machine Learning Through Dynamic Python Bytecode Transformation and Graph
+    Compilation.</em> ASPLOS 2024. <a href="https://doi.org/10.1145/3620665.3640366">doi:10.1145/3620665.3640366</a>
+    (TorchDynamo and TorchInductor.)</li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/export/__init__.py', 59, 260) }}"><code>torch.export.export</code></a>,
+    <a href="{{ src('torch/export/dynamic_shapes.py', 109, 256) }}"><code>Dim</code></a>,
+    <a href="{{ src('torch/export/exported_program.py', 1479, 1502) }}"><code>ExportedProgram.module</code></a>,
+    <a href="{{ src('torch/__init__.py', 3045, 3289) }}"><code>torch.compile</code></a>,
+    <a href="{{ src('torch/_inductor/__init__.py', 64, 166) }}"><code>aoti_compile_and_package</code></a>,
+    <a href="{{ src('torch/serialization.py', 1315, 1647) }}"><code>torch.load</code></a>,
+    <a href="{{ src('torch/autograd/grad_mode.py', 213, 301) }}"><code>inference_mode</code></a>.</li>
+</ul>
