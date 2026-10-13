@@ -1,0 +1,442 @@
+{% set ex = calibration_example() %}
+{% set cfg = ex.example %}
+{% set orig = ex.original %}
+{% set const = ex.constant %}
+{% set pl = ex.platt %}
+{% set ts = ex.temperature %}
+{% set iso = ex.isotonic %}
+{% macro n(x, d=2) -%}{{ ("%." ~ d ~ "f")|format(x) }}{%- endmacro %}
+{% macro pct(x, d=0) -%}{{ ("%." ~ d ~ "f")|format(x * 100) }}%{%- endmacro %}
+<header class="jj-header">
+  <h1>Calibration</h1>
+  <p class="tagline">
+    A model that says "90%" should be right about nine times in ten. This page defines what a calibrated probability
+    is, how to see miscalibration in a reliability diagram and measure it with ECE and the Brier score, how Platt
+    scaling, isotonic regression and temperature scaling repair it after training, and why modern neural networks
+    tend to be overconfident, all worked on one small set of predictions.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  <a href="/ml-models/classification-metrics">Classification metrics</a> like accuracy and AUC judge a model's
+  decisions and its ranking. Many uses need more: the probability itself. A doctor weighs a 3% risk differently from a
+  30% one; an ad system multiplies click probability by bid; a fraud team sets its review threshold from the expected
+  cost of each case; a language model decides when to say "I'm not sure". All of these read the number as a frequency.
+</p>
+<p>
+  Most models are not trained to make that reading true. A support vector machine outputs a margin, not a probability.
+  Boosted trees and random forests output averages that are systematically pulled away from, or toward, the extremes.
+  A deep network trained with cross-entropy can be highly accurate and still say 99% on cases it gets wrong a quarter of
+  the time. Calibration is the property that the probabilities mean what they say, and the post-processing that
+  restores it without retraining the model.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Take every case where a weather forecaster said "70% chance of rain" and count how often it rained. If it rained on
+  about 70% of them, and the same holds for every other number the forecaster uses, the forecaster is calibrated.
+  Calibration says nothing about how <em>useful</em> the forecasts are: someone who says "it rains on 30% of days"
+  every single day is perfectly calibrated and tells you nothing. A good probabilistic model is both calibrated and
+  <em>sharp</em>, or discriminating: its numbers spread out and separate the cases that happen from the ones that
+  don't.
+</p>
+<p>
+  This split suggests the fix. A model that ranks cases well but uses the wrong numbers can be repaired by a
+  monotone function that relabels its outputs: "when you say 95%, that really means 75%". Learning that function needs
+  only held-out predictions and labels, and since it is monotone it leaves the ranking, and so the AUC, as it was.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="definition">What calibrated means</h3>
+<p>
+  A binary classifier with predicted probability p̂ = f(x) is calibrated if, for every value p it outputs,
+</p>
+<div class="ml-formula">P(Y = 1 | p̂ = p) = p</div>
+<p>
+  For K classes the strict version requires the whole predicted vector to match the conditional class frequencies; the
+  version usually measured is <strong>confidence calibration</strong>, where the probability of the predicted class
+  should equal the accuracy on cases with that confidence. The condition is about a population, never about one
+  prediction: a single 70% forecast is neither right nor wrong.
+</p>
+
+<h3 id="reliability">Reliability diagrams and ECE</h3>
+<p>
+  Since p̂ is continuous, the condition is checked in bins. Split [0, 1] into B intervals, put each prediction in its
+  bin, and compare each bin's mean predicted probability (its <strong>confidence</strong>) with the fraction of
+  positives in it (its <strong>accuracy</strong>, or observed frequency). Plotting accuracy against confidence gives a
+  <strong>reliability diagram</strong>; a calibrated model lies on the diagonal, and points below it are
+  overconfident on the positive side. scikit-learn's <code>calibration_curve</code> returns exactly these two arrays,
+  with uniform bins by default (<code>n_bins=5</code>) or quantile bins that hold equal numbers of predictions.
+</p>
+<p>
+  The <strong>expected calibration error</strong> summarizes the diagram as the bin-size-weighted gap, and the maximum
+  calibration error as the worst bin:
+</p>
+<div class="ml-formula">ECE = Σ<sub>b</sub> (n<sub>b</sub> / N) · |acc(b) − conf(b)|,  MCE = max<sub>b</sub> |acc(b) − conf(b)|</div>
+<p>
+  ECE is easy to read but depends on the binning: few bins hide errors, many bins leave few cases per bin and add noise,
+  so an ECE should always be reported with its bin scheme. It is a diagnostic, not a training objective; scikit-learn
+  provides the curve but no ECE function.
+</p>
+
+<h3 id="scores">Proper scoring rules: Brier score and log loss</h3>
+<p>
+  A <strong>proper scoring rule</strong> is one whose expected value is optimized by reporting your true belief, so no
+  model can gain by shading its probabilities. Two are standard:
+</p>
+<div class="ml-formula">Brier = (1/N) Σ<sub>i</sub> (p̂<sub>i</sub> − y<sub>i</sub>)²,  log loss = −(1/N) Σ<sub>i</sub> [y<sub>i</sub> log p̂<sub>i</sub> + (1 − y<sub>i</sub>) log(1 − p̂<sub>i</sub>)]</div>
+<p>
+  Both reward calibration <em>and</em> sharpness together (the Brier score splits exactly into a reliability term minus a
+  resolution term plus the irreducible uncertainty of the labels, when predictions are grouped by value). The Brier score is
+  bounded and forgiving; log loss punishes confident mistakes without limit, which makes it the one models are trained
+  on and the one temperature scaling minimizes. Neither tells you <em>whether</em> the problem is calibration, which is
+  why they are reported next to a reliability diagram.
+</p>
+
+<h3 id="recalibration">Recalibration: Platt, isotonic and temperature</h3>
+<p>
+  All three methods fit a monotone map g from the model's output to a new probability, on data the model was not trained
+  on. Fitting it on the training set learns nothing useful, since the model's training predictions are more confident
+  than its predictions on new data.
+</p>
+<ul>
+  <li><strong>Platt scaling</strong> (Platt, 2000, for SVMs) is a one-feature logistic regression on the model's score
+    s: g(s) = σ(a·s + b). Two parameters, so it needs little data, but it can only produce sigmoid-shaped corrections. To
+    avoid overfitting small sets, Platt replaced the 0/1 labels with targets (N<sub>+</sub> + 1)/(N<sub>+</sub> + 2) and
+    1/(N<sub>−</sub> + 2), and scikit-learn does the same.</li>
+  <li><strong>Isotonic regression</strong> (Zadrozny and Elkan, 2002) fits the best non-decreasing step function in squared
+    error. The <strong>pool-adjacent-violators</strong> algorithm sorts by score, walks left to right, and whenever a block's
+    mean is not below the next block's, merges them into their weighted mean, repeating backwards until the sequence is
+    monotone. It can fix any monotone distortion but has as many parameters as steps, so it overfits small calibration
+    sets; scikit-learn's documentation advises against it well below about a thousand samples.</li>
+  <li><strong>Temperature scaling</strong> (Guo et al., 2017) divides the logits by one number T &gt; 0 before the softmax:
+    p̂ = softmax(z / T). T is fitted by minimizing log loss on a validation set. T &gt; 1 softens overconfident outputs. One
+    parameter, no change to the argmax, and it works for any number of classes directly; for binary models it is Platt
+    scaling with the intercept fixed at zero.</li>
+</ul>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>CalibratedClassifierCV</code></td><td><code>method="sigmoid"</code>, <code>cv=None</code>, <code>ensemble="auto"</code></td><td>Wraps a classifier and fits a calibrator on held-out folds</td><td><a href="{{ skl('sklearn/calibration.py', 74, 597) }}">calibration.py</a></td></tr>
+      <tr><td><code>method</code></td><td><code>'sigmoid'</code>, <code>'isotonic'</code> or <code>'temperature'</code></td><td>Platt scaling, isotonic regression, or temperature scaling (added in 1.8)</td><td><a href="{{ skl('sklearn/calibration.py', 114, 140) }}">calibration.py</a></td></tr>
+      <tr><td><code>_sigmoid_calibration</code></td><td>returns slope <code>a</code>, intercept <code>b</code></td><td>Platt's fit with smoothed targets, by L-BFGS; predicts σ(−(a·s + b)), so a is negative for a good model</td><td><a href="{{ skl('sklearn/calibration.py', 854, 953) }}">calibration.py</a></td></tr>
+      <tr><td><code>_TemperatureScaling</code></td><td><code>beta_</code> = 1/T</td><td>Minimizes multinomial log loss over log β in [−10, 10]; probabilities are first turned back into logits with log</td><td><a href="{{ skl('sklearn/calibration.py', 1070, 1215) }}">calibration.py</a></td></tr>
+      <tr><td><code>IsotonicRegression(out_of_bounds="clip")</code></td><td>step thresholds <code>X_thresholds_</code>, <code>y_thresholds_</code></td><td>The isotonic calibrator; interpolates linearly between steps</td><td><a href="{{ skl('sklearn/calibration.py', 726, 737) }}">calibration.py</a></td></tr>
+      <tr><td><code>_inplace_contiguous_isotonic_regression</code></td><td>y, w of length n</td><td>Pool-adjacent-violators in one pass with backtracking</td><td><a href="{{ skl('sklearn/_isotonic.pyx', 12, 60) }}">_isotonic.pyx</a></td></tr>
+      <tr><td><code>calibration_curve</code></td><td><code>n_bins=5</code>, <code>strategy="uniform"</code></td><td>Returns per-bin accuracy and confidence, dropping empty bins</td><td><a href="{{ skl('sklearn/calibration.py', 1227, 1342) }}">calibration.py</a></td></tr>
+      <tr><td><code>brier_score_loss</code></td><td>scalar</td><td>Mean squared error of the probabilities</td><td><a href="{{ skl('sklearn/metrics/_classification.py', 3713, 3856) }}">_classification.py</a></td></tr>
+      <tr><td><code>log_loss</code></td><td>scalar</td><td>Mean negative log-likelihood</td><td><a href="{{ skl('sklearn/metrics/_classification.py', 3321, 3446) }}">_classification.py</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="overconfidence">Why modern networks are overconfident</h3>
+<p>
+  Guo et al. (2017) found that a 1998 LeNet was well calibrated on CIFAR-100, while a 2016 ResNet, far more
+  accurate, was overconfident: their average confidence exceeds their accuracy. They linked the change
+  to greater depth and width, batch normalization, and training with less weight decay, and observed that test log loss
+  starts to rise while test error keeps falling: the network overfits the loss, not the labels.
+</p>
+<p>
+  The loss explains the incentive. Once a training example is classified correctly, cross-entropy can still be lowered by
+  making its logit larger, without changing any decision. Scaling every logit up shrinks the loss on correct examples
+  toward zero and grows it on wrong ones only linearly, so on a training set the network mostly gets right, growing its
+  logits pays. The result carries over to test data, where more examples are wrong. Temperature scaling undoes exactly
+  this uniform inflation, which is why one parameter fixes so much of it.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-bins">Twenty held-out predictions</h3>
+  <p>
+    A classifier makes {{ cfg.probabilities|length }} predictions on held-out data; {{ cfg.labels|sum }} of the cases are
+    positive (base rate {{ n(ex.base_rate) }}). Grouped into calibration_curve's five uniform bins:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Bin</th><th>Predictions</th><th>Positives</th><th>Confidence</th><th>Accuracy</th><th>Gap</th><th>Weight</th></tr></thead>
+      <tbody>
+        {% for b in orig.bins %}
+          <tr><td>({{ n(b.lo, 1) }}, {{ n(b.hi, 1) }}]</td><td>{{ cfg.probabilities[orig.bins[:loop.index0]|sum(attribute="count"):orig.bins[:loop.index]|sum(attribute="count")]|join(", ") }}</td><td>{{ b.positives }} of {{ b.count }}</td><td>{{ n(b.confidence, 3) }}</td><td>{{ n(b.accuracy, 3) }}</td><td>{{ n(b.gap, 3) }}</td><td>{{ n(b.share) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The top bin is the problem: eight predictions averaging {{ n(orig.bins[4].confidence, 3) }}, of which only
+    {{ orig.bins[4].positives }} were positive ({{ n(orig.bins[4].accuracy) }}). The bottom bin is overconfident the
+    other way, predicting {{ n(orig.bins[0].confidence) }} where {{ n(orig.bins[0].accuracy, 1) }} happened. ECE is
+    {% for b in orig.bins %}{{ n(b.share) }}·{{ n(b.gap, 3) }}{{ " + " if not loop.last else "" }}{% endfor %} =
+    {{ n(orig.ece, 4) }}, and the worst bin's gap (MCE) is {{ n(orig.mce, 3) }}.
+  </p>
+  <p>
+    Compare a model that ignores its input and always says {{ n(ex.base_rate) }}. Every prediction falls in one bin whose
+    accuracy is exactly {{ n(ex.base_rate) }}, so its ECE is {{ n(const.ece) }}: perfectly calibrated. Its AUC is
+    {{ n(const.auc) }}, and the proper scoring rules see through it: Brier {{ n(const.brier, 4) }} and log loss
+    {{ n(const.log_loss, 4) }}, both worse than the real model's {{ n(orig.brier, 4) }} and {{ n(orig.log_loss, 4) }}.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 360" role="img" aria-labelledby="cal-rel-title cal-rel-desc">
+    <title id="cal-rel-title">Reliability diagrams before and after temperature scaling</title>
+    <desc id="cal-rel-desc">
+      Two panels with predicted confidence on the horizontal axis and observed frequency on the vertical axis, both from 0 to 1,
+      and a dashed diagonal for perfect calibration. Bars show each bin's observed frequency and a marker shows its mean
+      confidence. Before: the top bin's bar reaches {{ n(orig.bins[4].accuracy) }} against confidence {{ n(orig.bins[4].confidence, 3) }},
+      well below the diagonal, and the bottom bin's bar is above it; ECE {{ n(orig.ece, 3) }}. After temperature scaling with
+      T = {{ n(ts.temperature) }}, the predictions move inward, the bars sit close to the diagonal, and ECE is
+      {{ n(ex.temperature_report.ece, 3) }}.
+    </desc>
+    {% set W = 250 %}
+    {% set H = 250 %}
+    <g font-size="11" text-anchor="middle">
+      {% for panel in [("before", orig, 70), ("after temperature scaling, T = " ~ n(ts.temperature), ex.temperature_report, 420)] %}
+        {% set x0 = panel[2] %}
+        {% set y0 = 300 %}
+        <text x="{{ x0 + W / 2 }}" y="24" class="ml-label">{{ panel[0] }}</text>
+        <line x1="{{ x0 }}" y1="{{ y0 }}" x2="{{ x0 + W }}" y2="{{ y0 }}" class="d-line"></line>
+        <line x1="{{ x0 }}" y1="{{ y0 }}" x2="{{ x0 }}" y2="{{ y0 - H }}" class="d-line"></line>
+        {% for b in panel[1].bins %}
+          <text x="{{ x0 + b.hi * W }}" y="{{ y0 + 16 }}" class="d-muted">{{ n(b.hi, 1) }}</text>
+          {% if b.count %}
+            <rect x="{{ x0 + b.lo * W + 3 }}" y="{{ "%.1f"|format(y0 - b.accuracy * H) }}" width="{{ W / 5 - 6 }}" height="{{ "%.1f"|format(b.accuracy * H) }}" class="d-box ml-tensor"></rect>
+            <line x1="{{ x0 + b.lo * W + 3 }}" y1="{{ "%.1f"|format(y0 - b.confidence * H) }}" x2="{{ x0 + b.hi * W - 3 }}" y2="{{ "%.1f"|format(y0 - b.confidence * H) }}" class="d-line" style="stroke:var(--jj-amber);stroke-width:3"></line>
+            <text x="{{ x0 + (b.lo + 0.1) * W }}" y="{{ y0 - 6 }}" class="d-muted">n={{ b.count }}</text>
+          {% endif %}
+        {% endfor %}
+        <line x1="{{ x0 }}" y1="{{ y0 }}" x2="{{ x0 + W }}" y2="{{ y0 - H }}" class="d-line ml-dashed"></line>
+        <text x="{{ x0 - 8 }}" y="{{ y0 - H + 4 }}" text-anchor="end" class="d-muted">1</text>
+        <text x="{{ x0 - 8 }}" y="{{ y0 + 4 }}" text-anchor="end" class="d-muted">0</text>
+        <text x="{{ x0 + W / 2 }}" y="{{ y0 + 34 }}" class="d-muted">confidence · ECE {{ n(panel[1].ece, 3) }}</text>
+      {% endfor %}
+      <rect x="250" y="342" width="14" height="10" class="d-box ml-tensor"></rect>
+      <text x="320" y="351">observed frequency</text>
+      <line x1="400" y1="347" x2="416" y2="347" class="d-line" style="stroke:var(--jj-amber);stroke-width:3"></line>
+      <text x="470" y="351">mean confidence</text>
+    </g>
+  </svg>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-recalibrate">Three recalibrators on the same predictions</h3>
+  <p>
+    Each method is fitted on the twenty predictions above and scored on them, to keep the arithmetic visible. In practice
+    the calibrator is fitted on one held-out set and scored on another, and the in-sample numbers below flatter it,
+    isotonic most of all.
+  </p>
+  <p>
+    <strong>Temperature.</strong> Turn each probability back into a logit, z = log(p / (1 − p)), so 0.99 becomes
+    {{ n(ex.logits[-1], 3) }} and 0.05 becomes {{ n(ex.logits[0], 3) }}. Newton's method on the log loss of σ(β·z) converges to
+    β = {{ n(ts.beta, 4) }}, so T = 1/β = {{ n(ts.temperature, 3) }}. Every logit is divided by {{ n(ts.temperature, 2) }}:
+    0.99 becomes {{ n(ts.probabilities[-1], 3) }}, 0.95 becomes {{ n(ts.probabilities[15], 3) }}, 0.05 becomes
+    {{ n(ts.probabilities[0], 3) }}. Nothing crosses 0.5, so the decisions and the AUC are unchanged.
+  </p>
+  <p>
+    <strong>Platt.</strong> With {{ cfg.labels|sum }} positives and {{ cfg.labels|length - cfg.labels|sum }} negatives, the
+    targets are 12/13 = {{ n(pl.target_positive, 3) }} and 1/11 = {{ n(pl.target_negative, 3) }}. Fitting σ(a·z + b) to them gives
+    a = {{ n(pl.a, 4) }} and b = {{ n(pl.b, 4) }} (scikit-learn would store −a and −b). The intercept is almost zero, so this is
+    nearly temperature scaling with T = 1/a = {{ n(1 / pl.a, 2) }}; the smoothed targets pull it a little further toward 0.5,
+    and 0.99 becomes {{ n(pl.probabilities[-1], 3) }}.
+  </p>
+  <p>
+    <strong>Isotonic.</strong> The {{ iso.unique|length }} distinct scores, sorted, have positive rates
+    {% for u in iso.unique %}{{ n(u.mean, 2) }}{{ ", " if not loop.last else "" }}{% endfor %}. That sequence rises and falls,
+    so pool-adjacent-violators merges neighbours {{ iso.merges }} times into {{ iso.steps|length }} monotone steps:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Scores</th><th>Cases</th><th>Calibrated probability</th></tr></thead>
+      <tbody>
+        {% for s in iso.steps %}
+          <tr><td>{{ s.lo }}{{ "–" ~ s.hi if s.hi != s.lo else "" }}</td><td>{{ s.weight }}</td><td>{{ n(s.value, 3) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The result scores perfectly in-sample, ECE {{ n(ex.isotonic_report.ece) }}, because each step is the observed rate of its
+    own cases. But it predicts exactly 0 and 1 at the ends, so a single new mistake there costs infinite log loss, and its
+    ties change the ranking: AUC moves from {{ n(orig.auc, 4) }} to {{ n(ex.isotonic_report.auc, 4) }}. With twenty points
+    isotonic is memorizing; it earns its flexibility only with thousands.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Predictions</th><th>ECE</th><th>MCE</th><th>Brier</th><th>Log loss</th><th>AUC</th><th>Accuracy at 0.5</th></tr></thead>
+      <tbody>
+        {% for row in [("Original", orig), ("Constant " ~ n(ex.base_rate), const), ("Platt", ex.platt_report), ("Temperature", ex.temperature_report), ("Isotonic (in-sample)", ex.isotonic_report)] %}
+          <tr><td>{{ row[0] }}</td><td>{{ n(row[1].ece, 4) }}</td><td>{{ n(row[1].mce, 3) }}</td><td>{{ n(row[1].brier, 4) }}</td><td>{{ n(row[1].log_loss, 4) }}</td><td>{{ n(row[1].auc, 4) }}</td><td>{{ pct(row[1].accuracy) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 340" role="img" aria-labelledby="cal-map-title cal-map-desc">
+    <title id="cal-map-title">The three calibration maps</title>
+    <desc id="cal-map-desc">
+      The model's original probability on the horizontal axis against the calibrated probability on the vertical axis. The
+      dashed diagonal is no change. The temperature map, with T = {{ n(ts.temperature) }}, is a curve flattened toward 0.5 that
+      passes through 0.5 at 0.5. The Platt map is almost the same curve, slightly flatter. The isotonic map is a staircase of
+      {{ iso.steps|length }} steps, from 0 at the lowest scores to 1 at 0.99.
+    </desc>
+    {% set x0 = 90 %}
+    {% set y0 = 300 %}
+    {% set S = 270 %}
+    <g font-size="11" text-anchor="middle">
+      <line x1="{{ x0 }}" y1="{{ y0 }}" x2="{{ x0 + S }}" y2="{{ y0 }}" class="d-line"></line>
+      <line x1="{{ x0 }}" y1="{{ y0 }}" x2="{{ x0 }}" y2="{{ y0 - S }}" class="d-line"></line>
+      <line x1="{{ x0 }}" y1="{{ y0 }}" x2="{{ x0 + S }}" y2="{{ y0 - S }}" class="d-line ml-dashed"></line>
+      {% for t in [0, 0.5, 1] %}
+        <text x="{{ x0 + t * S }}" y="{{ y0 + 16 }}" class="d-muted">{{ t }}</text>
+        <text x="{{ x0 - 8 }}" y="{{ y0 - t * S + 4 }}" text-anchor="end" class="d-muted">{{ t }}</text>
+      {% endfor %}
+      <text x="{{ x0 + S / 2 }}" y="{{ y0 + 34 }}" class="d-muted">original probability</text>
+      <text x="{{ x0 - 40 }}" y="{{ y0 - S / 2 }}" class="d-muted" transform="rotate(-90 {{ x0 - 40 }} {{ y0 - S / 2 }})">calibrated probability</text>
+      <polyline fill="none" class="d-line" style="stroke:var(--jj-amber);stroke-width:2" points="{% for m in ex.maps %}{{ "%.1f,%.1f"|format(x0 + m.p * S, y0 - m.temperature * S) }} {% endfor %}"></polyline>
+      <polyline fill="none" class="d-line ml-dashed" style="stroke:var(--jj-green);stroke-width:2" points="{% for m in ex.maps %}{{ "%.1f,%.1f"|format(x0 + m.p * S, y0 - m.platt * S) }} {% endfor %}"></polyline>
+      {% for s in iso.steps %}
+        {% set nxt = iso.steps[loop.index].lo if not loop.last else s.hi %}
+        <line x1="{{ "%.1f"|format(x0 + s.lo * S) }}" y1="{{ "%.1f"|format(y0 - s.value * S) }}" x2="{{ "%.1f"|format(x0 + nxt * S) }}" y2="{{ "%.1f"|format(y0 - s.value * S) }}" class="d-line" style="stroke:var(--jj-accent);stroke-width:2"></line>
+        {% if not loop.last %}
+          <line x1="{{ "%.1f"|format(x0 + nxt * S) }}" y1="{{ "%.1f"|format(y0 - s.value * S) }}" x2="{{ "%.1f"|format(x0 + nxt * S) }}" y2="{{ "%.1f"|format(y0 - iso.steps[loop.index].value * S) }}" class="d-line" style="stroke:var(--jj-accent);stroke-width:2"></line>
+        {% endif %}
+      {% endfor %}
+      <g text-anchor="start">
+        <line x1="420" y1="90" x2="450" y2="90" class="d-line" style="stroke:var(--jj-amber);stroke-width:2"></line>
+        <text x="460" y="94">temperature, T = {{ n(ts.temperature) }}</text>
+        <line x1="420" y1="120" x2="450" y2="120" class="d-line ml-dashed" style="stroke:var(--jj-green);stroke-width:2"></line>
+        <text x="460" y="124">Platt, a = {{ n(pl.a, 3) }}, b = {{ n(pl.b, 3) }}</text>
+        <line x1="420" y1="150" x2="450" y2="150" class="d-line" style="stroke:var(--jj-accent);stroke-width:2"></line>
+        <text x="460" y="154">isotonic, {{ iso.steps|length }} steps</text>
+        <line x1="420" y1="180" x2="450" y2="180" class="d-line ml-dashed"></line>
+        <text x="460" y="184">no change</text>
+        <text x="420" y="230" class="d-muted">all three are monotone, so they</text>
+        <text x="420" y="246" class="d-muted">relabel the scores without</text>
+        <text x="420" y="262" class="d-muted">reordering them (isotonic ties aside)</text>
+      </g>
+    </g>
+  </svg>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-inflation">What a larger logit buys</h3>
+  <p>
+    Take an example with logit {{ n(cfg.margin, 0) }} and multiply the logit by k. Its loss if the label agrees, −log σ(kz),
+    and if it doesn't, −log σ(−kz):
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>k</th><th>Logit</th><th>Probability</th><th>Loss if right</th><th>Loss if wrong</th></tr></thead>
+      <tbody>
+        {% for r in ex.overconfidence %}
+          <tr><td>{{ r.scale }}</td><td>{{ n(r.logit, 0) }}</td><td>{{ "%.6f"|format(1 / (1 + 2.718281828459045 ** (-r.logit))) }}</td><td>{{ "%.2e"|format(r.correct) }}</td><td>{{ n(r.wrong, 3) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The two losses always differ by exactly the logit. Doubling from k = 1 to 2 saves {{ n(ex.overconfidence[0].correct - ex.overconfidence[1].correct, 3) }}
+    on each correct example and costs {{ n(ex.overconfidence[1].wrong - ex.overconfidence[0].wrong, 3) }} on each wrong one,
+    so on a training set where more than about {{ pct((ex.overconfidence[1].wrong - ex.overconfidence[0].wrong) / (ex.overconfidence[1].wrong - ex.overconfidence[0].wrong + ex.overconfidence[0].correct - ex.overconfidence[1].correct)) }}
+    of such examples are right, the larger logits lower the training loss. A network that fits its training set well is
+    pushed toward confidence it cannot back up on new data.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  Calibrating a fitted classifier on a held-out set with scikit-learn, and checking it on a third split. Wrapping the model
+  in <code>FrozenEstimator</code> tells <code>CalibratedClassifierCV</code> not to refit it, so <code>ensemble="auto"</code>
+  resolves to <code>False</code> and the calibrator is fitted on all of the calibration data.
+</p>
+<pre><code>from sklearn.calibration import CalibratedClassifierCV, calibration_curve
+from sklearn.frozen import FrozenEstimator
+from sklearn.metrics import brier_score_loss, log_loss
+
+model.fit(X_train, y_train)                       # any classifier
+
+calibrated = CalibratedClassifierCV(FrozenEstimator(model), method="temperature")
+calibrated.fit(X_cal, y_cal)                      # data the model never saw
+
+for name, clf in [("raw", model), ("calibrated", calibrated)]:
+    p = clf.predict_proba(X_test)[:, 1]
+    frac_pos, mean_pred = calibration_curve(y_test, p, n_bins=10, strategy="quantile")
+    ece = abs(frac_pos - mean_pred).mean()        # equal-count bins, so a plain mean
+    print(name, brier_score_loss(y_test, p), log_loss(y_test, p), ece)</code></pre>
+<p>
+  With quantile bins every bin holds about the same number of predictions, so the unweighted mean of the gaps is the ECE;
+  with uniform bins it would need the bin counts. In PyTorch, temperature scaling is a single learnable scalar: collect
+  validation logits once, then minimize <code>F.cross_entropy(logits / T, labels)</code> over T and divide by T at inference.
+  Swap <code>"temperature"</code> for <code>"sigmoid"</code> on small calibration sets with a binary model that is biased toward
+  one class, and for <code>"isotonic"</code> only with thousands of calibration examples.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Platt vs isotonic vs temperature.</strong> Platt and temperature scaling have one or two parameters and are hard
+    to overfit, but can only apply a sigmoid-shaped correction. Isotonic fits any monotone distortion but needs much more data,
+    produces ties, and can output exact 0 and 1. Temperature scaling is the default for neural networks and multiclass models;
+    Platt's extra intercept helps when the model is biased toward one class.</li>
+  <li><strong>Calibration data.</strong> Every example spent on calibration is one not spent on training. Cross-validated
+    calibration (<code>CalibratedClassifierCV</code> with <code>cv</code>) reuses the data at the cost of fitting several models.</li>
+  <li><strong>ECE vs proper scores.</strong> ECE isolates calibration but depends on the bins and can be zero for a useless model;
+    Brier and log loss can't be gamed but mix calibration with discrimination. Report both.</li>
+  <li><strong>Average vs subgroup calibration.</strong> A model can be calibrated overall and miscalibrated for a subgroup or a
+    slice of the input space. Check reliability diagrams per important segment.</li>
+  <li><strong>Shift.</strong> Calibration holds for the distribution it was fitted on. When inputs or the base rate change, it
+    degrades first, often before accuracy does, so it needs monitoring and refitting.</li>
+  <li><strong>Resampling and class weights.</strong> Training on rebalanced data (see
+    <a href="/ml-models/class-imbalance">class imbalance</a>) deliberately shifts the probabilities toward the minority class;
+    recalibrate on data with the real base rate.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>A model predicts the base rate for everyone. What are its ECE and AUC?</summary>
+  <p>ECE 0, since its one bin's accuracy equals its confidence, and AUC 0.5, since it can't rank. Calibration alone does not make
+    a model useful; that is why Brier and log loss are reported alongside it.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does temperature scaling never change accuracy?</summary>
+  <p>Dividing all logits by the same positive T keeps their order, so the argmax, and for binary models the side of 0.5, is the
+    same. It only changes how confident the model is.</p>
+</details>
+<details class="ml-quiz">
+  <summary>You fit isotonic calibration on 200 examples and its validation ECE is near zero. Should you trust it?</summary>
+  <p>Not if that is the same data it was fitted on: isotonic matches its own data almost by construction. Score it on a separate
+    split, and with 200 examples prefer Platt or temperature scaling.</p>
+</details>
+<details class="ml-quiz">
+  <summary>A model was trained on data rebalanced to 50% positives; the real rate is 5%. What happens to its probabilities?</summary>
+  <p>They are far too high for the real population, even though ranking is fine. Recalibrate on data with the real base rate, or
+    correct the odds by the ratio of real to training prior odds.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Guo, Pleiss, Sun and Weinberger. <em>On Calibration of Modern Neural Networks.</em> ICML 2017.
+    <a href="https://arxiv.org/abs/1706.04599">arXiv:1706.04599</a></li>
+  <li>Platt. <em>Probabilistic Outputs for Support Vector Machines and Comparisons to Regularized Likelihood Methods.</em> In
+    Advances in Large Margin Classifiers, MIT Press, 2000.</li>
+  <li>Zadrozny and Elkan. <em>Transforming Classifier Scores into Accurate Multiclass Probability Estimates.</em> KDD 2002.</li>
+  <li>Niculescu-Mizil and Caruana. <em>Predicting Good Probabilities with Supervised Learning.</em> ICML 2005.</li>
+  <li>Brier. <em>Verification of Forecasts Expressed in Terms of Probability.</em> Monthly Weather Review, 1950.</li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/calibration.py', 74, 597) }}"><code>CalibratedClassifierCV</code></a>,
+    <a href="{{ skl('sklearn/calibration.py', 1227, 1342) }}"><code>calibration_curve</code></a>,
+    <a href="{{ skl('sklearn/isotonic.py', 181, 515) }}"><code>IsotonicRegression</code></a>,
+    <a href="{{ skl('sklearn/metrics/_classification.py', 3713, 3856) }}"><code>brier_score_loss</code></a>.</li>
+</ul>

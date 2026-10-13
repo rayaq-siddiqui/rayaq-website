@@ -434,7 +434,7 @@ PAGES = [
             "sklearn:sklearn/calibration.py",
             "sklearn:sklearn/metrics/_classification.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "uncertainty",
