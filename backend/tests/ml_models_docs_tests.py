@@ -4530,3 +4530,14 @@ def test_latency_fanout_tail():
     assert slow[1] == pytest.approx(0.01)
     assert slow[10] == pytest.approx(0.0956, abs=1e-4)
     assert slow[100] == pytest.approx(0.634, abs=1e-3)
+
+
+def test_latency_roofline_points_sit_under_the_roof():
+    ex = ml_models_docs.latency_example()
+    gpu = ex["example"]["gpu"]
+    for point in ex["roofline"]:
+        roof = min(gpu["flops"], gpu["bandwidth"] * point["intensity"]) / 1e12
+        assert point["tflops"] == pytest.approx(roof, rel=1e-6), point["label"]
+        assert 60 <= point["x"] <= 680 and 20 <= point["y"] <= 200
+    assert ex["roofline"][-1]["label"] == "prefill"
+    assert ex["roofline"][-1]["tflops"] == pytest.approx(989, rel=1e-6)

@@ -11096,6 +11096,12 @@ def lt_fanout_slow(p_slow, width):
     return 1 - (1 - p_slow) ** width
 
 
+def lt_roofline_xy(intensity, flops_per_s, width=620, height=180, max_intensity=3000):
+    x = 60 + width * math.log10(intensity) / math.log10(max_intensity)
+    y = 200 - height * (math.log10(flops_per_s) - 12) / 3
+    return round(x, 1), round(y, 1)
+
+
 @functools.lru_cache(maxsize=None)
 def latency_example():
     e = LATENCY_EXAMPLE
@@ -11115,6 +11121,13 @@ def latency_example():
         "little": [lt_little_fixed_point(r, e["context"], e["prompt"], e["output"], max_batch) for r in e["rates"]],
         "queue": [lt_queue_summary(q["service_ms"], u, q["requests"], q["seed"]) for u in q["utilizations"]],
         "fanout": [{"width": w, "slow": lt_fanout_slow(e["fanout"]["p_slow"], w)} for w in e["fanout"]["widths"]],
+        "roofline": [
+            dict(zip(("x", "y"), lt_roofline_xy(p["intensity"], p["flops"] / (p["ms"] / 1000))),
+                 label=p["label"], intensity=p["intensity"], tflops=p["flops"] / (p["ms"] / 1000) / 1e12)
+            for p in [{"label": f"B={d['batch']}", "intensity": d["intensity"], "flops": d["flops"], "ms": d["itl_ms"]}
+                      for d in decode] + [{"label": "prefill", "intensity": prefill["intensity"],
+                                           "flops": prefill["flops"], "ms": prefill["ms"]}]
+        ],
         "max_stable_rate": max(r for r in range(1, 60)
                                if lt_little_fixed_point(r, e["context"], e["prompt"], e["output"], max_batch)["stable"]),
     }
