@@ -9547,7 +9547,7 @@ def padded_batches(lengths, batch_size):
     return {"batches": batches, "slots": slots, "real": sum(lengths), "efficiency": sum(lengths) / slots}
 
 
-def pack_sequences(lengths, context):
+def pack_into_rows(lengths, context):
     rows = []
     for length in sorted(lengths, reverse=True):
         for row in rows:
@@ -9626,7 +9626,7 @@ def data_example():
         "example": e,
         "shuffled": padded_batches(lengths, e["batch_size"]),
         "bucketed": padded_batches(sorted(lengths), e["batch_size"]),
-        "packed": pack_sequences(lengths, e["context"]),
+        "packed": pack_into_rows(lengths, e["context"]),
         "lengths": {n: loader_length(e["dataset_size"], e["loader_batch_size"], d) for n, d in (("keep", False), ("drop", True))},
         "shards": distributed_shards(e["dataset_size"], e["replicas"]),
         "shards_drop": distributed_shards(e["dataset_size"], e["replicas"], drop_last=True),
