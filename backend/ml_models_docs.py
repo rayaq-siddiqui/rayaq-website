@@ -448,7 +448,7 @@ PAGES = [
             "sklearn:sklearn/ensemble/_bagging.py",
             "pytorch:torch/nn/modules/dropout.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "linear-regression",

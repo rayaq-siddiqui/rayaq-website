@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-13 (thirty-seventh run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-76, the last being `online-learning`.
-The next page is `uncertainty` (queue item 77).
+fixed page format. Ready pages: queue items 1-77, the last being `uncertainty`.
+The next page is `vision-transformer` (queue item 78).
 
 ## Pins
 
@@ -333,8 +333,8 @@ Gaps:
 74. `gradient-accumulation` ✓
 75. `latency-and-throughput` ✓
 76. `online-learning` ✓
-77. `uncertainty` ← next
-78. `vision-transformer`
+77. `uncertainty` ✓
+78. `vision-transformer` ← next
 79. `diffusion-unet`
 80. `fine-tuning`
 81. `two-tower-models`

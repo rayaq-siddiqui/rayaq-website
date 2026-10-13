@@ -1,0 +1,444 @@
+{% set ex = uncertainty_example() %}
+{% set e = ex.example %}
+{% set d = e.data %}
+{% set c = e.conformal %}
+{% set b = e.bootstrap %}
+{% set dr = e.dropout %}
+{% set boot = ex.bootstrap %}
+{% set probes = ex.probes %}
+{% macro n(x, d=2) -%}{{ ("%." ~ d ~ "f")|format(x) }}{%- endmacro %}
+{% macro pct(x, d=1) -%}{{ ("%." ~ d ~ "f")|format(100 * x) }}%{%- endmacro %}
+<header class="jj-header">
+  <h1>Uncertainty</h1>
+  <p class="tagline">
+    A prediction without an error bar invites people to trust it equally everywhere. This page separates the
+    noise a model can never remove (aleatoric uncertainty) from the ignorance more data would cure (epistemic
+    uncertainty), then builds error bars four ways: bootstrap confidence intervals, ensembles, Monte Carlo dropout,
+    and conformal prediction, the one method that comes with a coverage guarantee.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A model predicts that a house will sell for $612,000. Is that ±$5,000 or ±$200,000? A triage model says a scan is
+  benign. Did it see thousands of scans like this one, or is this a scanner it has never met? A point prediction
+  hides both questions, and the cost of an error usually depends on them: you can act on a confident prediction,
+  but an uncertain one should go to a person, trigger more measurement, or be refused.
+</p>
+<p>
+  <a href="/ml-models/calibration">Calibration</a> makes a classifier's probabilities honest on average. It does not say
+  which inputs are unfamiliar, it does not give regression models an interval, and it is itself an estimate from a
+  finite validation set. Uncertainty quantification fills those gaps.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Imagine predicting tomorrow's temperature. Even a perfect forecaster cannot say it will be exactly 18.3 °C: the
+  weather is noisy. That irreducible spread is <strong>aleatoric</strong> uncertainty (Latin <em>alea</em>, dice). Now
+  imagine forecasting for a town you have no records for. The extra doubt comes from your own ignorance, and data
+  from that town would remove it. That is <strong>epistemic</strong> uncertainty (Greek <em>episteme</em>, knowledge).
+</p>
+<p>
+  A practical test for epistemic uncertainty: train several reasonable models and see whether they agree. Where the
+  training data were dense, they agree; where there were none, each fills the gap its own way and they disagree. The
+  spread of their predictions measures what the data failed to pin down. Aleatoric uncertainty shows up instead as the
+  noise each model expects around its own prediction.
+</p>
+<p>
+  Conformal prediction takes a different, almost accountant-like view. It does not ask why the model is wrong. It holds
+  back some labelled data, looks at how wrong the model was on it, and widens every future prediction by the
+  error size that covered, say, 90% of those held-back cases. If future data look like the held-back data, about 90%
+  of future intervals will contain the truth, whatever the model is.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 240" role="img" aria-labelledby="unc-fan-title unc-fan-desc">
+    <title id="unc-fan-title">An ensemble's predictions agree inside the training data and fan out beyond it</title>
+    <desc id="unc-fan-desc">
+      Scatter of {{ e.plot.shown_points }} training points of y = sin(x) plus noise, for x between {{ d.lo }} and {{ d.hi }}; the
+      noise grows from left to right. The true curve sin(x) is dashed. Five cubic fits, each trained on a bootstrap
+      resample, lie on top of each other inside the training range and spread apart to the right of x = {{ d.hi }}, where
+      there are no data. A shaded band of plus or minus two total standard deviations widens slowly inside the data,
+      because of noise, and quickly outside it, because the members disagree. Even so, at x = 3 the true value sits right at
+      the edge of the band.
+    </desc>
+    <g font-size="11">
+      <rect x="{{ ex.train_edge }}" y="30" width="{{ 660 - ex.train_edge }}" height="170" class="d-box ml-dashed" style="fill:none"></rect>
+      <text x="{{ ex.train_edge + 6 }}" y="44" class="d-muted">no training data</text>
+      <polygon points="{% for x, y in ex.band %}{{ x }},{{ y }} {% endfor %}" style="fill:var(--jj-accent);fill-opacity:0.15;stroke:none"></polygon>
+      <line x1="60" y1="30" x2="60" y2="200" class="d-line"></line>
+      <line x1="60" y1="200" x2="660" y2="200" class="d-line"></line>
+      <text x="54" y="34" text-anchor="end" class="d-muted">{{ e.plot.y_hi }}</text>
+      <text x="54" y="204" text-anchor="end" class="d-muted">{{ e.plot.y_lo }}</text>
+      {% for tick in [-3, -2, -1, 0, 1, 2, 3] %}
+        <text x="{{ 60 + 100 * (tick + 3) }}" y="214" text-anchor="middle" class="d-muted">{{ tick }}</text>
+      {% endfor %}
+      <text x="360" y="232" text-anchor="middle" class="d-muted">x</text>
+      {% for x, y in ex.points %}<circle cx="{{ x }}" cy="{{ y }}" r="2" style="fill:var(--jj-muted)"></circle>{% endfor %}
+      {% for pts in ex.member_points %}
+        <polyline fill="none" class="d-line" style="stroke:var(--jj-accent);stroke-width:1.2;stroke-opacity:0.8" points="{% for x, y in pts %}{{ x }},{{ y }} {% endfor %}"></polyline>
+      {% endfor %}
+      <polyline fill="none" class="d-line ml-dashed" style="stroke:var(--jj-amber);stroke-width:2" points="{% for x, y in ex.truth_points %}{{ x }},{{ y }} {% endfor %}"></polyline>
+      <text x="80" y="60" style="fill:var(--jj-amber)">true sin(x)</text>
+      <text x="80" y="76" style="fill:var(--jj-accent)">5 members, ±2σ band</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="mechanics-decomposition">Two kinds of uncertainty</h3>
+<p>
+  Write the model's parameters as θ and the training data as <em>D</em>. A Bayesian predictive distribution averages
+  over every plausible θ (see <a href="/ml-models/bayes-rule">Bayes' rule</a>):
+</p>
+<p class="ml-formula">p(y | x, D) = ∫ p(y | x, θ) p(θ | D) dθ</p>
+<p>
+  If each θ gives a Gaussian with mean μ<sub>θ</sub>(x) and variance σ²<sub>θ</sub>(x), the law of total variance splits the
+  predictive variance in two:
+</p>
+<p class="ml-formula">Var[y | x] = E<sub>θ</sub>[σ²<sub>θ</sub>(x)] + Var<sub>θ</sub>[μ<sub>θ</sub>(x)] = aleatoric + epistemic</p>
+<p>
+  The first term is the noise the models expect; the second is how much they disagree. For classification the same
+  split uses entropy: the entropy of the averaged probabilities equals the average entropy of each model (aleatoric)
+  plus the mutual information between the label and θ (epistemic). The exact posterior p(θ | D) is out of reach for
+  neural networks, so the practical methods below each approximate it with a handful of samples.
+</p>
+
+<h3 id="mechanics-bootstrap">Bootstrap confidence intervals</h3>
+<p>
+  The bootstrap (Efron, 1979) estimates the sampling distribution of any statistic by resampling the data <em>n</em>
+  times with replacement, recomputing the statistic on each resample, and reading off quantiles. The
+  <strong>percentile interval</strong> takes the 2.5th and 97.5th percentiles of the resampled statistics. It answers
+  "how precisely do I know this number?", for example a test-set metric, which matters whenever two models are
+  compared on a few hundred examples. Each resample leaves out about 1/e ≈ 37% of the points, which is where the
+  <a href="/ml-models/random-forests">random forest</a>'s out-of-bag estimate comes from.
+</p>
+
+<h3 id="mechanics-ensembles">Ensembles and bagging</h3>
+<p>
+  <strong>Deep ensembles</strong> (Lakshminarayanan, Pritzel and Blundell, 2017) train <em>M</em> networks (5 is common)
+  from different random initializations, each with a mean and a variance head trained by Gaussian negative log
+  likelihood, and combine them as a mixture with the decomposition above. They are simple, parallel, and in large
+  comparisons are among the most reliable methods under dataset shift (Ovadia et al., 2019), at <em>M</em> times the
+  training and serving cost. <strong>Bagging</strong> gets diversity from bootstrap resamples instead.
+  scikit-learn's <code>BaggingRegressor</code> draws each member's rows with
+  <a href="{{ skl('sklearn/ensemble/_bagging.py', 51, 61) }}"><code>_generate_indices</code></a> (<code>randint(0, n, n)</code>
+  when <code>bootstrap=True</code>), and its
+  <a href="{{ skl('sklearn/ensemble/_bagging.py', 1384, 1446) }}"><code>predict</code></a> returns only the mean
+  (<code>sum(all_y_hat) / n_estimators</code>); to get the spread, loop over <code>estimators_</code> yourself.
+</p>
+
+<h3 id="mechanics-dropout">Monte Carlo dropout</h3>
+<p>
+  <a href="/ml-models/regularization">Dropout</a> zeroes each activation with probability <em>p</em> during training and scales the
+  survivors by 1/(1 − <em>p</em>).
+  <a href="{{ src('torch/nn/modules/dropout.py', 35, 73) }}"><code>nn.Dropout.forward</code></a> passes
+  <code>self.training</code> to <a href="{{ src('torch/nn/functional.py', 1473, 1498) }}"><code>F.dropout</code></a>, so in
+  <code>eval()</code> mode it is the identity. <strong>MC dropout</strong> (Gal and Ghahramani, 2016) leaves dropout on at test
+  time, runs <em>T</em> stochastic forward passes, and treats their mean and spread as an approximate posterior
+  predictive: each mask is one sample of a thinned network. It costs <em>T</em> forward passes but no retraining. The spread
+  depends on <em>p</em>, which was chosen for regularization, not for calibrated uncertainty, so check it on held-out data.
+</p>
+
+<h3 id="mechanics-conformal">Conformal prediction</h3>
+<p>
+  <strong>Split conformal prediction</strong> (Vovk, Gammerman and Shafer, 2005; Angelopoulos and Bates, 2021) wraps any
+  trained model:
+</p>
+<ol>
+  <li>Hold out <em>n</em> labelled calibration points the model did not train on.</li>
+  <li>Compute a nonconformity score on each, for regression <em>s<sub>i</sub></em> = |<em>y<sub>i</sub></em> − <em>ŷ</em>(<em>x<sub>i</sub></em>)|.</li>
+  <li>Let <em>q̂</em> be the <em>k</em>-th smallest score with <em>k</em> = ⌈(<em>n</em> + 1)(1 − α)⌉.</li>
+  <li>For a new <em>x</em>, predict the interval [<em>ŷ</em>(<em>x</em>) − <em>q̂</em>, <em>ŷ</em>(<em>x</em>) + <em>q̂</em>].</li>
+</ol>
+<p>
+  If the calibration and test points are exchangeable (for example i.i.d.), the new score is equally likely to fall in any
+  of the <em>n</em> + 1 rank positions, so
+</p>
+<p class="ml-formula">1 − α ≤ P(y<sub>new</sub> ∈ C(x<sub>new</sub>)) ≤ 1 − α + 1/(n + 1)</p>
+<p>
+  (the upper bound holds when scores have no ties). The "+1" in the rank is the finite-sample correction that makes this
+  exact. The guarantee is <strong>marginal</strong>: averaged over all <em>x</em>, not for each <em>x</em>. A constant-width
+  interval over-covers easy inputs and under-covers hard ones. Dividing the score by an estimated spread,
+  <em>s</em> = |<em>y</em> − <em>ŷ</em>| / σ̂(<em>x</em>), gives intervals ±<em>q̂</em>·σ̂(<em>x</em>) that adapt to the input;
+  conformalized quantile regression (Romano, Patterson and Candès, 2019) does the same with predicted quantiles. For
+  classification, the set of classes whose score 1 − <em>p̂</em>(<em>y</em> | <em>x</em>) is at most <em>q̂</em> covers the true
+  label with the same guarantee.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>_generate_indices</code></td><td><code>bootstrap=True</code> → <code>randint(0, n_population, n_samples)</code></td><td>Draws one bootstrap resample of row indices.</td><td><a href="{{ skl('sklearn/ensemble/_bagging.py', 51, 61) }}">_bagging.py 51–61</a></td></tr>
+      <tr><td><code>BaseBagging.__init__</code></td><td><code>n_estimators=10</code>, <code>max_samples=None</code>, <code>bootstrap=True</code>, <code>oob_score=False</code></td><td>Shared settings for bagging classifiers and regressors.</td><td><a href="{{ skl('sklearn/ensemble/_bagging.py', 294, 321) }}">294–321</a></td></tr>
+      <tr><td><code>BaggingRegressor</code></td><td><code>estimators_</code>: list of fitted members</td><td>Bagged regressors; members are available for spread estimates.</td><td><a href="{{ skl('sklearn/ensemble/_bagging.py', 1192, 1480) }}">1192–1480</a></td></tr>
+      <tr><td><code>BaggingRegressor.predict</code></td><td><code>X</code> [n, d] → [n]</td><td>Mean of member predictions only.</td><td><a href="{{ skl('sklearn/ensemble/_bagging.py', 1384, 1446) }}">1384–1446</a></td></tr>
+      <tr><td><code>oob_prediction_</code></td><td>[n]</td><td>Each training row predicted by members that never saw it.</td><td><a href="{{ skl('sklearn/ensemble/_bagging.py', 1448, 1474) }}">1448–1474</a></td></tr>
+      <tr><td><code>nn.Dropout</code></td><td><code>p=0.5</code>, <code>inplace=False</code>; any shape</td><td>Zero with probability <em>p</em>, scale by 1/(1 − <em>p</em>), identity in <code>eval()</code>.</td><td><a href="{{ src('torch/nn/modules/dropout.py', 17, 73) }}">dropout.py 17–73</a></td></tr>
+      <tr><td><code>F.dropout</code></td><td><code>p</code>, <code>training</code>, <code>inplace</code></td><td>The functional form; <code>training=True</code> forces MC dropout.</td><td><a href="{{ src('torch/nn/functional.py', 1473, 1498) }}">functional.py 1473–1498</a></td></tr>
+      <tr><td>conformal quantile</td><td>rank <em>k</em> = ⌈(<em>n</em>+1)(1−α)⌉</td><td>Interval half-width covering 1 − α of future points.</td><td>Angelopoulos and Bates (2021)</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  Data: <em>x</em> uniform on [{{ d.lo }}, {{ d.hi }}], <em>y</em> = sin(<em>x</em>) + Gaussian noise whose standard deviation grows linearly from
+  {{ d.noise_lo }} at the left edge to {{ d.noise_hi }} at the right. There are {{ d.n_train }} training, {{ d.n_cal }} calibration and
+  {{ d.n_test }} test points, all from the same distribution. Every number comes from tested helpers in
+  <code>ml_models_docs.py</code> with fixed seeds.
+</p>
+
+<div class="ml-worked">
+  <h3 id="worked-ensemble">Aleatoric and epistemic, from an ensemble</h3>
+  <p>
+    {{ e.members }} members, each fitted to its own bootstrap resample of the training set. A member is a cubic least-squares
+    fit for the mean plus a straight-line fit to its absolute residuals for the noise scale (dividing by √(2/π) turns a mean
+    absolute residual into a standard deviation). At five inputs, two of them beyond the training range:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>x</th><th>Member means</th><th>Ensemble mean</th><th>True sin(x)</th><th>Aleatoric σ²</th><th>Epistemic σ²</th><th>Total σ</th></tr></thead>
+      <tbody>
+        {% for r in probes %}
+          <tr><td>{{ r.x }}</td><td>{% for m in r.means %}{{ n(m) }}{{ ", " if not loop.last }}{% endfor %}</td><td>{{ n(r.mean, 3) }}</td><td>{{ n(r.truth, 3) }}</td><td>{{ n(r.aleatoric, 4) }}</td><td>{{ n(r.epistemic, 4) }}</td><td>{{ n(r.total ** 0.5, 3) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Inside the data the members agree to within about 0.1, and almost all the variance is aleatoric: at <em>x</em> = {{ probes[0].x }} the
+    estimated noise σ is {{ n(probes[0].aleatoric ** 0.5, 3) }} (the true value is {{ n(d.noise_lo + (d.noise_hi - d.noise_lo) * (probes[0].x - d.lo) / (d.hi - d.lo), 3) }}),
+    at <em>x</em> = {{ probes[2].x }} it is {{ n(probes[2].aleatoric ** 0.5, 3) }} (true {{ n(d.noise_lo + (d.noise_hi - d.noise_lo) * (probes[2].x - d.lo) / (d.hi - d.lo), 3) }}).
+    More data would not shrink these. Beyond the training range the member means scatter from
+    {{ n(probes[4].means|min) }} to {{ n(probes[4].means|max) }} at <em>x</em> = {{ probes[4].x }}, and epistemic variance rises from
+    {{ n(probes[2].epistemic, 4) }} to {{ n(probes[4].epistemic, 4) }}. Data in that region would shrink it.
+  </p>
+  <p>
+    It still is not enough. At <em>x</em> = {{ probes[4].x }} the truth, {{ n(probes[4].truth, 2) }}, is
+    {{ n((probes[4].truth - probes[4].mean) / probes[4].total ** 0.5, 1) }} total standard deviations from the ensemble mean: all
+    five cubics share the same wrong assumption about what lies beyond the data. Ensembles detect disagreement, not a shared
+    bias, and five samples are a coarse picture of the posterior. The same blind spot shows inside the data: at <em>x</em> = {{ probes[2].x }}
+    the cubic's mean, {{ n(probes[2].mean, 2) }}, misses sin({{ probes[2].x }}) = {{ n(probes[2].truth, 2) }} by more than the members' spread.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-bootstrap">A bootstrap interval for a test metric</h3>
+  <p>
+    The single cubic model's mean absolute error on the first {{ b.n_test }} test points is {{ n(boot.mean, 3) }}. Resampling those
+    {{ b.n_test }} errors {{ b.resamples }} times with replacement and taking the 2.5th and 97.5th percentiles of the resampled means gives
+    the {{ (100 * b.level)|int }}% interval [{{ n(boot.lo, 3) }}, {{ n(boot.hi, 3) }}]. The bootstrap standard error is
+    {{ n(boot.boot_se, 4) }}, close to the formula s/√n = {{ n(boot.se, 4) }}, and the normal interval mean ± 1.96·s/√n =
+    [{{ n(boot.normal_lo, 3) }}, {{ n(boot.normal_hi, 3) }}] nearly matches. With only {{ b.n_test }} test points the metric is known to about
+    ±{{ n(100 * (boot.hi - boot.lo) / 2 / boot.mean, 0) }}%, so a competing model would need to beat it by more than that to be clearly better.
+    The bootstrap earns its keep for statistics without a simple formula: a median, an AUC, a difference of F1 scores.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-dropout">Monte Carlo dropout on one layer</h3>
+  <p>
+    A hidden layer outputs <em>h</em> = [{{ dr.hidden|join(", ") }}] and the output weights are
+    <em>w</em> = [{{ dr.weights|join(", ") }}]. In <code>eval()</code> mode the output is <em>w</em>·<em>h</em> =
+    {{ n(ex.dropout_deterministic, 3) }}. With dropout <em>p</em> = {{ dr.p }} left on, each pass draws a mask and scales survivors by
+    1/(1 − {{ dr.p }}) = {{ n(1 / (1 - dr.p), 2) }}:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Pass</th><th>Mask</th><th>Output</th></tr></thead>
+      <tbody>
+        {% for s in ex.dropout_shown %}
+          <tr><td>{{ loop.index }}</td><td>{{ s.mask|join(" ") }}</td><td>{{ n(s.output, 4) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Passes T</th><th>MC mean</th><th>MC standard deviation</th></tr></thead>
+      <tbody>
+        {% for r in ex.mc %}
+          <tr><td>{{ r.samples }}</td><td>{{ n(r.mean, 3) }}</td><td>{{ n(r.sd, 3) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The 1/(1 − <em>p</em>) scaling makes each pass unbiased, so the MC mean converges to the eval-mode output
+    {{ n(ex.dropout_deterministic, 3) }}. For a linear read-out the variance is exactly <em>p</em>/(1 − <em>p</em>)·Σ(<em>w<sub>j</sub>h<sub>j</sub></em>)²,
+    a standard deviation of {{ n(ex.dropout_sd, 3) }}, which the 1000-pass estimate matches. Ten passes give a noisy mean
+    ({{ n(ex.mc[0].mean, 3) }}); the MC estimate's own error falls like 1/√<em>T</em>. With nonlinear layers after the dropout, the MC mean
+    no longer equals the eval-mode output.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-conformal">Conformal coverage, by hand and at scale</h3>
+  <p>
+    By hand first, with the first {{ c.small_n }} calibration scores and α = {{ c.small_alpha }}. The scores |<em>y</em> − <em>ŷ</em>| sorted are
+    {% for s in ex.small_sorted %}{{ n(s, 3) }}{{ ", " if not loop.last }}{% endfor %}. The rank is
+    ⌈({{ c.small_n }} + 1)(1 − {{ c.small_alpha }})⌉ = ⌈{{ n((c.small_n + 1) * (1 - c.small_alpha), 1) }}⌉ = {{ ex.small_rank }}, so <em>q̂</em> is the
+    {{ ex.small_rank }}th smallest, {{ n(ex.small_q, 3) }}, and every interval is <em>ŷ</em> ± {{ n(ex.small_q, 3) }}. Because ({{ c.small_n }} + 1)(1 − α) is a whole number here,
+    the lower and upper bounds meet: averaged over calibration sets, coverage is exactly {{ ex.small_rank }}/{{ c.small_n + 1 }} =
+    {{ pct(ex.small_rank / (c.small_n + 1), 0) }} when scores have no ties. Note the
+    naive choice, the 80th percentile of 9 scores, would sit lower and under-cover.
+  </p>
+  <p>
+    Now all {{ d.n_cal }} calibration points with α = {{ c.alpha }}: rank ⌈{{ d.n_cal + 1 }} × {{ 1 - c.alpha }}⌉ = {{ ex.rank }}, so
+    <em>q̂</em> = {{ n(ex.q, 3) }}. On the {{ d.n_test }} test points:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Score</th><th>q̂</th><th>Coverage, all</th><th>x &lt; {{ c.split_at }} (quiet)</th><th>x ≥ {{ c.split_at }} (noisy)</th></tr></thead>
+      <tbody>
+        <tr><td>|y − ŷ|</td><td>{{ n(ex.q, 3) }}</td><td>{{ pct(ex.coverage.all) }}</td><td>{{ pct(ex.coverage.left) }}</td><td>{{ pct(ex.coverage.right) }}</td></tr>
+        <tr><td>|y − ŷ| / σ̂(x)</td><td>{{ n(ex.q_normalized, 3) }}</td><td>{{ pct(ex.coverage_normalized.all) }}</td><td>{{ pct(ex.coverage_normalized.left) }}</td><td>{{ pct(ex.coverage_normalized.right) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Both rows deliver about 90% overall. The constant ±{{ n(ex.q, 2) }} interval does it by over-covering the quiet region
+    ({{ pct(ex.coverage.left) }}) and under-covering the noisy one ({{ pct(ex.coverage.right) }}). Normalizing by the model's own noise
+    estimate σ̂(<em>x</em>) makes the interval narrow where the data are quiet and wide where they are noisy, and brings the two
+    regions to {{ pct(ex.coverage_normalized.left) }} and {{ pct(ex.coverage_normalized.right) }}. The guarantee is the same; the intervals are more useful.
+  </p>
+  <p>
+    The guarantee is about the procedure, averaged over calibration sets. Repeating the whole thing {{ c.repeats }} times with fresh
+    calibration and test draws ({{ c.repeat_test }} test points each), coverage averaged {{ pct(ex.repeat_mean, 2) }}, against the
+    theoretical expectation {{ ex.rank }}/{{ d.n_cal + 1 }} = {{ pct(ex.guarantee_hi, 2) }}. Any single run varied: the middle 90% of runs
+    fell between {{ pct(ex.repeat_p05) }} and {{ pct(ex.repeat_p95) }}, and {{ ex.repeat_below }} of {{ c.repeats }} runs landed below 90%. A larger calibration set
+    tightens that spread; the coverage of one fixed calibration set follows a Beta({{ ex.rank }}, {{ d.n_cal + 1 - ex.rank }}) distribution.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 240" role="img" aria-labelledby="unc-cov-title unc-cov-desc">
+    <title id="unc-cov-title">Coverage of split conformal intervals over {{ c.repeats }} repeated calibration sets</title>
+    <desc id="unc-cov-desc">
+      Histogram of test coverage in {{ c.repeats }} independent runs, each with {{ d.n_cal }} calibration points and target 90%. The bars
+      peak between 90% and 92%, the mean is {{ pct(ex.repeat_mean, 1) }}, marked by a dashed line near the 90% target. Most runs fall
+      between {{ pct(ex.repeat_p05, 0) }} and {{ pct(ex.repeat_p95, 0) }}, with a thin tail of low-coverage runs.
+    </desc>
+    {% set top = ex.histogram|max %}
+    {% set nb = ex.histogram|length %}
+    {% set bw = 600 / nb %}
+    {% set lo = ex.histogram_edges[0] %}
+    {% set span = ex.histogram_edges[-1] - lo %}
+    <g font-size="11">
+      <line x1="60" y1="30" x2="60" y2="200" class="d-line"></line>
+      <line x1="60" y1="200" x2="660" y2="200" class="d-line"></line>
+      {% for count in ex.histogram %}
+        {% set h = 160 * count / top %}
+        <rect x="{{ n(60 + loop.index0 * bw + 2, 1) }}" y="{{ n(200 - h, 1) }}" width="{{ n(bw - 4, 1) }}" height="{{ n(h, 1) }}" class="d-box ml-op"></rect>
+        <text x="{{ n(60 + loop.index0 * bw + bw / 2, 1) }}" y="{{ n(200 - h - 4, 1) }}" text-anchor="middle" class="d-muted">{{ count }}</text>
+      {% endfor %}
+      {% for edge in ex.histogram_edges %}
+        {% if loop.index0 % 2 == 0 %}<text x="{{ n(60 + loop.index0 * bw, 1) }}" y="214" text-anchor="middle" class="d-muted">{{ n(100 * edge, 0) }}%</text>{% endif %}
+      {% endfor %}
+      {% set mx = 60 + 600 * (ex.repeat_mean - lo) / span %}
+      <line x1="{{ n(mx, 1) }}" y1="24" x2="{{ n(mx, 1) }}" y2="200" class="d-line ml-dashed" style="stroke:var(--jj-accent)"></line>
+      <text x="{{ n(mx - 6, 1) }}" y="22" text-anchor="end" style="fill:var(--jj-accent)">mean {{ pct(ex.repeat_mean, 1) }}</text>
+      <text x="360" y="232" text-anchor="middle" class="d-muted">test coverage of one run (target 90%)</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>Split conformal around any scikit-learn regressor, then MC dropout in PyTorch:</p>
+<pre><code>import numpy as np
+from sklearn.ensemble import BaggingRegressor
+
+model = BaggingRegressor(n_estimators=50, random_state=0).fit(X_train, y_train)
+
+# ensemble spread: predict() only returns the mean
+member_preds = np.stack([m.predict(X_test[:, f])
+                         for m, f in zip(model.estimators_, model.estimators_features_)])
+epistemic_sd = member_preds.std(axis=0)
+
+# split conformal, alpha = 0.1
+scores = np.abs(y_cal - model.predict(X_cal))
+n = len(scores)
+k = int(np.ceil((n + 1) * (1 - 0.1)))
+q = np.sort(scores)[k - 1] if k &lt;= n else np.inf
+lower, upper = model.predict(X_test) - q, model.predict(X_test) + q
+
+# MC dropout: dropout layers stay stochastic, everything else in eval mode
+import torch
+net.eval()
+for m in net.modules():
+    if isinstance(m, torch.nn.Dropout):
+        m.train()
+with torch.no_grad():
+    samples = torch.stack([net(x) for _ in range(30)])   # [T, b, out]
+mean, sd = samples.mean(0), samples.std(0)</code></pre>
+<p>
+  Keep normalization layers in <code>eval()</code> while switching only the dropout modules back to training mode: putting the whole net in
+  <code>train()</code> would also make <code>BatchNorm</code> use batch statistics. scikit-learn ships no conformal predictor; MAPIE
+  is the usual library. For classification the analogous conformal step uses <code>1 - predict_proba[range(n), y_cal]</code> as the score.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Conformal</strong> is cheap, model-agnostic and the only method here with a finite-sample guarantee, but the guarantee is
+    marginal and needs exchangeability: under distribution shift or in time series it breaks (weighted and adaptive variants exist). It
+    says nothing about <em>why</em> an interval is wide.</li>
+  <li><strong>Ensembles</strong> are the strongest practical estimate of epistemic uncertainty and improve accuracy too, but cost
+    <em>M</em>× in training, memory and latency. Distillation or sharing a backbone reduces the serving cost.</li>
+  <li><strong>MC dropout</strong> is nearly free to add to an existing model but tends to under-estimate uncertainty, especially far from the
+    data, and its spread depends on a dropout rate chosen for other reasons.</li>
+  <li><strong>The bootstrap</strong> quantifies uncertainty in an estimate (a metric, a coefficient), not in individual predictions, and the
+    percentile interval can be poor for small <em>n</em> or skewed statistics (BCa intervals correct this).</li>
+  <li><strong>Aleatoric versus epistemic</strong> is a modeling distinction: noise from a feature you did not measure looks aleatoric to this
+    model and would become explainable with that feature.</li>
+  <li>None of these methods reliably flags inputs that are far outside the training distribution; out-of-distribution detection is a
+    separate problem, and shared biases (like all five cubics bending the same way) stay invisible.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>You have 99 calibration scores and want 95% coverage. Which sorted score is q̂?</summary>
+  <p>k = ⌈100 × 0.95⌉ = 95, so the 95th smallest of the 99. Coverage is then between 95% and 95/100 = 95%: exactly 95% when scores have no ties.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Doubling the training data shrinks which kind of uncertainty?</summary>
+  <p>Epistemic. The noise around the true function, the aleatoric part, stays the same; the models' disagreement shrinks, most where new data land.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does MC dropout average to the eval-mode output only for a linear layer after the dropout?</summary>
+  <p>Each scaled mask has expectation 1, so E[w·(m⊙h)/(1−p)] = w·h by linearity. A nonlinearity f in between breaks it: E[f(z)] ≠ f(E[z]) in general.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Efron. <em>Bootstrap Methods: Another Look at the Jackknife.</em> Annals of Statistics, 1979.</li>
+  <li>Breiman. <em>Bagging Predictors.</em> Machine Learning, 1996.</li>
+  <li>Lakshminarayanan, Pritzel and Blundell. <em>Simple and Scalable Predictive Uncertainty Estimation using Deep Ensembles.</em> NeurIPS 2017.
+    <a href="https://arxiv.org/abs/1612.01474">arXiv:1612.01474</a></li>
+  <li>Gal and Ghahramani. <em>Dropout as a Bayesian Approximation: Representing Model Uncertainty in Deep Learning.</em> ICML 2016.
+    <a href="https://arxiv.org/abs/1506.02142">arXiv:1506.02142</a></li>
+  <li>Kendall and Gal. <em>What Uncertainties Do We Need in Bayesian Deep Learning for Computer Vision?</em> NeurIPS 2017.
+    <a href="https://arxiv.org/abs/1703.04977">arXiv:1703.04977</a></li>
+  <li>Ovadia et al. <em>Can You Trust Your Model's Uncertainty? Evaluating Predictive Uncertainty Under Dataset Shift.</em> NeurIPS 2019.
+    <a href="https://arxiv.org/abs/1906.02530">arXiv:1906.02530</a></li>
+  <li>Vovk, Gammerman and Shafer. <em>Algorithmic Learning in a Random World.</em> Springer, 2005.</li>
+  <li>Angelopoulos and Bates. <em>A Gentle Introduction to Conformal Prediction and Distribution-Free Uncertainty Quantification.</em> 2021.
+    <a href="https://arxiv.org/abs/2107.07511">arXiv:2107.07511</a></li>
+  <li>Romano, Patterson and Candès. <em>Conformalized Quantile Regression.</em> NeurIPS 2019.
+    <a href="https://arxiv.org/abs/1905.03222">arXiv:1905.03222</a></li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/ensemble/_bagging.py', 1192, 1480) }}"><code>BaggingRegressor</code></a>,
+    <a href="{{ skl('sklearn/ensemble/_bagging.py', 51, 61) }}">bootstrap indices</a>.
+    PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/nn/modules/dropout.py', 35, 73) }}"><code>nn.Dropout</code></a>,
+    <a href="{{ src('torch/nn/functional.py', 1473, 1498) }}"><code>F.dropout</code></a>.</li>
+</ul>
