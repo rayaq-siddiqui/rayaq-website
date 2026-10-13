@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-13 (thirty-seventh run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-74, the last being `gradient-accumulation`.
-The next page is `latency-and-throughput` (queue item 75).
+fixed page format. Ready pages: queue items 1-75, the last being `latency-and-throughput`.
+The next page is `online-learning` (queue item 76).
 
 ## Pins
 
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (74 of 93 ready, all
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (75 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -233,20 +233,28 @@ Gaps:
   follow the papers. The H100 peak (989 TFLOP/s dense BF16) and Llama 3 8B's 15T tokens are
   general knowledge, as are the illustrative mixture weights (labelled as such).
 
-## Thirty-seventh run (2026-10-13) — collaborative-filtering, gradient-accumulation, …
+## Thirty-seventh run (2026-10-13) — collaborative-filtering, gradient-accumulation, latency-and-throughput
 
 | Commit | What |
 |---|---|
 | `cbce53e` `ml-models: add tested collaborative-filtering helpers` | Toy 5×5 rating matrix with two held-out cells, centred-cosine neighbours, bias baseline, rank-2 ALS on observed cells (each solve is `ridge_coefficients`), zero-filled NMF multiplicative updates, implicit confidence, factor-table size |
 | `f283b1f` `ml-models: add the collaborative-filtering page` | The page, `ready`, queue ✓ |
 | `b6b4393` `ml-models: add tested gradient-accumulation helpers` | 24-token linear toy in 8 variable-length sequences: full-batch vs per-micro mean ÷ k vs ÷ global tokens vs unscaled; clip-after vs per-micro clip; BN micro-batch stats and effective momentum; ring all-reduce bytes with and without `no_sync` |
-| (this commit) `ml-models: add the gradient-accumulation page` | The page, `ready`, queue ✓ |
+| `492f50e` `ml-models: add the gradient-accumulation page` | The page, `ready`, queue ✓ |
+| `44712dd` `ml-models: add tested latency-and-throughput helpers` | 8B bf16 model on an H100-class part (989 TFLOP/s, 3.35 TB/s, 80 GB): decode-step roofline per batch (KV 131,072 B/token at 2,048 context), prefill, memory batch cap, Little's-law fixed point with prefill stealing decode time, seeded M/D/1 Lindley queue with percentiles, fan-out tail |
+| `a261b7b` `ml-models: add roofline points for the latency page` | Log-log roofline coordinates for the diagram, tested to sit under the roof |
+| (this commit) `ml-models: add the latency-and-throughput page` | The page, `ready`, queue ✓ |
 
 Findings worth keeping:
 
 - scikit-learn's `NMF` puts every cell in its loss, so blanks act as observed zeros. On the
   example it predicts 2.57 for a held-out 5 (ALS on observed cells: 4.01), and fits the real
   ratings worse too (RMSE 0.87 vs 0.29).
+- Decode at 2,048 context never becomes compute-bound: the per-sequence KV read grows with
+  the batch, so intensity tops out near 49 FLOP/byte at the 238-sequence memory cap, against a
+  ridge of 295. Little's law with prefill stealing decode time has no fixed point above 23 req/s.
+- The simulated M/D/1 means track Pollaczek–Khinchine within 1% up to ρ = 0.8; at ρ = 0.95 the
+  20,000-request run under-reads the theory (94 vs 105 ms), as a finite run near saturation does.
 - The bias baseline μ + b_u + b_i is worse than the global mean on the held-out cells: offsets
   cannot see interaction. The page says so.
 - ALS's objective falls every sweep, but RMSE on observed cells can tick up, because ALS
@@ -262,6 +270,10 @@ Gaps:
   text until ready. Goyal 2017, McCandlish 2018, Li 2020 (DDP), gradient cache (Gao 2021) cited
   from memory. DDP's `bucket_cap_mb` defaults to `None` meaning 25 MiB (doc 713-718), and the
   sync flag is read in `_pre_forward` (1745-1770), which is why forward must be inside `no_sync`.
+- latency-and-throughput: `speculative-decoding` and `profiling` are named in plain text until
+  ready. Little 1961, Williams–Waterman–Patterson 2009, Dean–Barroso 2013, Pope 2023, Kwon 2023,
+  Sarathi-Serve 2024 cited from memory. The hardware is round numbers, not a vendor spec sheet;
+  the numbers are roofline lower bounds, not measurements.
 
 ## Queue
 
@@ -339,8 +351,8 @@ Gaps:
 72. `pretraining` ✓
 73. `collaborative-filtering` ✓
 74. `gradient-accumulation` ✓
-75. `latency-and-throughput` ← next
-76. `online-learning`
+75. `latency-and-throughput` ✓
+76. `online-learning` ← next
 77. `uncertainty`
 78. `vision-transformer`
 79. `diffusion-unet`

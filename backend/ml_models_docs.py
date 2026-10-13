@@ -1260,7 +1260,7 @@ PAGES = [
             "pytorch:torch/profiler/profiler.py",
             "pytorch:torch/cuda/streams.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "monitoring-and-drift",

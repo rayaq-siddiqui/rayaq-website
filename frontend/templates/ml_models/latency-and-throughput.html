@@ -1,0 +1,428 @@
+{% set ex = latency_example() %}
+{% set e = ex.example %}
+{% set pre = ex.prefill %}
+{% set dec = ex.decode %}
+{% set one = dec[0] %}
+{% set top = dec[-1] %}
+{% set stable = ex.little|selectattr("stable")|list %}
+{% set q = ex.queue %}
+{% macro n(x, d=1) -%}{{ ("%." ~ d ~ "f")|format(x) }}{%- endmacro %}
+{% macro c(x) -%}{{ "{:,.0f}".format(x) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Latency and throughput</h1>
+  <p class="tagline">
+    A served model has two numbers that pull against each other: how long one user waits, and how many
+    users one GPU can serve. This page splits a language-model request into time to first token and
+    inter-token latency, shows on a roofline why decoding is limited by memory bandwidth rather than
+    arithmetic, works Little's law to find the concurrency a traffic level needs, and shows why the
+    99th percentile, not the mean, is what falls apart as a server fills up.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  You deploy an 8B-parameter model in bf16 on one accelerator with {{ n(e.gpu.flops / 1e12, 0) }} TFLOP/s of
+  dense bf16 compute, {{ n(e.gpu.bandwidth / 1e12, 2) }} TB/s of memory bandwidth and {{ n(e.gpu.memory / 1e9, 0) }} GB of
+  memory (round numbers for an H100-class part). Product asks two questions. "How fast is it?" and "How many
+  users can it take?" The first has at least three answers, and each one moves differently: how long until
+  the first word appears, how fast words stream after that, and how long the whole answer takes. The
+  second depends on the first, because you can almost always serve more users by making each one wait
+  longer.
+</p>
+<p>
+  Without a model of where the time goes, people tune the wrong thing: buying FLOPs for a workload limited by
+  bandwidth, reporting a mean that hides a tail of timeouts, or running a server at 95% utilization and
+  wondering why p99 tripled. The <a href="/ml-models/model-serving">model-serving</a> page built the
+  batching machinery; this page explains the numbers it produces.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Generating text has two phases. <strong>Prefill</strong> runs the whole prompt through the model at once:
+  {{ c(e.prompt) }} tokens multiply against every weight, so the GPU does a lot of arithmetic per byte of
+  weight it reads. <strong>Decode</strong> then produces one token per step, and each step has to read
+  all {{ n(one.weight_bytes / 1e9, 0) }} GB of weights plus the <a href="/ml-models/kv-cache">KV cache</a> to
+  do only two FLOPs per weight per sequence. A GPU can do about {{ n(ex.ridge, 0) }} FLOPs in the time it
+  reads one byte, so a single decode stream uses well under 1% of the compute. Decode is a bandwidth problem.
+</p>
+<p>
+  That is why batching works so well for decoding: one read of the weights serves every sequence in the
+  batch. Tokens per second rise almost linearly with batch size while each step barely slows down, until
+  the KV cache, which is per-sequence and grows with context, starts to dominate the bytes read. Batching
+  is how you buy throughput, and each user pays for it in latency.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 200" role="img" aria-labelledby="lt-req-title lt-req-desc">
+    <title id="lt-req-title">One request's timeline: queue, prefill, then a token every inter-token interval</title>
+    <desc id="lt-req-desc">
+      Left to right: a dashed box for time spent waiting in the queue, then a prefill box of about
+      {{ n(pre.ms) }} milliseconds that ends with the first token, marking the time to first token. After it,
+      evenly spaced ticks, one per generated token, {{ n(one.itl_ms, 2) }} milliseconds apart at batch size 1. The
+      end-to-end latency spans everything: time to first token plus {{ e.output - 1 }} inter-token
+      intervals.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      <rect x="20" y="60" width="90" height="44" rx="6" class="d-box ml-op ml-dashed"></rect>
+      <text x="65" y="86">queue wait</text>
+      <rect x="112" y="60" width="130" height="44" rx="6" class="d-box ml-op"></rect>
+      <text x="177" y="80">prefill</text>
+      <text x="177" y="96" class="d-muted">{{ c(e.prompt) }} tokens · compute</text>
+      {% for i in range(14) %}
+        {% set x = 250 + i * 32 %}
+        <rect x="{{ x }}" y="68" width="24" height="28" rx="3" class="d-box ml-tensor"></rect>
+      {% endfor %}
+      <text x="250" y="122" text-anchor="start" class="d-muted">one token per decode step · memory</text>
+      <text x="700" y="86" text-anchor="end">…</text>
+      <line x1="20" y1="40" x2="242" y2="40" class="d-line"></line>
+      <text x="131" y="32" style="fill:var(--jj-accent)">TTFT</text>
+      <line x1="250" y1="140" x2="282" y2="140" class="d-line"></line>
+      <text x="266" y="156" style="fill:var(--jj-accent)">ITL</text>
+      <line x1="20" y1="178" x2="700" y2="178" class="d-line"></line>
+      <text x="360" y="194">end-to-end = TTFT + ({{ e.output }} − 1) × ITL</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="mechanics-metrics">The latency metrics</h3>
+<ul>
+  <li><strong>Time to first token (TTFT)</strong>: from request arrival to the first output token. It is queue
+    wait plus prefill. It is what makes a chat feel responsive.</li>
+  <li><strong>Inter-token latency (ITL)</strong>, also called time per output token: the gap between
+    consecutive tokens, which is one decode step of the batch the request is in. Reading speed is
+    about 5–10 tokens per second, so an ITL under ~100 ms streams faster than anyone reads.</li>
+  <li><strong>End-to-end latency</strong>: TTFT + (<em>n</em> − 1)·ITL for <em>n</em> output tokens. It
+    matters when another program waits for the whole answer, as in agents and batch jobs.</li>
+  <li><strong>Throughput</strong>: output tokens per second across all users (or requests per second).
+    Goodput is throughput counting only requests that met their latency target.</li>
+</ul>
+
+<h3 id="mechanics-roofline">The roofline</h3>
+<p>
+  A kernel that does <em>F</em> FLOPs and moves <em>M</em> bytes takes at least
+</p>
+<p class="ml-formula">t = max(F / peak FLOP/s, M / bandwidth)</p>
+<p>
+  Its arithmetic intensity <em>I</em> = <em>F</em>/<em>M</em> decides which term wins: below the ridge point
+  peak/bandwidth = {{ n(ex.ridge, 0) }} FLOP/byte it is memory-bound, above it compute-bound. For one decode
+  step at batch <em>B</em> with context <em>L</em>:
+</p>
+<p class="ml-formula">F = B·(2·P + 4·layers·d·L), &nbsp; M = 2·P + B·L·(KV bytes per token)</p>
+<p>
+  where <em>P</em> = {{ n(e.params / 1e9, 0) }}B parameters at 2 bytes each, and each token of cache costs
+  2 (K and V) × 32 layers × 8 KV heads × 128 × 2 bytes = {{ c(ex.kv_bytes_per_token) }} bytes (the
+  <a href="/ml-models/kv-cache">KV-cache</a> page's configuration, with grouped-query attention). With no
+  cache, <em>I</em> ≈ <em>B</em>, so the weights alone would need a batch near {{ n(ex.ridge, 0) }} to become
+  compute-bound. The cache term grows with <em>B</em> too, so at long context the step never gets there.
+</p>
+
+<h3 id="mechanics-batching">Throughput against latency</h3>
+<p>
+  Holding the weights fixed, the step time is roughly <em>a</em> + <em>b</em>·<em>B</em>: a constant for
+  reading the weights plus a slope for each sequence's cache. Throughput is <em>B</em>/(<em>a</em> +
+  <em>b</em>·<em>B</em>), which rises toward 1/<em>b</em>; latency per token rises linearly. A server picks a
+  point on that curve, usually by capping the batch so ITL stays under a target, and continuous batching
+  keeps the batch full as requests finish. Two hard limits cap <em>B</em>: memory (weights plus every
+  sequence's cache must fit) and the compute ridge. Prefill tokens share the same GPU, so each prompt that
+  arrives stalls everyone's decoding for its prefill time unless the server splits prefills into chunks.
+</p>
+
+<h3 id="mechanics-little">Little's law</h3>
+<p>
+  For any stable system, averaged over a long enough window,
+</p>
+<p class="ml-formula">L = λ · W</p>
+<p>
+  the mean number of requests in the system equals the arrival rate times the mean time each spends in
+  it. It needs no assumption about arrival distributions or service order. For an LLM server, <em>L</em> is
+  the number of sequences being decoded, which is the batch size. So a target rate fixes the batch, and
+  the batch fixes the ITL, which feeds back into <em>W</em>. If the loop has no solution below the memory
+  limit, the queue grows without bound.
+</p>
+
+<h3 id="mechanics-tail">Tail latency</h3>
+<p>
+  Latency is a distribution, and the tail grows faster than the mean as utilization ρ approaches 1. For a
+  single server with random (Poisson) arrivals and a fixed service time <em>s</em>, the mean time in
+  system is
+</p>
+<p class="ml-formula">W = s + ρ·s / (2(1 − ρ))</p>
+<p>
+  (Pollaczek–Khinchine), which blows up as ρ → 1, and the high percentiles blow up sooner. Tails also
+  compound: a request that fans out to <em>k</em> backends waits for the slowest, so if each is slow with
+  probability <em>p</em>, the request is slow with probability 1 − (1 − <em>p</em>)<sup><em>k</em></sup>.
+  Report p50, p90 and p99, never a mean alone.
+</p>
+
+<h3 id="mechanics-measure">Measuring it in PyTorch</h3>
+<p>
+  CUDA kernels run asynchronously on a
+  <a href="{{ src('torch/cuda/streams.py', 17, 135) }}">stream</a>, so a Python timer around
+  <code>model(x)</code> measures how long it took to <em>queue</em> the work. Time GPU work with
+  <a href="{{ src('torch/cuda/streams.py', 159, 271) }}"><code>torch.cuda.Event(enable_timing=True)</code></a>:
+  <a href="{{ src('torch/cuda/streams.py', 199, 224) }}"><code>record</code></a> one before and one after on
+  the stream, <a href="{{ src('torch/cuda/streams.py', 245, 254) }}"><code>synchronize</code></a>, then read
+  <a href="{{ src('torch/cuda/streams.py', 234, 243) }}"><code>elapsed_time</code></a> in milliseconds. To see
+  <em>which</em> kernels the time goes to, use
+  <a href="{{ src('torch/profiler/profiler.py', 874, 1355) }}"><code>torch.profiler.profile</code></a> with a
+  <a href="{{ src('torch/profiler/profiler.py', 768, 829) }}"><code>schedule</code></a> that skips warmup steps,
+  call <a href="{{ src('torch/profiler/profiler.py', 1236, 1324) }}"><code>step()</code></a> per iteration, and
+  read <a href="{{ src('torch/profiler/profiler.py', 589, 615) }}"><code>key_averages()</code></a> or
+  <a href="{{ src('torch/profiler/profiler.py', 469, 524) }}"><code>export_chrome_trace</code></a>.
+  <code>with_flops=True</code> estimates FLOPs for matmuls and convolutions, which with the kernel time gives
+  the achieved TFLOP/s to put on a roofline.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>torch.cuda.Stream</code></td><td><code>device</code>, <code>priority</code></td><td>An in-order queue of GPU work; Python returns before the work runs.</td><td><a href="{{ src('torch/cuda/streams.py', 17, 135) }}">streams.py 17–135</a></td></tr>
+      <tr><td><code>torch.cuda.Event</code></td><td><code>enable_timing=False</code></td><td>A marker recorded on a stream; needs <code>enable_timing=True</code> to measure time.</td><td><a href="{{ src('torch/cuda/streams.py', 159, 271) }}">streams.py 159–271</a></td></tr>
+      <tr><td><code>Event.elapsed_time</code></td><td><code>end_event</code> → ms</td><td>GPU time between two recorded events.</td><td><a href="{{ src('torch/cuda/streams.py', 234, 243) }}">streams.py 234–243</a></td></tr>
+      <tr><td><code>Event.synchronize</code></td><td>—</td><td>Blocks the CPU until the event's work completes; required before reading the time.</td><td><a href="{{ src('torch/cuda/streams.py', 245, 254) }}">streams.py 245–254</a></td></tr>
+      <tr><td><code>torch.profiler.profile</code></td><td><code>activities</code>, <code>record_shapes</code>, <code>with_flops</code></td><td>Records CPU ops and GPU kernels with timings.</td><td><a href="{{ src('torch/profiler/profiler.py', 874, 1355) }}">profiler.py 874–1355</a></td></tr>
+      <tr><td><code>schedule</code></td><td><code>wait</code>, <code>warmup</code>, <code>active</code>, <code>repeat</code></td><td>Which steps to skip, warm up on, and record.</td><td><a href="{{ src('torch/profiler/profiler.py', 768, 829) }}">profiler.py 768–829</a></td></tr>
+      <tr><td><code>profile.step</code></td><td>—</td><td>Marks a step boundary and advances the schedule.</td><td><a href="{{ src('torch/profiler/profiler.py', 1236, 1324) }}">profiler.py 1236–1324</a></td></tr>
+      <tr><td><code>key_averages</code></td><td><code>group_by_input_shape</code></td><td>Aggregates events per operator, for a table of where time goes.</td><td><a href="{{ src('torch/profiler/profiler.py', 589, 615) }}">profiler.py 589–615</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  The model and accelerator from the problem, with every decoding sequence holding {{ c(e.context) }} tokens of
+  context, {{ c(e.prompt) }}-token prompts and {{ e.output }}-token answers. These are roofline lower bounds
+  (real kernels reach perhaps 60–80% of them, and activations and framework overhead are ignored), computed
+  by tested helpers in <code>ml_models_docs.py</code>.
+</p>
+
+<div class="ml-worked">
+  <h3 id="worked-prefill">Prefill sets the time to first token</h3>
+  <p>
+    The {{ c(e.prompt) }}-token prefill does {{ n(pre.flops / 1e12, 2) }} TFLOPs and moves {{ n(pre.bytes / 1e9, 2) }} GB,
+    an intensity of {{ c(pre.intensity) }} FLOP/byte, above the ridge of {{ n(ex.ridge, 0) }}. It is compute-bound:
+    {{ n(pre.compute_ms, 2) }} ms of arithmetic against {{ n(pre.memory_ms, 2) }} ms of reading, so the TTFT with an
+    empty queue is about {{ n(pre.ms) }} ms. Doubling the prompt roughly doubles it.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-decode">Decode across batch sizes</h3>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Batch</th><th>KV read (GB)</th><th>FLOP/byte</th><th>ITL (ms)</th><th>Tokens/s</th><th>Bound</th></tr></thead>
+      <tbody>
+        {% for d in dec %}
+          <tr><td>{{ d.batch }}</td><td>{{ n(d.kv_bytes / 1e9) }}</td><td>{{ n(d.intensity) }}</td><td>{{ n(d.itl_ms, 2) }}</td><td>{{ c(d.tokens_per_s) }}</td><td>{{ d.bound }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    At batch 1, each step reads {{ n((one.weight_bytes + one.kv_bytes) / 1e9, 2) }} GB in {{ n(one.itl_ms, 2) }} ms
+    and does arithmetic that would take {{ n(one.compute_ms, 3) }} ms: {{ n(one.tokens_per_s, 0) }} tokens/s, with the
+    compute units idle {{ n(100 * (1 - one.compute_ms / one.itl_ms), 1) }}% of the time. At batch {{ top.batch }},
+    throughput is {{ n(top.tokens_per_s / one.tokens_per_s, 0) }}× higher while each user's ITL is only
+    {{ n(top.itl_ms / one.itl_ms, 1) }}× longer. Every row is still memory-bound, because the cache read grows with
+    the batch: at batch {{ top.batch }} it is {{ n(top.kv_bytes / 1e9) }} GB against {{ n(top.weight_bytes / 1e9, 0) }} GB
+    of weights. Memory caps the batch at {{ ex.max_batch }}: ({{ n(e.gpu.memory / 1e9, 0) }} − {{ n(one.weight_bytes / 1e9, 0) }}) GB
+    ÷ ({{ c(e.context) }} × {{ c(ex.kv_bytes_per_token) }} bytes). Shrinking the cache
+    (<a href="/ml-models/quantization">quantizing</a> it to 8 bits, or fewer KV heads) raises both the cap and
+    the throughput.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 240" role="img" aria-labelledby="lt-roof-title lt-roof-desc">
+    <title id="lt-roof-title">Roofline: decode steps sit on the bandwidth slope, prefill on the compute roof</title>
+    <desc id="lt-roof-desc">
+      Log-log axes, arithmetic intensity from 1 to 3,000 FLOP per byte across, attained compute from 1 to 1,000
+      TFLOP/s up. The roof rises along the memory-bandwidth slope until the ridge at {{ n(ex.ridge, 0) }} FLOP per
+      byte, then is flat at {{ n(e.gpu.flops / 1e12, 0) }} TFLOP/s. Decode steps at batch 1 to {{ top.batch }} sit on
+      the slope between {{ n(one.intensity) }} and {{ n(top.intensity) }} FLOP per byte, reaching at most
+      {{ n(ex.roofline[-2].tflops, 0) }} TFLOP/s. Prefill sits on the flat roof at {{ c(pre.intensity) }} FLOP per byte.
+    </desc>
+    <g font-size="11">
+      <line x1="60" y1="20" x2="60" y2="200" class="d-line"></line>
+      <line x1="60" y1="200" x2="680" y2="200" class="d-line"></line>
+      <text x="370" y="232" text-anchor="middle" class="d-muted">arithmetic intensity (FLOP/byte, log)</text>
+      <text x="16" y="110" text-anchor="middle" class="d-muted" transform="rotate(-90 16 110)">TFLOP/s (log)</text>
+      <text x="60" y="216" text-anchor="middle" class="d-muted">1</text>
+      <text x="415" y="216" text-anchor="middle" class="d-muted">100</text>
+      <text x="680" y="216" text-anchor="end" class="d-muted">3,000</text>
+      <text x="54" y="204" text-anchor="end" class="d-muted">1</text>
+      <text x="54" y="24" text-anchor="end" class="d-muted">1,000</text>
+      <line x1="60" y1="168.5" x2="500.4" y2="20.3" class="d-line" style="stroke:var(--jj-accent)"></line>
+      <line x1="500.4" y1="20.3" x2="680" y2="20.3" class="d-line" style="stroke:var(--jj-accent)"></line>
+      <line x1="500.4" y1="20.3" x2="500.4" y2="200" class="d-line ml-dashed"></line>
+      <text x="506" y="190" class="d-muted">ridge {{ n(ex.ridge, 0) }}</text>
+      <text x="130" y="122" style="fill:var(--jj-accent)" transform="rotate(-18.6 130 122)">bandwidth {{ n(e.gpu.bandwidth / 1e12, 2) }} TB/s</text>
+      <text x="560" y="14" style="fill:var(--jj-accent)">peak {{ n(e.gpu.flops / 1e12, 0) }}</text>
+      {% for p in ex.roofline %}
+        <circle cx="{{ p.x }}" cy="{{ p.y }}" r="4" class="d-box ml-tensor"></circle>
+      {% endfor %}
+      {% for p in ex.roofline %}
+        {% if p.label in ("B=1", "B=8", "B=32") %}
+          <text x="{{ p.x + 8 }}" y="{{ p.y + 14 }}">decode {{ p.label }}</text>
+        {% elif p.label == "B=192" %}
+          <text x="{{ p.x - 4 }}" y="{{ p.y - 10 }}" text-anchor="middle">B=64…192</text>
+        {% elif p.label == "prefill" %}
+          <text x="{{ p.x }}" y="{{ p.y + 18 }}" text-anchor="middle">prefill</text>
+        {% endif %}
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-little">Little's law: what traffic needs</h3>
+  <p>
+    One request alone takes {{ n(pre.ms) }} ms + {{ e.output - 1 }} × {{ n(one.itl_ms, 2) }} ms =
+    {{ n(ex.single_request_s, 2) }} s. At λ requests per second, prefills take λ × {{ n(pre.ms) }} ms of every second,
+    stretching decode steps by 1/(1 − λ·{{ n(pre.ms / 1000, 4) }}). Iterating <em>B</em> = λ·<em>W</em>(<em>B</em>)
+    to a fixed point:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>λ (req/s)</th><th>Batch L = λW</th><th>ITL (ms)</th><th>W (s)</th><th>Output tokens/s</th></tr></thead>
+      <tbody>
+        {% for r in ex.little %}
+          {% if r.stable %}
+            <tr><td>{{ r.rate }}</td><td>{{ n(r.concurrency) }}</td><td>{{ n(r.itl_ms, 2) }}</td><td>{{ n(r.latency_s, 2) }}</td><td>{{ c(r.tokens_per_s) }}</td></tr>
+          {% else %}
+            <tr><td>{{ r.rate }}</td><td colspan="4">no fixed point under the batch cap of {{ ex.max_batch }}: the queue grows without bound</td></tr>
+          {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Check the law on the λ = {{ stable[-1].rate }} row: {{ stable[-1].rate }} × {{ n(stable[-1].latency_s, 3) }} s =
+    {{ n(stable[-1].concurrency) }} sequences in flight. Doubling traffic from {{ stable[0].rate }} to {{ stable[1].rate }}
+    req/s raises latency by {{ n(100 * (stable[1].latency_s / stable[0].latency_s - 1), 0) }}%; doubling again to
+    {{ stable[2].rate }} raises it {{ n(stable[2].latency_s / stable[1].latency_s, 1) }}×, because the larger batch slows
+    every step, which keeps requests longer, which grows the batch. The largest integer rate with a
+    fixed point is {{ ex.max_stable_rate }} req/s. Operating near that edge is where latency is worst
+    and least predictable.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-tail">The tail at rising utilization</h3>
+  <p>
+    {{ c(e.queue.requests) }} simulated requests with random (Poisson) arrivals and a fixed {{ n(e.queue.service_ms, 0) }} ms
+    service time, one at a time (a seeded run, not a measurement):
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Utilization ρ</th><th>Mean (ms)</th><th>Theory mean (ms)</th><th>p50 (ms)</th><th>p99 (ms)</th><th>p99 ÷ service</th></tr></thead>
+      <tbody>
+        {% for r in q %}
+          <tr><td>{{ n(r.utilization, 2) }}</td><td>{{ n(r.mean_ms) }}</td><td>{{ n(r.theory_mean_ms) }}</td><td>{{ n(r.p50_ms) }}</td><td>{{ n(r.p99_ms) }}</td><td>{{ n(r.p99_ms / e.queue.service_ms) }}×</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    From ρ = {{ q[0].utilization }} to {{ q[-1].utilization }}, the mean grows {{ n(q[-1].mean_ms / q[0].mean_ms) }}× and
+    p99 grows {{ n(q[-1].p99_ms / q[0].p99_ms) }}×, to {{ c(q[-1].p99_ms) }} ms for {{ n(e.queue.service_ms, 0) }} ms of work.
+    Capacity planning targets a p99 at a utilization well below 1, not the peak throughput.
+    Fan-out multiplies the effect: if each backend is slow 1% of the time, a request touching
+    {% for f in ex.fanout %}{{ f.width }}{{ ", " if not loop.last }}{% endfor %} backends is slow
+    {% for f in ex.fanout %}{{ n(100 * f.slow) }}%{{ ", " if not loop.last }}{% endfor %} of the time.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  Measuring TTFT and ITL for one request with CUDA events, then profiling a few decode steps:
+</p>
+<pre><code>import torch
+from torch.profiler import profile, schedule, ProfilerActivity
+
+@torch.inference_mode()
+def time_request(model, prompt_ids, n_new):
+    start = torch.cuda.Event(enable_timing=True)
+    marks = [torch.cuda.Event(enable_timing=True) for _ in range(n_new)]
+    start.record()
+    logits, cache = model(prompt_ids, cache=None)          # prefill
+    tok = logits[:, -1].argmax(-1, keepdim=True)
+    marks[0].record()                                      # first token ready
+    for i in range(1, n_new):
+        logits, cache = model(tok, cache=cache)            # one decode step
+        tok = logits[:, -1].argmax(-1, keepdim=True)
+        marks[i].record()
+    marks[-1].synchronize()                                # wait for the GPU
+    ttft = start.elapsed_time(marks[0])
+    itl = [a.elapsed_time(b) for a, b in zip(marks, marks[1:])]
+    return ttft, sorted(itl)[len(itl) // 2]                # ms, median ITL
+
+with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+             schedule=schedule(wait=1, warmup=2, active=3), with_flops=True) as prof:
+    for _ in range(6):
+        time_request(model, prompt_ids, n_new=32)
+        prof.step()
+print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))</code></pre>
+<p>
+  The first calls include CUDA context setup, allocator growth and kernel autotuning, which is why the
+  schedule waits and warms up before recording. For a server, measure latency at the client, including
+  queueing and network, and report percentiles over a load test at a fixed arrival rate. A closed loop
+  where each client waits for its answer before sending again hides queueing, because a slow server
+  slows its own load.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Batch size is the main dial.</strong> Larger batches buy throughput (cost per token) and
+    charge every user ITL. Set it from an ITL or p99 target, not from what fits in memory.</li>
+  <li><strong>Prefill and decode fight.</strong> A long prompt arriving stalls every running decode for its
+    prefill. Chunked prefill bounds the stall; separate prefill and decode machines remove it at the cost of
+    moving the KV cache between them.</li>
+  <li><strong>Memory bandwidth buys decode speed; FLOPs buy prefill.</strong> Weight and cache
+    <a href="/ml-models/quantization">quantization</a> help decode almost proportionally because they cut bytes
+    read. Speculative decoding spends idle compute to emit several tokens per weight read.</li>
+  <li><strong>Little's law is exact but averaged.</strong> It gives the mean concurrency, not the peak. Bursts
+    need headroom above λ·W.</li>
+  <li><strong>Utilization and tail latency trade directly.</strong> Running hot saves hardware and spends
+    p99. Shedding or queueing load at the edge keeps the served requests within target.</li>
+  <li><strong>The roofline is a bound, not a prediction.</strong> Small kernels, launch overhead (see
+    <a href="/ml-models/gpu-execution">GPU execution</a>) and attention's irregular memory access keep real
+    numbers below it; the profiler tells you how far.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Why does batch 1 decoding use under 1% of the GPU's arithmetic?</summary>
+  <p>Each step reads all {{ n(one.weight_bytes / 1e9, 0) }} GB of weights to do about two FLOPs per weight, an intensity near 1 FLOP/byte against a ridge of {{ n(ex.ridge, 0) }}. The step waits on memory.</p>
+</details>
+<details class="ml-quiz">
+  <summary>A server averages 40 requests in flight at 8 requests/s. What is the mean latency?</summary>
+  <p>W = L / λ = 40 / 8 = 5 s, whatever the arrival pattern or scheduling.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why can't timing <code>model(x)</code> with <code>time.perf_counter()</code> be trusted on a GPU?</summary>
+  <p>Kernels launch asynchronously on a stream, so the call returns after queueing the work. Without a synchronize, or with CUDA events, you measure launch time.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Little. <em>A Proof for the Queuing Formula: L = λW.</em> Operations Research, 1961.</li>
+  <li>Williams, Waterman and Patterson. <em>Roofline: An Insightful Visual Performance Model for Multicore Architectures.</em> CACM, 2009.</li>
+  <li>Dean and Barroso. <em>The Tail at Scale.</em> CACM, 2013.</li>
+  <li>Pope et al. <em>Efficiently Scaling Transformer Inference.</em> MLSys, 2023.</li>
+  <li>Kwon et al. <em>Efficient Memory Management for Large Language Model Serving with PagedAttention.</em> SOSP, 2023.</li>
+  <li>Agrawal et al. <em>Taming Throughput-Latency Tradeoff in LLM Inference with Sarathi-Serve</em> (chunked prefill). OSDI, 2024.</li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/cuda/streams.py', 159, 271) }}"><code>torch.cuda.Event</code></a>, <a href="{{ src('torch/profiler/profiler.py', 874, 1355) }}"><code>torch.profiler.profile</code></a>, <a href="{{ src('torch/profiler/profiler.py', 768, 829) }}"><code>schedule</code></a>.</li>
+</ul>
