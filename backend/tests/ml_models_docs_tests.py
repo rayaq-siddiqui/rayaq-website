@@ -3948,3 +3948,45 @@ def test_newton_steps_improve_ndcg_and_pointwise_loss_disagrees_with_ndcg():
     a, b = example["pointwise"]["a"], example["pointwise"]["b"]
     assert a["mse"] < b["mse"] and a["ndcg"] < b["ndcg"] == 1.0
     assert example["listnet"]["ideal"] < example["listnet"]["start"]
+
+
+def test_bucketing_and_packing_cut_padding_waste():
+    example = ml_models_docs.data_example()
+    assert (example["shuffled"]["slots"], example["bucketed"]["slots"], example["packed"]["slots"]) == (304, 220, 192)
+    assert example["shuffled"]["efficiency"] < example["bucketed"]["efficiency"] < example["packed"]["efficiency"]
+    rows = example["packed"]["rows"]
+    assert all(sum(row) <= ml_models_docs.DATA_EXAMPLE["context"] for row in rows)
+    assert sorted(x for row in rows for x in row) == sorted(ml_models_docs.DATA_EXAMPLE["lengths"])
+
+
+def test_distributed_shards_match_distributed_sampler_padding_and_dropping():
+    padded = ml_models_docs.distributed_shards(10, 4)
+    assert padded["shards"] == [[0, 4, 8], [1, 5, 9], [2, 6, 0], [3, 7, 1]]
+    dropped = ml_models_docs.distributed_shards(10, 4, drop_last=True)
+    assert dropped["shards"] == [[0, 4], [1, 5], [2, 6], [3, 7]]
+    assert ml_models_docs.distributed_shards(3, 8)["indices"] == [0, 1, 2, 0, 1, 2, 0, 1]
+    assert (ml_models_docs.loader_length(10, 3, False), ml_models_docs.loader_length(10, 3, True)) == (4, 3)
+
+
+def test_loader_pipeline_hides_loading_once_workers_keep_up():
+    e = ml_models_docs.DATA_EXAMPLE
+    runs = ml_models_docs.data_example()["pipelines"]
+    assert runs[0]["total_ms"] == (e["load_ms"] + e["compute_ms"]) * e["batches"]
+    busy = [r["gpu_busy"] for r in runs]
+    assert busy == sorted(busy)
+    assert runs[-1]["total_ms"] == e["load_ms"] + e["compute_ms"] * e["batches"]
+    for run in runs[1:]:
+        limit = e["prefetch_factor"] * run["workers"]
+        for i, step in enumerate(run["timeline"]):
+            taken = sum(1 for s in run["timeline"][:i] if s["compute_start"] <= step["load_start"])
+            assert i - taken < limit
+
+
+def test_minibatch_gradient_variance_matches_enumeration():
+    import itertools
+    grads = ml_models_docs.DATA_EXAMPLE["grads"]
+    for b in (1, 2, 4, 8):
+        means = [sum(c) / b for c in itertools.combinations(grads, b)]
+        avg = sum(means) / len(means)
+        exact = sum((m - avg) ** 2 for m in means) / len(means)
+        assert abs(ml_models_docs.minibatch_gradient_variance(grads, b)["variance"] - exact) < 1e-12

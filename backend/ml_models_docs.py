@@ -9516,6 +9516,131 @@ def ltr_example():
     }
 
 
+DATA_EXAMPLE = {
+    "lengths": [5, 23, 9, 31, 14, 7, 18, 4, 27, 11, 16, 8],
+    "batch_size": 4,
+    "context": 32,
+    "dataset_size": 10,
+    "loader_batch_size": 3,
+    "replicas": 4,
+    "load_ms": 40,
+    "compute_ms": 15,
+    "workers": [0, 1, 2, 3, 4],
+    "prefetch_factor": 2,
+    "batches": 12,
+    "grads": [0.9, -0.3, 1.6, 0.2, -1.1, 0.7, 2.0, 0.4],
+    "grad_batch_sizes": [1, 2, 4, 8],
+}
+
+
+def padded_batches(lengths, batch_size):
+    batches = []
+    for start in range(0, len(lengths), batch_size):
+        chunk = lengths[start:start + batch_size]
+        batches.append({
+            "lengths": chunk,
+            "padded_to": max(chunk),
+            "slots": max(chunk) * len(chunk),
+            "real": sum(chunk),
+        })
+    slots = sum(b["slots"] for b in batches)
+    return {"batches": batches, "slots": slots, "real": sum(lengths), "efficiency": sum(lengths) / slots}
+
+
+def pack_sequences(lengths, context):
+    rows = []
+    for length in sorted(lengths, reverse=True):
+        for row in rows:
+            if sum(row) + length <= context:
+                row.append(length)
+                break
+        else:
+            rows.append([length])
+    slots = len(rows) * context
+    return {"rows": rows, "slots": slots, "real": sum(lengths), "efficiency": sum(lengths) / slots}
+
+
+def loader_length(n, batch_size, drop_last):
+    return n // batch_size if drop_last else -(-n // batch_size)
+
+
+def distributed_shards(n, replicas, drop_last=False):
+    if drop_last and n % replicas:
+        num_samples = math.ceil((n - replicas) / replicas)
+    else:
+        num_samples = math.ceil(n / replicas)
+    total = num_samples * replicas
+    indices = list(range(n))
+    if drop_last:
+        indices = indices[:total]
+    else:
+        padding = total - n
+        indices += (indices * math.ceil(padding / n))[:padding] if padding else []
+    return {
+        "num_samples": num_samples,
+        "indices": indices,
+        "shards": [indices[rank:total:replicas] for rank in range(replicas)],
+    }
+
+
+def loader_pipeline(load_ms, compute_ms, workers, batches, prefetch_factor=2):
+    if workers == 0:
+        per_batch = load_ms + compute_ms
+        return {"total_ms": per_batch * batches, "per_batch_ms": per_batch, "gpu_busy": compute_ms / per_batch, "timeline": []}
+    limit = prefetch_factor * workers
+    dispatch = [0.0] * batches
+    worker_free = [0.0] * workers
+    compute_end = 0.0
+    timeline = []
+    for i in range(batches):
+        w = i % workers
+        start = max(worker_free[w], dispatch[i])
+        ready = start + load_ms
+        worker_free[w] = ready
+        take = max(ready, compute_end)
+        compute_end = take + compute_ms
+        if i + limit < batches:
+            dispatch[i + limit] = take
+        timeline.append({"worker": w, "load_start": start, "ready": ready, "compute_start": take, "compute_end": compute_end})
+    return {
+        "total_ms": compute_end,
+        "per_batch_ms": compute_end / batches,
+        "gpu_busy": compute_ms * batches / compute_end,
+        "timeline": timeline,
+    }
+
+
+def minibatch_gradient_variance(grads, batch_size):
+    n = len(grads)
+    mean = sum(grads) / n
+    population = sum((g - mean) ** 2 for g in grads) / n
+    variance = population / batch_size * (n - batch_size) / (n - 1)
+    return {"mean": mean, "variance": variance, "std": math.sqrt(variance)}
+
+
+@functools.lru_cache(maxsize=None)
+def data_example():
+    e = DATA_EXAMPLE
+    lengths = e["lengths"]
+    return {
+        "example": e,
+        "shuffled": padded_batches(lengths, e["batch_size"]),
+        "bucketed": padded_batches(sorted(lengths), e["batch_size"]),
+        "packed": pack_sequences(lengths, e["context"]),
+        "lengths": {n: loader_length(e["dataset_size"], e["loader_batch_size"], d) for n, d in (("keep", False), ("drop", True))},
+        "shards": distributed_shards(e["dataset_size"], e["replicas"]),
+        "shards_drop": distributed_shards(e["dataset_size"], e["replicas"], drop_last=True),
+        "pipelines": [
+            dict(loader_pipeline(e["load_ms"], e["compute_ms"], w, e["batches"], e["prefetch_factor"]), workers=w)
+            for w in e["workers"]
+        ],
+        "noise": [
+            dict(minibatch_gradient_variance(e["grads"], b), batch_size=b)
+            for b in e["grad_batch_sizes"]
+        ],
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -9547,6 +9672,7 @@ def render(slug, render_template):
         "upcoming": UPCOMING_MODELS,
         "encoder_example": encoder_example,
         "ltr_example": ltr_example,
+        "data_example": data_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,
         "multihead_example": MULTIHEAD_EXAMPLE,
