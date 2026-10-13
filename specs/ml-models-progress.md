@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-12 (thirty-third run). Spec v2 widens the section from model
+**Last updated:** 2026-10-13 (thirty-fourth run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-63, the last being `gans`. The next page is
-`encoder-only` (queue item 64).
+fixed page format. Ready pages: queue items 1-66, the last being `data-loading-and-batching`.
+The next page is `model-serving` (queue item 67).
 
 ## Pins
 
@@ -144,7 +144,7 @@ Paths are under `sklearn/`.
 - `transformer` uses the v1 section layout and is exempt from the §6 order test until its
   retrofit (queue item 18).
 
-## First to thirty-second runs (2026-10-08 to 2026-10-12) — condensed
+## First to thirty-third runs (2026-10-08 to 2026-10-12) — condensed
 
 Runs 1-3 wrote the spec (v1, then v2), the registry, `LEARNING_PATH`, the §6 and queue tests,
 `check_mobile.js` and the Routine. Every run since adds, per page, a tested-helpers commit, a
@@ -152,7 +152,8 @@ page commit (page, `ready`, queue ✓) and usually a `docs:` commit; items 1-51 
 queue order (run 28: quantization, reinforcement-learning, bayes-rule; run 29:
 class-imbalance, random-forests, initialization; run 30: rnns-and-lstms, autoencoders,
 variational-autoencoders; run 31: positional-encoding, clustering, vector-indexes; run 32:
-distillation, time-series, regression-metrics). `6f0803f` fixed 13 templates that read a
+distillation, time-series, regression-metrics; run 33: support-vector-machines,
+learning-rate-schedules, gans). `6f0803f` fixed 13 templates that read a
 missing `pins.X.version` key. Pins never moved. The ranges each page links live in its template
 (grep `src(`, `skl(`, `xgb(`); `git log -p` on this file has every old commit table and range list.
 
@@ -164,16 +165,10 @@ Findings worth keeping (details in each page and in `git log -p` on this file):
 - Cross-checks ran in scratch venvs, never in requirements: scikit-learn 1.9.1, torch 2.14.1,
   XGBoost 3.2.0 (3.4.2 is not on the mirror; the formulas used are unchanged).
 - Use the one-sided Jacobi SVD (eigenvalues of AᵀA squared the condition number).
-- A linear autoencoder's encoder·decoder product matches PCA's projection uuᵀ; only
-  `Normal.rsample` carries gradients (`sample` runs under `no_grad`).
-- The vector-index example is `lru_cache`d (about 1.7 s); PQ re-ranking only helps when R > k.
 - `.jj-diagram svg text { fill: var(--jj-text) }` beats an SVG `fill=` attribute, so coloured
   diagram text must use `style="fill: ..."`.
 - Jinja: a context dict key named `values`, `items` or `keys` resolves to the dict method;
   macros return Markup, so do arithmetic before calling them, never on their output.
-- Time series: trend + Fourier wins (MASE 0.73); shuffled K-fold flatters a 1-NN-in-time model
-  (3.53 vs 8.21). Regression metrics: the spiky model wins MAE and loses RMSE; MAPE's best
-  constant sits below the median.
 
 Open gaps from these runs:
 
@@ -190,57 +185,48 @@ Open gaps from these runs:
 - No pin implements IVF, PQ or HNSW; those follow the papers. `pca` appears as plain text on
   `clustering` until it is ready.
 - Page commits exceed 400 lines because each template is one file.
+- Run 33: no pin implements a GAN, a Wasserstein critic, R1 or FID; the schedulers were held
+  equal to a simulator of the pinned recursions, not cross-checked in torch. SVM helpers match
+  `SVC` (scratch venv). Dirac-GAN: minimax spirals out, non-saturating orbits, R1 converges.
 - Run 32: Hinton–Vinyals–Dean's T² remark was confirmed only through secondary quotes;
   Gneiting 2011 is cited only for consistent scoring functions. No pin implements ARIMA, STL
   or MASE; those follow the papers and FPP3.
 
-## Thirty-third run (2026-10-12) — support-vector-machines, learning-rate-schedules, gans
+## Thirty-fourth run (2026-10-13) — encoder-only, learning-to-rank, data-loading-and-batching
 
 | Commit | What |
 |---|---|
-| `4038256` `ml-models: add tested support vector machine helpers` | A deterministic SMO solver (maximal-violating-pair working set, as in libsvm), linear/RBF/polynomial kernels, hinge loss, `gamma='scale'`, hard and soft margins, an outlier at three C, a 1-D ring, a scaling demo, with tests |
-| `d4603af` `ml-models: build the support vector machines page` | The page, `ready`, queue ✓ |
-| `7696dbf` `ml-models: add tested learning rate schedule helpers` | Closed-form step/exponential/cosine/warmup/one-cycle schedules, a recursive `get_lr` simulator the tests hold equal to them, noisy-SGD expected loss on a quadratic, GD at four rates, an LR range test, Adam's first steps |
-| `ec993db` `ml-models: build the learning rate schedules page` | The page, `ready`, queue ✓ |
-| `c289d64` `ml-models: add gan worked-example helpers` | Optimal discriminator and value on an eight-bin two-mode distribution, JS, both KLs and W1 for four generators, disjoint supports, minimax vs non-saturating gradients, Dirac-GAN runs, the 2×2 Fréchet distance and its sample-size bias, ConvTranspose2d sizes, with tests |
-| `ae3cbd5` `ml-models: add generative adversarial networks page` | The page, `ready`, queue ✓ |
+| `ec3c7a7`, `2569f01` | Tested encoder-only helpers; the `encoder-only` page, `ready`, queue ✓ |
+| `da5aa30` `ml-models: add tested learning-to-rank helpers` | DCG/NDCG, RankNet and LambdaRank lambdas, Newton steps |
+| `d1a641c` `ml-models: build the learning-to-rank page` | The page, `ready`, queue ✓ |
+| `b333b79` `ml-models: add tested data-loading helpers` | Padding/bucketing/first-fit packing, loader and `DistributedSampler` lengths, an idealized worker pipeline, mini-batch gradient variance. **Broke one test**: the new `pack_sequences` shadowed the RNN page's helper of the same name |
+| `a6aae02` `fix: stop the packing helper shadowing pack_sequences` | Renamed it `pack_into_rows`; suite green again |
+| `a313541` `ml-models: build the data-loading-and-batching page` | The page, `ready`, queue ✓ |
 
-Ranges verified this run are linked from the three templates: scikit-learn `svm/_base.py`,
-`svm/_classes.py`, `svm/src/libsvm/svm.cpp`, `metrics/pairwise.py` kernels and the SGD hinge
-loss; PyTorch `torch/optim/lr_scheduler.py` (every scheduler in the component table);
-`BCELoss` 633-716, `BCEWithLogitsLoss` 719-844, `autograd.grad` 434-621, `ConvTranspose2d`
-1012-1207, `LeakyReLU` 875-930, `Tanh` 407-433, `init.normal_` 274-298, `spectral_norm`
-535-636 and `_SpectralNorm` 403-532.
+Ranges verified this run are linked from the three templates: XGBoost
+`src/objective/lambdarank_obj.{h,cc}`, `src/common/ranking_utils.h` and the ranking tutorial;
+scikit-learn `dcg_score`/`ndcg_score`; PyTorch `torch/utils/data/` (`dataloader.py`,
+`sampler.py`, `_utils/{fetch,collate,worker,pin_memory}.py`, `distributed.py`, `dataset.py`)
+and `pad_sequence`.
 
 Findings worth keeping:
 
-- The SVM helpers' coefficients, intercepts and support sets match scikit-learn 1.9.1 `SVC`
-  (scratch venv); the tests pin those values and check primal = dual.
-- Learning rates: cosine beats step decay on the noisy quadratic; the range test's best rate is
-  1.0 on curvatures 0.5/2/8 and blows up three steps later; Adam's first steps move by
-  ≈ lr whatever the gradient scale, which is the case for warmup.
-- Dirac-GAN at step 0.1 from (1, 1): minimax simultaneous GD spirals out (radius 2.76 at
-  step 1000); the non-saturating loss shrinks, then orbits at ≈ 0.44 (checked to 10,000
-  steps); R1 with γ = 1 converges. A first WGAN-GP simulation with a linear critic stalled at
-  a spurious point created by the kink of |ψ| at 0, so the page states WGAN-GP's
-  non-convergence only as Mescheder et al.'s result.
-- FID helper cross-checked against `scipy.linalg.sqrtm` in the scratch venv.
-- `rendered_pages` caches each page for the life of the process: restart the app before
-  re-screenshotting an edited template.
+- `ml_models_docs.py` is one ~9,700-line namespace: grep for a helper name before adding it,
+  and read the pytest result before committing (b333b79 was pushed red; CI gates the deploy).
+- DataLoader: `prefetch_factor × num_workers` tasks in flight; results reordered unless
+  `in_order=False`; workers seed `random`/`torch` with base_seed + id and NumPy via
+  `_generate_state`; `default_collate` turns a list of tuples into a *list* of fields.
 - Pins checked with `git ls-remote --tags`: v2.14.1, 1.9.1 and v3.4.2 are still the newest
   stable releases; no pin moved.
 
 Gaps:
 
-- References cited from memory (arxiv unreachable): Platt (SMO), Cortes–Vapnik, Fan–Chen–Lin,
-  Smith, SGDR, Goyal et al., Smith–Topin, RAdam, Xiong et al., Goodfellow et al., DCGAN,
-  Arjovsky–Bottou (including the KL(p_g‖p_data) − 2·JS gradient result), WGAN, WGAN-GP,
-  Heusel et al., Miyato et al., Mescheder et al. and Chong–Forsyth.
-- No torch cross-check was run for the schedulers; the closed forms are held equal to a
-  simulator of the pinned recursions instead.
-- No pin implements a GAN, a Wasserstein critic, R1 or FID; those follow the papers. The
-  "diffusion models largely replaced GANs" remark is general knowledge; `diffusion-models` is
-  not linked until it is ready.
+- References cited from memory (arxiv unreachable): BERT, RoBERTa, ELECTRA, GELU; RankNet,
+  LambdaRank, ListNet, Burges's overview, Järvelin–Kekäläinen, Unbiased LambdaMART; Goyal et
+  al., McCandlish et al. (critical batch size), Krell et al. (packing).
+- No pin implements sequence packing with masks or a bucketing sampler; that part of
+  `data-loading-and-batching` follows the packing paper and general practice. The worker
+  timeline is an idealized model (fixed costs), labelled as such.
 
 ## Queue
 
