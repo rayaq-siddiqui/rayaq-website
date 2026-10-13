@@ -4368,3 +4368,62 @@ def test_mixture_spends_the_budget_and_exact_match_is_a_power_of_per_token_accur
     assert ex["mixture"][-1]["epochs"] == pytest.approx(3.5)
     for row in ex["emergence"]:
         assert row["exact"] == pytest.approx(row["per_token"] ** 10)
+
+
+def test_centered_cosine_finds_the_two_taste_groups_and_neighbours_predict_from_them():
+    ex = ml_models_docs.collab_example()
+    sim = ex["similarity"]
+    for u in range(5):
+        assert sim[u][u] == pytest.approx(1)
+        for v in range(5):
+            assert sim[u][v] == pytest.approx(sim[v][u])
+    assert sim[0][1] > 0.9 and sim[0][3] < -0.9
+    assert sim[2][4] == pytest.approx(-1)
+    ben = ex["targets"][0]["neighbour"]
+    assert [v for _, v in ben["neighbours"]] == [0, 4]
+    assert ben["prediction"] == pytest.approx(2.75 + 1.25)
+
+
+def test_baseline_biases_sum_to_the_ratings_and_ignore_interaction():
+    ex = ml_models_docs.collab_example()
+    b = ex["baseline"]
+    assert b["mu"] == pytest.approx(58 / 20)
+    assert ex["user_means"] == pytest.approx([b["mu"] + x for x in b["user_bias"]])
+    assert ex["heldout_rmse"]["baseline"] > ex["heldout_rmse"]["global"]
+    assert ex["cold_order"][0] == 0 and ex["cold_order"][-1] == 4
+
+
+def test_als_fits_only_observed_entries_and_beats_zero_filled_nmf_on_held_out():
+    ex = ml_models_docs.collab_example()
+    objective = [h["objective"] for h in ex["als"]["history"]]
+    assert all(b <= a + 1e-9 for a, b in zip(objective, objective[1:]))
+    assert ex["als"]["history"][-1]["rmse"] < 0.3 < ex["als"]["history"][0]["rmse"]
+    assert ex["als_params"] == 20 and ex["observed"] == 20 and ex["cells"] == 25
+    assert ex["targets"][0]["als"] == pytest.approx(4.007, abs=1e-3)
+    assert ex["heldout_rmse"]["als"] < ex["heldout_rmse"]["neighbour"] < ex["heldout_rmse"]["nmf"]
+    for t in ex["targets"]:
+        assert t["nmf"] < t["als"]
+    assert all(x >= 0 for row in ex["nmf"]["w"] for x in row)
+    assert all(x >= 0 for row in ex["nmf"]["h"] for x in row)
+
+
+def test_als_row_solve_is_ridge_on_the_items_that_user_rated():
+    e = ml_models_docs.COLLAB_EXAMPLE
+    ex = ml_models_docs.collab_example()
+    items = ex["als"]["items"]
+    seen = [(i, r) for i, r in enumerate(e["ratings"][0]) if r is not None]
+    a = [[sum(items[i][p] * items[i][q] for i, _ in seen) + (e["l2"] if p == q else 0)
+          for q in range(2)] for p in range(2)]
+    rhs = [sum(items[i][p] * r for i, r in seen) for p in range(2)]
+    solved = ml_models_docs.solve_linear(a, rhs)
+    assert solved == pytest.approx(
+        ml_models_docs.ridge_coefficients([items[i] for i, _ in seen], [r for _, r in seen], e["l2"]))
+
+
+def test_implicit_confidence_and_factor_table_size():
+    ex = ml_models_docs.collab_example()
+    assert [r["confidence"] for r in ex["implicit"]] == [1, 41, 121, 401]
+    assert [r["preference"] for r in ex["implicit"]] == [0, 1, 1, 1]
+    assert ex["scale_params"] == 70_400_000
+    assert ex["scale_bytes"] == pytest.approx(281.6e6)
+    assert ex["scale_cells"] / ex["scale_params"] > 1000

@@ -10685,6 +10685,174 @@ def pretraining_example():
     }
 
 
+COLLAB_EXAMPLE = {
+    "users": ["Ana", "Ben", "Cai", "Dee", "Eli"],
+    "items": ["Heist", "Caper", "Sting", "Drift", "Haunt"],
+    "ratings": (
+        (5, 4, None, 1, 1),
+        (4, None, 4, 1, 2),
+        (1, 1, 2, 5, None),
+        (None, 2, 1, 4, 5),
+        (5, 5, 4, None, 1),
+    ),
+    "held_out": ((1, 1, 5), (3, 0, 1)),
+    "neighbours": 2,
+    "rank": 2,
+    "l2": 0.1,
+    "sweeps": 20,
+    "seed": 0,
+    "nmf_steps": 300,
+    "implicit_counts": [0, 1, 3, 10],
+    "implicit_alpha": 40,
+    "scale": {"users": 1_000_000, "items": 100_000, "rank": 64},
+}
+
+
+def cf_observed(ratings):
+    return [(u, i, r) for u, row in enumerate(ratings) for i, r in enumerate(row) if r is not None]
+
+
+def cf_user_mean(ratings, u):
+    values = [r for r in ratings[u] if r is not None]
+    return sum(values) / len(values)
+
+
+def cf_centered_cosine(ratings, u, v):
+    mu, mv = cf_user_mean(ratings, u), cf_user_mean(ratings, v)
+    common = [i for i, (a, b) in enumerate(zip(ratings[u], ratings[v])) if a is not None and b is not None]
+    a = [ratings[u][i] - mu for i in common]
+    b = [ratings[v][i] - mv for i in common]
+    na, nb = math.sqrt(dot_product(a, a)), math.sqrt(dot_product(b, b))
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot_product(a, b) / (na * nb)
+
+
+def cf_neighbour_predict(ratings, u, i, k):
+    candidates = sorted(
+        ((cf_centered_cosine(ratings, u, v), v) for v in range(len(ratings))
+         if v != u and ratings[v][i] is not None),
+        key=lambda t: -t[0],
+    )
+    top = [(s, v) for s, v in candidates if s > 0][:k]
+    base = cf_user_mean(ratings, u)
+    weight = sum(s for s, _ in top)
+    if weight == 0:
+        return {"prediction": base, "neighbours": top, "base": base}
+    lift = sum(s * (ratings[v][i] - cf_user_mean(ratings, v)) for s, v in top) / weight
+    return {"prediction": base + lift, "neighbours": top, "base": base}
+
+
+def cf_baseline(ratings):
+    observed = cf_observed(ratings)
+    mu = sum(r for _, _, r in observed) / len(observed)
+    user_bias = [cf_user_mean(ratings, u) - mu for u in range(len(ratings))]
+    item_bias = []
+    for i in range(len(ratings[0])):
+        column = [row[i] for row in ratings if row[i] is not None]
+        item_bias.append(sum(column) / len(column) - mu if column else 0.0)
+    return {"mu": mu, "user_bias": user_bias, "item_bias": item_bias}
+
+
+def cf_als(ratings, rank, l2, sweeps, seed):
+    rng = random.Random(seed)
+    users = [[rng.gauss(0, 0.5) for _ in range(rank)] for _ in ratings]
+    items = [[rng.gauss(0, 0.5) for _ in range(rank)] for _ in ratings[0]]
+    observed = cf_observed(ratings)
+    history = []
+    for _ in range(sweeps):
+        for u in range(len(users)):
+            seen = [(i, r) for v, i, r in observed if v == u]
+            users[u] = ridge_coefficients([items[i] for i, _ in seen], [r for _, r in seen], l2)
+        for i in range(len(items)):
+            seen = [(u, r) for u, j, r in observed if j == i]
+            items[i] = ridge_coefficients([users[u] for u, _ in seen], [r for _, r in seen], l2)
+        sse = sum((dot_product(users[u], items[i]) - r) ** 2 for u, i, r in observed)
+        penalty = l2 * sum(dot_product(x, x) for x in users + items)
+        history.append({"rmse": math.sqrt(sse / len(observed)), "objective": sse + penalty})
+    return {"users": users, "items": items, "history": history}
+
+
+def cf_nmf_multiplicative(matrix, rank, steps, seed):
+    rng = random.Random(seed)
+    n, m = len(matrix), len(matrix[0])
+    w = [[rng.random() for _ in range(rank)] for _ in range(n)]
+    h = [[rng.random() for _ in range(m)] for _ in range(rank)]
+
+    def product():
+        return [[sum(w[a][k] * h[k][b] for k in range(rank)) for b in range(m)] for a in range(n)]
+
+    for _ in range(steps):
+        wh = product()
+        for k in range(rank):
+            for b in range(m):
+                h[k][b] *= (sum(w[a][k] * matrix[a][b] for a in range(n))
+                            / sum(w[a][k] * wh[a][b] for a in range(n)))
+        wh = product()
+        for a in range(n):
+            for k in range(rank):
+                w[a][k] *= (sum(matrix[a][b] * h[k][b] for b in range(m))
+                            / sum(wh[a][b] * h[k][b] for b in range(m)))
+    return {"w": w, "h": h, "reconstruction": product()}
+
+
+def implicit_confidence(counts, alpha):
+    return [{"count": c, "preference": 1 if c > 0 else 0, "confidence": 1 + alpha * c} for c in counts]
+
+
+@functools.lru_cache(maxsize=None)
+def collab_example():
+    e = COLLAB_EXAMPLE
+    ratings = e["ratings"]
+    baseline = cf_baseline(ratings)
+    als = cf_als(ratings, e["rank"], e["l2"], e["sweeps"], e["seed"])
+    zero_filled = [[0 if r is None else r for r in row] for row in ratings]
+    nmf = cf_nmf_multiplicative(zero_filled, e["rank"], e["nmf_steps"], e["seed"])
+    targets = []
+    for u, i, truth in e["held_out"]:
+        neighbour = cf_neighbour_predict(ratings, u, i, e["neighbours"])
+        targets.append({
+            "user": u,
+            "item": i,
+            "truth": truth,
+            "global": baseline["mu"],
+            "baseline": baseline["mu"] + baseline["user_bias"][u] + baseline["item_bias"][i],
+            "neighbour": neighbour,
+            "als": dot_product(als["users"][u], als["items"][i]),
+            "nmf": nmf["reconstruction"][u][i],
+        })
+    methods = ["global", "baseline", "neighbour", "als", "nmf"]
+    heldout_rmse = {}
+    for name in methods:
+        errors = [(t[name]["prediction"] if name == "neighbour" else t[name]) - t["truth"] for t in targets]
+        heldout_rmse[name] = math.sqrt(sum(x * x for x in errors) / len(errors))
+    nmf_observed_rmse = math.sqrt(sum(
+        (nmf["reconstruction"][u][i] - r) ** 2 for u, i, r in cf_observed(ratings)
+    ) / len(cf_observed(ratings)))
+    cold_order = sorted(range(len(ratings[0])), key=lambda i: -baseline["item_bias"][i])
+    s = e["scale"]
+    return {
+        "ratings": ratings,
+        "observed": len(cf_observed(ratings)),
+        "cells": len(ratings) * len(ratings[0]),
+        "similarity": [[cf_centered_cosine(ratings, u, v) for v in range(len(ratings))]
+                       for u in range(len(ratings))],
+        "user_means": [cf_user_mean(ratings, u) for u in range(len(ratings))],
+        "baseline": baseline,
+        "als": als,
+        "als_params": (len(ratings) + len(ratings[0])) * e["rank"],
+        "nmf": nmf,
+        "nmf_observed_rmse": nmf_observed_rmse,
+        "targets": targets,
+        "heldout_rmse": heldout_rmse,
+        "implicit": implicit_confidence(e["implicit_counts"], e["implicit_alpha"]),
+        "cold_order": cold_order,
+        "scale_cells": s["users"] * s["items"],
+        "scale_params": (s["users"] + s["items"]) * s["rank"],
+        "scale_bytes": (s["users"] + s["items"]) * s["rank"] * 4,
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -10716,6 +10884,7 @@ def render(slug, render_template):
         "upcoming": UPCOMING_MODELS,
         "encoder_example": encoder_example,
         "ltr_example": ltr_example,
+        "collab_example": collab_example,
         "data_example": data_example,
         "serving_example": serving_example,
         "causal_example": causal_example,
