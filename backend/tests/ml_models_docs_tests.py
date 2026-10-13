@@ -3990,3 +3990,43 @@ def test_minibatch_gradient_variance_matches_enumeration():
         avg = sum(means) / len(means)
         exact = sum((m - avg) ** 2 for m in means) / len(means)
         assert abs(ml_models_docs.minibatch_gradient_variance(grads, b)["variance"] - exact) < 1e-12
+
+
+def test_dynamic_batching_cuts_queueing_delay_under_load():
+    runs = ml_models_docs.serving_example()["policies"]
+    sizes = [[b["size"] for b in run["batches"]] for run in runs]
+    assert sizes == [[1] * 16, [1, 4, 4, 4, 3], [3, 4, 4, 4, 1], [3, 5, 7, 1]]
+    assert [run["max_ms"] for run in runs] == [74, 22, 22, 21]
+    assert runs[0]["mean_ms"] > 2 * runs[1]["mean_ms"]
+    assert runs[2]["mean_ms"] > runs[1]["mean_ms"]
+    for run in runs:
+        assert all(b["size"] <= run["max_batch"] for b in run["batches"])
+        assert sum(b["size"] for b in run["batches"]) == 16
+
+
+def test_dynamic_batching_waits_for_the_deadline_or_a_full_batch():
+    out = ml_models_docs.dynamic_batching([0, 10], 2, 1, max_batch=4, max_wait_ms=3)
+    assert [(b["start"], b["size"]) for b in out["batches"]] == [(3, 1), (13, 1)]
+    out = ml_models_docs.dynamic_batching([0, 1, 2, 10], 2, 1, max_batch=3, max_wait_ms=5)
+    assert [(b["start"], b["size"]) for b in out["batches"]] == [(2, 3), (15, 1)]
+    assert ml_models_docs.nearest_rank([5, 1, 4, 2, 3], 0.9) == 5
+
+
+def test_batch_cost_shows_gpu_throughput_needs_large_batches():
+    cpu, gpu = ml_models_docs.serving_example()["devices"]
+    assert cpu["costs"][0]["latency_ms"] < gpu["costs"][0]["latency_ms"]
+    assert gpu["costs"][-1]["per_second"] > 20 * cpu["costs"][-1]["per_second"]
+    assert abs(ml_models_docs.batch_cost(3.0, 0.05, 64)["per_second"] - 64000 / 6.2) < 1e-9
+
+
+def test_continuous_batching_fills_freed_slots():
+    example = ml_models_docs.serving_example()
+    static, cont = example["static"], example["continuous"]
+    assert static["finish"] == [3, 9, 4, 2, 14, 12, 15, 11]
+    assert cont["finish"] == [3, 9, 4, 2, 7, 6, 10, 8]
+    assert static["tokens"] == cont["tokens"] == 34
+    assert (static["busy_steps"], cont["busy_steps"]) == (15, 10)
+    assert cont["utilization"] > static["utilization"]
+    for run in (static, cont):
+        assert sum(len(row["active"]) for row in run["timeline"]) == 34
+        assert all(len(row["active"]) + row["idle"] == 4 for row in run["timeline"])

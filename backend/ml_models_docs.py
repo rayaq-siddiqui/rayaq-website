@@ -9641,6 +9641,128 @@ def data_example():
     }
 
 
+SERVING_EXAMPLE = {
+    "arrivals": [0, 1, 2, 4, 5, 7, 8, 9, 12, 13, 15, 16, 18, 19, 21, 22],
+    "fixed_ms": 5,
+    "per_item_ms": 1,
+    "policies": [
+        {"name": "one at a time", "max_batch": 1, "max_wait_ms": 0},
+        {"name": "batch of up to 4, no wait", "max_batch": 4, "max_wait_ms": 0},
+        {"name": "batch of up to 4, wait 3 ms", "max_batch": 4, "max_wait_ms": 3},
+        {"name": "batch of up to 8, wait 3 ms", "max_batch": 8, "max_wait_ms": 3},
+    ],
+    "devices": [
+        {"name": "CPU", "fixed_ms": 0.5, "per_item_ms": 2.0},
+        {"name": "GPU", "fixed_ms": 3.0, "per_item_ms": 0.05},
+    ],
+    "cost_sizes": [1, 4, 16, 64],
+    "decode_requests": [(0, 3), (0, 9), (0, 4), (0, 2), (1, 5), (2, 3), (3, 6), (4, 2)],
+    "decode_slots": 4,
+}
+
+
+def batch_cost(fixed_ms, per_item_ms, size):
+    latency = fixed_ms + per_item_ms * size
+    return {"size": size, "latency_ms": latency, "per_second": 1000 * size / latency}
+
+
+def nearest_rank(values, q):
+    ordered = sorted(values)
+    return ordered[max(1, math.ceil(q * len(ordered))) - 1]
+
+
+def dynamic_batching(arrivals, fixed_ms, per_item_ms, max_batch, max_wait_ms):
+    queue = sorted(arrivals)
+    free_at = 0
+    i = 0
+    batches = []
+    finish = []
+    while i < len(queue):
+        deadline = queue[i] + max_wait_ms
+        full = queue[i + max_batch - 1] if i + max_batch - 1 < len(queue) else math.inf
+        start = max(free_at, min(deadline, full))
+        size = 0
+        while i + size < len(queue) and size < max_batch and queue[i + size] <= start:
+            size += 1
+        end = start + fixed_ms + per_item_ms * size
+        batches.append({"start": start, "end": end, "size": size, "arrivals": queue[i:i + size]})
+        finish.extend([end] * size)
+        free_at = end
+        i += size
+    latencies = [f - a for f, a in zip(finish, queue)]
+    busy = sum(b["end"] - b["start"] for b in batches)
+    makespan = batches[-1]["end"] - queue[0]
+    return {
+        "batches": batches,
+        "latencies": latencies,
+        "mean_ms": sum(latencies) / len(latencies),
+        "p50_ms": nearest_rank(latencies, 0.5),
+        "p90_ms": nearest_rank(latencies, 0.9),
+        "max_ms": max(latencies),
+        "makespan_ms": makespan,
+        "per_second": 1000 * len(queue) / makespan,
+        "busy": busy / makespan,
+        "mean_batch": len(queue) / len(batches),
+    }
+
+
+def decode_batching(requests, slots, continuous):
+    waiting = sorted(range(len(requests)), key=lambda r: (requests[r][0], r))
+    remaining = [tokens for _, tokens in requests]
+    running = []
+    finish = [None] * len(requests)
+    step = 0
+    busy_steps = 0
+    timeline = []
+    while waiting or running:
+        if continuous or not running:
+            while waiting and len(running) < slots and requests[waiting[0]][0] <= step:
+                running.append(waiting.pop(0))
+        if not running:
+            step = requests[waiting[0]][0]
+            continue
+        active = [r for r in running if remaining[r] > 0]
+        timeline.append({"step": step, "active": active, "idle": slots - len(active)})
+        busy_steps += 1
+        step += 1
+        for r in active:
+            remaining[r] -= 1
+            if remaining[r] == 0:
+                finish[r] = step
+        if continuous or not any(remaining[r] for r in running):
+            running = [r for r in running if remaining[r] > 0]
+    tokens = sum(t for _, t in requests)
+    latencies = [finish[r] - requests[r][0] for r in range(len(requests))]
+    return {
+        "finish": finish,
+        "latencies": latencies,
+        "mean_steps": sum(latencies) / len(latencies),
+        "steps": step,
+        "busy_steps": busy_steps,
+        "tokens": tokens,
+        "utilization": tokens / (busy_steps * slots),
+        "timeline": timeline,
+    }
+
+
+@functools.lru_cache(maxsize=None)
+def serving_example():
+    e = SERVING_EXAMPLE
+    return {
+        "example": e,
+        "policies": [
+            dict(dynamic_batching(e["arrivals"], e["fixed_ms"], e["per_item_ms"], p["max_batch"], p["max_wait_ms"]), **p)
+            for p in e["policies"]
+        ],
+        "devices": [
+            dict(d, costs=[batch_cost(d["fixed_ms"], d["per_item_ms"], size) for size in e["cost_sizes"]])
+            for d in e["devices"]
+        ],
+        "static": decode_batching(e["decode_requests"], e["decode_slots"], continuous=False),
+        "continuous": decode_batching(e["decode_requests"], e["decode_slots"], continuous=True),
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -9673,6 +9795,7 @@ def render(slug, render_template):
         "encoder_example": encoder_example,
         "ltr_example": ltr_example,
         "data_example": data_example,
+        "serving_example": serving_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,
         "multihead_example": MULTIHEAD_EXAMPLE,
