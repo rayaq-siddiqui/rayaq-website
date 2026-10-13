@@ -1,0 +1,521 @@
+{% set ex = collab_example() %}
+{% set names = ex.names %}
+{% set titles = ex.titles %}
+{% set R = ex.ratings %}
+{% set ben = ex.targets[0] %}
+{% set dee = ex.targets[1] %}
+{% set als = ex.als %}
+{% set als_items = als["items"] %}
+{% macro n(x, d=3) -%}{{ ("%." ~ d ~ "f")|format(x) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Collaborative filtering</h1>
+  <p class="tagline">
+    Recommend from behaviour alone: people who agreed with you before will probably agree again. This page
+    builds the user–item matrix, predicts missing ratings from similar users, then factorizes the matrix into
+    user and item vectors trained only on the ratings that exist. It works through a five-user example by
+    hand, explains implicit feedback and cold start, and shows why scikit-learn's NMF, which treats missing
+    entries as zeros, is the wrong tool for ratings.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A shop, a music app or a film site has millions of users and items and a log of who interacted with what:
+  star ratings, plays, purchases, clicks. Arrange it as a matrix <em>R</em> with one row per user and one
+  column per item. Nearly every cell is empty, because each user has touched a tiny fraction of the catalogue.
+  The job is to fill in the empty cells well enough to rank, for each user, the items they haven't seen.
+</p>
+<p>
+  We often know nothing about the items' content, or don't trust it, and we have no labelled features about
+  users. <strong>Collaborative filtering</strong> (CF) uses only the matrix: if two users rated the same items
+  the same way, each is a good guide to what the other will like. The example used throughout this page is
+  {{ names|length }} users and {{ titles|length }} films, {{ ex.observed }} of {{ ex.cells }} cells known,
+  plus two ratings we hide and try to predict:
+</p>
+
+<div class="jj-table-wrap">
+  <table class="ml-numbers">
+    <thead><tr><th>User</th>{% for t in titles %}<th>{{ t }}</th>{% endfor %}<th>Mean</th></tr></thead>
+    <tbody>
+      {% for row in R %}
+        {% set u = loop.index0 %}
+        <tr>
+          <td>{{ names[u] }}</td>
+          {% for r in row %}
+            {% set i = loop.index0 %}
+            <td>{% if r is none %}{% if u == ben.user and i == ben.item %}<strong>? ({{ ben.truth }})</strong>{% elif u == dee.user and i == dee.item %}<strong>? ({{ dee.truth }})</strong>{% else %}·{% endif %}{% else %}{{ r }}{% endif %}</td>
+          {% endfor %}
+          <td>{{ n(ex.user_means[u], 2) }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  The two cells marked ? are held out: their true ratings (in brackets) are hidden from every method below.
+  Two tastes are visible by eye: {{ names[0] }}, {{ names[1] }} and {{ names[4] }} like the first three films,
+  {{ names[2] }} and {{ names[3] }} like the last two.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  There are two families of CF, and they make the same bet in different ways:
+</p>
+<ul>
+  <li><strong>Neighbourhood methods</strong> keep the matrix as it is. To predict {{ names[ben.user] }}'s rating
+    of {{ titles[ben.item] }}, find the users most similar to {{ names[ben.user] }} (by how they rated the films
+    both have seen) and average what they gave {{ titles[ben.item] }}. Item-based neighbourhoods do the same over
+    columns: films that were rated alike are recommended alike.</li>
+  <li><strong>Latent factor models</strong> (matrix factorization) assume the matrix is close to low rank: a few
+    hidden dimensions, such as "likes heists" and "likes horror", explain most of the ratings. Each user gets a
+    short vector <em>p</em><sub>u</sub>, each item a vector <em>q</em><sub>i</sub>, and the predicted rating is
+    their dot product. These vectors are <a href="/ml-models/embeddings">embeddings</a> learned from nothing
+    but the matrix.</li>
+</ul>
+<p>
+  The crucial detail in both is that empty cells are <em>unknown</em>, not zero. A user who hasn't rated a film
+  hasn't said they hate it. Fitting the factors only on observed cells is what lets the model predict the rest.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 260" role="img" aria-labelledby="cf-mf-title cf-mf-desc">
+    <title id="cf-mf-title">The rating matrix approximated by user factors times item factors</title>
+    <desc id="cf-mf-desc">
+      On the left the five-by-five rating matrix of the example, with empty cells drawn dashed. An
+      approximately-equal sign leads to a five-by-two matrix P of user vectors, one row per user, multiplied by a
+      two-by-five matrix Q transpose of item vectors, one column per film. The loss is summed only over the
+      {{ ex.observed }} filled cells; the factors have {{ ex.als_params }} numbers in total.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      <text x="130" y="20">R: {{ names|length }} users × {{ titles|length }} items</text>
+      {% for row in R %}
+        {% set u = loop.index0 %}
+        <text x="22" y="{{ 56 + u * 36 }}" class="d-muted">{{ names[u] }}</text>
+        {% for r in row %}
+          {% set i = loop.index0 %}
+          <rect x="{{ 44 + i * 36 }}" y="{{ 36 + u * 36 }}" width="32" height="32" rx="3" class="d-box {{ 'ml-dashed' if r is none else 'ml-tensor' }}"></rect>
+          <text x="{{ 60 + i * 36 }}" y="{{ 56 + u * 36 }}">{{ '?' if r is none else r }}</text>
+        {% endfor %}
+      {% endfor %}
+      <text x="250" y="130" font-size="22">≈</text>
+      <text x="320" y="20">P: {{ names|length }} × 2</text>
+      {% for p in als.users %}
+        {% set u = loop.index0 %}
+        {% for v in p %}
+          <rect x="{{ 284 + loop.index0 * 38 }}" y="{{ 36 + u * 36 }}" width="34" height="32" rx="3" class="d-box ml-op"></rect>
+          <text x="{{ 301 + loop.index0 * 38 }}" y="{{ 56 + u * 36 }}">{{ "%.1f"|format(v) }}</text>
+        {% endfor %}
+      {% endfor %}
+      <text x="384" y="130" font-size="18">×</text>
+      <text x="510" y="20">Qᵀ: 2 × {{ titles|length }}</text>
+      {% for q in als_items %}
+        {% set i = loop.index0 %}
+        {% for v in q %}
+          <rect x="{{ 404 + i * 44 }}" y="{{ 98 + loop.index0 * 36 }}" width="40" height="32" rx="3" class="d-box ml-op"></rect>
+          <text x="{{ 424 + i * 44 }}" y="{{ 118 + loop.index0 * 36 }}">{{ "%.1f"|format(v) }}</text>
+        {% endfor %}
+        <text x="{{ 424 + i * 44 }}" y="88" class="d-muted">{{ titles[i] }}</text>
+      {% endfor %}
+      <text x="360" y="232" class="d-muted">loss summed over the {{ ex.observed }} filled cells only · {{ ex.als_params }} factor numbers</text>
+      <text x="360" y="250" style="fill:var(--jj-accent)">r̂(u, i) = p_u · q_i</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="neighbourhoods">Neighbourhoods</h3>
+<p>
+  Users rate on different scales: one person's 3 is another's 4. So centre each user's ratings on their own
+  mean <em>r̄</em><sub>u</sub> first, then measure similarity with the cosine of the centred vectors over the
+  items both rated (this is Pearson correlation restricted to co-rated items):
+</p>
+<p class="ml-formula">
+  s(u, v) = Σ<sub>i ∈ I<sub>uv</sub></sub> (r<sub>ui</sub> − r̄<sub>u</sub>)(r<sub>vi</sub> − r̄<sub>v</sub>)
+  / ( ‖r<sub>u</sub> − r̄<sub>u</sub>‖ · ‖r<sub>v</sub> − r̄<sub>v</sub>‖ )
+</p>
+<p>
+  The prediction starts from the user's own mean and adds the similarity-weighted deviations of the
+  <em>k</em> most similar users who rated the item:
+</p>
+<p class="ml-formula">
+  r̂<sub>ui</sub> = r̄<sub>u</sub> + Σ<sub>v ∈ N<sub>k</sub>(u, i)</sub> s(u, v)(r<sub>vi</sub> − r̄<sub>v</sub>) / Σ<sub>v</sub> |s(u, v)|
+</p>
+<p>
+  This needs no training, explains itself ("because Ana and Eli liked it"), and updates the moment a new
+  rating arrives. It costs a similarity per pair of users, which is why large systems use item-item
+  neighbourhoods (items are fewer and their similarities change slowly) and precompute them.
+</p>
+
+<h3 id="matrix-factorization">Matrix factorization and its loss</h3>
+<p>
+  Give each user a vector <em>p</em><sub>u</sub> ∈ ℝ<sup>k</sup> and each item <em>q</em><sub>i</sub> ∈ ℝ<sup>k</sup>.
+  With Ω the set of observed (user, item) pairs, minimize
+</p>
+<p class="ml-formula">
+  L = Σ<sub>(u,i) ∈ Ω</sub> (r<sub>ui</sub> − μ − b<sub>u</sub> − b<sub>i</sub> − p<sub>u</sub> · q<sub>i</sub>)²
+  + λ (‖p<sub>u</sub>‖² + ‖q<sub>i</sub>‖² + b<sub>u</sub>² + b<sub>i</sub>²)
+</p>
+<p>
+  μ is the global mean, <em>b</em><sub>u</sub> and <em>b</em><sub>i</sub> are a user's and an item's offsets
+  from it (a generous rater, a beloved film), and the dot product carries the interaction: how <em>this</em>
+  user feels about <em>this</em> item beyond those offsets. The L2 term λ is not optional. There are
+  (users + items) · k parameters, often as many as there are ratings, so without it the factors simply
+  memorize Ω.
+</p>
+<p>Two ways to minimize it:</p>
+<ul>
+  <li><strong>SGD.</strong> For each observed rating, compute the error <em>e</em> = r − r̂ and step
+    <em>p</em><sub>u</sub> += η(<em>e</em> <em>q</em><sub>i</sub> − λ<em>p</em><sub>u</sub>),
+    <em>q</em><sub>i</sub> += η(<em>e</em> <em>p</em><sub>u</sub> − λ<em>q</em><sub>i</sub>). Simple, and what a
+    PyTorch model with an embedding table does.</li>
+  <li><strong>Alternating least squares (ALS).</strong> The loss is not convex in (P, Q) together, but with Q
+    fixed it is an independent <a href="/ml-models/regularization">ridge regression</a> for every user:
+    <em>p</em><sub>u</sub> = (Q<sub>u</sub><sup>T</sup>Q<sub>u</sub> + λI)<sup>−1</sup> Q<sub>u</sub><sup>T</sup> r<sub>u</sub>,
+    where Q<sub>u</sub> holds only the items user u rated. Then fix P and solve every item the same way.
+    Each half-step can only lower L, the solves are embarrassingly parallel, and there is no learning rate.</li>
+</ul>
+
+<h3 id="implicit-feedback">Implicit feedback</h3>
+<p>
+  Most real signals are not ratings but events: plays, views, purchases. There are no negatives, only
+  "did" and "didn't (yet)". Hu, Koren and Volinsky turn each count <em>r</em><sub>ui</sub> into a binary
+  preference <em>p</em><sub>ui</sub> = [r<sub>ui</sub> &gt; 0] and a confidence
+  <em>c</em><sub>ui</sub> = 1 + α r<sub>ui</sub>, then fit over <em>all</em> cells:
+</p>
+<p class="ml-formula">
+  L = Σ<sub>u, i</sub> c<sub>ui</sub> (p<sub>ui</sub> − x<sub>u</sub> · y<sub>i</sub>)² + λ (Σ‖x<sub>u</sub>‖² + Σ‖y<sub>i</sub>‖²)
+</p>
+<p>
+  Here zeros <em>are</em> in the loss, deliberately, but with confidence 1, while anything the user actually
+  did weighs 1 + α times its count. Summing over every cell looks impossible at scale; the trick is that
+  Y<sup>T</sup>C<sub>u</sub>Y = Y<sup>T</sup>Y + Y<sup>T</sup>(C<sub>u</sub> − I)Y, where Y<sup>T</sup>Y is shared by all
+  users and C<sub>u</sub> − I is non-zero only on the items user u touched. Each ALS solve still costs only
+  that user's interactions.
+</p>
+
+<h3 id="cold-start">Cold start</h3>
+<p>
+  A new user or a new item has no row or column to learn from, so neither family can say anything personal
+  about it. The usual fallbacks: show new users popular or highly rated items (μ + <em>b</em><sub>i</sub>),
+  ask a few onboarding questions, or switch to content features (genre, text, image embeddings) that exist
+  from day one. Hybrid models, such as two-tower models with ID and
+  content features in each tower, blend the two as interactions accumulate.
+</p>
+
+<h3 id="nmf">Non-negative matrix factorization</h3>
+<p>
+  NMF factors a non-negative matrix X ≈ WH with W, H ≥ 0, which makes the factors additive parts (topics,
+  tastes) that are easy to read. scikit-learn's <code>NMF</code> minimizes
+  0.5‖X − WH‖²<sub>Fro</sub> plus L1/L2 penalties scaled by the matrix's dimensions. Its multiplicative update for
+  the Frobenius loss is H ← H ⊙ (W<sup>T</sup>X) / (W<sup>T</sup>WH), and the mirror image for W. Each factor
+  stays non-negative because it is only ever multiplied by a non-negative ratio.
+</p>
+<p>
+  The catch for recommendation: <code>X</code> is a whole matrix, sparse or dense, and every cell is in the loss.
+  An unrated film is a stored or implicit zero, so NMF treats "hasn't seen it" as "rated it 0" and drags those
+  predictions toward zero. That is fine for counts where absence really means zero, such as word counts in
+  documents, and wrong for explicit ratings.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>NMF</code></td>
+        <td><code>X [n_samples, n_features]</code> → <code>W [n_samples, k]</code>, <code>H [k, n_features]</code></td>
+        <td>W is the transformed data (users), H the components (items). Default <code>solver="cd"</code>, <code>tol=1e-4</code>, <code>max_iter=200</code>.</td>
+        <td><a href="{{ skl('sklearn/decomposition/_nmf.py', 1320, 1758) }}"><code>class NMF</code></a></td>
+      </tr>
+      <tr>
+        <td>objective</td>
+        <td><code>alpha_W</code>, <code>alpha_H="same"</code>, <code>l1_ratio</code></td>
+        <td>0.5‖X − WH‖² + L1 and L2 terms on W and H; summed over every cell, missing ones included.</td>
+        <td><a href="{{ skl('sklearn/decomposition/_nmf.py', 1328, 1339) }}">docstring</a>, <a href="{{ skl('sklearn/decomposition/_nmf.py', 1249, 1260) }}"><code>_compute_regularization</code></a></td>
+      </tr>
+      <tr>
+        <td>multiplicative update</td>
+        <td><code>solver="mu"</code>, any <code>beta_loss</code></td>
+        <td>W ← W ⊙ XH<sup>T</sup> / (WHH<sup>T</sup> + penalties); H likewise. Non-negativity is kept for free.</td>
+        <td><a href="{{ skl('sklearn/decomposition/_nmf.py', 521, 626) }}"><code>_multiplicative_update_w</code></a>, <a href="{{ skl('sklearn/decomposition/_nmf.py', 629, 723) }}"><code>_h</code></a></td>
+      </tr>
+      <tr>
+        <td><code>init</code></td>
+        <td><code>None</code> → <code>"nndsvda"</code> when k ≤ min(n, m), else <code>"random"</code></td>
+        <td>Starting factors from an SVD (zeros filled with the mean) or scaled random values.</td>
+        <td><a href="{{ skl('sklearn/decomposition/_nmf.py', 214, 366) }}"><code>_initialize_nmf</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.Embedding(n, k, sparse=True)</code></td>
+        <td><code>weight [n, k]</code>, init N(0, 1)</td>
+        <td>One learnable row per user or item; a lookup by ID. <code>sparse=True</code> makes the gradient touch only the rows in the batch.</td>
+        <td><a href="{{ src('torch/nn/modules/sparse.py', 14, 264) }}"><code>Embedding</code></a>, <a href="{{ src('torch/nn/modules/sparse.py', 179, 181) }}"><code>reset_parameters</code></a></td>
+      </tr>
+      <tr>
+        <td>sparse-gradient optimizers</td>
+        <td><code>SGD</code>, <code>SparseAdam</code>, <code>Adagrad</code> (CPU)</td>
+        <td>Only these accept the sparse gradient. <code>SparseAdam</code> updates moments for the touched rows only.</td>
+        <td><a href="{{ src('torch/nn/modules/sparse.py', 46, 48) }}">note</a>, <a href="{{ src('torch/optim/sparse_adam.py', 13, 130) }}"><code>SparseAdam</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.EmbeddingBag</code></td>
+        <td><code>mode="mean"</code> by default</td>
+        <td>Pools a variable-length bag of item rows into one vector: a user represented by their history.</td>
+        <td><a href="{{ src('torch/nn/modules/sparse.py', 267, 543) }}"><code>EmbeddingBag</code></a></td>
+      </tr>
+      <tr>
+        <td><code>cosine_similarity</code></td>
+        <td><code>X [n, d]</code>, <code>Y [m, d]</code> → <code>[n, m]</code></td>
+        <td>Item-item or user-user similarity for neighbourhoods; centre the rows first for the Pearson-style version.</td>
+        <td><a href="{{ skl('sklearn/metrics/pairwise.py', 1703, 1758) }}"><code>pairwise.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<h3 id="cf-similarity">User similarities</h3>
+<p>Centred cosine between every pair of users, over the films both rated:</p>
+<div class="jj-table-wrap">
+  <table class="ml-numbers">
+    <thead><tr><th></th>{% for name in names %}<th>{{ name }}</th>{% endfor %}</tr></thead>
+    <tbody>
+      {% for row in ex.similarity %}
+        <tr><td>{{ names[loop.index0] }}</td>{% for s in row %}<td>{{ "%+.2f"|format(s) }}</td>{% endfor %}</tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  The two taste groups fall out: similarities are positive within {{ names[0] }}, {{ names[1] }},
+  {{ names[4] }} and within {{ names[2] }}, {{ names[3] }}, and negative across.
+  {{ names[2] }} and {{ names[4] }} come out at exactly {{ "%+.2f"|format(ex.similarity[2][4]) }}: their
+  co-rated films' centred ratings are mirror images.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 240" role="img" aria-labelledby="cf-nb-title cf-nb-desc">
+    <title id="cf-nb-title">Predicting {{ names[ben.user] }}'s rating of {{ titles[ben.item] }} from two neighbours</title>
+    <desc id="cf-nb-desc">
+      {{ names[ben.user] }} is in the centre. Of the users who rated {{ titles[ben.item] }}, the two most similar
+      are {% for s, v in ben.neighbour.neighbours %}{{ names[v] }} (similarity {{ n(s, 2) }}){{ " and " if not loop.last }}{% endfor %};
+      both gave {{ titles[ben.item] }} 1.25 points more than their own average. {{ names[ben.user] }}'s mean of
+      {{ n(ben.neighbour.base, 2) }} plus 1.25 gives the prediction {{ n(ben.neighbour.prediction, 2) }}, against
+      a true rating of {{ ben.truth }}. Users with negative similarity are drawn dashed and ignored.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      <rect x="290" y="96" width="140" height="48" rx="8" class="d-box ml-op"></rect>
+      <text x="360" y="116">{{ names[ben.user] }} · mean {{ n(ben.neighbour.base, 2) }}</text>
+      <text x="360" y="134">r̂ = {{ n(ben.neighbour.prediction, 2) }} (true {{ ben.truth }})</text>
+      {% for s, v in ben.neighbour.neighbours %}
+        {% set x = 60 if loop.first else 520 %}
+        <rect x="{{ x }}" y="30" width="140" height="48" rx="8" class="d-box ml-tensor"></rect>
+        <text x="{{ x + 70 }}" y="50">{{ names[v] }} · mean {{ n(ex.user_means[v], 2) }}</text>
+        <text x="{{ x + 70 }}" y="68">{{ titles[ben.item] }}: {{ R[v][ben.item] }} ({{ "%+.2f"|format(R[v][ben.item] - ex.user_means[v]) }})</text>
+        <line x1="{{ x + 70 }}" y1="78" x2="{{ 300 if loop.first else 420 }}" y2="100" class="d-line"></line>
+        <text x="{{ 230 if loop.first else 490 }}" y="100" style="fill:var(--jj-accent)">s = {{ n(s, 2) }}</text>
+      {% endfor %}
+      {% for v in [2, 3] %}
+        {% set x = 60 if loop.first else 520 %}
+        <rect x="{{ x }}" y="166" width="140" height="40" rx="8" class="d-box ml-dashed"></rect>
+        <text x="{{ x + 70 }}" y="190">{{ names[v] }} · s = {{ n(ex.similarity[ben.user][v], 2) }}</text>
+        <line x1="{{ x + 70 }}" y1="166" x2="{{ 300 if loop.first else 420 }}" y2="142" class="d-line ml-dashed"></line>
+      {% endfor %}
+      <text x="360" y="230" class="d-muted">k = {{ ben.neighbour.neighbours|length }} · only positive similarities count</text>
+    </g>
+  </svg>
+</div>
+
+<h3 id="cf-predictions">Five ways to fill the two cells</h3>
+<p>
+  The global mean is μ = {{ n(ex.baseline.mu, 2) }}. The bias baseline adds {{ names[ben.user] }}'s offset
+  {{ "%+.2f"|format(ex.baseline.user_bias[ben.user]) }} and {{ titles[ben.item] }}'s
+  {{ "%+.2f"|format(ex.baseline.item_bias[ben.item]) }}. The neighbourhood prediction uses k = 2 as in the
+  diagram; for {{ names[dee.user] }} only {{ names[dee.neighbour.neighbours[0][1]] }} is both similar and has
+  rated {{ titles[dee.item] }}. Matrix factorization is rank 2 by ALS with λ = 0.1 on the {{ ex.observed }}
+  observed cells. NMF is rank 2, 300 multiplicative updates, on the matrix with blanks filled by 0.
+</p>
+<div class="jj-table-wrap">
+  <table class="ml-numbers">
+    <thead><tr><th>Method</th><th>{{ names[ben.user] }} × {{ titles[ben.item] }} (true {{ ben.truth }})</th><th>{{ names[dee.user] }} × {{ titles[dee.item] }} (true {{ dee.truth }})</th><th>Held-out RMSE</th></tr></thead>
+    <tbody>
+      <tr><td>Global mean μ</td><td>{{ n(ben.global, 2) }}</td><td>{{ n(dee.global, 2) }}</td><td>{{ n(ex.heldout_rmse.global, 2) }}</td></tr>
+      <tr><td>μ + b<sub>u</sub> + b<sub>i</sub></td><td>{{ n(ben.baseline, 2) }}</td><td>{{ n(dee.baseline, 2) }}</td><td>{{ n(ex.heldout_rmse.baseline, 2) }}</td></tr>
+      <tr><td>User neighbourhood, k = 2</td><td>{{ n(ben.neighbour.prediction, 2) }}</td><td>{{ n(dee.neighbour.prediction, 2) }}</td><td>{{ n(ex.heldout_rmse.neighbour, 2) }}</td></tr>
+      <tr><td>MF by ALS (observed only)</td><td><strong>{{ n(ben.als, 2) }}</strong></td><td><strong>{{ n(dee.als, 2) }}</strong></td><td><strong>{{ n(ex.heldout_rmse.als, 2) }}</strong></td></tr>
+      <tr><td>NMF (blanks = 0)</td><td>{{ n(ben.nmf, 2) }}</td><td>{{ n(dee.nmf, 2) }}</td><td>{{ n(ex.heldout_rmse.nmf, 2) }}</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  The bias baseline is <em>worse</em> than the global mean here: {{ names[dee.user] }} rates generously and
+  {{ titles[dee.item] }} is popular, so biases alone predict a high rating for a user who dislikes heist films.
+  Offsets can't see interaction; that is what the dot product is for. Both CF methods find the taste groups.
+  NMF finds them too but has been told that {{ names[ben.user] }} rated {{ titles[ben.item] }} 0, so its
+  prediction of {{ n(ben.nmf, 2) }} is dragged far below the truth; its fit on the {{ ex.observed }} real ratings
+  (RMSE {{ n(ex.nmf_observed_rmse, 2) }}) is also worse than ALS's, because it spends capacity reproducing the
+  fake zeros.
+</p>
+
+<h3 id="cf-als-steps">ALS, sweep by sweep</h3>
+<div class="jj-table-wrap">
+  <table class="ml-numbers">
+    <thead><tr><th>Sweep</th><th>Objective (SSE + λ‖·‖²)</th><th>RMSE on observed</th></tr></thead>
+    <tbody>
+      {% for h in als.history %}
+        {% if loop.index <= 5 or loop.last %}
+          <tr><td>{{ loop.index }}</td><td>{{ n(h.objective, 3) }}</td><td>{{ n(h.rmse, 3) }}</td></tr>
+        {% endif %}
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  The objective falls at every sweep, because each half-step solves its ridge problems exactly. The RMSE on
+  observed ratings levels off near {{ n(als.history[-1].rmse, 2) }} while the objective keeps creeping down: the
+  later sweeps shrink the vectors' norms without changing the fit. The model has {{ ex.als_params }} factor
+  numbers for {{ ex.observed }} ratings, so with λ = 0 it could fit them almost perfectly and generalize badly.
+</p>
+<p>
+  One concrete solve: {{ names[0] }} rated {{ R[0]|reject("none")|list|length }} films. With the item vectors
+  fixed, {{ names[0] }}'s new vector is the 2 × 2 ridge solution over those four rows of Q,
+  ({{ n(als.users[0][0], 2) }}, {{ n(als.users[0][1], 2) }}).
+</p>
+
+<h3 id="cf-implicit">Implicit confidence and scale</h3>
+<div class="jj-table-wrap">
+  <table class="ml-numbers">
+    <thead><tr><th>Plays r</th><th>Preference p</th><th>Confidence 1 + 40r</th></tr></thead>
+    <tbody>
+      {% for row in ex.implicit %}<tr><td>{{ row.count }}</td><td>{{ row.preference }}</td><td>{{ row.confidence }}</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  With α = 40 (the value Hu, Koren and Volinsky found worked), a film played once counts 41 times as much as an
+  unplayed one. At production scale, 1,000,000 users and 100,000 items give
+  {{ "{:,}".format(ex.scale_cells) }} cells. Rank-64 factors are {{ "{:,}".format(ex.scale_params) }} numbers,
+  about {{ "%.0f"|format(ex.scale_bytes / 1e6) }} MB in float32: the model is
+  {{ "{:,.0f}".format(ex.scale_cells / ex.scale_params) }} times smaller than the matrix it predicts.
+  For the cold-start user, the popularity order by μ + b<sub>i</sub> is
+  {% for i in ex.cold_order %}{{ titles[i] }}{{ ", " if not loop.last }}{% endfor %}.
+</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  Matrix factorization with biases in PyTorch: two <a href="{{ src('torch/nn/modules/sparse.py', 14, 264) }}"><code>nn.Embedding</code></a>
+  tables trained on (user, item, rating) triples, so only observed cells are ever in the loss. With
+  <code>sparse=True</code> each step's gradient touches only the batch's rows, which needs one of the optimizers
+  the <a href="{{ src('torch/nn/modules/sparse.py', 46, 48) }}">docstring</a> lists, such as
+  <a href="{{ src('torch/optim/sparse_adam.py', 13, 130) }}"><code>SparseAdam</code></a>:
+</p>
+<pre><code>import torch
+from torch import nn
+
+class MF(nn.Module):
+    def __init__(self, n_users, n_items, k=64):
+        super().__init__()
+        self.p = nn.Embedding(n_users, k, sparse=True)
+        self.q = nn.Embedding(n_items, k, sparse=True)
+        self.bu = nn.Embedding(n_users, 1, sparse=True)
+        self.bi = nn.Embedding(n_items, 1, sparse=True)
+        for e in (self.p, self.q):
+            nn.init.normal_(e.weight, std=0.01)   # default N(0, 1) is far too large
+        for e in (self.bu, self.bi):
+            nn.init.zeros_(e.weight)
+        self.mu = nn.Parameter(torch.zeros(()))
+
+    def forward(self, u, i):
+        return (self.mu + self.bu(u).squeeze(-1) + self.bi(i).squeeze(-1)
+                + (self.p(u) * self.q(i)).sum(-1))
+
+model = MF(n_users, n_items)
+model.mu.data.fill_(ratings.mean())
+sparse = [model.p.weight, model.q.weight, model.bu.weight, model.bi.weight]
+opt_sparse = torch.optim.SparseAdam(sparse, lr=1e-2)
+opt_dense = torch.optim.Adam([model.mu], lr=1e-2)
+lam = 1e-4
+
+for u, i, r in loader:                     # observed triples only
+    pred = model(u, i)
+    reg = lam * (model.p(u).pow(2).sum() + model.q(i).pow(2).sum())
+    loss = (pred - r).pow(2).mean() + reg / len(r)
+    opt_sparse.zero_grad(); opt_dense.zero_grad()
+    loss.backward()
+    opt_sparse.step(); opt_dense.step()</code></pre>
+<p>
+  The L2 term is applied to the rows in the batch, not via <code>weight_decay</code>, which would shrink every
+  row on every step (and <code>SparseAdam</code> doesn't support it). For implicit data, use an ALS library
+  built on the confidence trick, or train with sampled negatives as in
+  two-tower models.
+</p>
+<p>
+  If you reach for scikit-learn, remember what <a href="{{ skl('sklearn/decomposition/_nmf.py', 1320, 1758) }}"><code>NMF</code></a>
+  fits: a <code>scipy.sparse</code> rating matrix is accepted, but its missing entries are zeros in the loss.
+  That suits counts (topics in a document-term matrix) and not explicit ratings.
+</p>
+<pre><code>from sklearn.decomposition import NMF
+
+nmf = NMF(n_components=2, init="nndsvda", solver="mu", max_iter=300)
+W = nmf.fit_transform(play_counts)   # [users, k]: zeros here mean "zero plays", which is true
+H = nmf.components_                  # [k, items]</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Neighbourhoods vs factors.</strong> Neighbourhoods are explainable, training-free and instantly
+    fresh, but noisy when users share few items, and quadratic in users or items. Factors generalize across
+    the sparsity (two users need not share a single item to end up close in factor space) and serve as a fast dot
+    product, but must be retrained or folded in for new data.</li>
+  <li><strong>ALS vs SGD.</strong> ALS has no learning rate, parallelizes per row and handles the all-cells
+    implicit loss exactly. SGD is simpler, fits any differentiable model (side features, deep towers) and
+    streams over huge logs.</li>
+  <li><strong>Rank k and λ.</strong> Larger k fits more taste dimensions and overfits faster; λ trades the two
+    and must be tuned on held-out ratings, split by time if you can, since the future is what you'll predict.</li>
+  <li><strong>RMSE vs ranking.</strong> Predicting stars well is not the same as ranking the top 10 well. Many
+    systems train on implicit data and evaluate with ranking metrics, and add a
+    <a href="/ml-models/learning-to-rank">learning-to-rank</a> stage on top.</li>
+  <li><strong>Popularity and feedback loops.</strong> CF recommends what similar people consumed, which over
+    time amplifies what is already popular and starves new items; cold-start content features and some
+    exploration counter it.</li>
+  <li><strong>NMF.</strong> Non-negative parts are interpretable, but the default scikit-learn implementation's
+    zeros-are-observed loss makes it a poor fit for explicit ratings.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Why centre each user's ratings before computing similarity?</summary>
+  <p>A harsh rater's 3 can mean what a generous rater's 4 means. Centring compares how each user deviates from their own habit, not their raw scale.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why can each ALS half-step be solved in closed form?</summary>
+  <p>With the item vectors fixed, the loss for one user is a sum of squared errors linear in that user's vector plus an L2 term: a ridge regression on the items they rated.</p>
+</details>
+<details class="ml-quiz">
+  <summary>In the example, why does NMF predict {{ n(ben.nmf, 2) }} for a rating whose truth is {{ ben.truth }}?</summary>
+  <p>The blank cell was filled with 0 and is in NMF's loss, so the factorization is pulled toward reproducing that 0.</p>
+</details>
+<details class="ml-quiz">
+  <summary>How does the implicit-feedback loss avoid touching every cell for every user?</summary>
+  <p>YᵀC<sub>u</sub>Y = YᵀY + Yᵀ(C<sub>u</sub> − I)Y: YᵀY is computed once per sweep, and the correction only involves the items the user interacted with.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Resnick, Iacovou, Suchak, Bergstrom and Riedl. <em>GroupLens: An Open Architecture for Collaborative Filtering of Netnews.</em> CSCW, 1994.</li>
+  <li>Sarwar, Karypis, Konstan and Riedl. <em>Item-Based Collaborative Filtering Recommendation Algorithms.</em> WWW, 2001.</li>
+  <li>Koren, Bell and Volinsky. <em>Matrix Factorization Techniques for Recommender Systems.</em> IEEE Computer, 2009.</li>
+  <li>Hu, Koren and Volinsky. <em>Collaborative Filtering for Implicit Feedback Datasets.</em> ICDM, 2008.</li>
+  <li>Lee and Seung. <em>Algorithms for Non-negative Matrix Factorization.</em> NeurIPS, 2000.</li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/decomposition/_nmf.py', 1320, 1758) }}"><code>NMF</code></a>, <a href="{{ skl('sklearn/decomposition/_nmf.py', 521, 723) }}">multiplicative updates</a>, <a href="{{ skl('sklearn/metrics/pairwise.py', 1703, 1758) }}"><code>cosine_similarity</code></a>.</li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/nn/modules/sparse.py', 14, 264) }}"><code>nn.Embedding</code></a>, <a href="{{ src('torch/nn/modules/sparse.py', 267, 543) }}"><code>nn.EmbeddingBag</code></a>, <a href="{{ src('torch/optim/sparse_adam.py', 13, 130) }}"><code>SparseAdam</code></a>.</li>
+</ul>

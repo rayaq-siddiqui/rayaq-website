@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-13 (thirty-sixth run). Spec v2 widens the section from model
+**Last updated:** 2026-10-13 (thirty-seventh run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-72, the last being `pretraining`.
-The next page is `collaborative-filtering` (queue item 73).
+fixed page format. Ready pages: queue items 1-73, the last being `collaborative-filtering`.
+The next page is `gradient-accumulation` (queue item 74).
 
 ## Pins
 
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (72 of 93 ready, all
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (73 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -233,6 +233,30 @@ Gaps:
   follow the papers. The H100 peak (989 TFLOP/s dense BF16) and Llama 3 8B's 15T tokens are
   general knowledge, as are the illustrative mixture weights (labelled as such).
 
+## Thirty-seventh run (2026-10-13) — collaborative-filtering, …
+
+| Commit | What |
+|---|---|
+| `cbce53e` `ml-models: add tested collaborative-filtering helpers` | Toy 5×5 rating matrix with two held-out cells, centred-cosine neighbours, bias baseline, rank-2 ALS on observed cells (each solve is `ridge_coefficients`), zero-filled NMF multiplicative updates, implicit confidence, factor-table size |
+| (this commit) `ml-models: add the collaborative-filtering page` | The page, `ready`, queue ✓ |
+
+Findings worth keeping:
+
+- scikit-learn's `NMF` puts every cell in its loss, so blanks act as observed zeros. On the
+  example it predicts 2.57 for a held-out 5 (ALS on observed cells: 4.01), and fits the real
+  ratings worse too (RMSE 0.87 vs 0.29).
+- The bias baseline μ + b_u + b_i is worse than the global mean on the held-out cells: offsets
+  cannot see interaction. The page says so.
+- ALS's objective falls every sweep, but RMSE on observed cells can tick up, because ALS
+  minimizes the penalized loss. The test checks the objective.
+
+Gaps:
+
+- References cited from memory (arxiv unreachable): GroupLens 1994, Sarwar 2001, Koren–Bell–
+  Volinsky 2009, Hu–Koren–Volinsky 2008 (α = 40), Lee–Seung 2000. No pin implements ALS or
+  implicit-feedback MF; those follow the papers.
+- `two-tower-models` is named in plain text until it is ready.
+
 ## Queue
 
 1. `tensors-and-shapes` ✓
@@ -307,8 +331,8 @@ Gaps:
 70. `graph-neural-networks` ✓
 71. `diffusion-models` ✓
 72. `pretraining` ✓
-73. `collaborative-filtering` ← next
-74. `gradient-accumulation`
+73. `collaborative-filtering` ✓
+74. `gradient-accumulation` ← next
 75. `latency-and-throughput`
 76. `online-learning`
 77. `uncertainty`

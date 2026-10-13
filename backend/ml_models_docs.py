@@ -1092,7 +1092,7 @@ PAGES = [
             "sklearn:sklearn/decomposition/_nmf.py",
             "pytorch:torch/nn/modules/sparse.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "two-tower-models",
@@ -10832,6 +10832,8 @@ def collab_example():
     cold_order = sorted(range(len(ratings[0])), key=lambda i: -baseline["item_bias"][i])
     s = e["scale"]
     return {
+        "names": e["users"],
+        "titles": e["items"],
         "ratings": ratings,
         "observed": len(cf_observed(ratings)),
         "cells": len(ratings) * len(ratings[0]),
