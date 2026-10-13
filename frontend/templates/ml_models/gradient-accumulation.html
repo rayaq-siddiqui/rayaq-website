@@ -1,0 +1,421 @@
+{% set ex = accumulation_example() %}
+{% set full = ex.full %}
+{% set naive = ex.naive %}
+{% set exact = ex.exact %}
+{% set unscaled = ex.unscaled %}
+{% set clip = ex.clip %}
+{% set bn = ex.bn %}
+{% set every = ex.ddp_every %}
+{% set nosync = ex.ddp_no_sync %}
+{% macro n(x, d=3) -%}{{ ("%." ~ d ~ "f")|format(x) }}{%- endmacro %}
+{% macro gb(x) -%}{{ "%.1f"|format(x / 1e9) }} GB{%- endmacro %}
+<header class="jj-header">
+  <h1>Gradient accumulation</h1>
+  <p class="tagline">
+    The batch you want doesn't fit in memory, so you run several smaller micro-batches, add their gradients
+    into the same <code>.grad</code> buffers, and step the optimizer once. Done naively, that gives a
+    gradient that is close to the big-batch one but not equal to it. This page works through the loss
+    normalization that makes it exact on variable-length sequences, and shows why clipping, batch
+    normalization and <code>DistributedDataParallel</code> each need care.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A recipe says "batch size {{ ex.global_batch }} sequences of 2,048 tokens" ({{ "{:,}".format(ex.global_tokens) }}
+  tokens per optimizer step). The learning rate, warmup and weight decay in that recipe were tuned for
+  gradients averaged over that many tokens. Your GPU holds activations for 4 sequences at a time. Shrinking
+  the batch to 4 changes the noise in every gradient and, with it, the learning rate that works (see
+  <a href="/ml-models/learning-rate-schedules">learning-rate schedules</a>), so the recipe no longer
+  applies.
+</p>
+<p>
+  Activation memory scales with the micro-batch. The gradient is just a sum over examples, and
+  <a href="/ml-models/backpropagation">backpropagation</a> in PyTorch <em>adds</em> into
+  <code>param.grad</code> rather than overwriting it. So you can run the batch in pieces, let the
+  gradients pile up, and step once. The trade is time for memory: the same arithmetic, done
+  sequentially, with one step at the end. The questions are how to scale each piece so that the sum
+  is the gradient you meant, and which other parts of the training loop quietly assume one forward
+  pass per step.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Think of the gradient as a weighted vote. The full-batch mean-loss gradient gives every
+  <em>token</em> (or example) the same weight, 1/<em>N</em> where <em>N</em> is the total count. If you
+  split the batch into micro-batches and average each one separately, every token in a micro-batch of
+  4 tokens gets weight 1/4 of that micro-batch's share, while every token in a micro-batch of 8 gets
+  1/8. Short micro-batches are over-represented. With fixed-size images that never happens: every
+  micro-batch has the same count, and averaging the averages is the average. With language data,
+  padding and <code>ignore_index</code> make the counts differ, and the error is silent.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 240" role="img" aria-labelledby="ga-tl-title ga-tl-desc">
+    <title id="ga-tl-title">Four micro-batches add into one gradient buffer before a single optimizer step</title>
+    <desc id="ga-tl-desc">
+      A timeline left to right. Four forward-and-backward boxes, for micro-batches with
+      {% for r in exact.micro %}{{ r.tokens }}{{ ", " if not loop.last }}{% endfor %} tokens, each scale their
+      summed loss by one over {{ full.tokens }}, the total token count, and add into the same grad buffer drawn
+      below them. Only after the fourth do clip, optimizer step and zero grad run, once. The buffer ends at the
+      full-batch gradient.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      {% for r in exact.micro %}
+        {% set x = 20 + loop.index0 * 130 %}
+        <rect x="{{ x }}" y="30" width="110" height="48" rx="6" class="d-box ml-op"></rect>
+        <text x="{{ x + 55 }}" y="50">fwd + bwd {{ loop.index }}</text>
+        <text x="{{ x + 55 }}" y="66" class="d-muted">{{ r.tokens }} tokens</text>
+        <line x1="{{ x + 55 }}" y1="78" x2="{{ x + 55 }}" y2="128" class="d-line"></line>
+        <text x="{{ x + 55 }}" y="104" style="fill:var(--jj-accent)">+ sum ÷ {{ full.tokens }}</text>
+      {% endfor %}
+      <rect x="20" y="130" width="500" height="40" rx="6" class="d-box ml-tensor"></rect>
+      <text x="270" y="155">param.grad accumulates: ({{ n(exact.grad[0]) }}, {{ n(exact.grad[1]) }})</text>
+      <line x1="520" y1="150" x2="548" y2="150" class="d-line"></line>
+      <rect x="550" y="30" width="150" height="140" rx="6" class="d-box ml-op"></rect>
+      <text x="625" y="62">clip_grad_norm_</text>
+      <text x="625" y="96">optimizer.step()</text>
+      <text x="625" y="130">zero_grad()</text>
+      <text x="625" y="156" class="d-muted">once per step</text>
+      <text x="360" y="210" class="d-muted">memory: activations of one micro-batch · result: the gradient of all {{ full.tokens }} tokens</text>
+    </g>
+  </svg>
+</div>
+
+<p>
+  The other trap is anything that runs <em>per forward pass</em> or <em>per backward pass</em> rather
+  than per step. Batch normalization computes statistics per forward, so it sees micro-batches, not
+  the batch. Clipping a micro-batch's gradient clips the wrong vector. DDP all-reduces after every
+  backward, so with accumulation it would communicate <em>k</em> times per step unless you tell it not to.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="mechanics-sum">The gradient is a sum</h3>
+<p>
+  Let the batch have micro-batches <em>B</em><sub>1</sub>…<em>B</em><sub>k</sub> with <em>n</em><sub>j</sub>
+  counted tokens each and <em>N</em> = Σ<em>n</em><sub>j</sub>. The mean loss over the batch is
+</p>
+<p class="ml-formula">L = (1/N) Σ<sub>j</sub> Σ<sub>t ∈ B<sub>j</sub></sub> ℓ<sub>t</sub> &nbsp;⇒&nbsp; ∇L = Σ<sub>j</sub> (1/N) ∇ Σ<sub>t ∈ B<sub>j</sub></sub> ℓ<sub>t</sub></p>
+<p>
+  So each micro-batch should backpropagate its <em>summed</em> loss divided by the <em>global</em>
+  <em>N</em>. The common recipe, <code>loss = criterion(out, y) / k</code>, backpropagates
+  (1/k)(1/<em>n</em><sub>j</sub>)Σℓ<sub>t</sub>. That equals the line above only when every
+  <em>n</em><sub>j</sub> = <em>N</em>/<em>k</em>. <code>CrossEntropyLoss</code> with the default
+  <code>reduction='mean'</code> divides by the number of non-ignored targets in <em>its own</em> call
+  (<a href="{{ src('torch/nn/modules/loss.py', 1278, 1281) }}"><code>ignore_index</code></a>,
+  <a href="{{ src('torch/nn/modules/loss.py', 1286, 1292) }}"><code>reduction</code></a>), which is exactly
+  <em>n</em><sub>j</sub>. Use <code>reduction='sum'</code> and divide by <em>N</em> yourself.
+</p>
+<p>
+  <em>N</em> has to be known before the first backward. On one GPU, count the targets that are not
+  <code>ignore_index</code> across all micro-batches up front (the data is already loaded, or the
+  collate step can report it). Under DDP, ranks see different <em>N</em>; all-reduce the count first and
+  scale by world size, because DDP averages gradients across ranks (the
+  <a href="{{ src('torch/nn/parallel/distributed.py', 545, 554) }}">note on summed versus averaged
+  losses</a> in its docstring is the same issue across GPUs).
+</p>
+
+<h3 id="mechanics-loop">What the loop must do once per step</h3>
+<p>
+  <a href="{{ src('torch/optim/optimizer.py', 1048, 1110) }}"><code>zero_grad</code></a> (which sets
+  <code>.grad</code> to <code>None</code> by default) runs once at the start of the step, not per
+  micro-batch, or it erases what you accumulated.
+  <a href="{{ src('torch/optim/optimizer.py', 1112, 1124) }}"><code>step</code></a>, the learning-rate
+  scheduler and any EMA of weights run once at the end. Clipping
+  (<a href="{{ src('torch/nn/utils/clip_grad.py', 185, 232) }}"><code>clip_grad_norm_</code></a>) runs once,
+  after the last backward and before the step, on the accumulated gradient. With
+  <a href="/ml-models/mixed-precision">mixed precision</a>, <code>GradScaler</code> scales each backward
+  but unscales and checks for infinities once, before clipping. Step counters that drive warmup count
+  optimizer steps, not micro-batches.
+</p>
+
+<h3 id="mechanics-bn">Normalization layers see micro-batches</h3>
+<p>
+  <a href="{{ src('torch/nn/modules/batchnorm.py', 176, 226) }}"><code>_BatchNorm.forward</code></a>
+  normalizes with the current batch's mean and variance in training mode and updates the running
+  estimates with momentum 0.1 on every forward call. Under accumulation both change: each micro-batch is
+  normalized with its own, noisier statistics, and the running averages are updated <em>k</em> times per
+  step, so the effective momentum per optimizer step is 1 − (1 − 0.1)<sup><em>k</em></sup>. Neither is
+  fixed by scaling the loss. The options are to accept it (micro-batches of 16+ are usually fine), to use
+  <a href="{{ src('torch/nn/modules/batchnorm.py', 650, 951) }}"><code>SyncBatchNorm</code></a> to pool
+  statistics across GPUs (not across time), or to use a normalization that doesn't depend on the batch:
+  <a href="/ml-models/layernorm-and-residuals">LayerNorm</a> and GroupNorm are identical under
+  accumulation, which is one reason transformers are easy to accumulate.
+</p>
+
+<h3 id="mechanics-ddp">DDP and <code>no_sync</code></h3>
+<p>
+  <code>DistributedDataParallel</code> hooks each parameter's gradient and, as buckets of
+  <a href="{{ src('torch/nn/parallel/distributed.py', 713, 718) }}">25 MiB</a> fill during backward,
+  launches an all-reduce that averages them across ranks. With accumulation that averaging would happen
+  after every micro-batch, moving the full gradient over the network <em>k</em> times to produce the same
+  sum. The <a href="{{ src('torch/nn/parallel/distributed.py', 1659, 1686) }}"><code>no_sync</code></a>
+  context manager sets <code>require_backward_grad_sync</code> to <code>False</code>; the flag is read
+  in <a href="{{ src('torch/nn/parallel/distributed.py', 1745, 1770) }}"><code>_pre_forward</code></a>, so
+  the forward, not just the backward, must run inside the context. Gradients accumulate locally, and the
+  last micro-batch runs outside it and syncs the sum once.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Optimizer.zero_grad</code></td><td><code>set_to_none=True</code></td><td>Clears <code>.grad</code>; call once per optimizer step, before the first micro-batch.</td><td><a href="{{ src('torch/optim/optimizer.py', 1048, 1110) }}">optimizer.py 1048–1110</a></td></tr>
+      <tr><td><code>Optimizer.step</code></td><td><code>closure=None</code></td><td>Applies the update from the accumulated <code>.grad</code>; once per step.</td><td><a href="{{ src('torch/optim/optimizer.py', 1112, 1124) }}">optimizer.py 1112–1124</a></td></tr>
+      <tr><td><code>clip_grad_norm_</code></td><td><code>max_norm</code>, <code>foreach</code></td><td>Global-norm clip of the summed gradient; returns the pre-clip norm.</td><td><a href="{{ src('torch/nn/utils/clip_grad.py', 185, 232) }}">clip_grad.py 185–232</a></td></tr>
+      <tr><td><code>CrossEntropyLoss</code></td><td><code>reduction</code>, <code>ignore_index</code></td><td>'mean' divides by this call's non-ignored targets; use 'sum' and divide by the global count.</td><td><a href="{{ src('torch/nn/modules/loss.py', 1200, 1409) }}">loss.py 1200–1409</a></td></tr>
+      <tr><td><code>_BatchNorm.forward</code></td><td><code>momentum=0.1</code></td><td>Per-forward batch statistics and running-average update.</td><td><a href="{{ src('torch/nn/modules/batchnorm.py', 176, 226) }}">batchnorm.py 176–226</a></td></tr>
+      <tr><td><code>DistributedDataParallel</code></td><td><code>bucket_cap_mb</code> (25 MiB default)</td><td>All-reduces (averages) gradients bucket by bucket during backward.</td><td><a href="{{ src('torch/nn/parallel/distributed.py', 466, 2667) }}">distributed.py 466–2667</a></td></tr>
+      <tr><td><code>DDP.no_sync</code></td><td>context manager</td><td>Skips the all-reduce; gradients accumulate locally until the first backward outside it.</td><td><a href="{{ src('torch/nn/parallel/distributed.py', 1659, 1686) }}">distributed.py 1659–1686</a></td></tr>
+      <tr><td><code>DDP.forward</code></td><td>wraps the module</td><td>Calls <code>_pre_forward</code>, which reads the sync flag, so forward must be inside <code>no_sync</code>.</td><td><a href="{{ src('torch/nn/parallel/distributed.py', 1885, 1894) }}">distributed.py 1885–1894</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  A one-weight model <em>ŷ</em> = <em>w</em>·<em>x</em> + <em>b</em> at <em>w</em> = 0.5, <em>b</em> = 0, with
+  per-token loss ½(<em>ŷ</em> − <em>y</em>)², stands in for a language model. The batch is
+  {{ ex.sequences|length }} sequences of lengths {{ ex.lengths|join(", ") }} ({{ full.tokens }} tokens),
+  split into micro-batches of 2 sequences. Every number below comes from tested helpers in
+  <code>ml_models_docs.py</code>.
+</p>
+
+<div class="ml-worked">
+  <h3 id="worked-normalization">Three ways to scale the micro-batch losses</h3>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Micro-batch</th><th>Tokens</th><th>÷ (n<sub>j</sub>·k) contribution</th><th>÷ N contribution</th></tr></thead>
+      <tbody>
+        {% for r in exact.micro %}
+          {% set m = naive.micro[loop.index0] %}
+          <tr><td>{{ loop.index }}</td><td>{{ r.tokens }}</td><td>({{ n(m.grad[0]) }}, {{ n(m.grad[1]) }})</td><td>({{ n(r.grad[0]) }}, {{ n(r.grad[1]) }})</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Method</th><th>Gradient (∂w, ∂b)</th><th>Loss</th></tr></thead>
+      <tbody>
+        <tr><td>Full batch, mean over {{ full.tokens }} tokens</td><td>({{ n(full.grad[0]) }}, {{ n(full.grad[1]) }})</td><td>{{ n(full.loss) }}</td></tr>
+        <tr><td>Accumulate, each ÷ N (sum reduction)</td><td>({{ n(exact.grad[0]) }}, {{ n(exact.grad[1]) }})</td><td>{{ n(exact.loss) }}</td></tr>
+        <tr><td>Accumulate, mean ÷ k (common recipe)</td><td>({{ n(naive.grad[0]) }}, {{ n(naive.grad[1]) }})</td><td>{{ n(naive.loss) }}</td></tr>
+        <tr><td>Accumulate, mean, no ÷ k</td><td>({{ n(unscaled.grad[0]) }}, {{ n(unscaled.grad[1]) }})</td><td>{{ n(unscaled.loss) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Dividing by the global token count reproduces the full batch exactly. The common recipe is off by
+    {{ n((naive.grad[0] / full.grad[0] - 1) * 100, 1) }}% in ∂w here because micro-batch 2 has only
+    {{ exact.micro[1].tokens }} tokens but gets the same quarter of the vote as micro-batch 1 with
+    {{ exact.micro[0].tokens }}. Forgetting the ÷ k altogether makes the gradient {{ naive.micro|length }}×
+    too large, which acts like a {{ naive.micro|length }}× learning rate.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-clipping">Clip the sum, not the pieces</h3>
+  <p>
+    With <code>max_norm</code> = 10, the accumulated gradient has norm {{ n(clip.after.total_norm) }}, so the
+    correct loop doesn't clip at all. Clipping each micro-batch's own gradient (its contribution × k, the
+    gradient that micro-batch alone would produce) clips a different vector:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Micro-batch</th><th>Own gradient norm</th><th>Clip coefficient</th></tr></thead>
+      <tbody>
+        {% for r in clip.per_micro %}
+          <tr><td>{{ loop.index }}</td><td>{{ n(r.total_norm) }}</td><td>{{ n(r.coef) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Micro-batch 1 is scaled by {{ n(clip.per_micro[0].coef) }} and the result is
+    ({{ n(clip.per_micro_grad[0]) }}, {{ n(clip.per_micro_grad[1]) }}) instead of
+    ({{ n(clip.after.grads[0]) }}, {{ n(clip.after.grads[1]) }}). A noisy micro-batch is clipped even though
+    the batch's gradient is well inside the limit, so the update depends on how the batch happened to be split.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-batchnorm">Batch normalization under accumulation</h3>
+  <p>
+    One feature over 8 examples, {{ bn.micro|map(attribute="values")|map("join", ", ")|join(" | ") }}, split
+    into micro-batches of 2:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Batch</th><th>Mean</th><th>Variance</th></tr></thead>
+      <tbody>
+        <tr><td>All 8</td><td>{{ n(bn.full.mean, 2) }}</td><td>{{ n(bn.full.var, 2) }}</td></tr>
+        {% for r in bn.micro %}
+          <tr><td>Micro-batch {{ loop.index }}</td><td>{{ n(r.mean, 2) }}</td><td>{{ n(r.var, 2) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Every micro-batch is normalized with a mean of {{ n(bn.micro[0].mean, 0) }} or {{ n(bn.micro[1].mean, 0) }}
+    instead of {{ n(bn.full.mean, 0) }}, and a variance from 1 to 4 instead of {{ n(bn.full.var, 1) }}.
+    Starting from running mean 0 and variance 1, one update with the full batch gives
+    ({{ n(bn.running_once[0], 2) }}, {{ n(bn.running_once[1], 2) }}); four micro-batch updates give
+    ({{ n(bn.running_micro[0], 2) }}, {{ n(bn.running_micro[1], 2) }}), because momentum 0.1 applied 4 times
+    is an effective momentum of {{ n(bn.effective_momentum, 4) }} per step. Loss scaling cannot fix either.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-ddp">Communication with and without <code>no_sync</code></h3>
+  <p>
+    A 1.3B-parameter model in fp32 gradients ({{ gb(every.payload) }}) on 8 GPUs, accumulating 8
+    micro-batches of 4 sequences: global batch {{ ex.global_batch }} sequences. A ring all-reduce sends
+    and receives 2(<em>p</em> − 1)/<em>p</em> of the payload per GPU, {{ gb(every.per_reduce) }}.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Loop</th><th>All-reduces per step</th><th>Traffic per GPU per step</th></tr></thead>
+      <tbody>
+        <tr><td>Sync every micro-batch</td><td>{{ every.reduces }}</td><td>{{ gb(every.total) }}</td></tr>
+        <tr><td><code>no_sync</code> for the first 7</td><td>{{ nosync.reduces }}</td><td>{{ gb(nosync.total) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Both produce the same averaged gradient (averaging is linear), but one moves
+    {{ n(every.total / nosync.total, 0) }}× the data. At an effective 100 GB/s per GPU that is about
+    {{ n(every.total / 100e9, 2) }} s versus {{ n(nosync.total / 100e9, 2) }} s of communication each step,
+    much of which the bucketed overlap with backward can't hide.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 220" role="img" aria-labelledby="ga-ddp-title ga-ddp-desc">
+    <title id="ga-ddp-title">All-reduce after every micro-batch versus once with no_sync</title>
+    <desc id="ga-ddp-desc">
+      Two timelines of eight micro-batch backward passes. In the top one, each backward is followed by an
+      all-reduce bar, eight in total, {{ gb(every.total) }} per GPU. In the bottom one, the first seven run inside
+      no_sync with no communication, drawn dashed, and only the eighth is followed by one all-reduce,
+      {{ gb(nosync.total) }} per GPU.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      <text x="360" y="18">sync every micro-batch · {{ every.reduces }} all-reduces · {{ gb(every.total) }}</text>
+      {% for i in range(8) %}
+        {% set x = 20 + i * 86 %}
+        <rect x="{{ x }}" y="28" width="50" height="34" rx="4" class="d-box ml-op"></rect>
+        <text x="{{ x + 25 }}" y="50">bwd {{ i + 1 }}</text>
+        <rect x="{{ x + 52 }}" y="28" width="30" height="34" rx="4" class="d-box ml-tensor"></rect>
+        <text x="{{ x + 67 }}" y="50" style="fill:var(--jj-accent)">AR</text>
+      {% endfor %}
+      <text x="360" y="112">no_sync for 1–7 · {{ nosync.reduces }} all-reduce · {{ gb(nosync.total) }}</text>
+      {% for i in range(8) %}
+        {% set x = 20 + i * 70 %}
+        {% if i < 7 %}
+          <rect x="{{ x }}" y="122" width="62" height="34" rx="4" class="d-box ml-op ml-dashed"></rect>
+          <text x="{{ x + 31 }}" y="144">bwd {{ i + 1 }}</text>
+        {% else %}
+          <rect x="{{ x }}" y="122" width="62" height="34" rx="4" class="d-box ml-op"></rect>
+          <text x="{{ x + 31 }}" y="144">bwd 8</text>
+          <rect x="{{ x + 66 }}" y="122" width="40" height="34" rx="4" class="d-box ml-tensor"></rect>
+          <text x="{{ x + 86 }}" y="144" style="fill:var(--jj-accent)">AR</text>
+        {% endif %}
+      {% endfor %}
+      <text x="360" y="196" class="d-muted">dashed: gradients only added to local .grad · the sum is averaged across ranks once</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  A DDP training step with token-count normalization, <code>no_sync</code> on all but the last
+  micro-batch, and clipping, stepping and zeroing once:
+</p>
+<pre><code>import contextlib
+import torch
+import torch.distributed as dist
+import torch.nn.functional as F
+
+def train_step(model, optimizer, scheduler, micro_batches, max_norm=1.0):
+    # micro_batches: list of (input_ids, labels), labels == -100 where padded
+    local = sum((y != -100).sum() for _, y in micro_batches)
+    total = local.clone()
+    dist.all_reduce(total)                       # tokens across all ranks
+    scale = dist.get_world_size() / total        # DDP averages over ranks
+
+    optimizer.zero_grad(set_to_none=True)
+    for i, (x, y) in enumerate(micro_batches):
+        last = i == len(micro_batches) - 1
+        ctx = contextlib.nullcontext() if last else model.no_sync()
+        with ctx:                                # forward must be inside too
+            logits = model(x)
+            loss = F.cross_entropy(logits.flatten(0, 1), y.flatten(),
+                                   ignore_index=-100, reduction="sum")
+            (loss * scale).backward()
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+    optimizer.step()
+    scheduler.step()                             # once per optimizer step
+    return norm</code></pre>
+<p>
+  With <a href="/ml-models/mixed-precision"><code>GradScaler</code></a>, wrap each backward as
+  <code>scaler.scale(loss * scale).backward()</code> and call <code>scaler.unscale_(optimizer)</code>
+  once before clipping, then <code>scaler.step</code> and <code>scaler.update</code>. Under
+  FSDP the same <code>no_sync</code> exists but keeps unsharded gradients on every rank, so it trades memory
+  back for communication (named here; the distributed-training page will cover it).
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Time, not memory, is what you pay.</strong> Accumulating <em>k</em> micro-batches takes about
+    as long as running the big batch would have, minus the GPU's loss of efficiency on smaller kernels (see
+    <a href="/ml-models/gpu-execution">GPU execution</a>). If a larger micro-batch fits, prefer it.</li>
+  <li><strong>Activation checkpointing is the alternative.</strong> Recomputing activations in backward cuts
+    memory per example instead of examples per pass; the two combine, and checkpointing is better when
+    even one sequence is too large.</li>
+  <li><strong>Exactness needs the global count first.</strong> Token-count normalization requires knowing
+    <em>N</em> (and, under DDP, an extra small all-reduce) before the first backward. Some codebases accept the
+    per-micro-batch mean instead; with sequence packing to a fixed length the counts are nearly equal and the
+    error is small.</li>
+  <li><strong>Batch statistics don't accumulate.</strong> BatchNorm and anything else computed per forward
+    (in-batch negatives for contrastive losses, MoE load-balancing
+    statistics) sees the micro-batch. For in-batch negatives that is a real loss of signal; gradient caching
+    exists for that case.</li>
+  <li><strong>Dropout and data order are the same.</strong> Random masks per example and the sequence of
+    examples don't change, so runs with and without accumulation differ only by floating-point summation order.</li>
+  <li><strong>Large effective batches still need retuning.</strong> Accumulation lets you reach a batch size;
+    it doesn't make that batch size a good one. Past the critical batch size, more tokens per step buy little.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Why does <code>loss / k</code> give the exact gradient for image classification but not for padded text?</summary>
+  <p>Every image micro-batch has the same number of examples, so each mean has the same denominator and averaging the means is the overall mean. Padded text has a different number of counted tokens per micro-batch.</p>
+</details>
+<details class="ml-quiz">
+  <summary>What breaks if <code>model(x)</code> runs outside <code>no_sync</code> and only <code>backward()</code> runs inside?</summary>
+  <p>DDP reads the sync flag in <code>_pre_forward</code> and prepares the reducer there, so the backward still all-reduces. You pay the communication you meant to skip.</p>
+</details>
+<details class="ml-quiz">
+  <summary>The example's four micro-batch BN updates give an effective momentum of {{ n(bn.effective_momentum, 4) }}. What momentum per forward would give 0.1 per step?</summary>
+  <p>1 − 0.9<sup>1/4</sup> ≈ {{ n(1 - 0.9 ** 0.25, 4) }}.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Goyal et al. <em>Accurate, Large Minibatch SGD: Training ImageNet in 1 Hour.</em> 2017.</li>
+  <li>McCandlish, Kaplan, Amodei and the OpenAI Dota Team. <em>An Empirical Model of Large-Batch Training.</em> 2018.</li>
+  <li>Li et al. <em>PyTorch Distributed: Experiences on Accelerating Data Parallel Training.</em> VLDB, 2020.</li>
+  <li>Ioffe and Szegedy. <em>Batch Normalization: Accelerating Deep Network Training by Reducing Internal Covariate Shift.</em> ICML, 2015.</li>
+  <li>Gao, Zhang, Han and Callan. <em>Scaling Deep Contrastive Learning Batch Size under Memory Limited Setup</em> (gradient cache). RepL4NLP, 2021.</li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/nn/parallel/distributed.py', 1659, 1686) }}"><code>DistributedDataParallel.no_sync</code></a>, <a href="{{ src('torch/optim/optimizer.py', 1048, 1124) }}"><code>Optimizer.zero_grad</code> and <code>step</code></a>, <a href="{{ src('torch/nn/utils/clip_grad.py', 185, 232) }}"><code>clip_grad_norm_</code></a>, <a href="{{ src('torch/nn/modules/batchnorm.py', 176, 226) }}"><code>_BatchNorm.forward</code></a>.</li>
+</ul>

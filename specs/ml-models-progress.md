@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-13 (thirty-seventh run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-73, the last being `collaborative-filtering`.
-The next page is `gradient-accumulation` (queue item 74).
+fixed page format. Ready pages: queue items 1-74, the last being `gradient-accumulation`.
+The next page is `latency-and-throughput` (queue item 75).
 
 ## Pins
 
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (73 of 93 ready, all
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (74 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -233,12 +233,14 @@ Gaps:
   follow the papers. The H100 peak (989 TFLOP/s dense BF16) and Llama 3 8B's 15T tokens are
   general knowledge, as are the illustrative mixture weights (labelled as such).
 
-## Thirty-seventh run (2026-10-13) — collaborative-filtering, …
+## Thirty-seventh run (2026-10-13) — collaborative-filtering, gradient-accumulation, …
 
 | Commit | What |
 |---|---|
 | `cbce53e` `ml-models: add tested collaborative-filtering helpers` | Toy 5×5 rating matrix with two held-out cells, centred-cosine neighbours, bias baseline, rank-2 ALS on observed cells (each solve is `ridge_coefficients`), zero-filled NMF multiplicative updates, implicit confidence, factor-table size |
-| (this commit) `ml-models: add the collaborative-filtering page` | The page, `ready`, queue ✓ |
+| `f283b1f` `ml-models: add the collaborative-filtering page` | The page, `ready`, queue ✓ |
+| `b6b4393` `ml-models: add tested gradient-accumulation helpers` | 24-token linear toy in 8 variable-length sequences: full-batch vs per-micro mean ÷ k vs ÷ global tokens vs unscaled; clip-after vs per-micro clip; BN micro-batch stats and effective momentum; ring all-reduce bytes with and without `no_sync` |
+| (this commit) `ml-models: add the gradient-accumulation page` | The page, `ready`, queue ✓ |
 
 Findings worth keeping:
 
@@ -256,6 +258,10 @@ Gaps:
   Volinsky 2009, Hu–Koren–Volinsky 2008 (α = 40), Lee–Seung 2000. No pin implements ALS or
   implicit-feedback MF; those follow the papers.
 - `two-tower-models` is named in plain text until it is ready.
+- gradient-accumulation: `distributed-training` and `contrastive-learning` are named in plain
+  text until ready. Goyal 2017, McCandlish 2018, Li 2020 (DDP), gradient cache (Gao 2021) cited
+  from memory. DDP's `bucket_cap_mb` defaults to `None` meaning 25 MiB (doc 713-718), and the
+  sync flag is read in `_pre_forward` (1745-1770), which is why forward must be inside `no_sync`.
 
 ## Queue
 
@@ -332,8 +338,8 @@ Gaps:
 71. `diffusion-models` ✓
 72. `pretraining` ✓
 73. `collaborative-filtering` ✓
-74. `gradient-accumulation` ← next
-75. `latency-and-throughput`
+74. `gradient-accumulation` ✓
+75. `latency-and-throughput` ← next
 76. `online-learning`
 77. `uncertainty`
 78. `vision-transformer`

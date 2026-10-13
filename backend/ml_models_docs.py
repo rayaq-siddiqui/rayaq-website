@@ -1170,7 +1170,7 @@ PAGES = [
             "pytorch:torch/optim/optimizer.py",
             "pytorch:torch/nn/parallel/distributed.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "distributed-training",
