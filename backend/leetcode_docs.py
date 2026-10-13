@@ -5198,9 +5198,9 @@ def directed_cycle_of(adj):
 
 
 def word_ladder_of(begin, end, words):
-    """Shortest transformation sequence by BFS over words that differ in one letter, grouping words by wildcard pattern. Returns the sequence (or None) and how many words were dequeued."""
+    """Shortest transformation sequence by BFS over words that differ in one letter, grouping words by wildcard pattern. Every word after `begin`, `end` included, must come from `words`. Returns the sequence (or None) and how many words were dequeued."""
     buckets = {}
-    for word in set(words) | {begin, end}:
+    for word in set(words) | {begin}:
         for i in range(len(word)):
             buckets.setdefault(word[:i] + "*" + word[i + 1:], []).append(word)
     parent = {begin: None}

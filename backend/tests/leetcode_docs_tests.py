@@ -195,12 +195,23 @@ def test_ready_page_follows_the_format(url):
     assert 3 <= body.count('class="lc-quiz"') <= 4, url
 
 
-@pytest.mark.parametrize("url", ready_urls())
-def test_page_code_parses_and_imports_what_it_uses(url):
+def page_code(url):
     body = app_module.app.test_client().get(url).get_data(as_text=True)
     blocks = re.findall(r"<pre><code>(.*?)</code></pre>", body, re.S)
-    assert blocks, url
-    tree = ast.parse("\n\n".join(html.unescape(re.sub(r"<[^>]+>", "", block)) for block in blocks))
+    return "\n\n".join(html.unescape(re.sub(r"<[^>]+>", "", block)) for block in blocks)
+
+
+def run_page_code(slug):
+    namespace = {"__name__": f"leetcode_{slug.replace('-', '_')}"}
+    exec(compile(page_code(f"/leetcode/{slug}"), slug, "exec"), namespace)
+    return namespace
+
+
+@pytest.mark.parametrize("url", ready_urls())
+def test_page_code_parses_and_imports_what_it_uses(url):
+    code = page_code(url)
+    assert code, url
+    tree = ast.parse(code)
     bound, used = set(dir(builtins)), set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Name):
@@ -906,9 +917,10 @@ def test_graph_traversal_helpers_match_the_page():
     cyc_edges = [(0, 1), (1, 2), (2, 3), (2, 4), (3, 1)]
     assert leetcode_docs.directed_cycle_of(leetcode_docs.adjacency_list(5, cyc_edges, True)) == [1, 2, 3, 1]
     assert leetcode_docs.directed_cycle_of(leetcode_docs.adjacency_list(5, cyc_edges[:4], True)) is None
-    ladder = leetcode_docs.word_ladder_of("cat", "dog", ["cot", "cog", "dot", "bat", "cut"])
+    ladder = leetcode_docs.word_ladder_of("cat", "dog", ["cot", "cog", "dot", "bat", "cut", "dog"])
     assert ladder["path"] == ["cat", "cot", "dot", "dog"] and ladder["dequeued"] == 7
-    assert leetcode_docs.word_ladder_of("cat", "dog", ["cot"]) == {"path": None, "dequeued": 2}
+    assert leetcode_docs.word_ladder_of("cat", "dog", ["cot", "dog"]) == {"path": None, "dequeued": 2}
+    assert leetcode_docs.word_ladder_of("cat", "dog", ["cot", "cog", "dot", "bat", "cut"])["path"] is None
     clone = leetcode_docs.clone_graph_of(adj, 3)
     assert clone["ids"] == {3: 0, 1: 1, 2: 2, 4: 3, 0: 4}
     back = {new: old for old, new in clone["ids"].items()}
@@ -1991,3 +2003,30 @@ def test_bitmask_dp_helpers_match_the_page():
     assert "<td class=\"num\"><code>1101</code></td><td>{0, 2, 3}</td><td class=\"num\">3</td><td class=\"num\">45</td><td class=\"num\">2</td>" in body
     assert "<strong>0 &rarr; 2 &rarr; 3 &rarr; 1 &rarr; 0</strong>, length 80" in body
     assert "<td class=\"num\">20</td><td class=\"num\">2,432,902,008,176,640,000</td><td class=\"num\">419,430,400</td><td class=\"num\">20,971,520</td><td class=\"num\">3,486,784,401</td>" in body
+
+
+def test_graph_traversal_ladder_code_needs_the_target_in_the_word_list():
+    ladder_length = run_page_code("graph-traversal")["ladder_length"]
+    assert ladder_length("hit", "cog", ["hot", "dot", "dog", "lot", "log", "cog"]) == 5
+    assert ladder_length("hit", "cog", ["hot", "dot", "dog", "lot", "log"]) == 0
+    assert ladder_length("a", "b", []) == 0
+    assert ladder_length("a", "c", ["a", "b", "c"]) == 2
+
+
+def test_linked_list_design_copy_random_list_code_copies_deeply():
+    code = run_page_code("linked-list-design")
+    node_class, copy_random_list = code["RandomNode"], code["copy_random_list"]
+    assert copy_random_list(None) is None
+    nodes = [node_class(val) for val in (7, 13, 11, 10, 1)]
+    for node, nxt in zip(nodes, nodes[1:]):
+        node.next = nxt
+    for node, target in zip(nodes, (None, 0, 4, 2, 0)):
+        node.random = None if target is None else nodes[target]
+    copies = []
+    cur = copy_random_list(nodes[0])
+    while cur:
+        copies.append(cur)
+        cur = cur.next
+    assert [copy.val for copy in copies] == [7, 13, 11, 10, 1]
+    assert not set(map(id, copies)) & set(map(id, nodes))
+    assert [None if copy.random is None else copies.index(copy.random) for copy in copies] == [None, 0, 4, 2, 0]
