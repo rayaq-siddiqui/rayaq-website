@@ -4,7 +4,7 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-13 (thirty-seventh run). Spec v2 widens the section from model
+**Last updated:** 2026-10-13 (thirty-eighth run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
 fixed page format. Ready pages: queue items 1-78, the last being `vision-transformer`.
 The next page is `diffusion-unet` (queue item 79).
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (75 of 93 ready, all
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (78 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -145,18 +145,19 @@ Paths are under `sklearn/`.
 - `transformer` uses the v1 section layout and is exempt from the §6 order test until its
   retrofit (queue item 18).
 
-## First to thirty-sixth runs (2026-10-08 to 2026-10-13) — condensed
+## First to thirty-seventh runs (2026-10-08 to 2026-10-13) — condensed
 
 Runs 1-3 wrote the spec (v1, then v2), the registry, `LEARNING_PATH`, the §6 and queue tests,
 `check_mobile.js` and the Routine. Every run since adds, per page, a tested-helpers commit, a
-page commit (page, `ready`, queue ✓) and usually a `docs:` commit; items 1-69 were built in
+page commit (page, `ready`, queue ✓) and usually a `docs:` commit; items 1-75 were built in
 queue order (run 28: quantization, reinforcement-learning, bayes-rule; run 29:
 class-imbalance, random-forests, initialization; run 30: rnns-and-lstms, autoencoders,
 variational-autoencoders; run 31: positional-encoding, clustering, vector-indexes; run 32:
 distillation, time-series, regression-metrics; run 33: support-vector-machines,
 learning-rate-schedules, gans; run 34: encoder-only, learning-to-rank,
 data-loading-and-batching; run 35: model-serving, causal-inference, calibration; run 36:
-graph-neural-networks, diffusion-models, pretraining). `6f0803f` fixed 13 templates that read a
+graph-neural-networks, diffusion-models, pretraining; run 37: collaborative-filtering,
+gradient-accumulation, latency-and-throughput). `6f0803f` fixed 13 templates that read a
 missing `pins.X.version` key. Pins never moved. The ranges each page links live in its template
 (grep `src(`, `skl(`, `xgb(`); `git log -p` on this file has every old commit table and range list.
 
@@ -181,6 +182,11 @@ Findings worth keeping (details in each page and in `git log -p` on this file):
 - Chinchilla's Approach 3 constants in the closed form give about 32B params / 3.0T tokens at
   Chinchilla's budget, not 70B; the isoFLOP valley is flat and the 20-tokens rule recovers
   70B / 1.4T. The pretraining page says all three.
+- scikit-learn's `NMF` treats blank cells as observed zeros (2.57 for a held-out 5, against
+  4.01 from ALS on observed cells). ALS's penalized objective falls every sweep even when
+  observed-cell RMSE ticks up, so tests check the objective.
+- Decode at 2,048 context never becomes compute-bound: the per-sequence KV read grows with the
+  batch, so intensity tops out near 49 FLOP/byte against a ridge of 295.
 
 Open gaps from these runs:
 
@@ -208,53 +214,55 @@ Open gaps from these runs:
 - Run 35: no pin implements a serving system, ECE, propensity weighting, DiD or uplift;
   `model-serving`'s figures come from an invented, labelled model. Its references (Rubin,
   Rosenbaum & Rubin, Guo et al., Platt, Zadrozny & Elkan, …) were cited from memory.
+- Run 37: no pin implements ALS, implicit-feedback MF, a serving queue or gradient caching;
+  `two-tower-models`, `distributed-training`, `contrastive-learning`, `speculative-decoding`
+  and `profiling` are named in plain text until ready. The latency page's hardware is round
+  numbers and its results are roofline lower bounds, not measurements.
 - Run 36: no pin implements a GNN library, a diffusion sampler, MinHash or a scaling-law fit;
   those follow the papers. The H100 peak and Llama 3 8B's 15T tokens are general knowledge.
 
-## Thirty-seventh run (2026-10-13) — collaborative-filtering, gradient-accumulation, latency-and-throughput
+## Thirty-eighth run (2026-10-13) — online-learning, uncertainty, vision-transformer
 
 | Commit | What |
 |---|---|
-| `cbce53e` `ml-models: add tested collaborative-filtering helpers` | Toy 5×5 rating matrix with two held-out cells, centred-cosine neighbours, bias baseline, rank-2 ALS on observed cells (each solve is `ridge_coefficients`), zero-filled NMF multiplicative updates, implicit confidence, factor-table size |
-| `f283b1f` `ml-models: add the collaborative-filtering page` | The page, `ready`, queue ✓ |
-| `b6b4393` `ml-models: add tested gradient-accumulation helpers` | 24-token linear toy in 8 variable-length sequences: full-batch vs per-micro mean ÷ k vs ÷ global tokens vs unscaled; clip-after vs per-micro clip; BN micro-batch stats and effective momentum; ring all-reduce bytes with and without `no_sync` |
-| `492f50e` `ml-models: add the gradient-accumulation page` | The page, `ready`, queue ✓ |
-| `44712dd` `ml-models: add tested latency-and-throughput helpers` | 8B bf16 model on an H100-class part (989 TFLOP/s, 3.35 TB/s, 80 GB): decode-step roofline per batch (KV 131,072 B/token at 2,048 context), prefill, memory batch cap, Little's-law fixed point with prefill stealing decode time, seeded M/D/1 Lindley queue with percentiles, fan-out tail |
-| `a261b7b` `ml-models: add roofline points for the latency page` | Log-log roofline coordinates for the diagram, tested to sit under the roof |
-| `077666b` `ml-models: add the latency-and-throughput page` | The page, `ready`, queue ✓ |
-| (this commit) `docs: record the thirty-seventh ml-models run` | Commit SHAs, pin check, gaps; condenses run 36 |
+| `c7110bd` `ml-models: add tested online-learning helpers` | Seeded drifting stream with OGD vs a frozen batch fit, prequential windowed MSE, regret against the best fixed weight, ε-greedy / UCB1 / Thompson on a three-arm Bernoulli bandit |
+| `c060755` `ml-models: add the online-learning page` | The page, `ready`, queue ✓ |
+| `f9795f9` `ml-models: add tested uncertainty helpers` | Heteroscedastic sin(x) data; five-member bootstrap ensemble of cubic mean + linear scale fits with the aleatoric/epistemic split; percentile bootstrap CI; MC dropout on a fixed layer; split conformal (rank ⌈(n+1)(1−α)⌉), normalized scores, 200 repeated calibrations |
+| `adac70a` `ml-models: add the uncertainty page` | The page, `ready`, queue ✓ |
+| `d8079b4` `ml-models: add tested vision-transformer helpers` | Token counts, the ViT-B/16 shape walk, a parameter counter for ViT-Ti/S/B/L/H, a toy patchify where stride-P Conv2d equals Linear on flattened patches |
+| `947a130` `ml-models: add the vision-transformer page` | The page, `ready`, queue ✓ |
+| (this commit) `docs: record the thirty-eighth ml-models run` | Commit SHAs, pin check, gaps; condenses run 37 |
 
 Findings worth keeping:
 
-- scikit-learn's `NMF` puts every cell in its loss, so blanks act as observed zeros. On the
-  example it predicts 2.57 for a held-out 5 (ALS on observed cells: 4.01), and fits the real
-  ratings worse too (RMSE 0.87 vs 0.29).
-- Decode at 2,048 context never becomes compute-bound: the per-sequence KV read grows with
-  the batch, so intensity tops out near 49 FLOP/byte at the 238-sequence memory cap, against a
-  ridge of 295. Little's law with prefill stealing decode time has no fixed point above 23 req/s.
-- The simulated M/D/1 means track Pollaczek–Khinchine within 1% up to ρ = 0.8; at ρ = 0.95 the
-  20,000-request run under-reads the theory (94 vs 105 ms), as a finite run near saturation does.
+- The parameter counter matches torchvision's published totals exactly: ViT-B/16 86,567,656,
+  B/32 88,224,232, L/16 304,326,632, H/14 632,045,800. The packed `in_proj_weight` of
+  `nn.MultiheadAttention` has the paper's layout, so an `nn.TransformerEncoder` ViT counts
+  the same.
+- Split conformal on 200 calibration points gives 89.4% coverage overall, but 97.2% on the
+  quiet half and 81.5% on the noisy half: the guarantee is marginal. Normalized scores give
+  88.5% / 92.2%. Over 200 recalibrations the mean is 89.88% against the exact 90.05%.
+- The UCB1 trace has a three-way tie at t = 4 that the lowest index wins; the page describes
+  the trace as computed, not as a textbook would guess it.
 - Pins checked with `git ls-remote --tags`: v2.14.1, 1.9.1 and v3.4.2 are still the newest
-  stable releases; no pin moved.
-- The bias baseline μ + b_u + b_i is worse than the global mean on the held-out cells: offsets
-  cannot see interaction. The page says so.
-- ALS's objective falls every sweep, but RMSE on observed cells can tick up, because ALS
-  minimizes the penalized loss. The test checks the objective.
+  stable releases (PyTorch v2.15.0 has only release candidates); no pin moved.
+- Ranges cited this run, all checked at the pin: `conv.py` `Conv2d` 388-565 (`__init__`
+  512-544, `_conv_forward` 546-562); `transformer.py` `TransformerEncoder` 320-555,
+  `TransformerEncoderLayer` 663-983 (pre-norm branch 946-958, `_sa_block`/`_ff_block`
+  961-983); `flatten.py` `Flatten` 12-62; `activation.py` `GELU` 778-823,
+  `MultiheadAttention` 1090-1573; `normalization.py` `LayerNorm` 105-236; `linear.py`
+  `Linear` 53-140; `_bagging.py` `_generate_indices` 51-61, `BaggingRegressor` 1192-1480;
+  `dropout.py` 17-73; `functional.py` `F.dropout` 1473-1498.
 
 Gaps:
 
-- References cited from memory (arxiv unreachable): GroupLens 1994, Sarwar 2001, Koren–Bell–
-  Volinsky 2009, Hu–Koren–Volinsky 2008 (α = 40), Lee–Seung 2000. No pin implements ALS or
-  implicit-feedback MF; those follow the papers.
-- `two-tower-models` is named in plain text until it is ready.
-- gradient-accumulation: `distributed-training` and `contrastive-learning` are named in plain
-  text until ready. Goyal 2017, McCandlish 2018, Li 2020 (DDP), gradient cache (Gao 2021) cited
-  from memory. DDP's `bucket_cap_mb` defaults to `None` meaning 25 MiB (doc 713-718), and the
-  sync flag is read in `_pre_forward` (1745-1770), which is why forward must be inside `no_sync`.
-- latency-and-throughput: `speculative-decoding` and `profiling` are named in plain text until
-  ready. Little 1961, Williams–Waterman–Patterson 2009, Dean–Barroso 2013, Pope 2023, Kwon 2023,
-  Sarathi-Serve 2024 cited from memory. The hardware is round numbers, not a vendor spec sheet;
-  the numbers are roofline lower bounds, not measurements.
+- arxiv.org still returns 403 through the proxy, so every reference added this run (ViT,
+  DeiT, Swin, MAE, GELU, deep ensembles, MC dropout, conformal prediction, CQR, Ovadia et al.,
+  UCB1, Thompson sampling, Zinkevich's OGD) was cited from memory.
+- online-learning names `monitoring-and-drift` in plain text until it is ready.
+- No pin implements a bandit, a drift detector or conformal prediction; those follow the
+  papers. ViT's encoder in torchvision and timm uses their own block classes; the page links
+  `nn.TransformerEncoderLayer` as the equivalent pinned module.
 
 ## Queue
 
