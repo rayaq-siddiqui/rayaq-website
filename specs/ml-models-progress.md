@@ -144,16 +144,17 @@ Paths are under `sklearn/`.
 - `transformer` uses the v1 section layout and is exempt from the §6 order test until its
   retrofit (queue item 18).
 
-## First to thirty-third runs (2026-10-08 to 2026-10-12) — condensed
+## First to thirty-fourth runs (2026-10-08 to 2026-10-13) — condensed
 
 Runs 1-3 wrote the spec (v1, then v2), the registry, `LEARNING_PATH`, the §6 and queue tests,
 `check_mobile.js` and the Routine. Every run since adds, per page, a tested-helpers commit, a
-page commit (page, `ready`, queue ✓) and usually a `docs:` commit; items 1-51 were built in
+page commit (page, `ready`, queue ✓) and usually a `docs:` commit; items 1-66 were built in
 queue order (run 28: quantization, reinforcement-learning, bayes-rule; run 29:
 class-imbalance, random-forests, initialization; run 30: rnns-and-lstms, autoencoders,
 variational-autoencoders; run 31: positional-encoding, clustering, vector-indexes; run 32:
 distillation, time-series, regression-metrics; run 33: support-vector-machines,
-learning-rate-schedules, gans). `6f0803f` fixed 13 templates that read a
+learning-rate-schedules, gans; run 34: encoder-only, learning-to-rank,
+data-loading-and-batching). `6f0803f` fixed 13 templates that read a
 missing `pins.X.version` key. Pins never moved. The ranges each page links live in its template
 (grep `src(`, `skl(`, `xgb(`); `git log -p` on this file has every old commit table and range list.
 
@@ -167,6 +168,9 @@ Findings worth keeping (details in each page and in `git log -p` on this file):
 - Use the one-sided Jacobi SVD (eigenvalues of AᵀA squared the condition number).
 - `.jj-diagram svg text { fill: var(--jj-text) }` beats an SVG `fill=` attribute, so coloured
   diagram text must use `style="fill: ..."`.
+- `ml_models_docs.py` is one ~10,000-line namespace: grep for a helper name before adding it,
+  and read the pytest result before committing (run 34 pushed one red commit, `b333b79`, when
+  a new `pack_sequences` shadowed the RNN page's helper; `a6aae02` renamed it).
 - Jinja: a context dict key named `values`, `items` or `keys` resolves to the dict method;
   macros return Markup, so do arithmetic before calling them, never on their output.
 
@@ -180,8 +184,8 @@ Open gaps from these runs:
   `mixed-precision`'s fp8 recipes and the SwiGLU "2/3 hidden size" remark are general knowledge.
 - The end lines of the HistGradientBoosting regressor `__init__`, `_incremental_fit_estimator`
   and `Lasso` were inferred.
-- `kv-cache` (quantization), `reinforcement-learning` (preference optimization) and
-  `class-imbalance` (calibration) name those pages in plain text until they are ready.
+- `kv-cache` (quantization) and `reinforcement-learning` (preference optimization) name those
+  pages in plain text until they are ready.
 - No pin implements IVF, PQ or HNSW; those follow the papers. `pca` appears as plain text on
   `clustering` until it is ready.
 - Page commits exceed 400 lines because each template is one file.
@@ -191,42 +195,39 @@ Open gaps from these runs:
 - Run 32: Hinton–Vinyals–Dean's T² remark was confirmed only through secondary quotes;
   Gneiting 2011 is cited only for consistent scoring functions. No pin implements ARIMA, STL
   or MASE; those follow the papers and FPP3.
+- Run 34: no pin implements sequence packing with masks or a bucketing sampler; the
+  data-loading worker timeline is an idealized model, labelled as such.
 
-## Thirty-fourth run (2026-10-13) — encoder-only, learning-to-rank, data-loading-and-batching
+## Thirty-fifth run (2026-10-13) — model-serving, causal-inference, calibration
 
 | Commit | What |
 |---|---|
-| `ec3c7a7`, `2569f01` | Tested encoder-only helpers; the `encoder-only` page, `ready`, queue ✓ |
-| `da5aa30` `ml-models: add tested learning-to-rank helpers` | DCG/NDCG, RankNet and LambdaRank lambdas, Newton steps |
-| `d1a641c` `ml-models: build the learning-to-rank page` | The page, `ready`, queue ✓ |
-| `b333b79` `ml-models: add tested data-loading helpers` | Padding/bucketing/first-fit packing, loader and `DistributedSampler` lengths, an idealized worker pipeline, mini-batch gradient variance. **Broke one test**: the new `pack_sequences` shadowed the RNN page's helper of the same name |
-| `a6aae02` `fix: stop the packing helper shadowing pack_sequences` | Renamed it `pack_into_rows`; suite green again |
-| `a313541` `ml-models: build the data-loading-and-batching page` | The page, `ready`, queue ✓ |
-
-Ranges verified this run are linked from the three templates: XGBoost
-`src/objective/lambdarank_obj.{h,cc}`, `src/common/ranking_utils.h` and the ranking tutorial;
-scikit-learn `dcg_score`/`ndcg_score`; PyTorch `torch/utils/data/` (`dataloader.py`,
-`sampler.py`, `_utils/{fetch,collate,worker,pin_memory}.py`, `distributed.py`, `dataset.py`)
-and `pad_sequence`.
+| `f1d31b1`, `67970a7` | Tested serving helpers (batch cost model, dynamic batching simulator, nearest-rank percentiles, static vs continuous decode batching); the `model-serving` page, `ready`, queue ✓ |
+| `0a247cd`, `91a6c8d` | Tested causal helpers (potential outcomes, randomization enumeration, stratification, Horvitz–Thompson and Hájek IPW, propensity fit, difference-in-differences, uplift); the `causal-inference` page, `ready`, queue ✓ |
+| `cbb3b38` `ml-models: add tested calibration helpers` | Reliability bins/ECE/MCE matching `calibration_curve`'s right-closed uniform bins, Brier, Platt with smoothed targets, temperature scaling by Newton on β, isotonic PAV, logit-inflation losses |
+| `a0c640d` `ml-models: add the calibration page` | The page, `ready`, queue ✓ |
+| `29c3693` `ml-models: link class-imbalance to the calibration page` | The prior-correction paragraph now links `calibration` |
 
 Findings worth keeping:
 
-- `ml_models_docs.py` is one ~9,700-line namespace: grep for a helper name before adding it,
-  and read the pytest result before committing (b333b79 was pushed red; CI gates the deploy).
-- DataLoader: `prefetch_factor × num_workers` tasks in flight; results reordered unless
-  `in_order=False`; workers seed `random`/`torch` with base_seed + id and NumPy via
-  `_generate_state`; `default_collate` turns a list of tuples into a *list* of fields.
+- sklearn's `_SigmoidCalibration` predicts `expit(-(a_*T + b_))`, so its stored slope is
+  negative for a good model. `_TemperatureScaling` (method `"temperature"`, new in 1.8)
+  optimizes log β in [−10, 10] and turns probabilities back into logits with `log(p + eps)`.
+  `ensemble="auto"` means `False` only for a `FrozenEstimator`.
+- On calibration's 20-point example Platt's smoothed targets shrink harder than temperature
+  scaling (ECE 0.072 vs 0.033); in-sample isotonic reaches ECE 0 and changes AUC through ties.
 - Pins checked with `git ls-remote --tags`: v2.14.1, 1.9.1 and v3.4.2 are still the newest
   stable releases; no pin moved.
 
 Gaps:
 
-- References cited from memory (arxiv unreachable): BERT, RoBERTa, ELECTRA, GELU; RankNet,
-  LambdaRank, ListNet, Burges's overview, Järvelin–Kekäläinen, Unbiased LambdaMART; Goyal et
-  al., McCandlish et al. (critical batch size), Krell et al. (packing).
-- No pin implements sequence packing with masks or a bucketing sampler; that part of
-  `data-loading-and-batching` follows the packing paper and general practice. The worker
-  timeline is an idealized model (fixed costs), labelled as such.
+- References cited from memory (arxiv unreachable): Rubin 1974, Rosenbaum & Rubin 1983,
+  Horvitz & Thompson 1952, Card & Krueger 1994; Guo et al. 2017 (arXiv 1706.04599), Platt 2000,
+  Zadrozny & Elkan 2002, Niculescu-Mizil & Caruana 2005, Brier 1950. Pearl 2009 and Radcliffe
+  & Surry 2011 were verified by web search.
+- `model-serving`'s latency and cost figures come from an invented, labelled model; no pin
+  implements a serving system. No pin implements ECE, propensity weighting, DiD or uplift
+  models; those follow the papers.
 
 ## Queue
 
