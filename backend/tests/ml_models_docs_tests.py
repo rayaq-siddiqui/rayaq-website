@@ -4673,3 +4673,40 @@ def test_uncertainty_plot_points_stay_inside_the_frame():
     ex = ml_models_docs.uncertainty_example()
     for points in [ex["points"], ex["truth_points"], ex["band"], *ex["member_points"]]:
         assert all(60 <= x <= 660 and 30 <= y <= 200 for x, y in points)
+
+
+def test_vit_shape_walk_turns_an_image_into_197_tokens_of_width_768():
+    ex = ml_models_docs.vit_example()
+    shapes = {row["stage"]: row["shape"] for row in ex["walk"]}
+    assert ex["walk"][0]["shape"] == [8, 3, 224, 224]
+    assert shapes["transpose(1, 2)"] == [8, 196, 768]
+    assert shapes["prepend class token"] == [8, 197, 768]
+    assert shapes["per-head attention scores"] == [8, 12, 197, 197]
+    assert ex["walk"][-1]["shape"] == [8, 1000]
+
+
+def test_vit_parameter_counts_match_the_published_models():
+    totals = {m["config"]["name"]: m["total"] for m in ml_models_docs.vit_example()["models"]}
+    assert totals["ViT-B/16"] == 86_567_656
+    assert totals["ViT-B/32"] == 88_224_232
+    assert totals["ViT-L/16"] == 304_326_632
+    assert totals["ViT-H/14"] == 632_045_800
+    params = ml_models_docs.vit_example()["params"]
+    assert params["layer_total"] == 7_087_872
+    assert params["parts"]["patch_embed"] == 3 * 16 * 16 * 768 + 768
+
+
+def test_vit_strided_convolution_equals_a_linear_layer_on_flattened_patches():
+    ex = ml_models_docs.vit_example()
+    assert ex["conv_tokens"] == ex["linear"]
+    assert ex["patches"][0] == [1, 2, 3, 4]
+    assert len(ex["patches"]) == 4
+    assert ex["overlap_side"] == 3
+
+
+def test_vit_token_count_and_attention_cost_grow_with_resolution():
+    rows = {(r["image"], r["patch"]): r for r in ml_models_docs.vit_example()["resolutions"]}
+    assert rows[(224, 16)]["tokens"] == 197 and rows[(224, 16)]["relative"] == 1
+    assert rows[(384, 16)]["tokens"] == 577
+    assert rows[(224, 32)]["tokens"] == 50
+    assert rows[(384, 16)]["scores"] == 577 ** 2

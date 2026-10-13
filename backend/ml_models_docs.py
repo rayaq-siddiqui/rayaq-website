@@ -11485,6 +11485,127 @@ def uncertainty_example():
         "histogram_edges": edges,
     }
 
+VIT_EXAMPLE = {
+    "configs": [
+        {"name": "ViT-Ti/16", "image": 224, "patch": 16, "channels": 3, "dim": 192, "depth": 12, "heads": 3, "mlp": 768, "classes": 1000},
+        {"name": "ViT-S/16", "image": 224, "patch": 16, "channels": 3, "dim": 384, "depth": 12, "heads": 6, "mlp": 1536, "classes": 1000},
+        {"name": "ViT-B/16", "image": 224, "patch": 16, "channels": 3, "dim": 768, "depth": 12, "heads": 12, "mlp": 3072, "classes": 1000},
+        {"name": "ViT-B/32", "image": 224, "patch": 32, "channels": 3, "dim": 768, "depth": 12, "heads": 12, "mlp": 3072, "classes": 1000},
+        {"name": "ViT-L/16", "image": 224, "patch": 16, "channels": 3, "dim": 1024, "depth": 24, "heads": 16, "mlp": 4096, "classes": 1000},
+        {"name": "ViT-H/14", "image": 224, "patch": 14, "channels": 3, "dim": 1280, "depth": 32, "heads": 16, "mlp": 5120, "classes": 1000},
+    ],
+    "main": "ViT-B/16",
+    "batch": 8,
+    "resolutions": [(224, 32), (224, 16), (224, 14), (384, 16), (512, 16)],
+    "toy": {
+        "image": [[1, 2, 0, 1], [3, 4, 1, 0], [0, 0, 2, 2], [1, 0, 2, 3]],
+        "patch": 2,
+        "weights": [[1, 0, 0, -1], [1, 1, 1, 1]],
+        "bias": [1, 0],
+    },
+}
+
+
+def vit_config(name):
+    return next(c for c in VIT_EXAMPLE["configs"] if c["name"] == name)
+
+
+def vit_tokens(image, patch):
+    side = image // patch
+    return {"side": side, "patches": side * side, "tokens": side * side + 1}
+
+
+def vit_shape_walk(cfg, batch):
+    t = vit_tokens(cfg["image"], cfg["patch"])
+    b, c, d, s = batch, cfg["channels"], cfg["dim"], t["side"]
+    return [
+        {"stage": "image", "shape": [b, c, cfg["image"], cfg["image"]]},
+        {"stage": "Conv2d(kernel = stride = %d)" % cfg["patch"], "shape": [b, d, s, s]},
+        {"stage": "flatten(2)", "shape": [b, d, t["patches"]]},
+        {"stage": "transpose(1, 2)", "shape": [b, t["patches"], d]},
+        {"stage": "prepend class token", "shape": [b, t["tokens"], d]},
+        {"stage": "add position embeddings", "shape": [b, t["tokens"], d]},
+        {"stage": "per-head attention scores", "shape": [b, cfg["heads"], t["tokens"], t["tokens"]]},
+        {"stage": "MLP hidden", "shape": [b, t["tokens"], cfg["mlp"]]},
+        {"stage": "%d encoder layers" % cfg["depth"], "shape": [b, t["tokens"], d]},
+        {"stage": "take token 0", "shape": [b, d]},
+        {"stage": "head", "shape": [b, cfg["classes"]]},
+    ]
+
+
+def vit_params(cfg):
+    d, m, c, p = cfg["dim"], cfg["mlp"], cfg["channels"], cfg["patch"]
+    tokens = vit_tokens(cfg["image"], p)["tokens"]
+    layer = {
+        "attn_in": d * 3 * d + 3 * d,
+        "attn_out": d * d + d,
+        "norms": 2 * 2 * d,
+        "mlp_up": d * m + m,
+        "mlp_down": m * d + d,
+    }
+    layer_total = sum(layer.values())
+    parts = {
+        "patch_embed": c * p * p * d + d,
+        "class_token": d,
+        "position": tokens * d,
+        "layers": cfg["depth"] * layer_total,
+        "final_norm": 2 * d,
+        "head": d * cfg["classes"] + cfg["classes"],
+    }
+    return {"layer": layer, "layer_total": layer_total, "parts": parts, "total": sum(parts.values())}
+
+
+def vit_patchify(image, patch):
+    side = len(image) // patch
+    return [[image[pr * patch + i][pc * patch + j] for i in range(patch) for j in range(patch)]
+            for pr in range(side) for pc in range(side)]
+
+
+def vit_conv(image, weights, bias, patch, stride):
+    size = len(image)
+    out_side = (size - patch) // stride + 1
+    return [[[bias[k] + sum(weights[k][i * patch + j] * image[r * stride + i][q * stride + j]
+                            for i in range(patch) for j in range(patch))
+              for q in range(out_side)] for r in range(out_side)] for k in range(len(weights))]
+
+
+def vit_linear(patches, weights, bias):
+    return [[bias[k] + sum(w * v for w, v in zip(weights[k], row)) for k in range(len(weights))] for row in patches]
+
+
+@functools.lru_cache(maxsize=None)
+def vit_example():
+    e = VIT_EXAMPLE
+    main = vit_config(e["main"])
+    toy = e["toy"]
+    patches = vit_patchify(toy["image"], toy["patch"])
+    conv = vit_conv(toy["image"], toy["weights"], toy["bias"], toy["patch"], toy["patch"])
+    linear = vit_linear(patches, toy["weights"], toy["bias"])
+    side = len(conv[0])
+    conv_tokens = [[conv[k][r][q] for k in range(len(conv))] for r in range(side) for q in range(side)]
+    resolutions = []
+    for image, patch in e["resolutions"]:
+        t = vit_tokens(image, patch)
+        resolutions.append({"image": image, "patch": patch, **t, "scores": t["tokens"] ** 2})
+    base_scores = vit_tokens(main["image"], main["patch"])["tokens"] ** 2
+    for r in resolutions:
+        r["relative"] = r["scores"] / base_scores
+    return {
+        "example": e,
+        "main": main,
+        "tokens": vit_tokens(main["image"], main["patch"]),
+        "walk": vit_shape_walk(main, e["batch"]),
+        "params": vit_params(main),
+        "models": [{"config": c, "tokens": vit_tokens(c["image"], c["patch"])["tokens"], "total": vit_params(c)["total"]}
+                   for c in e["configs"]],
+        "patches": patches,
+        "conv": conv,
+        "conv_tokens": conv_tokens,
+        "linear": linear,
+        "resolutions": resolutions,
+        "overlap_side": len(vit_conv(toy["image"], toy["weights"], toy["bias"], toy["patch"], 1)[0]),
+    }
+
 
 def render(slug, render_template):
     if slug is None:
@@ -11522,6 +11643,7 @@ def render(slug, render_template):
         "latency_example": latency_example,
         "online_example": online_example,
         "uncertainty_example": uncertainty_example,
+        "vit_example": vit_example,
         "data_example": data_example,
         "serving_example": serving_example,
         "causal_example": causal_example,
