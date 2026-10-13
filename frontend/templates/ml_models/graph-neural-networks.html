@@ -1,0 +1,572 @@
+{% set ex = gnn_example() %}
+{% set cfg = ex.example %}
+{% set prop = ex.prop %}
+{% set mp = ex.mp %}
+{% set gat = ex.gat %}
+{% set sage = ex.sage %}
+{% set smooth = ex.smooth %}
+{% set batch = ex.batch %}
+{% set names = cfg.nodes %}
+{% set focus = cfg.focus %}
+{% macro n(x, d=2) -%}{{ ("%." ~ d ~ "f")|format(x) }}{%- endmacro %}
+{% macro vec(v, d=2) -%}[{% for x in v %}{{ ("%." ~ d ~ "f")|format(x) }}{% if not loop.last %}, {% endif %}{% endfor %}]{%- endmacro %}
+<header class="jj-header">
+  <h1>Graph neural networks</h1>
+  <p class="tagline">
+    Molecules, road maps, citation networks and social graphs have no grid and no order, only nodes and the edges between
+    them. This page writes a graph as an adjacency matrix and a feature matrix, builds the message-passing layer that every
+    graph neural network shares, derives GCN's normalized propagation, adds GraphSAGE and GAT, shows why deep stacks
+    over-smooth, and batches several graphs into one, all worked on one five-node graph.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A <a href="/ml-models/cnns">convolution</a> slides one small filter over a grid because every pixel has
+  the same neighbours in the same positions: up, down, left, right. A
+  <a href="/ml-models/transformer">transformer</a> works on a sequence, where position is an index. Many datasets
+  have neither. Atoms in a molecule have between one and four bonds. A paper cites any number of others. A user in a social
+  network has three friends or three thousand. There is no "left neighbour", and renumbering the nodes changes nothing
+  about the graph, so a model that depends on the numbering is wrong.
+</p>
+<p>
+  The questions asked of such data are of three kinds: about a node (what topic is this paper, is this account a bot),
+  about an edge (will these two users connect, do these two proteins interact) and about a whole graph (is this molecule
+  toxic). A graph neural network learns a vector for every node from its own features and from its neighbourhood, using
+  the same weights for every node whatever its degree, and in a way that does not depend on how the nodes are numbered.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Each node starts with a feature vector: an atom's element, a paper's bag of words. In one layer, every node collects its
+  neighbours' vectors, combines them with its own and passes the result through a small learned function. After one layer a
+  node's vector summarizes its immediate neighbours; after two, its neighbours' neighbours; after k layers, everything
+  within k hops. A paper about graph learning that cites three other graph papers ends up with a vector close to theirs.
+</p>
+<p>
+  The combining step has to treat the neighbours as a set, not a list, so it uses an order-free reduction: a sum, a mean, a
+  maximum, or a weighted sum whose weights are themselves computed from the vectors. Everything else is a
+  <a href="/ml-models/neurons-and-layers">linear layer</a> applied to every node with shared weights. The variants differ
+  mostly in how they weight the neighbours, and the cost of the whole idea shows up when the stack gets deep: averaging
+  over and over makes every node look like every other.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="graphs-as-matrices">A graph as two matrices</h3>
+<p>
+  Number the n nodes 0 to n − 1. The <strong>adjacency matrix</strong> A is n × n with A<sub>ij</sub> = 1 when there is an
+  edge between i and j and 0 otherwise; for an undirected graph it is symmetric. The <strong>feature matrix</strong> X is
+  n × f, one row per node. The <strong>degree</strong> d<sub>i</sub> = Σ<sub>j</sub> A<sub>ij</sub> counts node i's
+  neighbours, and D is the diagonal matrix of degrees. Renumbering the nodes with a permutation matrix P turns A into
+  PAPᵀ and X into PX; a layer is <em>permutation equivariant</em> when its output turns into P times the old output, which
+  is the property every layer on this page has.
+</p>
+<p>
+  Real graphs are sparse: a citation graph with millions of nodes has a few dozen edges per node, so A is stored as an
+  <strong>edge index</strong>, a 2 × E tensor of (source, target) pairs, with each undirected edge listed in both directions.
+  That is a COO sparse matrix without the values, and PyTorch's <code>torch.sparse_coo_tensor</code> takes exactly that
+  layout.
+</p>
+
+<h3 id="message-passing">Message passing</h3>
+<p>
+  The general layer, from the message passing neural network framework, has three parts. For each edge j → i a
+  <em>message</em> m<sub>ji</sub> = φ(h<sub>i</sub>, h<sub>j</sub>, e<sub>ji</sub>) is computed from the two endpoints and
+  any edge features. Each node <em>aggregates</em> its incoming messages with a permutation-invariant reduction ⊕ (sum,
+  mean, max). Then it <em>updates</em>:
+</p>
+<div class="ml-formula">h<sub>i</sub>′ = γ( h<sub>i</sub>, ⊕<sub>j ∈ N(i)</sub> φ(h<sub>i</sub>, h<sub>j</sub>, e<sub>ji</sub>) )</div>
+<p>
+  On an edge index this is three tensor operations: gather the endpoint rows with <code>x[src]</code> (an
+  <code>index_select</code>), compute one message per edge, and scatter the messages back into their target rows with
+  <code>index_add_</code> or <code>scatter_reduce_</code>. The cost is O(E · f) instead of the O(n² · f) of a dense matrix
+  product, which is what makes graphs with millions of nodes trainable.
+</p>
+
+<h3 id="gcn">GCN: normalized propagation, derived</h3>
+<p>
+  The simplest choice is to sum the neighbours: AX. It has two defects. A node's own features are dropped, since
+  A<sub>ii</sub> = 0, and the scale of the result grows with the degree, so a hub's vector is hundreds of times larger than a
+  leaf's. Adding self-loops fixes the first: Ã = A + I, with degrees d̃<sub>i</sub> = d<sub>i</sub> + 1. Dividing by the
+  degree fixes the second: D̃<sup>−1</sup>ÃX is the mean over the closed neighbourhood. That mean is not symmetric, though:
+  it weights the edge i ← j by 1/d̃<sub>i</sub> and the edge j ← i by 1/d̃<sub>j</sub>. The symmetric compromise splits the
+  normalization between both ends:
+</p>
+<div class="ml-formula">Â = D̃<sup>−½</sup> Ã D̃<sup>−½</sup>, &nbsp; Â<sub>ij</sub> = Ã<sub>ij</sub> / √(d̃<sub>i</sub> d̃<sub>j</sub>), &nbsp; H′ = σ(Â H W)</div>
+<p>
+  Kipf and Welling reached the same matrix from spectral graph theory. The normalized Laplacian
+  L = I − D<sup>−½</sup>AD<sup>−½</sup> is symmetric with eigenvalues in [0, 2], and its eigenvectors play the role of a
+  Fourier basis on the graph; a spectral filter multiplies each frequency by g<sub>θ</sub>(λ). Approximating the filter by a
+  first-order Chebyshev polynomial, with λ<sub>max</sub> ≈ 2, gives
+  g ⋆ x ≈ θ<sub>0</sub>x + θ<sub>1</sub>(L − I)x = θ<sub>0</sub>x − θ<sub>1</sub>D<sup>−½</sup>AD<sup>−½</sup>x, a filter that
+  only looks one hop away. Tying the two parameters, θ = θ<sub>0</sub> = −θ<sub>1</sub>, leaves θ(I + D<sup>−½</sup>AD<sup>−½</sup>)x.
+  That operator has eigenvalues in [0, 2], so stacking it can blow activations up; the <em>renormalization trick</em>
+  replaces it with D̃<sup>−½</sup>ÃD̃<sup>−½</sup>, which is Â above and whose eigenvalues lie in (−1, 1]. A filter with one
+  parameter per pair of input and output features, applied to all f inputs at once, is the matrix W. The paper's two-layer
+  model for node classification is Z = softmax(Â ReLU(ÂXW<sup>(0)</sup>) W<sup>(1)</sup>), trained with
+  <a href="/ml-models/loss-functions">cross-entropy</a> on the few labelled nodes.
+</p>
+<p>
+  Read as message passing, GCN's message is the transformed neighbour W<sup>ᵀ</sup>h<sub>j</sub> scaled by the fixed
+  coefficient 1/√(d̃<sub>i</sub>d̃<sub>j</sub>), the aggregation is a sum, and the update is the nonlinearity. The coefficients
+  depend only on the graph, so they can be computed once.
+</p>
+
+<h3 id="graphsage">GraphSAGE: sample, aggregate, concatenate</h3>
+<p>
+  GCN as written needs the whole graph in every step, and it mixes a node's own vector into the same average as its
+  neighbours. GraphSAGE changes both. Its layer keeps the self and the neighbourhood apart and concatenates them:
+</p>
+<div class="ml-formula">h<sub>N(v)</sub> = mean<sub>u ∈ N(v)</sub> h<sub>u</sub>, &nbsp; h<sub>v</sub>′ = σ( W · [h<sub>v</sub> ‖ h<sub>N(v)</sub>] ), &nbsp; h<sub>v</sub>′ ← h<sub>v</sub>′ / ‖h<sub>v</sub>′‖<sub>2</sub></div>
+<p>
+  so the model can learn how much to trust the node versus its context. The aggregator can be a mean, an elementwise max
+  after a small MLP ("pooling"), or an LSTM over a random ordering. The second change is training on samples: each layer
+  uses a fixed number of randomly sampled neighbours (the paper uses 25 at the first hop and 10 at the second), so the cost of
+  a minibatch of target nodes is bounded however large the graph is, and the learned function applies to nodes and graphs
+  never seen in training. This is the <em>inductive</em> setting, where GCN as originally trained is <em>transductive</em>.
+</p>
+
+<h3 id="gat">GAT: attention over the neighbourhood</h3>
+<p>
+  GCN gives every neighbour a weight fixed by degrees. A graph attention network learns the weights from the features, in
+  the spirit of <a href="/ml-models/attention">attention</a> but restricted to the edges. With z<sub>i</sub> = W h<sub>i</sub>
+  and a learned vector a of length 2f′:
+</p>
+<div class="ml-formula">e<sub>ij</sub> = LeakyReLU( aᵀ [z<sub>i</sub> ‖ z<sub>j</sub>] ), &nbsp; α<sub>ij</sub> = softmax<sub>j ∈ N(i) ∪ {i}</sub>(e<sub>ij</sub>), &nbsp; h<sub>i</sub>′ = σ( Σ<sub>j</sub> α<sub>ij</sub> z<sub>j</sub> )</div>
+<p>
+  The softmax runs only over the node's own neighbourhood including itself, so a degree-2 node and a degree-200 node both
+  get weights that sum to 1. The paper uses a LeakyReLU slope of 0.2 (PyTorch's <code>F.leaky_relu</code> defaults to 0.01),
+  and K independent heads whose outputs are concatenated in hidden layers and averaged in the output layer, exactly as
+  multi-head attention splits a transformer layer. Because a splits into a part that sees z<sub>i</sub> and a part that
+  sees z<sub>j</sub>, the score is a monotone function of a<sub>2</sub>ᵀz<sub>j</sub> plus a constant per node, so every node
+  ranks shared neighbours in the same order; GATv2 applies the nonlinearity before a to make the attention dynamic.
+</p>
+
+<h3 id="oversmoothing">Over-smoothing</h3>
+<p>
+  Each layer multiplies by Â, and Â is a smoothing operator: its largest eigenvalue is 1, with eigenvector proportional
+  to (√d̃<sub>1</sub>, …, √d̃<sub>n</sub>) on a connected graph, and with self-loops every other eigenvalue has magnitude
+  below 1. Applying it k times shrinks every other component by its eigenvalue to the k-th power, so Â<sup>k</sup>X tends to
+  a rank-one matrix: row i becomes √d̃<sub>i</sub> times one shared vector. Nodes then differ only by their degree, and the
+  features that distinguished them are gone. Li, Han and Wu showed this is Laplacian smoothing, the thing that makes
+  shallow GCNs work, taken too far. Weights and nonlinearities between the layers slow it but do not stop it in practice,
+  which is why most GNNs use two to four layers.
+</p>
+<p>
+  The remedies keep some of each node's own signal alive: <a href="/ml-models/layernorm-and-residuals">residual connections</a>
+  or a jumping-knowledge concatenation of every layer's output, normalization schemes that re-spread the rows, randomly
+  dropping edges during training, and decoupling the depth of propagation from the depth of the network. A related problem,
+  over-squashing, is the opposite: information from an exponentially growing number of nodes k hops away has to pass
+  through a fixed-size vector, so long-range dependencies are hard to learn even before smoothing sets in.
+</p>
+
+<h3 id="batching">Batching graphs</h3>
+<p>
+  For graph-level tasks the data is many small graphs of different sizes, so they cannot be stacked into one tensor. The
+  standard trick is to treat a minibatch as one big disconnected graph. Concatenate the feature matrices, add to each
+  graph's edge index the number of nodes that come before it, and keep a <strong>batch vector</strong> giving each node's
+  graph. The adjacency of the result is block-diagonal, so no message ever crosses between graphs and every layer above runs
+  unchanged. At the end a <em>readout</em> pools each graph's nodes into one vector with a sum, mean or max over the nodes
+  sharing a batch index; that pooling is one more <code>index_add_</code> or <code>scatter_reduce_</code>. Sum pooling keeps
+  the count of nodes, which mean pooling loses; the GIN paper shows sum aggregation is what lets a GNN be as discriminating
+  as the Weisfeiler-Lehman graph isomorphism test.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Adjacency A, features X</td><td>n × n, n × f</td><td>Who is connected to whom, and what each node is</td><td>GCN paper §2</td></tr>
+      <tr><td>Edge index</td><td>2 × E <code>long</code></td><td>Sparse COO indices of A, both directions of each edge</td><td><a href="{{ src('torch/_torch_docs.py', 10897, 10993) }}">sparse_coo_tensor</a>, <a href="{{ src('torch/_tensor.py', 1368, 1380) }}">to_sparse_coo</a></td></tr>
+      <tr><td><code>Tensor.index_select</code> / <code>x[src]</code></td><td>(E, f)</td><td>Gather each edge's source row: the messages before weighting</td><td><a href="{{ src('torch/_torch_docs.py', 5563, 5604) }}">_torch_docs.py</a></td></tr>
+      <tr><td><code>Tensor.index_add_(dim, index, source, *, alpha=1)</code></td><td><code>self[index[i]] += alpha * source[i]</code></td><td>Sum each message into its target row; nondeterministic on CUDA</td><td><a href="{{ src('torch/_tensor_docs.py', 2340, 2390) }}">_tensor_docs.py</a></td></tr>
+      <tr><td><code>Tensor.scatter_reduce_(dim, index, src, reduce, *, include_self=True)</code></td><td><code>reduce</code> in "sum", "prod", "mean", "amax", "amin"</td><td>Max or mean aggregation, and the per-node max for a stable softmax; marked beta</td><td><a href="{{ src('torch/_tensor_docs.py', 4488, 4552) }}">_tensor_docs.py</a></td></tr>
+      <tr><td><code>Tensor.scatter_add_</code></td><td>index shaped like src</td><td>Sum aggregation with an explicit index per element; backward only when <code>src.shape == index.shape</code></td><td><a href="{{ src('torch/_tensor_docs.py', 4432, 4486) }}">_tensor_docs.py</a></td></tr>
+      <tr><td><code>torch.gather</code></td><td>index with the output's shape</td><td>The inverse direction: read one value per index along a dim</td><td><a href="{{ src('torch/_torch_docs.py', 4813, 4849) }}">_torch_docs.py</a></td></tr>
+      <tr><td><code>nn.Linear(f, f′)</code></td><td>GCN layer {{ cfg.features[0]|length }} → {{ cfg.weight[0]|length }}: {{ ex.params.gcn }} parameters with bias</td><td>The shared W applied to every node, y = xAᵀ + b</td><td><a href="{{ src('torch/nn/modules/linear.py', 53, 147) }}">linear.py</a></td></tr>
+      <tr><td><code>F.leaky_relu(input, negative_slope=0.01)</code></td><td>GAT uses slope {{ cfg.gat_slope }}</td><td>Nonlinearity on the raw attention score</td><td><a href="{{ src('torch/nn/functional.py', 1955, 1976) }}">functional.py</a></td></tr>
+      <tr><td><code>F.softmax</code></td><td>over one neighbourhood</td><td>Turns GAT scores into weights; on an edge list it becomes a segment softmax</td><td><a href="{{ src('torch/nn/functional.py', 2176, 2216) }}">functional.py</a></td></tr>
+      <tr><td>GAT head</td><td>W f × f′ plus a of length 2f′: {{ ex.params.gat }} here</td><td>One attention head; K heads concatenated or averaged</td><td>GAT paper §2.1</td></tr>
+      <tr><td>GraphSAGE layer</td><td>W f′ × 2f: {{ ex.params.sage }} here</td><td>Self concatenated with the neighbour mean, then L2-normalized</td><td>GraphSAGE paper, Algorithm 1</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="ml-caption">
+  PyTorch {{ pins.pytorch.tag }} has no graph layers of its own; libraries such as PyTorch Geometric and DGL build them from
+  exactly these index and scatter operations.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  Five nodes and five undirected edges: A–B, A–C, B–C, C–D, D–E, a triangle with a tail. Each node has two features, chosen
+  so that A and B differ.
+</p>
+
+{% set pos = [(120, 70), (120, 230), (240, 150), (350, 150), (450, 150)] %}
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 320" role="img" aria-labelledby="gnn-graph-title gnn-graph-desc">
+    <title id="gnn-graph-title">The example graph and its normalized adjacency</title>
+    <desc id="gnn-graph-desc">
+      Left: five nodes. A, B and C form a triangle, C connects to D and D to E. Each node is labelled with its features and its
+      degree including the self-loop: A {{ vec(cfg.features[0], 0) }} degree {{ prop.degrees[0] }}, B {{ vec(cfg.features[1], 0) }}
+      degree {{ prop.degrees[1] }}, C {{ vec(cfg.features[2], 0) }} degree {{ prop.degrees[2] }}, D {{ vec(cfg.features[3], 0) }}
+      degree {{ prop.degrees[3] }}, E {{ vec(cfg.features[4], 0) }} degree {{ prop.degrees[4] }}. Right: a five by five heatmap of
+      the normalized adjacency with self-loops; darker cells are larger. Rows A and B are identical, the diagonal entry for E is
+      the largest at {{ n(prop.normalized[4][4], 3) }}, and the zeros are the missing edges.
+    </desc>
+    {% for e in cfg.edges %}
+      <line x1="{{ pos[e[0]][0] }}" y1="{{ pos[e[0]][1] }}" x2="{{ pos[e[1]][0] }}" y2="{{ pos[e[1]][1] }}" class="d-line" style="stroke-width:2"></line>
+    {% endfor %}
+    {% for p in pos %}
+      <circle cx="{{ p[0] }}" cy="{{ p[1] }}" r="22" class="d-box ml-tensor"></circle>
+      <text x="{{ p[0] }}" y="{{ p[1] + 5 }}" text-anchor="middle" class="ml-label">{{ names[loop.index0] }}</text>
+      {% if loop.index0 < 2 %}
+        <text x="{{ p[0] - 30 }}" y="{{ p[1] + 5 }}" text-anchor="end" class="d-muted">{{ vec(cfg.features[loop.index0], 0) }} d̃={{ prop.degrees[loop.index0] }}</text>
+      {% else %}
+        <text x="{{ p[0] }}" y="{{ p[1] + 40 }}" text-anchor="middle" class="d-muted">{{ vec(cfg.features[loop.index0], 0) }} d̃={{ prop.degrees[loop.index0] }}</text>
+      {% endif %}
+    {% endfor %}
+    <text x="270" y="290" text-anchor="middle" class="d-muted">self-loops are implied on every node</text>
+    {% set hx = 540 %}{% set hy = 60 %}{% set c = 34 %}
+    <text x="{{ hx + 2.5 * c }}" y="{{ hy - 20 }}" text-anchor="middle">Â = D̃^−½ (A + I) D̃^−½</text>
+    {% for row in prop.normalized %}
+      {% set r = loop.index0 %}
+      <text x="{{ hx - 10 }}" y="{{ hy + r * c + c / 2 + 5 }}" text-anchor="end" class="d-muted">{{ names[r] }}</text>
+      <text x="{{ hx + r * c + c / 2 }}" y="{{ hy + 5 * c + 18 }}" text-anchor="middle" class="d-muted">{{ names[r] }}</text>
+      {% for v in row %}
+        <rect x="{{ hx + loop.index0 * c }}" y="{{ hy + r * c }}" width="{{ c - 2 }}" height="{{ c - 2 }}" rx="3" style="fill: var(--jj-accent); fill-opacity: {{ "%.3f"|format(v * 1.6 + 0.04) }}; stroke: none"></rect>
+        <text x="{{ hx + loop.index0 * c + c / 2 - 1 }}" y="{{ hy + r * c + c / 2 + 4 }}" text-anchor="middle" style="font-size: 10px">{{ "%.2f"|format(v) if v else "0" }}</text>
+      {% endfor %}
+    {% endfor %}
+  </svg>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-gcn">One GCN layer</h3>
+  <p>
+    The degrees with self-loops are {{ prop.degrees|join(", ") }}. Each entry of Â is 1/√(d̃<sub>i</sub>d̃<sub>j</sub>): the
+    A–B entry is 1/√({{ prop.degrees[0] }}·{{ prop.degrees[1] }}) = {{ n(prop.normalized[0][1], 4) }}, the A–C entry is
+    1/√({{ prop.degrees[0] }}·{{ prop.degrees[2] }}) = {{ n(prop.normalized[0][2], 4) }}, and E's self-loop is
+    1/{{ prop.degrees[4] }} = {{ n(prop.normalized[4][4], 4) }}. With W = {{ cfg.weight }}:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Node</th><th>x</th><th>ÂX</th><th>ÂXW</th><th>ReLU(ÂXW)</th></tr></thead>
+      <tbody>
+        {% for i in range(names|length) %}
+          <tr><td>{{ names[i] }}</td><td>{{ vec(cfg.features[i], 0) }}</td><td>{{ vec(ex.ax[i], 4) }}</td><td>{{ vec(ex.axw[i], 4) }}</td><td>{{ vec(ex.gcn[i], 4) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    A and B started with different features and leave the layer with identical vectors. Their closed neighbourhoods are the same
+    set, {A, B, C}, with the same degrees, so their rows of Â are equal and no choice of W can separate them. This is a real limit
+    of GCN, not a quirk of the numbers: a node's output depends only on the multiset of its neighbourhood, never on which of the
+    two endpoints it was.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-message-passing">The same layer as message passing</h3>
+  <p>
+    Transform first: XW gives one row per node, {% for i in range(names|length) %}{{ names[i] }} {{ vec(mp.transformed[i], 1) }}{% if not loop.last %}, {% endif %}{% endfor %}.
+    The edge list has {{ mp.sources|length }} entries: each of the {{ cfg.edges|length }} edges in both directions plus
+    {{ names|length }} self-loops. Each entry carries its source's row times 1/√(d̃<sub>s</sub>d̃<sub>t</sub>), and
+    <code>index_add_</code> sums them by target. For C:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Source → C</th><th>Coefficient</th><th>Message</th></tr></thead>
+      <tbody>
+        {% for k in range(mp.sources|length) if mp.targets[k] == focus %}
+          {% set s = mp.sources[k] %}
+          <tr><td>{{ names[s] }}</td><td>1/√({{ prop.degrees[s] }}·{{ prop.degrees[focus] }}) = {{ n(mp.coefficients[k], 4) }}</td><td>[{{ n(mp.coefficients[k] * mp.transformed[s][0], 4) }}, {{ n(mp.coefficients[k] * mp.transformed[s][1], 4) }}]</td></tr>
+        {% endfor %}
+        <tr><td><strong>Sum</strong></td><td></td><td><strong>{{ vec(mp.aggregated[focus], 4) }}</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The sum is C's row of ÂXW above, and every other node matches too. The matrix form does n² = {{ names|length * names|length }}
+    multiply-adds per feature; the edge form does {{ mp.sources|length }}, and that gap is what grows to millions on a real graph.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 330" role="img" aria-labelledby="gnn-mp-title gnn-mp-desc">
+    <title id="gnn-mp-title">Messages into node C under GCN and GAT</title>
+    <desc id="gnn-mp-desc">
+      Node C in the middle receives arrows from A, B, D and from itself. Each arrow is labelled with two weights: GCN's fixed
+      coefficient and GAT's learned attention. From A: GCN {{ n(prop.normalized[2][0], 3) }}, GAT {{ n(gat.alpha[0], 3) }}. From B:
+      GCN {{ n(prop.normalized[2][1], 3) }}, GAT {{ n(gat.alpha[1], 3) }}. From C itself: GCN {{ n(prop.normalized[2][2], 3) }}, GAT
+      {{ n(gat.alpha[2], 3) }}. From D: GCN {{ n(prop.normalized[2][3], 3) }}, GAT {{ n(gat.alpha[3], 3) }}. E is two hops away and sends
+      nothing in one layer. The GCN weights do not sum to 1; the GAT weights do.
+    </desc>
+    <defs>
+      <marker id="gnn-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--jj-green)"></path>
+      </marker>
+    </defs>
+    {% set cx = 330 %}{% set cy = 170 %}
+    {% set srcs = [(0, 100, 60, -8, 12, "end"), (1, 100, 280, -8, -24, "end"), (3, 560, 170, 0, -30, "middle")] %}
+    {% for s in srcs %}
+      {% set dx = cx - s[1] %}{% set dy = cy - s[2] %}
+      {% set len = (dx * dx + dy * dy) ** 0.5 %}
+      <line x1="{{ "%.1f"|format(s[1] + dx / len * 30) }}" y1="{{ "%.1f"|format(s[2] + dy / len * 30) }}" x2="{{ "%.1f"|format(cx - dx / len * 32) }}" y2="{{ "%.1f"|format(cy - dy / len * 32) }}" class="d-line" style="stroke: var(--jj-green); stroke-width: 2" marker-end="url(#gnn-arrow)"></line>
+      <circle cx="{{ s[1] }}" cy="{{ s[2] }}" r="26" class="d-box ml-tensor"></circle>
+      <text x="{{ s[1] }}" y="{{ s[2] + 5 }}" text-anchor="middle" class="ml-label">{{ names[s[0]] }}</text>
+      {% set mx = (s[1] + cx) / 2 %}{% set my = (s[2] + cy) / 2 %}
+      <text x="{{ mx + s[3] }}" y="{{ my + s[4] }}" text-anchor="{{ s[5] }}" style="fill: var(--jj-muted)">GCN {{ n(prop.normalized[focus][s[0]], 3) }}</text>
+      <text x="{{ mx + s[3] }}" y="{{ my + s[4] + 18 }}" text-anchor="{{ s[5] }}" style="fill: var(--jj-violet)">GAT {{ n(gat.alpha[gat.neighbours.index(s[0])], 3) }}</text>
+    {% endfor %}
+    <circle cx="{{ cx }}" cy="{{ cy }}" r="30" class="d-box ml-op"></circle>
+    <text x="{{ cx }}" y="{{ cy + 5 }}" text-anchor="middle" class="ml-label">{{ names[focus] }}</text>
+    <path d="M {{ cx - 14 }} {{ cy - 27 }} C {{ cx - 40 }} {{ cy - 90 }}, {{ cx + 40 }} {{ cy - 90 }}, {{ cx + 14 }} {{ cy - 27 }}" fill="none" class="d-line" style="stroke: var(--jj-green); stroke-width: 2" marker-end="url(#gnn-arrow)"></path>
+    <text x="{{ cx }}" y="{{ cy - 92 }}" text-anchor="middle" style="fill: var(--jj-muted)">GCN {{ n(prop.normalized[focus][focus], 3) }}</text>
+    <text x="{{ cx }}" y="{{ cy - 74 }}" text-anchor="middle" style="fill: var(--jj-violet)">GAT {{ n(gat.alpha[gat.neighbours.index(focus)], 3) }}</text>
+    <circle cx="660" cy="170" r="20" class="d-box ml-dashed"></circle>
+    <text x="660" y="175" text-anchor="middle" class="d-muted">E</text>
+    <line x1="586" y1="170" x2="640" y2="170" class="d-line ml-dashed"></line>
+    <text x="{{ cx }}" y="310" text-anchor="middle" class="d-muted">GCN weights into C sum to {{ n(prop.normalized[focus]|sum, 3) }}; GAT weights sum to 1</text>
+  </svg>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-gat">One GAT head at C</h3>
+  <p>
+    With W = {{ cfg.gat_weight }}, the transformed vectors are {% for i in range(names|length) %}z<sub>{{ names[i] }}</sub> = {{ vec(gat.z[i], 1) }}{% if not loop.last %}, {% endif %}{% endfor %}.
+    The attention vector a = {{ cfg.gat_attention }} splits into a<sub>1</sub> = {{ cfg.gat_attention[:2] }}, which scores C itself
+    (a<sub>1</sub>·z<sub>C</sub> = {{ n(cfg.gat_attention[0] * gat.z[focus][0] + cfg.gat_attention[1] * gat.z[focus][1], 2) }}), and
+    a<sub>2</sub> = {{ cfg.gat_attention[2:] }}, which scores each neighbour. LeakyReLU with slope {{ cfg.gat_slope }}, then softmax:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>j</th><th>a₁·z<sub>C</sub> + a₂·z<sub>j</sub></th><th>e<sub>Cj</sub></th><th>α<sub>Cj</sub></th><th>α · z<sub>j</sub></th></tr></thead>
+      <tbody>
+        {% for j in gat.neighbours %}
+          {% set k = loop.index0 %}
+          {% set raw = cfg.gat_attention[0] * gat.z[focus][0] + cfg.gat_attention[1] * gat.z[focus][1] + cfg.gat_attention[2] * gat.z[j][0] + cfg.gat_attention[3] * gat.z[j][1] %}
+          <tr><td>{{ names[j] }}</td><td>{{ n(raw, 2) }}</td><td>{{ n(gat.scores[k], 2) }}</td><td>{{ n(gat.alpha[k], 4) }}</td><td>[{{ n(gat.alpha[k] * gat.z[j][0], 4) }}, {{ n(gat.alpha[k] * gat.z[j][1], 4) }}]</td></tr>
+        {% endfor %}
+        <tr><td><strong>Sum</strong></td><td></td><td></td><td>{{ n(gat.alpha|sum, 4) }}</td><td><strong>{{ vec(gat.output, 4) }}</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The two negative raw scores are multiplied by {{ cfg.gat_slope }}. A gets {{ n(gat.alpha[0] / gat.alpha[1], 2) }} times the
+    weight of B, though GCN treats them the same. The head has {{ ex.params.gat }} parameters, four in W and four in a; with K heads
+    concatenated, C's output in a hidden layer would be 2K wide.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-sage">One GraphSAGE layer at C</h3>
+  <p>
+    C's neighbours are {% for j in sage.neighbours %}{{ names[j] }}{% if not loop.last %}, {% endif %}{% endfor %}, whose mean is
+    {{ vec(sage.mean, 4) }}. Concatenated after C's own features {{ vec(cfg.features[focus], 0) }} that gives
+    {{ vec(sage.concat, 4) }}. With the 2 × 4 matrix W = {{ cfg.sage_weight }}, W · [h ‖ mean] = {{ vec(sage.pre, 4) }}; ReLU leaves
+    it unchanged, and dividing by its length {{ n((sage.activated[0] ** 2 + sage.activated[1] ** 2) ** 0.5, 4) }} gives
+    <strong>{{ vec(sage.output, 4) }}</strong>. The first two columns of W only see the node itself and the last two only see the
+    neighbourhood, so the model learns separately how much of each to keep. Note the mean is over neighbours without C: GraphSAGE
+    keeps the self apart instead of averaging it in.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-oversmoothing">Over-smoothing, measured</h3>
+  <p>
+    Apply Â repeatedly to X with no weights, the pure propagation that every GCN layer contains. Two measures: the smallest cosine
+    similarity between any two rows, and the largest distance between rows after dividing each by √d̃<sub>i</sub>, which goes to 0
+    exactly when the rows line up with the leading eigenvector (√d̃) = {{ vec(smooth.limit_direction, 3) }}.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Layers k</th><th>Row C of Â<sup>k</sup>X</th><th>Row E</th><th>Min cosine</th><th>Spread</th></tr></thead>
+      <tbody>
+        {% for r in smooth.rows %}
+          <tr><td>{{ r.depth }}</td><td>{{ vec(r.features[focus], 3) }}</td><td>{{ vec(r.features[4], 3) }}</td><td>{{ "%.5f"|format(r.min_cosine) }}</td><td>{{ "%.5f"|format(r.spread) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    One layer already pushes every pair of rows above cosine {{ n(smooth.rows[1].min_cosine, 3) }}. By {{ smooth.rows[4].depth }} layers
+    the spread is {{ n(smooth.rows[4].spread / smooth.rows[0].spread * 100, 1) }}% of where it started, and by
+    {{ smooth.rows[-1].depth }} every row is its node's √d̃ times one shared vector: C, with degree {{ prop.degrees[focus] }}, has
+    the largest row and E, with {{ prop.degrees[4] }}, the smallest, and the original features are no longer recoverable.
+  </p>
+</div>
+
+{% set sx = 90 %}{% set sy = 250 %}{% set sw = 540 %}{% set sh = 190 %}
+{% set top = smooth.rows[0].spread %}
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 320" role="img" aria-labelledby="gnn-smooth-title gnn-smooth-desc">
+    <title id="gnn-smooth-title">Spread between node vectors as propagation is repeated</title>
+    <desc id="gnn-smooth-desc">
+      Bars for {{ smooth.rows|length }} depths, {% for r in smooth.rows %}{{ r.depth }}{% if not loop.last %}, {% endif %}{% endfor %} layers
+      of propagation, each showing how far apart the degree-scaled node vectors are. The bar falls from {{ n(top, 3) }} at depth 0
+      to {{ n(smooth.rows[1].spread, 3) }} after one layer, {{ n(smooth.rows[4].spread, 3) }} after eight and
+      {{ "%.5f"|format(smooth.rows[-1].spread) }} after thirty-two, so all nodes collapse onto one direction.
+    </desc>
+    <line x1="{{ sx }}" y1="{{ sy }}" x2="{{ sx + sw }}" y2="{{ sy }}" class="d-line"></line>
+    <line x1="{{ sx }}" y1="{{ sy }}" x2="{{ sx }}" y2="{{ sy - sh - 10 }}" class="d-line"></line>
+    <text x="{{ sx - 50 }}" y="{{ sy - sh / 2 }}" class="d-muted" transform="rotate(-90 {{ sx - 50 }} {{ sy - sh / 2 }})">spread</text>
+    {% for t in [0.0, 0.5, 1.0, 1.5] %}
+      <text x="{{ sx - 8 }}" y="{{ "%.1f"|format(sy - t / 2 * sh + 4) }}" text-anchor="end" class="d-muted">{{ t }}</text>
+    {% endfor %}
+    {% set bw = sw / smooth.rows|length %}
+    {% for r in smooth.rows %}
+      {% set h = r.spread / 2 * sh %}
+      <rect x="{{ "%.1f"|format(sx + loop.index0 * bw + 12) }}" y="{{ "%.1f"|format(sy - h) }}" width="{{ "%.1f"|format(bw - 24) }}" height="{{ "%.1f"|format(h if h > 0.5 else 0.5) }}" class="d-box ml-tensor"></rect>
+      <text x="{{ "%.1f"|format(sx + loop.index0 * bw + bw / 2) }}" y="{{ sy + 20 }}" text-anchor="middle" class="d-muted">{{ r.depth }}</text>
+      <text x="{{ "%.1f"|format(sx + loop.index0 * bw + bw / 2) }}" y="{{ "%.1f"|format(sy - h - 8) }}" text-anchor="middle">{{ "%.3f"|format(r.spread) if r.spread >= 0.001 else "%.1e"|format(r.spread) }}</text>
+    {% endfor %}
+    <text x="{{ sx + sw / 2 }}" y="{{ sy + 44 }}" text-anchor="middle" class="d-muted">layers of propagation k</text>
+  </svg>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-batching">Batching two graphs</h3>
+  <p>
+    Add a triangle with features {{ cfg.second_graph.features }} to the five-node graph. Its nodes become 5, 6 and 7, so its edges
+    (0, 1), (1, 2), (0, 2) are shifted by the offset {{ batch.offsets[1] }}:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Tensor</th><th>Value</th></tr></thead>
+      <tbody>
+        <tr><td>offsets</td><td>{{ batch.offsets }}</td></tr>
+        <tr><td>edge sources</td><td>{{ batch.sources }}</td></tr>
+        <tr><td>edge targets</td><td>{{ batch.targets }}</td></tr>
+        <tr><td>batch vector</td><td>{{ batch.batch }}</td></tr>
+        <tr><td>sum pool</td><td>{% for row in batch.sum_pool %}{{ vec(row, 1) }}{% if not loop.last %}, {% endif %}{% endfor %}</td></tr>
+        <tr><td>mean pool</td><td>{% for row in batch.mean_pool %}{{ vec(row, 2) }}{% if not loop.last %}, {% endif %}{% endfor %}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    No edge links a node below 5 to one at or above it, so the block-diagonal structure keeps the graphs apart through any number
+    of layers. Each pool is <code>index_add_</code> over the batch vector, divided by the node counts 5 and 3 for the mean.
+  </p>
+</div>
+
+<details class="ml-quiz">
+  <summary>Why does Â use 1/√(d̃<sub>i</sub>d̃<sub>j</sub>) instead of 1/d̃<sub>i</sub>?</summary>
+  <p>1/d̃<sub>i</sub> is a plain mean, but its matrix is not symmetric, so it is not the normalized Laplacian the spectral derivation
+    starts from, and it weights a message by the receiver's degree only. The symmetric form also shrinks messages from hubs: D
+    weights C's message by {{ n(prop.normalized[3][2], 3) }} because C has degree {{ prop.degrees[2] }}, and E's by
+    {{ n(prop.normalized[3][4], 3) }} because E has degree {{ prop.degrees[4] }}.</p>
+</details>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  A GCN layer, a neighbourhood softmax for GAT and mean pooling for a batch, in plain PyTorch on an edge index. The example graph's
+  tensors reproduce the worked numbers above; <code>nn.Linear</code> computes x·Wᵀ, so the page's W goes in transposed.
+</p>
+<pre><code>import torch
+import torch.nn as nn
+
+def gcn_layer(x, edge_index, lin):
+    n = x.size(0)
+    loops = torch.arange(n)
+    src = torch.cat([edge_index[0], edge_index[1], loops])   # both directions plus self-loops
+    dst = torch.cat([edge_index[1], edge_index[0], loops])
+    deg = torch.zeros(n).index_add_(0, dst, torch.ones(dst.numel()))
+    coef = deg[src].rsqrt() * deg[dst].rsqrt()                # 1 / sqrt(d_s * d_t)
+    h = lin(x)
+    return torch.zeros_like(h).index_add_(0, dst, coef.unsqueeze(1) * h[src])
+
+def neighbourhood_softmax(scores, dst, n):
+    top = torch.full((n,), float("-inf")).scatter_reduce(0, dst, scores, reduce="amax")
+    e = (scores - top[dst]).exp()                             # subtract each node's max for stability
+    return e / torch.zeros(n).index_add_(0, dst, e)[dst]
+
+def mean_pool(h, batch, num_graphs):
+    total = torch.zeros(num_graphs, h.size(1)).index_add_(0, batch, h)
+    count = torch.zeros(num_graphs).index_add_(0, batch, torch.ones(batch.numel()))
+    return total / count.unsqueeze(1)
+
+x = torch.tensor([[1., 0.], [0., 1.], [1., 1.], [0., 2.], [2., 0.]])
+edge_index = torch.tensor([[0, 0, 1, 2, 3], [1, 2, 2, 3, 4]])
+lin = nn.Linear(2, 2, bias=False)
+with torch.no_grad():
+    lin.weight.copy_(torch.tensor([[0.5, -1.0], [1.0, 0.5]]).T)
+print(gcn_layer(x, edge_index, lin))       # row 2 is C: [1.3854, 0.0193]</code></pre>
+<p>
+  The docstrings of <code>index_add_</code> and <code>scatter_reduce_</code> warn that they may behave nondeterministically on a CUDA
+  device, so sums can differ in the last bits from run to run; <code>torch.use_deterministic_algorithms(True)</code> makes PyTorch
+  pick a deterministic implementation or raise an error. For a fixed graph the
+  coefficients can be computed once and the whole propagation stored as one sparse matrix, after which each layer is a single
+  <code>torch.sparse.mm</code>. Libraries such as PyTorch Geometric and DGL package these layers, neighbour samplers and batching
+  collators; the operations underneath are the ones above.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>GCN vs GraphSAGE vs GAT.</strong> GCN is the cheapest, with fixed coefficients and one matrix per layer, and is a strong
+    baseline on citation-style graphs where neighbours tend to share labels. GraphSAGE separates the self from the neighbourhood
+    and scales through sampling. GAT learns neighbour weights at the cost of one score per edge per head, which helps when some
+    neighbours matter more than others.</li>
+  <li><strong>Depth.</strong> More layers see further but over-smooth and over-squash; two to four layers are typical, with residual
+    connections or jumping knowledge to go deeper.</li>
+  <li><strong>Full graph vs sampling.</strong> Full-batch training is exact but needs the whole graph and all activations in memory.
+    Neighbour sampling bounds memory per minibatch but adds variance, and the number of sampled nodes still grows exponentially
+    with depth.</li>
+  <li><strong>Expressiveness.</strong> A message-passing GNN cannot tell apart nodes that the 1-WL test cannot, like A and B in the worked
+    example. Sum aggregation (GIN) reaches that bound; mean and max fall below it. Going further needs positional encodings, subgraph
+    features or higher-order methods.</li>
+  <li><strong>Homophily.</strong> Averaging neighbours assumes they resemble the node. On heterophilous graphs, where connected nodes
+    tend to differ (fraudsters and their victims), plain GCN can do worse than an MLP that ignores the edges; keeping the self apart
+    helps.</li>
+  <li><strong>Graph transformers.</strong> Full attention over all nodes avoids over-squashing but costs O(n²) and needs positional
+    encodings to know the structure at all; most such models still mix in local message passing.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>A two-layer GCN predicts a label for node E. Which nodes' features can affect it?</summary>
+  <p>Nodes within two hops: E, D and C. A and B are three hops away, so they are invisible until a third layer.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why can't the GAT softmax use <code>F.softmax</code> directly on the edge scores?</summary>
+  <p>Each node normalizes over its own neighbourhood, and the neighbourhoods have different sizes. On an edge list that is a segment
+    softmax: subtract each target's max (a <code>scatter_reduce</code> with <code>"amax"</code>), exponentiate, and divide by each
+    target's sum (an <code>index_add_</code>).</p>
+</details>
+<details class="ml-quiz">
+  <summary>Your 16-layer GCN has the same accuracy as one that predicts by degree alone. What happened?</summary>
+  <p>Over-smoothing: after many applications of Â every node's vector is close to √d̃ times one shared vector, so degree is all that is
+    left. Cut to two or three layers, or add residual connections.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Kipf and Welling. <em>Semi-Supervised Classification with Graph Convolutional Networks.</em> ICLR 2017.
+    <a href="https://arxiv.org/abs/1609.02907">arXiv:1609.02907</a></li>
+  <li>Veličković, Cucurull, Casanova, Romero, Liò and Bengio. <em>Graph Attention Networks.</em> ICLR 2018.
+    <a href="https://arxiv.org/abs/1710.10903">arXiv:1710.10903</a></li>
+  <li>Hamilton, Ying and Leskovec. <em>Inductive Representation Learning on Large Graphs.</em> NeurIPS 2017.
+    <a href="https://arxiv.org/abs/1706.02216">arXiv:1706.02216</a></li>
+  <li>Gilmer, Schoenholz, Riley, Vinyals and Dahl. <em>Neural Message Passing for Quantum Chemistry.</em> ICML 2017.
+    <a href="https://arxiv.org/abs/1704.01212">arXiv:1704.01212</a></li>
+  <li>Li, Han and Wu. <em>Deeper Insights into Graph Convolutional Networks for Semi-Supervised Learning.</em> AAAI 2018.
+    <a href="https://arxiv.org/abs/1801.07606">arXiv:1801.07606</a></li>
+  <li>Brody, Alon and Yahav. <em>How Attentive are Graph Attention Networks?</em> ICLR 2022.
+    <a href="https://arxiv.org/abs/2105.14491">arXiv:2105.14491</a></li>
+  <li>Xu, Hu, Leskovec and Jegelka. <em>How Powerful are Graph Neural Networks?</em> ICLR 2019.
+    <a href="https://arxiv.org/abs/1810.00826">arXiv:1810.00826</a></li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/_tensor_docs.py', 2340, 2390) }}"><code>Tensor.index_add_</code></a>,
+    <a href="{{ src('torch/_tensor_docs.py', 4488, 4552) }}"><code>Tensor.scatter_reduce_</code></a>,
+    <a href="{{ src('torch/_torch_docs.py', 10897, 10993) }}"><code>torch.sparse_coo_tensor</code></a>,
+    <a href="{{ src('torch/_tensor.py', 1368, 1380) }}"><code>Tensor.to_sparse_coo</code></a>.</li>
+</ul>

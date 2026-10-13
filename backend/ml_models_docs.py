@@ -764,7 +764,7 @@ PAGES = [
             "pytorch:torch/_torch_docs.py",
             "pytorch:torch/_tensor.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "vision-transformer",

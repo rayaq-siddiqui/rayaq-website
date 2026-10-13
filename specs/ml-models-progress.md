@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-13 (thirty-fifth run). Spec v2 widens the section from model
+**Last updated:** 2026-10-13 (thirty-sixth run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-69, the last being `calibration`.
-The next page is `graph-neural-networks` (queue item 70).
+fixed page format. Ready pages: queue items 1-70, the last being `graph-neural-networks`.
+The next page is `diffusion-models` (queue item 71).
 
 ## Pins
 
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (69 of 93 ready, all
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (70 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -300,8 +300,8 @@ Gaps:
 67. `model-serving` ✓
 68. `causal-inference` ✓
 69. `calibration` ✓
-70. `graph-neural-networks` ← next
-71. `diffusion-models`
+70. `graph-neural-networks` ✓
+71. `diffusion-models` ← next
 72. `pretraining`
 73. `collaborative-filtering`
 74. `gradient-accumulation`
