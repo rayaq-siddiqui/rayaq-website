@@ -309,8 +309,8 @@ Gaps:
 63. `gans` ✓
 64. `encoder-only` ✓
 65. `learning-to-rank` ✓
-66. `data-loading-and-batching` ← next
-67. `model-serving`
+66. `data-loading-and-batching` ✓
+67. `model-serving` ← next
 68. `causal-inference`
 69. `calibration`
 70. `graph-neural-networks`

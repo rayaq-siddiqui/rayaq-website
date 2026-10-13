@@ -1,0 +1,612 @@
+{% set ex = data_example() %}
+{% set cfg = ex.example %}
+{% set sh = ex.shuffled %}
+{% set bu = ex.bucketed %}
+{% set pk = ex.packed %}
+{% macro n(x, d=1) -%}{{ ("%." ~ d ~ "f")|format(x) }}{%- endmacro %}
+{% macro pct(x) -%}{{ "%.1f"|format(x * 100) }}%{%- endmacro %}
+<header class="jj-header">
+  <h1>Data loading and batching</h1>
+  <p class="tagline">
+    Before a model sees a single gradient, something has to read examples off disk, turn them into
+    tensors of equal shape, group them into batches and get those batches onto the accelerator fast enough
+    that it never waits. This page follows PyTorch's <code>DataLoader</code> through samplers, worker
+    processes, collation and pinned memory, measures how much compute padding wastes and how bucketing and
+    packing win it back, and shows what batch size does to gradient noise.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A <a href="/ml-models/training-loop">training loop</a> wants one thing per step: a batch, a tensor of shape
+  <code>[B, ...]</code> sitting in device memory. What it actually has is a dataset of individual examples:
+  image files of different sizes, sentences of different lengths, rows in a table. Getting from one to the
+  other raises four separate problems:
+</p>
+<ul>
+  <li><strong>Order.</strong> <a href="/ml-models/optimizers">SGD</a> assumes each batch is a fair random draw
+    from the data. Reading files in their stored order (all cats, then all dogs) breaks that.</li>
+  <li><strong>Shape.</strong> A batch is one rectangular tensor, but examples differ in length. Something
+    has to pad, crop or pack them.</li>
+  <li><strong>Speed.</strong> Decoding a JPEG or tokenizing a document runs on the CPU in Python. If it
+    takes longer than the forward and backward pass, the GPU sits idle, and a faster GPU makes no
+    difference.</li>
+  <li><strong>Batch size.</strong> Bigger batches are more efficient per example and give less noisy
+    gradients, but they change how far each step should go and take more memory.</li>
+</ul>
+<p>
+  Take {{ cfg.lengths|length }} token sequences with lengths {{ cfg.lengths|join(", ") }} and batch them in
+  fours in the order they arrive. Each batch is padded to its longest sequence, so the model processes
+  {{ sh.slots }} token positions of which only {{ sh.real }} are real: {{ pct(sh.efficiency) }} useful work.
+  Nearly half the compute goes to padding.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  PyTorch splits the job into small pieces that each do one thing, so any one can be replaced:
+</p>
+<ul>
+  <li>A <strong>Dataset</strong> answers "give me example <em>i</em>" (<code>__getitem__</code>) and "how many
+    are there" (<code>__len__</code>). An <strong>IterableDataset</strong> is a stream instead: it only
+    answers "give me the next one".</li>
+  <li>A <strong>Sampler</strong> decides the order: it yields indices. <code>RandomSampler</code> is a fresh
+    random permutation each epoch; <code>SequentialSampler</code> is 0, 1, 2, ….</li>
+  <li>A <strong>BatchSampler</strong> groups those indices into lists of <code>batch_size</code>.</li>
+  <li>A <strong>collate function</strong> turns a list of examples into one batch, usually by stacking
+    tensors along a new first dimension.</li>
+  <li><strong>Workers</strong> are separate processes that run the fetch-and-collate step in parallel, so
+    batch <em>t</em>+1, <em>t</em>+2, … are being prepared while the model trains on batch <em>t</em>.</li>
+</ul>
+<p>
+  The <code>DataLoader</code> wires these together. The main process owns the sampler, hands lists of
+  indices to workers, and receives finished batches back. A worker only ever sees indices; it never decides
+  what to load next. That is what keeps the order reproducible even when many processes load at once.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 300" role="img" aria-labelledby="dl-flow-title dl-flow-desc">
+    <title id="dl-flow-title">How a batch moves through a multi-worker DataLoader</title>
+    <desc id="dl-flow-desc">
+      In the main process, the sampler yields indices and the batch sampler groups them into lists. Each list
+      goes onto one worker's index queue, round robin. Each worker process calls the dataset's getitem for every
+      index, collates the examples into a batch, and puts it on a shared result queue. A pin-memory thread in the
+      main process copies the batch into page-locked memory, the iterator puts batches back in order, and the
+      training loop copies each batch to the GPU without blocking.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      <rect x="10" y="20" width="700" height="80" rx="8" class="d-box ml-dashed"></rect>
+      <text x="60" y="38" class="d-muted">main process</text>
+      <rect x="30" y="50" width="110" height="36" rx="6" class="d-box ml-op"></rect>
+      <text x="85" y="66">Sampler</text>
+      <text x="85" y="79" class="d-muted">7, 2, 9, 0, 5, …</text>
+      <line x1="140" y1="68" x2="180" y2="68" class="d-line"></line>
+      <rect x="180" y="50" width="120" height="36" rx="6" class="d-box ml-op"></rect>
+      <text x="240" y="66">BatchSampler</text>
+      <text x="240" y="79" class="d-muted">[7, 2, 9], [0, 5, …]</text>
+      <rect x="400" y="50" width="130" height="36" rx="6" class="d-box ml-op"></rect>
+      <text x="465" y="66">pin_memory thread</text>
+      <text x="465" y="79" class="d-muted">page-locked copy</text>
+      <line x1="530" y1="68" x2="570" y2="68" class="d-line"></line>
+      <rect x="570" y="50" width="125" height="36" rx="6" class="d-box ml-tensor"></rect>
+      <text x="632" y="66">reorder → loop</text>
+      <text x="632" y="79" class="d-muted">.to(cuda, non_blocking)</text>
+
+      {% for w in range(3) %}
+        {% set x = 40 + w * 150 %}
+        <line x1="240" y1="86" x2="{{ x + 60 }}" y2="150" class="d-line"></line>
+        <rect x="{{ x }}" y="150" width="120" height="26" rx="5" class="d-box ml-dashed"></rect>
+        <text x="{{ x + 60 }}" y="167">index queue {{ w }}</text>
+        <line x1="{{ x + 60 }}" y1="176" x2="{{ x + 60 }}" y2="196" class="d-line"></line>
+        <rect x="{{ x }}" y="196" width="120" height="58" rx="6" class="d-box ml-op"></rect>
+        <text x="{{ x + 60 }}" y="212">worker {{ w }}</text>
+        <text x="{{ x + 60 }}" y="228" class="d-muted">dataset[i] for i in idx</text>
+        <text x="{{ x + 60 }}" y="244" class="d-muted">collate_fn(samples)</text>
+        <line x1="{{ x + 120 }}" y1="225" x2="560" y2="225" class="d-line"></line>
+      {% endfor %}
+      <rect x="560" y="196" width="140" height="58" rx="6" class="d-box ml-tensor"></rect>
+      <text x="630" y="216">worker result queue</text>
+      <text x="630" y="232" class="d-muted">(idx, batch), any order</text>
+      <line x1="630" y1="196" x2="465" y2="86" class="d-line"></line>
+      <text x="360" y="285" class="d-muted">at most prefetch_factor × num_workers = {{ cfg.prefetch_factor }} × 3 = {{ cfg.prefetch_factor * 3 }} batches in flight</text>
+    </g>
+  </svg>
+</div>
+
+<p>
+  Padding is the second idea. A batch has to be rectangular, so short sequences get filler tokens that the
+  model computes on and then masks out. How much filler depends entirely on which sequences end up together.
+  Group similar lengths (<strong>bucketing</strong>) and each batch pads only a little. Drop the batch-of-rows
+  idea entirely and concatenate sequences end to end into fixed-length rows (<strong>packing</strong>) and
+  almost nothing is padding.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 220" role="img" aria-labelledby="dl-pad-title dl-pad-desc">
+    <title id="dl-pad-title">The same twelve sequences batched three ways</title>
+    <desc id="dl-pad-desc">
+      Left: batches of four in arrival order, each padded to its longest sequence, {{ pct(sh.efficiency) }} of slots
+      real. Middle: sorted into length buckets first, {{ pct(bu.efficiency) }} real. Right: packed end to end into
+      rows of {{ cfg.context }} tokens, {{ pk.rows|length }} rows, {{ pct(pk.efficiency) }} real. Solid outlined bars are real
+      tokens; the faint area behind them is padding.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      {% set scale = 5 %}
+      {% for panel in [("arrival order", sh), ("bucketed by length", bu)] %}
+        {% set px = 20 + loop.index0 * 240 %}
+        <text x="{{ px + 80 }}" y="18">{{ panel[0] }}</text>
+        {% for b in panel[1].batches %}
+          {% set bi = loop.index0 %}
+          {% for L in b.lengths %}
+            {% set y = 28 + bi * 56 + loop.index0 * 12 %}
+            <rect x="{{ px }}" y="{{ y }}" width="{{ b.padded_to * scale }}" height="10" class="d-box ml-dashed"></rect>
+            <rect x="{{ px }}" y="{{ y }}" width="{{ L * scale }}" height="10" class="d-box ml-tensor"></rect>
+          {% endfor %}
+        {% endfor %}
+        <text x="{{ px + 80 }}" y="204" class="d-muted">{{ panel[1].real }} / {{ panel[1].slots }} = {{ pct(panel[1].efficiency) }}</text>
+      {% endfor %}
+      {% set px = 500 %}
+      <text x="{{ px + 80 }}" y="18">packed into {{ cfg.context }}-token rows</text>
+      {% for row in pk.rows %}
+        {% set y = 28 + loop.index0 * 18 %}
+        <rect x="{{ px }}" y="{{ y }}" width="{{ cfg.context * scale }}" height="14" class="d-box ml-dashed"></rect>
+        {% set ns = namespace(off=0) %}
+        {% for L in row %}
+          <rect x="{{ px + ns.off * scale }}" y="{{ y }}" width="{{ L * scale }}" height="14" class="d-box {{ 'ml-tensor' if loop.index0 is even else 'ml-op' }}"></rect>
+          {% set ns.off = ns.off + L %}
+        {% endfor %}
+      {% endfor %}
+      <text x="{{ px + 80 }}" y="160" class="d-muted">documents alternate colour</text>
+      <text x="{{ px + 80 }}" y="204" class="d-muted">{{ pk.real }} / {{ pk.slots }} = {{ pct(pk.efficiency) }}</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="dataloader-wiring">How the DataLoader is assembled</h3>
+<p>
+  <a href="{{ src('torch/utils/data/dataloader.py', 255, 431) }}"><code>DataLoader.__init__</code></a> mostly
+  validates arguments and fills in defaults. If you pass neither <code>sampler</code> nor
+  <code>batch_sampler</code>, it builds a <code>RandomSampler</code> when <code>shuffle=True</code> and a
+  <code>SequentialSampler</code> otherwise, then wraps it as
+  <a href="{{ src('torch/utils/data/dataloader.py', 407, 407) }}"><code>BatchSampler(sampler, batch_size, drop_last)</code></a>.
+  Passing your own <code>sampler</code> together with <code>shuffle</code>
+  <a href="{{ src('torch/utils/data/dataloader.py', 375, 375) }}">raises</a>, and a custom
+  <code>batch_sampler</code> excludes <code>batch_size</code>, <code>shuffle</code>, <code>sampler</code>
+  and <code>drop_last</code>, because it already decides all four. With batching on, the default
+  <code>collate_fn</code> is <a href="{{ src('torch/utils/data/dataloader.py', 417, 417) }}"><code>default_collate</code></a>.
+</p>
+<p>
+  <a href="{{ src('torch/utils/data/sampler.py', 116, 188) }}"><code>RandomSampler</code></a> draws a
+  <code>torch.randperm</code> of the dataset each epoch, so every example is seen exactly once per epoch
+  (sampling without replacement). <a href="{{ src('torch/utils/data/sampler.py', 286, 354) }}"><code>BatchSampler</code></a>
+  then cuts that stream into lists of <code>batch_size</code>; its
+  <a href="{{ src('torch/utils/data/sampler.py', 346, 354) }}"><code>__len__</code></a> is
+  ⌈N / B⌉, or ⌊N / B⌋ with <code>drop_last=True</code>, which throws away the final short batch.
+</p>
+<p>
+  For each list of indices, a fetcher calls the dataset. <a href="{{ src('torch/utils/data/_utils/fetch.py', 48, 57) }}"><code>_MapDatasetFetcher.fetch</code></a>
+  uses the dataset's <code>__getitems__</code> if it has one (one call for the whole batch, useful when a
+  database or file format can read many rows at once), otherwise <code>[dataset[i] for i in indices]</code>,
+  and passes the list to <code>collate_fn</code>.
+</p>
+
+<h3 id="collation">Collation</h3>
+<p>
+  <a href="{{ src('torch/utils/data/_utils/collate.py', 340, 401) }}"><code>default_collate</code></a> calls a
+  recursive <a href="{{ src('torch/utils/data/_utils/collate.py', 118, 244) }}"><code>collate</code></a> that
+  mirrors the structure of one example: a list of dicts becomes a dict of batched values, a list of tuples a
+  list of batched fields (a namedtuple stays a namedtuple), a list of tensors one stacked tensor (Python and
+  NumPy numbers become tensors too, strings stay a list). Stacking needs equal shapes; a list field of uneven length fails with "each element in list of batch
+  should be of equal size" (<a href="{{ src('torch/utils/data/_utils/collate.py', 208, 208) }}">line 208</a>).
+  Inside a worker, <a href="{{ src('torch/utils/data/_utils/collate.py', 246, 275) }}"><code>collate_tensor_fn</code></a>
+  stacks straight into a shared-memory tensor, so handing the batch back to the main process needs no extra
+  copy.
+</p>
+<p>
+  For variable-length sequences you write your own <code>collate_fn</code>, usually around
+  <a href="{{ src('torch/nn/utils/rnn.py', 405, 473) }}"><code>pad_sequence</code></a>, which pads a list of
+  <code>[L_i, ...]</code> tensors to the longest <em>L</em> with <code>padding_value</code> on the right or left
+  (<code>padding_side</code>), and returns the lengths or an attention mask alongside so the model can ignore the
+  filler.
+</p>
+
+<h3 id="workers">Workers, prefetching and pinned memory</h3>
+<p>
+  With <code>num_workers=0</code>, <a href="{{ src('torch/utils/data/dataloader.py', 433, 438) }}"><code>_get_iterator</code></a>
+  returns a <a href="{{ src('torch/utils/data/dataloader.py', 757, 789) }}">single-process iterator</a>: each
+  <code>next()</code> fetches and collates in the training process itself, so loading and compute strictly take
+  turns. With workers it returns <code>_MultiProcessingDataLoaderIter</code>, whose source comment
+  (<a href="{{ src('torch/utils/data/dataloader.py', 798, 815) }}">lines 798-815</a>) draws the same queues as
+  the diagram above. When the iterator starts, <a href="{{ src('torch/utils/data/dataloader.py', 1235, 1278) }}"><code>_reset</code></a>
+  primes the pipeline by sending <code>prefetch_factor × num_workers</code> index lists
+  (<code>prefetch_factor</code> <a href="{{ src('torch/utils/data/dataloader.py', 293, 293) }}">defaults to 2</a>
+  once there are workers). <a href="{{ src('torch/utils/data/dataloader.py', 1533, 1563) }}"><code>_try_put_index</code></a>
+  hands lists to workers round robin and never lets more than that many be outstanding; each batch the loop
+  consumes triggers one more.
+</p>
+<p>
+  Workers finish out of order, so <a href="{{ src('torch/utils/data/dataloader.py', 1470, 1532) }}"><code>_next_data</code></a>
+  holds early arrivals until the batch the sampler asked for next shows up. Results are always in sampler
+  order unless you pass <code>in_order=False</code>, which trades reproducibility for not stalling on one slow
+  worker.
+</p>
+<p>
+  Each <a href="{{ src('torch/utils/data/_utils/worker.py', 244, 402) }}">worker loop</a> sets
+  <code>torch.set_num_threads(1)</code> so N workers don't oversubscribe the CPU, then seeds Python's
+  <code>random</code> and <code>torch</code> with <code>base_seed + worker_id</code>, and NumPy from a
+  hash of the same two numbers (<a href="{{ src('torch/utils/data/_utils/worker.py', 274, 282) }}">lines 274-282</a>).
+  The base seed is <a href="{{ src('torch/utils/data/dataloader.py', 690, 694) }}">drawn when the iterator is created</a>
+  from the loader's <code>generator</code>, so random augmentations differ between workers and between
+  epochs, yet a fixed generator reproduces them. Use <a href="{{ src('torch/utils/data/_utils/worker.py', 99, 125) }}"><code>get_worker_info()</code></a>
+  inside an <code>IterableDataset</code> to give each worker its own slice of the stream; without it every worker
+  yields the full stream and you get each example <code>num_workers</code> times.
+</p>
+<p>
+  With <code>pin_memory=True</code> a <a href="{{ src('torch/utils/data/_utils/pin_memory.py', 18, 52) }}">background thread</a>
+  copies each batch into page-locked host memory. The GPU's copy engine can read pinned memory directly, so
+  <code>batch.to("cuda", non_blocking=True)</code> becomes an asynchronous copy that overlaps with compute
+  already queued on the GPU (see <a href="/ml-models/gpu-execution">GPU execution</a>). From ordinary pageable
+  memory the driver has to stage the copy first. <code>persistent_workers=True</code> keeps worker processes
+  alive between epochs (<a href="{{ src('torch/utils/data/dataloader.py', 492, 505) }}"><code>__iter__</code></a>
+  resets the old iterator instead of building a new one), which saves start-up time when each worker holds
+  something expensive, like an open file or a tokenizer.
+</p>
+
+<h3 id="distributed">Sharding across processes</h3>
+<p>
+  In data-parallel training each of <em>R</em> processes must see a
+  different part of the data and all must take the same number of steps, or the gradient all-reduce
+  deadlocks. <a href="{{ src('torch/utils/data/distributed.py', 17, 157) }}"><code>DistributedSampler</code></a>
+  shuffles with the same seed on every rank (<code>seed + epoch</code>), then
+  <a href="{{ src('torch/utils/data/distributed.py', 115, 127) }}">pads the index list</a> by repeating its head
+  until the length divides by <em>R</em> (or with <code>drop_last=True</code> cuts the tail), and gives rank
+  <em>r</em> every <em>R</em>-th index starting at <em>r</em>
+  (<a href="{{ src('torch/utils/data/distributed.py', 134, 134) }}">line 134</a>). Because the shuffle seed
+  includes the epoch, you must call <a href="{{ src('torch/utils/data/distributed.py', 146, 157) }}"><code>set_epoch(e)</code></a>
+  before each epoch; forget it and every epoch replays the same order.
+</p>
+
+<h3 id="packing">Bucketing and packing</h3>
+<p>
+  <strong>Bucketing</strong> sorts (or roughly groups) examples by length, cuts batches from neighbours, and then
+  shuffles the order of the batches so training still sees lengths in random order. It is a custom
+  <code>batch_sampler</code>: the dataset and model don't change. The cost is a little randomness: examples of
+  similar length always share batches.
+</p>
+<p>
+  <strong>Packing</strong> concatenates documents into rows of exactly the context length, which is how
+  <a href="/ml-models/decoder-only-llm">language-model</a> pretraining is usually batched. Two details make it
+  correct rather than merely fast. Without an attention mask, tokens of one document attend to the previous
+  document in the same row; a block-diagonal causal mask (or a variable-length attention kernel given the
+  document boundaries) keeps them apart. And position ids should restart at 0 for each document, or the second
+  document is encoded as if it began mid-sentence. Some pipelines skip both and accept the cross-talk, treating
+  the separator token as enough; that is a deliberate tradeoff, not the default.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Dataset</code> / <code>IterableDataset</code></td><td><code>__getitem__(i)</code>, <code>__len__</code> / <code>__iter__</code></td><td>Where examples come from: random access or a stream</td><td><a href="{{ src('torch/utils/data/dataset.py', 39, 188) }}">dataset.py</a></td></tr>
+      <tr><td><code>RandomSampler</code></td><td>N indices per epoch</td><td>A fresh permutation each epoch (<code>shuffle=True</code>)</td><td><a href="{{ src('torch/utils/data/sampler.py', 116, 188) }}">sampler.py</a></td></tr>
+      <tr><td><code>BatchSampler</code></td><td><code>batch_size</code>, <code>drop_last</code></td><td>Groups indices; ⌈N/B⌉ or ⌊N/B⌋ batches</td><td><a href="{{ src('torch/utils/data/sampler.py', 286, 354) }}">sampler.py</a></td></tr>
+      <tr><td><code>_MapDatasetFetcher</code></td><td>list of B indices → list of B examples</td><td>Calls <code>__getitems__</code> or <code>__getitem__</code>, then collate</td><td><a href="{{ src('torch/utils/data/_utils/fetch.py', 48, 57) }}">fetch.py</a></td></tr>
+      <tr><td><code>default_collate</code></td><td>B × <code>[...]</code> → <code>[B, ...]</code></td><td>Recursive stack over dicts, tuples and tensors</td><td><a href="{{ src('torch/utils/data/_utils/collate.py', 340, 401) }}">collate.py</a></td></tr>
+      <tr><td><code>pad_sequence</code></td><td>B × <code>[L_i, ...]</code> → <code>[B, max L, ...]</code></td><td>Pads to the longest sequence in the batch</td><td><a href="{{ src('torch/nn/utils/rnn.py', 405, 473) }}">rnn.py</a></td></tr>
+      <tr><td><code>num_workers</code>, <code>prefetch_factor</code></td><td>W processes, ≤ prefetch × W batches in flight</td><td>Parallel loading that runs ahead of the loop</td><td><a href="{{ src('torch/utils/data/dataloader.py', 1533, 1563) }}">dataloader.py</a></td></tr>
+      <tr><td><code>pin_memory</code></td><td>one thread</td><td>Page-locked copies for async host-to-device transfer</td><td><a href="{{ src('torch/utils/data/_utils/pin_memory.py', 18, 52) }}">pin_memory.py</a></td></tr>
+      <tr><td><code>DistributedSampler</code></td><td>R replicas, ⌈N/R⌉ indices each</td><td>Equal-sized disjoint shards (up to padding), reshuffled by <code>set_epoch</code></td><td><a href="{{ src('torch/utils/data/distributed.py', 17, 157) }}">distributed.py</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="batch-size">Batch size, noise and the learning rate</h3>
+<p>
+  The mini-batch gradient is an average of per-example gradients, so it is an unbiased estimate of the
+  full-data gradient whose variance shrinks as the batch grows. Sampling <em>B</em> of <em>N</em> examples
+  without replacement, with per-example gradient variance σ²:
+</p>
+<pre><code>Var[ĝ_B] = σ² / B · (N − B) / (N − 1)</code></pre>
+<p>
+  Doubling the batch halves the variance (for B much smaller than N), which is the case for a bigger step. The
+  <em>linear scaling rule</em> (Goyal et al.) says: when you multiply the batch size by <em>k</em>, multiply the
+  learning rate by <em>k</em>, and warm the learning rate up over the first few epochs because the rule fails
+  while the weights are changing fastest (see <a href="/ml-models/learning-rate-schedules">learning-rate
+  schedules</a>). The rule only holds up to a point: past a <em>critical batch size</em> that depends on the
+  task and grows as training proceeds (McCandlish et al.), extra examples per step stop reducing the number of
+  steps needed, and you are paying for compute that buys nothing. In practice the learning rate is re-tuned whenever the batch size changes by a large factor.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<h3 id="worked-padding">Padding waste</h3>
+<p>
+  The twelve lengths from the problem section, batch size {{ cfg.batch_size }}. In arrival order:
+</p>
+<div class="jj-table-wrap">
+  <table class="ml-numbers">
+    <thead><tr><th>Batch</th><th>Lengths</th><th>Padded to</th><th>Slots (4 × max)</th><th>Real tokens</th></tr></thead>
+    <tbody>
+      {% for b in sh.batches %}
+        <tr><td>{{ loop.index }}</td><td>{{ b.lengths|join(", ") }}</td><td>{{ b.padded_to }}</td><td>{{ b.slots }}</td><td>{{ b.real }}</td></tr>
+      {% endfor %}
+      <tr><td colspan="3"><strong>Total</strong></td><td>{{ sh.slots }}</td><td>{{ sh.real }} ({{ pct(sh.efficiency) }})</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>Sorted by length first, then batched:</p>
+<div class="jj-table-wrap">
+  <table class="ml-numbers">
+    <thead><tr><th>Batch</th><th>Lengths</th><th>Padded to</th><th>Slots</th><th>Real tokens</th></tr></thead>
+    <tbody>
+      {% for b in bu.batches %}
+        <tr><td>{{ loop.index }}</td><td>{{ b.lengths|join(", ") }}</td><td>{{ b.padded_to }}</td><td>{{ b.slots }}</td><td>{{ b.real }}</td></tr>
+      {% endfor %}
+      <tr><td colspan="3"><strong>Total</strong></td><td>{{ bu.slots }}</td><td>{{ bu.real }} ({{ pct(bu.efficiency) }})</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  Packing into rows of {{ cfg.context }} with first-fit decreasing (take the longest remaining sequence, put it in
+  the first row with room, open a new row if none has room) gives {{ pk.rows|length }} rows:
+  {% for row in pk.rows %}[{{ row|join(" + ") }}]{{ ", " if not loop.last else "" }}{% endfor %}. That is
+  {{ pk.rows|length }} × {{ cfg.context }} = {{ pk.slots }} slots for {{ pk.real }} real tokens,
+  {{ pct(pk.efficiency) }}. Same data, same model: the packed version does
+  {{ n(sh.slots / pk.slots, 2) }}× less work than the arrival-order one.
+</p>
+
+<h3 id="worked-length">Counting batches and shards</h3>
+<p>
+  {{ cfg.dataset_size }} examples with batch size {{ cfg.loader_batch_size }}: <code>len(loader)</code> is
+  ⌈{{ cfg.dataset_size }}/{{ cfg.loader_batch_size }}⌉ = {{ ex.lengths.keep }} (the last batch holds one
+  example) or, with <code>drop_last=True</code>, ⌊{{ cfg.dataset_size }}/{{ cfg.loader_batch_size }}⌋ =
+  {{ ex.lengths.drop }}.
+</p>
+<p>
+  Now shard those {{ cfg.dataset_size }} examples (unshuffled, for readability) across {{ cfg.replicas }} ranks
+  with <code>DistributedSampler</code>:
+</p>
+<div class="jj-table-wrap">
+  <table class="ml-numbers">
+    <thead><tr><th>Rank</th><th>Default (pad)</th><th><code>drop_last=True</code></th></tr></thead>
+    <tbody>
+      {% for s in ex.shards.shards %}
+        <tr><td>{{ loop.index0 }}</td><td>{{ s|join(", ") }}</td><td>{{ ex.shards_drop.shards[loop.index0]|join(", ") }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  By default each rank gets ⌈{{ cfg.dataset_size }}/{{ cfg.replicas }}⌉ = {{ ex.shards.num_samples }} indices: the
+  list is padded to {{ ex.shards.indices|length }} by repeating its first two entries, so ranks 2 and 3 see examples
+  0 and 1 a second time this epoch. With <code>drop_last=True</code> every rank gets {{ ex.shards_drop.num_samples }}
+  and examples 8 and 9 are skipped this epoch (with shuffling on, which two depends on the
+  epoch). For evaluation, where duplicates bias the metric, this matters; for training it
+  rarely does.
+</p>
+
+<h3 id="worked-workers">How many workers?</h3>
+<p>
+  Suppose loading one batch takes a worker {{ cfg.load_ms }} ms and a training step takes {{ cfg.compute_ms }} ms,
+  and the epoch has {{ cfg.batches }} batches. In an idealized model (fixed costs, no start-up time, prefetch factor
+  {{ cfg.prefetch_factor }}), the epoch takes:
+</p>
+<div class="jj-table-wrap">
+  <table class="ml-numbers">
+    <thead><tr><th><code>num_workers</code></th><th>Epoch (ms)</th><th>Per batch (ms)</th><th>GPU busy</th></tr></thead>
+    <tbody>
+      {% for p in ex.pipelines %}
+        <tr><td>{{ p.workers }}</td><td>{{ n(p.total_ms, 0) }}</td><td>{{ n(p.per_batch_ms, 2) }}</td><td>{{ pct(p.gpu_busy) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  With no workers the loop alternates: {{ cfg.batches }} × ({{ cfg.load_ms }} + {{ cfg.compute_ms }}) =
+  {{ n(ex.pipelines[0].total_ms, 0) }} ms. One worker overlaps loading with compute, but it can only produce a
+  batch every {{ cfg.load_ms }} ms, so the GPU still waits. Loading keeps up once W workers produce a batch at
+  least every {{ cfg.compute_ms }} ms, that is W ≥ {{ cfg.load_ms }}/{{ cfg.compute_ms }}, so W = 3. Then the
+  epoch is the first load plus {{ cfg.batches }} back-to-back steps: {{ cfg.load_ms }} + {{ cfg.batches }} ×
+  {{ cfg.compute_ms }} = {{ n(ex.pipelines[3].total_ms, 0) }} ms, and a fourth worker changes nothing. The
+  remaining idle time is waiting for the first batch.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 740 252" role="img" aria-labelledby="dl-time-title dl-time-desc">
+    <title id="dl-time-title">Timelines for zero, one and three workers</title>
+    <desc id="dl-time-desc">
+      Time runs left to right, one pixel per millisecond; loads are green and training steps amber. With zero workers, one lane alternates
+      {{ cfg.load_ms }} millisecond loads and {{ cfg.compute_ms }} millisecond steps, ending at
+      {{ n(ex.pipelines[0].total_ms, 0) }} milliseconds. With one worker, the worker loads back to back and the GPU lane
+      shows short steps separated by gaps, ending at {{ n(ex.pipelines[1].total_ms, 0) }}. With three workers, the three
+      worker lanes load in staggered fashion and the GPU lane is busy continuously after the first load, ending at
+      {{ n(ex.pipelines[3].total_ms, 0) }}.
+    </desc>
+    <g font-size="11">
+      {% set x0 = 70 %}
+      <text x="4" y="30">0 workers</text>
+      {% for i in range(cfg.batches) %}
+        {% set t = i * (cfg.load_ms + cfg.compute_ms) %}
+        <rect x="{{ x0 + t }}" y="20" width="{{ cfg.load_ms - 2 }}" height="14" class="d-box ml-tensor"></rect>
+        <rect x="{{ x0 + t + cfg.load_ms }}" y="20" width="{{ cfg.compute_ms }}" height="14" class="d-box ml-op"></rect>
+      {% endfor %}
+      {% for pi in [1, 3] %}
+        {% set p = ex.pipelines[pi] %}
+        {% set base = 56 if pi == 1 else 112 %}
+        {% for w in range(p.workers) %}
+          <text x="4" y="{{ base + w * 18 + 11 }}" class="d-muted">worker {{ w }}</text>
+        {% endfor %}
+        <text x="4" y="{{ base + p.workers * 18 + 11 }}">GPU ({{ p.workers }}w)</text>
+        {% for s in p.timeline %}
+          <rect x="{{ x0 + s.load_start }}" y="{{ base + s.worker * 18 }}" width="{{ s.ready - s.load_start - 2 }}" height="14" class="d-box ml-tensor"></rect>
+          <rect x="{{ x0 + s.compute_start }}" y="{{ base + p.workers * 18 }}" width="{{ s.compute_end - s.compute_start - 2 }}" height="14" class="d-box ml-op"></rect>
+        {% endfor %}
+      {% endfor %}
+      <line x1="{{ x0 }}" y1="206" x2="{{ x0 + 660 }}" y2="206" class="d-line"></line>
+      <text x="{{ x0 + 330 }}" y="244" text-anchor="middle" class="d-muted">green: a worker loading one batch · amber: one training step</text>
+      {% for t in [0, 220, 495, 660] %}
+        <text x="{{ x0 + t }}" y="222" text-anchor="middle" class="d-muted">{{ t }} ms</text>
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+
+<h3 id="worked-noise">Gradient noise against batch size</h3>
+<p>
+  Take a tiny "dataset" of {{ cfg.grads|length }} per-example gradients for one weight:
+  {{ cfg.grads|join(", ") }}. The full gradient is their mean, {{ n(ex.noise[0].mean, 2) }}. A mini-batch of size
+  <em>B</em> drawn without replacement estimates it with variance σ²/B · (N − B)/(N − 1):
+</p>
+<div class="jj-table-wrap">
+  <table class="ml-numbers">
+    <thead><tr><th>B</th><th>Var of batch mean</th><th>Std</th></tr></thead>
+    <tbody>
+      {% for r in ex.noise %}
+        <tr><td>{{ r.batch_size }}</td><td>{{ n(r.variance, 4) }}</td><td>{{ n(r.std, 3) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  Going from 1 to 2 to 4 cuts the standard deviation by a bit more than √2 each time (the finite-population
+  factor helps); at B = N the estimate is exact. The test suite checks these numbers against brute-force
+  enumeration of every possible batch.
+</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  A bucketing batch sampler and a padding collate function for a token dataset. The sampler shuffles within
+  coarse length buckets and then shuffles the batch order, so lengths in a batch are similar but the training
+  order is still random:
+</p>
+<pre><code>import random
+import torch
+from torch.nn.utils.rnn import pad_sequence
+from torch.utils.data import DataLoader, Dataset, Sampler
+
+class Tokens(Dataset):
+    def __init__(self, seqs):
+        self.seqs = seqs                          # list of 1-D LongTensors
+    def __len__(self):
+        return len(self.seqs)
+    def __getitem__(self, i):
+        return self.seqs[i]
+
+class BucketBatches(Sampler):
+    def __init__(self, lengths, batch_size, bucket=100, seed=0):
+        self.lengths, self.batch_size, self.bucket = lengths, batch_size, bucket
+        self.seed, self.epoch = seed, 0
+    def set_epoch(self, epoch):
+        self.epoch = epoch
+    def __iter__(self):
+        rng = random.Random(self.seed + self.epoch)
+        idx = list(range(len(self.lengths)))
+        rng.shuffle(idx)
+        chunk = self.bucket * self.batch_size
+        batches = []
+        for start in range(0, len(idx), chunk):
+            block = sorted(idx[start:start + chunk], key=self.lengths.__getitem__)
+            batches += [block[i:i + self.batch_size] for i in range(0, len(block), self.batch_size)]
+        rng.shuffle(batches)
+        return iter(batches)
+    def __len__(self):
+        return sum(-(-min(self.bucket * self.batch_size, len(self.lengths) - s) // self.batch_size)
+                   for s in range(0, len(self.lengths), self.bucket * self.batch_size))
+
+def pad_collate(seqs, pad_id=0):
+    ids = pad_sequence(seqs, batch_first=True, padding_value=pad_id)
+    lengths = torch.tensor([len(s) for s in seqs])
+    mask = torch.arange(ids.shape[1])[None, :] &lt; lengths[:, None]
+    return ids, mask
+
+data = Tokens(seqs)
+sampler = BucketBatches([len(s) for s in seqs], batch_size=32)
+loader = DataLoader(data, batch_sampler=sampler, collate_fn=pad_collate,
+                    num_workers=4, pin_memory=True, persistent_workers=True)
+
+for epoch in range(epochs):
+    sampler.set_epoch(epoch)
+    for ids, mask in loader:
+        ids = ids.to("cuda", non_blocking=True)
+        mask = mask.to("cuda", non_blocking=True)
+        ...</code></pre>
+<p>
+  A few things to check when a loader is slow or wrong:
+</p>
+<ul>
+  <li><strong>Is the GPU waiting?</strong> Time <code>next(iter)</code> separately from the step. If fetching a batch
+    takes longer than a step, add workers (until CPU cores run out), move work like decoding out of Python, or
+    store data preprocessed.</li>
+  <li><strong>Are workers duplicating data?</strong> An <code>IterableDataset</code> must shard itself with
+    <code>get_worker_info()</code> and, under distributed training, by rank too.</li>
+  <li><strong>Is the order reproducible?</strong> Pass a seeded <code>generator</code> to the DataLoader and call
+    <code>set_epoch</code> on distributed or custom samplers.</li>
+  <li><strong>Is memory growing?</strong> Each worker is a separate process holding its own copy of whatever the
+    dataset object references; a large Python list of strings in the dataset is touched (and so copied, under
+    fork) by every worker. Arrays or memory-mapped files share better.</li>
+</ul>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Map-style vs iterable.</strong> Map-style datasets get exact shuffling, sharding and
+    <code>len()</code> for free but need random access. Streams (web-scale shards, databases) need an
+    <code>IterableDataset</code>, which only approximates shuffling with a buffer and must shard itself.</li>
+  <li><strong>Padding vs bucketing vs packing.</strong> Padding is simplest and exact. Bucketing keeps examples
+    separate and cuts most waste, at the cost of length-correlated batches. Packing wastes almost nothing but
+    needs a mask and position resets to be exact, and splits or drops documents longer than the context.</li>
+  <li><strong>More workers.</strong> They hide loading time until loading is no longer the bottleneck; past that they
+    only cost memory and CPU, and each one adds start-up time unless workers persist.</li>
+  <li><strong>Pinned memory.</strong> Faster, asynchronous copies, but page-locked memory can't be swapped out;
+    pinning too much starves the rest of the system.</li>
+  <li><strong>drop_last.</strong> Keeps every batch the same shape (helpful for compiled graphs and for
+    batch-statistics layers) at the cost of skipping a few examples each epoch.</li>
+  <li><strong>Large batches.</strong> Better hardware use and fewer steps, but each example does less work past the
+    critical batch size, and very large batches need learning-rate warmup and retuning. When memory is the limit,
+    <a href="/ml-models/mixed-precision">lower precision</a> or gradient accumulation gives the same effective
+    batch.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Training loss plateaus and the GPU shows 30% utilization. What do you check first?</summary>
+  <p>Whether the loop is waiting for data: time how long each <code>next()</code> on the loader takes compared with the
+    step. If loading dominates, raise <code>num_workers</code> until loading per batch divided by workers is below the
+    step time, and turn on <code>pin_memory</code> with <code>non_blocking=True</code> copies.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Every epoch of a distributed run shows the same loss curve shape, batch for batch. Why?</summary>
+  <p><code>DistributedSampler</code> shuffles with <code>seed + epoch</code>, and <code>set_epoch</code> was never called,
+    so <code>epoch</code> stays 0 and every epoch replays the same permutation.</p>
+</details>
+<details class="ml-quiz">
+  <summary>An IterableDataset with <code>num_workers=4</code> makes each epoch four times longer than expected. What happened?</summary>
+  <p>Every worker iterated the full stream, so each example arrived four times. The dataset's <code>__iter__</code> has to
+    use <code>get_worker_info()</code> to read only its worker's share.</p>
+</details>
+<details class="ml-quiz">
+  <summary>You pack documents into 2048-token rows with no attention mask. What does the model learn that it shouldn't?</summary>
+  <p>To predict tokens of one document from an unrelated preceding document in the same row. Masking attention to
+    each document's own block (and restarting position ids) removes the cross-talk.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Goyal et al. <em>Accurate, Large Minibatch SGD: Training ImageNet in 1 Hour.</em> 2017. (The linear scaling rule and warmup.)</li>
+  <li>McCandlish, Kaplan, Amodei and the OpenAI Dota Team. <em>An Empirical Model of Large-Batch Training.</em> 2018. (The critical batch size.)</li>
+  <li>Krell, Kosec, Perez and Fitzgibbon. <em>Efficient Sequence Packing without Cross-contamination.</em> 2021. (Packing with masks and position resets.)</li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/utils/data/dataloader.py', 255, 431) }}"><code>DataLoader</code></a>,
+    <a href="{{ src('torch/utils/data/dataloader.py', 791, 815) }}"><code>_MultiProcessingDataLoaderIter</code></a>,
+    <a href="{{ src('torch/utils/data/sampler.py', 28, 354) }}"><code>sampler.py</code></a>,
+    <a href="{{ src('torch/utils/data/_utils/collate.py', 118, 401) }}"><code>collate.py</code></a>,
+    <a href="{{ src('torch/utils/data/_utils/worker.py', 244, 402) }}"><code>_worker_loop</code></a>,
+    <a href="{{ src('torch/utils/data/distributed.py', 17, 157) }}"><code>DistributedSampler</code></a>,
+    <a href="{{ src('torch/nn/utils/rnn.py', 405, 473) }}"><code>pad_sequence</code></a>.</li>
+</ul>
