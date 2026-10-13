@@ -4541,3 +4541,79 @@ def test_latency_roofline_points_sit_under_the_roof():
         assert 60 <= point["x"] <= 680 and 20 <= point["y"] <= 200
     assert ex["roofline"][-1]["label"] == "prefill"
     assert ex["roofline"][-1]["tflops"] == pytest.approx(989, rel=1e-6)
+
+
+def test_online_stream_is_seeded_and_drifts():
+    s = ml_models_docs.ONLINE_EXAMPLE["stream"]
+    args = (s["n"], s["drift_at"], s["w_before"], s["w_after"], s["noise"], s["seed"])
+    stream = ml_models_docs.ol_stream(*args)
+    assert stream == ml_models_docs.ol_stream(*args)
+    assert len(stream) == 400
+    before = ml_models_docs.ol_least_squares_weight(stream[:200])
+    after = ml_models_docs.ol_least_squares_weight(stream[200:])
+    assert before == pytest.approx(2.0, abs=0.1)
+    assert after == pytest.approx(-1.0, abs=0.1)
+
+
+def test_online_prequential_predicts_before_it_updates():
+    stream = [(1.0, 2.0), (0.5, 1.0)]
+    run = ml_models_docs.ol_prequential(stream, 0.25)
+    assert run["losses"][0] == pytest.approx(4.0)
+    assert run["weights"][0] == pytest.approx(1.0)
+    assert run["losses"][1] == pytest.approx(0.25)
+    assert run["weights"][1] == pytest.approx(1.125)
+    frozen = ml_models_docs.ol_prequential(stream, 0.25, w=2.0, frozen=True)
+    assert frozen["weights"] == [2.0, 2.0] and frozen["losses"] == [0.0, 0.0]
+
+
+def test_online_constant_step_tracks_drift_and_decaying_step_does_not():
+    ex = ml_models_docs.online_example()
+    windows = ex["windows"]
+    before, after = slice(1, 4), slice(5, 8)
+    assert max(windows["frozen"][before]) < 0.15
+    assert min(windows["frozen"][after]) > 2.0
+    assert max(windows["constant"][after]) < 0.15
+    assert min(windows["decay"][after]) > 1.0
+    assert ex["weights_at"]["constant"][250] < -0.5
+    assert ex["weights_at"]["decay"][400] > 0.5
+    first = ex["first_steps"][0]
+    assert first["w_after"] == pytest.approx(-0.1 * 2 * (0.0 - first["y"]) * first["x"])
+
+
+def test_online_regret_is_sublinear():
+    rows = ml_models_docs.online_example()["regret"]
+    per_step = [row["per_step"] for row in rows]
+    assert per_step == sorted(per_step, reverse=True)
+    assert rows[-1]["per_step"] < 0.05
+    for row in rows:
+        assert row["regret"] == pytest.approx(row["learner_loss"] - row["best_loss"])
+        assert row["regret"] > 0
+
+
+def test_online_bandit_policies_rank_as_expected():
+    ex = ml_models_docs.online_example()
+    final = {row["policy"]: row["regret"][1000] for row in ex["bandit_rows"]}
+    assert final["thompson"] < final["epsilon"] < final["ucb"] < final["greedy"]
+    shares = {row["policy"]: row["best_share"] for row in ex["bandit_rows"]}
+    assert shares["thompson"] > 0.8 and shares["greedy"] < 0.6
+    assert ex["epsilon_floor"] == pytest.approx(0.1 * (0.30 + 0.10) / 3)
+    for points in ex["bandit_points"].values():
+        assert all(60 <= x <= 660 and 30 <= y <= 200 for x, y in points)
+
+
+def test_online_ucb_trace_matches_ucb1():
+    trace = ml_models_docs.online_example()["ucb_trace"]
+    assert [row["arm"] for row in trace[:3]] == [0, 1, 2]
+    for row in trace[3:]:
+        scores = row["ucb"]
+        assert row["arm"] == max(range(3), key=lambda a: scores[a])
+        for a in range(3):
+            mean = row["successes"][a] / row["counts"][a]
+            assert scores[a] == pytest.approx(mean + math.sqrt(2 * math.log(row["t"]) / row["counts"][a]))
+
+
+def test_online_bandit_runs_share_rewards_across_policies():
+    a = ml_models_docs.ol_bandit_run("greedy", [0.2, 0.8], 50, 3, 0.1)
+    b = ml_models_docs.ol_bandit_run("greedy", [0.2, 0.8], 50, 3, 0.1)
+    assert a == b
+    assert sum(a["counts"]) == 50

@@ -11133,6 +11133,165 @@ def latency_example():
     }
 
 
+ONLINE_EXAMPLE = {
+    "stream": {"n": 400, "drift_at": 200, "w_before": 2.0, "w_after": -1.0, "noise": 0.3, "seed": 11, "window": 50},
+    "frozen_after": 100,
+    "constant_eta": 0.1,
+    "decay_eta0": 0.5,
+    "regret": {"eta0": 0.5, "checkpoints": [10, 25, 50, 100, 200]},
+    "bandit": {"probs": [0.25, 0.45, 0.55], "steps": 1000, "runs": 50, "seed": 5, "epsilon": 0.1,
+               "checkpoints": [10, 50, 100, 250, 500, 1000], "every": 50},
+}
+
+
+def ol_stream(n, drift_at, w_before, w_after, noise, seed):
+    rng = random.Random(seed)
+    stream = []
+    for t in range(n):
+        x = rng.uniform(-1.0, 1.0)
+        w = w_before if t < drift_at else w_after
+        stream.append((x, w * x + rng.gauss(0.0, noise)))
+    return stream
+
+
+def ol_least_squares_weight(points):
+    return sum(x * y for x, y in points) / sum(x * x for x, _ in points)
+
+
+def ol_prequential(stream, eta, w=0.0, frozen=False):
+    weights, losses, steps = [], [], []
+    for t, (x, y) in enumerate(stream, start=1):
+        prediction = w * x
+        loss = (prediction - y) ** 2
+        losses.append(loss)
+        step = eta(t) if callable(eta) else eta
+        if not frozen:
+            gradient = 2 * (prediction - y) * x
+            w = w - step * gradient
+        weights.append(w)
+        steps.append(step)
+    return {"weights": weights, "losses": losses, "steps": steps}
+
+
+def ol_window_means(values, window):
+    return [sum(values[i:i + window]) / window for i in range(0, len(values) - window + 1, window)]
+
+
+def ol_regret(stream, eta0, checkpoints):
+    run = ol_prequential(stream, lambda t: eta0 / math.sqrt(t))
+    rows = []
+    for T in checkpoints:
+        head = stream[:T]
+        best = ol_least_squares_weight(head)
+        best_loss = sum((best * x - y) ** 2 for x, y in head)
+        learner_loss = sum(run["losses"][:T])
+        regret = learner_loss - best_loss
+        rows.append({"T": T, "best_w": best, "learner_loss": learner_loss, "best_loss": best_loss,
+                     "regret": regret, "per_step": regret / T, "per_sqrt": regret / math.sqrt(T)})
+    return rows
+
+
+def ol_bandit_choose(policy, t, counts, successes, rng, epsilon):
+    k = len(counts)
+    if policy == "thompson":
+        draws = [rng.betavariate(1 + successes[a], 1 + counts[a] - successes[a]) for a in range(k)]
+        return max(range(k), key=lambda a: draws[a])
+    for a in range(k):
+        if counts[a] == 0:
+            return a
+    means = [successes[a] / counts[a] for a in range(k)]
+    if policy == "epsilon" and rng.random() < epsilon:
+        return rng.randrange(k)
+    if policy == "ucb":
+        scores = [means[a] + math.sqrt(2 * math.log(t) / counts[a]) for a in range(k)]
+        return max(range(k), key=lambda a: scores[a])
+    return max(range(k), key=lambda a: means[a])
+
+
+def ol_bandit_run(policy, probs, steps, seed, epsilon, trace=0):
+    reward_rng = random.Random(seed)
+    rewards = [[reward_rng.random() < p for p in probs] for _ in range(steps)]
+    rng = random.Random(seed * 7919 + 1)
+    k = len(probs)
+    counts, successes = [0] * k, [0] * k
+    best = max(probs)
+    regret, curve, rows = 0.0, [], []
+    for t in range(1, steps + 1):
+        before_counts, before_successes = counts[:], successes[:]
+        arm = ol_bandit_choose(policy, t, counts, successes, rng, epsilon)
+        reward = rewards[t - 1][arm]
+        counts[arm] += 1
+        successes[arm] += reward
+        regret += best - probs[arm]
+        curve.append(regret)
+        if t <= trace:
+            rows.append({"t": t, "counts": before_counts, "successes": before_successes, "arm": arm,
+                         "reward": int(reward),
+                         "ucb": [None if before_counts[a] == 0 else
+                                 before_successes[a] / before_counts[a] + math.sqrt(2 * math.log(t) / before_counts[a])
+                                 for a in range(k)]})
+    return {"curve": curve, "counts": counts, "successes": successes, "trace": rows}
+
+
+def ol_bandit_average(policy, probs, steps, runs, seed, epsilon):
+    total = [0.0] * steps
+    best_share = 0.0
+    best_arm = probs.index(max(probs))
+    for r in range(runs):
+        run = ol_bandit_run(policy, probs, steps, seed + r, epsilon)
+        for i, value in enumerate(run["curve"]):
+            total[i] += value
+        best_share += run["counts"][best_arm] / steps
+    return {"curve": [value / runs for value in total], "best_share": best_share / runs}
+
+
+def ol_curve_xy(step, value, steps, top, x0=60, width=600, y0=200, height=170):
+    return round(x0 + width * step / steps, 1), round(y0 - height * min(value, top) / top, 1)
+
+
+@functools.lru_cache(maxsize=None)
+def online_example():
+    e = ONLINE_EXAMPLE
+    s = e["stream"]
+    stream = ol_stream(s["n"], s["drift_at"], s["w_before"], s["w_after"], s["noise"], s["seed"])
+    frozen_w = ol_least_squares_weight(stream[:e["frozen_after"]])
+    learners = {
+        "frozen": ol_prequential(stream, 0.0, w=frozen_w, frozen=True),
+        "decay": ol_prequential(stream, lambda t: e["decay_eta0"] / t),
+        "constant": ol_prequential(stream, e["constant_eta"]),
+    }
+    windows = {name: ol_window_means(run["losses"], s["window"]) for name, run in learners.items()}
+    b = e["bandit"]
+    policies = ["greedy", "epsilon", "ucb", "thompson"]
+    bandits = {p: ol_bandit_average(p, b["probs"], b["steps"], b["runs"], b["seed"], b["epsilon"]) for p in policies}
+    top = max(curve["curve"][-1] for curve in bandits.values())
+    top = math.ceil(top / 10) * 10
+    return {
+        "example": e,
+        "stream": stream,
+        "frozen_w": frozen_w,
+        "learners": learners,
+        "windows": windows,
+        "window_starts": list(range(0, s["n"], s["window"])),
+        "first_steps": [{"t": t, "x": stream[t - 1][0], "y": stream[t - 1][1],
+                         "w_before": 0.0 if t == 1 else learners["constant"]["weights"][t - 2],
+                         "w_after": learners["constant"]["weights"][t - 1],
+                         "loss": learners["constant"]["losses"][t - 1]} for t in (1, 2, 3)],
+        "weights_at": {name: {t: run["weights"][t - 1] for t in (s["drift_at"], s["drift_at"] + 50, s["n"])}
+                       for name, run in learners.items()},
+        "regret": ol_regret(stream[:s["drift_at"]], e["regret"]["eta0"], e["regret"]["checkpoints"]),
+        "bandits": bandits,
+        "bandit_rows": [{"policy": p, "regret": {c: bandits[p]["curve"][c - 1] for c in b["checkpoints"]},
+                         "best_share": bandits[p]["best_share"]} for p in policies],
+        "bandit_top": top,
+        "epsilon_floor": b["epsilon"] * sum(max(b["probs"]) - p for p in b["probs"]) / len(b["probs"]),
+        "bandit_points": {p: [ol_curve_xy(t, bandits[p]["curve"][t - 1], b["steps"], top)
+                              for t in [1] + list(range(b["every"], b["steps"] + 1, b["every"]))] for p in policies},
+        "ucb_trace": ol_bandit_run("ucb", b["probs"], b["steps"], b["seed"], b["epsilon"], trace=7)["trace"],
+        "thompson_run": ol_bandit_run("thompson", b["probs"], b["steps"], b["seed"], b["epsilon"]),
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -11167,6 +11326,7 @@ def render(slug, render_template):
         "collab_example": collab_example,
         "accumulation_example": accumulation_example,
         "latency_example": latency_example,
+        "online_example": online_example,
         "data_example": data_example,
         "serving_example": serving_example,
         "causal_example": causal_example,
