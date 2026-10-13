@@ -1336,7 +1336,7 @@ PAGES = [
         "sources": [
             "sklearn:sklearn/linear_model/_stochastic_gradient.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "multimodal-models",

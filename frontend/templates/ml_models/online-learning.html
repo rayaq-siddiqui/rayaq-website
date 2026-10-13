@@ -1,0 +1,495 @@
+{% set ex = online_example() %}
+{% set e = ex.example %}
+{% set s = e.stream %}
+{% set b = e.bandit %}
+{% set w = ex.windows %}
+{% set rows = ex.bandit_rows %}
+{% set by = {} %}
+{% for r in rows %}{% set _ = by.update({r.policy: r}) %}{% endfor %}
+{% set th = ex.thompson_run %}
+{% macro n(x, d=2) -%}{{ ("%." ~ d ~ "f")|format(x) }}{%- endmacro %}
+{% macro wx(i) -%}{{ "%.1f"|format(60 + i * 75 + 37.5) }}{%- endmacro %}
+{% macro wy(v) -%}{{ "%.1f"|format(200 - 170 * ([v, 3.5]|min) / 3.5) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Online learning</h1>
+  <p class="tagline">
+    Most models are trained once on a fixed dataset. Online learning updates a model one example (or one
+    small batch) at a time as data arrives, which is what you need when data never stops coming, does not fit
+    in memory, or changes under you. This page covers learning from a stream with scikit-learn's
+    <code>partial_fit</code>, measuring an online learner by regret, adapting to concept drift, and the
+    bandit problem, where the learner also chooses which data it gets to see.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A fraud model scores card payments. You trained it on last quarter's data and it worked. Then fraudsters
+  changed tactics, a new merchant category launched, and a holiday shifted spending. The model still answers
+  every request, with the same confidence, and gets steadily worse. Retraining from scratch every night on
+  all history is slow and still averages the old world with the new one.
+</p>
+<p>
+  A second version of the same problem: a news site must choose which of three headlines to show. It only
+  learns whether a headline gets clicks by showing it. Show the current favourite every time and you never
+  find out that another headline is better; show them all equally and you waste traffic on the bad ones.
+  Here the learner's own choices decide which labels it collects.
+</p>
+<p>
+  Without online learning, a model is frozen at the moment it was fitted. Online methods keep it current
+  in constant memory, at the cost of new failure modes: forgetting, sensitivity to the step size, and
+  noisy updates.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Think of a thermostat rather than a blueprint. It does not plan the year's heating in advance; it
+  measures, nudges, and measures again. An online learner does the same: for each new example it first
+  <strong>predicts</strong>, then sees the true answer, scores its mistake, and <strong>nudges</strong>
+  its weights a little to make that mistake smaller. It never revisits old data. Its memory of the past
+  lives only in its current weights.
+</p>
+<p>
+  How big each nudge is decides everything. Big nudges forget the past quickly, which is good when the
+  world changes and bad when it does not (the model chases noise). Small nudges average over a long history,
+  which is good when the world is stable and bad after a change (the model is stuck in the past). A step size
+  that shrinks over time, the classic choice for a fixed problem, slowly turns the learner into a frozen
+  model.
+</p>
+<p>
+  Bandits add a second dial: <strong>explore or exploit</strong>. You can only learn how good an option
+  is by trying it. The good strategies try each option enough to be confident, then spend most of their
+  time on the best one, and they keep a little doubt alive for options they have tried only rarely.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 210" role="img" aria-labelledby="ol-loop-title ol-loop-desc">
+    <title id="ol-loop-title">The online learning loop: predict, reveal, score, update, repeat</title>
+    <desc id="ol-loop-desc">
+      Four boxes in a cycle. An example x arrives from the stream and the model predicts with its current
+      weights. Then the true label y is revealed and the loss is scored; this score is the honest,
+      prequential test error because the model had not seen the example. Then the weights take one gradient
+      step. The loop repeats with the next example, and the old example is discarded. Under the loop, a note
+      says the stream itself may drift: the rule mapping x to y can change partway through.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <rect x="20" y="40" width="140" height="56" rx="8" class="d-box ml-tensor"></rect>
+      <text x="90" y="64">stream gives x<tspan x="90" dy="16" class="d-muted">example t</tspan></text>
+      <rect x="200" y="40" width="140" height="56" rx="8" class="d-box ml-op"></rect>
+      <text x="270" y="64">predict ŷ = f(x; w)<tspan x="270" dy="16" class="d-muted">current weights</tspan></text>
+      <rect x="380" y="40" width="140" height="56" rx="8" class="d-box ml-op"></rect>
+      <text x="450" y="64">reveal y, score ℓ(ŷ, y)<tspan x="450" dy="16" class="d-muted">test-then-train</tspan></text>
+      <rect x="560" y="40" width="140" height="56" rx="8" class="d-box ml-op"></rect>
+      <text x="630" y="64">w ← w − η ∇ℓ<tspan x="630" dy="16" class="d-muted">one step, drop x</tspan></text>
+      <line x1="160" y1="68" x2="198" y2="68" class="d-line"></line>
+      <line x1="340" y1="68" x2="378" y2="68" class="d-line"></line>
+      <line x1="520" y1="68" x2="558" y2="68" class="d-line"></line>
+      <path d="M630 96 V130 H270 V98" fill="none" class="d-line ml-dashed"></path>
+      <text x="450" y="146" class="d-muted">next example uses the updated w</text>
+      <rect x="20" y="166" width="680" height="32" rx="6" class="d-box ml-dashed"></rect>
+      <text x="360" y="187">drift: the rule y = g(x) can change mid-stream, so yesterday's best w is not today's</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="mechanics-setting">The online protocol</h3>
+<p>
+  At each round <em>t</em> = 1, 2, …, <em>T</em> the learner holds weights <em>w<sub>t</sub></em>, receives
+  <em>x<sub>t</sub></em>, predicts, then suffers loss ℓ<sub>t</sub>(<em>w<sub>t</sub></em>). Online
+  gradient descent updates
+</p>
+<p class="ml-formula">w<sub>t+1</sub> = w<sub>t</sub> − η<sub>t</sub> ∇ℓ<sub>t</sub>(w<sub>t</sub>)</p>
+<p>
+  which is stochastic gradient descent (see <a href="/ml-models/optimizers">optimizers</a>) with each example
+  used once. Scoring each example before training on it is called <strong>prequential</strong> evaluation;
+  its running average is an unbiased estimate of the learner's current error, without a held-out set.
+</p>
+
+<h3 id="mechanics-regret">Regret</h3>
+<p>
+  With no assumption that the data are i.i.d., or even random, the yardstick is the best single fixed model
+  chosen with hindsight:
+</p>
+<p class="ml-formula">Regret<sub>T</sub> = Σ<sub>t=1..T</sub> ℓ<sub>t</sub>(w<sub>t</sub>) − min<sub>w</sub> Σ<sub>t=1..T</sub> ℓ<sub>t</sub>(w)</p>
+<p>
+  An algorithm "learns" if regret is sublinear, so Regret<sub>T</sub>/<em>T</em> → 0: on average it does as well
+  as the best fixed model. For convex losses with bounded gradients, online gradient descent with
+  η<sub>t</sub> ∝ 1/√<em>t</em> has regret O(√<em>T</em>) (Zinkevich, 2003); for strongly convex losses, η<sub>t</sub>
+  ∝ 1/<em>t</em> gives O(log <em>T</em>). Regret against a <em>fixed</em> comparator is the wrong yardstick once the
+  data drift; then the comparator is allowed to move, and decaying step sizes are no longer the right choice.
+</p>
+
+<h3 id="mechanics-drift">Concept drift</h3>
+<p>
+  Drift means the joint distribution <em>p</em>(<em>x</em>, <em>y</em>) changes over time. <strong>Covariate
+  shift</strong> changes <em>p</em>(<em>x</em>) only; <strong>concept drift</strong> changes
+  <em>p</em>(<em>y</em> | <em>x</em>), the rule itself. It can be sudden, gradual, or recurring (seasons). The
+  standard responses are:
+</p>
+<ul>
+  <li><strong>Forget on purpose.</strong> A constant step size weights an example <em>k</em> steps old by
+    roughly (1 − η·<em>c</em>)<sup><em>k</em></sup>, an exponential moving window. A sliding-window refit does the
+    same with a hard edge.</li>
+  <li><strong>Detect and reset.</strong> Monitor the prequential error; when it rises significantly (tests such as
+    DDM, Page–Hinkley or ADWIN), retrain or raise the step size. A later page on monitoring and drift
+    covers detection in production.</li>
+  <li><strong>Ensembles over time.</strong> Keep models trained on different periods and weight them by recent
+    accuracy.</li>
+</ul>
+
+<h3 id="mechanics-sklearn">partial_fit in scikit-learn</h3>
+<p>
+  Estimators that can learn incrementally expose <code>partial_fit(X, y)</code>.
+  <a href="{{ skl('sklearn/linear_model/_stochastic_gradient.py', 848, 909) }}"><code>SGDClassifier.partial_fit</code></a>
+  runs one epoch of SGD over the batch it is given (it calls <code>_partial_fit</code> with
+  <code>max_iter=1</code>), and needs <code>classes=</code> on the first call because a batch may not contain every
+  label. It keeps the step counter <code>t_</code> across calls: <code>_partial_fit</code> sets it to 1.0 only if it
+  does not exist yet (<a href="{{ skl('sklearn/linear_model/_stochastic_gradient.py', 655, 656) }}">lines 655–656</a>),
+  and each fit adds the number of samples it processed
+  (<a href="{{ skl('sklearn/linear_model/_stochastic_gradient.py', 776, 776) }}">line 776</a>). The schedules read
+  that counter inside the Cython loop
+  (<a href="{{ skl('sklearn/linear_model/_sgd_fast.pyx.tp', 457, 488) }}"><code>_sgd_fast.pyx.tp</code> 457–488</a>):
+</p>
+<ul>
+  <li><code>"optimal"</code>, the classifier's default: η = 1 / (α·(<em>t</em><sub>0</sub> + <em>t</em> − 1)), with
+    <em>t</em><sub>0</sub> chosen by Bottou's heuristic so the first step is a sensible size.</li>
+  <li><code>"invscaling"</code>, the regressor's default: η = <code>eta0</code> / <em>t</em><sup><code>power_t</code></sup>,
+    with <code>eta0=0.01</code> and <code>power_t=0.25</code>.</li>
+  <li><code>"constant"</code>: η = <code>eta0</code>, which keeps adapting forever.</li>
+  <li><code>"pa1"</code>/<code>"pa2"</code>: the passive-aggressive updates (Crammer et al., 2006), which step only as
+    far as needed to fix the current mistake.</li>
+</ul>
+<p>
+  Because <code>t_</code> only grows, a long-running <code>partial_fit</code> loop with a decaying schedule ends up
+  taking tiny steps: it converges on a stationary stream and stops adapting on a drifting one.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>SGDClassifier</code></td><td><code>loss="hinge"</code>, <code>alpha=0.0001</code>, <code>learning_rate="optimal"</code>, <code>eta0=0.01</code>, <code>power_t=0.5</code></td><td>Linear classifier trained by SGD; supports <code>partial_fit</code>.</td><td><a href="{{ skl('sklearn/linear_model/_stochastic_gradient.py', 958, 1427) }}">_stochastic_gradient.py 958–1427</a></td></tr>
+      <tr><td><code>SGDRegressor</code></td><td><code>loss="squared_error"</code>, <code>learning_rate="invscaling"</code>, <code>eta0=0.01</code>, <code>power_t=0.25</code></td><td>Linear regressor trained by SGD.</td><td><a href="{{ skl('sklearn/linear_model/_stochastic_gradient.py', 1802, 2122) }}">_stochastic_gradient.py 1802–2122</a></td></tr>
+      <tr><td><code>partial_fit</code> (classifier)</td><td><code>X</code> [n, d], <code>y</code> [n], <code>classes</code></td><td>One SGD epoch over this batch; <code>classes</code> required on the first call.</td><td><a href="{{ skl('sklearn/linear_model/_stochastic_gradient.py', 848, 909) }}">848–909</a></td></tr>
+      <tr><td><code>partial_fit</code> (regressor)</td><td><code>X</code> [n, d], <code>y</code> [n]</td><td>One SGD epoch over this batch.</td><td><a href="{{ skl('sklearn/linear_model/_stochastic_gradient.py', 1540, 1578) }}">1540–1578</a></td></tr>
+      <tr><td><code>t_</code></td><td>float, starts at 1.0</td><td>Samples seen so far, kept across <code>partial_fit</code> calls; drives decaying schedules.</td><td><a href="{{ skl('sklearn/linear_model/_stochastic_gradient.py', 1779, 1779) }}">1779</a></td></tr>
+      <tr><td>step-size schedules</td><td><code>optimal</code>, <code>invscaling</code>, <code>constant</code></td><td>How η<sub>t</sub> is computed per sample.</td><td><a href="{{ skl('sklearn/linear_model/_sgd_fast.pyx.tp', 457, 488) }}">_sgd_fast.pyx.tp 457–488</a></td></tr>
+      <tr><td>update with L2 decay</td><td><code>w.scale(1 − η α)</code>, then <code>w += update·x</code></td><td>Weight decay applied as a multiplicative shrink each step.</td><td><a href="{{ skl('sklearn/linear_model/_sgd_fast.pyx.tp', 516, 542) }}">_sgd_fast.pyx.tp 516–542</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="mechanics-bandits">Bandits</h3>
+<p>
+  A <em>K</em>-armed bandit has arms with unknown mean rewards μ<sub>1</sub>, …, μ<sub>K</sub>. Each round the
+  learner pulls one arm and sees only that arm's reward. Its (pseudo-)regret after <em>T</em> rounds is
+</p>
+<p class="ml-formula">Regret<sub>T</sub> = Σ<sub>t</sub> (μ* − μ<sub>a<sub>t</sub></sub>) = Σ<sub>a</sub> Δ<sub>a</sub> · E[N<sub>a</sub>(T)]</p>
+<p>
+  where Δ<sub>a</sub> = μ* − μ<sub>a</sub> is arm <em>a</em>'s gap and <em>N<sub>a</sub></em> its pull count. Lai and
+  Robbins (1985) showed any consistent policy must pull each bad arm Ω(log <em>T</em>) times, so logarithmic regret is
+  the best possible. Three standard policies:
+</p>
+<ul>
+  <li><strong>ε-greedy.</strong> With probability ε pull a random arm, otherwise the arm with the best empirical
+    mean. Simple, but with fixed ε it keeps exploring forever, so its regret grows linearly at
+    ε·(average gap) per round.</li>
+  <li><strong>UCB1</strong> (Auer, Cesa-Bianchi and Fischer, 2002). Pull each arm once, then the arm maximizing
+    <span class="ml-formula" style="display:inline">μ̂<sub>a</sub> + √(2 ln <em>t</em> / <em>N<sub>a</sub></em>)</span>.
+    The bonus is large for rarely tried arms ("optimism in the face of uncertainty") and shrinks as evidence
+    accumulates. Regret O(Σ<sub>a</sub> log <em>T</em> / Δ<sub>a</sub>).</li>
+  <li><strong>Thompson sampling</strong> (Thompson, 1933). Keep a posterior per arm, for 0/1 rewards a
+    Beta(1 + successes, 1 + failures); each round draw one sample from each posterior and pull the arm with the
+    largest draw. It explores in proportion to the probability that each arm is the best, and matches the
+    Lai–Robbins bound for Bernoulli arms.</li>
+</ul>
+<p>
+  Contextual bandits (LinUCB, linear Thompson sampling) condition the choice on features <em>x<sub>t</sub></em>;
+  full <a href="/ml-models/reinforcement-learning">reinforcement learning</a> adds state that the actions change.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  Every number below comes from tested helpers in <code>ml_models_docs.py</code> with fixed seeds.
+</p>
+
+<div class="ml-worked">
+  <h3 id="worked-stream">A stream that drifts</h3>
+  <p>
+    {{ s.n }} examples arrive one at a time: <em>x</em> uniform on [−1, 1], <em>y</em> = <em>w</em>·<em>x</em> + Gaussian
+    noise (σ = {{ s.noise }}), with <em>w</em> = {{ s.w_before }} for the first {{ s.drift_at }} examples and
+    <em>w</em> = {{ s.w_after }} after. Three learners fit <em>ŷ</em> = <em>w</em>·<em>x</em> with squared loss, gradient
+    2(<em>ŷ</em> − <em>y</em>)<em>x</em>, starting from <em>w</em> = 0:
+  </p>
+  <ul>
+    <li><strong>frozen</strong>: least squares on the first {{ e.frozen_after }} examples (<em>w</em> = {{ n(ex.frozen_w, 3) }}), then never updated;</li>
+    <li><strong>1/t step</strong>: η<sub>t</sub> = {{ e.decay_eta0 }}/<em>t</em>;</li>
+    <li><strong>constant step</strong>: η = {{ e.constant_eta }}.</li>
+  </ul>
+  <p>The constant-step learner's first three rounds:</p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>t</th><th>x</th><th>y</th><th>w before</th><th>ŷ</th><th>loss</th><th>w after</th></tr></thead>
+      <tbody>
+        {% for r in ex.first_steps %}
+          <tr><td>{{ r.t }}</td><td>{{ n(r.x, 3) }}</td><td>{{ n(r.y, 3) }}</td><td>{{ n(r.w_before, 4) }}</td><td>{{ n(r.w_before * r.x, 4) }}</td><td>{{ n(r.loss, 4) }}</td><td>{{ n(r.w_after, 4) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Round 1: <em>ŷ</em> = 0, so the step is −{{ e.constant_eta }} × 2 × (0 − ({{ n(ex.first_steps[0].y, 3) }})) ×
+    ({{ n(ex.first_steps[0].x, 3) }}) = {{ n(ex.first_steps[0].w_after, 4) }}. The early inputs happen to be near zero, so the
+    weight barely moves: an online learner's progress depends on which examples arrive. Prequential mean squared
+    error in windows of {{ s.window }}:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Examples</th>{% for start in ex.window_starts %}<th>{{ start + 1 }}–{{ start + s.window }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        <tr><td>frozen</td>{% for v in w.frozen %}<td>{{ n(v, 3) }}</td>{% endfor %}</tr>
+        <tr><td>1/t step</td>{% for v in w.decay %}<td>{{ n(v, 3) }}</td>{% endfor %}</tr>
+        <tr><td>constant step</td>{% for v in w.constant %}<td>{{ n(v, 3) }}</td>{% endfor %}</tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Before the drift the frozen model is best (its error, about {{ n(w.frozen[2], 2) }}, is close to the noise variance
+    {{ n(s.noise * s.noise, 2) }}), and the 1/t learner is still converging. After the drift the frozen model's error jumps
+    to {{ n(w.frozen[4], 2) }}. The 1/t learner has shrunk its step to {{ n(e.decay_eta0 / s.drift_at, 4) }} by round {{ s.drift_at }}, so
+    its weight crawls from {{ n(ex.weights_at.decay[s.drift_at], 2) }} to only {{ n(ex.weights_at.decay[s.n], 2) }} by round {{ s.n }}. The
+    constant-step learner pays some noise before the drift but has reached <em>w</em> = {{ n(ex.weights_at.constant[s.drift_at + 50], 2) }}
+    within 50 rounds of it and ends at {{ n(ex.weights_at.constant[s.n], 2) }}.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 240" role="img" aria-labelledby="ol-drift-title ol-drift-desc">
+    <title id="ol-drift-title">Prequential error before and after the drift for three learners</title>
+    <desc id="ol-drift-desc">
+      Mean squared error in eight windows of {{ s.window }} examples, plotted as three lines. A dashed vertical line
+      marks the drift at example {{ s.drift_at }}. Before it, all three lines are low, the frozen model lowest.
+      After it, the frozen model's line jumps to about {{ n(w.frozen[4], 1) }} and stays there; the 1/t learner jumps to about
+      {{ n(w.decay[4], 1) }} and only falls to {{ n(w.decay[-1], 1) }}; the constant-step learner spikes to {{ n(w.constant[4], 2) }} in the
+      first window after the drift and returns to about {{ n(w.constant[-1], 2) }}.
+    </desc>
+    <g font-size="11">
+      <line x1="60" y1="30" x2="60" y2="200" class="d-line"></line>
+      <line x1="60" y1="200" x2="660" y2="200" class="d-line"></line>
+      <text x="54" y="204" text-anchor="end" class="d-muted">0</text>
+      <text x="54" y="34" text-anchor="end" class="d-muted">3.5</text>
+      <text x="16" y="115" text-anchor="middle" class="d-muted" transform="rotate(-90 16 115)">window MSE</text>
+      <text x="360" y="232" text-anchor="middle" class="d-muted">example index (1–{{ s.n }})</text>
+      <line x1="360" y1="24" x2="360" y2="200" class="d-line ml-dashed"></line>
+      <text x="366" y="22" class="d-muted">drift at {{ s.drift_at }}</text>
+      <polyline fill="none" class="d-line" style="stroke:var(--jj-amber);stroke-width:2" points="{% for v in w.frozen %}{{ wx(loop.index0) }},{{ wy(v) }} {% endfor %}"></polyline>
+      <polyline fill="none" class="d-line ml-dashed" style="stroke:var(--jj-green);stroke-width:2" points="{% for v in w.decay %}{{ wx(loop.index0) }},{{ wy(v) }} {% endfor %}"></polyline>
+      <polyline fill="none" class="d-line" style="stroke:var(--jj-accent);stroke-width:2" points="{% for v in w.constant %}{{ wx(loop.index0) }},{{ wy(v) }} {% endfor %}"></polyline>
+      <text x="{{ wx(5) }}" y="{{ wy(w.frozen[5]) | float - 8 }}" text-anchor="middle" style="fill:var(--jj-amber)">frozen</text>
+      <text x="{{ wx(6) }}" y="{{ wy(w.decay[6]) | float - 8 }}" text-anchor="middle" style="fill:var(--jj-green)">1/t step</text>
+      <text x="{{ wx(6) }}" y="{{ wy(w.constant[6]) | float - 8 }}" text-anchor="middle" style="fill:var(--jj-accent)">constant step</text>
+      {% for start in ex.window_starts %}
+        <text x="{{ wx(loop.index0) }}" y="214" text-anchor="middle" class="d-muted">{{ start + s.window }}</text>
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-regret">Regret on the stable part</h3>
+  <p>
+    On the first {{ s.drift_at }} examples (no drift), online gradient descent with η<sub>t</sub> = {{ e.regret.eta0 }}/√<em>t</em>
+    against the best fixed weight chosen with hindsight:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>T</th><th>Best fixed w</th><th>Learner's total loss</th><th>Best total loss</th><th>Regret</th><th>Regret / T</th></tr></thead>
+      <tbody>
+        {% for r in ex.regret %}
+          <tr><td>{{ r.T }}</td><td>{{ n(r.best_w, 3) }}</td><td>{{ n(r.learner_loss) }}</td><td>{{ n(r.best_loss) }}</td><td>{{ n(r.regret) }}</td><td>{{ n(r.per_step, 3) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Almost all of the regret, {{ n(ex.regret[0].regret) }}, is paid in the first {{ ex.regret[0].T }} rounds while the weight climbs
+    from 0; afterwards it grows by only {{ n(ex.regret[-1].regret - ex.regret[0].regret) }} over {{ ex.regret[-1].T - ex.regret[0].T }} rounds. Regret per
+    round falls from {{ n(ex.regret[0].per_step, 3) }} to {{ n(ex.regret[-1].per_step, 3) }}: sublinear regret, the online
+    learner's guarantee. Squared loss here is strongly convex, so the growth is even slower than the √<em>T</em> worst case.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-bandit">Three headlines: a Bernoulli bandit</h3>
+  <p>
+    Three arms with click rates {% for p in b.probs %}{{ p }}{{ ", " if not loop.last }}{% endfor %}, {{ b.steps }} rounds, averaged
+    over {{ b.runs }} seeds. Within a seed every policy sees the same reward draws. ε = {{ b.epsilon }}; ε-greedy, UCB1 and greedy
+    pull each arm once first, Thompson sampling starts from Beta(1, 1).
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Policy</th>{% for c in b.checkpoints %}<th>Regret at {{ c }}</th>{% endfor %}<th>Best-arm share</th></tr></thead>
+      <tbody>
+        {% for r in rows %}
+          <tr><td>{{ {"greedy": "greedy", "epsilon": "ε-greedy", "ucb": "UCB1", "thompson": "Thompson"}[r.policy] }}</td>{% for c in b.checkpoints %}<td>{{ n(r.regret[c], 1) }}</td>{% endfor %}<td>{{ n(100 * r.best_share, 0) }}%</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Greedy commits to whichever arm looked best after a few pulls; in many seeds that is the wrong one, and its
+    regret grows almost linearly ({{ n(by.greedy.regret[1000], 1) }} after {{ b.steps }} rounds). Thompson sampling has the
+    least regret, {{ n(by.thompson.regret[1000], 1) }}, and the slope of its curve keeps falling. UCB1 is behind ε-greedy at this
+    horizon ({{ n(by.ucb.regret[1000], 1) }} against {{ n(by.epsilon.regret[1000], 1) }}): its √(2 ln <em>t</em>/<em>N</em>) bonus is
+    conservative, so with gaps of 0.1 it keeps checking the second arm for a long time. Its guarantee is asymptotic. ε-greedy's
+    regret never stops growing at the floor of ε × mean gap = {{ n(ex.epsilon_floor, 4) }} per round, while UCB1's per-round
+    regret keeps shrinking like (log <em>t</em>)/<em>t</em>, so over a long enough horizon UCB1 wins.
+  </p>
+  <p>The first seven UCB1 rounds of seed {{ b.seed }} (bonus computed before the pull):</p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>t</th><th>Pulls (N)</th><th>Successes</th><th>UCB score per arm</th><th>Pull</th><th>Reward</th></tr></thead>
+      <tbody>
+        {% for r in ex.ucb_trace %}
+          <tr><td>{{ r.t }}</td><td>{{ r.counts|join(", ") }}</td><td>{{ r.successes|join(", ") }}</td><td>{% for u in r.ucb %}{{ "untried" if u is none else n(u, 3) }}{{ ", " if not loop.last }}{% endfor %}</td><td>arm {{ r.arm + 1 }}</td><td>{{ r.reward }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    At <em>t</em> = 4 all three arms have one pull and no success, so their scores tie and the lowest index wins. At
+    <em>t</em> = 5 arm 1 has two pulls, so its bonus is smaller; arm 2 wins the tie with arm 3 and pays 1. At <em>t</em> = 6
+    arm 2's mean is 0.5, yet arm 3 still wins ({{ n(ex.ucb_trace[5].ucb[2], 3) }} against {{ n(ex.ucb_trace[5].ucb[1], 3) }}):
+    its single pull gives it a bigger bonus, which outweighs arm 2's success. Early on, UCB1 is driven by the bonus, not the means.
+    On the same seed, Thompson sampling's {{ b.steps }} pulls ended at {{ th.counts|join(", ") }} per arm, with posteriors
+    {% for a in range(3) %}Beta({{ 1 + th.successes[a] }}, {{ 1 + th.counts[a] - th.successes[a] }}){{ ", " if not loop.last }}{% endfor %}.
+    The best arm's posterior is sharp, and the two bad arms were tried just enough to be confidently ruled out.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 240" role="img" aria-labelledby="ol-bandit-title ol-bandit-desc">
+    <title id="ol-bandit-title">Cumulative regret of four bandit policies over {{ b.steps }} rounds</title>
+    <desc id="ol-bandit-desc">
+      Average cumulative regret over {{ b.runs }} seeds against rounds 1 to {{ b.steps }}. Greedy rises almost in a straight line
+      to {{ n(by.greedy.regret[1000], 0) }}. UCB1 curves upward more slowly to {{ n(by.ucb.regret[1000], 0) }}. ε-greedy ends at
+      {{ n(by.epsilon.regret[1000], 0) }} and keeps a constant slope. Thompson sampling flattens fastest and ends at
+      {{ n(by.thompson.regret[1000], 0) }}.
+    </desc>
+    <g font-size="11">
+      <line x1="60" y1="30" x2="60" y2="200" class="d-line"></line>
+      <line x1="60" y1="200" x2="660" y2="200" class="d-line"></line>
+      <text x="54" y="204" text-anchor="end" class="d-muted">0</text>
+      <text x="54" y="34" text-anchor="end" class="d-muted">{{ ex.bandit_top }}</text>
+      <text x="60" y="216" text-anchor="middle" class="d-muted">0</text>
+      <text x="660" y="216" text-anchor="middle" class="d-muted">{{ b.steps }}</text>
+      <text x="360" y="232" text-anchor="middle" class="d-muted">round</text>
+      <text x="16" y="115" text-anchor="middle" class="d-muted" transform="rotate(-90 16 115)">cumulative regret</text>
+      {% set styles = {"greedy": "stroke:var(--jj-amber);stroke-width:2", "epsilon": "stroke:var(--jj-green);stroke-width:2", "ucb": "stroke:var(--jj-muted);stroke-width:2", "thompson": "stroke:var(--jj-accent);stroke-width:2"} %}
+      {% set labels = {"greedy": "greedy", "epsilon": "ε-greedy", "ucb": "UCB1", "thompson": "Thompson"} %}
+      {% set fills = {"greedy": "fill:var(--jj-amber)", "epsilon": "fill:var(--jj-green)", "ucb": "fill:var(--jj-muted)", "thompson": "fill:var(--jj-accent)"} %}
+      {% for p in ["greedy", "epsilon", "ucb", "thompson"] %}
+        {% set pts = ex.bandit_points[p] %}
+        <polyline fill="none" class="d-line{{ ' ml-dashed' if p == 'epsilon' }}" style="{{ styles[p] }}" points="{% for x, y in pts %}{{ x }},{{ y }} {% endfor %}"></polyline>
+        <text x="{{ pts[-1][0] + 6 }}" y="{{ pts[-1][1] + 4 }}" style="{{ fills[p] }}">{{ labels[p] }}</text>
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  Streaming a classifier with <code>partial_fit</code>, scoring each batch before training on it, and a constant step so it keeps
+  adapting; then Thompson sampling for a Bernoulli bandit in plain Python:
+</p>
+<pre><code>import numpy as np, random
+from sklearn.linear_model import SGDClassifier
+
+clf = SGDClassifier(loss="log_loss", learning_rate="constant", eta0=0.01, alpha=1e-4)
+classes = np.array([0, 1])
+errors = []
+for i, (X_batch, y_batch) in enumerate(stream_of_batches()):   # never holds the full data
+    if i &gt; 0:
+        errors.append(1 - clf.score(X_batch, y_batch))          # prequential: test, then train
+    clf.partial_fit(X_batch, y_batch, classes=classes if i == 0 else None)
+
+def thompson(pull, n_arms, rounds):
+    wins, losses = [0] * n_arms, [0] * n_arms
+    for _ in range(rounds):
+        draws = [random.betavariate(1 + wins[a], 1 + losses[a]) for a in range(n_arms)]
+        a = max(range(n_arms), key=draws.__getitem__)
+        if pull(a):          # 1 if the user clicked
+            wins[a] += 1
+        else:
+            losses[a] += 1
+    return wins, losses</code></pre>
+<p>
+  Other scikit-learn estimators with <code>partial_fit</code> include <code>MultinomialNB</code>, <code>MiniBatchKMeans</code>,
+  <code>IncrementalPCA</code> and <code>MLPClassifier</code>. Preprocessing must be online too: a <code>StandardScaler</code> fitted
+  on the first day leaks a stale mean into every later prediction, so update it with its own <code>partial_fit</code> or use
+  stateless features such as hashing. In PyTorch, online learning is just a training loop that calls
+  <code>optimizer.step()</code> once per arriving batch and never loops over epochs (see the
+  <a href="/ml-models/training-loop">training loop</a>).
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Online versus periodic retraining.</strong> Online updates react within seconds and use constant memory, but a bad
+    batch (a bot attack, a logging bug) goes straight into the weights. Nightly retraining on a window is easier to test,
+    roll back and reproduce. Many systems retrain periodically and update only a few parameters (a bias term, a bandit) online.</li>
+  <li><strong>Step size is the forgetting rate.</strong> Decaying schedules (sklearn's defaults) suit stationary data; under drift,
+    use a constant step, a sliding window or a drift detector that resets.</li>
+  <li><strong>Catastrophic forgetting.</strong> A neural net trained online on a changed distribution can lose old skills entirely;
+    replay buffers or regularizing toward old weights reduce it.</li>
+  <li><strong>Delayed and biased labels.</strong> Fraud labels arrive weeks later, and a model that blocks transactions never sees
+    whether the blocked ones were fraud. Bandit-style exploration or holdout traffic is the only fix for the second.</li>
+  <li><strong>Bandits versus A/B tests.</strong> A bandit earns more during the experiment by shifting traffic to the winner; an A/B
+    test with fixed allocation gives cleaner, unbiased effect estimates. Logged bandit data needs propensity weighting to evaluate
+    a new policy (see <a href="/ml-models/causal-inference">causal inference</a>).</li>
+  <li><strong>Policy choice.</strong> Thompson sampling is usually the best default for Bernoulli rewards and is easy to extend;
+    UCB gives deterministic, analyzable behaviour; ε-greedy is the easiest to explain but never stops paying for exploration
+    unless ε decays.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Why does the 1/t learner fail after the drift even though it converged nicely before?</summary>
+  <p>Its step at round {{ s.drift_at }} is {{ e.decay_eta0 }}/{{ s.drift_at }} = {{ n(e.decay_eta0 / s.drift_at, 4) }}, so each new example moves the weight very little. Effectively it weights all {{ s.drift_at }} old examples equally with the new ones.</p>
+</details>
+<details class="ml-quiz">
+  <summary>An arm has been pulled 4 times with 1 success at round t = 20. What is its UCB1 score?</summary>
+  <p>0.25 + √(2 ln 20 / 4) = 0.25 + √(1.498) ≈ 0.25 + 1.224 = 1.474.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why must <code>SGDClassifier.partial_fit</code> be given <code>classes</code> on its first call?</summary>
+  <p>The first batch may not contain every label, and the estimator has to allocate one weight vector per class (or one for binary) before it can train. Later batches are checked against those classes.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Zinkevich. <em>Online Convex Programming and Generalized Infinitesimal Gradient Ascent.</em> ICML 2003.</li>
+  <li>Hazan. <em>Introduction to Online Convex Optimization.</em> 2016, revised 2019.
+    <a href="https://arxiv.org/abs/1909.05207">arXiv:1909.05207</a></li>
+  <li>Bottou. <em>Large-Scale Machine Learning with Stochastic Gradient Descent.</em> COMPSTAT 2010.</li>
+  <li>Crammer, Dekel, Keshet, Shalev-Shwartz and Singer. <em>Online Passive-Aggressive Algorithms.</em> JMLR, 2006.</li>
+  <li>Gama, Žliobaitė, Bifet, Pechenizkiy and Bouchachia. <em>A Survey on Concept Drift Adaptation.</em> ACM Computing Surveys, 2014.</li>
+  <li>Lai and Robbins. <em>Asymptotically Efficient Adaptive Allocation Rules.</em> Advances in Applied Mathematics, 1985.</li>
+  <li>Auer, Cesa-Bianchi and Fischer. <em>Finite-time Analysis of the Multiarmed Bandit Problem.</em> Machine Learning, 2002.</li>
+  <li>Thompson. <em>On the Likelihood that One Unknown Probability Exceeds Another in View of the Evidence of Two Samples.</em> Biometrika, 1933.</li>
+  <li>Russo, Van Roy, Kazerouni, Osband and Wen. <em>A Tutorial on Thompson Sampling.</em> 2018.
+    <a href="https://arxiv.org/abs/1707.02038">arXiv:1707.02038</a></li>
+  <li>Lattimore and Szepesvári. <em>Bandit Algorithms.</em> Cambridge University Press, 2020.</li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/linear_model/_stochastic_gradient.py', 958, 1427) }}"><code>SGDClassifier</code></a>,
+    <a href="{{ skl('sklearn/linear_model/_stochastic_gradient.py', 1802, 2122) }}"><code>SGDRegressor</code></a>,
+    <a href="{{ skl('sklearn/linear_model/_sgd_fast.pyx.tp', 457, 488) }}">step-size schedules</a>.</li>
+</ul>
