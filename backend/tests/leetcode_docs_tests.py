@@ -663,11 +663,12 @@ def test_bst_helpers_match_the_page():
     bst = [8, [3, [1, None, None], [6, [4, None, None], [7, None, None]]], [10, None, [14, [13, None, None], None]]]
     assert leetcode_docs.tree_orders(bst)["inorder"] == [1, 3, 4, 6, 7, 8, 10, 13, 14]
     assert leetcode_docs.bst_validate_trace(bst)["valid"] is True
-    bad = [5, [1, None, None], [4, [3, None, None], [6, None, None]]]
+    bad = [5, [4, None, None], [6, [3, None, None], [7, None, None]]]
     trace = leetcode_docs.bst_validate_trace(bad)
     assert trace["valid"] is False
     assert [(s["node"], s["low"], s["high"], s["ok"]) for s in trace["steps"]] == [
-        (5, None, None, True), (1, None, 5, True), (4, 5, None, False)]
+        (5, None, None, True), (4, None, 5, True), (6, 5, None, True), (3, 5, 6, False)]
+    assert bad[2][1][0] < bad[2][0]
     leaky = [5, [1, None, None], [6, [3, None, None], [7, None, None]]]
     assert leetcode_docs.bst_validate_trace(leaky)["valid"] is False
     kth = leetcode_docs.bst_kth_smallest(bst, 4)
@@ -683,7 +684,8 @@ def test_bst_helpers_match_the_page():
     body = re.sub(r"\s+", " ", app_module.app.test_client().get("/leetcode/binary-search-trees").get_data(as_text=True))
     assert "The 4th smallest value is 6" in body
     assert "so the lowest common ancestor is 6." in body
-    assert "fails its interval (5, +inf)" in body
+    assert "fails its interval (5, 6)" in body
+    assert "Node 3 is a left child of 6 and smaller than it" in body
 
 
 def test_tree_construction_helpers_match_the_page():
@@ -2030,3 +2032,21 @@ def test_linked_list_design_copy_random_list_code_copies_deeply():
     assert [copy.val for copy in copies] == [7, 13, 11, 10, 1]
     assert not set(map(id, copies)) & set(map(id, nodes))
     assert [None if copy.random is None else copies.index(copy.random) for copy in copies] == [None, 0, 4, 2, 0]
+
+
+def test_prose_tracks_the_values_it_describes():
+    def text(slug):
+        html = app_module.app.test_client().get(f"/leetcode/{slug}").get_data(as_text=True)
+        return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", html))
+
+    prod = leetcode_docs.max_product_trace([2, -5, -2, -4, 3])
+    assert (f"smallest column swings to {prod['rows'][3][2]} and then {prod['rows'][4][2]}, "
+            f"while the biggest column reaches {prod['answer']}") in text("linear-dp")
+    uniq = leetcode_docs.longest_unique_trace("abcbdace")
+    assert uniq["steps"][5]["char"] == "a" and uniq["steps"][5]["left"] > 0
+    assert "the letter a at index 5 had an earlier copy at 0, which is already behind the left edge (2)" in text("variable-size-window")
+    run = leetcode_docs.bellman_ford_rounds(5, [(3, 4, 2), (1, 3, 3), (2, 3, 6), (2, 1, -2), (0, 2, 1), (0, 1, 4)], 0)
+    assert len(run["history"]) - 2 <= 4
+    assert "within the n - 1 = 4 bound" in text("bellman-ford")
+    assert "lower-numbered one" not in text("dijkstra")
+    assert "eight unions" not in text("union-find")

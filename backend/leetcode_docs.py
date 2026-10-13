@@ -2249,7 +2249,7 @@ PROBLEMS = [
         "lists": ["blind-75", "grind-169", "neetcode-150", "neetcode-250"],
         "home": "greedy",
         "patterns": ["interval-merging"],
-        "insight": "Sort by end time and keep each interval that starts after the last kept end; the answer is how many intervals were dropped.",
+        "insight": "Sort by end time and keep each interval that starts at or after the last kept end; the answer is how many intervals were dropped.",
     },
     {
         "number": 437,
