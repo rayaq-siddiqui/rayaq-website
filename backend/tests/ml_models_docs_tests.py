@@ -4472,3 +4472,61 @@ def test_no_sync_cuts_all_reduce_traffic_by_the_accumulation_factor():
     assert every["per_reduce"] == pytest.approx(2 * 7 / 8 * 5.2e9)
     assert every["total"] == pytest.approx(8 * once["total"])
     assert ex["global_batch"] == 256 and ex["global_tokens"] == 524_288
+
+
+def test_latency_decode_is_memory_bound_and_batching_trades_latency_for_throughput():
+    ex = ml_models_docs.latency_example()
+    decode = ex["decode"]
+    assert ex["kv_bytes_per_token"] == 131072
+    assert all(step["bound"] == "memory" and step["fits"] for step in decode)
+    assert all(step["intensity"] < ex["ridge"] for step in decode)
+    assert decode[0]["itl_ms"] == pytest.approx(16e9 * 1000 / 3.35e12, rel=0.02)
+    itls = [step["itl_ms"] for step in decode]
+    rates = [step["tokens_per_s"] for step in decode]
+    assert itls == sorted(itls) and rates == sorted(rates)
+    assert rates[-1] > 40 * rates[0] and itls[-1] < 5 * itls[0]
+    assert ex["max_batch"] == 238
+    assert ml_models_docs.lt_decode_step(238, 2048)["fits"]
+    assert not ml_models_docs.lt_decode_step(239, 2048)["fits"]
+
+
+def test_latency_prefill_is_compute_bound_and_sets_time_to_first_token():
+    ex = ml_models_docs.latency_example()
+    prefill = ex["prefill"]
+    assert prefill["bound"] == "compute"
+    assert prefill["intensity"] > ex["ridge"]
+    assert prefill["ms"] == pytest.approx(16.84, abs=0.01)
+    expected = (prefill["ms"] + 255 * ex["decode"][0]["itl_ms"]) / 1000
+    assert ex["single_request_s"] == pytest.approx(expected)
+
+
+def test_latency_littles_law_fixed_point():
+    ex = ml_models_docs.latency_example()
+    stable = [row for row in ex["little"] if row["stable"]]
+    assert [row["rate"] for row in stable] == [5, 10, 20]
+    for row in stable:
+        assert row["concurrency"] == pytest.approx(row["rate"] * row["latency_s"], rel=1e-6)
+        assert row["concurrency"] <= ex["max_batch"]
+    latencies = [row["latency_s"] for row in stable]
+    assert latencies == sorted(latencies)
+    assert 20 <= ex["max_stable_rate"] < 30
+    assert not ml_models_docs.lt_little_fixed_point(ex["max_stable_rate"] + 1, 2048, 1024, 256, 238)["stable"]
+
+
+def test_latency_queue_tail_grows_faster_than_the_mean():
+    ex = ml_models_docs.latency_example()
+    rows = ex["queue"]
+    for row in rows:
+        assert row["mean_ms"] == pytest.approx(row["theory_mean_ms"], rel=0.12)
+        assert row["p99_ms"] > row["mean_ms"] > row["p50_ms"] >= 10
+    p99 = [row["p99_ms"] for row in rows]
+    assert p99 == sorted(p99)
+    assert p99[-1] / p99[0] > rows[-1]["mean_ms"] / rows[0]["mean_ms"]
+    assert ml_models_docs.lt_queue_latencies(10.0, 0.5, 50, 7) == ml_models_docs.lt_queue_latencies(10.0, 0.5, 50, 7)
+
+
+def test_latency_fanout_tail():
+    slow = {row["width"]: row["slow"] for row in ml_models_docs.latency_example()["fanout"]}
+    assert slow[1] == pytest.approx(0.01)
+    assert slow[10] == pytest.approx(0.0956, abs=1e-4)
+    assert slow[100] == pytest.approx(0.634, abs=1e-3)

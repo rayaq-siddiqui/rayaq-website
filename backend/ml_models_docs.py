@@ -10981,6 +10981,145 @@ def accumulation_example():
     }
 
 
+LATENCY_EXAMPLE = {
+    "params": 8e9,
+    "bytes_per_param": 2,
+    "d_model": 4096,
+    "gpu": {"flops": 989e12, "bandwidth": 3.35e12, "memory": 80e9},
+    "context": 2048,
+    "prompt": 1024,
+    "output": 256,
+    "batches": (1, 8, 32, 64, 128, 192),
+    "rates": (5, 10, 20, 30, 40),
+    "queue": {"service_ms": 10.0, "utilizations": (0.5, 0.8, 0.9, 0.95), "requests": 20000, "seed": 7},
+    "fanout": {"p_slow": 0.01, "widths": (1, 10, 100)},
+}
+
+
+def lt_kv_bytes_per_token():
+    return kv_cache_bytes_per_token(KV_CONFIG["layers"], KV_CONFIG["kv_heads"], KV_CONFIG["head_dim"],
+                                    KV_CONFIG["bytes_per_value"])
+
+
+def lt_decode_step(batch, context):
+    e, gpu = LATENCY_EXAMPLE, LATENCY_EXAMPLE["gpu"]
+    weights = e["params"] * e["bytes_per_param"]
+    kv = batch * context * lt_kv_bytes_per_token()
+    flops = batch * (2 * e["params"] + 4 * KV_CONFIG["layers"] * e["d_model"] * context)
+    memory_s = (weights + kv) / gpu["bandwidth"]
+    compute_s = flops / gpu["flops"]
+    seconds = max(memory_s, compute_s)
+    return {
+        "batch": batch,
+        "weight_bytes": weights,
+        "kv_bytes": kv,
+        "flops": flops,
+        "intensity": flops / (weights + kv),
+        "memory_ms": 1000 * memory_s,
+        "compute_ms": 1000 * compute_s,
+        "itl_ms": 1000 * seconds,
+        "bound": "memory" if memory_s >= compute_s else "compute",
+        "tokens_per_s": batch / seconds,
+        "fits": weights + kv <= gpu["memory"],
+    }
+
+
+def lt_prefill(prompt):
+    e, gpu = LATENCY_EXAMPLE, LATENCY_EXAMPLE["gpu"]
+    flops = 2 * e["params"] * prompt + 2 * KV_CONFIG["layers"] * e["d_model"] * prompt * prompt
+    bytes_moved = e["params"] * e["bytes_per_param"] + prompt * lt_kv_bytes_per_token()
+    memory_s = bytes_moved / gpu["bandwidth"]
+    compute_s = flops / gpu["flops"]
+    return {
+        "flops": flops,
+        "bytes": bytes_moved,
+        "intensity": flops / bytes_moved,
+        "memory_ms": 1000 * memory_s,
+        "compute_ms": 1000 * compute_s,
+        "ms": 1000 * max(memory_s, compute_s),
+        "bound": "memory" if memory_s >= compute_s else "compute",
+    }
+
+
+def lt_max_batch(context):
+    e, gpu = LATENCY_EXAMPLE, LATENCY_EXAMPLE["gpu"]
+    return int((gpu["memory"] - e["params"] * e["bytes_per_param"]) // (context * lt_kv_bytes_per_token()))
+
+
+def lt_little_fixed_point(rate, context, prompt, output, max_batch, rounds=200):
+    prefill_s = lt_prefill(prompt)["ms"] / 1000
+    decode_share = 1 - rate * prefill_s
+    if decode_share <= 0:
+        return {"rate": rate, "stable": False}
+    concurrency = 1.0
+    for _ in range(rounds):
+        itl = lt_decode_step(concurrency, context)["itl_ms"] / 1000 / decode_share
+        latency = prefill_s + (output - 1) * itl
+        following = rate * latency
+        if following > max_batch:
+            return {"rate": rate, "stable": False}
+        if abs(following - concurrency) < 1e-9:
+            break
+        concurrency = following
+    return {
+        "rate": rate,
+        "stable": True,
+        "concurrency": concurrency,
+        "itl_ms": 1000 * itl,
+        "latency_s": latency,
+        "tokens_per_s": rate * output,
+    }
+
+
+def lt_queue_latencies(service_ms, utilization, requests, seed):
+    rng = random.Random(seed)
+    mean_gap = service_ms / utilization
+    wait, latencies = 0.0, []
+    for _ in range(requests):
+        latencies.append(wait + service_ms)
+        wait = max(0.0, wait + service_ms - rng.expovariate(1 / mean_gap))
+    return latencies
+
+
+def lt_queue_summary(service_ms, utilization, requests, seed):
+    latencies = lt_queue_latencies(service_ms, utilization, requests, seed)
+    return {
+        "utilization": utilization,
+        "mean_ms": sum(latencies) / len(latencies),
+        "theory_mean_ms": service_ms + utilization * service_ms / (2 * (1 - utilization)),
+        "p50_ms": nearest_rank(latencies, 0.5),
+        "p99_ms": nearest_rank(latencies, 0.99),
+    }
+
+
+def lt_fanout_slow(p_slow, width):
+    return 1 - (1 - p_slow) ** width
+
+
+@functools.lru_cache(maxsize=None)
+def latency_example():
+    e = LATENCY_EXAMPLE
+    q = e["queue"]
+    max_batch = lt_max_batch(e["context"])
+    prefill = lt_prefill(e["prompt"])
+    decode = [lt_decode_step(b, e["context"]) for b in e["batches"]]
+    single = decode[0]
+    return {
+        "example": e,
+        "kv_bytes_per_token": lt_kv_bytes_per_token(),
+        "ridge": e["gpu"]["flops"] / e["gpu"]["bandwidth"],
+        "prefill": prefill,
+        "decode": decode,
+        "max_batch": max_batch,
+        "single_request_s": (prefill["ms"] + (e["output"] - 1) * single["itl_ms"]) / 1000,
+        "little": [lt_little_fixed_point(r, e["context"], e["prompt"], e["output"], max_batch) for r in e["rates"]],
+        "queue": [lt_queue_summary(q["service_ms"], u, q["requests"], q["seed"]) for u in q["utilizations"]],
+        "fanout": [{"width": w, "slow": lt_fanout_slow(e["fanout"]["p_slow"], w)} for w in e["fanout"]["widths"]],
+        "max_stable_rate": max(r for r in range(1, 60)
+                               if lt_little_fixed_point(r, e["context"], e["prompt"], e["output"], max_batch)["stable"]),
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -11014,6 +11153,7 @@ def render(slug, render_template):
         "ltr_example": ltr_example,
         "collab_example": collab_example,
         "accumulation_example": accumulation_example,
+        "latency_example": latency_example,
         "data_example": data_example,
         "serving_example": serving_example,
         "causal_example": causal_example,
