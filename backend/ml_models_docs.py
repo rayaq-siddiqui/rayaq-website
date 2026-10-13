@@ -10319,6 +10319,187 @@ def gnn_example():
     }
 
 
+DIFFUSION_EXAMPLE = {
+    "steps": 1000,
+    "beta_start": 1e-4,
+    "beta_end": 0.02,
+    "cosine_offset": 0.008,
+    "checkpoints": [1, 10, 50, 100, 250, 500, 750, 1000],
+    "x0": 1.0,
+    "eps": -0.5,
+    "prior_plus": 0.7,
+    "ddim_steps": [10, 50],
+    "ddim_starts": [-1.5, -0.5, 0.0, 0.5, 1.5],
+    "grid": 400,
+    "guidance": [0.0, 1.0, 3.0],
+    "ddpm_samples": 1000,
+    "ddpm_seed": 0,
+    "latent": {"height": 512, "width": 512, "channels": 3, "factor": 8, "latent_channels": 4},
+}
+
+
+def diffusion_linear_betas(steps, start, end):
+    return [start + (end - start) * i / (steps - 1) for i in range(steps)]
+
+
+def diffusion_cosine_betas(steps, offset=0.008, max_beta=0.999):
+    def f(t):
+        return math.cos((t / steps + offset) / (1 + offset) * math.pi / 2) ** 2
+    return [min(1 - f(t + 1) / f(t), max_beta) for t in range(steps)]
+
+
+def diffusion_alpha_bars(betas):
+    out, running = [], 1.0
+    for b in betas:
+        running *= 1 - b
+        out.append(running)
+    return out
+
+
+def diffusion_forward(x0, eps, alpha_bar):
+    return math.sqrt(alpha_bar) * x0 + math.sqrt(1 - alpha_bar) * eps
+
+
+def diffusion_iterated_moments(betas, x0):
+    mean, var = x0, 0.0
+    for b in betas:
+        mean = math.sqrt(1 - b) * mean
+        var = (1 - b) * var + b
+    return mean, var
+
+
+def diffusion_posterior(x0, xt, t, betas, alpha_bars):
+    ab, ab_prev = alpha_bars[t], alpha_bars[t - 1] if t > 0 else 1.0
+    beta = betas[t]
+    coef_x0 = math.sqrt(ab_prev) * beta / (1 - ab)
+    coef_xt = math.sqrt(1 - beta) * (1 - ab_prev) / (1 - ab)
+    return {
+        "coef_x0": coef_x0,
+        "coef_xt": coef_xt,
+        "mean": coef_x0 * x0 + coef_xt * xt,
+        "variance": (1 - ab_prev) / (1 - ab) * beta,
+    }
+
+
+def diffusion_eps_mean(xt, eps, t, betas, alpha_bars):
+    return (xt - betas[t] / math.sqrt(1 - alpha_bars[t]) * eps) / math.sqrt(1 - betas[t])
+
+
+def diffusion_elbo_weight(t, betas, alpha_bars, variance):
+    beta = betas[t]
+    return beta * beta / (2 * variance * (1 - beta) * (1 - alpha_bars[t]))
+
+
+def two_point_denoiser(xt, alpha_bar, prior_plus=0.5):
+    shift = 0.5 * math.log(prior_plus / (1 - prior_plus))
+    x0_hat = math.tanh(math.sqrt(alpha_bar) * xt / (1 - alpha_bar) + shift)
+    eps_hat = (xt - math.sqrt(alpha_bar) * x0_hat) / math.sqrt(1 - alpha_bar)
+    return x0_hat, eps_hat
+
+
+def two_point_eps(xt, alpha_bar):
+    return two_point_denoiser(xt, alpha_bar)[1]
+
+
+def guided_eps(xt, alpha_bar, prior_plus, weight):
+    cond = two_point_denoiser(xt, alpha_bar, prior_plus)[1]
+    uncond = two_point_denoiser(xt, alpha_bar, 0.5)[1]
+    return (1 + weight) * cond - weight * uncond
+
+
+def ddim_timesteps(steps, count):
+    stride = steps // count
+    return list(range(steps - 1, -1, -stride))[:count]
+
+
+def ddim_sample(xt, alpha_bars, timesteps, eps_fn):
+    path = [xt]
+    for k, t in enumerate(timesteps):
+        ab = alpha_bars[t]
+        ab_next = alpha_bars[timesteps[k + 1]] if k + 1 < len(timesteps) else 1.0
+        eps = eps_fn(xt, ab)
+        x0_hat = (xt - math.sqrt(1 - ab) * eps) / math.sqrt(ab)
+        xt = math.sqrt(ab_next) * x0_hat + math.sqrt(1 - ab_next) * eps
+        path.append(xt)
+    return path
+
+
+def ddpm_sample(xt, betas, alpha_bars, eps_fn, rng):
+    for t in range(len(betas) - 1, -1, -1):
+        eps = eps_fn(xt, alpha_bars[t])
+        mean = diffusion_eps_mean(xt, eps, t, betas, alpha_bars)
+        xt = mean + (math.sqrt(betas[t]) * rng.gauss(0.0, 1.0) if t > 0 else 0.0)
+    return xt
+
+
+def normal_quantile_grid(count):
+    dist = statistics.NormalDist()
+    return [dist.inv_cdf((i + 0.5) / count) for i in range(count)]
+
+
+def latent_compression(height, width, channels, factor, latent_channels):
+    pixels = height * width * channels
+    latents = (height // factor) * (width // factor) * latent_channels
+    return {"pixels": pixels, "latents": latents, "ratio": pixels / latents,
+            "latent_shape": [latent_channels, height // factor, width // factor]}
+
+
+@functools.lru_cache(maxsize=None)
+def diffusion_example():
+    e = DIFFUSION_EXAMPLE
+    T = e["steps"]
+    linear = diffusion_linear_betas(T, e["beta_start"], e["beta_end"])
+    cosine = diffusion_cosine_betas(T, e["cosine_offset"])
+    ab_lin, ab_cos = diffusion_alpha_bars(linear), diffusion_alpha_bars(cosine)
+    schedule = []
+    for t in e["checkpoints"]:
+        a, c = ab_lin[t - 1], ab_cos[t - 1]
+        schedule.append({
+            "t": t, "beta": linear[t - 1], "linear": a, "cosine": c,
+            "snr_linear": a / (1 - a), "snr_cosine": c / (1 - c),
+            "xt": diffusion_forward(e["x0"], e["eps"], a),
+            "weight": diffusion_elbo_weight(t - 1, linear, ab_lin, linear[t - 1]) if t > 1 else None,
+        })
+    mean, var = diffusion_iterated_moments(linear, e["x0"])
+    t_mid = 499
+    xt_mid = diffusion_forward(e["x0"], e["eps"], ab_lin[t_mid])
+    post = diffusion_posterior(e["x0"], xt_mid, t_mid, linear, ab_lin)
+    eps_mean = diffusion_eps_mean(xt_mid, e["eps"], t_mid, linear, ab_lin)
+    denoise = []
+    for t in (999, 749, 499, 249, 99):
+        x0_hat, eps_hat = two_point_denoiser(0.5, ab_lin[t])
+        denoise.append({"t": t + 1, "alpha_bar": ab_lin[t], "x0_hat": x0_hat, "eps_hat": eps_hat})
+    ddim = []
+    for count in e["ddim_steps"]:
+        ts = ddim_timesteps(T, count)
+        paths = [ddim_sample(x, ab_lin, ts, two_point_eps) for x in e["ddim_starts"]]
+        ddim.append({"count": count, "timesteps": ts, "paths": paths})
+    grid = normal_quantile_grid(e["grid"])
+    ts50 = ddim_timesteps(T, 50)
+    guidance = []
+    for w in e["guidance"]:
+        finals = [ddim_sample(x, ab_lin, ts50, lambda xt, ab, w=w: guided_eps(xt, ab, e["prior_plus"], w))[-1] for x in grid]
+        plus = sum(1 for v in finals if v > 0) / len(finals)
+        guidance.append({"weight": w, "scale": 1 + w, "plus": plus, "mean": sum(finals) / len(finals),
+                         "max_abs": max(abs(v) for v in finals)})
+    rng = random.Random(e["ddpm_seed"])
+    samples = [ddpm_sample(rng.gauss(0.0, 1.0), linear, ab_lin, two_point_eps, rng) for _ in range(e["ddpm_samples"])]
+    plus = [v for v in samples if v > 0]
+    ddpm = {"count": len(samples), "plus": len(plus) / len(samples),
+            "max_error": max(abs(abs(v) - 1) for v in samples)}
+    return {
+        "example": e,
+        "schedule": schedule,
+        "iterated": {"mean": mean, "variance": var, "closed_mean": math.sqrt(ab_lin[-1]) * e["x0"], "closed_variance": 1 - ab_lin[-1]},
+        "posterior": {"t": t_mid + 1, "xt": xt_mid, "eps_mean": eps_mean, **post},
+        "denoise": denoise,
+        "ddim": ddim,
+        "guidance": guidance,
+        "ddpm": ddpm,
+        "latent": latent_compression(**e["latent"]),
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -10355,6 +10536,7 @@ def render(slug, render_template):
         "causal_example": causal_example,
         "calibration_example": calibration_example,
         "gnn_example": gnn_example,
+        "diffusion_example": diffusion_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,
         "multihead_example": MULTIHEAD_EXAMPLE,

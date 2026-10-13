@@ -4236,3 +4236,67 @@ def test_batching_graphs_offsets_edges_and_pools_per_graph():
     assert batch["sources"][-3:] == [5, 6, 5] and batch["targets"][-3:] == [6, 7, 7]
     assert batch["mean_pool"][0] == pytest.approx([0.8, 0.8])
     assert batch["mean_pool"][1] == pytest.approx([1, 2])
+
+
+def test_diffusion_schedules_match_the_ddpm_endpoints_and_decrease():
+    betas = ml_models_docs.diffusion_linear_betas(1000, 1e-4, 0.02)
+    assert betas[0] == pytest.approx(1e-4) and betas[-1] == pytest.approx(0.02)
+    for schedule in (betas, ml_models_docs.diffusion_cosine_betas(1000)):
+        bars = ml_models_docs.diffusion_alpha_bars(schedule)
+        assert all(a > b for a, b in zip(bars, bars[1:]))
+        assert bars[-1] < 1e-4
+    rows = ml_models_docs.diffusion_example()["schedule"]
+    assert all(r["cosine"] > r["linear"] for r in rows[1:-1])
+
+
+def test_diffusion_closed_form_matches_iterating_the_one_step_noise():
+    it = ml_models_docs.diffusion_example()["iterated"]
+
+    assert it["mean"] == pytest.approx(it["closed_mean"])
+    assert it["variance"] == pytest.approx(it["closed_variance"])
+
+
+def test_diffusion_posterior_mean_equals_the_epsilon_parameterization():
+    ex = ml_models_docs.diffusion_example()
+    post = ex["posterior"]
+
+    assert post["eps_mean"] == pytest.approx(post["mean"])
+    betas = ml_models_docs.diffusion_linear_betas(1000, 1e-4, 0.02)
+    assert post["variance"] < betas[post["t"] - 1]
+
+
+def test_two_point_denoiser_is_the_posterior_mean():
+    bars = ml_models_docs.diffusion_alpha_bars(ml_models_docs.diffusion_linear_betas(1000, 1e-4, 0.02))
+    ab, xt = bars[300], 0.4
+    plus = 0.7 * math.exp(-((xt - math.sqrt(ab)) ** 2) / (2 * (1 - ab)))
+    minus = 0.3 * math.exp(-((xt + math.sqrt(ab)) ** 2) / (2 * (1 - ab)))
+    x0_hat, eps_hat = ml_models_docs.two_point_denoiser(xt, ab, 0.7)
+
+    assert x0_hat == pytest.approx((plus - minus) / (plus + minus))
+    assert xt == pytest.approx(math.sqrt(ab) * x0_hat + math.sqrt(1 - ab) * eps_hat)
+
+
+def test_ddim_is_deterministic_and_lands_on_the_data():
+    ex = ml_models_docs.diffusion_example()
+    for run in ex["ddim"]:
+        assert len(run["timesteps"]) == run["count"] and run["timesteps"][0] == 999
+        finals = [p[-1] for p in run["paths"]]
+        for start, final in zip(ex["example"]["ddim_starts"], finals):
+            assert final == pytest.approx(math.copysign(1, start) if start else 0, abs=1e-4)
+
+
+def test_guidance_sharpens_toward_the_condition_and_ddpm_matches_the_data():
+    ex = ml_models_docs.diffusion_example()
+    plus = [g["plus"] for g in ex["guidance"]]
+
+    assert plus[0] == pytest.approx(0.7, abs=0.02)
+    assert plus == sorted(plus) and plus[-1] > 0.9
+    assert ex["ddpm"]["max_error"] < 1e-9
+    assert ex["ddpm"]["plus"] == pytest.approx(0.5, abs=0.05)
+
+
+def test_latent_diffusion_compresses_a_512_image_48_times():
+    latent = ml_models_docs.diffusion_example()["latent"]
+
+    assert latent["latent_shape"] == [4, 64, 64]
+    assert latent["ratio"] == 48
