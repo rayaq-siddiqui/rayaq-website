@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "86b7e2e80b8e541a6aee2972a077428b7d1d4e18",
-    "commit_date": "2026-10-12",
+    "commit": "1776665985c4b04f098dcfd31283315ca8a03758",
+    "commit_date": "2026-10-13",
     "version": "0.46.0",
-    "analyzed_on": "2026-10-12",
+    "analyzed_on": "2026-10-13",
 }
 
 TOPICS = [
@@ -409,7 +409,7 @@ COMMANDS = [
         "category": 'Content and conflicts',
         "tier": 'A',
         "summary": 'Delete files from the given revision',
-        "source": ('cli/src/commands/file/delete.rs', 36),
+        "source": ('cli/src/commands/file/delete.rs', 35),
     },
     {
         "command": 'file edit',
@@ -451,7 +451,7 @@ COMMANDS = [
         "category": 'Content and conflicts',
         "tier": 'A',
         "summary": 'Stop tracking specified paths in the working copy',
-        "source": ('cli/src/commands/file/untrack.rs', 34),
+        "source": ('cli/src/commands/file/untrack.rs', 33),
     },
     {
         "command": 'sparse edit',
