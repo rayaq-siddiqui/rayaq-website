@@ -9763,6 +9763,190 @@ def serving_example():
     }
 
 
+CAUSAL_EXAMPLE = {
+    "units": [
+        {"z": 0, "y0": 8, "y1": 9, "t": 0},
+        {"z": 0, "y0": 7, "y1": 9, "t": 0},
+        {"z": 0, "y0": 9, "y1": 10, "t": 0},
+        {"z": 0, "y0": 8, "y1": 10, "t": 1},
+        {"z": 1, "y0": 3, "y1": 6, "t": 1},
+        {"z": 1, "y0": 2, "y1": 5, "t": 1},
+        {"z": 1, "y0": 4, "y1": 6, "t": 1},
+        {"z": 1, "y0": 3, "y1": 5, "t": 0},
+    ],
+    "strata": [
+        {"name": "mild", "z": 0, "treated": 200, "treated_recovered": 180, "control": 600, "control_recovered": 480},
+        {"name": "severe", "z": 1, "treated": 300, "treated_recovered": 150, "control": 100, "control_recovered": 40},
+    ],
+    "did_treated": [48, 50, 62, 64],
+    "did_control": [38, 40, 46, 48],
+    "did_first_post": 2,
+    "segments": [
+        {"name": "A", "size": 1000, "treated_rate": 0.30, "control_rate": 0.10},
+        {"name": "B", "size": 1000, "treated_rate": 0.60, "control_rate": 0.58},
+        {"name": "C", "size": 1000, "treated_rate": 0.05, "control_rate": 0.04},
+        {"name": "D", "size": 1000, "treated_rate": 0.35, "control_rate": 0.45},
+    ],
+    "target_segments": 2,
+}
+
+
+def potential_outcomes_summary(units):
+    treated = [u["y1"] for u in units if u["t"] == 1]
+    control = [u["y0"] for u in units if u["t"] == 0]
+    effects = [u["y1"] - u["y0"] for u in units]
+    ate = sum(effects) / len(units)
+    naive = sum(treated) / len(treated) - sum(control) / len(control)
+    treated_baseline = statistics.fmean(u["y0"] for u in units if u["t"] == 1)
+    control_baseline = statistics.fmean(u["y0"] for u in units if u["t"] == 0)
+    att = statistics.fmean(u["y1"] - u["y0"] for u in units if u["t"] == 1)
+    return {
+        "effects": effects,
+        "ate": ate,
+        "att": att,
+        "naive": naive,
+        "selection_bias": treated_baseline - control_baseline,
+        "observed": [u["y1"] if u["t"] else u["y0"] for u in units],
+    }
+
+
+def randomized_assignments(units, treated_count):
+    estimates = []
+    for chosen in itertools.combinations(range(len(units)), treated_count):
+        picked = set(chosen)
+        treated = statistics.fmean(units[i]["y1"] for i in picked)
+        control = statistics.fmean(units[i]["y0"] for i in range(len(units)) if i not in picked)
+        estimates.append(treated - control)
+    return {
+        "count": len(estimates),
+        "mean": statistics.fmean(estimates),
+        "min": min(estimates),
+        "max": max(estimates),
+        "std": statistics.pstdev(estimates),
+    }
+
+
+def stratified_effect(strata):
+    total = sum(s["treated"] + s["control"] for s in strata)
+    rows = []
+    for s in strata:
+        size = s["treated"] + s["control"]
+        treated_rate = s["treated_recovered"] / s["treated"]
+        control_rate = s["control_recovered"] / s["control"]
+        rows.append({
+            "name": s["name"],
+            "size": size,
+            "share": size / total,
+            "propensity": s["treated"] / size,
+            "treated_rate": treated_rate,
+            "control_rate": control_rate,
+            "effect": treated_rate - control_rate,
+        })
+    treated_total = sum(s["treated"] for s in strata)
+    control_total = sum(s["control"] for s in strata)
+    naive_treated = sum(s["treated_recovered"] for s in strata) / treated_total
+    naive_control = sum(s["control_recovered"] for s in strata) / control_total
+    return {
+        "rows": rows,
+        "total": total,
+        "naive_treated": naive_treated,
+        "naive_control": naive_control,
+        "naive": naive_treated - naive_control,
+        "adjusted": sum(r["share"] * r["effect"] for r in rows),
+    }
+
+
+def ipw_effect(strata, propensities=None):
+    total = sum(s["treated"] + s["control"] for s in strata)
+    treated_sum = control_sum = treated_weight = control_weight = 0.0
+    weights = []
+    for i, s in enumerate(strata):
+        e = propensities[i] if propensities else s["treated"] / (s["treated"] + s["control"])
+        treated_sum += s["treated_recovered"] / e
+        control_sum += s["control_recovered"] / (1 - e)
+        treated_weight += s["treated"] / e
+        control_weight += s["control"] / (1 - e)
+        weights.append({"name": s["name"], "propensity": e, "treated": 1 / e, "control": 1 / (1 - e),
+                        "pseudo_treated": s["treated"] / e, "pseudo_control": s["control"] / (1 - e)})
+    return {
+        "weights": weights,
+        "horvitz_thompson": (treated_sum - control_sum) / total,
+        "hajek": treated_sum / treated_weight - control_sum / control_weight,
+    }
+
+
+def propensity_fit(strata, c=None):
+    rows, treated = [], []
+    for s in strata:
+        size = s["treated"] + s["control"]
+        rows += [[s["z"]]] * size
+        treated += [1] * s["treated"] + [0] * s["control"]
+    weight, bias = logistic_newton(rows, treated, c=c)[-1]["params"]
+    return {
+        "weight": weight,
+        "bias": bias,
+        "propensities": [sigmoid(weight * s["z"] + bias) for s in strata],
+    }
+
+
+def diff_in_diff(treated, control, first_post):
+    pre_t = statistics.fmean(treated[:first_post])
+    post_t = statistics.fmean(treated[first_post:])
+    pre_c = statistics.fmean(control[:first_post])
+    post_c = statistics.fmean(control[first_post:])
+    effect = (post_t - pre_t) - (post_c - pre_c)
+    counterfactual = [t if i < first_post else pre_t + (c - pre_c) for i, (t, c) in enumerate(zip(treated, control))]
+    return {
+        "pre_treated": pre_t,
+        "post_treated": post_t,
+        "pre_control": pre_c,
+        "post_control": post_c,
+        "effect": effect,
+        "before_after": post_t - pre_t,
+        "post_gap": post_t - post_c,
+        "pre_trend_gap": (treated[first_post - 1] - treated[0]) - (control[first_post - 1] - control[0]),
+        "counterfactual": counterfactual,
+    }
+
+
+def uplift_targeting(segments, k):
+    rows = [dict(s, uplift=s["treated_rate"] - s["control_rate"]) for s in segments]
+    for r in rows:
+        r["incremental"] = r["size"] * r["uplift"]
+
+    def pick(key):
+        chosen = sorted(rows, key=key, reverse=True)[:k]
+        return {"names": [r["name"] for r in chosen], "incremental": sum(r["incremental"] for r in chosen)}
+
+    return {
+        "rows": rows,
+        "by_response": pick(lambda r: r["treated_rate"]),
+        "by_uplift": pick(lambda r: r["uplift"]),
+        "everyone": sum(r["incremental"] for r in rows),
+    }
+
+
+@functools.lru_cache(maxsize=None)
+def causal_example():
+    e = CAUSAL_EXAMPLE
+    strat = stratified_effect(e["strata"])
+    fitted = propensity_fit(e["strata"])
+    regularized = propensity_fit(e["strata"], c=1.0)
+    return {
+        "example": e,
+        "po": potential_outcomes_summary(e["units"]),
+        "randomized": randomized_assignments(e["units"], 4),
+        "strat": strat,
+        "ipw": ipw_effect(e["strata"]),
+        "fit": fitted,
+        "fit_ipw": ipw_effect(e["strata"], fitted["propensities"]),
+        "regularized": regularized,
+        "regularized_ipw": ipw_effect(e["strata"], regularized["propensities"]),
+        "did": diff_in_diff(e["did_treated"], e["did_control"], e["did_first_post"]),
+        "uplift": uplift_targeting(e["segments"], e["target_segments"]),
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -9796,6 +9980,7 @@ def render(slug, render_template):
         "ltr_example": ltr_example,
         "data_example": data_example,
         "serving_example": serving_example,
+        "causal_example": causal_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,
         "multihead_example": MULTIHEAD_EXAMPLE,

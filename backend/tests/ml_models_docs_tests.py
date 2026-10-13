@@ -4030,3 +4030,67 @@ def test_continuous_batching_fills_freed_slots():
     for run in (static, cont):
         assert sum(len(row["active"]) for row in run["timeline"]) == 34
         assert all(len(row["active"]) + row["idle"] == 4 for row in run["timeline"])
+
+
+def test_naive_difference_is_the_effect_on_the_treated_plus_selection_bias():
+    units = ml_models_docs.CAUSAL_EXAMPLE["units"]
+    po = ml_models_docs.potential_outcomes_summary(units)
+
+    assert po["ate"] == 2
+    assert po["naive"] == 0
+    assert po["naive"] == pytest.approx(po["att"] + po["selection_bias"])
+    assert po["observed"] == [u["y1"] if u["t"] else u["y0"] for u in units]
+
+
+def test_randomized_assignment_is_unbiased_on_average():
+    units = ml_models_docs.CAUSAL_EXAMPLE["units"]
+    result = ml_models_docs.randomized_assignments(units, 4)
+
+    assert result["count"] == 70
+    assert result["mean"] == pytest.approx(ml_models_docs.potential_outcomes_summary(units)["ate"])
+    assert result["min"] < 0 < result["max"]
+
+
+def test_adjustment_and_inverse_weighting_reverse_the_naive_sign():
+    example = ml_models_docs.causal_example()
+    strat, ipw = example["strat"], example["ipw"]
+
+    assert strat["naive"] == pytest.approx(0.66 - 520 / 700)
+    assert strat["naive"] < 0
+    assert strat["adjusted"] == pytest.approx(0.10)
+    assert ipw["horvitz_thompson"] == pytest.approx(strat["adjusted"])
+    assert ipw["hajek"] == pytest.approx(strat["adjusted"])
+    for w, s in zip(ipw["weights"], ml_models_docs.CAUSAL_EXAMPLE["strata"]):
+        assert w["pseudo_treated"] == pytest.approx(s["treated"] + s["control"])
+        assert w["pseudo_control"] == pytest.approx(s["treated"] + s["control"])
+
+
+def test_logistic_propensity_recovers_stratum_rates_unless_penalized():
+    example = ml_models_docs.causal_example()
+
+    assert example["fit"]["propensities"] == pytest.approx([0.25, 0.75])
+    assert example["fit"]["bias"] == pytest.approx(math.log(1 / 3))
+    assert example["fit_ipw"]["horvitz_thompson"] == pytest.approx(0.10)
+    low, high = example["regularized"]["propensities"]
+    assert 0.25 < low < high < 0.75
+    assert example["regularized_ipw"]["horvitz_thompson"] < 0.10
+
+
+def test_difference_in_differences_subtracts_the_shared_trend():
+    did = ml_models_docs.causal_example()["did"]
+
+    assert did["effect"] == 6
+    assert did["before_after"] == 14
+    assert did["post_gap"] == 16
+    assert did["pre_trend_gap"] == 0
+    assert did["counterfactual"] == [48, 50, 56, 58]
+
+
+def test_uplift_targeting_beats_targeting_likely_responders():
+    uplift = ml_models_docs.causal_example()["uplift"]
+
+    assert uplift["by_response"]["names"] == ["B", "D"]
+    assert uplift["by_uplift"]["names"] == ["A", "B"]
+    assert uplift["by_response"]["incremental"] == pytest.approx(-80)
+    assert uplift["by_uplift"]["incremental"] == pytest.approx(220)
+    assert uplift["everyone"] == pytest.approx(130)
