@@ -1078,7 +1078,7 @@ PAGES = [
             "xgboost:src/objective/lambdarank_obj.cc",
             "sklearn:sklearn/metrics/_ranking.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "collaborative-filtering",
@@ -9497,6 +9497,7 @@ def ltr_example():
             "ndcg": ndcg_at(truth, guess),
         }
     return {
+        "example": e,
         "order": order,
         "ranked_labels": [labels[i] for i in order],
         "ideal_labels": sorted(labels, reverse=True),
