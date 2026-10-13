@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-13 (thirty-seventh run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-77, the last being `uncertainty`.
-The next page is `vision-transformer` (queue item 78).
+fixed page format. Ready pages: queue items 1-78, the last being `vision-transformer`.
+The next page is `diffusion-unet` (queue item 79).
 
 ## Pins
 
@@ -137,8 +137,9 @@ Paths are under `sklearn/`.
 - Where a list above gives only a start line, the end line is unverified. Check the end
   before linking a range. A naive "next top-level line" scan gets fooled by unindented
   docstrings and comments; it gave a wrong end for `RMSNorm`, which was corrected by hand.
-- On the index map, the boxes for `vision-transformer`, `mixture-of-experts` and
-  `diffusion-unet` link to whole files (`conv.py`, `container.py`) until their pages exist.
+- On the index map, the boxes for `mixture-of-experts` and `diffusion-unet` link to whole
+  files (`container.py`, `conv.py`) until their pages exist; `vision-transformer` now links
+  to its page.
 - The index map still covers only the architecture area. Widen it to all 12 areas once a
   page in each of the first few areas is ready.
 - `transformer` uses the v1 section layout and is exempt from the §6 order test until its
@@ -334,8 +335,8 @@ Gaps:
 75. `latency-and-throughput` ✓
 76. `online-learning` ✓
 77. `uncertainty` ✓
-78. `vision-transformer` ← next
-79. `diffusion-unet`
+78. `vision-transformer` ✓
+79. `diffusion-unet` ← next
 80. `fine-tuning`
 81. `two-tower-models`
 82. `distributed-training`

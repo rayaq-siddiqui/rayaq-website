@@ -1,0 +1,480 @@
+{% set ex = vit_example() %}
+{% set e = ex.example %}
+{% set cfg = ex.main %}
+{% set pr = ex.params %}
+{% set toy = e.toy %}
+{% macro c(x) -%}{{ "{:,}".format(x) }}{%- endmacro %}
+{% macro shape(s) -%}[{{ s|join(", ") }}]{%- endmacro %}
+<header class="jj-header">
+  <h1>Vision Transformer</h1>
+  <p class="tagline">
+    The Vision Transformer (ViT) reads an image the way a language model reads a sentence: it cuts the image into
+    16 × 16 patches, turns each patch into a token with one shared linear map, adds a learned position to each token,
+    and runs a plain transformer encoder. This page follows a 224 × 224 image to 197 tokens of width 768, shows why the
+    patch embedding is exactly a convolution with stride equal to its kernel, and counts ViT-B/16's
+    {{ c(pr.total) }} parameters.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  <a href="/ml-models/cnns">Convolutional networks</a> dominated vision for a decade because they build in two
+  assumptions: nearby pixels matter together (locality), and a cat is a cat wherever it appears (translation
+  equivariance). Meanwhile the <a href="/ml-models/transformer">transformer</a> took over language with almost no
+  built-in assumptions, and it kept getting better as data and models grew. Can the same architecture, unchanged,
+  learn vision?
+</p>
+<p>
+  The obvious move fails. Treat every pixel as a token and a 224 × 224 image becomes {{ c(224 * 224) }} tokens. Self-attention
+  compares every token with every other, so one head in one layer would compute {{ c((224 * 224) ** 2) }} scores, around
+  2.5 billion. The question is how to turn an image into a sequence short enough for attention while keeping the
+  architecture generic.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Cut the picture into tiles, the way you might cut a photo into a 14 × 14 grid of squares. Each tile is small enough
+  to describe with one vector, and there are only {{ ex.tokens.patches }} of them. Treat each tile as a word: flatten its pixels,
+  multiply by one learned matrix so every tile lands in the same {{ cfg.dim }}-dimensional space, and you have a
+  sentence of {{ ex.tokens.patches }} tokens. Attention then lets any tile look at any other from the very first layer; a CNN needs
+  many layers before a pixel in one corner can influence a pixel in the other.
+</p>
+<p>
+  Two pieces are borrowed from BERT's <a href="/ml-models/encoder-only">encoder-only</a> design. Attention ignores order,
+  so each token gets a learned <a href="/ml-models/positional-encoding">position embedding</a> that says which tile it
+  came from. And one extra token, the <strong>class token</strong>, starts as a learned vector with no image content; it
+  attends to all the patches in every layer, and its final state is what the classifier reads. It is an empty seat at
+  the table whose job is to summarize the conversation.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 260" role="img" aria-labelledby="vit-patch-title vit-patch-desc">
+    <title id="vit-patch-title">A 224 by 224 image becomes 196 patch tokens plus a class token</title>
+    <desc id="vit-patch-desc">
+      On the left, a square image divided by a 14 by 14 grid into 196 patches of 16 by 16 pixels; the first three
+      patches of the top row are highlighted, as is the last patch at the bottom right. An arrow leads to a box labelled
+      patch embedding, Conv2d with 3 input channels, 768 output channels, kernel 16 and stride 16, which maps each
+      patch of 768 values to a vector of 768. A second arrow leads to a column of tokens: the class token first, then
+      patch 1, patch 2, patch 3, a gap, and patch 196, each with a position embedding added. The column has shape
+      197 by 768.
+    </desc>
+    <g font-size="11">
+      <rect x="20" y="34" width="196" height="196" class="d-box ml-tensor"></rect>
+      {% for i in range(1, 14) %}
+        <line x1="{{ 20 + 14 * i }}" y1="34" x2="{{ 20 + 14 * i }}" y2="230" class="d-line" style="stroke-opacity:0.35"></line>
+        <line x1="20" y1="{{ 34 + 14 * i }}" x2="216" y2="{{ 34 + 14 * i }}" class="d-line" style="stroke-opacity:0.35"></line>
+      {% endfor %}
+      {% for i in range(3) %}
+        <rect x="{{ 20 + 14 * i }}" y="34" width="14" height="14" style="fill:var(--jj-accent);fill-opacity:0.55"></rect>
+      {% endfor %}
+      <rect x="202" y="216" width="14" height="14" style="fill:var(--jj-amber);fill-opacity:0.7"></rect>
+      <text x="118" y="22" text-anchor="middle" class="d-muted">224 × 224 × 3 pixels</text>
+      <text x="118" y="250" text-anchor="middle" class="d-muted">14 × 14 patches of 16 × 16 × 3</text>
+      <line x1="224" y1="132" x2="262" y2="132" class="d-line"></line>
+      <polygon points="262,128 270,132 262,136" style="fill:var(--jj-muted)"></polygon>
+      <rect x="272" y="96" width="176" height="72" class="d-box ml-op"></rect>
+      <text x="360" y="118" text-anchor="middle">patch embedding</text>
+      <text x="360" y="136" text-anchor="middle" class="d-muted">Conv2d(3, 768, 16, stride 16)</text>
+      <text x="360" y="154" text-anchor="middle" class="d-muted">768 values → 768-d token</text>
+      <line x1="448" y1="132" x2="486" y2="132" class="d-line"></line>
+      <polygon points="486,128 494,132 486,136" style="fill:var(--jj-muted)"></polygon>
+      {% set rows = [("[class]", "--jj-green", 0), ("patch 1", "--jj-accent", 1), ("patch 2", "--jj-accent", 2), ("patch 3", "--jj-accent", 3), ("patch 196", "--jj-amber", 196)] %}
+      {% for label, colour, pos in rows %}
+        {% set y = 40 + 34 * loop.index0 + (20 if loop.last else 0) %}
+        <rect x="500" y="{{ y }}" width="96" height="24" class="d-box ml-tensor"></rect>
+        <text x="548" y="{{ y + 16 }}" text-anchor="middle" style="fill:var({{ colour }})">{{ label }}</text>
+        <text x="604" y="{{ y + 16 }}" class="d-muted">+ pos[{{ pos }}]</text>
+      {% endfor %}
+      <text x="548" y="194" text-anchor="middle" class="d-muted">⋮</text>
+      <text x="600" y="250" text-anchor="middle" class="d-muted">[197, 768]</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="patches">Patches</h3>
+<p>
+  An image <em>x</em> of height <em>H</em>, width <em>W</em> and <em>C</em> channels is cut into non-overlapping
+  <em>P</em> × <em>P</em> patches. There are <em>N</em> = <em>HW</em> / <em>P</em>² of them, and each flattens to a vector of
+  <em>P</em>²<em>C</em> numbers. For ViT-B/16 on a 224 × 224 RGB image: <em>N</em> = (224 / 16)² = 14² = {{ ex.tokens.patches }}, and
+  each patch holds 16 · 16 · 3 = 768 numbers. (That 768 matching the model width is a coincidence of the B/16 choice; ViT-L/16
+  has the same patches and width 1024.) The image side must be a multiple of <em>P</em>.
+</p>
+
+<h3 id="patch-embedding">Patch embedding as a strided convolution</h3>
+<p>
+  Each flattened patch is multiplied by one shared matrix <strong>E</strong> of shape [<em>P</em>²<em>C</em>, <em>D</em>] and a bias
+  is added. That is a <a href="/ml-models/neurons-and-layers">linear layer</a> applied to every patch. It is also exactly a
+  convolution with <em>D</em> output channels, kernel size <em>P</em> and stride <em>P</em>: with stride equal to the kernel, the
+  windows tile the image without overlap, each output position sees exactly one patch, and every position uses the same
+  weights. The conv weight [<em>D</em>, <em>C</em>, <em>P</em>, <em>P</em>] reshaped to [<em>D</em>, <em>C</em>·<em>P</em>·<em>P</em>] is
+  <strong>E</strong>ᵀ, as long as the patch is flattened in the same channel, row, column order. Implementations use the
+  convolution because it does the cutting, flattening and multiplying in one fused kernel.
+</p>
+<p>
+  The convolution returns [<em>b</em>, <em>D</em>, 14, 14]: a 14 × 14 grid of {{ cfg.dim }}-vectors. <code>flatten(2)</code> merges the
+  two grid axes into [<em>b</em>, <em>D</em>, 196] in row-major order (patch 1 is the top-left, patch 14 the top-right, patch 15 starts
+  the second row), and <code>transpose(1, 2)</code> gives the sequence layout [<em>b</em>, 196, <em>D</em>] the encoder expects.
+</p>
+
+<h3 id="class-token">Class token and position embeddings</h3>
+<p class="ml-formula">z<sub>0</sub> = [x<sub>class</sub>; x<sub>p</sub><sup>1</sup>E; x<sub>p</sub><sup>2</sup>E; …; x<sub>p</sub><sup>N</sup>E] + E<sub>pos</sub>,
+  &nbsp; E ∈ ℝ<sup>(P²C)×D</sup>, &nbsp; E<sub>pos</sub> ∈ ℝ<sup>(N+1)×D</sup></p>
+<p>
+  The class token <em>x</em><sub>class</sub> is one learned vector of size <em>D</em>, copied for every image in the batch and
+  prepended, so the sequence has <em>N</em> + 1 = {{ ex.tokens.tokens }} tokens. Position embeddings are a learned table with one row per
+  token position, added (not concatenated) to the tokens. ViT uses plain 1-D learned positions: the paper found that 2-D-aware
+  and relative variants gave no measurable gain, and the learned rows end up encoding the 2-D layout on their own (each
+  position's embedding is most similar to those in its own row and column). Without them, attention would see a bag of
+  patches and could not tell a face from a scrambled face.
+</p>
+<p>
+  Because the table has a fixed number of rows, a model trained at 224 × 224 cannot directly read a 384 × 384 image, which
+  has 24 × 24 = 576 patches. The standard fix keeps the class-token row, reshapes the 196 patch rows into their 14 × 14 grid,
+  resizes that grid to 24 × 24 with 2-D bicubic interpolation, and flattens it back. Fine-tuning at a higher resolution than
+  pre-training is common, so this interpolation is part of every ViT checkpoint loader.
+</p>
+
+<h3 id="encoder">The encoder</h3>
+<p>
+  The encoder is the standard <a href="/ml-models/transformer">transformer</a> encoder in its pre-norm form
+  (<a href="/ml-models/layernorm-and-residuals">LayerNorm before each sublayer, residual around it</a>), with
+  GELU in the MLP. For layers ℓ = 1 … <em>L</em>:
+</p>
+<p class="ml-formula">z′<sub>ℓ</sub> = MSA(LN(z<sub>ℓ−1</sub>)) + z<sub>ℓ−1</sub>, &nbsp;&nbsp; z<sub>ℓ</sub> = MLP(LN(z′<sub>ℓ</sub>)) + z′<sub>ℓ</sub></p>
+<p>
+  MSA is <a href="/ml-models/attention">multi-head self-attention</a> with {{ cfg.heads }} heads of width {{ cfg.dim // cfg.heads }}, with no
+  causal mask: every patch may attend to every other patch and to the class token. The MLP is
+  Linear({{ cfg.dim }}, {{ cfg.mlp }}) → GELU → Linear({{ cfg.mlp }}, {{ cfg.dim }}). The shape stays [<em>b</em>, {{ ex.tokens.tokens }}, {{ cfg.dim }}]
+  through all {{ cfg.depth }} layers. In PyTorch terms one layer is
+  <code>nn.TransformerEncoderLayer(768, 12, 3072, activation="gelu", norm_first=True, batch_first=True)</code>, and the stack is
+  <code>nn.TransformerEncoder(layer, 12)</code>; the paper's models use LayerNorm ε = 10⁻⁶ rather than PyTorch's default 10⁻⁵.
+</p>
+
+<h3 id="head">The classification head</h3>
+<p class="ml-formula">y = Linear(LN(z<sub>L</sub><sup>0</sup>)) &nbsp; ∈ ℝ<sup>K</sup></p>
+<p>
+  After the last layer a final LayerNorm is applied and only token 0, the class token, is kept: [<em>b</em>, {{ ex.tokens.tokens }}, {{ cfg.dim }}] →
+  [<em>b</em>, {{ cfg.dim }}]. A linear head maps it to <em>K</em> class logits, trained with
+  <a href="/ml-models/loss-functions">cross-entropy</a>. During pre-training the paper used an MLP head with one hidden layer;
+  for fine-tuning it is replaced by a single zero-initialized linear layer sized for the new task. Averaging all patch tokens
+  (global average pooling) instead of reading the class token works as well once the learning rate is tuned for it, and many
+  later models do that.
+</p>
+
+<h3 id="inductive-bias">Inductive bias and data</h3>
+<p>
+  The only image-specific choices in ViT are the patch cut and the position-embedding resize. Everything else, including
+  which patches relate to which, must be learned. That is a weaker prior than a CNN's, and it shows: trained on ImageNet-1k
+  (1.3M images) alone, ViT-B lagged comparable ResNets. Pre-trained on ImageNet-21k (14M images) or JFT-300M and then
+  fine-tuned, ViT matched or beat them at lower pre-training compute. DeiT (Touvron et al., 2021) later closed the gap on
+  ImageNet-1k alone with heavy augmentation, regularization and <a href="/ml-models/distillation">distillation</a> from a CNN
+  teacher through an extra distillation token. Early layers still learn local filters, because the data reward them;
+  the architecture just does not force them.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>nn.Conv2d</code></td><td><code>Conv2d(3, 768, kernel_size=16, stride=16)</code>; weight [768, 3, 16, 16], bias [768]</td><td>The patch embedding: one shared linear map per non-overlapping patch.</td><td><a href="{{ src('torch/nn/modules/conv.py', 388, 565) }}">conv.py 388–565</a></td></tr>
+      <tr><td><code>Conv2d.__init__</code></td><td><code>stride=1</code>, <code>padding=0</code>, <code>dilation=1</code>, <code>groups=1</code>, <code>bias=True</code></td><td>Defaults; ViT overrides only the stride.</td><td><a href="{{ src('torch/nn/modules/conv.py', 512, 544) }}">512–544</a></td></tr>
+      <tr><td><code>Conv2d._conv_forward</code></td><td>[b, 3, 224, 224] → [b, 768, 14, 14]</td><td>Calls <code>F.conv2d</code> with the weight, bias and stride.</td><td><a href="{{ src('torch/nn/modules/conv.py', 546, 562) }}">546–562</a></td></tr>
+      <tr><td><code>nn.Flatten</code></td><td><code>start_dim=1</code>, <code>end_dim=-1</code> by default; ViT needs <code>Flatten(2)</code></td><td>Merges the 14 × 14 grid into 196 positions, row-major.</td><td><a href="{{ src('torch/nn/modules/flatten.py', 12, 62) }}">flatten.py 12–62</a></td></tr>
+      <tr><td>class token</td><td><code>nn.Parameter</code> [1, 1, 768]</td><td>Learned summary token, expanded over the batch and prepended.</td><td>Dosovitskiy et al. (2020), eq. 1</td></tr>
+      <tr><td>position embeddings</td><td><code>nn.Parameter</code> [1, 197, 768]</td><td>One learned row per position, added to the tokens.</td><td>Dosovitskiy et al. (2020), eq. 1</td></tr>
+      <tr><td><code>nn.TransformerEncoderLayer</code></td><td><code>d_model</code>, <code>nhead</code>, <code>dim_feedforward=2048</code>, <code>dropout=0.1</code>, <code>layer_norm_eps=1e-5</code>, <code>norm_first=False</code></td><td>One encoder block; ViT sets 768, 12, 3072, GELU, <code>norm_first=True</code>.</td><td><a href="{{ src('torch/nn/modules/transformer.py', 663, 983) }}">transformer.py 663–983</a></td></tr>
+      <tr><td>pre-norm branch</td><td><code>x = x + _sa_block(norm1(x))</code>; <code>x = x + _ff_block(norm2(x))</code></td><td>LayerNorm inside each residual branch.</td><td><a href="{{ src('torch/nn/modules/transformer.py', 946, 958) }}">946–958</a></td></tr>
+      <tr><td><code>_sa_block</code> / <code>_ff_block</code></td><td>[b, 197, 768] → [b, 197, 768]</td><td>Self-attention and MLP sublayers with dropout.</td><td><a href="{{ src('torch/nn/modules/transformer.py', 961, 983) }}">961–983</a></td></tr>
+      <tr><td><code>nn.TransformerEncoder</code></td><td><code>num_layers</code> deep copies of the layer, optional final <code>norm</code></td><td>The stack; pass a LayerNorm as <code>norm</code> for ViT's final LN.</td><td><a href="{{ src('torch/nn/modules/transformer.py', 320, 555) }}">transformer.py 320–555</a></td></tr>
+      <tr><td><code>nn.MultiheadAttention</code></td><td><code>in_proj_weight</code> [2304, 768], <code>out_proj</code> 768 → 768</td><td>The 12-head attention inside each layer.</td><td><a href="{{ src('torch/nn/modules/activation.py', 1090, 1573) }}">activation.py 1090–1573</a></td></tr>
+      <tr><td><code>nn.GELU</code></td><td><code>approximate="none"</code></td><td>The MLP nonlinearity.</td><td><a href="{{ src('torch/nn/modules/activation.py', 778, 823) }}">activation.py 778–823</a></td></tr>
+      <tr><td><code>nn.LayerNorm</code></td><td>weight and bias [768]; ε = 10⁻⁶ in ViT</td><td>Pre-norms and the final norm.</td><td><a href="{{ src('torch/nn/modules/normalization.py', 105, 236) }}">normalization.py 105–236</a></td></tr>
+      <tr><td><code>nn.Linear</code> head</td><td>[b, 768] → [b, 1000]</td><td>Class logits from the class token.</td><td><a href="{{ src('torch/nn/modules/linear.py', 53, 140) }}">linear.py 53–140</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 230" role="img" aria-labelledby="vit-enc-title vit-enc-desc">
+    <title id="vit-enc-title">The ViT encoder block repeated 12 times, then the class token goes to the head</title>
+    <desc id="vit-enc-desc">
+      Top row, left to right: the token sequence z zero of shape b by 197 by 768; inside a dashed frame labelled times 12,
+      a LayerNorm, multi-head self-attention with 12 heads, an addition joined by a residual line that skips the first two
+      boxes, another LayerNorm, an MLP from 768 to 3072 to 768 with GELU, and a second addition with its own residual line.
+      A line leads down to the bottom row: a final LayerNorm, selecting token 0 to give shape b by 768, a linear head from
+      768 to 1000, and logits of shape b by 1000.
+    </desc>
+    <g font-size="11">
+      <rect x="112" y="14" width="586" height="100" class="d-box ml-dashed" style="fill:none"></rect>
+      <text x="690" y="108" text-anchor="end" class="d-muted">× 12 layers</text>
+      <rect x="10" y="50" width="90" height="36" class="d-box ml-tensor"></rect>
+      <text x="55" y="66" text-anchor="middle">z₀</text>
+      <text x="55" y="80" text-anchor="middle" class="d-muted">[b,197,768]</text>
+      {% set boxes = [(130, 70, "LayerNorm", ""), (220, 100, "MSA", "12 heads"), (386, 70, "LayerNorm", ""), (476, 120, "MLP + GELU", "768→3072→768")] %}
+      {% for x, w, label, sub in boxes %}
+        <rect x="{{ x }}" y="50" width="{{ w }}" height="36" class="d-box ml-op"></rect>
+        <text x="{{ x + w / 2 }}" y="{{ 66 if sub else 72 }}" text-anchor="middle">{{ label }}</text>
+        {% if sub %}<text x="{{ x + w / 2 }}" y="80" text-anchor="middle" class="d-muted">{{ sub }}</text>{% endif %}
+      {% endfor %}
+      {% for x1, x2 in [(100, 130), (200, 220), (320, 344), (364, 386), (456, 476), (596, 620)] %}
+        <line x1="{{ x1 }}" y1="68" x2="{{ x2 }}" y2="68" class="d-line"></line>
+      {% endfor %}
+      {% for cx in [354, 630] %}
+        <circle cx="{{ cx }}" cy="68" r="10" class="d-box ml-op"></circle>
+        <text x="{{ cx }}" y="72" text-anchor="middle">+</text>
+      {% endfor %}
+      <path d="M118 68 V30 H354 V58" fill="none" class="d-line" style="stroke:var(--jj-accent)"></path>
+      <path d="M374 68 V30 H630 V58" fill="none" class="d-line" style="stroke:var(--jj-accent)"></path>
+      <text x="236" y="26" text-anchor="middle" style="fill:var(--jj-accent)">residual</text>
+      <path d="M640 68 H670 V140 H55 V160" fill="none" class="d-line"></path>
+      {% set tail = [(10, 110, "LayerNorm", "final"), (160, 140, "take token 0", "[b, 768]"), (340, 150, "Linear head", "768 → 1000"), (530, 150, "logits", "[b, 1000]")] %}
+      {% for x, w, label, sub in tail %}
+        <rect x="{{ x }}" y="160" width="{{ w }}" height="40" class="d-box {{ 'ml-tensor' if loop.last else 'ml-op' }}"></rect>
+        <text x="{{ x + w / 2 }}" y="177" text-anchor="middle"{% if loop.index == 2 %} style="fill:var(--jj-green)"{% endif %}>{{ label }}</text>
+        <text x="{{ x + w / 2 }}" y="192" text-anchor="middle" class="d-muted">{{ sub }}</text>
+        {% if not loop.last %}<line x1="{{ x + w }}" y1="180" x2="{{ tail[loop.index][0] }}" y2="180" class="d-line"></line>{% endif %}
+      {% endfor %}
+      <text x="360" y="222" text-anchor="middle" class="d-muted">the other 196 tokens are discarded by the classifier</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  All numbers below come from tested helpers in <code>ml_models_docs.py</code> (<code>vit_patchify</code>, <code>vit_conv</code>,
+  <code>vit_shape_walk</code>, <code>vit_params</code>), written in plain Python so the page needs no ML package. The parameter
+  counts match the published totals for torchvision's ViT models.
+</p>
+
+<div class="ml-worked">
+  <h3 id="worked-patchify">Patchify by hand: the convolution and the linear layer agree</h3>
+  <p>
+    A one-channel 4 × 4 image, patch size {{ toy.patch }}, and a model width of <em>D</em> = 2. The image has four 2 × 2 patches; each
+    flattens row by row to four numbers.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Image row</th><th>Pixels</th></tr></thead>
+      <tbody>
+        {% for row in toy.image %}<tr><td>{{ loop.index0 }}</td><td>{{ row|join("  ") }}</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The embedding has two output channels. Channel 0 has weights {{ toy.weights[0] }} (top-left minus bottom-right, a tiny diagonal-edge
+    detector) and bias {{ toy.bias[0] }}; channel 1 has weights {{ toy.weights[1] }} (the patch sum) and bias {{ toy.bias[1] }}. As a
+    convolution these are a [2, 1, 2, 2] weight with stride 2; as a linear layer they are the rows of a [2, 4] matrix.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Patch</th><th>Grid cell</th><th>Flattened</th><th>Linear: W·p + b</th><th>Conv2d output at that cell</th></tr></thead>
+      <tbody>
+        {% for p in ex.patches %}
+          <tr><td>{{ loop.index }}</td><td>({{ loop.index0 // 2 }}, {{ loop.index0 % 2 }})</td><td>{{ p }}</td><td>{{ ex.linear[loop.index0] }}</td><td>{{ ex.conv_tokens[loop.index0] }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Patch 1 is [1, 2, 3, 4]: channel 0 gives 1 · 1 − 1 · 4 + 1 = {{ ex.linear[0][0] }}, channel 1 gives 1 + 2 + 3 + 4 = {{ ex.linear[0][1] }}. The two
+    columns agree on every patch, which is the whole claim: a stride-<em>P</em>, kernel-<em>P</em> convolution is a linear layer on
+    flattened patches. With stride 1 instead, the same kernel would slide over overlapping windows and produce a
+    {{ ex.overlap_side }} × {{ ex.overlap_side }} grid, 9 tokens instead of 4: that is an ordinary CNN layer, not a patch embedding.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-shapes">Shape walk through ViT-B/16</h3>
+  <p>A batch of {{ e.batch }} RGB images at 224 × 224, with <em>D</em> = {{ cfg.dim }}, {{ cfg.heads }} heads, MLP width {{ cfg.mlp }} and {{ cfg.depth }} layers:</p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Step</th><th>Shape</th></tr></thead>
+      <tbody>
+        {% for row in ex.walk %}<tr><td>{{ row.stage }}</td><td>{{ shape(row.shape) }}</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The attention-score and MLP-hidden rows are the largest intermediate tensors in a layer: {{ cfg.heads }} attention maps of {{ ex.tokens.tokens }} × {{ ex.tokens.tokens }}
+    = {{ c(ex.tokens.tokens ** 2) }} scores each, and the MLP's {{ cfg.mlp }}-wide hidden layer. Every layer starts and ends at
+    [{{ e.batch }}, {{ ex.tokens.tokens }}, {{ cfg.dim }}].
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-params">Counting ViT-B/16's parameters</h3>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Part</th><th>Arithmetic</th><th>Parameters</th></tr></thead>
+      <tbody>
+        <tr><td>patch embedding</td><td>3 · 16 · 16 · 768 + 768</td><td>{{ c(pr.parts.patch_embed) }}</td></tr>
+        <tr><td>class token</td><td>768</td><td>{{ c(pr.parts.class_token) }}</td></tr>
+        <tr><td>position embeddings</td><td>197 · 768</td><td>{{ c(pr.parts.position) }}</td></tr>
+        <tr><td>&nbsp;&nbsp;attention in-projection (Q, K, V)</td><td>768 · 2304 + 2304</td><td>{{ c(pr.layer.attn_in) }}</td></tr>
+        <tr><td>&nbsp;&nbsp;attention out-projection</td><td>768 · 768 + 768</td><td>{{ c(pr.layer.attn_out) }}</td></tr>
+        <tr><td>&nbsp;&nbsp;two LayerNorms</td><td>2 · (768 + 768)</td><td>{{ c(pr.layer.norms) }}</td></tr>
+        <tr><td>&nbsp;&nbsp;MLP up</td><td>768 · 3072 + 3072</td><td>{{ c(pr.layer.mlp_up) }}</td></tr>
+        <tr><td>&nbsp;&nbsp;MLP down</td><td>3072 · 768 + 768</td><td>{{ c(pr.layer.mlp_down) }}</td></tr>
+        <tr><td>one encoder layer</td><td>sum of the five rows above</td><td>{{ c(pr.layer_total) }}</td></tr>
+        <tr><td>12 layers</td><td>12 · {{ c(pr.layer_total) }}</td><td>{{ c(pr.parts.layers) }}</td></tr>
+        <tr><td>final LayerNorm</td><td>768 + 768</td><td>{{ c(pr.parts.final_norm) }}</td></tr>
+        <tr><td>head</td><td>768 · 1000 + 1000</td><td>{{ c(pr.parts.head) }}</td></tr>
+        <tr><td><strong>total</strong></td><td></td><td><strong>{{ c(pr.total) }}</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    {{ "%.1f"|format(100 * pr.parts.layers / pr.total) }}% of the parameters sit in the encoder layers, and two thirds of each layer is
+    the MLP. The patch embedding, class token and positions together are under 1%. The image size enters only through the
+    position table, so the same weights serve any resolution once that table is interpolated.
+  </p>
+  <p>The same helper on the rest of the family:</p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Model</th><th>Patch</th><th>D</th><th>Layers</th><th>Heads</th><th>MLP</th><th>Tokens at 224</th><th>Parameters</th></tr></thead>
+      <tbody>
+        {% for m in ex.models %}
+          <tr><td>{{ m.config.name }}</td><td>{{ m.config.patch }}</td><td>{{ m.config.dim }}</td><td>{{ m.config.depth }}</td><td>{{ m.config.heads }}</td><td>{{ m.config.mlp }}</td><td>{{ m.tokens }}</td><td>{{ c(m.total) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    ViT-B/32 has <em>more</em> parameters than ViT-B/16 (its patch embedding is 4× larger) but runs on a quarter as many tokens, so it is
+    several times cheaper per image. Patch size trades accuracy for compute almost independently of model size.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-resolution">Resolution, patch size and attention cost</h3>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Image</th><th>Patch</th><th>Grid</th><th>Tokens</th><th>Scores per head per layer</th><th>vs 224/16</th></tr></thead>
+      <tbody>
+        {% for r in ex.resolutions %}
+          <tr><td>{{ r.image }}</td><td>{{ r.patch }}</td><td>{{ r.side }} × {{ r.side }}</td><td>{{ r.tokens }}</td><td>{{ c(r.scores) }}</td><td>{{ "%.2f"|format(r.relative) }}×</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Fine-tuning ViT-B/16 at 384 × 384 raises the sequence from 197 to 577 tokens: the position table is interpolated from 14 × 14 to
+    24 × 24, and every attention map grows about {{ "%.1f"|format(ex.resolutions[3].relative) }}×. The MLP and projections grow only linearly (577 / 197 ≈ 2.9×), so at high
+    resolution attention becomes the dominant cost, which is what windowed designs like Swin and memory-efficient kernels like
+    FlashAttention address.
+  </p>
+</div>
+
+<details class="ml-quiz">
+  <summary>How many tokens does ViT-H/14 see on a 224 × 224 image, and what happens with a 230 × 230 image?</summary>
+  <p>224 / 14 = 16, so 16² + 1 = 257 tokens. 230 is not a multiple of 14: a stride-14 convolution would silently drop the last 6 pixel rows and columns, so the image is resized or cropped to a multiple of the patch size first.</p>
+</details>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>A complete ViT in PyTorch, built only from the modules in the table above (dropout and initialization details left at their defaults):</p>
+
+<pre><code>import torch
+from torch import nn
+
+
+class ViT(nn.Module):
+    def __init__(self, image=224, patch=16, dim=768, depth=12, heads=12, mlp=3072, classes=1000):
+        super().__init__()
+        tokens = (image // patch) ** 2 + 1
+        self.embed = nn.Conv2d(3, dim, kernel_size=patch, stride=patch)
+        self.flatten = nn.Flatten(2)
+        self.cls = nn.Parameter(torch.zeros(1, 1, dim))
+        self.pos = nn.Parameter(torch.randn(1, tokens, dim) * 0.02)
+        layer = nn.TransformerEncoderLayer(dim, heads, mlp, dropout=0.0, activation="gelu",
+                                           layer_norm_eps=1e-6, batch_first=True, norm_first=True)
+        self.encoder = nn.TransformerEncoder(layer, depth, norm=nn.LayerNorm(dim, eps=1e-6),
+                                             enable_nested_tensor=False)
+        self.head = nn.Linear(dim, classes)
+
+    def forward(self, x):                                # [b, 3, 224, 224]
+        x = self.flatten(self.embed(x)).transpose(1, 2)  # [b, 196, 768]
+        cls = self.cls.expand(x.shape[0], -1, -1)        # [b, 1, 768]
+        x = torch.cat([cls, x], dim=1) + self.pos        # [b, 197, 768]
+        x = self.encoder(x)                              # [b, 197, 768], final LayerNorm included
+        return self.head(x[:, 0])                        # [b, 1000]
+
+
+model = ViT()
+print(sum(p.numel() for p in model.parameters()))       # 86567656
+print(model(torch.randn(8, 3, 224, 224)).shape)          # torch.Size([8, 1000])</code></pre>
+
+<p>
+  The count matches the table because <code>nn.MultiheadAttention</code> packs Q, K and V into one [2304, 768]
+  <code>in_proj_weight</code>, exactly the paper's layout. To load a checkpoint at a new resolution, interpolate the position table
+  before loading:
+</p>
+
+<pre><code>def resize_positions(pos, new_side):
+    cls, grid = pos[:, :1], pos[:, 1:]
+    side = int(grid.shape[1] ** 0.5)
+    grid = grid.reshape(1, side, side, -1).permute(0, 3, 1, 2)
+    grid = nn.functional.interpolate(grid, size=(new_side, new_side), mode="bicubic", align_corners=False)
+    return torch.cat([cls, grid.permute(0, 2, 3, 1).reshape(1, new_side * new_side, -1)], dim=1)</code></pre>
+
+<p>
+  In practice, torchvision's <code>vit_b_16</code> and the <code>timm</code> library provide pretrained weights, the same
+  structure with their own encoder block classes, and the position resize built into their loaders.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Data appetite.</strong> With few built-in priors ViT needs large pre-training sets (or strong augmentation and
+    distillation, as in DeiT) to beat a CNN; on small datasets from scratch a ResNet usually wins.</li>
+  <li><strong>Quadratic tokens.</strong> Halving the patch size quadruples the tokens and multiplies attention cost by about 16. Dense tasks
+    (detection, segmentation) want small patches and high resolution, so they use hierarchical or windowed variants (Swin) or
+    plain ViTs with windowed attention in most layers (ViTDet).</li>
+  <li><strong>Global from layer one.</strong> Every patch can attend to every other immediately, which helps with long-range structure
+    and makes ViTs more robust to some occlusions and patch shuffles than CNNs, but costs compute that local convolutions would not.</li>
+  <li><strong>Fixed positions.</strong> Learned absolute positions tie the model to a grid size; interpolation works but is a
+    mismatch until fine-tuned. Relative or rotary positions avoid that at some complexity.</li>
+  <li><strong>Uniform architecture.</strong> One token width at every depth makes ViT simple to scale, shard and pair with text
+    encoders (CLIP), and to pre-train by masking patches (MAE); a CNN's pyramid gives multi-scale features for free.</li>
+  <li><strong>Patch boundaries.</strong> Non-overlapping patches cut objects at arbitrary lines; small convolutional stems before
+    patching (hybrid models) smooth this and often help optimization.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Shuffle the 196 patch tokens after the position embeddings have been added. Does the class token's output change?</summary>
+  <p>No. Without a mask, self-attention and the per-token MLP are permutation-equivariant, so shuffling the tokens only shuffles the outputs, and the class token sees the same set. Order matters only through the position embeddings; shuffling the patches <em>before</em> adding them does change the output.</p>
+</details>
+<details class="ml-quiz">
+  <summary>ViT-B/16 at 384 has how many parameters?</summary>
+  <p>{{ c(pr.total + (577 - 197) * 768) }}: only the position table changes, growing by (577 − 197) · 768 = {{ c((577 - 197) * 768) }}.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Dosovitskiy et al. <em>An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale.</em> ICLR 2021.
+    <a href="https://arxiv.org/abs/2010.11929">arXiv:2010.11929</a></li>
+  <li>Vaswani et al. <em>Attention Is All You Need.</em> NeurIPS 2017. <a href="https://arxiv.org/abs/1706.03762">arXiv:1706.03762</a></li>
+  <li>Devlin et al. <em>BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding.</em> NAACL 2019.
+    <a href="https://arxiv.org/abs/1810.04805">arXiv:1810.04805</a></li>
+  <li>Touvron et al. <em>Training data-efficient image transformers &amp; distillation through attention</em> (DeiT). ICML 2021.
+    <a href="https://arxiv.org/abs/2012.12877">arXiv:2012.12877</a></li>
+  <li>Liu et al. <em>Swin Transformer: Hierarchical Vision Transformer using Shifted Windows.</em> ICCV 2021.
+    <a href="https://arxiv.org/abs/2103.14030">arXiv:2103.14030</a></li>
+  <li>He et al. <em>Masked Autoencoders Are Scalable Vision Learners.</em> CVPR 2022. <a href="https://arxiv.org/abs/2111.06377">arXiv:2111.06377</a></li>
+  <li>Hendrycks and Gimpel. <em>Gaussian Error Linear Units (GELUs).</em> 2016. <a href="https://arxiv.org/abs/1606.08415">arXiv:1606.08415</a></li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/nn/modules/conv.py', 388, 565) }}"><code>Conv2d</code></a>,
+    <a href="{{ src('torch/nn/modules/flatten.py', 12, 62) }}"><code>Flatten</code></a>,
+    <a href="{{ src('torch/nn/modules/transformer.py', 663, 983) }}"><code>TransformerEncoderLayer</code></a>,
+    <a href="{{ src('torch/nn/modules/transformer.py', 320, 555) }}"><code>TransformerEncoder</code></a>,
+    <a href="{{ src('torch/nn/modules/activation.py', 1090, 1573) }}"><code>MultiheadAttention</code></a>.</li>
+</ul>

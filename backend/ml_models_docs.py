@@ -779,7 +779,7 @@ PAGES = [
             "pytorch:torch/nn/modules/transformer.py",
             "pytorch:torch/nn/modules/flatten.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "mixture-of-experts",
