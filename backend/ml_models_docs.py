@@ -9389,6 +9389,132 @@ def encoder_example():
     }
 
 
+LTR_EXAMPLE = {
+    "docs": ["d1", "d2", "d3", "d4", "d5"],
+    "labels": [3, 2, 0, 1, 0],
+    "scores": [0.2, 0.6, 0.9, -0.4, 0.1],
+    "k": 3,
+    "steps": 5,
+    "learning_rate": 0.5,
+    "pointwise_labels": [2, 1, 0],
+    "pointwise_a": [1.1, 1.4, 0.0],
+    "pointwise_b": [10.0, 5.0, 0.0],
+}
+
+
+def ltr_gain(label, exp_gain=True):
+    return 2 ** label - 1 if exp_gain else label
+
+
+def dcg_discount(position):
+    return 1 / math.log2(position + 2)
+
+
+def score_order(scores):
+    return sorted(range(len(scores)), key=lambda i: -scores[i])
+
+
+def dcg_at(ranked_labels, k=None, exp_gain=True):
+    n = len(ranked_labels) if k is None else min(k, len(ranked_labels))
+    return sum(ltr_gain(ranked_labels[i], exp_gain) * dcg_discount(i) for i in range(n))
+
+
+def ndcg_at(labels, scores, k=None, exp_gain=True):
+    ideal = dcg_at(sorted(labels, reverse=True), k, exp_gain)
+    if ideal == 0:
+        return 0.0
+    return dcg_at([labels[i] for i in score_order(scores)], k, exp_gain) / ideal
+
+
+def lambda_gradients(labels, scores, exp_gain=True, use_metric=True):
+    order = score_order(scores)
+    ideal = dcg_at(sorted(labels, reverse=True), None, exp_gain)
+    inv_ideal = 0.0 if ideal == 0 else 1 / ideal
+    n = len(labels)
+    grad, hess, pairs = [0.0] * n, [0.0] * n, []
+    for rank_i in range(n):
+        for rank_j in range(rank_i + 1, n):
+            high, low = rank_i, rank_j
+            if labels[order[high]] == labels[order[low]]:
+                continue
+            if labels[order[high]] < labels[order[low]]:
+                high, low = low, high
+            i, j = order[high], order[low]
+            if use_metric:
+                g_i, g_j = ltr_gain(labels[i], exp_gain), ltr_gain(labels[j], exp_gain)
+                kept = g_i * dcg_discount(high) + g_j * dcg_discount(low)
+                swapped = g_j * dcg_discount(high) + g_i * dcg_discount(low)
+                delta = abs((kept - swapped) * inv_ideal)
+            else:
+                delta = 1.0
+            p = sigmoid(scores[i] - scores[j])
+            g = (p - 1) * delta
+            h = max(p * (1 - p), 1e-16) * delta * 2
+            grad[i] += g
+            grad[j] -= g
+            hess[i] += h
+            hess[j] += h
+            pairs.append({"high": i, "low": j, "delta": delta, "grad": g})
+    return {"grad": grad, "hess": hess, "pairs": pairs, "order": order}
+
+
+def listnet_loss(labels, scores):
+    def softmax(xs):
+        top = max(xs)
+        exps = [math.exp(x - top) for x in xs]
+        total = sum(exps)
+        return [e / total for e in exps]
+
+    target, predicted = softmax(labels), softmax(scores)
+    return -sum(t * math.log(q) for t, q in zip(target, predicted))
+
+
+def ltr_newton_steps(labels, scores, steps, learning_rate, use_metric=True):
+    history = [{"scores": list(scores), "ndcg": ndcg_at(labels, scores)}]
+    current = list(scores)
+    for _ in range(steps):
+        lam = lambda_gradients(labels, current, use_metric=use_metric)
+        current = [s - learning_rate * g / h if h > 0 else s
+                   for s, g, h in zip(current, lam["grad"], lam["hess"])]
+        history.append({"scores": list(current), "ndcg": ndcg_at(labels, current)})
+    return history
+
+
+@functools.lru_cache(maxsize=None)
+def ltr_example():
+    e = LTR_EXAMPLE
+    labels, scores = e["labels"], e["scores"]
+    order = score_order(scores)
+    lam = lambda_gradients(labels, scores)
+    ranknet = lambda_gradients(labels, scores, use_metric=False)
+    pointwise = {}
+    for name in ("a", "b"):
+        guess = e["pointwise_" + name]
+        truth = e["pointwise_labels"]
+        pointwise[name] = {
+            "scores": guess,
+            "mse": sum((g - t) ** 2 for g, t in zip(guess, truth)) / len(truth),
+            "ndcg": ndcg_at(truth, guess),
+        }
+    return {
+        "order": order,
+        "ranked_labels": [labels[i] for i in order],
+        "ideal_labels": sorted(labels, reverse=True),
+        "discounts": [dcg_discount(i) for i in range(len(labels))],
+        "dcg": dcg_at([labels[i] for i in order]),
+        "idcg": dcg_at(sorted(labels, reverse=True)),
+        "ndcg": ndcg_at(labels, scores),
+        "ndcg_linear": ndcg_at(labels, scores, exp_gain=False),
+        "ndcg_k": ndcg_at(labels, scores, k=e["k"]),
+        "lambda": lam,
+        "ranknet": ranknet,
+        "listnet": {"start": listnet_loss(labels, scores), "ideal": listnet_loss(labels, labels)},
+        "lambdamart": ltr_newton_steps(labels, scores, e["steps"], e["learning_rate"]),
+        "ranknet_steps": ltr_newton_steps(labels, scores, e["steps"], e["learning_rate"], use_metric=False),
+        "pointwise": pointwise,
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -9419,6 +9545,7 @@ def render(slug, render_template):
         "next_page": following,
         "upcoming": UPCOMING_MODELS,
         "encoder_example": encoder_example,
+        "ltr_example": ltr_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,
         "multihead_example": MULTIHEAD_EXAMPLE,

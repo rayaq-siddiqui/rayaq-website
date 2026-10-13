@@ -3904,3 +3904,47 @@ def test_encoder_example_contrasts_bidirectional_and_causal_attention():
     assert all(w > 0 for row in example["bidirectional"]["weights"] for w in row)
     assert [c["counts"]["total"] for c in example["configs"]] == [108_490_752, 333_557_760]
     assert example["batch"][1]["padding"].count(True) == 7
+
+
+def test_ndcg_matches_hand_computed_values_for_the_example_ranking():
+    example = ml_models_docs.ltr_example()
+    assert example["order"] == [2, 1, 0, 4, 3]
+    assert example["ideal_labels"] == [3, 2, 1, 0, 0]
+    assert abs(example["idcg"] - 9.3928) < 1e-4
+    assert abs(example["ndcg"] - 0.6153) < 1e-4
+    assert abs(example["ndcg_linear"] - 0.6612) < 1e-4
+    assert abs(example["ndcg_k"] - 0.5741) < 1e-4
+
+
+def test_ndcg_is_one_for_an_ideal_ranking_and_ignores_score_scale():
+    labels = [3, 2, 0, 1, 0]
+    assert ml_models_docs.ndcg_at(labels, [5, 4, 1, 3, 0]) == 1.0
+    scores = [0.2, 0.6, 0.9, -0.4, 0.1]
+    assert ml_models_docs.ndcg_at(labels, scores) == ml_models_docs.ndcg_at(labels, [10 * s for s in scores])
+
+
+def test_lambda_gradients_sum_to_zero_and_weight_the_top_swap_most():
+    e = ml_models_docs.LTR_EXAMPLE
+    out = ml_models_docs.lambda_gradients(e["labels"], e["scores"])
+    assert abs(sum(out["grad"])) < 1e-12
+    assert all(h > 0 for h in out["hess"])
+    biggest = max(out["pairs"], key=lambda p: p["delta"])
+    assert (biggest["high"], biggest["low"]) == (0, 2)
+    assert len(out["pairs"]) == 9
+
+
+def test_ranknet_weights_every_pair_equally():
+    e = ml_models_docs.LTR_EXAMPLE
+    out = ml_models_docs.lambda_gradients(e["labels"], e["scores"], use_metric=False)
+    assert all(p["delta"] == 1.0 for p in out["pairs"])
+    assert abs(sum(out["grad"])) < 1e-12
+
+
+def test_newton_steps_improve_ndcg_and_pointwise_loss_disagrees_with_ndcg():
+    example = ml_models_docs.ltr_example()
+    curve = [h["ndcg"] for h in example["lambdamart"]]
+    assert curve[-1] > curve[0]
+    assert all(b >= a - 1e-12 for a, b in zip(curve, curve[1:]))
+    a, b = example["pointwise"]["a"], example["pointwise"]["b"]
+    assert a["mse"] < b["mse"] and a["ndcg"] < b["ndcg"] == 1.0
+    assert example["listnet"]["ideal"] < example["listnet"]["start"]
