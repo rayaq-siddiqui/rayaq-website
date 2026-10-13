@@ -144,7 +144,7 @@ Paths are under `sklearn/`.
 - `transformer` uses the v1 section layout and is exempt from the §6 order test until its
   retrofit (queue item 18).
 
-## First to thirty-fifth runs (2026-10-08 to 2026-10-13) — condensed
+## First to thirty-sixth runs (2026-10-08 to 2026-10-13) — condensed
 
 Runs 1-3 wrote the spec (v1, then v2), the registry, `LEARNING_PATH`, the §6 and queue tests,
 `check_mobile.js` and the Routine. Every run since adds, per page, a tested-helpers commit, a
@@ -154,7 +154,8 @@ class-imbalance, random-forests, initialization; run 30: rnns-and-lstms, autoenc
 variational-autoencoders; run 31: positional-encoding, clustering, vector-indexes; run 32:
 distillation, time-series, regression-metrics; run 33: support-vector-machines,
 learning-rate-schedules, gans; run 34: encoder-only, learning-to-rank,
-data-loading-and-batching; run 35: model-serving, causal-inference, calibration). `6f0803f` fixed 13 templates that read a
+data-loading-and-batching; run 35: model-serving, causal-inference, calibration; run 36:
+graph-neural-networks, diffusion-models, pretraining). `6f0803f` fixed 13 templates that read a
 missing `pins.X.version` key. Pins never moved. The ranges each page links live in its template
 (grep `src(`, `skl(`, `xgb(`); `git log -p` on this file has every old commit table and range list.
 
@@ -176,6 +177,9 @@ Findings worth keeping (details in each page and in `git log -p` on this file):
 
 - sklearn's `_SigmoidCalibration` predicts `expit(-(a_*T + b_))` (negative stored slope);
   `_TemperatureScaling` optimizes log β in [−10, 10].
+- Chinchilla's Approach 3 constants in the closed form give about 32B params / 3.0T tokens at
+  Chinchilla's budget, not 70B; the isoFLOP valley is flat and the 20-tokens rule recovers
+  70B / 1.4T. The pretraining page says all three.
 
 Open gaps from these runs:
 
@@ -203,35 +207,8 @@ Open gaps from these runs:
 - Run 35: no pin implements a serving system, ECE, propensity weighting, DiD or uplift;
   `model-serving`'s figures come from an invented, labelled model. Its references (Rubin,
   Rosenbaum & Rubin, Guo et al., Platt, Zadrozny & Elkan, …) were cited from memory.
-
-## Thirty-sixth run (2026-10-13) — graph-neural-networks, diffusion-models, pretraining
-
-| Commit | What |
-|---|---|
-| `3350663`, `0558afe` | Tested GNN helpers; the `graph-neural-networks` page, `ready`, queue ✓ |
-| `511b6ac`, `7597f25` | Tested diffusion helpers (schedules, ᾱ curves, DDPM/DDIM steps, guidance tilt); the `diffusion-models` page, `ready`, queue ✓ |
-| `fa1e049` `ml-models: add pretraining and scaling-law helpers` | Span corruption, MLM counts, 6ND from one linear layer, 12Ld² params, Kaplan and Chinchilla laws with the closed-form optimum, isoFLOP curves, mixture epochs, MinHash/LSH, exact-match emergence |
-| `89eb2b1` `ml-models: add the pretraining page` | The page, `ready`, queue ✓ |
-
-Findings worth keeping:
-
-- Chinchilla's published Approach 3 constants (E 1.69, A 406.4, B 410.7, α .34, β .28) in the
-  closed form give about 32B params / 3.0T tokens at Chinchilla's budget, not 70B: the fit's
-  a = β/(α+β) = 0.45 sits below Approaches 1-2 (≈ 0.5). The isoFLOP valley is flat (70B loses
-  0.007 nats), and the 20-tokens rule recovers 70B / 1.4T exactly. The page says all three.
-- 6ND gives Chinchilla 5.9e23 vs Gopher 5.0e23; the paper's finer FLOP count puts both at one
-  budget. The page notes the difference.
-- Pins checked with `git ls-remote --tags`: v2.14.1, 1.9.1 and v3.4.2 are still the newest
-  stable releases; no pin moved.
-
-Gaps:
-
-- References cited from memory (arxiv unreachable): Kaplan 2001.08361, Hoffmann 2203.15556,
-  Devlin 1810.04805, Raffel 1910.10683, Muennighoff 2305.16264, Wei 2206.07682, Schaeffer
-  2304.15004, Broder 1997; the GNN and diffusion pages' papers likewise.
-- No pin implements a GNN library, a diffusion sampler, MinHash or a scaling-law fit; those
-  follow the papers. The H100 peak (989 TFLOP/s dense BF16) and Llama 3 8B's 15T tokens are
-  general knowledge, as are the illustrative mixture weights (labelled as such).
+- Run 36: no pin implements a GNN library, a diffusion sampler, MinHash or a scaling-law fit;
+  those follow the papers. The H100 peak and Llama 3 8B's 15T tokens are general knowledge.
 
 ## Thirty-seventh run (2026-10-13) — collaborative-filtering, gradient-accumulation, latency-and-throughput
 
@@ -243,7 +220,8 @@ Gaps:
 | `492f50e` `ml-models: add the gradient-accumulation page` | The page, `ready`, queue ✓ |
 | `44712dd` `ml-models: add tested latency-and-throughput helpers` | 8B bf16 model on an H100-class part (989 TFLOP/s, 3.35 TB/s, 80 GB): decode-step roofline per batch (KV 131,072 B/token at 2,048 context), prefill, memory batch cap, Little's-law fixed point with prefill stealing decode time, seeded M/D/1 Lindley queue with percentiles, fan-out tail |
 | `a261b7b` `ml-models: add roofline points for the latency page` | Log-log roofline coordinates for the diagram, tested to sit under the roof |
-| (this commit) `ml-models: add the latency-and-throughput page` | The page, `ready`, queue ✓ |
+| `077666b` `ml-models: add the latency-and-throughput page` | The page, `ready`, queue ✓ |
+| (this commit) `docs: record the thirty-seventh ml-models run` | Commit SHAs, pin check, gaps; condenses run 36 |
 
 Findings worth keeping:
 
@@ -255,6 +233,8 @@ Findings worth keeping:
   ridge of 295. Little's law with prefill stealing decode time has no fixed point above 23 req/s.
 - The simulated M/D/1 means track Pollaczek–Khinchine within 1% up to ρ = 0.8; at ρ = 0.95 the
   20,000-request run under-reads the theory (94 vs 105 ms), as a finite run near saturation does.
+- Pins checked with `git ls-remote --tags`: v2.14.1, 1.9.1 and v3.4.2 are still the newest
+  stable releases; no pin moved.
 - The bias baseline μ + b_u + b_i is worse than the global mean on the held-out cells: offsets
   cannot see interaction. The page says so.
 - ALS's objective falls every sweep, but RMSE on observed cells can tick up, because ALS
