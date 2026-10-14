@@ -261,7 +261,10 @@ Gaps:
 |---|---|
 | `5df6dce` `ml-models: add tested preference-optimization helpers` | Bradley–Terry MM fit and NLL, the KL-regularized optimum and a β sweep (proxy vs true reward), categorical KL, tabular DPO with its gradient, a unanimous pair under DPO and IPO, per-token KL rewards, GRPO advantages, the k3 estimator |
 | `8faca07` `ml-models: add the preference-optimization page` | The page, `ready`, queue ✓; the plain-text mentions in `reinforcement-learning` and `fine-tuning` now link to it |
-| `71340ee` `docs: record the preference-optimization page in ml-models progress` | This section |
+| `71340ee` `docs: record the preference-optimization page in ml-models progress` | The preference-optimization record |
+| `8e4d2c4` `ml-models: add tested retrieval-augmented-generation helpers` | Word and sentence chunking, BM25 and character-trigram retrieval, RRF, an IDF-weighted soft-match re-ranker, recall@k and MRR, greedy prompt packing, a lost-in-the-middle ordering, RAG-Sequence/RAG-Token marginals, exact match and token F1 |
+| `017a488` `ml-models: add the retrieval-augmented-generation page` | The page, word-range and answer-span helpers for its chunk figure, `ready`, queue ✓; the `learning-to-rank` tagline links to it |
+| (this commit) `docs: record the retrieval-augmented-generation page in ml-models progress` | The RAG record |
 
 Findings worth keeping:
 
@@ -277,6 +280,16 @@ Findings worth keeping:
 - PyTorch ranges checked at the pin: `logsigmoid` 2049-2058, `kl_div` 3401-3475,
   `cross_entropy` 3478-3569, `binary_cross_entropy_with_logits` 3634-3701, `log_softmax`
   2293-2324, `gather` docstring 4813-4849.
+- RAG: on an invented 121-word manual with five questions, fixed 24-word chunks cut one
+  answer (Q5) at word 96 and leave a one-word tail chunk; 8-word overlap and sentence packing
+  keep all five whole. BM25 misses the vocabulary-mismatch question entirely; recall@3 / MRR
+  go BM25 0.6 / 0.6, trigram 0.8 / 0.667, RRF hybrid 0.8 / 0.7, re-ranked 0.8 / 0.8 (the
+  re-ranker lifts Q1 from rank 2 to 1). No method finds "swim" → "submerged", which is the
+  page's argument for a learned encoder. RAG-Token gives the toy answer 1.62× RAG-Sequence's
+  probability; the correct "About 2 hours" gets lower token F1 than the wrong "Four hours."
+- PyTorch ranges checked at the pin for RAG: `normalize` 6096-6130, `cosine_similarity`
+  5895-5924, `log_softmax` 2293-2324 (functional.py); `matmul` 7908-7990, `topk`
+  11877-11921, `argsort` 10493-10532, `logsumexp` 6696-6728 (`_torch_docs.py`).
 
 Gaps:
 
@@ -287,6 +300,12 @@ Gaps:
 - The preference counts and the "true" reward are invented and labelled as such on the page.
 - The DPO, IPO, GRPO and k3 snippets were not run under real PyTorch (download blocked); their
   arithmetic matches the tested helpers.
+- RAG: the RAG paper (DPR retriever, BART generator, fixed document encoder, the two
+  marginals), DPR's 100-word Wikipedia passages, monoBERT, ColBERT's MaxSim, FiD, Lost in
+  the Middle, Greshake et al. and SQuAD's answer normalization are cited from memory
+  (arxiv.org unreachable). The trigram "vector" retriever and the soft-match re-ranker are
+  labelled stand-ins, not a trained encoder or cross-encoder; no pin implements either. The
+  RAG snippet was not run under real PyTorch.
 
 ## Queue
 
