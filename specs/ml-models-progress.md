@@ -4,9 +4,9 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-14 (thirty-ninth run). Spec v2 widens the section from model
+**Last updated:** 2026-10-14 (fortieth run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-81, the last being `two-tower-models`.
+fixed page format. Ready pages: queue items 1-84, the last being `multimodal-models`.
 The next page is `pca` (queue item 85).
 
 ## Pins
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (81 of 93 ready, all
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (84 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -144,13 +144,13 @@ Paths are under `sklearn/`.
 - `transformer` uses the v1 section layout and is exempt from the §6 order test until its
   retrofit (queue item 18).
 
-## First to thirty-eighth runs (2026-10-08 to 2026-10-13) — condensed
+## First to thirty-ninth runs (2026-10-08 to 2026-10-14) — condensed
 
 Runs 1-3 wrote the spec (v1, then v2), the registry, `LEARNING_PATH`, the §6 and queue tests,
 `check_mobile.js` and the Routine. Every run since adds, per page, a tested-helpers commit, a
-page commit (page, `ready`, queue ✓) and a `docs:` commit, building queue items 1-78 in order
-(three per run from run 28 to run 38, which built online-learning, uncertainty and
-vision-transformer). `6f0803f` fixed 13 templates that read a missing `pins.X.version` key.
+page commit (page, `ready`, queue ✓) and a `docs:` commit, building queue items 1-81 in order
+(three per run from run 28 to run 39, which built diffusion-unet, fine-tuning and
+two-tower-models). `6f0803f` fixed 13 templates that read a missing `pins.X.version` key.
 Pins never moved. The ranges each page links live in its template (grep `src(`, `skl(`,
 `xgb(`); `git log -p` on this file has every old commit table, range list and run detail.
 
@@ -173,6 +173,8 @@ Findings worth keeping:
   70B; the 20-tokens rule recovers 70B / 1.4T. scikit-learn's `NMF` treats blanks as zeros.
   Decode at 2,048 context tops out near 49 FLOP/byte against a ridge of 295. ViT's counter
   matches torchvision exactly; split conformal coverage is marginal, not per-group.
+- Counters that match published totals: SD v1 UNet 859,520,964, DiT-XL/2 674,834,720,
+  Llama 2 7B 6,738,415,616, PEFT's LoRA r=8 on q,v 4,194,304.
 
 Open gaps from these runs:
 
@@ -191,47 +193,47 @@ Open gaps from these runs:
 - The end lines of the HistGradientBoosting regressor `__init__`, `_incremental_fit_estimator`
   and `Lasso` were inferred.
 - Unready pages named in plain text until they are ready: `preference-optimization`
-  (`reinforcement-learning`, `fine-tuning`), `pca` (`clustering`), `monitoring-and-drift`
-  (`online-learning`), and `distributed-training`, `contrastive-learning`,
-  `speculative-decoding`, `profiling` (run 37 pages).
+  (`reinforcement-learning`, `fine-tuning`), `pca` (`clustering`), `contrastive-learning`,
+  `speculative-decoding`, `profiling` (run 37 pages), and activation checkpointing
+  (`distributed-training`).
+- No pin implements a UNet, LoRA/PEFT, NF4, an ANN index or logQ correction; the two-tower
+  serving numbers are an invented, labelled configuration.
 - Page commits exceed 400 lines because each template is one file.
 
-## Thirty-ninth run (2026-10-14) — diffusion-unet, fine-tuning, two-tower-models
+## Fortieth run (2026-10-14) — distributed-training, monitoring-and-drift, multimodal-models
 
 | Commit | What |
 |---|---|
-| `527f16b` `ml-models: add tested diffusion-unet helpers` | UNet shape walk, SD v1 and DiT parameter counters, timestep embedding, toy cross-attention and classifier-free guidance |
-| `77ebb91` `ml-models: add the diffusion-unet page` | The page, `ready`, queue ✓ |
-| `4d1867c` `ml-models: add tested fine-tuning helpers` | LoRA, adapter, prefix and prompt-tuning parameter counts on Llama 2 7B, QLoRA memory, SFT loss masking |
-| `79ba475` `ml-models: add the fine-tuning page` | The page, `ready`, queue ✓ |
-| `b96030b` `ml-models: add tested two-tower helpers` | Bag-of-history user tower, in-batch softmax with and without logQ, full-catalogue softmax, a hard negative, serving funnel arithmetic |
-| `2b6c628` `ml-models: add the two-tower-models page` | The page, `ready`, queue ✓ |
-| (this commit) `docs: record the thirty-ninth ml-models run` | Commit SHAs, pin check, gaps; condenses run 38 |
+| `5a569ef` `ml-models: add tested distributed-training helpers` | DDP bucketing, ZeRO stage memory, ring all-reduce traffic, tensor-parallel splits, GPipe and 1F1B bubbles |
+| `005c129` `ml-models: add the distributed-training page` | The page, `ready`, queue ✓ |
+| `baa0938` `ml-models: add tested monitoring-and-drift helpers` | PSI, two-sample KS, a weekly drift timeline, label-shift recalibration, delayed-label metrics |
+| `3b0595e` `ml-models: add the monitoring-and-drift page` | The page, `ready`, queue ✓ |
+| `09d185e` `ml-models: add tested multimodal-models helpers` | CLIP symmetric loss and gradient, scale sweep, zero-shot prompt ensemble, VLM token counts, concat vs cross-attention cost, tanh gate, Whisper and codec token rates |
+| `cdf87da` `ml-models: add the multimodal-models page` | The page, `ready`, queue ✓ |
+| (this commit) `docs: record the fortieth ml-models run` | Commit SHAs, pin check, gaps; condenses run 39 |
 
 Findings worth keeping:
 
-- The counters match published totals: SD v1 UNet 859,520,964, DiT-XL/2 674,834,720,
-  Llama 2 7B 6,738,415,616 and PEFT's LoRA r=8 on q,v 4,194,304.
-- On the toy two-tower batch, the in-batch loss is 0.379, logQ-corrected 0.360 and the
-  full-catalogue loss 0.502; one hard negative takes the loss from 0.176 to 0.545.
+- The CLIP gradient on the logits is (P_row + P_colᵀ − 2I)/(2N); a finite-difference test
+  checks it. On the four-pair toy batch the loss is 1.095 at s = 1, 0.080 at s = 1/0.07 and
+  3e-7 at s = 100 (chance ln 4 = 1.386).
+- Concatenating 576 image tokens to 100 text tokens in a 32-layer, d = 4,096 model costs 18.7×
+  the attention scores and 4× the image KV of cross-attention every 4th layer.
 - Pins checked with `git ls-remote --tags`: v2.14.1, 1.9.1 and v3.4.2 are still the newest
-  stable releases (PyTorch v2.15.0 is at rc5); no pin moved.
-- Ranges cited this run, all checked at the pin: `parametrize.py` `cached` 33-73,
-  `ParametrizationList` 95-341 (forward 326-341), `register_parametrization` 450-671,
-  `remove_parametrizations` 696-796; `linear.py` `__init__` 96-115, `reset_parameters`
-  117-128, forward 130-134; `module.py` `requires_grad_` 2934-2955; `sparse.py` `Embedding`
-  14-264, `EmbeddingBag` 267-543; `functional.py` `F.embedding` 2509-2621, `F.embedding_bag`
-  2624-2839, `F.normalize` 6096-6130, `cross_entropy` 3478-3571, `F.group_norm` 3015-3050,
-  `F.silu` 2429-2451; `normalization.py` `GroupNorm` 239-340; `upsampling.py` `Upsample`
-  13-198; `activation.py` `SiLU` 436-483; `conv.py` `ConvTranspose2d` 1012-1207.
+  stable releases (PyTorch v2.15.0 has only release candidates); no pin moved.
+- Every range cited this run was checked at its pin and lives in its template. Run 39's
+  `cross_entropy` 3478-3571 counted two trailing blank lines; the function ends at 3569.
+  `F.scaled_dot_product_attention` is verified as 6367-6540.
 
 Gaps:
 
-- arxiv.org is still unreachable, so every reference added this run was cited from memory.
-- The ends of `CrossEntropyLoss` (`loss.py`, starts at 1200) and
-  `F.scaled_dot_product_attention` are unverified and not linked as ranges.
-- No pin implements a UNet, LoRA/PEFT, NF4, an ANN index or logQ correction; those follow the
-  papers. The two-tower serving numbers are an invented, labelled configuration.
+- arxiv.org is still unreachable, so every reference added this run (CLIP, Flamingo, CPC,
+  SigLIP, LLaVA, Whisper, EnCodec, the drift and dataset-shift papers, ZeRO, Megatron, GPipe)
+  was cited from memory.
+- PSI's 0.1/0.25 thresholds are an industry convention with no canonical source. Whisper's
+  front end, EnCodec's rates, Flamingo's gate and resampler, and LLaVA's connector follow
+  the papers from memory; no pin implements them. The fusion model is an invented,
+  labelled configuration.
 
 ## Queue
 
