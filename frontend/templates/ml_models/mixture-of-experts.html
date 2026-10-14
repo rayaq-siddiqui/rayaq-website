@@ -1,0 +1,436 @@
+{% set ex = moe_example() %}
+{% set e = ex.example %}
+{% set mx = e.mixtral %}
+{% set c = ex.mixtral %}
+{% set s = ex.sample %}
+{% set r2 = ex.top2[s] %}
+{% set r1 = ex.top1[s] %}
+{% set bal = ex.balance %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(0.0 if x|abs < 0.5 * 10 ** (-n) else x)|replace("-", "−") }}{%- endmacro %}
+{% macro vec(v, n=2) -%}({% for x in v %}{{ f(x, n) }}{% if not loop.last %}, {% endif %}{% endfor %}){%- endmacro %}
+{% macro bn(x) -%}{{ '%.2f'|format(x / 1e9) }}B{%- endmacro %}
+{% macro mn(x) -%}{{ '%.1f'|format(x / 1e6) }}M{%- endmacro %}
+<header class="jj-header">
+  <h1>Mixture of experts</h1>
+  <p class="tagline">
+    A mixture-of-experts layer replaces a transformer's one feed-forward block with many, and a small router sends each token to only a few of them. The model holds far more parameters than any single token pays for.
+    This page builds the layer from its parts: the router, top-k gating, the load-balancing loss that keeps experts busy, capacity limits and dropped tokens, and the arithmetic of total versus active parameters, with every number computed and every PyTorch link pinned.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Bigger <a href="/ml-models/transformer">transformers</a> are better, but in a dense model every parameter takes part in every token's forward pass, so compute per token grows in step with parameter count. The feed-forward blocks hold about two thirds of a dense transformer's non-embedding parameters, and each token uses all of them.
+</p>
+<p>
+  Mixture of experts breaks that link. Keep E copies of the feed-forward block, the experts, and let a learned router pick k of them per token, with k usually 1 or 2. Parameters grow with E; compute per token grows with k. The cost moves elsewhere: memory to hold every expert, communication to send tokens to wherever their experts live, and a routing problem that has to be trained to stay balanced.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Think of a help desk with many specialists and a receptionist. Each question goes to the one or two specialists the receptionist thinks fit best, and the answer is a blend of theirs, weighted by the receptionist's confidence. The desk as a whole knows a great deal; each question only costs two specialists' time.
+  Two things can go wrong: the receptionist can send everyone to the same specialist, who then has a queue while the others sit idle, and a specialist with a full queue has to turn people away. The load-balancing loss and the capacity factor below deal with exactly those two problems.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 316" role="img" aria-labelledby="moe-layer-title moe-layer-desc">
+    <title id="moe-layer-title">A top-2 mixture-of-experts layer routing the token "{{ e.words[s] }}"</title>
+    <desc id="moe-layer-desc">
+      The token vector x enters a router, a linear layer with {{ ex.num_experts }} outputs. Its softmax gives the probabilities {{ vec(r2.probs) }} for experts 0 to {{ ex.num_experts - 1 }}. The two largest, experts {{ r2.experts[0] }} and {{ r2.experts[1] }}, are selected; their gates g, renormalized over the pair, are {{ f(r2.gates[0]) }} and {{ f(r2.gates[1]) }}.
+      Only those two experts run. Their outputs are multiplied by the gates and summed, then added to x by the residual connection. The other two experts are drawn dashed: they hold parameters but do no work for this token.
+    </desc>
+    <g font-size="12">
+      <rect x="10" y="125" width="70" height="44" rx="6" class="d-box"></rect>
+      <text x="45" y="145" text-anchor="middle">x</text>
+      <text x="45" y="161" text-anchor="middle" class="d-muted">"{{ e.words[s] }}"</text>
+      <line x1="80" y1="147" x2="110" y2="147" class="d-line"></line>
+      <rect x="110" y="115" width="92" height="64" rx="6" class="d-box" style="fill: var(--jj-amber)" fill-opacity="0.18"></rect>
+      <text x="156" y="138" text-anchor="middle">router</text>
+      <text x="156" y="154" text-anchor="middle" class="d-muted">Wᵣ x, softmax</text>
+      <text x="156" y="170" text-anchor="middle" class="d-muted">top-{{ e.k }}</text>
+      {% for p in r2.probs %}
+      {% set i = loop.index0 %}
+      {% set y = 20 + i * 70 %}
+      {% set on = i in r2.experts %}
+      <line x1="202" y1="147" x2="290" y2="{{ y + 22 }}" class="d-line{% if not on %} ml-dashed d-muted{% endif %}"></line>
+      <rect x="290" y="{{ y }}" width="120" height="44" rx="6" class="d-box{% if not on %} ml-dashed{% endif %}"{% if on %} style="fill: var(--jj-accent)" fill-opacity="0.18"{% endif %}></rect>
+      <text x="350" y="{{ y + 19 }}" text-anchor="middle"{% if not on %} class="d-muted"{% endif %}>expert {{ i }}</text>
+      {% if on %}
+      <text x="350" y="{{ y + 35 }}" text-anchor="middle"><tspan class="d-muted">p {{ f(p) }}</tspan> <tspan style="fill: var(--jj-violet)">g {{ f(r2.gates[r2.experts.index(i)]) }}</tspan></text>
+      <line x1="410" y1="{{ y + 22 }}" x2="490" y2="147" class="d-line"></line>
+      {% else %}
+      <text x="350" y="{{ y + 35 }}" text-anchor="middle" class="d-muted">p {{ f(p) }}</text>
+      {% endif %}
+      {% endfor %}
+      <circle cx="505" cy="147" r="15" class="d-box"></circle>
+      <text x="505" y="152" text-anchor="middle">Σ</text>
+      <line x1="520" y1="147" x2="536" y2="147" class="d-line"></line>
+      <rect x="536" y="125" width="100" height="44" rx="6" class="d-box"></rect>
+      <text x="586" y="145" text-anchor="middle">x + Σ gᵢ Eᵢ(x)</text>
+      <text x="586" y="161" text-anchor="middle" class="d-muted">residual</text>
+      <path d="M45 169 V306 H586 V169" class="d-line ml-dashed" fill="none"></path>
+      <text x="320" y="298" text-anchor="middle" class="d-muted">x skips the layer through the residual</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Four experts hold four feed-forward blocks' worth of parameters; this token's forward pass runs two of them.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="replacing-the-ffn">Replacing the feed-forward block</h3>
+<p>
+  In a transformer block, attention mixes information across positions and the feed-forward network (FFN) then transforms each position on its own. Because the FFN is applied token by token, nothing stops different tokens from using different FFNs. A mixture-of-experts layer keeps the attention sublayer and swaps the FFN for E expert FFNs E₁ … E<sub>E</sub> (each the same shape as the original) plus a router matrix Wᵣ with E rows:
+</p>
+<p class="ml-formula">h = Wᵣ x, &nbsp; p = softmax(h), &nbsp; y = Σ<sub>i ∈ TopK(h)</sub> gᵢ(x) · Eᵢ(x)</p>
+<p>
+  The router is one linear layer, so it costs E · d multiply-adds per token, tiny next to an expert. The gates gᵢ multiply each expert's output, which is how the router gets gradient: the choice of experts is discrete, but the gate values are differentiable, and making a gate larger for an expert whose output lowered the loss is what teaches the router. Not every block has to be sparse: GShard replaces every other FFN, Mixtral replaces all of them.
+</p>
+
+<h3 id="top-k-gating">Top-k gating</h3>
+<p>
+  The router keeps the k largest logits. Two gate conventions are common:
+</p>
+<ul>
+  <li><strong>Switch (k = 1).</strong> Each token goes to argmax h, and the gate is that expert's full-softmax probability pᵢ, which is below 1. Switch Transformers argues that one expert per token is enough and halves the routing computation and communication compared with k = 2.</li>
+  <li><strong>Renormalized top-k (Mixtral, k = 2).</strong> g = softmax over the k selected logits only, so the gates sum to 1. This equals taking the full softmax and dividing the chosen probabilities by their sum, because the shared normalizer cancels.</li>
+</ul>
+<p>
+  The original sparsely-gated layer (Shazeer et al.) added tunable Gaussian noise to the logits before the top-k, which spreads early routing decisions; GShard used top-2 with the second expert chosen at random in proportion to its weight. Later models mostly use the plain deterministic top-k above.
+</p>
+
+<h3 id="load-balancing">The load-balancing loss</h3>
+<p>
+  Left alone, routing collapses: whichever experts start slightly better get more tokens, train faster and get more tokens still, while the rest never learn. The Switch Transformer auxiliary loss pushes back. Over a batch of T tokens, let fᵢ be the fraction of tokens whose top choice is expert i, and Pᵢ the mean router probability for expert i:
+</p>
+<p class="ml-formula">L<sub>aux</sub> = α · E · Σ<sub>i</sub> fᵢ · Pᵢ, &nbsp; α = 0.01 in the paper</p>
+<p>
+  fᵢ is a count, so it has no gradient; Pᵢ does, and the gradient of fᵢ · Pᵢ with respect to Pᵢ is fᵢ, so the loss pushes probability away from the experts that are already busiest. When the routing is perfectly uniform, every fᵢ is 1/E and the sum is 1/E whatever the Pᵢ, so E · Σ fᵢ Pᵢ = 1; when every token goes to one expert with probability 1, it is E. The factor E keeps the value comparable as the number of experts changes.
+  ST-MoE adds a <strong>router z-loss</strong>, the mean over tokens of (log Σⱼ exp hⱼ)², with a small coefficient (10⁻³ in the paper). It keeps the router's logits from growing large, which the authors found made training more stable, especially in low precision.
+</p>
+
+<h3 id="capacity">Capacity and dropped tokens</h3>
+<p>
+  On accelerators, each expert processes a fixed-size buffer so that shapes are static and the work can be split evenly across devices. Switch Transformers sets
+</p>
+<p class="ml-formula">expert capacity = (tokens per batch / number of experts) × capacity factor</p>
+<p>
+  A factor of 1 leaves exactly enough slots for perfect balance; values above 1 leave slack for uneven routing, at the price of padding and memory. When more tokens choose an expert than it has slots, the overflow tokens are <strong>dropped</strong>: they skip the expert computation, and the residual connection carries their input forward unchanged. Which tokens are dropped depends on the order slots are filled; the simplest rule, used below, fills them in position order, so tokens late in the batch are the ones lost.
+  Dropless implementations (MegaBlocks, and the loop-over-experts style in the implementation section) instead give each expert a variable-size batch and drop nothing, at the cost of irregular shapes.
+</p>
+
+<h3 id="total-vs-active">Total versus active parameters</h3>
+<p>
+  A sparse model is described by two numbers. <strong>Total parameters</strong> count every expert, and decide the memory needed to hold the model. <strong>Active parameters</strong> count what one token's forward pass touches: the shared parts (embeddings, attention, norms, routers) plus k experts per MoE layer, and decide the compute per token. Mixtral 8x7B, worked out below, has about {{ '%.1f'|format(c.total / 1e9) }}B total and {{ '%.1f'|format(c.active / 1e9) }}B active parameters, not 56B, because only the FFNs are replicated. DeepSeek-V3 takes the ratio further, with 671B total and 37B active, using many small experts plus shared experts every token visits.
+</p>
+<p>
+  Active parameters set the FLOPs but not the cost of serving. At small batch sizes decoding is limited by reading weights from memory, and different tokens in the batch touch different experts, so a batch can read most of the total. Across many devices, <strong>expert parallelism</strong> places different experts on different devices and exchanges tokens with two all-to-all communications per layer, one to dispatch tokens and one to bring the outputs back.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Router <code>nn.Linear(d, E, bias=False)</code></td>
+        <td>weight (E, d); logits (T, E)</td>
+        <td>One row per expert. Its logits feed both the top-k choice and the softmax used by the gates and the balancing loss.</td>
+        <td><a href="{{ src('torch/nn/modules/linear.py', 53, 147) }}">linear.py 53-147</a>, <a href="{{ src('torch/nn/functional.py', 2382, 2403) }}">functional.py 2382-2403</a></td>
+      </tr>
+      <tr>
+        <td>Experts <code>nn.ModuleList</code></td>
+        <td>E modules, each an FFN with weights (d_ff, d) and (d, d_ff), three matrices for SwiGLU</td>
+        <td>Registers every expert so that their parameters are trained, moved and saved with the layer, while the forward pass calls only the chosen ones.</td>
+        <td><a href="{{ src('torch/nn/modules/container.py', 341, 508) }}">container.py 341-508</a></td>
+      </tr>
+      <tr>
+        <td><code>torch.topk</code></td>
+        <td>(T, E) → values (T, k), indices (T, k)</td>
+        <td>Picks each token's k largest logits and their expert ids, sorted largest first.</td>
+        <td><a href="{{ src('torch/_torch_docs.py', 11877, 11921) }}">_torch_docs.py 11877-11921</a></td>
+      </tr>
+      <tr>
+        <td><code>F.softmax</code></td>
+        <td>dim −1</td>
+        <td>Over all E logits for the probabilities pᵢ; over the k selected logits for renormalized gates.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 2176, 2216) }}">functional.py 2176-2216</a></td>
+      </tr>
+      <tr>
+        <td><code>Tensor.index_add_</code></td>
+        <td>dim 0, index (n,), source (n, d)</td>
+        <td>Scatters each expert's gated outputs back to their token rows, summing where a token used two experts. <code>scatter_add</code> does the same with an index per element.</td>
+        <td><a href="{{ src('torch/_torch_docs.py', 373, 380) }}">_torch_docs.py 373-380</a>, <a href="{{ src('torch/_torch_docs.py', 10008, 10015) }}">10008-10015</a></td>
+      </tr>
+      <tr>
+        <td><code>F.one_hot</code>, <code>torch.bincount</code></td>
+        <td>top-1 ids (T,) → (T, E) or counts (E,)</td>
+        <td>Turn routing decisions into the per-expert counts behind fᵢ and the capacity check.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 5927, 5974) }}">functional.py 5927-5974</a>, <a href="{{ src('torch/_torch_docs.py', 1641, 1683) }}">_torch_docs.py 1641-1683</a></td>
+      </tr>
+      <tr>
+        <td><code>F.silu</code></td>
+        <td>elementwise</td>
+        <td>The activation inside a SwiGLU expert: w₂(silu(w₁x) ⊙ w₃x).</td>
+        <td><a href="{{ src('torch/nn/functional.py', 2429, 2451) }}">functional.py 2429-2451</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>The top-k selection is not differentiable. How does the router learn at all?</summary>
+  <p>Through the gates. The layer's output is Σ gᵢ Eᵢ(x), and each gᵢ is a softmax of the router's logits, so the loss has a gradient with respect to the router weights through every selected expert's gate: an expert whose output helped gets a larger gate next time, which raises its logit relative to the others. Experts that were not selected get no gradient from that token, apart from the balancing loss, which acts through the mean probabilities Pᵢ.</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-routing">Routing eight tokens</h3>
+  <p>
+    <strong>Setup.</strong> {{ e.tokens|length }} tokens with d = {{ e.tokens[0]|length }} ("{{ e.words|join(' ') }}"), {{ ex.num_experts }} experts, and a router whose rows are {% for w in e.router %}{{ vec(w, 1) }}{% if not loop.last %}, {% endif %}{% endfor %}.
+    Each token's logits are its dot products with the rows; the table shows the softmax, the top-1 (Switch) choice and gate, and the top-2 choice with renormalized gates.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Token</th><th>Logits h</th><th>softmax p</th><th>Top-1: expert, gate</th><th>Top-2: experts, gates</th></tr></thead>
+      <tbody>
+        {% for r in ex.top2 %}
+        {% set t1 = ex.top1[loop.index0] %}
+        <tr><td>{{ loop.index0 }} "{{ e.words[loop.index0] }}"</td><td>{{ vec(r.logits) }}</td><td>{{ vec(r.probs) }}</td><td>{{ t1.experts[0] }}, {{ f(t1.gates[0]) }}</td><td>{{ r.experts[0] }}, {{ r.experts[1] }}: {{ f(r.gates[0]) }}, {{ f(r.gates[1]) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    For token 0, the full softmax gives experts {{ ex.top2[0].experts[0] }} and {{ ex.top2[0].experts[1] }} probabilities {{ f(ex.top2[0].probs[ex.top2[0].experts[0]]) }} and {{ f(ex.top2[0].probs[ex.top2[0].experts[1]]) }}; dividing each by their sum {{ f(ex.top2_raw[0].gates[0] + ex.top2_raw[0].gates[1]) }} gives {{ f(ex.top2[0].gates[0]) }} and {{ f(ex.top2[0].gates[1]) }}, the same as a softmax over just those two logits.
+    The router already favours expert 0: {{ ex.counts[0] }} of {{ e.tokens|length }} tokens pick it first.
+  </p>
+
+  <h3 id="worked-balance">The balancing loss</h3>
+  <p>
+    Top-1 counts per expert are {{ ex.counts|join(', ') }}, so f = {{ vec(bal.fraction, 3) }}. The mean probabilities are P = {{ vec(bal.mean_prob, 3) }}.
+    E · Σ fᵢ Pᵢ = {{ ex.num_experts }} × ({% for fi in bal.fraction %}{{ f(fi) }} × {{ f(bal.mean_prob[loop.index0]) }}{% if not loop.last %} + {% endif %}{% endfor %}) = {{ f(bal.loss, 4) }}, and with α = {{ e.aux_alpha }} the auxiliary loss is {{ f(e.aux_alpha * bal.loss, 5) }}.
+    For comparison, a perfectly balanced routing (two tokens per expert, uniform probabilities) gives {{ f(ex.balance_uniform, 1) }}, and sending every token to expert 0 with probability 1 gives {{ f(ex.balance_collapsed, 1) }}. The gradient on Pᵢ is proportional to fᵢ, so expert 0's mean probability gets {{ f(bal.fraction[0] / bal.fraction[1], 0) }} times the push-down of each other expert's.
+    The router z-loss over these tokens is {{ f(ex.z_loss, 4) }}: the mean squared log-sum-exp of the logits.
+  </p>
+
+  <h3 id="worked-capacity">Capacity and dropped tokens</h3>
+  <p>
+    With T = {{ e.tokens|length }} and E = {{ ex.num_experts }}, perfect balance is {{ (e.tokens|length / ex.num_experts)|int }} tokens per expert. Capacity is that times the factor, rounded down here. Slots fill in token order, so expert 0, chosen by tokens {% for t in range(e.tokens|length) if ex.first[t] == 0 %}{{ t }}{% if not loop.last %}, {% endif %}{% endfor %}, overflows:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Capacity factor</th><th>Capacity per expert</th><th>Total slots</th><th>Load per expert</th><th>Dropped tokens</th></tr></thead>
+      <tbody>
+        {% for row in ex.capacity %}
+        <tr><td>{{ row.factor }}</td><td>{{ row.capacity }}</td><td>{{ row.slots }}</td><td>{{ row.load|join(', ') }}</td><td>{% for t in row.dropped %}{{ t }} "{{ e.words[t] }}"{% if not loop.last %}, {% endif %}{% else %}none{% endfor %}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Factors {{ ex.capacity[0].factor }} and {{ ex.capacity[1].factor }} give the same capacity, because {{ (e.tokens|length / ex.num_experts)|int }} × {{ ex.capacity[1].factor }} rounds down to {{ ex.capacity[1].capacity }}; with real batches of thousands of tokens the rounding barely matters.
+    Even at factor {{ ex.capacity[-1].factor }}, with {{ ex.capacity[-1].slots }} slots for {{ e.tokens|length }} tokens, token {{ ex.capacity[-1].dropped[0] }} is dropped, because the slack is spread evenly across experts while the load is not. More capacity is a poor fix for imbalance; the balancing loss is what makes a factor near 1 workable.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 260" role="img" aria-labelledby="moe-cap-title moe-cap-desc">
+    <title id="moe-cap-title">Expert loads for {{ e.tokens|length }} tokens under top-1 routing, with capacity lines</title>
+    <desc id="moe-cap-desc">
+      One column per expert, one square per token that chose it, stacked in token order. Expert 0 has {{ ex.counts[0] }} tokens, experts 1 to 3 have {{ ex.counts[1] }}, {{ ex.counts[2] }} and {{ ex.counts[3] }}. A solid line marks capacity {{ ex.capacity[0].capacity }} (factor {{ ex.capacity[0].factor }}) and a dashed line capacity {{ ex.capacity[-1].capacity }} (factor {{ ex.capacity[-1].factor }}).
+      At factor {{ ex.capacity[0].factor }}, the squares above the solid line, tokens {{ ex.capacity[0].dropped|join(', ') }}, are dropped and drawn in red; at factor {{ ex.capacity[-1].factor }} only token {{ ex.capacity[-1].dropped|join(', ') }} is.
+    </desc>
+    <g font-size="12">
+      {% set base = 220 %}
+      {% set cell = 34 %}
+      {% for expert in range(ex.num_experts) %}
+      {% set x = 70 + expert * 140 %}
+      {% set ns = namespace(level=0) %}
+      {% for t in range(e.tokens|length) if ex.first[t] == expert %}
+      {% set dropped = t in ex.capacity[0].dropped %}
+      <rect x="{{ x }}" y="{{ base - (ns.level + 1) * cell }}" width="80" height="{{ cell - 4 }}" rx="4" class="d-box{% if dropped %} ml-dashed{% endif %}" style="fill: var({{ '--jj-red' if dropped else '--jj-accent' }})" fill-opacity="0.22"></rect>
+      <text x="{{ x + 40 }}" y="{{ base - (ns.level + 1) * cell + 20 }}" text-anchor="middle">{{ t }} "{{ e.words[t] }}"</text>
+      {% set ns.level = ns.level + 1 %}
+      {% endfor %}
+      <text x="{{ x + 40 }}" y="{{ base + 20 }}" text-anchor="middle">expert {{ expert }}</text>
+      {% endfor %}
+      <line x1="40" y1="{{ base }}" x2="630" y2="{{ base }}" class="d-line"></line>
+      <line x1="40" y1="{{ base - ex.capacity[0].capacity * cell - 2 }}" x2="630" y2="{{ base - ex.capacity[0].capacity * cell - 2 }}" stroke-width="2" style="stroke: var(--jj-amber)"></line>
+      <text x="630" y="{{ base - ex.capacity[0].capacity * cell - 8 }}" text-anchor="end" style="fill: var(--jj-amber)">capacity {{ ex.capacity[0].capacity }} (factor {{ ex.capacity[0].factor }})</text>
+      <line x1="40" y1="{{ base - ex.capacity[-1].capacity * cell - 2 }}" x2="630" y2="{{ base - ex.capacity[-1].capacity * cell - 2 }}" stroke-width="2" class="ml-dashed" style="stroke: var(--jj-violet)"></line>
+      <text x="630" y="{{ base - ex.capacity[-1].capacity * cell - 8 }}" text-anchor="end" style="fill: var(--jj-violet)">capacity {{ ex.capacity[-1].capacity }} (factor {{ ex.capacity[-1].factor }})</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Red squares are dropped at capacity factor {{ ex.capacity[0].factor }}: they pass through the residual connection without any expert. Doubling the factor saves two of them and leaves experts 1 to 3 three-quarters empty.</p>
+
+<div class="ml-worked">
+  <h3 id="worked-output">One token's output</h3>
+  <p>
+    To keep the arithmetic visible, each toy expert here is a single {{ e.tokens[0]|length }} × {{ e.tokens[0]|length }} matrix followed by ReLU, not a full FFN. Token {{ s }} "{{ e.words[s] }}" is x = {{ vec(e.tokens[s], 1) }}. Its top-2 experts produce
+  </p>
+  <ul>
+    {% for i in r2.experts %}
+    <li>E{{ i }}(x) = relu({{ vec(e.tokens[s], 1) }} through rows {% for row in ex.experts[i] %}{{ vec(row, 1) }}{% if not loop.last %}, {% endif %}{% endfor %}) = {{ vec(ex.sample_top2.outputs[i]) }}</li>
+    {% endfor %}
+  </ul>
+  <p>
+    With gates {{ f(r2.gates[0]) }} and {{ f(r2.gates[1]) }}, the layer output is {{ f(r2.gates[0]) }} · E{{ r2.experts[0] }}(x) + {{ f(r2.gates[1]) }} · E{{ r2.experts[1] }}(x) = {{ vec(ex.sample_top2.combined) }}, which the residual adds to x.
+    Under Switch top-1 routing the token uses only expert {{ r1.experts[0] }} with gate {{ f(r1.gates[0]) }}, giving {{ vec(ex.sample_top1.combined) }}: a smaller output, since a single full-softmax gate is below 1, and none of expert {{ r2.experts[1] }}'s contribution.
+  </p>
+
+  <h3 id="worked-mixtral">Mixtral 8x7B: total and active parameters</h3>
+  <p>
+    The Mixtral paper's architecture table gives d = {{ mx.d_model }}, {{ mx.layers }} layers, {{ mx.heads }} query heads and {{ mx.kv_heads }} key-value heads of size {{ mx.head_dim }}, SwiGLU experts with hidden size {{ mx.d_ff }}, {{ mx.experts }} experts with top-{{ mx.top_k }} routing in every layer, and a {{ mx.vocab }}-token vocabulary. Counting weights, assuming untied input and output embeddings and no biases:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Part</th><th>Formula</th><th>Parameters</th></tr></thead>
+      <tbody>
+        <tr><td>Attention, per layer</td><td>2 · d · heads · head_dim + 2 · d · kv_heads · head_dim</td><td>{{ mn(c.attention) }}</td></tr>
+        <tr><td>One expert</td><td>3 · d · d_ff</td><td>{{ mn(c.expert) }}</td></tr>
+        <tr><td>Router, per layer</td><td>d · E</td><td>{{ '{:,}'.format(c.router) }}</td></tr>
+        <tr><td>Norms, per layer</td><td>2 · d</td><td>{{ '{:,}'.format(c.norms) }}</td></tr>
+        <tr><td>Embeddings, output head and final norm</td><td>2 · vocab · d + d</td><td>{{ mn(c.embeddings) }}</td></tr>
+        <tr><td><strong>Total</strong></td><td>layers · (attention + {{ mx.experts }} experts + router + norms) + embeddings</td><td><strong>{{ bn(c.total) }}</strong></td></tr>
+        <tr><td><strong>Active per token</strong></td><td>the same with {{ mx.top_k }} experts</td><td><strong>{{ bn(c.active) }}</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    That reproduces the paper's "47B total, 13B active". Experts are {{ f(c.expert_share * 100, 1) }}% of the total, which is why the name's eight 7B models add up to {{ '%.0f'|format(c.total / 1e9) }}B, not 56B: only the FFNs are replicated, while attention and embeddings are shared. Per token the model does the work of a {{ '%.0f'|format(c.active / 1e9) }}B dense model, but serving it needs memory for all {{ '%.0f'|format(c.total / 1e9) }}B, about {{ '%.0f'|format(c.total * 2 / 1e9) }} GB in 16-bit weights.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 170" role="img" aria-labelledby="moe-params-title moe-params-desc">
+    <title id="moe-params-title">Mixtral 8x7B total versus active parameters</title>
+    <desc id="moe-params-desc">
+      Two horizontal bars on the same scale. The total bar, {{ bn(c.total) }}, is almost all experts: {{ bn(mx.layers * mx.experts * c.expert) }} of experts and {{ bn(c.total - mx.layers * mx.experts * c.expert) }} shared (attention, embeddings, norms, routers).
+      The active bar, {{ bn(c.active) }}, has the same shared part and only {{ mx.top_k }} of {{ mx.experts }} experts per layer, {{ bn(mx.layers * mx.top_k * c.expert) }}.
+    </desc>
+    {% set scale = 520 / c.total %}
+    {% set shared = c.total - mx.layers * mx.experts * c.expert %}
+    <g font-size="12">
+      <text x="10" y="45">total</text>
+      <rect x="80" y="28" width="{{ '%.1f'|format(shared * scale) }}" height="26" class="d-box" style="fill: var(--jj-amber)" fill-opacity="0.5"></rect>
+      <rect x="{{ '%.1f'|format(80 + shared * scale) }}" y="28" width="{{ '%.1f'|format(mx.layers * mx.experts * c.expert * scale) }}" height="26" class="d-box" style="fill: var(--jj-accent)" fill-opacity="0.3"></rect>
+      <text x="{{ '%.1f'|format(80 + c.total * scale - 6) }}" y="45" text-anchor="end">{{ bn(c.total) }}</text>
+      <text x="10" y="95">active</text>
+      <rect x="80" y="78" width="{{ '%.1f'|format(shared * scale) }}" height="26" class="d-box" style="fill: var(--jj-amber)" fill-opacity="0.5"></rect>
+      <rect x="{{ '%.1f'|format(80 + shared * scale) }}" y="78" width="{{ '%.1f'|format(mx.layers * mx.top_k * c.expert * scale) }}" height="26" class="d-box" style="fill: var(--jj-accent)" fill-opacity="0.3"></rect>
+      <text x="{{ '%.1f'|format(80 + c.active * scale + 6) }}" y="95">{{ bn(c.active) }}</text>
+      <rect x="80" y="130" width="14" height="14" class="d-box" style="fill: var(--jj-amber)" fill-opacity="0.5"></rect>
+      <text x="100" y="142">shared: attention, embeddings, norms, routers ({{ bn(shared) }})</text>
+      <rect x="430" y="130" width="14" height="14" class="d-box" style="fill: var(--jj-accent)" fill-opacity="0.3"></rect>
+      <text x="450" y="142">experts</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Compute follows the lower bar, memory the upper one.</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class SwiGLU(nn.Module):
+    def __init__(self, d, d_ff):
+        super().__init__()
+        self.w1 = nn.Linear(d, d_ff, bias=False)
+        self.w3 = nn.Linear(d, d_ff, bias=False)
+        self.w2 = nn.Linear(d_ff, d, bias=False)
+
+    def forward(self, x):
+        return self.w2(F.silu(self.w1(x)) * self.w3(x))
+
+class MoE(nn.Module):
+    def __init__(self, d, d_ff, num_experts, k=2, capacity=None):
+        super().__init__()
+        self.router = nn.Linear(d, num_experts, bias=False)
+        self.experts = nn.ModuleList(SwiGLU(d, d_ff) for _ in range(num_experts))
+        self.k, self.capacity = k, capacity
+
+    def forward(self, x):                                  # x: (T, d), batch and sequence flattened
+        logits = self.router(x)                            # (T, E)
+        probs = logits.softmax(-1)
+        top_logits, top_idx = logits.topk(self.k, dim=-1)  # (T, k), largest first
+        gates = top_logits.softmax(-1)                     # renormalized over the k chosen
+        out = torch.zeros_like(x)
+        for e, expert in enumerate(self.experts):
+            token, slot = (top_idx == e).nonzero(as_tuple=True)   # in token order
+            if self.capacity is not None:
+                token, slot = token[:self.capacity], slot[:self.capacity]  # the rest are dropped
+            if token.numel():
+                out.index_add_(0, token, gates[token, slot, None] * expert(x[token]))
+        E = len(self.experts)
+        f = F.one_hot(top_idx[:, 0], E).float().mean(0)   # share of tokens whose first choice is e
+        aux = E * (f * probs.mean(0)).sum()                # 1 when balanced, E when collapsed
+        z = torch.logsumexp(logits, -1).pow(2).mean()
+        return out, aux, z
+
+# In the block: h = h + moe_out; in the loss: loss = task_loss + 0.01 * aux + 0.001 * z</code></pre>
+
+<p>
+  The loop over experts gathers each expert's tokens, runs the expert once on that sub-batch and scatters the gated results back with <code>index_add_</code>, so a token with two experts gets the sum of both. With <code>capacity=None</code> nothing is dropped. Production kernels replace the Python loop with a sort of tokens by expert and a grouped matrix multiply, and across devices with an all-to-all exchange, but the arithmetic is the same.
+  Two details matter in practice: compute the router in float32 even under <a href="/ml-models/mixed-precision">mixed precision</a>, since small logit errors flip discrete choices, and count the auxiliary losses per MoE layer, summing them across layers.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Design</th><th>Compute per token</th><th>Memory</th><th>Training</th><th>Use for</th></tr></thead>
+    <tbody>
+      <tr><td>Dense FFN</td><td>all parameters</td><td>all parameters</td><td>simple and stable</td><td>small models, low-memory serving, fine-tuning on little data</td></tr>
+      <tr><td>Top-1 (Switch)</td><td>shared + 1 expert</td><td>shared + E experts</td><td>cheapest routing; needs balancing and capacity tuning</td><td>pretraining many parameters on a fixed compute budget</td></tr>
+      <tr><td>Top-2 (GShard, Mixtral)</td><td>shared + 2 experts</td><td>shared + E experts</td><td>smoother gradients to the router; twice the expert compute and communication of top-1</td><td>the common default for open-weight MoE language models</td></tr>
+      <tr><td>Many small experts plus shared experts (DeepSeekMoE)</td><td>shared experts + k small ones</td><td>very large</td><td>finer specialization; more routing work per token</td><td>very high total-to-active ratios</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<ul>
+  <li><strong>Quality per FLOP improves, quality per byte does not.</strong> An MoE model usually beats a dense model with the same active parameters, and usually loses to a dense model with the same total parameters. Choose it when compute, not memory, is the limit.</li>
+  <li><strong>Serving is harder.</strong> All experts must be resident, batches spread across experts unevenly, and at low batch sizes memory bandwidth, which scales with total parameters read, dominates. <a href="/ml-models/quantization">Quantization</a> and expert offloading help.</li>
+  <li><strong>Training is less stable.</strong> Routing can collapse or oscillate; the balancing and z losses, float32 routers and careful initialization are standard. Fine-tuning a sparse model has been reported to overfit more readily than its dense counterpart.</li>
+  <li><strong>Experts do not specialize the way the name suggests.</strong> Analyses of Mixtral found little specialization by topic and more by syntax and token type, with consecutive tokens often going to the same expert.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>A team doubles the capacity factor to stop tokens being dropped, and training gets slower without getting better. What happened?</summary>
+  <p>Capacity is reserved for every expert, so doubling the factor doubles every expert's buffer, padding included, and the memory and communication with it. If the drops come from imbalance, most of the new slots sit empty on the quiet experts while the busy ones still overflow. Fixing the routing, with a larger balancing coefficient or a check that the auxiliary loss is actually being added, attacks the cause.</p>
+</details>
+
+<details class="ml-quiz">
+  <summary>Why can a model with 13B active parameters be slower to serve than a 13B dense model, even at the same FLOPs per token?</summary>
+  <p>Decoding a small batch is limited by reading weights from memory, not by arithmetic. A dense 13B model reads 13B parameters per step. In the MoE model, each token reads its own two experts per layer, and the tokens in a batch choose different experts, so a step can read most of the 47B, and the model needs memory, or multiple devices with all-to-all communication, to hold it all.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<p>
+  The <a href="/ml-models/transformer">transformer</a> page builds the block whose feed-forward sublayer the experts replace, and <a href="/ml-models/decoder-only-llm">decoder-only language models</a> are where MoE is now most used.
+  Expert parallelism is one more axis alongside the data, tensor and pipeline parallelism of <a href="/ml-models/distributed-training">distributed training</a>, and the memory-bound serving problem is the one on <a href="/ml-models/latency-and-throughput">latency and throughput</a>.
+  The idea of combining specialists by a learned weighting goes back to ensembles like <a href="/ml-models/random-forests">random forests</a>, with the difference that a router picks a few members per input instead of averaging all of them.
+</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Jacobs, Jordan, Nowlan and Hinton. <em>Adaptive Mixtures of Local Experts.</em> Neural Computation 1991. <a href="https://doi.org/10.1162/neco.1991.3.1.79">doi:10.1162/neco.1991.3.1.79</a></li>
+  <li>Shazeer et al. <em>Outrageously Large Neural Networks: The Sparsely-Gated Mixture-of-Experts Layer.</em> ICLR 2017. <a href="https://arxiv.org/abs/1701.06538">arXiv:1701.06538</a></li>
+  <li>Lepikhin et al. <em>GShard: Scaling Giant Models with Conditional Computation and Automatic Sharding.</em> 2020. <a href="https://arxiv.org/abs/2006.16668">arXiv:2006.16668</a></li>
+  <li>Fedus, Zoph and Shazeer. <em>Switch Transformers: Scaling to Trillion Parameter Models with Simple and Efficient Sparsity.</em> JMLR 2022. <a href="https://arxiv.org/abs/2101.03961">arXiv:2101.03961</a></li>
+  <li>Zoph et al. <em>ST-MoE: Designing Stable and Transferable Sparse Expert Models.</em> 2022. <a href="https://arxiv.org/abs/2202.08906">arXiv:2202.08906</a></li>
+  <li>Gale et al. <em>MegaBlocks: Efficient Sparse Training with Mixture-of-Experts.</em> MLSys 2023. <a href="https://arxiv.org/abs/2211.15841">arXiv:2211.15841</a></li>
+  <li>Jiang et al. <em>Mixtral of Experts.</em> 2024. <a href="https://arxiv.org/abs/2401.04088">arXiv:2401.04088</a></li>
+  <li>Dai et al. <em>DeepSeekMoE: Towards Ultimate Expert Specialization in Mixture-of-Experts Language Models.</em> 2024. <a href="https://arxiv.org/abs/2401.06066">arXiv:2401.06066</a></li>
+  <li>DeepSeek-AI. <em>DeepSeek-V3 Technical Report.</em> 2024. <a href="https://arxiv.org/abs/2412.19437">arXiv:2412.19437</a></li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/nn/modules/container.py', 341, 508) }}"><code>nn.ModuleList</code></a>, <a href="{{ src('torch/nn/modules/linear.py', 53, 147) }}"><code>nn.Linear</code></a>, <a href="{{ src('torch/_torch_docs.py', 11877, 11921) }}"><code>torch.topk</code></a>, <a href="{{ src('torch/_torch_docs.py', 373, 380) }}"><code>index_add</code></a>, <a href="{{ src('torch/nn/functional.py', 2176, 2216) }}"><code>F.softmax</code></a>.</li>
+</ul>

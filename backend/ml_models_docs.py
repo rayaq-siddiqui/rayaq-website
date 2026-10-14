@@ -794,7 +794,7 @@ PAGES = [
             "pytorch:torch/nn/modules/linear.py",
             "pytorch:torch/nn/functional.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "state-space-models",

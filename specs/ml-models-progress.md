@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-14 (forty-first run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-85, the last being `pca`.
-The next page is `mixture-of-experts` (queue item 86).
+fixed page format. Ready pages: queue items 1-86, the last being `mixture-of-experts`.
+The next page is `flow-matching` (queue item 87).
 
 ## Pins
 
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (85 of 93 ready, all
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (86 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -136,8 +136,7 @@ Paths are under `sklearn/`.
 - Where a list above gives only a start line, the end line is unverified. Check the end
   before linking a range. A naive "next top-level line" scan gets fooled by unindented
   docstrings and comments; it gave a wrong end for `RMSNorm`, which was corrected by hand.
-- On the index map, the box for `mixture-of-experts` links to the whole file `container.py`
-  until its page exists; every other map box links to its page.
+- Every index map box links to its page.
 - The index map still covers only the architecture area. Widen it to all 12 areas once a
   page in each of the first few areas is ready.
 - `transformer` uses the v1 section layout and is exempt from the §6 order test until its
@@ -343,8 +342,8 @@ Gaps:
 83. `monitoring-and-drift` ✓
 84. `multimodal-models` ✓
 85. `pca` ✓
-86. `mixture-of-experts` ← next
-87. `flow-matching`
+86. `mixture-of-experts` ✓
+87. `flow-matching` ← next
 88. `preference-optimization`
 89. `retrieval-augmented-generation`
 90. `checkpointing`
