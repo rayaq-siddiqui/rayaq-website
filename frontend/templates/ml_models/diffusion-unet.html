@@ -1,0 +1,624 @@
+{% set ex = unet_example() %}
+{% set e = ex.example %}
+{% set sd = ex.sd %}
+{% set walk = ex.walk %}
+{% set parts = walk.parts %}
+{% set dm = ex.dit_main %}
+{% set gn = ex.group_norm %}
+{% set ln = ex.layer_norm_style %}
+{% macro c(x) -%}{{ "{:,}".format(x) }}{%- endmacro %}
+{% macro f3(x) -%}{{ "{:.3f}".format(x) }}{%- endmacro %}
+{% macro pct(x) -%}{{ "{:.1f}".format(100 * x / walk.total) }}%{%- endmacro %}
+<header class="jj-header">
+  <h1>Diffusion U-Net</h1>
+  <p class="tagline">
+    A diffusion model is only as good as the network that guesses the noise. For most image diffusion models that network
+    is a U-Net: a convolutional encoder that shrinks the image, a decoder that grows it back, skip connections that carry
+    detail across, a timestep embedding injected into every block, and attention at the coarser resolutions. This page
+    walks Stable Diffusion v1's U-Net from a 64 × 64 latent down to 8 × 8 and back, counts its {{ c(walk.total) }}
+    parameters, and ends with DiT, the transformer that replaces the U-Net.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  <a href="/ml-models/diffusion-models">Diffusion models</a> train one network ε<sub>θ</sub>(<em>x<sub>t</sub></em>, <em>t</em>)
+  to predict the noise that was added to a clean image. Its input is a noisy image and its output is a tensor of the
+  <em>same shape</em>: a guess for every pixel. The same network is called at every one of up to 1000 noise levels, from
+  almost-clean images where it must find faint grain to pure static where it must invent global layout.
+</p>
+<p>
+  That asks a lot of one architecture. It must see the whole image, because deciding where a face goes is a global
+  decision. It must also keep exact pixel positions, because the noise is per-pixel. It must know how noisy its input is.
+  And for text-to-image it must listen to a prompt. A plain stack of convolutions sees only a small window; a classifier
+  throws away position. The question is what shape of network does all four.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  The U-Net, introduced by Ronneberger et al. for biomedical segmentation, already had the right shape: another
+  image-in, image-out problem. Its <strong>down path</strong> halves the resolution step by step while widening the
+  channels, so deep layers see the whole picture coarsely. Its <strong>up path</strong> mirrors it, doubling the
+  resolution back. The two paths drawn side by side make a U.
+</p>
+<p>
+  The trick is the <strong>skip connections</strong> across the U. Squeezing a 64 × 64 grid to 8 × 8 loses fine detail,
+  and the up path cannot invent it back. So each down-path output is kept and concatenated onto the matching up-path
+  input: the decoder gets both "what the image is about" from below and "exactly where things were" from the side. Think of
+  an editor who reads a summary of the whole book and also keeps the original page open.
+</p>
+<p>
+  Diffusion adds two inputs on top. The <strong>timestep</strong> becomes a vector, the same sinusoids used for
+  <a href="/ml-models/positional-encoding">positional encoding</a>, and every residual block adds it to its features, so
+  every layer knows the noise level. The <strong>prompt</strong> enters through
+  <a href="/ml-models/attention">cross-attention</a> layers placed where the grid is small enough for attention to be
+  affordable.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 330" role="img" aria-labelledby="unet-u-title unet-u-desc">
+    <title id="unet-u-title">The Stable Diffusion v1 U-Net: four resolutions down, a middle block, four back up, with skips</title>
+    <desc id="unet-u-desc">
+      On the left, four boxes step down and to the right: 64 by 64 with 320 channels, 32 by 32 with 640, 16 by 16 with 1280,
+      and 8 by 8 with 1280. The first three hold two ResBlocks with attention each; the 8 by 8 box holds two ResBlocks without
+      attention. Downsampling convolutions with stride 2 join them. At the bottom a middle block at 8 by 8 runs a ResBlock,
+      attention and another ResBlock. On the right, four boxes step back up, each holding three ResBlocks, with attention at
+      16, 32 and 64, joined by upsampling. Dashed horizontal arrows labelled skip run from each left box to the right box at
+      the same resolution, where features are concatenated. The input is the noisy latent with the timestep and text; the
+      output is the predicted noise, both 4 by 64 by 64.
+    </desc>
+    <g font-size="11">
+      {% set chans = [320, 640, 1280, 1280] %}
+      <text x="105" y="26" text-anchor="middle" style="fill:var(--jj-accent)">in: z_t [b, 4, 64, 64], t, text</text>
+      <text x="615" y="26" text-anchor="middle" style="fill:var(--jj-green)">out: ε̂ [b, 4, 64, 64]</text>
+      {% for i in range(4) %}
+        {% set y = 40 + 62 * i %}
+        {% set lx = 20 + 30 * i %}
+        {% set rx = 530 - 30 * i %}
+        {% set side = 64 // (2 ** i) %}
+        <rect x="{{ lx }}" y="{{ y }}" width="170" height="40" class="d-box ml-op"></rect>
+        <text x="{{ lx + 85 }}" y="{{ y + 16 }}" text-anchor="middle">{{ side }}×{{ side }} · {{ chans[i] }} ch</text>
+        <text x="{{ lx + 85 }}" y="{{ y + 31 }}" text-anchor="middle" class="d-muted">2 ResBlock{{ " + attn" if i < 3 else "" }}</text>
+        <rect x="{{ rx }}" y="{{ y }}" width="170" height="40" class="d-box ml-op"></rect>
+        <text x="{{ rx + 85 }}" y="{{ y + 16 }}" text-anchor="middle">{{ side }}×{{ side }} · {{ chans[i] }} ch</text>
+        <text x="{{ rx + 85 }}" y="{{ y + 31 }}" text-anchor="middle" class="d-muted">3 ResBlock{{ " + attn" if i < 3 else "" }}</text>
+        <line x1="{{ lx + 170 }}" y1="{{ y + 20 }}" x2="{{ rx }}" y2="{{ y + 20 }}" class="d-line ml-dashed" style="stroke:var(--jj-accent)"></line>
+        <polygon points="{{ rx - 8 }},{{ y + 16 }} {{ rx }},{{ y + 20 }} {{ rx - 8 }},{{ y + 24 }}" style="fill:var(--jj-accent)"></polygon>
+        <text x="{{ (lx + 170 + rx) / 2 }}" y="{{ y + 15 }}" text-anchor="middle" style="fill:var(--jj-accent)">skip · concat</text>
+        {% if i < 3 %}
+          <line x1="{{ lx + 85 }}" y1="{{ y + 40 }}" x2="{{ lx + 115 }}" y2="{{ y + 62 }}" class="d-line"></line>
+          <text x="{{ lx + 108 }}" y="{{ y + 54 }}" class="d-muted">↓2</text>
+          <line x1="{{ rx + 55 }}" y1="{{ y + 62 }}" x2="{{ rx + 85 }}" y2="{{ y + 40 }}" class="d-line"></line>
+          <text x="{{ rx + 46 }}" y="{{ y + 54 }}" text-anchor="end" class="d-muted">↑2</text>
+        {% endif %}
+      {% endfor %}
+      <line x1="195" y1="266" x2="250" y2="290" class="d-line"></line>
+      <line x1="470" y1="290" x2="525" y2="266" class="d-line"></line>
+      <rect x="250" y="276" width="220" height="40" class="d-box ml-tensor"></rect>
+      <text x="360" y="292" text-anchor="middle">middle · 8×8 · 1280 ch</text>
+      <text x="360" y="307" text-anchor="middle" class="d-muted">ResBlock · attn · ResBlock</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="latent-input">Input and output</h3>
+<p>
+  Stable Diffusion runs in the latent space of a <a href="/ml-models/variational-autoencoders">VAE</a>: a
+  {{ sd.image }} × {{ sd.image }} RGB image becomes a {{ sd.in_channels }} × {{ sd.latent }} × {{ sd.latent }} latent, and the
+  U-Net denoises that (the latent diffusion idea of Rombach et al.). The U-Net's input and output both have shape
+  [<em>b</em>, {{ sd.in_channels }}, {{ sd.latent }}, {{ sd.latent }}]. A 3 × 3 convolution, <code>conv_in</code>, lifts the
+  {{ sd.in_channels }} channels to the base width of {{ sd.model_channels }}; at the end a GroupNorm, SiLU and 3 × 3
+  convolution bring {{ sd.model_channels }} channels back to {{ sd.out_channels }}, the predicted noise.
+</p>
+
+<h3 id="down-up">Down path, up path and skips</h3>
+<p>
+  The down path has four levels with channel multipliers {{ sd.channel_mult }} on the base width, so
+  {{ sd.channel_mult | map("string") | join(", ") }} × {{ sd.model_channels }} =
+  {% for m in sd.channel_mult %}{{ m * sd.model_channels }}{{ ", " if not loop.last }}{% endfor %} channels. Each level runs
+  {{ sd.num_res_blocks }} residual blocks, then (except the last) a <strong>downsample</strong>: a 3 × 3 convolution with
+  stride 2 that halves height and width. Every block's output, including <code>conv_in</code>'s and each downsample's, is
+  pushed onto a stack: {{ walk.down | length }} saved tensors.
+</p>
+<p>
+  The up path walks the levels in reverse with {{ sd.num_res_blocks + 1 }} residual blocks per level, one more than the
+  down path, so it pops all {{ walk.down | length }} saved tensors. Each up block concatenates the popped tensor onto its
+  input along the channel axis, <code>torch.cat([h, skip], dim=1)</code>, which is why up-block inputs are wide (up to
+  {{ walk.up | map(attribute="in") | max }} channels) and the first convolution of each up block narrows them. At the end
+  of each level except the finest, an <strong>upsample</strong> doubles the resolution: nearest-neighbour interpolation
+  (<code>nn.Upsample(scale_factor=2, mode="nearest")</code>) followed by a 3 × 3 convolution. The original U-Net used a
+  learned transposed convolution (<code>nn.ConvTranspose2d</code>) here instead; resize-then-convolve avoids the
+  checkerboard artifacts transposed convolutions can produce when the kernel size is not divisible by the stride.
+</p>
+<p class="ml-formula">
+  skip: concat([<em>h</em>, <em>s</em>], dim = 1) &nbsp;·&nbsp; channels<sub>in</sub> = <em>C</em><sub>h</sub> + <em>C</em><sub>s</sub>
+</p>
+<p>
+  Concatenation, not addition, is the U-Net choice: the up block can weigh the skip and the upsampled path however it
+  likes, at the cost of wider convolutions. A ResNet's skip adds; a U-Net's skip stacks.
+</p>
+
+<h3 id="resblock">ResBlock with GroupNorm</h3>
+<p>
+  The workhorse is a pre-activation residual block. With input <em>x</em> of <em>C</em><sub>in</sub> channels and
+  timestep embedding <em>e</em>:
+</p>
+<p class="ml-formula">
+  <em>h</em> = Conv<sub>3×3</sub>(SiLU(GN(<em>x</em>))) + Linear(SiLU(<em>e</em>))[:, :, None, None]<br>
+  <em>y</em> = skip(<em>x</em>) + Conv<sub>3×3</sub>(Dropout(SiLU(GN(<em>h</em>))))
+</p>
+<p>
+  The skip is the identity when channels match and a 1 × 1 convolution when they change. The last convolution is
+  initialized to zero, so every block starts as the identity and the untrained network passes its input straight
+  through; the same zero init is used on the output convolution and on each attention block's output projection.
+</p>
+<p>
+  <strong>GroupNorm</strong> (Wu and He) splits the <em>C</em> channels into <em>G</em> groups and normalizes each group over
+  its channels and all spatial positions, separately for every sample. <a href="/ml-models/layernorm-and-residuals">LayerNorm</a>
+  is the case <em>G</em> = 1 and InstanceNorm the case <em>G</em> = <em>C</em>. Unlike BatchNorm, nothing depends on the
+  other samples in the batch, which matters when a large model fits only a few images per GPU. Stable Diffusion uses
+  <em>G</em> = {{ sd.groups }} everywhere, so every channel count must be a multiple of {{ sd.groups }};
+  <code>nn.GroupNorm</code> raises a <code>ValueError</code> otherwise. SiLU, also called Swish, is <em>x</em> · σ(<em>x</em>).
+</p>
+
+<h3 id="timestep">Timestep embedding</h3>
+<p>
+  The integer timestep <em>t</em> becomes sinusoids of geometrically spaced frequencies, the transformer's position
+  encoding with <em>t</em> as the position. With embedding width <em>d</em> and half = <em>d</em>/2:
+</p>
+<p class="ml-formula">
+  ω<sub><em>i</em></sub> = 10000<sup>−<em>i</em>/half</sup>, &nbsp; <em>i</em> = 0 … half − 1 &nbsp;·&nbsp;
+  emb(<em>t</em>) = [cos(<em>t</em>ω<sub>0</sub>), …, cos(<em>t</em>ω<sub>half−1</sub>), sin(<em>t</em>ω<sub>0</sub>), …, sin(<em>t</em>ω<sub>half−1</sub>)]
+</p>
+<p>
+  That is the latent-diffusion and DiT convention. The original DDPM code divides by half − 1 instead of half and puts
+  sin before cos; the two are equivalent up to a permutation and a slight change of frequencies, and any one model only
+  ever sees its own. Stable Diffusion embeds <em>t</em> at width {{ sd.model_channels }} and passes it through
+  Linear({{ sd.model_channels }}, {{ ex.emb_dim }}) → SiLU → Linear({{ ex.emb_dim }}, {{ ex.emb_dim }}). Each ResBlock
+  then projects the {{ ex.emb_dim }}-wide vector to its own channel count and adds it to every spatial position: a per-channel
+  bias that depends on the noise level. Guided-diffusion's ADM variant instead produces a scale and a shift and applies
+  them after the second GroupNorm (adaptive GroupNorm), which Dhariwal and Nichol found improved sample quality.
+</p>
+
+<h3 id="attention-blocks">Self- and cross-attention at low resolution</h3>
+<p>
+  Convolutions are local; attention lets every position see every other. Attention compares all pairs of positions, so
+  its cost grows with the square of the token count, and the U-Net places it only where the grid is small. DDPM used
+  self-attention at 16 × 16 only; Stable Diffusion v1 places a transformer block after every ResBlock at 64, 32 and 16 and
+  in the middle block at 8 (configured as <code>attention_resolutions</code> {{ sd.attention_resolutions }}, which are
+  downsampling factors, not sizes).
+</p>
+<p>
+  Each block first applies GroupNorm and a 1 × 1 convolution, then flattens the grid to a sequence,
+  [<em>b</em>, <em>C</em>, <em>H</em>, <em>W</em>] → [<em>b</em>, <em>HW</em>, <em>C</em>], and runs a pre-norm transformer layer:
+  self-attention over the <em>HW</em> positions, <strong>cross-attention</strong> whose queries come from the image and whose
+  keys and values come from the {{ sd.context_tokens }} × {{ sd.context_dim }} CLIP text-encoder output, and a GEGLU
+  feed-forward (Linear to 8<em>C</em>, split in half, one half times GELU of the other, Linear 4<em>C</em> → <em>C</em>).
+  A zero-initialized 1 × 1 convolution maps back and the result is added to the block input. Cross-attention is how the
+  prompt reaches the pixels: each position asks which words concern it. With {{ sd.num_heads }} heads at every level, the
+  head width is {% for m in sd.channel_mult[:3] %}{{ m * sd.model_channels // sd.num_heads }}{{ ", " if not loop.last }}{% endfor %}
+  as the channels grow.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>nn.Conv2d</code></td><td><code>conv_in</code> 4 → 320, 3 × 3, padding 1; downsample 3 × 3, stride 2; skip 1 × 1</td><td>Every spatial layer of the U-Net, and the 1 × 1 projections around attention.</td><td><a href="{{ src('torch/nn/modules/conv.py', 388, 565) }}">conv.py 388–565</a></td></tr>
+      <tr><td><code>Conv2d.__init__</code></td><td><code>stride=1</code>, <code>padding=0</code>, <code>bias=True</code> by default</td><td>The U-Net sets <code>padding=1</code> on 3 × 3 convolutions so sizes are kept.</td><td><a href="{{ src('torch/nn/modules/conv.py', 512, 544) }}">512–544</a></td></tr>
+      <tr><td><code>nn.ConvTranspose2d</code></td><td>kernel 2, stride 2 in the original U-Net</td><td>Learned upsampling; Stable Diffusion uses resize + conv instead.</td><td><a href="{{ src('torch/nn/modules/conv.py', 1012, 1207) }}">conv.py 1012–1207</a></td></tr>
+      <tr><td><code>nn.Upsample</code></td><td><code>size=None</code>, <code>scale_factor=None</code>, <code>mode="nearest"</code></td><td>With <code>scale_factor=2</code>, doubles height and width before a 3 × 3 conv.</td><td><a href="{{ src('torch/nn/modules/upsampling.py', 13, 198) }}">upsampling.py 13–198</a></td></tr>
+      <tr><td><code>Upsample.forward</code></td><td>[b, C, H, W] → [b, C, 2H, 2W]</td><td>Calls <code>F.interpolate</code>.</td><td><a href="{{ src('torch/nn/modules/upsampling.py', 170, 182) }}">170–182</a></td></tr>
+      <tr><td><code>nn.GroupNorm</code></td><td><code>GroupNorm(32, C)</code>, <code>eps=1e-5</code>, weight and bias [C]</td><td>Per-sample normalization over each group of C/32 channels and all positions.</td><td><a href="{{ src('torch/nn/modules/normalization.py', 239, 340) }}">normalization.py 239–340</a></td></tr>
+      <tr><td><code>F.group_norm</code></td><td><code>num_groups</code>, <code>weight</code>, <code>bias</code>, <code>eps</code></td><td>The functional form <code>GroupNorm.forward</code> calls.</td><td><a href="{{ src('torch/nn/functional.py', 3015, 3050) }}">functional.py 3015–3050</a></td></tr>
+      <tr><td><code>nn.SiLU</code></td><td>no parameters</td><td><em>x</em> · σ(<em>x</em>), before every convolution and in the time MLP.</td><td><a href="{{ src('torch/nn/modules/activation.py', 436, 483) }}">activation.py 436–483</a></td></tr>
+      <tr><td><code>nn.Linear</code></td><td>time MLP 320 → 1280 → 1280; per block 1280 → C</td><td>Turns the timestep embedding into a per-channel bias.</td><td><a href="{{ src('torch/nn/modules/linear.py', 53, 140) }}">linear.py 53–140</a></td></tr>
+      <tr><td><code>nn.MultiheadAttention</code></td><td><code>embed_dim=C</code>, <code>num_heads=8</code>; <code>kdim=vdim=768</code> for cross-attention</td><td>Self- and cross-attention over the flattened grid.</td><td><a href="{{ src('torch/nn/modules/activation.py', 1090, 1573) }}">activation.py 1090–1573</a></td></tr>
+      <tr><td><code>nn.LayerNorm</code></td><td>weight and bias [C]</td><td>Pre-norms inside each transformer block (and DiT's blocks, without affine).</td><td><a href="{{ src('torch/nn/modules/normalization.py', 105, 236) }}">normalization.py 105–236</a></td></tr>
+      <tr><td><code>nn.GELU</code></td><td><code>approximate="none"</code> or <code>"tanh"</code></td><td>Gate of the GEGLU feed-forward; DiT's MLP uses the tanh form.</td><td><a href="{{ src('torch/nn/modules/activation.py', 778, 823) }}">activation.py 778–823</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 270" role="img" aria-labelledby="unet-block-title unet-block-desc">
+    <title id="unet-block-title">Inside one level: a ResBlock with the timestep added, then a transformer block with cross-attention</title>
+    <desc id="unet-block-desc">
+      Top row, the ResBlock: input x, GroupNorm, SiLU, a 3 by 3 convolution, an addition where the timestep embedding,
+      passed through SiLU and a Linear layer, is added, then GroupNorm, SiLU and a zero-initialized 3 by 3 convolution,
+      and a final addition with a skip line from x that is the identity or a 1 by 1 convolution. Bottom row, the
+      transformer block: GroupNorm and a 1 by 1 convolution that flattens to b by HW by C, LayerNorm and self-attention with
+      a residual, LayerNorm and cross-attention whose keys and values come from text tokens of shape b by 77 by 768, with a
+      residual, LayerNorm and a GEGLU feed-forward with a residual, then a zero-initialized 1 by 1 convolution reshaped back
+      and added to the block input.
+    </desc>
+    <g font-size="11">
+      <text x="10" y="14" class="d-muted">ResBlock</text>
+      <path d="M45 46 V24 H665 V44" fill="none" class="d-line" style="stroke:var(--jj-accent)"></path>
+      <text x="360" y="20" text-anchor="middle" style="fill:var(--jj-accent)">skip: identity, or 1×1 conv when channels change</text>
+      {% set top = [(10, 70, "x", "[b,C,H,W]", "ml-tensor"), (96, 76, "GroupNorm", "32 groups", "ml-op"), (186, 48, "SiLU", "", "ml-op"), (248, 80, "Conv 3×3", "C → C′", "ml-op"), (394, 76, "GroupNorm", "", "ml-op"), (484, 48, "SiLU", "", "ml-op"), (546, 88, "Conv 3×3", "zero init", "ml-op")] %}
+      {% for x, w, label, sub, cls in top %}
+        <rect x="{{ x }}" y="46" width="{{ w }}" height="34" class="d-box {{ cls }}"></rect>
+        <text x="{{ x + w / 2 }}" y="{{ 60 if sub else 67 }}" text-anchor="middle">{{ label }}</text>
+        {% if sub %}<text x="{{ x + w / 2 }}" y="74" text-anchor="middle" class="d-muted">{{ sub }}</text>{% endif %}
+      {% endfor %}
+      {% for x1, x2 in [(80, 96), (172, 186), (234, 248), (328, 350), (370, 394), (470, 484), (532, 546), (634, 655)] %}
+        <line x1="{{ x1 }}" y1="63" x2="{{ x2 }}" y2="63" class="d-line"></line>
+      {% endfor %}
+      {% for cx in [360, 665] %}
+        <circle cx="{{ cx }}" cy="63" r="10" class="d-box ml-op"></circle>
+        <text x="{{ cx }}" y="67" text-anchor="middle">+</text>
+      {% endfor %}
+      <rect x="260" y="100" width="200" height="34" class="d-box ml-tensor"></rect>
+      <text x="360" y="114" text-anchor="middle" style="fill:var(--jj-amber)">timestep t</text>
+      <text x="360" y="128" text-anchor="middle" class="d-muted">sinusoid · MLP · SiLU · Linear</text>
+      <line x1="360" y1="100" x2="360" y2="73" class="d-line" style="stroke:var(--jj-amber)"></line>
+      <text x="10" y="160" class="d-muted">Transformer block (where attention runs)</text>
+      <path d="M30 190 V178 H668 V197" fill="none" class="d-line" style="stroke:var(--jj-accent)"></path>
+      <text x="440" y="174" text-anchor="middle" style="fill:var(--jj-accent)">block residual: x + proj_out(…)</text>
+      {% set bottom = [(10, 92, "GN · 1×1 in", "→ [b, HW, C]"), (116, 112, "LN · self-attn", "+ residual"), (242, 122, "LN · cross-attn", "+ residual"), (378, 112, "LN · GEGLU FF", "+ residual"), (504, 114, "1×1 out", "zero init · reshape")] %}
+      {% for x, w, label, sub in bottom %}
+        <rect x="{{ x }}" y="190" width="{{ w }}" height="34" class="d-box ml-op"></rect>
+        <text x="{{ x + w / 2 }}" y="204" text-anchor="middle">{{ label }}</text>
+        <text x="{{ x + w / 2 }}" y="218" text-anchor="middle" class="d-muted">{{ sub }}</text>
+        <line x1="{{ x + w }}" y1="207" x2="{{ bottom[loop.index][0] if not loop.last else 658 }}" y2="207" class="d-line"></line>
+      {% endfor %}
+      <circle cx="668" cy="207" r="10" class="d-box ml-op"></circle>
+      <text x="668" y="211" text-anchor="middle">+</text>
+      <rect x="236" y="238" width="134" height="26" class="d-box ml-tensor"></rect>
+      <text x="303" y="255" text-anchor="middle" style="fill:var(--jj-green)">text [b, 77, 768]</text>
+      <line x1="303" y1="238" x2="303" y2="224" class="d-line" style="stroke:var(--jj-green)"></line>
+      <text x="380" y="256" class="d-muted">keys and values come from the prompt</text>
+    </g>
+  </svg>
+</div>
+
+<h3 id="dit">DiT: the transformer alternative</h3>
+<p>
+  Peebles and Xie asked whether the U-Net's convolutional inductive bias is needed at all. A <strong>Diffusion
+  Transformer</strong> (DiT) treats the latent the way a <a href="/ml-models/vision-transformer">Vision Transformer</a> treats
+  an image: cut the {{ e.dit_channels }} × {{ e.dit_latent }} × {{ e.dit_latent }} latent into <em>p</em> × <em>p</em> patches
+  (a Conv2d with kernel and stride <em>p</em>), add fixed sin-cos position embeddings, and run a stack of plain transformer
+  blocks at one constant width. There is no down path, no up path and no skip; a final linear layer turns each token back
+  into a <em>p</em> × <em>p</em> × {{ dm.out_channels }} patch ({{ e.dit_channels }} channels of noise and
+  {{ e.dit_channels }} of learned variance), and the patches are reassembled.
+</p>
+<p>
+  Conditioning changes too. The timestep (embedded with the same sinusoids at width {{ e.dit_frequency_dim }}, then an MLP)
+  and the class label (a learned embedding table with one extra row for "no class", used for classifier-free guidance)
+  are summed into one vector <em>c</em>. Instead of being added to features, <em>c</em> drives <strong>adaLN-Zero</strong>:
+  a SiLU and Linear(<em>D</em>, 6<em>D</em>) produce a shift, a scale and a gate for each of the attention and MLP branches.
+  The LayerNorms have no learned affine; the shift and scale come from <em>c</em>, and each branch output is multiplied by its
+  gate before the residual add. The Linear is initialized to zero, so every gate starts at zero and every block starts as
+  the identity, the same trick as the U-Net's zero-initialized convolutions. Among the conditioning schemes the paper
+  compared (in-context tokens, cross-attention, adaLN and adaLN-Zero), adaLN-Zero gave the best FID.
+</p>
+<p class="ml-formula">
+  <em>x</em> ← <em>x</em> + <em>α</em><sub>1</sub> · Attn(LN(<em>x</em>)(1 + <em>γ</em><sub>1</sub>) + <em>β</em><sub>1</sub>) &nbsp;·&nbsp;
+  <em>x</em> ← <em>x</em> + <em>α</em><sub>2</sub> · MLP(LN(<em>x</em>)(1 + <em>γ</em><sub>2</sub>) + <em>β</em><sub>2</sub>),
+  &nbsp; (<em>β</em>, <em>γ</em>, <em>α</em>)<sub>1,2</sub> = Linear(SiLU(<em>c</em>))
+</p>
+<p>
+  The paper's finding was that DiTs scale cleanly: more compute per forward pass, whether from a larger model or from
+  smaller patches (more tokens), gave better samples, and DiT-XL/2 set a new state of the art on class-conditional
+  ImageNet at 256 × 256. Later large text-to-image models moved to transformer backbones in this spirit.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  All numbers below come from tested helpers in <code>ml_models_docs.py</code> (<code>unet_walk</code>,
+  <code>dit_params</code>, <code>timestep_embedding_ldm</code>, <code>timestep_embedding_ddpm</code>,
+  <code>unet_group_norm</code>), written in plain Python. The Stable Diffusion count reproduces the 859.52M the latent
+  diffusion code reports for this configuration, and the DiT-XL/2 count matches the paper's 675M.
+</p>
+
+<div class="ml-worked">
+  <h3 id="worked-timestep">Timestep embeddings at width {{ e.embed_dim }}</h3>
+  <p>
+    With <em>d</em> = {{ e.embed_dim }}, half = {{ e.embed_dim // 2 }} and the frequencies are
+    {% for w in ex.frequencies %}{{ "{:g}".format(w) }}{{ ", " if not loop.last }}{% endfor %}: one cycle every
+    2π ≈ 6.3 steps at the fastest, one every 6,283 steps at the slowest.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th><em>t</em></th><th>LDM / DiT: [cos …, sin …]</th><th>DDPM: [sin …, cos …]</th></tr></thead>
+      <tbody>
+        {% for row in ex.embeddings %}
+          <tr><td>{{ row.t }}</td><td>{% for v in row.ldm %}{{ "{:.2f}".format(v) }}{{ " " if not loop.last }}{% endfor %}</td><td>{% for v in row.ddpm %}{{ "{:.2f}".format(v) }}{{ " " if not loop.last }}{% endfor %}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    At <em>t</em> = 0 every cosine is 1 and every sine 0. Neighbouring steps 0 and 1 differ mostly in the fast dimensions;
+    steps 500 and 999 differ in the slow ones too. The DDPM rows are not a reordering of the LDM rows, because DDPM's
+    frequencies run from 1 down to exactly 10000<sup>−1</sup> while LDM's stop one step short, at
+    {{ "{:g}".format(ex.frequencies[-1]) }}. Each model learns the MLP that follows, so either works.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-groupnorm">GroupNorm by hand</h3>
+  <p>
+    One sample with {{ e.toy_x | length }} channels on a 2-pixel grid, values per channel
+    {% for ch in e.toy_x %}{{ ch }}{{ ", " if not loop.last }}{% endfor %}, normalized with {{ e.toy_groups }} groups (no affine).
+    Channels 0–1 form group 1 and channels 2–3 group 2.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Group</th><th>Values pooled</th><th>Mean</th><th>Variance</th><th>Output</th></tr></thead>
+      <tbody>
+        {% for s in gn.stats %}
+          {% set g = loop.index0 %}
+          <tr><td>{{ loop.index }}</td><td>{{ s.count }}</td><td>{{ s.mean }}</td><td>{{ s.var }}</td><td>{% for ch in gn.out[2 * g:2 * g + 2] %}[{% for v in ch %}{{ "{:.3f}".format(v) }}{{ ", " if not loop.last }}{% endfor %}]{{ " " if not loop.last }}{% endfor %}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Each group lands at mean 0 and variance 1 on its own, so the large values of group 2 do not drown out group 1. With one
+    group (LayerNorm over channels and positions) the shared mean is {{ ln.stats[0].mean }} and variance {{ ln.stats[0].var }};
+    channel 0 becomes [{% for v in ln.out[0] %}{{ "{:.3f}".format(v) }}{{ ", " if not loop.last }}{% endfor %}] and the
+    difference between its two pixels shrinks from 2 to about {{ "{:.2f}".format(ln.out[0][1] - ln.out[0][0]) }}. No
+    other sample is consulted either way, which is the point compared with BatchNorm.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-shapes">Shape walk through Stable Diffusion v1's U-Net</h3>
+  <p>Down path, with every row's output saved for a skip (shapes are [<em>b</em>, <em>C</em>, <em>H</em>, <em>W</em>]):</p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>#</th><th>Block</th><th>Output shape</th></tr></thead>
+      <tbody>
+        {% for r in walk.down %}<tr><td>{{ loop.index }}</td><td>{{ r.name }}</td><td>[b, {{ r.channels }}, {{ r.side }}, {{ r.side }}]</td></tr>{% endfor %}
+        <tr><td>—</td><td>middle: ResBlock + attention + ResBlock</td><td>[b, {{ walk.middle.channels }}, {{ walk.middle.side }}, {{ walk.middle.side }}]</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>Up path, popping the saved tensors in reverse:</p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>#</th><th>Resolution</th><th>Input + skip = concat</th><th>Output</th><th>Attention</th><th>Then</th></tr></thead>
+      <tbody>
+        {% for r in walk.up %}
+          <tr><td>{{ loop.index }}</td><td>{{ r.side }}×{{ r.side }}</td><td>{{ r.in - r.skip }} + {{ r.skip }} = {{ r.in }}</td><td>{{ r.channels }}</td><td>{{ "yes" if r.attn else "no" }}</td><td>{{ "upsample to " ~ (2 * r.side) if r.upsample else "" }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Up block 1 takes the middle block's 1280 channels plus the last saved tensor, the 8 × 8 ResBlock output; up block 12
+    takes the 320 channels from block 11 plus <code>conv_in</code>'s output, the very first thing saved. The concatenated
+    widths vary within a level because the saved tensors come from blocks of different widths: at 16 × 16 the third up block
+    pairs 1280 channels with the 640-channel downsample output from 32 × 32. After the last up block,
+    GroupNorm, SiLU and a 3 × 3 convolution return [b, {{ sd.out_channels }}, {{ sd.latent }}, {{ sd.latent }}].
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-attention-cost">Why attention waits for small grids</h3>
+  <p>Attention scores per head per image at each resolution (self: tokens²; cross: tokens × {{ sd.context_tokens }} text tokens):</p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Grid</th><th>Tokens</th><th>Self-attention scores</th><th>Cross-attention scores</th></tr></thead>
+      <tbody>
+        {% for a in ex.attention %}
+          <tr><td>{{ a.side }}×{{ a.side }}{{ " (middle only)" if a.side not in ex.attn_sides else "" }}</td><td>{{ c(a.tokens) }}</td><td>{{ c(a.self_scores) }}</td><td>{{ c(a.cross_scores) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Each halving of the side cuts the tokens by 4 and the self-attention scores by 16. At 64 × 64 a single head already
+    builds a {{ c(ex.attention[0].tokens) }} × {{ c(ex.attention[0].tokens) }} matrix, which is why latent diffusion runs at
+    64 × 64 rather than on 512 × 512 pixels, where the same layer would need {{ c((512 * 512) ** 2) }} scores per head, and
+    why memory-efficient attention kernels matter so much for this model. Cross-attention stays cheap because the prompt
+    has only {{ sd.context_tokens }} tokens.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-params">Counting the parameters</h3>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Part</th><th>Parameters</th><th>Share</th></tr></thead>
+      <tbody>
+        <tr><td>Time MLP (320 → 1280 → 1280)</td><td>{{ c(parts.time) }}</td><td>{{ pct(parts.time) }}</td></tr>
+        <tr><td><code>conv_in</code> (4 → 320, 3 × 3)</td><td>{{ c(parts.conv_in) }}</td><td>{{ pct(parts.conv_in) }}</td></tr>
+        <tr><td>22 ResBlocks (8 down, 2 middle, 12 up)</td><td>{{ c(parts.res) }}</td><td>{{ pct(parts.res) }}</td></tr>
+        <tr><td>16 transformer blocks</td><td>{{ c(parts.attn) }}</td><td>{{ pct(parts.attn) }}</td></tr>
+        <tr><td>3 downsample + 3 upsample convolutions</td><td>{{ c(parts.resample) }}</td><td>{{ pct(parts.resample) }}</td></tr>
+        <tr><td>Output GroupNorm + conv (320 → 4)</td><td>{{ c(parts.out) }}</td><td>{{ pct(parts.out) }}</td></tr>
+        <tr><td><strong>Total</strong></td><td><strong>{{ c(walk.total) }}</strong></td><td>100%</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The up-path ResBlocks are the heaviest because their first convolution reads the concatenated input. The 16
+    transformer blocks are 6 down, 1 middle and 9 up. The 1280-channel
+    levels hold most of the weight: a 3 × 3 convolution from 2560 to 1280 channels alone has
+    {{ c(2560 * 1280 * 9 + 1280) }} parameters, while the whole 64 × 64 level is light. The convolutions are cheap where the
+    grid is large and expensive where it is small, the opposite of the activations.
+  </p>
+  <p>DiT, at 256 × 256 images (a {{ e.dit_latent }} × {{ e.dit_latent }} × {{ e.dit_channels }} latent):</p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Model</th><th>Width</th><th>Depth</th><th>Heads</th><th>Patch</th><th>Tokens</th><th>Parameters</th></tr></thead>
+      <tbody>
+        {% for d in ex.dits %}
+          <tr><td>{{ d.name }}</td><td>{{ d.dim }}</td><td>{{ d.depth }}</td><td>{{ d.heads }}</td><td>{{ d.patch }}</td><td>{{ d.tokens }}</td><td>{{ c(d.total) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    One DiT-XL block has {{ c(dm.block) }} parameters, of which {{ c(dm.dim * 6 * dm.dim + 6 * dm.dim) }} are the adaLN
+    Linear(1152, 6912): more than the attention's {{ c(dm.dim * 4 * dm.dim + 4 * dm.dim) }}. The fixed position table
+    ({{ dm.tokens }} × {{ dm.dim }} = {{ c(dm.pos_table) }} numbers) is not trained and not counted. Changing the patch from
+    2 to 8 barely changes the parameters but cuts the tokens from {{ dm.tokens }} to 16, so attention gets 256 times cheaper
+    and the samples get worse: in DiT, compute, not parameter count, tracks quality.
+  </p>
+</div>
+
+<details class="ml-quiz">
+  <summary>Why does <code>nn.GroupNorm(32, 48)</code> fail, and what group counts would work for 48 channels?</summary>
+  <p>The channels must split evenly into groups, and 48 is not a multiple of 32, so the constructor raises <code>ValueError</code>. Any divisor of 48 works: 1, 2, 3, 4, 6, 8, 12, 16, 24 or 48. This is why U-Net widths are multiples of 32.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Remove the skip connections. What goes wrong first, coarse layout or fine detail?</summary>
+  <p>Fine detail. The 8 × 8 bottleneck can still encode layout, but per-pixel noise at 64 × 64 cannot pass through it, so low-noise steps, which need exact positions, degrade most. The skips are the only route for full-resolution information to reach the output.</p>
+</details>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  A two-level U-Net with timestep conditioning in plain PyTorch. It keeps every idea from Stable Diffusion's network at
+  toy size: GroupNorm-SiLU-conv ResBlocks, the embedding added per channel, a stride-2 downsample, nearest upsample
+  plus conv, concatenated skips, and zero-initialized last convolutions.
+</p>
+<pre><code>import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+def timestep_embedding(t, dim, max_period=10000):
+    half = dim // 2
+    freqs = torch.exp(-math.log(max_period) * torch.arange(half, dtype=torch.float32) / half)
+    args = t[:, None].float() * freqs[None]
+    return torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+
+
+class ResBlock(nn.Module):
+    def __init__(self, cin, cout, emb_dim, groups=32):
+        super().__init__()
+        self.norm1 = nn.GroupNorm(groups, cin)
+        self.conv1 = nn.Conv2d(cin, cout, 3, padding=1)
+        self.emb = nn.Linear(emb_dim, cout)
+        self.norm2 = nn.GroupNorm(groups, cout)
+        self.conv2 = nn.Conv2d(cout, cout, 3, padding=1)
+        nn.init.zeros_(self.conv2.weight)
+        nn.init.zeros_(self.conv2.bias)
+        self.skip = nn.Identity() if cin == cout else nn.Conv2d(cin, cout, 1)
+
+    def forward(self, x, emb):
+        h = self.conv1(F.silu(self.norm1(x)))
+        h = h + self.emb(F.silu(emb))[:, :, None, None]
+        h = self.conv2(F.silu(self.norm2(h)))
+        return self.skip(x) + h
+
+
+class TinyUNet(nn.Module):
+    def __init__(self, cin=4, ch=64, emb_dim=256):
+        super().__init__()
+        self.ch = ch
+        self.time = nn.Sequential(nn.Linear(ch, emb_dim), nn.SiLU(), nn.Linear(emb_dim, emb_dim))
+        self.conv_in = nn.Conv2d(cin, ch, 3, padding=1)
+        self.down1 = ResBlock(ch, ch, emb_dim)
+        self.down = nn.Conv2d(ch, ch, 3, stride=2, padding=1)
+        self.down2 = ResBlock(ch, 2 * ch, emb_dim)
+        self.mid = ResBlock(2 * ch, 2 * ch, emb_dim)
+        self.up2 = ResBlock(4 * ch, 2 * ch, emb_dim)
+        self.up = nn.Sequential(nn.Upsample(scale_factor=2, mode="nearest"), nn.Conv2d(2 * ch, 2 * ch, 3, padding=1))
+        self.up1 = ResBlock(3 * ch, ch, emb_dim)
+        self.out = nn.Sequential(nn.GroupNorm(32, ch), nn.SiLU(), nn.Conv2d(ch, cin, 3, padding=1))
+        nn.init.zeros_(self.out[-1].weight)
+        nn.init.zeros_(self.out[-1].bias)
+
+    def forward(self, x, t):
+        emb = self.time(timestep_embedding(t, self.ch))
+        h1 = self.down1(self.conv_in(x), emb)               # [b, 64, 32, 32], saved
+        h2 = self.down2(self.down(h1), emb)                 # [b, 128, 16, 16], saved
+        h = self.mid(h2, emb)
+        h = self.up2(torch.cat([h, h2], dim=1), emb)         # 128 + 128 -> 128
+        h = self.up1(torch.cat([self.up(h), h1], dim=1), emb)  # 128 + 64 -> 64, at 32 x 32
+        return self.out(h)
+
+
+model = TinyUNet()
+x = torch.randn(8, 4, 32, 32)
+t = torch.randint(0, 1000, (8,))
+assert model(x, t).shape == x.shape</code></pre>
+<p>
+  Attention slots in after a ResBlock at a small resolution. A simplified block (Stable Diffusion's adds the 1 × 1
+  projections and a GEGLU feed-forward) using <code>nn.MultiheadAttention</code>, whose <code>kdim</code> and
+  <code>vdim</code> let keys and values come from a text encoder of a different width:
+</p>
+<pre><code>class SpatialAttention(nn.Module):
+    def __init__(self, ch, ctx_dim, heads=8):
+        super().__init__()
+        self.norm = nn.GroupNorm(32, ch)
+        self.ln1, self.ln2 = nn.LayerNorm(ch), nn.LayerNorm(ch)
+        self.self_attn = nn.MultiheadAttention(ch, heads, batch_first=True)
+        self.cross_attn = nn.MultiheadAttention(ch, heads, kdim=ctx_dim, vdim=ctx_dim, batch_first=True)
+
+    def forward(self, x, ctx):
+        b, c, height, width = x.shape
+        h = self.norm(x).flatten(2).transpose(1, 2)        # [b, H*W, C]
+        q = self.ln1(h)
+        h = h + self.self_attn(q, q, q, need_weights=False)[0]
+        q = self.ln2(h)
+        h = h + self.cross_attn(q, ctx, ctx, need_weights=False)[0]
+        return x + h.transpose(1, 2).reshape(b, c, height, width)</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>U-Net versus DiT.</strong> The U-Net's multi-resolution convolutions are a strong prior for images and work
+    well at moderate scale; its design has many knobs (levels, multipliers, where attention goes). DiT has one width, one
+    block and a patch size, scales predictably with compute, and reuses transformer tooling, but it is less data-efficient
+    and its token count, and cost, grows quickly as patches shrink.</li>
+  <li><strong>Where attention goes.</strong> Attention at fine resolutions improves global coherence and prompt following
+    but its cost grows with the fourth power of the side. Stable Diffusion v1 pays for it at 64 × 64; DDPM kept it at
+    16 × 16 only.</li>
+  <li><strong>Concatenated skips.</strong> They preserve detail but make up-path convolutions wide; most of the
+    parameters sit in the 1280-channel levels.</li>
+  <li><strong>Conditioning.</strong> Adding the embedding is cheapest; adaptive normalization (scale and shift, as in ADM's
+    AdaGN or DiT's adaLN-Zero) is more expressive for global signals like timestep and class; cross-attention is needed
+    for sequences like prompts.</li>
+  <li><strong>Zero initialization.</strong> Starting every residual branch at zero makes deep networks stable from step one,
+    at no cost.</li>
+  <li><strong>Fixed sizes.</strong> The latent side must survive repeated halving (a multiple of 8 for three
+    downsamples), and a network trained at one resolution drifts at others without fine-tuning.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>DiT-XL/4 has {{ c(ex.dits[4].total) }} parameters, almost exactly XL/2's {{ c(dm.total) }}. Why is XL/2 the better model?</summary>
+  <p>The weights are nearly the same, but XL/2 sees {{ dm.tokens }} tokens instead of {{ ex.dits[4].tokens }}, so it does about four times the compute per forward pass (more for attention). The DiT paper found sample quality tracks that compute, and smaller patches gave better FID at every model size.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Ronneberger, Fischer and Brox. <em>U-Net: Convolutional Networks for Biomedical Image Segmentation.</em> MICCAI 2015.
+    <a href="https://arxiv.org/abs/1505.04597">arXiv:1505.04597</a></li>
+  <li>Ho, Jain and Abbeel. <em>Denoising Diffusion Probabilistic Models.</em> NeurIPS 2020.
+    <a href="https://arxiv.org/abs/2006.11239">arXiv:2006.11239</a></li>
+  <li>Dhariwal and Nichol. <em>Diffusion Models Beat GANs on Image Synthesis.</em> NeurIPS 2021.
+    <a href="https://arxiv.org/abs/2105.05233">arXiv:2105.05233</a></li>
+  <li>Rombach et al. <em>High-Resolution Image Synthesis with Latent Diffusion Models.</em> CVPR 2022.
+    <a href="https://arxiv.org/abs/2112.10752">arXiv:2112.10752</a></li>
+  <li>Peebles and Xie. <em>Scalable Diffusion Models with Transformers.</em> ICCV 2023.
+    <a href="https://arxiv.org/abs/2212.09748">arXiv:2212.09748</a></li>
+  <li>Wu and He. <em>Group Normalization.</em> ECCV 2018. <a href="https://arxiv.org/abs/1803.08494">arXiv:1803.08494</a></li>
+  <li>Ho and Salimans. <em>Classifier-Free Diffusion Guidance.</em> 2022. <a href="https://arxiv.org/abs/2207.12598">arXiv:2207.12598</a></li>
+  <li>Shazeer. <em>GLU Variants Improve Transformer.</em> 2020. <a href="https://arxiv.org/abs/2002.05202">arXiv:2002.05202</a></li>
+  <li>Odena, Dumoulin and Olah. <em>Deconvolution and Checkerboard Artifacts.</em> Distill, 2016.
+    <a href="https://distill.pub/2016/deconv-checkerboard/">distill.pub/2016/deconv-checkerboard</a></li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/nn/modules/conv.py', 388, 565) }}"><code>Conv2d</code></a>,
+    <a href="{{ src('torch/nn/modules/conv.py', 1012, 1207) }}"><code>ConvTranspose2d</code></a>,
+    <a href="{{ src('torch/nn/modules/upsampling.py', 13, 198) }}"><code>Upsample</code></a>,
+    <a href="{{ src('torch/nn/modules/normalization.py', 239, 340) }}"><code>GroupNorm</code></a>,
+    <a href="{{ src('torch/nn/modules/activation.py', 436, 483) }}"><code>SiLU</code></a>,
+    <a href="{{ src('torch/nn/modules/activation.py', 1090, 1573) }}"><code>MultiheadAttention</code></a>.</li>
+</ul>

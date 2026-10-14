@@ -882,7 +882,7 @@ PAGES = [
             "pytorch:torch/nn/modules/upsampling.py",
             "pytorch:torch/nn/modules/activation.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "flow-matching",
