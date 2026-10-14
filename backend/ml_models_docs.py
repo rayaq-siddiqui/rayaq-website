@@ -11761,6 +11761,137 @@ def unet_example():
     }
 
 
+FT_EXAMPLE = {
+    "model": {"name": "Llama 2 7B", "vocab": 32000, "dim": 4096, "layers": 32, "ffn": 11008},
+    "ranks": [1, 4, 8, 16, 64],
+    "targets": [
+        {"name": "q, v", "modules": ["q", "v"]},
+        {"name": "q, k, v, o", "modules": ["q", "k", "v", "o"]},
+        {"name": "all linear", "modules": ["q", "k", "v", "o", "gate", "up", "down"]},
+    ],
+    "main_rank": 8,
+    "toy": {
+        "W0": [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]],
+        "A": [[1, 0, -1]],
+        "B": [[0.5], [0], [-0.5], [1]],
+        "alpha": 2,
+        "x": [2, 1, 1],
+    },
+    "adapter_bottleneck": 64,
+    "prefix_length": 10,
+    "prompt_length": 20,
+    "probe_classes": 2,
+    "full_bytes": 16,
+    "frozen_bytes": 2,
+    "nf4_bits": 4,
+    "constant_bits": {"plain": 32 / 64, "double": 8 / 64 + 32 / (64 * 256)},
+    "sft": {"tokens": ["<user>", "Name", "a", "prime", "<assistant>", "Seven", "."],
+            "response_from": 5, "probs": [0.02, 0.1, 0.3, 0.05, 0.9, 0.4, 0.8]},
+    "forgetting": {"a": 1.0, "b": 3.0, "lambdas": [0, 0.5, 1, 4]},
+}
+
+
+def ft_linear_shapes(model):
+    d, f = model["dim"], model["ffn"]
+    return {"q": (d, d), "k": (d, d), "v": (d, d), "o": (d, d), "gate": (f, d), "up": (f, d), "down": (d, f)}
+
+
+def ft_model_params(model):
+    d, layers = model["dim"], model["layers"]
+    per_layer = sum(o * i for o, i in ft_linear_shapes(model).values()) + 2 * d
+    embed = model["vocab"] * d
+    return {"embedding": embed, "per_layer": per_layer, "layers": layers * per_layer, "final_norm": d,
+            "head": embed, "total": 2 * embed + layers * per_layer + d}
+
+
+def ft_lora_trainable(model, modules, rank):
+    shapes = ft_linear_shapes(model)
+    return model["layers"] * sum(lora_param_counts(*shapes[m], rank)["lora"] for m in modules)
+
+
+def ft_matmul(a, b):
+    return [[sum(x * y for x, y in zip(row, col)) for col in zip(*b)] for row in a]
+
+
+def ft_matvec(m, v):
+    return [sum(x * y for x, y in zip(row, v)) for row in m]
+
+
+def ft_lora_toy(toy):
+    rank = len(toy["A"])
+    scale = toy["alpha"] / rank
+    delta = [[scale * v for v in row] for row in ft_matmul(toy["B"], toy["A"])]
+    merged = [[w + d for w, d in zip(wr, dr)] for wr, dr in zip(toy["W0"], delta)]
+    ax = ft_matvec(toy["A"], toy["x"])
+    base = ft_matvec(toy["W0"], toy["x"])
+    side = [scale * v for v in ft_matvec(toy["B"], ax)]
+    d, k = len(toy["W0"]), len(toy["W0"][0])
+    return {"rank": rank, "scale": scale, "delta": delta, "merged": merged, "ax": ax, "base": base, "side": side,
+            "unmerged": [b + s for b, s in zip(base, side)], "merged_out": ft_matvec(merged, toy["x"]),
+            "init_out": base, "delta_rank": matrix_rank(delta), "full_count": d * k, "lora_count": rank * (d + k)}
+
+
+def ft_memory(n_params, trainable, e):
+    gib = 2 ** 30
+    nf4 = n_params * (e["nf4_bits"] + e["constant_bits"]["double"]) / 8
+    return [
+        {"method": "Full fine-tuning", "bytes": n_params * e["full_bytes"]},
+        {"method": "LoRA, frozen 16-bit base", "bytes": n_params * e["frozen_bytes"] + trainable * e["full_bytes"]},
+        {"method": "QLoRA, frozen 4-bit NF4 base", "bytes": nf4 + trainable * e["full_bytes"]},
+    ], gib
+
+
+def ft_masked_loss(tokens, probs, response_from):
+    labels = [-100 if i < response_from else token for i, token in enumerate(tokens)]
+    terms = [-math.log(p) for p, label in zip(probs, labels) if label != -100]
+    every = [-math.log(p) for p in probs]
+    return {"labels": labels, "terms": terms, "loss": sum(terms) / len(terms), "unmasked": sum(every) / len(every)}
+
+
+def ft_forgetting(a, b, lam):
+    w = (b + lam * a) / (1 + lam)
+    return {"lambda": lam, "w": w, "loss_a": (w - a) ** 2, "loss_b": (w - b) ** 2}
+
+
+@functools.lru_cache(maxsize=None)
+def ft_example():
+    e = FT_EXAMPLE
+    model = e["model"]
+    params = ft_model_params(model)
+    d, layers, m = model["dim"], model["layers"], e["adapter_bottleneck"]
+    grid = [{"target": t["name"], "counts": [ft_lora_trainable(model, t["modules"], r) for r in e["ranks"]]}
+            for t in e["targets"]]
+    main = ft_lora_trainable(model, ["q", "v"], e["main_rank"])
+    memory, gib = ft_memory(params["total"], main, e)
+    adapter = 2 * m * d + m + d
+    peft = [
+        {"method": "Full fine-tuning", "count": params["total"]},
+        {"method": "LoRA r = {} on q, v".format(e["main_rank"]), "count": main},
+        {"method": "LoRA r = {} on all linear layers".format(e["main_rank"]), "count": grid[2]["counts"][e["ranks"].index(e["main_rank"])]},
+        {"method": "Adapters, bottleneck {}, two per layer".format(m), "count": layers * 2 * adapter},
+        {"method": "Prefix tuning, {} positions per layer".format(e["prefix_length"]), "count": layers * e["prefix_length"] * 2 * d},
+        {"method": "Prompt tuning, {} soft tokens".format(e["prompt_length"]), "count": e["prompt_length"] * d},
+        {"method": "Linear probe, {} classes".format(e["probe_classes"]), "count": d * e["probe_classes"] + e["probe_classes"]},
+    ]
+    f = e["forgetting"]
+    return {
+        "example": e,
+        "model": model,
+        "params": params,
+        "shapes": ft_linear_shapes(model),
+        "grid": grid,
+        "main": main,
+        "main_share": main / params["total"],
+        "memory": [dict(row, gib=row["bytes"] / gib) for row in memory],
+        "adapter": adapter,
+        "peft": [dict(row, share=row["count"] / params["total"]) for row in peft],
+        "toy": ft_lora_toy(e["toy"]),
+        "sft": ft_masked_loss(e["sft"]["tokens"], e["sft"]["probs"], e["sft"]["response_from"]),
+        "forgetting": [ft_forgetting(f["a"], f["b"], lam) for lam in f["lambdas"]],
+        "q_single": lora_param_counts(d, d, e["main_rank"]),
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -11805,6 +11936,7 @@ def render(slug, render_template):
         "gnn_example": gnn_example,
         "diffusion_example": diffusion_example,
         "unet_example": unet_example,
+        "ft_example": ft_example,
         "pretraining_example": pretraining_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,

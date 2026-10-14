@@ -4762,3 +4762,43 @@ def test_unet_group_norm_normalises_each_group_separately():
     assert [s["var"] for s in gn["stats"]] == [0.5, 2.0]
     assert gn["out"][1] == [0.0, 0.0]
     assert ml_models_docs.unet_example()["layer_norm_style"]["stats"][0]["mean"] == 7.0
+
+
+def test_ft_model_params_match_llama_2_7b():
+    assert ml_models_docs.ft_example()["params"]["total"] == 6_738_415_616
+
+
+def test_ft_lora_counts_match_the_published_peft_totals():
+    e = ml_models_docs.ft_example()
+    assert e["main"] == 4_194_304
+    assert e["params"]["total"] + e["main"] == 6_742_609_920
+    grid = {row["target"]: row["counts"] for row in e["grid"]}
+    assert grid["all linear"][e["example"]["ranks"].index(8)] == 19_988_480
+    assert all(b == 2 * a for a, b in zip(grid["q, v"], grid["q, k, v, o"]))
+
+
+def test_ft_lora_toy_merges_to_the_same_output():
+    toy = ml_models_docs.ft_example()["toy"]
+    assert toy["unmerged"] == toy["merged_out"] == [3.0, 1.0, 0.0, 6.0]
+    assert toy["delta_rank"] == 1
+    assert (toy["full_count"], toy["lora_count"]) == (12, 7)
+
+
+def test_ft_memory_orders_full_lora_qlora():
+    gib = [row["gib"] for row in ml_models_docs.ft_example()["memory"]]
+    assert gib[0] > gib[1] > gib[2]
+    assert round(gib[0]) == 100
+
+
+def test_ft_masked_loss_ignores_prompt_tokens():
+    sft = ml_models_docs.ft_example()["sft"]
+    assert sft["labels"][:5] == [-100] * 5
+    assert len(sft["terms"]) == 2
+    assert math.isclose(sft["loss"], -(math.log(0.4) + math.log(0.8)) / 2)
+
+
+def test_ft_forgetting_trades_task_a_for_task_b():
+    rows = ml_models_docs.ft_example()["forgetting"]
+    assert rows[0]["w"] == 3.0 and rows[0]["loss_a"] == 4.0
+    assert [r["loss_a"] < q["loss_a"] for q, r in zip(rows, rows[1:])] == [True] * 3
+    assert rows[2]["loss_a"] == rows[2]["loss_b"] == 1.0
