@@ -1,0 +1,589 @@
+{% set ex = dt_example() %}
+{% set e = ex.example %}
+{% set ring = ex.ring %}
+{% set mem = ex.memory %}
+{% set zc = ex.zero_check %}
+{% set comm = ex.comm %}
+{% set tp = ex.tp %}
+{% set tc = ex.tp_comm %}
+{% set g8 = ex.gpipe_8 %}
+{% set f8 = ex.one_f_one_b_8 %}
+{% set model = e.model %}
+{% macro n(x, d=3) -%}{{ ("%." ~ d ~ "f")|format(x) }}{%- endmacro %}
+{% macro gb(x, d=1) -%}{{ ("%." ~ d ~ "f")|format(x / 1e9) }} GB{%- endmacro %}
+{% macro vec(v, d=1) -%}({% for x in v %}{{ ("%." ~ d ~ "f")|format(x) }}{{ ", " if not loop.last }}{% endfor %}){%- endmacro %}
+{% macro mat(m, d=2) -%}[{% for row in m %}{{ vec(row, d) }}{{ "; " if not loop.last }}{% endfor %}]{%- endmacro %}
+<header class="jj-header">
+  <h1>Distributed training</h1>
+  <p class="tagline">
+    One GPU can't hold or finish a large model's training run, so the work is split across many. Data
+    parallelism copies the model and splits the batch; sharded data parallelism (ZeRO, FSDP) also splits
+    the weights, gradients and optimizer state; tensor and pipeline parallelism split the model itself.
+    This page works through the ring all-reduce, the memory each scheme needs per GPU, and what each one
+    sends over the wire.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Training {{ model.name }} ({{ "{:,}".format(ex.params) }} parameters) with Adam in
+  <a href="/ml-models/mixed-precision">mixed precision</a> keeps a bf16 copy of the weights, bf16
+  gradients, and an fp32 master copy plus two fp32 Adam moments: 2 + 2 + 12 = 16 bytes per parameter,
+  {{ gb(mem.ddp) }} before a single activation. An 80 GB GPU can't hold it. Even if it could, one GPU
+  doing the trillions of token-steps a pretraining run needs would take years.
+</p>
+<p>
+  So the run is spread over <em>N</em> GPUs, and two questions decide how. First, which of the
+  training state gets <em>replicated</em> on every GPU and which gets <em>split</em>: the batch, the
+  optimizer state, the gradients, the weights, or the layers themselves. Second, what that split costs in
+  communication, because every GPU still has to end each step with the same update the single-GPU
+  program would have made (see <a href="/ml-models/training-loop">the training loop</a>).
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  The gradient of a mean loss is the mean of per-example gradients, so <strong>data parallelism</strong>
+  gives each of <em>N</em> GPUs a full model copy and 1/<em>N</em> of the batch, then averages the
+  gradients. That's the same gradient as the big batch (the argument
+  <a href="/ml-models/gradient-accumulation">gradient accumulation</a> makes for micro-batches in time,
+  made here across space). Every GPU then applies the same update to the same weights, so they stay in
+  sync without ever sending weights.
+</p>
+<p>
+  The waste is that every GPU stores the same optimizer state, gradients and weights.
+  <strong>Sharded data parallelism</strong> gives each GPU 1/<em>N</em> of them. A GPU only needs a
+  layer's full weights while it computes that layer, so it all-gathers them just before, then frees
+  them. <strong>Tensor parallelism</strong> splits each weight matrix so a single layer's matmul runs on
+  several GPUs, and <strong>pipeline parallelism</strong> gives each GPU a contiguous slice of the layers
+  and streams micro-batches through them like an assembly line. Large runs combine all of them: tensor
+  parallel inside a node where links are fastest, pipeline across nodes, and data parallel over the rest.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 260" role="img" aria-labelledby="dt-split-title dt-split-desc">
+    <title id="dt-split-title">What each kind of parallelism splits across two GPUs</title>
+    <desc id="dt-split-desc">
+      Four panels for two GPUs. Data parallel: each GPU holds the whole model and half of the batch.
+      Sharded data parallel: each GPU holds half of every layer's parameters, gradients and optimizer
+      state, and half of the batch. Tensor parallel: each GPU holds half of the columns or rows of every
+      weight matrix and the whole batch. Pipeline parallel: GPU 0 holds the first half of the layers and
+      GPU 1 the second half, and micro-batches flow from one to the other.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      {% set panels = [("data parallel", "full model", "full model", "batch ½", "batch ½"),
+                       ("sharded (ZeRO-3 / FSDP)", "params ½ · grads ½ · optim ½", "params ½ · grads ½ · optim ½", "batch ½", "batch ½"),
+                       ("tensor parallel", "W columns ½ · rows ½", "W columns ½ · rows ½", "whole batch", "whole batch"),
+                       ("pipeline parallel", "layers 1–16", "layers 17–32", "micro-batches →", "→ micro-batches")] %}
+      {% for title, m0, m1, b0, b1 in panels %}
+        {% set x = 10 + loop.index0 * 178 %}
+        <text x="{{ x + 82 }}" y="20" style="fill:var(--jj-accent)">{{ title }}</text>
+        {% for label, batch in [(m0, b0), (m1, b1)] %}
+          {% set y = 34 + loop.index0 * 108 %}
+          <rect x="{{ x }}" y="{{ y }}" width="164" height="96" rx="6" class="d-box ml-op"></rect>
+          <text x="{{ x + 82 }}" y="{{ y + 18 }}" class="d-muted">GPU {{ loop.index0 }}</text>
+          <rect x="{{ x + 10 }}" y="{{ y + 28 }}" width="144" height="28" rx="4" class="d-box ml-tensor"></rect>
+          <text x="{{ x + 82 }}" y="{{ y + 46 }}" font-size="10">{{ label }}</text>
+          <rect x="{{ x + 10 }}" y="{{ y + 62 }}" width="144" height="24" rx="4" class="d-box ml-tensor ml-dashed"></rect>
+          <text x="{{ x + 82 }}" y="{{ y + 78 }}" font-size="10">{{ batch }}</text>
+        {% endfor %}
+      {% endfor %}
+      <text x="360" y="254" class="d-muted">solid: model state on the GPU · dashed: the data it processes this step</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="mechanics-allreduce">All-reduce, and the ring that makes it cheap</h3>
+<p>
+  An <em>all-reduce</em> takes one tensor per rank and leaves every rank holding their elementwise sum
+  (<a href="{{ src('torch/distributed/distributed_c10d.py', 3811, 3915) }}"><code>dist.all_reduce</code></a>,
+  default <code>op=ReduceOp.SUM</code>). It splits into two halves that are collectives in their own right:
+  a <em>reduce-scatter</em> leaves rank <em>r</em> holding the sum of only its 1/<em>p</em> chunk
+  (<a href="{{ src('torch/distributed/distributed_c10d.py', 5820, 5925) }}"><code>reduce_scatter_single</code></a>),
+  and an <em>all-gather</em> copies every rank's chunk to everyone
+  (<a href="{{ src('torch/distributed/distributed_c10d.py', 5060, 5172) }}"><code>all_gather_single</code></a>).
+  In a ring, each of <em>p</em> ranks sends one chunk of <em>N</em>/<em>p</em> elements to its neighbour
+  per step: <em>p</em> − 1 steps of reduce-scatter, then <em>p</em> − 1 of all-gather.
+</p>
+<p class="ml-formula">bytes sent per rank = 2(<em>p</em> − 1)/<em>p</em> · <em>N</em> · bytes per element &nbsp;&nbsp;&nbsp; (→ 2<em>N</em> as <em>p</em> grows, independent of <em>p</em>)</p>
+<p>
+  The point is the last part: each rank's traffic barely grows with the number of ranks, where a naive
+  "send everything to rank 0 and broadcast back" puts 2(<em>p</em> − 1)<em>N</em> through rank 0's link.
+  NCCL picks rings, trees or other algorithms per message size and topology, but the bandwidth term of any
+  all-reduce can't beat this 2(<em>p</em> − 1)/<em>p</em> factor.
+</p>
+
+<h3 id="mechanics-ddp">DDP: buckets that overlap with backward</h3>
+<p>
+  <a href="{{ src('torch/nn/parallel/distributed.py', 466, 2667) }}"><code>DistributedDataParallel</code></a>
+  broadcasts rank 0's weights and buffers at construction
+  (<a href="{{ src('torch/nn/parallel/distributed.py', 1062, 1073) }}"><code>_sync_module_states</code></a>) so every
+  replica starts identical, then registers a hook on
+  each parameter's gradient. Calling all-reduce per parameter would launch thousands of tiny collectives,
+  and waiting until backward finishes would leave the network idle while it runs. So DDP groups gradients into
+  <em>buckets</em> of <a href="{{ src('torch/nn/parallel/distributed.py', 713, 718) }}"><code>bucket_cap_mb</code></a>
+  (default <a href="{{ src('torch/nn/parallel/distributed.py', 31, 31) }}">25 MiB</a>). Parameters are assigned in
+  roughly <em>reverse</em> order of definition, because backward produces the last layer's gradients first
+  (<a href="{{ src('torch/nn/parallel/distributed.py', 1375, 1484) }}"><code>_ddp_init_helper</code></a> builds the
+  <code>Reducer</code> from that order). When every gradient in a bucket is ready, its all-reduce starts
+  asynchronously while backward keeps computing earlier layers. The bucket for the parameters defined
+  first, whose gradients arrive last, can be kept small
+  (<a href="{{ src('torch/nn/parallel/distributed.py', 36, 162) }}"><code>_BucketCapacityConfig</code></a>), so
+  little communication is left once backward ends.
+</p>
+<p>
+  The reducer averages: it sums and divides by the world size. With
+  <a href="{{ src('torch/nn/parallel/distributed.py', 731, 742) }}"><code>gradient_as_bucket_view=True</code></a>,
+  <code>param.grad</code> is a view into the bucket, saving one gradient-sized copy. The
+  <a href="{{ src('torch/nn/parallel/distributed.py', 1659, 1686) }}"><code>no_sync</code></a> context skips the
+  all-reduce for gradient accumulation; the flag is read in
+  <a href="{{ src('torch/nn/parallel/distributed.py', 1745, 1814) }}"><code>_pre_forward</code></a>.
+</p>
+
+<h3 id="mechanics-zero">ZeRO: shard the optimizer state, then gradients, then weights</h3>
+<p>
+  ZeRO (Rajbhandari et al.) counts the model states for Adam in mixed precision as 2Ψ bytes of fp16
+  weights, 2Ψ of fp16 gradients and <em>K</em>Ψ of optimizer state, with <em>K</em> = 12 (fp32 weights,
+  momentum and variance, 4 bytes each), for Ψ parameters. Data parallelism replicates all (4 + <em>K</em>)Ψ
+  on every GPU. ZeRO removes the replication in three stages:
+</p>
+<p class="ml-formula">
+  DDP: (2 + 2 + <em>K</em>)Ψ &nbsp;&nbsp; stage 1 (P<sub>os</sub>): 4Ψ + <em>K</em>Ψ/<em>N</em> &nbsp;&nbsp;
+  stage 2 (P<sub>os+g</sub>): 2Ψ + (2 + <em>K</em>)Ψ/<em>N</em> &nbsp;&nbsp; stage 3 (P<sub>os+g+p</sub>): (2 + 2 + <em>K</em>)Ψ/<em>N</em>
+</p>
+<p>
+  Stage 1 gives each rank the Adam state for 1/<em>N</em> of the parameters; it updates only that slice and
+  then all-gathers the new weights. Stage 2 also keeps only that slice's gradient: instead of an all-reduce,
+  a reduce-scatter hands each rank the summed gradient for exactly the slice it updates. The traffic is the
+  same as DDP, since an all-reduce <em>is</em> a reduce-scatter plus an all-gather. Stage 3 also shards
+  the weights. A layer's weights are all-gathered before its forward, freed, all-gathered again before its
+  backward, and its gradients are reduce-scattered. That's one extra all-gather, 1.5× DDP's traffic, for
+  model states that shrink linearly with <em>N</em>.
+</p>
+
+<h3 id="mechanics-fsdp">FSDP in PyTorch</h3>
+<p>
+  <a href="{{ src('torch/distributed/fsdp/__init__.py') }}"><code>torch.distributed.fsdp</code></a> exports two
+  APIs. FSDP1's <code>FullyShardedDataParallel</code> names the ZeRO stages in
+  <a href="{{ src('torch/distributed/fsdp/api.py', 32, 69) }}"><code>ShardingStrategy</code></a>:
+  <code>FULL_SHARD</code> (stage 3), <code>SHARD_GRAD_OP</code> (stage 2: parameters are sharded outside
+  computation but stay unsharded from forward through backward), <code>NO_SHARD</code> (DDP) and
+  <code>HYBRID_SHARD</code> (full sharding inside a node, replication across nodes). FSDP2's
+  <a href="{{ src('torch/distributed/fsdp/_fully_shard/_fully_shard.py', 97, 296) }}"><code>fully_shard</code></a>
+  shards each parameter on dim 0 as a <code>DTensor</code>. Its docstring
+  (<a href="{{ src('torch/distributed/fsdp/_fully_shard/_fully_shard.py', 114, 121) }}">lines 114–121</a>) is the
+  ZeRO-3 schedule: all-gather before forward, free after forward if <code>reshard_after_forward</code>,
+  all-gather again in backward, then free and reduce-scatter the gradients.
+</p>
+<p>
+  Each <code>fully_shard</code> call makes one communication group, so it is applied bottom-up, once per
+  transformer block and then once on the root. Each block's weights then come in one
+  <a href="{{ src('torch/distributed/fsdp/_fully_shard/_fsdp_collectives.py', 324, 378) }}"><code>foreach_all_gather</code></a>
+  and leave in one
+  <a href="{{ src('torch/distributed/fsdp/_fully_shard/_fsdp_collectives.py', 521, 775) }}"><code>foreach_reduce</code></a>.
+  Peak memory is the shards plus one or two blocks' full weights.
+  <a href="{{ src('torch/distributed/fsdp/_fully_shard/_fully_shard.py', 180, 200) }}"><code>reshard_after_forward</code></a>
+  is the stage-2/stage-3 dial: <code>False</code> keeps the gathered weights until backward (no second
+  all-gather, more memory), and an integer reshards to a smaller group such as the GPUs of one node. For
+  gradient accumulation,
+  <a href="{{ src('torch/distributed/fsdp/_fully_shard/_fully_shard.py', 413, 435) }}"><code>set_requires_gradient_sync(False)</code></a>
+  is FSDP2's equivalent of <code>no_sync</code>. It skips the reduce-scatter, so every rank keeps
+  <em>unsharded</em> gradients until the last micro-batch. That trades the memory ZeRO saved back for
+  communication.
+</p>
+
+<h3 id="mechanics-tp">Tensor parallelism: split the matmuls</h3>
+<p>
+  Megatron-LM (Shoeybi et al.) splits a transformer's MLP <em>Z</em> = ReLU(<em>XA</em>)<em>B</em> so that it needs
+  one all-reduce. Split <em>A</em> by <strong>columns</strong> into [<em>A</em><sub>1</sub>, <em>A</em><sub>2</sub>]: each
+  GPU computes <em>Y</em><sub>i</sub> = ReLU(<em>XA</em><sub>i</sub>) with no communication, because the activation
+  works elementwise on columns it owns. Split <em>B</em> by <strong>rows</strong> to match: each GPU computes
+  <em>Y</em><sub>i</sub><em>B</em><sub>i</sub>, and <em>Z</em> = Σ<sub>i</sub> <em>Y</em><sub>i</sub><em>B</em><sub>i</sub> is a single
+  all-reduce. Splitting <em>A</em> by rows instead would leave partial sums <em>before</em> the nonlinearity,
+  and ReLU(<em>a</em> + <em>b</em>) ≠ ReLU(<em>a</em>) + ReLU(<em>b</em>). Attention is split the same way: heads
+  go column-wise across GPUs, and the output projection is row-wise.
+</p>
+<p>
+  PyTorch spells the two halves
+  <a href="{{ src('torch/distributed/tensor/parallel/style.py', 45, 183) }}"><code>ColwiseParallel</code></a>
+  (input replicated, output sharded on the last dim) and
+  <a href="{{ src('torch/distributed/tensor/parallel/style.py', 186, 336) }}"><code>RowwiseParallel</code></a>
+  (input sharded on the last dim, output replicated), applied with
+  <a href="{{ src('torch/distributed/tensor/parallel/api.py', 14, 142) }}"><code>parallelize_module</code></a>.
+  The cost is two all-reduces of the <em>b</em> × <em>s</em> × <em>h</em> activations per layer in forward (attention
+  and MLP) and two in backward, on the critical path with nothing to overlap. That is why tensor
+  parallelism stays inside a node, on NVLink.
+</p>
+
+<h3 id="mechanics-pp">Pipeline parallelism: split the layers</h3>
+<p>
+  With <em>p</em> stages, stage <em>s</em> can't start a micro-batch until stage <em>s</em> − 1 has sent its
+  activations, and backward runs in the reverse direction. GPipe
+  (<a href="{{ src('torch/distributed/pipelining/schedules.py', 1083, 1203) }}"><code>ScheduleGPipe</code></a>) runs every
+  micro-batch's forward, then every backward. 1F1B
+  (<a href="{{ src('torch/distributed/pipelining/schedules.py', 1206, 1456) }}"><code>Schedule1F1B</code></a>) runs
+  <code>min(n_microbatches, num_stages − stage_index)</code> warm-up forwards, then alternates one backward
+  and one forward. With equal forward and backward times, both take 2(<em>m</em> + <em>p</em> − 1) slots for 2<em>m</em>
+  slots of work, so both leave the same idle <em>bubble</em>:
+</p>
+<p class="ml-formula">bubble fraction = (<em>p</em> − 1) / (<em>m</em> + <em>p</em> − 1) &nbsp;&nbsp;&nbsp; (Narayanan et al. write (<em>p</em> − 1)/<em>m</em> as bubble time over ideal time)</p>
+<p>
+  What 1F1B changes is memory. A stage must keep each micro-batch's activations from its forward until
+  its backward. GPipe holds all <em>m</em>, while 1F1B frees one per forward after warm-up, so stage 0
+  never holds more than <em>p</em>. More micro-batches shrink the bubble without growing 1F1B's
+  activation memory, and interleaved schedules
+  (<a href="{{ src('torch/distributed/pipelining/schedules.py', 3149, 3262) }}"><code>ScheduleInterleaved1F1B</code></a>)
+  give each GPU several non-adjacent chunks of layers to shrink it further, at the cost of more sends.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr>{{ "<th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th>"|safe }}</tr></thead>
+    <tbody>
+      <tr><td><code>dist.all_reduce</code></td><td><code>op=ReduceOp.SUM</code>, <code>async_op=False</code></td><td>Every rank ends with the elementwise sum of all ranks' tensors.</td><td><a href="{{ src('torch/distributed/distributed_c10d.py', 3811, 3915) }}">distributed_c10d.py 3811–3915</a></td></tr>
+      <tr><td><code>dist.reduce_scatter_single</code></td><td>output = input / world size</td><td>Each rank gets the sum of its own chunk; ZeRO-2/3 gradient sync.</td><td><a href="{{ src('torch/distributed/distributed_c10d.py', 5820, 5925) }}">distributed_c10d.py 5820–5925</a></td></tr>
+      <tr><td><code>dist.all_gather_single</code></td><td>output = input × world size</td><td>Concatenates every rank's chunk on every rank; FSDP weight gather.</td><td><a href="{{ src('torch/distributed/distributed_c10d.py', 5060, 5172) }}">distributed_c10d.py 5060–5172</a></td></tr>
+      <tr><td><code>DistributedDataParallel</code></td><td><code>bucket_cap_mb</code> (25 MiB)</td><td>Replicates the model; all-reduces (averages) gradient buckets during backward.</td><td><a href="{{ src('torch/nn/parallel/distributed.py', 466, 2667) }}">distributed.py 466–2667</a></td></tr>
+      <tr><td><code>_BucketCapacityConfig</code></td><td>smaller first bucket</td><td>Optional smaller cap for the last-ready bucket, cutting the tail after backward.</td><td><a href="{{ src('torch/nn/parallel/distributed.py', 36, 162) }}">distributed.py 36–162</a></td></tr>
+      <tr><td><code>DDP.no_sync</code></td><td>context manager</td><td>Accumulates gradients locally without all-reducing.</td><td><a href="{{ src('torch/nn/parallel/distributed.py', 1659, 1686) }}">distributed.py 1659–1686</a></td></tr>
+      <tr><td><code>ShardingStrategy</code></td><td><code>FULL_SHARD</code>, <code>SHARD_GRAD_OP</code>, <code>NO_SHARD</code>, <code>HYBRID_SHARD</code></td><td>FSDP1's names for ZeRO-3, ZeRO-2, DDP and node-local sharding.</td><td><a href="{{ src('torch/distributed/fsdp/api.py', 32, 69) }}">api.py 32–69</a></td></tr>
+      <tr><td><code>fully_shard</code></td><td><code>mesh</code>, <code>reshard_after_forward</code>, <code>mp_policy</code></td><td>FSDP2: dim-0 DTensor shards, all-gather before use, reduce-scatter gradients.</td><td><a href="{{ src('torch/distributed/fsdp/_fully_shard/_fully_shard.py', 97, 296) }}">_fully_shard.py 97–296</a></td></tr>
+      <tr><td><code>FSDPModule.set_requires_gradient_sync</code></td><td><code>bool</code></td><td>FSDP2's <code>no_sync</code>: skip the reduce-scatter while accumulating.</td><td><a href="{{ src('torch/distributed/fsdp/_fully_shard/_fully_shard.py', 413, 435) }}">_fully_shard.py 413–435</a></td></tr>
+      <tr><td><code>MixedPrecisionPolicy</code></td><td><code>param_dtype</code>, <code>reduce_dtype</code></td><td>Dtype the gathered weights compute in and the gradients are reduced in.</td><td><a href="{{ src('torch/distributed/fsdp/_fully_shard/_fsdp_api.py', 13, 54) }}">_fsdp_api.py 13–54</a></td></tr>
+      <tr><td><code>ColwiseParallel</code></td><td><code>nn.Linear</code> weight split by output features</td><td>Replicated input, output sharded on the last dim; no communication.</td><td><a href="{{ src('torch/distributed/tensor/parallel/style.py', 45, 183) }}">style.py 45–183</a></td></tr>
+      <tr><td><code>RowwiseParallel</code></td><td><code>nn.Linear</code> weight split by input features</td><td>Sharded input, partial outputs all-reduced into a replicated output.</td><td><a href="{{ src('torch/distributed/tensor/parallel/style.py', 186, 336) }}">style.py 186–336</a></td></tr>
+      <tr><td><code>ScheduleGPipe</code></td><td><code>n_microbatches</code></td><td>All forwards, then all backwards; holds <em>m</em> activations.</td><td><a href="{{ src('torch/distributed/pipelining/schedules.py', 1083, 1203) }}">schedules.py 1083–1203</a></td></tr>
+      <tr><td><code>Schedule1F1B</code></td><td>warm-up <code>min(m, p − s)</code></td><td>Alternates one forward and one backward after warm-up; holds at most <em>p</em>.</td><td><a href="{{ src('torch/distributed/pipelining/schedules.py', 1206, 1456) }}">schedules.py 1206–1456</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  Four parts: a ring all-reduce by hand, the memory per GPU for {{ model.name }} on {{ e.world }} GPUs under
+  each scheme, a tensor-parallel MLP split two ways, and the bubble in a {{ e.pipeline.stages }}-stage
+  pipeline. Every number below comes from tested helpers in <code>ml_models_docs.py</code>.
+</p>
+
+<div class="ml-worked">
+  <h3 id="worked-ring">A ring all-reduce over four ranks</h3>
+  <p>
+    Each rank holds a gradient of 4 values, split into 4 chunks of 1. At reduce-scatter step <em>t</em>,
+    rank <em>r</em> sends chunk (<em>r</em> − <em>t</em>) mod 4 to rank <em>r</em> + 1, which adds it to its own. At
+    all-gather step <em>t</em>, rank <em>r</em> forwards chunk (<em>r</em> + 1 − <em>t</em>) mod 4, which the receiver
+    overwrites. Bold marks a fully summed chunk.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>After</th><th>Rank 0</th><th>Rank 1</th><th>Rank 2</th><th>Rank 3</th></tr></thead>
+      <tbody>
+        <tr><td>start</td>{% for g in e.ring %}<td>{{ vec(g, 0) }}</td>{% endfor %}</tr>
+        {% for step in ring.steps %}
+          <tr>
+            <td>{{ step.phase }} {{ loop.index if loop.index <= 3 else loop.index - 3 }}</td>
+            {% for row in step.state %}
+              <td>({% for ch in row %}{% set v = ch[0] %}{% if v == ring.sum[0][loop.index0] %}<strong>{{ n(v, 0) }}</strong>{% else %}{{ n(v, 0) }}{% endif %}{{ ", " if not loop.last }}{% endfor %})</td>
+            {% endfor %}
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    After three reduce-scatter steps, rank <em>r</em> owns the full sum of chunk {% for c in ring.owned %}{{ c }}{{ ", " if not loop.last }}{% endfor %}
+    (for ranks 0–3). After three all-gather steps, every rank holds {{ vec(ring.sum[0], 0) }}, and dividing by 4
+    gives the mean gradient {{ vec(ring.mean[0], 0) }}. Each rank sent {{ ring.sent_per_rank }} values,
+    2(<em>p</em> − 1)/<em>p</em> × 4 = 6, whereas gathering on rank 0 and broadcasting back would push
+    {{ ring.naive_root_traffic }} through rank 0's link.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 250" role="img" aria-labelledby="dt-ring-title dt-ring-desc">
+    <title id="dt-ring-title">Ring all-reduce over four ranks</title>
+    <desc id="dt-ring-desc">
+      Four ranks in a ring, each sending to the next: 0 to 1, 1 to 2, 2 to 3 and 3 back to 0. On the right,
+      the two phases: three reduce-scatter steps after which rank r owns the sum of chunk r plus 1 mod 4, then
+      three all-gather steps after which every rank holds the full sum
+      {% for x in ring.sum[0] %}{{ n(x, 0) }}{{ ", " if not loop.last }}{% endfor %}. Each rank sends
+      {{ ring.sent_per_rank }} values in total.
+    </desc>
+    <defs>
+      <marker id="dt-ring-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="d-line"></path>
+      </marker>
+    </defs>
+    <g font-size="12" text-anchor="middle">
+      {% set pos = [(150, 40), (260, 125), (150, 210), (40, 125)] %}
+      {% for x, y in pos %}
+        {% set nx, ny = pos[(loop.index0 + 1) % 4] %}
+        <line x1="{{ x + (nx - x) * 0.28 }}" y1="{{ y + (ny - y) * 0.28 }}" x2="{{ x + (nx - x) * 0.72 }}" y2="{{ y + (ny - y) * 0.72 }}" class="d-line" marker-end="url(#dt-ring-arrow)"></line>
+      {% endfor %}
+      {% for x, y in pos %}
+        <rect x="{{ x - 34 }}" y="{{ y - 18 }}" width="68" height="36" rx="6" class="d-box ml-op"></rect>
+        <text x="{{ x }}" y="{{ y + 4 }}">rank {{ loop.index0 }}</text>
+      {% endfor %}
+      <text x="150" y="129" class="d-muted" font-size="10">sends to r + 1</text>
+      <g text-anchor="start" font-size="11">
+        <text x="330" y="44" style="fill:var(--jj-accent)">reduce-scatter · p − 1 = 3 steps</text>
+        <text x="330" y="64">step t: rank r sends chunk (r − t) mod 4, receiver adds</text>
+        <text x="330" y="84">after: rank r owns Σ of chunk (r + 1) mod 4</text>
+        <text x="330" y="128" style="fill:var(--jj-accent)">all-gather · p − 1 = 3 steps</text>
+        <text x="330" y="148">step t: rank r forwards chunk (r + 1 − t) mod 4, receiver copies</text>
+        <text x="330" y="168">after: every rank holds {{ vec(ring.sum[0], 0) }}</text>
+        <text x="330" y="212" class="d-muted">per rank: 2(p − 1) chunks of N/p = {{ ring.sent_per_rank }} values sent</text>
+      </g>
+    </g>
+  </svg>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-memory">Memory per GPU: {{ model.name }} on {{ e.world }} GPUs</h3>
+  <p>
+    First a check against the ZeRO paper's own example, Ψ = 7.5B on <em>N</em> = 64 with <em>K</em> = 12:
+    {{ gb(zc.ddp, 0) }}, {{ gb(zc.zero1) }}, {{ gb(zc.zero2) }} and {{ gb(zc.zero3) }} for DDP and stages 1–3, the
+    figures the paper reports. Now Ψ = {{ "{:,}".format(ex.params) }} on {{ e.world }} GPUs of
+    {{ gb(e.gpu_memory, 0) }}, model states only:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Scheme</th><th>Formula</th><th>Per GPU</th><th>Fits {{ gb(e.gpu_memory, 0) }}?</th></tr></thead>
+      <tbody>
+        {% for key, label, formula in [("ddp", "DDP", "16Ψ"), ("zero1", "ZeRO-1", "4Ψ + 12Ψ/8"), ("zero2", "ZeRO-2", "2Ψ + 14Ψ/8"), ("zero3", "ZeRO-3 / FSDP", "16Ψ/8")] %}
+          <tr><td>{{ label }}</td><td>{{ formula }}</td><td>{{ gb(mem[key]) }}</td><td>{{ "yes" if ex.memory_fits[key] else "no" }}</td></tr>
+        {% endfor %}
+        <tr><td>Tensor parallel, 8-way</td><td>16Ψ/8</td><td>{{ gb(ex.tp_states) }}</td><td>yes</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    DDP can't train this model on 80 GB GPUs at all. ZeRO-1 alone brings it to {{ gb(mem.zero1) }}, and
+    ZeRO-3 leaves {{ gb(e.gpu_memory - mem.zero3) }} per GPU for activations, which at 4,096-token sequences are
+    the next wall (activation checkpointing, recomputing them in backward, is the usual answer). 8-way tensor
+    parallelism splits the same states 8 ways, and also the activations inside each layer, which ZeRO doesn't
+    touch.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 210" role="img" aria-labelledby="dt-mem-title dt-mem-desc">
+    <title id="dt-mem-title">Model-state memory per GPU for {{ model.name }} on {{ e.world }} GPUs</title>
+    <desc id="dt-mem-desc">
+      Horizontal bars against a dashed line at {{ gb(e.gpu_memory, 0) }}: DDP {{ gb(mem.ddp) }} crosses the line; ZeRO-1
+      {{ gb(mem.zero1) }}, ZeRO-2 {{ gb(mem.zero2) }} and ZeRO-3 {{ gb(mem.zero3) }} fit, each shorter than the last.
+    </desc>
+    {% set scale = 520 / 110e9 %}
+    <g font-size="11">
+      {% for key, label in [("ddp", "DDP"), ("zero1", "ZeRO-1"), ("zero2", "ZeRO-2"), ("zero3", "ZeRO-3")] %}
+        {% set y = 20 + loop.index0 * 42 %}
+        <text x="80" y="{{ y + 20 }}" text-anchor="end">{{ label }}</text>
+        <rect x="90" y="{{ y }}" width="{{ mem[key] * scale }}" height="28" rx="3" class="d-box {{ 'ml-op' if ex.memory_fits[key] else 'ml-tensor' }}"></rect>
+        <text x="{{ 96 + mem[key] * scale }}" y="{{ y + 19 }}" style="fill:var(--jj-accent)">{{ gb(mem[key]) }}</text>
+      {% endfor %}
+      <line x1="{{ 90 + e.gpu_memory * scale }}" y1="12" x2="{{ 90 + e.gpu_memory * scale }}" y2="184" class="d-line ml-dashed"></line>
+      <text x="{{ 90 + e.gpu_memory * scale }}" y="200" text-anchor="middle" class="d-muted">{{ gb(e.gpu_memory, 0) }} GPU</text>
+    </g>
+  </svg>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-communication">What each step sends</h3>
+  <p>
+    Gradients and gathered weights in bf16 ({{ e.comm_bytes }} bytes), payload Ψ × 2 = {{ gb(comm.payload) }},
+    across {{ e.world }} ranks. Times assume an effective {{ n(e.bandwidth / 1e9, 0) }} GB/s per GPU, an assumed
+    round number, not a measurement.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Scheme</th><th>Collectives per step</th><th>Sent per GPU</th><th>At {{ n(e.bandwidth / 1e9, 0) }} GB/s</th></tr></thead>
+      <tbody>
+        <tr><td>DDP, ZeRO-1</td><td>all-reduce gradients</td><td>{{ gb(comm.ddp, 2) }}</td><td>{{ n(ex.comm_seconds.ddp, 3) }} s</td></tr>
+        <tr><td>ZeRO-2</td><td>reduce-scatter grads + all-gather weights</td><td>{{ gb(comm.zero2, 2) }}</td><td>{{ n(ex.comm_seconds.zero2, 3) }} s</td></tr>
+        <tr><td>ZeRO-3 / FSDP</td><td>2 all-gathers + reduce-scatter</td><td>{{ gb(comm.zero3, 2) }}</td><td>{{ n(ex.comm_seconds.zero3, 3) }} s</td></tr>
+        <tr><td>Tensor parallel, 8-way</td><td>{{ tc.reduces }} activation all-reduces</td><td>{{ gb(tc.total, 2) }}</td><td>{{ n(tc.total / e.bandwidth, 3) }} s</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    DDP's all-reduce goes out bucket by bucket, overlapped with backward. With fp32 gradients (an fp32 model
+    under autocast) a 25 MiB bucket holds {{ "{:,}".format(ex.bucket_params) }} of them, so the model's gradients
+    fill about {{ ex.buckets }} buckets and the traffic doubles to {{ gb(2 * comm.ddp, 2) }}. The tensor-parallel
+    row is for one 4,096-token sequence: each all-reduce moves
+    {{ e.tp_scale.batch }} × {{ e.tp_scale.seq }} × {{ model.dim }} × 2 bytes = {{ "{:,}".format(tc.tensor) }} bytes
+    of activations, 4 per layer over {{ model.layers }} layers. It grows with batch and sequence length, not with
+    parameters, and it sits between matmuls where nothing hides it.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-tp">Tensor-parallel MLP: the right split and the wrong one</h3>
+  <p>
+    <em>X</em> = {{ mat(e.tp.x, 1) }}, <em>A</em> (2 × 4) = {{ mat(e.tp.a, 1) }}, <em>B</em> (4 × 2) = {{ mat(e.tp.b, 1) }}.
+    Unsplit, <em>Z</em> = ReLU(<em>XA</em>)<em>B</em> = {{ mat(tp.full) }}, with hidden activations {{ mat(tp.hidden) }}.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>GPU</th><th><em>A</em><sub>i</sub> (columns)</th><th><em>Y</em><sub>i</sub> = ReLU(<em>XA</em><sub>i</sub>)</th><th><em>B</em><sub>i</sub> (rows)</th><th><em>Y</em><sub>i</sub><em>B</em><sub>i</sub></th></tr></thead>
+      <tbody>
+        {% for s in tp.shards %}
+          <tr><td>{{ loop.index0 }}</td><td>{{ mat(s.a, 1) }}</td><td>{{ mat(s.y) }}</td><td>{{ mat(s.b, 1) }}</td><td>{{ mat(s.z) }}</td></tr>
+        {% endfor %}
+        <tr><td>all-reduce</td><td colspan="3">Σ<sub>i</sub> <em>Y</em><sub>i</sub><em>B</em><sub>i</sub></td><td><strong>{{ mat(tp.summed) }}</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The sum matches the unsplit {{ mat(tp.full) }} exactly. Split <em>A</em> by rows instead, and each GPU holds
+    a partial pre-activation; the true pre-activation is their sum, {{ mat(tp.row_split_pre) }}, and its
+    {{ n(tp.row_split_pre[0][2], 1) }} becomes 0 after ReLU. Applying ReLU to the partial sums first and adding
+    gives hidden {{ mat(tp.row_split_wrong_hidden) }} and output {{ mat(tp.row_split_wrong) }}: wrong, unless you
+    pay for an all-reduce <em>before</em> the activation as well.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-pipeline">Pipeline bubble and activation memory</h3>
+  <p>
+    {{ e.pipeline.stages }} stages, one time slot per forward and per backward of one micro-batch, simulated with
+    the dependencies F(<em>s</em>, <em>j</em>) after F(<em>s</em> − 1, <em>j</em>) and B(<em>s</em>, <em>j</em>) after
+    B(<em>s</em> + 1, <em>j</em>):
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Micro-batches <em>m</em></th>{% for b in ex.bubbles %}<th>{{ b.m }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        <tr><td>Bubble (<em>p</em> − 1)/(<em>m</em> + <em>p</em> − 1)</td>{% for b in ex.bubbles %}<td>{{ n(b.fraction * 100, 1) }}%</td>{% endfor %}</tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    At <em>m</em> = 8 both schedules take {{ g8.total }} slots for {{ g8.busy }} of work per stage, a
+    {{ n(g8.bubble * 100, 1) }}% bubble. Peak micro-batches held in activation memory per stage: GPipe
+    {{ g8.peak_in_flight|join(", ") }}; 1F1B {{ f8.peak_in_flight|join(", ") }}. Going to <em>m</em> = 32 shrinks the
+    bubble to {{ n(ex.bubbles[-1].fraction * 100, 1) }}% and GPipe's peak to 32 micro-batches, while 1F1B's
+    stays at 4.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 300" role="img" aria-labelledby="dt-pp-title dt-pp-desc">
+    <title id="dt-pp-title">GPipe and 1F1B schedules for {{ e.pipeline.stages }} stages and 8 micro-batches</title>
+    <desc id="dt-pp-desc">
+      Two grids of {{ e.pipeline.stages }} rows (stages) by {{ g8.total }} time slots. In GPipe, each stage runs forwards
+      F0 to F7, then backwards B0 to B7, with idle slots forming a triangle at the start and end. In 1F1B, stage s
+      runs 4 − s warm-up forwards and then alternates backward and forward. Both finish at slot {{ g8.total }}
+      with the same bubble of {{ n(g8.bubble * 100, 1) }}%, but 1F1B stage 0 holds at most
+      {{ f8.peak_in_flight[0] }} micro-batches of activations versus {{ g8.peak_in_flight[0] }} for GPipe.
+    </desc>
+    {% set cell = 26 %}
+    <g font-size="10" text-anchor="middle">
+      {% for title, sched, top in [("GPipe", g8, 24), ("1F1B", f8, 166)] %}
+        <text x="20" y="{{ top - 8 }}" text-anchor="start" style="fill:var(--jj-accent)">{{ title }} · peak in flight {{ sched.peak_in_flight|join(" / ") }}</text>
+        {% for s in range(e.pipeline.stages) %}
+          <text x="44" y="{{ top + s * 28 + 17 }}" text-anchor="end">stage {{ s }}</text>
+          <rect x="52" y="{{ top + s * 28 }}" width="{{ sched.total * cell }}" height="24" class="d-box ml-dashed"></rect>
+        {% endfor %}
+        {% for slot in sched.slots %}
+          <rect x="{{ 52 + slot.start * cell }}" y="{{ top + slot.stage * 28 }}" width="{{ cell }}" height="24" class="d-box {{ 'ml-op' if slot.kind == 'F' else 'ml-tensor' }}"></rect>
+          <text x="{{ 52 + slot.start * cell + cell / 2 }}" y="{{ top + slot.stage * 28 + 16 }}"{% if slot.kind == 'B' %} style="fill:var(--jj-accent)"{% endif %}>{{ slot.kind }}{{ slot.mb }}</text>
+        {% endfor %}
+      {% endfor %}
+      <text x="360" y="296" class="d-muted">dashed background: idle (bubble) · F: forward · B: backward · one slot each</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  FSDP2 on one node, sharding each transformer block, with bf16 compute and fp32 gradient reduction. Launch
+  with <code>torchrun --nproc-per-node 8 train.py</code>:
+</p>
+<pre><code>import os
+import torch
+import torch.distributed as dist
+from torch.distributed.fsdp import fully_shard, MixedPrecisionPolicy
+
+dist.init_process_group("nccl")
+torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+
+model = build_model()                       # on the meta device for large models
+mp = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
+for block in model.layers:                  # bottom-up: one all-gather per block
+    fully_shard(block, mp_policy=mp)
+fully_shard(model, mp_policy=mp)            # root: embeddings, final norm, head
+
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)   # sees only shards
+
+for step, micro_batches in enumerate(loader):
+    for i, (x, y) in enumerate(micro_batches):
+        model.set_requires_gradient_sync(i == len(micro_batches) - 1)
+        loss = model(x, labels=y) / len(micro_batches)
+        loss.backward()
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # DTensor-aware
+    optimizer.step()
+    optimizer.zero_grad(set_to_none=True)</code></pre>
+<p>
+  Swap the two <code>fully_shard</code> lines for
+  <code>model = DistributedDataParallel(model, device_ids=[local_rank])</code>, and <code>set_requires_gradient_sync</code> for
+  <code>no_sync</code>, to get plain data parallelism. Add tensor parallelism by building a 2-D
+  <code>DeviceMesh</code> and calling <code>parallelize_module</code> with <code>ColwiseParallel</code> on
+  the up projections and attention input projections and <code>RowwiseParallel</code> on the down and output
+  projections before <code>fully_shard</code> on the data-parallel dimension. Each rank must also see a
+  different slice of data (<code>DistributedSampler</code>, see
+  <a href="/ml-models/data-loading-and-batching">data loading</a>), or all of them compute the same gradient.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Data parallel is simplest and fastest when it fits.</strong> One overlapped all-reduce per step and no
+    change to the model, but full model states on every GPU.</li>
+  <li><strong>Sharding buys memory with latency.</strong> ZeRO-3/FSDP sends 1.5× DDP's bytes and puts an all-gather
+    in front of every block, which prefetching must hide. Small blocks, slow links or tiny per-GPU batches expose
+    it. Stage 2 or <code>reshard_after_forward=False</code> sits in between.</li>
+  <li><strong>Tensor parallelism needs fast links.</strong> Its all-reduces are on the critical path and scale with
+    batch × sequence × hidden, so it stays within NVLink domains (typically ≤ 8 ways) and needs the hidden size
+    and head count to divide evenly.</li>
+  <li><strong>Pipelines need many micro-batches.</strong> The bubble is (<em>p</em> − 1)/(<em>m</em> + <em>p</em> − 1), so deep
+    pipelines need large global batches, and stages must be balanced or the slowest one sets the pace. The
+    traffic, activations between neighbours only, is the lightest of all, which suits slower inter-node links.</li>
+  <li><strong>The global batch grows with data parallelism.</strong> 1,024 GPUs at 4 sequences each is a 4,096-sequence
+    batch, which may need learning-rate retuning or exceed the critical batch size (see
+    <a href="/ml-models/gradient-accumulation">gradient accumulation</a>).</li>
+  <li><strong>Failures scale too.</strong> More GPUs mean more frequent hardware faults; frequent sharded
+    checkpoints and elastic restarts become part of the design.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Why is ZeRO-2's communication the same as DDP's, while ZeRO-3's is 1.5×?</summary>
+  <p>An all-reduce is a reduce-scatter plus an all-gather. ZeRO-2 does the reduce-scatter on gradients and the all-gather on updated weights, so the same two halves. ZeRO-3 must all-gather weights twice, once for forward and again for backward, since it freed them in between.</p>
+</details>
+<details class="ml-quiz">
+  <summary>In the tensor-parallel MLP, why split the first matrix by columns and the second by rows?</summary>
+  <p>Column-splitting the first matrix lets each GPU apply the nonlinearity to complete hidden units with no communication. Row-splitting the second then consumes exactly those hidden units, leaving partial outputs that one all-reduce sums. The other way round needs an all-reduce before the nonlinearity too.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Doubling micro-batches from 8 to 16 with 4 stages: what happens to the bubble and to 1F1B's peak activations?</summary>
+  <p>The bubble falls from {{ n(ex.bubbles[2].fraction * 100, 1) }}% to {{ n(ex.bubbles[3].fraction * 100, 1) }}%. 1F1B's stage 0 still holds at most 4 micro-batches; GPipe's would rise from 8 to 16.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Rajbhandari, Rasley, Ruwase and He. <em>ZeRO: Memory Optimizations Toward Training Trillion Parameter Models.</em> SC, 2020. <a href="https://arxiv.org/abs/1910.02054">arXiv:1910.02054</a>.</li>
+  <li>Shoeybi, Patwary, Puri, LeGresley, Casper and Catanzaro. <em>Megatron-LM: Training Multi-Billion Parameter Language Models Using Model Parallelism.</em> 2019. <a href="https://arxiv.org/abs/1909.08053">arXiv:1909.08053</a>.</li>
+  <li>Narayanan et al. <em>Efficient Large-Scale Language Model Training on GPU Clusters Using Megatron-LM.</em> SC, 2021. <a href="https://arxiv.org/abs/2104.04473">arXiv:2104.04473</a> (1F1B, interleaving, the bubble).</li>
+  <li>Huang et al. <em>GPipe: Efficient Training of Giant Neural Networks using Pipeline Parallelism.</em> NeurIPS, 2019. <a href="https://arxiv.org/abs/1811.06965">arXiv:1811.06965</a>.</li>
+  <li>Li et al. <em>PyTorch Distributed: Experiences on Accelerating Data Parallel Training.</em> VLDB, 2020. <a href="https://arxiv.org/abs/2006.15704">arXiv:2006.15704</a> (DDP's buckets).</li>
+  <li>Zhao et al. <em>PyTorch FSDP: Experiences on Scaling Fully Sharded Data Parallel.</em> VLDB, 2023. <a href="https://arxiv.org/abs/2304.11277">arXiv:2304.11277</a>.</li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/nn/parallel/distributed.py') }}"><code>torch/nn/parallel/distributed.py</code></a>, <a href="{{ src('torch/distributed/fsdp/__init__.py') }}"><code>torch/distributed/fsdp/__init__.py</code></a>, <a href="{{ src('torch/distributed/fsdp/_fully_shard/_fully_shard.py') }}"><code>_fully_shard.py</code></a>, <a href="{{ src('torch/distributed/tensor/parallel/style.py') }}"><code>tensor/parallel/style.py</code></a>, <a href="{{ src('torch/distributed/pipelining/schedules.py') }}"><code>pipelining/schedules.py</code></a>.</li>
+</ul>

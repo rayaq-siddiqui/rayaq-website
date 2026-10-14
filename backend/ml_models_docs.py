@@ -1183,7 +1183,7 @@ PAGES = [
             "pytorch:torch/nn/parallel/distributed.py",
             "pytorch:torch/distributed/fsdp/__init__.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "checkpointing",
