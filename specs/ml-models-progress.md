@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-14 (fortieth run). Spec v2 widens the section from model
+**Last updated:** 2026-10-14 (forty-first run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-84, the last being `multimodal-models`.
-The next page is `pca` (queue item 85).
+fixed page format. Ready pages: queue items 1-85, the last being `pca`.
+The next page is `mixture-of-experts` (queue item 86).
 
 ## Pins
 
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (84 of 93 ready, all
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (85 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -115,7 +115,6 @@ Paths are under `sklearn/`.
 - `ensemble/_hist_gradient_boosting/gradient_boosting.py`: `HistGradientBoostingClassifier` 1762.
 - `svm/` and `metrics/pairwise.py` kernels: ranges live in the `support-vector-machines`
   template.
-- `decomposition/_pca.py`: `PCA` 113.
 - `model_selection/_split.py`: `KFold` 437, `GroupKFold` 533, `StratifiedKFold` 687,
   `TimeSeriesSplit` 1116, `train_test_split` 2797.
 - `model_selection/_validation.py`: `cross_validate` 101, `cross_val_score` 512,
@@ -193,7 +192,7 @@ Open gaps from these runs:
 - The end lines of the HistGradientBoosting regressor `__init__`, `_incremental_fit_estimator`
   and `Lasso` were inferred.
 - Unready pages named in plain text until they are ready: `preference-optimization`
-  (`reinforcement-learning`, `fine-tuning`), `pca` (`clustering`), `contrastive-learning`,
+  (`reinforcement-learning`, `fine-tuning`), `contrastive-learning`,
   `speculative-decoding`, `profiling` (run 37 pages), and activation checkpointing
   (`distributed-training`).
 - No pin implements a UNet, LoRA/PEFT, NF4, an ANN index or logQ correction; the two-tower
@@ -234,6 +233,28 @@ Gaps:
   front end, EnCodec's rates, Flamingo's gate and resampler, and LLaVA's connector follow
   the papers from memory; no pin implements them. The fusion model is an invented,
   labelled configuration.
+
+## Forty-first run (2026-10-14) — pca, mixture-of-experts, flow-matching
+
+| Commit | What |
+|---|---|
+| `8236077` `ml-models: add tested pca helpers` | PCA fit/transform/inverse via the SVD, whitening, the float n_components rule, noise variance, a seeded two-factor survey, an arc PCA folds, t-SNE kernel tails |
+| `ab63d2b` `ml-models: add the pca page` | The page, `ready`, queue ✓; PCA mentions in `clustering`, `preprocessing` and `linear-algebra-toolkit` now link to it |
+
+Findings worth keeping:
+
+- Every PCA number was cross-checked offline against scikit-learn 1.9.1 in a scratch venv
+  (never a requirements file): components, explained variance, ratios, transform, whitened
+  transform, inverse_transform, `n_components=0.9` (2 with both the full and covariance_eigh
+  solvers) and `noise_variance_` 0.0722918 all agree to about 1e-15.
+- The float `n_components` rule is `searchsorted(cumsum, t, side="right") + 1`: the smallest k
+  whose cumulative ratio is strictly above t.
+
+Gaps:
+
+- UMAP is in no pin; its description (and the reference implementation's n_neighbors = 15
+  default) is from the paper and memory. arxiv.org is still unreachable, so the Halko, UMAP,
+  t-SNE, Minka and Tipping–Bishop references were cited from memory.
 
 ## Queue
 
