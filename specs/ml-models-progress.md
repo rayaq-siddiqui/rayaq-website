@@ -345,8 +345,8 @@ Gaps:
 78. `vision-transformer` ✓
 79. `diffusion-unet` ✓
 80. `fine-tuning` ✓
-81. `two-tower-models` ← next
-82. `distributed-training`
+81. `two-tower-models` ✓
+82. `distributed-training` ← next
 83. `monitoring-and-drift`
 84. `multimodal-models`
 85. `pca`

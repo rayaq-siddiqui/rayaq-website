@@ -1,0 +1,524 @@
+{% set ex = tt_example() %}
+{% set e = ex.example %}
+{% set s = e.scale %}
+{% set sv = ex.serving %}
+{% macro c(x) -%}{{ "{:,}".format(x) }}{%- endmacro %}
+{% macro f2(x) -%}{{ "{:.2f}".format(x) }}{%- endmacro %}
+{% macro f3(x) -%}{{ "{:.3f}".format(x) }}{%- endmacro %}
+{% macro vec(v) -%}[{% for x in v %}{{ "{:g}".format(x) }}{{ ", " if not loop.last }}{% endfor %}]{%- endmacro %}
+{% macro vec2(v) -%}[{% for x in v %}{{ f2(x) }}{{ ", " if not loop.last }}{% endfor %}]{%- endmacro %}
+<header class="jj-header">
+  <h1>Two-tower models</h1>
+  <p class="tagline">
+    Recommending from ten million items means scoring ten million items, for every user, in milliseconds. A two-tower model
+    makes that possible by encoding the query and the item separately, so every item vector can be computed in advance and
+    searched with a vector index. This page covers the two encoders, training them with in-batch negatives and the sampled
+    softmax (with its popularity correction), hard negatives, and the retrieve-then-rank pipeline they feed.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  <a href="/ml-models/collaborative-filtering">Matrix factorization</a> learns one vector per user and one per item from
+  the interaction matrix, and scores a pair with a dot product. That is fast, but it knows nothing beyond IDs: a new user
+  or item has no row, and the user's recent history, the time of day, an item's text or category cannot be used. A model
+  that reads all of those features and scores a (user, item) pair jointly, with
+  <a href="/ml-models/learning-to-rank">a ranking network</a>, is far more accurate, and far too slow to run against the
+  whole catalogue: at {{ c(s.ranker_macs) }} multiply-adds per pair, {{ c(s["items"]) }} items cost
+  {{ c(sv.rank_all_macs) }} multiply-adds per request.
+</p>
+<p>
+  The way out is to give up on modelling the pair jointly for a first, cheap stage: score with a dot product between a
+  query vector and an item vector, where each vector is a rich function of its own side's features. Then item vectors
+  are fixed between model updates, and finding the best ones is
+  <a href="/ml-models/similarity-search">nearest-neighbour search</a>.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Two networks, two "towers", map different kinds of input into one shared
+  <a href="/ml-models/embeddings">embedding</a> space. The query tower reads who is asking and in what context: user ID,
+  the items they recently watched, their language, the time. The item tower reads what an item is: its ID, title,
+  category, age. Training pulls each observed (query, item) pair together and pushes the query away from other items,
+  so that geometric closeness comes to mean "this person would engage with this item".
+</p>
+<p>
+  The only place the two sides meet is the final dot product. That restriction is what makes serving cheap, and it is
+  also the model's main weakness: no feature of the query can change how an item's features are read. So two-tower
+  models do <em>retrieval</em>, narrowing millions to hundreds, and a heavier ranker that may cross every feature does the
+  final ordering of those few.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 300" role="img" aria-labelledby="towers-title towers-desc">
+    <title id="towers-title">Two towers meeting only at a dot product</title>
+    <desc id="towers-desc">
+      Left, the query tower: user ID, a bag of recently watched item IDs averaged by EmbeddingBag, and context features
+      are concatenated, passed through an MLP and L2-normalized into a vector q. Right, the item tower: item ID, category
+      and text features go through an Embedding and an MLP and are L2-normalized into a vector v. The two vectors meet only
+      in the dot product q dot v, divided by a temperature, which is the score. Item vectors can be computed offline for
+      the whole catalogue.
+    </desc>
+    <g font-size="11">
+      <rect x="20" y="236" width="90" height="44" class="d-box ml-tensor"></rect>
+      <text x="65" y="255" text-anchor="middle">user ID</text>
+      <text x="65" y="270" text-anchor="middle" class="d-muted">Embedding</text>
+      <rect x="120" y="236" width="110" height="44" class="d-box ml-tensor"></rect>
+      <text x="175" y="255" text-anchor="middle">watch history</text>
+      <text x="175" y="270" text-anchor="middle" class="d-muted">EmbeddingBag</text>
+      <rect x="240" y="236" width="80" height="44" class="d-box ml-tensor"></rect>
+      <text x="280" y="255" text-anchor="middle">context</text>
+      <text x="280" y="270" text-anchor="middle" class="d-muted">time, device</text>
+      <path d="M65 236 V220 H170 M175 236 V210 M280 236 V220 H180" fill="none" class="d-line"></path>
+      <rect x="90" y="150" width="170" height="60" class="d-box ml-op"></rect>
+      <text x="175" y="174" text-anchor="middle">concat → MLP</text>
+      <text x="175" y="192" text-anchor="middle" class="d-muted">query tower</text>
+      <line x1="175" y1="150" x2="175" y2="122" class="d-line"></line>
+      <rect x="110" y="86" width="130" height="36" class="d-box ml-tensor" style="stroke:var(--jj-accent)"></rect>
+      <text x="175" y="102" text-anchor="middle" style="fill:var(--jj-accent)">q = normalize(·)</text>
+      <text x="175" y="116" text-anchor="middle" class="d-muted">d numbers, online</text>
+      <rect x="420" y="236" width="90" height="44" class="d-box ml-tensor"></rect>
+      <text x="465" y="255" text-anchor="middle">item ID</text>
+      <text x="465" y="270" text-anchor="middle" class="d-muted">Embedding</text>
+      <rect x="520" y="236" width="90" height="44" class="d-box ml-tensor"></rect>
+      <text x="565" y="255" text-anchor="middle">category</text>
+      <text x="565" y="270" text-anchor="middle" class="d-muted">Embedding</text>
+      <rect x="620" y="236" width="80" height="44" class="d-box ml-tensor"></rect>
+      <text x="660" y="255" text-anchor="middle">title text</text>
+      <text x="660" y="270" text-anchor="middle" class="d-muted">encoder</text>
+      <path d="M465 236 V220 H560 M565 236 V210 M660 236 V220 H570" fill="none" class="d-line"></path>
+      <rect x="480" y="150" width="170" height="60" class="d-box ml-op"></rect>
+      <text x="565" y="174" text-anchor="middle">concat → MLP</text>
+      <text x="565" y="192" text-anchor="middle" class="d-muted">item tower</text>
+      <line x1="565" y1="150" x2="565" y2="122" class="d-line"></line>
+      <rect x="500" y="86" width="130" height="36" class="d-box ml-tensor" style="stroke:var(--jj-green)"></rect>
+      <text x="565" y="102" text-anchor="middle" style="fill:var(--jj-green)">v = normalize(·)</text>
+      <text x="565" y="116" text-anchor="middle" class="d-muted">d numbers, offline</text>
+      <path d="M175 86 V40 H330 M565 86 V40 H410" fill="none" class="d-line"></path>
+      <circle cx="370" cy="40" r="30" class="d-box ml-op" style="stroke:var(--jj-amber)"></circle>
+      <text x="370" y="38" text-anchor="middle" style="fill:var(--jj-amber)">q · v / τ</text>
+      <text x="370" y="52" text-anchor="middle" class="d-muted">score</text>
+      <text x="370" y="110" text-anchor="middle" class="d-muted">no other path between</text>
+      <text x="370" y="124" text-anchor="middle" class="d-muted">the two sides</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="encoders">Separate query and item encoders</h3>
+<p>
+  Each tower is an ordinary network. Categorical features enter through <code>nn.Embedding</code>, a lookup table of
+  shape [num_embeddings, embedding_dim] initialized from a standard normal. Variable-length sets of IDs, such as a watch
+  history, enter through <code>nn.EmbeddingBag</code>, which looks up every ID in a bag and reduces them with
+  <code>mode="mean"</code> (the default), <code>"sum"</code> or <code>"max"</code> without materializing the
+  per-ID vectors. The pooled and dense features are concatenated and passed through an MLP, and the output is usually
+  L2-normalized with <code>F.normalize</code>, so the dot product is a cosine similarity in [−1, 1].
+</p>
+<p>
+  The score is <em>s</em>(<em>q</em>, <em>v</em>) = <em>q</em> · <em>v</em> / τ. With normalized vectors the
+  temperature τ sets how sharp the softmax over items can get; values around 0.05 are common. The towers need not share
+  anything; when both sides are the same kind of object (two sentences, a question and a passage) they often share
+  weights, as in DSSM or DPR's dual encoder.
+</p>
+
+<h3 id="in-batch">In-batch negatives and the sampled softmax</h3>
+<p>
+  Training data is usually implicit: a log of (query, item) pairs that happened, with no record of what the user
+  disliked. The natural objective treats retrieval as classification over the whole catalogue, a softmax over every item
+  with the observed one as the label:
+</p>
+<p class="ml-formula">
+  <em>L</em> = −log [ exp <em>s</em>(<em>q</em>, <em>v</em><sup>+</sup>) / Σ<sub><em>j</em> ∈ catalogue</sub>
+  exp <em>s</em>(<em>q</em>, <em>v</em><sub><em>j</em></sub>) ]
+</p>
+<p>
+  The denominator runs over millions of items, each needing a pass through the item tower. A <strong>sampled
+  softmax</strong> replaces it with the positive plus a sample of negatives. The cheapest sample is free:
+  <strong>in-batch negatives</strong>. A batch of <em>B</em> pairs gives <em>B</em> query vectors and <em>B</em> item
+  vectors; the <em>B</em> × <em>B</em> matrix of scores has the positives on its diagonal, and every off-diagonal entry
+  is another query's positive, used as a negative. The loss is <code>F.cross_entropy</code> on that matrix with targets
+  0, 1, …, <em>B</em> − 1. Each query gets <em>B</em> − 1 negatives for the cost of one matrix multiply, so larger batches
+  give a better approximation of the full softmax. This is the InfoNCE loss of contrastive learning.
+</p>
+
+<h3 id="logq">Popularity bias and the logQ correction</h3>
+<p>
+  In-batch negatives are not a uniform sample: an item appears in the batch as often as it appears in the log, so popular
+  items are used as negatives far more than rare ones and the model learns to under-score them. Yi et al. correct the
+  sampled softmax by subtracting the log of each item's sampling probability from its logit:
+</p>
+<p class="ml-formula">
+  <em>s</em><sup>c</sup>(<em>q</em>, <em>v</em><sub><em>j</em></sub>) = <em>s</em>(<em>q</em>, <em>v</em><sub><em>j</em></sub>)
+  − log <em>p</em><sub><em>j</em></sub>
+</p>
+<p>
+  where <em>p</em><sub><em>j</em></sub> is the probability that item <em>j</em> appears in a batch, estimated from its
+  frequency in the training stream. Rare items get a large boost and popular items a small one. This is the
+  importance-sampling correction long used for sampled softmax (Jean et al.), which removes the sampling bias from the
+  estimate of the full softmax. The correction is applied
+  only in training; at serving time the raw score <em>s</em> is used. A related problem is the <strong>false
+  negative</strong>: if the same item is the positive for two queries in a batch, each query's positive also appears as
+  its own negative, so duplicates are usually masked out.
+</p>
+
+<h3 id="hard-negatives">Hard negatives</h3>
+<p>
+  Most random negatives are easy: their score is already far below the positive, their softmax probability is close to
+  zero, and since the gradient of the loss with respect to a negative's logit is exactly that probability, they teach
+  almost nothing. <strong>Hard negatives</strong> are items the model currently scores high that are not the positive:
+  same category, retrieved by the current index, or retrieved by a lexical method like BM25. DPR added one BM25 hard
+  negative per question to its in-batch negatives; ANCE mines them from an index of the model being trained, refreshed
+  asynchronously. The risk is that many "hard negatives" are unlabeled positives, so the hardest ones are often skipped,
+  and training on only hard negatives tends to collapse; mixing them with easy in-batch negatives is the usual recipe.
+</p>
+
+<h3 id="serving">Serving with a vector index</h3>
+<p>
+  After training, run the item tower over the whole catalogue once and load the vectors into a
+  <a href="/ml-models/vector-indexes">vector index</a>. A request runs the query tower once, then asks the index for the
+  top <em>k</em> items by inner product. Normalizing both sides makes maximum inner product equal to maximum cosine,
+  which every index supports. Exact search over <em>N</em> items costs <em>N</em> · <em>d</em> multiply-adds;
+  IVF, HNSW and product quantization trade a little recall for orders of magnitude less work and memory. Item vectors
+  are recomputed when the item tower is retrained or an item's features change; new items need only a forward pass, not
+  retraining, which is how two-tower models soften the cold-start problem of ID-only factorization.
+</p>
+
+<h3 id="retrieve-rank">Retrieval, then ranking</h3>
+<p>
+  Covington et al.'s YouTube system split recommendation into candidate generation, which narrows millions of videos to
+  hundreds, and ranking, which scores those hundreds with many more features and a different objective. Most large
+  systems keep that funnel, often with several retrievers (two-tower, co-occurrence, popular in your region) merged before
+  a ranker and a final re-ranking stage for diversity and business rules. Each stage is judged differently: retrieval by
+  recall@<em>k</em> (is the item the user wanted among the candidates at all?), ranking by
+  <a href="/ml-models/learning-to-rank">NDCG or similar</a> on the order.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>nn.Embedding</code></td><td><code>weight</code> [num_embeddings, embedding_dim]</td><td>ID lookup table for users, items, categories.</td><td><a href="{{ src('torch/nn/modules/sparse.py', 14, 264) }}">sparse.py 14–264</a></td></tr>
+      <tr><td><code>Embedding.__init__</code></td><td><code>padding_idx</code>, <code>max_norm</code>, <code>sparse=False</code></td><td><code>sparse=True</code> gives sparse gradients for huge tables.</td><td><a href="{{ src('torch/nn/modules/sparse.py', 134, 177) }}">134–177</a></td></tr>
+      <tr><td><code>Embedding.reset_parameters</code></td><td><code>init.normal_(self.weight)</code></td><td>Default init N(0, 1); the padding row is zeroed.</td><td><a href="{{ src('torch/nn/modules/sparse.py', 179, 181) }}">179–181</a></td></tr>
+      <tr><td><code>Embedding.forward</code></td><td>IDs [*] → [*, embedding_dim]</td><td>Calls <code>F.embedding</code>.</td><td><a href="{{ src('torch/nn/modules/sparse.py', 188, 197) }}">188–197</a></td></tr>
+      <tr><td><code>nn.EmbeddingBag</code></td><td><code>mode="mean"</code> by default</td><td>Pools a variable-length bag of IDs, such as a watch history.</td><td><a href="{{ src('torch/nn/modules/sparse.py', 267, 543) }}">sparse.py 267–543</a></td></tr>
+      <tr><td><code>EmbeddingBag.forward</code></td><td><code>(input, offsets=None, per_sample_weights=None)</code></td><td>Flat IDs plus bag start offsets → [bags, dim].</td><td><a href="{{ src('torch/nn/modules/sparse.py', 425, 473) }}">425–473</a></td></tr>
+      <tr><td><code>F.embedding</code></td><td><code>(input, weight, padding_idx, max_norm, …)</code></td><td>The lookup itself; renormalizes rows in place if <code>max_norm</code> is set.</td><td><a href="{{ src('torch/nn/functional.py', 2509, 2621) }}">functional.py 2509–2621</a></td></tr>
+      <tr><td><code>F.embedding_bag</code></td><td><code>mode</code>, <code>offsets</code>, <code>per_sample_weights</code></td><td>Lookup and reduce in one kernel.</td><td><a href="{{ src('torch/nn/functional.py', 2624, 2839) }}">2624–2839</a></td></tr>
+      <tr><td><code>F.normalize</code></td><td><code>p=2.0, dim=1, eps=1e-12</code></td><td><em>v</em> / max(‖<em>v</em>‖, ε): makes dot products cosines.</td><td><a href="{{ src('torch/nn/functional.py', 6096, 6130) }}">6096–6130</a></td></tr>
+      <tr><td><code>F.cross_entropy</code></td><td>logits [<em>B</em>, <em>B</em>], targets <code>arange(B)</code></td><td>The in-batch softmax loss.</td><td><a href="{{ src('torch/nn/functional.py', 3478, 3571) }}">3478–3571</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 260" role="img" aria-labelledby="funnel-title funnel-desc">
+    <title id="funnel-title">Serving: offline item vectors, online query, retrieve then rank</title>
+    <desc id="funnel-desc">
+      Top row, offline: the item tower runs over the whole catalogue of ten million items, and the vectors are built into
+      an approximate nearest-neighbour index. Bottom row, per request: the query tower produces q, the index returns about a
+      thousand candidates by inner product, a ranker that sees query and item features together scores those, and a
+      re-ranker chooses the ten shown. Each stage handles fewer items with a more expensive model.
+    </desc>
+    <g font-size="11">
+      <text x="20" y="22" class="d-muted">offline, when the item tower or catalogue changes</text>
+      <rect x="20" y="34" width="150" height="44" class="d-box ml-tensor"></rect>
+      <text x="95" y="53" text-anchor="middle">catalogue</text>
+      <text x="95" y="68" text-anchor="middle" class="d-muted">{{ c(s["items"]) }} items</text>
+      <line x1="170" y1="56" x2="210" y2="56" class="d-line"></line>
+      <rect x="210" y="34" width="130" height="44" class="d-box ml-op" style="stroke:var(--jj-green)"></rect>
+      <text x="275" y="53" text-anchor="middle" style="fill:var(--jj-green)">item tower</text>
+      <text x="275" y="68" text-anchor="middle" class="d-muted">batch inference</text>
+      <line x1="340" y1="56" x2="380" y2="56" class="d-line"></line>
+      <rect x="380" y="34" width="150" height="44" class="d-box ml-tensor"></rect>
+      <text x="455" y="53" text-anchor="middle">ANN index</text>
+      <text x="455" y="68" text-anchor="middle" class="d-muted">IVF / HNSW / PQ</text>
+      <text x="20" y="126" class="d-muted">per request, in milliseconds</text>
+      <rect x="20" y="150" width="110" height="50" class="d-box ml-op" style="stroke:var(--jj-accent)"></rect>
+      <text x="75" y="171" text-anchor="middle" style="fill:var(--jj-accent)">query tower</text>
+      <text x="75" y="187" text-anchor="middle" class="d-muted">one forward</text>
+      <line x1="130" y1="175" x2="160" y2="175" class="d-line"></line>
+      <text x="145" y="168" text-anchor="middle">q</text>
+      <rect x="160" y="150" width="110" height="50" class="d-box ml-op"></rect>
+      <text x="215" y="171" text-anchor="middle">top-k search</text>
+      <text x="215" y="187" text-anchor="middle" class="d-muted">max q · v</text>
+      <path d="M400 78 V140 H215 V150" fill="none" class="d-line ml-dashed"></path>
+      <line x1="270" y1="175" x2="300" y2="175" class="d-line"></line>
+      <rect x="300" y="150" width="120" height="50" class="d-box ml-tensor"></rect>
+      <text x="360" y="171" text-anchor="middle">{{ c(s.candidates) }} candidates</text>
+      <text x="360" y="187" text-anchor="middle" class="d-muted">recall@k matters</text>
+      <line x1="420" y1="175" x2="450" y2="175" class="d-line"></line>
+      <rect x="450" y="150" width="120" height="50" class="d-box ml-op" style="stroke:var(--jj-amber)"></rect>
+      <text x="510" y="171" text-anchor="middle" style="fill:var(--jj-amber)">ranker</text>
+      <text x="510" y="187" text-anchor="middle" class="d-muted">crosses all features</text>
+      <line x1="570" y1="175" x2="600" y2="175" class="d-line"></line>
+      <rect x="600" y="150" width="100" height="50" class="d-box ml-tensor"></rect>
+      <text x="650" y="171" text-anchor="middle">{{ s.shown }} shown</text>
+      <text x="650" y="187" text-anchor="middle" class="d-muted">after re-rank</text>
+      <text x="360" y="236" text-anchor="middle" class="d-muted">{{ c(s["items"]) }} → {{ c(s.candidates) }} → {{ s.shown }}: each stage sees fewer items with a costlier model</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  Every number below comes from tested helpers in <code>ml_models_docs.py</code> (<code>tt_bag_mean</code>,
+  <code>tt_normalize</code>, <code>tt_in_batch</code>, <code>tt_full_softmax</code>, <code>tt_hard_negative</code>,
+  <code>tt_serving</code>). The towers are tiny and hand-set so each step can be checked; the serving numbers are an
+  invented, labelled configuration, not a measured system.
+</p>
+
+<div class="ml-worked">
+  <h3 id="worked-towers">Two towers on five items</h3>
+  <p>
+    The item tower is an embedding table followed by normalization; its five 2-d rows are already unit length. The query
+    tower averages a separate history table over each user's watched items, like <code>EmbeddingBag(mode="mean")</code>,
+    then normalizes. τ = {{ e.temperature }}.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>User</th><th>History</th><th>Mean of history rows</th><th><em>q</em> (normalized)</th><th>Positive item</th></tr></thead>
+      <tbody>
+        {% for h in e.histories %}
+          <tr><td>u{{ loop.index0 }}</td><td>{% for i in h %}{{ e.item_names[i] }}{{ ", " if not loop.last }}{% endfor %}</td><td>{{ vec(ex.pooled[loop.index0]) }}</td><td>{{ vec2(ex.queries[loop.index0]) }}</td><td>{{ e.item_names[e.positives[loop.index0]] }} = {{ vec(ex["items"][e.positives[loop.index0]]) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-in-batch">The in-batch softmax</h3>
+  <p>
+    The batch is the four (user, positive) pairs. Its score matrix has one row per query and one column per positive item
+    in the batch, <em>q</em> · <em>v</em> / τ; the diagonal is the label. Each cell shows the logit and, below it, the
+    softmax probability across the row.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Query</th>{% for j in e.positives %}<th>{{ e.item_names[j] }}</th>{% endfor %}<th>Loss −log p<sub>diag</sub></th></tr></thead>
+      <tbody>
+        {% for row in ex.plain.rows %}
+          {% set r = loop.index0 %}
+          <tr><td>u{{ r }}</td>{% for x in row.logits %}<td>{% if loop.index0 == r %}<strong>{{ f2(x) }}<br>{{ f3(row.probs[loop.index0]) }}</strong>{% else %}{{ f2(x) }}<br>{{ f3(row.probs[loop.index0]) }}{% endif %}</td>{% endfor %}<td>{{ f3(row.loss) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The mean in-batch loss is {{ f3(ex.plain.loss) }}. Over the full five-item catalogue the same queries give
+    {{ f3(ex.full.loss) }}: the batch is missing {{ e.item_names[e.hard.item] }}, which is no query's positive in this batch, so it is
+    never used as a negative. With a catalogue of millions and a batch of thousands, the batch is always a small, biased
+    sample of the denominator. Row u0 shows a tie: its history makes {{ e.item_names[e.positives[0]] }} and
+    {{ e.item_names[e.positives[2]] }} equally similar, so the loss is about ln 2.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-logq">The logQ correction</h3>
+  <p>
+    Suppose the training log has these item frequencies, so in a batch of {{ c(e.popular_batch) }} pairs each item
+    appears about <em>B</em> · <em>p</em> times and is a negative for nearly every query in it:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Item</th><th><em>p</em></th><th>log <em>p</em></th><th>Expected appearances per batch of {{ c(e.popular_batch) }}</th></tr></thead>
+      <tbody>
+        {% for row in ex.popularity %}<tr><td>{{ row.item }}</td><td>{{ row.q }}</td><td>{{ f3(row.log_q) }}</td><td>{{ "{:g}".format(row.per_batch) }}</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>Subtracting log <em>p</em> from each column's logit changes the toy batch's losses:</p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Query</th><th>Positive (p)</th><th>Loss, plain</th><th>Loss, corrected</th></tr></thead>
+      <tbody>
+        {% for row in ex.plain.rows %}
+          {% set j = e.positives[loop.index0] %}
+          <tr><td>u{{ loop.index0 }}</td><td>{{ e.item_names[j] }} ({{ e.frequencies[j] }})</td><td>{{ f3(row.loss) }}</td><td>{{ f3(ex.corrected.rows[loop.index0].loss) }}</td></tr>
+        {% endfor %}
+        <tr><td>Mean</td><td></td><td>{{ f3(ex.plain.loss) }}</td><td>{{ f3(ex.corrected.loss) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    u0's tie breaks toward its rarer positive {{ e.item_names[e.positives[0]] }} (loss {{ f3(ex.plain.rows[0].loss) }} →
+    {{ f3(ex.corrected.rows[0].loss) }}): it no longer has to beat the popular {{ e.item_names[e.positives[2]] }} on raw
+    score alone. u2's loss rises ({{ f3(ex.plain.rows[2].loss) }} → {{ f3(ex.corrected.rows[2].loss) }}) because its
+    positive is the popular item, whose logit gets the smallest boost; the larger gradient pushes that item's raw score up,
+    offsetting how often it is pushed down as everyone else's negative.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-hard">One hard negative</h3>
+  <p>
+    For u2 (positive {{ e.item_names[e.positives[e.hard.row]] }}), mine {{ e.item_names[e.hard.item] }}, which the model
+    scores {{ f2(ex.hard.hard_logit) }}, and add it as a fifth column:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Quantity</th><th>Value</th></tr></thead>
+      <tbody>
+        <tr><td>Mean softmax probability of u2's three in-batch negatives</td><td>{{ f3(ex.hard.easy_mean_prob) }}</td></tr>
+        <tr><td>Softmax probability of the hard negative</td><td>{{ f3(ex.hard.hard_prob) }}</td></tr>
+        <tr><td>u2's loss with in-batch negatives only</td><td>{{ f3(ex.hard.loss_before) }}</td></tr>
+        <tr><td>u2's loss with the hard negative added</td><td>{{ f3(ex.hard.loss_after) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The gradient of the loss with respect to a negative's logit is its softmax probability, so this one negative carries
+    about {{ "{:.0f}".format(ex.hard.hard_prob / ex.hard.easy_mean_prob) }} times the signal of an average in-batch one.
+    Adding it also makes u2's loss equal its full-catalogue loss, {{ f3(ex.full.rows[e.hard.row].loss) }}: here, the
+    hard negative was the only item the batch was missing.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-serving">Serving cost</h3>
+  <p>
+    An invented but typical configuration: {{ c(s.users) }} users, {{ c(s["items"]) }} items, <em>d</em> = {{ s.dim }},
+    an MLP of widths {{ s.mlp | join(" → ") }} per tower, and a ranker costing {{ c(s.ranker_macs) }} multiply-adds per
+    candidate.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Quantity</th><th>Value</th></tr></thead>
+      <tbody>
+        <tr><td>Parameters in the user and item ID tables</td><td>{{ c(sv.table_params) }}</td></tr>
+        <tr><td>Parameters in one tower's MLP</td><td>{{ c(sv.mlp_params) }}</td></tr>
+        <tr><td>Item vectors, float32</td><td>{{ "{:.2f}".format(sv.flat_bytes / 1e9) }} GB</td></tr>
+        <tr><td>Item vectors, PQ at {{ s.pq_bytes }} bytes each</td><td>{{ "{:.0f}".format(sv.pq_bytes / 1e6) }} MB</td></tr>
+        <tr><td>Exact top-k: multiply-adds per query</td><td>{{ c(sv.flat_macs) }}</td></tr>
+        <tr><td>IVF, {{ c(s.nlist) }} lists, {{ s.nprobe }} probed: vectors scanned</td><td>{{ c(sv.ivf_scanned | int) }}</td></tr>
+        <tr><td>IVF: multiply-adds per query (centroids + scanned)</td><td>{{ c(sv.ivf_macs | int) }}</td></tr>
+        <tr><td>Ranker on every item</td><td>{{ c(sv.rank_all_macs) }}</td></tr>
+        <tr><td>Ranker on {{ c(s.candidates) }} retrieved candidates</td><td>{{ c(sv.rank_candidates_macs) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Nearly all parameters are embedding rows, which is why recommendation models are memory-bound and use sparse
+    gradients and sharded tables. Retrieval cuts the ranker's work {{ c(sv.rank_all_macs // sv.rank_candidates_macs) }}-fold,
+    and an IVF index cuts the retrieval itself about {{ "{:.0f}".format(sv.flat_macs / sv.ivf_macs) }}-fold more, at
+    some loss of recall.
+  </p>
+</div>
+
+<details class="ml-quiz">
+  <summary>Why can't a two-tower model use a feature like "has this user already bought this item's brand?"</summary>
+  <p>The feature depends on the query and the item together, and the towers only meet at the dot product, so neither tower can compute it. That is a cross feature, which belongs in the ranker; the retriever can only approximate it if brand affinity is encoded in both vectors.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Doubling the batch size from 1,024 to 2,048 changes what about in-batch training, and what does it leave alone?</summary>
+  <p>Each query gets 2,047 negatives instead of 1,023, a closer approximation of the full softmax, for a score matrix four times larger. The negatives still follow item popularity, so the logQ correction is still needed.</p>
+</details>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  Both towers, the in-batch loss with the logQ correction and duplicate masking, and top-<em>k</em> retrieval. Item
+  frequencies <code>log_p</code> are estimated from the training stream and passed in.
+</p>
+<pre><code>import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class QueryTower(nn.Module):
+    def __init__(self, num_users, num_items, dim=64):
+        super().__init__()
+        self.user = nn.Embedding(num_users, dim)
+        self.history = nn.EmbeddingBag(num_items, dim, mode="mean")
+        self.mlp = nn.Sequential(nn.Linear(2 * dim, 128), nn.ReLU(), nn.Linear(128, dim))
+
+    def forward(self, user_ids, history_ids, offsets):
+        x = torch.cat([self.user(user_ids), self.history(history_ids, offsets)], dim=-1)
+        return F.normalize(self.mlp(x), dim=-1)
+
+
+class ItemTower(nn.Module):
+    def __init__(self, num_items, num_categories, dim=64):
+        super().__init__()
+        self.item = nn.Embedding(num_items, dim)
+        self.category = nn.Embedding(num_categories, dim)
+        self.mlp = nn.Sequential(nn.Linear(2 * dim, 128), nn.ReLU(), nn.Linear(128, dim))
+
+    def forward(self, item_ids, category_ids):
+        x = torch.cat([self.item(item_ids), self.category(category_ids)], dim=-1)
+        return F.normalize(self.mlp(x), dim=-1)
+
+
+def in_batch_loss(q, v, item_ids, log_p, tau=0.05):
+    logits = q @ v.T / tau - log_p[item_ids]
+    same = item_ids[:, None] == item_ids[None, :]
+    diagonal = torch.eye(len(q), dtype=torch.bool, device=q.device)
+    logits = logits.masked_fill(same & ~diagonal, float("-inf"))
+    return F.cross_entropy(logits, torch.arange(len(q), device=q.device))
+
+
+@torch.no_grad()
+def retrieve(query_tower, item_vectors, user_ids, history_ids, offsets, k=1000):
+    q = query_tower(user_ids, history_ids, offsets)
+    return (q @ item_vectors.T).topk(k, dim=-1)</code></pre>
+<p>
+  <code>retrieve</code> is exact search; at catalogue scale <code>item_vectors</code> lives in an approximate index
+  instead (<a href="/ml-models/vector-indexes">vector indexes</a>). <code>log_p</code> is subtracted only in the training
+  loss. For tables with millions of rows, <code>nn.Embedding(..., sparse=True)</code> with a sparse-aware optimizer avoids
+  updating every row on every step.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Separable scoring</strong> is what makes millisecond retrieval over millions of items possible, and it caps
+    accuracy: no query–item interaction before the dot product. Late-interaction models (ColBERT) and rankers recover some
+    of that at higher cost.</li>
+  <li><strong>In-batch negatives</strong> are free but biased toward popular items and limited by batch size; logQ
+    correction fixes the bias, and gradient caching or cross-device batches raise the count (see
+    <a href="/ml-models/gradient-accumulation">gradient accumulation</a>).</li>
+  <li><strong>Hard negatives</strong> speed learning and sharpen fine distinctions, and add false negatives and the cost
+    of mining from a stale index.</li>
+  <li><strong>Feature-based towers</strong> handle new users and items better than ID-only factorization, but ID
+    embeddings still dominate for items with history, and their tables dominate memory.</li>
+  <li><strong>Approximate indexes</strong> trade recall for latency; the index must be rebuilt or updated whenever the item
+    tower changes, and query and item vectors must come from compatible model versions.</li>
+  <li><strong>Training on logged interactions</strong> learns what the previous system chose to show, a feedback loop
+    that retrieval of fresh or rare items needs exploration to break.</li>
+</ul>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Covington, Adams and Sargin. <em>Deep Neural Networks for YouTube Recommendations.</em> RecSys 2016.
+    <a href="https://doi.org/10.1145/2959100.2959190">doi:10.1145/2959100.2959190</a></li>
+  <li>Yi et al. <em>Sampling-Bias-Corrected Neural Modeling for Large Corpus Item Recommendations.</em> RecSys 2019.
+    <a href="https://doi.org/10.1145/3298689.3346996">doi:10.1145/3298689.3346996</a></li>
+  <li>Huang et al. <em>Learning Deep Structured Semantic Models for Web Search using Clickthrough Data</em> (DSSM). CIKM 2013.
+    <a href="https://doi.org/10.1145/2505515.2505665">doi:10.1145/2505515.2505665</a></li>
+  <li>Jean et al. <em>On Using Very Large Target Vocabulary for Neural Machine Translation</em> (sampled softmax). ACL 2015.
+    <a href="https://arxiv.org/abs/1412.2007">arXiv:1412.2007</a></li>
+  <li>van den Oord, Li and Vinyals. <em>Representation Learning with Contrastive Predictive Coding</em> (InfoNCE). 2018.
+    <a href="https://arxiv.org/abs/1807.03748">arXiv:1807.03748</a></li>
+  <li>Karpukhin et al. <em>Dense Passage Retrieval for Open-Domain Question Answering.</em> EMNLP 2020.
+    <a href="https://arxiv.org/abs/2004.04906">arXiv:2004.04906</a></li>
+  <li>Xiong et al. <em>Approximate Nearest Neighbor Negative Contrastive Learning for Dense Text Retrieval</em> (ANCE). ICLR 2021.
+    <a href="https://arxiv.org/abs/2007.00808">arXiv:2007.00808</a></li>
+  <li>Johnson, Douze and Jégou. <em>Billion-scale similarity search with GPUs</em> (Faiss). 2017.
+    <a href="https://arxiv.org/abs/1702.08734">arXiv:1702.08734</a></li>
+  <li>Khattab and Zaharia. <em>ColBERT: Efficient and Effective Passage Search via Contextualized Late Interaction over BERT.</em> SIGIR 2020.
+    <a href="https://arxiv.org/abs/2004.12832">arXiv:2004.12832</a></li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/nn/modules/sparse.py', 14, 264) }}"><code>Embedding</code></a>,
+    <a href="{{ src('torch/nn/modules/sparse.py', 267, 543) }}"><code>EmbeddingBag</code></a>,
+    <a href="{{ src('torch/nn/functional.py', 6096, 6130) }}"><code>normalize</code></a>,
+    <a href="{{ src('torch/nn/functional.py', 3478, 3571) }}"><code>cross_entropy</code></a>.</li>
+</ul>

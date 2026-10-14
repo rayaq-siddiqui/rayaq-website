@@ -1105,7 +1105,7 @@ PAGES = [
             "pytorch:torch/nn/modules/sparse.py",
             "pytorch:torch/nn/functional.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "retrieval-augmented-generation",
