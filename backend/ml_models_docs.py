@@ -12835,6 +12835,185 @@ def moe_example():
     }
 
 
+FLOW_EXAMPLE = {
+    "lognormal": {"loc": 0.2, "scale": 0.5, "y": 1.5, "grid": 4000, "upper": 40.0},
+    "coupling": {"x": [0.5, -1.2], "s_scale": 0.8, "t_slope": 0.5, "t_bias": -0.3, "h": 1e-6},
+    "gaussian": {"mean": 2.0, "std": 0.5, "z": 1.0, "steps": [1, 2, 4, 8, 64]},
+    "point": {"x": 0.5, "t": 0.5},
+    "cross": [[-1.0, 1.0], [0.5, -1.0]],
+    "grid": 400,
+    "steps": [1, 2, 4, 8, 16, 64, 256],
+    "straightness_steps": 1000,
+    "path_starts": [-1.5, -0.5, 0.1, 0.5, 1.5],
+}
+
+
+def standard_normal_log_pdf(z):
+    return -0.5 * z * z - 0.5 * math.log(2 * math.pi)
+
+
+def lognormal_log_prob(y, loc, scale):
+    x = math.log(y)
+    z = (x - loc) / scale
+    return {"x": x, "z": z, "base": standard_normal_log_pdf(z), "affine": -math.log(scale), "exp": -x,
+            "log_prob": standard_normal_log_pdf(z) - math.log(scale) - x}
+
+
+def lognormal_mass(loc, scale, upper, count):
+    points = [(upper * i / count, math.exp(lognormal_log_prob(upper * i / count, loc, scale)["log_prob"]) if i else 0.0)
+              for i in range(count + 1)]
+    return trapezoid_area(points)
+
+
+def coupling_forward(x, s_scale, t_slope, t_bias):
+    a, b = x
+    s = s_scale * math.tanh(a)
+    t = t_slope * a + t_bias
+    return {"y": [a, b * math.exp(s) + t], "s": s, "t": t, "log_det": s}
+
+
+def coupling_inverse(y, s_scale, t_slope, t_bias):
+    a, b = y
+    s = s_scale * math.tanh(a)
+    t = t_slope * a + t_bias
+    return [a, (b - t) * math.exp(-s)]
+
+
+def coupling_jacobian(x, s_scale, t_slope, t_bias, h):
+    cols = []
+    for i in range(2):
+        up = list(x)
+        down = list(x)
+        up[i] += h
+        down[i] -= h
+        fu = coupling_forward(up, s_scale, t_slope, t_bias)["y"]
+        fd = coupling_forward(down, s_scale, t_slope, t_bias)["y"]
+        cols.append([(fu[j] - fd[j]) / (2 * h) for j in range(2)])
+    jac = [[cols[0][0], cols[1][0]], [cols[0][1], cols[1][1]]]
+    return {"jacobian": jac, "det": jac[0][0] * jac[1][1] - jac[0][1] * jac[1][0]}
+
+
+def gaussian_path_velocity(x, t, mean, std):
+    var = (1 - t) ** 2 + t * t * std * std
+    slope = (t * std * std - (1 - t)) / var
+    return mean + slope * (x - t * mean), slope
+
+
+def gaussian_flow_solve(z, mean, std, steps):
+    x, logp, h = z, standard_normal_log_pdf(z), 1.0 / steps
+    for k in range(steps):
+        v, slope = gaussian_path_velocity(x, k * h, mean, std)
+        x += h * v
+        logp -= h * slope
+    exact_x = mean + std * z
+    return {"steps": steps, "x": x, "log_prob": logp, "exact_x": exact_x,
+            "exact_log_prob": standard_normal_log_pdf(z) - math.log(std),
+            "density_at_x": standard_normal_log_pdf((x - mean) / std) - math.log(std)}
+
+
+def two_point_flow(x, t):
+    x1_hat = math.tanh(t * x / (1 - t) ** 2)
+    x0_hat = (x - t * x1_hat) / (1 - t)
+    return {"x1_hat": x1_hat, "x0_hat": x0_hat, "velocity": (x1_hat - x) / (1 - t),
+            "residual": (1 - x1_hat * x1_hat) / (1 - t) ** 2}
+
+
+def flow_to_vp(x, t):
+    c = math.sqrt(t * t + (1 - t) ** 2)
+    return x / c, t * t / (c * c)
+
+
+def flow_euler(x, steps, velocity):
+    h, path = 1.0 / steps, [x]
+    for k in range(steps):
+        x += h * velocity(x, k * h)
+        path.append(x)
+    return path
+
+
+def flow_heun(x, steps, velocity):
+    h, path = 1.0 / steps, [x]
+    for k in range(steps):
+        t = k * h
+        v = velocity(x, t)
+        if k + 1 < steps:
+            x += h * 0.5 * (v + velocity(x + h * v, t + h))
+        else:
+            x += h * v
+        path.append(x)
+    return path
+
+
+def flow_sample_stats(finals):
+    return {"plus": sum(1 for v in finals if v > 0) / len(finals),
+            "mean_abs": sum(abs(v) for v in finals) / len(finals),
+            "max_error": max(abs(abs(v) - 1) for v in finals)}
+
+
+def line_crossing(a, b):
+    t = (b[0] - a[0]) / ((a[1] - a[0]) - (b[1] - b[0]))
+    return t, (1 - t) * a[0] + t * a[1]
+
+
+def reflow_velocity(pairs):
+    def velocity(x, t):
+        points = [(1 - t) * a + t * b for a, b in pairs]
+        i = min(max(bisect.bisect_left(points, x), 1), len(points) - 1)
+        lo, hi = points[i - 1], points[i]
+        w = (x - lo) / (hi - lo)
+        return (1 - w) * (pairs[i - 1][1] - pairs[i - 1][0]) + w * (pairs[i][1] - pairs[i][0])
+    return velocity
+
+
+def path_straightness(path):
+    steps = len(path) - 1
+    displacement = path[-1] - path[0]
+    length = sum(abs(path[k + 1] - path[k]) for k in range(steps))
+    defect = sum((displacement - (path[k + 1] - path[k]) * steps) ** 2 for k in range(steps)) / steps
+    return {"displacement": displacement, "length": length, "defect": defect}
+
+
+@functools.lru_cache(maxsize=None)
+def flow_example():
+    e = FLOW_EXAMPLE
+    ln, cp, g, pt = e["lognormal"], e["coupling"], e["gaussian"], e["point"]
+    coupling = coupling_forward(cp["x"], cp["s_scale"], cp["t_slope"], cp["t_bias"])
+    velocity = lambda x, t: two_point_flow(x, t)["velocity"]
+    grid = normal_quantile_grid(e["grid"])
+    samplers = []
+    for n in e["steps"]:
+        samplers.append({"steps": n,
+                         "euler": flow_sample_stats([flow_euler(x, n, velocity)[-1] for x in grid]),
+                         "heun": flow_sample_stats([flow_heun(x, n, velocity)[-1] for x in grid]),
+                         "heun_evals": 2 * n - 1})
+    fine = e["straightness_steps"]
+    paths = [{"start": x, **path_straightness(flow_euler(x, fine, velocity))} for x in e["path_starts"]]
+    finals = [flow_euler(x, fine, velocity)[-1] for x in grid]
+    pairs = list(zip(grid, finals))
+    reflow = reflow_velocity(pairs)
+    point = two_point_flow(pt["x"], pt["t"])
+    vp_x, vp_ab = flow_to_vp(pt["x"], pt["t"])
+    return {
+        "example": e,
+        "lognormal": {**lognormal_log_prob(ln["y"], ln["loc"], ln["scale"]),
+                      "mass": lognormal_mass(ln["loc"], ln["scale"], ln["upper"], ln["grid"])},
+        "coupling": {**coupling,
+                     "inverse": coupling_inverse(coupling["y"], cp["s_scale"], cp["t_slope"], cp["t_bias"]),
+                     **coupling_jacobian(cp["x"], cp["s_scale"], cp["t_slope"], cp["t_bias"], cp["h"]),
+                     "exp_log_det": math.exp(coupling["log_det"])},
+        "gaussian": [gaussian_flow_solve(g["z"], g["mean"], g["std"], n) for n in g["steps"]],
+        "point": point,
+        "vp": {"x": vp_x, "alpha_bar": vp_ab, "x0_hat": two_point_denoiser(vp_x, vp_ab)[0]},
+        "samplers": samplers,
+        "paths": paths,
+        "mean_defect": sum(path_straightness(flow_euler(x, fine, velocity))["defect"] for x in grid[::8]) / len(grid[::8]),
+        "crossing": line_crossing(*e["cross"]),
+        "reflow_monotone": all(a[1] <= b[1] for a, b in zip(pairs, pairs[1:])),
+        "reflow": [{"steps": n, "max_error": max(abs(flow_euler(x, n, reflow)[-1] - y) for x, y in pairs)}
+                   for n in (1, 2, 4)],
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -12886,6 +13065,7 @@ def render(slug, render_template):
         "mm_example": mm_example,
         "pca_example": pca_example,
         "moe_example": moe_example,
+        "flow_example": flow_example,
         "pretraining_example": pretraining_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,

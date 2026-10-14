@@ -1,5 +1,6 @@
 import os
 import math
+import random
 import re
 from datetime import date
 
@@ -5169,3 +5170,79 @@ def test_moe_mixtral_parameter_counts_match_the_paper():
     assert counts["active"] / 1e9 == pytest.approx(12.9, abs=0.05)
     assert counts["expert"] == 3 * 4096 * 14336
     assert 0.96 < counts["expert_share"] < 0.97
+
+
+def test_flow_lognormal_change_of_variables_matches_closed_form_and_integrates_to_one():
+    ex = ml_models_docs.flow_example()
+    ln, cfg = ex["lognormal"], ex["example"]["lognormal"]
+    y, mu, s = cfg["y"], cfg["loc"], cfg["scale"]
+    closed = -math.log(y * s * math.sqrt(2 * math.pi)) - (math.log(y) - mu) ** 2 / (2 * s * s)
+    assert ln["log_prob"] == pytest.approx(closed)
+    assert ln["log_prob"] == pytest.approx(ln["base"] + ln["affine"] + ln["exp"])
+    assert ln["mass"] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_flow_coupling_inverts_and_log_det_matches_finite_differences():
+    c = ml_models_docs.flow_example()["coupling"]
+    x = ml_models_docs.FLOW_EXAMPLE["coupling"]["x"]
+    assert c["inverse"] == pytest.approx(x)
+    assert c["jacobian"][0] == pytest.approx([1.0, 0.0], abs=1e-8)
+    assert c["det"] == pytest.approx(c["exp_log_det"], rel=1e-6)
+    assert c["y"][0] == x[0]
+
+
+def test_flow_gaussian_path_ode_converges_to_the_exact_transport():
+    rows = ml_models_docs.flow_example()["gaussian"]
+    g = ml_models_docs.FLOW_EXAMPLE["gaussian"]
+    assert rows[0]["x"] == pytest.approx(g["mean"])
+    errors = [abs(r["x"] - r["exact_x"]) for r in rows]
+    assert errors == sorted(errors, reverse=True)
+    assert errors[-1] < 0.02
+    assert abs(rows[-1]["log_prob"] - rows[-1]["exact_log_prob"]) < 0.02
+    fine = ml_models_docs.gaussian_flow_solve(g["z"], g["mean"], g["std"], 20000)
+    assert fine["x"] == pytest.approx(fine["exact_x"], abs=1e-4)
+    assert fine["log_prob"] == pytest.approx(fine["exact_log_prob"], abs=1e-4)
+
+
+def test_flow_two_point_velocity_is_denoiser_minus_noise_and_matches_diffusion():
+    ex = ml_models_docs.flow_example()
+    p = ex["point"]
+    assert p["x1_hat"] == pytest.approx(math.tanh(1.0))
+    assert p["velocity"] == pytest.approx(p["x1_hat"] - p["x0_hat"])
+    assert p["velocity"] == pytest.approx(0.5232, abs=1e-4)
+    assert ex["vp"]["alpha_bar"] == pytest.approx(0.5)
+    assert ex["vp"]["x0_hat"] == pytest.approx(p["x1_hat"])
+    rng = random.Random(3)
+    x, t = 0.5, 0.5
+    samples = []
+    while len(samples) < 20000:
+        x0, x1 = rng.gauss(0.0, 1.0), rng.choice([-1.0, 1.0])
+        if abs((1 - t) * x0 + t * x1 - x) < 0.02:
+            samples.append(x1 - x0)
+    mean = sum(samples) / len(samples)
+    assert mean == pytest.approx(p["velocity"], abs=0.05)
+    assert sum((v - mean) ** 2 for v in samples) / len(samples) == pytest.approx(p["residual"], abs=0.1)
+
+
+def test_flow_samplers_one_step_collapses_and_more_steps_reach_the_data():
+    rows = {r["steps"]: r for r in ml_models_docs.flow_example()["samplers"]}
+    assert rows[1]["euler"]["mean_abs"] == 0.0
+    for n in (2, 4, 8, 16, 64, 256):
+        assert rows[n]["euler"]["plus"] == 0.5
+    assert rows[4]["heun"]["max_error"] < rows[4]["euler"]["max_error"]
+    assert rows[16]["euler"]["max_error"] < 1e-9
+    assert rows[8]["heun_evals"] == 15
+
+
+def test_flow_rectified_lines_cross_but_reflow_is_straight():
+    ex = ml_models_docs.flow_example()
+    t, x = ex["crossing"]
+    assert t == pytest.approx(3 / 7)
+    assert x == pytest.approx(-1 / 7)
+    assert ex["mean_defect"] > 0.1
+    by_start = {p["start"]: p for p in ex["paths"]}
+    assert by_start[0.1]["length"] > abs(by_start[0.1]["displacement"])
+    assert ex["reflow_monotone"]
+    assert all(r["max_error"] < 1e-12 for r in ex["reflow"])
+    line = ml_models_docs.path_straightness([0.0, 0.25, 0.5, 0.75, 1.0])
+    assert line["defect"] == pytest.approx(0.0)
