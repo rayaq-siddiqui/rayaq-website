@@ -1,0 +1,421 @@
+{% set ex = flow_example() %}
+{% set e = ex.example %}
+{% set ln = ex.lognormal %}
+{% set lc = e.lognormal %}
+{% set cp = ex.coupling %}
+{% set cc = e.coupling %}
+{% set g = e.gaussian %}
+{% set pt = ex.point %}
+{% set cross_t = ex.crossing[0] %}
+{% set cross_x = ex.crossing[1] %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(0.0 if x|abs < 0.5 * 10 ** (-n) else x)|replace("-", "−") }}{%- endmacro %}
+{% macro px(t, left) -%}{{ '%.1f'|format(left + t * 240) }}{%- endmacro %}
+{% macro py(x) -%}{{ '%.1f'|format(150 - 50 * x) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Normalizing flows and flow matching</h1>
+  <p class="tagline">
+    A flow turns simple noise into data with an invertible map, so it can both sample and give an exact likelihood. Flow matching trains the continuous version of that map with a plain regression loss: no simulation during training, no noise schedule to tune.
+    This page goes from the change-of-variables formula and coupling layers to continuous flows, the flow-matching and rectified-flow objectives, how they relate to diffusion, and sampling with an ODE solver, with every number computed and every PyTorch link pinned.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A generative model should do two things: draw new samples, and say how likely a given sample is. <a href="/ml-models/variational-autoencoders">VAEs</a> give a bound on the likelihood, not the likelihood itself; <a href="/ml-models/diffusion-models">diffusion models</a> sample well but need hundreds of network calls, and their likelihood is a bound unless you solve an ODE.
+</p>
+<p>
+  A normalizing flow makes the likelihood exact by construction. Pick a base distribution you can sample and score, usually a standard normal, and an invertible, differentiable map f. Sample by pushing noise through f; score a data point by pulling it back through f⁻¹ and correcting for how much f stretched space. The hard part is building maps that are expressive, invertible and have a cheap Jacobian determinant. Continuous flows sidestep the architecture constraints by defining f as the solution of an ODE, and flow matching is the training objective that made them practical at scale.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Picture probability as sand. The base distribution is a smooth pile; the data distribution is the shape you want. A flow is a set of instructions for moving every grain, and because grains are neither created nor destroyed, wherever the map squeezes space the density goes up by exactly the factor it squeezed. That bookkeeping is the change-of-variables formula.
+</p>
+<p>
+  A continuous flow gives each grain a velocity at every moment instead of one big jump. Flow matching learns that velocity field by regression: take a noise grain and a data grain, draw the straight line between them, and teach the network that a grain at a point on the line at time t should be moving along it. Many lines pass through the same point, so the network learns their average direction, and following those averaged directions turns out to carry the whole noise pile onto the whole data pile.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 210" role="img" aria-labelledby="flow-cov-title flow-cov-desc">
+    <title id="flow-cov-title">A two-transform flow from a standard normal to a log-normal</title>
+    <desc id="flow-cov-desc">
+      A sample z from Normal(0, 1) passes through AffineTransform with loc {{ lc.loc }} and scale {{ lc.scale }}, giving x, then through ExpTransform, giving y. To score y = {{ lc.y }}, the arrows run backwards: x = log y = {{ f(ln.x) }}, z = (x − {{ lc.loc }}) / {{ lc.scale }} = {{ f(ln.z) }}.
+      The log density is the base term {{ f(ln.base) }}, plus {{ f(ln.affine) }} from the affine step (minus log of the scale), plus {{ f(ln.exp) }} from the exp step (minus x), which sums to {{ f(ln.log_prob) }}.
+    </desc>
+    <g font-size="12">
+      <rect x="10" y="40" width="130" height="64" rx="6" class="d-box" style="fill: var(--jj-accent)" fill-opacity="0.18"></rect>
+      <text x="75" y="64" text-anchor="middle">z ~ N(0, 1)</text>
+      <text x="75" y="84" text-anchor="middle" class="d-muted">z = {{ f(ln.z) }}</text>
+      <line x1="140" y1="72" x2="230" y2="72" class="d-line"></line>
+      <text x="185" y="62" text-anchor="middle" class="d-muted">Affine</text>
+      <rect x="230" y="40" width="160" height="64" rx="6" class="d-box"></rect>
+      <text x="310" y="64" text-anchor="middle">x = {{ lc.loc }} + {{ lc.scale }} z</text>
+      <text x="310" y="84" text-anchor="middle" class="d-muted">x = {{ f(ln.x) }}</text>
+      <line x1="390" y1="72" x2="480" y2="72" class="d-line"></line>
+      <text x="435" y="62" text-anchor="middle" class="d-muted">Exp</text>
+      <rect x="480" y="40" width="150" height="64" rx="6" class="d-box" style="fill: var(--jj-violet)" fill-opacity="0.18"></rect>
+      <text x="555" y="64" text-anchor="middle">y = exp(x)</text>
+      <text x="555" y="84" text-anchor="middle" class="d-muted">y = {{ lc.y }}</text>
+      <text x="75" y="130" text-anchor="middle">log N(z)</text>
+      <text x="75" y="148" text-anchor="middle" class="d-muted">{{ f(ln.base) }}</text>
+      <text x="310" y="130" text-anchor="middle">− log |scale|</text>
+      <text x="310" y="148" text-anchor="middle" class="d-muted">{{ f(ln.affine) }}</text>
+      <text x="555" y="130" text-anchor="middle">− log |dy/dx| = − x</text>
+      <text x="555" y="148" text-anchor="middle" class="d-muted">{{ f(ln.exp) }}</text>
+      <text x="320" y="190" text-anchor="middle" style="fill: var(--jj-amber)">log p(y) = {{ f(ln.base) }} + {{ f(ln.affine) }} + ({{ f(ln.exp) }}) = {{ f(ln.log_prob) }}</text>
+    </g>
+  </svg>
+  <p class="ml-caption">Sampling runs left to right; scoring runs right to left, inverting each transform and subtracting its log-Jacobian. This is exactly what <code>TransformedDistribution.log_prob</code> does.</p>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="change-of-variables">Change of variables</h3>
+<p>
+  If z has density p<sub>Z</sub> and y = f(z) with f invertible and differentiable, then
+</p>
+<p class="ml-formula">log p<sub>Y</sub>(y) = log p<sub>Z</sub>(f⁻¹(y)) − log |det ∂f/∂z|, evaluated at z = f⁻¹(y)</p>
+<p>
+  The determinant measures how much f expands a small volume around z; expanding spreads the same probability over more space, so the density drops. A composition f = f<sub>K</sub> ∘ … ∘ f<sub>1</sub> adds one log-determinant per step, which is why flows are built from many simple layers. PyTorch implements this directly: a <code>Transform</code> provides the forward map, its inverse and <code>log_abs_det_jacobian(x, y)</code>, and <code>TransformedDistribution.log_prob</code> walks the transforms in reverse, inverting each and subtracting its log-Jacobian before scoring the base. <code>LogNormal</code> is literally <code>TransformedDistribution(Normal(loc, scale), ExpTransform())</code>.
+</p>
+<p>
+  For a general D-dimensional map, the determinant costs O(D³). Normalizing-flow research is largely the search for layers whose Jacobians are triangular, so the determinant is the product of the diagonal.
+</p>
+
+<h3 id="coupling-layers">Coupling layers</h3>
+<p>
+  A coupling layer splits the input into halves x<sub>a</sub> and x<sub>b</sub>, leaves x<sub>a</sub> alone and transforms x<sub>b</sub> with parameters computed from x<sub>a</sub>. The affine coupling of RealNVP is
+</p>
+<p class="ml-formula">y<sub>a</sub> = x<sub>a</sub>, &nbsp; y<sub>b</sub> = x<sub>b</sub> ⊙ exp(s(x<sub>a</sub>)) + t(x<sub>a</sub>), &nbsp; log |det J| = Σ s(x<sub>a</sub>)</p>
+<p>
+  The Jacobian is block triangular with an identity block and a diagonal block exp(s), so its log-determinant is just the sum of s. Inverting needs no inverse of the networks s and t: x<sub>b</sub> = (y<sub>b</sub> − t(y<sub>a</sub>)) ⊙ exp(−s(y<sub>a</sub>)), because y<sub>a</sub> = x<sub>a</sub>. s and t can be any networks. Stacking layers that alternate which half is left alone lets every dimension be transformed. NICE used the additive special case (s = 0), which preserves volume; Glow added learned invertible 1×1 convolutions to mix channels between couplings. Autoregressive flows generalize the idea with one conditioner per dimension.
+</p>
+
+<h3 id="continuous-flows">Continuous flows</h3>
+<p>
+  Make the layers infinitely thin. A continuous normalizing flow defines the map as the solution of an ODE with a learned velocity field v<sub>θ</sub>:
+</p>
+<p class="ml-formula">dx/dt = v<sub>θ</sub>(x, t), &nbsp; x(0) ~ p₀ (noise), &nbsp; x(1) = the sample</p>
+<p>
+  Any reasonable v<sub>θ</sub> gives an invertible map (run the ODE backwards), with no architectural constraint. The log density changes along a trajectory by the <strong>instantaneous change of variables</strong> from the Neural ODE paper:
+</p>
+<p class="ml-formula">d log p(x(t)) / dt = − tr(∂v<sub>θ</sub>/∂x) = − div v<sub>θ</sub></p>
+<p>
+  Computing the trace exactly costs about D backward passes, so FFJORD estimated it with Hutchinson's trick, εᵀ (∂v/∂x) ε for random ε. Training these models by maximum likelihood still meant solving the ODE inside every training step, which was slow. Flow matching removes that.
+</p>
+
+<h3 id="flow-matching">The flow-matching objective</h3>
+<p>
+  Choose a <strong>probability path</strong> p<sub>t</sub> from noise p₀ to data p₁, and regress v<sub>θ</sub> onto the velocity u<sub>t</sub> that generates it. That velocity is unknown, but it is easy for one data point at a time. With the straight-line path
+</p>
+<p class="ml-formula">x<sub>t</sub> = (1 − t) x₀ + t x₁, &nbsp; x₀ ~ N(0, I), x₁ ~ data, t ~ U[0, 1]</p>
+<p>
+  each pair moves at constant velocity x₁ − x₀. The <strong>conditional flow-matching</strong> loss regresses onto that per-pair target:
+</p>
+<p class="ml-formula">L<sub>CFM</sub>(θ) = E<sub>t, x₀, x₁</sub> ‖ v<sub>θ</sub>(x<sub>t</sub>, t) − (x₁ − x₀) ‖²</p>
+<p>
+  The minimizer of a squared loss is a conditional mean, so the best v<sub>θ</sub> is v*(x, t) = E[x₁ − x₀ | x<sub>t</sub> = x], the average direction of all lines through x at time t. Lipman et al. show that this marginal velocity generates the marginal path p<sub>t</sub>, and that the conditional loss has the same gradients as regressing on the intractable marginal velocity directly. The loss never reaches zero: what is left is the variance of x₁ − x₀ among the lines through each point.
+  Lipman et al. write the path with a small floor, x<sub>t</sub> = (1 − (1 − σ<sub>min</sub>) t) x₀ + t x₁, calling it the optimal-transport conditional path; σ<sub>min</sub> = 0 gives the line above. Training needs no ODE solve, no simulation and no noise schedule: one network call and one squared error per example, like a denoising loss.
+</p>
+
+<h3 id="rectified-flow">Rectified flow and reflow</h3>
+<p>
+  Rectified flow (Liu et al.) uses the same straight-line interpolation and loss. Its focus is what happens to the paths. Because the pairs (x₀, x₁) are drawn independently, their lines cross, and at a crossing the learned velocity averages the two directions. So the ODE trajectories of the trained model do not cross (an ODE's solutions never do) and are curved, and a coarse solver following them has to take many steps.
+  <strong>Reflow</strong> fixes this: sample noise x₀, run the trained ODE to get its endpoint T(x₀), and train a new flow on the pairs (x₀, T(x₀)). Those pairs already come from a flow whose paths do not cross, so the new lines cross less, and the new model's paths are straighter. A perfectly straight flow is solved exactly by a single Euler step, which is why reflow, followed by distillation, gives few-step and one-step samplers. Stable Diffusion 3 trains its image model with the rectified-flow objective.
+</p>
+
+<h3 id="relation-to-diffusion">Relation to diffusion</h3>
+<p>
+  Diffusion corrupts data with x<sub>t</sub> = √ᾱ x₀ + √(1 − ᾱ) ε, with data at the start of time; flow matching writes x<sub>t</sub> = t x₁ + (1 − t) x₀ with data at the end. Both are Gaussian paths x = α · data + σ · noise, and only α and σ differ: dividing the flow's x<sub>t</sub> by √(t² + (1 − t)²) gives a diffusion point with ᾱ = t² / (t² + (1 − t)²). The optimal predictions are linked too. With x̂₁ = E[x₁ | x<sub>t</sub>] the predicted data and x̂₀ = E[x₀ | x<sub>t</sub>] the predicted noise,
+</p>
+<p class="ml-formula">v*(x<sub>t</sub>, t) = x̂₁ − x̂₀ = (x̂₁ − x<sub>t</sub>) / (1 − t)</p>
+<p>
+  so a velocity network, a denoiser and a noise predictor are three parametrizations of one function. Every diffusion model also has a deterministic <strong>probability-flow ODE</strong> (Song et al.) with the same marginals as its stochastic sampler, and DDIM's update is a first-order solver for it written in other variables. Flow matching picks the straight path and the velocity target directly, which in practice gives straighter trajectories and a simpler training recipe.
+</p>
+
+<h3 id="ode-sampling">Sampling with an ODE solver</h3>
+<p>
+  Sampling integrates dx/dt = v<sub>θ</sub>(x, t) from t = 0 to 1. <strong>Euler</strong> takes N steps of x ← x + h · v(x, t) with h = 1/N, one network call each. <strong>Heun</strong> (a second-order Runge-Kutta method) takes an Euler step, evaluates the velocity at its end, and moves by the average of the two slopes, two calls per step and error falling as h² instead of h. Adaptive solvers such as Dormand-Prince pick their own step sizes from an error estimate. PyTorch has no ODE solver in the core library; the loop is a few lines, as in the implementation below, and libraries such as torchdiffeq provide adaptive ones.
+  Straighter paths need fewer steps, which is the practical case for the straight-line path and for reflow. Likelihoods need the trace integral above solved alongside x, which is why flow-matching models are mostly used for sampling.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>Transform</code></td>
+        <td><code>__call__</code>, <code>inv</code>, <code>log_abs_det_jacobian(x, y)</code></td>
+        <td>The base class for an invertible map: forward, inverse (via <code>_inverse</code>), and the elementwise log |dy/dx| that the change of variables subtracts.</td>
+        <td><a href="{{ src('torch/distributions/transforms.py', 47, 211) }}">transforms.py 47-211</a></td>
+      </tr>
+      <tr>
+        <td><code>ComposeTransform</code></td>
+        <td>list of transforms</td>
+        <td>Chains transforms; its log-Jacobian is the sum of the parts', each evaluated at its own input.</td>
+        <td><a href="{{ src('torch/distributions/transforms.py', 286, 411) }}">transforms.py 286-411</a></td>
+      </tr>
+      <tr>
+        <td><code>AffineTransform(loc, scale)</code></td>
+        <td>y = loc + scale · x; log-Jacobian log |scale|</td>
+        <td>The affine step of the diagram, and the building block of an affine coupling when loc and scale come from a network.</td>
+        <td><a href="{{ src('torch/distributions/transforms.py', 752, 856) }}">transforms.py 752-856</a></td>
+      </tr>
+      <tr>
+        <td><code>ExpTransform</code></td>
+        <td>y = exp(x); log-Jacobian x</td>
+        <td>Maps the real line to positive values; its <code>log_abs_det_jacobian</code> returns x itself.</td>
+        <td><a href="{{ src('torch/distributions/transforms.py', 571, 591) }}">transforms.py 571-591</a></td>
+      </tr>
+      <tr>
+        <td><code>TransformedDistribution</code></td>
+        <td>base distribution, list of transforms</td>
+        <td><code>rsample</code> pushes base samples forward; <code>log_prob</code> inverts the transforms in reverse order, subtracting each log-Jacobian, then adds the base log density.</td>
+        <td><a href="{{ src('torch/distributions/transformed_distribution.py', 16, 226) }}">transformed_distribution.py 16-226</a> (<a href="{{ src('torch/distributions/transformed_distribution.py', 168, 190) }}">log_prob 168-190</a>)</td>
+      </tr>
+      <tr>
+        <td><code>LogNormal</code></td>
+        <td>loc, scale</td>
+        <td>A one-line flow: <code>Normal(loc, scale)</code> through <code>ExpTransform()</code>.</td>
+        <td><a href="{{ src('torch/distributions/log_normal.py', 13, 75) }}">log_normal.py 13-75</a></td>
+      </tr>
+      <tr>
+        <td>Velocity network <code>nn.Sequential</code> of <code>nn.Linear</code>, <code>nn.SiLU</code></td>
+        <td>input (B, D + 1) with t appended; output (B, D)</td>
+        <td>Any network that maps (x, t) to a vector of the same shape as x; images use a U-Net or a transformer with a time embedding instead.</td>
+        <td><a href="{{ src('torch/nn/modules/container.py', 59, 338) }}">container.py 59-338</a>, <a href="{{ src('torch/nn/modules/linear.py', 53, 147) }}">linear.py 53-147</a>, <a href="{{ src('torch/nn/modules/activation.py', 436, 483) }}">activation.py 436-483</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>The training target x₁ − x₀ is different for every pair, but the learned field is a single function of (x, t). What does the network converge to?</summary>
+  <p>The conditional mean E[x₁ − x₀ | x<sub>t</sub> = x] at each point and time: the average direction of all the lines that pass through x at time t, weighted by how likely each pair is to be there. That average is the marginal velocity, and following it moves the whole noise distribution onto the whole data distribution, even though no single sample follows its own training line.</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-change-of-variables">Scoring a point through two transforms</h3>
+  <p>
+    <strong>Setup.</strong> The flow of the first diagram: z ~ N(0, 1), x = {{ lc.loc }} + {{ lc.scale }} z, y = exp(x), which is LogNormal({{ lc.loc }}, {{ lc.scale }}). Score y = {{ lc.y }}.
+  </p>
+  <p>
+    <strong>Invert.</strong> x = log {{ lc.y }} = {{ f(ln.x) }}; z = ({{ f(ln.x) }} − {{ lc.loc }}) / {{ lc.scale }} = {{ f(ln.z) }}.
+    <strong>Score.</strong> log N(z) = −z²/2 − ½ log 2π = {{ f(ln.base) }}. The affine step subtracts log {{ lc.scale }}, adding {{ f(ln.affine) }}; the exp step subtracts x, adding {{ f(ln.exp) }}. Total {{ f(ln.log_prob) }}, which matches the closed-form log-normal density.
+  </p>
+  <p>
+    <strong>Check.</strong> Integrating exp(log p(y)) by the trapezoid rule over (0, {{ lc.upper|int }}] with {{ lc.grid }} intervals gives {{ f(ln.mass, 6) }}. Leave out the −x term and the "density" would no longer integrate to 1: the Jacobian term is what keeps probability conserved.
+  </p>
+
+  <h3 id="worked-coupling">One affine coupling layer</h3>
+  <p>
+    <strong>Setup.</strong> x = ({{ f(cc.x[0], 1) }}, {{ f(cc.x[1], 1) }}), with s(a) = {{ cc.s_scale }} tanh(a) and t(a) = {{ cc.t_slope }} a {{ cc.t_bias|string|replace("-", "− ") }}.
+    <strong>Forward.</strong> s = {{ f(cp.s) }}, t = {{ f(cp.t) }}, so y = ({{ f(cp.y[0]) }}, {{ f(cc.x[1], 1) }} · exp({{ f(cp.s) }}) + ({{ f(cp.t) }})) = ({{ f(cp.y[0]) }}, {{ f(cp.y[1]) }}).
+    <strong>Log-determinant.</strong> s = {{ f(cp.log_det) }}, so the layer stretches area by exp({{ f(cp.log_det) }}) = {{ f(cp.exp_log_det, 4) }}.
+  </p>
+  <p>
+    <strong>Check.</strong> Central finite differences give the Jacobian [[{{ f(cp.jacobian[0][0], 4) }}, {{ f(cp.jacobian[0][1], 4) }}], [{{ f(cp.jacobian[1][0], 4) }}, {{ f(cp.jacobian[1][1], 4) }}]]: lower triangular, as promised, with determinant {{ f(cp.det, 4) }}. The off-diagonal entry, how y<sub>b</sub> depends on x<sub>a</sub>, is not zero and does not matter for the determinant. Running the inverse on y returns ({{ f(cp.inverse[0]) }}, {{ f(cp.inverse[1]) }}).
+  </p>
+
+  <h3 id="worked-gaussian-ode">A continuous flow with a known answer</h3>
+  <p>
+    <strong>Setup.</strong> Noise x₀ ~ N(0, 1), data x₁ ~ N({{ g.mean }}, {{ g.std }}²), independent pairs and the straight-line path. Then x<sub>t</sub> is Gaussian with mean {{ g.mean }}t and variance σ<sub>t</sub>² = (1 − t)² + {{ g.std }}² t², and the marginal velocity, the regression of x₁ − x₀ on x<sub>t</sub>, is
+  </p>
+  <p class="ml-formula">v*(x, t) = {{ g.mean }} + ({{ g.std }}² t − (1 − t)) / σ<sub>t</sub>² · (x − {{ g.mean }}t), &nbsp; div v* = ({{ g.std }}² t − (1 − t)) / σ<sub>t</sub>²</p>
+  <p>
+    Start at z = {{ g.z }}. In one dimension the flow must map each quantile to the same quantile, so the exact endpoint is {{ g.mean }} + {{ g.std }} · {{ g.z }} = {{ f(ex.gaussian[0].exact_x) }} with log density {{ f(ex.gaussian[0].exact_log_prob) }}. Euler integration of x and of log p (subtracting h · div v* each step):
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Euler steps</th><th>x(1)</th><th>log p tracked along the path</th><th>True log density at that x(1)</th></tr></thead>
+      <tbody>
+        {% for r in ex.gaussian %}
+        <tr><td>{{ r.steps }}</td><td>{{ f(r.x) }}</td><td>{{ f(r.log_prob) }}</td><td>{{ f(r.density_at_x) }}</td></tr>
+        {% endfor %}
+        <tr><td>exact</td><td>{{ f(ex.gaussian[0].exact_x) }}</td><td>{{ f(ex.gaussian[0].exact_log_prob) }}</td><td>{{ f(ex.gaussian[0].exact_log_prob) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    One step evaluates the velocity at t = 0, where it is {{ g.mean }} − x, so every start lands exactly on the mean {{ f(ex.gaussian[0].x) }}: the spread of the data is lost. More steps converge, with error roughly halving as steps double, as expected of a first-order method. The tracked log density converges to the exact {{ f(ex.gaussian[0].exact_log_prob) }}, which is the instantaneous change of variables at work: squeezing by a factor of {{ g.std }} adds −log {{ g.std }} = {{ f(ex.gaussian[0].exact_log_prob - ex.gaussian[0].base_log_prob) }} to the base log density {{ f(ex.gaussian[0].base_log_prob) }}.
+  </p>
+
+  <h3 id="worked-two-point">The learned velocity for two-point data</h3>
+  <p>
+    <strong>Setup.</strong> The data are ±1 with equal probability, as on the <a href="/ml-models/diffusion-models">diffusion page</a>, and x₀ ~ N(0, 1). Given x<sub>t</sub> = x, the posterior over x₁ = ±1 comes from two Gaussians of width 1 − t centred at ±t, so
+  </p>
+  <p class="ml-formula">x̂₁ = E[x₁ | x<sub>t</sub> = x] = tanh(t x / (1 − t)²), &nbsp; x̂₀ = (x − t x̂₁) / (1 − t), &nbsp; v* = x̂₁ − x̂₀</p>
+  <p>
+    At x = {{ e.point.x }}, t = {{ e.point.t }}: x̂₁ = tanh(1) = {{ f(pt.x1_hat, 4) }}, x̂₀ = {{ f(pt.x0_hat, 4) }}, v* = {{ f(pt.velocity, 4) }}. The irreducible part of the loss there, Var(x₁ − x₀ | x<sub>t</sub>) = (1 − x̂₁²) / (1 − t)², is {{ f(pt.residual, 3) }}: even a perfect network has this much loss at this point. A Monte Carlo check in the tests keeps the pairs whose x<sub>t</sub> lands near {{ e.point.x }} and recovers both numbers.
+  </p>
+  <p>
+    <strong>The diffusion view.</strong> Dividing x by √(t² + (1 − t)²) gives the diffusion point x = {{ f(ex.vp.x, 4) }} at ᾱ = {{ f(ex.vp.alpha_bar) }}, and the diffusion page's optimal denoiser there returns {{ f(ex.vp.x0_hat, 4) }}, the same x̂₁. Same function, different coordinates.
+  </p>
+
+  <h3 id="worked-samplers">Euler and Heun on the two-point flow</h3>
+  <p>
+    <strong>Setup.</strong> {{ e.grid }} starting points at the quantiles of N(0, 1), integrated with the exact v* above. A good sampler sends half to each of ±1. Heun uses Euler for its final step so that it never evaluates v at t = 1; it costs 2N − 1 velocity evaluations.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Steps N</th><th>Euler: fraction &gt; 0</th><th>Euler: mean |x|</th><th>Euler: max ||x| − 1|</th><th>Heun: mean |x|</th><th>Heun: max ||x| − 1|</th><th>Heun evaluations</th></tr></thead>
+      <tbody>
+        {% for r in ex.samplers %}
+        <tr><td>{{ r.steps }}</td><td>{{ f(r.euler.plus, 2) }}</td><td>{{ f(r.euler.mean_abs) }}</td><td>{{ f(r.euler.max_error) }}</td><td>{{ f(r.heun.mean_abs) }}</td><td>{{ f(r.heun.max_error) }}</td><td>{{ r.heun_evals }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    One Euler step evaluates v* at t = 0, where x̂₁ = 0 and v* = −x, so every sample lands on 0, the mean of the data, just like the Gaussian case. From two steps on, the signs are right; by {{ ex.samplers[4].steps }} Euler steps every sample sits on ±1 to printed precision. That last part is special to this data: once x̂₁ has saturated at ±1, the last Euler step x + (1 − t) · (x̂₁ − x)/(1 − t) lands exactly on x̂₁, as DDIM's last step returns its x̂₀. Per step, Heun is ahead: at {{ ex.samplers[2].steps }} steps its mean |x| is {{ f(ex.samplers[2].heun.mean_abs) }} against {{ f(ex.samplers[2].euler.mean_abs) }}. Per velocity evaluation it is not, on this data: {{ ex.samplers[2].heun_evals }} Heun evaluations leave a worst error of {{ f(ex.samplers[2].heun.max_error) }}, while {{ ex.samplers[3].steps }} Euler steps leave {{ f(ex.samplers[3].euler.max_error) }}. The velocity turns sharply late in time, when x̂₁ snaps to ±1, and a second-order method only pays off when the field is smooth across a step, one reason practical samplers space their steps unevenly in time.
+  </p>
+
+  <h3 id="worked-rectified">Crossing lines and curved paths</h3>
+  <p>
+    <strong>Crossing.</strong> The training pairs ({{ f(e.cross[0][0], 1) }} → {{ f(e.cross[0][1], 1) }}) and ({{ f(e.cross[1][0], 1) }} → {{ f(e.cross[1][1], 1) }}) meet at t = {{ f(cross_t) }} (3/7), x = {{ f(cross_x) }}. A network trained on both sees opposite targets at that point and learns their average, so its trajectories bend instead.
+  </p>
+  <p>
+    <strong>Curvature.</strong> Following v* with {{ e.straightness_steps }} Euler steps, the path from {{ ex.paths[2].start }} has displacement {{ f(ex.paths[2].displacement) }} but length {{ f(ex.paths[2].length) }}: it first drifts toward 0, then turns and heads for +1. The straightness defect, the time average of (x(1) − x(0) − dx/dt)², which is zero exactly for a constant-speed line, averages {{ f(ex.mean_defect) }} over every eighth of the {{ e.grid }} quantile starting points.
+  </p>
+  <p>
+    <strong>Reflow.</strong> Pair each start x₀ with its endpoint T(x₀) and use the lines between them. The endpoints are in the same order as the starts, so for t &lt; 1 no two lines meet, and the velocity at each point is just its line's slope. Euler with 1, 2 and 4 steps on that field reproduces every endpoint, worst errors {% for r in ex.reflow %}{{ '%.0e'|format(r.max_error) if r.max_error else '0' }}{% if not loop.last %}, {% endif %}{% endfor %}, rounding only. One network call per sample, where the original flow gave 0 for every sample with one step.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 300" role="img" aria-labelledby="flow-paths-title flow-paths-desc">
+    <title id="flow-paths-title">Straight training lines cross; the learned flow's paths do not</title>
+    <desc id="flow-paths-desc">
+      Left panel: two training pairs drawn as straight lines over time t from 0 to 1, from {{ f(e.cross[0][0], 1) }} to {{ f(e.cross[0][1], 1) }} and from {{ f(e.cross[1][0], 1) }} to {{ f(e.cross[1][1], 1) }}. They cross at t = {{ f(cross_t) }}, x = {{ f(cross_x) }}.
+      Right panel: the trajectories of the marginal flow for two-point data from starts {% for x in e.path_starts %}{{ f(x, 1) }}{% if not loop.last %}, {% endif %}{% endfor %}. They first drift toward zero while the velocity is still the average of both targets, then turn toward plus or minus one, never crossing. The starts at plus and minus {{ e.path_starts[-1] }} move almost monotonically; the start at {{ ex.paths[2].start }} travels {{ f(ex.paths[2].length) }} to cover a displacement of {{ f(ex.paths[2].displacement) }}.
+    </desc>
+    <g font-size="12">
+      {% for left in [50, 370] %}
+      <line x1="{{ left }}" y1="270" x2="{{ left + 240 }}" y2="270" class="d-line d-muted"></line>
+      <text x="{{ left }}" y="288" text-anchor="middle" class="d-muted">t = 0</text>
+      <text x="{{ left + 240 }}" y="288" text-anchor="middle" class="d-muted">t = 1</text>
+      {% for v in [-1, 0, 1] %}
+      <line x1="{{ left }}" y1="{{ py(v) }}" x2="{{ left + 240 }}" y2="{{ py(v) }}" class="d-line ml-dashed d-muted"></line>
+      {% if left == 50 %}<text x="{{ left - 8 }}" y="{{ '%.1f'|format(150 - 50 * v + 4) }}" text-anchor="end" class="d-muted">{{ v|string|replace("-", "−") }}</text>{% endif %}
+      {% endfor %}
+      {% endfor %}
+      <text x="170" y="22" text-anchor="middle">training lines (independent pairs)</text>
+      {% for pair in e.cross %}
+      <line x1="{{ px(0, 50) }}" y1="{{ py(pair[0]) }}" x2="{{ px(1, 50) }}" y2="{{ py(pair[1]) }}" class="d-line" style="stroke: var(--jj-{{ 'accent' if loop.first else 'violet' }})"></line>
+      <circle cx="{{ px(0, 50) }}" cy="{{ py(pair[0]) }}" r="4" style="fill: var(--jj-{{ 'accent' if loop.first else 'violet' }})"></circle>
+      <circle cx="{{ px(1, 50) }}" cy="{{ py(pair[1]) }}" r="4" style="fill: var(--jj-{{ 'accent' if loop.first else 'violet' }})"></circle>
+      {% endfor %}
+      <circle cx="{{ px(cross_t, 50) }}" cy="{{ py(cross_x) }}" r="6" fill="none" style="stroke: var(--jj-red)" stroke-width="2"></circle>
+      <text x="{{ px(cross_t, 50) }}" y="{{ '%.1f'|format(150 - 50 * cross_x + 24) }}" text-anchor="middle" style="fill: var(--jj-red)">cross, t = 3/7</text>
+      <text x="490" y="22" text-anchor="middle">learned flow (ODE paths)</text>
+      {% for p in ex.paths %}
+      <polyline fill="none" class="d-line" style="stroke: var(--jj-{{ 'amber' if p.start == ex.paths[2].start else 'accent' }})" points="{% for t, x in p.points %}{{ px(t, 370) }},{{ py(x) }} {% endfor %}"></polyline>
+      <text x="362" y="{{ '%.1f'|format(150 - 50 * p.start + 4) }}" text-anchor="end" font-size="10" class="d-muted">{{ p.start|string|replace("-", "−") }}</text>
+      {% endfor %}
+    </g>
+  </svg>
+  <p class="ml-caption">Left: two straight training lines from independent pairs cross, so the regression target at the red circle is ambiguous. Right: the flow that the regression actually learns. The amber path from {{ ex.paths[2].start }} shows the detour; reflow would replace each path with the straight line from its start to its end.</p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+from torch import nn
+from torch.distributions import Normal, TransformedDistribution
+from torch.distributions.transforms import AffineTransform, ExpTransform
+
+# A discrete flow: change of variables through two transforms.
+flow = TransformedDistribution(Normal(0.0, 1.0), [AffineTransform({{ lc.loc }}, {{ lc.scale }}), ExpTransform()])
+flow.log_prob(torch.tensor({{ lc.y }}))   # {{ f(ln.log_prob, 4) }}, the same as LogNormal({{ lc.loc }}, {{ lc.scale }})
+
+# A continuous flow trained with flow matching.
+D = 2
+net = nn.Sequential(nn.Linear(D + 1, 256), nn.SiLU(),
+                    nn.Linear(256, 256), nn.SiLU(),
+                    nn.Linear(256, D))
+opt = torch.optim.Adam(net.parameters(), lr=1e-3)
+
+def velocity(x, t):                       # x: (B, D), t: (B, 1)
+    return net(torch.cat([x, t], dim=-1))
+
+def train_step(x1):                       # x1: a batch of data, (B, D)
+    x0 = torch.randn_like(x1)             # noise
+    t = torch.rand(x1.shape[0], 1)        # one time per example
+    xt = (1 - t) * x0 + t * x1            # point on the straight line
+    loss = ((velocity(xt, t) - (x1 - x0)) ** 2).mean()
+    opt.zero_grad()
+    loss.backward()
+    opt.step()
+    return loss.item()
+
+@torch.no_grad()
+def sample(n, steps=32):                  # Euler from noise (t = 0) to data (t = 1)
+    x = torch.randn(n, D)
+    for k in range(steps):
+        t = torch.full((n, 1), k / steps)
+        x = x + velocity(x, t) / steps
+    return x
+</code></pre>
+<p>
+  The training step has no ODE in it: the only randomness is the noise, the time and the batch, and the target is a subtraction. Swapping the Euler loop for a Heun loop, or for an adaptive solver from a library, changes only <code>sample</code>. For reflow, run <code>sample</code> on a fixed batch of noise, keep each (noise, output) pair, and train a fresh <code>net</code> with <code>x0</code> and <code>x1</code> taken from those pairs instead of drawn independently.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Approach</th><th>Likelihood</th><th>Sampling cost</th><th>Main constraint</th></tr></thead>
+    <tbody>
+      <tr><td>Coupling and autoregressive flows (RealNVP, Glow)</td><td>Exact, one pass</td><td>One pass</td><td>Invertible layers with triangular Jacobians limit expressiveness; latent has the same dimension as the data</td></tr>
+      <tr><td>Continuous flow trained by likelihood (Neural ODE, FFJORD)</td><td>Exact up to solver error, needs the trace</td><td>An ODE solve</td><td>Every training step solves the ODE; slow</td></tr>
+      <tr><td>Flow matching / rectified flow</td><td>Available through the ODE and trace, rarely used</td><td>An ODE solve; tens of steps, fewer after reflow or distillation</td><td>Paths curve where training lines cross</td></tr>
+      <tr><td><a href="/ml-models/diffusion-models">Diffusion</a></td><td>A bound, or exact through the probability-flow ODE</td><td>Many steps with a stochastic sampler, fewer with ODE solvers</td><td>Noise schedule and parametrization choices</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<ul>
+  <li><strong>Straight paths buy cheap sampling.</strong> The number of solver steps is set by how curved the paths are, not by the network. Reflow straightens them at the cost of generating a dataset of pairs and training again, and each round adds some error of its own.</li>
+  <li><strong>The path is a design choice.</strong> The straight line and diffusion's variance-preserving path describe the same family with different α and σ; which works better also depends on how t is sampled during training, for which Stable Diffusion 3 reports gains from weighting the middle of the path.</li>
+  <li><strong>Exact likelihood is rarely the point.</strong> Discrete flows are used where an exact density matters, and as components of other models; for sample quality, large image models have moved to diffusion and flow matching.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Why does one Euler step of a flow-matching model produce a blurry average instead of a sample?</summary>
+  <p>The first step evaluates the velocity at t = 0, where x<sub>t</sub> is pure noise and says nothing about which data point it is heading to, so x̂₁ is the data mean and the step x₀ + (x̂₁ − x̂₀) lands on the mean. On two-point data every sample lands on 0. Getting a sharp sample in one step needs paths that are already straight for each start, which is what reflow and distillation provide.</p>
+</details>
+
+<details class="ml-quiz">
+  <summary>A coupling layer leaves half its input unchanged. How can a stack of them model a distribution where every dimension depends on every other?</summary>
+  <p>By alternating the split. A layer that conditions x<sub>b</sub> on x<sub>a</sub> is followed by one that conditions x<sub>a</sub> on the new x<sub>b</sub>, so after two layers every output depends on every input. Glow's learned 1×1 convolutions go further, mixing channels between couplings so the split is not fixed in advance.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<p>
+  <a href="/ml-models/diffusion-models">Diffusion models</a> are the closest relative: the same Gaussian paths in other coordinates, and DDIM is an ODE sampler like the ones here. <a href="/ml-models/variational-autoencoders">VAEs</a> also map between noise and data but approximate the likelihood, and flows have been used inside them as richer approximate posteriors.
+  The training loss is ordinary regression, so everything on <a href="/ml-models/optimizers">optimizers</a> and <a href="/ml-models/backpropagation">backpropagation</a> applies unchanged.
+</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Dinh, Krueger and Bengio. <em>NICE: Non-linear Independent Components Estimation.</em> 2014. <a href="https://arxiv.org/abs/1410.8516">arXiv:1410.8516</a></li>
+  <li>Dinh, Sohl-Dickstein and Bengio. <em>Density Estimation Using Real NVP.</em> ICLR 2017. <a href="https://arxiv.org/abs/1605.08803">arXiv:1605.08803</a></li>
+  <li>Kingma and Dhariwal. <em>Glow: Generative Flow with Invertible 1x1 Convolutions.</em> NeurIPS 2018. <a href="https://arxiv.org/abs/1807.03039">arXiv:1807.03039</a></li>
+  <li>Chen, Rubanova, Bettencourt and Duvenaud. <em>Neural Ordinary Differential Equations.</em> NeurIPS 2018. <a href="https://arxiv.org/abs/1806.07366">arXiv:1806.07366</a></li>
+  <li>Grathwohl et al. <em>FFJORD: Free-form Continuous Dynamics for Scalable Reversible Generative Models.</em> ICLR 2019. <a href="https://arxiv.org/abs/1810.01367">arXiv:1810.01367</a></li>
+  <li>Song et al. <em>Score-Based Generative Modeling through Stochastic Differential Equations.</em> ICLR 2021. <a href="https://arxiv.org/abs/2011.13456">arXiv:2011.13456</a></li>
+  <li>Song, Meng and Ermon. <em>Denoising Diffusion Implicit Models.</em> ICLR 2021. <a href="https://arxiv.org/abs/2010.02502">arXiv:2010.02502</a></li>
+  <li>Lipman et al. <em>Flow Matching for Generative Modeling.</em> ICLR 2023. <a href="https://arxiv.org/abs/2210.02747">arXiv:2210.02747</a></li>
+  <li>Liu, Gong and Liu. <em>Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow.</em> ICLR 2023. <a href="https://arxiv.org/abs/2209.03003">arXiv:2209.03003</a></li>
+  <li>Albergo and Vanden-Eijnden. <em>Building Normalizing Flows with Stochastic Interpolants.</em> ICLR 2023. <a href="https://arxiv.org/abs/2209.15571">arXiv:2209.15571</a></li>
+  <li>Esser et al. <em>Scaling Rectified Flow Transformers for High-Resolution Image Synthesis.</em> 2024. <a href="https://arxiv.org/abs/2403.03206">arXiv:2403.03206</a></li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/distributions/transforms.py', 47, 211) }}"><code>Transform</code></a>, <a href="{{ src('torch/distributions/transforms.py', 752, 856) }}"><code>AffineTransform</code></a>, <a href="{{ src('torch/distributions/transforms.py', 571, 591) }}"><code>ExpTransform</code></a>, <a href="{{ src('torch/distributions/transformed_distribution.py', 16, 226) }}"><code>TransformedDistribution</code></a>, <a href="{{ src('torch/distributions/log_normal.py', 13, 75) }}"><code>LogNormal</code></a>.</li>
+</ul>

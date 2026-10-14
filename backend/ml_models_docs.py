@@ -895,7 +895,7 @@ PAGES = [
         "sources": [
             "pytorch:torch/distributions/transforms.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "tokenization",
@@ -12906,7 +12906,7 @@ def gaussian_flow_solve(z, mean, std, steps):
         x += h * v
         logp -= h * slope
     exact_x = mean + std * z
-    return {"steps": steps, "x": x, "log_prob": logp, "exact_x": exact_x,
+    return {"steps": steps, "x": x, "log_prob": logp, "exact_x": exact_x, "base_log_prob": standard_normal_log_pdf(z),
             "exact_log_prob": standard_normal_log_pdf(z) - math.log(std),
             "density_at_x": standard_normal_log_pdf((x - mean) / std) - math.log(std)}
 
@@ -12987,7 +12987,11 @@ def flow_example():
                          "heun": flow_sample_stats([flow_heun(x, n, velocity)[-1] for x in grid]),
                          "heun_evals": 2 * n - 1})
     fine = e["straightness_steps"]
-    paths = [{"start": x, **path_straightness(flow_euler(x, fine, velocity))} for x in e["path_starts"]]
+    paths = []
+    for x in e["path_starts"]:
+        path = flow_euler(x, fine, velocity)
+        paths.append({"start": x, **path_straightness(path),
+                      "points": [(k / fine, path[k]) for k in range(0, fine + 1, fine // 20)]})
     finals = [flow_euler(x, fine, velocity)[-1] for x in grid]
     pairs = list(zip(grid, finals))
     reflow = reflow_velocity(pairs)

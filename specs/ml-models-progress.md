@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-14 (forty-first run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-86, the last being `mixture-of-experts`.
-The next page is `flow-matching` (queue item 87).
+fixed page format. Ready pages: queue items 1-87, the last being `flow-matching`.
+The next page is `preference-optimization` (queue item 88).
 
 ## Pins
 
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (86 of 93 ready, all
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (87 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -358,8 +358,8 @@ Gaps:
 84. `multimodal-models` ✓
 85. `pca` ✓
 86. `mixture-of-experts` ✓
-87. `flow-matching` ← next
-88. `preference-optimization`
+87. `flow-matching` ✓
+88. `preference-optimization` ← next
 89. `retrieval-augmented-generation`
 90. `checkpointing`
 91. `reproducibility`
