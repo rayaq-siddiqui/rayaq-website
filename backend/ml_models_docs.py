@@ -11892,6 +11892,128 @@ def ft_example():
     }
 
 
+TT_EXAMPLE = {
+    "item_names": ["i0", "i1", "i2", "i3", "i4"],
+    "item_table": [[1.0, 0.0], [0.0, 1.0], [0.6, 0.8], [-0.8, 0.6], [0.8, -0.6]],
+    "history_table": [[1.0, 1.0], [0.0, 2.0], [2.0, 0.0], [-1.0, 1.0], [1.0, -1.0]],
+    "histories": [[2, 4], [1, 3], [0, 2], [3]],
+    "positives": [4, 1, 0, 3],
+    "temperature": 0.2,
+    "frequencies": [0.4, 0.1, 0.2, 0.1, 0.2],
+    "hard": {"row": 2, "item": 2},
+    "popular_batch": 1024,
+    "scale": {
+        "users": 20_000_000,
+        "items": 10_000_000,
+        "dim": 64,
+        "mlp": [256, 128, 64],
+        "nlist": 4096,
+        "nprobe": 32,
+        "pq_bytes": 8,
+        "candidates": 1000,
+        "shown": 10,
+        "ranker_macs": 2_000_000,
+    },
+}
+
+
+def tt_bag_mean(table, ids):
+    return [sum(table[i][k] for i in ids) / len(ids) for k in range(len(table[0]))]
+
+
+def tt_normalize(v, eps=1e-12):
+    n = max(vector_norm(v), eps)
+    return [x / n for x in v]
+
+
+def tt_cross_entropy(logits, target):
+    top = max(logits)
+    lse = top + math.log(sum(math.exp(x - top) for x in logits))
+    return lse - logits[target]
+
+
+def tt_in_batch(queries, items, positives, tau, frequencies=None):
+    columns = [items[j] for j in positives]
+    rows = []
+    for r, q in enumerate(queries):
+        logits = [dot_product(q, c) / tau for c in columns]
+        if frequencies is not None:
+            logits = [x - math.log(frequencies[j]) for x, j in zip(logits, positives)]
+        rows.append({"logits": logits, "probs": softmax_probs(logits), "loss": tt_cross_entropy(logits, r)})
+    return {"rows": rows, "loss": sum(row["loss"] for row in rows) / len(rows)}
+
+
+def tt_full_softmax(queries, items, positives, tau):
+    rows = []
+    for q, target in zip(queries, positives):
+        logits = [dot_product(q, v) / tau for v in items]
+        rows.append({"logits": logits, "probs": softmax_probs(logits), "loss": tt_cross_entropy(logits, target)})
+    return {"rows": rows, "loss": sum(row["loss"] for row in rows) / len(rows)}
+
+
+def tt_hard_negative(query, items, positives, row, hard, tau):
+    base = [dot_product(query, items[j]) / tau for j in positives]
+    extended = base + [dot_product(query, items[hard]) / tau]
+    before = softmax_probs(base)
+    after = softmax_probs(extended)
+    easy = [p for k, p in enumerate(before) if k != row]
+    return {
+        "hard_logit": extended[-1],
+        "hard_prob": after[-1],
+        "easy_mean_prob": sum(easy) / len(easy),
+        "loss_before": tt_cross_entropy(base, row),
+        "loss_after": tt_cross_entropy(extended, row),
+    }
+
+
+def tt_serving(s):
+    n, d = s["items"], s["dim"]
+    scanned = n * s["nprobe"] / s["nlist"]
+    mlp = sum(a * b + b for a, b in zip(s["mlp"], s["mlp"][1:]))
+    return {
+        "table_params": (s["users"] + n) * d,
+        "mlp_params": mlp,
+        "flat_bytes": n * d * 4,
+        "pq_bytes": n * s["pq_bytes"],
+        "flat_macs": n * d,
+        "ivf_scanned": scanned,
+        "ivf_macs": (s["nlist"] + scanned) * d,
+        "rank_all_macs": n * s["ranker_macs"],
+        "rank_candidates_macs": s["candidates"] * s["ranker_macs"],
+    }
+
+
+@functools.lru_cache(maxsize=None)
+def tt_example():
+    e = TT_EXAMPLE
+    tau = e["temperature"]
+    pooled = [tt_bag_mean(e["history_table"], h) for h in e["histories"]]
+    queries = [tt_normalize(v) for v in pooled]
+    items = [tt_normalize(v) for v in e["item_table"]]
+    cosines = [[dot_product(q, items[j]) for j in e["positives"]] for q in queries]
+    plain = tt_in_batch(queries, items, e["positives"], tau)
+    corrected = tt_in_batch(queries, items, e["positives"], tau, e["frequencies"])
+    full = tt_full_softmax(queries, items, e["positives"], tau)
+    h = e["hard"]
+    hard = tt_hard_negative(queries[h["row"]], items, e["positives"], h["row"], h["item"], tau)
+    b = e["popular_batch"]
+    popularity = [{"item": name, "q": f, "log_q": math.log(f), "per_batch": b * f}
+                  for name, f in zip(e["item_names"], e["frequencies"])]
+    return {
+        "example": e,
+        "pooled": pooled,
+        "queries": queries,
+        "items": items,
+        "cosines": cosines,
+        "plain": plain,
+        "corrected": corrected,
+        "full": full,
+        "hard": hard,
+        "popularity": popularity,
+        "serving": tt_serving(e["scale"]),
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -11937,6 +12059,7 @@ def render(slug, render_template):
         "diffusion_example": diffusion_example,
         "unet_example": unet_example,
         "ft_example": ft_example,
+        "tt_example": tt_example,
         "pretraining_example": pretraining_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,

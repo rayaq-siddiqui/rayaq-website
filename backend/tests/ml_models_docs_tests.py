@@ -4804,3 +4804,51 @@ def test_ft_forgetting_trades_task_a_for_task_b():
     assert rows[0]["w"] == 3.0 and rows[0]["loss_a"] == 4.0
     assert [r["loss_a"] < q["loss_a"] for q, r in zip(rows, rows[1:])] == [True] * 3
     assert rows[2]["loss_a"] == rows[2]["loss_b"] == 1.0
+
+
+def test_tt_query_tower_matches_embedding_bag_mean():
+    ex = ml_models_docs.tt_example()
+    assert ex["pooled"] == [[1.5, -0.5], [-0.5, 1.5], [1.5, 0.5], [-1.0, 1.0]]
+    for v in ex["queries"] + ex["items"]:
+        assert math.isclose(ml_models_docs.vector_norm(v), 1.0)
+
+
+def test_tt_in_batch_uses_the_batch_positives_as_columns():
+    ex = ml_models_docs.tt_example()
+    tau = ex["example"]["temperature"]
+    for r, row in enumerate(ex["plain"]["rows"]):
+        assert len(row["logits"]) == 4
+        assert math.isclose(sum(row["probs"]), 1.0)
+        assert math.isclose(row["loss"], -math.log(row["probs"][r]))
+        for k, logit in enumerate(row["logits"]):
+            assert math.isclose(logit, ex["cosines"][r][k] / tau)
+    assert math.isclose(ex["plain"]["loss"], 0.3788951774317155)
+    assert ex["full"]["loss"] > ex["plain"]["loss"]
+
+
+def test_tt_logq_correction_subtracts_log_frequency():
+    ex = ml_models_docs.tt_example()
+    freq = ex["example"]["frequencies"]
+    positives = ex["example"]["positives"]
+    for plain, corrected in zip(ex["plain"]["rows"], ex["corrected"]["rows"]):
+        for k, j in enumerate(positives):
+            assert math.isclose(corrected["logits"][k], plain["logits"][k] - math.log(freq[j]))
+    assert ex["corrected"]["rows"][0]["loss"] < ex["plain"]["rows"][0]["loss"]
+    assert ex["corrected"]["rows"][2]["loss"] > ex["plain"]["rows"][2]["loss"]
+
+
+def test_tt_hard_negative_raises_the_loss():
+    ex = ml_models_docs.tt_example()
+    hard = ex["hard"]
+    assert hard["hard_prob"] > 5 * hard["easy_mean_prob"]
+    assert hard["loss_after"] > 3 * hard["loss_before"]
+    assert math.isclose(hard["loss_after"], ex["full"]["rows"][2]["loss"])
+
+
+def test_tt_serving_costs():
+    s = ml_models_docs.tt_example()["serving"]
+    assert s["table_params"] == 1_920_000_000
+    assert s["mlp_params"] == 41_152
+    assert s["flat_macs"] == 640_000_000
+    assert s["ivf_scanned"] == 78_125
+    assert s["rank_all_macs"] // s["rank_candidates_macs"] == 10_000
