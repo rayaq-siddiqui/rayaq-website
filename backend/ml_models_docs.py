@@ -12014,6 +12014,225 @@ def tt_example():
     }
 
 
+
+DT_EXAMPLE = {
+    "ring": [[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0], [9.0, 10.0, 11.0, 12.0], [13.0, 14.0, 15.0, 16.0]],
+    "zero_check": {"params": 7_500_000_000, "world": 64, "k": 12},
+    "model": FT_EXAMPLE["model"],
+    "world": 8,
+    "k": 12,
+    "comm_bytes": 2,
+    "bandwidth": 100e9,
+    "gpu_memory": 80e9,
+    "bucket_mib": 25,
+    "tp": {
+        "x": [[1.0, -1.0], [2.0, 0.5]],
+        "a": [[1.0, 0.0, -1.0, 2.0], [0.5, 1.0, 1.0, -1.0]],
+        "b": [[1.0, 0.0], [0.0, 1.0], [-1.0, 1.0], [0.5, -0.5]],
+        "ways": 2,
+    },
+    "tp_scale": {"batch": 1, "seq": 4096, "ways": 8},
+    "pipeline": {"stages": 4, "microbatches": 4, "bubble_microbatches": [1, 4, 8, 16, 32]},
+}
+
+
+def dt_ring_allreduce(grads):
+    p = len(grads)
+    size = len(grads[0])
+    if size % p:
+        raise ValueError("vector length must divide by the number of ranks")
+    width = size // p
+    chunks = [[list(g[c * width:(c + 1) * width]) for c in range(p)] for g in grads]
+    steps = []
+    for s in range(p - 1):
+        sends = [(r, (r - s) % p, list(chunks[r][(r - s) % p])) for r in range(p)]
+        for r, c, data in sends:
+            dest = (r + 1) % p
+            chunks[dest][c] = [a + b for a, b in zip(chunks[dest][c], data)]
+        steps.append({"phase": "reduce-scatter", "sends": [(r, c) for r, c, _ in sends],
+                      "state": [[list(ch) for ch in row] for row in chunks]})
+    owned = [(r + 1) % p for r in range(p)]
+    for s in range(p - 1):
+        sends = [(r, (r + 1 - s) % p, list(chunks[r][(r + 1 - s) % p])) for r in range(p)]
+        for r, c, data in sends:
+            chunks[(r + 1) % p][c] = data
+        steps.append({"phase": "all-gather", "sends": [(r, c) for r, c, _ in sends],
+                      "state": [[list(ch) for ch in row] for row in chunks]})
+    result = [[x for ch in row for x in ch] for row in chunks]
+    return {
+        "steps": steps,
+        "owned": owned,
+        "sum": result,
+        "mean": [[x / p for x in row] for row in result],
+        "sent_per_rank": 2 * (p - 1) * width,
+        "naive_root_traffic": 2 * (p - 1) * size,
+    }
+
+
+def dt_allreduce_factor(world):
+    return 2 * (world - 1) / world
+
+
+def dt_zero_memory(params, world, k=12):
+    psi = params
+    return {
+        "ddp": (2 + 2 + k) * psi,
+        "zero1": 2 * psi + 2 * psi + k * psi / world,
+        "zero2": 2 * psi + (2 + k) * psi / world,
+        "zero3": (2 + 2 + k) * psi / world,
+    }
+
+
+def dt_comm(params, world, bytes_per):
+    payload = params * bytes_per
+    gather = (world - 1) / world * payload
+    return {
+        "payload": payload,
+        "ddp": dt_allreduce_factor(world) * payload,
+        "zero2": 2 * gather,
+        "zero3": 3 * gather,
+    }
+
+
+def dt_tp_mlp(x, a, b, ways):
+    hidden = len(a[0])
+    if hidden % ways:
+        raise ValueError("hidden size must divide by the number of ways")
+    w = hidden // ways
+    full = matmul([relu(row) for row in matmul(x, a)], b)
+    shards = []
+    for r in range(ways):
+        a_r = [row[r * w:(r + 1) * w] for row in a]
+        b_r = b[r * w:(r + 1) * w]
+        y_r = [relu(row) for row in matmul(x, a_r)]
+        shards.append({"a": a_r, "b": b_r, "y": y_r, "z": matmul(y_r, b_r)})
+    summed = [[sum(s["z"][i][j] for s in shards) for j in range(len(b[0]))] for i in range(len(x))]
+    width = len(a) // ways
+    pre = [[0.0] * hidden for _ in x]
+    wrong_y = [[0.0] * hidden for _ in x]
+    for r in range(ways):
+        x_r = [row[r * width:(r + 1) * width] for row in x]
+        part = matmul(x_r, a[r * width:(r + 1) * width])
+        pre = [[u + v for u, v in zip(pr, pa)] for pr, pa in zip(pre, part)]
+        wrong_y = [[u + v for u, v in zip(wy, relu(pa))] for wy, pa in zip(wrong_y, part)]
+    return {
+        "full": full,
+        "hidden": [relu(row) for row in matmul(x, a)],
+        "shards": shards,
+        "summed": summed,
+        "row_split_pre": pre,
+        "row_split_wrong_hidden": wrong_y,
+        "row_split_wrong": matmul(wrong_y, b),
+    }
+
+
+def dt_tp_activation_bytes(batch, seq, dim, layers, ways, bytes_per):
+    tensor = batch * seq * dim * bytes_per
+    per_reduce = dt_allreduce_factor(ways) * tensor
+    reduces = 4 * layers
+    return {"tensor": tensor, "per_reduce": per_reduce, "reduces": reduces, "total": per_reduce * reduces}
+
+
+def dt_pipeline_orders(stages, microbatches, schedule):
+    orders = []
+    for s in range(stages):
+        if schedule == "gpipe":
+            ops = [("F", j) for j in range(microbatches)] + [("B", j) for j in range(microbatches)]
+        else:
+            warmup = min(microbatches, stages - s)
+            ops = [("F", j) for j in range(warmup)]
+            f, b = warmup, 0
+            while b < microbatches:
+                ops.append(("B", b))
+                b += 1
+                if f < microbatches:
+                    ops.append(("F", f))
+                    f += 1
+        orders.append(ops)
+    return orders
+
+
+def dt_pipeline_schedule(stages, microbatches, schedule, forward=1, backward=1):
+    orders = dt_pipeline_orders(stages, microbatches, schedule)
+    end = {}
+    free = [0] * stages
+    position = [0] * stages
+    slots = []
+    remaining = sum(len(o) for o in orders)
+    while remaining:
+        progressed = False
+        for s in range(stages):
+            if position[s] == len(orders[s]):
+                continue
+            kind, j = orders[s][position[s]]
+            if kind == "F":
+                dep = end.get(("F", s - 1, j)) if s else 0
+            else:
+                dep = end.get(("B", s + 1, j)) if s < stages - 1 else end.get(("F", s, j))
+            if dep is None:
+                continue
+            start = max(free[s], dep)
+            length = forward if kind == "F" else backward
+            end[(kind, s, j)] = start + length
+            free[s] = start + length
+            slots.append({"stage": s, "kind": kind, "mb": j, "start": start, "end": start + length})
+            position[s] += 1
+            remaining -= 1
+            progressed = True
+        if not progressed:
+            raise ValueError("pipeline schedule deadlocked")
+    total = max(free)
+    busy = microbatches * (forward + backward)
+    peaks = []
+    for s in range(stages):
+        events = sorted(((x["end"] if x["kind"] == "F" else x["start"], 1 if x["kind"] == "F" else -1)
+                         for x in slots if x["stage"] == s), key=lambda e: (e[0], -e[1]))
+        live = peak = 0
+        for _, delta in events:
+            live += delta
+            peak = max(peak, live)
+        peaks.append(peak)
+    return {"slots": slots, "total": total, "busy": busy, "bubble": 1 - busy / total, "peak_in_flight": peaks}
+
+
+def dt_bubble_fraction(stages, microbatches):
+    return (stages - 1) / (microbatches + stages - 1)
+
+
+@functools.lru_cache(maxsize=None)
+def dt_example():
+    e = DT_EXAMPLE
+    psi = ft_model_params(e["model"])["total"]
+    world = e["world"]
+    memory = dt_zero_memory(psi, world, e["k"])
+    zc = e["zero_check"]
+    comm = dt_comm(psi, world, e["comm_bytes"])
+    tp = e["tp"]
+    ts = e["tp_scale"]
+    m = e["model"]
+    pp = e["pipeline"]
+    bucket_bytes = e["bucket_mib"] * 1024 * 1024
+    return {
+        "example": e,
+        "params": psi,
+        "ring": dt_ring_allreduce(e["ring"]),
+        "memory": memory,
+        "memory_fits": {key: value <= e["gpu_memory"] for key, value in memory.items()},
+        "zero_check": dt_zero_memory(zc["params"], zc["world"], zc["k"]),
+        "comm": comm,
+        "comm_seconds": {key: comm[key] / e["bandwidth"] for key in ("ddp", "zero2", "zero3")},
+        "bucket_params": bucket_bytes // 4,
+        "buckets": math.ceil(psi * 4 / bucket_bytes),
+        "tp": dt_tp_mlp(tp["x"], tp["a"], tp["b"], tp["ways"]),
+        "tp_comm": dt_tp_activation_bytes(ts["batch"], ts["seq"], m["dim"], m["layers"], ts["ways"], e["comm_bytes"]),
+        "tp_states": (2 + 2 + e["k"]) * psi / ts["ways"],
+        "gpipe": dt_pipeline_schedule(pp["stages"], pp["microbatches"], "gpipe"),
+        "one_f_one_b": dt_pipeline_schedule(pp["stages"], pp["microbatches"], "1f1b"),
+        "one_f_one_b_8": dt_pipeline_schedule(pp["stages"], 8, "1f1b"),
+        "gpipe_8": dt_pipeline_schedule(pp["stages"], 8, "gpipe"),
+        "bubbles": [{"m": mb, "fraction": dt_bubble_fraction(pp["stages"], mb)} for mb in pp["bubble_microbatches"]],
+    }
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -12060,6 +12279,7 @@ def render(slug, render_template):
         "unet_example": unet_example,
         "ft_example": ft_example,
         "tt_example": tt_example,
+        "dt_example": dt_example,
         "pretraining_example": pretraining_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,

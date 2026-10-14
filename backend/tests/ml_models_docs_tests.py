@@ -4852,3 +4852,74 @@ def test_tt_serving_costs():
     assert s["flat_macs"] == 640_000_000
     assert s["ivf_scanned"] == 78_125
     assert s["rank_all_macs"] // s["rank_candidates_macs"] == 10_000
+
+
+def test_dt_ring_allreduce_sums_every_rank():
+    ring = ml_models_docs.dt_example()["ring"]
+    assert len(ring["steps"]) == 6
+    assert all(row == [28.0, 32.0, 36.0, 40.0] for row in ring["sum"])
+    assert all(row == [7.0, 8.0, 9.0, 10.0] for row in ring["mean"])
+    assert ring["sent_per_rank"] == 6
+    assert ring["naive_root_traffic"] == 24
+    after_rs = ring["steps"][2]["state"]
+    for r, c in enumerate(ring["owned"]):
+        assert after_rs[r][c] == [28.0, 32.0, 36.0, 40.0][c:c + 1]
+
+
+def test_dt_ring_rejects_uneven_chunks():
+    with pytest.raises(ValueError):
+        ml_models_docs.dt_ring_allreduce([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+
+
+def test_dt_zero_memory_matches_the_paper():
+    check = ml_models_docs.dt_example()["zero_check"]
+    assert math.isclose(check["ddp"] / 1e9, 120.0)
+    assert round(check["zero1"] / 1e9, 1) == 31.4
+    assert round(check["zero2"] / 1e9, 1) == 16.6
+    assert round(check["zero3"] / 1e9, 1) == 1.9
+
+
+def test_dt_llama_memory_and_fit():
+    ex = ml_models_docs.dt_example()
+    assert ex["params"] == 6_738_415_616
+    assert ex["memory"]["ddp"] == 16 * 6_738_415_616
+    assert ex["memory"]["zero3"] == 2 * 6_738_415_616
+    assert ex["memory_fits"] == {"ddp": False, "zero1": True, "zero2": True, "zero3": True}
+    assert ex["memory"]["ddp"] > ex["memory"]["zero1"] > ex["memory"]["zero2"] > ex["memory"]["zero3"]
+
+
+def test_dt_communication_volumes():
+    ex = ml_models_docs.dt_example()
+    comm = ex["comm"]
+    assert math.isclose(comm["ddp"], comm["zero2"])
+    assert math.isclose(comm["zero3"], 1.5 * comm["ddp"])
+    assert math.isclose(comm["ddp"], 2 * 7 / 8 * 2 * 6_738_415_616)
+    assert ex["bucket_params"] == 6_553_600
+    assert ex["buckets"] == 1029
+
+
+def test_dt_tensor_parallel_split_is_exact():
+    tp = ml_models_docs.dt_example()["tp"]
+    assert tp["summed"] == tp["full"]
+    assert tp["full"] == [[2.0, -1.5], [4.0, -1.25]]
+    assert tp["row_split_wrong"] != tp["full"]
+    assert tp["row_split_pre"][0][2] < 0
+
+
+def test_dt_tensor_parallel_activation_traffic():
+    ex = ml_models_docs.dt_example()
+    tc = ex["tp_comm"]
+    assert tc["tensor"] == 4096 * 4096 * 2
+    assert tc["reduces"] == 128
+    assert math.isclose(tc["total"], 128 * 2 * 7 / 8 * tc["tensor"])
+
+
+def test_dt_pipeline_schedules():
+    ex = ml_models_docs.dt_example()
+    for key, m in (("gpipe", 4), ("one_f_one_b", 4), ("gpipe_8", 8), ("one_f_one_b_8", 8)):
+        sched = ex[key]
+        assert sched["total"] == 2 * (m + 3)
+        assert math.isclose(sched["bubble"], ml_models_docs.dt_bubble_fraction(4, m))
+    assert ex["gpipe_8"]["peak_in_flight"] == [8, 8, 8, 8]
+    assert ex["one_f_one_b_8"]["peak_in_flight"] == [4, 3, 2, 1]
+    assert [round(b["fraction"], 3) for b in ex["bubbles"]] == [0.75, 0.429, 0.273, 0.158, 0.086]
