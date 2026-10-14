@@ -1,0 +1,526 @@
+{% set ex = mm_example() %}
+{% set cfg = ex.example %}
+{% set clip = ex.clip %}
+{% set zs = ex.zero_shot %}
+{% set vt = ex.vision %}
+{% set llm = cfg.llm %}
+{% set plain = ex.fusion[0] %}
+{% set tiled = ex.fusion[1] %}
+{% set lat = ex.fusion[2] %}
+{% set au = ex.audio %}
+{% macro n(x, d=2) -%}{{ ("%." ~ d ~ "f")|format(x) }}{%- endmacro %}
+{% macro pct(x, d=0) -%}{{ ("%." ~ d ~ "f")|format(x * 100) }}%{%- endmacro %}
+{% macro mib(x) -%}{{ "{:,.0f}".format(x / 1048576) }} MiB{%- endmacro %}
+{% macro big(x) -%}{{ "{:,}".format(x) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Multimodal models</h1>
+  <p class="tagline">
+    Models that read images, text and audio together. This page derives CLIP's contrastive loss and its gradient on a
+    batch of four image–caption pairs, uses the result for zero-shot classification, then builds a vision-language model
+    by attaching an image encoder to a language model and compares the two ways to connect them, token concatenation and
+    gated cross-attention, by their cost, and ends with how audio becomes tokens.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A <a href="/ml-models/vision-transformer">vision transformer</a> trained on ImageNet knows a thousand labels, and a
+  <a href="/ml-models/decoder-only-llm">language model</a> knows text but has never seen a pixel. Many tasks need both:
+  search photos by a sentence, describe an image, answer a question about a chart, transcribe and then reason about a
+  recording. Collecting labels for each of these is expensive, and a fixed label set cannot cover "a corgi wearing
+  sunglasses on a skateboard".
+</p>
+<p>
+  The web, however, is full of images next to text that describes them: alt text, captions, titles. Multimodal models
+  turn that weak, noisy pairing into supervision. The two problems are how to learn a shared space in which an image and
+  its caption land close together, and how to feed what an image encoder sees into a language model so the language
+  model can talk about it.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  For the first, use a <a href="/ml-models/two-tower-models">two-tower model</a>: one encoder per modality, each producing
+  a vector, trained so that matching pairs have a high dot product and mismatched pairs a low one. Every other caption in
+  the batch is a negative for each image. The model never has to generate text; it only has to tell which caption goes
+  with which image, a task that already forces it to recognize objects, scenes, styles and text in the image. Once
+  trained, any label can be turned into a caption ("a photo of a dog") and classified by similarity, with no training
+  examples at all.
+</p>
+<p>
+  For the second, treat the image encoder's output vectors as if they were words. Either project them into the language
+  model's embedding space and put them in the sequence in front of the text, so ordinary self-attention reads them, or keep
+  them separate and add cross-attention layers in which the text queries the image. The first is simple and is what most
+  open models do; the second keeps the text sequence short and the language model untouched.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="contrastive">Contrastive image–text pretraining</h3>
+<p>
+  CLIP (Radford et al., 2021) has an image encoder f, a ResNet or a ViT, and a text encoder g, a Transformer whose output
+  at the end-of-text token summarizes the caption. Each is followed by a linear projection into a shared space of the same
+  width, and both outputs are L2-normalized, so their dot product is a cosine similarity. For a batch of N pairs with unit
+  vectors u<sub>i</sub> = f(image<sub>i</sub>)/‖·‖ and v<sub>j</sub> = g(text<sub>j</sub>)/‖·‖, the logits are
+</p>
+<div class="ml-formula">S<sub>ij</sub> = s · u<sub>i</sub> · v<sub>j</sub>,&nbsp;&nbsp; s = e<sup>t</sup></div>
+<p>
+  with t a learned scalar: s is an inverse temperature, initialized to 1/{{ cfg.init_temperature }} ≈ {{ n(ex.init_scale, 2) }}
+  and clipped at {{ cfg.max_scale|int }}. Each row of S is a classification over N captions with the correct one on the
+  diagonal, and each column a classification over N images. The loss is the average of the two cross-entropies:
+</p>
+<div class="ml-formula">L = ½ · ( (1/N) Σ<sub>i</sub> −log softmax<sub>j</sub>(S<sub>i·</sub>)<sub>i</sub> + (1/N) Σ<sub>j</sub> −log softmax<sub>i</sub>(S<sub>·j</sub>)<sub>j</sub> )</div>
+<p>
+  This is InfoNCE (van den Oord et al., 2018) in both directions. It is a lower bound on the mutual information between
+  the two views that tightens as N grows, which is one reason CLIP trained with 32,768 pairs per batch. Its gradient
+  with respect to each logit follows from the softmax–cross-entropy derivative, p − y, applied to each direction:
+</p>
+<div class="ml-formula">∂L/∂S<sub>ij</sub> = ( P<sup>row</sup><sub>ij</sub> + P<sup>col</sup><sub>ij</sub> − 2·[i = j] ) / (2N)</div>
+<p>
+  where P<sup>row</sup> is the softmax of S along each row and P<sup>col</sup> along each column. Every diagonal entry is
+  pulled up and every off-diagonal entry pushed down in proportion to how much probability it steals, so the gradient is
+  spent on the hardest negatives. A larger s makes the softmax sharper: it concentrates on those hard negatives, and lets
+  the loss approach zero once the diagonal wins; too small an s caps how confident the model can be at all.
+</p>
+<p>
+  Without labels, each row needs the others as negatives, so the loss depends on the whole batch. In data-parallel
+  training each device gathers the embeddings from every other device to build the full N × N matrix. SigLIP (Zhai et
+  al., 2023) replaces the softmax with an independent sigmoid on every pair, a binary "match or not" per entry, which
+  removes the normalization over the batch and so the need to see all of it at once.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 300" role="img" aria-labelledby="mm-clip-title mm-clip-desc">
+    <title id="mm-clip-title">CLIP: two encoders and the batch similarity matrix</title>
+    <desc id="mm-clip-desc">
+      On the left, four images go through the image encoder and a projection to unit vectors u1 to u4; four captions go
+      through the text encoder and a projection to unit vectors v1 to v4. On the right is the four by four matrix of cosine
+      similarities from this page's worked example, images as rows and captions as columns. The diagonal cells, the true
+      pairs, are highlighted: {% for i in range(4) %}{{ n(ex.cosines[i][i], 3) }}{% if not loop.last %}, {% endif %}{% endfor %}.
+      Each row's softmax picks a caption for an image and each column's softmax an image for a caption; the loss averages
+      both cross-entropies.
+    </desc>
+    <rect x="20" y="40" width="110" height="44" rx="6" class="d-box ml-tensor"></rect>
+    <text x="75" y="67" text-anchor="middle">images</text>
+    <rect x="150" y="40" width="160" height="44" rx="6" class="d-box ml-op"></rect>
+    <text x="230" y="60" text-anchor="middle">image encoder</text>
+    <text x="230" y="76" text-anchor="middle" class="d-muted">+ proj, normalize</text>
+    <line x1="130" y1="62" x2="150" y2="62" class="d-line"></line>
+    <rect x="20" y="200" width="110" height="44" rx="6" class="d-box ml-tensor"></rect>
+    <text x="75" y="227" text-anchor="middle">captions</text>
+    <rect x="150" y="200" width="160" height="44" rx="6" class="d-box ml-op"></rect>
+    <text x="230" y="220" text-anchor="middle">text encoder</text>
+    <text x="230" y="236" text-anchor="middle" class="d-muted">+ proj, normalize</text>
+    <line x1="130" y1="222" x2="150" y2="222" class="d-line"></line>
+    <line x1="310" y1="62" x2="372" y2="100" class="d-line"></line>
+    <line x1="310" y1="222" x2="372" y2="190" class="d-line"></line>
+    <text x="345" y="150" text-anchor="middle" class="d-muted">s · u·v</text>
+    {% for i in range(4) %}
+      <text x="{{ 412 + i * 64 + 30 }}" y="28" text-anchor="middle" class="d-muted">v{{ i + 1 }}</text>
+      <text x="400" y="{{ 40 + i * 60 + 35 }}" text-anchor="end" class="d-muted">u{{ i + 1 }}</text>
+      {% for j in range(4) %}
+        <rect x="{{ 412 + j * 64 }}" y="{{ 40 + i * 60 }}" width="60" height="56" rx="4" class="d-box {{ 'ml-op' if i == j else 'ml-dashed' }}"></rect>
+        <text x="{{ 412 + j * 64 + 30 }}" y="{{ 40 + i * 60 + 33 }}" text-anchor="middle"{% if i == j %} style="fill:var(--jj-accent)"{% endif %}>{{ n(ex.cosines[i][j], 2) }}</text>
+      {% endfor %}
+    {% endfor %}
+    <text x="540" y="292" text-anchor="middle" class="d-muted">softmax per row and per column</text>
+  </svg>
+</div>
+
+<h3 id="zero-shot">Zero-shot classification</h3>
+<p>
+  To classify into K labels, embed one caption per label, such as "a photo of a {label}.", and pick the label whose text
+  vector has the highest cosine with the image. The K text vectors act as the weights of a linear classifier that was
+  never trained on the task. Prompt wording matters, since web captions rarely consist of a bare label; CLIP's authors
+  averaged the normalized embeddings of many prompts per class ("a blurry photo of a …", "a drawing of a …") into one
+  vector, a prompt ensemble, which is computed once and costs nothing at inference.
+</p>
+
+<h3 id="vlm">Vision-language models</h3>
+<p>
+  A vision-language model (VLM) generates text conditioned on images. The usual recipe has three parts: a pretrained
+  image encoder, often a CLIP or SigLIP ViT; a <em>connector</em> that maps its outputs into the language model's
+  embedding space; and a pretrained decoder-only language model. LLaVA (Liu et al., 2023) used a single linear layer as the
+  connector, and LLaVA-1.5 a two-layer MLP, on the patch tokens of a CLIP ViT-L/14 at 336 pixels: (336/14)² =
+  {{ vt.per_tile }} tokens per image. Training typically runs in two stages: first only the connector, on image–caption
+  pairs, to align the spaces; then the connector and the language model together on instruction data (see
+  <a href="/ml-models/fine-tuning">fine-tuning</a>).
+</p>
+<p>
+  Higher resolution means more tokens. Splitting a large image into tiles at the encoder's native resolution, plus one
+  downscaled overview, multiplies the count: four tiles and an overview give {{ big(vt.tiled) }} tokens. Connectors
+  shrink it back by pooling neighbouring patches (2 × 2 pooling gives {{ vt.pooled }}) or by a small set of learned
+  queries that cross-attend to all patches and return a fixed number of tokens, like Flamingo's Perceiver Resampler with
+  {{ vt.latents }}.
+</p>
+
+<h3 id="fusion">Concatenation versus cross-attention</h3>
+<p>
+  <strong>Token concatenation</strong> (LLaVA and most open VLMs) places the projected image tokens in the input
+  sequence, so every self-attention layer of the language model attends over them as over any text. Nothing in the
+  language model changes. The cost is sequence length: every layer's attention and every layer's
+  <a href="/ml-models/kv-cache">KV cache</a> includes the image tokens.
+</p>
+<p>
+  <strong>Gated cross-attention</strong> (Flamingo, Alayrac et al., 2022) freezes the language model and inserts new
+  blocks between its layers. In each, the text hidden states are queries and the visual tokens are keys and values, so
+  attention is rectangular, text length by image length, and the text sequence never grows. The block's output is added
+  through a gate:
+</p>
+<div class="ml-formula">y = x + tanh(α) · CrossAttn(x, image) ,&nbsp;&nbsp; then the same for a feed-forward layer</div>
+<p>
+  with α a learned scalar initialized to 0. At the start, tanh(0) = 0 and the model is exactly the frozen language model,
+  so training begins from its full ability and opens the gate gradually. Flamingo also masks the cross-attention so each
+  text token sees only the image that immediately precedes it, which lets it read interleaved sequences of many images
+  and text. Llama 3's vision models use the same adapter idea of cross-attention layers added to a language model.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 300" role="img" aria-labelledby="mm-fuse-title mm-fuse-desc">
+    <title id="mm-fuse-title">Two ways to connect an image encoder to a language model</title>
+    <desc id="mm-fuse-desc">
+      Left, token concatenation: the image encoder's {{ vt.per_tile }} patch tokens pass through a projector and are placed in
+      front of the {{ llm.text_tokens }} text tokens, making a sequence of {{ vt.per_tile + llm.text_tokens }} that every one of
+      the {{ llm.layers }} language-model layers attends over with ordinary self-attention. Right, gated cross-attention: the
+      text sequence stays {{ llm.text_tokens }} tokens long and goes through the frozen language-model layers; every
+      {{ llm.xattn_every }}th layer is preceded by a new cross-attention block whose queries are text states and whose keys
+      and values are the image tokens, added through a tanh gate that starts at zero.
+    </desc>
+    <text x="180" y="24" text-anchor="middle" style="fill:var(--jj-accent)">token concatenation</text>
+    <rect x="20" y="40" width="150" height="40" rx="6" class="d-box ml-tensor"></rect>
+    <text x="95" y="65" text-anchor="middle">{{ vt.per_tile }} image tokens</text>
+    <rect x="190" y="40" width="150" height="40" rx="6" class="d-box ml-tensor"></rect>
+    <text x="265" y="65" text-anchor="middle">{{ llm.text_tokens }} text tokens</text>
+    <rect x="20" y="104" width="320" height="34" rx="6" class="d-box ml-dashed"></rect>
+    <text x="180" y="126" text-anchor="middle">one sequence of {{ vt.per_tile + llm.text_tokens }}</text>
+    <line x1="95" y1="80" x2="120" y2="104" class="d-line"></line>
+    <line x1="265" y1="80" x2="240" y2="104" class="d-line"></line>
+    <rect x="20" y="160" width="320" height="90" rx="6" class="d-box ml-op"></rect>
+    <text x="180" y="190" text-anchor="middle">{{ llm.layers }} language-model layers</text>
+    <text x="180" y="212" text-anchor="middle" class="d-muted">self-attention over all {{ vt.per_tile + llm.text_tokens }}</text>
+    <text x="180" y="234" text-anchor="middle" class="d-muted">image tokens cached in every layer</text>
+    <line x1="180" y1="138" x2="180" y2="160" class="d-line"></line>
+    <text x="540" y="24" text-anchor="middle" style="fill:var(--jj-accent)">gated cross-attention</text>
+    <rect x="390" y="40" width="130" height="40" rx="6" class="d-box ml-tensor"></rect>
+    <text x="455" y="65" text-anchor="middle">image tokens</text>
+    <rect x="550" y="40" width="160" height="40" rx="6" class="d-box ml-tensor"></rect>
+    <text x="630" y="65" text-anchor="middle">{{ llm.text_tokens }} text tokens</text>
+    {% for k in range(3) %}
+      <rect x="550" y="{{ 104 + k * 50 }}" width="160" height="20" rx="4" class="d-box ml-weight"></rect>
+      <text x="630" y="{{ 118 + k * 50 }}" text-anchor="middle" class="d-muted">tanh(α)·xattn</text>
+      <rect x="550" y="{{ 126 + k * 50 }}" width="160" height="22" rx="4" class="d-box ml-op"></rect>
+      <text x="630" y="{{ 141 + k * 50 }}" text-anchor="middle" class="d-muted">{{ llm.xattn_every }} frozen layers</text>
+      <line x1="520" y1="{{ 72 + k * 4 }}" x2="550" y2="{{ 114 + k * 50 }}" class="d-line ml-dashed"></line>
+    {% endfor %}
+    <line x1="630" y1="80" x2="630" y2="104" class="d-line"></line>
+    <text x="455" y="150" text-anchor="middle" class="d-muted">keys and values</text>
+    <text x="455" y="170" text-anchor="middle" class="d-muted">only, never in</text>
+    <text x="455" y="190" text-anchor="middle" class="d-muted">the text sequence</text>
+    <text x="540" y="282" text-anchor="middle" class="d-muted">… {{ plain.xattn_layers }} gated blocks across {{ llm.layers }} layers</text>
+    <text x="180" y="282" text-anchor="middle" class="d-muted">the language model is unchanged</text>
+  </svg>
+</div>
+
+<h3 id="audio">Audio tokens</h3>
+<p>
+  Audio enters the same way, as a sequence of vectors. Whisper (Radford et al., 2022) resamples speech to
+  {{ big(cfg.whisper.sample_rate) }} Hz, computes an 80-channel log-Mel spectrogram with a 10 ms hop over 30-second windows,
+  and runs two convolutions, the second with stride 2, before a Transformer encoder; a decoder cross-attends to it to emit
+  text. Audio-language models attach such an encoder to a language model with a projector, exactly like a VLM.
+</p>
+<p>
+  To <em>generate</em> audio, a model needs discrete output tokens. Neural codecs such as SoundStream and EnCodec (Défossez
+  et al., 2022) encode the waveform into frames and quantize each frame with residual vector quantization: a first
+  codebook picks the nearest code, a second quantizes what is left, and so on. More codebooks give higher fidelity and
+  more tokens per second. A language model trained on those tokens (AudioLM, VALL-E, and speech-native assistants) can
+  continue speech the way a text model continues a sentence, usually predicting the first codebook first and the finer
+  ones from it.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>F.normalize</code></td><td><code>p=2.0</code>, <code>dim=1</code>, <code>eps=1e-12</code></td><td>v / max(‖v‖, ε): unit image and text embeddings, so dot products are cosines</td><td><a href="{{ src('torch/nn/functional.py', 6096, 6130) }}">functional.py</a></td></tr>
+      <tr><td>logits</td><td>[N, N] = s · U Vᵀ</td><td>Row i scores image i against every caption in the batch</td><td>CLIP, §2.3</td></tr>
+      <tr><td><code>F.cross_entropy</code></td><td>input [N, N], target <code>arange(N)</code></td><td>Applied to the logits and to their transpose; the CLIP loss is the mean of the two</td><td><a href="{{ src('torch/nn/functional.py', 3478, 3569) }}">functional.py</a></td></tr>
+      <tr><td><code>logit_scale</code></td><td>scalar t, s = eᵗ</td><td>Learned inverse temperature, initialized to log(1/0.07) and clamped so s ≤ 100</td><td>CLIP</td></tr>
+      <tr><td><code>F.scaled_dot_product_attention</code></td><td>query [B, H, L, E], key/value [B, H, S, E]</td><td>L ≠ S is cross-attention: L text queries, S image keys and values; <code>is_causal=False</code></td><td><a href="{{ src('torch/nn/functional.py', 6367, 6540) }}">functional.py</a></td></tr>
+      <tr><td>reference implementation</td><td>attn_weight [L, S]</td><td>softmax(QKᵀ · scale + bias) V, with the bias built as an L × S matrix</td><td><a href="{{ src('torch/nn/functional.py', 6378, 6403) }}">functional.py</a></td></tr>
+      <tr><td>projector</td><td>[V, d<sub>vision</sub>] → [V, d<sub>model</sub>]</td><td>Linear or two-layer MLP connecting encoder and language model</td><td>LLaVA</td></tr>
+      <tr><td>gate α</td><td>scalar per block, init 0</td><td>tanh(α) scales each new cross-attention and feed-forward output</td><td>Flamingo</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-clip">The CLIP loss on four pairs</h3>
+  <p>
+    Four images and four captions, embedded in three dimensions (real models use 512 to 1,024). After normalization the
+    cosine similarities are the matrix in the first diagram; each image's own caption is its most similar, but image 4
+    also resembles caption 2 ({{ n(ex.cosines[3][1], 3) }}) and image 1 caption 4 ({{ n(ex.cosines[0][3], 3) }}). At the
+    initial scale s = {{ n(ex.init_scale, 2) }}:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Image i</th><th>P(caption 1)</th><th>P(caption 2)</th><th>P(caption 3)</th><th>P(caption 4)</th><th>−log P(own)</th></tr></thead>
+      <tbody>
+        {% for row in clip.row_probs %}{% set i = loop.index0 %}
+          <tr><td>{{ loop.index }}</td>{% for p in row %}<td>{% if loop.index0 == i %}<strong>{{ n(p, 3) }}</strong>{% else %}{{ n(p, 3) }}{% endif %}</td>{% endfor %}<td>{{ n(clip.image_loss[i], 3) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The text direction uses the columns: caption 2's softmax over images gives its own image
+    {{ n(clip.col_probs[1][1], 3) }} and image 4 {{ n(clip.col_probs[1][3], 3) }}, a loss of {{ n(clip.text_loss[1], 3) }}.
+    The four text losses are {% for x in clip.text_loss %}{{ n(x, 3) }}{% if not loop.last %}, {% endif %}{% endfor %}.
+    Averaging all eight, L = {{ n(clip.loss, 4) }}.
+  </p>
+  <p>The gradient ∂L/∂S<sub>ij</sub>, by the formula above:</p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Image i</th><th>Caption 1</th><th>Caption 2</th><th>Caption 3</th><th>Caption 4</th></tr></thead>
+      <tbody>
+        {% for row in clip.grad %}
+          <tr><td>{{ loop.index }}</td>{% for g in row %}<td>{{ "%+.4f"|format(g) }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The diagonal is negative, so gradient descent raises it. The largest push down is on the confusable pair, image 4 with
+    caption 2 ({{ "%+.4f"|format(clip.grad[3][1]) }}), and the easy negatives, around 0.0000, get almost nothing. The whole
+    matrix sums to zero, since each softmax's probabilities sum to one.
+  </p>
+  <p>The effect of the scale on the same similarities:</p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Scale s</th>{% for r in ex.sweep %}<th>{{ n(r.scale, 2) }}</th>{% endfor %}<th>s = 0 (chance)</th></tr></thead>
+      <tbody>
+        <tr><td>Loss L</td>{% for r in ex.sweep %}<td>{{ "%.3g"|format(r.loss) }}</td>{% endfor %}<td>ln 4 = {{ n(ex.chance, 3) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    At s = 1 the logits differ by less than 1 and the loss stays near chance however good the embeddings are; at s = 100 the
+    same embeddings give almost zero loss. Learning s lets the model sharpen as the embeddings improve, and the clamp at 100
+    stops it from shrinking the loss by inflating the scale alone.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-zero-shot">Zero-shot with one prompt and with an ensemble</h3>
+  <p>
+    An image embedding is compared with three classes, each with two prompt embeddings. "Single" uses the first prompt;
+    "ensemble" averages both normalized prompts and normalizes again. Probabilities use s = 100.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Class</th><th>Cosine, single</th><th>P, single</th><th>Cosine, ensemble</th><th>P, ensemble</th></tr></thead>
+      <tbody>
+        {% for c in zs.classes %}
+          <tr><td>{{ cfg.zero_shot.classes[loop.index0] }}</td><td>{{ n(c.single, 3) }}</td><td>{{ n(zs.single[loop.index0], 3) }}</td><td>{{ n(c.ensemble, 3) }}</td><td>{{ n(zs.ensemble[loop.index0], 3) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Both pick "{{ cfg.zero_shot.classes[1] }}". A cosine gap of {{ n(zs.classes[1].single - zs.classes[2].single, 3) }} becomes
+    a logit gap of {{ n(100 * (zs.classes[1].single - zs.classes[2].single), 1) }} at s = 100, so the softmax is nearly one-hot:
+    CLIP's zero-shot probabilities are confident and need <a href="/ml-models/calibration">calibration</a> before they are
+    read as frequencies. The ensemble moves "{{ cfg.zero_shot.classes[2] }}" up from
+    {{ "%.1e"|format(zs.single[2]) }} to {{ "%.1e"|format(zs.ensemble[2]) }}: averaging prompts removes some of
+    the wording each one carries.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-fusion">What fusion costs</h3>
+  <p>
+    A {{ llm.layers }}-layer language model with d<sub>model</sub> = {{ big(llm.d_model) }}, full multi-head attention and
+    16-bit activations, reading {{ llm.text_tokens }} text tokens. Each cached token costs 2 (K and V) × {{ llm.layers }} ×
+    {{ big(llm.d_model) }} × 2 bytes = {{ big(plain.kv_per_token) }} bytes, half a mebibyte. Cross-attention is placed
+    before every {{ llm.xattn_every }}th layer, {{ plain.xattn_layers }} blocks in all. Attention scores counted per
+    forward pass over the whole prompt, ignoring the causal half and the heads:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Image tokens</th><th>Concat: scores</th><th>Concat: image KV</th><th>Cross-attn: scores</th><th>Cross-attn: image KV</th></tr></thead>
+      <tbody>
+        {% for f, label in [(plain, "one 336 px tile"), (tiled, "4 tiles + overview"), (lat, "resampled latents")] %}
+          <tr><td>{{ big(f.image_tokens) }} ({{ label }})</td><td>{{ big(f.concat_scores) }}</td><td>{{ mib(f.concat_kv) }}</td><td>{{ big(f.xattn_scores) }}</td><td>{{ mib(f.xattn_kv) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    With one tile, concatenation computes {{ big(llm.layers) }} × ({{ llm.text_tokens }} + {{ vt.per_tile }})² =
+    {{ big(plain.concat_scores) }} scores, {{ n(plain.concat_scores / plain.xattn_scores, 1) }} times the cross-attention
+    layout's {{ llm.layers }} × {{ llm.text_tokens }}² + {{ plain.xattn_layers }} × {{ llm.text_tokens }} × {{ vt.per_tile }}
+    = {{ big(plain.xattn_scores) }}, and caches the image in all {{ llm.layers }} layers instead of
+    {{ plain.xattn_layers }}: {{ mib(plain.concat_kv) }} against {{ mib(plain.xattn_kv) }}. With tiling the image dwarfs the
+    text. Compressing to {{ vt.latents }} tokens makes concatenation cheap again ({{ big(lat.concat_scores) }} scores), which
+    is why token reduction and concatenation are a common pair. In exchange, cross-attention adds new parameters, close to a
+    full layer's worth per block once its gated feed-forward layer is counted, and since the image is not in the sequence the frozen model cannot attend to
+    individual image tokens with its own heads.
+  </p>
+  <p>The gate at work, with hidden state x = [{{ ex.gates.x|join(', ') }}] and a cross-attention update of [{{ ex.gates['update']|join(', ') }}]:</p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>α</th>{% for r in ex.gates.rows %}<th>{{ r.alpha }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        <tr><td>tanh(α)</td>{% for r in ex.gates.rows %}<td>{{ n(r.gate, 3) }}</td>{% endfor %}</tr>
+        <tr><td>y</td>{% for r in ex.gates.rows %}<td>[{{ n(r.out[0], 3) }}, {{ n(r.out[1], 3) }}]</td>{% endfor %}</tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    At α = 0 the output is x exactly: the frozen language model's behaviour is preserved bit for bit at step zero, and the
+    gate's gradient, (1 − tanh²α) · update, is largest there, so the image starts to flow in at once. tanh keeps the
+    gate below 1, so the new path never overwhelms the residual stream.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-audio">Audio token rates</h3>
+  <p>
+    Whisper: {{ cfg.whisper.seconds }} s × {{ big(cfg.whisper.sample_rate) }} Hz / {{ cfg.whisper.hop }}-sample hop =
+    {{ big(au.mel_frames) }} spectrogram frames, halved by the stride-2 convolution to {{ big(au.encoder_tokens) }} encoder
+    tokens, {{ au.encoder_rate|int }} per second. A codec at {{ big(cfg.codec.sample_rate) }} Hz with a {{ cfg.codec.hop }}-sample
+    frame produces {{ au.codec_rate|int }} frames per second; each codebook of {{ big(cfg.codec.codebook) }} entries carries
+    log₂ {{ cfg.codec.codebook }} = {{ au.bits|int }} bits per frame, so a bitrate fixes the number of codebooks:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Bitrate</th><th>Codebooks</th><th>Tokens per second</th><th>Tokens for {{ cfg.codec.seconds }} s</th></tr></thead>
+      <tbody>
+        {% for r in au.codec %}
+          <tr><td>{{ r.kbps }} kbps</td><td>{{ r.codebooks }}</td><td>{{ big(r.per_second|int) }}</td><td>{{ big(r.tokens|int) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Ten seconds of speech is a few dozen words, about as many text tokens, but {{ big(au.codec[2].tokens|int) }} codec tokens
+    at {{ au.codec[2].kbps }} kbps. That gap is why audio language models predict the coarse first codebook
+    autoregressively and fill in the rest with a cheaper model, or predict all codebooks of a frame at once.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  The CLIP loss in PyTorch. The encoders are any image and text models with pooled outputs; everything that is specific to
+  CLIP is these lines.
+</p>
+<pre><code>import math
+import torch
+import torch.nn.functional as F
+from torch import nn
+
+class ClipHead(nn.Module):
+    def __init__(self, image_dim, text_dim, embed_dim=512):
+        super().__init__()
+        self.image_proj = nn.Linear(image_dim, embed_dim, bias=False)
+        self.text_proj = nn.Linear(text_dim, embed_dim, bias=False)
+        self.logit_scale = nn.Parameter(torch.tensor(math.log(1 / 0.07)))
+
+    def forward(self, image_features, text_features):     # [N, image_dim], [N, text_dim]
+        u = F.normalize(self.image_proj(image_features), dim=-1)
+        v = F.normalize(self.text_proj(text_features), dim=-1)
+        logits = self.logit_scale.exp().clamp(max=100) * u @ v.T    # [N, N]
+        target = torch.arange(len(logits), device=logits.device)
+        return (F.cross_entropy(logits, target) + F.cross_entropy(logits.T, target)) / 2
+
+class GatedCrossAttention(nn.Module):
+    def __init__(self, d_model, heads):
+        super().__init__()
+        self.heads = heads
+        self.norm = nn.LayerNorm(d_model)
+        self.q = nn.Linear(d_model, d_model, bias=False)
+        self.kv = nn.Linear(d_model, 2 * d_model, bias=False)
+        self.out = nn.Linear(d_model, d_model, bias=False)
+        self.alpha = nn.Parameter(torch.zeros(()))
+
+    def forward(self, x, image):                          # [B, L, d], [B, S, d]
+        B, L, d = x.shape
+        q = self.q(self.norm(x)).view(B, L, self.heads, -1).transpose(1, 2)
+        k, v = self.kv(image).view(B, image.shape[1], 2, self.heads, -1).permute(2, 0, 3, 1, 4)
+        y = F.scaled_dot_product_attention(q, k, v)        # [B, H, L, d/H]: L queries over S keys
+        return x + self.alpha.tanh() * self.out(y.transpose(1, 2).reshape(B, L, d))</code></pre>
+<p>
+  The clamp sits on the scale, not on the parameter, so the parameter keeps receiving gradients but the logits cannot exceed
+  100 times a cosine. In data-parallel training, gather <code>u</code> and <code>v</code> from all ranks (with a gather that
+  passes gradients back) before forming the logits, or each device sees only its local negatives. For concatenation, the
+  connector is just <code>nn.Sequential(nn.Linear(d_vision, d_model), nn.GELU(), nn.Linear(d_model, d_model))</code> and
+  its output is spliced into <code>inputs_embeds</code> where the image placeholder tokens were. A full Flamingo block also
+  has a gated feed-forward layer after the cross-attention.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Contrastive vs generative pretraining.</strong> A contrastive model gives embeddings for retrieval and
+    zero-shot classification and is cheap to run per item, but cannot describe an image. Captioning objectives learn
+    more fine-grained detail and generate text, at a higher cost per example. Many models combine both.</li>
+  <li><strong>Softmax vs sigmoid loss.</strong> The softmax over the batch needs large batches and an all-gather;
+    SigLIP's pairwise sigmoid works with smaller batches and less communication but treats each pair independently.</li>
+  <li><strong>Batch size.</strong> More in-batch negatives tighten the InfoNCE bound and give harder negatives, but the
+    logit matrix grows as N² and the gathered embeddings with N.</li>
+  <li><strong>Concatenation vs cross-attention.</strong> Concatenation needs no change to the language model and lets every
+    layer attend to image detail, but image tokens fill the context window and the KV cache. Cross-attention keeps the
+    sequence short and the language model frozen, at the price of new parameters and a less direct interaction.</li>
+  <li><strong>Resolution vs tokens.</strong> Documents, charts and small text need high resolution, which multiplies image
+    tokens; pooling and resamplers save compute but lose detail. Tiling with a low-resolution overview is the usual compromise.</li>
+  <li><strong>Frozen vs trained encoder.</strong> Freezing the image encoder protects its general features and saves memory;
+    unfreezing it late in training improves fine detail at the risk of forgetting.</li>
+  <li><strong>Web data.</strong> Alt text is noisy, biased and sometimes harmful; filtering and deduplication matter as
+    much as model size, and zero-shot classifiers inherit the associations in their captions.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Why does CLIP normalize the embeddings before the dot product?</summary>
+  <p>So similarities are cosines in [−1, 1] and the only way to sharpen the softmax is the learned scale. Without
+    normalization the model could lower the loss by growing vector lengths, and image and text norms would be compared
+    directly, mixing confidence with content.</p>
+</details>
+<details class="ml-quiz">
+  <summary>A batch of 32,768 pairs is split over 256 GPUs without gathering embeddings. How many negatives does each image get?</summary>
+  <p>127, the other captions in its local batch of 128, instead of 32,767. The loss is still valid but much easier, and the
+    gradient sees far fewer hard negatives.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why is Flamingo's gate initialized to zero rather than one?</summary>
+  <p>At zero the network is exactly the pretrained language model, so training starts from its full text ability and the
+    randomly initialized cross-attention can't corrupt it in the first steps. The gate opens as far as the image helps.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Radford, Kim, Hallacy et al. <em>Learning Transferable Visual Models From Natural Language Supervision.</em> ICML 2021.
+    <a href="https://arxiv.org/abs/2103.00020">arXiv:2103.00020</a></li>
+  <li>Alayrac, Donahue, Luc et al. <em>Flamingo: a Visual Language Model for Few-Shot Learning.</em> NeurIPS 2022.
+    <a href="https://arxiv.org/abs/2204.14198">arXiv:2204.14198</a></li>
+  <li>van den Oord, Li and Vinyals. <em>Representation Learning with Contrastive Predictive Coding.</em> 2018.
+    <a href="https://arxiv.org/abs/1807.03748">arXiv:1807.03748</a></li>
+  <li>Zhai, Mustafa, Kolesnikov and Beyer. <em>Sigmoid Loss for Language Image Pre-Training.</em> ICCV 2023.
+    <a href="https://arxiv.org/abs/2303.15343">arXiv:2303.15343</a></li>
+  <li>Liu, Li, Wu and Lee. <em>Visual Instruction Tuning.</em> NeurIPS 2023.
+    <a href="https://arxiv.org/abs/2304.08485">arXiv:2304.08485</a>; and <em>Improved Baselines with Visual Instruction
+    Tuning</em>, <a href="https://arxiv.org/abs/2310.03744">arXiv:2310.03744</a></li>
+  <li>Radford, Kim, Xu et al. <em>Robust Speech Recognition via Large-Scale Weak Supervision.</em> (Whisper) 2022.
+    <a href="https://arxiv.org/abs/2212.04356">arXiv:2212.04356</a></li>
+  <li>Défossez, Copet, Synnaeve and Adi. <em>High Fidelity Neural Audio Compression.</em> (EnCodec) 2022.
+    <a href="https://arxiv.org/abs/2210.13438">arXiv:2210.13438</a></li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/nn/functional.py', 6096, 6130) }}"><code>F.normalize</code></a>,
+    <a href="{{ src('torch/nn/functional.py', 3478, 3569) }}"><code>F.cross_entropy</code></a>,
+    <a href="{{ src('torch/nn/functional.py', 6367, 6540) }}"><code>F.scaled_dot_product_attention</code></a>.</li>
+</ul>
