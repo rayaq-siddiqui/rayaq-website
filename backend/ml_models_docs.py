@@ -1,9 +1,12 @@
 import bisect
+import collections
 import functools
 import hashlib
 import heapq
 import itertools
 import math
+import pickle
+import pickletools
 import random
 import re
 import statistics
@@ -13513,6 +13516,239 @@ def rag_example():
     }
 
 
+CKPT_EXAMPLE = {
+    "data": [(-1.5, -2.1), (-1.0, -0.8), (-0.5, 0.2), (0.0, 1.1), (0.5, 1.9), (1.0, 3.2), (1.5, 3.9), (2.0, 5.1)],
+    "batch_size": 2,
+    "epochs": 3,
+    "seed": 7,
+    "lr": 0.5,
+    "jitter": 0.1,
+    "warmup": 3,
+    "betas": (0.9, 0.999),
+    "eps": 1e-8,
+    "save_at": 6,
+    "params": 7_000_000_000,
+    "save_seconds": 60,
+    "async_seconds": 5,
+    "mtbf_hours": 6,
+    "layers": 16,
+    "rows": 12,
+    "old_world": 4,
+    "new_world": 3,
+}
+
+CKPT_FORGETS = ("optimizer", "scheduler", "rng", "data_position")
+
+
+def ckpt_lr(step, base_lr, warmup, total):
+    if step < warmup:
+        return base_lr * (step + 1) / warmup
+    return base_lr * 0.5 * (1 + math.cos(math.pi * (step - warmup) / (total - warmup)))
+
+
+def ckpt_initial_state(seed):
+    return {
+        "model": {"w": 0.0, "b": 0.0},
+        "optimizer": {"t": 0, "m": [0.0, 0.0], "v": [0.0, 0.0]},
+        "scheduler": {"step": 0},
+        "rng": random.Random(seed).getstate(),
+        "data": {"epoch": 0, "batch": 0},
+    }
+
+
+def ckpt_copy(state):
+    return {
+        "model": dict(state["model"]),
+        "optimizer": {"t": state["optimizer"]["t"], "m": list(state["optimizer"]["m"]), "v": list(state["optimizer"]["v"])},
+        "scheduler": dict(state["scheduler"]),
+        "rng": state["rng"],
+        "data": dict(state["data"]),
+    }
+
+
+def ckpt_epoch_order(n, seed, epoch):
+    order = list(range(n))
+    random.Random(seed + epoch).shuffle(order)
+    return order
+
+
+def ckpt_mse(model, data):
+    return sum((model["w"] * x + model["b"] - y) ** 2 for x, y in data) / len(data)
+
+
+def ckpt_train(state, steps, example=CKPT_EXAMPLE):
+    data, bs = example["data"], example["batch_size"]
+    total = example["epochs"] * len(data) // bs
+    beta1, beta2 = example["betas"]
+    state = ckpt_copy(state)
+    rng = random.Random()
+    rng.setstate(state["rng"])
+    model, opt, sched, pos = state["model"], state["optimizer"], state["scheduler"], state["data"]
+    log = []
+    for _ in range(steps):
+        order = ckpt_epoch_order(len(data), example["seed"], pos["epoch"])
+        picked = order[pos["batch"] * bs:(pos["batch"] + 1) * bs]
+        batch = [(data[i][0] + rng.gauss(0, example["jitter"]), data[i][1]) for i in picked]
+        gw = sum(2 * (model["w"] * x + model["b"] - y) * x for x, y in batch) / len(batch)
+        gb = sum(2 * (model["w"] * x + model["b"] - y) for x, y in batch) / len(batch)
+        lr = ckpt_lr(sched["step"], example["lr"], example["warmup"], total)
+        opt["t"] += 1
+        for i, (name, g) in enumerate((("w", gw), ("b", gb))):
+            opt["m"][i] = beta1 * opt["m"][i] + (1 - beta1) * g
+            opt["v"][i] = beta2 * opt["v"][i] + (1 - beta2) * g * g
+            m_hat = opt["m"][i] / (1 - beta1 ** opt["t"])
+            v_hat = opt["v"][i] / (1 - beta2 ** opt["t"])
+            model[name] -= lr * m_hat / (math.sqrt(v_hat) + example["eps"])
+        sched["step"] += 1
+        log.append({"epoch": pos["epoch"], "batch": picked, "lr": lr, "w": model["w"], "b": model["b"],
+                    "loss": ckpt_mse(model, data)})
+        pos["batch"] += 1
+        if pos["batch"] * bs >= len(data):
+            pos["epoch"] += 1
+            pos["batch"] = 0
+    state["rng"] = rng.getstate()
+    return state, log
+
+
+def ckpt_forget(saved, part, seed):
+    state = ckpt_copy(saved)
+    fresh = ckpt_initial_state(seed)
+    if part == "data_position":
+        state["data"]["batch"] = 0
+    else:
+        state[part] = fresh[part]
+    return state
+
+
+def ckpt_resume_comparison(example=CKPT_EXAMPLE):
+    total = example["epochs"] * len(example["data"]) // example["batch_size"]
+    start = ckpt_initial_state(example["seed"])
+    _, straight = ckpt_train(start, total, example)
+    saved, before = ckpt_train(start, example["save_at"], example)
+    runs = {}
+    for name in ("full",) + CKPT_FORGETS:
+        resumed = saved if name == "full" else ckpt_forget(saved, name, example["seed"])
+        _, after = ckpt_train(resumed, total - example["save_at"], example)
+        log = before + after
+        runs[name] = {
+            "log": log,
+            "w": log[-1]["w"],
+            "b": log[-1]["b"],
+            "loss": log[-1]["loss"],
+            "max_gap": max(max(abs(a["w"] - s["w"]), abs(a["b"] - s["b"])) for a, s in zip(log, straight)),
+            "identical": log == straight,
+            "first_diverged": next((i + 1 for i, (a, s) in enumerate(zip(log, straight)) if a != s), None),
+        }
+    return {"total_steps": total, "straight": straight, "saved": saved, "runs": runs}
+
+
+CKPT_STATE_BYTES = (
+    ("bf16 weights", 2, "the copy the forward pass uses; also the whole inference export"),
+    ("fp32 master weights", 4, "what the optimizer updates under mixed precision"),
+    ("Adam first moment m", 4, "one fp32 value per parameter"),
+    ("Adam second moment v", 4, "one fp32 value per parameter"),
+)
+
+
+def checkpoint_sizes(params, parts=CKPT_STATE_BYTES):
+    rows = [{"name": name, "bytes_per_param": b, "note": note, "gb": params * b / 1e9} for name, b, note in parts]
+    full = sum(r["bytes_per_param"] for r in rows)
+    return {"rows": rows, "bytes_per_param": full, "full_gb": params * full / 1e9,
+            "weights_gb": params * parts[0][1] / 1e9, "ratio": full / parts[0][1]}
+
+
+def young_interval(save_seconds, mtbf_seconds):
+    return math.sqrt(2 * save_seconds * mtbf_seconds)
+
+
+def checkpoint_waste(interval, save_seconds, mtbf_seconds):
+    return save_seconds / interval + interval / (2 * mtbf_seconds)
+
+
+def activation_checkpoint_cost(layers, segments):
+    size = layers // segments
+    last = layers - size * (segments - 1)
+    return {"segments": segments, "segment_size": size, "last_segment": last,
+            "stored_inputs": segments - 1, "peak": segments - 1 + max(size, last),
+            "recomputed": size * (segments - 1)}
+
+
+def even_shards(rows, world):
+    base, extra = divmod(rows, world)
+    bounds, start = [], 0
+    for r in range(world):
+        end = start + base + (1 if r < extra else 0)
+        bounds.append((start, end))
+        start = end
+    return bounds
+
+
+def reshard_plan(rows, old_world, new_world):
+    old = even_shards(rows, old_world)
+    plan = []
+    for rank, (lo, hi) in enumerate(even_shards(rows, new_world)):
+        reads = [{"old_rank": o, "rows": (max(lo, a), min(hi, b)), "offset": max(lo, a) - a}
+                 for o, (a, b) in enumerate(old) if max(lo, a) < min(hi, b)]
+        plan.append({"rank": rank, "rows": (lo, hi), "reads": reads})
+    return {"old": old, "new": plan}
+
+
+class CkptPayload:
+    def __reduce__(self):
+        return (print, ("this ran while unpickling",))
+
+
+def pickle_globals(blob):
+    return [arg.replace(" ", ".") for op, arg, _ in pickletools.genops(blob) if op.name == "GLOBAL"]
+
+
+def weights_only_verdict(blob, allowed):
+    found = pickle_globals(blob)
+    blocked = [g for g in found if g not in allowed]
+    return {"globals": found, "blocked": blocked, "loads": not blocked}
+
+
+CKPT_ALLOWED = ("collections.OrderedDict", "collections.Counter")
+CKPT_PICKLE_PROTOCOL = 2
+
+
+def checkpoint_pickles():
+    tensors = collections.OrderedDict([("w", 2.09), ("b", 1.57)])
+    cases = (
+        ("plain state dict", {"w": 2.09, "b": 1.57}),
+        ("OrderedDict state dict", tensors),
+        ("object with __reduce__", {"w": 2.09, "extra": CkptPayload()}),
+    )
+    out = []
+    for name, obj in cases:
+        blob = pickle.dumps(obj, protocol=CKPT_PICKLE_PROTOCOL, fix_imports=False)
+        out.append({"name": name, "size": len(blob), **weights_only_verdict(blob, CKPT_ALLOWED)})
+    return out
+
+
+def checkpointing_example():
+    ex = CKPT_EXAMPLE
+    resume = ckpt_resume_comparison(ex)
+    mtbf = ex["mtbf_hours"] * 3600
+    intervals = []
+    for save in (ex["save_seconds"], ex["async_seconds"]):
+        best = young_interval(save, mtbf)
+        intervals.append({"save": save, "interval": best, "waste": checkpoint_waste(best, save, mtbf),
+                          "sweep": [{"interval": t, "waste": checkpoint_waste(t, save, mtbf)}
+                                    for t in (300, 900, best, 3600, 7200)]})
+    n = ex["layers"]
+    return {
+        "example": ex,
+        "resume": resume,
+        "sizes": checkpoint_sizes(ex["params"]),
+        "intervals": intervals,
+        "activation": [activation_checkpoint_cost(n, k) for k in (1, 2, 4, 8, 16)],
+        "sqrt_layers": math.sqrt(n),
+        "reshard": reshard_plan(ex["rows"], ex["old_world"], ex["new_world"]),
+        "pickles": checkpoint_pickles(),
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -13567,6 +13803,7 @@ def render(slug, render_template):
         "flow_example": flow_example,
         "po_example": po_example,
         "rag_example": rag_example,
+        "checkpointing_example": checkpointing_example,
         "pretraining_example": pretraining_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,

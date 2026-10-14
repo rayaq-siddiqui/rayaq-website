@@ -5462,3 +5462,114 @@ def test_rag_word_ranges_and_answer_spans_match_the_chunks():
         assert ml_models_docs.rag_words(" ".join(words[span[0]:span[1]])) == ml_models_docs.rag_words(q["answer"])
     assert ex["splits"]["fixed"]["ranges"][-1] == [120, 121]
     assert ml_models_docs.phrase_span("a b c", "d") is None
+
+
+def test_ckpt_full_resume_is_bit_identical_and_each_missing_piece_diverges():
+    result = ml_models_docs.ckpt_resume_comparison()
+    ex = ml_models_docs.CKPT_EXAMPLE
+    assert result["total_steps"] == ex["epochs"] * len(ex["data"]) // ex["batch_size"]
+    assert result["saved"]["scheduler"]["step"] == ex["save_at"]
+    assert result["saved"]["optimizer"]["t"] == ex["save_at"]
+    assert result["saved"]["data"]["batch"] != 0
+    runs = result["runs"]
+    assert runs["full"]["identical"] and runs["full"]["max_gap"] == 0.0
+    assert runs["full"]["log"] == result["straight"]
+    for part in ml_models_docs.CKPT_FORGETS:
+        assert not runs[part]["identical"]
+        assert runs[part]["first_diverged"] == ex["save_at"] + 1
+        assert runs[part]["max_gap"] > 0
+        assert runs[part]["log"][:ex["save_at"]] == result["straight"][:ex["save_at"]]
+
+
+def test_ckpt_training_loop_learns_and_follows_its_schedule():
+    ex = ml_models_docs.CKPT_EXAMPLE
+    total = ex["epochs"] * len(ex["data"]) // ex["batch_size"]
+    _, log = ml_models_docs.ckpt_train(ml_models_docs.ckpt_initial_state(ex["seed"]), total)
+    assert log[-1]["loss"] < log[0]["loss"] / 10
+    assert [round(e["lr"], 12) for e in log[:ex["warmup"]]] == [round(ex["lr"] * (i + 1) / ex["warmup"], 12) for i in range(ex["warmup"])]
+    assert log[ex["warmup"]]["lr"] == pytest.approx(ex["lr"])
+    assert all(a["lr"] >= b["lr"] for a, b in zip(log[ex["warmup"]:], log[ex["warmup"] + 1:]))
+    per_epoch = len(ex["data"]) // ex["batch_size"]
+    for epoch in range(ex["epochs"]):
+        seen = sorted(i for e in log[epoch * per_epoch:(epoch + 1) * per_epoch] for i in e["batch"])
+        assert seen == list(range(len(ex["data"])))
+        assert all(e["epoch"] == epoch for e in log[epoch * per_epoch:(epoch + 1) * per_epoch])
+    assert ml_models_docs.ckpt_epoch_order(8, ex["seed"], 1) == ml_models_docs.ckpt_epoch_order(8, ex["seed"], 1)
+    assert ml_models_docs.ckpt_epoch_order(8, ex["seed"], 0) != ml_models_docs.ckpt_epoch_order(8, ex["seed"], 1)
+
+
+def test_ckpt_forget_drops_only_the_named_piece():
+    ex = ml_models_docs.CKPT_EXAMPLE
+    saved, _ = ml_models_docs.ckpt_train(ml_models_docs.ckpt_initial_state(ex["seed"]), ex["save_at"])
+    fresh = ml_models_docs.ckpt_initial_state(ex["seed"])
+    for part in ("optimizer", "scheduler", "rng"):
+        state = ml_models_docs.ckpt_forget(saved, part, ex["seed"])
+        assert state[part] == fresh[part]
+        assert all(state[k] == saved[k] for k in state if k != part)
+    state = ml_models_docs.ckpt_forget(saved, "data_position", ex["seed"])
+    assert state["data"] == {"epoch": saved["data"]["epoch"], "batch": 0}
+    assert all(state[k] == saved[k] for k in state if k != "data")
+
+
+def test_ckpt_sizes_add_up_per_parameter():
+    sizes = ml_models_docs.checkpoint_sizes(7_000_000_000)
+    assert sizes["bytes_per_param"] == 2 + 4 + 4 + 4
+    assert sizes["full_gb"] == pytest.approx(98.0)
+    assert sizes["weights_gb"] == pytest.approx(14.0)
+    assert sizes["ratio"] == 7
+    assert sum(r["gb"] for r in sizes["rows"]) == pytest.approx(sizes["full_gb"])
+
+
+def test_ckpt_young_interval_minimizes_the_waste_model():
+    save, mtbf = 60, 6 * 3600
+    best = ml_models_docs.young_interval(save, mtbf)
+    assert best == pytest.approx(math.sqrt(2 * 60 * 21600))
+    waste = ml_models_docs.checkpoint_waste(best, save, mtbf)
+    assert save / best == pytest.approx(best / (2 * mtbf))
+    for t in (best * 0.5, best * 0.9, best * 1.1, best * 2):
+        assert ml_models_docs.checkpoint_waste(t, save, mtbf) > waste
+    assert ml_models_docs.checkpoint_waste(900, save, mtbf) == pytest.approx(60 / 900 + 900 / 43200)
+    example = ml_models_docs.checkpointing_example()
+    assert example["intervals"][1]["interval"] < example["intervals"][0]["interval"]
+    assert example["intervals"][1]["waste"] < example["intervals"][0]["waste"]
+
+
+def test_ckpt_activation_checkpointing_matches_checkpoint_sequential_segments():
+    costs = {k: ml_models_docs.activation_checkpoint_cost(16, k) for k in (1, 2, 4, 8, 16)}
+    assert costs[1] == {"segments": 1, "segment_size": 16, "last_segment": 16, "stored_inputs": 0, "peak": 16, "recomputed": 0}
+    assert costs[4]["peak"] == 3 + 4 and costs[4]["recomputed"] == 12
+    assert min(costs.values(), key=lambda c: c["peak"])["segments"] == 4 == math.isqrt(16)
+    assert all(costs[k]["recomputed"] == 16 - 16 // k for k in costs)
+    uneven = ml_models_docs.activation_checkpoint_cost(10, 3)
+    assert uneven["segment_size"] == 3 and uneven["last_segment"] == 4
+    assert uneven["peak"] == 2 + 4 and uneven["recomputed"] == 6
+
+
+def test_ckpt_reshard_plan_covers_every_row_once():
+    plan = ml_models_docs.reshard_plan(12, 4, 3)
+    assert plan["old"] == [(0, 3), (3, 6), (6, 9), (9, 12)]
+    assert [p["rows"] for p in plan["new"]] == [(0, 4), (4, 8), (8, 12)]
+    assert plan["new"][1]["reads"] == [
+        {"old_rank": 1, "rows": (4, 6), "offset": 1},
+        {"old_rank": 2, "rows": (6, 8), "offset": 0},
+    ]
+    for rows, old, new in ((12, 4, 3), (10, 3, 4), (7, 2, 5), (9, 3, 3)):
+        plan = ml_models_docs.reshard_plan(rows, old, new)
+        covered = [r for p in plan["new"] for read in p["reads"] for r in range(*read["rows"])]
+        assert covered == list(range(rows))
+    same = ml_models_docs.reshard_plan(9, 3, 3)
+    assert all(len(p["reads"]) == 1 and p["reads"][0]["old_rank"] == p["rank"] for p in same["new"])
+
+
+def test_ckpt_weights_only_scan_blocks_unlisted_globals_without_loading():
+    cases = {c["name"]: c for c in ml_models_docs.checkpoint_pickles()}
+    assert cases["plain state dict"]["globals"] == [] and cases["plain state dict"]["loads"]
+    assert cases["OrderedDict state dict"]["globals"] == ["collections.OrderedDict"]
+    assert cases["OrderedDict state dict"]["loads"]
+    assert cases["object with __reduce__"]["blocked"] == ["builtins.print"]
+    assert not cases["object with __reduce__"]["loads"]
+    import pickle
+    blob = pickle.dumps(ml_models_docs.CkptPayload(), protocol=2, fix_imports=False)
+    assert ml_models_docs.pickle_globals(blob) == ["builtins.print"]
+    verdict = ml_models_docs.weights_only_verdict(blob, ("builtins.print",))
+    assert verdict["loads"] and verdict["blocked"] == []
