@@ -12555,6 +12555,173 @@ def mm_example():
     }
 
 
+PCA_EXAMPLE = {
+    "points": [[1.0, 1.5], [2.0, 1.8], [3.0, 3.4], [4.0, 3.6], [5.0, 5.3], [2.5, 3.0], [3.5, 2.6], [4.5, 4.9]],
+    "query": [3.0, 2.0],
+    "power_start": [1.0, 0.0],
+    "power_steps": 5,
+    "fruit": {
+        "features": ["weight (g)", "sugar fraction"],
+        "rows": [[120.0, 0.10], [150.0, 0.12], [180.0, 0.11], [140.0, 0.14], [200.0, 0.13], [160.0, 0.09]],
+    },
+    "survey": {"seed": 11, "rows": 30, "noise": 0.25, "threshold": 0.9,
+               "loadings": [[1.0, 0.0], [0.9, 0.2], [0.8, -0.1], [0.1, 1.0], [-0.2, 0.9], [0.5, 0.5]]},
+    "arc": {"count": 13, "radius": 2.0, "start_degrees": -45.0, "end_degrees": 225.0, "close": 0.05},
+    "kernel_distances": [0.0, 0.5, 1.0, 2.0, 3.0, 5.0],
+}
+
+
+def pca_fit(rows):
+    n = len(rows)
+    mean = [_mean(column) for column in zip(*rows)]
+    centered = [[x - m for x, m in zip(row, mean)] for row in rows]
+    factors = svd(centered)
+    singular = factors["S"]
+    variance = [s * s / (n - 1) for s in singular]
+    total = sum(variance)
+    ratio = [v / total for v in variance]
+    cumulative, running = [], 0.0
+    for r in ratio:
+        running += r
+        cumulative.append(running)
+    scores = [[u * s for u, s in zip(row, singular)] for row in factors["U"]]
+    return {
+        "mean": mean,
+        "centered": centered,
+        "components": factors["Vh"],
+        "singular_values": singular,
+        "explained_variance": variance,
+        "ratio": ratio,
+        "cumulative": cumulative,
+        "scores": scores,
+        "total_variance": total,
+    }
+
+
+def pca_transform(model, x, k=None, whiten=False):
+    k = len(model["components"]) if k is None else k
+    centered = [a - m for a, m in zip(x, model["mean"])]
+    out = [dot_product(centered, model["components"][j]) for j in range(k)]
+    if whiten:
+        out = [z / math.sqrt(v) for z, v in zip(out, model["explained_variance"])]
+    return out
+
+
+def pca_inverse(model, z):
+    out = list(model["mean"])
+    for value, component in zip(z, model["components"]):
+        out = [o + value * c for o, c in zip(out, component)]
+    return out
+
+
+def pca_reconstruction_error(rows, model, k):
+    total = 0.0
+    for row in rows:
+        back = pca_inverse(model, pca_transform(model, row, k))
+        total += sum((a - b) ** 2 for a, b in zip(row, back))
+    return total
+
+
+def pca_n_components_for(cumulative, threshold):
+    return sum(1 for c in cumulative if c <= threshold) + 1
+
+
+def pca_noise_variance(variance, k):
+    dropped = variance[k:]
+    return sum(dropped) / len(dropped) if dropped else 0.0
+
+
+def sample_covariance(rows):
+    n = len(rows)
+    mean = [_mean(column) for column in zip(*rows)]
+    centered = [[x - m for x, m in zip(row, mean)] for row in rows]
+    d = len(mean)
+    return [[sum(r[i] * r[j] for r in centered) / (n - 1) for j in range(d)] for i in range(d)]
+
+
+def pca_survey_rows(settings):
+    rng = random.Random(settings["seed"])
+    rows = []
+    for _ in range(settings["rows"]):
+        factors = [rng.gauss(0, 1), rng.gauss(0, 1)]
+        rows.append([round(dot_product(loading, factors) + rng.gauss(0, settings["noise"]), 2)
+                     for loading in settings["loadings"]])
+    return rows
+
+
+def pca_arc(settings):
+    count, radius = settings["count"], settings["radius"]
+    start, end = math.radians(settings["start_degrees"]), math.radians(settings["end_degrees"])
+    angles = [start + (end - start) * i / (count - 1) for i in range(count)]
+    points = [[radius * math.cos(a), radius * math.sin(a)] for a in angles]
+    model = pca_fit(points)
+    coords = [s[0] for s in model["scores"]]
+    best = None
+    for i in range(count):
+        for j in range(i + 1, count):
+            if abs(coords[i] - coords[j]) <= settings["close"]:
+                along = radius * abs(angles[j] - angles[i])
+                if best is None or along > best["along"]:
+                    best = {"i": i, "j": j, "along": along, "gap": abs(coords[i] - coords[j]),
+                            "straight": math.dist(points[i], points[j])}
+    return {"points": points, "angles": [math.degrees(a) for a in angles], "model": model,
+            "coords": coords, "fold": best}
+
+
+def tsne_kernels(distances):
+    return [{"d": d, "gaussian": math.exp(-d * d / 2), "student": 1 / (1 + d * d),
+             "ratio": (1 / (1 + d * d)) / math.exp(-d * d / 2)} for d in distances]
+
+
+def pca_example():
+    e = PCA_EXAMPLE
+    model = pca_fit(e["points"])
+    n = len(e["points"])
+    cov = sample_covariance(e["points"])
+    eig = jacobi_eigh(cov)
+    whitened = [pca_transform(model, p, whiten=True) for p in e["points"]]
+    one = [pca_inverse(model, pca_transform(model, p, 1)) for p in e["points"]]
+    query_scores = pca_transform(model, e["query"])
+    fruit = e["fruit"]["rows"]
+    raw = pca_fit(fruit)
+    means = [_mean(c) for c in zip(*fruit)]
+    stds = [math.sqrt(sum((x - m) ** 2 for x in c) / len(c)) for c, m in zip(zip(*fruit), means)]
+    scaled_rows = [[(x - m) / s for x, m, s in zip(row, means, stds)] for row in fruit]
+    scaled = pca_fit(scaled_rows)
+    survey_rows = pca_survey_rows(e["survey"])
+    survey = pca_fit(survey_rows)
+    survey_eig = jacobi_eigh(sample_covariance(survey_rows))
+    keep = pca_n_components_for(survey["cumulative"], e["survey"]["threshold"])
+    errors = [{"k": k, "error": pca_reconstruction_error(survey_rows, survey, k),
+               "dropped": sum(s * s for s in survey["singular_values"][k:]),
+               "noise_variance": pca_noise_variance(survey["explained_variance"], k)}
+              for k in range(len(survey["components"]) + 1)]
+    return {
+        "example": e,
+        "model": model,
+        "n": n,
+        "cov": cov,
+        "eigenvalues": list(reversed(eig["values"])),
+        "power": power_iteration(cov, e["power_start"], e["power_steps"]),
+        "whitened": whitened,
+        "whitened_cov": sample_covariance(whitened),
+        "one_component": one,
+        "one_error": pca_reconstruction_error(e["points"], model, 1),
+        "query_scores": query_scores,
+        "query_back": pca_inverse(model, query_scores[:1]),
+        "fruit_raw": raw,
+        "fruit_scaled": scaled,
+        "fruit_stds": stds,
+        "survey_rows": survey_rows,
+        "survey": survey,
+        "survey_eigenvalues": list(reversed(survey_eig["values"])),
+        "survey_keep": keep,
+        "survey_errors": errors,
+        "arc": pca_arc(e["arc"]),
+        "kernels": tsne_kernels(e["kernel_distances"]),
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -12604,6 +12771,7 @@ def render(slug, render_template):
         "dt_example": dt_example,
         "md_example": md_example,
         "mm_example": mm_example,
+        "pca_example": pca_example,
         "pretraining_example": pretraining_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,

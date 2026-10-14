@@ -5051,3 +5051,65 @@ def test_mm_gate_starts_closed_and_audio_token_rates():
     assert audio["codec_rate"] == 75 and audio["bits"] == 10
     assert [r["codebooks"] for r in audio["codec"]] == [2, 4, 8, 16, 32]
     assert all(r["per_second"] * audio["bits"] == r["kbps"] * 1000 for r in audio["codec"])
+
+
+def test_pca_components_are_covariance_eigenvectors_and_variance_is_s_squared():
+    ex = ml_models_docs.pca_example()
+    model = ex["model"]
+    assert model["explained_variance"] == pytest.approx(ex["eigenvalues"])
+    assert model["explained_variance"] == pytest.approx([s * s / (ex["n"] - 1) for s in model["singular_values"]])
+    assert sum(model["ratio"]) == pytest.approx(1.0)
+    assert model["total_variance"] == pytest.approx(ex["cov"][0][0] + ex["cov"][1][1])
+    for value, component in zip(model["explained_variance"], model["components"]):
+        image = [ml_models_docs.dot_product(row, component) for row in ex["cov"]]
+        assert image == pytest.approx([value * c for c in component])
+        assert max(component, key=abs) > 0
+    assert ml_models_docs.dot_product(*model["components"]) == pytest.approx(0, abs=1e-12)
+    assert ex["power"][-1]["vector"] == pytest.approx(model["components"][0], abs=1e-5)
+    assert ex["power"][-1]["value"] == pytest.approx(model["explained_variance"][0])
+
+
+def test_pca_scores_whitening_and_reconstruction():
+    ex = ml_models_docs.pca_example()
+    model = ex["model"]
+    for point, score in zip(ex["example"]["points"], model["scores"]):
+        assert ml_models_docs.pca_transform(model, point) == pytest.approx(score)
+        assert ml_models_docs.pca_inverse(model, score) == pytest.approx(point)
+    assert ex["whitened_cov"] == [pytest.approx(row, abs=1e-12) for row in ([1, 0], [0, 1])]
+    assert ex["one_error"] == pytest.approx(model["singular_values"][1] ** 2)
+    assert ex["query_scores"] == pytest.approx([-1.029366, 0.754631], abs=1e-6)
+    assert ex["query_back"] == pytest.approx([2.463542, 2.530736], abs=1e-6)
+
+
+def test_pca_scale_dominates_until_features_are_standardized():
+    ex = ml_models_docs.pca_example()
+    assert ex["fruit_raw"]["ratio"][0] > 0.99999
+    assert abs(ex["fruit_raw"]["components"][0][0]) > 0.9999
+    assert ex["fruit_scaled"]["ratio"][0] == pytest.approx(0.602874, abs=1e-6)
+    assert [abs(c) for c in ex["fruit_scaled"]["components"][0]] == pytest.approx([2 ** -0.5] * 2)
+
+
+def test_pca_survey_keeps_two_components_and_errors_are_dropped_variance():
+    ex = ml_models_docs.pca_example()
+    survey = ex["survey"]
+    assert len(ex["survey_rows"]) == 30 and len(ex["survey_rows"][0]) == 6
+    assert survey["explained_variance"] == pytest.approx(ex["survey_eigenvalues"])
+    assert ex["survey_keep"] == 2
+    assert survey["cumulative"][0] < 0.9 < survey["cumulative"][1]
+    assert ml_models_docs.pca_n_components_for([0.5, 0.9, 1.0], 0.9) == 3
+    for row in ex["survey_errors"]:
+        assert row["error"] == pytest.approx(row["dropped"], abs=1e-9)
+    errors = [row["error"] for row in ex["survey_errors"]]
+    assert errors == sorted(errors, reverse=True)
+    assert ex["survey_errors"][2]["noise_variance"] == pytest.approx(0.072292, abs=1e-6)
+
+
+def test_pca_folds_an_arc_and_t_kernel_has_heavier_tails():
+    ex = ml_models_docs.pca_example()
+    fold = ex["arc"]["fold"]
+    assert fold["gap"] == pytest.approx(0, abs=1e-9)
+    assert fold["along"] == pytest.approx(math.pi)
+    rows = ex["kernels"]
+    assert rows[0]["gaussian"] == rows[0]["student"] == 1
+    assert all(a["student"] >= b["student"] for a, b in zip(rows, rows[1:]))
+    assert rows[-1]["ratio"] > 1000
