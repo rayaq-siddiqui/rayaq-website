@@ -239,6 +239,9 @@ Gaps:
 |---|---|
 | `8236077` `ml-models: add tested pca helpers` | PCA fit/transform/inverse via the SVD, whitening, the float n_components rule, noise variance, a seeded two-factor survey, an arc PCA folds, t-SNE kernel tails |
 | `ab63d2b` `ml-models: add the pca page` | The page, `ready`, queue ✓; PCA mentions in `clustering`, `preprocessing` and `linear-algebra-toolkit` now link to it |
+| `848a559` `docs: record the pca page in ml-models progress` | This section |
+| `c1615bc` `ml-models: add tested mixture-of-experts helpers` | Top-k routing (renormalized and raw gates), the Switch balancing loss, router z-loss, capacity with dropped tokens, one token's mixed output, Mixtral 8x7B total and active counts |
+| `085bf0c` `ml-models: add the mixture-of-experts page` | The page, `ready`, queue ✓; the index map box now links to it |
 
 Findings worth keeping:
 
@@ -248,12 +251,24 @@ Findings worth keeping:
   solvers) and `noise_variance_` 0.0722918 all agree to about 1e-15.
 - The float `n_components` rule is `searchsorted(cumsum, t, side="right") + 1`: the smallest k
   whose cumulative ratio is strictly above t.
+- Mixtral 8x7B's config (d 4096, 32 layers, 32/8 heads of 128, d_ff 14336, 8 experts, top-2,
+  vocab 32000) with untied embeddings and no biases gives 46.70B total and 12.88B active,
+  matching the paper's 47B / 13B; the helper test pins both.
+- The page's PyTorch MoE layer was checked line for line against the stdlib helpers with a NumPy
+  mirror (outputs, balancing loss, z-loss, capacity drops all agree).
 
 Gaps:
 
 - UMAP is in no pin; its description (and the reference implementation's n_neighbors = 15
   default) is from the paper and memory. arxiv.org is still unreachable, so the Halko, UMAP,
   t-SNE, Minka and Tipping–Bishop references were cited from memory.
+- The MoE layer snippet was not run under real PyTorch: download.pytorch.org is blocked by the
+  proxy and the PyPI wheel did not finish downloading in time. Its arithmetic was verified with
+  NumPy; the torch API calls (`topk`, `nonzero(as_tuple=True)`, `index_add_`, indexing with
+  `None`) are standard but unexecuted here.
+- Switch, GShard, ST-MoE, Mixtral, MegaBlocks, DeepSeekMoE and DeepSeek-V3 claims (α = 0.01,
+  z-loss coefficient 1e-3, 671B/37B, Mixtral's routing analysis) are from the papers as
+  remembered; arxiv.org was not reachable to re-read them.
 
 ## Queue
 
