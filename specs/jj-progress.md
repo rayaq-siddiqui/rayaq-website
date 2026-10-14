@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-13 (fifty-seventh run): bumped the pin `86b7e2e..1776665` (0.46.0). **The
+**Last updated:** 2026-10-14 (fifty-eighth run): bumped the pin `1776665..9031d0a` (0.46.0). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@1776665985c4b04f098dcfd31283315ca8a03758` (committed 2026-10-13, version
-0.46.0), analyzed 2026-10-13. Held in `jj_docs.UPSTREAM`. Previous pin: `86b7e2e`.
+`jj-vcs/jj@9031d0a1669a262af10f95497a458f0084b28fbb` (committed 2026-10-14, version
+0.46.0), analyzed 2026-10-14. Held in `jj_docs.UPSTREAM`. Previous pin: `1776665`.
 
 ## §10 acceptance criteria
 
@@ -31,43 +31,34 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to fifty-seventh runs: pin bumped).
+      run: pin bumped; fiftieth to fifty-eighth runs: pin bumped).
 
-## Fifty-seventh run (2026-10-13)
+## Fifty-eighth run (2026-10-14)
 
-- `970fe53` maintenance `86b7e2e..1776665` (8 commits). `git-push`: with `git.sign-on-push`, the
-  signatures are committed first as a `sign commits before push` operation, so they survive a failed
-  push and `jj undo` of the push. `MergedTreeBuilder` has `set_or_remove`/`set_or_remove_merge`, which
-  returns `ConflictArityMismatchError` instead of padding (`trees`, `file-chmod`, `file-delete`,
-  `file-untrack`); `Merge::pad_to` dropped from `conflicts`. Copy sources resolve asynchronously
-  (`trees`). gix errors unified (ranges only). Registry: two source lines moved. Protos unchanged.
-- 24 files in one commit (mechanical remap). Link check: 121 pages, 5,502 links, 0 bad. 0px overflow
-  at 390px.
+- `ca92ab5` maintenance `1776665..9031d0a` (12 commits). The concurrent diff walk is now the only one,
+  built on the new `core/src/tree_walk.rs` (`OrderedTreeWalk`, `TreeWalkQueue`, `PrioritizedFutures`);
+  `trees` §5 rewritten, `TreeDiffIterator` gone. Templates: `contained_in()` takes a `Stringify` and a
+  top-level `revset()` function exists; no page covers the template language, so ranges only.
+  Registry and protos unchanged. Link check: 121 pages, 5,505 links, 0 bad. 0px overflow at 390px.
 
-## Fifty-sixth run (2026-10-12)
+## Fifty-sixth and fifty-seventh runs (2026-10-12 to 2026-10-13)
 
-- `ac97ee5` maintenance `0558176..86b7e2e` (18 commits). Eleven modules (`commit`, `index`, `store`,
-  `merged_tree`, `tree`, `revset_backend` and others) moved from `lib/src` to `core/src`: links and
-  source lists follow. `merge_commit_trees` now lives in `commit.rs`; `show` names
-  `merge_commit_trees_no_resolve`. `git-fetch`: `--refmap=`, and dropped refspecs' refs are deleted
-  through gix (new `Failed to prune stale refs` row). `revsets`: the old `:` operator left the grammar.
-  Registry and protos unchanged.
-- Link check: 121 pages, 5,498 pinned links, 0 bad. 0px overflow at 390px on every page.
+- `ac97ee5` `0558176..86b7e2e`: eleven modules moved from `lib/src` to `core/src`; `git-fetch`
+  `--refmap=` and stale-ref pruning; the old `:` revset operator left the grammar.
+- `970fe53` `86b7e2e..1776665`: `git.sign-on-push` signs as its own operation; `MergedTreeBuilder`
+  `set_or_remove` returns `ConflictArityMismatchError`; copy sources resolve asynchronously.
 
 ## Fifty-third to fifty-fifth runs (2026-10-09 to 2026-10-11)
 
 - `c3d8c40` `26bcd69..da1d234` (ranges only). `b4bc7c5` `da1d234..889e5a6` (refactor wave, `git fetch`
   output; about 570 ranges). `937e560` `889e5a6..0558176`: `resolve` `:editor`, tree merges.
 
-## Fifty-first and fifty-second runs (2026-10-08)
+## Fiftieth to fifty-second runs (2026-10-06 to 2026-10-08)
 
 - `d7ebdbf` maintenance `320f7e6..3935c0f` (release 0.46.0): revset/fileset parsers and grammars moved to
   the new `jj-dsl` crate (`dsl/src/`); `revsets` says so; `git init` help remapped. Held a day by a
   permission denial until the owner allowed pushes to `main`.
 - `7eafa56` pin-only `3935c0f..26bcd69` (unused `pest` deps dropped from `lib/Cargo.toml`).
-
-## Fiftieth run (2026-10-06)
-
 - `58584d3` maintenance `4df5265..320f7e6` (17 commits, 49 pages re-pinned). New pages: `39e7fb0`
   `file delete`, `8e737cf` `file edit`, and the Tier C pages (`437a375` through `901d340`).
 
