@@ -12722,6 +12722,119 @@ def pca_example():
     }
 
 
+MOE_EXAMPLE = {
+    "tokens": [
+        [1.0, 0.2, -0.5, 0.3], [0.8, 0.5, 0.1, -0.2], [-0.3, 1.1, 0.4, 0.0], [0.9, -0.1, -0.2, 0.6],
+        [0.1, 0.3, 1.2, -0.4], [1.1, 0.4, -0.3, 0.1], [-0.6, 0.2, 0.3, 1.0], [0.7, 0.9, 0.0, 0.2],
+    ],
+    "words": ["The", "cat", "sat", "on", "a", "warm", "red", "mat"],
+    "router": [[1.2, 0.3, -0.4, 0.5], [-0.2, 1.0, 0.3, -0.1], [0.1, -0.3, 1.1, 0.2], [-0.4, 0.2, 0.0, 1.0]],
+    "k": 2,
+    "capacity_factors": [1.0, 1.25, 1.5, 2.0],
+    "expert_seed": 7,
+    "aux_alpha": 0.01,
+    "mixtral": {"layers": 32, "d_model": 4096, "d_ff": 14336, "heads": 32, "kv_heads": 8, "head_dim": 128,
+                "vocab": 32000, "experts": 8, "top_k": 2},
+}
+
+
+def moe_route(tokens, router, k, renormalize=True):
+    rows = []
+    for x in tokens:
+        logits = [dot_product(w, x) for w in router]
+        probs = softmax_probs(logits)
+        chosen = sorted(range(len(logits)), key=lambda e: (-logits[e], e))[:k]
+        if renormalize:
+            gates = softmax_probs([logits[e] for e in chosen])
+        else:
+            gates = [probs[e] for e in chosen]
+        rows.append({"logits": logits, "probs": probs, "experts": chosen, "gates": gates})
+    return rows
+
+
+def moe_load_balance(routes, num_experts):
+    tokens = len(routes)
+    fraction = [sum(1 for r in routes if r["experts"][0] == e) / tokens for e in range(num_experts)]
+    mean_prob = [sum(r["probs"][e] for r in routes) / tokens for e in range(num_experts)]
+    loss = num_experts * sum(f * p for f, p in zip(fraction, mean_prob))
+    return {"fraction": fraction, "mean_prob": mean_prob, "loss": loss}
+
+
+def moe_z_loss(routes):
+    return sum(math.log(sum(math.exp(v) for v in r["logits"])) ** 2 for r in routes) / len(routes)
+
+
+def moe_capacity(first_choices, num_experts, factor):
+    capacity = int(len(first_choices) / num_experts * factor)
+    load = [0] * num_experts
+    kept, dropped = [], []
+    for position, expert in enumerate(first_choices):
+        if load[expert] < capacity:
+            load[expert] += 1
+            kept.append(position)
+        else:
+            dropped.append(position)
+    return {"factor": factor, "capacity": capacity, "load": load, "kept": kept, "dropped": dropped,
+            "slots": capacity * num_experts}
+
+
+def moe_experts(seed, count, width):
+    rng = random.Random(seed)
+    return [[[round(rng.gauss(0.0, 0.6), 1) for _ in range(width)] for _ in range(width)] for _ in range(count)]
+
+
+def moe_layer_output(x, route, experts):
+    outputs = {e: relu([dot_product(row, x) for row in experts[e]]) for e in route["experts"]}
+    combined = [sum(g * outputs[e][i] for e, g in zip(route["experts"], route["gates"])) for i in range(len(x))]
+    return {"outputs": outputs, "combined": combined}
+
+
+def moe_parameter_counts(config):
+    d, ff, layers = config["d_model"], config["d_ff"], config["layers"]
+    attention = d * config["heads"] * config["head_dim"] * 2 + d * config["kv_heads"] * config["head_dim"] * 2
+    expert = 3 * d * ff
+    router = d * config["experts"]
+    norms = 2 * d
+    embeddings = 2 * config["vocab"] * d + d
+    total = layers * (attention + config["experts"] * expert + router + norms) + embeddings
+    active = layers * (attention + config["top_k"] * expert + router + norms) + embeddings
+    return {"attention": attention, "expert": expert, "router": router, "norms": norms, "embeddings": embeddings,
+            "total": total, "active": active, "expert_share": layers * config["experts"] * expert / total}
+
+
+def moe_example():
+    ex = MOE_EXAMPLE
+    num_experts = len(ex["router"])
+    top1 = moe_route(ex["tokens"], ex["router"], 1, renormalize=False)
+    top2 = moe_route(ex["tokens"], ex["router"], ex["k"])
+    first = [r["experts"][0] for r in top1]
+    balance = moe_load_balance(top1, num_experts)
+    uniform = [{"experts": [t % num_experts], "probs": [1.0 / num_experts] * num_experts} for t in range(len(top1))]
+    collapsed = [{"experts": [0], "probs": [1.0] + [0.0] * (num_experts - 1)} for _ in top1]
+    experts = moe_experts(ex["expert_seed"], num_experts, len(ex["tokens"][0]))
+    sample = 1
+    top2_raw = moe_route(ex["tokens"], ex["router"], ex["k"], renormalize=False)
+    return {
+        "example": ex,
+        "num_experts": num_experts,
+        "top1": top1,
+        "top2": top2,
+        "top2_raw": top2_raw,
+        "z_loss": moe_z_loss(top1),
+        "first": first,
+        "counts": [first.count(e) for e in range(num_experts)],
+        "balance": balance,
+        "balance_uniform": moe_load_balance(uniform, num_experts)["loss"],
+        "balance_collapsed": moe_load_balance(collapsed, num_experts)["loss"],
+        "capacity": [moe_capacity(first, num_experts, f) for f in ex["capacity_factors"]],
+        "experts": experts,
+        "sample": sample,
+        "sample_top2": moe_layer_output(ex["tokens"][sample], top2[sample], experts),
+        "sample_top1": moe_layer_output(ex["tokens"][sample], top1[sample], experts),
+        "mixtral": moe_parameter_counts(ex["mixtral"]),
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -12772,6 +12885,7 @@ def render(slug, render_template):
         "md_example": md_example,
         "mm_example": mm_example,
         "pca_example": pca_example,
+        "moe_example": moe_example,
         "pretraining_example": pretraining_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,

@@ -5113,3 +5113,59 @@ def test_pca_folds_an_arc_and_t_kernel_has_heavier_tails():
     assert rows[0]["gaussian"] == rows[0]["student"] == 1
     assert all(a["student"] >= b["student"] for a, b in zip(rows, rows[1:]))
     assert rows[-1]["ratio"] > 1000
+
+
+def test_moe_top_k_gates_renormalize_over_the_chosen_experts():
+    ex = ml_models_docs.moe_example()
+    for full, raw in zip(ex["top2"], ex["top2_raw"]):
+        assert sum(full["gates"]) == pytest.approx(1)
+        assert full["experts"] == raw["experts"]
+        assert full["experts"][0] == max(range(4), key=lambda e: full["logits"][e])
+        picked = [full["probs"][e] for e in full["experts"]]
+        assert full["gates"] == pytest.approx([p / sum(picked) for p in picked])
+        assert raw["gates"] == pytest.approx(picked)
+    assert ex["top2"][0]["experts"] == [0, 3]
+    assert ex["top2"][0]["gates"][0] == pytest.approx(0.842, abs=1e-3)
+    assert [r["experts"][0] for r in ex["top1"]] == ex["first"]
+    assert sum(r["gates"][0] for r in ex["top1"]) < len(ex["top1"])
+
+
+def test_moe_load_balance_loss_is_one_when_uniform_and_e_when_collapsed():
+    ex = ml_models_docs.moe_example()
+    assert ex["balance_uniform"] == pytest.approx(1)
+    assert ex["balance_collapsed"] == pytest.approx(ex["num_experts"])
+    assert ex["counts"] == [5, 1, 1, 1]
+    assert sum(ex["balance"]["fraction"]) == pytest.approx(1)
+    assert sum(ex["balance"]["mean_prob"]) == pytest.approx(1)
+    assert ex["balance"]["loss"] == pytest.approx(1.288, abs=1e-3)
+    assert ex["z_loss"] > 0
+
+
+def test_moe_capacity_drops_late_tokens_on_the_busy_expert():
+    ex = ml_models_docs.moe_example()
+    rows = {row["factor"]: row for row in ex["capacity"]}
+    assert rows[1.0]["capacity"] == rows[1.25]["capacity"] == 2
+    assert rows[1.0]["dropped"] == [3, 5, 7]
+    assert rows[2.0]["dropped"] == [7]
+    for row in ex["capacity"]:
+        assert sorted(row["kept"] + row["dropped"]) == list(range(8))
+        assert max(row["load"]) <= row["capacity"]
+        assert all(ex["first"][t] == 0 for t in row["dropped"])
+    assert ml_models_docs.moe_capacity([0, 1, 2, 3], 4, 1.0)["dropped"] == []
+
+
+def test_moe_output_mixes_expert_outputs_by_gate():
+    ex = ml_models_docs.moe_example()
+    route = ex["top2"][ex["sample"]]
+    out = ex["sample_top2"]
+    for i, value in enumerate(out["combined"]):
+        assert value == pytest.approx(sum(g * out["outputs"][e][i] for e, g in zip(route["experts"], route["gates"])))
+    assert ex["sample_top1"]["combined"] == pytest.approx([ex["top1"][ex["sample"]]["gates"][0] * v for v in ex["sample_top1"]["outputs"][0]])
+
+
+def test_moe_mixtral_parameter_counts_match_the_paper():
+    counts = ml_models_docs.moe_example()["mixtral"]
+    assert counts["total"] / 1e9 == pytest.approx(46.7, abs=0.05)
+    assert counts["active"] / 1e9 == pytest.approx(12.9, abs=0.05)
+    assert counts["expert"] == 3 * 4096 * 14336
+    assert 0.96 < counts["expert_share"] < 0.97
