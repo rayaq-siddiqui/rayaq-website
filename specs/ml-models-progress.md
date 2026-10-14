@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-14 (forty-first run). Spec v2 widens the section from model
+**Last updated:** 2026-10-14 (forty-second run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-87, the last being `flow-matching`.
-The next page is `preference-optimization` (queue item 88).
+fixed page format. Ready pages: queue items 1-88, the last being `preference-optimization`.
+The next page is `retrieval-augmented-generation` (queue item 89).
 
 ## Pins
 
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (87 of 93 ready, all
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (88 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -192,8 +192,7 @@ Open gaps from these runs:
   remark was confirmed only through secondary quotes.
 - The end lines of the HistGradientBoosting regressor `__init__`, `_incremental_fit_estimator`
   and `Lasso` were inferred.
-- Unready pages named in plain text until they are ready: `preference-optimization`
-  (`reinforcement-learning`, `fine-tuning`), `contrastive-learning`,
+- Unready pages named in plain text until they are ready: `contrastive-learning`,
   `speculative-decoding`, `profiling` (run 37 pages), and activation checkpointing
   (`distributed-training`).
 - No pin implements a UNet, LoRA/PEFT, NF4, an ANN index or logQ correction; the two-tower
@@ -255,6 +254,39 @@ Gaps:
   value comes from the tested helper. NICE, RealNVP, Glow, Neural ODE, FFJORD, score SDE, DDIM,
   Flow Matching, Rectified Flow, stochastic interpolants and SD3 claims (the σ_min path,
   DDIM as an ODE solver, SD3's mid-path timestep weighting) are cited from memory.
+
+## Forty-second run (2026-10-14) — preference-optimization, retrieval-augmented-generation, checkpointing
+
+| Commit | What |
+|---|---|
+| `5df6dce` `ml-models: add tested preference-optimization helpers` | Bradley–Terry MM fit and NLL, the KL-regularized optimum and a β sweep (proxy vs true reward), categorical KL, tabular DPO with its gradient, a unanimous pair under DPO and IPO, per-token KL rewards, GRPO advantages, the k3 estimator |
+| `8faca07` `ml-models: add the preference-optimization page` | The page, `ready`, queue ✓; the plain-text mentions in `reinforcement-learning` and `fine-tuning` now link to it |
+| (this commit) `docs: record the preference-optimization page in ml-models progress` | This section |
+
+Findings worth keeping:
+
+- On one prompt with four responses, tabular DPO from π_ref (lr 0.5, 1000 steps) lands on the
+  closed-form optimum π_ref·exp(r/β)/Z of the Bradley–Terry rewards to 1.5e-6, its loss equals
+  the reward model's NLL (0.5384), and its implicit rewards equal the fitted rewards up to the
+  constant β log Z; tests pin all three and check the DPO gradient by finite differences.
+- The invented counts over-rate the padded response C, so the β sweep shows the proxy reward
+  and KL rising monotonically while the true reward peaks at β = 0.5 and ends below the
+  reference at β = 0.05.
+- On a unanimous pair the DPO margin keeps growing (12.9 after 10,000 steps), while IPO
+  settles at 1/(2τ) = 2.
+- PyTorch ranges checked at the pin: `logsigmoid` 2049-2058, `kl_div` 3401-3475,
+  `cross_entropy` 3478-3569, `binary_cross_entropy_with_logits` 3634-3701, `log_softmax`
+  2293-2324, `gather` docstring 4813-4849.
+
+Gaps:
+
+- arxiv.org is still unreachable. The InstructGPT (K = 4-9 rankings, the 1/C(K,2) batching,
+  the zero-mean reward normalization, PPO-ptx), DPO (the unweighted-gradient remark), IPO,
+  KTO, DeepSeekMath (GRPO, k3) and Gao–Schulman–Hilton claims are cited from memory. KTO is
+  described in prose only, without its exact loss, for that reason.
+- The preference counts and the "true" reward are invented and labelled as such on the page.
+- The DPO, IPO, GRPO and k3 snippets were not run under real PyTorch (download blocked); their
+  arithmetic matches the tested helpers.
 
 ## Queue
 
