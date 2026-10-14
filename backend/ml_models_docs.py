@@ -1003,7 +1003,7 @@ PAGES = [
             "pytorch:torch/nn/utils/parametrize.py",
             "pytorch:torch/nn/modules/linear.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "preference-optimization",
@@ -11845,7 +11845,7 @@ def ft_masked_loss(tokens, probs, response_from):
     labels = [-100 if i < response_from else token for i, token in enumerate(tokens)]
     terms = [-math.log(p) for p, label in zip(probs, labels) if label != -100]
     every = [-math.log(p) for p in probs]
-    return {"labels": labels, "terms": terms, "loss": sum(terms) / len(terms), "unmasked": sum(every) / len(every)}
+    return {"labels": labels, "terms": terms, "loss": sum(terms) / len(terms), "unmasked": sum(every) / len(every), "nll": every}
 
 
 def ft_forgetting(a, b, lam):

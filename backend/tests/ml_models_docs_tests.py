@@ -4795,6 +4795,8 @@ def test_ft_masked_loss_ignores_prompt_tokens():
     assert sft["labels"][:5] == [-100] * 5
     assert len(sft["terms"]) == 2
     assert math.isclose(sft["loss"], -(math.log(0.4) + math.log(0.8)) / 2)
+    assert len(sft["nll"]) == 7
+    assert math.isclose(sft["unmasked"], sum(sft["nll"]) / 7)
 
 
 def test_ft_forgetting_trades_task_a_for_task_b():

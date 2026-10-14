@@ -1,0 +1,534 @@
+{% set ex = ft_example() %}
+{% set e = ex.example %}
+{% set m = ex.model %}
+{% set pr = ex.params %}
+{% set toy = ex.toy %}
+{% set t = e.toy %}
+{% set sft = ex.sft %}
+{% macro c(x) -%}{{ "{:,}".format(x) }}{%- endmacro %}
+{% macro g(x) -%}{{ "{:g}".format(x) }}{%- endmacro %}
+{% macro vec(v) -%}[{% for x in v %}{{ g(x) }}{{ ", " if not loop.last }}{% endfor %}]{%- endmacro %}
+{% macro pc(x) -%}{{ "{:.4f}".format(100 * x) }}%{%- endmacro %}
+<header class="jj-header">
+  <h1>Fine-tuning and LoRA</h1>
+  <p class="tagline">
+    A pretrained model knows a lot but does not yet do your task. Fine-tuning keeps training it on your data. This page
+    compares training everything with training almost nothing: feature extraction, full fine-tuning, instruction tuning,
+    and the parameter-efficient methods led by LoRA, whose low-rank update trains {{ c(ex.main) }} of
+    {{ m.name }}'s {{ c(pr.total) }} parameters. It ends with QLoRA, which fits that update on top of a 4-bit base.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  <a href="/ml-models/pretraining">Pretraining</a> spends enormous compute to produce one general model. Every use of it
+  afterwards, a support bot, a code reviewer, a classifier for legal clauses, needs a different behaviour. Training a new
+  model per task from scratch throws the pretraining away. Continuing to train the whole model per task works, but each
+  copy of a 7-billion-parameter <a href="/ml-models/decoder-only-llm">decoder</a> is about 13.5 GB in 16-bit, and
+  training it with Adam needs several times that in GPU memory.
+</p>
+<p>
+  Two further problems come with training everything. A small task dataset can pull the weights far from where pretraining
+  left them, and the model forgets what it knew: <strong>catastrophic forgetting</strong>. And a model that was only taught
+  to continue text does not follow instructions; that has to be taught too. The question is how to adapt a large model
+  cheaply, without breaking it, and keep many adaptations side by side.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Think of the pretrained weights as an experienced employee. <strong>Feature extraction</strong> leaves them untouched
+  and trains only a small head on their outputs, like asking for a report in a new format. <strong>Full
+  fine-tuning</strong> retrains the whole person, which is powerful but expensive and can overwrite old skills. The
+  parameter-efficient methods sit between: they freeze the original and train a small add-on.
+</p>
+<p>
+  LoRA's bet is that the <em>change</em> needed for a new task is simple even when the weights are not. A weight matrix
+  in a 4096-wide model has 16.8 million entries, but the useful update may move it along only a few directions. So LoRA
+  writes the update as a product of two thin matrices, <strong>B</strong> times <strong>A</strong>, with an inner
+  dimension (the rank) of 8 or so. That is the <a href="/ml-models/linear-algebra-toolkit">low-rank approximation</a>
+  idea from the SVD, used not to compress a matrix but to restrict what training can change. Since <strong>B</strong>
+  starts at zero, the model starts exactly where pretraining left it.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 250" role="img" aria-labelledby="lora-title lora-desc">
+    <title id="lora-title">A LoRA layer: the frozen weight in parallel with a trainable low-rank path</title>
+    <desc id="lora-desc">
+      An input x of width k splits into two paths. The upper path is the frozen pretrained weight W zero, a large d by k
+      square. The lower path is A, a thin r by k matrix that maps x down to r numbers, then B, a thin d by r matrix that
+      maps them back up to d, then a multiplication by alpha over r. The two paths are added to give h of width d. B starts
+      at zero, so the lower path contributes nothing at the start of training. Only A and B are trained.
+    </desc>
+    <g font-size="11">
+      <rect x="10" y="100" width="70" height="40" class="d-box ml-tensor"></rect>
+      <text x="45" y="118" text-anchor="middle">x</text>
+      <text x="45" y="132" text-anchor="middle" class="d-muted">width k</text>
+      <path d="M80 120 H110 V60 H200" fill="none" class="d-line"></path>
+      <path d="M110 120 V190 H200" fill="none" class="d-line"></path>
+      <rect x="200" y="20" width="120" height="80" class="d-box ml-op"></rect>
+      <text x="260" y="54" text-anchor="middle">W₀</text>
+      <text x="260" y="70" text-anchor="middle" class="d-muted">d × k, frozen</text>
+      <rect x="200" y="176" width="120" height="28" class="d-box ml-op" style="stroke:var(--jj-accent)"></rect>
+      <text x="260" y="194" text-anchor="middle" style="fill:var(--jj-accent)">A: r × k</text>
+      <line x1="320" y1="190" x2="360" y2="190" class="d-line"></line>
+      <text x="340" y="182" text-anchor="middle" class="d-muted">r</text>
+      <rect x="360" y="150" width="28" height="80" class="d-box ml-op" style="stroke:var(--jj-accent)"></rect>
+      <text x="374" y="244" text-anchor="middle" style="fill:var(--jj-accent)">B: d × r</text>
+      <text x="374" y="194" text-anchor="middle" style="fill:var(--jj-accent)">B</text>
+      <line x1="388" y1="190" x2="430" y2="190" class="d-line"></line>
+      <rect x="430" y="174" width="70" height="32" class="d-box ml-op"></rect>
+      <text x="465" y="194" text-anchor="middle">× α / r</text>
+      <path d="M320 60 H560 V108" fill="none" class="d-line"></path>
+      <path d="M500 190 H560 V132" fill="none" class="d-line" style="stroke:var(--jj-accent)"></path>
+      <circle cx="560" cy="120" r="12" class="d-box ml-op"></circle>
+      <text x="560" y="124" text-anchor="middle">+</text>
+      <line x1="572" y1="120" x2="610" y2="120" class="d-line"></line>
+      <rect x="610" y="100" width="100" height="40" class="d-box ml-tensor"></rect>
+      <text x="660" y="118" text-anchor="middle">h</text>
+      <text x="660" y="132" text-anchor="middle" class="d-muted">width d</text>
+      <text x="440" y="50" text-anchor="middle" class="d-muted">W₀x: what pretraining learned</text>
+      <text x="610" y="214" text-anchor="middle" style="fill:var(--jj-green)">B starts at 0 → h = W₀x at step 0</text>
+      <text x="610" y="230" text-anchor="middle" style="fill:var(--jj-green)">only A and B get gradients</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="full-vs-features">Full fine-tuning versus feature extraction</h3>
+<p>
+  <strong>Feature extraction</strong> (a linear probe when the head is linear) freezes the network and trains only a new
+  output layer on its final hidden states. It is cheap, cannot forget, and needs no backward pass through the body, but
+  it can only use features that already exist. <strong>Full fine-tuning</strong> updates every weight, usually with a
+  learning rate well below the pretraining one so the weights stay near their starting point; it is the most accurate
+  when data is plentiful and the most expensive. In between, one can unfreeze only the top layers. Kumar et al. found
+  that full fine-tuning with a randomly initialized head can distort the pretrained features while the head is still
+  bad, and that training the linear probe first and then fine-tuning everything (LP-FT) holds up better out of
+  distribution.
+</p>
+<p>
+  In PyTorch, freezing is <code>module.requires_grad_(False)</code>, which sets <code>requires_grad</code> on every
+  parameter; frozen tensors get no gradient and should be left out of the optimizer, so they cost no optimizer state.
+</p>
+
+<h3 id="instruction-tuning">Instruction tuning</h3>
+<p>
+  A pretrained language model continues text; asked a question, it might continue with three more questions.
+  <strong>Instruction tuning</strong>, also called supervised fine-tuning (SFT), trains it on pairs of an instruction and a
+  good response, formatted with the chat template the model will see at inference. Wei et al. (FLAN) showed that
+  fine-tuning on many tasks phrased as instructions improves zero-shot performance on tasks never seen in training, and
+  InstructGPT used SFT on human-written demonstrations as the first stage before
+  preference optimization.
+</p>
+<p>
+  The loss is the usual next-token <a href="/ml-models/loss-functions">cross-entropy</a>, but only on the response
+  tokens: prompt positions get the label −100, which is <code>F.cross_entropy</code>'s default
+  <code>ignore_index</code>, so they add nothing to the loss or its average. The model is trained to answer, not to
+  reproduce the user's question.
+</p>
+
+<h3 id="forgetting">Catastrophic forgetting</h3>
+<p>
+  Gradient descent on task B moves the weights toward B's optimum with no regard for task A, and nothing in B's loss
+  says A mattered. Remedies all keep the weights near the pretrained point: a small learning rate and few epochs; an L2
+  penalty toward the original weights; elastic weight consolidation (EWC, Kirkpatrick et al.), which weights that
+  penalty by each parameter's Fisher information so important weights move least; mixing some original-style data into
+  the fine-tuning set; and freezing most weights, which is what the parameter-efficient methods do structurally.
+  Biderman et al. found that LoRA learns less of a new domain than full fine-tuning but also forgets less of the old one.
+</p>
+
+<h3 id="lora">LoRA, derived</h3>
+<p>
+  Take one linear layer with frozen weight <em>W</em><sub>0</sub> ∈ ℝ<sup><em>d</em>×<em>k</em></sup> (PyTorch's
+  <code>nn.Linear</code> stores it as [out_features, in_features] = [<em>d</em>, <em>k</em>]). Full fine-tuning learns an
+  update Δ<em>W</em> of the same shape: <em>dk</em> numbers. LoRA constrains it to rank at most <em>r</em> by writing it
+  as a product:
+</p>
+<p class="ml-formula">
+  Δ<em>W</em> = (α / <em>r</em>) · <em>B A</em>, &nbsp; <em>B</em> ∈ ℝ<sup><em>d</em>×<em>r</em></sup>, &nbsp;
+  <em>A</em> ∈ ℝ<sup><em>r</em>×<em>k</em></sup>, &nbsp; <em>r</em> ≪ min(<em>d</em>, <em>k</em>)<br>
+  <em>h</em> = <em>W</em><sub>0</sub><em>x</em> + (α / <em>r</em>) · <em>B</em>(<em>A x</em>)
+</p>
+<p>
+  Every column of <em>BA</em> is a combination of <em>B</em>'s <em>r</em> columns, so its rank is at most <em>r</em>.
+  The trainable count drops from <em>dk</em> to <em>r</em>(<em>d</em> + <em>k</em>). For a 4096 × 4096 attention
+  projection at <em>r</em> = {{ e.main_rank }}: {{ c(ex.q_single.full) }} becomes {{ e.main_rank }} · 8192 =
+  {{ c(ex.q_single.lora) }}, {{ "{:.2f}".format(100 * ex.q_single.share) }}% as many.
+</p>
+<p>
+  <em>A</em> starts random (Gaussian in the paper) and <em>B</em> starts at zero, so Δ<em>W</em> = 0 and training begins
+  at the pretrained model; both cannot be zero, or no gradient would flow to either. The constant α / <em>r</em> scales
+  the update so that changing <em>r</em> does not require retuning the learning rate much. Computing
+  <em>B</em>(<em>Ax</em>) right to left never forms the <em>d</em> × <em>k</em> product. After training,
+  <em>W</em> = <em>W</em><sub>0</sub> + (α/<em>r</em>)<em>BA</em> can be merged into a single matrix, so inference has
+  no extra latency, and a different adapter can be swapped in by subtracting one product and adding another.
+</p>
+<p>
+  Hu et al. applied LoRA to the attention query and value projections and found very small ranks competitive; on GPT-3
+  175B it cut trainable parameters about 10,000-fold and training GPU memory about threefold relative to full fine-tuning
+  with Adam. Later practice, including QLoRA, often applies it to every linear layer.
+</p>
+
+<h3 id="qlora">QLoRA</h3>
+<p>
+  With LoRA, the frozen base still has to sit in GPU memory, 2 bytes per parameter in 16-bit. QLoRA (Dettmers et al.)
+  stores the frozen base in 4 bits and trains LoRA adapters on top, backpropagating through the quantized weights, which
+  are dequantized to bfloat16 for each matmul. Three pieces make it work:
+</p>
+<ul>
+  <li><strong>4-bit NormalFloat (NF4)</strong>: a 4-bit data type whose 16 levels are quantiles of a normal distribution,
+    matched to how pretrained weights are distributed. Each block of 64 weights shares one absmax scale
+    (<a href="/ml-models/quantization">quantization</a>).</li>
+  <li><strong>Double quantization</strong>: the per-block scales are themselves quantized to 8 bits in blocks of 256,
+    cutting their overhead from 32/64 = {{ g(e.constant_bits.plain) }} bits per parameter to about
+    {{ "{:.3f}".format(e.constant_bits.double) }}.</li>
+  <li><strong>Paged optimizers</strong>: optimizer state in unified memory that pages to CPU RAM during memory spikes.</li>
+</ul>
+<p>
+  The paper fine-tuned a 65B model on a single 48 GB GPU, and found adapters on all linear layers were needed to match
+  16-bit full fine-tuning.
+</p>
+
+<h3 id="adapters-prefix">Adapters, prefix tuning and prompt tuning</h3>
+<p>
+  <strong>Adapters</strong> (Houlsby et al.) insert a small bottleneck MLP, down-project <em>d</em> → <em>m</em>,
+  nonlinearity, up-project <em>m</em> → <em>d</em>, with a residual connection, twice in every transformer layer, and
+  train only those. They are near-identity at initialization like LoRA, but they add layers to the forward pass, so they
+  add inference latency and cannot be merged away.
+</p>
+<p>
+  <strong>Prefix tuning</strong> (Li and Liang) prepends a few trainable vectors to the keys and values of every attention
+  layer: virtual tokens that every real token can attend to. <strong>Prompt tuning</strong> (Lester et al.) keeps only
+  trainable embeddings at the input, a soft prompt; it becomes competitive with full fine-tuning as models grow to
+  around ten billion parameters. Both use up context positions and are often less stable to train than LoRA.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>nn.Linear</code></td><td><code>weight</code> [out, in], <code>bias</code> [out]</td><td>The layer LoRA wraps; [<em>d</em>, <em>k</em>] in the formulas.</td><td><a href="{{ src('torch/nn/modules/linear.py', 53, 140) }}">linear.py 53–140</a></td></tr>
+      <tr><td><code>Linear.__init__</code></td><td><code>Parameter(torch.empty((out_features, in_features)))</code></td><td>Where the [out, in] layout is fixed.</td><td><a href="{{ src('torch/nn/modules/linear.py', 96, 115) }}">96–115</a></td></tr>
+      <tr><td><code>Linear.reset_parameters</code></td><td><code>kaiming_uniform_(weight, a=sqrt(5))</code></td><td>Default init, uniform in ±1/√in; a LoRA <code>A</code> needs its own, and <code>B</code> zeros.</td><td><a href="{{ src('torch/nn/modules/linear.py', 117, 128) }}">117–128</a></td></tr>
+      <tr><td><code>Linear.forward</code></td><td><code>F.linear(input, self.weight, self.bias)</code></td><td>Reads <code>self.weight</code>, so a parametrization changes what it sees.</td><td><a href="{{ src('torch/nn/modules/linear.py', 130, 134) }}">130–134</a></td></tr>
+      <tr><td><code>register_parametrization</code></td><td><code>(module, tensor_name, parametrization, *, unsafe=False)</code></td><td>Makes <code>module.weight</code> return <code>parametrization(original)</code>; checks shape and dtype are kept unless <code>unsafe</code>.</td><td><a href="{{ src('torch/nn/utils/parametrize.py', 450, 671) }}">parametrize.py 450–671</a></td></tr>
+      <tr><td><code>ParametrizationList</code></td><td><code>original</code>, then the parametrizations in order</td><td>Holds the frozen original at <code>module.parametrizations.weight.original</code>.</td><td><a href="{{ src('torch/nn/utils/parametrize.py', 95, 341) }}">95–341</a></td></tr>
+      <tr><td><code>ParametrizationList.forward</code></td><td><code>x = self[0](self.original)</code>, then each later one</td><td>Recomputes the weight on every access unless cached.</td><td><a href="{{ src('torch/nn/utils/parametrize.py', 326, 341) }}">326–341</a></td></tr>
+      <tr><td><code>remove_parametrizations</code></td><td><code>leave_parametrized=True</code></td><td>Writes the current value back as a plain parameter: the LoRA merge.</td><td><a href="{{ src('torch/nn/utils/parametrize.py', 696, 796) }}">696–796</a></td></tr>
+      <tr><td><code>cached</code></td><td>context manager</td><td>Computes each parametrized tensor once per block instead of on every access.</td><td><a href="{{ src('torch/nn/utils/parametrize.py', 33, 73) }}">33–73</a></td></tr>
+      <tr><td><code>Module.requires_grad_</code></td><td><code>requires_grad=True</code></td><td>Freezes or unfreezes every parameter of a module.</td><td><a href="{{ src('torch/nn/modules/module.py', 2934, 2955) }}">module.py 2934–2955</a></td></tr>
+      <tr><td><code>F.cross_entropy</code></td><td><code>ignore_index=-100</code></td><td>Prompt tokens labelled −100 are skipped in SFT.</td><td><a href="{{ src('torch/nn/functional.py', 3478, 3571) }}">functional.py 3478–3571</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 270" role="img" aria-labelledby="peft-title peft-desc">
+    <title id="peft-title">Where each fine-tuning method trains inside a transformer</title>
+    <desc id="peft-desc">
+      A stack from bottom to top: token embeddings, a decoder layer repeated N times, and the output head. Prompt tuning
+      adds trainable soft-prompt vectors beside the token embeddings. Inside the layer, attention has q, k, v and o
+      projections: LoRA attaches low-rank pairs to the projections, prefix tuning adds trainable key and value vectors to
+      attention, and an adapter follows attention. The MLP has gate, up and down projections, with LoRA on all linear
+      layers optional and a second adapter after the MLP. A linear probe trains only the head. Full fine-tuning trains
+      everything.
+    </desc>
+    <g font-size="11">
+      <rect x="150" y="214" width="260" height="34" class="d-box ml-tensor"></rect>
+      <text x="280" y="235" text-anchor="middle">token embeddings</text>
+      <rect x="20" y="214" width="110" height="34" class="d-box ml-op" style="stroke:var(--jj-green)"></rect>
+      <text x="75" y="229" text-anchor="middle" style="fill:var(--jj-green)">soft prompt</text>
+      <text x="75" y="242" text-anchor="middle" class="d-muted">prompt tuning</text>
+      <rect x="140" y="56" width="400" height="146" class="d-box ml-dashed" style="fill:none"></rect>
+      <text x="150" y="197" class="d-muted">× N layers</text>
+      <rect x="150" y="140" width="220" height="44" class="d-box ml-op"></rect>
+      <text x="260" y="156" text-anchor="middle">attention: q · k · v · o</text>
+      <text x="260" y="172" text-anchor="middle" style="fill:var(--jj-accent)">LoRA on q, v (+ k, o)</text>
+      <rect x="380" y="140" width="150" height="44" class="d-box ml-op" style="stroke:var(--jj-amber)"></rect>
+      <text x="455" y="158" text-anchor="middle" style="fill:var(--jj-amber)">adapter</text>
+      <text x="455" y="173" text-anchor="middle" class="d-muted">d → m → d</text>
+      <rect x="150" y="66" width="220" height="44" class="d-box ml-op"></rect>
+      <text x="260" y="82" text-anchor="middle">MLP: gate · up · down</text>
+      <text x="260" y="98" text-anchor="middle" style="fill:var(--jj-accent)">LoRA on all linear (QLoRA)</text>
+      <rect x="380" y="66" width="150" height="44" class="d-box ml-op" style="stroke:var(--jj-amber)"></rect>
+      <text x="455" y="84" text-anchor="middle" style="fill:var(--jj-amber)">adapter</text>
+      <text x="455" y="99" text-anchor="middle" class="d-muted">d → m → d</text>
+      <rect x="560" y="140" width="150" height="44" class="d-box ml-op" style="stroke:var(--jj-green)"></rect>
+      <text x="635" y="158" text-anchor="middle" style="fill:var(--jj-green)">prefix K, V</text>
+      <text x="635" y="173" text-anchor="middle" class="d-muted">prefix tuning</text>
+      <path d="M635 184 V193 H330 V184" fill="none" class="d-line ml-dashed"></path>
+      <line x1="260" y1="140" x2="260" y2="110" class="d-line"></line>
+      <line x1="130" y1="231" x2="150" y2="231" class="d-line ml-dashed"></line>
+      <rect x="150" y="10" width="260" height="34" class="d-box ml-tensor"></rect>
+      <text x="280" y="31" text-anchor="middle">output head</text>
+      <text x="420" y="31" style="fill:var(--jj-green)">← linear probe trains only this</text>
+      <line x1="280" y1="214" x2="280" y2="202" class="d-line"></line>
+      <line x1="280" y1="56" x2="280" y2="44" class="d-line"></line>
+      <text x="630" y="240" text-anchor="middle" class="d-muted">full fine-tuning: every box</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  All numbers below come from tested helpers in <code>ml_models_docs.py</code> (<code>ft_lora_toy</code>,
+  <code>ft_model_params</code>, <code>ft_lora_trainable</code>, <code>ft_memory</code>, <code>ft_masked_loss</code>,
+  <code>ft_forgetting</code>). The {{ m.name }} count matches its published size, and the LoRA counts match what the
+  Hugging Face PEFT library reports for the same settings.
+</p>
+
+<div class="ml-worked">
+  <h3 id="worked-lora">A rank-1 LoRA update by hand</h3>
+  <p>
+    A frozen 4 × 3 layer <em>W</em><sub>0</sub> with rows
+    {% for row in t.W0 %}{{ vec(row) }}{{ ", " if not loop.last }}{% endfor %}, input <em>x</em> = {{ vec(t.x) }}, rank
+    <em>r</em> = {{ toy.rank }}, α = {{ t.alpha }}, so α/<em>r</em> = {{ g(toy.scale) }}. After some training,
+    <em>A</em> = {{ vec(t.A[0]) }} and <em>B</em> = {{ vec(t.B | map("first") | list) }}ᵀ.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Step</th><th>Value</th></tr></thead>
+      <tbody>
+        <tr><td>At initialization, <em>B</em> = 0: <em>h</em> = <em>W</em><sub>0</sub><em>x</em></td><td>{{ vec(toy.init_out) }}</td></tr>
+        <tr><td><em>Ax</em> (1 × 3 times 3 → 1 number)</td><td>{{ vec(toy.ax) }}</td></tr>
+        <tr><td>(α/<em>r</em>) · <em>B</em>(<em>Ax</em>)</td><td>{{ vec(toy.side) }}</td></tr>
+        <tr><td><em>h</em> = <em>W</em><sub>0</sub><em>x</em> + side path</td><td>{{ vec(toy.unmerged) }}</td></tr>
+        <tr><td>Δ<em>W</em> = (α/<em>r</em>)<em>BA</em></td><td>{% for row in toy.delta %}{{ vec(row) }}{{ " " if not loop.last }}{% endfor %}</td></tr>
+        <tr><td>Merged <em>W</em> = <em>W</em><sub>0</sub> + Δ<em>W</em></td><td>{% for row in toy.merged %}{{ vec(row) }}{{ " " if not loop.last }}{% endfor %}</td></tr>
+        <tr><td>Merged <em>Wx</em></td><td>{{ vec(toy.merged_out) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The merged and unmerged outputs agree, which is why LoRA has no inference cost after merging. Every row of
+    Δ<em>W</em> is a multiple of <em>A</em> = {{ vec(t.A[0]) }}, so its rank is {{ toy.delta_rank }}: the update can only
+    respond to the input direction <em>A</em> picks out (here, the difference between the first and last input) and write
+    along the direction <em>B</em> picks. It stores {{ toy.lora_count }} numbers instead of {{ toy.full_count }}; at
+    4096 × 4096 the same trick stores {{ c(ex.q_single.lora) }} instead of {{ c(ex.q_single.full) }}.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-counts">LoRA on {{ m.name }}</h3>
+  <p>
+    {{ m.name }} has width {{ m.dim }}, {{ m.layers }} layers, an MLP of width {{ m.ffn }} with gate, up and down
+    projections, and a {{ c(m.vocab) }}-token vocabulary with separate input and output embeddings: {{ c(pr.per_layer) }}
+    parameters per layer and {{ c(pr.total) }} in all. Trainable LoRA parameters by target and rank:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Targets</th>{% for r in e.ranks %}<th><em>r</em> = {{ r }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for row in ex.grid %}
+          <tr><td>{{ row.target }}</td>{% for n in row.counts %}<td>{{ c(n) }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The q, v column at <em>r</em> = {{ e.main_rank }} is {{ m.layers }} layers × 2 matrices × {{ c(ex.q_single.lora) }} =
+    {{ c(ex.main) }}, or {{ pc(ex.main_share) }} of the model. Counts are linear in <em>r</em>, and the MLP matrices
+    (11008 × 4096) dominate the all-linear row. Every method on one table:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Method</th><th>Trainable parameters</th><th>Share of the model</th></tr></thead>
+      <tbody>
+        {% for row in ex.peft %}<tr><td>{{ row.method }}</td><td>{{ c(row.count) }}</td><td>{{ pc(row.share) }}</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    An adapter with bottleneck {{ e.adapter_bottleneck }} costs 2 · {{ e.adapter_bottleneck }} · {{ m.dim }} +
+    {{ e.adapter_bottleneck }} + {{ m.dim }} = {{ c(ex.adapter) }} parameters including biases. Prefix tuning stores a key and
+    a value vector per prefix position per layer; prompt tuning stores one embedding per soft token, once.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-memory">Memory for weights and optimizer state</h3>
+  <p>
+    Full fine-tuning with Adam in mixed precision needs about {{ e.full_bytes }} bytes per trained parameter: 16-bit weights
+    and gradients (2 + 2), a 32-bit master copy (4) and Adam's two moments (4 + 4), as in the ZeRO paper's accounting
+    (<a href="/ml-models/mixed-precision">mixed precision</a>, <a href="/ml-models/optimizers">optimizers</a>). With
+    LoRA, frozen weights need only their {{ e.frozen_bytes }} bytes; with QLoRA, {{ e.nf4_bits }} bits plus
+    {{ "{:.3f}".format(e.constant_bits.double) }} bits of scales. Activations are left out; they depend on batch and
+    sequence length and are the same for all three.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Method ({{ m.name }}, LoRA r = {{ e.main_rank }} on q, v)</th><th>Bytes</th><th>GiB</th></tr></thead>
+      <tbody>
+        {% for row in ex.memory %}<tr><td>{{ row.method }}</td><td>{{ c(row.bytes | int) }}</td><td>{{ "{:.1f}".format(row.gib) }}</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The idealized QLoRA figure counts every weight at 4 bits; real implementations usually keep the embeddings and output
+    head in 16-bit, which adds about 0.5 GiB here. The pattern is the point: full fine-tuning needs a multi-GPU node, LoRA
+    one large GPU, QLoRA a consumer card.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-sft">Masking the prompt in SFT</h3>
+  <p>A seven-token example, with the probability the model gives each token when predicting it:</p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Position</th><th>Token</th><th>Label (target, or −100)</th><th>p(token)</th><th>−ln p</th></tr></thead>
+      <tbody>
+        {% for tok in e.sft.tokens %}
+          {% set p = e.sft.probs[loop.index0] %}
+          <tr><td>{{ loop.index0 }}</td><td><code>{{ tok }}</code></td><td>{{ sft.labels[loop.index0] }}</td><td>{{ p }}</td><td>{{ "{:.3f}".format(sft.nll[loop.index0]) }}{% if sft.labels[loop.index0] != -100 %} (counted){% endif %}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Only the two response tokens count: the loss is ({% for v in sft.terms %}{{ "{:.3f}".format(v) }}{{ " + " if not loop.last }}{% endfor %})
+    / {{ sft.terms | length }} = {{ "{:.3f}".format(sft.loss) }}. Averaged over all seven tokens it would be
+    {{ "{:.3f}".format(sft.unmasked) }}, dominated by the user's prompt, which the model is not supposed to learn to
+    write.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-forgetting">Forgetting in one parameter</h3>
+  <p>
+    A model with one weight <em>w</em>. Task A's loss is (<em>w</em> − {{ g(e.forgetting.a) }})², minimized by pretraining
+    at <em>w</em> = {{ g(e.forgetting.a) }}; task B's is (<em>w</em> − {{ g(e.forgetting.b) }})². Fine-tuning on B with a
+    penalty λ(<em>w</em> − {{ g(e.forgetting.a) }})² toward the pretrained weight settles at
+    <em>w</em> = ({{ g(e.forgetting.b) }} + λ · {{ g(e.forgetting.a) }}) / (1 + λ):
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>λ</th><th><em>w</em></th><th>Loss on A</th><th>Loss on B</th></tr></thead>
+      <tbody>
+        {% for r in ex.forgetting %}<tr><td>{{ g(r.lambda) }}</td><td>{{ "{:.3f}".format(r.w) }}</td><td>{{ "{:.3f}".format(r.loss_a) }}</td><td>{{ "{:.3f}".format(r.loss_b) }}</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    With no penalty, B is solved perfectly and A's loss jumps from 0 to {{ g(ex.forgetting[0].loss_a) }}: forgetting.
+    Every remedy picks a point on this trade-off. EWC sets a separate λ per weight from how much task A depends on it, and
+    LoRA restricts the directions <em>w</em> can move in rather than the distance.
+  </p>
+</div>
+
+<details class="ml-quiz">
+  <summary>Why must LoRA initialize exactly one of <em>A</em> and <em>B</em> to zero, not both?</summary>
+  <p>One zero makes Δ<em>W</em> = 0, so training starts at the pretrained model. Both zero would make both gradients zero: the gradient for <em>B</em> is proportional to <em>A x</em> and the gradient for <em>A</em> to <em>B</em>ᵀ times the output gradient, so neither would ever move.</p>
+</details>
+<details class="ml-quiz">
+  <summary>How many trainable parameters does LoRA r = 16 on q, k, v and o add to {{ m.name }}, and could you have predicted it from the r = 8 q, v figure?</summary>
+  <p>{{ c(ex.grid[1].counts[3]) }}. Doubling the rank doubles the count and doubling the number of 4096 × 4096 targets doubles it again: 4 × {{ c(ex.main) }}.</p>
+</details>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  LoRA with <code>torch.nn.utils.parametrize</code>: the parametrization receives the frozen weight and returns
+  <em>W</em><sub>0</sub> + (α/<em>r</em>)<em>BA</em>, so <code>nn.Linear</code> needs no changes, and
+  <code>remove_parametrizations</code> performs the merge.
+</p>
+<pre><code>import torch
+import torch.nn as nn
+import torch.nn.utils.parametrize as P
+
+
+class LoRA(nn.Module):
+    def __init__(self, out_features, in_features, r=8, alpha=16):
+        super().__init__()
+        self.A = nn.Parameter(torch.randn(r, in_features) * 0.01)
+        self.B = nn.Parameter(torch.zeros(out_features, r))
+        self.scale = alpha / r
+
+    def forward(self, W):
+        return W + self.scale * (self.B @ self.A)
+
+
+def add_lora(model, names=("q_proj", "v_proj"), r=8, alpha=16):
+    model.requires_grad_(False)
+    targets = [m for n, m in model.named_modules() if isinstance(m, nn.Linear) and n.endswith(names)]
+    for layer in targets:
+        P.register_parametrization(layer, "weight", LoRA(layer.out_features, layer.in_features, r, alpha))
+    return [p for p in model.parameters() if p.requires_grad]
+
+
+def merge_lora(model):
+    for m in model.modules():
+        if P.is_parametrized(m, "weight"):
+            P.remove_parametrizations(m, "weight", leave_parametrized=True)
+
+
+trainable = add_lora(model)
+optimizer = torch.optim.AdamW(trainable, lr=2e-4)
+# ... train on (input_ids, labels) with prompt positions set to -100 ...
+merge_lora(model)</code></pre>
+<p>
+  The original weight moves to <code>layer.parametrizations.weight.original</code> and keeps
+  <code>requires_grad=False</code>, so only <code>A</code> and <code>B</code> reach the optimizer. This version forms
+  the full <em>d</em> × <em>k</em> weight on every forward pass (wrap the forward in <code>P.cached()</code> to do it once
+  per pass when a weight is used more than once); production libraries such as PEFT instead wrap the layer and compute
+  <code>base(x) + scale * (x @ A.T @ B.T)</code>, which never builds the large product. The SFT loss is
+  <code>F.cross_entropy(logits.view(-1, V), labels.view(-1))</code>, whose default <code>ignore_index=-100</code> drops
+  the prompt.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Full fine-tuning</strong> has the most capacity and is the reference for quality on large, shifted datasets,
+    at full memory cost, one full model copy per task, and the most forgetting.</li>
+  <li><strong>Feature extraction</strong> is cheapest and cannot forget, but cannot learn features the base lacks.</li>
+  <li><strong>LoRA</strong> trains a fraction of a percent, stores a few megabytes per task, merges to zero inference
+    cost, and forgets less; it can trail full fine-tuning when the new task is far from pretraining. Rank, α and which
+    layers to target are the knobs.</li>
+  <li><strong>QLoRA</strong> cuts base-model memory about fourfold again, at the cost of dequantization work every step
+    and an adapter trained against quantized weights; merging back into a 16-bit model is then an approximation.</li>
+  <li><strong>Adapters</strong> are modular but add latency; <strong>prefix and prompt tuning</strong> are tiny but use
+    context positions and train less reliably, especially on smaller models.</li>
+  <li><strong>Instruction data quality</strong> matters more than quantity: SFT copies the style and the mistakes of its
+    demonstrations.</li>
+</ul>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Hu et al. <em>LoRA: Low-Rank Adaptation of Large Language Models.</em> ICLR 2022.
+    <a href="https://arxiv.org/abs/2106.09685">arXiv:2106.09685</a></li>
+  <li>Dettmers et al. <em>QLoRA: Efficient Finetuning of Quantized LLMs.</em> NeurIPS 2023.
+    <a href="https://arxiv.org/abs/2305.14314">arXiv:2305.14314</a></li>
+  <li>Houlsby et al. <em>Parameter-Efficient Transfer Learning for NLP.</em> ICML 2019.
+    <a href="https://arxiv.org/abs/1902.00751">arXiv:1902.00751</a></li>
+  <li>Li and Liang. <em>Prefix-Tuning: Optimizing Continuous Prompts for Generation.</em> ACL 2021.
+    <a href="https://arxiv.org/abs/2101.00190">arXiv:2101.00190</a></li>
+  <li>Lester, Al-Rfou and Constant. <em>The Power of Scale for Parameter-Efficient Prompt Tuning.</em> EMNLP 2021.
+    <a href="https://arxiv.org/abs/2104.08691">arXiv:2104.08691</a></li>
+  <li>Wei et al. <em>Finetuned Language Models Are Zero-Shot Learners</em> (FLAN). ICLR 2022.
+    <a href="https://arxiv.org/abs/2109.01652">arXiv:2109.01652</a></li>
+  <li>Ouyang et al. <em>Training language models to follow instructions with human feedback</em> (InstructGPT). NeurIPS 2022.
+    <a href="https://arxiv.org/abs/2203.02155">arXiv:2203.02155</a></li>
+  <li>Kirkpatrick et al. <em>Overcoming catastrophic forgetting in neural networks.</em> PNAS 2017.
+    <a href="https://arxiv.org/abs/1612.00796">arXiv:1612.00796</a></li>
+  <li>Kumar et al. <em>Fine-Tuning can Distort Pretrained Features and Underperform Out-of-Distribution.</em> ICLR 2022.
+    <a href="https://arxiv.org/abs/2202.10054">arXiv:2202.10054</a></li>
+  <li>Biderman et al. <em>LoRA Learns Less and Forgets Less.</em> TMLR 2024.
+    <a href="https://arxiv.org/abs/2405.09673">arXiv:2405.09673</a></li>
+  <li>Touvron et al. <em>Llama 2: Open Foundation and Fine-Tuned Chat Models.</em> 2023.
+    <a href="https://arxiv.org/abs/2307.09288">arXiv:2307.09288</a></li>
+  <li>Rajbhandari et al. <em>ZeRO: Memory Optimizations Toward Training Trillion Parameter Models.</em> SC 2020.
+    <a href="https://arxiv.org/abs/1910.02054">arXiv:1910.02054</a></li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/nn/modules/linear.py', 53, 140) }}"><code>Linear</code></a>,
+    <a href="{{ src('torch/nn/utils/parametrize.py', 450, 671) }}"><code>register_parametrization</code></a>,
+    <a href="{{ src('torch/nn/utils/parametrize.py', 696, 796) }}"><code>remove_parametrizations</code></a>,
+    <a href="{{ src('torch/nn/utils/parametrize.py', 33, 73) }}"><code>cached</code></a>,
+    <a href="{{ src('torch/nn/functional.py', 3478, 3571) }}"><code>cross_entropy</code></a>.</li>
+</ul>

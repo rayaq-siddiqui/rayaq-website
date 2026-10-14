@@ -344,8 +344,8 @@ Gaps:
 77. `uncertainty` ✓
 78. `vision-transformer` ✓
 79. `diffusion-unet` ✓
-80. `fine-tuning` ← next
-81. `two-tower-models`
+80. `fine-tuning` ✓
+81. `two-tower-models` ← next
 82. `distributed-training`
 83. `monitoring-and-drift`
 84. `multimodal-models`
