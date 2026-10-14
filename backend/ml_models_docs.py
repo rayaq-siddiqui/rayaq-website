@@ -1201,7 +1201,7 @@ PAGES = [
             "pytorch:torch/utils/checkpoint.py",
             "pytorch:torch/distributed/checkpoint/__init__.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "profiling",

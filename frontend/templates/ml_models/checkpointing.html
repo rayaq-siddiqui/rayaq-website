@@ -1,0 +1,571 @@
+{% set ex = checkpointing_example() %}
+{% set e = ex.example %}
+{% set r = ex.resume %}
+{% set runs = r.runs %}
+{% set saved = r.saved %}
+{% set sz = ex.sizes %}
+{% set i0 = ex.intervals[0] %}
+{% set i1 = ex.intervals[1] %}
+{% set per_epoch = e.data|length // e.batch_size %}
+{% set names = [("full", "Full checkpoint"), ("optimizer", "Forgot optimizer state"), ("scheduler", "Forgot scheduler state"), ("rng", "Forgot RNG state"), ("data_position", "Forgot position in epoch")] %}
+{% set colors = {"full": "--jj-accent", "optimizer": "--jj-red", "scheduler": "--jj-amber", "rng": "--jj-violet", "data_position": "--jj-green"} %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(0.0 if x|abs < 0.5 * 10 ** (-n) else x)|replace("-", "−") }}{%- endmacro %}
+{% macro pct(x, n=1) -%}{{ f(100 * x, n) }}%{%- endmacro %}
+{% macro mins(s) -%}{{ f(s / 60, 1) }} min{%- endmacro %}
+<header class="jj-header">
+  <h1>Checkpointing</h1>
+  <p class="tagline">
+    A long training run will be interrupted, and resuming it should give the same run you would have had without the interruption. That takes more than the weights.
+    This page saves and resumes a small Adam run mid-epoch, shows what goes wrong when each piece of state is left out, sizes a checkpoint, picks how often to save, loads files safely, reshards a distributed checkpoint, and covers activation checkpointing, which trades compute for memory. Every number is computed and every PyTorch link is pinned.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A large <a href="/ml-models/training-loop">training run</a> lasts days or weeks on many machines, and something will stop it: a hardware fault, a preempted spot instance, a crashed process, a bug fix you need to deploy. Without a checkpoint all of that compute is lost. With a checkpoint that holds only the weights, training restarts, but as a different run: the optimizer forgets its momentum, the learning-rate schedule starts again from warmup, and the data order changes. Losses spike, results stop being reproducible, and a bug introduced by the resume is hard to tell apart from a real training problem.
+</p>
+<p>
+  Checkpoints also leave the machine that made them. People download weights, and PyTorch's default file format is a Python pickle, which can run code when it is loaded. And at scale a checkpoint is many gigabytes split across hundreds of ranks, so writing it takes real time, and the job that reads it back may not have the same number of GPUs.
+</p>
+<p>
+  The same word also names an unrelated memory technique. <em>Activation checkpointing</em> keeps only some of the activations from the forward pass and recomputes the rest during backward, so a deeper model or a bigger batch fits in memory. It is covered at the end of Mechanics.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  A checkpoint is a save file for a game with randomness in it. To continue exactly where you stopped, the save must hold the map and your inventory (the weights), but also how fast you are moving and in which direction (the optimizer's moments), where you are on the level's timer (the schedule), the state of the dice (the random number generators) and which cards you have already drawn from the deck (the position in the data). Leave any one out and you can still keep playing, but not the same game.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 300" role="img" aria-labelledby="ckpt-state-title ckpt-state-desc">
+    <title id="ckpt-state-title">What a resumable checkpoint holds</title>
+    <desc id="ckpt-state-desc">Six pieces of training state, each with the call that captures it, flow into one checkpoint. The model's parameters and buffers come from model.state_dict(). Adam's moments and step count come from optimizer.state_dict(). The schedule's step comes from scheduler.state_dict(). The mixed-precision loss scale comes from scaler.state_dict(). The CPU, CUDA and Python random generator states come from torch.get_rng_state, torch.cuda.get_rng_state_all and random.getstate. The epoch and batch within the epoch are saved by your own code, since DataLoader has no state_dict. The weights alone are enough for inference; resuming training needs all six.</desc>
+    <g font-size="12">
+      {% set pieces = [
+        ("model", "parameters, buffers", "model.state_dict()", "--jj-accent"),
+        ("optimizer", "Adam m, v, step count", "optimizer.state_dict()", "--jj-red"),
+        ("scheduler", "steps taken so far", "scheduler.state_dict()", "--jj-amber"),
+        ("grad scaler", "loss scale, growth tracker", "scaler.state_dict()", "--jj-amber"),
+        ("RNG", "CPU, each GPU, Python", "get_rng_state(), ...", "--jj-violet"),
+        ("data position", "epoch, batch in epoch", "your own dict", "--jj-green"),
+      ] %}
+      {% for name, what, call, color in pieces %}
+      {% set y = 14 + loop.index0 * 46 %}
+      <rect x="10" y="{{ y }}" width="190" height="38" rx="6" class="d-box" style="fill: var({{ color }})" fill-opacity="0.18"></rect>
+      <text x="20" y="{{ y + 16 }}" font-weight="bold">{{ name }}</text>
+      <text x="20" y="{{ y + 31 }}" class="d-muted">{{ what }}</text>
+      <line x1="200" y1="{{ y + 19 }}" x2="460" y2="{{ y + 19 }}" class="d-line"></line>
+      <text x="215" y="{{ y + 14 }}" font-family="monospace" font-size="11">{{ call }}</text>
+      {% endfor %}
+      <rect x="460" y="14" width="170" height="268" rx="8" class="d-box"></rect>
+      <text x="545" y="44" text-anchor="middle" font-weight="bold">checkpoint</text>
+      <text x="545" y="64" text-anchor="middle" class="d-muted">one torch.save file,</text>
+      <text x="545" y="80" text-anchor="middle" class="d-muted">or one DCP directory</text>
+      <line x1="475" y1="98" x2="615" y2="98" class="d-line ml-dashed"></line>
+      <text x="545" y="120" text-anchor="middle">inference needs</text>
+      <text x="545" y="136" text-anchor="middle">the first box only</text>
+      <text x="545" y="170" text-anchor="middle">exact resume needs</text>
+      <text x="545" y="186" text-anchor="middle">all six</text>
+      <text x="545" y="230" text-anchor="middle" class="d-muted">plus the step counter</text>
+      <text x="545" y="246" text-anchor="middle" class="d-muted">and the config that</text>
+      <text x="545" y="262" text-anchor="middle" class="d-muted">built the model</text>
+    </g>
+  </svg>
+  <p class="ml-caption">Everything on the left changes every step. The worked example below leaves out the optimizer, scheduler, RNG and data position in turn and measures what changes; the toy run has no grad scaler.</p>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="state-dicts">State dicts</h3>
+
+<p>
+  PyTorch saves state as plain dictionaries, never as live objects. <a href="{{ src('torch/nn/modules/module.py', 2199, 2287) }}"><code>Module.state_dict()</code></a> maps each parameter's and buffer's dotted name (<code>layers.0.attn.q_proj.weight</code>) to its tensor; <a href="{{ src('torch/nn/modules/module.py', 2535, 2648) }}"><code>load_state_dict(sd, strict=True)</code></a> copies tensors back by name and, with <code>strict=False</code>, returns the missing and unexpected keys instead of raising. Because the file holds names and tensors, not code, the model class must be rebuilt by your code before loading.
+</p>
+<p>
+  <a href="{{ src('torch/optim/optimizer.py', 700, 791) }}"><code>Optimizer.state_dict()</code></a> has two entries: <code>state</code>, the per-parameter tensors (for Adam: <code>exp_avg</code>, <code>exp_avg_sq</code> and <code>step</code>), and <code>param_groups</code>, the hyperparameters of each group with parameters replaced by integer ids. Its docstring is explicit that "the parameter itself is NOT saved"; <a href="{{ src('torch/optim/optimizer.py', 900, 1046) }}"><code>load_state_dict</code></a> matches ids to the new optimizer's parameters by order, so the parameters must be passed in the same order as when the checkpoint was made. A learning-rate scheduler's <a href="{{ src('torch/optim/lr_scheduler.py', 182, 191) }}"><code>state_dict</code></a> is its <code>__dict__</code> minus the optimizer; restoring it (<a href="{{ src('torch/optim/lr_scheduler.py', 192, 200) }}"><code>load_state_dict</code></a>) restores how many steps have been taken. See <a href="/ml-models/optimizers">optimizers</a> and <a href="/ml-models/learning-rate-schedules">learning-rate schedules</a> for what those states mean.
+</p>
+
+<h3 id="rng-and-data">Random state and data position</h3>
+
+<p>
+  Shuffling, dropout, data augmentation and random cropping all draw from generators. <a href="{{ src('torch/random.py', 39, 48) }}"><code>torch.get_rng_state()</code></a> returns the CPU generator's state as a byte tensor and <a href="{{ src('torch/random.py', 27, 38) }}"><code>set_rng_state</code></a> restores it; <a href="{{ src('torch/cuda/random.py', 45, 50) }}"><code>torch.cuda.get_rng_state_all()</code></a> and <a href="{{ src('torch/cuda/random.py', 79, 88) }}"><code>set_rng_state_all</code></a> do the same for every GPU. Python's <code>random</code> and NumPy have their own generators, saved separately.
+</p>
+<p>
+  The position in the data is the piece most often lost. <code>torch.utils.data.DataLoader</code> at this pin has no <code>state_dict</code>, so the epoch and the number of batches already consumed must be saved by your loop. The order itself can be made a pure function of saved numbers: <a href="{{ src('torch/utils/data/distributed.py', 107, 157) }}"><code>DistributedSampler.__iter__</code></a> shuffles with a fresh generator seeded with <code>self.seed + self.epoch</code>, so after <code>set_epoch(epoch)</code> the order is reproduced exactly, and resuming mid-epoch means skipping the batches already seen. The plain <a href="{{ src('torch/utils/data/sampler.py', 160, 166) }}"><code>RandomSampler</code></a>, given no generator, draws a fresh seed from the global generator on every <code>iter()</code>, so its order depends on the RNG state at the start of the epoch. The worked example uses the <code>seed + epoch</code> scheme for the order and a separate stateful generator for input noise, so both pieces have to be restored.
+</p>
+
+<h3 id="saving-and-loading">Saving and loading files</h3>
+
+<p>
+  <a href="{{ src('torch/serialization.py', 944, 1020) }}"><code>torch.save(obj, f)</code></a> pickles the object with protocol <code>DEFAULT_PROTOCOL = 2</code> and writes tensor storages as separate entries in a zip archive (<code>_use_new_zipfile_serialization=True</code> by default). Write to a temporary file and rename it over the old one, so a crash mid-write never leaves a half-written file under the name your resume logic will read; keep the last few checkpoints rather than one, in case the newest is bad.
+</p>
+<p>
+  <a href="{{ src('torch/serialization.py', 1315, 1649) }}"><code>torch.load</code></a> takes <code>map_location</code> (load GPU tensors onto the CPU or another device), <code>mmap</code> (map the file instead of reading it into memory) and <code>weights_only</code>. Unpickling can call any importable function, because a pickle can say "call this global with these arguments" (Python's <code>__reduce__</code>). Since 2.6 <code>weights_only</code> defaults to <code>True</code>; the <a href="{{ src('torch/serialization.py', 76, 81) }}">error message</a> says setting it to <code>False</code> "can result in arbitrary code execution". With <code>weights_only=True</code> a <a href="{{ src('torch/_weights_only_unpickler.py', 331, 383) }}">restricted unpickler</a> resolves each <code>GLOBAL</code> opcode against an <a href="{{ src('torch/_weights_only_unpickler.py', 174, 228) }}">allowlist</a> (tensor rebuild functions, dtypes, <code>torch.Size</code>, <code>nn.Parameter</code>, <code>collections.OrderedDict</code>, <code>collections.Counter</code>, and others), refuses the modules <code>sys</code>, <code>os</code>, <code>posix</code> and <code>nt</code> outright, and raises "Unsupported global" for anything else. Your own trusted classes can be added with <a href="{{ src('torch/serialization.py', 282, 317) }}"><code>torch.serialization.add_safe_globals</code></a>. Formats such as safetensors avoid pickle entirely by storing only a header and raw tensor bytes.
+</p>
+
+<h3 id="size-and-frequency">How big, and how often</h3>
+
+<p>
+  With <a href="/ml-models/mixed-precision">mixed precision</a> and Adam, each parameter carries a bf16 copy for compute (2 bytes), an fp32 master copy (4) and two fp32 moments (4 + 4): 14 bytes to resume, against 2 bytes for an inference export. The ZeRO paper counts the same 12 bytes of fp32 optimizer state plus 2 bytes each of half-precision weights and gradients, 16 in all, in memory; gradients are recomputed every step and are not saved.
+</p>
+<p>
+  Saving often wastes time writing; saving rarely wastes time redoing lost work. If writing a checkpoint stops training for C seconds and failures arrive on average every M seconds, saving every T seconds loses about C/T of the time to writing and, on a failure, half an interval of work on average. Young (1974) minimized that first-order waste:
+</p>
+<p class="ml-formula">waste(T) ≈ C / T + T / (2M) &nbsp;&nbsp;⇒&nbsp;&nbsp; T* = √(2 C M)</p>
+<p>
+  At T* the two terms are equal. Making writes cheaper shortens the best interval and lowers the waste, which is why large jobs save asynchronously: <a href="{{ src('torch/distributed/checkpoint/state_dict_saver.py', 221, 397) }}"><code>dcp.async_save</code></a> first copies the state to staging storage (CPU memory by default) and then runs the save in a separate thread, so training is blocked only for the copy. The formula assumes failures are independent and C is much smaller than M; a job on N machines has roughly N times the failure rate of one.
+</p>
+
+<h3 id="distributed-checkpoints">Distributed checkpoints</h3>
+
+<p>
+  When <a href="/ml-models/distributed-training">FSDP or tensor parallelism</a> shards parameters and optimizer state across ranks, gathering everything onto rank 0 to call <code>torch.save</code> is slow and may not fit in its memory. <code>torch.distributed.checkpoint</code> (<a href="{{ src('torch/distributed/checkpoint/__init__.py', 1, 22) }}">DCP</a>) instead has every rank write its own shards in parallel: <a href="{{ src('torch/distributed/checkpoint/state_dict_saver.py', 89, 205) }}"><code>dcp.save</code></a> "handles <code>ShardedTensor</code>, and <code>DTensor</code> by having each rank only save their local shards", and a <code>.metadata</code> file records which piece of which tensor lives where. On <a href="{{ src('torch/distributed/checkpoint/state_dict_loader.py', 60, 202) }}"><code>dcp.load</code></a> "each rank will try to read the least amount of data necessary"; the <a href="{{ src('torch/distributed/checkpoint/default_planner.py', 478, 524) }}">default load planner</a> "handles resharding by issuing multiple read requests against storage", so a checkpoint saved on 64 GPUs can be loaded on 48. <a href="{{ src('torch/distributed/checkpoint/state_dict.py', 1271, 1361) }}"><code>get_state_dict(model, optimizers)</code></a> returns model and optimizer state dicts keyed by canonical names that "can be resharded with a different number of trainers and/or different parallelisms", and <a href="{{ src('torch/distributed/checkpoint/state_dict.py', 1481, 1544) }}"><code>set_state_dict</code></a> puts them back. DCP loads in place: tensors in the state dict you pass must already be allocated with their destination layout.
+</p>
+
+<h3 id="activation-checkpointing">Activation checkpointing</h3>
+
+<p>
+  <a href="/ml-models/backpropagation">Backpropagation</a> needs the activations of every layer, so by default the forward pass keeps all of them, and activation memory grows with depth × batch × sequence length. <a href="{{ src('torch/utils/checkpoint.py', 423, 617) }}"><code>torch.utils.checkpoint.checkpoint(fn, *args)</code></a> runs <code>fn</code> without saving its intermediate tensors, keeps only its inputs, and runs <code>fn</code> again during backward to rebuild them; its docstring describes this as trading compute for memory. With <code>preserve_rng_state=True</code> (the default) it stashes and restores the RNG state so dropout masks in the recomputation match the original forward. Pass <code>use_reentrant=False</code>; the docstring recommends it, and it works with <code>torch.autograd.grad</code> and keyword arguments.
+</p>
+<p>
+  <a href="{{ src('torch/utils/checkpoint.py', 701, 792) }}"><code>checkpoint_sequential(functions, segments, input)</code></a> splits a sequence of n layers into k segments of ⌊n/k⌋ layers; all segments except the last are checkpointed and the last absorbs the remainder. At the peak, memory holds the k − 1 saved segment inputs plus one segment's activations, about k + n/k layers' worth, which is smallest near k = √n: memory grows with √n instead of n, for about one extra forward pass. That is the sublinear-memory result of Chen et al. (2016). Transformer libraries usually checkpoint each block, saving one tensor per block and recomputing attention and MLP intermediates.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>Module.state_dict</code></td>
+        <td>→ {dotted name: tensor}</td>
+        <td>Parameters and persistent buffers by name; no code, no class.</td>
+        <td><a href="{{ src('torch/nn/modules/module.py', 2199, 2287) }}">module.py 2199-2287</a></td>
+      </tr>
+      <tr>
+        <td><code>Module.load_state_dict</code></td>
+        <td>sd, <code>strict=True</code>, <code>assign=False</code></td>
+        <td>Copies tensors in by name; returns missing and unexpected keys.</td>
+        <td><a href="{{ src('torch/nn/modules/module.py', 2535, 2648) }}">module.py 2535-2648</a></td>
+      </tr>
+      <tr>
+        <td><code>Optimizer.state_dict</code></td>
+        <td>{"state": {id: {...}}, "param_groups": [...]}</td>
+        <td>Per-parameter moments and step; hyperparameters per group, parameters as ids.</td>
+        <td><a href="{{ src('torch/optim/optimizer.py', 700, 791) }}">optimizer.py 700-791</a></td>
+      </tr>
+      <tr>
+        <td><code>Optimizer.load_state_dict</code></td>
+        <td>state dict from the same parameter order</td>
+        <td>Maps saved ids to the current parameters and casts state to their device.</td>
+        <td><a href="{{ src('torch/optim/optimizer.py', 900, 1046) }}">optimizer.py 900-1046</a></td>
+      </tr>
+      <tr>
+        <td><code>LRScheduler.state_dict</code></td>
+        <td>__dict__ minus the optimizer</td>
+        <td>How far along the schedule is (<code>last_epoch</code>) and its settings.</td>
+        <td><a href="{{ src('torch/optim/lr_scheduler.py', 182, 200) }}">lr_scheduler.py 182-200</a></td>
+      </tr>
+      <tr>
+        <td><code>torch.get_rng_state</code> / <code>cuda.get_rng_state_all</code></td>
+        <td>ByteTensor / list of ByteTensor</td>
+        <td>CPU and per-GPU generator states, restored with the matching setters.</td>
+        <td><a href="{{ src('torch/random.py', 27, 48) }}">random.py 27-48</a>, <a href="{{ src('torch/cuda/random.py', 45, 88) }}">cuda/random.py 45-88</a></td>
+      </tr>
+      <tr>
+        <td><code>DistributedSampler</code></td>
+        <td>seed, epoch, rank, num_replicas</td>
+        <td>Order from <code>seed + epoch</code>, so <code>set_epoch</code> reproduces it.</td>
+        <td><a href="{{ src('torch/utils/data/distributed.py', 107, 157) }}">distributed.py 107-157</a></td>
+      </tr>
+      <tr>
+        <td><code>torch.save</code> / <code>torch.load</code></td>
+        <td>obj, f; <code>map_location</code>, <code>weights_only</code>, <code>mmap</code></td>
+        <td>Zip archive of a protocol-2 pickle plus raw storages; restricted unpickling by default.</td>
+        <td><a href="{{ src('torch/serialization.py', 944, 1020) }}">serialization.py 944-1020</a>, <a href="{{ src('torch/serialization.py', 1315, 1649) }}">1315-1649</a></td>
+      </tr>
+      <tr>
+        <td><code>add_safe_globals</code></td>
+        <td>list of classes or functions</td>
+        <td>Extends the <code>weights_only</code> allowlist with globals you trust.</td>
+        <td><a href="{{ src('torch/serialization.py', 282, 317) }}">serialization.py 282-317</a></td>
+      </tr>
+      <tr>
+        <td><code>dcp.save</code> / <code>dcp.async_save</code> / <code>dcp.load</code></td>
+        <td>state_dict, <code>checkpoint_id</code></td>
+        <td>Each rank writes or reads only its shards; load reshards to the current layout.</td>
+        <td><a href="{{ src('torch/distributed/checkpoint/state_dict_saver.py', 89, 397) }}">state_dict_saver.py 89-397</a>, <a href="{{ src('torch/distributed/checkpoint/state_dict_loader.py', 60, 202) }}">state_dict_loader.py 60-202</a></td>
+      </tr>
+      <tr>
+        <td><code>get_state_dict</code> / <code>set_state_dict</code></td>
+        <td>model, optimizers</td>
+        <td>Canonical-name state dicts for FSDP, DDP and tensor-parallel models.</td>
+        <td><a href="{{ src('torch/distributed/checkpoint/state_dict.py', 1271, 1361) }}">state_dict.py 1271-1361</a>, <a href="{{ src('torch/distributed/checkpoint/state_dict.py', 1481, 1544) }}">1481-1544</a></td>
+      </tr>
+      <tr>
+        <td><code>checkpoint</code> / <code>checkpoint_sequential</code></td>
+        <td>fn, *args, <code>use_reentrant=False</code>; segments</td>
+        <td>Activation checkpointing: keep inputs, recompute the rest in backward.</td>
+        <td><a href="{{ src('torch/utils/checkpoint.py', 423, 617) }}">checkpoint.py 423-617</a>, <a href="{{ src('torch/utils/checkpoint.py', 701, 792) }}">701-792</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>A collaborator's checkpoint fails to load with "Unsupported global: GLOBAL mylib.config.TrainConfig". Is setting <code>weights_only=False</code> the fix?</summary>
+  <p>Only if you trust the file completely, because <code>weights_only=False</code> lets the pickle call any importable function. The narrower fix is <code>torch.serialization.add_safe_globals([TrainConfig])</code> after checking that the class is yours and harmless to construct, or better, asking for a checkpoint that stores the config as a plain dict. The error is the allowlist doing its job: the file asks to build an object the loader does not know is safe.</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-run">A run that is interrupted</h3>
+  <p>
+    Fit y ≈ w·x + b to {{ e.data|length }} points with Adam (β = {{ f(e.betas[0], 1) }}, {{ f(e.betas[1], 3) }}), batches of {{ e.batch_size }} for {{ e.epochs }} epochs ({{ r.total_steps }} steps). The learning rate warms up linearly over {{ e.warmup }} steps to {{ f(e.lr, 1) }}, then follows a cosine to zero. Each epoch's order is <code>Random(seed + epoch)</code>, as in <code>DistributedSampler</code>, and each input gets Gaussian jitter (σ = {{ e.jitter }}) from one stateful generator, standing in for dropout or augmentation. The run is checkpointed after step {{ e.save_at }}, in the middle of epoch {{ saved.data.epoch + 1 }}.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Step</th><th>Epoch</th><th>Batch (point ids)</th><th>Learning rate</th><th>w</th><th>b</th><th>Loss on all points</th></tr></thead>
+      <tbody>
+        {% for s in r.straight %}
+        <tr{% if loop.index == e.save_at %} style="font-weight: bold"{% endif %}>
+          <td>{{ loop.index }}{% if loop.index == e.save_at %} (save){% endif %}</td>
+          <td>{{ s.epoch + 1 }}</td>
+          <td>{{ s.batch|join(", ") }}</td>
+          <td>{{ f(s.lr, 4) }}</td>
+          <td>{{ f(s.w, 4) }}</td>
+          <td>{{ f(s.b, 4) }}</td>
+          <td>{{ f(s.loss, 4) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The checkpoint after step {{ e.save_at }} holds w = {{ f(saved.model.w, 4) }}, b = {{ f(saved.model.b, 4) }}; Adam's step count t = {{ saved.optimizer.t }} and moments m = ({{ f(saved.optimizer.m[0], 4) }}, {{ f(saved.optimizer.m[1], 4) }}), v = ({{ f(saved.optimizer.v[0], 4) }}, {{ f(saved.optimizer.v[1], 4) }}); the schedule's step {{ saved.scheduler.step }}; the jitter generator's state; and the data position: epoch {{ saved.data.epoch + 1 }}, {{ saved.data.batch }} of {{ per_epoch }} batches done.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-resume">Resume five ways</h3>
+  <p>
+    Restoring everything replays steps {{ e.save_at + 1 }} to {{ r.total_steps }} bit for bit: every w, b, learning rate and batch equals the uninterrupted run's exactly, not approximately. Each other row restores everything except one piece, which it resets to its value at the start of training (the position resets to the start of the current epoch, the common bug when only the epoch is saved).
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Resume</th><th>Step {{ e.save_at + 1 }} batch</th><th>Step {{ e.save_at + 1 }} learning rate</th><th>Identical?</th><th>Final w</th><th>Final b</th><th>Final loss</th><th>Largest gap in w or b</th></tr></thead>
+      <tbody>
+        {% for key, label in names %}
+        {% set run = runs[key] %}
+        {% set nxt = run.log[e.save_at] %}
+        <tr>
+          <td>{{ label }}</td>
+          <td>{{ nxt.batch|join(", ") }}</td>
+          <td>{{ f(nxt.lr, 4) }}</td>
+          <td>{{ "yes" if run.identical else "no, from step " ~ run.first_diverged }}</td>
+          <td>{{ f(run.w, 4) }}</td>
+          <td>{{ f(run.b, 4) }}</td>
+          <td>{{ f(run.loss, 4) }}</td>
+          <td>{{ f(run.max_gap, 4) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% set opt_run = runs.optimizer.log[e.save_at] %}
+  {% set sched_run = runs.scheduler.log[e.save_at] %}
+  {% set lower = namespace(n=0) %}
+  {% for key, label in names[1:] %}{% if runs[key].loss < runs.full.loss %}{% set lower.n = lower.n + 1 %}{% endif %}{% endfor %}
+  <ul>
+    <li><strong>Optimizer.</strong> With t reset to 1, Adam's bias correction makes the first step's size about the full learning rate in the gradient's sign direction, whatever the gradient's size; the saved moments would have damped it. The gap peaks at {{ f(runs.optimizer.max_gap, 3) }}.</li>
+    <li><strong>Scheduler.</strong> The warmup starts again, so step {{ e.save_at + 1 }} uses {{ f(sched_run.lr, 4) }} instead of {{ f(r.straight[e.save_at].lr, 4) }}, and the next steps climb back to {{ f(e.lr, 1) }} where the schedule should be decaying. This is the largest gap of the four ({{ f(runs.scheduler.max_gap, 3) }}).</li>
+    <li><strong>RNG.</strong> The batches and learning rates are right, but the jitter replays the noise from step 1. The gap is small here ({{ f(runs.rng.max_gap, 3) }}), but the run is no longer reproducible, and with dropout in a real network every mask changes.</li>
+    <li><strong>Position.</strong> Epoch {{ saved.data.epoch + 1 }} starts over, so its first {{ saved.data.batch }} batches are seen twice and the last {{ saved.data.batch }} batches of the final epoch are never reached before the step budget ends.</li>
+  </ul>
+  <p>
+    {{ lower.n }} of the four broken resumes end with a lower loss than the uninterrupted run ({{ f(runs.full.loss, 4) }}). A broken resume is not necessarily worse on one run; it is a different, unrepeatable run, which is what makes these bugs hard to find from the loss curve.
+  </p>
+</div>
+
+{% set x0 = 60 %}
+{% set xs = 45 %}
+{% set yb = 250 %}
+{% set ys = 80 %}
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 290" role="img" aria-labelledby="ckpt-resume-title ckpt-resume-desc">
+    <title id="ckpt-resume-title">The weight w during the uninterrupted run and four broken resumes</title>
+    <desc id="ckpt-resume-desc">The weight w over {{ r.total_steps }} steps. The uninterrupted run, which the full resume matches exactly, rises from 0 to {{ f(runs.full.w, 3) }}. From the checkpoint at step {{ e.save_at }}, the run that forgot the scheduler overshoots to {{ f(runs.scheduler.w, 3) }}, the run that forgot the optimizer ends at {{ f(runs.optimizer.w, 3) }}, and the runs that forgot the RNG or the data position stay close to the uninterrupted curve, ending at {{ f(runs.rng.w, 3) }} and {{ f(runs.data_position.w, 3) }}.</desc>
+    <g font-size="12">
+      <line x1="{{ x0 }}" y1="{{ yb }}" x2="{{ x0 + xs * r.total_steps }}" y2="{{ yb }}" class="d-line"></line>
+      <line x1="{{ x0 }}" y1="{{ yb }}" x2="{{ x0 }}" y2="30" class="d-line"></line>
+      {% for t in [0, 1, 2] %}
+      <text x="{{ x0 - 8 }}" y="{{ yb - t * ys + 4 }}" text-anchor="end" class="d-muted">{{ t }}</text>
+      <line x1="{{ x0 }}" y1="{{ yb - t * ys }}" x2="{{ x0 + xs * r.total_steps }}" y2="{{ yb - t * ys }}" class="d-line ml-dashed" stroke-opacity="0.3"></line>
+      {% endfor %}
+      {% for step in range(0, r.total_steps + 1, 2) %}
+      <text x="{{ x0 + xs * step }}" y="{{ yb + 18 }}" text-anchor="middle" class="d-muted">{{ step }}</text>
+      {% endfor %}
+      <text x="{{ x0 + xs * r.total_steps / 2 }}" y="{{ yb + 34 }}" text-anchor="middle" class="d-muted">step</text>
+      <text x="{{ x0 - 30 }}" y="140" class="d-muted">w</text>
+      <line x1="{{ x0 + xs * e.save_at }}" y1="{{ yb }}" x2="{{ x0 + xs * e.save_at }}" y2="30" class="d-line ml-dashed"></line>
+      <text x="{{ x0 + xs * e.save_at + 6 }}" y="{{ yb - 8 }}" class="d-muted">checkpoint</text>
+      <polyline fill="none" stroke-width="3" style="stroke: var(--jj-accent)" points="{{ x0 }},{{ yb }} {% for s in r.straight %}{{ x0 + xs * loop.index }},{{ '%.1f'|format(yb - s.w * ys) }} {% endfor %}"></polyline>
+      {% for key, label in names[1:] %}
+      <polyline fill="none" stroke-width="2"{% if key in ("rng", "data_position") %} stroke-dasharray="6 4"{% endif %} style="stroke: var({{ colors[key] }})" points="{{ x0 + xs * e.save_at }},{{ '%.1f'|format(yb - saved.model.w * ys) }} {% for s in runs[key].log[e.save_at:] %}{{ x0 + xs * (e.save_at + loop.index) }},{{ '%.1f'|format(yb - s.w * ys) }} {% endfor %}"></polyline>
+      {% endfor %}
+      {% for key, label in names %}
+      {% set ly = 36 + loop.index0 * 18 %}
+      <line x1="{{ x0 + 14 }}" y1="{{ ly - 4 }}" x2="{{ x0 + 40 }}" y2="{{ ly - 4 }}" stroke-width="{{ 3 if key == 'full' else 2 }}" style="stroke: var({{ colors[key] }})"></line>
+      <text x="{{ x0 + 48 }}" y="{{ ly }}">{{ "Uninterrupted = full resume" if key == "full" else label }}</text>
+      {% endfor %}
+    </g>
+  </svg>
+  <p class="ml-caption">Curves leave the uninterrupted run at the checkpoint. The scheduler bug is the most visible because it re-applies a large learning rate late in training; the RNG and position bugs are nearly invisible in w, and that is why they survive.</p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-size">How big is a resumable checkpoint?</h3>
+  <p>For a {{ (e.params / 1e9)|int }}-billion-parameter model trained in bf16 with Adam:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Piece</th><th>Bytes per parameter</th><th>Size</th><th>Why</th></tr></thead>
+      <tbody>
+        {% for row in sz.rows %}
+        <tr><td>{{ row.name }}</td><td>{{ row.bytes_per_param }}</td><td>{{ f(row.gb, 0) }} GB</td><td>{{ row.note }}</td></tr>
+        {% endfor %}
+        <tr><td><strong>Resumable checkpoint</strong></td><td><strong>{{ sz.bytes_per_param }}</strong></td><td><strong>{{ f(sz.full_gb, 0) }} GB</strong></td><td>{{ f(sz.ratio, 0) }}× the {{ f(sz.weights_gb, 0) }} GB inference export</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>The optimizer state alone is six times the bf16 weights, which is why sharding it (ZeRO, FSDP) and writing shards in parallel matter more than compressing the weights.</p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-interval">How often to save</h3>
+  <p>
+    Suppose the whole job fails on average every {{ e.mtbf_hours }} hours (M = {{ e.mtbf_hours * 3600 }} s), and a blocking save stops training for C = {{ e.save_seconds }} s. Young's interval is T* = √(2 · {{ e.save_seconds }} · {{ e.mtbf_hours * 3600 }}) = {{ f(i0.interval, 0) }} s ≈ {{ mins(i0.interval) }}, and both waste terms equal {{ pct(e.save_seconds / i0.interval, 2) }} there, {{ pct(i0.waste, 2) }} in all. If an asynchronous save blocks for only C = {{ e.async_seconds }} s, T* drops to {{ mins(i1.interval) }} and the waste to {{ pct(i1.waste, 2) }}.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Blocking time C</th>{% for row in i0.sweep %}<th>{% if row.interval == i0.interval %}T*{% else %}T = {{ mins(row.interval) }}{% endif %}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for item in ex.intervals %}
+        <tr>
+          <td>{{ item.save }} s</td>
+          {% for row in item.sweep %}<td>{% if row.interval == item.interval %}{{ mins(row.interval) }}: {% endif %}{{ pct(row.waste, 2) }}</td>{% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>The minimum is flat: saving at half or twice T* costs little extra. Being off by ten times costs a lot in either direction.</p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-reshard">Loading {{ e.old_world }} shards on {{ e.new_world }} ranks</h3>
+  <p>
+    A {{ e.rows }}-row parameter was saved row-sharded across {{ e.old_world }} ranks and is loaded on {{ e.new_world }}. Each new rank owns a contiguous block of rows and reads, from each saved shard that overlaps it, only the overlapping rows. This is the kind of read plan DCP's metadata lets the load planner make.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>New rank</th><th>Owns rows</th><th>Reads</th></tr></thead>
+      <tbody>
+        {% for p in ex.reshard.new %}
+        <tr>
+          <td>{{ p.rank }}</td>
+          <td>{{ p.rows[0] }}–{{ p.rows[1] - 1 }}</td>
+          <td>{% for read in p.reads %}rows {{ read.rows[0] }}–{{ read.rows[1] - 1 }} from old rank {{ read.old_rank }} (offset {{ read.offset }} in its shard){% if not loop.last %}; {% endif %}{% endfor %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% set rx0 = 60 %}
+{% set rw = 520 / e.rows %}
+{% set shard_colors = ["--jj-accent", "--jj-violet", "--jj-amber", "--jj-green"] %}
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 220" role="img" aria-labelledby="ckpt-reshard-title ckpt-reshard-desc">
+    <title id="ckpt-reshard-title">Resharding {{ e.rows }} rows from {{ e.old_world }} saved shards onto {{ e.new_world }} ranks</title>
+    <desc id="ckpt-reshard-desc">Top: the saved checkpoint, {{ e.old_world }} shards of {{ e.rows // e.old_world }} rows each, one colour per old rank. Bottom: the {{ e.new_world }} new ranks of {{ e.rows // e.new_world }} rows each, every new rank's block coloured by the old shard each row is read from. Every new rank reads from two old shards, and every row is read exactly once.</desc>
+    <g font-size="12">
+      <text x="10" y="56" class="d-muted">saved</text>
+      <text x="10" y="166" class="d-muted">loaded</text>
+      {% for a, b in ex.reshard.old %}
+      <rect x="{{ rx0 + a * rw }}" y="36" width="{{ (b - a) * rw }}" height="32" class="d-box" style="fill: var({{ shard_colors[loop.index0] }})" fill-opacity="0.35"></rect>
+      <text x="{{ rx0 + (a + b) / 2 * rw }}" y="57" text-anchor="middle">old rank {{ loop.index0 }}</text>
+      {% endfor %}
+      {% for p in ex.reshard.new %}
+      {% for read in p.reads %}
+      <rect x="{{ rx0 + read.rows[0] * rw }}" y="146" width="{{ (read.rows[1] - read.rows[0]) * rw }}" height="32" style="fill: var({{ shard_colors[read.old_rank] }})" fill-opacity="0.35"></rect>
+      <polygon points="{{ rx0 + read.rows[0] * rw }},68 {{ rx0 + read.rows[1] * rw }},68 {{ rx0 + read.rows[1] * rw }},146 {{ rx0 + read.rows[0] * rw }},146" style="fill: var({{ shard_colors[read.old_rank] }})" fill-opacity="0.08"></polygon>
+      {% endfor %}
+      <rect x="{{ rx0 + p.rows[0] * rw }}" y="146" width="{{ (p.rows[1] - p.rows[0]) * rw }}" height="32" rx="2" class="d-box" style="fill: none" stroke-width="2"></rect>
+      <text x="{{ rx0 + (p.rows[0] + p.rows[1]) / 2 * rw }}" y="167" text-anchor="middle" font-weight="bold">new rank {{ p.rank }}</text>
+      {% endfor %}
+      {% for row in range(e.rows + 1) %}
+      <text x="{{ rx0 + row * rw }}" y="28" text-anchor="middle" class="d-muted" font-size="10">{{ row }}</text>
+      {% endfor %}
+      <text x="{{ rx0 + 260 }}" y="205" text-anchor="middle" class="d-muted">row index; each colour band is one read request</text>
+    </g>
+  </svg>
+  <p class="ml-caption">No rank reads the whole tensor. With real FSDP or tensor-parallel layouts the shards are multi-dimensional, but the plan is the same: intersect what each rank needs with what each saved chunk holds.</p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-activation">Activation checkpointing a {{ e.layers }}-layer stack</h3>
+  <p>
+    Count memory in units of one layer's saved activations and treat a segment's input as one unit. <code>checkpoint_sequential</code> with k segments keeps k − 1 segment inputs and, at the peak, one segment's activations; every checkpointed layer is run forward a second time.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Segments k</th><th>Layers per segment</th><th>Saved inputs</th><th>Peak memory (units)</th><th>Layers recomputed</th></tr></thead>
+      <tbody>
+        {% for c in ex.activation %}
+        <tr{% if c.segments == ex.sqrt_layers|int %} style="font-weight: bold"{% endif %}>
+          <td>{{ c.segments }}</td><td>{{ c.segment_size }}</td><td>{{ c.stored_inputs }}</td><td>{{ c.peak }}</td><td>{{ c.recomputed }} of {{ e.layers }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The peak is lowest at k = {{ ex.sqrt_layers|int }} = √{{ e.layers }}: {{ ex.activation[2].peak }} units instead of {{ ex.activation[0].peak }}. More segments only add saved inputs; with one layer per segment everything is saved again as inputs and nothing is gained. If backward costs about twice the forward, recomputing {{ ex.activation[2].recomputed }} of {{ e.layers }} layers adds {{ ex.activation[2].recomputed }}/{{ e.layers }} of a forward to 3 forward-equivalents of work, about {{ pct(ex.activation[2].recomputed / e.layers / 3, 0) }} more compute.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-weights-only">What <code>weights_only</code> sees in a pickle</h3>
+  <p>
+    Each object is pickled with protocol {{ 2 }}, as <code>torch.save</code> does, and its opcodes are listed with <code>pickletools</code> without unpickling anything. The verdict uses an allowlist of two entries copied from PyTorch's (<code>collections.OrderedDict</code> and <code>collections.Counter</code>); the real list adds the tensor and dtype globals.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Object pickled</th><th>Bytes</th><th>GLOBAL opcodes</th><th>Restricted load</th></tr></thead>
+      <tbody>
+        {% for c in ex.pickles %}
+        <tr>
+          <td>{{ c.name }}</td>
+          <td>{{ c.size }}</td>
+          <td>{% if c.globals %}<code>{{ c.globals|join(", ") }}</code>{% else %}none{% endif %}</td>
+          <td>{% if c.loads %}loads{% else %}refused: <code>{{ c.blocked|join(", ") }}</code> is not allowed{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The third object's <code>__reduce__</code> tells the unpickler to call <code>print</code> with a string. A plain <code>pickle.load</code> would call it; a real attack names <code>os.system</code> instead. The restricted loader refuses before calling anything, because the decision is made when the <code>GLOBAL</code> opcode is read.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import os, random
+import torch
+import torch.distributed.checkpoint as dcp
+from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
+from torch.utils.checkpoint import checkpoint
+
+def save(path, step, model, opt, sched, scaler, epoch, batches_done):
+    state = {
+        "model": model.state_dict(),
+        "optimizer": opt.state_dict(),
+        "scheduler": sched.state_dict(),
+        "scaler": scaler.state_dict(),
+        "rng": {"torch": torch.get_rng_state(),
+                "cuda": torch.cuda.get_rng_state_all(),
+                "python": random.getstate()},
+        "data": {"epoch": epoch, "batches_done": batches_done},
+        "step": step,
+    }
+    tmp = path + ".tmp"
+    torch.save(state, tmp)
+    os.replace(tmp, path)                       # atomic: never a half-written file at path
+
+def resume(path, model, opt, sched, scaler, sampler):
+    state = torch.load(path, map_location="cpu", weights_only=True)
+    model.load_state_dict(state["model"])        # model already built and on its device
+    opt.load_state_dict(state["optimizer"])      # same parameter order as when saved
+    sched.load_state_dict(state["scheduler"])
+    scaler.load_state_dict(state["scaler"])
+    torch.set_rng_state(state["rng"]["torch"])
+    torch.cuda.set_rng_state_all(state["rng"]["cuda"])
+    random.setstate(state["rng"]["python"])
+    sampler.set_epoch(state["data"]["epoch"])    # DistributedSampler: order = seed + epoch
+    return state["step"], state["data"]["epoch"], state["data"]["batches_done"]
+
+# Sharded models (FSDP, tensor parallel): every rank calls these.
+def save_sharded(ckpt_dir, model, opt):
+    model_sd, optim_sd = get_state_dict(model, opt)
+    dcp.save({"model": model_sd, "optim": optim_sd}, checkpoint_id=ckpt_dir)
+
+def load_sharded(ckpt_dir, model, opt):        # world size may differ from the save
+    model_sd, optim_sd = get_state_dict(model, opt)
+    state = {"model": model_sd, "optim": optim_sd}
+    dcp.load(state, checkpoint_id=ckpt_dir)      # fills the tensors in place
+    set_state_dict(model, opt, model_state_dict=state["model"], optim_state_dict=state["optim"])
+
+# Activation checkpointing: keep each block's input, recompute its insides in backward.
+class Stack(torch.nn.Module):
+    def __init__(self, blocks):
+        super().__init__()
+        self.blocks = torch.nn.ModuleList(blocks)
+
+    def forward(self, x):
+        for block in self.blocks:
+            x = checkpoint(block, x, use_reentrant=False)
+        return x</code></pre>
+
+<p>
+  In the loop, skip <code>batches_done</code> batches of the resumed epoch before training, and call <code>save</code> every T* seconds of wall time rather than every fixed number of steps if step times vary. The skip costs reading those batches again; a loader that saves its own position avoids that.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Choice</th><th>Gains</th><th>Costs</th></tr></thead>
+    <tbody>
+      <tr><td>Full training state vs weights only</td><td>Exact, reproducible resume</td><td>{{ f(sz.ratio, 0) }}× the bytes with bf16 + Adam; longer writes</td></tr>
+      <tr><td>Save more often</td><td>Less work lost per failure</td><td>More time blocked writing; the optimum is T* = √(2CM)</td></tr>
+      <tr><td>Asynchronous save</td><td>Blocking time drops to the copy into CPU memory</td><td>Extra host memory for the staged copy; a failure during the background write loses that checkpoint</td></tr>
+      <tr><td>One <code>torch.save</code> file vs DCP</td><td>Simple, portable, easy to inspect</td><td>Must gather to one rank; DCP writes in parallel and reshards on load but needs a matching state-dict structure</td></tr>
+      <tr><td><code>weights_only=True</code></td><td>Loading cannot run arbitrary code</td><td>Custom classes need <code>add_safe_globals</code>; store configs as plain dicts instead</td></tr>
+      <tr><td>Activation checkpointing</td><td>Memory from ∝ n toward ∝ √n; bigger batches or longer sequences fit</td><td>About one extra forward pass (≈ a third more compute); more segments than √n waste memory again</td></tr>
+      <tr><td>Skip-ahead resume vs a stateful loader</td><td>No extra machinery</td><td>Reads and discards the batches already used; slow if an epoch is huge</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>Your saves now block for {{ e.async_seconds }} s instead of {{ e.save_seconds }} s thanks to <code>async_save</code>. Should you save less often, the same, or more often?</summary>
+  <p>More often. T* = √(2CM) shrinks with √C: here from {{ mins(i0.interval) }} to {{ mins(i1.interval) }}. Cheaper writes make each save cost less than the work it protects, and the total waste falls from {{ pct(i0.waste, 1) }} to {{ pct(i1.waste, 1) }}. Keeping the old interval with the cheaper save would leave the work-lost term where it was.</p>
+</details>
+
+<details class="ml-quiz">
+  <summary>A resumed run's loss is fine, but rerunning the same resume gives slightly different results from the original job. Which piece of state is the first suspect?</summary>
+  <p>The random state. Batches and the learning rate would show up as a visible bump; a reset generator changes dropout masks, augmentation and possibly data-worker seeds while the loss looks normal, as in the RNG row above. Save the CPU, GPU and Python generator states (and seed workers from saved values), and check that the resumed run reproduces a known batch and loss at the first step after the checkpoint.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<p>
+  The state being saved is defined on other pages: the loop that produces it on <a href="/ml-models/training-loop">training loop</a>, Adam's moments on <a href="/ml-models/optimizers">optimizers</a>, warmup and cosine on <a href="/ml-models/learning-rate-schedules">learning-rate schedules</a>, the grad scaler and master weights on <a href="/ml-models/mixed-precision">mixed precision</a>, and <code>DistributedSampler</code> on <a href="/ml-models/data-loading-and-batching">data loading and batching</a>. Sharded checkpoints follow the layouts of <a href="/ml-models/distributed-training">distributed training</a>. Activation checkpointing trades against the memory that <a href="/ml-models/backpropagation">backpropagation</a> keeps in the <a href="/ml-models/computation-graphs">computation graph</a>, and competes with <a href="/ml-models/gradient-accumulation">gradient accumulation</a> as the way to fit a bigger effective batch.
+</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Young. <em>A First Order Approximation to the Optimum Checkpoint Interval.</em> Communications of the ACM 17(9), 1974. <a href="https://doi.org/10.1145/361147.361115">doi:10.1145/361147.361115</a></li>
+  <li>Chen, Xu, Zhang and Guestrin. <em>Training Deep Nets with Sublinear Memory Cost.</em> 2016. <a href="https://arxiv.org/abs/1604.06174">arXiv:1604.06174</a></li>
+  <li>Rajbhandari, Rasley, Ruwase and He. <em>ZeRO: Memory Optimizations Toward Training Trillion Parameter Models.</em> SC 2020. <a href="https://arxiv.org/abs/1910.02054">arXiv:1910.02054</a></li>
+  <li>Kingma and Ba. <em>Adam: A Method for Stochastic Optimization.</em> ICLR 2015. <a href="https://arxiv.org/abs/1412.6980">arXiv:1412.6980</a></li>
+  <li>Python documentation: <a href="https://docs.python.org/3/library/pickle.html"><code>pickle</code></a> (including its warning that unpickling can execute arbitrary code) and <a href="https://docs.python.org/3/library/pickletools.html"><code>pickletools</code></a>.</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/serialization.py', 944, 1020) }}"><code>torch.save</code></a>, <a href="{{ src('torch/serialization.py', 1315, 1649) }}"><code>torch.load</code></a>, <a href="{{ src('torch/_weights_only_unpickler.py', 174, 228) }}">the <code>weights_only</code> allowlist</a>, <a href="{{ src('torch/nn/modules/module.py', 2199, 2287) }}"><code>Module.state_dict</code></a>, <a href="{{ src('torch/optim/optimizer.py', 700, 791) }}"><code>Optimizer.state_dict</code></a>, <a href="{{ src('torch/utils/data/distributed.py', 107, 157) }}"><code>DistributedSampler</code></a>, <a href="{{ src('torch/distributed/checkpoint/state_dict_saver.py', 89, 205) }}"><code>dcp.save</code></a>, <a href="{{ src('torch/distributed/checkpoint/state_dict_loader.py', 60, 202) }}"><code>dcp.load</code></a>, <a href="{{ src('torch/distributed/checkpoint/state_dict.py', 1271, 1361) }}"><code>get_state_dict</code></a>, <a href="{{ src('torch/utils/checkpoint.py', 423, 617) }}"><code>checkpoint</code></a>, <a href="{{ src('torch/utils/checkpoint.py', 701, 792) }}"><code>checkpoint_sequential</code></a>.</li>
+</ul>

@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-14 (forty-second run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-89, the last being `retrieval-augmented-generation`.
-The next page is `checkpointing` (queue item 90).
+fixed page format. Ready pages: queue items 1-90, the last being `checkpointing`.
+The next page is `reproducibility` (queue item 91).
 
 ## Pins
 
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (89 of 93 ready, all
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (90 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -193,8 +193,7 @@ Open gaps from these runs:
 - The end lines of the HistGradientBoosting regressor `__init__`, `_incremental_fit_estimator`
   and `Lasso` were inferred.
 - Unready pages named in plain text until they are ready: `contrastive-learning`,
-  `speculative-decoding`, `profiling` (run 37 pages), and activation checkpointing
-  (`distributed-training`).
+  `speculative-decoding` and `profiling` (run 37 pages).
 - No pin implements a UNet, LoRA/PEFT, NF4, an ANN index or logQ correction; the two-tower
   serving numbers are an invented, labelled configuration.
 - PSI's 0.1/0.25 thresholds are an industry convention; Whisper, EnCodec, Flamingo and LLaVA
@@ -398,8 +397,8 @@ Gaps:
 87. `flow-matching` ✓
 88. `preference-optimization` ✓
 89. `retrieval-augmented-generation` ✓
-90. `checkpointing` ← next
-91. `reproducibility`
+90. `checkpointing` ✓
+91. `reproducibility` ← next
 92. `state-space-models`
 93. `profiling`
 
