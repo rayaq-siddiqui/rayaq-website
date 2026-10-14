@@ -1,3 +1,4 @@
+import bisect
 import functools
 import hashlib
 import heapq
@@ -12233,6 +12234,196 @@ def dt_example():
         "bubbles": [{"m": mb, "fraction": dt_bubble_fraction(pp["stages"], mb)} for mb in pp["bubble_microbatches"]],
     }
 
+
+MD_EXAMPLE = {
+    "grid": 2000,
+    "bins": 10,
+    "ks": {"n": 2000, "shift": 0.3, "alpha": 0.05},
+    "ks_large": {"n": 20000, "shift": 0.05},
+    "model": {"slope": 2.0, "intercept": -1.0},
+    "weeks": [
+        {"label": "baseline", "mean": 0.0, "slope": 2.0, "intercept": -1.0},
+        {"label": "small input shift", "mean": 0.1, "slope": 2.0, "intercept": -1.0},
+        {"label": "covariate shift", "mean": 0.6, "slope": 2.0, "intercept": -1.0},
+        {"label": "concept drift", "mean": 0.0, "slope": 1.0, "intercept": -1.0},
+        {"label": "base-rate drift", "mean": 0.0, "slope": 2.0, "intercept": -0.5},
+    ],
+    "thresholds": {"psi_watch": 0.1, "psi_act": 0.25, "gap": 0.02},
+    "reliability_bins": 5,
+    "label_shift": {"train_prior": 0.1, "new_prior": 0.3, "scores": [0.2, 0.5, 0.8]},
+    "maturity": [0.2, 0.5, 0.8, 0.95, 1.0],
+    "empty_bin": {"expected": [0.25, 0.25, 0.25, 0.25], "actual": [0.4, 0.3, 0.3, 0.0], "eps": 1e-4},
+}
+
+
+def md_sample(mean, n, sd=1.0):
+    dist = statistics.NormalDist(mean, sd)
+    return [dist.inv_cdf((i + 0.5) / n) for i in range(n)]
+
+
+def md_quantile_edges(values, bins):
+    ordered = sorted(values)
+    return [ordered[len(ordered) * k // bins] for k in range(1, bins)]
+
+
+def md_bin_shares(values, edges):
+    counts = [0] * (len(edges) + 1)
+    for v in values:
+        counts[bisect.bisect_right(edges, v)] += 1
+    return [c / len(values) for c in counts]
+
+
+def md_psi(expected, actual, eps=None):
+    terms = []
+    for e, a in zip(expected, actual):
+        if eps is not None:
+            e, a = max(e, eps), max(a, eps)
+        if a == 0 or e == 0:
+            terms.append(math.inf)
+        else:
+            terms.append((a - e) * math.log(a / e))
+    return {"terms": terms, "psi": sum(terms)}
+
+
+def md_ks_critical(n, m, alpha):
+    return math.sqrt(-math.log(alpha / 2) / 2) * math.sqrt((n + m) / (n * m))
+
+
+def md_ks_pvalue(d, n, m):
+    ne = n * m / (n + m)
+    lam = (math.sqrt(ne) + 0.12 + 0.11 / math.sqrt(ne)) * d
+    if lam < 1e-3:
+        return 1.0
+    total = sum(2 * (-1) ** (k - 1) * math.exp(-2 * k * k * lam * lam) for k in range(1, 101))
+    return min(1.0, max(0.0, total))
+
+
+def md_ks(reference, current):
+    a, b = sorted(reference), sorted(current)
+    i = j = 0
+    best, at = 0.0, None
+    while i < len(a) and j < len(b):
+        x = min(a[i], b[j])
+        while i < len(a) and a[i] == x:
+            i += 1
+        while j < len(b) and b[j] == x:
+            j += 1
+        gap = abs(i / len(a) - j / len(b))
+        if gap > best:
+            best, at = gap, x
+    return {"d": best, "at": at, "n": len(a), "m": len(b)}
+
+
+def md_ks_test(reference, current, alpha):
+    ks = md_ks(reference, current)
+    ks["critical"] = md_ks_critical(ks["n"], ks["m"], alpha)
+    ks["p"] = md_ks_pvalue(ks["d"], ks["n"], ks["m"])
+    ks["reject"] = ks["d"] > ks["critical"]
+    return ks
+
+
+def md_week(week, model, reference_edges, reference_shares, grid, reliability_bins):
+    xs = md_sample(week["mean"], grid)
+    truth = [sigmoid(week["slope"] * x + week["intercept"]) for x in xs]
+    scores = [sigmoid(model["slope"] * x + model["intercept"]) for x in xs]
+    n = len(xs)
+    brier = sum(t * (1 - q) ** 2 + (1 - t) * q * q for t, q in zip(truth, scores)) / n
+    oracle = sum(t * (1 - t) for t in truth) / n
+    log_loss_value = sum(-t * math.log(q) - (1 - t) * math.log(1 - q) for t, q in zip(truth, scores)) / n
+    inner = [k / reliability_bins for k in range(1, reliability_bins)]
+    sums = [[0, 0.0, 0.0] for _ in range(reliability_bins)]
+    for t, q in zip(truth, scores):
+        row = sums[bisect.bisect_left(inner, q)]
+        row[0] += 1
+        row[1] += q
+        row[2] += t
+    reliability = [{"count": c, "predicted": sp / c, "observed": st / c} for c, sp, st in sums if c]
+    shares = md_bin_shares(xs, reference_edges)
+    return {
+        "week": week,
+        "psi": md_psi(reference_shares, shares)["psi"],
+        "predicted_rate": sum(scores) / n,
+        "observed_rate": sum(truth) / n,
+        "gap": sum(scores) / n - sum(truth) / n,
+        "brier": brier,
+        "oracle_brier": oracle,
+        "log_loss": log_loss_value,
+        "reliability": reliability,
+        "max_reliability_gap": max(abs(r["predicted"] - r["observed"]) for r in reliability),
+        "logits": [model["slope"] * x + model["intercept"] for x in xs],
+        "truth": truth,
+    }
+
+
+def md_decision(week, thresholds):
+    if week["max_reliability_gap"] > thresholds["gap"]:
+        return "recalibrate or retrain"
+    if week["psi"] >= thresholds["psi_act"]:
+        return "investigate inputs"
+    if week["psi"] >= thresholds["psi_watch"]:
+        return "watch"
+    return "ok"
+
+
+def md_platt(logits, truth):
+    final = logistic_newton([[z] for z in logits], truth, iterations=10)[-1]
+    a, b = final["params"]
+    brier = sum(t * (1 - q) ** 2 + (1 - t) * q * q
+                for t, q in ((t, sigmoid(a * z + b)) for z, t in zip(logits, truth))) / len(truth)
+    return {"a": a, "b": b, "brier": brier}
+
+
+def md_prior_shift(p, train_prior, new_prior):
+    up = new_prior / train_prior
+    down = (1 - new_prior) / (1 - train_prior)
+    return p * up / (p * up + (1 - p) * down)
+
+
+@functools.lru_cache(maxsize=None)
+def md_example():
+    e = MD_EXAMPLE
+    reference = md_sample(0.0, e["grid"])
+    edges = md_quantile_edges(reference, e["bins"])
+    ref_shares = md_bin_shares(reference, edges)
+    weeks = []
+    for week in e["weeks"]:
+        w = md_week(week, e["model"], edges, ref_shares, e["grid"], e["reliability_bins"])
+        w["decision"] = md_decision(w, e["thresholds"])
+        if w["max_reliability_gap"] > e["thresholds"]["gap"]:
+            w["platt"] = md_platt(w["logits"], w["truth"])
+        weeks.append(w)
+    for w in weeks:
+        del w["logits"], w["truth"]
+    ks = e["ks"]
+    ks_ref, ks_cur = md_sample(0.0, ks["n"]), md_sample(ks["shift"], ks["n"])
+    ks_edges = md_quantile_edges(ks_ref, e["bins"])
+    psi_detail = md_psi(md_bin_shares(ks_ref, ks_edges), md_bin_shares(ks_cur, ks_edges))
+    large = e["ks_large"]
+    big_ref, big_cur = md_sample(0.0, large["n"]), md_sample(large["shift"], large["n"])
+    big_edges = md_quantile_edges(big_ref, e["bins"])
+    unit = statistics.NormalDist()
+    ls = e["label_shift"]
+    rate = weeks[0]["observed_rate"]
+    eb = e["empty_bin"]
+    return {
+        "example": e,
+        "edges": edges,
+        "weeks": weeks,
+        "psi_shares": {"reference": md_bin_shares(ks_ref, ks_edges), "current": md_bin_shares(ks_cur, ks_edges)},
+        "psi": psi_detail,
+        "psi_continuous": ks["shift"] ** 2,
+        "ks": md_ks_test(ks_ref, ks_cur, ks["alpha"]),
+        "ks_analytic": 2 * unit.cdf(ks["shift"] / 2) - 1,
+        "ks_large": md_ks_test(big_ref, big_cur, ks["alpha"]),
+        "psi_large": md_psi(md_bin_shares(big_ref, big_edges), md_bin_shares(big_cur, big_edges))["psi"],
+        "label_shift": [{"score": p, "corrected": md_prior_shift(p, ls["train_prior"], ls["new_prior"])}
+                        for p in ls["scores"]],
+        "maturity": [{"age": i + 1, "share": share, "observed": rate * share}
+                     for i, share in enumerate(e["maturity"])],
+        "empty": md_psi(eb["expected"], eb["actual"]),
+        "empty_eps": md_psi(eb["expected"], eb["actual"], eb["eps"]),
+    }
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -12280,6 +12471,7 @@ def render(slug, render_template):
         "ft_example": ft_example,
         "tt_example": tt_example,
         "dt_example": dt_example,
+        "md_example": md_example,
         "pretraining_example": pretraining_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,

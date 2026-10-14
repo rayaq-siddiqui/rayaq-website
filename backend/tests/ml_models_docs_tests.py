@@ -4923,3 +4923,66 @@ def test_dt_pipeline_schedules():
     assert ex["gpipe_8"]["peak_in_flight"] == [8, 8, 8, 8]
     assert ex["one_f_one_b_8"]["peak_in_flight"] == [4, 3, 2, 1]
     assert [round(b["fraction"], 3) for b in ex["bubbles"]] == [0.75, 0.429, 0.273, 0.158, 0.086]
+
+
+def test_md_psi_matches_the_continuous_limit():
+    ex = ml_models_docs.md_example()
+    assert all(math.isclose(s, 0.1) for s in ex["psi_shares"]["reference"])
+    assert math.isclose(sum(ex["psi_shares"]["current"]), 1.0)
+    assert 0.08 < ex["psi"]["psi"] < ex["psi_continuous"] == pytest.approx(0.09)
+    assert ex["psi"]["terms"][0] > ex["psi"]["terms"][5]
+
+
+def test_md_psi_empty_bin_needs_a_floor():
+    ex = ml_models_docs.md_example()
+    assert ex["empty"]["psi"] == math.inf
+    assert math.isfinite(ex["empty_eps"]["psi"]) and ex["empty_eps"]["psi"] > 2
+
+
+def test_md_ks_statistic_and_critical_value():
+    ex = ml_models_docs.md_example()
+    ks = ex["ks"]
+    assert abs(ks["d"] - ex["ks_analytic"]) < 1e-3
+    assert math.isclose(ks["critical"], 1.3581015157406195 * math.sqrt(2 / 2000))
+    assert ks["reject"] and ks["p"] < 1e-10
+    large = ex["ks_large"]
+    assert large["reject"] and large["p"] < 0.01
+    assert ex["psi_large"] < 0.01
+
+
+def test_md_ks_identical_samples():
+    same = ml_models_docs.md_sample(0.0, 100)
+    ks = ml_models_docs.md_ks_test(same, list(same), 0.05)
+    assert ks["d"] == 0 and not ks["reject"] and ks["p"] == 1.0
+
+
+def test_md_weeks_and_decisions():
+    weeks = ml_models_docs.md_example()["weeks"]
+    assert [w["decision"] for w in weeks] == [
+        "ok", "ok", "investigate inputs", "recalibrate or retrain", "recalibrate or retrain",
+    ]
+    covariate = weeks[2]
+    assert abs(covariate["gap"]) < 1e-12 and covariate["max_reliability_gap"] < 1e-12
+    assert covariate["brier"] > weeks[0]["brier"]
+    for w in weeks[3:]:
+        assert w["psi"] == 0
+        assert w["brier"] > w["oracle_brier"]
+    assert round(weeks[3]["gap"], 3) == 0.049
+
+
+def test_md_platt_recovers_the_new_relationship():
+    weeks = ml_models_docs.md_example()["weeks"]
+    for w, (a, b) in zip(weeks[3:], [(0.5, -0.5), (1.0, 0.5)]):
+        assert math.isclose(w["platt"]["a"], a, abs_tol=1e-6)
+        assert math.isclose(w["platt"]["b"], b, abs_tol=1e-6)
+        assert math.isclose(w["platt"]["brier"], w["oracle_brier"], rel_tol=1e-6)
+
+
+def test_md_prior_shift_and_delayed_labels():
+    ex = ml_models_docs.md_example()
+    assert math.isclose(ex["label_shift"][1]["corrected"], 27 / 34)
+    assert all(r["corrected"] > r["score"] for r in ex["label_shift"])
+    assert math.isclose(ml_models_docs.md_prior_shift(0.3, 0.2, 0.2), 0.3)
+    maturity = ex["maturity"]
+    assert maturity[-1]["observed"] == pytest.approx(ex["weeks"][0]["observed_rate"])
+    assert maturity[0]["observed"] < maturity[-1]["observed"] / 4
