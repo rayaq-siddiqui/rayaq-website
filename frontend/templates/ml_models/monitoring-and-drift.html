@@ -1,0 +1,563 @@
+{% set ex = md_example() %}
+{% set cfg = ex.example %}
+{% set th = cfg.thresholds %}
+{% set base = ex.weeks[0] %}
+{% set cov = ex.weeks[2] %}
+{% set concept = ex.weeks[3] %}
+{% set rate = ex.weeks[4] %}
+{% set ks = ex.ks %}
+{% set big = ex.ks_large %}
+{% macro n(x, d=2) -%}{{ ("%." ~ d ~ "f")|format(x) }}{%- endmacro %}
+{% macro pct(x, d=0) -%}{{ ("%." ~ d ~ "f")|format(x * 100) }}%{%- endmacro %}
+<header class="jj-header">
+  <h1>Monitoring and drift</h1>
+  <p class="tagline">
+    A deployed model is tested once and then meets data that keeps changing. This page separates the three ways the
+    world drifts away from the training set (covariate, label and concept drift), shows what can be watched before the
+    labels arrive and what only the labels reveal, works the population stability index and the Kolmogorov–Smirnov test
+    by hand, and turns the numbers into retraining triggers, all on one simulated model over five weeks.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Every guarantee from <a href="/ml-models/data-splits">held-out evaluation</a> assumes the test set comes from the same
+  distribution as the data the model will see. After deployment that assumption decays. Customers change, a competitor
+  launches, a sensor is recalibrated, an upstream team renames a field, a pandemic moves everyone online. The model
+  keeps returning numbers with the same confidence, and nothing in the serving path fails: a
+  <a href="/ml-models/model-serving">server</a> answering in 20 ms with stale probabilities looks perfectly healthy.
+</p>
+<p>
+  The labels that would show the problem often come late or never: a loan defaults months after approval, a fraud
+  chargeback arrives weeks after the purchase, a recommendation that wasn't clicked says little about the one that wasn't
+  shown. Monitoring is the practice of catching these changes from whatever signals are available, telling apart the ones
+  that hurt the model from the ones that don't, and deciding when to recalibrate, retrain, or look for a bug.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  A classifier is an estimate of P(y | x), learned from examples drawn from a joint P(x, y). That joint can change in
+  three ways that matter differently. If only the inputs move, P(x), into regions the model saw rarely, its answers are
+  still right where it learned well and become guesses where it didn't. If only how common each outcome is changes, P(y),
+  every probability is off by the same factor in the odds, and a one-number correction fixes it. If the relationship
+  itself changes, P(y | x), the model is answering a question that no longer has the same answer, and only new labels can
+  say how.
+</p>
+<p>
+  So there are two kinds of signals. Inputs and predictions are available immediately for every request and show that
+  <em>something</em> changed. Outcomes arrive later, for some of the requests, and show whether the model is
+  <em>wrong</em>. A good monitor uses the cheap signals as an early warning and the expensive ones as the verdict.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="drift-types">Three kinds of shift</h3>
+<p>
+  Write the joint two ways: P(x, y) = P(y | x) P(x) = P(x | y) P(y). Following Moreno-Torres et al. (2012), each kind of
+  shift keeps one factor fixed and changes the other:
+</p>
+<ul>
+  <li><strong>Covariate shift</strong>: P(x) changes, P(y | x) does not. A credit model trained mostly on salaried
+    applicants starts seeing freelancers. If the model learned P(y | x) well everywhere, it stays correct; its errors grow
+    only where the new inputs are rare in training. Shimodaira (2000) showed training can be corrected by weighting each
+    example by P<sub>new</sub>(x) / P<sub>train</sub>(x).</li>
+  <li><strong>Label shift</strong> (prior shift): P(y) changes, P(x | y) does not. A disease becomes more common, but a
+    sick patient's symptoms look the same. By <a href="/ml-models/bayes-rule">Bayes' rule</a> the correct posterior moves
+    by a fixed factor in the odds, so the model's probabilities can be corrected without retraining (Saerens et al., 2002).</li>
+  <li><strong>Concept drift</strong>: P(y | x) changes. Fraudsters adapt to the rules, a feature's meaning changes, a
+    policy change makes the same applicant riskier. The model's mapping is now wrong, and since the inputs may not move at
+    all, nothing short of new labels reveals it.</li>
+</ul>
+<p>
+  In time, drift can be sudden (a code release), gradual (tastes changing), recurring (seasons, weekends), or a one-off
+  outlier. Gama et al. (2014) survey the detectors and adaptation strategies for each; models that learn from every new
+  example are covered under <a href="/ml-models/online-learning">online learning</a>.
+</p>
+
+<h3 id="what-to-watch">What to watch</h3>
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 260" role="img" aria-labelledby="md-flow-title md-flow-desc">
+    <title id="md-flow-title">Three monitoring signals and when each arrives</title>
+    <desc id="md-flow-desc">
+      Requests flow left to right: inputs x enter the model, which emits a prediction p, and much later the outcome y
+      arrives and is joined back to the logged prediction. Under each stage is what it lets you check. Inputs, available
+      at once: missing values, ranges and categories, and per-feature drift by PSI or the KS test. Predictions, available
+      at once: the score distribution and the mean predicted rate. Outcomes, delayed by days to months and only for some
+      requests: calibration, Brier score, log loss, AUC, and the gap between predicted and observed rates.
+    </desc>
+    <rect x="20" y="30" width="170" height="56" rx="8" class="d-box ml-tensor"></rect>
+    <text x="105" y="54" text-anchor="middle">inputs x</text>
+    <text x="105" y="74" text-anchor="middle" class="d-muted">every request, now</text>
+    <rect x="270" y="30" width="170" height="56" rx="8" class="d-box ml-op"></rect>
+    <text x="355" y="54" text-anchor="middle">model → p̂</text>
+    <text x="355" y="74" text-anchor="middle" class="d-muted">every request, now</text>
+    <rect x="520" y="30" width="180" height="56" rx="8" class="d-box ml-dashed"></rect>
+    <text x="610" y="54" text-anchor="middle">outcome y</text>
+    <text x="610" y="74" text-anchor="middle" class="d-muted">some requests, later</text>
+    <line x1="190" y1="58" x2="268" y2="58" class="d-line"></line>
+    <line x1="440" y1="58" x2="518" y2="58" class="d-line ml-dashed"></line>
+    <text x="479" y="48" text-anchor="middle" class="d-muted">delay</text>
+    <text x="105" y="122" text-anchor="middle" style="fill:var(--jj-accent)">data checks</text>
+    <text x="105" y="146" text-anchor="middle">nulls, ranges,</text>
+    <text x="105" y="166" text-anchor="middle">new categories</text>
+    <text x="105" y="190" text-anchor="middle">PSI, KS per feature</text>
+    <text x="355" y="122" text-anchor="middle" style="fill:var(--jj-accent)">prediction drift</text>
+    <text x="355" y="146" text-anchor="middle">score distribution</text>
+    <text x="355" y="166" text-anchor="middle">mean predicted rate</text>
+    <text x="355" y="190" text-anchor="middle">share above threshold</text>
+    <text x="610" y="122" text-anchor="middle" style="fill:var(--jj-accent)">performance</text>
+    <text x="610" y="146" text-anchor="middle">reliability, Brier</text>
+    <text x="610" y="166" text-anchor="middle">log loss, AUC</text>
+    <text x="610" y="190" text-anchor="middle">predicted vs observed</text>
+    <text x="230" y="236" text-anchor="middle" class="d-muted">early warning: something changed</text>
+    <text x="610" y="236" text-anchor="middle" class="d-muted">verdict: is the model wrong?</text>
+  </svg>
+</div>
+<p>
+  The first line of defence is the plain data checks: the share of nulls, values outside the training range, unseen
+  categories, a feature that is suddenly constant. Most production "drift" is a broken pipeline, not a changing world, and
+  these checks catch it the same day (Breck et al., 2017). Then come distribution tests per feature and on the model's
+  output. The output is the most useful single series: it is one number per request, it summarizes every feature the
+  model uses, weighted by how much the model uses it, and its mean is the base rate the model believes in, which can be
+  compared with the observed rate once labels mature.
+</p>
+
+<h3 id="psi">The population stability index</h3>
+<p>
+  Split a feature into bins, usually deciles of the reference (training or launch) data, so each holds 10% of it. Let
+  e<sub>i</sub> be the reference share in bin i and a<sub>i</sub> the current share. Then
+</p>
+<div class="ml-formula">PSI = Σ<sub>i</sub> (a<sub>i</sub> − e<sub>i</sub>) · ln(a<sub>i</sub> / e<sub>i</sub>)</div>
+<p>
+  Every term is non-negative, since a<sub>i</sub> − e<sub>i</sub> and ln(a<sub>i</sub>/e<sub>i</sub>) always have the same
+  sign. PSI is the sum of the two <a href="/ml-models/entropy-and-kl">KL divergences</a>, KL(a ‖ e) + KL(e ‖ a), over the
+  binned distributions, so it is symmetric. The usual reading, a convention from credit scoring with no single canonical
+  source, is below {{ th.psi_watch }} stable, {{ th.psi_watch }} to {{ th.psi_act }} worth watching, above
+  {{ th.psi_act }} a significant shift. A bin that is empty in either distribution makes its term infinite, so
+  implementations clip shares to a small ε; the result then depends on ε.
+</p>
+
+<h3 id="ks">The two-sample Kolmogorov–Smirnov test</h3>
+<p>
+  For a continuous feature, compare the empirical CDFs F<sub>ref</sub> and F<sub>cur</sub> directly, with no bins:
+</p>
+<div class="ml-formula">D = sup<sub>x</sub> | F<sub>ref</sub>(x) − F<sub>cur</sub>(x) |</div>
+<p>
+  Under the null hypothesis that both samples come from one distribution, √(nm/(n+m)) · D follows the Kolmogorov
+  distribution for large samples, so the test rejects at level α when D exceeds c(α) · √((n+m)/(nm)) with
+  c(α) = √(−ln(α/2) / 2), 1.358 at α = 0.05. The p-value is the series
+  2 Σ<sub>k≥1</sub> (−1)<sup>k−1</sup> e<sup>−2k²λ²</sup>, with λ = (√N<sub>e</sub> + 0.12 + 0.11/√N<sub>e</sub>) · D and
+  N<sub>e</sub> = nm/(n+m) (Stephens' correction). The catch is that the critical value shrinks like 1/√n: with enough
+  traffic every real-world feature "fails" the test, so KS answers "is there any difference?", not "is the difference
+  big enough to matter?". PSI is a size, KS a significance; dashboards usually alert on a size.
+</p>
+
+<h3 id="delayed-labels">Delayed and partial labels</h3>
+<p>
+  When labels arrive over weeks, the most recent cohorts always look better than they are: only the quick outcomes are in.
+  Comparing this week's observed rate with last quarter's fully matured one finds a false improvement every time. Compare
+  cohorts at the same <em>age</em>, wait for a maturity window, or model the arrival curve. Labels can also be biased by the
+  model itself: a rejected loan never shows whether it would have defaulted, and a fraud model only gets labels for the
+  cases it flagged for review. Those gaps are filled with a small random holdout that is served without the model's
+  decision, which also keeps the evaluation honest for <a href="/ml-models/causal-inference">causal</a> questions.
+</p>
+
+<h3 id="label-shift-correction">Correcting label shift</h3>
+<p>
+  If P(x | y) is fixed and the positive rate moves from π to π′, Bayes' rule gives the new posterior from the old one:
+</p>
+<div class="ml-formula">p′ = p·(π′/π) / ( p·(π′/π) + (1 − p)·((1 − π′)/(1 − π)) )</div>
+<p>
+  In log-odds this adds the constant ln(π′/(1−π′)) − ln(π/(1−π)) to every prediction. π′ itself is unknown without labels,
+  but can be estimated from the predictions on new data: Saerens et al. (2002) iterate EM between the corrected posteriors
+  and their mean, and Lipton et al. (2018) solve a linear system using the model's confusion matrix from validation
+  (black-box shift estimation), which also detects label shift with a statistical test.
+</p>
+
+<h3 id="triggers">Retraining triggers</h3>
+<ul>
+  <li><strong>Schedule.</strong> Retrain daily, weekly or monthly on a sliding window. Simple and predictable, wasteful
+    when nothing changed, too slow after a sudden break.</li>
+  <li><strong>Input drift.</strong> PSI above the action threshold on an important feature or on the score. Fast, but
+    covariate shift often doesn't hurt, so this trigger should open an investigation, not ship a model.</li>
+  <li><strong>Performance.</strong> A matured-label metric (Brier, log loss, AUC, calibration gap) crosses a threshold or
+    a drift detector fires. The signal that matters, late by the label delay.</li>
+  <li><strong>Calibration only.</strong> When ranking holds (AUC unchanged) but the probabilities are off, refit a
+    <a href="/ml-models/calibration">calibrator</a> on recent labeled data: two parameters, minutes, and no new model to
+    validate.</li>
+</ul>
+<p>
+  Whatever fires, the new model goes through the same evaluation, shadow or canary rollout as the first one; an automatic
+  retrain that trains on a broken feed ships the bug.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>PSI</td><td>bin shares e, a of length B</td><td>Symmetric binned KL between reference and current; a size of shift</td><td>Formula above</td></tr>
+      <tr><td>KS statistic D</td><td>samples of size n, m</td><td>Largest gap between empirical CDFs; a test of any shift</td><td>Formula above (<code>scipy.stats.ks_2samp</code>)</td></tr>
+      <tr><td><code>calibration_curve</code></td><td><code>n_bins=5</code>, <code>strategy="uniform"</code></td><td>Observed rate and mean prediction per score bin, empty bins dropped</td><td><a href="{{ skl('sklearn/calibration.py', 1227, 1342) }}">calibration.py</a></td></tr>
+      <tr><td><code>brier_score_loss</code></td><td>scalar</td><td>Mean squared error of the probabilities; a strictly proper score</td><td><a href="{{ skl('sklearn/metrics/_classification.py', 3713, 3856) }}">_classification.py</a></td></tr>
+      <tr><td><code>log_loss</code></td><td>scalar</td><td>Mean negative log-likelihood of the outcomes</td><td><a href="{{ skl('sklearn/metrics/_classification.py', 3321, 3446) }}">_classification.py</a></td></tr>
+      <tr><td><code>roc_auc_score</code></td><td>scalar</td><td>Ranking quality; unchanged by a monotone recalibration</td><td><a href="{{ skl('sklearn/metrics/_ranking.py', 499, 747) }}">_ranking.py</a></td></tr>
+      <tr><td><code>confusion_matrix</code></td><td>K × K</td><td>The validation matrix black-box shift estimation inverts</td><td><a href="{{ skl('sklearn/metrics/_classification.py', 418, 623) }}">_classification.py</a></td></tr>
+      <tr><td><code>CalibratedClassifierCV</code></td><td><code>method="sigmoid"</code> (default)</td><td>Refits a calibrator on recent labels</td><td><a href="{{ skl('sklearn/calibration.py', 74, 597) }}">calibration.py</a></td></tr>
+      <tr><td><code>FrozenEstimator</code> wrapping</td><td>a fitted model</td><td>Calibrate a deployed model without refitting it; all given data goes to the calibrator</td><td><a href="{{ skl('sklearn/calibration.py', 88, 92) }}">calibration.py</a></td></tr>
+      <tr><td><code>_sigmoid_calibration</code></td><td>slope a, intercept b</td><td>Platt's two-parameter fit, with smoothed targets</td><td><a href="{{ skl('sklearn/calibration.py', 854, 953) }}">calibration.py</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  One feature x, standard normal at launch. The true outcome probability is σ(2x − 1), and the deployed model learned it
+  exactly: p̂ = σ(2x − 1). Each week is {{ cfg.grid }} evenly spaced quantiles of that week's input distribution, an
+  idealized sample with no noise, and each point's outcome is scored by its true probability, so every number below is the
+  expected value, not one random draw. Monitoring uses the launch deciles of x as PSI bins.
+</p>
+
+<div class="ml-worked">
+  <h3 id="worked-psi">PSI on a shift of {{ cfg.ks.shift }}</h3>
+  <p>
+    Reference x ~ N(0, 1) and current x ~ N({{ cfg.ks.shift }}, 1), {{ ks.n }} points each, binned at the reference
+    deciles:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Bin</th><th>Reference e</th><th>Current a</th><th>a − e</th><th>ln(a/e)</th><th>Term</th></tr></thead>
+      <tbody>
+        {% for t in ex.psi.terms %}
+          {% set e = ex.psi_shares.reference[loop.index0] %}
+          {% set a = ex.psi_shares.current[loop.index0] %}
+          <tr><td>{{ loop.index }}</td><td>{{ n(e, 3) }}</td><td>{{ n(a, 4) }}</td><td>{{ n(a - e, 4) }}</td><td>{{ n(t / (a - e), 3) }}</td><td>{{ n(t, 4) }}</td></tr>
+        {% endfor %}
+        <tr><td>Sum</td><td>1</td><td>1</td><td></td><td></td><td><strong>{{ n(ex.psi.psi, 4) }}</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Mass moves out of the low bins into the high ones, and the two tails contribute most:
+    {{ n(ex.psi.terms[0], 3) }} and {{ n(ex.psi.terms[-1], 3) }} of the {{ n(ex.psi.psi, 4) }}. The PSI is below the
+    {{ th.psi_watch }} watch level. For two unit normals a distance δ apart, each KL direction is δ²/2, so the unbinned
+    value is δ² = {{ n(ex.psi_continuous, 2) }}; binning can only lose information, and ten bins give
+    {{ n(ex.psi.psi, 4) }}.
+  </p>
+  <div class="jj-diagram">
+    <svg viewBox="0 0 720 280" role="img" aria-labelledby="md-psi-title md-psi-desc">
+      <title id="md-psi-title">Reference and current shares per decile bin</title>
+      <desc id="md-psi-desc">
+        Ten pairs of bars, one per reference decile. Every reference bar is at 0.10. The current bars rise steadily from
+        {{ n(ex.psi_shares.current[0], 3) }} in the lowest bin to {{ n(ex.psi_shares.current[-1], 3) }} in the highest, so the
+        shifted data has fewer points on the left and more on the right. The PSI term under each pair is largest at the two
+        ends.
+      </desc>
+      <line x1="60" y1="220" x2="700" y2="220" class="d-line"></line>
+      <line x1="60" y1="120" x2="700" y2="120" class="d-line ml-dashed"></line>
+      <text x="54" y="124" text-anchor="end" class="d-muted">0.10</text>
+      <text x="54" y="224" text-anchor="end" class="d-muted">0</text>
+      {% for i in range(10) %}
+        {% set e = ex.psi_shares.reference[i] %}
+        {% set a = ex.psi_shares.current[i] %}
+        {% set x0 = 66 + i * 64 %}
+        <rect x="{{ x0 }}" y="{{ n(220 - e * 1000, 1) }}" width="24" height="{{ n(e * 1000, 1) }}" class="d-box ml-op"></rect>
+        <rect x="{{ x0 + 26 }}" y="{{ n(220 - a * 1000, 1) }}" width="24" height="{{ n(a * 1000, 1) }}" class="d-box ml-tensor"></rect>
+        <text x="{{ x0 + 25 }}" y="240" text-anchor="middle" class="d-muted">{{ i + 1 }}</text>
+        <text x="{{ x0 + 25 }}" y="260" text-anchor="middle" style="fill:var(--jj-accent)">{{ n(ex.psi.terms[i], 3) }}</text>
+      {% endfor %}
+      <rect x="70" y="18" width="14" height="14" class="d-box ml-op"></rect>
+      <text x="90" y="30">reference e</text>
+      <rect x="200" y="18" width="14" height="14" class="d-box ml-tensor"></rect>
+      <text x="220" y="30">current a</text>
+      <text x="700" y="30" text-anchor="end" style="fill:var(--jj-accent)">PSI terms below the bins</text>
+    </svg>
+  </div>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-ks">KS on the same shift, and on a tiny one with ten times the data</h3>
+  <p>
+    On the same two samples the largest CDF gap is D = {{ n(ks.d, 4) }}, near the midpoint of the two
+    means, where the gap between two unit normals peaks at 2Φ(δ/2) − 1 = {{ n(ex.ks_analytic, 4) }}. The critical value at α =
+    {{ cfg.ks.alpha }} is 1.358 · √(({{ ks.n }} + {{ ks.m }}) / ({{ ks.n }} · {{ ks.m }})) = {{ n(ks.critical, 4) }}, and
+    the p-value is {{ "%.1e"|format(ks.p) }}: rejected decisively, while PSI said "stable".
+  </p>
+  <p>
+    Now shift by only {{ cfg.ks_large.shift }} with {{ big.n }} points per sample. D = {{ n(big.d, 4) }} against a
+    critical value of {{ n(big.critical, 4) }}, p = {{ n(big.p, 5) }}: still rejected. The PSI is
+    {{ n(ex.psi_large, 4) }}, about a fortieth of the watch level. At production volumes the test flags shifts far too small to
+    change any prediction, which is why KS is used to rank features by how much they moved, and PSI or an effect size to
+    decide whether to act.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-weeks">Five weeks, one decision rule</h3>
+  <p>
+    Each week, the monitor computes the PSI of x against launch, then, once labels mature, the mean predicted and observed
+    rates, the Brier score next to the best achievable Brier (that of the true probabilities), and the largest gap in a
+    five-bin reliability table. The rule: recalibrate or retrain if any reliability gap exceeds {{ th.gap }}; else
+    investigate inputs if PSI ≥ {{ th.psi_act }}; else watch if PSI ≥ {{ th.psi_watch }}.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Week</th><th>What changed</th><th>PSI(x)</th><th>Predicted rate</th><th>Observed rate</th><th>Brier</th><th>Best Brier</th><th>Max gap</th><th>Decision</th></tr></thead>
+      <tbody>
+        {% for w in ex.weeks %}
+          <tr><td>{{ loop.index }}</td><td>{{ w.week.label }}</td><td>{{ n(w.psi, 4) }}</td><td>{{ n(w.predicted_rate, 4) }}</td><td>{{ n(w.observed_rate, 4) }}</td><td>{{ n(w.brier, 4) }}</td><td>{{ n(w.oracle_brier, 4) }}</td><td>{{ n(w.max_reliability_gap, 3) }}</td><td>{{ w.decision }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Since each point's expected Brier is (p̂ − p)² + p(1 − p), the gap between the two Brier columns is exactly the mean
+    squared error of the probabilities: zero means the model is right.
+  </p>
+  <ul>
+    <li><strong>Week 3, covariate shift.</strong> x moves to N({{ cov.week.mean }}, 1). PSI is {{ n(cov.psi, 3) }}, a
+      "significant shift", and the mean prediction jumps from {{ n(base.predicted_rate, 3) }} to
+      {{ n(cov.predicted_rate, 3) }}. Yet the observed rate matches it and Brier equals the best possible: the model still
+      knows P(y | x). The alarm is right that the world changed and wrong that the model broke. Prediction drift without
+      a calibration gap is the signature of covariate shift.</li>
+    <li><strong>Week 4, concept drift.</strong> The truth becomes σ(x − 1): the feature now matters half as much. The
+      inputs are identical, so PSI is {{ n(concept.psi, 1) }} and the predictions are unchanged, and nothing fires until
+      labels arrive. Then the observed rate is {{ n(concept.observed_rate, 3) }} against {{ n(concept.predicted_rate, 3) }}
+      predicted, and the top bin is off by {{ n(concept.max_reliability_gap, 3) }}.</li>
+    <li><strong>Week 5, base-rate drift.</strong> The truth becomes σ(2x − 0.5): every case is 0.5 more likely in log-odds,
+      exactly the form a change of prior takes. Again PSI is {{ n(rate.psi, 1) }}; only labels show the observed rate
+      rising to {{ n(rate.observed_rate, 3) }}.</li>
+  </ul>
+  <div class="jj-diagram">
+    <svg viewBox="0 0 720 320" role="img" aria-labelledby="md-rel-title md-rel-desc">
+      <title id="md-rel-title">Reliability diagrams for the baseline, concept-drift and base-rate-drift weeks</title>
+      <desc id="md-rel-desc">
+        Mean predicted probability on the horizontal axis and observed rate on the vertical, five uniform bins. The baseline
+        week's points lie on the diagonal. The concept-drift week's points fall below it at high scores, the top bin
+        predicting {{ n(concept.reliability[-1].predicted, 3) }} where {{ n(concept.reliability[-1].observed, 3) }} happened,
+        and above it in the bottom bin: the model is overconfident in both directions. The base-rate-drift week's points lie
+        above the diagonal everywhere: the model underpredicts every bin.
+      </desc>
+      <rect x="60" y="20" width="260" height="260" class="d-box ml-dashed"></rect>
+      <line x1="60" y1="280" x2="320" y2="20" class="d-line ml-dashed"></line>
+      <text x="60" y="300" text-anchor="middle" class="d-muted">0</text>
+      <text x="320" y="300" text-anchor="middle" class="d-muted">1</text>
+      <text x="190" y="314" text-anchor="middle" class="d-muted">mean predicted</text>
+      <text x="50" y="284" text-anchor="end" class="d-muted">0</text>
+      <text x="50" y="24" text-anchor="end" class="d-muted">1</text>
+      {% for series in [(base, "d-line", "ml-op"), (concept, "d-line", "ml-tensor"), (rate, "d-line", "ml-weight")] %}
+        {% set w = series[0] %}
+        <polyline fill="none" class="{{ series[1] }}" points="{% for r in w.reliability %}{{ n(60 + r.predicted * 260, 1) }},{{ n(280 - r.observed * 260, 1) }} {% endfor %}"></polyline>
+        {% for r in w.reliability %}
+          <circle cx="{{ n(60 + r.predicted * 260, 1) }}" cy="{{ n(280 - r.observed * 260, 1) }}" r="5" class="d-box {{ series[2] }}"></circle>
+        {% endfor %}
+      {% endfor %}
+      <circle cx="380" cy="60" r="6" class="d-box ml-op"></circle>
+      <text x="394" y="65">week 1, baseline: on the diagonal</text>
+      <circle cx="380" cy="100" r="6" class="d-box ml-tensor"></circle>
+      <text x="394" y="105">week 4, concept drift: flattened</text>
+      <circle cx="380" cy="140" r="6" class="d-box ml-weight"></circle>
+      <text x="394" y="145">week 5, base-rate drift: above</text>
+      <text x="380" y="195" style="fill:var(--jj-accent)">top bin, week 4</text>
+      <text x="380" y="217">predicted {{ n(concept.reliability[-1].predicted, 3) }}</text>
+      <text x="380" y="239">observed {{ n(concept.reliability[-1].observed, 3) }}</text>
+      <text x="380" y="261" class="d-muted">{{ concept.reliability[-1].count }} of {{ cfg.grid }} cases</text>
+    </svg>
+  </div>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Week 4 bin</th><th>Cases</th><th>Mean predicted</th><th>Observed</th><th>Gap</th></tr></thead>
+      <tbody>
+        {% for r in concept.reliability %}
+          <tr><td>{{ loop.index }}</td><td>{{ r.count }}</td><td>{{ n(r.predicted, 3) }}</td><td>{{ n(r.observed, 3) }}</td><td>{{ n(r.predicted - r.observed, 3) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-recalibrate">Recalibrating instead of retraining</h3>
+  <p>
+    Both label-detected weeks keep the model's ranking: the true probability is still increasing in the model's logit
+    z = 2x − 1. So fit Platt scaling, σ(a·z + b), on the week's labels (here by Newton's method, with each point's true
+    probability as a soft target):
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Week</th><th>a</th><th>b</th><th>Brier before</th><th>Brier after</th><th>Best Brier</th></tr></thead>
+      <tbody>
+        {% for w in [concept, rate] %}
+          <tr><td>{{ w.week.label }}</td><td>{{ n(w.platt.a, 3) }}</td><td>{{ n(w.platt.b, 3) }}</td><td>{{ n(w.brier, 4) }}</td><td>{{ n(w.platt.brier, 4) }}</td><td>{{ n(w.oracle_brier, 4) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The fits recover the drift exactly. For concept drift the truth's logit is x − 1 = 0.5·z − 0.5; for base-rate drift it
+    is z + 0.5. Two parameters fitted in milliseconds bring Brier back to the best achievable. This works only because the
+    drift here is monotone in z; if the new relationship had reordered cases (a different feature now mattering), no
+    calibrator could fix it, AUC would drop, and the model would need retraining.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-labels">Prior correction and maturing labels</h3>
+  <p>
+    Label shift with a known prior: a model trained where {{ pct(cfg.label_shift.train_prior) }} of cases were positive is
+    deployed where {{ pct(cfg.label_shift.new_prior) }} are. The odds factor is (0.3/0.1) / (0.7/0.9) = 27/7, adding
+    ln(27/7) ≈ 1.350 to every log-odds:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Model's p</th>{% for r in ex.label_shift %}<th>{{ n(r.score, 1) }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        <tr><td>Corrected p′</td>{% for r in ex.label_shift %}<td>{{ n(r.corrected, 3) }}</td>{% endfor %}</tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    A case the model calls a coin flip is {{ n(ex.label_shift[1].corrected, 3) }} = 27/34 likely in the new population.
+  </p>
+  <p>
+    Delayed labels: suppose the baseline week's positives are reported over five weeks, with this share known after each:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Weeks since prediction</th>{% for r in ex.maturity %}<th>{{ r.age }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        <tr><td>Share of positives reported</td>{% for r in ex.maturity %}<td>{{ pct(r.share) }}</td>{% endfor %}</tr>
+        <tr><td>Apparent positive rate</td>{% for r in ex.maturity %}<td>{{ n(r.observed, 3) }}</td>{% endfor %}</tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The model predicts {{ n(base.predicted_rate, 3) }} and is exactly right, but a week after deployment it appears to
+    overpredict fivefold. Unlabeled cases are not negatives yet; compare each cohort with the reference at the same age.
+  </p>
+  <p>
+    And the empty-bin trap: with reference shares {{ cfg.empty_bin.expected|join(", ") }} and current shares
+    {{ cfg.empty_bin.actual|join(", ") }}, the last term is (0 − 0.25) · ln 0 = +∞. Clipping to ε = {{ cfg.empty_bin.eps }}
+    gives {{ n(ex.empty_eps.terms[-1], 3) }} for that term and PSI = {{ n(ex.empty_eps.psi, 3) }}, a number set mostly by
+    the choice of ε. Report an emptied bin as its own alert.
+  </p>
+</div>
+
+<details class="ml-quiz">
+  <summary>Input PSI is 0.34 on the most important feature, and the matured calibration is perfect. Retrain?</summary>
+  <p>Not because of this. It is covariate shift the model handles, as in week 3. Check the pipeline for a bug, check
+    performance in the newly common region, and keep watching; retraining on the new mix may help a little but is not
+    urgent.</p>
+</details>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  A batch monitoring job: PSI and KS per feature against a reference snapshot, and, for the cohort whose labels have
+  matured, calibration metrics and a refit calibrator for the frozen deployed model.
+</p>
+<pre><code>import numpy as np
+from scipy.stats import ks_2samp
+from sklearn.calibration import CalibratedClassifierCV, calibration_curve
+from sklearn.frozen import FrozenEstimator
+from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
+
+def psi(reference, current, bins=10, eps=1e-4):
+    edges = np.quantile(reference, np.linspace(0, 1, bins + 1)[1:-1])
+    e = np.bincount(np.searchsorted(edges, reference, side="right"), minlength=bins) / len(reference)
+    a = np.bincount(np.searchsorted(edges, current, side="right"), minlength=bins) / len(current)
+    empty = (a == 0) | (e == 0)
+    e, a = np.clip(e, eps, None), np.clip(a, eps, None)
+    return float(np.sum((a - e) * np.log(a / e))), bool(empty.any())
+
+for name in features:                          # inputs: every request, now
+    value, emptied = psi(X_ref[name], X_week[name])
+    d, p = ks_2samp(X_ref[name], X_week[name])
+    report(name, psi=value, emptied=emptied, ks=d, ks_p=p)
+
+scores = model.predict_proba(X_mature)[:, 1]   # outcomes: the matured cohort
+frac_pos, mean_pred = calibration_curve(y_mature, scores, n_bins=5)
+report("model", auc=roc_auc_score(y_mature, scores),
+       brier=brier_score_loss(y_mature, scores), log_loss=log_loss(y_mature, scores),
+       max_gap=np.abs(frac_pos - mean_pred).max(),
+       rate_gap=scores.mean() - y_mature.mean())
+
+recalibrated = CalibratedClassifierCV(FrozenEstimator(model), method="sigmoid")
+recalibrated.fit(X_mature, y_mature)           # two parameters; the model is not refit</code></pre>
+<p>
+  <code>FrozenEstimator</code> makes <code>CalibratedClassifierCV</code> use all the data for the calibrator and leave the
+  model alone. scikit-learn's <code>_sigmoid_calibration</code> parameterizes Platt as σ(−(a·s + b)) and smooths the 0/1
+  targets, so its a has the opposite sign of the one above. The recalibrated model should itself be scored on a later
+  cohort before it replaces the old one. Thresholds and reference windows belong in configuration next to the model
+  version, since a retrained model needs a new reference snapshot: its own training data.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Sensitivity vs alert fatigue.</strong> Hundreds of features times daily tests produce false alarms every day;
+    a team that learns to ignore them misses the real one. Alert on the score and a few key features, use sizes rather than
+    p-values, and require persistence (two windows in a row).</li>
+  <li><strong>PSI vs KS vs model-based detectors.</strong> PSI is easy to explain and handles categories but depends on the
+    bins and ε. KS needs no bins but is univariate and over-sensitive at volume. Training a classifier to tell reference
+    from current data (a domain classifier) catches multivariate shift that no single feature shows; Rabanser et al. (2019)
+    found that testing a dimension-reduced representation, or the model's own outputs, works well for high-dimensional
+    inputs.</li>
+  <li><strong>Reference window.</strong> Comparing with training data detects everything since launch; comparing with last
+    week detects sudden changes but lets slow drift through unnoticed. Seasonal data needs last year's same week.</li>
+  <li><strong>Label delay vs label quality.</strong> Early, partial labels give a fast but biased verdict; waiting for
+    maturity is accurate but slow. Proxy outcomes (a click for a purchase) are faster still and drift on their own.</li>
+  <li><strong>Recalibrate vs retrain vs adapt online.</strong> Recalibration is cheap and safe but fixes only monotone
+    errors. Retraining fixes concept drift but needs fresh labels, validation and a rollout. Online updates adapt fastest
+    and can also learn a corrupted feed within hours.</li>
+  <li><strong>Feedback loops.</strong> A deployed model changes the data it later trains on: approved loans are the only
+    labeled loans, recommended items get the clicks. Sculley et al. (2015) list these hidden loops among ML systems'
+    technical debts; a small randomized holdout is the usual remedy.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Why can't any input-only monitor detect week 4's concept drift?</summary>
+  <p>Concept drift changes P(y | x) and can leave P(x) exactly as it was, as here: PSI is 0 and the predictions are
+    identical. Only outcomes carry information about P(y | x), so only labeled data can show it.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Your KS test rejects on every feature, every day, at p &lt; 0.001. What do you do?</summary>
+  <p>Look at the effect sizes. With millions of rows, the test detects differences too small to matter; switch the alert to
+    PSI or D above a size threshold, and use the p-values only to rank which features moved most.</p>
+</details>
+<details class="ml-quiz">
+  <summary>The predicted rate is stable but AUC on matured labels fell from 0.82 to 0.71. Will recalibration help?</summary>
+  <p>No. A monotone calibrator keeps the ranking, so it cannot change AUC; the model ranks cases worse than before. That is
+    concept drift beyond a rescaling, and it needs retraining on recent labeled data.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Moreno-Torres, Raeder, Alaiz-Rodríguez, Chawla and Herrera. <em>A Unifying View on Dataset Shift in
+    Classification.</em> Pattern Recognition, 2012.</li>
+  <li>Shimodaira. <em>Improving Predictive Inference under Covariate Shift by Weighting the Log-Likelihood Function.</em>
+    Journal of Statistical Planning and Inference, 2000.</li>
+  <li>Saerens, Latinne and Decaestecker. <em>Adjusting the Outputs of a Classifier to New a Priori Probabilities: A Simple
+    Procedure.</em> Neural Computation, 2002.</li>
+  <li>Lipton, Wang and Smola. <em>Detecting and Correcting for Label Shift with Black Box Predictors.</em> ICML 2018.
+    <a href="https://arxiv.org/abs/1802.03916">arXiv:1802.03916</a></li>
+  <li>Rabanser, Günnemann and Lipton. <em>Failing Loudly: An Empirical Study of Methods for Detecting Dataset Shift.</em>
+    NeurIPS 2019. <a href="https://arxiv.org/abs/1810.11953">arXiv:1810.11953</a></li>
+  <li>Gama, Žliobaitė, Bifet, Pechenizkiy and Bouchachia. <em>A Survey on Concept Drift Adaptation.</em> ACM Computing
+    Surveys, 2014.</li>
+  <li>Sculley et al. <em>Hidden Technical Debt in Machine Learning Systems.</em> NeurIPS 2015.</li>
+  <li>Breck, Cai, Nielsen, Salib and Sculley. <em>The ML Test Score: A Rubric for ML Production Readiness and Technical
+    Debt Reduction.</em> IEEE Big Data 2017.</li>
+  <li>Platt. <em>Probabilistic Outputs for Support Vector Machines and Comparisons to Regularized Likelihood Methods.</em>
+    In Advances in Large Margin Classifiers, MIT Press, 2000.</li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/calibration.py', 1227, 1342) }}"><code>calibration_curve</code></a>,
+    <a href="{{ skl('sklearn/calibration.py', 74, 597) }}"><code>CalibratedClassifierCV</code></a>,
+    <a href="{{ skl('sklearn/metrics/_classification.py', 3713, 3856) }}"><code>brier_score_loss</code></a>,
+    <a href="{{ skl('sklearn/metrics/_classification.py', 3321, 3446) }}"><code>log_loss</code></a>.</li>
+</ul>

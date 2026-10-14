@@ -1274,7 +1274,7 @@ PAGES = [
             "sklearn:sklearn/metrics/_classification.py",
             "sklearn:sklearn/calibration.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "reproducibility",

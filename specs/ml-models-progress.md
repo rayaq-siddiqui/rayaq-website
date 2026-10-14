@@ -7,7 +7,7 @@ records where the build actually stands.
 **Last updated:** 2026-10-14 (thirty-ninth run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
 fixed page format. Ready pages: queue items 1-81, the last being `two-tower-models`.
-The next page is `monitoring-and-drift` (queue item 83).
+The next page is `multimodal-models` (queue item 84).
 
 ## Pins
 
@@ -317,8 +317,8 @@ Gaps:
 80. `fine-tuning` ✓
 81. `two-tower-models` ✓
 82. `distributed-training` ✓
-83. `monitoring-and-drift` ← next
-84. `multimodal-models`
+83. `monitoring-and-drift` ✓
+84. `multimodal-models` ← next
 85. `pca`
 86. `mixture-of-experts`
 87. `flow-matching`
