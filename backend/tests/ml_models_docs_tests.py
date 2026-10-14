@@ -4986,3 +4986,68 @@ def test_md_prior_shift_and_delayed_labels():
     maturity = ex["maturity"]
     assert maturity[-1]["observed"] == pytest.approx(ex["weeks"][0]["observed_rate"])
     assert maturity[0]["observed"] < maturity[-1]["observed"] / 4
+
+
+def test_mm_clip_loss_is_symmetric_cross_entropy_on_scaled_cosines():
+    ex = ml_models_docs.mm_example()
+    clip = ex["clip"]
+    n = len(ex["example"]["images"])
+    assert clip["loss"] == pytest.approx((sum(clip["image_loss"]) + sum(clip["text_loss"])) / (2 * n))
+    assert all(-1 <= c <= 1 for row in ex["cosines"] for c in row)
+    assert all(math.isclose(ex["cosines"][i][i], max(row), rel_tol=0) for i, row in enumerate(ex["cosines"]))
+    assert clip["image_top1"] == clip["text_top1"] == 1.0
+    losses = [r["loss"] for r in ex["sweep"]]
+    assert losses == sorted(losses, reverse=True)
+    assert losses[0] < ex["chance"]
+    zero = ml_models_docs.mm_clip_loss([[0.0] * n for _ in range(n)])
+    assert zero["loss"] == pytest.approx(math.log(n))
+
+
+def test_mm_clip_gradient_matches_finite_differences():
+    ex = ml_models_docs.mm_example()
+    e = ex["example"]
+    logits = ml_models_docs.mm_clip_logits(e["images"], e["texts"], ex["init_scale"])
+    grad = ml_models_docs.mm_clip_loss(logits)["grad"]
+    h = 1e-6
+    for i in range(len(logits)):
+        for j in range(len(logits)):
+            bumped = [row[:] for row in logits]
+            bumped[i][j] += h
+            numeric = (ml_models_docs.mm_clip_loss(bumped)["loss"] - ml_models_docs.mm_clip_loss(logits)["loss"]) / h
+            assert numeric == pytest.approx(grad[i][j], abs=1e-5)
+    assert all(grad[i][i] < 0 for i in range(len(grad)))
+    assert sum(sum(row) for row in grad) == pytest.approx(0, abs=1e-12)
+
+
+def test_mm_zero_shot_picks_the_closest_class_and_ensembles_prompts():
+    zs = ml_models_docs.mm_example()["zero_shot"]
+    assert sum(zs["single"]) == pytest.approx(1)
+    assert sum(zs["ensemble"]) == pytest.approx(1)
+    best = max(range(3), key=lambda k: zs["classes"][k]["single"])
+    assert best == max(range(3), key=lambda k: zs["single"][k]) == 1
+    assert zs["ensemble"][2] > zs["single"][2]
+
+
+def test_mm_vision_tokens_and_fusion_costs():
+    ex = ml_models_docs.mm_example()
+    v = ex["vision"]
+    assert (v["side"], v["per_tile"], v["tiled"], v["pooled"]) == (24, 576, 2880, 144)
+    plain, tiled, latents = ex["fusion"]
+    assert plain["kv_per_token"] == 2 * 32 * 4096 * 2 == 524288
+    assert plain["concat_scores"] == 32 * 676 ** 2
+    assert plain["xattn_scores"] == 32 * 100 ** 2 + 8 * 100 * 576
+    assert plain["concat_kv"] == 4 * plain["xattn_kv"]
+    assert tiled["concat_kv"] == 5 * plain["concat_kv"]
+    assert latents["concat_scores"] < plain["xattn_scores"] * 2
+
+
+def test_mm_gate_starts_closed_and_audio_token_rates():
+    gates = ml_models_docs.mm_example()["gates"]
+    assert gates["rows"][0]["out"] == gates["x"]
+    assert [r["gate"] for r in gates["rows"]] == sorted(r["gate"] for r in gates["rows"])
+    assert all(r["gate"] < 1 for r in gates["rows"])
+    audio = ml_models_docs.mm_example()["audio"]
+    assert (audio["mel_frames"], audio["encoder_tokens"], audio["encoder_rate"]) == (3000, 1500, 50)
+    assert audio["codec_rate"] == 75 and audio["bits"] == 10
+    assert [r["codebooks"] for r in audio["codec"]] == [2, 4, 8, 16, 32]
+    assert all(r["per_second"] * audio["bits"] == r["kbps"] * 1000 for r in audio["codec"])

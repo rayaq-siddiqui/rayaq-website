@@ -12424,6 +12424,137 @@ def md_example():
         "empty_eps": md_psi(eb["expected"], eb["actual"], eb["eps"]),
     }
 
+
+MM_EXAMPLE = {
+    "images": [[2.0, 0.5, 0.0], [0.4, 1.5, 0.3], [0.0, 0.6, 1.2], [1.0, 1.0, 1.0]],
+    "texts": [[1.0, 0.1, 0.1], [0.2, 1.0, 0.4], [-0.1, 0.4, 1.0], [0.9, 0.6, 0.6]],
+    "init_temperature": 0.07,
+    "max_scale": 100.0,
+    "scales": [1.0, 14.285714285714286, 100.0],
+    "zero_shot": {
+        "image": [0.2, 0.9, 0.9],
+        "classes": ["dog", "cat", "car"],
+        "prompts": [[[1.0, 0.2, 0.0], [0.9, 0.0, 0.3]],
+                    [[0.1, 1.0, 0.5], [0.3, 0.9, 0.2]],
+                    [[0.0, 0.2, 1.0], [-0.2, 0.4, 0.9]]],
+    },
+    "vision": {"image": 336, "patch": 14, "tiles": 4, "latents": 64},
+    "llm": {"layers": 32, "d_model": 4096, "bytes": 2, "text_tokens": 100, "xattn_every": 4},
+    "gate_alphas": [0.0, 0.1, 0.5, 2.0],
+    "whisper": {"sample_rate": 16000, "hop": 160, "seconds": 30, "conv_stride": 2},
+    "codec": {"sample_rate": 24000, "hop": 320, "codebook": 1024, "kbps": [1.5, 3.0, 6.0, 12.0, 24.0], "seconds": 10},
+}
+
+
+def mm_clip_logits(images, texts, scale):
+    a = [tt_normalize(v) for v in images]
+    b = [tt_normalize(v) for v in texts]
+    return [[scale * dot_product(u, w) for w in b] for u in a]
+
+
+def mm_clip_loss(logits):
+    n = len(logits)
+    columns = [[logits[i][j] for i in range(n)] for j in range(n)]
+    image_loss = [tt_cross_entropy(row, i) for i, row in enumerate(logits)]
+    text_loss = [tt_cross_entropy(col, j) for j, col in enumerate(columns)]
+    row_p = [softmax_probs(row) for row in logits]
+    col_p = [softmax_probs(col) for col in columns]
+    grad = [[((row_p[i][j] - (i == j)) + (col_p[j][i] - (i == j))) / (2 * n) for j in range(n)] for i in range(n)]
+    return {
+        "image_loss": image_loss,
+        "text_loss": text_loss,
+        "loss": (sum(image_loss) + sum(text_loss)) / (2 * n),
+        "row_probs": row_p,
+        "col_probs": col_p,
+        "grad": grad,
+        "image_top1": sum(max(range(n), key=lambda j: logits[i][j]) == i for i in range(n)) / n,
+        "text_top1": sum(max(range(n), key=lambda i: columns[j][i]) == j for j in range(n)) / n,
+    }
+
+
+def mm_zero_shot(image, prompts, scale):
+    img = tt_normalize(image)
+    classes = []
+    for group in prompts:
+        unit = [tt_normalize(p) for p in group]
+        mean = tt_normalize([sum(u[k] for u in unit) / len(unit) for k in range(len(img))])
+        classes.append({"single": dot_product(img, unit[0]), "ensemble": dot_product(img, mean)})
+    single = softmax_probs([scale * c["single"] for c in classes])
+    ensemble = softmax_probs([scale * c["ensemble"] for c in classes])
+    return {"classes": classes, "single": single, "ensemble": ensemble}
+
+
+def mm_vision_tokens(v):
+    side = v["image"] // v["patch"]
+    per_tile = side * side
+    return {"side": side, "per_tile": per_tile, "tiled": per_tile * (v["tiles"] + 1),
+            "pooled": per_tile // 4, "latents": v["latents"]}
+
+
+def mm_fusion_cost(image_tokens, llm):
+    t, layers = llm["text_tokens"], llm["layers"]
+    xlayers = layers // llm["xattn_every"]
+    kv_token = 2 * layers * llm["d_model"] * llm["bytes"]
+    xkv_token = 2 * xlayers * llm["d_model"] * llm["bytes"]
+    return {
+        "image_tokens": image_tokens,
+        "concat_scores": layers * (t + image_tokens) ** 2,
+        "xattn_scores": layers * t * t + xlayers * t * image_tokens,
+        "concat_kv": image_tokens * kv_token,
+        "xattn_kv": image_tokens * xkv_token,
+        "xattn_layers": xlayers,
+        "kv_per_token": kv_token,
+    }
+
+
+def mm_gate(x, update, alpha):
+    g = math.tanh(alpha)
+    return {"alpha": alpha, "gate": g, "out": [a + g * b for a, b in zip(x, update)]}
+
+
+def mm_audio(whisper, codec):
+    frames = whisper["seconds"] * whisper["sample_rate"] // whisper["hop"]
+    rate = codec["sample_rate"] / codec["hop"]
+    bits = math.log2(codec["codebook"])
+    rows = []
+    for kbps in codec["kbps"]:
+        books = round(kbps * 1000 / (rate * bits))
+        rows.append({"kbps": kbps, "codebooks": books, "per_second": rate * books,
+                     "tokens": rate * books * codec["seconds"]})
+    return {"mel_frames": frames, "encoder_tokens": frames // whisper["conv_stride"],
+            "encoder_rate": frames // whisper["conv_stride"] / whisper["seconds"],
+            "codec_rate": rate, "bits": bits, "codec": rows}
+
+
+@functools.lru_cache(maxsize=None)
+def mm_example():
+    e = MM_EXAMPLE
+    init_scale = 1 / e["init_temperature"]
+    sweep = []
+    for s in e["scales"]:
+        r = mm_clip_loss(mm_clip_logits(e["images"], e["texts"], s))
+        sweep.append({"scale": s, "loss": r["loss"]})
+    cos = mm_clip_logits(e["images"], e["texts"], 1.0)
+    main = mm_clip_loss(mm_clip_logits(e["images"], e["texts"], init_scale))
+    vt = mm_vision_tokens(e["vision"])
+    fusion = [mm_fusion_cost(n, e["llm"]) for n in (vt["per_tile"], vt["tiled"], vt["latents"])]
+    zs = e["zero_shot"]
+    x, update = [1.0, -0.5], [0.4, 0.8]
+    return {
+        "example": e,
+        "init_scale": init_scale,
+        "cosines": cos,
+        "clip": main,
+        "sweep": sweep,
+        "chance": math.log(len(e["images"])),
+        "zero_shot": mm_zero_shot(zs["image"], zs["prompts"], 100.0),
+        "vision": vt,
+        "fusion": fusion,
+        "gates": {"x": x, "update": update, "rows": [mm_gate(x, update, a) for a in e["gate_alphas"]]},
+        "audio": mm_audio(e["whisper"], e["codec"]),
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -12472,6 +12603,7 @@ def render(slug, render_template):
         "tt_example": tt_example,
         "dt_example": dt_example,
         "md_example": md_example,
+        "mm_example": mm_example,
         "pretraining_example": pretraining_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,
