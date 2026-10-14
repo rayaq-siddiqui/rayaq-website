@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-13 (thirty-eighth run). Spec v2 widens the section from model
+**Last updated:** 2026-10-14 (thirty-ninth run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-78, the last being `vision-transformer`.
-The next page is `diffusion-unet` (queue item 79).
+fixed page format. Ready pages: queue items 1-81, the last being `two-tower-models`.
+The next page is `distributed-training` (queue item 82).
 
 ## Pins
 
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (78 of 93 ready, all
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (81 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -138,33 +138,27 @@ Paths are under `sklearn/`.
   before linking a range. A naive "next top-level line" scan gets fooled by unindented
   docstrings and comments; it gave a wrong end for `RMSNorm`, which was corrected by hand.
 - On the index map, the box for `mixture-of-experts` links to the whole file `container.py`
-  until its page exists; `vision-transformer` and `diffusion-unet` now link to their pages.
+  until its page exists; every other map box links to its page.
 - The index map still covers only the architecture area. Widen it to all 12 areas once a
   page in each of the first few areas is ready.
 - `transformer` uses the v1 section layout and is exempt from the §6 order test until its
   retrofit (queue item 18).
 
-## First to thirty-seventh runs (2026-10-08 to 2026-10-13) — condensed
+## First to thirty-eighth runs (2026-10-08 to 2026-10-13) — condensed
 
 Runs 1-3 wrote the spec (v1, then v2), the registry, `LEARNING_PATH`, the §6 and queue tests,
 `check_mobile.js` and the Routine. Every run since adds, per page, a tested-helpers commit, a
-page commit (page, `ready`, queue ✓) and usually a `docs:` commit; items 1-75 were built in
-queue order (run 28: quantization, reinforcement-learning, bayes-rule; run 29:
-class-imbalance, random-forests, initialization; run 30: rnns-and-lstms, autoencoders,
-variational-autoencoders; run 31: positional-encoding, clustering, vector-indexes; run 32:
-distillation, time-series, regression-metrics; run 33: support-vector-machines,
-learning-rate-schedules, gans; run 34: encoder-only, learning-to-rank,
-data-loading-and-batching; run 35: model-serving, causal-inference, calibration; run 36:
-graph-neural-networks, diffusion-models, pretraining; run 37: collaborative-filtering,
-gradient-accumulation, latency-and-throughput). `6f0803f` fixed 13 templates that read a
-missing `pins.X.version` key. Pins never moved. The ranges each page links live in its template
-(grep `src(`, `skl(`, `xgb(`); `git log -p` on this file has every old commit table and range list.
+page commit (page, `ready`, queue ✓) and a `docs:` commit, building queue items 1-78 in order
+(three per run from run 28 to run 38, which built online-learning, uncertainty and
+vision-transformer). `6f0803f` fixed 13 templates that read a missing `pins.X.version` key.
+Pins never moved. The ranges each page links live in its template (grep `src(`, `skl(`,
+`xgb(`); `git log -p` on this file has every old commit table, range list and run detail.
 
-Findings worth keeping (details in each page and in `git log -p` on this file):
+Findings worth keeping:
 
 - sklearn's `Entropy` criterion is in bits; XGBoost's `loss_chg` has no ½. `AdamW` is `Adam`
   with `decoupled_weight_decay=True`. `nn.Linear` uses `kaiming_uniform_(a=math.sqrt(5))`,
-  a bound of exactly 1/√fan_in.
+  a bound of exactly 1/√fan_in. `_SigmoidCalibration` predicts `expit(-(a_*T + b_))`.
 - Cross-checks ran in scratch venvs, never in requirements: scikit-learn 1.9.1, torch 2.14.1,
   XGBoost 3.2.0 (3.4.2 is not on the mirror; the formulas used are unchanged).
 - Use the one-sided Jacobi SVD (eigenvalues of AᵀA squared the condition number).
@@ -175,93 +169,69 @@ Findings worth keeping (details in each page and in `git log -p` on this file):
   a new `pack_sequences` shadowed the RNN page's helper; `a6aae02` renamed it).
 - Jinja: a context dict key named `values`, `items` or `keys` resolves to the dict method;
   macros return Markup, so do arithmetic before calling them, never on their output.
-
-- sklearn's `_SigmoidCalibration` predicts `expit(-(a_*T + b_))` (negative stored slope);
-  `_TemperatureScaling` optimizes log β in [−10, 10].
-- Chinchilla's Approach 3 constants in the closed form give about 32B params / 3.0T tokens at
-  Chinchilla's budget, not 70B; the isoFLOP valley is flat and the 20-tokens rule recovers
-  70B / 1.4T. The pretraining page says all three.
-- scikit-learn's `NMF` treats blank cells as observed zeros (2.57 for a held-out 5, against
-  4.01 from ALS on observed cells). ALS's penalized objective falls every sweep even when
-  observed-cell RMSE ticks up, so tests check the objective.
-- Decode at 2,048 context never becomes compute-bound: the per-sequence KV read grows with the
-  batch, so intensity tops out near 49 FLOP/byte against a ridge of 295.
+- Chinchilla's Approach 3 constants give about 32B params / 3.0T tokens at its budget, not
+  70B; the 20-tokens rule recovers 70B / 1.4T. scikit-learn's `NMF` treats blanks as zeros.
+  Decode at 2,048 context tops out near 49 FLOP/byte against a ridge of 295. ViT's counter
+  matches torchvision exactly; split conformal coverage is marginal, not per-group.
 
 Open gaps from these runs:
 
 - Every paper reference so far was cited from memory (arxiv.org is unreachable through the
   proxy); pre-arXiv papers and the GPT-2 report have no link. Each page's references list
   is the full set to re-check once arxiv is reachable.
-- No pin implements WordPiece training, BM25, GPTQ, LLM.int8() or any RL algorithm; those pages
-  follow the papers. `gpu-execution`'s hardware remarks (on an invented, labelled example GPU),
-  `mixed-precision`'s fp8 recipes and the SwiGLU "2/3 hidden size" remark are general knowledge.
+- Ideas no pin implements follow their papers: WordPiece training, BM25, GPTQ, LLM.int8(), RL,
+  IVF/PQ/HNSW, GANs, R1, FID, ARIMA/STL/MASE, sequence packing, serving systems, ECE,
+  propensity weighting, DiD, uplift, GNNs, diffusion samplers, MinHash, scaling-law fits, ALS,
+  gradient caching, bandits, drift detectors and conformal prediction.
+- Invented, labelled examples: `gpu-execution`'s GPU, `model-serving`'s model, the
+  data-loading worker timeline and the latency page's round-number hardware (roofline bounds,
+  not measurements). `mixed-precision`'s fp8 recipes, the SwiGLU "2/3 hidden size" remark,
+  the H100 peak and Llama 3 8B's 15T tokens are general knowledge; Hinton–Vinyals–Dean's T²
+  remark was confirmed only through secondary quotes.
 - The end lines of the HistGradientBoosting regressor `__init__`, `_incremental_fit_estimator`
   and `Lasso` were inferred.
-- `kv-cache` (quantization) and `reinforcement-learning` (preference optimization) name those
-  pages in plain text until they are ready.
-- No pin implements IVF, PQ or HNSW; those follow the papers. `pca` appears as plain text on
-  `clustering` until it is ready.
+- Unready pages named in plain text until they are ready: `preference-optimization`
+  (`reinforcement-learning`, `fine-tuning`), `pca` (`clustering`), `monitoring-and-drift`
+  (`online-learning`), and `distributed-training`, `contrastive-learning`,
+  `speculative-decoding`, `profiling` (run 37 pages).
 - Page commits exceed 400 lines because each template is one file.
-- Run 33: no pin implements a GAN, a Wasserstein critic, R1 or FID; the schedulers were held
-  equal to a simulator of the pinned recursions, not cross-checked in torch. SVM helpers match
-  `SVC` (scratch venv). Dirac-GAN: minimax spirals out, non-saturating orbits, R1 converges.
-- Run 32: Hinton–Vinyals–Dean's T² remark was confirmed only through secondary quotes;
-  Gneiting 2011 is cited only for consistent scoring functions. No pin implements ARIMA, STL
-  or MASE; those follow the papers and FPP3.
-- Run 34: no pin implements sequence packing with masks or a bucketing sampler; the
-  data-loading worker timeline is an idealized model, labelled as such.
-- Run 35: no pin implements a serving system, ECE, propensity weighting, DiD or uplift;
-  `model-serving`'s figures come from an invented, labelled model. Its references (Rubin,
-  Rosenbaum & Rubin, Guo et al., Platt, Zadrozny & Elkan, …) were cited from memory.
-- Run 37: no pin implements ALS, implicit-feedback MF, a serving queue or gradient caching;
-  `two-tower-models`, `distributed-training`, `contrastive-learning`, `speculative-decoding`
-  and `profiling` are named in plain text until ready. The latency page's hardware is round
-  numbers and its results are roofline lower bounds, not measurements.
-- Run 36: no pin implements a GNN library, a diffusion sampler, MinHash or a scaling-law fit;
-  those follow the papers. The H100 peak and Llama 3 8B's 15T tokens are general knowledge.
 
-## Thirty-eighth run (2026-10-13) — online-learning, uncertainty, vision-transformer
+## Thirty-ninth run (2026-10-14) — diffusion-unet, fine-tuning, two-tower-models
 
 | Commit | What |
 |---|---|
-| `c7110bd` `ml-models: add tested online-learning helpers` | Seeded drifting stream with OGD vs a frozen batch fit, prequential windowed MSE, regret against the best fixed weight, ε-greedy / UCB1 / Thompson on a three-arm Bernoulli bandit |
-| `c060755` `ml-models: add the online-learning page` | The page, `ready`, queue ✓ |
-| `f9795f9` `ml-models: add tested uncertainty helpers` | Heteroscedastic sin(x) data; five-member bootstrap ensemble of cubic mean + linear scale fits with the aleatoric/epistemic split; percentile bootstrap CI; MC dropout on a fixed layer; split conformal (rank ⌈(n+1)(1−α)⌉), normalized scores, 200 repeated calibrations |
-| `adac70a` `ml-models: add the uncertainty page` | The page, `ready`, queue ✓ |
-| `d8079b4` `ml-models: add tested vision-transformer helpers` | Token counts, the ViT-B/16 shape walk, a parameter counter for ViT-Ti/S/B/L/H, a toy patchify where stride-P Conv2d equals Linear on flattened patches |
-| `947a130` `ml-models: add the vision-transformer page` | The page, `ready`, queue ✓ |
-| (this commit) `docs: record the thirty-eighth ml-models run` | Commit SHAs, pin check, gaps; condenses run 37 |
+| `527f16b` `ml-models: add tested diffusion-unet helpers` | UNet shape walk, SD v1 and DiT parameter counters, timestep embedding, toy cross-attention and classifier-free guidance |
+| `77ebb91` `ml-models: add the diffusion-unet page` | The page, `ready`, queue ✓ |
+| `4d1867c` `ml-models: add tested fine-tuning helpers` | LoRA, adapter, prefix and prompt-tuning parameter counts on Llama 2 7B, QLoRA memory, SFT loss masking |
+| `79ba475` `ml-models: add the fine-tuning page` | The page, `ready`, queue ✓ |
+| `b96030b` `ml-models: add tested two-tower helpers` | Bag-of-history user tower, in-batch softmax with and without logQ, full-catalogue softmax, a hard negative, serving funnel arithmetic |
+| `2b6c628` `ml-models: add the two-tower-models page` | The page, `ready`, queue ✓ |
+| (this commit) `docs: record the thirty-ninth ml-models run` | Commit SHAs, pin check, gaps; condenses run 38 |
 
 Findings worth keeping:
 
-- The parameter counter matches torchvision's published totals exactly: ViT-B/16 86,567,656,
-  B/32 88,224,232, L/16 304,326,632, H/14 632,045,800. The packed `in_proj_weight` of
-  `nn.MultiheadAttention` has the paper's layout, so an `nn.TransformerEncoder` ViT counts
-  the same.
-- Split conformal on 200 calibration points gives 89.4% coverage overall, but 97.2% on the
-  quiet half and 81.5% on the noisy half: the guarantee is marginal. Normalized scores give
-  88.5% / 92.2%. Over 200 recalibrations the mean is 89.88% against the exact 90.05%.
-- The UCB1 trace has a three-way tie at t = 4 that the lowest index wins; the page describes
-  the trace as computed, not as a textbook would guess it.
+- The counters match published totals: SD v1 UNet 859,520,964, DiT-XL/2 674,834,720,
+  Llama 2 7B 6,738,415,616 and PEFT's LoRA r=8 on q,v 4,194,304.
+- On the toy two-tower batch, the in-batch loss is 0.379, logQ-corrected 0.360 and the
+  full-catalogue loss 0.502; one hard negative takes the loss from 0.176 to 0.545.
 - Pins checked with `git ls-remote --tags`: v2.14.1, 1.9.1 and v3.4.2 are still the newest
-  stable releases (PyTorch v2.15.0 has only release candidates); no pin moved.
-- Ranges cited this run, all checked at the pin: `conv.py` `Conv2d` 388-565 (`__init__`
-  512-544, `_conv_forward` 546-562); `transformer.py` `TransformerEncoder` 320-555,
-  `TransformerEncoderLayer` 663-983 (pre-norm branch 946-958, `_sa_block`/`_ff_block`
-  961-983); `flatten.py` `Flatten` 12-62; `activation.py` `GELU` 778-823,
-  `MultiheadAttention` 1090-1573; `normalization.py` `LayerNorm` 105-236; `linear.py`
-  `Linear` 53-140; `_bagging.py` `_generate_indices` 51-61, `BaggingRegressor` 1192-1480;
-  `dropout.py` 17-73; `functional.py` `F.dropout` 1473-1498.
+  stable releases (PyTorch v2.15.0 is at rc5); no pin moved.
+- Ranges cited this run, all checked at the pin: `parametrize.py` `cached` 33-73,
+  `ParametrizationList` 95-341 (forward 326-341), `register_parametrization` 450-671,
+  `remove_parametrizations` 696-796; `linear.py` `__init__` 96-115, `reset_parameters`
+  117-128, forward 130-134; `module.py` `requires_grad_` 2934-2955; `sparse.py` `Embedding`
+  14-264, `EmbeddingBag` 267-543; `functional.py` `F.embedding` 2509-2621, `F.embedding_bag`
+  2624-2839, `F.normalize` 6096-6130, `cross_entropy` 3478-3571, `F.group_norm` 3015-3050,
+  `F.silu` 2429-2451; `normalization.py` `GroupNorm` 239-340; `upsampling.py` `Upsample`
+  13-198; `activation.py` `SiLU` 436-483; `conv.py` `ConvTranspose2d` 1012-1207.
 
 Gaps:
 
-- arxiv.org still returns 403 through the proxy, so every reference added this run (ViT,
-  DeiT, Swin, MAE, GELU, deep ensembles, MC dropout, conformal prediction, CQR, Ovadia et al.,
-  UCB1, Thompson sampling, Zinkevich's OGD) was cited from memory.
-- online-learning names `monitoring-and-drift` in plain text until it is ready.
-- No pin implements a bandit, a drift detector or conformal prediction; those follow the
-  papers. ViT's encoder in torchvision and timm uses their own block classes; the page links
-  `nn.TransformerEncoderLayer` as the equivalent pinned module.
+- arxiv.org is still unreachable, so every reference added this run was cited from memory.
+- The ends of `CrossEntropyLoss` (`loss.py`, starts at 1200) and
+  `F.scaled_dot_product_attention` are unverified and not linked as ranges.
+- No pin implements a UNet, LoRA/PEFT, NF4, an ANN index or logQ correction; those follow the
+  papers. The two-tower serving numbers are an invented, labelled configuration.
 
 ## Queue
 
