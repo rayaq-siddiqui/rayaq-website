@@ -142,13 +142,12 @@ Paths are under `sklearn/`.
 - `transformer` uses the v1 section layout and is exempt from the §6 order test until its
   retrofit (queue item 18).
 
-## First to fortieth runs (2026-10-08 to 2026-10-14) — condensed
+## First to forty-first runs (2026-10-08 to 2026-10-14) — condensed
 
 Runs 1-3 wrote the spec (v1, then v2), the registry, `LEARNING_PATH`, the §6 and queue tests,
 `check_mobile.js` and the Routine. Every run since adds, per page, a tested-helpers commit, a
-page commit (page, `ready`, queue ✓) and a `docs:` commit, building queue items 1-81 in order
-(three per run from run 28 to run 40, which built distributed-training,
-monitoring-and-drift and multimodal-models). `6f0803f` fixed 13 templates that read a missing `pins.X.version` key.
+page commit (page, `ready`, queue ✓) and a `docs:` commit, building queue items 1-84 in order
+(three per run from run 28 to run 41, which built pca, mixture-of-experts and flow-matching). `6f0803f` fixed 13 templates that read a missing `pins.X.version` key.
 Pins never moved. The ranges each page links live in its template (grep `src(`, `skl(`,
 `xgb(`); `git log -p` on this file has every old commit table, range list and run detail.
 
@@ -173,6 +172,9 @@ Findings worth keeping:
   matches torchvision exactly; split conformal coverage is marginal, not per-group.
 - Counters that match published totals: SD v1 UNet 859,520,964, DiT-XL/2 674,834,720,
   Llama 2 7B 6,738,415,616, PEFT's LoRA r=8 on q,v 4,194,304.
+- PCA's float `n_components` keeps the smallest k whose cumulative ratio is strictly above t
+  (`searchsorted(..., side="right") + 1`). Mixtral 8x7B counts 46.70B total, 12.88B active.
+  On ±1 data one flow-matching Euler step sends every sample to the data mean.
 - The CLIP logit gradient is (P_row + P_colᵀ − 2I)/(2N). `cross_entropy` ends at 3569 and
   `F.scaled_dot_product_attention` is 6367-6540 at the PyTorch pin.
 
@@ -198,61 +200,9 @@ Open gaps from these runs:
   serving numbers are an invented, labelled configuration.
 - PSI's 0.1/0.25 thresholds are an industry convention; Whisper, EnCodec, Flamingo and LLaVA
   details follow the papers from memory, and the fusion model is invented and labelled.
+- UMAP is in no pin. Since run 41 the PyTorch wheel download is blocked, so page snippets
+  are checked against the stdlib helpers (and NumPy mirrors), not run under torch.
 - Page commits exceed 400 lines because each template is one file.
-
-## Forty-first run (2026-10-14) — pca, mixture-of-experts, flow-matching
-
-| Commit | What |
-|---|---|
-| `8236077` `ml-models: add tested pca helpers` | PCA fit/transform/inverse via the SVD, whitening, the float n_components rule, noise variance, a seeded two-factor survey, an arc PCA folds, t-SNE kernel tails |
-| `ab63d2b` `ml-models: add the pca page` | The page, `ready`, queue ✓; PCA mentions in `clustering`, `preprocessing` and `linear-algebra-toolkit` now link to it |
-| `848a559` `docs: record the pca page in ml-models progress` | This section |
-| `c1615bc` `ml-models: add tested mixture-of-experts helpers` | Top-k routing (renormalized and raw gates), the Switch balancing loss, router z-loss, capacity with dropped tokens, one token's mixed output, Mixtral 8x7B total and active counts |
-| `085bf0c` `ml-models: add the mixture-of-experts page` | The page, `ready`, queue ✓; the index map box now links to it |
-| `e5ebeea` `docs: record the mixture-of-experts page in ml-models progress` | This section |
-| `9e2a859` `ml-models: add tested flow-matching helpers` | LogNormal change of variables and its integral, affine coupling with inverse and finite-difference Jacobian, the Gaussian-path ODE with log-density tracking, the two-point velocity and its diffusion form, Euler and Heun, line crossings, straightness, reflow |
-| `57a75a1` `ml-models: add the flow-matching page` | The page, `ready`, queue ✓ |
-| (this commit) `docs: record the forty-first ml-models run` | Pin check, gaps; condenses run 40 |
-
-Findings worth keeping:
-
-- Every PCA number was cross-checked offline against scikit-learn 1.9.1 in a scratch venv
-  (never a requirements file): components, explained variance, ratios, transform, whitened
-  transform, inverse_transform, `n_components=0.9` (2 with both the full and covariance_eigh
-  solvers) and `noise_variance_` 0.0722918 all agree to about 1e-15.
-- The float `n_components` rule is `searchsorted(cumsum, t, side="right") + 1`: the smallest k
-  whose cumulative ratio is strictly above t.
-- Mixtral 8x7B's config (d 4096, 32 layers, 32/8 heads of 128, d_ff 14336, 8 experts, top-2,
-  vocab 32000) with untied embeddings and no biases gives 46.70B total and 12.88B active,
-  matching the paper's 47B / 13B; the helper test pins both.
-- The page's PyTorch MoE layer was checked line for line against the stdlib helpers with a NumPy
-  mirror (outputs, balancing loss, z-loss, capacity drops all agree).
-- Flow matching on ±1 data: x̂₁ = tanh(t x/(1 − t)²) and v* = x̂₁ − x̂₀; rescaling x by
-  √(t² + (1 − t)²) gives the diffusion page's denoiser at ᾱ = t²/(t² + (1 − t)²), and a test
-  checks both against Monte Carlo. One Euler step sends every sample to the data mean; per
-  network call Euler beats Heun on this data because the last Euler step lands on x̂₁.
-- `TransformedDistribution` 16-226 (`log_prob` 168-190), `LogNormal` 13-75, `Transform` 47-211,
-  `ComposeTransform` 286-411, `ExpTransform` 571-591, `AffineTransform` 752-856, `Sequential`
-  59-338 and `SiLU` 436-483 were checked at the PyTorch pin.
-- Pins checked with `git ls-remote --tags`: v2.14.1, 1.9.1 and v3.4.2 are still the newest
-  stable releases; no pin moved.
-
-Gaps:
-
-- UMAP is in no pin; its description (and the reference implementation's n_neighbors = 15
-  default) is from the paper and memory. arxiv.org is still unreachable, so the Halko, UMAP,
-  t-SNE, Minka and Tipping–Bishop references were cited from memory.
-- The MoE layer snippet was not run under real PyTorch: download.pytorch.org is blocked by the
-  proxy and the PyPI wheel did not finish downloading in time. Its arithmetic was verified with
-  NumPy; the torch API calls (`topk`, `nonzero(as_tuple=True)`, `index_add_`, indexing with
-  `None`) are standard but unexecuted here.
-- Switch, GShard, ST-MoE, Mixtral, MegaBlocks, DeepSeekMoE and DeepSeek-V3 claims (α = 0.01,
-  z-loss coefficient 1e-3, 671B/37B, Mixtral's routing analysis) are from the papers as
-  remembered; arxiv.org was not reachable to re-read them.
-- The flow-matching snippet was not run under real PyTorch (same blocked download); its log_prob
-  value comes from the tested helper. NICE, RealNVP, Glow, Neural ODE, FFJORD, score SDE, DDIM,
-  Flow Matching, Rectified Flow, stochastic interpolants and SD3 claims (the σ_min path,
-  DDIM as an ODE solver, SD3's mid-path timestep weighting) are cited from memory.
 
 ## Forty-second run (2026-10-14) — preference-optimization, retrieval-augmented-generation, checkpointing
 
@@ -263,7 +213,10 @@ Gaps:
 | `71340ee` `docs: record the preference-optimization page in ml-models progress` | The preference-optimization record |
 | `8e4d2c4` `ml-models: add tested retrieval-augmented-generation helpers` | Word and sentence chunking, BM25 and character-trigram retrieval, RRF, an IDF-weighted soft-match re-ranker, recall@k and MRR, greedy prompt packing, a lost-in-the-middle ordering, RAG-Sequence/RAG-Token marginals, exact match and token F1 |
 | `017a488` `ml-models: add the retrieval-augmented-generation page` | The page, word-range and answer-span helpers for its chunk figure, `ready`, queue ✓; the `learning-to-rank` tagline links to it |
-| (this commit) `docs: record the retrieval-augmented-generation page in ml-models progress` | The RAG record |
+| `43693ae` `docs: record the retrieval-augmented-generation page in ml-models progress` | The RAG record |
+| `955b292` `ml-models: add tested checkpointing helpers` | A seeded Adam run with warmup-cosine, `seed + epoch` shuffling and RNG jitter; save and resume with each piece forgotten; checkpoint sizes; Young's interval and waste; `checkpoint_sequential` memory; a reshard read plan; a `pickletools` GLOBAL scan with a `weights_only`-style verdict |
+| `cec3a22` `ml-models: add the checkpointing page` | The page, `ready`, queue ✓; activation-checkpointing mentions in `distributed-training`, `backpropagation`, `gradient-accumulation` and `computation-graphs` now link to it |
+| (this commit) `docs: record the forty-second ml-models run` | Checkpointing record, pin check; condenses run 41 |
 
 Findings worth keeping:
 
@@ -289,6 +242,25 @@ Findings worth keeping:
 - PyTorch ranges checked at the pin for RAG: `normalize` 6096-6130, `cosine_similarity`
   5895-5924, `log_softmax` 2293-2324 (functional.py); `matmul` 7908-7990, `topk`
   11877-11921, `argsort` 10493-10532, `logsumexp` 6696-6728 (`_torch_docs.py`).
+- Checkpointing: a full resume replays steps 7-12 bit for bit. Forgetting the scheduler
+  restarts warmup and gives the largest gap in w or b (0.4226); the optimizer 0.3043; the RNG
+  0.0140 and the data position 0.0325. All four diverge at step 7, and three of the four end
+  with a lower loss than the uninterrupted run, so a broken resume is a different run, not a
+  visibly worse one. Young's T* = √(2CM) is 26.8 min (7.45% waste) at C = 60 s, M = 6 h and
+  7.7 min (2.15%) at C = 5 s. `checkpoint_sequential` on 16 layers peaks at 7 units with k = 4.
+- `torch.save` uses pickle protocol 2 (`DEFAULT_PROTOCOL`), whose GLOBAL opcode names
+  `builtins.print` with `fix_imports=False`; the restricted unpickler checks GLOBAL. DataLoader
+  has no `state_dict` at the pin, so the mid-epoch position is the user's to save.
+- PyTorch ranges checked at the pin for checkpointing: `serialization.py` (`UNSAFE_MESSAGE`
+  76-81, `add_safe_globals` 282-317, `save` 944-1020, `load` 1315-1649),
+  `_weights_only_unpickler.py` (allowlist 174-228, GLOBAL 331-383), `utils/checkpoint.py`
+  (`checkpoint` 423-617, `checkpoint_sequential` 701-792), `Module.state_dict` 2199-2287 and
+  `load_state_dict` 2535-2648, `Optimizer.state_dict` 700-791 and `load_state_dict` 900-1046,
+  `LRScheduler` 182-200, `random.py` 27-48, `cuda/random.py` 45-88, `DistributedSampler`
+  107-157, `RandomSampler.__iter__` 160-166, DCP `save` 89-205, `async_save` 221-397, `load`
+  60-202, default load planner 478-524, `get_state_dict` 1271-1361, `set_state_dict` 1481-1544.
+- Pins checked with `git ls-remote --tags`: v2.14.1, 1.9.1 and v3.4.2 are still the newest
+  stable PyTorch, scikit-learn and XGBoost releases; no pin moved.
 
 Gaps:
 
@@ -305,6 +277,12 @@ Gaps:
   (arxiv.org unreachable). The trigram "vector" retriever and the soft-match re-ranker are
   labelled stand-ins, not a trained encoder or cross-encoder; no pin implements either. The
   RAG snippet was not run under real PyTorch.
+- Checkpointing: Young (1974), Chen et al. (2016), ZeRO and Adam are cited from memory.
+  Young's first-order interval assumes independent failures and C ≪ M; no higher-order
+  refinement is covered. Selective activation checkpointing (`context_fn`) is not
+  covered. Stateful data loaders (such as torchdata's) are outside the pins. The failure
+  rate, save times and 7B size are an invented, labelled scenario. The page's snippets
+  were not run under real PyTorch.
 
 ## Queue
 
