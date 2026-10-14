@@ -1,0 +1,530 @@
+{% set ex = pca_example() %}
+{% set e = ex.example %}
+{% set m = ex.model %}
+{% set sv = ex.survey %}
+{% set arc = ex.arc %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(0.0 if x|abs < 0.5 * 10 ** (-n) else x)|replace("-", "−") }}{%- endmacro %}
+{% macro pt(p, n=2) -%}({{ f(p[0], n) }}, {{ f(p[1], n) }}){%- endmacro %}
+{% macro px(x) -%}{{ '%.1f'|format(70 + x * 50) }}{%- endmacro %}
+{% macro py(y) -%}{{ '%.1f'|format(290 - y * 50) }}{%- endmacro %}
+{% set pc1 = m.components[0] %}
+{% set pc2 = m.components[1] %}
+<header class="jj-header">
+  <h1>Principal component analysis</h1>
+  <p class="tagline">
+    PCA finds the few directions along which a dataset varies most and re-expresses every point in those coordinates. This page derives it as variance maximization, computes it through the SVD, and works through explained variance, choosing how many components to keep, whitening and reconstruction,
+    then explains what t-SNE and UMAP do when the structure is not linear and why their pictures are easy to misread. Every number is computed, and the links point at the scikit-learn and PyTorch code that does the same thing.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A dataset with 300 features is hard to plot, slow to search and full of redundancy: survey questions that measure the same attitude, pixels that move together, sensor channels that track each other. You want fewer numbers per row that keep most of the information, to visualize the data, to speed up a downstream model, to remove noise, or to make <a href="/ml-models/clustering">clustering</a> and <a href="/ml-models/nearest-neighbors">nearest-neighbour</a> search work in fewer dimensions.
+</p>
+<p>
+  "Most of the information" needs a definition. PCA's answer: keep the k-dimensional linear subspace that preserves the most variance, which is the same as the subspace that reconstructs the points with the smallest squared error. That choice is cheap to compute and easy to invert, but it is linear and it is sensitive to the units of each feature, and both limits come up below.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Picture a cloud of points shaped like a tilted cigar. Its long axis is the direction where points differ most; knowing only where a point sits along that axis already tells you most of where it is. That axis is the first principal component. The second is the longest axis at right angles to the first, and so on. PCA is a rotation of the coordinate system so that the axes line up with the cloud, sorted from widest to thinnest.
+  Dropping the thin axes is the compression: every point is projected onto the wide ones.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 300" role="img" aria-labelledby="pca-axes-title pca-axes-desc">
+    <title id="pca-axes-title">Principal axes of {{ e.points|length }} points and their projections onto the first one</title>
+    <desc id="pca-axes-desc">
+      Left: {{ e.points|length }} points in the plane spread along a diagonal. Their mean {{ pt(m.mean) }} is marked with a cross. The first principal component, direction {{ pt(pc1) }}, runs along the diagonal and carries {{ f(m.ratio[0] * 100, 1) }}% of the variance; the second, {{ pt(pc2) }}, is perpendicular and carries {{ f(m.ratio[1] * 100, 1) }}%.
+      Dashed segments drop each point onto the first axis; their squared lengths sum to the reconstruction error {{ f(ex.one_error) }}. Right: the same points as one number each, their coordinate along the first axis, from {{ f(m.scores|map(attribute=0)|min, 2) }} to {{ f(m.scores|map(attribute=0)|max, 2) }}.
+    </desc>
+    <g font-size="12">
+      <rect x="10" y="10" width="330" height="280" rx="6" class="d-box" fill-opacity="0.04"></rect>
+      <line x1="{{ px(m.mean[0] - 2.8 * pc1[0]) }}" y1="{{ py(m.mean[1] - 2.8 * pc1[1]) }}" x2="{{ px(m.mean[0] + 2.8 * pc1[0]) }}" y2="{{ py(m.mean[1] + 2.8 * pc1[1]) }}" stroke-width="2" style="stroke: var(--jj-accent)"></line>
+      <line x1="{{ px(m.mean[0] - 1.0 * pc2[0]) }}" y1="{{ py(m.mean[1] - 1.0 * pc2[1]) }}" x2="{{ px(m.mean[0] + 1.0 * pc2[0]) }}" y2="{{ py(m.mean[1] + 1.0 * pc2[1]) }}" stroke-width="2" style="stroke: var(--jj-violet)"></line>
+      {% for p in e.points %}
+      {% set s = m.scores[loop.index0][0] %}
+      <line x1="{{ px(p[0]) }}" y1="{{ py(p[1]) }}" x2="{{ px(m.mean[0] + s * pc1[0]) }}" y2="{{ py(m.mean[1] + s * pc1[1]) }}" class="d-line ml-dashed"></line>
+      <circle cx="{{ px(p[0]) }}" cy="{{ py(p[1]) }}" r="4" class="d-line" style="fill: var(--jj-amber)"></circle>
+      {% endfor %}
+      <path d="M{{ '%.1f'|format(70 + m.mean[0] * 50 - 6) }} {{ '%.1f'|format(290 - m.mean[1] * 50 - 6) }} l12 12 m0 -12 l-12 12" stroke-width="2" class="d-line" fill="none"></path>
+      <text x="{{ px(m.mean[0] + 2.8 * pc1[0]) }}" y="{{ '%.1f'|format(290 - (m.mean[1] + 2.8 * pc1[1]) * 50 + 16) }}" text-anchor="end" style="fill: var(--jj-accent)">PC1</text>
+      <text x="{{ px(m.mean[0] + 1.0 * pc2[0]) }}" y="{{ '%.1f'|format(290 - (m.mean[1] + 1.0 * pc2[1]) * 50 + 14) }}" style="fill: var(--jj-violet)">PC2</text>
+      <text x="20" y="30">x, y: the data</text>
+      <rect x="350" y="10" width="280" height="280" rx="6" class="d-box" fill-opacity="0.04"></rect>
+      <text x="360" y="30">one number per point: PC1 score</text>
+      <line x1="360" y1="160" x2="620" y2="160" class="d-line"></line>
+      {% for t in [-2, -1, 0, 1, 2] %}
+      <line x1="{{ 490 + t * 45 }}" y1="155" x2="{{ 490 + t * 45 }}" y2="165" class="d-line"></line>
+      <text x="{{ 490 + t * 45 }}" y="182" text-anchor="middle" class="d-muted">{{ f(t, 0) }}</text>
+      {% endfor %}
+      {% for s in m.scores %}
+      <circle cx="{{ '%.1f'|format(490 + s[0] * 45) }}" cy="160" r="5" class="d-line" style="fill: var(--jj-amber)"></circle>
+      {% endfor %}
+      <text x="360" y="230" class="d-muted">keeps {{ f(m.ratio[0] * 100, 1) }}% of the variance</text>
+      <text x="360" y="250" class="d-muted">squared error {{ f(ex.one_error) }} = S₂²</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Projecting onto PC1 turns each pair of numbers into one and loses only the short dashed offsets, the part of each point that lies along PC2.</p>
+
+<p>
+  Two things the picture hides. First, PCA only sees straight lines: if the data lies on a curve, no rotation lines an axis up with it, and points far apart along the curve can land on top of each other. Second, "widest" depends on units: measure one feature in grams and another as a fraction, and the grams axis wins whatever the data says. Both are worked through below.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="variance-maximization">Variance-maximizing directions</h3>
+<p>
+  Stack n points of d features as rows of X and subtract the column means, giving the centred matrix X<sub>c</sub>. The sample covariance is
+</p>
+<p class="ml-formula">C = X<sub>c</sub>ᵀ X<sub>c</sub> / (n − 1)</p>
+<p>
+  The variance of the data projected onto a unit vector w is wᵀ C w. Maximizing it subject to ‖w‖ = 1 with a Lagrange multiplier λ gives C w = λ w: the best direction is an eigenvector of C, and the variance along it is its eigenvalue, so the first principal component is the eigenvector with the largest eigenvalue.
+  Requiring the next direction to be orthogonal to the first gives the second eigenvector, and so on. Because C is symmetric, its eigenvectors are orthogonal and the eigenvalues are real and non-negative (see <a href="/ml-models/linear-algebra-toolkit">the linear algebra toolkit</a>).
+</p>
+<p>
+  The same subspace also minimizes the squared reconstruction error. For any unit w, ‖x‖² = (wᵀx)² + ‖x − w wᵀx‖², so for centred data, maximizing the variance kept is the same as minimizing what is thrown away. That is why "PCA" can be introduced either way.
+</p>
+
+<h3 id="pca-via-svd">PCA via the SVD</h3>
+<p>
+  Forming C squares the condition number, so libraries usually skip it. Take the singular value decomposition X<sub>c</sub> = U S Vᵀ. Then
+</p>
+<p class="ml-formula">C = V S² Vᵀ / (n − 1)</p>
+<p>
+  so the rows of Vᵀ are the principal directions (scikit-learn's <code>components_</code>), the eigenvalues are λ<sub>j</sub> = S<sub>j</sub>² / (n − 1) (<code>explained_variance_</code>), and the coordinates of the points in the new basis, the <em>scores</em>, are X<sub>c</sub> V = U S.
+  Eigenvectors are only defined up to sign, so the same data could return +v or −v. scikit-learn's <code>svd_flip</code> fixes the sign so that the largest-magnitude entry of each row of Vᵀ is positive, which makes results reproducible across runs and LAPACK builds.
+</p>
+<p>
+  scikit-learn's <code>PCA</code> picks among four solvers when <code>svd_solver="auto"</code>: <code>"covariance_eigh"</code> (form the d × d covariance and diagonalize it) when there are at most 1,000 features and at least ten times as many rows as features; otherwise <code>"full"</code> (an exact LAPACK SVD) when the larger dimension is at most 500 or <code>n_components="mle"</code>; otherwise <code>"randomized"</code> when 1 ≤ k &lt; 0.8 · min(n, d); and <code>"full"</code> in the remaining cases.
+  The covariance route is fast for tall, thin data and is safe there because the d × d matrix is small; it clips tiny negative eigenvalues caused by rounding to zero.
+</p>
+<p>
+  The <strong>randomized</strong> solver (Halko, Martinsson and Tropp) multiplies X<sub>c</sub> by a random d × (k + p) Gaussian matrix, with oversampling p (<code>n_oversamples=10</code>), sharpens the result with a few power iterations X<sub>c</sub>X<sub>c</sub>ᵀ, orthonormalizes it into a basis Q, and takes the exact SVD of the small matrix Qᵀ X<sub>c</sub>.
+  When the spectrum decays, the top k components come out accurate at a fraction of the cost. PyTorch's <code>torch.pca_lowrank</code> does the same: it centres the columns, uses q = min(6, m, n) by default and 2 power iterations, and returns U, S, V, leaving the S² / (m − 1) step to you.
+</p>
+
+<h3 id="explained-variance">Explained variance and choosing k</h3>
+<p>
+  The share of the total variance that component j accounts for is
+</p>
+<p class="ml-formula">ratio<sub>j</sub> = λ<sub>j</sub> / Σ<sub>i</sub> λ<sub>i</sub></p>
+<p>
+  A <em>scree plot</em> shows these ratios in order; the cumulative sum tells you how much a k-component projection keeps. Common ways to pick k:
+</p>
+<ul>
+  <li><strong>A variance threshold.</strong> Pass a float such as <code>n_components=0.9</code>, and scikit-learn keeps the smallest k whose cumulative ratio is strictly greater than 0.9 (a <code>searchsorted(..., side="right") + 1</code> on the cumulative sum).</li>
+  <li><strong>The elbow</strong> of the scree plot: the point where the ratios flatten into a floor of noise.</li>
+  <li><strong>Minka's MLE</strong> (<code>n_components="mle"</code>): treat the data as a low-rank signal plus isotropic Gaussian noise and pick the rank with the highest approximate Bayesian evidence. It needs n ≥ d.</li>
+  <li><strong>The downstream task.</strong> If a classifier on top is what matters, cross-validate k like any other hyperparameter.</li>
+</ul>
+<p>
+  After fitting with k components, scikit-learn stores <code>noise_variance_</code>, the mean of the dropped eigenvalues. It is the noise estimate of probabilistic PCA (Tipping and Bishop), which treats each point as W z + μ + ε with z ~ N(0, I) and ε ~ N(0, σ² I); that model is what <code>score</code> and <code>get_covariance</code> use.
+</p>
+
+<h3 id="reconstruction">Projection and reconstruction</h3>
+<p>Keeping the first k rows V<sub>k</sub>ᵀ of Vᵀ, a point x maps to k scores and back:</p>
+<p class="ml-formula">z = V<sub>k</sub>ᵀ (x − μ) &nbsp;&nbsp;&nbsp; x̂ = μ + V<sub>k</sub> z</p>
+<p>
+  Over the training set, the total squared reconstruction error Σ‖x<sub>i</sub> − x̂<sub>i</sub>‖² is exactly the sum of the dropped squared singular values, S<sub>k+1</sub>² + … + S<sub>r</sub>², or (n − 1) times the dropped eigenvalues: Eckart–Young says no other rank-k projection does better.
+  Reconstruction is also how PCA denoises: noise spreads its variance over every direction, while signal concentrates in a few, so projecting onto the top components keeps most of the signal and removes most of the noise.
+  A point whose reconstruction error is far above the training points' is unlike them, a cheap anomaly score.
+</p>
+
+<h3 id="whitening">Whitening</h3>
+<p>
+  Whitening divides each score by the standard deviation along its component, so that the new features are uncorrelated and all have variance 1:
+</p>
+<p class="ml-formula">z<sub>j</sub> = v<sub>j</sub>ᵀ (x − μ) / √λ<sub>j</sub></p>
+<p>
+  The covariance of whitened data is the identity. That helps models that assume isotropic, equally scaled inputs, such as RBF-kernel SVMs, k-means or ICA. The cost: low-variance directions, which are often mostly noise, get blown up to the same size as the signal, and <code>inverse_transform</code> has to undo the scaling.
+  In scikit-learn, <code>whiten=True</code> changes <code>transform</code> but not <code>components_</code>; the division uses √λ clipped below at machine epsilon so a zero-variance direction does not divide by zero.
+</p>
+
+<h3 id="scaling">Scaling comes first</h3>
+<p>
+  Variance has units. A feature in grams with a spread of tens has a variance thousands of times larger than a fraction that varies in the second decimal, and PC1 will simply be "the grams feature". Unless features already share a unit and a meaningful scale (pixel intensities, say), standardize them first with a <a href="/ml-models/preprocessing">StandardScaler</a>.
+  PCA on standardized data is PCA of the correlation matrix rather than the covariance matrix.
+</p>
+
+<h3 id="nonlinear">Nonlinear alternatives: t-SNE and UMAP</h3>
+<p>
+  When the data lies on a curved surface, any linear projection flattens it by squashing, which can put far-apart points on top of each other. Neighbour-embedding methods drop the goal of a global linear map and instead try to keep each point's nearest neighbours near it in 2 or 3 dimensions.
+</p>
+<p>
+  <strong>t-SNE</strong> (van der Maaten and Hinton) turns distances in the original space into neighbour probabilities with a Gaussian around each point, whose width is tuned so that every point has the same <em>perplexity</em> (roughly, an effective number of neighbours, 30 by default), and symmetrizes them into p<sub>ij</sub>.
+  In the embedding it uses a heavy-tailed Student-t kernel, q<sub>ij</sub> ∝ (1 + ‖y<sub>i</sub> − y<sub>j</sub>‖²)<sup>−1</sup> for a 2-D output, and moves the points y by gradient descent to minimize KL(P ‖ Q).
+  The heavy tail is the trick: a 2-D map has too little room for all the moderately distant points of a high-dimensional space (the "crowding problem"), and the t kernel lets them sit much farther apart than a Gaussian would allow.
+  scikit-learn's <code>TSNE</code> runs the first 250 iterations with the p<sub>ij</sub> multiplied by an <em>early exaggeration</em> of 12, which pulls clusters together; uses the Barnes-Hut approximation with about 3 × perplexity neighbours per point by default; starts from a PCA projection scaled down so PC1 has standard deviation 10⁻⁴; and sets the learning rate to max(n / 12 / 4, 50).
+</p>
+<p>
+  <strong>UMAP</strong> (McInnes, Healy and Melville) builds a weighted k-nearest-neighbour graph (<code>n_neighbors</code>, 15 by default in the reference implementation) whose edge weights fall off with distance past each point's nearest neighbour, then lays out a low-dimensional graph to minimize the cross-entropy between the two, with negative sampling. <code>min_dist</code> sets how tightly points may pack.
+  It is usually faster than t-SNE, keeps somewhat more of the global arrangement, and can embed new points with <code>transform</code>; it is a separate package (<code>umap-learn</code>), not part of scikit-learn.
+</p>
+<p><strong>Caveats for both</strong>, which matter more than the differences:</p>
+<ul>
+  <li><strong>Cluster sizes mean nothing.</strong> Each point's neighbourhood is rescaled to the same effective size, so dense and sparse clusters come out about equally wide.</li>
+  <li><strong>Distances between clusters mean little.</strong> The loss barely penalizes moving far-apart groups, so the gap between two islands is not a measure of how different they are.</li>
+  <li><strong>The hyperparameters change the picture.</strong> Different perplexities or <code>n_neighbors</code> values give different-looking maps, and random noise at low perplexity can show apparent clusters.</li>
+  <li><strong>They are stochastic and, for t-SNE, non-parametric.</strong> Different seeds give different maps; scikit-learn's <code>TSNE</code> has no <code>transform</code> for new points.</li>
+  <li><strong>They are for looking, not for features.</strong> Use the coordinates as model inputs only with care; PCA or a learned embedding is usually the better pipeline step, and running PCA to about 50 dimensions before t-SNE is standard to cut noise and cost.</li>
+</ul>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>PCA</code></td>
+        <td>n_components None, whiten False, svd_solver "auto", tol 0, iterated_power "auto", n_oversamples 10; components_ (k, d), explained_variance_ (k,), mean_ (d,)</td>
+        <td>The estimator. n_components may be an int, a float in (0, 1) for a variance threshold, or "mle".</td>
+        <td><a href="{{ skl('sklearn/decomposition/_pca.py', 113, 852) }}">_pca.py 113-852</a>, <a href="{{ skl('sklearn/decomposition/_pca.py', 399, 421) }}">399-421</a></td>
+      </tr>
+      <tr>
+        <td><code>PCA._fit</code></td>
+        <td>X (n, d)</td>
+        <td>Validates the input and picks the solver with the "auto" rule above.</td>
+        <td><a href="{{ skl('sklearn/decomposition/_pca.py', 481, 542) }}">_pca.py 481-542</a></td>
+      </tr>
+      <tr>
+        <td><code>PCA._fit_full</code></td>
+        <td>"full" or "covariance_eigh"</td>
+        <td>Centres, runs an exact SVD (or eigh of the covariance), flips signs, sets explained_variance_ = S² / (n − 1), resolves a float or "mle" n_components, and sets noise_variance_ to the mean of the dropped eigenvalues.</td>
+        <td><a href="{{ skl('sklearn/decomposition/_pca.py', 544, 694) }}">_pca.py 544-694</a></td>
+      </tr>
+      <tr>
+        <td><code>PCA._fit_truncated</code></td>
+        <td>"arpack" or "randomized"</td>
+        <td>Computes only k components; noise_variance_ comes from the total variance minus the kept part.</td>
+        <td><a href="{{ skl('sklearn/decomposition/_pca.py', 696, 788) }}">_pca.py 696-788</a></td>
+      </tr>
+      <tr>
+        <td><code>PCA.fit_transform</code></td>
+        <td>→ (n, k)</td>
+        <td>Returns U · S, or U · √(n − 1) when whitening, without a second pass over the data.</td>
+        <td><a href="{{ skl('sklearn/decomposition/_pca.py', 444, 479) }}">_pca.py 444-479</a></td>
+      </tr>
+      <tr>
+        <td><code>_assess_dimension</code>, <code>_infer_dimension</code></td>
+        <td>spectrum (d,), n</td>
+        <td>Minka's evidence for each rank; the argmax is n_components="mle".</td>
+        <td><a href="{{ skl('sklearn/decomposition/_pca.py', 25, 96) }}">_pca.py 25-96</a>, <a href="{{ skl('sklearn/decomposition/_pca.py', 99, 110) }}">99-110</a></td>
+      </tr>
+      <tr>
+        <td><code>transform</code>, <code>inverse_transform</code></td>
+        <td>(n, d) ↔ (n, k)</td>
+        <td>(x − μ) Vₖ, divided by √λ when whitening; the inverse multiplies back and adds μ.</td>
+        <td><a href="{{ skl('sklearn/decomposition/_base.py', 125, 175) }}">_base.py 125-175</a>, <a href="{{ skl('sklearn/decomposition/_base.py', 177, 214) }}">177-214</a></td>
+      </tr>
+      <tr>
+        <td><code>get_covariance</code></td>
+        <td>→ (d, d)</td>
+        <td>The probabilistic-PCA covariance Vₖ diag(λ − σ²) Vₖᵀ + σ² I.</td>
+        <td><a href="{{ skl('sklearn/decomposition/_base.py', 34, 60) }}">_base.py 34-60</a></td>
+      </tr>
+      <tr>
+        <td><code>svd_flip</code></td>
+        <td>u_based_decision False for PCA</td>
+        <td>Makes the largest-magnitude entry of each row of Vᵀ positive.</td>
+        <td><a href="{{ skl('sklearn/utils/extmath.py', 924, 982) }}">extmath.py 924-982</a></td>
+      </tr>
+      <tr>
+        <td><code>randomized_svd</code>, <code>randomized_range_finder</code></td>
+        <td>n_oversamples 10, n_iter "auto"</td>
+        <td>Random projection, power iterations, QR, then an exact SVD of the small matrix.</td>
+        <td><a href="{{ skl('sklearn/utils/extmath.py', 402, 557) }}">extmath.py 402-557</a>, <a href="{{ skl('sklearn/utils/extmath.py', 241, 310) }}">241-310</a></td>
+      </tr>
+      <tr>
+        <td><code>torch.pca_lowrank</code>, <code>get_approximate_basis</code></td>
+        <td>q = min(6, m, n), center True, niter 2; returns U, S, V</td>
+        <td>Halko's randomized range finder and SVD on tensors, dense or sparse.</td>
+        <td><a href="{{ src('torch/_lowrank.py', 183, 293) }}">_lowrank.py 183-293</a>, <a href="{{ src('torch/_lowrank.py', 11, 82) }}">11-82</a></td>
+      </tr>
+      <tr>
+        <td><code>TSNE</code></td>
+        <td>n_components 2, perplexity 30, early_exaggeration 12, learning_rate "auto", max_iter 1000, init "pca", method "barnes_hut", angle 0.5</td>
+        <td>The t-SNE estimator; fit_transform only.</td>
+        <td><a href="{{ skl('sklearn/manifold/_t_sne.py', 557, 1174) }}">_t_sne.py 557-1174</a>, <a href="{{ skl('sklearn/manifold/_t_sne.py', 807, 840) }}">807-840</a></td>
+      </tr>
+      <tr>
+        <td><code>_joint_probabilities</code>, <code>_kl_divergence</code></td>
+        <td>P (n·(n−1)/2,), embedding (n, 2)</td>
+        <td>Symmetrized Gaussian neighbour probabilities; the KL objective with a Student-t kernel and its gradient.</td>
+        <td><a href="{{ skl('sklearn/manifold/_t_sne.py', 35, 65) }}">_t_sne.py 35-65</a>, <a href="{{ skl('sklearn/manifold/_t_sne.py', 125, 199) }}">125-199</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>The rows of Vᵀ from the SVD of the centred data are the principal directions. Why must you centre first?</summary>
+  <p>Without centring, the SVD finds directions that maximize the mean of (wᵀx)², the second moment about the origin, not the variance. If the data sits far from the origin, the first "component" just points at the mean, and every later direction is forced orthogonal to it. Subtracting μ makes XᵀX / (n − 1) the covariance, which is what the variance argument needs.</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-components">Components from the SVD</h3>
+  <p>
+    <strong>Data.</strong> {{ e.points|length }} points: {% for p in e.points %}{{ pt(p, 1) }}{% if not loop.last %}, {% endif %}{% endfor %}. Their mean is {{ pt(m.mean, 4) }} and the sample covariance is
+  </p>
+  <p class="ml-formula">C = [[{{ f(ex.cov[0][0], 4) }}, {{ f(ex.cov[0][1], 4) }}], [{{ f(ex.cov[1][0], 4) }}, {{ f(ex.cov[1][1], 4) }}]]</p>
+  <p>
+    The SVD of the centred 8 × 2 matrix gives singular values S = ({{ f(m.singular_values[0], 4) }}, {{ f(m.singular_values[1], 4) }}) and directions v₁ = {{ pt(pc1, 4) }}, v₂ = {{ pt(pc2, 4) }}.
+    Dividing S² by n − 1 = {{ ex.n - 1 }} gives the explained variances {{ f(m.explained_variance[0], 4) }} and {{ f(m.explained_variance[1], 4) }}: the eigenvalues of C, and they sum to its trace, {{ f(m.total_variance, 4) }}. The ratios are {{ f(m.ratio[0], 4) }} and {{ f(m.ratio[1], 4) }}.
+    v₁ is almost the 45° diagonal because the two features have nearly equal variances and a strong covariance.
+  </p>
+  <p>
+    <strong>Power iteration</strong> on C from {{ pt(e.power_start, 0) }} finds the same direction without an SVD, by repeatedly computing v ← C v / ‖C v‖ and reading off the variance vᵀ C v:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Step</th><th>v</th><th>vᵀ C v</th></tr></thead>
+      <tbody>
+        {% for row in ex.power %}
+        <tr><td>{{ loop.index }}</td><td>{{ pt(row.vector, 6) }}</td><td>{{ f(row.value, 7) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The direction's error shrinks by about λ₂ / λ₁ = {{ f(m.explained_variance[1] / m.explained_variance[0], 4) }} per step and the variance's by its square, so the variance is right to 7 digits after {{ ex.power|length - 1 }} steps. Randomized solvers use the same idea on blocks of vectors.
+  </p>
+
+  <h3 id="worked-projection">Projecting, reconstructing and whitening</h3>
+  <p>
+    The new point {{ pt(e.query, 0) }} has scores z = Vᵀ(x − μ) = {{ pt(ex.query_scores, 4) }}. Keeping only PC1 and mapping back gives μ + z₁ v₁ = {{ pt(ex.query_back, 4) }}, the nearest point on the PC1 line.
+    Doing that for all 8 training points loses a total squared error of {{ f(ex.one_error, 4) }}, which is exactly S₂² = {{ f(m.singular_values[1] ** 2, 4) }}.
+  </p>
+  <p>
+    Whitening divides the scores by √λ = ({{ f(m.explained_variance[0] ** 0.5, 4) }}, {{ f(m.explained_variance[1] ** 0.5, 4) }}). The first point's scores {{ pt(m.scores[0], 4) }} become {{ pt(ex.whitened[0], 4) }}: its small PC2 offset is now more than half the size of its PC1 coordinate. The covariance of the 8 whitened points is
+    [[{{ f(ex.whitened_cov[0][0], 4) }}, {{ f(ex.whitened_cov[0][1], 4) }}], [{{ f(ex.whitened_cov[1][0], 4) }}, {{ f(ex.whitened_cov[1][1], 4) }}]], the identity.
+  </p>
+
+  <h3 id="worked-scaling">Why scaling matters</h3>
+  <p>
+    Six fruits with {{ e.fruit.features[0] }} and {{ e.fruit.features[1] }}: {% for r in e.fruit.rows %}({{ f(r[0], 0) }}, {{ f(r[1], 2) }}){% if not loop.last %}, {% endif %}{% endfor %}. The standard deviations are {{ f(ex.fruit_stds[0], 2) }} g and {{ f(ex.fruit_stds[1], 4) }}.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Input</th><th>PC1</th><th>Ratio PC1</th><th>Ratio PC2</th></tr></thead>
+      <tbody>
+        <tr><td>raw</td><td>{{ pt(ex.fruit_raw.components[0], 5) }}</td><td>{{ f(ex.fruit_raw.ratio[0], 7) }}</td><td>{{ f(ex.fruit_raw.ratio[1], 7) }}</td></tr>
+        <tr><td>standardized</td><td>{{ pt(ex.fruit_scaled.components[0], 5) }}</td><td>{{ f(ex.fruit_scaled.ratio[0], 4) }}</td><td>{{ f(ex.fruit_scaled.ratio[1], 4) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    On raw data PC1 is the weight axis, carrying all but {{ f(ex.fruit_raw.ratio[1] * 100, 5) }}% of the variance: the sugar feature is invisible because its numbers are small, not because it is uninformative. After standardizing, both features count equally and PC1 is the 45° diagonal with {{ f(ex.fruit_scaled.ratio[0] * 100, 1) }}% of the variance; with two standardized features the components are always ±45°, and only the ratio says how correlated they are.
+  </p>
+
+  <h3 id="worked-choosing-k">Choosing k on a survey</h3>
+  <p>
+    {{ ex.survey_rows|length }} answers to 6 questions, generated (seed {{ e.survey.seed }}) from two hidden factors: questions 1-3 load mostly on the first, 4-5 on the second, 6 on both, plus independent noise with standard deviation {{ e.survey.noise }} (variance {{ f(e.survey.noise ** 2, 4) }}). PCA does not know any of that.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>k</th><th>λ<sub>k</sub></th><th>Ratio</th><th>Cumulative</th><th>Squared error keeping k</th><th>noise_variance_</th></tr></thead>
+      <tbody>
+        {% for row in ex.survey_errors %}
+        <tr>
+          <td>{{ row.k }}</td>
+          <td>{{ f(sv.explained_variance[row.k - 1], 4) if row.k else "—" }}</td>
+          <td>{{ f(sv.ratio[row.k - 1], 4) if row.k else "—" }}</td>
+          <td>{{ f(sv.cumulative[row.k - 1], 4) if row.k else "0" }}</td>
+          <td>{{ f(row.error, 3) }}</td>
+          <td>{{ f(row.noise_variance, 4) if row.k < 6 else "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Two components keep {{ f(sv.cumulative[1] * 100, 1) }}% of the variance, so <code>n_components={{ e.survey.threshold }}</code> keeps k = {{ ex.survey_keep }}: one component ({{ f(sv.cumulative[0] * 100, 1) }}%) is not strictly above 0.9. The scree plot has a clear elbow at 2 as well, and the four dropped eigenvalues sit in a flat floor between {{ f(sv.explained_variance[5], 4) }} and {{ f(sv.explained_variance[2], 4) }}.
+    Their mean, the noise estimate at k = 2, is {{ f(ex.survey_errors[2].noise_variance, 4) }}, close to the true noise variance {{ f(e.survey.noise ** 2, 4) }}. Each squared error equals the sum of the dropped S², and with all 6 kept it is zero.
+  </p>
+  <p>
+    The two kept directions are v₁ = ({% for c in sv.components[0] %}{{ f(c, 2) }}{% if not loop.last %}, {% endif %}{% endfor %}) and v₂ = ({% for c in sv.components[1] %}{{ f(c, 2) }}{% if not loop.last %}, {% endif %}{% endfor %}). They span the same plane as the two factors but are not the factors themselves: PCA only promises orthogonal directions of decreasing variance, so v₁ mixes in every question. Recovering interpretable factors needs a rotation such as varimax (factor analysis) or a different method such as ICA.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 300" role="img" aria-labelledby="pca-scree-title pca-scree-desc">
+    <title id="pca-scree-title">Scree plot of the survey: explained variance ratio and cumulative share for 6 components</title>
+    <desc id="pca-scree-desc">
+      Bars give each component's share of the variance: {% for r in sv.ratio %}{{ f(r, 3) }}{% if not loop.last %}, {% endif %}{% endfor %}. A line through the bar tops gives the cumulative share: {% for c in sv.cumulative %}{{ f(c, 3) }}{% if not loop.last %}, {% endif %}{% endfor %}.
+      A dashed horizontal line at {{ e.survey.threshold }} is first crossed by the cumulative line at component {{ ex.survey_keep }}, which is highlighted. Components 3 to 6 form a flat floor.
+    </desc>
+    <g font-size="12">
+      <line x1="60" y1="260" x2="620" y2="260" class="d-line"></line>
+      <line x1="60" y1="40" x2="60" y2="260" class="d-line"></line>
+      {% for t in [0, 0.5, 1] %}
+      <text x="52" y="{{ '%.1f'|format(264 - t * 220) }}" text-anchor="end" class="d-muted">{{ f(t, 1) }}</text>
+      {% endfor %}
+      <line x1="60" y1="{{ '%.1f'|format(260 - e.survey.threshold * 220) }}" x2="620" y2="{{ '%.1f'|format(260 - e.survey.threshold * 220) }}" class="d-line ml-dashed"></line>
+      <text x="616" y="{{ '%.1f'|format(254 - e.survey.threshold * 220) }}" text-anchor="end" class="d-muted">threshold {{ e.survey.threshold }}</text>
+      {% for r in sv.ratio %}
+      {% set x = 90 + loop.index0 * 88 %}
+      <rect x="{{ x }}" y="{{ '%.1f'|format(260 - r * 220) }}" width="50" height="{{ '%.1f'|format(r * 220) }}" class="d-box" style="fill: var({{ '--jj-accent' if loop.index <= ex.survey_keep else '--jj-violet' }})" fill-opacity="0.6"></rect>
+      <text x="{{ x + 25 }}" y="278" text-anchor="middle">PC{{ loop.index }}</text>
+      <text x="{{ x + 25 }}" y="{{ '%.1f'|format(254 - r * 220) }}" text-anchor="middle" class="d-muted">{{ f(r, 2) }}</text>
+      {% endfor %}
+      {% set pts = [] %}
+      {% for c in sv.cumulative %}{% set _ = pts.append('%.1f,%.1f'|format(115 + loop.index0 * 88, 260 - c * 220)) %}{% endfor %}
+      <polyline points="{{ pts|join(' ') }}" fill="none" stroke-width="2" style="stroke: var(--jj-amber)"></polyline>
+      {% for c in sv.cumulative %}
+      <circle cx="{{ 115 + loop.index0 * 88 }}" cy="{{ '%.1f'|format(260 - c * 220) }}" r="4" style="fill: var(--jj-amber)"></circle>
+      {% endfor %}
+      <text x="70" y="30" style="fill: var(--jj-amber)">cumulative</text>
+      <text x="170" y="30" class="d-muted">bars: share per component</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Two big components, then a flat floor of noise: the elbow and the 0.9 threshold agree on k = 2 here. On real data the floor is rarely this flat.</p>
+
+<div class="ml-worked">
+  <h3 id="worked-arc">Where a linear projection fails</h3>
+  <p>
+    {{ arc.points|length }} points evenly spaced along an arc of radius {{ e.arc.radius }} from {{ f(e.arc.start_degrees, 0) }}° to {{ f(e.arc.end_degrees, 0) }}°, three quarters of a circle. The arc is symmetric about the vertical axis, so PCA's components are the coordinate axes, and PC1 (the horizontal axis) keeps {{ f(arc.model.ratio[0] * 100, 1) }}% of the variance.
+    Along PC1, the points at {{ f(arc.angles[arc.fold.i], 0) }}° and {{ f(arc.angles[arc.fold.j], 0) }}° both land at {{ f(arc.coords[arc.fold.i], 3) }}: a gap of {{ f(arc.fold.gap, 3) }}, though they are {{ f(arc.fold.straight, 3) }} apart in the plane and {{ f(arc.fold.along, 3) }} apart along the arc. Four such pairs collide.
+    A neighbour embedding unrolls the arc instead, because it only asks that each point keep its two neighbours close.
+  </p>
+  <p>
+    <strong>The t-SNE kernel.</strong> How much affinity a pair keeps at distance d in the map, with a Gaussian kernel exp(−d²/2) and t-SNE's Student-t kernel 1 / (1 + d²):
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>d</th><th>Gaussian</th><th>Student-t</th><th>t / Gaussian</th></tr></thead>
+      <tbody>
+        {% for k in ex.kernels %}
+        <tr><td>{{ f(k.d, 1) }}</td><td>{{ f(k.gaussian, 6) }}</td><td>{{ f(k.student, 4) }}</td><td>{{ f(k.ratio, 2) if k.ratio < 100 else f(k.ratio, 0) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    At d = 3 the t kernel still gives {{ f(ex.kernels[4].student, 2) }} where the Gaussian has fallen to {{ f(ex.kernels[4].gaussian, 4) }}, {{ f(ex.kernels[4].ratio, 1) }} times more. So a modest affinity p<sub>ij</sub> can be matched by points placed much farther apart in the map than a Gaussian would allow, which opens up the gaps between clusters. It is also why those gaps should not be read as distances.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 300" role="img" aria-labelledby="pca-arc-title pca-arc-desc">
+    <title id="pca-arc-title">PCA projection of an arc folds distant points onto each other</title>
+    <desc id="pca-arc-desc">
+      Left: {{ arc.points|length }} points numbered 0 to {{ arc.points|length - 1 }} along a three-quarter circle from {{ f(e.arc.start_degrees, 0) }}° to {{ f(e.arc.end_degrees, 0) }}°, with the horizontal PC1 axis drawn through their mean. Points {{ arc.fold.i }} and {{ arc.fold.j }} are highlighted.
+      Right: each point placed at its PC1 coordinate, one row per point. Points {{ arc.fold.i }} and {{ arc.fold.j }} share the coordinate {{ f(arc.coords[arc.fold.i], 3) }}, as do several other pairs from opposite sides of the arc, so the order along the arc is lost.
+    </desc>
+    <g font-size="11">
+      <rect x="10" y="10" width="290" height="280" rx="6" class="d-box" fill-opacity="0.04"></rect>
+      <line x1="30" y1="{{ '%.1f'|format(150 - arc.model.mean[1] * 55) }}" x2="290" y2="{{ '%.1f'|format(150 - arc.model.mean[1] * 55) }}" stroke-width="2" style="stroke: var(--jj-accent)"></line>
+      <text x="286" y="{{ '%.1f'|format(142 - arc.model.mean[1] * 55) }}" text-anchor="end" style="fill: var(--jj-accent)">PC1</text>
+      {% for p in arc.points %}
+      {% set hot = loop.index0 in [arc.fold.i, arc.fold.j] %}
+      <circle cx="{{ '%.1f'|format(155 + p[0] * 55) }}" cy="{{ '%.1f'|format(160 - p[1] * 55) }}" r="5" style="fill: var({{ '--jj-red' if hot else '--jj-amber' }})"></circle>
+      <text x="{{ '%.1f'|format(155 + p[0] * 70) }}" y="{{ '%.1f'|format(164 - p[1] * 70) }}" text-anchor="middle" class="d-muted">{{ loop.index0 }}</text>
+      {% endfor %}
+      <rect x="320" y="10" width="310" height="280" rx="6" class="d-box" fill-opacity="0.04"></rect>
+      <text x="330" y="28">PC1 coordinate, one row per point</text>
+      {% for t in [-2, -1, 0, 1, 2] %}
+      <line x1="{{ 475 + t * 65 }}" y1="40" x2="{{ 475 + t * 65 }}" y2="270" class="d-line ml-dashed"></line>
+      <text x="{{ 475 + t * 65 }}" y="284" text-anchor="middle" class="d-muted">{{ f(t, 0) }}</text>
+      {% endfor %}
+      {% for c in arc.coords %}
+      {% set hot = loop.index0 in [arc.fold.i, arc.fold.j] %}
+      <circle cx="{{ '%.1f'|format(475 + c * 65) }}" cy="{{ 52 + loop.index0 * 17 }}" r="5" style="fill: var({{ '--jj-red' if hot else '--jj-amber' }})"></circle>
+      <text x="332" y="{{ 56 + loop.index0 * 17 }}" class="d-muted">{{ loop.index0 }}</text>
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Points 0 and 4 are a quarter of the circle apart along the arc, yet PCA gives them the same coordinate; so do 1 and 3, 9 and 11, and 8 and 12.</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import numpy as np
+from sklearn.decomposition import PCA
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+
+pca = make_pipeline(StandardScaler(), PCA(n_components=0.9))
+Z = pca.fit_transform(X)                       # (n, k), k chosen by the 0.9 threshold
+p = pca[-1]
+p.components_, p.explained_variance_ratio_     # (k, d) rows of Vᵀ, shares of variance
+X_back = pca.inverse_transform(Z)              # reconstruction in the original units
+
+# The same thing from the SVD:
+def pca_svd(X, k):
+    mu = X.mean(0)
+    U, S, Vt = np.linalg.svd(X - mu, full_matrices=False)
+    flip = np.sign(Vt[np.arange(len(Vt)), np.abs(Vt).argmax(1)])
+    U, Vt = U * flip, Vt * flip[:, None]       # svd_flip: largest entry of each row positive
+    var = S**2 / (len(X) - 1)                  # explained_variance_
+    return mu, Vt[:k], var[:k], (U * S)[:, :k]  # mean, components, variances, scores
+
+# PyTorch, randomized, on a GPU tensor:
+#   U, S, V = torch.pca_lowrank(A, q=k, center=True, niter=2)
+#   scores = A_centred @ V[:, :k];  variances = S**2 / (A.shape[0] - 1)</code></pre>
+
+<p>
+  Fit the scaler and PCA on the training split only and reuse them for validation and test data, or information leaks across the split; a pipeline does that automatically. For data that does not fit in memory, <code>IncrementalPCA</code> updates the components batch by batch; for sparse matrices such as TF-IDF, <code>TruncatedSVD</code> skips the centring, which would make the matrix dense.
+  For a 2-D picture of high-dimensional data, reduce to about 50 dimensions with PCA first, then run t-SNE or UMAP on that, and try more than one perplexity or <code>n_neighbors</code> and seed before trusting any structure you see.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Method</th><th>Map</th><th>Preserves</th><th>New points</th><th>Cost</th><th>Use for</th></tr></thead>
+    <tbody>
+      <tr><td>PCA (full SVD)</td><td>linear, orthogonal</td><td>global variance; exact best rank-k reconstruction</td><td>yes, a matrix product</td><td>O(n·d·min(n, d))</td><td>compression, denoising, a preprocessing step, a first look</td></tr>
+      <tr><td>Randomized PCA</td><td>linear, approximate</td><td>top k components when the spectrum decays</td><td>yes</td><td>about O(n·d·k)</td><td>large matrices, k ≪ d</td></tr>
+      <tr><td>Kernel PCA</td><td>nonlinear via a kernel</td><td>variance in the kernel's feature space</td><td>yes, through kernel evaluations</td><td>O(n²) memory, O(n³) eigensolve</td><td>small curved datasets</td></tr>
+      <tr><td>t-SNE</td><td>nonlinear, non-parametric</td><td>local neighbourhoods</td><td>no (refit)</td><td>O(n log n) per iteration with Barnes-Hut</td><td>2-D or 3-D visualization</td></tr>
+      <tr><td>UMAP</td><td>nonlinear</td><td>local neighbourhoods, somewhat more global layout</td><td>yes, approximately</td><td>approximate k-NN graph, then fast SGD</td><td>visualization, sometimes as features</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<ul>
+  <li><strong>PCA is the default</strong> because it is deterministic, fast, invertible and has one knob. Its components are hard to name, since each mixes every feature; for interpretable parts, sparse PCA or non-negative matrix factorization trade some variance for sparser loadings.</li>
+  <li><strong>Variance is not importance.</strong> The directions that separate classes can have small variance; PCA ignores labels, so a supervised method (LDA, or simply the model's own features) can beat it as preprocessing.</li>
+  <li><strong>Outliers dominate variance.</strong> One extreme point can rotate PC1 toward itself; robust PCA variants or clipping help.</li>
+  <li><strong>t-SNE and UMAP make persuasive pictures.</strong> Treat clusters in them as hypotheses to check in the original space, not as findings.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>You whiten before k-means and the clusters get worse. Why might that happen?</summary>
+  <p>Whitening scales every component to variance 1, including the low-variance ones that hold mostly noise. k-means uses Euclidean distance, so after whitening a noise direction counts as much as the direction that separated the clusters. Keeping only the top components first, or not whitening, keeps the noise from drowning the signal.</p>
+</details>
+
+<details class="ml-quiz">
+  <summary>A t-SNE plot shows two tight clusters far apart and one large diffuse cluster. What can you conclude?</summary>
+  <p>Only that the points within each blob are near neighbours of each other in the original space. The relative sizes are not trustworthy, because t-SNE equalizes neighbourhood sizes, and the gaps are not trustworthy, because the heavy-tailed kernel exaggerates them. Check the clusters' spread and separation in the original space or in a PCA projection, and rerun with other perplexities and seeds.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<p>
+  The <a href="/ml-models/linear-algebra-toolkit">linear algebra toolkit</a> supplies the eigen-decomposition, the SVD and power iteration this page is built from; <a href="/ml-models/preprocessing">feature preprocessing</a> supplies the standardization PCA needs first; and PCA is the usual step before <a href="/ml-models/clustering">clustering</a> or <a href="/ml-models/nearest-neighbors">nearest-neighbour search</a> in many dimensions.
+  An <a href="/ml-models/autoencoders">autoencoder</a> with linear layers and squared loss learns the same subspace as PCA, and with nonlinear layers it is a nonlinear generalization.
+</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Pearson. <em>On Lines and Planes of Closest Fit to Systems of Points in Space.</em> Philosophical Magazine 1901. <a href="https://doi.org/10.1080/14786440109462720">doi:10.1080/14786440109462720</a></li>
+  <li>Hotelling. <em>Analysis of a Complex of Statistical Variables into Principal Components.</em> Journal of Educational Psychology 1933. <a href="https://doi.org/10.1037/h0071325">doi:10.1037/h0071325</a></li>
+  <li>Eckart and Young. <em>The Approximation of One Matrix by Another of Lower Rank.</em> Psychometrika 1936. <a href="https://doi.org/10.1007/BF02288367">doi:10.1007/BF02288367</a></li>
+  <li>Tipping and Bishop. <em>Probabilistic Principal Component Analysis.</em> Journal of the Royal Statistical Society B 1999.</li>
+  <li>Minka. <em>Automatic Choice of Dimensionality for PCA.</em> NIPS 2000.</li>
+  <li>Halko, Martinsson and Tropp. <em>Finding Structure with Randomness: Probabilistic Algorithms for Constructing Approximate Matrix Decompositions.</em> SIAM Review 2011. <a href="https://arxiv.org/abs/0909.4061">arXiv:0909.4061</a></li>
+  <li>van der Maaten and Hinton. <em>Visualizing Data using t-SNE.</em> Journal of Machine Learning Research 2008.</li>
+  <li>McInnes, Healy and Melville. <em>UMAP: Uniform Manifold Approximation and Projection for Dimension Reduction.</em> 2018. <a href="https://arxiv.org/abs/1802.03426">arXiv:1802.03426</a></li>
+  <li>Wattenberg, Viégas and Johnson. <em>How to Use t-SNE Effectively.</em> Distill 2016. <a href="https://doi.org/10.23915/distill.00002">doi:10.23915/distill.00002</a></li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/decomposition/_pca.py', 113, 852) }}"><code>PCA</code></a>, <a href="{{ skl('sklearn/decomposition/_base.py', 125, 214) }}"><code>transform</code> and <code>inverse_transform</code></a>, <a href="{{ skl('sklearn/manifold/_t_sne.py', 557, 1174) }}"><code>TSNE</code></a>. PyTorch {{ upstream.tag }}: <a href="{{ src('torch/_lowrank.py', 183, 293) }}"><code>pca_lowrank</code></a>.</li>
+</ul>

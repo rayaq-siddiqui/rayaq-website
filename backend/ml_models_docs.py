@@ -572,7 +572,7 @@ PAGES = [
             "sklearn:sklearn/decomposition/_pca.py",
             "pytorch:torch/_lowrank.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "neurons-and-layers",

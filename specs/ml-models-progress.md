@@ -321,8 +321,8 @@ Gaps:
 82. `distributed-training` ✓
 83. `monitoring-and-drift` ✓
 84. `multimodal-models` ✓
-85. `pca` ← next
-86. `mixture-of-experts`
+85. `pca` ✓
+86. `mixture-of-experts` ← next
 87. `flow-matching`
 88. `preference-optimization`
 89. `retrieval-augmented-generation`
