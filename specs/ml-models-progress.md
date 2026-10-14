@@ -345,8 +345,8 @@ Gaps:
 85. `pca` ✓
 86. `mixture-of-experts` ✓
 87. `flow-matching` ✓
-88. `preference-optimization` ← next
-89. `retrieval-augmented-generation`
+88. `preference-optimization` ✓
+89. `retrieval-augmented-generation` ← next
 90. `checkpointing`
 91. `reproducibility`
 92. `state-space-models`

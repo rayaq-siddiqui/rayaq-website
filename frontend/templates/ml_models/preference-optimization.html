@@ -1,0 +1,526 @@
+{% set ex = po_example() %}
+{% set e = ex.example %}
+{% set names = e.responses|map(attribute="name")|list %}
+{% set pw = e.pair[0] %}
+{% set pl = e.pair[1] %}
+{% set tok = ex.tokens %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(0.0 if x|abs < 0.5 * 10 ** (-n) else x)|replace("-", "−") }}{%- endmacro %}
+{% macro vec(v, n=2) -%}({% for x in v %}{{ f(x, n) }}{% if not loop.last %}, {% endif %}{% endfor %}){%- endmacro %}
+<header class="jj-header">
+  <h1>Preference optimization</h1>
+  <p class="tagline">
+    A fine-tuned language model can follow instructions, but nothing in next-token training says which of two good-looking answers people actually prefer. Preference optimization trains on those judgments directly.
+    This page builds the pieces in order: a reward model fitted to pairwise preferences with the Bradley–Terry model, RLHF with PPO and a KL penalty, the closed-form solution that lets DPO skip the reward model, the IPO, KTO and GRPO variants, and reward hacking, with every number computed and every PyTorch link pinned.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  <a href="/ml-models/fine-tuning">Supervised fine-tuning</a> imitates demonstrations: it raises the probability of whatever a human wrote. That works for format and tone, but it cannot express "this answer is better than that one", it treats every token of a demonstration as equally right, and good demonstrations are slow to write. Judging is cheaper than writing: a person can compare two answers in seconds, even for tasks they could not have answered well themselves.
+</p>
+<p>
+  Preference optimization turns comparisons into a training signal. The data is a set of triples (prompt x, preferred response y<sub>w</sub>, rejected response y<sub>l</sub>). The goal is a policy π<sub>θ</sub> that produces responses people prefer, without drifting so far from the fine-tuned model that it forgets how to write or finds a loophole in the signal.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Think of a judge at a cooking contest who never gives scores, only says which of two dishes is better. From enough of those verdicts you can recover a score for every dish: a dish that beats strong dishes must be strong. That is the reward model. Then you train the cook to make dishes the score likes, while keeping them close to the cook's own style, so the cook improves instead of inventing something the judge has never tasted and the score cannot rate.
+</p>
+<p>
+  RLHF does those two steps literally: fit a score, then run <a href="/ml-models/reinforcement-learning">reinforcement learning</a> against it with a leash. DPO notices that the best leashed policy has a formula, and that the formula can be turned around so that the policy itself is the score. One classification-style loss on the pairs then does both steps at once.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 290" role="img" aria-labelledby="po-pipeline-title po-pipeline-desc">
+    <title id="po-pipeline-title">Two routes from preference pairs to a tuned policy</title>
+    <desc id="po-pipeline-desc">An SFT model generates candidate responses and people compare them, producing preference pairs. The RLHF route fits a reward model to the pairs, then optimizes the policy with PPO against that reward minus a KL penalty to the frozen reference model. The DPO route applies one loss to the pairs using the policy and the frozen reference directly. Both end at a tuned policy.</desc>
+    <g font-size="12">
+      <rect x="10" y="118" width="110" height="54" rx="6" class="d-box"></rect>
+      <text x="65" y="141" text-anchor="middle">SFT model</text>
+      <text x="65" y="158" text-anchor="middle" class="d-muted">π_SFT = π_ref</text>
+      <line x1="120" y1="145" x2="150" y2="145" class="d-line"></line>
+      <rect x="150" y="104" width="120" height="82" rx="6" class="d-box" style="fill: var(--jj-amber)" fill-opacity="0.18"></rect>
+      <text x="210" y="128" text-anchor="middle">preference pairs</text>
+      <text x="210" y="146" text-anchor="middle" class="d-muted">(x, y_w, y_l)</text>
+      <text x="210" y="164" text-anchor="middle" class="d-muted">people compare</text>
+      <line x1="270" y1="130" x2="300" y2="62" class="d-line"></line>
+      <line x1="270" y1="160" x2="300" y2="226" class="d-line"></line>
+      <rect x="300" y="30" width="130" height="62" rx="6" class="d-box" style="fill: var(--jj-violet)" fill-opacity="0.18"></rect>
+      <text x="365" y="54" text-anchor="middle">reward model r_φ</text>
+      <text x="365" y="72" text-anchor="middle" class="d-muted">Bradley–Terry loss</text>
+      <line x1="430" y1="61" x2="455" y2="61" class="d-line"></line>
+      <rect x="455" y="30" width="150" height="62" rx="6" class="d-box" style="fill: var(--jj-violet)" fill-opacity="0.18"></rect>
+      <text x="530" y="54" text-anchor="middle">PPO on policy</text>
+      <text x="530" y="72" text-anchor="middle" class="d-muted">r_φ − β·log π/π_ref</text>
+      <text x="530" y="20" text-anchor="middle" style="fill: var(--jj-violet)">RLHF: two stages, sampling</text>
+      <rect x="300" y="196" width="305" height="62" rx="6" class="d-box" style="fill: var(--jj-accent)" fill-opacity="0.18"></rect>
+      <text x="452" y="220" text-anchor="middle">DPO loss on π_θ and frozen π_ref</text>
+      <text x="452" y="238" text-anchor="middle" class="d-muted">−log σ(β·(log-ratio_w − log-ratio_l))</text>
+      <text x="452" y="278" text-anchor="middle" style="fill: var(--jj-accent)">DPO: one stage, no sampling</text>
+      <line x1="530" y1="92" x2="530" y2="196" class="d-line ml-dashed"></line>
+      <text x="538" y="140" class="d-muted">same optimum</text>
+      <text x="538" y="156" class="d-muted">(in theory)</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">Both routes start from the same supervised model, which also serves as the frozen reference π<sub>ref</sub>. RLHF learns a separate reward and then samples from the policy to optimize it; DPO fits the policy to the pairs directly. The worked example below shows the two reaching the same policy.</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="bradley-terry">Reward models from pairwise preferences</h3>
+
+<p>
+  The <strong>Bradley–Terry</strong> model says each item has a hidden strength, and the chance that i beats j depends only on the difference. Written with a reward r instead of a strength, the probability is the <a href="/ml-models/logistic-regression">sigmoid</a> of the reward gap:
+</p>
+<p class="ml-formula">P(y<sub>w</sub> ≻ y<sub>l</sub> | x) = σ(r(x, y<sub>w</sub>) − r(x, y<sub>l</sub>)) = exp r<sub>w</sub> / (exp r<sub>w</sub> + exp r<sub>l</sub>)</p>
+<p>
+  A reward model r<sub>φ</sub> is usually the fine-tuned language model with its vocabulary head replaced by a single linear output, read at the last token of the response. It is trained by maximum likelihood on the comparisons, which is <a href="/ml-models/loss-functions">binary cross-entropy</a> on the reward gap with the label "the preferred one won":
+</p>
+<p class="ml-formula">L<sub>RM</sub>(φ) = −E<sub>(x, y<sub>w</sub>, y<sub>l</sub>)</sub> log σ(r<sub>φ</sub>(x, y<sub>w</sub>) − r<sub>φ</sub>(x, y<sub>l</sub>))</p>
+<p>
+  Only differences matter, so adding a constant to every reward changes nothing; InstructGPT normalizes the reward model so that the demonstrations score zero on average before reinforcement learning. InstructGPT also had labelers rank between K = 4 and K = 9 responses per prompt, which gives C(K, 2) comparisons from one prompt, and trained on all comparisons from a prompt together as one batch element, scaling the loss by 1/C(K, 2): treating them as independent samples made the reward model overfit, since each response appears in K − 1 of them.
+</p>
+
+<h3 id="rlhf">RLHF: PPO with a KL penalty</h3>
+
+<p>
+  With a reward model in hand, the policy is trained to maximize reward while staying close to the reference policy π<sub>ref</sub>, the supervised model it started from:
+</p>
+<p class="ml-formula">max<sub>π</sub> E<sub>x, y∼π</sub>[ r<sub>φ</sub>(x, y) ] − β · KL(π(·|x) ‖ π<sub>ref</sub>(·|x))</p>
+<p>
+  In practice the KL term is folded into the reward. Each sampled response is scored once by r<sub>φ</sub> at its end, and every token pays −β · log(π(y<sub>t</sub>|·) / π<sub>ref</sub>(y<sub>t</sub>|·)); summed over the response this is a one-sample estimate of the sequence KL. The resulting per-token rewards go to <a href="/ml-models/reinforcement-learning">PPO</a>, with a value head estimating advantages and the clipped ratio keeping each update small. InstructGPT also added a pretraining term, "PPO-ptx", that mixes ordinary language-modeling gradients on pretraining data into the PPO update to reduce regressions on public benchmarks.
+</p>
+<p>
+  The KL term does two jobs. It keeps the policy in the region where the reward model was trained, since the reward model has only seen responses from something like π<sub>ref</sub>, and it stops the policy collapsing onto a single high-reward response: without it, the optimum of E[r] is a point mass on the arg max.
+</p>
+
+<h3 id="dpo">DPO: the closed-form optimum, turned around</h3>
+
+<p>
+  For a fixed prompt, the KL-regularized objective has an exact solution. Write the objective as −β times a KL to a tilted distribution plus a constant, and the maximizer is that distribution:
+</p>
+<p class="ml-formula">π*(y|x) = π<sub>ref</sub>(y|x) · exp(r(x, y) / β) / Z(x), &nbsp; Z(x) = Σ<sub>y</sub> π<sub>ref</sub>(y|x) · exp(r(x, y) / β)</p>
+<p>
+  Z(x) sums over every possible response, so this formula cannot be used to sample; that is why RLHF needs PPO. But it can be solved for the reward. Take logs:
+</p>
+<p class="ml-formula">r(x, y) = β · log(π*(y|x) / π<sub>ref</sub>(y|x)) + β · log Z(x)</p>
+<p>
+  Substitute this into Bradley–Terry. The β log Z(x) term is the same for y<sub>w</sub> and y<sub>l</sub>, so it cancels in the difference, and the preference probability depends only on the policy and the reference:
+</p>
+<p class="ml-formula">P(y<sub>w</sub> ≻ y<sub>l</sub> | x) = σ(β · log(π*(y<sub>w</sub>|x) / π<sub>ref</sub>(y<sub>w</sub>|x)) − β · log(π*(y<sub>l</sub>|x) / π<sub>ref</sub>(y<sub>l</sub>|x)))</p>
+<p>
+  Now replace π* with the trainable π<sub>θ</sub> and maximize the likelihood of the observed preferences. That is <strong>Direct Preference Optimization</strong>:
+</p>
+<p class="ml-formula">L<sub>DPO</sub>(θ) = −E log σ(β · log(π<sub>θ</sub>(y<sub>w</sub>|x) / π<sub>ref</sub>(y<sub>w</sub>|x)) − β · log(π<sub>θ</sub>(y<sub>l</sub>|x) / π<sub>ref</sub>(y<sub>l</sub>|x)))</p>
+<p>
+  The quantity r̂<sub>θ</sub>(x, y) = β · log(π<sub>θ</sub>(y|x) / π<sub>ref</sub>(y|x)) is the policy's <strong>implicit reward</strong>; the paper's title says it: your language model is secretly a reward model. The loss is the reward-model loss with r̂<sub>θ</sub> in place of r<sub>φ</sub>, so fitting it fits a reward model whose optimal policy is π<sub>θ</sub> itself. Its gradient is
+</p>
+<p class="ml-formula">∇L<sub>DPO</sub> = −β · E[ σ(r̂<sub>θ</sub>(y<sub>l</sub>) − r̂<sub>θ</sub>(y<sub>w</sub>)) · (∇ log π<sub>θ</sub>(y<sub>w</sub>|x) − ∇ log π<sub>θ</sub>(y<sub>l</sub>|x)) ]</p>
+<p>
+  It pushes up the preferred response and down the rejected one, weighted by how wrong the implicit reward currently is: pairs the model already orders correctly by a wide margin contribute almost nothing. The paper reports that dropping the weight and just pushing the pair apart degenerates the model. Every log π(y|x) is a sum of token log-probabilities, the same quantity <a href="/ml-models/pretraining">pretraining</a> maximizes, so DPO needs four forward passes per pair (policy and reference, on both responses) and no sampling.
+</p>
+
+<h3 id="variants">Variants: IPO, KTO and GRPO</h3>
+
+<p>
+  <strong>IPO</strong> (Azar et al.) starts from a weakness in DPO's derivation. If a pair is always won by the same response, Bradley–Terry says the reward gap is infinite, and DPO keeps widening the log-ratio margin h = log(π<sub>θ</sub>(y<sub>w</sub>)/π<sub>ref</sub>(y<sub>w</sub>)) − log(π<sub>θ</sub>(y<sub>l</sub>)/π<sub>ref</sub>(y<sub>l</sub>)) forever, so the KL regularization stops binding on finite data. IPO regresses the margin to a fixed target instead:
+</p>
+<p class="ml-formula">L<sub>IPO</sub>(θ) = E (h<sub>θ</sub>(x, y<sub>w</sub>, y<sub>l</sub>) − 1/(2τ))²</p>
+<p>
+  where τ plays the role of β. The worked example shows both behaviours on one unanimous pair.
+</p>
+<p>
+  <strong>KTO</strong> (Ethayarajh et al.) drops the pairs. It needs only a label per response, desirable or undesirable, which is easier to collect, for example from thumbs-up and thumbs-down. Its loss is built on the value function of Kahneman and Tversky's prospect theory: the implicit reward β · log(π<sub>θ</sub>/π<sub>ref</sub>) of each response is compared to a reference point estimated from the KL between policy and reference, and gains and losses are weighted separately, which lets the loss be tuned when desirable and undesirable examples are imbalanced.
+</p>
+<p>
+  <strong>GRPO</strong> (Group Relative Policy Optimization, from DeepSeekMath) keeps the reinforcement learning but removes PPO's value network. For each prompt it samples a group of G responses, scores each, and uses the group-normalized score as every token's advantage:
+</p>
+<p class="ml-formula">Â<sub>i</sub> = (r<sub>i</sub> − mean(r<sub>1..G</sub>)) / std(r<sub>1..G</sub>)</p>
+<p>
+  The clipped PPO ratio objective is unchanged. Instead of subtracting a KL penalty from the reward, GRPO adds a KL term directly to the loss, estimated per token with the unbiased, always non-negative estimator k3 = π<sub>ref</sub>/π<sub>θ</sub> − log(π<sub>ref</sub>/π<sub>θ</sub>) − 1. With a rule-based reward, such as checking a math answer, GRPO needs neither a value model nor a learned reward model.
+</p>
+
+<h3 id="reward-hacking">Reward hacking</h3>
+
+<p>
+  A reward model is a proxy fitted to a finite set of judgments, and the policy is an optimizer pointed at it. As optimization pushes the policy away from π<sub>ref</sub>, it finds responses the proxy over-rates: longer answers, confident tone, flattering agreement, formatting the labelers happened to like. This is Goodhart's law. Gao, Schulman and Hilton measured it by training policies against a proxy reward model and scoring them with a larger "gold" reward model: as the KL from the initial policy grows, the proxy reward keeps rising while the gold reward rises, peaks and falls, and larger reward models peak later. The worked example below reproduces the shape in miniature.
+</p>
+<p>
+  The defenses are the ones already on this page plus some process: the KL coefficient, early stopping on a held-out judgment, larger and better reward models, fresh comparisons on the current policy's outputs, ensembles of reward models, and penalties for known biases such as length. DPO is not immune: its implicit reward is fitted to the same biased judgments, and its optimum is the same policy.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>F.logsigmoid</code></td>
+        <td>elementwise; margin (B,) → (B,)</td>
+        <td>log σ(z) computed stably; the reward-model, DPO and KTO losses are −logsigmoid of a margin.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 2049, 2058) }}">functional.py 2049-2058</a></td>
+      </tr>
+      <tr>
+        <td><code>F.binary_cross_entropy_with_logits</code></td>
+        <td>input (B,), target (B,) of ones</td>
+        <td>The same reward-model loss written as classification, with the reward gap as the logit; also accepts soft targets when labelers disagree.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 3634, 3701) }}">functional.py 3634-3701</a></td>
+      </tr>
+      <tr>
+        <td><code>F.log_softmax</code></td>
+        <td>logits (B, T, V) over dim −1</td>
+        <td>Token log-probabilities for the policy and the reference; their sums over the response tokens are log π(y|x).</td>
+        <td><a href="{{ src('torch/nn/functional.py', 2293, 2324) }}">functional.py 2293-2324</a></td>
+      </tr>
+      <tr>
+        <td><code>torch.gather</code></td>
+        <td>(B, T, V) with index (B, T, 1) → (B, T, 1)</td>
+        <td>Picks the log-probability of each actual next token out of the vocabulary.</td>
+        <td><a href="{{ src('torch/_torch_docs.py', 4813, 4849) }}">_torch_docs.py 4813-4849</a></td>
+      </tr>
+      <tr>
+        <td><code>F.kl_div</code></td>
+        <td>input log q, target p; reduction <code>batchmean</code></td>
+        <td>A full-distribution KL between policy and reference token distributions, an alternative to the sampled log-ratio estimate.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 3401, 3475) }}">functional.py 3401-3475</a></td>
+      </tr>
+      <tr>
+        <td><code>F.cross_entropy</code></td>
+        <td>logits (N, V), targets (N,)</td>
+        <td>The supervised fine-tuning loss that produces π<sub>ref</sub>, and the pretraining term in PPO-ptx.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 3478, 3569) }}">functional.py 3478-3569</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>Why does the reward model see two responses at once, instead of being trained to predict a 1-to-10 score?</summary>
+  <p>People are inconsistent about absolute scores, from each other and from one day to the next, but much more consistent about which of two answers is better. Bradley–Terry only asks for those relative judgments, and because only differences enter the loss, any per-labeler offset in what counts as "good" cancels out.</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  One prompt, "{{ e.prompt }}", and four candidate responses, small enough to solve exactly. The reference policy is a probability over whole responses, π<sub>ref</sub> = {{ vec(e.reference) }}. Each pair was compared ten times, and the counts are invented to carry a known flaw: labelers somewhat prefer the longer answers, so the padded response C, which contains a factual error, wins more often than it should. A hidden "true" reward, {{ vec(e.true_reward, 1) }}, stands in for the gold judge.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Response</th><th>Description</th><th>π<sub>ref</sub></th><th>True reward</th></tr></thead>
+    <tbody>
+      {% for r in e.responses %}
+      <tr><td>{{ r.name }}</td><td>{{ r.label }}</td><td>{{ f(e.reference[loop.index0], 2) }}</td><td>{{ f(e.true_reward[loop.index0], 1) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-reward-model">Fitting the reward model</h3>
+  <p>
+    The table gives each row's wins against each column out of ten comparisons, and next to it the probability the fitted Bradley–Terry model assigns. Fitting is maximum likelihood, here by {{ e.bt_iterations }} rounds of the classic minorize–maximize update, with rewards centered to sum to zero.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Wins / fitted P(row ≻ column)</th>{% for name in names %}<th>{{ name }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for i in range(ex.n) %}
+        <tr>
+          <td>{{ names[i] }}</td>
+          {% for j in range(ex.n) %}
+          <td>{% if i == j %}–{% else %}{{ e.wins[i][j] }}/{{ ex.comparisons[i][j] }} · {{ f(ex.fitted[i][j], 2) }}{% endif %}</td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The fitted rewards are r = {{ vec(ex.rewards) }} for {{ names|join(", ") }}. The proxy ranks {{ names[ex.proxy_top] }} first; the true reward ranks {{ names[ex.true_top] }} first. Four numbers cannot match twelve observed rates exactly: the fit gives each response exactly as many expected wins as it observed, which is the maximum-likelihood condition, and spreads the rest.
+    The average loss per comparison is {{ f(ex.nll, 4) }} nats, against ln 2 = {{ f(ex.zero_nll, 4) }} for all-zero rewards. Adding 3 to every reward gives {{ f(ex.shifted_nll, 4) }}, unchanged, because only gaps enter the loss.
+  </p>
+  <p>
+    For the pair {{ names[pw] }} over {{ names[pl] }}: the gap is {{ f(ex.rm_pair.r_w) }} − ({{ f(ex.rm_pair.r_l) }}) = {{ f(ex.rm_pair.r_w - ex.rm_pair.r_l) }}, so P = σ({{ f(ex.rm_pair.r_w - ex.rm_pair.r_l) }}) = {{ f(ex.rm_pair.p, 4) }} and that comparison's loss is −log {{ f(ex.rm_pair.p, 4) }} = {{ f(ex.rm_pair.loss, 4) }}.
+  </p>
+
+  <h3 id="worked-optimum">The KL-regularized optimum</h3>
+  <p>
+    With β = {{ e.beta }}, the optimal policy reweights the reference by exp(r/β) and renormalizes:
+  </p>
+  <p class="ml-formula">π* ∝ π<sub>ref</sub> · exp(r / {{ e.beta }}) = {{ vec(ex.optimum, 4) }}</p>
+  <p>
+    It moves mass from the short wrong answer D to B and C, keeps A roughly where it was, and sits at KL(π* ‖ π<sub>ref</sub>) = {{ f(ex.optimum_kl, 4) }} nats. Its proxy reward is {{ f(ex.best.proxy, 3) }} and its true reward {{ f(ex.best.true, 3) }}, up from the reference's {{ f(ex.reference_true, 3) }}.
+  </p>
+
+  <h3 id="worked-sweep">Turning β down: reward hacking</h3>
+  <p>
+    The same closed form for a range of β shows what a weaker leash does. The proxy reward and the KL rise every time β falls, because that is exactly what the objective trades. The true reward does not.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>β</th><th>Policy over {{ names|join(", ") }}</th><th>KL (nats)</th><th>Proxy reward</th><th>True reward</th></tr></thead>
+      <tbody>
+        {% for row in ex.sweep %}
+        <tr><td>{{ row.beta }}</td><td>{{ vec(row.policy) }}</td><td>{{ f(row.kl) }}</td><td>{{ f(row.proxy) }}</td><td>{{ f(row.true) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% set x0 = 70 %}
+{% set xw = 540 %}
+{% set kmax = 1.7 %}
+{% set yb = 250 %}
+{% set yh = 210 %}
+{% set lo = -0.2 %}
+{% set span = 1.2 %}
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 300" role="img" aria-labelledby="po-sweep-title po-sweep-desc">
+    <title id="po-sweep-title">Proxy and true reward against KL from the reference</title>
+    <desc id="po-sweep-desc">As β falls from {{ ex.sweep[0].beta }} to {{ ex.sweep[-1].beta }}, the optimal policy's KL from the reference grows from {{ f(ex.sweep[0].kl, 3) }} to {{ f(ex.sweep[-1].kl, 2) }} nats. The proxy reward rises at every step, from {{ f(ex.sweep[0].proxy) }} to {{ f(ex.sweep[-1].proxy) }}. The true reward rises to {{ f(ex.best.true) }} at β = {{ ex.best.beta }} and then falls to {{ f(ex.sweep[-1].true) }}, below the reference policy's {{ f(ex.reference_true, 2) }}.</desc>
+    <g font-size="12">
+      <line x1="{{ x0 }}" y1="{{ yb }}" x2="{{ x0 + xw }}" y2="{{ yb }}" class="d-line"></line>
+      <line x1="{{ x0 }}" y1="{{ yb }}" x2="{{ x0 }}" y2="{{ yb - yh }}" class="d-line"></line>
+      {% for v in [-0.2, 0.0, 0.2, 0.4, 0.6, 0.8, 1.0] %}
+      {% set y = yb - (v - lo) / span * yh %}
+      <line x1="{{ x0 - 4 }}" y1="{{ '%.1f'|format(y) }}" x2="{{ x0 }}" y2="{{ '%.1f'|format(y) }}" class="d-line"></line>
+      <text x="{{ x0 - 8 }}" y="{{ '%.1f'|format(y + 4) }}" text-anchor="end" class="d-muted">{{ f(v, 1) }}</text>
+      {% endfor %}
+      {% for k in [0.0, 0.5, 1.0, 1.5] %}
+      {% set x = x0 + k / kmax * xw %}
+      <line x1="{{ '%.1f'|format(x) }}" y1="{{ yb }}" x2="{{ '%.1f'|format(x) }}" y2="{{ yb + 4 }}" class="d-line"></line>
+      <text x="{{ '%.1f'|format(x) }}" y="{{ yb + 18 }}" text-anchor="middle" class="d-muted">{{ k }}</text>
+      {% endfor %}
+      <text x="{{ x0 + xw / 2 }}" y="{{ yb + 38 }}" text-anchor="middle">KL(π ‖ π_ref), nats</text>
+      {% set yref = yb - (ex.reference_true - lo) / span * yh %}
+      <line x1="{{ x0 }}" y1="{{ '%.1f'|format(yref) }}" x2="{{ x0 + xw }}" y2="{{ '%.1f'|format(yref) }}" class="d-line ml-dashed"></line>
+      <text x="{{ x0 + xw }}" y="{{ '%.1f'|format(yref - 6) }}" text-anchor="end" class="d-muted">reference true reward</text>
+      <polyline fill="none" stroke-width="2" style="stroke: var(--jj-amber)" points="{% for row in ex.sweep %}{{ '%.1f'|format(x0 + row.kl / kmax * xw) }},{{ '%.1f'|format(yb - (row.proxy - lo) / span * yh) }} {% endfor %}"></polyline>
+      <polyline fill="none" stroke-width="2" style="stroke: var(--jj-accent)" points="{% for row in ex.sweep %}{{ '%.1f'|format(x0 + row.kl / kmax * xw) }},{{ '%.1f'|format(yb - (row.true - lo) / span * yh) }} {% endfor %}"></polyline>
+      {% for row in ex.sweep %}
+      {% set x = x0 + row.kl / kmax * xw %}
+      <circle cx="{{ '%.1f'|format(x) }}" cy="{{ '%.1f'|format(yb - (row.proxy - lo) / span * yh) }}" r="3" style="fill: var(--jj-amber)"></circle>
+      <circle cx="{{ '%.1f'|format(x) }}" cy="{{ '%.1f'|format(yb - (row.true - lo) / span * yh) }}" r="3" style="fill: var(--jj-accent)"></circle>
+      {% if row.kl > 0.1 %}
+      <text x="{{ '%.1f'|format(x) }}" y="{{ '%.1f'|format(yb - (row.true - lo) / span * yh - 9) }}" text-anchor="middle" class="d-muted">β={{ row.beta }}</text>
+      {% endif %}
+      {% endfor %}
+      <rect x="{{ x0 + 10 }}" y="18" width="12" height="12" style="fill: var(--jj-amber)"></rect>
+      <text x="{{ x0 + 28 }}" y="28">proxy reward (fitted)</text>
+      <rect x="{{ x0 + 190 }}" y="18" width="12" height="12" style="fill: var(--jj-accent)"></rect>
+      <text x="{{ x0 + 208 }}" y="28">true reward</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The Goodhart curve in miniature. Each point is the exact optimum for one β. Past β = {{ ex.best.beta }} the policy keeps buying proxy reward by moving toward C, the padded answer the labelers over-rated, and by β = {{ ex.sweep[-1].beta }} it is worse than where it started.</p>
+
+<div class="ml-worked">
+  <h3 id="worked-dpo">DPO reaches the same policy</h3>
+  <p>
+    Now skip the reward model. Parameterize the policy by four logits, start them at log π<sub>ref</sub> so that π<sub>θ</sub> = π<sub>ref</sub>, and run plain gradient descent with learning rate {{ e.dpo_lr }} on the DPO loss averaged over all {{ ex.comparisons[0][1] * ex.n * (ex.n - 1) // 2 }} comparisons, β = {{ e.beta }}.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Step</th><th>DPO loss</th><th>π<sub>θ</sub></th><th>Implicit reward β·log(π<sub>θ</sub>/π<sub>ref</sub>)</th></tr></thead>
+      <tbody>
+        {% for row in ex.dpo %}
+        <tr><td>{{ row.step }}</td><td>{{ f(row.loss, 4) }}</td><td>{{ vec(row.policy, 4) }}</td><td>{{ vec(row.implicit) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    At step 0 every margin is zero, so each comparison's loss is −log σ(0) = {{ f(ex.dpo_start.loss, 4) }} and its gradient weight σ(0) = {{ f(ex.dpo_start.weight, 2) }}. By step {{ ex.dpo[-1].step }} the loss is {{ f(ex.dpo[-1].loss, 4) }}, the reward model's loss, and the policy matches the RLHF optimum π* to within {{ "%.0e"|format(ex.dpo_gap) }} in every entry.
+    The implicit rewards are the fitted rewards shifted by a constant: {{ f(ex.dpo[-1].implicit[0]) }} vs {{ f(ex.rewards[0]) }}, {{ f(ex.dpo[-1].implicit[3]) }} vs {{ f(ex.rewards[3]) }}. The shift is β log Z, the term that cancelled in the derivation.
+  </p>
+  <p>
+    For the pair {{ names[pw] }} over {{ names[pl] }} the trained margin is β·h = {{ f(ex.dpo_after.margin) }}, so the pair's loss is {{ f(ex.dpo_after.loss, 4) }}, the reward model's {{ f(ex.rm_pair.loss, 4) }} for the same pair, and its gradient weight has dropped to σ(−{{ f(ex.dpo_after.margin) }}) = {{ f(ex.dpo_after.weight) }}.
+  </p>
+
+  <h3 id="worked-ipo">A unanimous pair: DPO against IPO</h3>
+  <p>
+    Take one pair that the preferred response always wins and train only the margin h (β = {{ e.beta }} for DPO, τ = {{ e.ipo_tau }} for IPO, learning rate {{ e.unanimous_lr }}). DPO's loss −log σ(βh) never reaches zero, so its gradient never vanishes and h grows without bound, a little slower each decade. IPO's squared loss has its minimum at 1/(2τ) = {{ f(ex.ipo_target, 1) }} and stops there.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Step</th><th>DPO margin h</th><th>DPO loss</th><th>IPO margin h</th><th>IPO loss</th></tr></thead>
+      <tbody>
+        {% for row in ex.unanimous %}
+        <tr><td>{{ row.step }}</td><td>{{ f(row.dpo, 2) }}</td><td>{{ f(row.dpo_loss, 4) }}</td><td>{{ f(row.ipo, 3) }}</td><td>{{ f(row.ipo_loss, 4) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    A margin of {{ f(ex.unanimous[-1].dpo, 1) }} means the policy has made the winner e<sup>{{ f(ex.unanimous[-1].dpo, 1) }}</sup> times more likely relative to the loser than the reference did, from ten agreeing votes. In practice DPO is trained for one or a few epochs, which limits this, and the IPO paper argues the regularized target is the more principled fix.
+  </p>
+
+  <h3 id="worked-tokens">Per-token KL rewards in RLHF</h3>
+  <p>
+    In the PPO stage the penalty is applied token by token. For a three-token response scored {{ e.tokens.score }} by the reward model with β = {{ e.tokens.beta }}:
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Token</th><th>log π</th><th>log π<sub>ref</sub></th><th>log ratio</th><th>Reward at this token</th></tr></thead>
+      <tbody>
+        {% for row in tok.rows %}
+        <tr><td><code>{{ row.word }}</code></td><td>{{ f(row.logp) }}</td><td>{{ f(row.logref) }}</td><td>{{ f(row.log_ratio) }}</td><td>{{ f(tok.rewards[loop.index0], 4) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Each token pays −{{ e.tokens.beta }} × its log ratio, and the last also gets the reward model's score. The sequence log ratio is {{ f(tok.seq_logp) }} − ({{ f(tok.seq_logref) }}) = {{ f(tok.seq_ratio) }}, so the episode's return is {{ e.tokens.score }} − {{ e.tokens.beta }} × {{ f(tok.seq_ratio) }} = {{ f(tok.total, 4) }}. A token the policy likes less than the reference, here the full stop, earns a small bonus.
+  </p>
+
+  <h3 id="worked-grpo">GRPO's group advantages and the k3 estimator</h3>
+  <p>
+    Six sampled answers to one math problem are checked by a rule: rewards {{ vec(e.group_rewards, 0) }}. The group mean is {{ f(ex.grpo.mean, 4) }} and the standard deviation {{ f(ex.grpo.std, 4) }}, so the correct answers get advantage {{ f(ex.grpo.advantages[0]) }} and the wrong ones {{ f(ex.grpo.advantages[1]) }}, on every one of their tokens. If all six were right, or all wrong, every advantage would be zero and the prompt would teach nothing.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Ratio π<sub>ref</sub>/π<sub>θ</sub></th><th>k1 = −log ratio</th><th>k3 = ratio − log ratio − 1</th></tr></thead>
+      <tbody>
+        {% for row in ex.k3 %}
+        <tr><td>{{ row.ratio }}</td><td>{{ f(row.k1, 4) }}</td><td>{{ f(row.k3, 4) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    For tokens sampled from π<sub>θ</sub> both estimators average to KL(π<sub>θ</sub> ‖ π<sub>ref</sub>), but k1 is negative whenever the reference likes a token more than the policy, so a single-sample penalty can reward drift. k3 is never negative and is zero only when the two agree.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 230" role="img" aria-labelledby="po-weight-title po-weight-desc">
+    <title id="po-weight-title">How DPO weights a pair as its margin grows</title>
+    <desc id="po-weight-desc">The DPO loss −log σ(m) and its gradient weight σ(−m), plotted against the scaled margin m = β·h from −4 to 6. At m = 0 the loss is ln 2 and the weight is 0.5. Pairs ordered the wrong way have weight near 1; pairs ordered correctly by a wide margin have weight near 0. The pair {{ names[pw] }} over {{ names[pl] }} sits at m = {{ f(ex.dpo_after.margin, 2) }} after training.</desc>
+    {% set mx0 = 70 %}
+    {% set mxw = 540 %}
+    {% set my = 180 %}
+    {% set mh = 36 %}
+    <g font-size="12">
+      <line x1="{{ mx0 }}" y1="{{ my }}" x2="{{ mx0 + mxw }}" y2="{{ my }}" class="d-line"></line>
+      <line x1="{{ mx0 + 4 / 10 * mxw }}" y1="{{ my }}" x2="{{ mx0 + 4 / 10 * mxw }}" y2="20" class="d-line ml-dashed"></line>
+      {% for m in [-4, -2, 0, 2, 4, 6] %}
+      <text x="{{ '%.1f'|format(mx0 + (m + 4) / 10 * mxw) }}" y="{{ my + 18 }}" text-anchor="middle" class="d-muted">{{ m }}</text>
+      {% endfor %}
+      <text x="{{ mx0 + mxw / 2 }}" y="{{ my + 38 }}" text-anchor="middle">scaled margin m = β·h</text>
+      {% for v in [0, 1, 2, 3, 4] %}
+      <text x="{{ mx0 - 8 }}" y="{{ my - v * mh + 4 }}" text-anchor="end" class="d-muted">{{ v }}</text>
+      {% endfor %}
+      <polyline fill="none" stroke-width="2" style="stroke: var(--jj-violet)" points="{% for i in range(41) %}{% set m = -4 + i * 0.25 %}{{ '%.1f'|format(mx0 + (m + 4) / 10 * mxw) }},{{ '%.1f'|format(my - mh * softplus(-m)) }} {% endfor %}"></polyline>
+      <polyline fill="none" stroke-width="2" style="stroke: var(--jj-accent)" points="{% for i in range(41) %}{% set m = -4 + i * 0.25 %}{{ '%.1f'|format(mx0 + (m + 4) / 10 * mxw) }},{{ '%.1f'|format(my - mh * sigmoid(-m)) }} {% endfor %}"></polyline>
+      {% set mp = ex.dpo_after.margin %}
+      <circle cx="{{ '%.1f'|format(mx0 + (mp + 4) / 10 * mxw) }}" cy="{{ '%.1f'|format(my - mh * ex.dpo_after.loss) }}" r="4" style="fill: var(--jj-violet)"></circle>
+      <circle cx="{{ '%.1f'|format(mx0 + (mp + 4) / 10 * mxw) }}" cy="{{ '%.1f'|format(my - mh * ex.dpo_after.weight) }}" r="4" style="fill: var(--jj-accent)"></circle>
+      <text x="{{ '%.1f'|format(mx0 + (mp + 4) / 10 * mxw + 8) }}" y="{{ '%.1f'|format(my - mh * ex.dpo_after.loss - 10) }}">pair {{ names[pw] }} ≻ {{ names[pl] }}</text>
+      <rect x="{{ mx0 + 300 }}" y="22" width="12" height="12" style="fill: var(--jj-violet)"></rect>
+      <text x="{{ mx0 + 318 }}" y="32">loss −log σ(m)</text>
+      <rect x="{{ mx0 + 300 }}" y="42" width="12" height="12" style="fill: var(--jj-accent)"></rect>
+      <text x="{{ mx0 + 318 }}" y="52">gradient weight σ(−m)</text>
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">The DPO loss is the reward-model loss on the implicit reward gap, so it has the same shape: a pair ordered the wrong way gets nearly full weight, a pair already ordered by a wide margin gets almost none. The loss only flattens toward zero as m grows, which is why a unanimous pair keeps pushing.</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+import torch.nn.functional as F
+
+def response_logp(model, input_ids, response_mask):
+    # model returns logits (B, T, V); response_mask is 1 on response tokens, 0 on the prompt and padding
+    logits = model(input_ids)[:, :-1].float()
+    targets = input_ids[:, 1:].unsqueeze(-1)
+    token_logp = F.log_softmax(logits, dim=-1).gather(-1, targets).squeeze(-1)
+    return (token_logp * response_mask[:, 1:]).sum(-1)          # log pi(y|x), shape (B,)
+
+def reward_model_loss(reward_model, chosen, rejected):
+    gap = reward_model(**chosen) - reward_model(**rejected)       # one scalar per sequence
+    return -F.logsigmoid(gap).mean()
+
+def dpo_loss(policy, reference, chosen, rejected, beta=0.1):
+    pi_w, pi_l = response_logp(policy, **chosen), response_logp(policy, **rejected)
+    with torch.no_grad():
+        ref_w, ref_l = response_logp(reference, **chosen), response_logp(reference, **rejected)
+    reward_w, reward_l = beta * (pi_w - ref_w), beta * (pi_l - ref_l)   # implicit rewards
+    loss = -F.logsigmoid(reward_w - reward_l).mean()
+    accuracy = (reward_w > reward_l).float().mean()
+    return loss, accuracy
+
+def ipo_loss(pi_w, pi_l, ref_w, ref_l, tau=0.1):
+    h = (pi_w - ref_w) - (pi_l - ref_l)
+    return ((h - 1 / (2 * tau)) ** 2).mean()
+
+def grpo_advantages(rewards, eps=1e-6):                         # rewards: (prompts, G)
+    return (rewards - rewards.mean(-1, keepdim=True)) / (rewards.std(-1, keepdim=True) + eps)
+
+def k3(logp, ref_logp):                                         # per token, sampled from the policy
+    log_ratio = ref_logp - logp
+    return torch.exp(log_ratio) - log_ratio - 1</code></pre>
+
+<p>
+  The reference model is a frozen copy of the starting policy, so DPO holds two models in memory; its log-probabilities can be computed once over the dataset and stored, since they never change. Sum log-probabilities only over response tokens: including the prompt adds the same constant to both sides of each ratio and does nothing but cost precision, and averaging instead of summing changes the objective. Implementations differ on the standard deviation in GRPO (PyTorch's <code>std</code> divides by n − 1 by default; the worked example above uses the population value) and on how token losses are averaged across responses of different lengths.
+  Track the implicit-reward accuracy and margins during DPO, and the KL and reward during PPO: a KL that climbs while held-out human or gold-model preference stalls is the reward-hacking signal.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Method</th><th>Data</th><th>Models in memory</th><th>Samples during training</th><th>Weak spots</th></tr></thead>
+    <tbody>
+      <tr><td>RLHF (reward model + PPO)</td><td>pairs or rankings</td><td>policy, reference, reward model, value model</td><td>yes, on-policy</td><td>many hyperparameters, unstable, expensive; the reward model can be reused and inspected</td></tr>
+      <tr><td>DPO</td><td>pairs</td><td>policy, reference (or stored reference log-probs)</td><td>no, offline</td><td>overfits unanimous or noisy pairs; can lower the likelihood of both responses; limited to the data's responses</td></tr>
+      <tr><td>IPO</td><td>pairs</td><td>as DPO</td><td>no</td><td>a target margin to tune; same offline limits</td></tr>
+      <tr><td>KTO</td><td>single responses labelled good or bad</td><td>as DPO</td><td>no</td><td>weaker signal per example than a pair; desirable/undesirable weights to tune</td></tr>
+      <tr><td>GRPO</td><td>prompts plus a reward function or model</td><td>policy, reference, reward if learned</td><td>yes, a group per prompt</td><td>prompts that are all-right or all-wrong give no signal; needs a reward that is hard to game</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<ul>
+  <li><strong>Online or offline.</strong> PPO and GRPO learn from the current policy's own samples, so they can correct mistakes the dataset never showed; DPO, IPO and KTO only reweight responses already in the data. Iterated DPO, with fresh pairs from the current policy each round, closes part of that gap.</li>
+  <li><strong>β sets the leash.</strong> Small β lets the policy move far, which the sweep above shows can buy proxy reward at the expense of real quality; large β changes little. It is the main hyperparameter in every method here.</li>
+  <li><strong>The data decides what "preferred" means.</strong> Labeler instructions, the people chosen and their biases toward length or confidence all end up in the reward. No loss function fixes a preference dataset that rewards the wrong thing.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>A DPO run shows rising reward accuracy and margins, but the log-probability of the chosen responses is falling. Is something broken?</summary>
+  <p>Not necessarily. The loss only sees the difference of log ratios, so it can be satisfied by pushing the rejected response down faster than the chosen one falls. Probability mass leaves both and goes to responses in neither, which can be good or bad. Watch quality on held-out prompts, and consider a larger β, fewer epochs, or adding a supervised term on the chosen responses.</p>
+</details>
+
+<details class="ml-quiz">
+  <summary>Why can't you skip the KL term and just maximize the reward model's score?</summary>
+  <p>The unregularized optimum puts all probability on whatever response the reward model scores highest, and the reward model is only accurate near the responses it was trained on. The policy finds the reward model's mistakes, as in the β = {{ ex.sweep[-1].beta }} row of the sweep, where proxy reward is highest and true reward lowest. The KL term also makes DPO possible: without it there is no closed-form optimum to invert.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<p>
+  This page continues <a href="/ml-models/fine-tuning">fine-tuning</a>, which produces the reference policy, and <a href="/ml-models/reinforcement-learning">reinforcement learning</a>, which builds policy gradients and PPO's clipped ratio. The reward model is <a href="/ml-models/logistic-regression">logistic regression</a> on a reward gap, trained with <a href="/ml-models/loss-functions">cross-entropy</a>, and every log π(y|x) is the quantity <a href="/ml-models/pretraining">pretraining</a> maximizes for a <a href="/ml-models/decoder-only-llm">decoder-only model</a>. The KL penalty is the <a href="/ml-models/entropy-and-kl">entropy and KL divergence</a> page put to work.
+</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Bradley and Terry. <em>Rank Analysis of Incomplete Block Designs: I. The Method of Paired Comparisons.</em> Biometrika 1952. <a href="https://doi.org/10.2307/2334029">doi:10.2307/2334029</a></li>
+  <li>Christiano et al. <em>Deep Reinforcement Learning from Human Preferences.</em> NeurIPS 2017. <a href="https://arxiv.org/abs/1706.03741">arXiv:1706.03741</a></li>
+  <li>Schulman et al. <em>Proximal Policy Optimization Algorithms.</em> 2017. <a href="https://arxiv.org/abs/1707.06347">arXiv:1707.06347</a></li>
+  <li>Ziegler et al. <em>Fine-Tuning Language Models from Human Preferences.</em> 2019. <a href="https://arxiv.org/abs/1909.08593">arXiv:1909.08593</a></li>
+  <li>Stiennon et al. <em>Learning to Summarize from Human Feedback.</em> NeurIPS 2020. <a href="https://arxiv.org/abs/2009.01325">arXiv:2009.01325</a></li>
+  <li>Ouyang et al. <em>Training Language Models to Follow Instructions with Human Feedback.</em> NeurIPS 2022. <a href="https://arxiv.org/abs/2203.02155">arXiv:2203.02155</a></li>
+  <li>Gao, Schulman and Hilton. <em>Scaling Laws for Reward Model Overoptimization.</em> ICML 2023. <a href="https://arxiv.org/abs/2210.10760">arXiv:2210.10760</a></li>
+  <li>Rafailov et al. <em>Direct Preference Optimization: Your Language Model is Secretly a Reward Model.</em> NeurIPS 2023. <a href="https://arxiv.org/abs/2305.18290">arXiv:2305.18290</a></li>
+  <li>Azar et al. <em>A General Theoretical Paradigm to Understand Learning from Human Preferences.</em> AISTATS 2024. <a href="https://arxiv.org/abs/2310.12036">arXiv:2310.12036</a></li>
+  <li>Ethayarajh et al. <em>KTO: Model Alignment as Prospect Theoretic Optimization.</em> 2024. <a href="https://arxiv.org/abs/2402.01306">arXiv:2402.01306</a></li>
+  <li>Shao et al. <em>DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models.</em> 2024. <a href="https://arxiv.org/abs/2402.03300">arXiv:2402.03300</a></li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/nn/functional.py', 2049, 2058) }}"><code>F.logsigmoid</code></a>, <a href="{{ src('torch/nn/functional.py', 2293, 2324) }}"><code>F.log_softmax</code></a>, <a href="{{ src('torch/_torch_docs.py', 4813, 4849) }}"><code>torch.gather</code></a>, <a href="{{ src('torch/nn/functional.py', 3634, 3701) }}"><code>F.binary_cross_entropy_with_logits</code></a>, <a href="{{ src('torch/nn/functional.py', 3401, 3475) }}"><code>F.kl_div</code></a>, <a href="{{ src('torch/nn/functional.py', 3478, 3569) }}"><code>F.cross_entropy</code></a>.</li>
+</ul>

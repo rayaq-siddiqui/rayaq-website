@@ -1016,7 +1016,7 @@ PAGES = [
         "sources": [
             "pytorch:torch/nn/functional.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "decoding",
