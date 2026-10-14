@@ -4710,3 +4710,55 @@ def test_vit_token_count_and_attention_cost_grow_with_resolution():
     assert rows[(384, 16)]["tokens"] == 577
     assert rows[(224, 32)]["tokens"] == 50
     assert rows[(384, 16)]["scores"] == 577 ** 2
+
+
+def test_unet_parameter_count_matches_stable_diffusion_v1():
+    walk = ml_models_docs.unet_example()["walk"]
+    assert walk["total"] == 859_520_964
+    assert walk["total"] == sum(walk["parts"].values())
+    assert walk["skips_left"] == 0
+
+
+def test_unet_walk_has_twelve_skips_and_matching_up_blocks():
+    walk = ml_models_docs.unet_example()["walk"]
+    assert len(walk["down"]) == 12
+    assert len(walk["up"]) == 12
+    assert [r["side"] for r in walk["down"] if r["name"] == "Downsample"] == [32, 16, 8]
+    assert walk["middle"] == {"side": 8, "channels": 1280}
+    assert walk["up"][-1]["side"] == 64 and walk["up"][-1]["channels"] == 320
+    assert all(r["in"] == r["skip"] + (walk["up"][i - 1]["channels"] if i else 1280) for i, r in enumerate(walk["up"]))
+
+
+def test_unet_attention_runs_only_at_the_three_finer_resolutions():
+    e = ml_models_docs.unet_example()
+    assert e["attn_sides"] == [64, 32, 16]
+    assert not any(r["attn"] for r in e["walk"]["up"] if r["side"] == 8)
+    assert e["attention"][0]["self_scores"] == 4096 ** 2
+
+
+def test_dit_parameter_counts_match_the_paper():
+    dits = {d["name"]: d for d in ml_models_docs.unet_example()["dits"]}
+    assert dits["DiT-XL/2"]["total"] == 674_834_720
+    assert dits["DiT-XL/2"]["tokens"] == 256
+    assert dits["DiT-XL/8"]["tokens"] == 16
+    assert round(dits["DiT-S/2"]["total"] / 1e6) == 33
+    assert round(dits["DiT-B/2"]["total"] / 1e6) == 130
+    assert round(dits["DiT-L/2"]["total"] / 1e6) == 458
+
+
+def test_timestep_embeddings_follow_each_convention():
+    e = ml_models_docs.unet_example()
+    zero = e["embeddings"][0]
+    assert zero["ldm"] == [1.0] * 4 + [0.0] * 4
+    assert zero["ddpm"] == [0.0] * 4 + [1.0] * 4
+    one = e["embeddings"][1]
+    assert one["ldm"][0] == math.cos(1) and one["ddpm"][0] == math.sin(1)
+    assert e["frequencies"][-1] == math.exp(-math.log(10000) * 3 / 4)
+
+
+def test_unet_group_norm_normalises_each_group_separately():
+    gn = ml_models_docs.unet_example()["group_norm"]
+    assert [s["mean"] for s in gn["stats"]] == [2.0, 12.0]
+    assert [s["var"] for s in gn["stats"]] == [0.5, 2.0]
+    assert gn["out"][1] == [0.0, 0.0]
+    assert ml_models_docs.unet_example()["layer_norm_style"]["stats"][0]["mean"] == 7.0

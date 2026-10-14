@@ -11607,6 +11607,160 @@ def vit_example():
     }
 
 
+UNET_EXAMPLE = {
+    "sd": {"name": "Stable Diffusion v1", "in_channels": 4, "out_channels": 4, "model_channels": 320,
+           "channel_mult": [1, 2, 4, 4], "num_res_blocks": 2, "attention_resolutions": [4, 2, 1],
+           "num_heads": 8, "context_dim": 768, "context_tokens": 77, "latent": 64, "image": 512, "groups": 32},
+    "dits": [
+        {"name": "DiT-S/2", "dim": 384, "depth": 12, "heads": 6, "patch": 2},
+        {"name": "DiT-B/2", "dim": 768, "depth": 12, "heads": 12, "patch": 2},
+        {"name": "DiT-L/2", "dim": 1024, "depth": 24, "heads": 16, "patch": 2},
+        {"name": "DiT-XL/2", "dim": 1152, "depth": 28, "heads": 16, "patch": 2},
+        {"name": "DiT-XL/4", "dim": 1152, "depth": 28, "heads": 16, "patch": 4},
+        {"name": "DiT-XL/8", "dim": 1152, "depth": 28, "heads": 16, "patch": 8},
+    ],
+    "dit_latent": 32,
+    "dit_channels": 4,
+    "dit_classes": 1000,
+    "dit_frequency_dim": 256,
+    "embed_dim": 8,
+    "embed_steps": [0, 1, 10, 500, 999],
+    "toy_groups": 2,
+    "toy_x": [[1.0, 3.0], [2.0, 2.0], [10.0, 14.0], [12.0, 12.0]],
+}
+
+
+def _unet_conv(ci, co, k):
+    return ci * co * k * k + co
+
+
+def _unet_linear(i, o, bias=True):
+    return i * o + (o if bias else 0)
+
+
+def unet_resblock_params(ci, co, emb):
+    skip = 0 if ci == co else _unet_conv(ci, co, 1)
+    return 2 * ci + _unet_conv(ci, co, 3) + _unet_linear(emb, co) + 2 * co + _unet_conv(co, co, 3) + skip
+
+
+def unet_transformer_params(c, ctx):
+    self_attn = 3 * _unet_linear(c, c, False) + _unet_linear(c, c)
+    cross_attn = _unet_linear(c, c, False) + 2 * _unet_linear(ctx, c, False) + _unet_linear(c, c)
+    ff = _unet_linear(c, 8 * c) + _unet_linear(4 * c, c)
+    return 2 * c + 2 * _unet_conv(c, c, 1) + self_attn + cross_attn + ff + 3 * 2 * c
+
+
+def unet_walk(cfg):
+    mc, emb, ctx = cfg["model_channels"], 4 * cfg["model_channels"], cfg["context_dim"]
+    side, ch, ds = cfg["latent"], mc, 1
+    parts = {"time": _unet_linear(mc, emb) + _unet_linear(emb, emb), "conv_in": _unet_conv(cfg["in_channels"], mc, 3),
+             "res": 0, "attn": 0, "resample": 0, "out": 0}
+    down = [{"name": "conv_in", "side": side, "channels": mc, "attn": False}]
+    skips = [mc]
+    last = len(cfg["channel_mult"]) - 1
+    for level, mult in enumerate(cfg["channel_mult"]):
+        for _ in range(cfg["num_res_blocks"]):
+            parts["res"] += unet_resblock_params(ch, mult * mc, emb)
+            ch = mult * mc
+            attn = ds in cfg["attention_resolutions"]
+            if attn:
+                parts["attn"] += unet_transformer_params(ch, ctx)
+            down.append({"name": "ResBlock" + (" + attention" if attn else ""), "side": side, "channels": ch, "attn": attn})
+            skips.append(ch)
+        if level != last:
+            parts["resample"] += _unet_conv(ch, ch, 3)
+            side //= 2
+            ds *= 2
+            down.append({"name": "Downsample", "side": side, "channels": ch, "attn": False})
+            skips.append(ch)
+    parts["res"] += 2 * unet_resblock_params(ch, ch, emb)
+    parts["attn"] += unet_transformer_params(ch, ctx)
+    middle = {"side": side, "channels": ch}
+    up = []
+    for level in range(last, -1, -1):
+        mult = cfg["channel_mult"][level]
+        for i in range(cfg["num_res_blocks"] + 1):
+            skip = skips.pop()
+            parts["res"] += unet_resblock_params(ch + skip, mult * mc, emb)
+            row = {"side": side, "in": ch + skip, "skip": skip, "channels": mult * mc,
+                   "attn": ds in cfg["attention_resolutions"], "upsample": bool(level and i == cfg["num_res_blocks"])}
+            ch = mult * mc
+            if row["attn"]:
+                parts["attn"] += unet_transformer_params(ch, ctx)
+            if row["upsample"]:
+                parts["resample"] += _unet_conv(ch, ch, 3)
+                side *= 2
+                ds //= 2
+            up.append(row)
+    parts["out"] = 2 * ch + _unet_conv(mc, cfg["out_channels"], 3)
+    return {"down": down, "middle": middle, "up": up, "parts": parts, "total": sum(parts.values()),
+            "skips_left": len(skips)}
+
+
+def dit_params(cfg, latent, channels, classes, freq_dim):
+    d, p = cfg["dim"], cfg["patch"]
+    out = 2 * channels
+    block = _unet_linear(d, 3 * d) + _unet_linear(d, d) + _unet_linear(d, 4 * d) + _unet_linear(4 * d, d) + _unet_linear(d, 6 * d)
+    parts = {"patchify": _unet_conv(channels, d, p),
+             "conditioning": _unet_linear(freq_dim, d) + _unet_linear(d, d) + (classes + 1) * d,
+             "blocks": cfg["depth"] * block,
+             "final": _unet_linear(d, 2 * d) + _unet_linear(d, p * p * out)}
+    tokens = (latent // p) ** 2
+    return {"parts": parts, "block": block, "total": sum(parts.values()), "tokens": tokens,
+            "pos_table": tokens * d, "out_channels": out}
+
+
+def timestep_embedding_ldm(t, dim, max_period=10000.0):
+    half = dim // 2
+    freqs = [math.exp(-math.log(max_period) * i / half) for i in range(half)]
+    return [math.cos(t * f) for f in freqs] + [math.sin(t * f) for f in freqs]
+
+
+def timestep_embedding_ddpm(t, dim, max_period=10000.0):
+    half = dim // 2
+    freqs = [math.exp(-math.log(max_period) * i / (half - 1)) for i in range(half)]
+    return [math.sin(t * f) for f in freqs] + [math.cos(t * f) for f in freqs]
+
+
+def unet_group_norm(x, groups, eps=1e-5):
+    size = len(x) // groups
+    out, stats = [], []
+    for g in range(groups):
+        values = [v for channel in x[g * size:(g + 1) * size] for v in channel]
+        mean = _mean(values)
+        var = _variance(values)
+        stats.append({"mean": mean, "var": var, "count": len(values)})
+        out.extend([[(v - mean) / math.sqrt(var + eps) for v in channel] for channel in x[g * size:(g + 1) * size]])
+    return {"out": out, "stats": stats}
+
+
+@functools.lru_cache(maxsize=None)
+def unet_example():
+    e = UNET_EXAMPLE
+    sd = e["sd"]
+    walk = unet_walk(sd)
+    dits = [dict(c, **dit_params(c, e["dit_latent"], e["dit_channels"], e["dit_classes"], e["dit_frequency_dim"]))
+            for c in e["dits"]]
+    attn_sides = sorted({r["side"] for r in walk["down"] if r["attn"]}, reverse=True)
+    attention = [{"side": s, "tokens": s * s, "self_scores": (s * s) ** 2, "cross_scores": s * s * sd["context_tokens"]}
+                 for s in [sd["latent"] // 2 ** k for k in range(len(sd["channel_mult"]))]]
+    return {
+        "example": e,
+        "sd": sd,
+        "walk": walk,
+        "emb_dim": 4 * sd["model_channels"],
+        "frequencies": [math.exp(-math.log(10000.0) * i / (e["embed_dim"] // 2)) for i in range(e["embed_dim"] // 2)],
+        "embeddings": [{"t": t, "ldm": timestep_embedding_ldm(t, e["embed_dim"]),
+                        "ddpm": timestep_embedding_ddpm(t, e["embed_dim"])} for t in e["embed_steps"]],
+        "group_norm": unet_group_norm(e["toy_x"], e["toy_groups"]),
+        "layer_norm_style": unet_group_norm(e["toy_x"], 1),
+        "dits": dits,
+        "dit_main": next(d for d in dits if d["name"] == "DiT-XL/2"),
+        "attn_sides": attn_sides,
+        "attention": attention,
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -11650,6 +11804,7 @@ def render(slug, render_template):
         "calibration_example": calibration_example,
         "gnn_example": gnn_example,
         "diffusion_example": diffusion_example,
+        "unet_example": unet_example,
         "pretraining_example": pretraining_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,
