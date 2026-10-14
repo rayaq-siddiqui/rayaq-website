@@ -13018,6 +13018,228 @@ def flow_example():
     }
 
 
+PO_EXAMPLE = {
+    "prompt": "Why is the sky blue?",
+    "responses": [
+        {"name": "A", "label": "short and correct"},
+        {"name": "B", "label": "long, correct, well organized"},
+        {"name": "C", "label": "long, padded, one factual error"},
+        {"name": "D", "label": "short and wrong"},
+    ],
+    "reference": [0.40, 0.25, 0.10, 0.25],
+    "true_reward": [1.0, 1.5, -0.5, -1.5],
+    "wins": [
+        [0, 4, 4, 9],
+        [6, 0, 4, 9],
+        [6, 6, 0, 8],
+        [1, 1, 2, 0],
+    ],
+    "bt_iterations": 500,
+    "beta": 0.5,
+    "betas": [8.0, 4.0, 2.0, 1.0, 0.5, 0.25, 0.1, 0.05],
+    "dpo_lr": 0.5,
+    "dpo_steps": [0, 1, 2, 5, 20, 100, 1000],
+    "pair": [1, 3],
+    "ipo_tau": 0.25,
+    "unanimous_steps": [1, 10, 100, 1000, 10000],
+    "unanimous_lr": 0.25,
+    "tokens": {
+        "words": ["Rayleigh", "scattering", "."],
+        "policy": [0.30, 0.80, 0.90],
+        "reference": [0.20, 0.70, 0.95],
+        "score": 1.2,
+        "beta": 0.1,
+    },
+    "group_rewards": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+    "k3_ratios": [0.5, 0.9, 1.0, 1.1, 2.0],
+}
+
+
+def log_sigmoid(z):
+    return -softplus(-z)
+
+
+def bradley_terry_probability(r_i, r_j):
+    return sigmoid(r_i - r_j)
+
+
+def bradley_terry_fit(wins, iterations):
+    n = len(wins)
+    strengths = [1.0] * n
+    for _ in range(iterations):
+        updated = []
+        for i in range(n):
+            total_wins = sum(wins[i])
+            denominator = sum((wins[i][j] + wins[j][i]) / (strengths[i] + strengths[j]) for j in range(n) if j != i)
+            updated.append(total_wins / denominator)
+        scale = math.exp(sum(math.log(s) for s in updated) / n)
+        strengths = [s / scale for s in updated]
+    return [math.log(s) for s in strengths]
+
+
+def bradley_terry_nll(rewards, wins):
+    n = len(wins)
+    total = sum(wins[i][j] for i in range(n) for j in range(n))
+    loss = -sum(wins[i][j] * log_sigmoid(rewards[i] - rewards[j]) for i in range(n) for j in range(n) if i != j)
+    return loss / total
+
+
+def kl_regularized_optimum(reference, rewards, beta):
+    weights = [p * math.exp(r / beta) for p, r in zip(reference, rewards)]
+    z = sum(weights)
+    return [w / z for w in weights]
+
+
+def categorical_kl(p, q):
+    return sum(pi * math.log(pi / qi) for pi, qi in zip(p, q) if pi > 0)
+
+
+def rlhf_sweep(reference, proxy, true_reward, betas):
+    rows = []
+    for beta in betas:
+        policy = kl_regularized_optimum(reference, proxy, beta)
+        expected_proxy = sum(p * r for p, r in zip(policy, proxy))
+        kl = categorical_kl(policy, reference)
+        rows.append({
+            "beta": beta,
+            "policy": policy,
+            "proxy": expected_proxy,
+            "true": sum(p * r for p, r in zip(policy, true_reward)),
+            "kl": kl,
+            "objective": expected_proxy - beta * kl,
+        })
+    return rows
+
+
+def dpo_pair_loss(logp_w, logp_l, ref_w, ref_l, beta):
+    margin = beta * ((logp_w - ref_w) - (logp_l - ref_l))
+    return {"margin": margin, "loss": -log_sigmoid(margin), "weight": sigmoid(-margin),
+            "implicit_w": beta * (logp_w - ref_w), "implicit_l": beta * (logp_l - ref_l)}
+
+
+def _log_softmax(logits):
+    top = max(logits)
+    log_z = top + math.log(sum(math.exp(x - top) for x in logits))
+    return [x - log_z for x in logits]
+
+
+def dpo_tabular_gradient(logits, reference, wins, beta):
+    n = len(logits)
+    logp = _log_softmax(logits)
+    ref = [math.log(p) for p in reference]
+    total = sum(wins[i][j] for i in range(n) for j in range(n))
+    grad = [0.0] * n
+    loss = 0.0
+    for i in range(n):
+        for j in range(n):
+            if i == j or not wins[i][j]:
+                continue
+            pair = dpo_pair_loss(logp[i], logp[j], ref[i], ref[j], beta)
+            loss += wins[i][j] * pair["loss"]
+            push = wins[i][j] * beta * pair["weight"] / total
+            grad[i] -= push
+            grad[j] += push
+    return {"loss": loss / total, "grad": grad}
+
+
+def dpo_tabular_training(reference, wins, beta, lr, record_steps):
+    logits = [math.log(p) for p in reference]
+    rows = []
+    for step in range(max(record_steps) + 1):
+        result = dpo_tabular_gradient(logits, reference, wins, beta)
+        if step in record_steps:
+            policy = [math.exp(x) for x in _log_softmax(logits)]
+            rows.append({"step": step, "loss": result["loss"], "policy": policy,
+                         "implicit": [beta * math.log(p / q) for p, q in zip(policy, reference)]})
+        logits = [x - lr * g for x, g in zip(logits, result["grad"])]
+    return rows
+
+
+def unanimous_pair_training(beta, tau, lr, record_steps):
+    dpo_h, ipo_h = 0.0, 0.0
+    rows = []
+    for step in range(1, max(record_steps) + 1):
+        dpo_h += lr * beta * sigmoid(-beta * dpo_h)
+        ipo_h -= lr * 2 * (ipo_h - 1 / (2 * tau))
+        if step in record_steps:
+            rows.append({"step": step, "dpo": dpo_h, "dpo_loss": -log_sigmoid(beta * dpo_h),
+                         "ipo": ipo_h, "ipo_loss": (ipo_h - 1 / (2 * tau)) ** 2})
+    return rows
+
+
+def token_kl_reward(tokens):
+    rows = []
+    for word, p, q in zip(tokens["words"], tokens["policy"], tokens["reference"]):
+        rows.append({"word": word, "logp": math.log(p), "logref": math.log(q), "log_ratio": math.log(p / q),
+                     "penalty": -tokens["beta"] * math.log(p / q)})
+    seq_ratio = sum(row["log_ratio"] for row in rows)
+    rewards = [row["penalty"] for row in rows]
+    rewards[-1] += tokens["score"]
+    return {"rows": rows, "seq_logp": sum(row["logp"] for row in rows),
+            "seq_logref": sum(row["logref"] for row in rows), "seq_ratio": seq_ratio,
+            "rewards": rewards, "total": tokens["score"] - tokens["beta"] * seq_ratio}
+
+
+def grpo_advantages(rewards):
+    mean = sum(rewards) / len(rewards)
+    std = math.sqrt(sum((r - mean) ** 2 for r in rewards) / len(rewards))
+    return {"mean": mean, "std": std, "advantages": [(r - mean) / std if std else 0.0 for r in rewards]}
+
+
+def k3_kl_estimate(ratio_ref_over_policy):
+    x = ratio_ref_over_policy
+    return x - math.log(x) - 1
+
+
+def po_example():
+    ex = PO_EXAMPLE
+    n = len(ex["reference"])
+    rewards = bradley_terry_fit(ex["wins"], ex["bt_iterations"])
+    shifted = [r + 3.0 for r in rewards]
+    comparisons = [[ex["wins"][i][j] + ex["wins"][j][i] for j in range(n)] for i in range(n)]
+    fitted = [[bradley_terry_probability(rewards[i], rewards[j]) if i != j else None for j in range(n)] for i in range(n)]
+    observed = [[ex["wins"][i][j] / comparisons[i][j] if i != j else None for j in range(n)] for i in range(n)]
+    w, l = ex["pair"]
+    ref_log = [math.log(p) for p in ex["reference"]]
+    beta = ex["beta"]
+    optimum = kl_regularized_optimum(ex["reference"], rewards, beta)
+    dpo = dpo_tabular_training(ex["reference"], ex["wins"], beta, ex["dpo_lr"], ex["dpo_steps"])
+    start = dpo_pair_loss(ref_log[w], ref_log[l], ref_log[w], ref_log[l], beta)
+    final = dpo[-1]["policy"]
+    after = dpo_pair_loss(math.log(final[w]), math.log(final[l]), ref_log[w], ref_log[l], beta)
+    sweep = rlhf_sweep(ex["reference"], rewards, ex["true_reward"], ex["betas"])
+    best = max(sweep, key=lambda row: row["true"])
+    return {
+        "example": ex,
+        "n": n,
+        "rewards": rewards,
+        "shifted_nll": bradley_terry_nll(shifted, ex["wins"]),
+        "nll": bradley_terry_nll(rewards, ex["wins"]),
+        "zero_nll": bradley_terry_nll([0.0] * n, ex["wins"]),
+        "comparisons": comparisons,
+        "fitted": fitted,
+        "observed": observed,
+        "rm_pair": {"r_w": rewards[w], "r_l": rewards[l], "p": bradley_terry_probability(rewards[w], rewards[l]),
+                    "loss": -log_sigmoid(rewards[w] - rewards[l])},
+        "optimum": optimum,
+        "optimum_kl": categorical_kl(optimum, ex["reference"]),
+        "sweep": sweep,
+        "best": best,
+        "reference_true": sum(p * r for p, r in zip(ex["reference"], ex["true_reward"])),
+        "proxy_top": max(range(n), key=lambda i: rewards[i]),
+        "true_top": max(range(n), key=lambda i: ex["true_reward"][i]),
+        "dpo": dpo,
+        "dpo_start": start,
+        "dpo_after": after,
+        "dpo_gap": max(abs(a - b) for a, b in zip(final, optimum)),
+        "unanimous": unanimous_pair_training(beta, ex["ipo_tau"], ex["unanimous_lr"], ex["unanimous_steps"]),
+        "ipo_target": 1 / (2 * ex["ipo_tau"]),
+        "tokens": token_kl_reward(ex["tokens"]),
+        "grpo": grpo_advantages(ex["group_rewards"]),
+        "k3": [{"ratio": x, "k3": k3_kl_estimate(x), "k1": -math.log(x)} for x in ex["k3_ratios"]],
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -13070,6 +13292,7 @@ def render(slug, render_template):
         "pca_example": pca_example,
         "moe_example": moe_example,
         "flow_example": flow_example,
+        "po_example": po_example,
         "pretraining_example": pretraining_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,

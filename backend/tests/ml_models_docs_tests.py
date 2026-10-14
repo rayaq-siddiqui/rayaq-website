@@ -5246,3 +5246,106 @@ def test_flow_rectified_lines_cross_but_reflow_is_straight():
     assert all(r["max_error"] < 1e-12 for r in ex["reflow"])
     line = ml_models_docs.path_straightness([0.0, 0.25, 0.5, 0.75, 1.0])
     assert line["defect"] == pytest.approx(0.0)
+
+
+def test_po_bradley_terry_fit_is_a_shift_invariant_maximum_likelihood():
+    ex = ml_models_docs.po_example()
+    rewards = ex["rewards"]
+    assert sum(rewards) == pytest.approx(0, abs=1e-9)
+    assert ex["shifted_nll"] == pytest.approx(ex["nll"])
+    assert ex["nll"] < ex["zero_nll"] == pytest.approx(math.log(2))
+    wins = ex["example"]["wins"]
+    for i in range(ex["n"]):
+        expected = sum(ex["comparisons"][i][j] * ex["fitted"][i][j] for j in range(ex["n"]) if j != i)
+        assert expected == pytest.approx(sum(wins[i]), abs=1e-6)
+    for k in range(ex["n"]):
+        bumped = list(rewards)
+        bumped[k] += 1e-3
+        assert ml_models_docs.bradley_terry_nll(bumped, wins) > ex["nll"]
+    assert ex["proxy_top"] == 2 and ex["true_top"] == 1
+    assert ex["rm_pair"]["loss"] == pytest.approx(-math.log(ex["rm_pair"]["p"]))
+
+
+def test_po_kl_regularized_optimum_maximizes_the_rlhf_objective():
+    ex = ml_models_docs.po_example()
+    ref, rewards, beta = ex["example"]["reference"], ex["rewards"], ex["example"]["beta"]
+    best = next(row for row in ex["sweep"] if row["beta"] == beta)
+    assert best["policy"] == pytest.approx(ex["optimum"])
+    rng = random.Random(0)
+    for _ in range(200):
+        logits = [math.log(p) + rng.gauss(0, 1) for p in ex["optimum"]]
+        q = ml_models_docs.softmax_probs(logits)
+        value = sum(a * r for a, r in zip(q, rewards)) - beta * ml_models_docs.categorical_kl(q, ref)
+        assert value <= best["objective"] + 1e-12
+    kls = [row["kl"] for row in ex["sweep"]]
+    proxies = [row["proxy"] for row in ex["sweep"]]
+    assert kls == sorted(kls) and proxies == sorted(proxies)
+
+
+def test_po_proxy_reward_keeps_rising_while_true_reward_peaks_then_falls():
+    ex = ml_models_docs.po_example()
+    trues = [row["true"] for row in ex["sweep"]]
+    peak = trues.index(max(trues))
+    assert 0 < peak < len(trues) - 1
+    assert trues[:peak + 1] == sorted(trues[:peak + 1])
+    assert trues[peak:] == sorted(trues[peak:], reverse=True)
+    assert trues[-1] < ex["reference_true"]
+    assert ex["best"]["beta"] == ex["example"]["beta"]
+
+
+def test_po_dpo_starts_at_log_two_and_converges_to_the_rlhf_optimum():
+    ex = ml_models_docs.po_example()
+    assert ex["dpo_start"]["loss"] == pytest.approx(math.log(2))
+    assert ex["dpo_start"]["weight"] == pytest.approx(0.5)
+    losses = [row["loss"] for row in ex["dpo"]]
+    assert losses == sorted(losses, reverse=True)
+    assert losses[-1] == pytest.approx(ex["nll"], abs=1e-6)
+    assert ex["dpo_gap"] < 1e-4
+    final = ex["dpo"][-1]
+    implicit = final["implicit"]
+    for i in range(ex["n"]):
+        for j in range(ex["n"]):
+            assert implicit[i] - implicit[j] == pytest.approx(ex["rewards"][i] - ex["rewards"][j], abs=1e-4)
+    assert ex["dpo_after"]["loss"] == pytest.approx(ex["rm_pair"]["loss"], abs=1e-4)
+
+
+def test_po_dpo_gradient_matches_finite_differences():
+    ex = ml_models_docs.po_example()
+    ref, wins, beta = ex["example"]["reference"], ex["example"]["wins"], ex["example"]["beta"]
+    logits = [0.3, -0.2, 0.5, 0.1]
+    grad = ml_models_docs.dpo_tabular_gradient(logits, ref, wins, beta)["grad"]
+    h = 1e-6
+    for k in range(4):
+        up = list(logits)
+        up[k] += h
+        down = list(logits)
+        down[k] -= h
+        numeric = (ml_models_docs.dpo_tabular_gradient(up, ref, wins, beta)["loss"]
+                   - ml_models_docs.dpo_tabular_gradient(down, ref, wins, beta)["loss"]) / (2 * h)
+        assert grad[k] == pytest.approx(numeric, abs=1e-6)
+    assert sum(grad) == pytest.approx(0, abs=1e-12)
+
+
+def test_po_dpo_margin_grows_without_bound_on_a_unanimous_pair_while_ipo_stops():
+    ex = ml_models_docs.po_example()
+    rows = ex["unanimous"]
+    dpo = [row["dpo"] for row in rows]
+    assert dpo == sorted(dpo) and dpo[-1] > 10
+    assert all(b - a > 3 for a, b in zip(dpo[2:], dpo[3:]))
+    assert rows[-1]["ipo"] == pytest.approx(ex["ipo_target"]) == pytest.approx(2.0)
+    assert rows[-1]["dpo_loss"] > 0
+
+
+def test_po_token_rewards_and_grpo_advantages():
+    ex = ml_models_docs.po_example()
+    tok = ex["tokens"]
+    assert tok["seq_ratio"] == pytest.approx(tok["seq_logp"] - tok["seq_logref"])
+    assert sum(tok["rewards"]) == pytest.approx(tok["total"])
+    g = ex["grpo"]
+    assert sum(g["advantages"]) == pytest.approx(0, abs=1e-12)
+    assert sum(a * a for a in g["advantages"]) / len(g["advantages"]) == pytest.approx(1)
+    assert g["advantages"][0] == pytest.approx(math.sqrt(2))
+    assert ml_models_docs.grpo_advantages([1.0, 1.0])["advantages"] == [0.0, 0.0]
+    for row in ex["k3"]:
+        assert row["k3"] >= 0
+    assert next(r for r in ex["k3"] if r["ratio"] == 1.0)["k3"] == 0
