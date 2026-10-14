@@ -5349,3 +5349,102 @@ def test_po_token_rewards_and_grpo_advantages():
     for row in ex["k3"]:
         assert row["k3"] >= 0
     assert next(r for r in ex["k3"] if r["ratio"] == 1.0)["k3"] == 0
+
+
+def test_rag_chunking_overlap_and_sentences_keep_every_answer_whole():
+    ex = ml_models_docs.rag_example()
+    doc = ex["example"]["document"]
+    assert ml_models_docs.word_chunks("a b c d e f g", 4, 2) == ["a b c d", "c d e f", "e f g"]
+    assert ml_models_docs.word_chunks("a b c", 4) == ["a b c"]
+    for name in ("fixed", "overlap"):
+        joined = ex["splits"][name]["chunks"]
+        assert all(len(c.split()) <= ex["example"]["chunk_size"] for c in joined)
+    assert " ".join(ex["splits"]["fixed"]["chunks"]) == doc
+    assert ex["splits"]["fixed"]["found"] == [True, True, True, True, False]
+    assert all(ex["splits"]["overlap"]["found"]) and all(ex["splits"]["sentence"]["found"])
+    assert " ".join(ex["chunks"]) == doc
+    assert all(len(c.split()) <= ex["example"]["sentence_budget"] for c in ex["chunks"])
+    assert all(c.endswith(".") for c in ex["chunks"])
+
+
+def test_rag_bm25_misses_vocabulary_mismatch_and_ranks_only_matches():
+    ex = ml_models_docs.rag_example()
+    q = {r["text"]: r for r in ex["queries"]}
+    charging = q["how long does charging take"]
+    assert charging["lexical"] == [0.0] * len(ex["chunks"])
+    assert charging["rankings"]["bm25"] == [] and charging["ranks"]["bm25"] is None
+    assert charging["ranks"]["trigram"] == 1
+    assert ml_models_docs.query_terms("how do I lock the headlamp") == ["lock", "headlamp"]
+    swim = q["can I swim with it"]
+    assert all(r is None for r in swim["ranks"].values())
+    assert ml_models_docs.ranking_from_scores([0.0, 2.0, 0.5, 2.0]) == [1, 3, 2]
+    assert ml_models_docs.sparse_cosine({"ab": 1}, {}) == 0.0
+    v = ml_models_docs.trigram_vector("lock")
+    assert v == {"#lo": 1, "loc": 1, "ock": 1, "ck#": 1}
+    assert ml_models_docs.sparse_cosine(v, v) == pytest.approx(1)
+
+
+def test_rag_fusion_and_rerank_follow_their_formulas():
+    ex = ml_models_docs.rag_example()
+    k = ex["example"]["rrf_k"]
+    for q in ex["queries"]:
+        for i, score in q["fused_scores"].items():
+            expected = sum(1 / (k + r.index(i) + 1) for r in (q["rankings"]["bm25"], q["rankings"]["trigram"]) if i in r)
+            assert score == pytest.approx(expected)
+        for i, part in q["rerank_parts"].items():
+            assert part["score"] == pytest.approx(sum(part["parts"].values()))
+            assert q["rerank_scores"][i] == part["score"]
+        pool = q["rankings"]["hybrid"][:ex["example"]["rerank_pool"]]
+        assert sorted(q["rankings"]["reranked"]) == sorted(q["rankings"]["hybrid"])
+        assert q["rankings"]["reranked"][:len(pool)] == sorted(pool, key=lambda i: -q["rerank_scores"][i])
+    lock = ex["queries"][0]
+    assert lock["ranks"]["hybrid"] == 2 and lock["ranks"]["reranked"] == 1
+
+
+def test_rag_metrics_improve_from_bm25_to_hybrid_to_reranked():
+    ex = ml_models_docs.rag_example()
+    m = ex["metrics"]
+    assert m["bm25"] == {"recall": pytest.approx(0.6), "mrr": pytest.approx(0.6)}
+    assert m["trigram"]["recall"] == m["hybrid"]["recall"] == m["reranked"]["recall"] == pytest.approx(0.8)
+    assert m["trigram"]["mrr"] == pytest.approx(2 / 3)
+    assert m["hybrid"]["mrr"] == pytest.approx(0.7)
+    assert m["reranked"]["mrr"] == pytest.approx(0.8)
+    assert ml_models_docs.retrieval_metrics([1, 2, None, 4], 3) == {"recall": 0.5, "mrr": pytest.approx((1 + 0.5 + 0.25) / 4)}
+
+
+def test_rag_prompt_budget_and_lost_in_the_middle_order():
+    ex = ml_models_docs.rag_example()
+    p = ex["prompt"]
+    assert p["kept"] == [1, 4] and p["skipped"] == [2, 0]
+    assert p["used"] == ex["example"]["overhead_words"] + sum(len(ex["chunks"][i].split()) for i in p["kept"])
+    assert p["used"] <= ex["example"]["budget_words"]
+    for i in p["skipped"]:
+        assert p["used"] + len(ex["chunks"][i].split()) > ex["example"]["budget_words"]
+    assert ex["middle"] == [1, 3, 5, 4, 2]
+    assert ml_models_docs.lost_in_the_middle_order([]) == []
+
+
+def test_rag_sequence_and_token_marginals():
+    ex = ml_models_docs.rag_example()
+    r = ex["rag"]
+    probs = ex["example"]["rag"]["token_probs"]
+    assert sum(r["doc_probs"]) == pytest.approx(1)
+    assert r["doc_probs"][0] == pytest.approx(1 / (1 + math.exp(-1)))
+    p0, p1 = r["doc_probs"]
+    assert r["sequence"] == pytest.approx(p0 * 0.9 * 0.2 + p1 * 0.1 * 0.8)
+    assert r["per_token"] == pytest.approx([p0 * 0.9 + p1 * 0.1, p0 * 0.2 + p1 * 0.8])
+    assert r["token"] == pytest.approx(r["per_token"][0] * r["per_token"][1])
+    assert r["token"] > r["sequence"]
+    same = ml_models_docs.rag_marginals([0.3, -1.0], [[0.5, 0.4], [0.5, 0.4]])
+    assert same["sequence"] == pytest.approx(same["token"]) == pytest.approx(0.2)
+    assert len(probs) == 2
+
+
+def test_rag_exact_match_and_token_f1():
+    ex = ml_models_docs.rag_example()
+    assert [a["em"] for a in ex["answers"]] == [0.0, 0.0, 0.0]
+    assert [round(a["f1"], 3) for a in ex["answers"]] == [0.571, 0.4, 0.5]
+    assert ml_models_docs.exact_match("The two hours.", "two hours") == 1.0
+    assert ml_models_docs.token_f1("blue", "two hours")["f1"] == 0.0
+    f = ml_models_docs.token_f1("two two hours", "two hours")
+    assert f["precision"] == pytest.approx(2 / 3) and f["recall"] == 1.0

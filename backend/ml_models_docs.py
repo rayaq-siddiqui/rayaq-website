@@ -13240,6 +13240,251 @@ def po_example():
     }
 
 
+RAG_EXAMPLE = {
+    "document": (
+        "The Trailhead 2 headlamp has three modes: low, medium and high. "
+        "Press the button once to turn it on and press it again to change modes. "
+        "Hold the button for three seconds to lock it, so it cannot switch on in a bag. "
+        "The battery is charged over USB-C, and a full charge takes two hours. "
+        "On low the battery lasts forty hours; on high it lasts four hours. "
+        "The light turns red when less than ten percent of the charge remains. "
+        "The headlamp is rated IPX6, so it survives heavy rain but must not be submerged. "
+        "Clean the lens with a dry cloth. "
+        "The warranty covers defects for two years from purchase and does not cover water damage from submersion."
+    ),
+    "chunk_size": 24,
+    "overlap": 8,
+    "sentence_budget": 30,
+    "queries": [
+        {"text": "how do I lock the headlamp", "answer": "hold the button for three seconds"},
+        {"text": "how long does charging take", "answer": "a full charge takes two hours"},
+        {"text": "what does the red light mean", "answer": "less than ten percent of the charge remains"},
+        {"text": "is water damage covered by the warranty", "answer": "does not cover water damage"},
+        {"text": "can I swim with it", "answer": "must not be submerged"},
+    ],
+    "rrf_k": 60,
+    "k": 3,
+    "rerank_pool": 5,
+    "budget_words": 70,
+    "overhead_words": 22,
+    "rag": {"scores": [2.0, 1.0], "token_probs": [[0.9, 0.2], [0.1, 0.8]]},
+    "reference_answer": "two hours",
+    "answers": ["A full charge takes two hours.", "About 2 hours", "Four hours."],
+}
+
+_ARTICLES = {"a", "an", "the"}
+RAG_STOPWORDS = {"a", "an", "the", "how", "do", "does", "i", "what", "is", "by", "can", "with", "it", "to", "of"}
+
+
+def rag_words(text):
+    return re.findall(r"[a-z0-9]+(?:-[a-z0-9]+)?", text.lower())
+
+
+def rag_sentences(text):
+    return [s.strip() for s in re.split(r"(?<=\.)\s+", text) if s.strip()]
+
+
+def word_chunks(text, size, overlap=0):
+    words = text.split()
+    stride = size - overlap
+    chunks = []
+    start = 0
+    while True:
+        chunks.append(" ".join(words[start:start + size]))
+        if start + size >= len(words):
+            break
+        start += stride
+    return chunks
+
+
+def sentence_chunks(text, budget):
+    chunks, current = [], []
+    for sentence in rag_sentences(text):
+        if current and len(" ".join(current + [sentence]).split()) > budget:
+            chunks.append(" ".join(current))
+            current = []
+        current.append(sentence)
+    if current:
+        chunks.append(" ".join(current))
+    return chunks
+
+
+def query_terms(query):
+    return [w for w in rag_words(query) if w not in RAG_STOPWORDS]
+
+
+def chunk_contains(chunk, phrase):
+    return " ".join(rag_words(phrase)) in " ".join(rag_words(chunk))
+
+
+def bm25_rank(chunks, query, k1=1.2, b=0.75):
+    docs = [rag_words(c) for c in chunks]
+    terms = query_terms(query)
+    avgdl = sum(len(d) for d in docs) / len(docs)
+    scores = []
+    for tokens in docs:
+        score = 0.0
+        for t in set(terms):
+            tf = tokens.count(t)
+            if tf:
+                df = sum(t in d for d in docs)
+                score += bm25_idf(len(docs), df) * tf * (k1 + 1) / (tf + k1 * (1 - b + b * len(tokens) / avgdl))
+        scores.append(score)
+    return scores
+
+
+def trigram_vector(text):
+    counts = {}
+    for word in rag_words(text):
+        padded = f"#{word}#"
+        for i in range(len(padded) - 2):
+            gram = padded[i:i + 3]
+            counts[gram] = counts.get(gram, 0) + 1
+    return counts
+
+
+def sparse_cosine(u, v):
+    dot = sum(x * v.get(g, 0) for g, x in u.items())
+    nu = math.sqrt(sum(x * x for x in u.values()))
+    nv = math.sqrt(sum(x * x for x in v.values()))
+    return dot / (nu * nv) if nu and nv else 0.0
+
+
+def trigram_rank(chunks, query):
+    q = trigram_vector(" ".join(query_terms(query)))
+    return [sparse_cosine(q, trigram_vector(c)) for c in chunks]
+
+
+def soft_match_score(chunks, index, query):
+    docs = [set(rag_words(c)) for c in chunks]
+    words = [trigram_vector(w) for w in docs[index]]
+    parts = {}
+    for t in query_terms(query):
+        idf = bm25_idf(len(docs), sum(t in d for d in docs))
+        vector = trigram_vector(t)
+        parts[t] = idf * max(sparse_cosine(vector, w) for w in words)
+    return {"parts": parts, "score": sum(parts.values())}
+
+
+def ranking_from_scores(scores):
+    return sorted((i for i in range(len(scores)) if scores[i] > 0), key=lambda i: (-scores[i], i))
+
+
+def first_hit_rank(ranking, chunks, answer):
+    for position, i in enumerate(ranking, start=1):
+        if chunk_contains(chunks[i], answer):
+            return position
+    return None
+
+
+def retrieval_metrics(ranks, k):
+    n = len(ranks)
+    return {
+        "recall": sum(1 for r in ranks if r is not None and r <= k) / n,
+        "mrr": sum(1 / r for r in ranks if r is not None) / n,
+    }
+
+
+def assemble_prompt(chunks, order, budget_words, overhead_words):
+    used, kept, skipped = overhead_words, [], []
+    for i in order:
+        length = len(chunks[i].split())
+        if used + length <= budget_words:
+            kept.append(i)
+            used += length
+        else:
+            skipped.append(i)
+    return {"kept": kept, "skipped": skipped, "used": used}
+
+
+def lost_in_the_middle_order(ranked):
+    front, back = [], []
+    for position, item in enumerate(ranked):
+        (front if position % 2 == 0 else back).append(item)
+    return front + back[::-1]
+
+
+def rag_marginals(scores, token_probs):
+    doc_probs = softmax_probs(scores)
+    sequence = sum(p * math.prod(probs) for p, probs in zip(doc_probs, token_probs))
+    per_token = [sum(p * probs[i] for p, probs in zip(doc_probs, token_probs)) for i in range(len(token_probs[0]))]
+    return {"doc_probs": doc_probs, "sequence": sequence, "per_token": per_token, "token": math.prod(per_token)}
+
+
+def answer_tokens(text):
+    return [w for w in rag_words(text) if w not in _ARTICLES]
+
+
+def exact_match(prediction, reference):
+    return float(answer_tokens(prediction) == answer_tokens(reference))
+
+
+def token_f1(prediction, reference):
+    pred, ref = answer_tokens(prediction), answer_tokens(reference)
+    common = sum(min(pred.count(w), ref.count(w)) for w in set(pred))
+    if common == 0:
+        return {"precision": 0.0, "recall": 0.0, "f1": 0.0}
+    precision, recall = common / len(pred), common / len(ref)
+    return {"precision": precision, "recall": recall, "f1": 2 * precision * recall / (precision + recall)}
+
+
+def rag_example():
+    ex = RAG_EXAMPLE
+    doc = ex["document"]
+    plain = word_chunks(doc, ex["chunk_size"])
+    overlapped = word_chunks(doc, ex["chunk_size"], ex["overlap"])
+    sentences = sentence_chunks(doc, ex["sentence_budget"])
+    splits = {}
+    for name, chunks in (("fixed", plain), ("overlap", overlapped), ("sentence", sentences)):
+        splits[name] = {
+            "chunks": chunks,
+            "found": [any(chunk_contains(c, q["answer"]) for c in chunks) for q in ex["queries"]],
+        }
+    chunks = sentences
+    queries = []
+    for q in ex["queries"]:
+        lexical = bm25_rank(chunks, q["text"])
+        dense = trigram_rank(chunks, q["text"])
+        lex_rank, dense_rank = ranking_from_scores(lexical), ranking_from_scores(dense)
+        fused = reciprocal_rank_fusion([[str(i) for i in lex_rank], [str(i) for i in dense_rank]], k=ex["rrf_k"])
+        fused_rank = [int(i) for i in fused["ranking"]]
+        pool = fused_rank[:ex["rerank_pool"]]
+        rerank_parts = {i: soft_match_score(chunks, i, q["text"]) for i in pool}
+        rerank_scores = {i: part["score"] for i, part in rerank_parts.items()}
+        reranked = sorted(pool, key=lambda i: (-rerank_scores[i], i)) + fused_rank[ex["rerank_pool"]:]
+        gold = next((i for i, c in enumerate(chunks) if chunk_contains(c, q["answer"])), None)
+        queries.append({
+            "text": q["text"],
+            "answer": q["answer"],
+            "gold": gold,
+            "lexical": lexical,
+            "dense": dense,
+            "rankings": {"bm25": lex_rank, "trigram": dense_rank, "hybrid": fused_rank, "reranked": reranked},
+            "fused_scores": {int(i): s for i, s in fused["scores"].items()},
+            "rerank_scores": rerank_scores,
+            "rerank_parts": rerank_parts,
+            "ranks": {m: first_hit_rank(r, chunks, q["answer"]) for m, r in
+                      (("bm25", lex_rank), ("trigram", dense_rank), ("hybrid", fused_rank), ("reranked", reranked))},
+        })
+    metrics = {m: retrieval_metrics([q["ranks"][m] for q in queries], ex["k"]) for m in ("bm25", "trigram", "hybrid", "reranked")}
+    focus = queries[1]
+    top = focus["rankings"]["reranked"]
+    prompt = assemble_prompt(chunks, top, ex["budget_words"], ex["overhead_words"])
+    return {
+        "example": ex,
+        "splits": splits,
+        "chunks": chunks,
+        "queries": queries,
+        "metrics": metrics,
+        "focus": focus,
+        "prompt": prompt,
+        "middle": lost_in_the_middle_order(list(range(1, 6))),
+        "rag": rag_marginals(ex["rag"]["scores"], ex["rag"]["token_probs"]),
+        "answers": [{"text": a, "em": exact_match(a, ex["reference_answer"]), **token_f1(a, ex["reference_answer"])}
+                    for a in ex["answers"]],
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -13293,6 +13538,7 @@ def render(slug, render_template):
         "moe_example": moe_example,
         "flow_example": flow_example,
         "po_example": po_example,
+        "rag_example": rag_example,
         "pretraining_example": pretraining_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,
