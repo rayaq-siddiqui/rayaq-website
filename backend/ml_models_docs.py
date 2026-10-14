@@ -1118,7 +1118,7 @@ PAGES = [
         "sources": [
             "pytorch:torch/nn/functional.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "gpu-execution",
@@ -13370,6 +13370,26 @@ def ranking_from_scores(scores):
     return sorted((i for i in range(len(scores)) if scores[i] > 0), key=lambda i: (-scores[i], i))
 
 
+def phrase_span(text, phrase):
+    words = [" ".join(rag_words(w)) for w in text.split()]
+    target = rag_words(phrase)
+    for start in range(len(words) - len(target) + 1):
+        if words[start:start + len(target)] == target:
+            return [start, start + len(target)]
+    return None
+
+
+def chunk_word_ranges(n_words, size, overlap=0):
+    stride = size - overlap
+    ranges, start = [], 0
+    while True:
+        ranges.append([start, min(start + size, n_words)])
+        if start + size >= n_words:
+            break
+        start += stride
+    return ranges
+
+
 def first_hit_rank(ranking, chunks, answer):
     for position, i in enumerate(ranking, start=1):
         if chunk_contains(chunks[i], answer):
@@ -13440,6 +13460,12 @@ def rag_example():
             "chunks": chunks,
             "found": [any(chunk_contains(c, q["answer"]) for c in chunks) for q in ex["queries"]],
         }
+    n_words = len(doc.split())
+    splits["fixed"]["ranges"] = chunk_word_ranges(n_words, ex["chunk_size"])
+    splits["overlap"]["ranges"] = chunk_word_ranges(n_words, ex["chunk_size"], ex["overlap"])
+    starts = list(itertools.accumulate([0] + [len(c.split()) for c in sentences]))
+    splits["sentence"]["ranges"] = [list(r) for r in zip(starts, starts[1:])]
+    spans = [phrase_span(doc, q["answer"]) for q in ex["queries"]]
     chunks = sentences
     queries = []
     for q in ex["queries"]:
@@ -13473,6 +13499,8 @@ def rag_example():
     return {
         "example": ex,
         "splits": splits,
+        "n_words": n_words,
+        "spans": spans,
         "chunks": chunks,
         "queries": queries,
         "metrics": metrics,

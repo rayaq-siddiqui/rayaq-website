@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-14 (forty-second run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-88, the last being `preference-optimization`.
-The next page is `retrieval-augmented-generation` (queue item 89).
+fixed page format. Ready pages: queue items 1-89, the last being `retrieval-augmented-generation`.
+The next page is `checkpointing` (queue item 90).
 
 ## Pins
 
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (88 of 93 ready, all
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (89 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -261,7 +261,7 @@ Gaps:
 |---|---|
 | `5df6dce` `ml-models: add tested preference-optimization helpers` | Bradley–Terry MM fit and NLL, the KL-regularized optimum and a β sweep (proxy vs true reward), categorical KL, tabular DPO with its gradient, a unanimous pair under DPO and IPO, per-token KL rewards, GRPO advantages, the k3 estimator |
 | `8faca07` `ml-models: add the preference-optimization page` | The page, `ready`, queue ✓; the plain-text mentions in `reinforcement-learning` and `fine-tuning` now link to it |
-| (this commit) `docs: record the preference-optimization page in ml-models progress` | This section |
+| `71340ee` `docs: record the preference-optimization page in ml-models progress` | This section |
 
 Findings worth keeping:
 
@@ -378,8 +378,8 @@ Gaps:
 86. `mixture-of-experts` ✓
 87. `flow-matching` ✓
 88. `preference-optimization` ✓
-89. `retrieval-augmented-generation` ← next
-90. `checkpointing`
+89. `retrieval-augmented-generation` ✓
+90. `checkpointing` ← next
 91. `reproducibility`
 92. `state-space-models`
 93. `profiling`

@@ -1,0 +1,516 @@
+{% set ex = rag_example() %}
+{% set e = ex.example %}
+{% set lock = ex.queries[0] %}
+{% set focus = ex.focus %}
+{% set methods = [("bm25", "BM25"), ("trigram", "Trigram vectors"), ("hybrid", "Hybrid (RRF)"), ("reranked", "Hybrid + rerank")] %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(0.0 if x|abs < 0.5 * 10 ** (-n) else x)|replace("-", "−") }}{%- endmacro %}
+{% macro vec(v, n=2) -%}({% for x in v %}{{ f(x, n) }}{% if not loop.last %}, {% endif %}{% endfor %}){%- endmacro %}
+{% macro rank(r) -%}{{ r if r is not none else "missed" }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Retrieval-augmented generation</h1>
+  <p class="tagline">
+    A language model only knows what was in its training data, and it cannot say where an answer came from. Retrieval-augmented generation looks up passages at question time and puts them in the prompt.
+    This page builds the pipeline on one small manual: chunking, lexical, vector and hybrid retrieval, re-ranking, packing a prompt under a budget, the RAG paper's two ways to combine documents, and how to evaluate retrieval and generation separately. Every number is computed and every PyTorch link is pinned.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A <a href="/ml-models/decoder-only-llm">decoder-only model</a> stores what it learned in <a href="/ml-models/pretraining">pretraining</a> in its weights. That knowledge stops at a cutoff date, never included your private documents, and comes back without a source, so a confident wrong answer looks the same as a right one. Retraining or <a href="/ml-models/fine-tuning">fine-tuning</a> every time a document changes is slow and expensive, and it still does not give citations.
+</p>
+<p>
+  Retrieval-augmented generation (RAG) splits the job in two. A retriever finds the few passages in a corpus most likely to answer the question; a generator reads the question together with those passages and writes the answer. Updating knowledge becomes updating an index, and every answer can point at the passages it used. The cost is a second system that can fail on its own: if retrieval misses the passage, the generator cannot use it.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  It is an open-book exam. A student who has to answer from memory guesses when unsure; a student allowed to bring the textbook does better, but only if they can find the right page quickly, and only if they read the page instead of writing what they already believed. RAG's quality is the product of those two skills. Searching well is a <a href="/ml-models/similarity-search">similarity search</a> problem, and reading well is the generator's job; most of the engineering goes into the first.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 300" role="img" aria-labelledby="rag-pipeline-title rag-pipeline-desc">
+    <title id="rag-pipeline-title">The RAG pipeline, offline and per question</title>
+    <desc id="rag-pipeline-desc">Offline, documents are split into chunks, each chunk is encoded into a vector and a lexical index, and both are stored. Per question, the query is run against both indexes, the two rankings are fused, a re-ranker reorders the top candidates, the best chunks are packed into a prompt with the question, and the language model writes the answer. Retrieval metrics are measured after re-ranking against labelled relevant chunks; generation metrics are measured on the answer.</desc>
+    <g font-size="12">
+      <text x="10" y="20" class="d-muted">offline, when documents change</text>
+      <rect x="10" y="32" width="110" height="48" rx="6" class="d-box"></rect>
+      <text x="65" y="60" text-anchor="middle">documents</text>
+      <line x1="120" y1="56" x2="150" y2="56" class="d-line"></line>
+      <rect x="150" y="32" width="110" height="48" rx="6" class="d-box" style="fill: var(--jj-amber)" fill-opacity="0.18"></rect>
+      <text x="205" y="53" text-anchor="middle">chunk</text>
+      <text x="205" y="70" text-anchor="middle" class="d-muted">size, overlap</text>
+      <line x1="260" y1="56" x2="290" y2="56" class="d-line"></line>
+      <rect x="290" y="32" width="150" height="48" rx="6" class="d-box"></rect>
+      <text x="365" y="53" text-anchor="middle">encode + index</text>
+      <text x="365" y="70" text-anchor="middle" class="d-muted">vectors and BM25 terms</text>
+      <line x1="440" y1="56" x2="470" y2="56" class="d-line"></line>
+      <rect x="470" y="32" width="160" height="48" rx="6" class="d-box" style="fill: var(--jj-violet)" fill-opacity="0.18"></rect>
+      <text x="550" y="53" text-anchor="middle">vector index</text>
+      <text x="550" y="70" text-anchor="middle" class="d-muted">+ inverted index</text>
+      <path d="M 550 80 V 100 H 180 V 124" fill="none" class="d-line ml-dashed"></path>
+
+      <text x="10" y="118" class="d-muted">per question</text>
+      <rect x="10" y="124" width="90" height="48" rx="6" class="d-box"></rect>
+      <text x="55" y="152" text-anchor="middle">query</text>
+      <line x1="100" y1="148" x2="125" y2="148" class="d-line"></line>
+      <rect x="125" y="124" width="110" height="48" rx="6" class="d-box" style="fill: var(--jj-violet)" fill-opacity="0.18"></rect>
+      <text x="180" y="145" text-anchor="middle">retrieve</text>
+      <text x="180" y="162" text-anchor="middle" class="d-muted">dense + BM25</text>
+      <line x1="235" y1="148" x2="260" y2="148" class="d-line"></line>
+      <rect x="260" y="124" width="90" height="48" rx="6" class="d-box"></rect>
+      <text x="305" y="145" text-anchor="middle">fuse</text>
+      <text x="305" y="162" text-anchor="middle" class="d-muted">RRF</text>
+      <line x1="350" y1="148" x2="375" y2="148" class="d-line"></line>
+      <rect x="375" y="124" width="100" height="48" rx="6" class="d-box" style="fill: var(--jj-accent)" fill-opacity="0.18"></rect>
+      <text x="425" y="145" text-anchor="middle">re-rank</text>
+      <text x="425" y="162" text-anchor="middle" class="d-muted">top candidates</text>
+      <line x1="475" y1="148" x2="500" y2="148" class="d-line"></line>
+      <rect x="500" y="124" width="130" height="48" rx="6" class="d-box" style="fill: var(--jj-amber)" fill-opacity="0.18"></rect>
+      <text x="565" y="145" text-anchor="middle">assemble prompt</text>
+      <text x="565" y="162" text-anchor="middle" class="d-muted">budget, order</text>
+      <line x1="565" y1="172" x2="565" y2="200" class="d-line"></line>
+      <rect x="440" y="200" width="190" height="48" rx="6" class="d-box" style="fill: var(--jj-green)" fill-opacity="0.18"></rect>
+      <text x="535" y="221" text-anchor="middle">language model</text>
+      <text x="535" y="238" text-anchor="middle" class="d-muted">answer + citations</text>
+
+      <line x1="425" y1="172" x2="425" y2="262" class="d-line ml-dashed"></line>
+      <text x="300" y="280" text-anchor="middle" style="fill: var(--jj-red)">retrieval metrics: recall@k, MRR</text>
+      <line x1="535" y1="248" x2="535" y2="262" class="d-line ml-dashed"></line>
+      <text x="540" y="280" text-anchor="middle" style="fill: var(--jj-red)">answer metrics</text>
+    </g>
+  </svg>
+  <p class="ml-caption">Everything above the line is built once; everything below runs on each question. Measuring at the two dashed taps tells you which half failed.</p>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="chunking">Chunking</h3>
+
+<p>
+  Retrieval returns units, and the unit is the chunk. Chunks must be small enough that a vector or a term count can represent one topic and that several fit in the prompt, and large enough to hold a complete answer with its context. The common recipes:
+</p>
+<ul>
+  <li><strong>Fixed-size windows.</strong> Every n words or tokens. Simple and predictable, but a boundary can cut a sentence, or an answer, in half.</li>
+  <li><strong>Overlapping windows.</strong> Each window starts n − o words after the previous one, so any span up to o words long lies wholly inside some chunk. The cost is a bigger index and duplicate text when neighbouring chunks are both retrieved.</li>
+  <li><strong>Structure-aware splits.</strong> Pack whole sentences, paragraphs or sections up to a budget, so boundaries fall where the author put them. Headings and the document title are often prepended to each chunk so it still makes sense out of context.</li>
+</ul>
+<p>
+  The RAG paper reused the DPR index: Wikipedia split into disjoint 100-word passages, about 21 million of them. Chunk size is a hyperparameter to tune against retrieval metrics on your own questions, not a constant.
+</p>
+
+<h3 id="dense-and-hybrid-retrieval">Dense, lexical and hybrid retrieval</h3>
+
+<p>
+  A dense retriever is a <a href="/ml-models/two-tower-models">two-tower model</a>: a query encoder q(·) and a document encoder d(·) map text to vectors, and relevance is their inner product. The RAG paper uses DPR's BERT encoders and writes the retrieval distribution as
+</p>
+<p class="ml-formula">p<sub>η</sub>(z | x) ∝ exp(d(z)<sup>⊤</sup> q(x))</p>
+<p>
+  Document vectors are computed once and stored in a <a href="/ml-models/vector-indexes">vector index</a>, so a query costs one encoder pass plus an approximate maximum-inner-product search; with unit-length vectors this is cosine similarity. Dense retrieval matches meaning ("charging" finds "charged"), but it can miss rare exact strings such as part numbers, names and error codes, and it only knows what its training pairs taught it.
+</p>
+<p>
+  A lexical retriever, usually BM25, scores exact term overlap weighted by rarity (see <a href="/ml-models/similarity-search">similarity search</a>). It handles exact strings and needs no training, but it scores zero when the question and the passage use different words for the same thing. Hybrid retrieval runs both and merges the rankings. Their scores are on unrelated scales, so the simplest robust merge ignores scores and uses ranks, reciprocal rank fusion:
+</p>
+<p class="ml-formula">RRF(d) = Σ<sub>rankings r</sub> 1 / (k + rank<sub>r</sub>(d)), k = 60</p>
+
+<h3 id="re-ranking">Re-ranking</h3>
+
+<p>
+  First-stage retrievers encode query and document separately, which is what makes them fast and indexable. A re-ranker sees them together. A cross-encoder (monoBERT is the classic) feeds "[query] [SEP] [passage]" through one transformer and outputs a relevance score, so attention can compare every query token with every passage token. It is far more accurate and far too slow to run over the corpus, so it only reorders the first stage's top 20 to 100 candidates. ColBERT sits in between: it stores one vector per document token and scores with "MaxSim", the sum over query tokens of the best-matching document token similarity, which keeps documents indexable while matching at the token level.
+</p>
+<p>
+  Re-ranking cannot recover a passage the first stage missed. That is why first-stage recall is measured on its own: it is the ceiling for everything after it.
+</p>
+
+<h3 id="prompt-assembly">Prompt assembly</h3>
+
+<p>
+  The retrieved chunks, the question and the instructions must fit in the context window, with room left for the answer. Assembly decides how many chunks, in what order, and how they are marked up: each chunk with an id and source so the model can cite it, a clear separation between instructions and retrieved text, and an instruction to say so when the passages do not contain the answer.
+</p>
+<p>
+  More is not always better. Liu et al. found that models used information at the start or end of a long context much better than information in the middle ("lost in the middle"), and irrelevant passages distract the generator. Common responses are a small k after a good re-ranker, a relevance-score cutoff, and placing the strongest chunks at the edges of the context.
+</p>
+
+<h3 id="combining-documents">Combining documents: RAG-Sequence and RAG-Token</h3>
+
+<p>
+  Putting chunks in the prompt treats retrieval as a fixed preprocessing step. The RAG paper instead treats the retrieved document z as a latent variable and marginalizes over the top k. RAG-Sequence uses one document for the whole answer:
+</p>
+<p class="ml-formula">p(y | x) ≈ Σ<sub>z ∈ top-k</sub> p<sub>η</sub>(z | x) Π<sub>i</sub> p<sub>θ</sub>(y<sub>i</sub> | x, z, y<sub>&lt;i</sub>)</p>
+<p>RAG-Token may draw each token from a different document:</p>
+<p class="ml-formula">p(y | x) ≈ Π<sub>i</sub> Σ<sub>z ∈ top-k</sub> p<sub>η</sub>(z | x) p<sub>θ</sub>(y<sub>i</sub> | x, z, y<sub>&lt;i</sub>)</p>
+<p>
+  Both are differentiable in the retrieval scores, so the loss on the answer trains the query encoder without any labels saying which document was relevant. The paper keeps the document encoder, and so the index, fixed and fine-tunes the query encoder and the BART generator. Fusion-in-Decoder takes a third route: encode each (question, passage) pair separately and let the decoder attend over all of them at once.
+</p>
+
+<h3 id="evaluation">Evaluating retrieval and generation separately</h3>
+
+<p>
+  An end-to-end score says the system is wrong but not where. Evaluate each half against its own labels:
+</p>
+<ul>
+  <li><strong>Retrieval.</strong> For each question, label which chunks contain the answer. Recall@k is the fraction of questions with a relevant chunk in the top k; MRR averages 1/rank of the first relevant chunk (0 when none is found); nDCG handles graded relevance (see <a href="/ml-models/learning-to-rank">learning to rank</a>).</li>
+  <li><strong>Generation given good context.</strong> Feed the labelled relevant chunks directly and score the answer. If answers are wrong even then, the generator or prompt is the problem, not retrieval.</li>
+  <li><strong>Answer quality.</strong> For short answers, exact match and token F1 after normalization (lowercase, strip punctuation and articles), as in SQuAD. For long answers, human or model judges, and two separate questions: is it <em>correct</em>, and is it <em>faithful</em>, meaning every claim is supported by the retrieved chunks.</li>
+</ul>
+
+<h3 id="failure-modes">Failure modes</h3>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Failure</th><th>Where</th><th>Symptom</th><th>Typical fix</th></tr></thead>
+    <tbody>
+      <tr><td>Answer split across chunks</td><td>chunking</td><td>no single chunk contains it</td><td>overlap, structure-aware splits</td></tr>
+      <tr><td>Vocabulary mismatch</td><td>lexical retrieval</td><td>BM25 scores zero</td><td>dense or hybrid retrieval, query rewriting</td></tr>
+      <tr><td>Exact-string miss</td><td>dense retrieval</td><td>codes and names ranked low</td><td>hybrid retrieval</td></tr>
+      <tr><td>Relevant chunk ranked low</td><td>ranking</td><td>good recall@20, poor recall@3</td><td>re-ranker</td></tr>
+      <tr><td>Lost in the middle, distraction</td><td>assembly</td><td>right chunk in prompt, wrong answer</td><td>fewer chunks, ordering, cutoffs</td></tr>
+      <tr><td>Unfaithful answer</td><td>generation</td><td>claims not in any chunk</td><td>instructions, citations, faithfulness checks</td></tr>
+      <tr><td>Stale or conflicting sources</td><td>corpus</td><td>old and new versions both retrieved</td><td>dates and versions in metadata, filtering</td></tr>
+      <tr><td>Prompt injection</td><td>corpus</td><td>a retrieved page contains instructions the model follows</td><td>treat retrieved text as data, restrict tools and actions</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  Prompt injection deserves its own line: Greshake et al. showed that text planted in a web page or document a RAG system retrieves can steer the model, because the model sees retrieved text and instructions in the same context. Retrieval turns everyone who can write to your corpus into someone who can write to your prompt.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>F.normalize</code></td>
+        <td>(N, d) along dim −1</td>
+        <td>Scales each embedding to unit length, so an inner product is a cosine similarity.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 6096, 6130) }}">functional.py 6096-6130</a></td>
+      </tr>
+      <tr>
+        <td><code>torch.matmul</code></td>
+        <td>query (B, d) @ index (d, N) → (B, N)</td>
+        <td>Exact (brute-force) retrieval: every query against every chunk in one product.</td>
+        <td><a href="{{ src('torch/_torch_docs.py', 7908, 7990) }}">_torch_docs.py 7908-7990</a></td>
+      </tr>
+      <tr>
+        <td><code>torch.topk</code></td>
+        <td>scores (B, N), k → values, indices (B, k)</td>
+        <td>Picks the k best chunks per query without sorting all N.</td>
+        <td><a href="{{ src('torch/_torch_docs.py', 11877, 11921) }}">_torch_docs.py 11877-11921</a></td>
+      </tr>
+      <tr>
+        <td><code>torch.argsort</code></td>
+        <td>re-ranker scores (C,), <code>descending=True</code></td>
+        <td>The new order of the candidate chunks after re-ranking.</td>
+        <td><a href="{{ src('torch/_torch_docs.py', 10493, 10532) }}">_torch_docs.py 10493-10532</a></td>
+      </tr>
+      <tr>
+        <td><code>F.cosine_similarity</code></td>
+        <td>(B, d), (B, d) → (B,)</td>
+        <td>Pairwise cosine without normalizing first; handy for scoring labelled (query, chunk) pairs.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 5895, 5924) }}">functional.py 5895-5924</a></td>
+      </tr>
+      <tr>
+        <td><code>F.log_softmax</code></td>
+        <td>retrieval scores (K,)</td>
+        <td>log p<sub>η</sub>(z | x) over the top-k documents.</td>
+        <td><a href="{{ src('torch/nn/functional.py', 2293, 2324) }}">functional.py 2293-2324</a></td>
+      </tr>
+      <tr>
+        <td><code>torch.logsumexp</code></td>
+        <td>(K, T) over dim 0</td>
+        <td>The marginal over documents in log space, for RAG-Sequence and RAG-Token.</td>
+        <td><a href="{{ src('torch/_torch_docs.py', 6696, 6728) }}">_torch_docs.py 6696-6728</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>Why can a re-ranker be much more accurate than the retriever it follows, yet never improve recall@100 when it reorders only the top 100?</summary>
+  <p>A cross-encoder reads the query and passage together, so it can check that they are about the same thing instead of comparing two summaries made independently. But it only reorders the candidates it is given: a passage outside the first stage's top 100 is never scored. Reordering changes which relevant chunks reach the top few, which is what recall@3 and MRR measure, but the set in the top 100 stays the same.</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  The corpus is one invented product manual of {{ ex.n_words }} words, for the "Trailhead 2" headlamp, and five questions, each with the phrase that answers it. The retrievers are stand-ins small enough to compute by hand, labelled for what they are: BM25 is real BM25 (k<sub>1</sub> = 1.2, b = 0.75); the "vector" retriever uses character-trigram count vectors and cosine similarity, a crude substitute for a learned encoder that still matches "charging" with "charged"; the re-ranker is a hand-built scorer, not a trained cross-encoder. Questions drop a short stop-word list before scoring.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>#</th><th>Question</th><th>Answering phrase</th><th>Word positions (from 0)</th></tr></thead>
+    <tbody>
+      {% for q in e.queries %}
+      <tr><td>Q{{ loop.index }}</td><td>{{ q.text }}</td><td>"{{ q.answer }}"</td><td>{{ ex.spans[loop.index0][0] }}-{{ ex.spans[loop.index0][1] - 1 }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-chunking">Three ways to chunk the same manual</h3>
+  <p>
+    Fixed windows of {{ e.chunk_size }} words; the same windows with an overlap of {{ e.overlap }} words; and whole sentences packed up to {{ e.sentence_budget }} words. Each answer is a band in the figure: an answer is retrievable only if one chunk covers its whole band.
+  </p>
+</div>
+
+{% set x0 = 90 %}
+{% set w = 530 / ex.n_words %}
+{% set rows = [("fixed", "fixed " ~ e.chunk_size, 40), ("overlap", "overlap " ~ e.overlap, 96), ("sentence", "sentences", 170)] %}
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 240" role="img" aria-labelledby="rag-chunks-title rag-chunks-desc">
+    <title id="rag-chunks-title">Chunk boundaries against the five answer spans</title>
+    <desc id="rag-chunks-desc">The manual's {{ ex.n_words }} words run left to right. Shaded vertical bands mark where each of the five answers lies. Fixed {{ e.chunk_size }}-word chunks put a boundary at word {{ ex.splits.fixed.ranges[4][0] }}, inside the band for question 5, so no fixed chunk contains that answer, and the last fixed chunk holds a single word. Overlapping chunks, drawn on two staggered lines, and sentence chunks each contain every answer whole.</desc>
+    <g font-size="11">
+      {% for span in ex.spans %}
+      <rect x="{{ x0 + span[0] * w }}" y="22" width="{{ (span[1] - span[0]) * w }}" height="190" style="fill: var(--jj-amber)" fill-opacity="0.25"></rect>
+      <text x="{{ x0 + (span[0] + span[1]) / 2 * w }}" y="228" text-anchor="middle">Q{{ loop.index }}</text>
+      {% endfor %}
+      {% for name, label, y in rows %}
+      {% set split = ex.splits[name] %}
+      <text x="10" y="{{ y + 14 }}">{{ label }}</text>
+      {% for r in split.ranges %}
+      {% set yy = y + (18 if name == "overlap" and loop.index0 % 2 else 0) %}
+      <rect x="{{ x0 + r[0] * w }}" y="{{ yy }}" width="{{ (r[1] - r[0]) * w - 1 }}" height="16" rx="3" class="d-box" style="fill: var(--jj-violet)" fill-opacity="0.18"></rect>
+      {% if r[1] - r[0] >= 8 %}<text x="{{ x0 + (r[0] + r[1]) / 2 * w }}" y="{{ yy + 12 }}" text-anchor="middle" class="d-muted">{{ loop.index0 }}</text>{% endif %}
+      {% endfor %}
+      <text x="10" y="{{ y + 30 if name != 'overlap' else y + 48 }}" class="d-muted">{{ split.found|select|list|length }}/{{ split.found|length }} whole</text>
+      {% endfor %}
+    </g>
+  </svg>
+  <p class="ml-caption">Fixed windows cut Q5's answer, "{{ e.queries[4].answer }}", at word {{ ex.splits.fixed.ranges[4][0] }}. Overlap and sentence packing both keep it whole; sentence packing does it with fewer chunks ({{ ex.splits.sentence.chunks|length }} against {{ ex.splits.overlap.chunks|length }}).</p>
+</div>
+
+<p>The rest of the example uses the {{ ex.chunks|length }} sentence chunks:</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Chunk</th><th>Words</th><th>Text</th></tr></thead>
+    <tbody>
+      {% for c in ex.chunks %}
+      <tr><td>{{ loop.index0 }}</td><td>{{ c.split()|length }}</td><td>{{ c }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-retrieval">Lexical, vector and hybrid retrieval</h3>
+  <p>
+    The table gives each retriever's score for every chunk; a retriever returns only chunks with a positive score. The bold cell is the chunk that contains the answer.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Question</th><th>Retriever</th>{% for c in ex.chunks %}<th>{{ loop.index0 }}</th>{% endfor %}<th>Rank of answer</th></tr></thead>
+      <tbody>
+        {% for q in ex.queries %}
+        <tr>
+          <td rowspan="2">Q{{ loop.index }}</td>
+          <td>BM25</td>
+          {% for s in q.lexical %}<td>{% if loop.index0 == q.gold %}<strong>{{ f(s, 2) }}</strong>{% else %}{{ f(s, 2) }}{% endif %}</td>{% endfor %}
+          <td>{{ rank(q.ranks.bm25) }}</td>
+        </tr>
+        <tr>
+          <td>Trigram</td>
+          {% for s in q.dense %}<td>{% if loop.index0 == q.gold %}<strong>{{ f(s, 3) }}</strong>{% else %}{{ f(s, 3) }}{% endif %}</td>{% endfor %}
+          <td>{{ rank(q.ranks.trigram) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Q2, "{{ ex.queries[1].text }}", is vocabulary mismatch: the manual says "charged" and "charge", never "charging", so BM25 scores zero everywhere, while the trigram vectors share "#ch", "cha", "har", "arg" and rank chunk {{ ex.queries[1].gold }} first. Q5, "{{ ex.queries[4].text }}", defeats both: after stop words the question is just "swim", which shares no trigram with "submerged", and the only trigram retrieval, chunk {{ ex.queries[4].rankings.trigram[0] }}, comes from "swim" sharing "#sw" and "swi" with "switch". Answering it needs an encoder trained on enough text to know that swimming means being underwater.
+  </p>
+  <p>
+    Fusing with RRF, k = {{ e.rrf_k }}: for Q1, chunk {{ lock.rankings.hybrid[0] }} is ranked {{ lock.rankings.bm25.index(lock.rankings.hybrid[0]) + 1 }} by BM25 and {{ lock.rankings.trigram.index(lock.rankings.hybrid[0]) + 1 }} by trigram vectors, scoring 1/{{ e.rrf_k + lock.rankings.bm25.index(lock.rankings.hybrid[0]) + 1 }} + 1/{{ e.rrf_k + lock.rankings.trigram.index(lock.rankings.hybrid[0]) + 1 }} = {{ f(lock.fused_scores[lock.rankings.hybrid[0]], 5) }}; the answer chunk {{ lock.gold }} is ranked {{ lock.rankings.bm25.index(lock.gold) + 1 }} and {{ lock.rankings.trigram.index(lock.gold) + 1 }}, scoring {{ f(lock.fused_scores[lock.gold], 5) }}. Ranks 2 and 1 narrowly beat ranks 1 and 3, so the hybrid ranking puts the answer second: fusion rewards agreement, and here the trigram retriever's weak ranking pulls the answer down.
+  </p>
+
+  <h3 id="worked-rerank">Re-ranking the top {{ e.rerank_pool }}</h3>
+  <p>
+    The stand-in re-ranker scores a chunk by, for each query word, the trigram similarity of its best-matching word in the chunk, weighted by the query word's BM25 IDF, and sums. An exact match on a rare word ("lock" appears in one chunk) counts for much more than a partial match on a common one. It is a crude token-level matcher in the spirit of ColBERT's MaxSim, and it has the property that matters here: it looks at the query and chunk together, word by word.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Q1 chunk</th><th>RRF score</th>{% for t in lock.rerank_parts[lock.gold].parts %}<th>"{{ t }}"</th>{% endfor %}<th>Re-rank score</th></tr></thead>
+      <tbody>
+        {% for i in lock.rankings.hybrid %}
+        <tr><td>{{ i }}{% if i == lock.gold %} (answer){% endif %}</td><td>{{ f(lock.fused_scores[i], 5) }}</td>{% for t, v in lock.rerank_parts[i].parts.items() %}<td>{{ f(v, 3) }}</td>{% endfor %}<td>{{ f(lock.rerank_scores[i], 3) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Hybrid order {{ lock.rankings.hybrid|join(", ") }} becomes {{ lock.rankings.reranked|join(", ") }}: the answer moves from rank {{ lock.ranks.hybrid }} to rank {{ lock.ranks.reranked }}. For the other questions the answer was already first or never retrieved, and re-ranking cannot fix Q5, whose answer chunk was never a candidate.
+  </p>
+
+  <h3 id="worked-metrics">Retrieval metrics</h3>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Retriever</th>{% for q in ex.queries %}<th>Q{{ loop.index }} rank</th>{% endfor %}<th>Recall@{{ e.k }}</th><th>MRR</th></tr></thead>
+      <tbody>
+        {% for key, label in methods %}
+        <tr><td>{{ label }}</td>{% for q in ex.queries %}<td>{{ rank(q.ranks[key]) }}</td>{% endfor %}<td>{{ f(ex.metrics[key].recall, 2) }}</td><td>{{ f(ex.metrics[key].mrr, 3) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    MRR for the hybrid ranking is (1/{{ ex.queries[0].ranks.hybrid }} + {% for q in ex.queries[1:4] %}1/{{ q.ranks.hybrid }} + {% endfor %}0) / {{ ex.queries|length }} = {{ f(ex.metrics.hybrid.mrr, 3) }}. Recall@{{ e.k }} stops at {{ f(ex.metrics.reranked.recall, 1) }} for everything but BM25 because of Q5: no amount of fusion or re-ranking adds a chunk that no first-stage retriever returned.
+  </p>
+
+  <h3 id="worked-prompt">Packing the prompt</h3>
+  <p>
+    For Q2 the re-ranked order is {{ focus.rankings.reranked|join(", ") }}. The budget is {{ e.budget_words }} words, of which {{ e.overhead_words }} go to instructions and the question; chunks are added greedily in rank order and skipped when they do not fit.
+  </p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Chunk (rank order)</th><th>Words</th><th>Re-rank score</th><th>Decision</th></tr></thead>
+      <tbody>
+        {% for i in focus.rankings.reranked %}
+        <tr><td>{{ i }}</td><td>{{ ex.chunks[i].split()|length }}</td><td>{{ f(focus.rerank_scores[i], 3) }}</td><td>{{ "kept" if i in ex.prompt.kept else "skipped, does not fit" }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The prompt holds chunks {{ ex.prompt.kept|join(" and ") }} in {{ ex.prompt.used }} of {{ e.budget_words }} words. The answer chunk is in, but so is chunk {{ ex.prompt.kept[-1] }}, about the warranty, which only fitted because it is short: its score is {{ f(focus.rerank_scores[ex.prompt.kept[-1]], 3) }} against {{ f(focus.rerank_scores[ex.prompt.kept[0]], 3) }} for the top chunk. A minimum relevance score would have left that space empty, which is better than filling it with distraction.
+  </p>
+  <p>
+    To keep the best chunks out of the middle of a longer prompt, interleave them toward both ends: chunks ranked 1 to 5 are placed in the order {{ ex.middle|join(", ") }}, so ranks 1 and 2 sit at the edges and rank 5 in the centre.
+  </p>
+
+  <h3 id="worked-marginals">RAG-Sequence against RAG-Token</h3>
+  <p>
+    Two retrieved documents with scores {{ vec(e.rag.scores, 1) }} get p(z | x) = softmax = {{ vec(ex.rag.doc_probs, 3) }}. The answer has two tokens. Document 1 supports the first token strongly and the second weakly, p<sub>θ</sub> = {{ vec(e.rag.token_probs[0], 1) }}; document 2 the reverse, {{ vec(e.rag.token_probs[1], 1) }}.
+  </p>
+  <ul>
+    <li>RAG-Sequence: {{ f(ex.rag.doc_probs[0], 3) }} × {{ f(e.rag.token_probs[0][0], 1) }} × {{ f(e.rag.token_probs[0][1], 1) }} + {{ f(ex.rag.doc_probs[1], 3) }} × {{ f(e.rag.token_probs[1][0], 1) }} × {{ f(e.rag.token_probs[1][1], 1) }} = <strong>{{ f(ex.rag.sequence, 4) }}</strong>.</li>
+    <li>RAG-Token: per-token marginals {{ vec(ex.rag.per_token, 4) }}, product <strong>{{ f(ex.rag.token, 4) }}</strong>.</li>
+  </ul>
+  <p>
+    RAG-Token gives the answer {{ f(ex.rag.token / ex.rag.sequence, 2) }} times the probability, because it can take each token from the document that supports it. When an answer needs facts from two passages, that flexibility helps; when one passage should be used consistently, RAG-Sequence's single choice is the better assumption.
+  </p>
+
+  <h3 id="worked-answers">Scoring the answers</h3>
+  <p>The reference answer to Q2 is "{{ e.reference_answer }}". Three generated answers, scored after lowercasing and removing punctuation and articles:</p>
+  <div class="jj-table-wrap">
+    <table>
+      <thead><tr><th>Answer</th><th>Exact match</th><th>Precision</th><th>Recall</th><th>Token F1</th></tr></thead>
+      <tbody>
+        {% for a in ex.answers %}
+        <tr><td>"{{ a.text }}"</td><td>{{ f(a.em, 0) }}</td><td>{{ f(a.precision, 3) }}</td><td>{{ f(a.recall, 3) }}</td><td>{{ f(a.f1, 3) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    All three get exact match 0, including the two correct ones. Token F1 misleads here: the wrong answer "{{ ex.answers[2].text }}" scores {{ f(ex.answers[2].f1, 3) }}, above the correct "{{ ex.answers[1].text }}" at {{ f(ex.answers[1].f1, 3) }}, because "2" is not the token "two" and "hours" matches either way. Lexical answer metrics are cheap and useful for short factual answers across many questions, but they need normalization rules for your domain, and spot checks by a person or a judge model.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import torch
+import torch.nn.functional as F
+
+def build_index(encode, chunks):                      # encode: list[str] -> (N, d)
+    with torch.no_grad():
+        return F.normalize(encode(chunks), dim=-1)
+
+def dense_search(encode, index, queries, k=20):
+    with torch.no_grad():
+        q = F.normalize(encode(queries), dim=-1)      # (B, d)
+    scores = q @ index.T                              # cosine, (B, N)
+    return torch.topk(scores, k, dim=-1)              # values, indices: (B, k)
+
+def rrf(rankings, k=60):                              # rankings: lists of chunk ids
+    fused = {}
+    for ranking in rankings:
+        for rank, chunk_id in enumerate(ranking, start=1):
+            fused[chunk_id] = fused.get(chunk_id, 0.0) + 1 / (k + rank)
+    return sorted(fused, key=fused.get, reverse=True)
+
+def rerank(cross_encoder, query, chunks, candidates, keep=5):
+    with torch.no_grad():
+        scores = cross_encoder([(query, chunks[i]) for i in candidates])   # (C,)
+    order = torch.argsort(scores, descending=True)[:keep]
+    return [candidates[i] for i in order.tolist()], scores[order]
+
+def assemble(question, chunks, ids, count_tokens, budget, min_score=None, scores=None):
+    parts, used = [], count_tokens(question) + 200   # room for instructions
+    for j, i in enumerate(ids):
+        if min_score is not None and scores[j] &lt; min_score:
+            break
+        block = f"[{i}] {chunks[i]}"
+        if used + count_tokens(block) &lt;= budget:
+            parts.append(block)
+            used += count_tokens(block)
+    context = "\n\n".join(parts)
+    return ("Answer using only the numbered passages and cite them as [n]. "
+            "If they do not contain the answer, say so.\n\n"
+            f"Passages:\n{context}\n\nQuestion: {question}\nAnswer:")
+
+def rag_log_likelihoods(doc_scores, token_logp):     # (K,), (K, T)
+    log_pz = F.log_softmax(doc_scores, dim=-1)
+    sequence = torch.logsumexp(log_pz + token_logp.sum(-1), dim=0)
+    token = torch.logsumexp(log_pz[:, None] + token_logp, dim=0).sum()
+    return sequence, token</code></pre>
+
+<p>
+  Brute-force <code>q @ index.T</code> is exact, and its cost grows linearly with the corpus; once that is too slow, use an approximate index such as HNSW or IVF-PQ from the <a href="/ml-models/vector-indexes">vector indexes</a> page, and measure recall against the exact search. Use the same encoder, normalization and text preprocessing for queries and documents, and re-embed the whole corpus when the encoder changes: vectors from two models are not comparable. Store each chunk's source, position and version with its vector so answers can cite and filter. Build the evaluation set early, a few hundred real questions with labelled relevant chunks, and tune chunk size, k, the fusion and the re-ranker against recall@k and MRR before touching the prompt.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Choice</th><th>Gains</th><th>Costs</th></tr></thead>
+    <tbody>
+      <tr><td>Smaller chunks</td><td>precise matches, more chunks fit in the prompt</td><td>answers and context split; bigger index</td></tr>
+      <tr><td>Overlap</td><td>answers near boundaries survive</td><td>index grows by about size / (size − overlap); duplicate text in the prompt</td></tr>
+      <tr><td>Dense only</td><td>paraphrase and meaning</td><td>exact strings, domain shift; needs a trained encoder</td></tr>
+      <tr><td>BM25 only</td><td>exact strings, no training, transparent</td><td>vocabulary mismatch</td></tr>
+      <tr><td>Hybrid + RRF</td><td>robust, no score calibration</td><td>two indexes; k to choose</td></tr>
+      <tr><td>Cross-encoder re-ranker</td><td>much better top-of-list precision</td><td>one model pass per candidate per query; adds latency</td></tr>
+      <tr><td>Larger k in the prompt</td><td>higher recall reaches the generator</td><td>cost, latency, distraction, lost in the middle</td></tr>
+      <tr><td>RAG versus fine-tuning</td><td>fresh, citable, per-user knowledge without retraining</td><td>retrieval can fail; a second system to run. Fine-tuning teaches style and skills, not reliable facts</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>Answers are often wrong. Retrieval recall@5 is 0.95, and feeding the labelled relevant chunks directly gives mostly right answers. Where do you look?</summary>
+  <p>Between retrieval and generation: prompt assembly. Recall says a relevant chunk is usually in the top 5, and the generator answers well when given it, so check what actually reaches the prompt: whether the chunk is cut by the budget, buried among distractors in the middle, or outranked by a near-duplicate or outdated chunk. Re-ranking, a score cutoff and ordering are the levers.</p>
+</details>
+
+<details class="ml-quiz">
+  <summary>Why does RRF use ranks instead of adding the BM25 and cosine scores?</summary>
+  <p>The scores live on unrelated scales: BM25 is unbounded and grows with query length and term rarity, while cosine is between −1 and 1 and bunched together for a given encoder. Adding them lets one retriever dominate depending on the query. Ranks are on the same scale for every retriever, and the constant k = 60 flattens the curve so that a single first place does not outweigh consistently good ranks elsewhere.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<p>
+  The dense retriever is a <a href="/ml-models/two-tower-models">two-tower model</a> served from a <a href="/ml-models/vector-indexes">vector index</a>; BM25 and hybrid fusion are developed on <a href="/ml-models/similarity-search">similarity search</a>, and recall, MRR and nDCG on <a href="/ml-models/learning-to-rank">learning to rank</a>. The generator is a <a href="/ml-models/decoder-only-llm">decoder-only model</a>, and the alternative way to add knowledge is <a href="/ml-models/fine-tuning">fine-tuning</a>. RAG's marginal over documents is a softmax-weighted mixture, computed in log space with the log-softmax and logsumexp used on the <a href="/ml-models/loss-functions">loss functions</a> page.
+</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Lewis et al. <em>Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks.</em> NeurIPS 2020. <a href="https://arxiv.org/abs/2005.11401">arXiv:2005.11401</a></li>
+  <li>Karpukhin et al. <em>Dense Passage Retrieval for Open-Domain Question Answering.</em> EMNLP 2020. <a href="https://arxiv.org/abs/2004.04906">arXiv:2004.04906</a></li>
+  <li>Guu et al. <em>REALM: Retrieval-Augmented Language Model Pre-Training.</em> ICML 2020. <a href="https://arxiv.org/abs/2002.08909">arXiv:2002.08909</a></li>
+  <li>Izacard and Grave. <em>Leveraging Passage Retrieval with Generative Models for Open Domain Question Answering.</em> EACL 2021. <a href="https://arxiv.org/abs/2007.01282">arXiv:2007.01282</a></li>
+  <li>Nogueira and Cho. <em>Passage Re-ranking with BERT.</em> 2019. <a href="https://arxiv.org/abs/1901.04085">arXiv:1901.04085</a></li>
+  <li>Khattab and Zaharia. <em>ColBERT: Efficient and Effective Passage Search via Contextualized Late Interaction over BERT.</em> SIGIR 2020. <a href="https://arxiv.org/abs/2004.12832">arXiv:2004.12832</a></li>
+  <li>Cormack, Clarke and Büttcher. <em>Reciprocal Rank Fusion Outperforms Condorcet and Individual Rank Learning Methods.</em> SIGIR 2009. <a href="https://doi.org/10.1145/1571941.1572114">doi:10.1145/1571941.1572114</a></li>
+  <li>Robertson and Zaragoza. <em>The Probabilistic Relevance Framework: BM25 and Beyond.</em> Foundations and Trends in IR 2009. <a href="https://doi.org/10.1561/1500000019">doi:10.1561/1500000019</a></li>
+  <li>Rajpurkar et al. <em>SQuAD: 100,000+ Questions for Machine Comprehension of Text.</em> EMNLP 2016. <a href="https://arxiv.org/abs/1606.05250">arXiv:1606.05250</a></li>
+  <li>Liu et al. <em>Lost in the Middle: How Language Models Use Long Contexts.</em> TACL 2024. <a href="https://arxiv.org/abs/2307.03172">arXiv:2307.03172</a></li>
+  <li>Greshake et al. <em>Not What You've Signed Up For: Compromising Real-World LLM-Integrated Applications with Indirect Prompt Injection.</em> 2023. <a href="https://arxiv.org/abs/2302.12173">arXiv:2302.12173</a></li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/nn/functional.py', 6096, 6130) }}"><code>F.normalize</code></a>, <a href="{{ src('torch/_torch_docs.py', 7908, 7990) }}"><code>torch.matmul</code></a>, <a href="{{ src('torch/_torch_docs.py', 11877, 11921) }}"><code>torch.topk</code></a>, <a href="{{ src('torch/_torch_docs.py', 10493, 10532) }}"><code>torch.argsort</code></a>, <a href="{{ src('torch/nn/functional.py', 5895, 5924) }}"><code>F.cosine_similarity</code></a>, <a href="{{ src('torch/nn/functional.py', 2293, 2324) }}"><code>F.log_softmax</code></a>, <a href="{{ src('torch/_torch_docs.py', 6696, 6728) }}"><code>torch.logsumexp</code></a>.</li>
+</ul>

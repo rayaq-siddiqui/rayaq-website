@@ -5448,3 +5448,17 @@ def test_rag_exact_match_and_token_f1():
     assert ml_models_docs.token_f1("blue", "two hours")["f1"] == 0.0
     f = ml_models_docs.token_f1("two two hours", "two hours")
     assert f["precision"] == pytest.approx(2 / 3) and f["recall"] == 1.0
+
+
+def test_rag_word_ranges_and_answer_spans_match_the_chunks():
+    ex = ml_models_docs.rag_example()
+    words = ex["example"]["document"].split()
+    assert ex["n_words"] == len(words)
+    for name, split in ex["splits"].items():
+        assert [" ".join(words[a:b]) for a, b in split["ranges"]] == split["chunks"]
+        for span, found in zip(ex["spans"], split["found"]):
+            assert found == any(a <= span[0] and span[1] <= b for a, b in split["ranges"])
+    for span, q in zip(ex["spans"], ex["example"]["queries"]):
+        assert ml_models_docs.rag_words(" ".join(words[span[0]:span[1]])) == ml_models_docs.rag_words(q["answer"])
+    assert ex["splits"]["fixed"]["ranges"][-1] == [120, 121]
+    assert ml_models_docs.phrase_span("a b c", "d") is None
