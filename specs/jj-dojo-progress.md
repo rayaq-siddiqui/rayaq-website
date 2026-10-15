@@ -3,13 +3,13 @@
 Running log for the weekly jj-dojo maintenance Routine. Read this first, update it last.
 The contract is `specs/jj-dojo.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-08 (seventh run, first weekly maintenance run). **The build is complete:** all nine §5 pages are
+**Last updated:** 2026-10-15 (eighth run, weekly maintenance). **The build is complete:** all nine §5 pages are
 ready and every §10 criterion is met. From here the Routine runs weekly in maintenance mode only.
 
 ## Upstream pin
 
-`jj-vcs/jj-dojo@67c5c1f1223f1f077e86511a30d6979b52863501` (committed 2026-10-06), analyzed
-2026-10-07, re-checked 2026-10-08. Held in `jj_dojo_docs.UPSTREAM`.
+`jj-vcs/jj-dojo@5fecc7aef52a54ff575ac9b6d999443bffc94f2a` (committed 2026-10-12), analyzed
+2026-10-15. `package.json` version still 0.0.1. Held in `jj_dojo_docs.UPSTREAM`.
 
 ## §10 acceptance criteria
 
@@ -25,7 +25,20 @@ ready and every §10 criterion is met. From here the Routine runs weekly in main
 - [x] Mobile at 390px: no horizontal page scroll on `/jj-dojo` and every ready page (checked in
       headless Chromium this run).
 - [x] The Routine has run in maintenance mode (second to fourth runs: no upstream change;
-      fifth run: pin bumped; sixth and seventh runs: no upstream change). It now runs weekly.
+      fifth and eighth runs: pin bumped; sixth and seventh runs: no upstream change). It now runs weekly.
+
+## Eighth run (2026-10-15): maintenance
+
+| Commit | What |
+|---|---|
+| `948323c` | Pin bump `67c5c1f` → `5fecc7a`. Upstream turned `//` comments into `/** */` doc comments across 27 files, so every shifted link on `activation`, `graph-layout`, `graph-protocol`, `graph-webview`, `merge-conflicts` and `utils` was re-anchored (difflib line map, unmapped endpoints checked by hand). `graph-webview` also covers the split chip passing hover to both halves and empty chips rendering nothing |
+| `b352ebf` | New upstream code, none of it wired into activation, so it goes on `roadmap` (deviation below): §3 rewritten around the `Client` interface and `SubprocessClient` (`snapshotWithoutIntegrating`, `getCommits`, the template, display IDs, divergence, six integration tests); `//src/api` commit types; new §4 for the bare `OpHeadWatcher`, `NetworkReconnectWatcher` and `Telemetry` interfaces; watcher §5 updated (relative paths, `realpath`, 20 tests). Index repository map and status rows; `build-and-test` gains the `newRepo` helper and the `//src/client` test target |
+
+Moved from planned: JJ PubSub is now *in progress* (the `OpHeadWatcher` interface, no
+implementation); the client layer has a real `SubprocessClient`, still unwired. Not in the plan
+but now on `roadmap`: `NetworkReconnectWatcher` and `Telemetry` interfaces. Suite green (1034
+tests across all sections); smoke test and pinned-link check pass; 390 px check clean on all
+ten changed pages.
 
 ## Seventh run (2026-10-08): maintenance
 
@@ -61,29 +74,15 @@ dependency. None of it is wired into activation, so no existing page's claims ch
 the rows above. Mobile check (390 px, headless Chromium): no page overflow on `/jj-dojo` or
 `graph-webview`.
 
-## Fourth run (2026-10-05)
+## Second to fourth runs (2026-10-03 to 10-05)
 
 | Commit | What |
 |---|---|
-| `7c46312` | `merge-conflicts` page: marker grammar, `parser_test.ts`/`getChangeId` vector tables, types, tracker, decorations and the third-side colour, CodeLens, resolver and commands, mapping to `/jj/conflicts`; one data-flow SVG |
+| `1f2a888` | `graph-protocol` page: both RPC interfaces, transport, handshake sequence diagram, entry points, every wire type |
+| `6d109d3` | `activation` page: `package.json`, `activate`/`deactivate`, registration order, `Disposable` tree, logging, errors; activation SVG |
+| `7c46312` | `merge-conflicts` page: marker grammar, parser vectors, tracker, decorations, CodeLens, resolver; data-flow SVG |
 
-Maintenance: upstream `HEAD` still at `978c25d`, so the pin stayed.
-
-## Third run (2026-10-04)
-
-| Commit | What |
-|---|---|
-| `6d109d3` | `activation` page: `package.json` field by field, `activate`/`deactivate`, `ui.ts` registration order, the `Disposable` tree, logging, `JjError` and the error helpers; one activation-sequence SVG |
-
-Maintenance: upstream `HEAD` still at `978c25d`, so the pin stayed.
-
-## Second run (2026-10-03)
-
-| Commit | What |
-|---|---|
-| `1f2a888` | `graph-protocol` page: both RPC interfaces, the transport, the handshake with a sequence diagram, host and webview entry points, every wire type field by field |
-
-Maintenance: upstream `HEAD` still at `978c25d`, so the pin stayed.
+Maintenance: upstream `HEAD` stayed at `978c25d` on all three runs.
 
 The type tables on `graph-protocol` were generated from `api/types.ts` by a scratch parser that
 fails if any field lacks a description. Regenerate them that way when the types change.
@@ -132,10 +131,10 @@ into activation, propose a page for it here first.
   says so in its "Lanes and edges" section and uses a four-parent merge as the example.
 - **"How ranges are merged" (§8 item 5).** `RangeManager` never merges ranges. It only
   appends and checks for collisions. The page describes that instead.
-- **New modules go on `roadmap`, not new pages.** `src/client/` (one `execFile` helper) and
-  `src/file_system_watcher/` (`FileSystemWatcher` interface, `LocalFileSystemWatcher` over
-  `@parcel/watcher`, its test) arrived with `67c5c1f` and are the first code of the planned client
-  and API layers. Proposal, recorded as a deliberate addition: `roadmap` must also cover what each
+- **New modules go on `roadmap`, not new pages.** `src/client/` (now `SubprocessClient`, since
+  `5fecc7a`), `src/api/`, `src/file_system_watcher/` and the `op_head_watcher`,
+  `network_reconnect_watcher` and `telemetry` interfaces are code of the planned layers that
+  activation does not reach. Proposal, recorded as a deliberate addition: `roadmap` must also cover what each
   module does today, that neither is wired into activation, and its tests; sources
   `src/client/*`, `src/file_system_watcher/*`. They get their own pages only once they are wired in.
 - **`graph-webview` defers tiles, glyphs and lines to `graph-layout`.** Those components are
@@ -175,7 +174,11 @@ into activation, propose a page for it here first.
 - **"Minimap" is the overview ruler.** Upstream's decorator test says minimap; the code sets
   only `overviewRulerColor`/`overviewRulerLane`. The page uses the accurate term and notes it.
 - **The graph has no real data yet.** `createFakeWebviewState` sends one hard-coded commit.
-  The pages say so plainly. Revisit once the subprocess client lands upstream.
+  `SubprocessClient` landed in `5fecc7a` but nothing calls it. Revisit once it is wired in.
+- **Two commit types.** `src/api` defines its own `Commit`, separate from the webview's
+  `api/types.ts` one; nothing converts between them yet. On `roadmap#gaps`.
+- **1 MiB output buffer.** The subprocess helper keeps `execFile`'s default `maxBuffer`; upstream
+  now acknowledges it in a comment. Large logs would fail. On `roadmap#gaps`.
 - **Context-menu items are defined nowhere in the repo (`graph-webview`).** Rows, chips and top-bar
   split buttons send contexts with origins such as `commitRow` and `commitRowMultiSelected`, but
   `package.json` has no `webview/context` menu contribution at this pin and nothing else reads those
@@ -189,7 +192,8 @@ into activation, propose a page for it here first.
 - **No CSP in the webview HTML.** `getHtmlForWebview` sets no Content-Security-Policy meta tag. The
   page states the fact without judging it.
 - **`@parcel/watcher` loose ends.** The `vsix` target has a TODO about packaging the native module,
-  and `LocalFileSystemWatcher` subscribes without an ignore list. Both are now on `roadmap#gaps`.
+  and `LocalFileSystemWatcher` subscribes without an ignore list. Both are on `roadmap#gaps`.
+  The earlier symlink gap is resolved: since `5fecc7a` the watcher `realpath`s its root.
 - **`//:test` does not exist (`build-and-test`).** The spec's "Must cover" names a `//:test`
   target. There is none at this pin: `npm test` runs `bazel test //...` over ten `:tests` targets.
   The page describes what exists.
