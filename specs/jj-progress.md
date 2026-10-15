@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-14 (fifty-eighth run): bumped the pin `1776665..9031d0a` (0.46.0). **The
+**Last updated:** 2026-10-15 (fifty-ninth run): bumped the pin `9031d0a..df92b83` (0.46.0). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@9031d0a1669a262af10f95497a458f0084b28fbb` (committed 2026-10-14, version
-0.46.0), analyzed 2026-10-14. Held in `jj_docs.UPSTREAM`. Previous pin: `1776665`.
+`jj-vcs/jj@df92b83d7d1141cd51aabf0dd744bb365d62ae3b` (committed 2026-10-15, version
+0.46.0), analyzed 2026-10-15. Held in `jj_docs.UPSTREAM`. Previous pin: `9031d0a`.
 
 ## §10 acceptance criteria
 
@@ -31,22 +31,23 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to fifty-eighth runs: pin bumped).
+      run: pin bumped; fiftieth to fifty-ninth runs: pin bumped).
 
-## Fifty-eighth run (2026-10-14)
+## Fifty-ninth run (2026-10-15)
 
-- `ca92ab5` maintenance `1776665..9031d0a` (12 commits). The concurrent diff walk is now the only one,
-  built on the new `core/src/tree_walk.rs` (`OrderedTreeWalk`, `TreeWalkQueue`, `PrioritizedFutures`);
-  `trees` §5 rewritten, `TreeDiffIterator` gone. Templates: `contained_in()` takes a `Stringify` and a
-  top-level `revset()` function exists; no page covers the template language, so ranges only.
-  Registry and protos unchanged. Link check: 121 pages, 5,505 links, 0 bad. 0px overflow at 390px.
+- `148c9e1` maintenance `9031d0a..df92b83`. Tree reads are now concurrent streams
+  (`entries_stream_matching`, `conflicts_stream_matching`, subtrees read at once, yielded in path
+  order): file list/search/show/chmod/delete, resolve, status and trees updated; `file search` drops
+  its "not concurrent" warning. `git fetch` fetches into a private `refs/jj/remote-*` namespace
+  (git-fetch/import/push/remote). `MergedTreeBuilder` resolves conflicted overrides up front (trees).
+  The op store writes `head_ids` sorted and map fields as `BTreeMap` (protobufs). Registry line
+  numbers only; protos unchanged. Link check: 121 pages, 5,521 links, 0 bad. 390px OK.
 
-## Fifty-sixth and fifty-seventh runs (2026-10-12 to 2026-10-13)
+## Fifty-sixth to fifty-eighth runs (2026-10-12 to 2026-10-14)
 
-- `ac97ee5` `0558176..86b7e2e`: eleven modules moved from `lib/src` to `core/src`; `git-fetch`
-  `--refmap=` and stale-ref pruning; the old `:` revset operator left the grammar.
-- `970fe53` `86b7e2e..1776665`: `git.sign-on-push` signs as its own operation; `MergedTreeBuilder`
-  `set_or_remove` returns `ConflictArityMismatchError`; copy sources resolve asynchronously.
+- `ac97ee5` `0558176..86b7e2e`: eleven modules moved to `core/src`; `git-fetch` `--refmap=`.
+  `970fe53` `86b7e2e..1776665`: `git.sign-on-push`, `ConflictArityMismatchError`.
+  `ca92ab5` `1776665..9031d0a`: concurrent diff walk on `core/src/tree_walk.rs`; `trees` §5 rewritten.
 
 ## Fifty-third to fifty-fifth runs (2026-10-09 to 2026-10-11)
 
@@ -128,11 +129,12 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
 
 ## Open gaps / questions for the owner
 
+- **`tree_builder` fix in `df92b83`.** Upstream fixed a `TreeBuilder` bug in this range; no page
+  describes that code path at that depth, so only ranges moved.
 - **`jj util diff --tool`.** `show_diff_bytes` has a TODO and prints nothing for a tool format; the
   page says so rather than describing tool output.
 - **`jj debug object` help.** The enum's doc comment, "Show information about an operation and its
   view", covers commits, files, symlinks and trees too; the page quotes it as written.
-
 - **This Routine fires hourly, not daily.** On 2026-10-05/06 roughly eighteen firings of this
   "daily" Routine arrived about an hour apart in one session. Worth checking its schedule.
 - **`workspace_store/` location in spec §5.** The spec lists `workspace_store/` directly under `.jj/`,
