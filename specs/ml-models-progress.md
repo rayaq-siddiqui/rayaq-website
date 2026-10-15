@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-15 (forty-third run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-92, the last being `state-space-models`.
-The next page is `profiling` (queue item 93), the last in the queue.
+fixed page format. Every queue item is ready (1-93, the last being `profiling`). The queue
+is empty, so the next run is the first weekly audit (spec §8.1).
 
 ## Pins
 
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (92 of 93 ready, all
+- [x] Every §5 page is ready and meets its "Must cover" column and §6 (93 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -84,7 +84,7 @@ None yet. Record each script here as script · command · output · seed · libr
 ### PyTorch v2.14.1
 
 Ranges already cited by built pages live in their templates (and in `git log -p` on this
-file); this list keeps only what queued pages still need.
+file); this list keeps ranges checked but not yet linked, for audits and new §5 rows.
 
 - `torch/nn/utils/clip_grad.py`: `clip_grad_norm_` starts at 185.
 - `torch/nn/attention/bias.py`: `CausalBias` 86-306, `causal_upper_left`/`causal_lower_right`
@@ -140,12 +140,13 @@ Paths are under `sklearn/`.
 - `transformer` uses the v1 section layout and is exempt from the §6 order test until its
   retrofit (queue item 18).
 
-## First to forty-first runs (2026-10-08 to 2026-10-14) — condensed
+## First to forty-second runs (2026-10-08 to 2026-10-14) — condensed
 
 Runs 1-3 wrote the spec (v1, then v2), the registry, `LEARNING_PATH`, the §6 and queue tests,
 `check_mobile.js` and the Routine. Every run since adds, per page, a tested-helpers commit, a
 page commit (page, `ready`, queue ✓) and a `docs:` commit, building queue items 1-84 in order
-(three per run from run 28 to run 41, which built pca, mixture-of-experts and flow-matching). `6f0803f` fixed 13 templates that read a missing `pins.X.version` key.
+(three per run from run 28 to run 42, which built preference-optimization,
+retrieval-augmented-generation and checkpointing). `6f0803f` fixed 13 templates that read a missing `pins.X.version` key.
 Pins never moved. The ranges each page links live in its template (grep `src(`, `skl(`,
 `xgb(`); `git log -p` on this file has every old commit table, range list and run detail.
 
@@ -173,6 +174,10 @@ Findings worth keeping:
 - PCA's float `n_components` keeps the smallest k whose cumulative ratio is strictly above t
   (`searchsorted(..., side="right") + 1`). Mixtral 8x7B counts 46.70B total, 12.88B active.
   On ±1 data one flow-matching Euler step sends every sample to the data mean.
+- Tabular DPO lands on the closed-form optimum π_ref·exp(r/β)/Z to 1.5e-6; on a unanimous
+  pair DPO's margin keeps growing while IPO settles at 1/(2τ). A full checkpoint resume
+  replays steps bit for bit, and forgetting any one piece (scheduler, optimizer, RNG, data
+  position) gives a different run, often with a lower loss. Young's T* = √(2CM).
 - The CLIP logit gradient is (P_row + P_colᵀ − 2I)/(2N). `cross_entropy` ends at 3569 and
   `F.scaled_dot_product_attention` is 6367-6540 at the PyTorch pin.
 
@@ -181,6 +186,10 @@ Open gaps from these runs:
 - Every paper reference so far was cited from memory (arxiv.org is unreachable through the
   proxy); pre-arXiv papers and the GPT-2 report have no link. Each page's references list
   is the full set to re-check once arxiv is reachable.
+- Run 42's invented examples are labelled on their pages: the preference counts and "true"
+  reward, the RAG manual and its trigram/soft-match stand-ins for trained encoders, and the
+  checkpointing failure rate, save times and 7B size. KTO is prose only (exact loss not
+  checked); selective activation checkpointing and stateful data loaders are not covered.
 - Ideas no pin implements follow their papers: WordPiece training, BM25, GPTQ, LLM.int8(), RL,
   IVF/PQ/HNSW, GANs, R1, FID, ARIMA/STL/MASE, sequence packing, serving systems, ECE,
   propensity weighting, DiD, uplift, GNNs, diffusion samplers, MinHash, scaling-law fits, ALS,
@@ -192,8 +201,8 @@ Open gaps from these runs:
   remark was confirmed only through secondary quotes.
 - The end lines of the HistGradientBoosting regressor `__init__`, `_incremental_fit_estimator`
   and `Lasso` were inferred.
-- Unready pages named in plain text until they are ready: `contrastive-learning`,
-  `speculative-decoding` and `profiling` (run 37 pages).
+- Topics named in plain text with no page: `contrastive-learning` and `speculative-decoding`
+  (run 37 pages); candidates for §5 rows in an audit.
 - No pin implements a UNet, LoRA/PEFT, NF4, an ANN index or logQ correction; the two-tower
   serving numbers are an invented, labelled configuration.
 - PSI's 0.1/0.25 thresholds are an industry convention; Whisper, EnCodec, Flamingo and LLaVA
@@ -201,86 +210,6 @@ Open gaps from these runs:
 - UMAP is in no pin. Since run 41 the PyTorch wheel download is blocked, so page snippets
   are checked against the stdlib helpers (and NumPy mirrors), not run under torch.
 - Page commits exceed 400 lines because each template is one file.
-
-## Forty-second run (2026-10-14) — preference-optimization, retrieval-augmented-generation, checkpointing
-
-| Commit | What |
-|---|---|
-| `5df6dce` `ml-models: add tested preference-optimization helpers` | Bradley–Terry MM fit and NLL, the KL-regularized optimum and a β sweep (proxy vs true reward), categorical KL, tabular DPO with its gradient, a unanimous pair under DPO and IPO, per-token KL rewards, GRPO advantages, the k3 estimator |
-| `8faca07` `ml-models: add the preference-optimization page` | The page, `ready`, queue ✓; the plain-text mentions in `reinforcement-learning` and `fine-tuning` now link to it |
-| `71340ee` `docs: record the preference-optimization page in ml-models progress` | The preference-optimization record |
-| `8e4d2c4` `ml-models: add tested retrieval-augmented-generation helpers` | Word and sentence chunking, BM25 and character-trigram retrieval, RRF, an IDF-weighted soft-match re-ranker, recall@k and MRR, greedy prompt packing, a lost-in-the-middle ordering, RAG-Sequence/RAG-Token marginals, exact match and token F1 |
-| `017a488` `ml-models: add the retrieval-augmented-generation page` | The page, word-range and answer-span helpers for its chunk figure, `ready`, queue ✓; the `learning-to-rank` tagline links to it |
-| `43693ae` `docs: record the retrieval-augmented-generation page in ml-models progress` | The RAG record |
-| `955b292` `ml-models: add tested checkpointing helpers` | A seeded Adam run with warmup-cosine, `seed + epoch` shuffling and RNG jitter; save and resume with each piece forgotten; checkpoint sizes; Young's interval and waste; `checkpoint_sequential` memory; a reshard read plan; a `pickletools` GLOBAL scan with a `weights_only`-style verdict |
-| `cec3a22` `ml-models: add the checkpointing page` | The page, `ready`, queue ✓; activation-checkpointing mentions in `distributed-training`, `backpropagation`, `gradient-accumulation` and `computation-graphs` now link to it |
-| (this commit) `docs: record the forty-second ml-models run` | Checkpointing record, pin check; condenses run 41 |
-
-Findings worth keeping:
-
-- On one prompt with four responses, tabular DPO from π_ref (lr 0.5, 1000 steps) lands on the
-  closed-form optimum π_ref·exp(r/β)/Z of the Bradley–Terry rewards to 1.5e-6, its loss equals
-  the reward model's NLL (0.5384), and its implicit rewards equal the fitted rewards up to the
-  constant β log Z; tests pin all three and check the DPO gradient by finite differences.
-- The invented counts over-rate the padded response C, so the β sweep shows the proxy reward
-  and KL rising monotonically while the true reward peaks at β = 0.5 and ends below the
-  reference at β = 0.05.
-- On a unanimous pair the DPO margin keeps growing (12.9 after 10,000 steps), while IPO
-  settles at 1/(2τ) = 2.
-- PyTorch ranges checked at the pin: `logsigmoid` 2049-2058, `kl_div` 3401-3475,
-  `cross_entropy` 3478-3569, `binary_cross_entropy_with_logits` 3634-3701, `log_softmax`
-  2293-2324, `gather` docstring 4813-4849.
-- RAG: on an invented 121-word manual with five questions, fixed 24-word chunks cut one
-  answer (Q5) at word 96 and leave a one-word tail chunk; 8-word overlap and sentence packing
-  keep all five whole. BM25 misses the vocabulary-mismatch question entirely; recall@3 / MRR
-  go BM25 0.6 / 0.6, trigram 0.8 / 0.667, RRF hybrid 0.8 / 0.7, re-ranked 0.8 / 0.8 (the
-  re-ranker lifts Q1 from rank 2 to 1). No method finds "swim" → "submerged", which is the
-  page's argument for a learned encoder. RAG-Token gives the toy answer 1.62× RAG-Sequence's
-  probability; the correct "About 2 hours" gets lower token F1 than the wrong "Four hours."
-- PyTorch ranges checked at the pin for RAG: `normalize` 6096-6130, `cosine_similarity`
-  5895-5924, `log_softmax` 2293-2324 (functional.py); `matmul` 7908-7990, `topk`
-  11877-11921, `argsort` 10493-10532, `logsumexp` 6696-6728 (`_torch_docs.py`).
-- Checkpointing: a full resume replays steps 7-12 bit for bit. Forgetting the scheduler
-  restarts warmup and gives the largest gap in w or b (0.4226); the optimizer 0.3043; the RNG
-  0.0140 and the data position 0.0325. All four diverge at step 7, and three of the four end
-  with a lower loss than the uninterrupted run, so a broken resume is a different run, not a
-  visibly worse one. Young's T* = √(2CM) is 26.8 min (7.45% waste) at C = 60 s, M = 6 h and
-  7.7 min (2.15%) at C = 5 s. `checkpoint_sequential` on 16 layers peaks at 7 units with k = 4.
-- `torch.save` uses pickle protocol 2 (`DEFAULT_PROTOCOL`), whose GLOBAL opcode names
-  `builtins.print` with `fix_imports=False`; the restricted unpickler checks GLOBAL. DataLoader
-  has no `state_dict` at the pin, so the mid-epoch position is the user's to save.
-- PyTorch ranges checked at the pin for checkpointing: `serialization.py` (`UNSAFE_MESSAGE`
-  76-81, `add_safe_globals` 282-317, `save` 944-1020, `load` 1315-1649),
-  `_weights_only_unpickler.py` (allowlist 174-228, GLOBAL 331-383), `utils/checkpoint.py`
-  (`checkpoint` 423-617, `checkpoint_sequential` 701-792), `Module.state_dict` 2199-2287 and
-  `load_state_dict` 2535-2648, `Optimizer.state_dict` 700-791 and `load_state_dict` 900-1046,
-  `LRScheduler` 182-200, `random.py` 27-48, `cuda/random.py` 45-88, `DistributedSampler`
-  107-157, `RandomSampler.__iter__` 160-166, DCP `save` 89-205, `async_save` 221-397, `load`
-  60-202, default load planner 478-524, `get_state_dict` 1271-1361, `set_state_dict` 1481-1544.
-- Pins checked with `git ls-remote --tags`: v2.14.1, 1.9.1 and v3.4.2 are still the newest
-  stable PyTorch, scikit-learn and XGBoost releases; no pin moved.
-
-Gaps:
-
-- arxiv.org is still unreachable. The InstructGPT (K = 4-9 rankings, the 1/C(K,2) batching,
-  the zero-mean reward normalization, PPO-ptx), DPO (the unweighted-gradient remark), IPO,
-  KTO, DeepSeekMath (GRPO, k3) and Gao–Schulman–Hilton claims are cited from memory. KTO is
-  described in prose only, without its exact loss, for that reason.
-- The preference counts and the "true" reward are invented and labelled as such on the page.
-- The DPO, IPO, GRPO and k3 snippets were not run under real PyTorch (download blocked); their
-  arithmetic matches the tested helpers.
-- RAG: the RAG paper (DPR retriever, BART generator, fixed document encoder, the two
-  marginals), DPR's 100-word Wikipedia passages, monoBERT, ColBERT's MaxSim, FiD, Lost in
-  the Middle, Greshake et al. and SQuAD's answer normalization are cited from memory
-  (arxiv.org unreachable). The trigram "vector" retriever and the soft-match re-ranker are
-  labelled stand-ins, not a trained encoder or cross-encoder; no pin implements either. The
-  RAG snippet was not run under real PyTorch.
-- Checkpointing: Young (1974), Chen et al. (2016), ZeRO and Adam are cited from memory.
-  Young's first-order interval assumes independent failures and C ≪ M; no higher-order
-  refinement is covered. Selective activation checkpointing (`context_fn`) is not
-  covered. Stateful data loaders (such as torchdata's) are outside the pins. The failure
-  rate, save times and 7B size are an invented, labelled scenario. The page's snippets
-  were not run under real PyTorch.
 
 ## Forty-third run (2026-10-15) — reproducibility, state-space-models, profiling
 
@@ -291,7 +220,10 @@ Gaps:
 | `4c55a5b` `docs: record the reproducibility page in ml-models progress` | The reproducibility record |
 | `51756e2` `ml-models: add tested state-space-model helpers` | Scalar Euler/bilinear/ZOH discretization, HiPPO-LegS and its NPLR split, recurrent versus convolutional evaluation, a gated selective scan against a fixed step, a Hillis-Steele scan, state versus KV-cache costs |
 | `8b41fbc` `ml-models: add the state-space-models page` | The page, `ready`, queue ✓; links the SSM mentions on `rnns-and-lstms` and `attention` |
-| (this commit) `docs: record the state-space-models page in ml-models progress` | The state-space-models record |
+| `ad9d04a` `docs: record the state-space-models page in ml-models progress` | The state-space-models record |
+| `aeac839` `ml-models: add tested profiling helpers` | A port of `torch.profiler.schedule`, step timing with and without sync and warmup (on `async_timeline`), a `key_averages`-style self/total split, MFU versus HFU, data-loader wait fractions (on `loader_pipeline`), a training-step memory timeline |
+| `81c854a` `ml-models: add the profiling page` | The page, `ready`, queue ✓ (queue empty); links the profiling mentions on `gpu-execution` and `latency-and-throughput` |
+| (this commit) `docs: record the forty-third ml-models run` | Profiling record, pin check; condenses run 42 |
 
 Findings worth keeping:
 
@@ -327,6 +259,31 @@ Findings worth keeping:
   `_conv_forward` 366-382, `forward` 384-385), `functional.py` (`einsum` 175-382),
   `nn/functional.py` (`conv1d` docstring 53-99, `softplus` 2115-2127, `silu` 2429-2451),
   `_torch_docs.py` (`cumprod` 3521-3558, `cumsum` 3560-3590).
+- Profiling: a six-kernel step synced reads 7.005 ms, unsynced 0.03 ms; the 8-iteration mean
+  with two warmup costs is 117.6 ms, 17× the median. Twenty 2 µs kernels launched 5 µs apart
+  keep the GPU 39% busy. The schedule port (skip_first 2, wait 1, warmup 1, active 2,
+  repeat 2) saves at steps 5 and 9 and is idle after. With 120 ms loads and 40 ms steps,
+  two workers wait a third of each step; three remove the stall. Adam state makes step 1's
+  peak (5,650 MiB) exceed step 0's (4,000); a 2× batch peaks at 8,050. A 1.3B model on 8
+  GPUs at 1,048,576 tokens per 2.6 s is 45.9% MFU (61.2% HFU with full recompute).
+- Ranges checked at PyTorch v2.14.1 for profiling (all linked from the page):
+  `profiler/profiler.py` (`export_chrome_trace` 469-523, `export_stacks` 545-554,
+  `key_averages` 589-614, `export_memory_timeline` 692-742, `ProfilerAction` 745-759,
+  `schedule` 768-827, `_default_schedule_fn` 830-835, `tensorboard_trace_handler` 838-871,
+  `profile` 874-1323, `action_map` 1088-1198, `step` 1236-1323, `_transit_action`
+  1344-1349), `autograd/profiler.py` (`record_function` 868-1001), `autograd/profiler_util.py`
+  (FLOP formulas 44-107, `table` 242-286), `cuda/__init__.py` (`synchronize` 1271-1281),
+  `cuda/memory.py` (`memory_stats` 242-350, `reset_peak_memory_stats` 381-397,
+  `memory_allocated` 525-539, `max_memory_allocated` 542-560, `memory_reserved` 563-575,
+  `max_memory_reserved` 578-593, `memory_summary` 652-778, `_record_memory_history` 897-995,
+  `_dump_snapshot` 1149-1168), `cuda/streams.py` (`Event` 159-243, `record` 199-209,
+  `elapsed_time` 234-243), `utils/benchmark/utils/timer.py` (`timer` 17-20, `Timer` 66-382,
+  `timeit` 259-273, `_estimate_block_size` 305-322, `blocked_autorange` 324-382),
+  `docs/source/notes/cuda.md` (asynchronous execution 307-345, memory management 506-530).
+  `self_cuda_time_total` is deprecated in favour of `self_device_time_total` on events but is
+  still a `table` sort key.
+- Pins checked with `git ls-remote --tags`: v2.14.1, 1.9.1 and v3.4.2 are still the newest
+  stable PyTorch, scikit-learn and XGBoost releases; no pin moved.
 
 Gaps:
 
@@ -338,6 +295,11 @@ Gaps:
   block layout) follow the papers from memory, with arxiv.org unreachable from the Routine.
   The cost model counts only sequence mixing, with no grouped-query attention; the snippet
   was not run under real PyTorch.
+- Profiling: the step kernels, warmup costs, trace spans, loader times and memory model are
+  invented and labelled; the 989 TFLOP/s peak is the H100 SXM bf16 dense figure from general
+  knowledge. PaLM's MFU definition, Korthikanti et al.'s HFU and Kaplan's 6N are cited from
+  memory (arxiv.org unreachable). Nsight, Perfetto and pytorch.org/memory_viz are named, not
+  pinned. The snippet was not run under real PyTorch.
 
 ## Queue
 
@@ -435,7 +397,6 @@ Gaps:
 92. `state-space-models` ✓
 93. `profiling` ✓
 
-Build three pages per run, top to bottom, pushing each as it is finished. Once the queue is empty, the Routine runs maintenance
-only: for each pin it checks for a newer stable release (never an rc, beta or dev tag). When one
+The queue is empty since run 43. From now on the Routine runs the weekly audit (spec §8.1): for each pin it checks for a newer stable release (never an rc, beta or dev tag). When one
 exists, it diffs every file the ready pages link to between the pin and that tag, updates the
 affected line ranges and claims, and moves the pin.
