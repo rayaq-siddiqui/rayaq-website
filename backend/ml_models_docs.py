@@ -13749,6 +13749,210 @@ def checkpointing_example():
     }
 
 
+REPRO_EXAMPLE = {
+    "seed": 0,
+    "base_seed": 4_181_960_235_772_163_819,
+    "workers": 4,
+    "samples_per_worker": 3,
+    "layers": (("embedding", 3), ("head", 3)),
+    "inserted": ("flip", 1),
+    "n_values": 4096,
+    "values_seed": 11,
+    "blocks": 32,
+    "atomic_orders": 5,
+    "n_samples": 10,
+    "n_splits": 5,
+    "csv": "x,y\n-1.0,-0.8\n0.0,1.1\n0.5,1.9\n1.0,3.2\n1.5,3.9\n",
+    "edit": ("1.0,3.2", "1.0,3.3"),
+    "script": "import torch\ntorch.manual_seed(0)\nmodel = torch.nn.Linear(1, 1)\n",
+    "lockfile": "numpy==2.3.4\nscikit-learn==1.9.1\ntorch==2.14.1\n",
+}
+
+_REPRO_MASK32 = 0xFFFFFFFF
+
+
+def worker_numpy_seed(base_seed, worker_id):
+    mask = _REPRO_MASK32
+    mult_a, mult_b, mix_l, mix_r = 0x931E8875, 0x58F38DED, 0xCA01F9DD, 0x4973F715
+    const_a, const_b = 0x43B0D7E5, 0x8B51F9DD
+
+    def hash_(value):
+        nonlocal const_a
+        value = (value ^ const_a) & mask
+        const_a = (const_a * mult_a) & mask
+        value = (value * const_a) & mask
+        return (value ^ (value >> 16)) & mask
+
+    def mix(x, y):
+        result = (((mix_l * x) & mask) - ((mix_r * y) & mask)) & mask
+        return (result ^ (result >> 16)) & mask
+
+    pool = [hash_(e) for e in (worker_id, base_seed & mask, base_seed >> 32, 0)]
+    for src in range(4):
+        for dst in range(4):
+            if src != dst:
+                pool[dst] = mix(pool[dst], hash_(pool[src]))
+    state = []
+    for value in pool:
+        value = (value ^ const_b) & mask
+        const_b = (const_b * mult_b) & mask
+        value = (value * const_b) & mask
+        state.append((value ^ (value >> 16)) & mask)
+    return state
+
+
+def worker_seeds(base_seed, workers):
+    return [{"worker": w, "seed": base_seed + w, "numpy": worker_numpy_seed(base_seed, w)}
+            for w in range(workers)]
+
+
+def worker_crops(seeds, per_worker):
+    rows = []
+    for s in seeds:
+        rng = random.Random(s)
+        rows.append([rng.randrange(32) for _ in range(per_worker)])
+    return {"rows": rows, "distinct": len({tuple(r) for r in rows})}
+
+
+def gauss_stream(seed, n):
+    rng = random.Random(seed)
+    return [rng.gauss(0, 1) for _ in range(n)]
+
+
+def draw_shared(seed, layers):
+    rng = random.Random(seed)
+    return {name: [rng.gauss(0, 1) for _ in range(n)] for name, n in layers}
+
+
+def derived_seed(seed, name):
+    return int.from_bytes(hashlib.sha256(f"{seed}/{name}".encode()).digest()[:8], "little")
+
+
+def draw_separate(seed, layers):
+    return {name: gauss_stream(derived_seed(seed, name), n) for name, n in layers}
+
+
+def f32(x):
+    return struct.unpack("<f", struct.pack("<f", x))[0]
+
+
+def f32_ulp(x):
+    return 2.0 ** (math.frexp(abs(x))[1] - 24)
+
+
+def f32_sum(values):
+    total = 0.0
+    for v in values:
+        total = f32(total + v)
+    return total
+
+
+def f32_pairwise(values):
+    level = list(values)
+    while len(level) > 1:
+        nxt = [f32(level[i] + level[i + 1]) for i in range(0, len(level) - 1, 2)]
+        if len(level) % 2:
+            nxt.append(level[-1])
+        level = nxt
+    return level[0]
+
+
+def f32_blocked(values, blocks):
+    size = -(-len(values) // blocks)
+    return f32_sum([f32_sum(values[i:i + size]) for i in range(0, len(values), size)])
+
+
+def reduction_orders(n, seed, blocks, atomic_orders):
+    rng = random.Random(seed)
+    values = [f32(rng.gauss(0, 1)) for _ in range(n)]
+    exact = math.fsum(values)
+    rows = [("left to right", f32_sum(values)), ("pairwise tree", f32_pairwise(values)),
+            (f"{blocks} blocks, then their partial sums", f32_blocked(values, blocks))]
+    for k in range(atomic_orders):
+        order = list(values)
+        random.Random(k).shuffle(order)
+        rows.append((f"arrival order {k + 1}", f32_sum(order)))
+    out = [{"name": name, "sum": s, "error": s - exact, "ulps": (s - exact) / f32_ulp(exact)} for name, s in rows]
+    sums = [r["sum"] for r in out]
+    return {"values": values, "exact": exact, "rows": out, "distinct": len(set(sums)),
+            "spread": max(sums) - min(sums), "spread_ulps": (max(sums) - min(sums)) / f32_ulp(exact),
+            "ulp": f32_ulp(exact)}
+
+
+_GLOBAL_STAND_IN = random.Random()
+
+
+def check_random_state_stand_in(seed):
+    if seed is None:
+        return _GLOBAL_STAND_IN
+    if isinstance(seed, int):
+        return random.Random(seed)
+    if isinstance(seed, random.Random):
+        return seed
+    raise ValueError(f"{seed!r} cannot be used to seed a random.Random instance")
+
+
+def kfold_test_folds(n_samples, n_splits, random_state):
+    indices = list(range(n_samples))
+    check_random_state_stand_in(random_state).shuffle(indices)
+    size = n_samples // n_splits
+    return [sorted(indices[i * size:(i + 1) * size]) for i in range(n_splits)]
+
+
+def random_state_calls(n_samples, n_splits, seed):
+    shared = random.Random(seed)
+    cases = (("random_state=" + str(seed), lambda: seed), ("random_state=RandomState(" + str(seed) + ")", lambda: shared))
+    out = []
+    for name, arg in cases:
+        first = kfold_test_folds(n_samples, n_splits, arg())
+        second = kfold_test_folds(n_samples, n_splits, arg())
+        out.append({"name": name, "first": first, "second": second, "same": first == second})
+    return out
+
+
+def git_blob_id(text):
+    data = text.encode()
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def sha256_text(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def run_manifest(example=REPRO_EXAMPLE):
+    edited = example["csv"].replace(*example["edit"])
+    return {
+        "data": sha256_text(example["csv"]),
+        "data_edited": sha256_text(edited),
+        "differing_bytes": sum(a != b for a, b in zip(example["csv"], edited)),
+        "code": git_blob_id(example["script"]),
+        "environment": sha256_text(example["lockfile"]),
+        "seed": example["seed"],
+    }
+
+
+def reproducibility_example():
+    ex = REPRO_EXAMPLE
+    seeds = worker_seeds(ex["base_seed"], ex["workers"])
+    name, n = ex["inserted"]
+    first, second = ex["layers"]
+    changed = (first, (name, n), second)
+    return {
+        "example": ex,
+        "workers": seeds,
+        "copied": worker_crops([ex["seed"]] * ex["workers"], ex["samples_per_worker"]),
+        "reseeded": worker_crops([w["seed"] for w in seeds], ex["samples_per_worker"]),
+        "shared_before": draw_shared(ex["seed"], ex["layers"]),
+        "shared_after": draw_shared(ex["seed"], changed),
+        "separate_before": draw_separate(ex["seed"], ex["layers"]),
+        "separate_after": draw_separate(ex["seed"], changed),
+        "derived": {layer: derived_seed(ex["seed"], layer) for layer, _ in changed},
+        "sums": reduction_orders(ex["n_values"], ex["values_seed"], ex["blocks"], ex["atomic_orders"]),
+        "random_state": random_state_calls(ex["n_samples"], ex["n_splits"], ex["seed"]),
+        "manifest": run_manifest(ex),
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -13804,6 +14008,7 @@ def render(slug, render_template):
         "po_example": po_example,
         "rag_example": rag_example,
         "checkpointing_example": checkpointing_example,
+        "reproducibility_example": reproducibility_example,
         "pretraining_example": pretraining_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,

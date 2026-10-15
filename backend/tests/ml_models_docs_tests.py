@@ -5573,3 +5573,76 @@ def test_ckpt_weights_only_scan_blocks_unlisted_globals_without_loading():
     assert ml_models_docs.pickle_globals(blob) == ["builtins.print"]
     verdict = ml_models_docs.weights_only_verdict(blob, ("builtins.print",))
     assert verdict["loads"] and verdict["blocked"] == []
+
+
+def test_repro_worker_numpy_seed_matches_seed_sequence_values():
+    base = ml_models_docs.REPRO_EXAMPLE["base_seed"]
+    assert ml_models_docs.worker_numpy_seed(base, 0) == [1310905175, 2081109477, 4124378009, 3038891885]
+    assert ml_models_docs.worker_numpy_seed(base, 3) == [1534353524, 2778767537, 1060257585, 3308704576]
+    seeds = ml_models_docs.worker_seeds(base, 4)
+    assert [s["seed"] - base for s in seeds] == [0, 1, 2, 3]
+    assert len({tuple(s["numpy"]) for s in seeds}) == 4
+    assert all(0 <= v < 2**32 for s in seeds for v in s["numpy"])
+
+
+def test_repro_copied_rng_repeats_and_reseeding_separates_workers():
+    ex = ml_models_docs.reproducibility_example()
+    assert ex["copied"]["distinct"] == 1
+    assert len(set(map(tuple, ex["copied"]["rows"]))) == 1
+    assert ex["reseeded"]["distinct"] == 4
+    again = ml_models_docs.worker_crops([w["seed"] for w in ex["workers"]], 3)
+    assert again == ex["reseeded"]
+
+
+def test_repro_inserting_a_draw_shifts_shared_stream_but_not_derived_seeds():
+    ex = ml_models_docs.reproducibility_example()
+    assert ex["shared_before"]["embedding"] == ex["shared_after"]["embedding"]
+    assert ex["shared_before"]["head"] != ex["shared_after"]["head"]
+    assert ex["shared_after"]["flip"] == ex["shared_before"]["head"][:1]
+    assert ex["shared_after"]["head"][:2] == ex["shared_before"]["head"][1:]
+    assert ex["separate_before"]["head"] == ex["separate_after"]["head"]
+    assert ex["separate_before"]["embedding"] == ex["separate_after"]["embedding"]
+    assert len(set(ex["derived"].values())) == 3
+
+
+def test_repro_float32_reduction_order_changes_the_sum():
+    sums = ml_models_docs.reproducibility_example()["sums"]
+    assert len(sums["values"]) == 4096
+    assert all(ml_models_docs.f32(v) == v for v in sums["values"])
+    assert all(ml_models_docs.f32(r["sum"]) == r["sum"] for r in sums["rows"])
+    assert sums["distinct"] >= 5
+    assert sums["spread"] > 0 and sums["spread_ulps"] == sums["spread"] / sums["ulp"]
+    assert sums["ulp"] == 2.0 ** -18 and 32 <= abs(sums["exact"]) < 64
+    assert all(abs(r["ulps"]) < 64 for r in sums["rows"])
+    assert ml_models_docs.f32_sum([1.0, 2.0**-24, 2.0**-24]) == 1.0
+    assert ml_models_docs.f32_pairwise([1.0, 2.0**-24, 2.0**-24, 0.0]) == 1.0
+    assert ml_models_docs.f32_sum([2.0**-24, 2.0**-24, 1.0]) == 1.0 + 2.0**-23
+
+
+def test_repro_random_state_int_repeats_and_instance_advances():
+    calls = {c["name"]: c for c in ml_models_docs.reproducibility_example()["random_state"]}
+    assert calls["random_state=0"]["same"]
+    assert not calls["random_state=RandomState(0)"]["same"]
+    assert calls["random_state=0"]["first"] == calls["random_state=RandomState(0)"]["first"]
+    for c in calls.values():
+        for folds in (c["first"], c["second"]):
+            assert sorted(i for f in folds for i in f) == list(range(10))
+    rng = random.Random(5)
+    assert ml_models_docs.check_random_state_stand_in(rng) is rng
+    assert ml_models_docs.check_random_state_stand_in(None) is ml_models_docs.check_random_state_stand_in(None)
+    with pytest.raises(ValueError):
+        ml_models_docs.check_random_state_stand_in("seed")
+
+
+def test_repro_manifest_hashes_match_git_and_sha256():
+    import hashlib
+    import subprocess
+    ex = ml_models_docs.REPRO_EXAMPLE
+    m = ml_models_docs.run_manifest()
+    assert m["data"] == hashlib.sha256(ex["csv"].encode()).hexdigest()
+    assert m["data"] != m["data_edited"] and m["differing_bytes"] == 1
+    assert m["code"] == "f1b034256689f3f67dcb29f0952d111eb5803b86"
+    out = subprocess.run(["git", "hash-object", "--stdin"], input=ex["script"].encode(), capture_output=True)
+    if out.returncode == 0:
+        assert out.stdout.decode().strip() == m["code"]
+    assert len(m["environment"]) == 64
