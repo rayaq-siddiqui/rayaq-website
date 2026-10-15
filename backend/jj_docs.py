@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "9031d0a1669a262af10f95497a458f0084b28fbb",
-    "commit_date": "2026-10-14",
+    "commit": "df92b83d7d1141cd51aabf0dd744bb365d62ae3b",
+    "commit_date": "2026-10-15",
     "version": "0.46.0",
-    "analyzed_on": "2026-10-14",
+    "analyzed_on": "2026-10-15",
 }
 
 TOPICS = [
@@ -388,7 +388,7 @@ COMMANDS = [
         "category": 'Content and conflicts',
         "tier": 'A',
         "summary": 'Resolve conflicted files with an external merge tool',
-        "source": ('cli/src/commands/resolve.rs', 53),
+        "source": ('cli/src/commands/resolve.rs', 54),
     },
     {
         "command": 'file annotate',
@@ -402,14 +402,14 @@ COMMANDS = [
         "category": 'Content and conflicts',
         "tier": 'A',
         "summary": 'Sets or removes the executable bit for paths in the repo',
-        "source": ('cli/src/commands/file/chmod.rs', 46),
+        "source": ('cli/src/commands/file/chmod.rs', 47),
     },
     {
         "command": 'file delete',
         "category": 'Content and conflicts',
         "tier": 'A',
         "summary": 'Delete files from the given revision',
-        "source": ('cli/src/commands/file/delete.rs', 35),
+        "source": ('cli/src/commands/file/delete.rs', 36),
     },
     {
         "command": 'file edit',
@@ -423,7 +423,7 @@ COMMANDS = [
         "category": 'Content and conflicts',
         "tier": 'B',
         "summary": 'List files in a revision',
-        "source": ('cli/src/commands/file/list.rs', 30),
+        "source": ('cli/src/commands/file/list.rs', 31),
     },
     {
         "command": 'file search',
@@ -437,7 +437,7 @@ COMMANDS = [
         "category": 'Content and conflicts',
         "tier": 'B',
         "summary": 'Print contents of files in a revision',
-        "source": ('cli/src/commands/file/show.rs', 50),
+        "source": ('cli/src/commands/file/show.rs', 54),
     },
     {
         "command": 'file track',
@@ -514,7 +514,7 @@ COMMANDS = [
         "category": 'Inspecting history',
         "tier": 'B',
         "summary": 'Show high-level repo status [default alias: st]',
-        "source": ('cli/src/commands/status.rs', 61),
+        "source": ('cli/src/commands/status.rs', 62),
     },
     {
         "command": 'evolog',
@@ -710,7 +710,7 @@ COMMANDS = [
         "category": 'Git and remotes',
         "tier": 'A',
         "summary": 'Create a new repo backed by a clone of a Git repo',
-        "source": ('cli/src/commands/git/clone.rs', 59),
+        "source": ('cli/src/commands/git/clone.rs', 58),
     },
     {
         "command": 'git colocation',
@@ -731,7 +731,7 @@ COMMANDS = [
         "category": 'Git and remotes',
         "tier": 'A',
         "summary": 'Fetch from a Git remote',
-        "source": ('cli/src/commands/git/fetch.rs', 70),
+        "source": ('cli/src/commands/git/fetch.rs', 68),
     },
     {
         "command": 'git import',
