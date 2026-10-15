@@ -1,0 +1,434 @@
+{% set ex = profiling_example() %}
+{% set e = ex.example %}
+{% set t = ex.timing %}
+{% set m = ex.mfu %}
+{% set mem = ex.memory %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(0.0 if x|abs < 0.5 * 10 ** (-n) else x)|replace("-", "−") }}{%- endmacro %}
+{% macro pct(x, n=1) -%}{{ ("%." ~ n ~ "f")|format(100 * x) }}%{%- endmacro %}
+<header class="jj-header">
+  <h1>Profiling</h1>
+  <p class="tagline">
+    A training step is slow for one of a few reasons: the GPU is waiting for data, waiting for the Python code that launches its kernels, running out of memory headroom, or simply doing a lot of arithmetic. Profiling is how you tell which, and it starts with measuring time correctly at all, because GPU work is <a href="/ml-models/gpu-execution">asynchronous</a>.
+    This page times a step with and without synchronization and warmup, ports the profiler's step schedule, splits a trace into self and total time, finds a data-loader stall, traces memory across steps and works out MFU for a real-sized run. Every number is computed and every PyTorch link is pinned to {{ upstream.tag }}.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A training run reports {{ f(t.naive_mean, 1) }} ms per step. Is that good? The GPU's spec sheet promises about {{ f(e.mfu.peak / 1e12, 0) }} TFLOP/s; the model does a known number of FLOPs per token. Without a measurement you can trust, you cannot say whether the step is close to the hardware limit or wasting most of it, and without a breakdown you cannot say where the waste is.
+</p>
+<p>
+  Both are easy to get wrong. <code>time.time()</code> around a step measures how long Python took to <em>queue</em> the work, not how long the GPU took to do it. The first steps include one-off costs (CUDA context creation, cuDNN autotuning, allocator growth, compilation) that the average then carries forever. And a profiler that records every step slows the run and produces traces too large to open. Profiling is a set of habits that avoid these traps and point at the bottleneck.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  The CPU is a dispatcher handing work to the GPU through a queue. As long as the CPU stays ahead, the queue is never empty and the GPU is busy; a timer on the CPU stops long before the GPU finishes. If each piece of work is tiny, the GPU finishes it faster than the CPU can queue the next one, and the GPU idles between kernels no matter how fast it is. If the CPU stalls to fetch the next batch, the queue drains and the GPU idles for the length of the stall.
+</p>
+<p>
+  So the questions to ask a trace are visual: are there gaps in the GPU row, and what is the CPU doing during them? A gap under a data-loader call is an input stall; a stream of tiny kernels with gaps between them is host overhead; a solid GPU row means the step is compute-bound, and only then do kernel-level optimizations (<a href="/ml-models/mixed-precision">lower precision</a>, fused kernels) pay off.
+</p>
+
+{% set gpu_scale = 560 / t.timeline.total %}
+{% set host = ex.host_bound %}
+{% set host_scale = 560 / host.total %}
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 270" role="img" aria-labelledby="prof-async-title prof-async-desc">
+    <title id="prof-async-title">A GPU-bound step and a host-bound step</title>
+    <desc id="prof-async-desc">Top: six large kernels totalling {{ "{:,}".format(t.timeline.busy) }} microseconds. The CPU finishes queueing them after {{ t.timeline.cpu_done }} microseconds, a sliver at the left, while the GPU runs back to back until {{ "{:,}".format(t.timeline.total) }} microseconds: GPU utilization {{ pct(t.timeline.utilization) }}. A timer without synchronization stops at the CPU's end. Bottom: twenty 2-microsecond kernels, each launched {{ e.launch_us }} microseconds apart. The GPU finishes each before the next arrives and is busy only {{ host.busy }} of {{ host.total }} microseconds, {{ pct(host.utilization) }}.</desc>
+    <g font-size="12">
+      <text x="10" y="18" font-weight="bold">GPU-bound: {{ e.step_kernels_us|length }} large kernels</text>
+      <text x="10" y="50">CPU</text>
+      <text x="10" y="84">GPU</text>
+      {% for r in t.timeline.rows %}
+      <rect x="{{ f(70 + (r.issued - e.launch_us) * gpu_scale, 2) }}" y="36" width="{{ f([e.launch_us * gpu_scale, 1.5]|max, 2) }}" height="20" class="d-box ml-op"></rect>
+      <rect x="{{ f(70 + r.start * gpu_scale, 2) }}" y="70" width="{{ f(r["end"] * gpu_scale - r.start * gpu_scale - 1, 2) }}" height="20" class="d-box ml-tensor" style="fill: var(--jj-green); fill-opacity: 0.35"></rect>
+      {% endfor %}
+      <line x1="{{ f(70 + t.timeline.cpu_done * gpu_scale, 2) }}" y1="30" x2="{{ f(70 + t.timeline.cpu_done * gpu_scale, 2) }}" y2="100" class="d-line ml-dashed"></line>
+      <text x="{{ f(76 + t.timeline.cpu_done * gpu_scale, 2) }}" y="114" class="d-muted">no-sync timer stops: {{ t.timeline.cpu_done }} µs</text>
+      <text x="630" y="114" text-anchor="end" class="d-muted">synchronize(): {{ "{:,}".format(t.timeline.total) }} µs</text>
+
+      <text x="10" y="152" font-weight="bold">host-bound: {{ e.small_kernels_us|length }} kernels of {{ e.small_kernels_us[0] }} µs</text>
+      <text x="10" y="184">CPU</text>
+      <text x="10" y="218">GPU</text>
+      {% for r in host.rows %}
+      <rect x="{{ f(70 + (r.issued - e.launch_us) * host_scale, 2) }}" y="170" width="{{ f(e.launch_us * host_scale - 1, 2) }}" height="20" class="d-box ml-op"></rect>
+      <rect x="{{ f(70 + r.start * host_scale, 2) }}" y="204" width="{{ f((r["end"] - r.start) * host_scale, 2) }}" height="20" class="d-box ml-tensor" style="fill: var(--jj-green); fill-opacity: 0.35"></rect>
+      {% endfor %}
+      <text x="70" y="248" class="d-muted">GPU busy {{ host.busy }} of {{ host.total }} µs ({{ pct(host.utilization, 0) }}): the gaps are launch overhead</text>
+    </g>
+  </svg>
+  <p class="ml-caption">Kernel launches (boxes on the CPU row) return immediately; kernels (green) run in queue order. Top: the CPU is done after {{ t.timeline.cpu_done }} µs of a {{ "{:,}".format(t.timeline.total) }} µs step. Bottom: every kernel finishes before the next launch, so the GPU waits on Python. Each panel has its own time scale.</p>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="measuring">Measuring correctly</h3>
+<p>
+  CUDA calls return as soon as the work is queued. The PyTorch notes on <a href="{{ pinned('pytorch', 'docs/source/notes/cuda.md', 307, 345) }}">asynchronous execution</a> give the two correct ways to time GPU work:
+</p>
+<ul>
+  <li><strong>Synchronize, then read a host clock.</strong> <a href="{{ src('torch/cuda/__init__.py', 1271, 1281) }}"><code>torch.cuda.synchronize()</code></a> blocks until every queued kernel on the device has finished. Call it before starting the timer and before stopping it. The benchmark utility's own <a href="{{ src('torch/utils/benchmark/utils/timer.py', 17, 20) }}"><code>timer()</code></a> does exactly that: <code>torch.accelerator.synchronize()</code>, then <code>timeit.default_timer()</code>.</li>
+  <li><strong>CUDA events.</strong> A <a href="{{ src('torch/cuda/streams.py', 159, 243) }}"><code>torch.cuda.Event(enable_timing=True)</code></a> is a marker placed in the stream by <a href="{{ src('torch/cuda/streams.py', 199, 209) }}"><code>record()</code></a>; <a href="{{ src('torch/cuda/streams.py', 234, 243) }}"><code>elapsed_time()</code></a> returns the GPU time between two of them in milliseconds. Events measure the device's own timeline and need a sync only before reading the result, so they disturb the pipeline less.</li>
+</ul>
+<p>
+  Setting <code>CUDA_LAUNCH_BLOCKING=1</code> makes every launch synchronous. It is for debugging (errors are reported at the line that caused them) and never for timing, since it removes the overlap a real run has.
+</p>
+<p>
+  Then discard the first iterations. They pay for context creation, lazy module initialization, <code>cudnn.benchmark</code> autotuning, <code>torch.compile</code> compilation and the caching allocator requesting memory from the driver. Report the median of the rest, which ignores the occasional slow step from a garbage collection or a checkpoint write. <a href="{{ src('torch/utils/benchmark/utils/timer.py', 66, 273) }}"><code>torch.utils.benchmark.Timer</code></a> does all of this: <a href="{{ src('torch/utils/benchmark/utils/timer.py', 259, 273) }}"><code>timeit</code></a> runs max(<var>n</var>/100, 2) warmup calls first, and <a href="{{ src('torch/utils/benchmark/utils/timer.py', 324, 382) }}"><code>blocked_autorange</code></a> picks a <a href="{{ src('torch/utils/benchmark/utils/timer.py', 305, 322) }}">block size</a> so each timed block is long enough that timer overhead is negligible, then reports the median per call.
+</p>
+
+<h3 id="profiler">The PyTorch profiler</h3>
+<p>
+  <a href="{{ src('torch/profiler/profiler.py', 874, 1323) }}"><code>torch.profiler.profile</code></a> records every operator call on the CPU and, through NVIDIA's CUPTI via Kineto, every kernel and memory copy on the GPU, with the link between each launch and its kernel. Its main options:
+</p>
+<ul>
+  <li><code>activities</code>: <code>ProfilerActivity.CPU</code> and <code>ProfilerActivity.CUDA</code>.</li>
+  <li><code>record_shapes</code> (input shapes per operator), <code>profile_memory</code> (allocations and frees), <code>with_stack</code> (Python stack per event, expensive) and <code>with_flops</code> (estimated FLOPs for matmuls and convolutions, by <a href="{{ src('torch/autograd/profiler_util.py', 44, 107) }}">formula from the shapes</a>).</li>
+  <li><code>schedule</code> and <code>on_trace_ready</code>, below.</li>
+</ul>
+<p>
+  <a href="{{ src('torch/autograd/profiler.py', 868, 1001) }}"><code>torch.profiler.record_function("name")</code></a> adds your own labelled span, so "data", "forward", "backward" and "optimizer" show up as blocks in the trace. The profiler adds its own <code>ProfilerStep#N</code> span around each step.
+</p>
+
+<h3 id="schedule">The step schedule</h3>
+<p>
+  Recording every step would slow training and fill the disk. <a href="{{ src('torch/profiler/profiler.py', 768, 827) }}"><code>torch.profiler.schedule(wait, warmup, active, repeat, skip_first)</code></a> returns a function from step number to a <a href="{{ src('torch/profiler/profiler.py', 745, 759) }}"><code>ProfilerAction</code></a>: <code>NONE</code> (off), <code>WARMUP</code> (tracing on but results discarded, because starting the tracer has its own overhead), <code>RECORD</code>, and <code>RECORD_AND_SAVE</code> on the last active step, which ends the cycle and calls <code>on_trace_ready</code>. Each call to <a href="{{ src('torch/profiler/profiler.py', 1236, 1323) }}"><code>prof.step()</code></a> advances the step counter and <a href="{{ src('torch/profiler/profiler.py', 1344, 1349) }}">applies the transition</a> between the old and new action from a <a href="{{ src('torch/profiler/profiler.py', 1088, 1198) }}">table</a>. With <code>repeat=0</code> the cycle never ends; the function warns when <code>warmup</code> is 0. With no schedule, <a href="{{ src('torch/profiler/profiler.py', 830, 835) }}">every step is recorded</a>.
+</p>
+<p>
+  The schedule from this page's example, <code>skip_first={{ e.schedule.skip_first }}, wait={{ e.schedule.wait }}, warmup={{ e.schedule.warmup }}, active={{ e.schedule.active }}, repeat={{ e.schedule.repeat }}</code>, ported line for line:
+</p>
+{% set colors = {"NONE": "", "WARMUP": "fill: var(--jj-amber); fill-opacity: 0.35", "RECORD": "fill: var(--jj-violet); fill-opacity: 0.3", "RECORD_AND_SAVE": "fill: var(--jj-violet); fill-opacity: 0.6"} %}
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 130" role="img" aria-labelledby="prof-sched-title prof-sched-desc">
+    <title id="prof-sched-title">Profiler actions for {{ e.schedule_steps }} steps</title>
+    <desc id="prof-sched-desc">Steps 0 to {{ e.schedule_steps - 1 }} with their actions: {% for a in ex.actions %}{{ loop.index0 }} {{ a }}{% if not loop.last %}, {% endif %}{% endfor %}. Two traces are saved, at steps {% for a in ex.actions %}{% if a == "RECORD_AND_SAVE" %}{{ loop.index0 }} {% endif %}{% endfor %}and the profiler is idle after that.</desc>
+    <g font-size="11">
+      {% for a in ex.actions %}
+      {% set x = 10 + loop.index0 * 44 %}
+      <rect x="{{ x }}" y="20" width="40" height="40" rx="4" class="d-box"{% if colors[a] %} style="{{ colors[a] }}"{% endif %}></rect>
+      <text x="{{ x + 20 }}" y="44" text-anchor="middle">{{ loop.index0 }}</text>
+      <text x="{{ x + 20 }}" y="78" text-anchor="middle" class="d-muted">{{ {"NONE": "–", "WARMUP": "W", "RECORD": "R", "RECORD_AND_SAVE": "R+S"}[a] }}</text>
+      {% endfor %}
+      <text x="10" y="108" class="d-muted">– none &nbsp; W warmup &nbsp; R record &nbsp; R+S record and save (on_trace_ready fires)</text>
+    </g>
+  </svg>
+  <p class="ml-caption">The first {{ e.schedule.skip_first }} steps are skipped outright, then each cycle of {{ e.schedule.wait + e.schedule.warmup + e.schedule.active }} steps waits {{ e.schedule.wait }}, warms up {{ e.schedule.warmup }} and records {{ e.schedule.active }}. After {{ e.schedule.repeat }} cycles every step is <code>NONE</code>.</p>
+</div>
+
+<h3 id="traces">Traces and tables</h3>
+<p>
+  <code>on_trace_ready</code> receives the profiler at each save. <a href="{{ src('torch/profiler/profiler.py', 838, 871) }}"><code>tensorboard_trace_handler(dir)</code></a> writes one <code>.pt.trace.json</code> per save, named by host, process and time; <a href="{{ src('torch/profiler/profiler.py', 469, 523) }}"><code>export_chrome_trace(path)</code></a> writes one directly. Either file opens in Perfetto (ui.perfetto.dev) or <code>chrome://tracing</code> as a timeline: CPU threads on top, one row per CUDA stream below, with flow arrows from each launch to its kernel. <a href="{{ src('torch/profiler/profiler.py', 545, 554) }}"><code>export_stacks</code></a> writes stacks for a flame graph, and <a href="{{ src('torch/profiler/profiler.py', 692, 742) }}"><code>export_memory_timeline</code></a> plots memory by category.
+</p>
+<p>
+  <a href="{{ src('torch/profiler/profiler.py', 589, 614) }}"><code>key_averages()</code></a> aggregates events by name (optionally by input shape or stack) and its <a href="{{ src('torch/autograd/profiler_util.py', 242, 286) }}"><code>table(sort_by=..., row_limit=...)</code></a> prints them. Each row has a <strong>total</strong> time, the span from entry to exit, and a <strong>self</strong> time, the total minus the time spent in child operators. <code>aten::linear</code> has a large total but almost no self time, because the work is in its child <code>aten::addmm</code>. Sort by <code>self_cpu_time_total</code> to find host overhead, and by <code>self_cuda_time_total</code> (deprecated in favour of <code>self_device_time_total</code> on the event objects) to find the expensive kernels.
+</p>
+
+<h3 id="bottlenecks">Finding the bottleneck</h3>
+<ul>
+  <li><strong>Data-loader stalls.</strong> In the trace, a long <code>enumerate(DataLoader)#..._next__</code> span on the CPU with an empty GPU row underneath. Without a profiler, time <code>next(iterator)</code> separately from the step. The fixes are on <a href="/ml-models/data-loading-and-batching">data loading</a>: more <code>num_workers</code>, <code>pin_memory</code>, prefetching, or cheaper decoding.</li>
+  <li><strong>Host overhead.</strong> Many short kernels with gaps between them, and CPU time per step close to the step time. Fixes: larger batches, fewer and bigger operations, fused kernels, <code>torch.compile</code> or CUDA graphs, which replay a recorded sequence of launches with one call.</li>
+  <li><strong>Hidden synchronizations.</strong> <code>.item()</code>, <code>.cpu()</code>, <code>print(loss)</code>, indexing with a GPU boolean mask, and <code>nonzero</code> all wait for the GPU. In a trace they show as a <code>cudaStreamSynchronize</code> or <code>cudaMemcpyAsync</code> on the CPU that lasts until the queue drains. One per step for logging is fine; one per layer serializes the step.</li>
+  <li><strong>Memory spikes.</strong> An out-of-memory error at step 1, or only on some batches. See below.</li>
+  <li><strong>Compute-bound.</strong> A solid GPU row. Now kernel time matters: check the top self-time kernels, whether matmuls use tensor cores (<a href="/ml-models/mixed-precision">bf16</a>, dimensions that are multiples of 8), and the MFU.</li>
+</ul>
+
+<h3 id="memory">Memory</h3>
+<p>
+  The caching allocator (<a href="{{ pinned('pytorch', 'docs/source/notes/cuda.md', 506, 530) }}">memory management notes</a>) keeps freed blocks for reuse, so <code>nvidia-smi</code> shows the reserved pool, not what tensors use. <a href="{{ src('torch/cuda/memory.py', 525, 539) }}"><code>memory_allocated()</code></a> is the bytes held by live tensors now; <a href="{{ src('torch/cuda/memory.py', 542, 560) }}"><code>max_memory_allocated()</code></a> reads <code>"allocated_bytes.all.peak"</code> from <a href="{{ src('torch/cuda/memory.py', 242, 350) }}"><code>memory_stats()</code></a>; <a href="{{ src('torch/cuda/memory.py', 563, 575) }}"><code>memory_reserved()</code></a> and <a href="{{ src('torch/cuda/memory.py', 578, 593) }}"><code>max_memory_reserved()</code></a> are the same for the pool. <a href="{{ src('torch/cuda/memory.py', 381, 397) }}"><code>reset_peak_memory_stats()</code></a> restarts the peaks, so you can measure one step at a time, and <a href="{{ src('torch/cuda/memory.py', 652, 778) }}"><code>memory_summary()</code></a> prints the whole table.
+</p>
+<p>
+  For the question "what was allocated at the peak, and by which line", turn on <a href="{{ src('torch/cuda/memory.py', 897, 995) }}"><code>torch.cuda.memory._record_memory_history()</code></a>, which records a stack trace for every allocation and free (up to <code>max_entries</code>, keeping the latest), run a few steps, and write the history with <a href="{{ src('torch/cuda/memory.py', 1149, 1168) }}"><code>_dump_snapshot("snapshot.pickle")</code></a>. Dragging the file into pytorch.org/memory_viz shows every tensor as a band over time; the tallest stack of bands is the peak. The leading underscore means the API may change between releases.
+</p>
+
+<h3 id="mfu">Model FLOPs utilization</h3>
+<p>
+  Throughput in tokens per second is hard to compare across models and machines. MFU (introduced with PaLM, Chowdhery et al., 2022) divides the FLOPs the model <em>needs</em> per second by the hardware's peak. For a decoder-only Transformer with <var>N</var> parameters, <var>n</var><sub>layers</sub> layers, width <var>d</var> and context <var>T</var>, training costs about
+</p>
+<div class="jj-diagram"><p>
+  FLOPs per token ≈ 6<var>N</var> + 12 · <var>n</var><sub>layers</sub> · <var>d</var> · <var>T</var>, &nbsp; MFU = tokens/s × FLOPs per token ÷ (GPUs × peak FLOP/s)
+</p></div>
+<p>
+  The 6<var>N</var> is 2<var>N</var> for the forward pass's multiply-adds plus 4<var>N</var> for the backward pass (gradients for activations and weights), as on <a href="/ml-models/pretraining">pretraining</a>; the second term is the attention scores and weighted sums, which grow with context. <strong>Hardware</strong> FLOPs utilization (HFU) also counts work done twice, such as the forward pass repeated by <a href="/ml-models/checkpointing">activation checkpointing</a>, so it is never lower than MFU. MFU is the honest number: a run that recomputes everything can raise HFU without training any faster. Well-tuned large dense runs report roughly 40 to 60% MFU.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>torch.cuda.synchronize</code></td><td>device</td><td>Block the host until queued work finishes</td><td><a href="{{ src('torch/cuda/__init__.py', 1271, 1281) }}">cuda/__init__.py</a></td></tr>
+      <tr><td><code>torch.cuda.Event</code></td><td><code>enable_timing=True</code></td><td>Stream marker; <code>elapsed_time</code> in ms</td><td><a href="{{ src('torch/cuda/streams.py', 159, 243) }}">streams.py</a></td></tr>
+      <tr><td><code>benchmark.Timer</code></td><td><code>stmt</code>, <code>setup</code>, <code>globals</code></td><td>Synced, warmed-up timing with median</td><td><a href="{{ src('torch/utils/benchmark/utils/timer.py', 66, 382) }}">timer.py</a></td></tr>
+      <tr><td><code>profiler.profile</code></td><td><code>activities</code>, <code>schedule</code>, <code>on_trace_ready</code>, <code>record_shapes</code>, <code>profile_memory</code>, <code>with_stack</code>, <code>with_flops</code></td><td>CPU and GPU event recorder</td><td><a href="{{ src('torch/profiler/profiler.py', 874, 1323) }}">profiler.py</a></td></tr>
+      <tr><td><code>profiler.schedule</code></td><td><code>wait</code>, <code>warmup</code>, <code>active</code>, <code>repeat</code>, <code>skip_first</code></td><td>Step → <code>ProfilerAction</code></td><td><a href="{{ src('torch/profiler/profiler.py', 768, 827) }}">profiler.py</a></td></tr>
+      <tr><td><code>tensorboard_trace_handler</code></td><td><code>dir_name</code></td><td>Writes one trace file per saved cycle</td><td><a href="{{ src('torch/profiler/profiler.py', 838, 871) }}">profiler.py</a></td></tr>
+      <tr><td><code>key_averages</code></td><td><code>group_by_input_shape</code>, <code>group_by_stack_n</code></td><td>Per-name count, self and total time</td><td><a href="{{ src('torch/profiler/profiler.py', 589, 614) }}">profiler.py</a></td></tr>
+      <tr><td><code>max_memory_allocated</code></td><td>bytes</td><td>Peak tensor memory since last reset</td><td><a href="{{ src('torch/cuda/memory.py', 542, 560) }}">memory.py</a></td></tr>
+      <tr><td><code>_record_memory_history</code></td><td><code>max_entries</code></td><td>Stack per allocation, for snapshots</td><td><a href="{{ src('torch/cuda/memory.py', 897, 995) }}">memory.py</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>Why does the profiler need a WARMUP action at all, if its results are thrown away?</summary>
+  <p>Starting the tracer (CUPTI and Kineto) has a one-off cost, and the first traced step pays it. Tracing a step and discarding it means the recorded steps show the training loop's steady state, not the profiler's own start-up. That is why <code>schedule</code> warns when <code>warmup</code> is 0.</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-timing">Timing a step</h3>
+  <p>
+    A step of {{ e.step_kernels_us|length }} kernels ({{ e.step_kernels_us|join(", ") }} µs) launched {{ e.launch_us }} µs apart, top of the first figure. The first two iterations add {{ f(e.warmup_extra_ms[0], 0) }} ms and {{ f(e.warmup_extra_ms[1], 0) }} ms of one-off work.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>iteration</th>{% for s in t.synced %}<th>{{ loop.index0 }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        <tr><td>synced (ms)</td>{% for s in t.synced %}<td>{{ f(s, 2) }}</td>{% endfor %}</tr>
+        <tr><td>no sync (ms)</td>{% for s in t.unsynced %}<td>{{ f(s, 2) }}</td>{% endfor %}</tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The mean of all {{ t.synced|length }} synced iterations is {{ f(t.naive_mean, 2) }} ms, {{ f(t.naive_mean / t.median, 0) }} times the steady {{ f(t.median, 3) }} ms, because of the first iteration. Without synchronization the steady iterations read {{ f(t.unsynced_mean, 2) }} ms: the time to launch, about {{ f(t.median / t.unsynced_mean, 0) }} times too fast. Drop the first two, synchronize, take the median: {{ f(t.median, 3) }} ms. That is also the GPU time, at {{ pct(t.timeline.utilization) }} utilization; the host-bound step below it uses only {{ pct(host.utilization) }}.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-averages">Self and total time</h3>
+  <p>
+    A profiled step with these CPU spans (µs from the step start), nested by time: the step contains the data-loader call, two <code>aten::linear</code> calls (each containing <code>aten::t</code> and <code>aten::addmm</code>), a ReLU, the loss, two backward nodes and the optimizer. Self time is total time minus the totals of direct children; a stack walk over the spans sorted by start computes it.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>name</th><th>calls</th><th>self (µs)</th><th>total (µs)</th><th>self %</th></tr></thead>
+      <tbody>
+        {% set step_total = (ex.averages|selectattr("name", "equalto", "ProfilerStep#4")|first).total %}
+        {% for r in ex.averages %}
+        <tr><td><code>{{ r.name }}</code></td><td>{{ r.count }}</td><td>{{ "{:,}".format(r.self) }}</td><td>{{ "{:,}".format(r.total) }}</td><td>{{ pct(r.self / step_total) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Sorted by self time, the optimizer and the data loader top the list, together {{ pct((ex.averages[0].self + ex.averages[1].self) / step_total, 0) }} of the step. Sorted by total time, <code>aten::linear</code> would sit above <code>aten::addmm</code> with {{ (ex.averages|selectattr("name", "equalto", "aten::linear")|first).total }} µs, yet only {{ (ex.averages|selectattr("name", "equalto", "aten::linear")|first).self }} µs is its own. The self column sums to the step's {{ "{:,}".format(step_total) }} µs, since every microsecond belongs to exactly one innermost span. A {{ f(ex.averages[1].self / 1000, 1) }} ms <code>DataLoader</code> span is the stall to fix first; a <code>for</code> loop over parameters in the optimizer suggests <code>foreach=True</code> or <code>fused=True</code>.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-loader">A data-loader stall</h3>
+  <p>
+    Each batch takes {{ f(e.loader.load_ms, 0) }} ms to load on one worker and {{ f(e.loader.compute_ms, 0) }} ms to train on. With <var>w</var> workers loading in parallel, a batch is ready every {{ f(e.loader.load_ms, 0) }}/<var>w</var> ms. The time the step waits in <code>next(iterator)</code>, averaged after the pipeline fills:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>workers</th><th>first batch wait (ms)</th><th>steady wait (ms)</th><th>wait fraction</th><th>ms per step</th></tr></thead>
+      <tbody>
+        {% for r in ex.loader %}
+        <tr><td>{{ r.workers }}</td><td>{{ f(r.first_wait, 0) }}</td><td>{{ f(r.steady_wait, 1) }}</td><td>{{ pct(r.wait_fraction) }}</td><td>{{ f(r.step_ms, 1) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    With {{ ex.loader[0].workers }} workers the GPU waits {{ f(ex.loader[0].steady_wait, 0) }} ms of every {{ f(ex.loader[0].steady_wait + e.loader.compute_ms, 0) }}, a third of the step, and no kernel optimization can fix that. With {{ ex.loader[1].workers }} workers, batches arrive every {{ f(e.loader.load_ms / ex.loader[1].workers, 0) }} ms, as fast as they are consumed, and the wait disappears; a fourth worker buys nothing. The {{ f(ex.loader[0].first_wait, 0) }} ms first wait is the pipeline filling and is one more reason to skip the first steps when timing.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-memory">Where the peak is</h3>
+  <p>
+    A {{ e.memory.layers }}-layer model with {{ "{:,}".format(e.memory.params_mib) }} MiB of parameters, trained with Adam, on batches of {{ e.memory.tokens|join(", ") }} tokens. Each layer saves {{ e.memory.act_mib_per_1k }} MiB of activations per 1,024 tokens. The backward pass frees each layer's activations after creating its gradient; Adam creates <code>exp_avg</code> and <code>exp_avg_sq</code> lazily at the first <code>optimizer.step()</code>; <code>zero_grad(set_to_none=True)</code> frees the gradients.
+  </p>
+  {% set top = mem.reserved %}
+  {% set dx = 580 / (mem.events|length - 1) %}
+  <div class="jj-diagram">
+    <svg viewBox="0 0 640 250" role="img" aria-labelledby="prof-mem-title prof-mem-desc">
+      <title id="prof-mem-title">Allocated memory over {{ e.memory.tokens|length }} training steps</title>
+      <desc id="prof-mem-desc">Allocated memory after each of {{ mem.events|length }} allocation events. Parameters take {{ "{:,}".format(e.memory.params_mib) }} MiB. Step peaks: {% for p in mem.peaks %}step {{ p.step }} with {{ "{:,}".format(p.tokens) }} tokens, {{ "{:,}".format(p.peak|int) }} MiB{% if not loop.last %}; {% endif %}{% endfor %}. Every step ends at {{ "{:,}".format(mem.peaks[0]["end"]|int) }} MiB, parameters plus Adam state.</desc>
+      <g font-size="11">
+        <line x1="40" y1="210" x2="625" y2="210" class="d-line"></line>
+        <line x1="40" y1="20" x2="40" y2="210" class="d-line"></line>
+        {% for level in [0, 2000, 4000, 6000, 8000] %}
+        <text x="34" y="{{ f(214 - level / top * 180, 1) }}" text-anchor="end" class="d-muted">{{ level // 1000 }}k</text>
+        {% endfor %}
+        {% set ns = namespace(points="40,210", prev=0) %}
+        {% for ev in mem.events %}
+        {% set x = 40 + loop.index0 * dx %}
+        {% set ns.points = ns.points ~ " " ~ f(x, 1) ~ "," ~ f(210 - ns.prev / top * 180, 1) ~ " " ~ f(x, 1) ~ "," ~ f(210 - ev.allocated / top * 180, 1) %}
+        {% set ns.prev = ev.allocated %}
+        {% if loop.previtem and loop.previtem.step != ev.step %}
+        <line x1="{{ f(x, 1) }}" y1="20" x2="{{ f(x, 1) }}" y2="210" class="d-line ml-dashed"></line>
+        <text x="{{ f(x + 4, 1) }}" y="232" class="d-muted">step {{ ev.step }}</text>
+        {% endif %}
+        {% endfor %}
+        <polyline points="{{ ns.points }}" fill="none" class="d-line" style="stroke-width: 2"></polyline>
+        <text x="620" y="16" text-anchor="end" class="d-muted">peak {{ "{:,}".format(top|int) }} MiB at step {{ (mem.peaks|sort(attribute="peak")|last).step }}</text>
+      </g>
+    </svg>
+    <p class="ml-caption">Each step climbs through the forward pass, steps down through the backward pass as activations are freed, then drops at <code>zero_grad</code>. Step 0 is lower than step 1 because the Adam state does not exist until its end; the last step is tallest because its batch is twice as long.</p>
+  </div>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>step</th><th>tokens</th><th>peak allocated (MiB)</th><th>allocated at end (MiB)</th></tr></thead>
+      <tbody>
+        {% for p in mem.peaks %}
+        <tr><td>{{ p.step }}</td><td>{{ "{:,}".format(p.tokens) }}</td><td>{{ "{:,}".format(p.peak|int) }}</td><td>{{ "{:,}".format(p["end"]|int) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Measuring <code>max_memory_allocated()</code> after step 0 gives {{ "{:,}".format(mem.peaks[0].peak|int) }} MiB and badly underestimates the {{ "{:,}".format(mem.peaks[1].peak|int) }} MiB of every later step: the {{ "{:,}".format(2 * e.memory.params_mib) }} MiB of Adam state is resident through the next forward pass. And a run sized on typical batches fails on the first long one, at {{ "{:,}".format(mem.peaks[-1].peak|int) }} MiB. Calling <code>reset_peak_memory_stats()</code> before each step and logging the peak catches both; a memory snapshot shows that the long batch's activations, not the parameters, are the tall band. Fixes: cap tokens per batch rather than sequences, <a href="/ml-models/checkpointing">activation checkpointing</a>, or <a href="/ml-models/gradient-accumulation">gradient accumulation</a> with smaller micro-batches.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-mfu">MFU for a 1.3B model</h3>
+  <p>
+    A {{ f(e.mfu.params / 1e9, 1) }}B-parameter decoder with {{ e.mfu.layers }} layers, <var>d</var> = {{ e.mfu.d_model }} and context {{ "{:,}".format(e.mfu.context) }}, trained on {{ e.mfu.gpus }} GPUs with a {{ f(e.mfu.peak / 1e12, 0) }} TFLOP/s bf16 dense peak. Each step processes {{ "{:,}".format(e.mfu.tokens_per_step) }} tokens in {{ f(e.mfu.step_s, 1) }} s (measured as above).
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>quantity</th><th>value</th></tr></thead>
+      <tbody>
+        <tr><td>6<var>N</var> (FLOPs per token)</td><td>{{ f(m.dense / 1e9, 2) }} × 10⁹</td></tr>
+        <tr><td>12 · <var>n</var><sub>layers</sub> · <var>d</var> · <var>T</var></td><td>{{ f(m.attention / 1e9, 2) }} × 10⁹</td></tr>
+        <tr><td>FLOPs per token</td><td>{{ f(m.per_token / 1e9, 2) }} × 10⁹</td></tr>
+        <tr><td>tokens per second</td><td>{{ "{:,}".format(m.tokens_per_s|round|int) }}</td></tr>
+        <tr><td>achieved FLOP/s per GPU</td><td>{{ f(m.per_gpu / 1e12, 1) }} × 10¹²</td></tr>
+        <tr><td>MFU</td><td>{{ pct(m.mfu) }}</td></tr>
+        <tr><td>HFU with full recomputation</td><td>{{ pct(m.hfu) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Attention adds {{ pct(m.attention / m.dense, 0) }} on top of 6<var>N</var> at this context, which is why leaving it out understates MFU for long contexts. At {{ pct(m.mfu, 0) }} the run is in the healthy range; at 15% the next step would be the trace, looking for the stalls above. With full activation recomputation the hardware does a second forward pass (8<var>N</var> instead of 6<var>N</var>, and the attention term likewise grows by a third), so HFU reads {{ pct(m.hfu, 0) }}, but the run is no faster.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  Timing a step with events, profiling a few steps on a schedule, measuring the peak memory per step, and computing MFU. <code>train_step</code> and <code>loader</code> stand for your own loop.
+</p>
+
+<pre><code class="language-python">import torch
+from torch.profiler import ProfilerActivity, profile, record_function, schedule, tensorboard_trace_handler
+
+
+def time_steps(train_step, batches, warmup=2):
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    times = []
+    for i, batch in enumerate(batches):
+        start.record()
+        train_step(batch)
+        end.record()
+        end.synchronize()
+        if i &gt;= warmup:
+            times.append(start.elapsed_time(end))
+    return sorted(times)[len(times) // 2]
+
+
+def profile_steps(train_step, loader, steps=14):
+    with profile(
+        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+        schedule=schedule(skip_first=2, wait=1, warmup=1, active=2, repeat=2),
+        on_trace_ready=tensorboard_trace_handler("./traces"),
+        record_shapes=True,
+        profile_memory=True,
+    ) as prof:
+        it = iter(loader)
+        for _ in range(steps):
+            with record_function("data"):
+                batch = next(it)
+            train_step(batch)
+            prof.step()
+    print(prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=15))
+
+
+def peak_memory_per_step(train_step, batches, snapshot=None):
+    if snapshot:
+        torch.cuda.memory._record_memory_history(max_entries=100_000)
+    peaks = []
+    for batch in batches:
+        torch.cuda.reset_peak_memory_stats()
+        train_step(batch)
+        peaks.append(torch.cuda.max_memory_allocated() / 2**20)
+    if snapshot:
+        torch.cuda.memory._dump_snapshot(snapshot)
+        torch.cuda.memory._record_memory_history(enabled=None)
+    return peaks
+
+
+def mfu(params, layers, d_model, context, tokens_per_step, step_s, gpus, peak_flops):
+    per_token = 6 * params + 12 * layers * d_model * context
+    return tokens_per_step / step_s * per_token / (gpus * peak_flops)</code></pre>
+
+<p>
+  <code>end.synchronize()</code> waits only for that event, not the whole device. For a single function, <code>torch.utils.benchmark.Timer(stmt="f(x)", globals={"f": f, "x": x}).blocked_autorange()</code> does the warmup, synchronization and median for you. Note that <code>peak_memory_per_step</code> reads the peak after each step, which is itself a sync; that is fine for a diagnostic run and is why it is not left on in production.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Tool</th><th>Good for</th><th>Cost</th></tr></thead>
+    <tbody>
+      <tr><td>Sync + host clock</td><td>Whole steps, simplest code</td><td>Each sync drains the queue and removes overlap with the next step</td></tr>
+      <tr><td>CUDA events</td><td>GPU time of a region, low disturbance</td><td>Only covers GPU work on one stream; still needs a sync to read</td></tr>
+      <tr><td><code>benchmark.Timer</code></td><td>Microbenchmarks of one op or module</td><td>Isolated from the real loop: no data loading, different cache state</td></tr>
+      <tr><td><code>torch.profiler</code></td><td>Where time goes: ops, kernels, gaps, launches</td><td>Slows traced steps (more with <code>with_stack</code> and <code>record_shapes</code>); traces are large</td></tr>
+      <tr><td>Memory stats and snapshots</td><td>Peaks per step; which allocation made the peak</td><td>History recording adds a stack trace per allocation; snapshot API is private</td></tr>
+      <tr><td>MFU</td><td>One number to compare runs and hardware</td><td>Needs a FLOP model of the architecture; says nothing about where the loss is</td></tr>
+      <tr><td>Nsight Systems / Compute</td><td>Kernel internals: occupancy, memory bandwidth, stalls</td><td>Outside PyTorch; per-kernel replay is very slow</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>A step timed with <code>time.time()</code> and no synchronization reads 0.4 ms, but the run makes 3 steps a second. What is going on?</summary>
+  <p>The timer measures only how long Python took to queue the kernels; the GPU runs them afterwards. The queue fills until some call forces a sync (a <code>.item()</code> for logging, a full launch queue, the next batch's copy), and that call absorbs the waiting. The real step time is about 330 ms. Synchronize before stopping the timer, or use CUDA events.</p>
+</details>
+
+<details class="ml-quiz">
+  <summary>The profiler's GPU rows show many 5 µs kernels with 10 µs gaps between them, and CPU time per step equals the step time. Will a faster GPU help?</summary>
+  <p>No. The step is host-bound: the GPU finishes each kernel and then waits for the next launch. A faster GPU only makes the gaps longer. Reduce the number of launches (bigger batches, fused ops, <code>torch.compile</code>, CUDA graphs) or the Python work between them.</p>
+</details>
+
+<details class="ml-quiz">
+  <summary>Why is MFU, not HFU, the number to report when comparing two training setups?</summary>
+  <p>MFU counts only the FLOPs the model needs, so it rises only when the same training finishes faster. HFU also counts recomputation, so a setup that recomputes activations can show a higher HFU while taking longer per token.</p>
+</details>
+
+<h3 id="check-yourself">Check yourself</h3>
+<ul>
+  <li>Give two correct ways to time a GPU operation in PyTorch, and say why <code>CUDA_LAUNCH_BLOCKING=1</code> is not one of them.</li>
+  <li>For <code>schedule(wait=1, warmup=1, active=2, repeat=1)</code>, list the action at steps 0 to 5.</li>
+  <li>An operator has a large total time and a small self time. Where is the time?</li>
+  <li>What would a data-loader stall look like in a trace, and what would you try first?</li>
+  <li>Why is peak memory after step 0 lower than after step 1 with Adam?</li>
+  <li>Compute the MFU of a 7B model on 64 GPUs at 989 TFLOP/s peak processing 2M tokens per 9 s step, ignoring attention.</li>
+</ul>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<p>
+  Why GPU work is asynchronous and what makes kernels fast is on <a href="/ml-models/gpu-execution">GPU execution</a>. Profiling usually leads to <a href="/ml-models/data-loading-and-batching">data loading</a> (stalls), <a href="/ml-models/mixed-precision">mixed precision</a> (kernel time), <a href="/ml-models/checkpointing">checkpointing</a> and <a href="/ml-models/gradient-accumulation">gradient accumulation</a> (memory), or <a href="/ml-models/distributed-training">distributed training</a>, where communication shows up as NCCL kernels in the trace. The FLOP counts come from <a href="/ml-models/pretraining">pretraining</a>, and serving-side measurements of time to first token and inter-token latency are on <a href="/ml-models/latency-and-throughput">latency and throughput</a>. The <a href="/ml-models/training-loop">training loop</a> is what gets profiled, and fixing seeds and nondeterminism before comparing runs is on <a href="/ml-models/reproducibility">reproducibility</a>.
+</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/profiler/profiler.py', 874, 1323) }}"><code>profile</code></a>, <a href="{{ src('torch/profiler/profiler.py', 768, 827) }}"><code>schedule</code></a>, <a href="{{ src('torch/profiler/profiler.py', 745, 759) }}"><code>ProfilerAction</code></a>, <a href="{{ src('torch/profiler/profiler.py', 838, 871) }}"><code>tensorboard_trace_handler</code></a>, <a href="{{ src('torch/profiler/profiler.py', 469, 523) }}"><code>export_chrome_trace</code></a>, <a href="{{ src('torch/profiler/profiler.py', 589, 614) }}"><code>key_averages</code></a>, <a href="{{ src('torch/autograd/profiler.py', 868, 1001) }}"><code>record_function</code></a>, <a href="{{ src('torch/cuda/__init__.py', 1271, 1281) }}"><code>cuda.synchronize</code></a>, <a href="{{ src('torch/cuda/streams.py', 159, 243) }}"><code>cuda.Event</code></a>, <a href="{{ src('torch/cuda/memory.py', 542, 560) }}"><code>max_memory_allocated</code></a>, <a href="{{ src('torch/cuda/memory.py', 381, 397) }}"><code>reset_peak_memory_stats</code></a>, <a href="{{ src('torch/cuda/memory.py', 897, 995) }}"><code>_record_memory_history</code></a>, <a href="{{ src('torch/cuda/memory.py', 1149, 1168) }}"><code>_dump_snapshot</code></a>, <a href="{{ src('torch/utils/benchmark/utils/timer.py', 66, 382) }}"><code>benchmark.Timer</code></a>.</li>
+  <li>PyTorch {{ upstream.tag }} notes: <a href="{{ pinned('pytorch', 'docs/source/notes/cuda.md', 307, 345) }}">asynchronous execution</a>, <a href="{{ pinned('pytorch', 'docs/source/notes/cuda.md', 506, 530) }}">memory management</a>.</li>
+  <li>Chowdhery et al. <em>PaLM: Scaling Language Modeling with Pathways.</em> 2022, appendix B (model FLOPs utilization). <a href="https://arxiv.org/abs/2204.02311">arXiv:2204.02311</a></li>
+  <li>Korthikanti et al. <em>Reducing Activation Recomputation in Large Transformer Models.</em> 2022 (hardware versus model FLOPs). <a href="https://arxiv.org/abs/2205.05198">arXiv:2205.05198</a></li>
+  <li>Kaplan et al. <em>Scaling Laws for Neural Language Models.</em> 2020, section 2.1 (6<var>N</var> FLOPs per token). <a href="https://arxiv.org/abs/2001.08361">arXiv:2001.08361</a></li>
+</ul>

@@ -1214,7 +1214,7 @@ PAGES = [
             "pytorch:torch/profiler/profiler.py",
             "pytorch:torch/cuda/__init__.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "quantization",
