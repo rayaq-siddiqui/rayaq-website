@@ -166,6 +166,19 @@ PAGES = [
         "ready": True,
     },
     {
+        "slug": "matrix-decompositions",
+        "title": "LU, QR, Cholesky and matrix norms",
+        "area": "foundations",
+        "level": "core",
+        "summary": "Solving linear systems and least squares stably, and measuring a matrix with norms.",
+        "prerequisites": ["linear-algebra-toolkit"],
+        "sources": [
+            "pytorch:torch/linalg/__init__.py",
+            "pytorch:torch/nn/init.py",
+        ],
+        "ready": True,
+    },
+    {
         "slug": "derivatives-and-gradients",
         "title": "Derivatives and gradients",
         "area": "foundations",
@@ -2288,6 +2301,207 @@ def perturbed_solve(example):
         "x_change": x_change,
         "amplification": x_change / rhs_change,
         "cond": condition_number(a),
+    }
+
+
+DECOMPOSITION_EXAMPLE = {
+    "a": [[2.0, 1.0, 1.0], [4.0, -6.0, 0.0], [-2.0, 7.0, 2.0]],
+    "b": [5.0, -2.0, 9.0],
+    "spd": [[4.0, 2.0, 2.0], [2.0, 10.0, 7.0], [2.0, 7.0, 21.0]],
+    "spd_b": [10.0, 26.0, 51.0],
+    "design": [[1.0, 0.0], [1.0, 1.0], [1.0, 2.0], [1.0, 3.0]],
+    "targets": [1.0, 2.0, 2.0, 4.0],
+    "lauchli_eps": [10.0 ** -k for k in range(1, 9)],
+    "samples": 4000,
+    "seed": 7,
+}
+
+
+def lu_factor(matrix):
+    n = len(matrix)
+    u = [list(map(float, row)) for row in matrix]
+    lower = [[0.0] * n for _ in range(n)]
+    order = list(range(n))
+    pivots = []
+    for col in range(n):
+        pivot = max(range(col, n), key=lambda r: abs(u[r][col]))
+        pivots.append(pivot + 1)
+        u[col], u[pivot] = u[pivot], u[col]
+        lower[col], lower[pivot] = lower[pivot], lower[col]
+        order[col], order[pivot] = order[pivot], order[col]
+        for r in range(col + 1, n):
+            factor = u[r][col] / u[col][col]
+            lower[r][col] = factor
+            u[r] = [x - factor * y for x, y in zip(u[r], u[col])]
+    for i in range(n):
+        lower[i][i] = 1.0
+    permutation = [[float(order[i] == j) for j in range(n)] for i in range(n)]
+    return {"P": permutation, "L": lower, "U": u, "order": order, "pivots": pivots}
+
+
+def forward_substitute(lower, b):
+    out = []
+    for i, row in enumerate(lower):
+        out.append((b[i] - sum(row[j] * out[j] for j in range(i))) / row[i])
+    return out
+
+
+def back_substitute(upper, b):
+    n = len(upper)
+    out = [0.0] * n
+    for i in reversed(range(n)):
+        out[i] = (b[i] - sum(upper[i][j] * out[j] for j in range(i + 1, n))) / upper[i][i]
+    return out
+
+
+def lu_solve(factors, b):
+    permuted = [b[i] for i in factors["order"]]
+    return back_substitute(factors["U"], forward_substitute(factors["L"], permuted))
+
+
+def cholesky(matrix):
+    n = len(matrix)
+    lower = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(i + 1):
+            total = matrix[i][j] - sum(lower[i][k] * lower[j][k] for k in range(j))
+            if i == j:
+                if total <= 0:
+                    raise ValueError("matrix is not positive-definite")
+                lower[i][i] = math.sqrt(total)
+            else:
+                lower[i][j] = total / lower[j][j]
+    return lower
+
+
+def gram_schmidt(matrix, modified=True):
+    rows, cols = len(matrix), len(matrix[0])
+    columns = [[float(matrix[i][j]) for i in range(rows)] for j in range(cols)]
+    q, r = [], [[0.0] * cols for _ in range(cols)]
+    for j in range(cols):
+        v = list(columns[j])
+        for k in range(j):
+            r[k][j] = dot_product(q[k], v if modified else columns[j])
+            v = [a - r[k][j] * b for a, b in zip(v, q[k])]
+        r[j][j] = vector_norm(v)
+        q.append([a / r[j][j] for a in v])
+    return {"Q": transpose(q), "R": r}
+
+
+def orthogonality_loss(q):
+    gram = matmul(transpose(q), q)
+    return math.sqrt(sum((gram[i][j] - (i == j)) ** 2 for i in range(len(gram)) for j in range(len(gram))))
+
+
+def householder_least_squares(design, targets):
+    rows, cols = len(design), len(design[0])
+    r = [list(map(float, row)) for row in design]
+    y = list(map(float, targets))
+    for k in range(cols):
+        x = [r[i][k] for i in range(k, rows)]
+        v = list(x)
+        v[0] += math.copysign(vector_norm(x), x[0])
+        norm_sq = dot_product(v, v)
+        if norm_sq == 0:
+            continue
+        for j in range(k, cols):
+            scale = 2 * sum(v[i - k] * r[i][j] for i in range(k, rows)) / norm_sq
+            for i in range(k, rows):
+                r[i][j] -= scale * v[i - k]
+        scale = 2 * sum(v[i - k] * y[i] for i in range(k, rows)) / norm_sq
+        for i in range(k, rows):
+            y[i] -= scale * v[i - k]
+    return {"R": [row[:cols] for row in r[:cols]], "qtb": y, "solution": back_substitute([row[:cols] for row in r[:cols]], y[:cols])}
+
+
+def lauchli(eps, truth=(1.0, -1.0)):
+    a = [[1.0, 1.0], [eps, 0.0], [0.0, eps]]
+    return a, [dot_product(row, truth) for row in a]
+
+
+def least_squares_errors(eps_values, truth=(1.0, -1.0)):
+    rows = []
+    for eps in eps_values:
+        a, b = lauchli(eps, truth)
+        gram = matmul(transpose(a), a)
+        moment = [dot_product(column, b) for column in transpose(a)]
+        try:
+            normal = solve_linear(gram, moment)
+            normal_error = vector_norm([x - t for x, t in zip(normal, truth)])
+        except ZeroDivisionError:
+            normal, normal_error = None, None
+        qr = householder_least_squares(a, b)["solution"]
+        rows.append({
+            "eps": eps,
+            "cond": condition_number(a),
+            "gram_singular": gram[0][0] == gram[0][1],
+            "normal": normal,
+            "normal_error": normal_error,
+            "qr": qr,
+            "qr_error": vector_norm([x - t for x, t in zip(qr, truth)]),
+        })
+    for row in rows:
+        row["normal_log"] = None if row["normal_error"] is None else error_exponent(row["normal_error"])
+        row["qr_log"] = error_exponent(row["qr_error"])
+    return rows
+
+
+def error_exponent(error, floor=-16.0):
+    return floor if error < 10 ** floor else max(floor, math.log10(error))
+
+
+def matrix_norms(matrix):
+    singular = svd(matrix)["S"]
+    return {
+        "fro": frobenius_norm(matrix),
+        "nuc": sum(singular),
+        "inf": max(sum(abs(x) for x in row) for row in matrix),
+        "one": max(sum(abs(x) for x in col) for col in transpose(matrix)),
+        "two": singular[0],
+        "minus_two": singular[-1],
+        "cond": singular[0] / singular[-1],
+    }
+
+
+def correlated_samples(spd, count, seed):
+    lower = cholesky(spd)
+    rng = random.Random(seed)
+    n = len(spd)
+    samples = []
+    for _ in range(count):
+        z = [rng.gauss(0.0, 1.0) for _ in range(n)]
+        samples.append([sum(lower[i][k] * z[k] for k in range(n)) for i in range(n)])
+    cov = [[sum(x[i] * x[j] for x in samples) / count for j in range(n)] for i in range(n)]
+    return {"L": lower, "samples": samples, "covariance": cov}
+
+
+def decomposition_example(ex=DECOMPOSITION_EXAMPLE):
+    lu = lu_factor(ex["a"])
+    x = lu_solve(lu, ex["b"])
+    lower = cholesky(ex["spd"])
+    qr = gram_schmidt(ex["design"])
+    fit = householder_least_squares(ex["design"], ex["targets"])
+    normal = normal_equations([[row[1]] for row in ex["design"]], ex["targets"])["solution"]
+    hilbert = [[1.0 / (i + j + 1) for j in range(6)] for i in range(6)]
+    return {
+        "lu": lu,
+        "x": x,
+        "pa": matmul(lu["P"], ex["a"]),
+        "lu_product": matmul(lu["L"], lu["U"]),
+        "cholesky": lower,
+        "cholesky_y": forward_substitute(lower, ex["spd_b"]),
+        "cholesky_x": back_substitute(transpose(lower), forward_substitute(lower, ex["spd_b"])),
+        "qr": qr,
+        "fit": fit["solution"],
+        "fit_r": fit["R"],
+        "normal_fit": [normal[1], normal[0]],
+        "norms": matrix_norms(ex["a"]),
+        "spd_norms": matrix_norms(ex["spd"]),
+        "least_squares": least_squares_errors(ex["lauchli_eps"]),
+        "hilbert_cond": condition_number(hilbert),
+        "hilbert_classical": orthogonality_loss(gram_schmidt(hilbert, modified=False)["Q"]),
+        "hilbert_modified": orthogonality_loss(gram_schmidt(hilbert)["Q"]),
+        "sampling": correlated_samples(ex["spd"], ex["samples"], ex["seed"]),
     }
 
 
@@ -14786,6 +15000,8 @@ def render(slug, render_template):
         "ratings_example": RATINGS_EXAMPLE,
         "rank_example": RANK_EXAMPLE,
         "condition_example": CONDITION_EXAMPLE,
+        "decomposition_settings": DECOMPOSITION_EXAMPLE,
+        "decomposition_example": decomposition_example,
         "jacobi_eigh": jacobi_eigh,
         "power_iteration": power_iteration,
         "svd": svd,

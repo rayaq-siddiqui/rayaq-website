@@ -5819,3 +5819,78 @@ def test_prof_memory_peak_moves_after_first_step_and_long_batch():
     assert all(p["end"] == 3000.0 for p in mem["peaks"])
     assert mem["reserved"] == max(peaks)
     assert mem["events"][0] == {"step": -1, "event": "model.to(device)", "allocated": 1000}
+
+
+def test_lu_factor_pivots_and_reconstructs():
+    ex = ml_models_docs.DECOMPOSITION_EXAMPLE
+    lu = ml_models_docs.lu_factor(ex["a"])
+    assert lu["pivots"] == [2, 2, 3]
+    assert lu["U"] == [[4.0, -6.0, 0.0], [0.0, 4.0, 1.0], [0.0, 0.0, 1.0]]
+    assert lu["L"] == [[1.0, 0.0, 0.0], [0.5, 1.0, 0.0], [-0.5, 1.0, 1.0]]
+    assert ml_models_docs.matmul(lu["L"], lu["U"]) == ml_models_docs.matmul(lu["P"], ex["a"])
+    assert ml_models_docs.lu_solve(lu, ex["b"]) == pytest.approx([1.0, 1.0, 2.0])
+
+
+def test_cholesky_factor_and_solve():
+    ex = ml_models_docs.DECOMPOSITION_EXAMPLE
+    lower = ml_models_docs.cholesky(ex["spd"])
+    assert lower == [[2.0, 0.0, 0.0], [1.0, 3.0, 0.0], [1.0, 2.0, 4.0]]
+    assert ml_models_docs.matmul(lower, ml_models_docs.transpose(lower)) == ex["spd"]
+    with pytest.raises(ValueError):
+        ml_models_docs.cholesky([[1.0, 2.0], [2.0, 1.0]])
+    example = ml_models_docs.decomposition_example()
+    assert example["cholesky_y"] == pytest.approx([5.0, 7.0, 8.0])
+    assert example["cholesky_x"] == pytest.approx([1.0, 1.0, 2.0])
+
+
+def test_gram_schmidt_gives_orthonormal_q_and_triangular_r():
+    ex = ml_models_docs.DECOMPOSITION_EXAMPLE
+    qr = ml_models_docs.gram_schmidt(ex["design"])
+    assert ml_models_docs.orthogonality_loss(qr["Q"]) < 1e-12
+    assert qr["R"][1][0] == 0
+    product = ml_models_docs.matmul(qr["Q"], qr["R"])
+    assert [x for row in product for x in row] == pytest.approx([x for row in ex["design"] for x in row])
+
+
+def test_modified_gram_schmidt_keeps_orthogonality_on_hilbert():
+    example = ml_models_docs.decomposition_example()
+    assert example["hilbert_cond"] > 1e7
+    assert example["hilbert_classical"] > 1e-6
+    assert example["hilbert_modified"] < 1e-8
+
+
+def test_householder_least_squares_matches_normal_equations_on_a_line():
+    example = ml_models_docs.decomposition_example()
+    assert example["fit"] == pytest.approx([0.9, 0.9])
+    assert example["normal_fit"] == pytest.approx([0.9, 0.9])
+
+
+def test_normal_equations_lose_accuracy_where_qr_does_not():
+    rows = {r["eps"]: r for r in ml_models_docs.decomposition_example()["least_squares"]}
+    assert rows[1e-7]["normal_error"] > 1e-4
+    assert rows[1e-8]["normal"] is None and rows[1e-8]["gram_singular"]
+    assert all(r["qr_error"] < 1e-14 for r in rows.values())
+    assert rows[1e-4]["cond"] == pytest.approx(math.sqrt(2) * 1e4, rel=1e-6)
+
+
+def test_matrix_norms_follow_torch_definitions():
+    norms = ml_models_docs.matrix_norms(ml_models_docs.DECOMPOSITION_EXAMPLE["a"])
+    assert norms["inf"] == 11 and norms["one"] == 14
+    assert norms["two"] <= norms["fro"] <= norms["nuc"]
+    assert norms["cond"] == pytest.approx(norms["two"] / norms["minus_two"])
+    assert ml_models_docs.matrix_norms(ml_models_docs.DECOMPOSITION_EXAMPLE["spd"])["nuc"] == pytest.approx(35.0)
+
+
+def test_cholesky_samples_have_the_target_covariance():
+    sampling = ml_models_docs.decomposition_example()["sampling"]
+    target = ml_models_docs.DECOMPOSITION_EXAMPLE["spd"]
+    for got, want in zip(sampling["covariance"], target):
+        assert got == pytest.approx(want, abs=0.25)
+
+
+def test_error_exponent_clamps_to_the_plot_floor():
+    assert ml_models_docs.error_exponent(0.0) == -16.0
+    assert ml_models_docs.error_exponent(1e-3) == pytest.approx(-3.0)
+    rows = ml_models_docs.least_squares_errors([1e-2, 1e-8])
+    assert rows[0]["qr_log"] == -16.0 or rows[0]["qr_log"] < -15
+    assert rows[1]["normal_log"] is None

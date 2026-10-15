@@ -396,6 +396,7 @@ Gaps:
 91. `reproducibility` ✓
 92. `state-space-models` ✓
 93. `profiling` ✓
+94. `matrix-decompositions` ✓
 
 The queue is empty since run 43. From now on the Routine runs the weekly audit (spec §8.1): for each pin it checks for a newer stable release (never an rc, beta or dev tag). When one
 exists, it diffs every file the ready pages link to between the pin and that tag, updates the

@@ -1,0 +1,547 @@
+{% set ex = decomposition_settings %}
+{% set d = decomposition_example(ex) %}
+{% set lu = d.lu %}
+{% set ls = d.least_squares %}
+{% macro n(x) -%}{% if x == x|round %}{{ "%g"|format(x) }}{% else %}{{ "%.4g"|format(x) }}{% endif %}{%- endmacro %}
+{% macro vec(v) -%}[{% for x in v %}{{ n(x) }}{% if not loop.last %}, {% endif %}{% endfor %}]{%- endmacro %}
+{% macro mat(m) -%}[{% for row in m %}{{ vec(row) }}{% if not loop.last %}, {% endif %}{% endfor %}]{%- endmacro %}
+{% macro sci(x) -%}{{ "%.1e"|format(x) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>LU, QR, Cholesky and matrix norms</h1>
+  <p class="tagline">
+    The factorizations that do the actual work whenever a library solves a linear system, fits a
+    least-squares model or samples a correlated Gaussian. This page solves a 3 × 3 system with LU
+    and partial pivoting, factors a covariance matrix with Cholesky, fits a line with QR, shows the
+    normal equations failing where QR does not, and defines the matrix norms behind the condition
+    number, with every function linked at {{ upstream.tag }}.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  The <a href="{{ url_for('ml_models', slug='linear-algebra-toolkit') }}">eigen-decomposition and
+  SVD</a> explain what a matrix does, but they are expensive and are rarely how a computer solves
+  anything. Most numerical work reduces to two questions. Given a square A and a vector b, find
+  x with Ax = b. Given a tall A with more equations than unknowns, find the x that makes Ax as close
+  to b as possible. The first appears in Newton steps, Gaussian processes and every
+  <code>solve</code> call; the second is
+  <a href="{{ url_for('ml_models', slug='linear-regression') }}">linear regression</a>.
+</p>
+<p>
+  The textbook answers, x = A<sup>−1</sup>b and x = (A<sup>T</sup>A)<sup>−1</sup>A<sup>T</sup>b, are
+  exactly the ones not to compute. Forming an inverse costs more than solving, and forming
+  A<sup>T</sup>A squares the condition number, so a problem that floating point can solve to 10
+  digits comes back with 3, or not at all. Libraries instead factor A once into triangular and
+  orthogonal pieces, which are cheap to solve with and lose almost no accuracy.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  A triangular system is easy. If L is lower triangular, the first equation has one unknown, the
+  second has two of which one is already known, and so on down: <em>forward substitution</em>,
+  n²/2 multiplications. An upper triangular system is solved the same way from the bottom up,
+  <em>back substitution</em>. An orthogonal matrix Q is even easier, since Q<sup>−1</sup> =
+  Q<sup>T</sup>. So the whole game is to rewrite A as a product of triangular and orthogonal
+  matrices.
+</p>
+<ul>
+  <li><strong>LU</strong> records Gaussian elimination: PA = LU, where P reorders the rows, L
+  holds the multipliers and U is what elimination leaves. It works for any invertible square A.</li>
+  <li><strong>Cholesky</strong> is LU for a symmetric positive-definite A, where symmetry lets the
+  two factors be transposes of each other: A = LL<sup>T</sup>. Half the work, no pivoting.</li>
+  <li><strong>QR</strong> makes A's columns orthonormal one at a time: A = QR. It works for tall
+  matrices too, which is why it solves least squares.</li>
+</ul>
+
+<div class="jj-diagram">
+  {% macro cell(x0, i, j) -%}x="{{ x0 + 40 * j }}" y="{{ 50 + 40 * i }}"{%- endmacro %}
+  <svg viewBox="0 0 680 230" role="img" aria-labelledby="dec-lu-title dec-lu-desc">
+    <title id="dec-lu-title">PA = LU for the worked example</title>
+    <desc id="dec-lu-desc">
+      The rows of A = {{ mat(ex.a) }} reordered by the pivots give PA = {{ mat(d.pa) }}. It equals the
+      lower triangular L = {{ mat(lu.L) }}, with ones on the diagonal and the elimination multipliers
+      below it, times the upper triangular U = {{ mat(lu.U) }}.
+    </desc>
+    {% for name, m, x0 in [("PA", d.pa, 30), ("L", lu.L, 260), ("U", lu.U, 490)] %}
+      <text x="{{ x0 + 60 }}" y="34" font-size="13" text-anchor="middle">{{ name }}</text>
+      {% for i in range(3) %}{% for j in range(3) %}
+        {% set lit = (name == "L" and i > j) or (name == "U" and i <= j) %}
+        <rect {{ cell(x0, i, j) }} width="38" height="38" rx="4" fill="none" class="d-line" opacity="{{ 0.9 if lit else 0.25 }}"></rect>
+        <text x="{{ x0 + 40 * j + 19 }}" y="{{ 50 + 40 * i + 24 }}" font-size="13" text-anchor="middle"{% if name == "L" and i > j %} style="fill: var(--jj-amber)"{% elif name == "U" and i <= j %} style="fill: var(--jj-green)"{% elif name != "PA" %} class="d-muted"{% endif %}>{{ n(m[i][j]) }}</text>
+      {% endfor %}{% endfor %}
+    {% endfor %}
+    <text x="200" y="115" font-size="20" text-anchor="middle">=</text>
+    <text x="430" y="115" font-size="20" text-anchor="middle">·</text>
+    <text x="340" y="200" font-size="12" text-anchor="middle" style="fill: var(--jj-amber)">multipliers: how much of a pivot row was subtracted</text>
+    <text x="340" y="218" font-size="12" text-anchor="middle" style="fill: var(--jj-green)">what elimination leaves: solve upward</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Elimination on A = {{ mat(ex.a) }} first swaps rows 1 and 2, because 4 is the largest entry in the
+  first column. Each amber number is the multiple of a pivot row that was subtracted to put a zero
+  below it, and U is the matrix left at the end. Multiplying L by U gives back the row-swapped A
+  exactly. Computed by <code>lu_factor</code>, a stdlib copy of what
+  <code>torch.linalg.lu_factor</code> returns unpacked.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="lu">LU with partial pivoting</h3>
+
+<p>
+  Gaussian elimination clears column k below the diagonal by subtracting ℓ<sub>ik</sub> =
+  a<sub>ik</sub>/a<sub>kk</sub> times row k from each row i &gt; k. Storing each ℓ<sub>ik</sub> in
+  L, below a unit diagonal, gives A = LU. The pivot a<sub>kk</sub> can be zero, or tiny, and dividing
+  by a tiny pivot makes the multipliers huge and swamps the other entries in rounding error. So
+  before clearing column k, <em>partial pivoting</em> swaps in the row with the largest
+  |a<sub>ik</sub>|, which keeps every |ℓ<sub>ik</sub>| ≤ 1. The swaps collect in a permutation P,
+  and the factorization is PA = LU. It costs about (2/3)n³ operations.
+</p>
+<p>
+  Solving Ax = b then takes two triangular solves: Ly = Pb by forward substitution, then Ux = y by
+  back substitution, each O(n²). Once A is factored, every new right-hand side is cheap. That is
+  the reason to keep the factors (<code>lu_factor</code> then <code>lu_solve</code>) when the same
+  matrix meets many vectors. <code>torch.linalg.solve</code> does both steps for you, and its
+  docstring notes it is faster and more stable than <code>A.inverse() @ B</code>. PyTorch returns
+  P as LAPACK does, as a 1-indexed vector of row swaps: <code>pivots[i] == j</code> means row i was
+  swapped with row j − 1, in that order.
+</p>
+
+<h3 id="cholesky">Cholesky for positive-definite matrices</h3>
+
+<p>
+  A covariance matrix, a kernel matrix plus noise, a Hessian at a minimum, and any
+  A<sup>T</sup>A of full column rank are symmetric positive-definite: x<sup>T</sup>Ax &gt; 0 for every
+  x ≠ 0. For these, A = LL<sup>T</sup> with L lower triangular and a positive diagonal. Entry by
+  entry,
+</p>
+<p>
+  ℓ<sub>jj</sub> = √(a<sub>jj</sub> − Σ<sub>k&lt;j</sub> ℓ<sub>jk</sub>²), &nbsp;
+  ℓ<sub>ij</sub> = (a<sub>ij</sub> − Σ<sub>k&lt;j</sub> ℓ<sub>ik</sub>ℓ<sub>jk</sub>) / ℓ<sub>jj</sub> for i &gt; j.
+</p>
+<p>
+  It costs about n³/3, half of LU, needs no pivoting, and is the fastest way to test positive
+  definiteness: if a square root's argument is not positive, the matrix is not positive-definite.
+  <code>cholesky_ex</code> exists to return that as an <code>info</code> code instead of raising,
+  and its docstring calls this the faster way to check. Cholesky also turns independent noise into
+  correlated noise: if z ~ N(0, I) then Lz has covariance L·I·L<sup>T</sup> = Σ. That is how
+  <code>MultivariateNormal</code> samples, and how a Gaussian process draws functions and evaluates
+  its likelihood.
+</p>
+
+<div class="jj-diagram">
+  {% set pts = d.sampling.samples[:300] %}
+  {% macro sx(v) -%}{{ 340 + v * 11 }}{%- endmacro %}
+  {% macro sy(v) -%}{{ 130 - v * 11 }}{%- endmacro %}
+  <svg viewBox="0 0 680 270" role="img" aria-labelledby="dec-chol-title dec-chol-desc">
+    <title id="dec-chol-title">Correlated samples made by multiplying white noise by a Cholesky factor</title>
+    <desc id="dec-chol-desc">
+      300 of {{ ex.samples }} points x = Lz, with z drawn from a standard normal and L the Cholesky
+      factor {{ mat(d.cholesky) }} of Σ = {{ mat(ex.spd) }}, plotted as their first two coordinates.
+      The cloud is wider vertically (variance {{ n(ex.spd[1][1]) }}) than horizontally (variance
+      {{ n(ex.spd[0][0]) }}) and tilts up to the right (covariance {{ n(ex.spd[0][1]) }}). Over all
+      {{ ex.samples }} samples the measured covariance of the first two coordinates is
+      {{ n(d.sampling.covariance[0][0]) }}, {{ n(d.sampling.covariance[0][1]) }} and
+      {{ n(d.sampling.covariance[1][1]) }}.
+    </desc>
+    <line x1="{{ sx(-10) }}" y1="{{ sy(0) }}" x2="{{ sx(10) }}" y2="{{ sy(0) }}" class="d-line" opacity="0.25"></line>
+    <line x1="{{ sx(0) }}" y1="{{ sy(-10) }}" x2="{{ sx(0) }}" y2="{{ sy(10) }}" class="d-line" opacity="0.25"></line>
+    {% for p in pts %}
+      {% if -10 < p[0] < 10 and -10 < p[1] < 10 %}<circle cx="{{ sx(p[0]) }}" cy="{{ sy(p[1]) }}" r="2" fill="var(--jj-violet)" opacity="0.6"></circle>{% endif %}
+    {% endfor %}
+    <text x="{{ sx(10) }}" y="{{ sy(0)|float - 6 }}" font-size="11" text-anchor="end" class="d-muted">x₁</text>
+    <text x="{{ sx(0)|float + 6 }}" y="{{ sy(10)|float + 10 }}" font-size="11" class="d-muted">x₂</text>
+    <text x="20" y="40" font-size="12" style="fill: var(--jj-violet)">x = L z</text>
+    <text x="20" y="58" font-size="12" class="d-muted">measured var(x₁) = {{ "%.2f"|format(d.sampling.covariance[0][0]) }}</text>
+    <text x="20" y="76" font-size="12" class="d-muted">measured var(x₂) = {{ "%.2f"|format(d.sampling.covariance[1][1]) }}</text>
+    <text x="20" y="94" font-size="12" class="d-muted">measured cov = {{ "%.2f"|format(d.sampling.covariance[0][1]) }}</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Target Σ has var(x₁) = {{ n(ex.spd[0][0]) }}, var(x₂) = {{ n(ex.spd[1][1]) }} and covariance
+  {{ n(ex.spd[0][1]) }}; {{ ex.samples }} samples from <code>random.Random({{ ex.seed }})</code>
+  land within a few percent of each. Every sample cost one triangular matrix-vector product.
+</p>
+
+<h3 id="qr">QR: Gram–Schmidt and Householder</h3>
+
+<p>
+  Gram–Schmidt builds Q one column at a time: take column j of A, subtract its projection onto
+  each earlier q<sub>k</sub> (the coefficient r<sub>kj</sub> = q<sub>k</sub>·a<sub>j</sub>), and
+  normalize what is left (its length is r<sub>jj</sub>). The coefficients form an upper triangular
+  R with A = QR. For an m × n matrix with m ≥ n, the <em>reduced</em> QR has Q of shape m × n with
+  orthonormal columns and R of shape n × n, which is <code>torch.linalg.qr</code>'s default
+  <code>mode='reduced'</code>.
+</p>
+<p>
+  Written the obvious way, <em>classical</em> Gram–Schmidt projects the original column onto every
+  q<sub>k</sub>, and rounding errors leave the q's less and less orthogonal on ill-conditioned
+  input. <em>Modified</em> Gram–Schmidt projects the running remainder instead, the same arithmetic
+  in a different order, and loses far less. On the 6 × 6 Hilbert matrix (condition number
+  {{ sci(d.hilbert_cond) }}), ‖Q<sup>T</sup>Q − I‖<sub>F</sub> is {{ sci(d.hilbert_classical) }}
+  for classical and {{ sci(d.hilbert_modified) }} for modified. Libraries go further and use
+  <em>Householder reflections</em>: each step reflects the remaining part of a column onto a
+  coordinate axis with an exactly orthogonal matrix I − 2vv<sup>T</sup>/v<sup>T</sup>v, so Q is
+  orthogonal to machine precision whatever the conditioning. LAPACK's <code>geqrf</code>, which
+  PyTorch calls, stores Q as those reflectors rather than as a matrix.
+</p>
+
+<h3 id="least-squares">Least squares: QR versus the normal equations</h3>
+
+<p>
+  With more equations than unknowns, minimize ‖Ax − b‖<sub>2</sub>. Setting the gradient to zero
+  gives the <em>normal equations</em> A<sup>T</sup>Ax = A<sup>T</sup>b, solvable by Cholesky. They
+  are fast and correct in exact arithmetic, but κ(A<sup>T</sup>A) = κ(A)², so they lose twice as
+  many digits as the problem requires. QR avoids forming A<sup>T</sup>A: since Q has orthonormal
+  columns, ‖Ax − b‖ is minimized by solving Rx = Q<sup>T</sup>b, a single back substitution, with
+  error proportional to κ(A) for small-residual problems.
+</p>
+
+<div class="jj-diagram">
+  {% macro lx(i) -%}{{ 90 + i * 76 }}{%- endmacro %}
+  {% macro ly(e) -%}{{ 230 - (16 + e) * 12.5 }}{%- endmacro %}
+  <svg viewBox="0 0 680 280" role="img" aria-labelledby="dec-ls-title dec-ls-desc">
+    <title id="dec-ls-title">Least-squares error: normal equations versus Householder QR</title>
+    <desc id="dec-ls-desc">
+      The Läuchli matrix [[1, 1], [ε, 0], [0, ε]] with b chosen so the exact answer is [1, −1], for ε
+      from 10⁻¹ to 10⁻⁸. Error of the normal equations:
+      {% for r in ls %}ε = {{ sci(r.eps) }}: {% if r.normal_error is none %}AᵀA is exactly singular in floating point and the solve fails{% else %}{{ sci(r.normal_error) }}{% endif %}. {% endfor %}
+      Householder QR stays below 10⁻¹⁵ for every ε.
+    </desc>
+    {% for e in [-16, -12, -8, -4, 0] %}
+      <line x1="{{ lx(0) }}" y1="{{ 230 - (16 + e) * 12.5 }}" x2="{{ lx(7) }}" y2="{{ 230 - (16 + e) * 12.5 }}" class="d-line" opacity="0.15"></line>
+      <text x="{{ lx(0)|float - 10 }}" y="{{ 234 - (16 + e) * 12.5 }}" font-size="11" text-anchor="end">1e{{ e }}</text>
+    {% endfor %}
+    {% for r in ls %}
+      <text x="{{ lx(loop.index0) }}" y="250" font-size="11" text-anchor="middle">1e-{{ loop.index }}</text>
+    {% endfor %}
+    <path d="M{% for r in ls if r.normal_error is not none %}{% if not loop.first %} L{% endif %}{{ lx(loop.index0) }},{{ ly(r.normal_log) }}{% endfor %}" fill="none" stroke="var(--jj-red)" stroke-width="2.5"></path>
+    {% for r in ls %}
+      {% if r.normal_error is none %}
+        <text x="{{ lx(loop.index0) }}" y="34" font-size="16" text-anchor="middle" style="fill: var(--jj-red)">✕</text>
+      {% else %}
+        <circle cx="{{ lx(loop.index0) }}" cy="{{ ly(r.normal_log) }}" r="4" fill="var(--jj-red)"></circle>
+      {% endif %}
+      <circle cx="{{ lx(loop.index0) }}" cy="{{ ly(r.qr_log) }}" r="4" fill="var(--jj-green)"></circle>
+    {% endfor %}
+    <line x1="{{ lx(0) }}" y1="230" x2="{{ lx(7) }}" y2="230" stroke="var(--jj-green)" stroke-width="2.5"></line>
+    <text x="{{ lx(2) }}" y="70" font-size="12" style="fill: var(--jj-red)">normal equations (AᵀA x = Aᵀb)</text>
+    <text x="{{ lx(1) }}" y="220" font-size="12" style="fill: var(--jj-green)">Householder QR (≤ 1e-16 drawn on the floor)</text>
+    <text x="{{ lx(7) }}" y="52" font-size="11" text-anchor="end" style="fill: var(--jj-red)">AᵀA singular</text>
+    <text x="{{ lx(3.5) }}" y="272" font-size="11" text-anchor="middle" class="d-muted">ε; vertical: error in x, log scale</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  At ε = 10⁻⁷, κ(A) = {{ sci(ls[6].cond) }} and κ(A<sup>T</sup>A) ≈ 2·10¹⁴: the normal equations
+  are off by {{ sci(ls[6].normal_error) }}. At ε = 10⁻⁸, 1 + ε² rounds to 1, A<sup>T</sup>A becomes
+  [[1, 1], [1, 1]] and there is nothing left to solve. QR gets [1, −1] at every ε.
+</p>
+
+<h3 id="norms">Matrix norms and the condition number</h3>
+
+<p>
+  A matrix norm measures the size of a matrix. <code>torch.linalg.matrix_norm</code> supports the
+  ones that matter, shown here for the worked example's A = {{ mat(ex.a) }}:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th><code>ord</code></th><th>Name</th><th>Definition</th><th>Value for A</th></tr></thead>
+    <tbody>
+      <tr><td><code>'fro'</code> (default)</td><td>Frobenius</td><td>√Σ a<sub>ij</sub>² = √Σ σ<sub>i</sub>²</td><td>{{ n(d.norms.fro) }}</td></tr>
+      <tr><td><code>'nuc'</code></td><td>nuclear</td><td>Σ σ<sub>i</sub></td><td>{{ n(d.norms.nuc) }}</td></tr>
+      <tr><td><code>2</code></td><td>spectral</td><td>σ<sub>max</sub>, the most any unit vector is stretched</td><td>{{ n(d.norms.two) }}</td></tr>
+      <tr><td><code>-2</code></td><td></td><td>σ<sub>min</sub></td><td>{{ n(d.norms.minus_two) }}</td></tr>
+      <tr><td><code>1</code></td><td>max column sum</td><td>max<sub>j</sub> Σ<sub>i</sub> |a<sub>ij</sub>|</td><td>{{ n(d.norms.one) }}</td></tr>
+      <tr><td><code>inf</code></td><td>max row sum</td><td>max<sub>i</sub> Σ<sub>j</sub> |a<sub>ij</sub>|</td><td>{{ n(d.norms.inf) }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The spectral norm is the one most results are stated in: ‖Ax‖ ≤ ‖A‖<sub>2</sub>‖x‖, and
+  ‖A‖<sub>2</sub> ≤ ‖A‖<sub>F</sub> ≤ ‖A‖<sub>nuc</sub>. The <em>condition number</em>
+  κ(A) = ‖A‖‖A<sup>−1</sup>‖, which for the 2-norm is σ<sub>max</sub>/σ<sub>min</sub> =
+  {{ n(d.norms.cond) }} here, bounds how much a relative error in b can grow in x. A rule of thumb:
+  with float64's 16 digits, expect to lose about log<sub>10</sub>κ of them. The same norms appear
+  elsewhere in ML: weight decay penalizes the squared Frobenius norm, spectral normalization divides
+  a weight by its spectral norm, the nuclear norm is the convex stand-in for rank in matrix
+  completion, and <a href="{{ url_for('ml_models', slug='optimizers') }}#muon">Muon</a> sets every
+  singular value of its update to about 1.
+</p>
+
+<h3 id="where-they-appear">Where they appear in ML</h3>
+
+<ul>
+  <li><strong>Linear and ridge regression:</strong> least squares with QR or SVD, or Cholesky on
+  A<sup>T</sup>A + λI, where the ridge term λ also fixes the conditioning.</li>
+  <li><strong>Gaussian processes and Gaussians:</strong> Cholesky of the kernel matrix gives both
+  samples and log det Σ = 2Σ log ℓ<sub>ii</sub>, needed in the likelihood.</li>
+  <li><strong>Orthogonal initialization:</strong> <code>nn.init.orthogonal_</code> takes the QR of
+  a Gaussian matrix and multiplies Q's columns by the signs of R's diagonal, which makes Q uniformly
+  distributed over orthogonal matrices rather than biased by the QR convention.</li>
+  <li><strong>Second-order methods and natural gradients:</strong> each step solves a linear system
+  in a Hessian or Fisher matrix, usually by Cholesky with damping.</li>
+  <li><strong>Orthogonalized updates:</strong> Muon's Newton–Schulz iteration approximates the
+  orthogonal polar factor of the gradient using only matrix products, because QR and SVD are slow
+  on GPUs in bfloat16.</li>
+</ul>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Term</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>linalg.lu_factor</code></td>
+        <td><code>[*, m, n]</code> → <code>(LU, pivots [*, min(m, n)])</code>, <code>pivot=True</code></td>
+        <td>L and U packed in one matrix; 1-indexed LAPACK row swaps.</td>
+        <td><a href="{{ src('torch/linalg/__init__.py', 2445, 2529) }}"><code>lu_factor</code></a></td>
+      </tr>
+      <tr>
+        <td><code>linalg.lu</code></td>
+        <td><code>[*, m, n]</code> → <code>(P, L, U)</code></td>
+        <td>The same factorization unpacked into three matrices, A = PLU.</td>
+        <td><a href="{{ src('torch/linalg/__init__.py', 2641, 2729) }}"><code>lu</code></a></td>
+      </tr>
+      <tr>
+        <td><code>linalg.solve</code></td>
+        <td><code>A [*, n, n]</code>, <code>B [*, n]</code> or <code>[*, n, k]</code>, <code>left=True</code></td>
+        <td>X with AX = B, assuming A is invertible; faster and more stable than <code>A.inverse() @ B</code>.</td>
+        <td><a href="{{ src('torch/linalg/__init__.py', 2260, 2363) }}"><code>solve</code></a></td>
+      </tr>
+      <tr>
+        <td><code>linalg.solve_triangular</code></td>
+        <td><code>A</code>, <code>B</code>, <code>upper</code>, <code>left=True</code>, <code>unitriangular=False</code></td>
+        <td>Forward or back substitution.</td>
+        <td><a href="{{ src('torch/linalg/__init__.py', 2365, 2443) }}"><code>solve_triangular</code></a></td>
+      </tr>
+      <tr>
+        <td><code>linalg.cholesky</code></td>
+        <td><code>[*, n, n]</code> → <code>L [*, n, n]</code>, <code>upper=False</code></td>
+        <td>A = LL<sup>H</sup> for Hermitian positive-definite A; raises otherwise.</td>
+        <td><a href="{{ src('torch/linalg/__init__.py', 71, 146) }}"><code>cholesky</code></a></td>
+      </tr>
+      <tr>
+        <td><code>linalg.cholesky_ex</code></td>
+        <td>→ <code>(L, info)</code>, <code>check_errors=False</code></td>
+        <td>Cholesky that reports failure in <code>info</code>: a fast positive-definiteness test.</td>
+        <td><a href="{{ src('torch/linalg/__init__.py', 148, 212) }}"><code>cholesky_ex</code></a></td>
+      </tr>
+      <tr>
+        <td><code>linalg.qr</code></td>
+        <td><code>[*, m, n]</code> → <code>(Q [*, m, k], R [*, k, n])</code>, <code>mode='reduced'</code></td>
+        <td>A = QR; <code>'complete'</code> gives square Q, <code>'r'</code> skips Q.</td>
+        <td><a href="{{ src('torch/linalg/__init__.py', 2865, 2966) }}"><code>qr</code></a></td>
+      </tr>
+      <tr>
+        <td><code>linalg.lstsq</code></td>
+        <td><code>A [*, m, n]</code>, <code>B [*, m, k]</code>, <code>rcond</code>, <code>driver</code></td>
+        <td>min ‖AX − B‖<sub>F</sub>; CPU default <code>'gelsy'</code> (QR with pivoting), CUDA only <code>'gels'</code>.</td>
+        <td><a href="{{ src('torch/linalg/__init__.py', 1078, 1200) }}"><code>lstsq</code></a></td>
+      </tr>
+      <tr>
+        <td><code>linalg.matrix_norm</code></td>
+        <td><code>ord='fro'</code>, <code>dim=(-2, -1)</code></td>
+        <td>Frobenius, nuclear, ±1, ±inf and ±2 norms.</td>
+        <td><a href="{{ src('torch/linalg/__init__.py', 1570, 1644) }}"><code>matrix_norm</code></a></td>
+      </tr>
+      <tr>
+        <td><code>linalg.cond</code></td>
+        <td><code>p=None</code> (2-norm)</td>
+        <td>κ(A) = ‖A‖<sub>p</sub>‖A<sup>−1</sup>‖<sub>p</sub>.</td>
+        <td><a href="{{ src('torch/linalg/__init__.py', 1938, 2054) }}"><code>cond</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.init.orthogonal_</code></td>
+        <td><code>tensor</code> with ≥ 2 dims, <code>gain=1</code></td>
+        <td>QR of a Gaussian matrix, Q's columns sign-corrected by diag(R), times <code>gain</code>.</td>
+        <td><a href="{{ src('torch/nn/init.py', 672, 720) }}"><code>init.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<h3 id="worked-lu">Solving a 3 × 3 system with LU</h3>
+
+<p>
+  Solve Ax = b with A = {{ mat(ex.a) }} and b = {{ vec(ex.b) }}.
+</p>
+<ol>
+  <li>Column 1: the largest |entry| is 4, in row 2, so swap rows 1 and 2 (pivot 2). Subtract
+  {{ n(lu.L[1][0]) }} × row 1 from row 2 and {{ n(lu.L[2][0]) }} × row 1 from row 3.</li>
+  <li>Column 2: the remaining entries are 4 and 4; the first is kept (pivot 2, no swap). Subtract
+  {{ n(lu.L[2][1]) }} × row 2 from row 3.</li>
+  <li>That leaves U = {{ mat(lu.U) }}, with L = {{ mat(lu.L) }} and pivots {{ lu.pivots }} in
+  PyTorch's 1-indexed form.</li>
+  <li>Permute b to Pb = {{ vec(ex.b[1:2] + ex.b[0:1] + ex.b[2:]) }}. Forward substitution in Ly = Pb gives
+  y = [−2, 5 − 0.5·(−2), 9 + 0.5·(−2) − 6] = [−2, 6, 2].</li>
+  <li>Back substitution in Ux = y gives x₃ = 2, x₂ = (6 − 2)/4 = 1, x₁ = (−2 + 6)/4 = 1, so
+  x = {{ vec(d.x) }}.</li>
+</ol>
+
+<h3 id="worked-cholesky">Cholesky by hand</h3>
+
+<p>
+  Factor Σ = {{ mat(ex.spd) }}. Column 1: ℓ₁₁ = √4 = 2, ℓ₂₁ = 2/2 = 1, ℓ₃₁ = 2/2 = 1. Column 2:
+  ℓ₂₂ = √(10 − 1²) = 3, ℓ₃₂ = (7 − 1·1)/3 = 2. Column 3: ℓ₃₃ = √(21 − 1² − 2²) = 4. So
+  L = {{ mat(d.cholesky) }}. To solve Σx = {{ vec(ex.spd_b) }}, forward-substitute Ly = b to get
+  y = {{ vec(d.cholesky_y) }}, then back-substitute L<sup>T</sup>x = y to get x = {{ vec(d.cholesky_x) }}.
+  Its determinant is (2·3·4)² = 576, and its log-determinant 2(ln 2 + ln 3 + ln 4) = 2 ln 24 ≈ 6.356,
+  read straight off the diagonal of L.
+</p>
+
+<h3 id="worked-qr">Fitting a line with QR</h3>
+
+<p>
+  Fit y ≈ c + mx to the points x = 0, 1, 2, 3, y = {{ vec(ex.targets) }}. The design matrix has a
+  column of ones and a column of x. Gram–Schmidt gives the first column of Q as
+  {{ vec(d.qr.Q|map(attribute=0)|list) }} with r₁₁ = 2 and r₁₂ = 3, and the second as
+  {{ vec(d.qr.Q|map(attribute=1)|list) }} with r₂₂ = √5 ≈ {{ n(d.qr.R[1][1]) }}. Then
+  Q<sup>T</sup>y = [4.5, 2.012], and back substitution in Rx = Q<sup>T</sup>y gives
+  c = {{ n(d.fit[0]) }} and m = {{ n(d.fit[1]) }}. The normal equations give the same line here,
+  because this matrix is well conditioned.
+</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code class="language-python">import torch
+
+A = torch.tensor([[2., 1., 1.], [4., -6., 0.], [-2., 7., 2.]])
+b = torch.tensor([5., -2., 9.])
+torch.linalg.solve(A, b)                       # tensor([1., 1., 2.])
+
+LU, pivots = torch.linalg.lu_factor(A)         # pivots = tensor([2, 2, 3], dtype=torch.int32)
+torch.linalg.lu_solve(LU, pivots, b[:, None])  # reuse the factors for any right-hand side
+P, L, U = torch.linalg.lu(A)                   # A == P @ L @ U
+
+S = torch.tensor([[4., 2., 2.], [2., 10., 7.], [2., 7., 21.]])
+L = torch.linalg.cholesky(S)                   # [[2, 0, 0], [1, 3, 0], [1, 2, 4]]
+L, info = torch.linalg.cholesky_ex(-S)         # info &gt; 0: not positive-definite, no exception
+z = torch.randn(3, 10_000)
+x = torch.linalg.cholesky(S) @ z               # samples with covariance S
+torch.cov(x)
+
+X = torch.tensor([[1., 0.], [1., 1.], [1., 2.], [1., 3.]])
+y = torch.tensor([[1.], [2.], [2.], [4.]])
+Q, R = torch.linalg.qr(X)                      # reduced: Q [4, 2], R [2, 2]; signs may differ
+torch.linalg.solve_triangular(R, Q.T @ y, upper=True)   # [[0.9], [0.9]]
+torch.linalg.lstsq(X, y).solution              # same, through LAPACK's QR
+
+torch.linalg.matrix_norm(A), torch.linalg.matrix_norm(A, ord=2), torch.linalg.cond(A)</code></pre>
+
+<p>The same pieces from scratch, in plain Python:</p>
+
+<pre><code class="language-python">import math
+
+def lu_factor(a):                          # partial pivoting; returns order, L, U with A[order] = L U
+    n = len(a); u = [list(map(float, r)) for r in a]
+    lo = [[0.0] * n for _ in range(n)]; order = list(range(n))
+    for k in range(n):
+        p = max(range(k, n), key=lambda r: abs(u[r][k]))
+        u[k], u[p] = u[p], u[k]; lo[k], lo[p] = lo[p], lo[k]; order[k], order[p] = order[p], order[k]
+        for r in range(k + 1, n):
+            lo[r][k] = u[r][k] / u[k][k]
+            u[r] = [x - lo[r][k] * y for x, y in zip(u[r], u[k])]
+    for i in range(n):
+        lo[i][i] = 1.0
+    return order, lo, u
+
+def forward(lo, b):
+    y = []
+    for i, row in enumerate(lo):
+        y.append((b[i] - sum(row[j] * y[j] for j in range(i))) / row[i])
+    return y
+
+def back(u, y):
+    n = len(u); x = [0.0] * n
+    for i in reversed(range(n)):
+        x[i] = (y[i] - sum(u[i][j] * x[j] for j in range(i + 1, n))) / u[i][i]
+    return x
+
+def cholesky(a):
+    n = len(a); lo = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(i + 1):
+            s = a[i][j] - sum(lo[i][k] * lo[j][k] for k in range(j))
+            lo[i][j] = math.sqrt(s) if i == j else s / lo[j][j]   # sqrt of a negative: not PD
+    return lo
+
+order, lo, u = lu_factor([[2, 1, 1], [4, -6, 0], [-2, 7, 2]])
+b = [5, -2, 9]
+back(u, forward(lo, [b[i] for i in order]))   # [1.0, 1.0, 2.0]</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Never invert to solve.</strong> <code>inv(A) @ b</code> does the LU anyway, then extra
+    work, and is less accurate. Keep the factors when the matrix is reused.
+  </li>
+  <li>
+    <strong>Normal equations versus QR versus SVD.</strong> Normal equations with Cholesky cost about
+    mn² + n³/3 and are fine when A is well conditioned; QR costs about 2mn² and loses only κ(A);
+    the SVD (<code>gelsd</code>) costs several times more but handles rank deficiency by dropping
+    singular values below <code>rcond</code>. On CUDA <code>lstsq</code> only offers
+    <code>'gels'</code>, which assumes full rank.
+  </li>
+  <li>
+    <strong>Pivoting is not optional.</strong> Without it, elimination on [[ε, 1], [1, 1]] divides by
+    ε and wipes out the answer in rounding. <code>pivot=False</code> exists only on CUDA, for
+    matrices known to be safe, such as diagonally dominant ones.
+  </li>
+  <li>
+    <strong>Positive-definite in theory, not in floating point.</strong> A covariance or kernel
+    matrix can have eigenvalues that round below zero. Adding a small jitter εI before Cholesky is
+    standard in Gaussian-process code; check <code>cholesky_ex</code>'s <code>info</code> instead of
+    catching exceptions.
+  </li>
+  <li>
+    <strong>GPU and precision.</strong> These factorizations are sequential column by column and run
+    in float32 or float64, not bfloat16. On GPUs, for many small matrices batch them; for one
+    big orthogonalization in low precision, matrix-product iterations such as Newton–Schulz can be
+    faster than QR.
+  </li>
+  <li>
+    <strong>Non-uniqueness.</strong> LU depends on pivot choices and QR on sign conventions, so
+    different devices can return different valid factors. Compare products or solutions, not factors.
+  </li>
+</ul>
+
+<h2 id="check-yourself">Check yourself</h2>
+
+<details class="ml-quiz">
+  <summary>You need to solve Ax = b for 1,000 different b with the same 2,000 × 2,000 A. What do you compute once?</summary>
+  <p>The LU factors (<code>lu_factor</code>), about (2/3)n³ operations once. Each b then costs two triangular solves, O(n²), with <code>lu_solve</code>. Calling <code>solve</code> 1,000 times would redo the factorization every time.</p>
+</details>
+<details class="ml-quiz">
+  <summary>κ(A) = 10⁶. Roughly how many correct digits does float64 least squares give via QR, and via the normal equations?</summary>
+  <p>About 16 − 6 = 10 via QR, and about 16 − 12 = 4 via the normal equations, since κ(AᵀA) = 10¹².</p>
+</details>
+<details class="ml-quiz">
+  <summary>Cholesky of a 3 × 3 covariance hits √(−0.0001) at the last step. What does that tell you, and what do people do?</summary>
+  <p>The matrix is not positive-definite in floating point, usually because it is only positive semi-definite or nearly singular. Adding a small multiple of the identity (jitter) makes it positive-definite; check with <code>cholesky_ex</code>.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does <code>orthogonal_</code> multiply Q by the signs of R's diagonal?</summary>
+  <p>QR fixes signs by convention, so Q from a Gaussian matrix is not uniformly distributed over orthogonal matrices. Making R's diagonal positive pins the decomposition to a unique one, and then Q is uniform (Haar) distributed.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Trefethen and Bau. <em>Numerical Linear Algebra.</em> SIAM, 1997: lectures 7–11 on QR and least squares, 20–23 on LU and Cholesky.</li>
+  <li>Golub and Van Loan. <em>Matrix Computations</em>, 4th ed. Johns Hopkins University Press, 2013: chapters 3–5.</li>
+  <li>Higham. <em>Accuracy and Stability of Numerical Algorithms</em>, 2nd ed. SIAM, 2002: chapter 19 on QR, 20 on least squares.</li>
+  <li>Läuchli. <em>Jordan-Elimination und Ausgleichung nach kleinsten Quadraten.</em> Numerische Mathematik 3, 226–240, 1961.</li>
+  <li>Mezzadri. <em>How to generate random matrices from the classical compact groups.</em> 2006. <a href="https://arxiv.org/abs/math-ph/0609050">arXiv:math-ph/0609050</a> (cited by <code>orthogonal_</code>).</li>
+  <li>Rasmussen and Williams. <em>Gaussian Processes for Machine Learning.</em> MIT Press, 2006: Algorithm 2.1, Cholesky-based GP regression.</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/linalg/__init__.py', 2445, 2529) }}"><code>linalg.lu_factor</code></a>, <a href="{{ src('torch/linalg/__init__.py', 71, 146) }}"><code>linalg.cholesky</code></a>, <a href="{{ src('torch/linalg/__init__.py', 2865, 2966) }}"><code>linalg.qr</code></a>, <a href="{{ src('torch/linalg/__init__.py', 1078, 1200) }}"><code>linalg.lstsq</code></a>, <a href="{{ src('torch/linalg/__init__.py', 1570, 1644) }}"><code>linalg.matrix_norm</code></a> and <a href="{{ src('torch/nn/init.py', 672, 720) }}"><code>nn.init.orthogonal_</code></a>.</li>
+</ul>
