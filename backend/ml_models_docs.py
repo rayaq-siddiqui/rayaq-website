@@ -13953,6 +13953,209 @@ def reproducibility_example():
     }
 
 
+SSM_EXAMPLE = {
+    "scalar_a": -1.0,
+    "steps": (0.1, 0.5, 1.0, 2.5),
+    "hippo_n": 4,
+    "hippo_step": 0.1,
+    "hippo_c": (1.0, 0.5, 0.25, 0.125),
+    "u": (1.0, 0.5, -0.5, 2.0, 0.0, -1.0, 0.5, 1.0),
+    "sel_a": (-1.0, -2.0),
+    "sel_b_vec": (1.0, 2.0),
+    "sel_c": (0.5, 0.5),
+    "sel_w": 10.0,
+    "sel_b": -6.0,
+    "values": (2.0, 0.7, -0.4, 0.9, -1.0, 0.8, 0.5, -0.2),
+    "gates": (1, 0, 0, 0, 1, 0, 0, 0),
+    "lti_step": 0.5,
+    "d_model": 2048,
+    "layers": 48,
+    "d_state": 16,
+    "expand": 2,
+    "conv_width": 4,
+    "bytes": 2,
+    "contexts": (1024, 8192, 65536, 524288),
+}
+
+
+def ssm_matmul(a, b):
+    return [[math.fsum(a[i][k] * b[k][j] for k in range(len(b))) for j in range(len(b[0]))] for i in range(len(a))]
+
+
+def ssm_matvec(a, v):
+    return [math.fsum(a[i][k] * v[k] for k in range(len(v))) for i in range(len(a))]
+
+
+def ssm_inverse(m):
+    n = len(m)
+    aug = [list(row) + [1.0 if i == j else 0.0 for j in range(n)] for i, row in enumerate(m)]
+    for col in range(n):
+        pivot = max(range(col, n), key=lambda r: abs(aug[r][col]))
+        aug[col], aug[pivot] = aug[pivot], aug[col]
+        p = aug[col][col]
+        aug[col] = [x / p for x in aug[col]]
+        for r in range(n):
+            if r != col and aug[r][col]:
+                factor = aug[r][col]
+                aug[r] = [x - factor * y for x, y in zip(aug[r], aug[col])]
+    return [row[n:] for row in aug]
+
+
+def scalar_discretizations(a, steps):
+    rows = []
+    for dt in steps:
+        exact = math.exp(a * dt)
+        euler = 1 + a * dt
+        bilinear = (1 + a * dt / 2) / (1 - a * dt / 2)
+        rows.append({"step": dt, "exact": exact, "euler": euler, "bilinear": bilinear,
+                     "zoh_b": (exact - 1) / a, "euler_stable": abs(euler) < 1, "bilinear_stable": abs(bilinear) < 1})
+    return rows
+
+
+def hippo_legs(n):
+    a = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        for k in range(n):
+            if i > k:
+                a[i][k] = -math.sqrt((2 * i + 1) * (2 * k + 1))
+            elif i == k:
+                a[i][k] = -(i + 1.0)
+    return a, [math.sqrt(2 * i + 1) for i in range(n)]
+
+
+def hippo_normal_plus_low_rank(n):
+    a, _ = hippo_legs(n)
+    p = [math.sqrt(i + 0.5) for i in range(n)]
+    s = [[a[i][k] + p[i] * p[k] for k in range(n)] for i in range(n)]
+    return {"p": p, "s": s}
+
+
+def bilinear_discretize(a, b, dt):
+    n = len(a)
+    left = [[(1.0 if i == k else 0.0) - dt / 2 * a[i][k] for k in range(n)] for i in range(n)]
+    right = [[(1.0 if i == k else 0.0) + dt / 2 * a[i][k] for k in range(n)] for i in range(n)]
+    inv = ssm_inverse(left)
+    return ssm_matmul(inv, right), ssm_matvec(inv, [dt * x for x in b])
+
+
+def ssm_recurrent(a_bar, b_bar, c, u):
+    h = [0.0] * len(b_bar)
+    states, ys = [], []
+    for x in u:
+        h = [s + bb * x for s, bb in zip(ssm_matvec(a_bar, h), b_bar)]
+        states.append(h)
+        ys.append(math.fsum(ci * hi for ci, hi in zip(c, h)))
+    return {"states": states, "y": ys}
+
+
+def ssm_kernel(a_bar, b_bar, c, length):
+    kernel, v = [], list(b_bar)
+    for _ in range(length):
+        kernel.append(math.fsum(ci * vi for ci, vi in zip(c, v)))
+        v = ssm_matvec(a_bar, v)
+    return kernel
+
+
+def causal_convolve(kernel, u):
+    return [math.fsum(kernel[k] * u[t - k] for k in range(t + 1)) for t in range(len(u))]
+
+
+def selective_scan(values, gates, a, b_vec, c, w, b):
+    h = [0.0] * len(a)
+    rows = []
+    for v, g in zip(values, gates):
+        dt = softplus(w * g + b)
+        a_bar = [math.exp(dt * an) for an in a]
+        b_bar = [(ab - 1) / an * bn * g for ab, an, bn in zip(a_bar, a, b_vec)]
+        h = [ab * hn + bb * v for ab, hn, bb in zip(a_bar, h, b_bar)]
+        rows.append({"value": v, "gate": g, "step": dt, "a_bar": a_bar, "b_bar": b_bar,
+                     "h": h, "y": math.fsum(cn * hn for cn, hn in zip(c, h))})
+    return rows
+
+
+def lti_scan(values, a, b_vec, c, dt):
+    a_bar = [math.exp(dt * an) for an in a]
+    b_bar = [(ab - 1) / an * bn for ab, an, bn in zip(a_bar, a, b_vec)]
+    h = [0.0] * len(a)
+    ys = []
+    for v in values:
+        h = [ab * hn + bb * v for ab, hn, bb in zip(a_bar, h, b_bar)]
+        ys.append(math.fsum(cn * hn for cn, hn in zip(c, h)))
+    return ys
+
+
+def last_gated(values, gates):
+    out, last = [], 0.0
+    for v, g in zip(values, gates):
+        if g:
+            last = v
+        out.append(last)
+    return out
+
+
+def scan_combine(first, second):
+    return (first[0] * second[0], second[0] * first[1] + second[1])
+
+
+def parallel_scan(pairs):
+    level = list(pairs)
+    levels = [level]
+    shift = 1
+    while shift < len(level):
+        level = [level[i] if i < shift else scan_combine(level[i - shift], level[i]) for i in range(len(level))]
+        levels.append(level)
+        shift *= 2
+    return {"levels": levels, "h": [p[1] for p in level], "depth": len(levels) - 1,
+            "combines": sum(len(pairs) - 2 ** d for d in range(len(levels) - 1))}
+
+
+def sequential_scan(pairs):
+    h, out = 0.0, []
+    for a, b in pairs:
+        h = a * h + b
+        out.append(h)
+    return out
+
+
+def inference_costs(ex=SSM_EXAMPLE):
+    d, layers, n, nbytes = ex["d_model"], ex["layers"], ex["d_state"], ex["bytes"]
+    inner = ex["expand"] * d
+    state = layers * inner * (n + ex["conv_width"] - 1) * nbytes
+    rows = []
+    for ctx in ex["contexts"]:
+        kv = 2 * layers * ctx * d * nbytes
+        rows.append({"context": ctx, "kv_bytes": kv, "ssm_bytes": state,
+                     "attn_flops": 4 * layers * ctx * d, "ssm_flops": 6 * layers * inner * n,
+                     "train_attn": 2 * layers * ctx * ctx * d, "train_ssm": 6 * layers * ctx * inner * n})
+    return {"state_bytes": state, "rows": rows}
+
+
+def state_space_example():
+    ex = SSM_EXAMPLE
+    a, b = hippo_legs(ex["hippo_n"])
+    a_bar, b_bar = bilinear_discretize(a, b, ex["hippo_step"])
+    rec = ssm_recurrent(a_bar, b_bar, ex["hippo_c"], ex["u"])
+    kernel = ssm_kernel(a_bar, b_bar, ex["hippo_c"], len(ex["u"]))
+    conv = causal_convolve(kernel, ex["u"])
+    sel = selective_scan(ex["values"], ex["gates"], ex["sel_a"], ex["sel_b_vec"], ex["sel_c"], ex["sel_w"], ex["sel_b"])
+    lti = lti_scan(ex["values"], ex["sel_a"], ex["sel_b_vec"], ex["sel_c"], ex["lti_step"])
+    target = last_gated(ex["values"], ex["gates"])
+    pairs = [(r["a_bar"][0], r["b_bar"][0] * r["value"]) for r in sel]
+    return {
+        "example": ex,
+        "scalar": scalar_discretizations(ex["scalar_a"], ex["steps"]),
+        "hippo_a": a, "hippo_b": b, "nplr": hippo_normal_plus_low_rank(ex["hippo_n"]),
+        "a_bar": a_bar, "b_bar": b_bar,
+        "recurrent": rec, "kernel": kernel, "conv": conv,
+        "dual_gap": max(abs(x - y) for x, y in zip(rec["y"], conv)),
+        "selective": sel, "lti": lti, "target": target,
+        "sel_error": max(abs(r["y"] - t) for r, t in zip(sel, target)),
+        "lti_error": max(abs(y - t) for y, t in zip(lti, target)),
+        "scan": parallel_scan(pairs), "sequential": sequential_scan(pairs),
+        "costs": inference_costs(ex),
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -14009,6 +14212,7 @@ def render(slug, render_template):
         "rag_example": rag_example,
         "checkpointing_example": checkpointing_example,
         "reproducibility_example": reproducibility_example,
+        "state_space_example": state_space_example,
         "pretraining_example": pretraining_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,

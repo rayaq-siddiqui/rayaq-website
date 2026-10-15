@@ -5646,3 +5646,70 @@ def test_repro_manifest_hashes_match_git_and_sha256():
     if out.returncode == 0:
         assert out.stdout.decode().strip() == m["code"]
     assert len(m["environment"]) == 64
+
+
+def test_ssm_discretizations_match_closed_forms_and_stability():
+    rows = {r["step"]: r for r in ml_models_docs.scalar_discretizations(-1.0, (0.1, 0.5, 1.0, 2.5))}
+    assert rows[0.5]["exact"] == pytest.approx(math.exp(-0.5))
+    assert rows[0.5]["bilinear"] == pytest.approx(0.6) and rows[1.0]["bilinear"] == pytest.approx(1 / 3)
+    assert rows[2.5]["euler"] == pytest.approx(-1.5) and not rows[2.5]["euler_stable"]
+    assert all(r["bilinear_stable"] for r in rows.values())
+    assert rows[0.1]["zoh_b"] == pytest.approx(1 - math.exp(-0.1))
+    assert abs(rows[0.1]["bilinear"] - rows[0.1]["exact"]) < abs(rows[0.1]["euler"] - rows[0.1]["exact"])
+
+
+def test_ssm_hippo_legs_is_normal_plus_low_rank():
+    a, b = ml_models_docs.hippo_legs(4)
+    assert a[2][0] == pytest.approx(-math.sqrt(5)) and a[3][3] == -4.0 and a[0][3] == 0.0
+    assert b == pytest.approx([1, math.sqrt(3), math.sqrt(5), math.sqrt(7)])
+    s = ml_models_docs.hippo_normal_plus_low_rank(4)["s"]
+    for i in range(4):
+        assert s[i][i] == pytest.approx(-0.5)
+        for k in range(4):
+            if i != k:
+                assert s[i][k] == pytest.approx(-s[k][i])
+    inv = ml_models_docs.ssm_inverse(a)
+    ident = ml_models_docs.ssm_matmul(a, inv)
+    assert all(ident[i][k] == pytest.approx(1.0 if i == k else 0.0, abs=1e-12) for i in range(4) for k in range(4))
+
+
+def test_ssm_recurrence_equals_convolution():
+    ex = ml_models_docs.state_space_example()
+    assert ex["dual_gap"] < 1e-12
+    assert ex["kernel"][0] == pytest.approx(sum(c * b for c, b in zip(ex["example"]["hippo_c"], ex["b_bar"])))
+    assert all(x > y > 0 for x, y in zip(ex["kernel"], ex["kernel"][1:]))
+    impulse = [1.0] + [0.0] * 7
+    rec = ml_models_docs.ssm_recurrent(ex["a_bar"], ex["b_bar"], ex["example"]["hippo_c"], impulse)
+    assert rec["y"] == pytest.approx(ex["kernel"])
+
+
+def test_ssm_selection_holds_gated_values_that_a_fixed_step_cannot():
+    ex = ml_models_docs.state_space_example()
+    assert ex["target"] == [2.0] * 4 + [-1.0] * 4
+    assert ex["sel_error"] < 0.05 and ex["lti_error"] > 1.5
+    gated = [r for r in ex["selective"] if r["gate"]]
+    filler = [r for r in ex["selective"] if not r["gate"]]
+    assert all(r["step"] > 4 for r in gated) and all(r["step"] < 0.003 for r in filler)
+    assert all(r["b_bar"] == [0.0, 0.0] for r in filler)
+
+
+def test_ssm_parallel_scan_matches_sequential_in_log_depth():
+    ex = ml_models_docs.state_space_example()
+    assert ex["scan"]["h"] == pytest.approx(ex["sequential"], abs=1e-15)
+    assert ex["scan"]["depth"] == 3 and ex["scan"]["combines"] == 7 + 6 + 4
+    assert [r["h"][0] for r in ex["selective"]] == pytest.approx(ex["sequential"])
+    pairs = [(0.5, 1.0), (2.0, -1.0), (0.25, 3.0)]
+    left = ml_models_docs.scan_combine(ml_models_docs.scan_combine(pairs[0], pairs[1]), pairs[2])
+    right = ml_models_docs.scan_combine(pairs[0], ml_models_docs.scan_combine(pairs[1], pairs[2]))
+    assert left == pytest.approx(right)
+
+
+def test_ssm_costs_grow_with_context_only_for_attention():
+    costs = ml_models_docs.state_space_example()["costs"]
+    assert costs["state_bytes"] == 48 * 4096 * (16 + 3) * 2
+    rows = costs["rows"]
+    assert rows[0]["kv_bytes"] == 2 * 48 * 1024 * 2048 * 2
+    assert all(r["ssm_bytes"] == costs["state_bytes"] for r in rows)
+    assert rows[-1]["kv_bytes"] // rows[0]["kv_bytes"] == 512
+    assert rows[-1]["train_attn"] // rows[0]["train_attn"] == 512 ** 2
+    assert rows[-1]["train_ssm"] // rows[0]["train_ssm"] == 512
