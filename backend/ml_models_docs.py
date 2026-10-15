@@ -664,12 +664,13 @@ PAGES = [
         "title": "Optimizers: SGD to AdamW",
         "area": "neural-networks",
         "level": "core",
-        "summary": "SGD, momentum, RMSProp, Adam and AdamW, with a worked Adam step.",
+        "summary": "SGD, momentum, RMSProp, Adam, AdamW and Muon, with a worked Adam step.",
         "prerequisites": ["derivatives-and-gradients", "backpropagation"],
         "sources": [
             "pytorch:torch/optim/sgd.py",
             "pytorch:torch/optim/adam.py",
             "pytorch:torch/optim/adamw.py",
+            "pytorch:torch/optim/_muon.py",
             "pytorch:torch/optim/optimizer.py",
         ],
         "ready": True,
@@ -3221,6 +3222,77 @@ def optimizer_memory(parameters):
         {"name": name, "tensors": tensors, "state": state, "bytes_per_param": 4 * tensors, "gigabytes": 4 * tensors * parameters / 1e9}
         for name, tensors, state in rows
     ]
+
+
+MUON_EXAMPLE = {
+    "gradient": [[3.0, 1.0, 0.0, 0.5], [1.0, 2.0, 1.0, 0.0], [0.0, 0.5, 0.2, 0.1]],
+    "coefficients": (3.4445, -4.7750, 2.0315),
+    "steps": 5,
+    "eps": 1e-7,
+    "logits": [42.0, 180.0, 95.0, 400.0],
+    "tau": 100.0,
+}
+
+
+def newton_schulz_polynomial(s, coefficients=MUON_EXAMPLE["coefficients"]):
+    a, b, c = coefficients
+    return a * s + b * s ** 3 + c * s ** 5
+
+
+def muon_newton_schulz(matrix, steps=MUON_EXAMPLE["steps"], coefficients=MUON_EXAMPLE["coefficients"], eps=MUON_EXAMPLE["eps"]):
+    a, b, c = coefficients
+    flip = len(matrix) > len(matrix[0])
+    x = transpose(matrix) if flip else [list(map(float, row)) for row in matrix]
+    scale = max(frobenius_norm(x), eps)
+    x = [[v / scale for v in row] for row in x]
+    trace = [x]
+    for _ in range(steps):
+        gram = matmul(x, transpose(x))
+        gram_sq = matmul(gram, gram)
+        update = [[b * g + c * h for g, h in zip(r1, r2)] for r1, r2 in zip(gram, gram_sq)]
+        step = matmul(update, x)
+        x = [[a * v + u for v, u in zip(r1, r2)] for r1, r2 in zip(x, step)]
+        trace.append(x)
+    if flip:
+        trace = [transpose(m) for m in trace]
+    return trace
+
+
+def muon_adjusted_lr(lr, shape, adjust_lr_fn="original"):
+    rows, cols = shape[0], shape[1]
+    if adjust_lr_fn == "original":
+        return lr * math.sqrt(max(1.0, rows / cols))
+    if adjust_lr_fn == "match_rms_adamw":
+        return lr * 0.2 * math.sqrt(max(rows, cols))
+    return lr * math.sqrt(rows / cols)
+
+
+def qk_clip(max_logits, tau=MUON_EXAMPLE["tau"]):
+    return [
+        {"logit": s, "gamma": min(1.0, tau / s), "scale": math.sqrt(min(1.0, tau / s)), "clipped_logit": s * min(1.0, tau / s)}
+        for s in max_logits
+    ]
+
+
+def muon_example(ex=MUON_EXAMPLE):
+    trace = muon_newton_schulz(ex["gradient"], ex["steps"], ex["coefficients"], ex["eps"])
+    singular = [svd(m)["S"] for m in trace]
+    exact = svd(ex["gradient"])
+    polar = matmul(exact["U"], exact["Vh"])
+    final = trace[-1]
+    gap = frobenius_norm([[p - q for p, q in zip(r1, r2)] for r1, r2 in zip(final, polar)])
+    curve = [newton_schulz_polynomial(i / 100, ex["coefficients"]) for i in range(0, 121)]
+    return {
+        "trace": trace,
+        "singular": singular,
+        "gradient_singular": exact["S"],
+        "polar": polar,
+        "polar_gap": gap,
+        "curve": curve,
+        "clip": qk_clip(ex["logits"], ex["tau"]),
+        "lr": {fn: muon_adjusted_lr(1.0, (1024, 4096), fn) for fn in ("original", "match_rms_adamw", "spectral_unclamped")},
+        "lr_tall": {fn: muon_adjusted_lr(1.0, (4096, 1024), fn) for fn in ("original", "match_rms_adamw", "spectral_unclamped")},
+    }
 
 
 def embedding_lookup(table, ids):
@@ -14686,6 +14758,8 @@ def render(slug, render_template):
         "uncorrected_step_ratio": uncorrected_step_ratio,
         "weight_decay_paths": weight_decay_paths,
         "optimizer_memory": optimizer_memory,
+        "muon_settings": MUON_EXAMPLE,
+        "muon_example": muon_example,
         "embedding_example": EMBEDDING_EXAMPLE,
         "word2vec_example": WORD2VEC_EXAMPLE,
         "embedding_lookup": embedding_lookup,

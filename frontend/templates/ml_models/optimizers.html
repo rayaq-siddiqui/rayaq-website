@@ -5,6 +5,8 @@
 {% set wd = weight_decay_example %}
 {% set decay = weight_decay_paths(wd) %}
 {% set memory = optimizer_memory(7e9) %}
+{% set mu = muon_settings %}
+{% set muon = muon_example(mu) %}
 {% macro n(x) -%}{% if x == x|round %}{{ "%g"|format(x) }}{% else %}{{ "%.4g"|format(x) }}{% endif %}{%- endmacro %}
 {% macro vec(v) -%}[{% for x in v %}{{ n(x) }}{% if not loop.last %}, {% endif %}{% endfor %}]{%- endmacro %}
 {% macro sci(x) -%}{{ "%.1e"|format(x) }}{%- endmacro %}
@@ -14,7 +16,8 @@
     Backpropagation gives the gradient; the optimizer decides what to do with it. This page builds
     up from plain stochastic gradient descent through momentum, Nesterov and RMSProp to Adam and
     AdamW, races them on the same narrow valley, works one Adam step through by hand, shows why
-    decoupled weight decay is not the same as L2 regularization, and reads the update rules out of
+    decoupled weight decay is not the same as L2 regularization, adds Muon's orthogonalized update
+    for weight matrices and Kimi K2's QK-Clip, and reads the update rules out of
     <code>torch.optim</code> at {{ upstream.tag }}.
   </p>
 </header>
@@ -298,6 +301,127 @@
   (1 − ηλ)<sup>{{ wd.steps }}</sup> = {{ n((1 - wd.lr * wd.weight_decay) ** wd.steps) }}.
 </p>
 
+<h3 id="muon">Muon: orthogonalized momentum for weight matrices</h3>
+
+<p>
+  Every optimizer so far treats a weight matrix as a bag of independent numbers. Muon treats it as a
+  matrix. Its gradient G (or the momentum built from it) can have a few large singular values and
+  many tiny ones, and then a plain step moves the layer a lot along a handful of directions and barely at
+  all along the rest. Muon replaces the update with its nearest semi-orthogonal matrix: write the
+  momentum as M = USV<sup>T</sup> and step along UV<sup>T</sup>, which has the same singular
+  directions but every singular value set to 1. Every direction the gradient points in gets an equal
+  share of the step.
+</p>
+<p>
+  An exact SVD per step would be too slow, so Muon runs a few Newton–Schulz iterations instead. Divide
+  M by its Frobenius norm, which puts every singular value in [0, 1], then repeat
+  X ← aX + (bXX<sup>T</sup> + c(XX<sup>T</sup>)<sup>2</sup>)X. Each iteration only multiplies
+  matrices, and it acts on each singular value s independently as the odd polynomial
+  φ(s) = as + bs<sup>3</sup> + cs<sup>5</sup>. PyTorch's coefficients, (a, b, c) =
+  ({{ mu.coefficients|join(", ") }}), are chosen to make the slope at zero, a, as large as
+  possible, so small singular values grow quickly, at the cost of exactness: φ(1) =
+  {{ n(muon.curve[100]) }}, so the iteration never settles at exactly 1. The pinned docstring says
+  the result is US′V<sup>T</sup> with S′ roughly uniform on (0.5, 1.5), and that this does not hurt
+  model performance relative to UV<sup>T</sup>. The matrix runs in bfloat16, and a tall matrix is transposed first so XX<sup>T</sup> is
+  the smaller Gram matrix.
+</p>
+
+<div class="jj-diagram">
+  {% macro mx(k) -%}{{ 90 + k * 100 }}{%- endmacro %}
+  {% macro my(v) -%}{{ 225 - v * 125 }}{%- endmacro %}
+  {% set colors = ["var(--jj-amber)", "var(--jj-green)", "var(--jj-violet)"] %}
+  <svg viewBox="0 0 680 270" role="img" aria-labelledby="opt-muon-title opt-muon-desc">
+    <title id="opt-muon-title">Singular values through five Newton–Schulz steps</title>
+    <desc id="opt-muon-desc">
+      The 3 by 4 example gradient has singular values {{ vec(muon.gradient_singular) }}. After dividing
+      by its Frobenius norm they are {{ vec(muon.singular[0]) }}.
+      {% for sv in muon.singular[1:] %}After step {{ loop.index }}: {{ vec(sv) }}. {% endfor %}
+      All three end between 0.5 and 1.5; the smallest grows from {{ n(muon.singular[0][-1]) }} to
+      {{ n(muon.singular[-1][-1]) }}.
+    </desc>
+    {% for v in [0, 0.5, 1, 1.5] %}
+      <line x1="{{ mx(0) }}" y1="{{ my(v) }}" x2="{{ mx(5) }}" y2="{{ my(v) }}" class="d-line" opacity="{{ 0.5 if v == 1 else 0.15 }}" stroke-dasharray="{{ '6 4' if v == 1 else 'none' }}"></line>
+      <text x="{{ mx(0)|float - 8 }}" y="{{ my(v)|float + 4 }}" font-size="11" text-anchor="end">{{ v }}</text>
+    {% endfor %}
+    {% for k in range(muon.singular|length) %}
+      <text x="{{ mx(k) }}" y="{{ my(0)|float + 18 }}" font-size="11" text-anchor="middle">{{ k }}</text>
+    {% endfor %}
+    {% for i in range(3) %}
+      <path d="M{% for sv in muon.singular %}{% if not loop.first %} L{% endif %}{{ mx(loop.index0) }},{{ my(sv[i]) }}{% endfor %}" fill="none" stroke="{{ colors[i] }}" stroke-width="2.5"></path>
+      {% for sv in muon.singular %}<circle cx="{{ mx(loop.index0) }}" cy="{{ my(sv[i]) }}" r="3.5" fill="{{ colors[i] }}"></circle>{% endfor %}
+    {% endfor %}
+    <text x="{{ mx(0)|float + 8 }}" y="{{ my(muon.singular[0][0])|float - 8 }}" font-size="12" style="fill: var(--jj-amber)">σ₁</text>
+    <text x="{{ mx(0)|float + 8 }}" y="{{ my(muon.singular[0][1])|float - 8 }}" font-size="12" style="fill: var(--jj-green)">σ₂</text>
+    <text x="{{ mx(0)|float + 8 }}" y="{{ my(muon.singular[0][2])|float - 8 }}" font-size="12" style="fill: var(--jj-violet)">σ₃</text>
+    <text x="{{ mx(2.5) }}" y="266" font-size="11" text-anchor="middle" class="d-muted">Newton–Schulz step; vertical: singular value</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  The example gradient {{ vec(mu.gradient[0]) }}, {{ vec(mu.gradient[1]) }}, {{ vec(mu.gradient[2]) }}
+  has a condition number of {{ n(muon.gradient_singular[0] / muon.gradient_singular[-1]) }}. Five
+  steps with PyTorch's coefficients bring its singular values to {{ vec(muon.singular[-1]) }}: not
+  exactly 1, which is why the result still differs from the exact UV<sup>T</sup> by
+  {{ n(muon.polar_gap) }} in Frobenius norm, but no direction is left out. Computed in float64 by
+  <code>muon_newton_schulz</code>, a stdlib copy of <code>_zeropower_via_newtonschulz</code>.
+</p>
+
+<p>
+  The rest of <code>torch.optim.Muon</code> is short. Momentum is one buffer per matrix, updated
+  in place as <code>buf.lerp_(grad, 1 - momentum)</code>: an exponential average, even though the
+  docstring's formula writes B<sub>t</sub> = μB<sub>t−1</sub> + g<sub>t</sub>. With
+  <code>nesterov=True</code> (the default) the orthogonalized matrix is
+  <code>grad.lerp(buf, momentum)</code>. Weight decay is decoupled as in AdamW, with the unadjusted
+  rate, and then the step is scaled by a shape-dependent factor, because an orthogonal matrix's
+  entries shrink as the matrix grows. For an A×B weight:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th><code>adjust_lr_fn</code></th><th>Learning-rate multiplier</th><th>1024×4096</th><th>4096×1024</th></tr></thead>
+    <tbody>
+      <tr><td><code>None</code> or <code>"original"</code></td><td>√max(1, A/B)</td><td>{{ n(muon.lr.original) }}</td><td>{{ n(muon.lr_tall.original) }}</td></tr>
+      <tr><td><code>"match_rms_adamw"</code></td><td>0.2·√max(A, B)</td><td>{{ n(muon.lr.match_rms_adamw) }}</td><td>{{ n(muon.lr_tall.match_rms_adamw) }}</td></tr>
+      <tr><td><code>"spectral_unclamped"</code></td><td>√(A/B)</td><td>{{ n(muon.lr.spectral_unclamped) }}</td><td>{{ n(muon.lr_tall.spectral_unclamped) }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <code>"match_rms_adamw"</code> is the rule from Moonshot's <em>Muon is Scalable for LLM Training</em>:
+  it scales the update so its entries have about the same RMS (0.2) as a typical AdamW step, which
+  lets Muon reuse AdamW's learning rate and weight decay. Muon only accepts 2-D parameters and raises
+  on anything else; the docstring says biases, embeddings and other non-2-D parameters should go to
+  a standard optimizer such as AdamW, and its example builds the two side by side. Its state is one momentum buffer, half of Adam's.
+</p>
+<p>
+  At scale, Muon has one known failure. Kimi K2's report says that training a 53B-parameter MoE with
+  plain Muon let the largest attention logit, the maximum of q·k/√d over a batch, climb past 1000
+  in some heads, which risks loss spikes. Their fix, <em>QK-Clip</em>, watches each head's maximum
+  logit S<sub>max</sub> and, whenever it passes a threshold τ, rescales that head's query and key
+  weights after the optimizer step by √γ each, with γ = min(1, τ/S<sub>max</sub>), so the product
+  q·k shrinks by exactly γ. Heads under τ are untouched, and nothing in the forward pass changes.
+  With τ = {{ n(mu.tau) }}:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Head's max logit</th><th>γ = min(1, τ/S<sub>max</sub>)</th><th>Scale on W<sub>q</sub> and W<sub>k</sub></th><th>Max logit after</th></tr></thead>
+    <tbody>
+      {% for row in muon.clip %}
+      <tr><td>{{ n(row.logit) }}</td><td>{{ n(row.gamma) }}</td><td>{{ n(row.scale) }}</td><td>{{ n(row.clipped_logit) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Muon with QK-Clip, plus weight decay and the RMS-matching scale, is what the report calls
+  <em>MuonClip</em>; K2 used τ = 100 and pre-trained a 1T-parameter MoE on 15.5T tokens with no
+  loss spikes. For multi-head latent attention the report scales only the per-head components and
+  leaves the shared rotary key alone. PyTorch's <code>Muon</code> does not include QK-Clip at
+  {{ upstream.tag }}, since the clip needs the attention logits, which the optimizer never sees.
+</p>
+
 <h3 id="state-memory">Optimizer state memory</h3>
 
 <p>
@@ -386,6 +510,30 @@
         <td><code>weight_decay=1e-2</code></td>
         <td>Adam with <code>decoupled_weight_decay=True</code>.</td>
         <td><a href="{{ src('torch/optim/adamw.py', 19, 47) }}"><code>adamw.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>torch.optim.Muon</code></td>
+        <td><code>lr=1e-3</code>, <code>weight_decay=0.1</code>, <code>momentum=0.95</code>, <code>nesterov=True</code>, <code>ns_steps=5</code></td>
+        <td>Muon for 2-D parameters only; state <code>momentum_buffer</code>.</td>
+        <td><a href="{{ src('torch/optim/_muon.py', 89, 205) }}"><code>_muon.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_zeropower_via_newtonschulz</code></td>
+        <td>(A, B) matrix, <code>ns_coefficients</code>, <code>ns_steps</code>, <code>eps=1e-7</code></td>
+        <td>Normalizes by the Frobenius norm, then runs the quintic Newton–Schulz iteration in bfloat16.</td>
+        <td><a href="{{ src('torch/optim/_muon.py', 31, 70) }}"><code>_muon.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_adjust_lr</code></td>
+        <td><code>adjust_lr_fn</code>, <code>param.shape[:2]</code></td>
+        <td>The shape-dependent learning-rate multiplier.</td>
+        <td><a href="{{ src('torch/optim/_muon.py', 73, 86) }}"><code>_muon.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_single_tensor_muon</code></td>
+        <td>per parameter: B</td>
+        <td>EMA momentum, Nesterov blend, orthogonalize, decoupled decay, step.</td>
+        <td><a href="{{ src('torch/optim/_muon.py', 318, 351) }}"><code>_muon.py</code></a></td>
       </tr>
       <tr>
         <td><code>Optimizer.zero_grad</code></td>
@@ -609,5 +757,9 @@ theta                                   # [0.497125..., -0.297029...]</code></pr
   <li>Loshchilov and Hutter. <em>Decoupled Weight Decay Regularization.</em> ICLR, 2019 (<a href="https://arxiv.org/abs/1711.05101">arXiv 1711.05101</a>).</li>
   <li>Reddi, Kale and Kumar. <em>On the Convergence of Adam and Beyond.</em> ICLR, 2018 (<a href="https://arxiv.org/abs/1904.09237">arXiv 1904.09237</a>; AMSGrad).</li>
   <li>Rajbhandari, Rasley, Ruwase and He. <em>ZeRO: Memory Optimizations Toward Training Trillion Parameter Models.</em> SC, 2020 (<a href="https://arxiv.org/abs/1910.02054">arXiv 1910.02054</a>).</li>
-  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/optim/sgd.py', 322, 380) }}"><code>torch/optim/sgd.py</code></a>, <a href="{{ src('torch/optim/adam.py', 347, 552) }}"><code>torch/optim/adam.py</code></a>, <a href="{{ src('torch/optim/adamw.py', 19, 47) }}"><code>torch/optim/adamw.py</code></a> and <a href="{{ src('torch/optim/optimizer.py', 358, 1180) }}"><code>torch/optim/optimizer.py</code></a>.</li>
+  <li>Keller Jordan. <em>Muon: An Optimizer for Hidden Layers in Neural Networks.</em> Blog post, 2024 (<a href="https://kellerjordan.github.io/posts/muon/">kellerjordan.github.io/posts/muon</a>).</li>
+  <li>Moonshot AI. <em>Muon is Scalable for LLM Training.</em> 2025 (<a href="https://arxiv.org/abs/2502.16982">arXiv 2502.16982</a>; the <code>match_rms_adamw</code> scale).</li>
+  <li>Jeremy Bernstein. <em>Deriving Muon.</em> 2025 (<a href="https://jeremybernste.in/writing/deriving-muon">jeremybernste.in/writing/deriving-muon</a>).</li>
+  <li>Kimi Team. <em>Kimi K2: Open Agentic Intelligence.</em> 2025 (<a href="https://arxiv.org/abs/2507.20534">arXiv 2507.20534</a>; QK-Clip and MuonClip).</li>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/optim/sgd.py', 322, 380) }}"><code>torch/optim/sgd.py</code></a>, <a href="{{ src('torch/optim/adam.py', 347, 552) }}"><code>torch/optim/adam.py</code></a>, <a href="{{ src('torch/optim/adamw.py', 19, 47) }}"><code>torch/optim/adamw.py</code></a>, <a href="{{ src('torch/optim/_muon.py', 31, 351) }}"><code>torch/optim/_muon.py</code></a> and <a href="{{ src('torch/optim/optimizer.py', 358, 1180) }}"><code>torch/optim/optimizer.py</code></a>.</li>
 </ul>

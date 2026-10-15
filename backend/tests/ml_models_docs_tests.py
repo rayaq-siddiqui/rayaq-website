@@ -1113,6 +1113,49 @@ def test_optimizer_memory_counts_state_tensors():
     assert rows["Adam / AdamW"]["gigabytes"] == pytest.approx(56)
 
 
+def test_newton_schulz_polynomial_matches_pinned_coefficients():
+    assert ml_models_docs.MUON_EXAMPLE["coefficients"] == (3.4445, -4.7750, 2.0315)
+    assert ml_models_docs.newton_schulz_polynomial(0.0) == 0
+    assert ml_models_docs.newton_schulz_polynomial(1.0) == pytest.approx(0.701)
+    assert ml_models_docs.newton_schulz_polynomial(0.1) > 3 * 0.1
+
+
+def test_muon_newton_schulz_pushes_singular_values_toward_one():
+    example = ml_models_docs.muon_example()
+    first, last = example["singular"][0], example["singular"][-1]
+    assert len(example["trace"]) == ml_models_docs.MUON_EXAMPLE["steps"] + 1
+    assert sum(s * s for s in first) == pytest.approx(1.0)
+    assert min(first) < 0.05
+    assert all(0.5 < s < 1.5 for s in last)
+    assert example["polar_gap"] > 0.1
+    assert len(example["trace"][-1]) == 3 and len(example["trace"][-1][0]) == 4
+
+
+def test_muon_newton_schulz_transposes_tall_matrices():
+    wide = ml_models_docs.MUON_EXAMPLE["gradient"]
+    tall = ml_models_docs.transpose(wide)
+    out_wide = ml_models_docs.muon_newton_schulz(wide)[-1]
+    out_tall = ml_models_docs.muon_newton_schulz(tall)[-1]
+    flat_tall = [x for row in ml_models_docs.transpose(out_tall) for x in row]
+    assert flat_tall == pytest.approx([x for row in out_wide for x in row])
+
+
+def test_muon_adjusted_lr_follows_each_rule():
+    lr = ml_models_docs.muon_adjusted_lr
+    assert lr(0.02, (4096, 1024)) == pytest.approx(0.04)
+    assert lr(0.02, (1024, 4096)) == pytest.approx(0.02)
+    assert lr(1.0, (1024, 4096), "match_rms_adamw") == pytest.approx(12.8)
+    assert lr(1.0, (1024, 4096), "spectral_unclamped") == pytest.approx(0.5)
+
+
+def test_qk_clip_caps_each_head_at_tau():
+    rows = ml_models_docs.qk_clip([42.0, 400.0], tau=100.0)
+    assert rows[0]["gamma"] == 1.0 and rows[0]["clipped_logit"] == 42.0
+    assert rows[1]["gamma"] == pytest.approx(0.25)
+    assert rows[1]["scale"] == pytest.approx(0.5)
+    assert rows[1]["clipped_logit"] == pytest.approx(100.0)
+
+
 def test_embedding_lookup_equals_one_hot_matmul():
     example = ml_models_docs.EMBEDDING_EXAMPLE
     ids = example["batch"][0]
