@@ -14156,6 +14156,172 @@ def state_space_example():
     }
 
 
+PROFILING_EXAMPLE = {
+    "step_kernels_us": (1200, 800, 2400, 600, 1600, 400),
+    "small_kernels_us": (2,) * 20,
+    "launch_us": 5,
+    "warmup_extra_ms": (850.0, 35.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    "schedule": {"skip_first": 2, "wait": 1, "warmup": 1, "active": 2, "repeat": 2},
+    "schedule_steps": 14,
+    "trace": (
+        ("ProfilerStep#4", 0, 9800),
+        ("enumerate(DataLoader)#_SingleProcessDataLoaderIter.__next__", 20, 3020),
+        ("aten::linear", 3100, 3460),
+        ("aten::t", 3110, 3150),
+        ("aten::addmm", 3160, 3450),
+        ("aten::relu", 3470, 3540),
+        ("aten::linear", 3550, 3900),
+        ("aten::t", 3560, 3600),
+        ("aten::addmm", 3610, 3890),
+        ("aten::cross_entropy_loss", 3920, 4180),
+        ("autograd::engine::evaluate_function: AddmmBackward0", 4300, 5100),
+        ("autograd::engine::evaluate_function: AddmmBackward0", 5150, 5900),
+        ("Optimizer.step#AdamW.step", 6000, 9700),
+    ),
+    "mfu": {"params": 1.3e9, "layers": 24, "d_model": 2048, "context": 2048, "gpus": 8,
+            "tokens_per_step": 1048576, "step_s": 2.6, "peak": 989e12},
+    "loader": {"load_ms": 120.0, "compute_ms": 40.0, "workers": (2, 3, 4), "batches": 24},
+    "memory": {"params_mib": 1000, "layers": 4, "act_mib_per_1k": 150, "tokens": (4096, 4096, 4096, 8192)},
+}
+
+
+def profiler_schedule(wait, warmup, active, repeat=0, skip_first=0, skip_first_wait=0):
+    def action(step):
+        if step < skip_first:
+            return "NONE"
+        step -= skip_first
+        if skip_first_wait != 0:
+            step += wait
+        num_steps = wait + warmup + active
+        if repeat > 0 and step / num_steps >= repeat:
+            return "NONE"
+        mod_step = step % num_steps
+        if mod_step < wait:
+            return "NONE"
+        if mod_step < wait + warmup:
+            return "WARMUP"
+        return "RECORD" if mod_step < num_steps - 1 else "RECORD_AND_SAVE"
+    return action
+
+
+def schedule_actions(config, steps):
+    action = profiler_schedule(**config)
+    return [action(s) for s in range(steps)]
+
+
+def step_timings(kernel_us, launch_us, warmup_extra_ms):
+    line = async_timeline(kernel_us, launch_us)
+    synced = [line["total"] / 1000 + extra for extra in warmup_extra_ms]
+    unsynced = [line["cpu_done"] / 1000 + extra for extra in warmup_extra_ms]
+    steady = sorted(synced[2:])
+    return {
+        "timeline": line,
+        "synced": synced,
+        "unsynced": unsynced,
+        "naive_mean": sum(synced) / len(synced),
+        "unsynced_mean": sum(unsynced[2:]) / len(unsynced[2:]),
+        "median": steady[len(steady) // 2],
+    }
+
+
+def key_averages(events):
+    spans = sorted(events, key=lambda e: (e[1], -e[2]))
+    child_time = [0] * len(spans)
+    stack = []
+    for i, (_, start, end) in enumerate(spans):
+        while stack and spans[stack[-1]][2] <= start:
+            stack.pop()
+        if stack:
+            child_time[stack[-1]] += end - start
+        stack.append(i)
+    rows = {}
+    for (name, start, end), inner in zip(spans, child_time):
+        row = rows.setdefault(name, {"name": name, "count": 0, "total": 0, "self": 0})
+        row["count"] += 1
+        row["total"] += end - start
+        row["self"] += end - start - inner
+    return sorted(rows.values(), key=lambda r: -r["self"])
+
+
+def model_flops_utilization(cfg):
+    n, layers, d, ctx = cfg["params"], cfg["layers"], cfg["d_model"], cfg["context"]
+    attention = 12 * layers * d * ctx
+    per_token = 6 * n + attention
+    tokens_per_s = cfg["tokens_per_step"] / cfg["step_s"]
+    achieved = tokens_per_s * per_token / cfg["gpus"]
+    hardware = tokens_per_s * (8 * n + 4 / 3 * attention) / cfg["gpus"]
+    return {
+        "dense": 6 * n, "attention": attention, "per_token": per_token,
+        "tokens_per_s": tokens_per_s, "per_gpu": achieved,
+        "mfu": achieved / cfg["peak"], "hfu": hardware / cfg["peak"],
+    }
+
+
+def data_wait(load_ms, compute_ms, workers, batches):
+    run = loader_pipeline(load_ms, compute_ms, workers, batches)
+    waits, previous = [], 0.0
+    for row in run["timeline"]:
+        waits.append(row["compute_start"] - previous)
+        previous = row["compute_end"]
+    steady = waits[workers * 2:]
+    return {
+        "workers": workers,
+        "first_wait": waits[0],
+        "steady_wait": sum(steady) / len(steady),
+        "wait_fraction": sum(steady) / (sum(steady) + compute_ms * len(steady)),
+        "step_ms": run["per_batch_ms"],
+    }
+
+
+def memory_timeline(params_mib, layers, act_mib_per_1k, tokens):
+    allocated = 0
+    events = []
+    peaks = []
+
+    def change(step, label, mib):
+        nonlocal allocated
+        allocated += mib
+        events.append({"step": step, "event": label, "allocated": allocated})
+
+    change(-1, "model.to(device)", params_mib)
+    grads = False
+    optimizer_state = False
+    grad_per_layer = params_mib / layers
+    for step, n in enumerate(tokens):
+        start = len(events)
+        act = act_mib_per_1k * n / 1024
+        for layer in range(layers):
+            change(step, f"forward {layer}", act)
+        for layer in reversed(range(layers)):
+            if not grads:
+                change(step, f"backward {layer}: grad", grad_per_layer)
+            change(step, f"backward {layer}: free activations", -act)
+        grads = True
+        if not optimizer_state:
+            change(step, "optimizer.step: exp_avg, exp_avg_sq", 2 * params_mib)
+            optimizer_state = True
+        change(step, "zero_grad(set_to_none=True)", -params_mib)
+        grads = False
+        peaks.append({"step": step, "tokens": n, "peak": max(e["allocated"] for e in events[start:]),
+                      "end": allocated})
+    return {"events": events, "peaks": peaks, "reserved": max(e["allocated"] for e in events)}
+
+
+def profiling_example():
+    ex = PROFILING_EXAMPLE
+    return {
+        "example": ex,
+        "timing": step_timings(ex["step_kernels_us"], ex["launch_us"], ex["warmup_extra_ms"]),
+        "host_bound": async_timeline(ex["small_kernels_us"], ex["launch_us"]),
+        "actions": schedule_actions(ex["schedule"], ex["schedule_steps"]),
+        "averages": key_averages(ex["trace"]),
+        "mfu": model_flops_utilization(ex["mfu"]),
+        "loader": [data_wait(ex["loader"]["load_ms"], ex["loader"]["compute_ms"], w, ex["loader"]["batches"])
+                   for w in ex["loader"]["workers"]],
+        "memory": memory_timeline(**ex["memory"]),
+    }
+
+
 def render(slug, render_template):
     if slug is None:
         page = None
@@ -14213,6 +14379,7 @@ def render(slug, render_template):
         "checkpointing_example": checkpointing_example,
         "reproducibility_example": reproducibility_example,
         "state_space_example": state_space_example,
+        "profiling_example": profiling_example,
         "pretraining_example": pretraining_example,
         "attention_example": ATTENTION_EXAMPLE,
         "attention_weights": attention_weights,

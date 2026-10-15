@@ -5713,3 +5713,66 @@ def test_ssm_costs_grow_with_context_only_for_attention():
     assert rows[-1]["kv_bytes"] // rows[0]["kv_bytes"] == 512
     assert rows[-1]["train_attn"] // rows[0]["train_attn"] == 512 ** 2
     assert rows[-1]["train_ssm"] // rows[0]["train_ssm"] == 512
+
+
+def test_prof_schedule_matches_upstream_cycle():
+    ex = ml_models_docs.profiling_example()
+    assert ex["actions"] == ["NONE"] * 3 + ["WARMUP", "RECORD", "RECORD_AND_SAVE"] * 1 + [
+        "NONE", "WARMUP", "RECORD", "RECORD_AND_SAVE"] + ["NONE"] * 4
+    action = ml_models_docs.profiler_schedule(wait=1, warmup=1, active=2, skip_first_wait=1)
+    assert [action(s) for s in range(5)] == ["WARMUP", "RECORD", "RECORD_AND_SAVE", "NONE", "WARMUP"]
+    endless = ml_models_docs.profiler_schedule(wait=0, warmup=0, active=1)
+    assert {endless(s) for s in range(50)} == {"RECORD_AND_SAVE"}
+
+
+def test_prof_timing_needs_sync_and_warmup():
+    t = ml_models_docs.profiling_example()["timing"]
+    assert t["timeline"]["total"] == 7000 + 5 and t["timeline"]["cpu_done"] == 30
+    assert t["median"] == pytest.approx(7.005)
+    assert t["unsynced_mean"] == pytest.approx(0.03)
+    assert t["naive_mean"] > 16 * t["median"]
+    assert t["synced"][0] > 100 * t["median"]
+
+
+def test_prof_host_bound_steps_leave_the_gpu_idle():
+    h = ml_models_docs.profiling_example()["host_bound"]
+    assert h["busy"] == 40 and h["cpu_done"] == 100
+    assert h["utilization"] < 0.4
+
+
+def test_prof_key_averages_splits_self_from_total():
+    rows = {r["name"]: r for r in ml_models_docs.profiling_example()["averages"]}
+    linear = rows["aten::linear"]
+    assert (linear["count"], linear["total"], linear["self"]) == (2, 710, 60)
+    step = rows["ProfilerStep#4"]
+    assert step["total"] == 9800 and step["self"] == 9800 - sum(
+        r["total"] for name, r in rows.items() if name not in ("ProfilerStep#4", "aten::t", "aten::addmm"))
+    assert sum(r["self"] for r in rows.values()) == step["total"]
+    first = ml_models_docs.profiling_example()["averages"][0]
+    assert first["name"].startswith("Optimizer.step")
+
+
+def test_prof_mfu_counts_model_flops_only():
+    m = ml_models_docs.profiling_example()["mfu"]
+    assert m["per_token"] == 6 * 1.3e9 + 12 * 24 * 2048 * 2048
+    assert m["mfu"] == pytest.approx(0.4592, abs=1e-4)
+    assert m["hfu"] > m["mfu"]
+    assert m["tokens_per_s"] * 2.6 == pytest.approx(1048576)
+
+
+def test_prof_data_wait_disappears_once_workers_keep_up():
+    rows = ml_models_docs.profiling_example()["loader"]
+    assert [r["workers"] for r in rows] == [2, 3, 4]
+    assert rows[0]["steady_wait"] == pytest.approx(20.0)
+    assert rows[0]["wait_fraction"] == pytest.approx(1 / 3)
+    assert rows[1]["wait_fraction"] == 0.0 and rows[2]["wait_fraction"] == 0.0
+    assert all(r["first_wait"] == 120.0 for r in rows)
+
+
+def test_prof_memory_peak_moves_after_first_step_and_long_batch():
+    mem = ml_models_docs.profiling_example()["memory"]
+    peaks = [p["peak"] for p in mem["peaks"]]
+    assert peaks == [4000.0, 5650.0, 5650.0, 8050.0]
+    assert all(p["end"] == 3000.0 for p in mem["peaks"])
+    assert mem["reserved"] == max(peaks)
+    assert mem["events"][0] == {"step": -1, "event": "model.to(device)", "allocated": 1000}
