@@ -1431,6 +1431,9 @@ UPCOMING_MODELS = [
             {"name": "Diffusion transformers (DiT, SD3)", "year": "2022/2024", "idea": "Replace the U-Net with a transformer over latent patches; SD3 trains it with rectified flow.", "paper": "Esser et al., Scaling Rectified Flow Transformers for High-Resolution Image Synthesis, 2024", "url": _arxiv("2403.03206")},
             {"name": "Segment Anything (SAM)", "year": "2023", "idea": "A promptable segmentation model: ViT image encoder, prompt encoder, light mask decoder.", "paper": "Kirillov et al., Segment Anything, 2023", "url": _arxiv("2304.02643")},
             {"name": "Mamba", "year": "2023", "idea": "A selective state-space model: linear-time sequence mixing, the main alternative to attention.", "paper": "Gu and Dao, Mamba, 2023", "url": _arxiv("2312.00752")},
+            {"name": "Kimi K2", "year": "2025", "idea": "A 1T-total, 32B-active MoE pre-trained on 15.5T tokens with MuonClip: Muon plus QK-Clip, which rescales query and key weights whenever a head's max attention logit passes a threshold.", "paper": "Kimi Team, Kimi K2: Open Agentic Intelligence, 2025", "url": _arxiv("2507.20534"), "slug": "optimizers"},
+            {"name": "DeepSeek-V3.2-Exp", "year": "2025", "idea": "DeepSeek Sparse Attention: a small ReLU \"lightning indexer\" scores earlier tokens and each query attends only to its top-k (2,048) of them.", "paper": "DeepSeek-AI, DeepSeek-V3.2-Exp: Boosting Long-Context Efficiency with DeepSeek Sparse Attention, 2025 (report in the model's GitHub repository)", "url": None, "slug": "attention"},
+            {"name": "MiMo-V2-Flash", "year": "2026", "idea": "309B total, 15B active; five 128-token sliding-window layers per global layer with a learnable attention sink, and its multi-token-prediction heads reused as a speculative-decoding draft.", "paper": "LLM-Core Xiaomi, MiMo-V2-Flash Technical Report, 2026", "url": _arxiv("2601.02780"), "slug": "decoding"},
         ],
     },
 ]
