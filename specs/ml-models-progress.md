@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-15 (forty-third run). Spec v2 widens the section from model
-architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Every queue item is ready (1-93, the last being `profiling`). The queue
-is empty, so the next run is the first weekly audit (spec §8.1).
+**Last updated:** 2026-10-15 (first weekly audit). Spec v2 widens the section from model
+architectures to all of machine learning: 12 areas, 94 pages, a seven-step learning path and a
+fixed page format. Every queue item is ready (1-94; the audit added `matrix-decompositions`).
+Nothing is queued, so the next run is the next weekly audit (spec §8.1).
 
 ## Pins
 
@@ -42,18 +42,22 @@ pull, clone the pins, build the `← next` page to §6, maintain the pins, recor
 and push small commits to `main`. The phone check before each push is
 `NODE_PATH=$(npm root -g) node tools/ml_models/check_mobile.js / /ml-models <ready pages>`.
 
+The first audit had no tool to change a trigger's schedule, so the trigger still fires every
+5 hours. Until the owner switches it to weekly, a run that finds the last audit row less than
+seven days old should record nothing and stop.
+
 ## §9 acceptance criteria
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [x] Every §5 page is ready and meets its "Must cover" column and §6 (93 of 93 ready, all
+- [x] Every §5 page is ready and meets its "Must cover" column and §6 (94 of 94 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
 - [x] No ML package in either requirements file (tested). There is no offline data yet.
 - [x] Mobile at 390px: no horizontal page scroll on `/`, `/ml-models` or any ready page
       (`check_mobile.js` in headless Chromium, every run).
-- [ ] The Routine has run at least once in maintenance mode.
+- [x] The Routine has run at least once in maintenance mode (the 2026-10-15 audit).
 
 ## Decisions
 
@@ -140,13 +144,14 @@ Paths are under `sklearn/`.
 - `transformer` uses the v1 section layout and is exempt from the §6 order test until its
   retrofit (queue item 18).
 
-## First to forty-second runs (2026-10-08 to 2026-10-14) — condensed
+## First to forty-third runs (2026-10-08 to 2026-10-15) — condensed
 
 Runs 1-3 wrote the spec (v1, then v2), the registry, `LEARNING_PATH`, the §6 and queue tests,
 `check_mobile.js` and the Routine. Every run since adds, per page, a tested-helpers commit, a
 page commit (page, `ready`, queue ✓) and a `docs:` commit, building queue items 1-84 in order
 (three per run from run 28 to run 42, which built preference-optimization,
-retrieval-augmented-generation and checkpointing). `6f0803f` fixed 13 templates that read a missing `pins.X.version` key.
+retrieval-augmented-generation and checkpointing; run 43 built reproducibility,
+state-space-models and profiling and emptied the queue). `6f0803f` fixed 13 templates that read a missing `pins.X.version` key.
 Pins never moved. The ranges each page links live in its template (grep `src(`, `skl(`,
 `xgb(`); `git log -p` on this file has every old commit table, range list and run detail.
 
@@ -178,6 +183,9 @@ Findings worth keeping:
   pair DPO's margin keeps growing while IPO settles at 1/(2τ). A full checkpoint resume
   replays steps bit for bit, and forgetting any one piece (scheduler, optimizer, RNG, data
   position) gives a different run, often with a lower loss. Young's T* = √(2CM).
+- DataLoader workers reseed `random`, torch and NumPy at the pin; the trap is a generator
+  built in `Dataset.__init__`. A HiPPO-LegS SSM gives the same outputs as a recurrence and
+  a convolution to 1e-16. A six-kernel step reads 7.0 ms synced, 0.03 ms unsynced.
 - The CLIP logit gradient is (P_row + P_colᵀ − 2I)/(2N). `cross_entropy` ends at 3569 and
   `F.scaled_dot_product_attention` is 6367-6540 at the PyTorch pin.
 
@@ -211,95 +219,32 @@ Open gaps from these runs:
   are checked against the stdlib helpers (and NumPy mirrors), not run under torch.
 - Page commits exceed 400 lines because each template is one file.
 
-## Forty-third run (2026-10-15) — reproducibility, state-space-models, profiling
+## Weekly audits
 
-| Commit | What |
-|---|---|
-| `02bde76` `ml-models: add tested reproducibility helpers` | A port of DataLoader's `_generate_state` worker NumPy seed, copied versus reseeded worker generators, shared versus per-purpose derived seed streams, float32 sums in eight orders, a `check_random_state` stand-in with KFold-like folds, a data/code/environment manifest |
-| `af0dbcf` `ml-models: add the reproducibility page` | The page, `ready`, queue ✓ |
-| `4c55a5b` `docs: record the reproducibility page in ml-models progress` | The reproducibility record |
-| `51756e2` `ml-models: add tested state-space-model helpers` | Scalar Euler/bilinear/ZOH discretization, HiPPO-LegS and its NPLR split, recurrent versus convolutional evaluation, a gated selective scan against a fixed step, a Hillis-Steele scan, state versus KV-cache costs |
-| `8b41fbc` `ml-models: add the state-space-models page` | The page, `ready`, queue ✓; links the SSM mentions on `rnns-and-lstms` and `attention` |
-| `ad9d04a` `docs: record the state-space-models page in ml-models progress` | The state-space-models record |
-| `aeac839` `ml-models: add tested profiling helpers` | A port of `torch.profiler.schedule`, step timing with and without sync and warmup (on `async_timeline`), a `key_averages`-style self/total split, MFU versus HFU, data-loader wait fractions (on `loader_pipeline`), a training-step memory timeline |
-| `81c854a` `ml-models: add the profiling page` | The page, `ready`, queue ✓ (queue empty); links the profiling mentions on `gpu-execution` and `latency-and-throughput` |
-| (this commit) `docs: record the forty-third ml-models run` | Profiling record, pin check; condenses run 42 |
+| Date | Checked | Found | Added |
+|---|---|---|---|
+| 2026-10-15 | Pins (`git ls-remote --tags`); the Kimi K2, DeepSeek-V3.2-Exp and MiMo-V2-Flash reports; `torch/optim/_muon.py`; the foundations area against `torch.linalg` | No pin moved (PyTorch v2.15.0 is still rc only). Muon and QK-Clip had no coverage; foundations stopped at eigen/SVD with no LU, QR, Cholesky, least squares or matrix norms | `063d6ab` three `UPCOMING_MODELS` entries; `045a59f` a Muon/QK-Clip section on `optimizers`; `736023a` the `matrix-decompositions` page (§5 row, registry, queue 94) |
 
-Findings worth keeping:
+Notes from the 2026-10-15 audit:
 
-- At the pin, DataLoader workers already reseed Python `random`, torch and NumPy's global
-  generator (`seed = base_seed + worker_id`, NumPy from `_generate_state`). The remaining trap
-  is a generator object built in `Dataset.__init__`, copied unchanged into every worker; the
-  page shows four identical crop sequences versus four distinct ones.
-- The pure-Python `_generate_state` port matches `np.random.SeedSequence([wid, lo, hi,
-  0]).generate_state(4)` word for word (checked once in a scratch venv with NumPy, not in the
-  repo); the tests pin the words.
-- 4096 float32 normals (seed 11) summed in eight orders give 7 distinct results spread over
-  39 ULPs; pairwise is 1.7 ULPs from the exact sum, left to right 4.3.
-- `use_deterministic_algorithms`'s docstring at the pin does not mention
-  `CUBLAS_WORKSPACE_CONFIG`; the page attributes that setting to NVIDIA's cuBLAS docs. At
-  scikit-learn 1.9.1, `KFold(shuffle=False, random_state=...)` raises a `ValueError`.
-- Ranges checked at the pins: `random.py` (`set_rng_state` 27-36, `get_rng_state` 39-46,
-  `manual_seed` 49-59, `_manual_seed_impl` 62-86, `initial_seed` 144-150, `fork_rng`
-  156-239), `_utils/worker.py` (`get_worker_info` 99-129, `_generate_state` 192-241, seeding
-  274-282), `dataloader.py` (`worker_init_fn` doc 188-190, `_base_seed` 690-694),
-  `RandomSampler.__iter__` 160-166, `torch/__init__.py` (`use_deterministic_algorithms`
-  1756-1903, `set_deterministic_debug_mode` 1921-1962), `backends/cudnn/__init__.py` (flag
-  defaults 192-194, `CudnnModule` props 221-229), `docs/source/notes/randomness.md` (1-272;
-  benchmarking 73-92, uninitialized memory 235-249, DataLoader 251-272); scikit-learn
-  `check_random_state` 1455-1485, `KFold._iter_test_indices` 516-521, the `shuffle=False`
-  check 364-371.
-- State-space models: the HiPPO-LegS SSM (N = 4, Δ = 0.1, bilinear) gives the same eight
-  outputs as a recurrence and as a causal convolution to 1.1e-16, and A + ppᵀ is −½I plus a
-  skew-symmetric matrix. The selective scan tracks the last flagged value with error 0.040;
-  the same SSM with a fixed Δ = 0.5 misses by 1.81. A 48-layer, width-2048 Mamba-shaped
-  model carries 7,471,104 bytes of state at any context, against 384 MiB of KV cache at
-  1,024 tokens and 192 GiB at 524,288.
-- Ranges checked at PyTorch v2.14.1: `nn/modules/conv.py` (`Conv1d` 225-385,
-  `_conv_forward` 366-382, `forward` 384-385), `functional.py` (`einsum` 175-382),
-  `nn/functional.py` (`conv1d` docstring 53-99, `softplus` 2115-2127, `silu` 2429-2451),
-  `_torch_docs.py` (`cumprod` 3521-3558, `cumsum` 3560-3590).
-- Profiling: a six-kernel step synced reads 7.005 ms, unsynced 0.03 ms; the 8-iteration mean
-  with two warmup costs is 117.6 ms, 17× the median. Twenty 2 µs kernels launched 5 µs apart
-  keep the GPU 39% busy. The schedule port (skip_first 2, wait 1, warmup 1, active 2,
-  repeat 2) saves at steps 5 and 9 and is idle after. With 120 ms loads and 40 ms steps,
-  two workers wait a third of each step; three remove the stall. Adam state makes step 1's
-  peak (5,650 MiB) exceed step 0's (4,000); a 2× batch peaks at 8,050. A 1.3B model on 8
-  GPUs at 1,048,576 tokens per 2.6 s is 45.9% MFU (61.2% HFU with full recompute).
-- Ranges checked at PyTorch v2.14.1 for profiling (all linked from the page):
-  `profiler/profiler.py` (`export_chrome_trace` 469-523, `export_stacks` 545-554,
-  `key_averages` 589-614, `export_memory_timeline` 692-742, `ProfilerAction` 745-759,
-  `schedule` 768-827, `_default_schedule_fn` 830-835, `tensorboard_trace_handler` 838-871,
-  `profile` 874-1323, `action_map` 1088-1198, `step` 1236-1323, `_transit_action`
-  1344-1349), `autograd/profiler.py` (`record_function` 868-1001), `autograd/profiler_util.py`
-  (FLOP formulas 44-107, `table` 242-286), `cuda/__init__.py` (`synchronize` 1271-1281),
-  `cuda/memory.py` (`memory_stats` 242-350, `reset_peak_memory_stats` 381-397,
-  `memory_allocated` 525-539, `max_memory_allocated` 542-560, `memory_reserved` 563-575,
-  `max_memory_reserved` 578-593, `memory_summary` 652-778, `_record_memory_history` 897-995,
-  `_dump_snapshot` 1149-1168), `cuda/streams.py` (`Event` 159-243, `record` 199-209,
-  `elapsed_time` 234-243), `utils/benchmark/utils/timer.py` (`timer` 17-20, `Timer` 66-382,
-  `timeit` 259-273, `_estimate_block_size` 305-322, `blocked_autorange` 324-382),
-  `docs/source/notes/cuda.md` (asynchronous execution 307-345, memory management 506-530).
-  `self_cuda_time_total` is deprecated in favour of `self_device_time_total` on events but is
-  still a `table` sort key.
-- Pins checked with `git ls-remote --tags`: v2.14.1, 1.9.1 and v3.4.2 are still the newest
-  stable PyTorch, scikit-learn and XGBoost releases; no pin moved.
-
-Gaps:
-
-- Reproducibility: the scikit-learn example uses `random.Random` as a labelled stand-in for
-  `RandomState`, so the fold contents differ from scikit-learn's. Goldberg, O'Neill (PCG) and
-  Bouthillier et al. are cited from memory. The snippet was not run under real PyTorch.
-- State-space models: no pin implements an SSM, so S4, S4D, HiPPO, Mamba and Mamba-2 details
-  (HiPPO-LegS formula, NPLR with p = √(n+½), S4D-real init, Mamba's B̄ = ΔB shortcut and
-  block layout) follow the papers from memory, with arxiv.org unreachable from the Routine.
-  The cost model counts only sequence mixing, with no grouped-query attention; the snippet
-  was not run under real PyTorch.
-- Profiling: the step kernels, warmup costs, trace spans, loader times and memory model are
-  invented and labelled; the 989 TFLOP/s peak is the H100 SXM bf16 dense figure from general
-  knowledge. PaLM's MFU definition, Korthikanti et al.'s HFU and Kaplan's 6N are cited from
-  memory (arxiv.org unreachable). Nsight, Perfetto and pytorch.org/memory_viz are named, not
-  pinned. The snippet was not run under real PyTorch.
+- arxiv.org is still unreachable, so the model reports were read as the PDFs in their GitHub
+  repositories. DeepSeek-V3.2-Exp has no arXiv id there, so its entry has no link.
+- Muon at the pin: `_zeropower_via_newtonschulz` 31-70 (coefficients 3.4445, −4.7750, 2.0315),
+  `_adjust_lr` 73-86, `Muon` 89-205, docstring 208-315, `_single_tensor_muon` 318-351. The
+  docstring routes biases, embeddings and other non-2-D parameters to AdamW.
+- `torch/linalg/__init__.py` docstring ranges at v2.14.1: `cholesky` 71-146, `cholesky_ex`
+  148-212, `eigh` 642-763, `lstsq` 1078-1200, `norm` 1353-1489, `matrix_norm` 1570-1644, `svd`
+  1734-1886, `cond` 1938-2054, `solve` 2260-2363, `solve_triangular` 2365-2443, `lu_factor`
+  2445-2529, `lu` 2641-2729, `qr` 2865-2966; `nn/init.py` `orthogonal_` 672-720.
+- On the Läuchli matrix the normal equations lose accuracy as κ² (error 1.1e-3 at ε = 1e-7)
+  and fail at ε = 1e-8, where 1 + ε² rounds to 1; Householder QR stays at or below 2.5e-16.
+  Classical Gram–Schmidt on the 6 × 6 Hilbert matrix loses orthogonality to 7.1e-5, modified
+  to 2.7e-10.
+- Gaps: the Muon post, Moonshot's scaling paper, *Deriving Muon*, Trefethen–Bau, Golub–Van
+  Loan, Higham, Läuchli and Rasmussen–Williams are cited from memory. Neither the Muon nor the
+  decompositions snippet was run under real PyTorch (the wheel download is still blocked).
+- Candidates for later audits: a page on iterative solvers (conjugate gradient, Lanczos) and
+  one on numerical precision in linear algebra beyond `mixed-precision`.
 
 ## Queue
 
@@ -398,6 +343,6 @@ Gaps:
 93. `profiling` ✓
 94. `matrix-decompositions` ✓
 
-The queue is empty since run 43. From now on the Routine runs the weekly audit (spec §8.1): for each pin it checks for a newer stable release (never an rc, beta or dev tag). When one
+Nothing is queued. Each audit appends at most two pages here. From now on the Routine runs the weekly audit (spec §8.1): for each pin it checks for a newer stable release (never an rc, beta or dev tag). When one
 exists, it diffs every file the ready pages link to between the pin and that tag, updates the
 affected line ranges and claims, and moves the pin.
