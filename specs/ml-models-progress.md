@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-14 (forty-second run). Spec v2 widens the section from model
+**Last updated:** 2026-10-15 (forty-third run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-90, the last being `checkpointing`.
-The next page is `reproducibility` (queue item 91).
+fixed page format. Ready pages: queue items 1-91, the last being `reproducibility`.
+The next page is `state-space-models` (queue item 92).
 
 ## Pins
 
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (90 of 93 ready, all
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (91 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -95,7 +95,6 @@ file); this list keeps only what queued pages still need.
 - `torch/linalg/__init__.py`: `inv` 214-292, `vector_norm` 1491-1568; `matrix_norm` starts at 1570.
 - `torch/_torch_docs.py` (from `add_docstr(` to `)`): `matmul` 7908-7990, `mm` 7831-7887,
   `bmm` 1706-1762, `addmm` 592-665, `baddbmm` 1512-1581.
-- `torch/random.py`: `manual_seed` 49-59; `get_rng_state` 39-46; `set_rng_state` 27-36.
 - `torch/optim/optimizer.py`: `Optimizer` starts at 358; `state_dict` 700-791, `zero_grad`
   1048-1110.
 - `torch/nn/modules/module.py`: `class Module` 407; `register_buffer` 528.
@@ -283,6 +282,45 @@ Gaps:
   covered. Stateful data loaders (such as torchdata's) are outside the pins. The failure
   rate, save times and 7B size are an invented, labelled scenario. The page's snippets
   were not run under real PyTorch.
+
+## Forty-third run (2026-10-15) — reproducibility, state-space-models, profiling
+
+| Commit | What |
+|---|---|
+| `02bde76` `ml-models: add tested reproducibility helpers` | A port of DataLoader's `_generate_state` worker NumPy seed, copied versus reseeded worker generators, shared versus per-purpose derived seed streams, float32 sums in eight orders, a `check_random_state` stand-in with KFold-like folds, a data/code/environment manifest |
+| `af0dbcf` `ml-models: add the reproducibility page` | The page, `ready`, queue ✓ |
+| (this commit) `docs: record the reproducibility page in ml-models progress` | The reproducibility record |
+
+Findings worth keeping:
+
+- At the pin, DataLoader workers already reseed Python `random`, torch and NumPy's global
+  generator (`seed = base_seed + worker_id`, NumPy from `_generate_state`). The remaining trap
+  is a generator object built in `Dataset.__init__`, copied unchanged into every worker; the
+  page shows four identical crop sequences versus four distinct ones.
+- The pure-Python `_generate_state` port matches `np.random.SeedSequence([wid, lo, hi,
+  0]).generate_state(4)` word for word (checked once in a scratch venv with NumPy, not in the
+  repo); the tests pin the words.
+- 4096 float32 normals (seed 11) summed in eight orders give 7 distinct results spread over
+  39 ULPs; pairwise is 1.7 ULPs from the exact sum, left to right 4.3.
+- `use_deterministic_algorithms`'s docstring at the pin does not mention
+  `CUBLAS_WORKSPACE_CONFIG`; the page attributes that setting to NVIDIA's cuBLAS docs. At
+  scikit-learn 1.9.1, `KFold(shuffle=False, random_state=...)` raises a `ValueError`.
+- Ranges checked at the pins: `random.py` (`set_rng_state` 27-36, `get_rng_state` 39-46,
+  `manual_seed` 49-59, `_manual_seed_impl` 62-86, `initial_seed` 144-150, `fork_rng`
+  156-239), `_utils/worker.py` (`get_worker_info` 99-129, `_generate_state` 192-241, seeding
+  274-282), `dataloader.py` (`worker_init_fn` doc 188-190, `_base_seed` 690-694),
+  `RandomSampler.__iter__` 160-166, `torch/__init__.py` (`use_deterministic_algorithms`
+  1756-1903, `set_deterministic_debug_mode` 1921-1962), `backends/cudnn/__init__.py` (flag
+  defaults 192-194, `CudnnModule` props 221-229), `docs/source/notes/randomness.md` (1-272;
+  benchmarking 73-92, uninitialized memory 235-249, DataLoader 251-272); scikit-learn
+  `check_random_state` 1455-1485, `KFold._iter_test_indices` 516-521, the `shuffle=False`
+  check 364-371.
+
+Gaps:
+
+- Reproducibility: the scikit-learn example uses `random.Random` as a labelled stand-in for
+  `RandomState`, so the fold contents differ from scikit-learn's. Goldberg, O'Neill (PCG) and
+  Bouthillier et al. are cited from memory. The snippet was not run under real PyTorch.
 
 ## Queue
 
