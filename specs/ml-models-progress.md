@@ -376,8 +376,8 @@ Gaps:
 88. `preference-optimization` ✓
 89. `retrieval-augmented-generation` ✓
 90. `checkpointing` ✓
-91. `reproducibility` ← next
-92. `state-space-models`
+91. `reproducibility` ✓
+92. `state-space-models` ← next
 93. `profiling`
 
 Build three pages per run, top to bottom, pushing each as it is finished. Once the queue is empty, the Routine runs maintenance

@@ -1,0 +1,441 @@
+{% set ex = reproducibility_example() %}
+{% set e = ex.example %}
+{% set sums = ex.sums %}
+{% set man = ex.manifest %}
+{% set rs = ex.random_state %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(0.0 if x|abs < 0.5 * 10 ** (-n) else x)|replace("-", "−") }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Reproducibility</h1>
+  <p class="tagline">
+    Run the same training script twice and you would like the same model twice. That needs every source of randomness pinned, kernels that add numbers in the same order, and a record of exactly which data, code and libraries went in.
+    This page traces where randomness enters a PyTorch run, computes the seeds DataLoader gives its workers, shows two seeding bugs, sums the same 4096 numbers in eight orders and gets {{ sums.distinct }} different answers, and builds a run manifest. Every number is computed and every library link is pinned.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A <a href="/ml-models/training-loop">training run</a> is full of random choices: initial weights, the order of the data, dropout masks, augmentations, which examples land in the validation split. Change any of them and the final model changes, sometimes by more than the effect you are trying to measure. If two runs of the same script give accuracies of 91.2% and 90.6%, you cannot tell whether your new idea helped by 0.3 points, and you cannot debug a loss spike you cannot make happen again.
+</p>
+<p>
+  Fixing a seed is the start, not the end. Data-loader workers run in separate processes with their own generators. Some GPU kernels add numbers in whatever order threads finish, and floating-point addition is not associative, so the same inputs give slightly different outputs. And a result is only reproducible by someone else if they can get the same data, the same code and the same library versions. PyTorch's own notes start with the limit: completely reproducible results are not guaranteed across releases, commits or platforms, or between CPU and GPU, even with identical seeds (<a href="{{ pinned('pytorch', 'docs/source/notes/randomness.md', 5, 7) }}">randomness.md 5-7</a>).
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  A pseudo-random generator is a long, fixed list of numbers, and the seed picks where in the list you start. Two runs with the same seed read the same numbers <em>in the same order</em>, so the same calls get the same values. Reproducibility breaks in three ways: a generator you forgot to seed starts somewhere unknown; an extra or missing draw shifts everything after it to a different place in the list; and a computation that does not use randomness at all still varies because the hardware schedules its additions differently. The fourth way is outside the program: the data file, the code or a library changed between the runs.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 300" role="img" aria-labelledby="repro-sources-title repro-sources-desc">
+    <title id="repro-sources-title">Where variation enters a training run</title>
+    <desc id="repro-sources-desc">Four groups of inputs feed one training run. Seeded random number generators: Python random, NumPy, the torch CPU generator and one generator per GPU, all set by torch.manual_seed plus random.seed and NumPy seeding. Data-loader workers: one process each, seeded from base_seed plus the worker id, with base_seed drawn from the loader's generator. Kernel choice and order: cuDNN benchmarking and atomic additions, controlled by torch.backends.cudnn.benchmark and torch.use_deterministic_algorithms. Versions: data, code and environment, recorded by hashes and lockfiles. The run's output is the same only when all four are fixed.</desc>
+    <g font-size="12">
+      {% set groups = [
+        ("random generators", "Python, NumPy, torch CPU, each GPU", "manual_seed, random.seed", "--jj-violet"),
+        ("data-loader workers", "seed = base_seed + worker_id", "DataLoader(generator=g)", "--jj-green"),
+        ("kernels", "algorithm choice, summation order", "use_deterministic_algorithms", "--jj-red"),
+        ("versions", "data, code, environment", "hashes, git commit, lockfile", "--jj-amber"),
+      ] %}
+      {% for name, what, control, color in groups %}
+      {% set y = 14 + loop.index0 * 70 %}
+      <rect x="10" y="{{ y }}" width="250" height="56" rx="6" class="d-box" style="fill: var({{ color }})" fill-opacity="0.18"></rect>
+      <text x="20" y="{{ y + 18 }}" font-weight="bold">{{ name }}</text>
+      <text x="20" y="{{ y + 34 }}" class="d-muted">{{ what }}</text>
+      <text x="20" y="{{ y + 49 }}" font-family="monospace" font-size="11">{{ control }}</text>
+      <line x1="260" y1="{{ y + 28 }}" x2="440" y2="150" class="d-line"></line>
+      {% endfor %}
+      <rect x="440" y="100" width="190" height="100" rx="8" class="d-box"></rect>
+      <text x="535" y="130" text-anchor="middle" font-weight="bold">training run</text>
+      <text x="535" y="152" text-anchor="middle" class="d-muted">same output only when</text>
+      <text x="535" y="168" text-anchor="middle" class="d-muted">all four are fixed</text>
+      <text x="535" y="188" text-anchor="middle" class="d-muted">(and on the same platform)</text>
+    </g>
+  </svg>
+  <p class="ml-caption">The first two are about random numbers and are fixed by seeding correctly. The third has nothing to do with randomness. The fourth is about what the run was given.</p>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="seeding">Seeding every generator</h3>
+<p>
+  A PyTorch program usually draws from four kinds of generator. <a href="{{ src('torch/random.py', 49, 59) }}"><code>torch.manual_seed(seed)</code></a> seeds the CPU generator and, through <a href="{{ src('torch/random.py', 62, 86) }}"><code>_manual_seed_impl</code></a>, every CUDA, MPS, XPU and MTIA device and any custom backend, and returns the CPU <code>Generator</code>. Python's <code>random</code> and NumPy's global <code>np.random</code> are separate generators that PyTorch does not touch, so a script that wants all three repeatable seeds all three (<a href="{{ pinned('pytorch', 'docs/source/notes/randomness.md', 25, 72) }}">randomness.md 25-72</a>). <a href="{{ src('torch/random.py', 144, 150) }}"><code>torch.initial_seed()</code></a> returns the seed in use, and <a href="{{ src('torch/random.py', 27, 46) }}"><code>get_rng_state</code> / <code>set_rng_state</code></a> save and restore the generator's position, which is how a <a href="/ml-models/checkpointing">checkpoint</a> resumes the same random stream.
+</p>
+<p>
+  A single global generator has a weakness: every draw moves everyone's position. Insert one extra random call (a new augmentation, a dropout layer, a debug sample) and every later draw comes from a different place in the stream, so the head's initial weights change even though you only touched the data pipeline. <a href="{{ src('torch/random.py', 156, 239) }}"><code>torch.random.fork_rng()</code></a> runs a block and then restores the global state, so the block's draws do not shift what comes after. Passing an explicit <code>torch.Generator</code> to the code that needs randomness, one per purpose, goes further: each stream depends only on its own seed.
+</p>
+
+<h3 id="workers">Data-loader workers</h3>
+<p>
+  With <code>num_workers &gt; 0</code>, each worker is a separate process. When an iterator starts, the loader draws one 64-bit <a href="{{ src('torch/utils/data/dataloader.py', 690, 694) }}"><code>_base_seed</code></a> from <code>loader.generator</code> (or the global torch generator if none was given). Each worker then runs <a href="{{ src('torch/utils/data/_utils/worker.py', 274, 282) }}">its seeding block</a>: <code>seed = base_seed + worker_id</code>, then <code>random.seed(seed)</code>, <code>torch.manual_seed(seed)</code>, and, when NumPy is installed, <code>np.random.seed(_generate_state(base_seed, worker_id))</code>. <a href="{{ src('torch/utils/data/_utils/worker.py', 192, 241) }}"><code>_generate_state</code></a> is a pure-Python copy of NumPy's <code>SeedSequence</code> hashing that turns (worker id, low and high 32 bits of base_seed) into four 32-bit words. Your <code>worker_init_fn</code> runs after this seeding and before data loading (<a href="{{ src('torch/utils/data/dataloader.py', 188, 190) }}">dataloader.py 188-190</a>), and <a href="{{ src('torch/utils/data/_utils/worker.py', 99, 129) }}"><code>get_worker_info()</code></a> gives it the worker's id and seed.
+</p>
+<p>
+  So at this release every worker's global generators already differ, and they are repeatable if <code>base_seed</code> is. The order of the data is a separate draw: <a href="{{ src('torch/utils/data/sampler.py', 160, 166) }}"><code>RandomSampler.__iter__</code></a> uses the loader's generator, and without one it draws a fresh seed from the global torch generator. PyTorch's recommended recipe passes a seeded <code>torch.Generator</code> as <code>generator=</code> and seeds <code>random</code> and NumPy from <code>torch.initial_seed()</code> in <code>worker_init_fn</code> (<a href="{{ pinned('pytorch', 'docs/source/notes/randomness.md', 251, 272) }}">randomness.md 251-272</a>). The trap that remains is a generator <em>object</em> you build yourself, for example <code>self.rng = np.random.default_rng(0)</code> in <code>Dataset.__init__</code>: each worker gets a copy of the same object in the same state, and the per-worker reseeding never touches it.
+</p>
+
+<h3 id="kernels">Nondeterministic kernels</h3>
+<p>
+  Floating-point addition rounds after every step, so (a + b) + c and a + (b + c) can differ in the last bit. A GPU kernel that sums with atomic adds, such as <code>scatter_add_</code> or the backward of an embedding or an index, adds contributions in whatever order threads arrive, which changes between runs. cuDNN adds another source: with <code>torch.backends.cudnn.benchmark = True</code> it times several convolution algorithms for each new input shape and keeps the fastest, and timing noise can pick a different one next run (<a href="{{ pinned('pytorch', 'docs/source/notes/randomness.md', 73, 92) }}">randomness.md 73-92</a>). Its default is <code>False</code> (<a href="{{ src('torch/backends/cudnn/__init__.py', 192, 194) }}">cudnn/__init__.py 192-194</a>).
+</p>
+<p>
+  <a href="{{ src('torch/__init__.py', 1756, 1903) }}"><code>torch.use_deterministic_algorithms(True)</code></a> makes PyTorch pick a deterministic implementation where one exists and raise a <code>RuntimeError</code> for an operation that has none; its docstring lists both groups, for example <code>index_add</code> and <code>scatter_add_</code> on CUDA switch, while <code>AdaptiveAvgPool2d</code>'s CUDA backward and <code>histc</code> on CUDA raise. <code>warn_only=True</code> turns the errors into warnings so you can find every offender in one run. The same call turns on Inductor's deterministic mode, which skips on-device benchmarking for compiled code, and with it <code>torch.utils.deterministic.fill_uninitialized_memory</code> fills tensors from <code>torch.empty</code> with a known value (<a href="{{ pinned('pytorch', 'docs/source/notes/randomness.md', 235, 249) }}">randomness.md 235-249</a>). <code>torch.backends.cudnn.deterministic = True</code> (<a href="{{ src('torch/backends/cudnn/__init__.py', 221, 229) }}">cudnn/__init__.py 221-229</a>) is the older, cuDNN-only switch for convolutions. <a href="{{ src('torch/__init__.py', 1921, 1962) }}"><code>set_deterministic_debug_mode</code></a> is the same setting under the names "default", "warn" and "error". Deterministic kernels are usually slower, and PyTorch says so in the docstring.
+</p>
+
+<h3 id="random-state">random_state in scikit-learn</h3>
+<p>
+  Every scikit-learn estimator or splitter that uses randomness takes a <code>random_state</code> argument and passes it through <a href="{{ skl('sklearn/utils/validation.py', 1455, 1485) }}"><code>check_random_state</code></a>: <code>None</code> returns NumPy's global <code>RandomState</code>, an int builds a <em>new</em> <code>RandomState(seed)</code> each call, and a <code>RandomState</code> instance is returned as is; anything else raises <code>ValueError</code>. That difference matters. With an int, every call (every <code>split</code>, every <code>fit</code>) starts from the same place and gives the same result. With an instance, each call advances the shared generator, so calls differ from one another but the whole program is still repeatable. <a href="{{ skl('sklearn/model_selection/_split.py', 516, 521) }}"><code>KFold</code></a> shuffles with <code>check_random_state(self.random_state)</code>, and at this release passing a <code>random_state</code> with <code>shuffle=False</code> raises an error because it would have no effect (<a href="{{ skl('sklearn/model_selection/_split.py', 364, 371) }}">_split.py 364-371</a>).
+</p>
+
+<h3 id="versioning">Versioning data, code and environment</h3>
+<p>
+  Seeds only reproduce a run on the same inputs. Record a content hash of the data (sha256 of each file, or of a sorted list of file hashes for a directory), the git commit of the code and whether the working tree was clean, and the exact environment: a lockfile with every package version, plus the Python, CUDA, cuDNN and driver versions and the GPU model, since kernels differ across them. Store these with the seed, the config and the metrics in one manifest next to each run's <a href="/ml-models/checkpointing">checkpoints</a>. Tools such as DVC, lakeFS or a model registry do this at scale; the principle is that every input is named by its hash, not by a path that can change.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>torch.manual_seed</code></td>
+        <td>int → <code>Generator</code></td>
+        <td>Seeds the CPU generator and every accelerator's.</td>
+        <td><a href="{{ src('torch/random.py', 49, 86) }}">random.py 49-86</a></td>
+      </tr>
+      <tr>
+        <td><code>get_rng_state</code> / <code>set_rng_state</code></td>
+        <td>uint8 state tensor</td>
+        <td>Save and restore the CPU generator's position.</td>
+        <td><a href="{{ src('torch/random.py', 27, 46) }}">random.py 27-46</a></td>
+      </tr>
+      <tr>
+        <td><code>fork_rng</code></td>
+        <td>devices, enabled</td>
+        <td>Context manager that restores the global state on exit.</td>
+        <td><a href="{{ src('torch/random.py', 156, 239) }}">random.py 156-239</a></td>
+      </tr>
+      <tr>
+        <td><code>_base_seed</code></td>
+        <td>one int64 per iterator</td>
+        <td>Drawn from <code>loader.generator</code>; all worker seeds derive from it.</td>
+        <td><a href="{{ src('torch/utils/data/dataloader.py', 690, 694) }}">dataloader.py 690-694</a></td>
+      </tr>
+      <tr>
+        <td>Worker seeding</td>
+        <td>base_seed + worker_id</td>
+        <td>Seeds <code>random</code>, torch and NumPy in each worker.</td>
+        <td><a href="{{ src('torch/utils/data/_utils/worker.py', 274, 282) }}">worker.py 274-282</a></td>
+      </tr>
+      <tr>
+        <td><code>_generate_state</code></td>
+        <td>(base_seed, worker_id) → 4 × uint32</td>
+        <td>SeedSequence-style hash for NumPy's worker seed.</td>
+        <td><a href="{{ src('torch/utils/data/_utils/worker.py', 192, 241) }}">worker.py 192-241</a></td>
+      </tr>
+      <tr>
+        <td><code>RandomSampler.__iter__</code></td>
+        <td>n, generator</td>
+        <td>Shuffle order; draws its own seed if no generator is given.</td>
+        <td><a href="{{ src('torch/utils/data/sampler.py', 160, 166) }}">sampler.py 160-166</a></td>
+      </tr>
+      <tr>
+        <td><code>use_deterministic_algorithms</code></td>
+        <td>mode, <code>warn_only=False</code></td>
+        <td>Deterministic kernels or an error; also Inductor's deterministic mode.</td>
+        <td><a href="{{ src('torch/__init__.py', 1756, 1903) }}">__init__.py 1756-1903</a></td>
+      </tr>
+      <tr>
+        <td><code>cudnn.benchmark</code>, <code>cudnn.deterministic</code></td>
+        <td>bool, both default False</td>
+        <td>Autotuned convolution choice; deterministic cuDNN algorithms.</td>
+        <td><a href="{{ src('torch/backends/cudnn/__init__.py', 221, 229) }}">cudnn/__init__.py 221-229</a></td>
+      </tr>
+      <tr>
+        <td><code>check_random_state</code></td>
+        <td>None, int or <code>RandomState</code></td>
+        <td>Global, fresh or shared NumPy generator for scikit-learn.</td>
+        <td><a href="{{ skl('sklearn/utils/validation.py', 1455, 1485) }}">validation.py 1455-1485</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>You set <code>torch.manual_seed(0)</code> at the top of the script, but two runs still differ in their first batch. The loader has <code>shuffle=True</code> and four workers. What is the first thing to check?</summary>
+  <p>Whether anything draws from the global torch generator between the seed and the first iteration, in a different amount from run to run. Without <code>generator=</code>, both the shuffle order and <code>_base_seed</code> come from the global generator, so a model whose construction varies (or a library that consumes random numbers on import) moves both. Passing a dedicated seeded <code>torch.Generator</code> to the DataLoader isolates the data order from everything else.</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-workers">The seeds four workers get</h3>
+  <p>
+    Take <code>base_seed</code> = {{ e.base_seed }} (any 64-bit value the loader's generator could draw) and {{ e.workers }} workers. The Python and torch seed is base_seed + worker_id. The NumPy seed is four 32-bit words from <code>_generate_state</code>; this page's port of it gives exactly the words NumPy's own <code>SeedSequence([worker_id, low32, high32, 0]).generate_state(4)</code> gives, which the tests check.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Worker</th><th>random / torch seed</th><th>NumPy seed (4 × uint32)</th></tr></thead>
+      <tbody>
+        {% for w in ex.workers %}
+        <tr><td>{{ w.worker }}</td><td>{{ w.seed }}</td><td>{{ w.numpy|join(", ") }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The torch seeds differ only in the last digit, which is fine because the generator scrambles its seed. The NumPy words share no visible pattern: the hash spreads neighboring worker ids across all 128 bits of state.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 250" role="img" aria-labelledby="repro-workers-title repro-workers-desc">
+    <title id="repro-workers-title">How a DataLoader seeds its workers, and the copied-generator trap</title>
+    <desc id="repro-workers-desc">The loader's generator draws one base_seed. It fans out to four worker processes, each seeded with base_seed plus its id, so their global random, torch and NumPy generators differ. A generator object created in the dataset's constructor is copied into every worker unchanged. In the example, each worker draws three random crop offsets from 0 to 31. With the copied generator all four workers draw {{ ex.copied.rows[0]|join(", ") }}. Reseeded from base_seed plus worker id they draw {% for r in ex.reseeded.rows %}{{ r|join(", ") }}{% if not loop.last %}; {% endif %}{% endfor %}.</desc>
+    <g font-size="12">
+      <rect x="10" y="100" width="130" height="50" rx="6" class="d-box"></rect>
+      <text x="75" y="121" text-anchor="middle" font-weight="bold">loader.generator</text>
+      <text x="75" y="138" text-anchor="middle" class="d-muted">draws base_seed</text>
+      {% for w in ex.workers %}
+      {% set y = 10 + loop.index0 * 60 %}
+      <line x1="140" y1="125" x2="200" y2="{{ y + 22 }}" class="d-line"></line>
+      <rect x="200" y="{{ y }}" width="160" height="46" rx="6" class="d-box" style="fill: var(--jj-green)" fill-opacity="0.15"></rect>
+      <text x="210" y="{{ y + 18 }}" font-weight="bold">worker {{ w.worker }}</text>
+      <text x="210" y="{{ y + 35 }}" class="d-muted">seed = base_seed + {{ w.worker }}</text>
+      <text x="380" y="{{ y + 18 }}" style="fill: var(--jj-red)">copied rng: {{ ex.copied.rows[loop.index0]|join(", ") }}</text>
+      <text x="380" y="{{ y + 35 }}" style="fill: var(--jj-accent)">reseeded: {{ ex.reseeded.rows[loop.index0]|join(", ") }}</text>
+      {% endfor %}
+    </g>
+  </svg>
+  <p class="ml-caption">Each worker draws three crop offsets in 0-31. A generator built in <code>Dataset.__init__</code> is copied into every process, so all four workers produce the same crops ({{ ex.copied.distinct }} distinct sequence); seeding it from <code>get_worker_info().seed</code> gives {{ ex.reseeded.distinct }} distinct sequences that repeat from run to run.</p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-shift">One extra draw moves everything after it</h3>
+  <p>
+    Initialize two layers of {{ e.layers[0][1] }} weights each from one generator seeded with {{ e.seed }}, then add a one-draw "{{ e.inserted[0] }}" augmentation between them. With a shared stream the embedding is unchanged but the head's weights slide along by one draw. With one generator per purpose, seeded from sha256 of "seed/name", the head does not move.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Stream</th><th>Layer</th><th>Before</th><th>After inserting {{ e.inserted[0] }}</th><th>Same?</th></tr></thead>
+      <tbody>
+        {% for label, before, after in [("one shared generator", ex.shared_before, ex.shared_after), ("one generator per purpose", ex.separate_before, ex.separate_after)] %}
+        {% for name, n in e.layers %}
+        <tr>
+          <td>{% if loop.first %}{{ label }}{% endif %}</td>
+          <td>{{ name }}</td>
+          <td>{% for v in before[name] %}{{ f(v, 3) }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+          <td>{% for v in after[name] %}{{ f(v, 3) }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+          <td>{{ "yes" if before[name] == after[name] else "no" }}</td>
+        </tr>
+        {% endfor %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    In the shared stream the new draw takes {{ f(ex.shared_after[e.inserted[0]][0], 3) }}, which used to be the head's first weight, and the head's last weight is a value no run used before. Nothing is wrong with either run; they just cannot be compared weight for weight. The derived seeds are {% for name, s in ex.derived.items() %}{{ name }} = {{ s }}{% if not loop.last %}, {% endif %}{% endfor %}.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-sums">The same 4096 numbers, eight sums</h3>
+  <p>
+    Draw {{ e.n_values }} standard normal values (seed {{ e.values_seed }}), round each to float32, and add them in float32 in different orders: left to right, as a pairwise tree, in {{ e.blocks }} blocks whose partial sums are then added (how a GPU reduction works), and in {{ e.atomic_orders }} shuffled orders standing in for atomic adds arriving in different orders. The exact sum, from <code>math.fsum</code>, is {{ f(sums.exact, 8) }}. One float32 unit in the last place (ULP) near it is 2<sup>−18</sup> = {{ "%.3e"|format(sums.ulp) }}.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Order</th><th>float32 sum</th><th>Error</th><th>Error in ULPs</th></tr></thead>
+      <tbody>
+        {% for r in sums.rows %}
+        <tr><td>{{ r.name }}</td><td>{{ f(r.sum, 8) }}</td><td>{{ "%.2e"|format(r.error)|replace("-", "−") }}</td><td>{{ f(r.ulps, 1) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Eight orders give {{ sums.distinct }} distinct results, spread over {{ f(sums.spread_ulps, 0) }} ULPs ({{ "%.2e"|format(sums.spread) }}). None of them is a bug: each is a correctly rounded float32 computation. A loss that differs by this much in step 1 feeds a slightly different gradient into step 2, and over thousands of steps the runs drift apart visibly. That is why deterministic mode has to fix the order, not just the seed.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 210" role="img" aria-labelledby="repro-order-title repro-order-desc">
+    <title id="repro-order-title">Two summation orders for the same four numbers</title>
+    <desc id="repro-order-desc">Four numbers a, b, c, d are added two ways. On the left, sequentially: a plus b, then plus c, then plus d, rounding after each addition. On the right, as a tree: a plus b and c plus d in parallel, then the two partial sums. Both are correct roundings, but each addition rounds a different intermediate value, so the results can differ in the last bits. Atomic adds on a GPU pick an order at run time, so the result can change between runs.</desc>
+    <g font-size="12">
+      {% for i, name in [(0, "a"), (1, "b"), (2, "c"), (3, "d")] %}
+      <rect x="{{ 20 + i * 60 }}" y="16" width="40" height="26" rx="4" class="ml-tensor"></rect>
+      <text x="{{ 40 + i * 60 }}" y="34" text-anchor="middle">{{ name }}</text>
+      <rect x="{{ 360 + i * 70 }}" y="16" width="40" height="26" rx="4" class="ml-tensor"></rect>
+      <text x="{{ 380 + i * 70 }}" y="34" text-anchor="middle">{{ name }}</text>
+      {% endfor %}
+      <circle cx="70" cy="80" r="14" class="ml-op"></circle><text x="70" y="85" text-anchor="middle">+</text>
+      <line x1="40" y1="42" x2="62" y2="68" class="d-line"></line><line x1="100" y1="42" x2="76" y2="68" class="d-line"></line>
+      <circle cx="120" cy="125" r="14" class="ml-op"></circle><text x="120" y="130" text-anchor="middle">+</text>
+      <line x1="80" y1="92" x2="110" y2="114" class="d-line"></line><line x1="160" y1="42" x2="124" y2="111" class="d-line"></line>
+      <circle cx="170" cy="170" r="14" class="ml-op"></circle><text x="170" y="175" text-anchor="middle">+</text>
+      <line x1="130" y1="137" x2="160" y2="159" class="d-line"></line><line x1="220" y1="42" x2="174" y2="156" class="d-line"></line>
+      <text x="200" y="200" class="d-muted">((a + b) + c) + d</text>
+      <circle cx="415" cy="85" r="14" class="ml-op"></circle><text x="415" y="90" text-anchor="middle">+</text>
+      <line x1="380" y1="42" x2="408" y2="73" class="d-line"></line><line x1="450" y1="42" x2="422" y2="73" class="d-line"></line>
+      <circle cx="555" cy="85" r="14" class="ml-op"></circle><text x="555" y="90" text-anchor="middle">+</text>
+      <line x1="520" y1="42" x2="548" y2="73" class="d-line"></line><line x1="590" y1="42" x2="562" y2="73" class="d-line"></line>
+      <circle cx="485" cy="150" r="14" class="ml-op"></circle><text x="485" y="155" text-anchor="middle">+</text>
+      <line x1="425" y1="96" x2="475" y2="140" class="d-line"></line><line x1="545" y1="96" x2="495" y2="140" class="d-line"></line>
+      <text x="420" y="200" class="d-muted">(a + b) + (c + d)</text>
+      <line x1="300" y1="10" x2="300" y2="200" class="d-line ml-dashed"></line>
+    </g>
+  </svg>
+  <p class="ml-caption">Every circle rounds its result to float32. On {{ e.n_values }} values the left-to-right sum is off by {{ f(sums.rows[0].ulps, 1) }} ULPs and the pairwise tree by {{ f(sums.rows[1].ulps, 1) }}; the tree is usually closer because its partial sums stay similar in size.</p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-random-state">An int versus a shared generator</h3>
+  <p>
+    Split {{ e.n_samples }} samples into {{ e.n_splits }} shuffled folds twice, the way <code>KFold(shuffle=True)</code> does through <code>check_random_state</code>. Python's <code>random.Random</code> stands in for NumPy's <code>RandomState</code> here, so the fold contents differ from scikit-learn's but the behavior is the same.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Argument</th><th>First call's test folds</th><th>Second call's test folds</th><th>Same?</th></tr></thead>
+      <tbody>
+        {% for c in rs %}
+        <tr>
+          <td><code>{{ c.name }}</code></td>
+          <td>{% for fold in c.first %}{{ fold|join(",") }}{% if not loop.last %} | {% endif %}{% endfor %}</td>
+          <td>{% for fold in c.second %}{{ fold|join(",") }}{% if not loop.last %} | {% endif %}{% endfor %}</td>
+          <td>{{ "yes" if c.same else "no" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The int rebuilds the generator each call, so both calls agree; the instance continues where the first call stopped. Both are reproducible run to run. Use an int when two places (say, two models being compared) must see identical splits, and an instance when you want different but repeatable randomness in each call. <code>random_state=None</code> uses the global generator and is repeatable only if something seeded it.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-manifest">A run manifest</h3>
+  <p>
+    The toy run trains on a five-row CSV with a three-line script and a three-package lockfile. Changing one target from 3.2 to 3.3 changes {{ man.differing_bytes }} byte of the data and the whole hash, which is what makes a hash a reliable name.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Input</th><th>How it is named</th><th>Value</th></tr></thead>
+      <tbody>
+        <tr><td>data</td><td>sha256 of the file</td><td><code>{{ man.data[:16] }}…</code></td></tr>
+        <tr><td>data, one value edited</td><td>sha256 of the file</td><td><code>{{ man.data_edited[:16] }}…</code></td></tr>
+        <tr><td>code</td><td>git blob id: sha1 of "blob &lt;size&gt;\0" + bytes</td><td><code>{{ man.code[:16] }}…</code></td></tr>
+        <tr><td>environment</td><td>sha256 of the lockfile</td><td><code>{{ man.environment[:16] }}…</code></td></tr>
+        <tr><td>seed</td><td>the value itself</td><td>{{ man.seed }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The code hash is exactly what <code>git hash-object</code> prints for that script, so it can be looked up in the repository's history. In practice record the commit id (which covers every file) and a flag for uncommitted changes, rather than one blob.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code>import hashlib, json, os, platform, random, subprocess
+import numpy as np
+import torch
+from torch.utils.data import DataLoader, get_worker_info
+
+def seed_everything(seed, deterministic=True):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)                      # CPU and every GPU
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(deterministic, warn_only=False)
+
+class Crops(torch.utils.data.Dataset):
+    def __init__(self, images):
+        self.images = images
+        self.rng = None                          # built per worker, not here
+    def __getitem__(self, i):
+        if self.rng is None:
+            info = get_worker_info()
+            self.rng = np.random.default_rng(info.seed if info else torch.initial_seed())
+        x, y = self.rng.integers(0, 32, size=2)
+        return self.images[i][:, y:y + 224, x:x + 224]
+    def __len__(self):
+        return len(self.images)
+
+def loader(dataset, seed):
+    g = torch.Generator()
+    g.manual_seed(seed)                          # data order and base_seed only
+    return DataLoader(dataset, batch_size=64, shuffle=True, num_workers=4, generator=g)
+
+def manifest(seed, data_paths, config):
+    def sha256(path):
+        with open(path, "rb") as f:
+            return hashlib.file_digest(f, "sha256").hexdigest()
+    git = lambda *a: subprocess.run(["git", *a], capture_output=True, text=True).stdout.strip()
+    return {
+        "seed": seed, "config": config,
+        "data": {p: sha256(p) for p in sorted(data_paths)},
+        "commit": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain")),
+        "torch": torch.__version__, "cuda": torch.version.cuda,
+        "cudnn": torch.backends.cudnn.version(), "python": platform.python_version(),
+        "gpu": torch.cuda.get_device_name() if torch.cuda.is_available() else None,
+    }
+
+# Some CUDA matmuls also need this set before the first CUDA call:
+# os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"</code></pre>
+
+<p>
+  The snippet has not been run against PyTorch here; it only uses the calls linked above. The <code>CUBLAS_WORKSPACE_CONFIG</code> line comes from NVIDIA's cuBLAS documentation on reproducibility, not from PyTorch's docstring at this release, which does not mention it. <code>hashlib.file_digest</code> needs Python 3.11 or later.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Choice</th><th>Gains</th><th>Costs</th></tr></thead>
+    <tbody>
+      <tr><td><code>use_deterministic_algorithms(True)</code></td><td>Bitwise-identical runs on one platform</td><td>Slower kernels; some operations raise instead of running</td></tr>
+      <tr><td><code>cudnn.benchmark = True</code></td><td>Fastest convolution for each shape</td><td>Algorithm choice can change between runs</td></tr>
+      <tr><td>One generator per purpose</td><td>Changing one component does not move another's randomness</td><td>More plumbing; every random call needs its generator</td></tr>
+      <tr><td>One global seed</td><td>One line of code</td><td>Any added or removed draw shifts everything after it</td></tr>
+      <tr><td>Reproduce bitwise vs statistically</td><td>Bitwise: easy debugging and exact comparison</td><td>Statistical (several seeds, report mean and spread) answers whether an idea helps, which bitwise reproduction of one seed cannot</td></tr>
+      <tr><td>Hash data and lock the environment</td><td>Someone else can rerun the result later</td><td>Storage for snapshots; lockfiles need updating</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>Your baseline scores 91.2% with seed 0 and your change scores 91.5% with seed 0. Does making the runs bitwise reproducible tell you the change helped?</summary>
+  <p>No. Bitwise reproducibility means seed 0 gives 91.5% every time, not that the 0.3-point gap is real. Seed-to-seed variation (initialization, data order, dropout) can be as large as the gap. Run both versions over several seeds and compare the distributions, as on <a href="/ml-models/cross-validation">cross-validation</a>; use the fixed seed to debug, not to decide.</p>
+</details>
+
+<details class="ml-quiz">
+  <summary>Two runs on identical hardware with every seed fixed and deterministic mode on diverge after a library upgrade. Is that a bug?</summary>
+  <p>Not necessarily. PyTorch guarantees nothing across releases: a new version may choose a different kernel, change a reduction's order or draw random numbers differently. That is why the environment is part of the manifest. Pin versions for the runs you need to compare, and expect only statistical agreement across upgrades.</p>
+</details>
+
+<h3 id="check-yourself">Check yourself</h3>
+<ul>
+  <li>Why does <code>self.rng = np.random.default_rng(0)</code> in <code>Dataset.__init__</code> give every worker the same augmentations, even though PyTorch reseeds NumPy in each worker?</li>
+  <li>What two things does the DataLoader's <code>generator</code> argument control?</li>
+  <li>Why can a GPU sum of the same tensor differ between runs with no randomness involved?</li>
+  <li>When would you pass an int to <code>random_state</code> and when a <code>RandomState</code> instance?</li>
+</ul>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<p>
+  Saving and restoring generator states is the RNG part of <a href="/ml-models/checkpointing">checkpointing</a>. The worker processes and samplers are explained on <a href="/ml-models/data-loading-and-batching">data loading and batching</a>, why float32 rounding depends on order on <a href="/ml-models/mixed-precision">mixed precision</a>, and how kernels are scheduled on <a href="/ml-models/gpu-execution">GPU execution</a>. Fixed splits matter for <a href="/ml-models/data-splits">data splits</a> and <a href="/ml-models/cross-validation">cross-validation</a>, where comparing models across several seeds is the honest test. Dropout, one of the random draws, is on <a href="/ml-models/regularization">regularization</a>.
+</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ pinned('pytorch', 'docs/source/notes/randomness.md', 1, 272) }}">Reproducibility notes</a>, <a href="{{ src('torch/random.py', 49, 86) }}"><code>manual_seed</code></a>, <a href="{{ src('torch/random.py', 156, 239) }}"><code>fork_rng</code></a>, <a href="{{ src('torch/utils/data/dataloader.py', 690, 694) }}"><code>_base_seed</code></a>, <a href="{{ src('torch/utils/data/_utils/worker.py', 192, 241) }}"><code>_generate_state</code></a>, <a href="{{ src('torch/utils/data/_utils/worker.py', 274, 282) }}">worker seeding</a>, <a href="{{ src('torch/utils/data/sampler.py', 160, 166) }}"><code>RandomSampler.__iter__</code></a>, <a href="{{ src('torch/__init__.py', 1756, 1903) }}"><code>use_deterministic_algorithms</code></a>, <a href="{{ src('torch/__init__.py', 1921, 1962) }}"><code>set_deterministic_debug_mode</code></a>, <a href="{{ src('torch/backends/cudnn/__init__.py', 221, 229) }}">cuDNN flags</a>.</li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/utils/validation.py', 1455, 1485) }}"><code>check_random_state</code></a>, <a href="{{ skl('sklearn/model_selection/_split.py', 516, 521) }}"><code>KFold</code> shuffling</a>, <a href="{{ skl('sklearn/model_selection/_split.py', 364, 371) }}">the <code>shuffle=False</code> check</a>.</li>
+  <li>Goldberg. <em>What Every Computer Scientist Should Know About Floating-Point Arithmetic.</em> ACM Computing Surveys 23(1), 1991. <a href="https://doi.org/10.1145/103162.103163">doi:10.1145/103162.103163</a></li>
+  <li>O'Neill. <em>PCG: A Family of Simple Fast Space-Efficient Statistically Good Algorithms for Random Number Generation.</em> 2014; its seed-mixing design underlies NumPy's <code>SeedSequence</code>. <a href="https://www.pcg-random.org/paper.html">pcg-random.org</a></li>
+  <li>Bouthillier, Laurent and Vincent. <em>Unreproducible Research is Reproducible.</em> ICML 2019. <a href="https://proceedings.mlr.press/v97/bouthillier19a.html">PMLR 97</a></li>
+</ul>
