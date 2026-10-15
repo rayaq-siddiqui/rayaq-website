@@ -1,0 +1,386 @@
+{% set ex = state_space_example() %}
+{% set e = ex.example %}
+{% set costs = ex.costs %}
+{% macro f(x, n=3) -%}{{ ("%." ~ n ~ "f")|format(0.0 if x|abs < 0.5 * 10 ** (-n) else x)|replace("-", "−") }}{%- endmacro %}
+{% macro gib(b) -%}{{ "%.2f"|format(b / 1024 ** 3) }} GiB{%- endmacro %}
+<header class="jj-header">
+  <h1>State-space models</h1>
+  <p class="tagline">
+    A state-space model reads a sequence through a fixed-size state, like an <a href="/ml-models/rnns-and-lstms">RNN</a>, but its update is linear, so the same layer can also be run as one long convolution and trained in parallel. S4 made that work for long sequences with a carefully structured state matrix; Mamba made the update depend on the input, so the model can choose what to remember.
+    This page discretizes the equations three ways, checks that the recurrence and the convolution give the same {{ e.u|length }} outputs, runs a selective scan that holds a value a fixed step cannot, scans it in {{ ex.scan.depth }} parallel steps, and compares memory with a <a href="/ml-models/kv-cache">KV cache</a>. Every number is computed and every library link is pinned.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  A <a href="/ml-models/transformer">Transformer</a> compares every token with every earlier token. Training on a sequence of length <var>L</var> costs time proportional to <var>L</var>², and generating each new token reads a <a href="/ml-models/kv-cache">KV cache</a> that grows by one entry per token. At 8,000 tokens that is manageable; at half a million it dominates both memory and time. An <a href="/ml-models/rnns-and-lstms">RNN</a> has the opposite profile: a fixed-size state and constant cost per token at inference, but training must step through time one position at a time, and gradients fade over long distances.
+</p>
+<p>
+  State-space models (SSMs) aim for both: constant-size state and linear cost at inference, and parallel training over the whole sequence. The price is a linear recurrence, which on its own cannot decide what to keep. The history of the family is how to make that recurrence remember long and, in Mamba, how to let it choose.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Picture a set of leaky buckets, the state. Each time step some input pours in, every bucket leaks a fixed fraction, and the output is a weighted reading of the levels. Because the leaking and pouring are linear, an input at time 0 contributes to the output at time <var>t</var> by a fixed amount that depends only on the gap <var>t</var>. So you can compute the output either by simulating the buckets step by step (a recurrence) or by sliding one fixed filter over the input (a convolution). Training uses the convolution, which is parallel; generation uses the recurrence, which needs only the current levels.
+</p>
+<p>
+  The leak rate is controlled by a step size Δ. A large Δ means the state is mostly replaced by the new input; a tiny Δ means the input is ignored and the state carries on unchanged. Mamba's idea is to let each token pick its own Δ: an important token takes a large step and is written in, filler takes a tiny step and is skipped. The filter is then different at every position, so the convolution view is lost, and an associative <em>scan</em> recovers the parallelism.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 260" role="img" aria-labelledby="ssm-dual-title ssm-dual-desc">
+    <title id="ssm-dual-title">One linear SSM, two ways to compute it</title>
+    <desc id="ssm-dual-desc">Top: the recurrent view. Inputs u0 to u3 enter one at a time; the state h is updated as h_t = A-bar h_(t-1) + B-bar u_t and read out as y_t = C h_t, using constant memory. Bottom: the convolutional view. The kernel K = (C B-bar, C A-bar B-bar, C A-bar squared B-bar, ...) is computed once and slid over the whole input in parallel. Both produce the same outputs when A-bar, B-bar and C do not depend on the input.</desc>
+    <g font-size="12">
+      <text x="10" y="20" font-weight="bold">recurrent: one step at a time, state of size N</text>
+      {% for t in range(4) %}
+      {% set x = 30 + t * 150 %}
+      <rect x="{{ x }}" y="70" width="70" height="36" rx="6" class="d-box ml-tensor"></rect>
+      <text x="{{ x + 35 }}" y="93" text-anchor="middle">h{{ t }}</text>
+      <text x="{{ x + 35 }}" y="130" text-anchor="middle" class="d-muted">u{{ t }} → B̄</text>
+      <line x1="{{ x + 35 }}" y1="118" x2="{{ x + 35 }}" y2="106" class="d-line"></line>
+      <text x="{{ x + 35 }}" y="48" text-anchor="middle">y{{ t }} = C h{{ t }}</text>
+      <line x1="{{ x + 35 }}" y1="70" x2="{{ x + 35 }}" y2="55" class="d-line"></line>
+      {% if t < 3 %}
+      <line x1="{{ x + 70 }}" y1="88" x2="{{ x + 150 }}" y2="88" class="d-line"></line>
+      <text x="{{ x + 110 }}" y="82" text-anchor="middle" class="ml-op">Ā</text>
+      {% endif %}
+      {% endfor %}
+      <text x="10" y="170" font-weight="bold">convolutional: kernel K computed once, applied in parallel</text>
+      <rect x="30" y="185" width="290" height="36" rx="6" class="d-box" style="fill: var(--jj-violet)" fill-opacity="0.18"></rect>
+      <text x="175" y="208" text-anchor="middle">K = (CB̄, CĀB̄, CĀ²B̄, …, CĀ^(L−1)B̄)</text>
+      <rect x="360" y="185" width="250" height="36" rx="6" class="d-box" style="fill: var(--jj-green)" fill-opacity="0.18"></rect>
+      <text x="485" y="208" text-anchor="middle">y = K ∗ u (causal convolution)</text>
+      <line x1="320" y1="203" x2="360" y2="203" class="d-line"></line>
+      <text x="320" y="248" text-anchor="middle" class="d-muted">same y in both views, as long as Ā, B̄, C are the same at every step</text>
+    </g>
+  </svg>
+  <p class="ml-caption">The duality holds only for a linear, time-invariant (LTI) system. Selection breaks the time invariance, which is why Mamba needs a scan instead of a convolution.</p>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="continuous">The continuous system</h3>
+<p>
+  An SSM maps a one-dimensional input signal <var>u</var>(<var>t</var>) to an output <var>y</var>(<var>t</var>) through an <var>N</var>-dimensional state <var>h</var>(<var>t</var>):
+</p>
+<div class="jj-diagram"><p>
+  <var>h</var>′(<var>t</var>) = <var>A</var> <var>h</var>(<var>t</var>) + <var>B</var> <var>u</var>(<var>t</var>), &nbsp; <var>y</var>(<var>t</var>) = <var>C</var> <var>h</var>(<var>t</var>) (+ <var>D</var> <var>u</var>(<var>t</var>), a skip term)
+</p></div>
+<p>
+  <var>A</var> is <var>N</var> × <var>N</var>, <var>B</var> is <var>N</var> × 1 and <var>C</var> is 1 × <var>N</var>. A model with <var>D</var> channels runs <var>D</var> independent copies, one per channel, usually with <var>N</var> between 4 and 64. The eigenvalues of <var>A</var> must have negative real parts, or the state blows up.
+</p>
+
+<h3 id="discretization">Discretization</h3>
+<p>
+  Tokens arrive at discrete steps, so the equation is turned into a recurrence <var>h</var><sub><var>t</var></sub> = Ā <var>h</var><sub><var>t</var>−1</sub> + B̄ <var>u</var><sub><var>t</var></sub> with a step size Δ. Three rules are common:
+</p>
+<ul>
+  <li><strong>Euler:</strong> Ā = <var>I</var> + Δ<var>A</var>, B̄ = Δ<var>B</var>. Cheap, but unstable once Δ is large: for scalar <var>a</var> = −1, |1 − Δ| &gt; 1 when Δ &gt; 2.</li>
+  <li><strong>Bilinear (Tustin):</strong> Ā = (<var>I</var> − Δ<var>A</var>/2)⁻¹(<var>I</var> + Δ<var>A</var>/2), B̄ = (<var>I</var> − Δ<var>A</var>/2)⁻¹Δ<var>B</var>. Stable for every Δ whenever <var>A</var> is. S4 uses it.</li>
+  <li><strong>Zero-order hold (ZOH):</strong> assumes the input is constant over each step, giving Ā = exp(Δ<var>A</var>) and B̄ = <var>A</var>⁻¹(exp(Δ<var>A</var>) − <var>I</var>)<var>B</var>. Exact for piecewise-constant input. S4D and Mamba use it; for a diagonal <var>A</var> both are elementwise.</li>
+</ul>
+
+<div class="jj-table-wrap">
+  <table class="ml-numbers">
+    <thead><tr><th>Δ (a = {{ f(e.scalar_a, 0) }})</th><th>exact e<sup>aΔ</sup></th><th>Euler 1 + aΔ</th><th>bilinear</th><th>ZOH B̄</th></tr></thead>
+    <tbody>
+      {% for r in ex.scalar %}
+      <tr><td>{{ r.step }}</td><td>{{ f(r.exact, 4) }}</td><td>{{ f(r.euler, 4) }}{% if not r.euler_stable %} (unstable){% endif %}</td><td>{{ f(r.bilinear, 4) }}</td><td>{{ f(r.zoh_b, 4) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p>
+  At small Δ all three agree (bilinear is closer to exact than Euler at Δ = 0.1). At Δ = 1 Euler forgets everything in one step; at Δ = 2.5 its factor of −1.5 makes the state grow and flip sign, while bilinear stays below 1 in magnitude and ZOH is exact by construction.
+</p>
+
+<h3 id="duality">Recurrence and convolution</h3>
+<p>
+  Unroll the recurrence from <var>h</var><sub>−1</sub> = 0: <var>y</var><sub><var>t</var></sub> = Σ<sub><var>k</var>=0..<var>t</var></sub> <var>C</var>Ā<sup><var>k</var></sup>B̄ <var>u</var><sub><var>t</var>−<var>k</var></sub>. That is a causal convolution with kernel <var>K</var><sub><var>k</var></sub> = <var>C</var>Ā<sup><var>k</var></sup>B̄. In training, the whole sequence is known, so the kernel is computed once per layer and applied with an FFT in <var>O</var>(<var>L</var> log <var>L</var>) or as a <a href="{{ src('torch/nn/modules/conv.py', 225, 385) }}"><code>Conv1d</code></a>. In generation, the recurrence advances the <var>N</var>-dimensional state by one token at constant cost. The kernel is the system's impulse response: feed a single 1 followed by zeros through the recurrence and the outputs are <var>K</var>.
+</p>
+
+<h3 id="s4">S4: a structured state matrix</h3>
+<p>
+  A random <var>A</var> forgets quickly and its powers are expensive. S4 (Gu, Goel and Ré, 2021) starts from HiPPO-LegS, a matrix derived so that the state holds the coefficients of a Legendre-polynomial approximation of the whole input history so far:
+</p>
+<div class="jj-diagram"><p>
+  <var>A</var><sub><var>nk</var></sub> = −√((2<var>n</var>+1)(2<var>k</var>+1)) for <var>n</var> &gt; <var>k</var>, &nbsp; −(<var>n</var>+1) for <var>n</var> = <var>k</var>, &nbsp; 0 above the diagonal; &nbsp; <var>B</var><sub><var>n</var></sub> = √(2<var>n</var>+1)
+</p></div>
+<p>
+  This <var>A</var> is not diagonalizable in a numerically useful way, but it is <em>normal plus low rank</em> (NPLR): adding <var>pp</var><sup>T</sup> with <var>p</var><sub><var>n</var></sub> = √(<var>n</var> + ½) gives −½<var>I</var> plus a skew-symmetric matrix, which is normal and so unitarily diagonalizable. S4 uses that split and the Woodbury identity to compute the length-<var>L</var> kernel in nearly linear time instead of raising Ā to <var>L</var> powers. Later work found simpler choices nearly as good: S4D (Gu et al., 2022) keeps only a diagonal <var>A</var>, initialized from the diagonal part of the NPLR form or with real values −(<var>n</var>+1), and the kernel becomes a Vandermonde product.
+</p>
+
+<h3 id="selection">Mamba: selection</h3>
+<p>
+  An LTI system applies the same filter to every input. It cannot do something as simple as "remember the last value that was flagged and ignore everything else", because which inputs matter depends on their content. Mamba (Gu and Dao, 2023) makes Δ, <var>B</var> and <var>C</var> functions of the current token:
+</p>
+<div class="jj-diagram"><p>
+  Δ<sub><var>t</var></sub> = softplus(<var>W</var><sub>Δ</sub><var>x</var><sub><var>t</var></sub> + <var>b</var>), &nbsp; <var>B</var><sub><var>t</var></sub> = <var>W</var><sub><var>B</var></sub><var>x</var><sub><var>t</var></sub>, &nbsp; <var>C</var><sub><var>t</var></sub> = <var>W</var><sub><var>C</var></sub><var>x</var><sub><var>t</var></sub>, &nbsp; Ā<sub><var>t</var></sub> = exp(Δ<sub><var>t</var></sub><var>A</var>)
+</p></div>
+<p>
+  <a href="{{ src('torch/nn/functional.py', 2115, 2127) }}"><code>softplus</code></a> keeps Δ positive. A large Δ<sub><var>t</var></sub> drives Ā<sub><var>t</var></sub> towards 0 and writes the token in; a Δ<sub><var>t</var></sub> near 0 leaves Ā<sub><var>t</var></sub> ≈ 1 and B̄<sub><var>t</var></sub> ≈ 0, so the token is skipped. This is a gate, the same idea as an <a href="/ml-models/rnns-and-lstms">LSTM</a>'s forget gate, but the recurrence stays linear in <var>h</var>. <var>A</var> stays fixed and diagonal (S4D-real initialization), stored as log(−<var>A</var>). Each channel of the expanded inner dimension has its own <var>A</var> and Δ, and all channels share <var>B</var><sub><var>t</var></sub> and <var>C</var><sub><var>t</var></sub>.
+</p>
+<p>
+  A Mamba block wraps the selective SSM: a linear projection to twice the expanded width, a depthwise causal <a href="{{ src('torch/nn/modules/conv.py', 366, 382) }}">convolution</a> of width 4 and a <a href="{{ src('torch/nn/functional.py', 2429, 2451) }}"><code>silu</code></a> on one half, the SSM, multiplication by <code>silu</code> of the other half, and a projection back. Blocks are stacked with residual connections and normalization, with no attention and no MLP.
+</p>
+
+<h3 id="scan">The parallel scan</h3>
+<p>
+  With per-token Ā<sub><var>t</var></sub> there is no single kernel. But the update <var>h</var><sub><var>t</var></sub> = <var>a</var><sub><var>t</var></sub><var>h</var><sub><var>t</var>−1</sub> + <var>b</var><sub><var>t</var></sub> composes: applying (<var>a</var><sub>1</sub>, <var>b</var><sub>1</sub>) then (<var>a</var><sub>2</sub>, <var>b</var><sub>2</sub>) is the single step (<var>a</var><sub>1</sub><var>a</var><sub>2</sub>, <var>a</var><sub>2</sub><var>b</var><sub>1</sub> + <var>b</var><sub>2</sub>). That combine is associative, so a prefix scan computes every <var>h</var><sub><var>t</var></sub> in log₂<var>L</var> parallel rounds, the same trick as a parallel prefix sum (<a href="{{ src('torch/_torch_docs.py', 3560, 3590) }}"><code>cumsum</code></a>, or <a href="{{ src('torch/_torch_docs.py', 3521, 3558) }}"><code>cumprod</code></a> for the <var>a</var> half). Mamba's CUDA kernel goes further: it keeps the expanded state (<var>L</var> × <var>D</var> × <var>N</var>) in on-chip SRAM, never writes it to GPU memory, and recomputes it in the backward pass, the same IO-aware idea as FlashAttention (see <a href="/ml-models/gpu-execution">GPU execution</a>). Mamba-2 (Dao and Gu, 2024) restricts <var>A</var> to a scalar times the identity per head, which turns the scan into blocks of matrix multiplication that use tensor cores, and shows the result is a form of masked linear attention.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><var>A</var></td><td>(<var>D</var>, <var>N</var>) diagonal, negative</td><td>Decay rate of each state; S4 uses HiPPO, Mamba −exp(A_log)</td><td>S4 §3; Mamba §3.6</td></tr>
+      <tr><td>Δ</td><td>(<var>B</var>, <var>L</var>, <var>D</var>) after softplus</td><td>Step size: how much of the token to write in</td><td><a href="{{ src('torch/nn/functional.py', 2115, 2127) }}">functional.py 2115-2127</a></td></tr>
+      <tr><td><var>B</var><sub><var>t</var></sub>, <var>C</var><sub><var>t</var></sub></td><td>(<var>B</var>, <var>L</var>, <var>N</var>)</td><td>Input and output maps; input-dependent in Mamba, fixed in S4</td><td>Mamba Algorithm 2</td></tr>
+      <tr><td>Kernel <var>K</var></td><td>(<var>D</var>, <var>L</var>)</td><td><var>C</var>Ā<sup><var>k</var></sup>B̄ for LTI models; computed with <code>einsum</code></td><td><a href="{{ src('torch/functional.py', 175, 382) }}">functional.py 175-382</a></td></tr>
+      <tr><td>Causal convolution</td><td>kernel <var>L</var> (S4) or 4 (Mamba, depthwise)</td><td>Applies the kernel; pad on the left only</td><td><a href="{{ src('torch/nn/modules/conv.py', 225, 385) }}">conv.py 225-385</a></td></tr>
+      <tr><td><code>F.conv1d</code></td><td>input (<var>B</var>, <var>C</var>, <var>L</var>), weight (out, in/groups, <var>k</var>)</td><td>Cross-correlation, so flip the kernel for a convolution</td><td><a href="{{ src('torch/nn/functional.py', 53, 99) }}">functional.py 53-99</a></td></tr>
+      <tr><td><code>silu</code> gate</td><td>(<var>B</var>, <var>L</var>, <var>E</var>·<var>D</var>)</td><td>Gates the SSM output in a Mamba block</td><td><a href="{{ src('torch/nn/functional.py', 2429, 2451) }}">functional.py 2429-2451</a></td></tr>
+      <tr><td>Scan state</td><td>(<var>B</var>, <var>E</var>·<var>D</var>, <var>N</var>) per layer</td><td>All a layer carries between tokens at inference</td><td>Mamba §3.3</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>Why can S4 be trained with a convolution but Mamba cannot?</summary>
+  <p>The convolution kernel <var>C</var>Ā<sup><var>k</var></sup>B̄ assumes the same Ā, B̄ and <var>C</var> at every step. In Mamba they depend on each token, so the contribution of <var>u</var><sub><var>s</var></sub> to <var>y</var><sub><var>t</var></sub> is <var>C</var><sub><var>t</var></sub>Ā<sub><var>t</var></sub>…Ā<sub><var>s</var>+1</sub>B̄<sub><var>s</var></sub>, which changes with both <var>s</var> and <var>t</var>, not only with their gap. The associative scan replaces the convolution.</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-duality">A HiPPO SSM, run both ways</h3>
+  <p>
+    Take <var>N</var> = {{ e.hippo_n }} with the HiPPO-LegS <var>A</var> and <var>B</var> above, <var>C</var> = ({{ e.hippo_c|join(", ")|replace("-", "−") }}), Δ = {{ e.hippo_step }} and the bilinear rule. Adding <var>pp</var><sup>T</sup> to <var>A</var> gives a diagonal of {{ f(ex.nplr.s[0][0], 3) }}, {{ f(ex.nplr.s[1][1], 3) }}, {{ f(ex.nplr.s[2][2], 3) }}, {{ f(ex.nplr.s[3][3], 3) }} and off-diagonal pairs such as {{ f(ex.nplr.s[0][1], 3) }} and {{ f(ex.nplr.s[1][0], 3) }}: −½<var>I</var> plus a skew-symmetric matrix, as claimed. Discretized, Ā has diagonal {{ f(ex.a_bar[0][0], 4) }}, {{ f(ex.a_bar[1][1], 4) }}, {{ f(ex.a_bar[2][2], 4) }}, {{ f(ex.a_bar[3][3], 4) }} and B̄ = ({{ ex.b_bar|map("round", 4)|join(", ")|replace("-", "−") }}).
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th><var>t</var></th><th><var>u</var><sub><var>t</var></sub></th><th>kernel <var>K</var><sub><var>t</var></sub></th><th>recurrent <var>y</var><sub><var>t</var></sub></th><th>convolution <var>y</var><sub><var>t</var></sub></th></tr></thead>
+      <tbody>
+        {% for t in range(e.u|length) %}
+        <tr><td>{{ t }}</td><td>{{ f(e.u[t], 1) }}</td><td>{{ f(ex.kernel[t], 4) }}</td><td>{{ f(ex.recurrent.y[t], 4) }}</td><td>{{ f(ex.conv[t], 4) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The two columns agree to {{ "%.1e"|format(ex.dual_gap) }}, rounding error. The kernel decays smoothly from {{ f(ex.kernel[0], 4) }} to {{ f(ex.kernel[-1], 4) }} rather than geometrically at one rate: the four states decay at different speeds and the HiPPO coupling mixes them, which is how the model keeps a long, graded memory.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 220" role="img" aria-labelledby="ssm-kernel-title ssm-kernel-desc">
+    <title id="ssm-kernel-title">The HiPPO SSM's convolution kernel</title>
+    <desc id="ssm-kernel-desc">Bar chart of the eight kernel values K_0 to K_7 of the worked example, from {{ f(ex.kernel[0], 4) }} down to {{ f(ex.kernel[-1], 4) }}, each the weight given to an input k steps in the past.</desc>
+    <g font-size="12">
+      <line x1="40" y1="180" x2="620" y2="180" class="d-line"></line>
+      {% for k in ex.kernel %}
+      {% set h = k / ex.kernel[0] * 140 %}
+      {% set x = 60 + loop.index0 * 70 %}
+      <rect x="{{ x }}" y="{{ 180 - h }}" width="44" height="{{ h }}" class="d-box ml-tensor" style="fill: var(--jj-violet)" fill-opacity="0.35"></rect>
+      <text x="{{ x + 22 }}" y="{{ 174 - h }}" text-anchor="middle">{{ f(k, 3) }}</text>
+      <text x="{{ x + 22 }}" y="198" text-anchor="middle" class="d-muted">K{{ loop.index0 }}</text>
+      {% endfor %}
+      <text x="340" y="215" text-anchor="middle" class="d-muted">weight on an input k steps back</text>
+    </g>
+  </svg>
+  <p class="ml-caption">Feeding a single 1 through the recurrence produces exactly these values: the kernel is the impulse response.</p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-selection">Remembering the flagged value</h3>
+  <p>
+    The task: a stream of values, some flagged, and the output should always be the most recent flagged value. Inputs are ({{ e["values"]|join(", ")|replace("-", "−") }}) with flags ({{ e.gates|join(", ")|replace("-", "−") }}), so the target is ({{ ex.target|join(", ")|replace("-", "−") }}). A two-state selective SSM uses <var>A</var> = ({{ e.sel_a|join(", ")|replace("-", "−") }}), <var>B</var> = ({{ e.sel_b_vec|join(", ")|replace("-", "−") }}) times the flag, <var>C</var> = ({{ e.sel_c|join(", ")|replace("-", "−") }}) and Δ<sub><var>t</var></sub> = softplus({{ e.sel_w }}·flag {{ e.sel_b|string|replace("-", "− ") }}) with ZOH.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th><var>t</var></th><th>value</th><th>flag</th><th>Δ<sub><var>t</var></sub></th><th>Ā<sub><var>t</var></sub></th><th>B̄<sub><var>t</var></sub></th><th><var>h</var><sub><var>t</var></sub></th><th><var>y</var><sub><var>t</var></sub></th><th>fixed Δ = {{ e.lti_step }}</th></tr></thead>
+      <tbody>
+        {% for r in ex.selective %}
+        <tr><td>{{ loop.index0 }}</td><td>{{ f(r.value, 1) }}</td><td>{{ r.gate }}</td><td>{{ f(r.step, 4) }}</td><td>{{ f(r.a_bar[0], 4) }}, {{ f(r.a_bar[1], 4) }}</td><td>{{ f(r.b_bar[0], 3) }}, {{ f(r.b_bar[1], 3) }}</td><td>{{ f(r.h[0], 3) }}, {{ f(r.h[1], 3) }}</td><td>{{ f(r.y, 4) }}</td><td>{{ f(ex.lti[loop.index0], 3) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Flagged tokens get Δ = {{ f(ex.selective[0].step, 3) }}, so Ā is nearly 0 and the state is overwritten; unflagged tokens get Δ = {{ f(ex.selective[1].step, 4) }}, so Ā ≈ 1 and nothing is written. The largest error is {{ f(ex.sel_error, 3) }}, from the slow leak of Ā slightly below 1. The same SSM with one fixed Δ = {{ e.lti_step }} (and <var>B</var> applied to every token) blends all the inputs and misses by up to {{ f(ex.lti_error, 2) }}. No choice of a fixed Δ fixes this: a time-invariant filter weights inputs by position, not by content.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-scan">Scanning it in parallel</h3>
+  <p>
+    Take the first state of the selective run as pairs (<var>a</var><sub><var>t</var></sub>, <var>b</var><sub><var>t</var></sub>) = (Ā<sub><var>t</var></sub>, B̄<sub><var>t</var></sub><var>u</var><sub><var>t</var></sub>). A Hillis-Steele scan combines each element with the one 1, then 2, then 4 places to its left. After round <var>r</var>, element <var>t</var> covers the 2<sup><var>r</var></sup> steps ending at <var>t</var>, and its <var>b</var> is the state <var>h</var><sub><var>t</var></sub>.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>round</th>{% for t in range(e["values"]|length) %}<th><var>t</var> = {{ t }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for level in ex.scan.levels %}
+        <tr><td>{{ loop.index0 }}</td>{% for a, b in level %}<td>{{ f(b, 3) }}</td>{% endfor %}</tr>
+        {% endfor %}
+        <tr><td>sequential</td>{% for h in ex.sequential %}<td>{{ f(h, 3) }}</td>{% endfor %}</tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    {{ ex.scan.depth }} rounds instead of {{ e["values"]|length }} sequential steps, at the cost of {{ ex.scan.combines }} combines instead of {{ e["values"]|length - 1 }}. A work-efficient (Blelloch) scan does about 2<var>L</var> combines in 2 log₂<var>L</var> rounds. The final row matches the sequential loop exactly.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 230" role="img" aria-labelledby="ssm-scan-title ssm-scan-desc">
+    <title id="ssm-scan-title">Hillis-Steele scan over eight steps</title>
+    <desc id="ssm-scan-desc">Four rows of eight boxes, rounds 0 to 3. In round 1 each box from position 1 combines with its left neighbour, in round 2 with the box two to the left, in round 3 with the box four to the left. After round 3 every position holds the full prefix, that is the state h_t.</desc>
+    <g font-size="11">
+      {% for level in ex.scan.levels %}
+      {% set r = loop.index0 %}
+      {% set y = 14 + r * 56 %}
+      <text x="8" y="{{ y + 20 }}" class="d-muted">round {{ r }}</text>
+      {% for a, b in level %}
+      {% set x = 70 + loop.index0 * 70 %}
+      <rect x="{{ x }}" y="{{ y }}" width="56" height="30" rx="4" class="d-box ml-tensor"></rect>
+      <text x="{{ x + 28 }}" y="{{ y + 19 }}" text-anchor="middle">{{ f(b, 2) }}</text>
+      {% if r > 0 and loop.index0 >= 2 ** (r - 1) %}
+      <line x1="{{ x - 70 * 2 ** (r - 1) + 28 }}" y1="{{ y - 26 }}" x2="{{ x + 28 }}" y2="{{ y }}" class="d-line ml-dashed"></line>
+      {% endif %}
+      {% endfor %}
+      {% endfor %}
+    </g>
+  </svg>
+  <p class="ml-caption">Each dashed line is one combine. Round <var>r</var> reaches 2<sup><var>r</var>−1</sup> places to the left, so log₂ 8 = 3 rounds cover every prefix.</p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-costs">State versus KV cache</h3>
+  <p>
+    Compare a {{ e.layers }}-layer model of width {{ "{:,}".format(e.d_model) }} in bf16 ({{ e.bytes }} bytes). The attention version caches a key and a value per layer per token: 2 × {{ e.layers }} × context × {{ "{:,}".format(e.d_model) }} × {{ e.bytes }} bytes (no grouped-query sharing). A Mamba version with expansion {{ e.expand }} and <var>N</var> = {{ e.d_state }} carries {{ e.layers }} × {{ "{:,}".format(e.expand * e.d_model) }} × ({{ e.d_state }} + {{ e.conv_width - 1 }}) × {{ e.bytes }} = {{ "{:,}".format(costs.state_bytes) }} bytes: the SSM state plus the last {{ e.conv_width - 1 }} inputs of the convolution, whatever the context. Per-token FLOPs count the attention read as 4 × layers × context × width and the SSM update as 6 × layers × inner width × <var>N</var>; training FLOPs count causal attention scores and values (2 × layers × context² × width) against the scan.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>context</th><th>KV cache</th><th>SSM state</th><th>attention FLOPs / token</th><th>SSM FLOPs / token</th><th>attention mixing, training</th><th>SSM scan, training</th></tr></thead>
+      <tbody>
+        {% for r in costs.rows %}
+        <tr><td>{{ "{:,}".format(r.context) }}</td><td>{{ gib(r.kv_bytes) }}</td><td>{{ "%.2f"|format(r.ssm_bytes / 1024 ** 2) }} MiB</td><td>{{ "%.2e"|format(r.attn_flops) }}</td><td>{{ "%.2e"|format(r.ssm_flops) }}</td><td>{{ "%.2e"|format(r.train_attn) }}</td><td>{{ "%.2e"|format(r.train_ssm) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Going from 1,024 to 524,288 tokens multiplies the KV cache and per-token attention cost by 512 and the attention mixing cost in training by 512² = 262,144; the SSM's state does not change and its training cost grows 512-fold. These count only the sequence-mixing part; the projections and MLPs cost the same per token in both and dominate at short context.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  From primitives: an S4-style LTI layer computed both as a kernel and as a convolution, and a Mamba-style selective SSM as a plain loop. The kernel uses <a href="{{ src('torch/functional.py', 175, 382) }}"><code>torch.einsum</code></a>, and the convolution uses <a href="{{ src('torch/nn/functional.py', 53, 99) }}"><code>F.conv1d</code></a> with left padding so no output sees the future.
+</p>
+
+<pre><code>import torch
+import torch.nn.functional as F
+
+def discretize_bilinear(A, B, dt):
+    I = torch.eye(A.shape[0], dtype=A.dtype)
+    left = torch.linalg.inv(I - dt / 2 * A)
+    return left @ (I + dt / 2 * A), left @ (dt * B)
+
+def ssm_kernel(A_bar, B_bar, C, L):
+    powers = [torch.eye(A_bar.shape[0], dtype=A_bar.dtype)]
+    for _ in range(L - 1):
+        powers.append(A_bar @ powers[-1])
+    return torch.einsum("n,lnm,m->l", C, torch.stack(powers), B_bar)   # K[l] = C A^l B
+
+def ssm_conv(u, K):                                   # u: (batch, L)
+    L = u.shape[-1]
+    x = F.pad(u.unsqueeze(1), (L - 1, 0))             # causal: pad the left only
+    return F.conv1d(x, K.flip(-1).view(1, 1, L)).squeeze(1)  # conv1d correlates, so flip
+
+def selective_scan(x, delta, A, B, C):
+    # x, delta: (batch, L, D); A: (D, N); B, C: (batch, L, N)
+    h = x.new_zeros(x.shape[0], x.shape[2], A.shape[1])
+    ys = []
+    for t in range(x.shape[1]):
+        dA = torch.exp(delta[:, t, :, None] * A)          # ZOH for diagonal A
+        dB = (dA - 1) / A * B[:, t, None, :]
+        h = dA * h + dB * x[:, t, :, None]
+        ys.append(torch.einsum("bdn,bn->bd", h, C[:, t]))
+    return torch.stack(ys, dim=1)
+
+class SelectiveSSM(torch.nn.Module):
+    def __init__(self, d, n=16):
+        super().__init__()
+        self.A_log = torch.nn.Parameter(torch.log(torch.arange(1, n + 1).float()).repeat(d, 1))
+        self.to_delta = torch.nn.Linear(d, d)
+        self.to_B = torch.nn.Linear(d, n, bias=False)
+        self.to_C = torch.nn.Linear(d, n, bias=False)
+        self.D = torch.nn.Parameter(torch.ones(d))
+
+    def forward(self, x):                             # x: (batch, L, d)
+        A = -torch.exp(self.A_log)                    # S4D-real: -1, -2, ..., -n
+        delta = F.softplus(self.to_delta(x))
+        return selective_scan(x, delta, A, self.to_B(x), self.to_C(x)) + self.D * x</code></pre>
+
+<p>
+  The snippet has not been run against PyTorch here; it uses only the calls linked above, and the helpers behind this page compute the same recurrence, kernel and selective scan in plain Python. The loop is <var>O</var>(<var>L</var>) sequential steps: fine for checking, far too slow for training. The official Mamba package replaces it with a fused CUDA scan, and its reference implementation uses the simpler B̄ = Δ<var>B</var> rather than the exact ZOH form for <var>B</var>.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Choice</th><th>Gains</th><th>Costs</th></tr></thead>
+    <tbody>
+      <tr><td>SSM instead of attention</td><td>Constant memory and cost per generated token; linear training cost</td><td>Everything must pass through a fixed-size state, so exact recall of a long span (copying, lookup of a phone number from far back) is harder</td></tr>
+      <tr><td>LTI (S4) vs selective (Mamba)</td><td>LTI: FFT convolution, simple and fast on continuous signals such as audio</td><td>LTI cannot filter by content, and does poorly on language; selective needs a custom scan kernel</td></tr>
+      <tr><td>HiPPO / NPLR vs diagonal <var>A</var></td><td>HiPPO: principled long memory</td><td>NPLR needs complex arithmetic and Cauchy kernels; diagonal (S4D, Mamba) is nearly as good and much simpler</td></tr>
+      <tr><td>Bilinear vs ZOH</td><td>Both stable for any Δ</td><td>ZOH is exact for held inputs and elementwise with a diagonal <var>A</var>; bilinear needs a matrix inverse for a full <var>A</var></td></tr>
+      <tr><td>Hybrids (some attention layers)</td><td>Recover precise recall with a few attention layers, keep most of the memory savings</td><td>The attention layers bring back a (smaller) KV cache</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>A Mamba model and a Transformer of the same size both answer questions about a 100-page document. Which is more likely to quote a specific number from page 3 exactly, and why?</summary>
+  <p>The Transformer. Its KV cache keeps every token, so attention can look the number up directly. The SSM compressed the whole document into a fixed state of a few megabytes and only kept the number if selection decided, when it read page 3, that it was worth storing. This recall gap is the main reason many recent large models mix SSM layers with a few attention layers.</p>
+</details>
+
+<details class="ml-quiz">
+  <summary>Why must Δ be positive, and what happens at the two extremes?</summary>
+  <p>With <var>A</var> negative, Ā = exp(Δ<var>A</var>) lies in (0, 1) only when Δ &gt; 0; a negative Δ would make the state grow. As Δ → 0, Ā → 1 and B̄ → 0: the state is kept and the token ignored. As Δ → ∞, Ā → 0 and B̄ → −<var>B</var>/<var>A</var>: the state is reset to the current token. Softplus keeps Δ positive and smooth between these.</p>
+</details>
+
+<h3 id="check-yourself">Check yourself</h3>
+<ul>
+  <li>Write the convolution kernel of a discretized LTI SSM in terms of Ā, B̄ and <var>C</var>.</li>
+  <li>Why does Euler discretization fail for large Δ while bilinear and ZOH do not?</li>
+  <li>What does the associative combine (<var>a</var><sub>1</sub>, <var>b</var><sub>1</sub>) ∘ (<var>a</var><sub>2</sub>, <var>b</var><sub>2</sub>) compute, and why does associativity matter?</li>
+  <li>How much memory does a Mamba layer need at inference for a 1M-token context, compared with 1K?</li>
+</ul>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<p>
+  SSMs are linear <a href="/ml-models/rnns-and-lstms">RNNs</a> with gates like an LSTM's, and they compete with the <a href="/ml-models/transformer">Transformer</a> and its <a href="/ml-models/attention">attention</a>. The memory comparison is with the <a href="/ml-models/kv-cache">KV cache</a>, and the per-token cost matters for <a href="/ml-models/latency-and-throughput">latency and throughput</a>. The convolution view is a one-dimensional <a href="/ml-models/cnns">CNN</a> with a kernel as long as the sequence. Why the fused scan kernel is fast is on <a href="/ml-models/gpu-execution">GPU execution</a>; matrix powers and eigenvalues are on the <a href="/ml-models/linear-algebra-toolkit">linear algebra toolkit</a>. As language models, SSMs are trained like any <a href="/ml-models/decoder-only-llm">decoder-only LLM</a>; long time series are covered on <a href="/ml-models/time-series">time series</a>.
+</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/nn/modules/conv.py', 225, 385) }}"><code>Conv1d</code></a>, <a href="{{ src('torch/nn/modules/conv.py', 366, 382) }}"><code>_conv_forward</code></a>, <a href="{{ src('torch/functional.py', 175, 382) }}"><code>einsum</code></a>, <a href="{{ src('torch/nn/functional.py', 53, 99) }}"><code>conv1d</code></a>, <a href="{{ src('torch/nn/functional.py', 2115, 2127) }}"><code>softplus</code></a>, <a href="{{ src('torch/nn/functional.py', 2429, 2451) }}"><code>silu</code></a>, <a href="{{ src('torch/_torch_docs.py', 3560, 3590) }}"><code>cumsum</code></a>, <a href="{{ src('torch/_torch_docs.py', 3521, 3558) }}"><code>cumprod</code></a>.</li>
+  <li>Gu, Dao, Ermon, Rudra and Ré. <em>HiPPO: Recurrent Memory with Optimal Polynomial Projections.</em> NeurIPS 2020. <a href="https://arxiv.org/abs/2008.07669">arXiv:2008.07669</a></li>
+  <li>Gu, Goel and Ré. <em>Efficiently Modeling Long Sequences with Structured State Spaces.</em> ICLR 2022. <a href="https://arxiv.org/abs/2111.00396">arXiv:2111.00396</a></li>
+  <li>Gu, Gupta, Goel and Ré. <em>On the Parameterization and Initialization of Diagonal State Space Models.</em> NeurIPS 2022. <a href="https://arxiv.org/abs/2206.11893">arXiv:2206.11893</a></li>
+  <li>Gu and Dao. <em>Mamba: Linear-Time Sequence Modeling with Selective State Spaces.</em> 2023. <a href="https://arxiv.org/abs/2312.00752">arXiv:2312.00752</a></li>
+  <li>Dao and Gu. <em>Transformers are SSMs: Generalized Models and Efficient Algorithms Through Structured State Space Duality.</em> ICML 2024. <a href="https://arxiv.org/abs/2405.21060">arXiv:2405.21060</a></li>
+  <li>Blelloch. <em>Prefix Sums and Their Applications.</em> CMU-CS-90-190, 1990.</li>
+</ul>

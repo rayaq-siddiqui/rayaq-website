@@ -810,7 +810,7 @@ PAGES = [
             "pytorch:torch/nn/modules/conv.py",
             "pytorch:torch/functional.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "autoregressive-models",

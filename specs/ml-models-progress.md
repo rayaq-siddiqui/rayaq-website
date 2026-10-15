@@ -415,8 +415,8 @@ Gaps:
 89. `retrieval-augmented-generation` ✓
 90. `checkpointing` ✓
 91. `reproducibility` ✓
-92. `state-space-models` ← next
-93. `profiling`
+92. `state-space-models` ✓
+93. `profiling` ← next
 
 Build three pages per run, top to bottom, pushing each as it is finished. Once the queue is empty, the Routine runs maintenance
 only: for each pin it checks for a newer stable release (never an rc, beta or dev tag). When one
