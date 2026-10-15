@@ -6,8 +6,8 @@ records where the build actually stands.
 
 **Last updated:** 2026-10-15 (forty-third run). Spec v2 widens the section from model
 architectures to all of machine learning: 12 areas, 93 pages, a seven-step learning path and a
-fixed page format. Ready pages: queue items 1-91, the last being `reproducibility`.
-The next page is `state-space-models` (queue item 92).
+fixed page format. Ready pages: queue items 1-92, the last being `state-space-models`.
+The next page is `profiling` (queue item 93), the last in the queue.
 
 ## Pins
 
@@ -46,7 +46,7 @@ and push small commits to `main`. The phone check before each push is
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (91 of 93 ready, all
+- [ ] Every §5 page is ready and meets its "Must cover" column and §6 (92 of 93 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -91,7 +91,6 @@ file); this list keeps only what queued pages still need.
   308-376.
 - `torch/nn/attention/flex_attention.py`: `BlockMask` 855-1694, `create_block_mask` 1967-2088,
   `flex_attention` starts at 2365.
-- `conv.py`: `Conv1d` 225-385 (`ConvTranspose2d` is cited in `autoencoders` and `gans`).
 - `torch/linalg/__init__.py`: `inv` 214-292, `vector_norm` 1491-1568; `matrix_norm` starts at 1570.
 - `torch/_torch_docs.py` (from `add_docstr(` to `)`): `matmul` 7908-7990, `mm` 7831-7887,
   `bmm` 1706-1762, `addmm` 592-665, `baddbmm` 1512-1581.
@@ -289,7 +288,10 @@ Gaps:
 |---|---|
 | `02bde76` `ml-models: add tested reproducibility helpers` | A port of DataLoader's `_generate_state` worker NumPy seed, copied versus reseeded worker generators, shared versus per-purpose derived seed streams, float32 sums in eight orders, a `check_random_state` stand-in with KFold-like folds, a data/code/environment manifest |
 | `af0dbcf` `ml-models: add the reproducibility page` | The page, `ready`, queue ✓ |
-| (this commit) `docs: record the reproducibility page in ml-models progress` | The reproducibility record |
+| `4c55a5b` `docs: record the reproducibility page in ml-models progress` | The reproducibility record |
+| `51756e2` `ml-models: add tested state-space-model helpers` | Scalar Euler/bilinear/ZOH discretization, HiPPO-LegS and its NPLR split, recurrent versus convolutional evaluation, a gated selective scan against a fixed step, a Hillis-Steele scan, state versus KV-cache costs |
+| `8b41fbc` `ml-models: add the state-space-models page` | The page, `ready`, queue ✓; links the SSM mentions on `rnns-and-lstms` and `attention` |
+| (this commit) `docs: record the state-space-models page in ml-models progress` | The state-space-models record |
 
 Findings worth keeping:
 
@@ -315,12 +317,27 @@ Findings worth keeping:
   benchmarking 73-92, uninitialized memory 235-249, DataLoader 251-272); scikit-learn
   `check_random_state` 1455-1485, `KFold._iter_test_indices` 516-521, the `shuffle=False`
   check 364-371.
+- State-space models: the HiPPO-LegS SSM (N = 4, Δ = 0.1, bilinear) gives the same eight
+  outputs as a recurrence and as a causal convolution to 1.1e-16, and A + ppᵀ is −½I plus a
+  skew-symmetric matrix. The selective scan tracks the last flagged value with error 0.040;
+  the same SSM with a fixed Δ = 0.5 misses by 1.81. A 48-layer, width-2048 Mamba-shaped
+  model carries 7,471,104 bytes of state at any context, against 384 MiB of KV cache at
+  1,024 tokens and 192 GiB at 524,288.
+- Ranges checked at PyTorch v2.14.1: `nn/modules/conv.py` (`Conv1d` 225-385,
+  `_conv_forward` 366-382, `forward` 384-385), `functional.py` (`einsum` 175-382),
+  `nn/functional.py` (`conv1d` docstring 53-99, `softplus` 2115-2127, `silu` 2429-2451),
+  `_torch_docs.py` (`cumprod` 3521-3558, `cumsum` 3560-3590).
 
 Gaps:
 
 - Reproducibility: the scikit-learn example uses `random.Random` as a labelled stand-in for
   `RandomState`, so the fold contents differ from scikit-learn's. Goldberg, O'Neill (PCG) and
   Bouthillier et al. are cited from memory. The snippet was not run under real PyTorch.
+- State-space models: no pin implements an SSM, so S4, S4D, HiPPO, Mamba and Mamba-2 details
+  (HiPPO-LegS formula, NPLR with p = √(n+½), S4D-real init, Mamba's B̄ = ΔB shortcut and
+  block layout) follow the papers from memory, with arxiv.org unreachable from the Routine.
+  The cost model counts only sequence mixing, with no grouped-query attention; the snippet
+  was not run under real PyTorch.
 
 ## Queue
 
