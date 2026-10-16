@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "df92b83d7d1141cd51aabf0dd744bb365d62ae3b",
+    "commit": "fd68202c82739dbc3406c3c0fe2c99203d047ae0",
     "commit_date": "2026-10-15",
     "version": "0.46.0",
-    "analyzed_on": "2026-10-15",
+    "analyzed_on": "2026-10-16",
 }
 
 TOPICS = [
@@ -849,8 +849,8 @@ COMMANDS = [
         "command": 'config gc',
         "category": 'Configuration',
         "tier": 'B',
-        "summary": 'Find and optionally delete repo-level config directories whose repo path no longer exists.',
-        "source": ('cli/src/commands/config/gc.rs', 36),
+        "summary": 'Find and optionally delete repo and workspace config directories whose paths no longer exist.',
+        "source": ('cli/src/commands/config/gc.rs', 35),
     },
     {
         "command": 'config get',
