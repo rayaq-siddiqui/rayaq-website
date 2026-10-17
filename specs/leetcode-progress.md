@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-14 (eighth audit run). All 58 pages are ready and the queue is empty. This audit found and fixed one gap (stale README wording). This session also had no `update_trigger` tool, so the schedule is still every 5 hours (see Known gaps). **The next run is an audit run** (spec §8.1). Before any other work, it moves this Routine to weekly: `update_trigger` on `trig_01XkmtUwbN1iL5esk5KeGRPa` with `CRON_TZ=America/Los_Angeles 14 4 * * 2`.
+**Last updated:** 2026-10-17 (ninth audit run). All 58 pages are ready and the queue is empty. This audit found and fixed one gap (two problem insights that described an incomplete algorithm). This session also had no `update_trigger` tool, so the schedule may still be every 5 hours (see Known gaps). **The next run is an audit run** (spec §8.1). Before any other work, it moves this Routine to weekly: `update_trigger` on `trig_01XkmtUwbN1iL5esk5KeGRPa` with `CRON_TZ=America/Los_Angeles 14 4 * * 2`.
 
 ## The Routine
 
@@ -187,7 +187,7 @@ build once research is done.
   recorded the request had no `update_trigger` tool. The next run calls `update_trigger` on
   `trig_01XkmtUwbN1iL5esk5KeGRPa` with `CRON_TZ=America/Los_Angeles 14 4 * * 2` and clears this
   gap. If it can't, the owner can change the schedule by hand under the Routine's settings at
-  claude.ai/code. The seventh and eighth audits' sessions had no `update_trigger` tool either.
+  claude.ai/code. The seventh, eighth and ninth audits' sessions had no `update_trigger` tool either.
 
 ## Run log
 
@@ -511,3 +511,21 @@ helpers changed. Coverage is unchanged at 100% (Blind 75 75/75, Grind 169 169/16
 150/150, NeetCode 250 250/250). pytest green; every ready page returns 200 and the phone check
 passed on `/`, `/leetcode` and every ready page. This session had no `update_trigger` tool, so the
 schedule is still every 5 hours. Next: another audit run, which moves the schedule first.
+
+### 2026-10-17 — audit run (ninth)
+
+Ninth audit run. Checked every SVG's accessibility markup (`role="img"`, `<title>` first, `<desc>`,
+`viewBox`), duplicate ids, table headers, hard-coded colours in templates and `leetcode.css`, every
+`leetcode.com` link's slug against its title, `PROBLEMS` consistency (unique numbers and slugs, slugs
+matching titles, valid `patterns`), original papers in References, prose in Connections, and the
+title, slug and difficulty of all 169 Grind problems against open-minded13's Grind 169 README (all
+match; the README's 227 title is its own typo). Then read all 297 insights. One gap: two insights
+described an algorithm that fails on some inputs. 236 Lowest Common Ancestor of a Binary Tree said
+the answer is the first node with a hit from both sides, which misses the case where p is an
+ancestor of q (the `tree-dfs` signals row said the same); 678 Valid Parenthesis String never said the
+low count must end at zero, so it would accept `(((`. Both insights and the signals row now cover
+those cases, and a new test runs the page's own `lowest_common_ancestor` on the ancestor case. No
+helpers changed. Coverage is unchanged at 100% (Blind 75 75/75, Grind 169 169/169, NeetCode 150
+150/150, NeetCode 250 250/250). pytest green (1035 passed); every ready page returns 200 and the
+phone check passed on `/`, `/leetcode` and every ready page. This session had no `update_trigger`
+tool. Next: another audit run, which moves the schedule first.
