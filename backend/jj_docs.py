@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "fd68202c82739dbc3406c3c0fe2c99203d047ae0",
-    "commit_date": "2026-10-15",
+    "commit": "8555ddeb8db13661d1d4759ab88f2f0cc782986f",
+    "commit_date": "2026-10-17",
     "version": "0.46.0",
-    "analyzed_on": "2026-10-16",
+    "analyzed_on": "2026-10-17",
 }
 
 TOPICS = [
@@ -941,7 +941,7 @@ COMMANDS = [
         "category": 'Utilities and internals',
         "tier": 'C',
         "summary": 'Run backend-dependent garbage collection.',
-        "source": ('cli/src/commands/util/gc.rs', 31),
+        "source": ('cli/src/commands/util/gc.rs', 32),
     },
     {
         "command": 'util install-man-pages',
