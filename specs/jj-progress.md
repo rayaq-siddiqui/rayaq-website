@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-16 (sixtieth run): bumped the pin `df92b83..fd68202` (0.46.0). **The
+**Last updated:** 2026-10-17 (sixty-first run): bumped the pin `fd68202..8555dde` (0.46.0). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@fd68202c82739dbc3406c3c0fe2c99203d047ae0` (committed 2026-10-15, version
-0.46.0), analyzed 2026-10-16. Held in `jj_docs.UPSTREAM`. Previous pin: `df92b83`.
+`jj-vcs/jj@8555ddeb8db13661d1d4759ab88f2f0cc782986f` (committed 2026-10-17, version
+0.46.0), analyzed 2026-10-17. Held in `jj_docs.UPSTREAM`. Previous pin: `fd68202`.
 
 ## §10 acceptance criteria
 
@@ -31,24 +31,23 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to sixtieth runs: pin bumped).
+      run: pin bumped; fiftieth to sixty-first runs: pin bumped).
 
-## Sixtieth run (2026-10-16)
+## Sixty-first run (2026-10-17)
 
-- `b5d9fcd` maintenance `df92b83..fd68202`. `config gc` now also collects workspace config
-  directories (`jj/workspaces`): config-gc covers both roots, `find_configs_with_missing_paths`,
-  `remove_config_dir`, one "Delete N missing config directories?" prompt, the "No repo configs
-  directory found" error and the two-list example; registry summary regenerated. chrono to jiff:
-  `RevsetParseContext` carries the current time (revsets). 85 other pages remapped only; protos
-  unchanged. Link check: 121 pages, 5,525 links, 0 bad. 390px OK.
+- `826e666` maintenance `fd68202..8555dde`. `Backend::gc` is back as an async trait method that
+  `jj util gc` calls with the index's heads (Git does the work, simple is a no-op, secret
+  delegates): util-gc (diagram box, new touchpoint row, root-filter link), backends (trait row,
+  §6 wording, `GitBackend` impl range), operations. Arg parsing moved to `cli/src/cli_args.rs`
+  (cli, version links). Timestamps serialize `+00:00` not `Z`: no wording affected. Registry: util
+  gc line. 81 pages remapped; protos unchanged. Links: 121 pages, 5,531, 0 bad. 390px OK.
 
-## Fifty-sixth to fifty-ninth runs (2026-10-12 to 2026-10-15)
+## Fifty-sixth to sixtieth runs (2026-10-12 to 2026-10-16)
 
-- `ac97ee5` `0558176..86b7e2e`: eleven modules moved to `core/src`; `git-fetch` `--refmap=`.
-  `970fe53` `86b7e2e..1776665`: `git.sign-on-push`, `ConflictArityMismatchError`.
-  `ca92ab5` `1776665..9031d0a`: concurrent diff walk on `core/src/tree_walk.rs`; `trees` §5 rewritten.
-  `148c9e1` `9031d0a..df92b83`: concurrent tree-read streams (file pages, resolve, status, trees);
-  `git fetch` into private `refs/jj/remote-*`; op store sorted `head_ids`.
+- `b5d9fcd` `df92b83..fd68202`: `config gc` collects workspace config dirs too; revsets jiff.
+
+- `ac97ee5` `0558176..86b7e2e` (modules to `core/src`), `970fe53` `..1776665` (sign-on-push),
+  `ca92ab5` `..9031d0a` (concurrent diff walk), `148c9e1` `..df92b83` (tree-read streams).
 
 ## Fifty-third to fifty-fifth runs (2026-10-09 to 2026-10-11)
 
