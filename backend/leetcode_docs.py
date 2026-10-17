@@ -1759,7 +1759,7 @@ PROBLEMS = [
         "lists": ["grind-169"],
         "home": "tree-dfs",
         "patterns": [],
-        "insight": "Each subtree reports whether it contains p or q, and the first node where both sides report a hit is the answer.",
+        "insight": "Each subtree returns p or q if it holds one, and the answer is the first node that gets a hit from both sides, or p or q itself when the other lies below it.",
     },
     {
         "number": 238,
@@ -2499,7 +2499,7 @@ PROBLEMS = [
         "lists": ["neetcode-150", "neetcode-250"],
         "home": "greedy",
         "patterns": [],
-        "insight": "Track the lowest and highest number of open brackets possible, with a star widening the range, and fail if the high count drops below zero.",
+        "insight": "Track the lowest and highest number of open brackets possible, with a star widening the range; fail if the high count drops below zero, and accept only if the low count can end at zero.",
     },
     {
         "number": 680,

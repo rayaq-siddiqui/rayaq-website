@@ -2034,6 +2034,18 @@ def test_linked_list_design_copy_random_list_code_copies_deeply():
     assert [None if copy.random is None else copies.index(copy.random) for copy in copies] == [None, 0, 4, 2, 0]
 
 
+def test_lowest_common_ancestor_code_and_insight_cover_a_target_above_the_other():
+    code = run_page_code("tree-dfs")
+    node, lca = code["TreeNode"], code["lowest_common_ancestor"]
+    q = node(4)
+    p = node(5, node(6), node(2, node(7), q))
+    root = node(3, p, node(1, node(0), node(8)))
+    assert lca(root, p, q) is p
+    assert lca(root, q, root.right.left) is root
+    insight = next(problem["insight"] for problem in leetcode_docs.PROBLEMS if problem["number"] == 236)
+    assert "p or q itself when the other lies below it" in insight
+
+
 def test_prose_tracks_the_values_it_describes():
     def text(slug):
         html = app_module.app.test_client().get(f"/leetcode/{slug}").get_data(as_text=True)
