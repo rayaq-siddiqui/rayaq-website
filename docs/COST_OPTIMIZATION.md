@@ -4,24 +4,18 @@ Maintained by the weekly "rayaq.ca — weekly server cost optimization" Routine.
 each run; **Considered and rejected** carries forward. Scope is application code only —
 server configuration (Caddy, gunicorn, systemd, the VM) is out of scope by the owner's choice.
 
-## 2026-10-11
+## 2026-10-18
 
-**Verdict:** one small, measured win landed. The page cache now holds encoded bytes, which
-halves its memory and trims per-request time. The weather outage item still needs the owner.
-`/assembly-agents` and `showcase.json` no longer exist in the app, so the routine's smoke
-list gets a 404 there. That is expected.
+**Verdict:** no change landed. The hot paths haven't changed since last week, and nothing
+measured is big enough to justify new code. The weather outage item still needs the owner.
+`/assembly-agents` and `showcase.json` still don't exist in the app, so the smoke list's
+404 there is expected.
 
 ### Landed
 
-- `13982b3` **perf: keep cached reference pages as utf-8 bytes.** The six reference sections
-  now have 240 ready pages, about 10.8 MB of HTML. Every page holds some non-ASCII text, so
-  CPython stored each cached str at 2 bytes per character (21.6 MB), and Flask re-encoded it
-  on every response. The cache now keeps the UTF-8 bytes: **21.6 → 10.8 MB** resident in
-  the single worker on the 1 GB VM. The saving keeps growing as the ml-models and leetcode
-  Routines add pages. Warm p50 over 2000 requests: `/jj` 0.139 → 0.114 ms, `/jj/fix`
-  0.144 → 0.119, `/ml-models/cnns` 0.150 → 0.120, `/leetcode` 0.134 → 0.114. Status,
-  headers and body sha256 match before and after for all 240 pages plus `/`, `/resume`,
-  `/health` and two 404s, each fetched twice.
+Nothing this run. Last week's `13982b3` (cached reference pages kept as UTF-8 bytes) is
+still the most recent optimization. With 302 ready pages the cache now holds **15.2 MB**
+of bytes; as a str cache it would hold about 30 MB.
 
 ### Needs the owner
 
@@ -32,9 +26,18 @@ list gets a 404 there. That is expected.
    request (it accepts comma-separated coordinates), cutting outbound calls per refresh
    from 4 to 1. Either changes what visitors see during an outage, and the second changes
    the `_fetch_weather` test seam.
+2. **Stray screenshots in `backend/`.** `tf_arch.png`, `tf_attn.png`, `tf_calc.png` and
+   `tf_tier.png` (231 KB) came in with `e476f70`. Nothing references them and Flask doesn't
+   serve `backend/`, so they cost nothing at runtime, only clone and pull size. They came
+   from another Routine's commit, so they're left for the owner to delete.
 
 ### Considered and rejected
 
+- **Caching the formatted weather rows.** On a warm cache, `get_weather_for_cities`
+  re-parses and re-formats 4 × 24 hourly timestamps on every view: 125 µs of `/weather`'s
+  0.44 ms p50. Caching the rows next to the raw fetch would save ~0.12 ms per view, but it
+  adds state that has to expire with the 1-hour TTL. At this site's traffic it isn't worth
+  it (same call as caching `/` and `/resume`).
 - **Minifying the reference pages' HTML.** It would save whitespace, but the routine
   requires their output to stay byte-identical, and compression in transit is server
   config (out of scope).
@@ -53,4 +56,4 @@ list gets a 404 there. That is expected.
 ### Already optimal
 
 Versioned static assets with year-long caching, the per-city weather TTL cache, and the
-reference page cache (now bytes, bounded by the number of ready pages).
+reference page cache (bytes, bounded by the number of ready pages, 302 today).
