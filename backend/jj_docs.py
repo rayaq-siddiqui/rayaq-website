@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "8555ddeb8db13661d1d4759ab88f2f0cc782986f",
-    "commit_date": "2026-10-17",
+    "commit": "4eb41bedcb07869476b6d56000b5c1ef7fda1c86",
+    "commit_date": "2026-10-18",
     "version": "0.46.0",
-    "analyzed_on": "2026-10-17",
+    "analyzed_on": "2026-10-18",
 }
 
 TOPICS = [
@@ -68,6 +68,7 @@ TOPICS = [
             "core/src/backend.rs",
             "core/src/merged_tree.rs",
             "core/src/merged_tree_builder.rs",
+            "core/src/tree_rewriter.rs",
             "core/src/tree.rs",
             "core/src/copies.rs",
             "docs/design/copy-tracking.md",
@@ -801,7 +802,7 @@ COMMANDS = [
         "category": 'Workspaces',
         "tier": 'A',
         "summary": 'Remove a workspace and its working-copy files from disk',
-        "source": ('cli/src/commands/workspace/remove.rs', 43),
+        "source": ('cli/src/commands/workspace/remove.rs', 47),
     },
     {
         "command": 'workspace rename',
@@ -1853,6 +1854,7 @@ COMMAND_PAGE_OVERRIDES = {
             "lib/src/rewrite.rs",
             "core/src/merged_tree.rs",
             "core/src/filtered_tree_writer.rs",
+            "core/src/tree_rewriter.rs",
             "lib/src/repo.rs",
             "cli/src/cli_util.rs",
         ],
