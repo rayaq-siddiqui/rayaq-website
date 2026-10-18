@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-17 (sixty-first run): bumped the pin `fd68202..8555dde` (0.46.0). **The
+**Last updated:** 2026-10-18 (sixty-second run): bumped the pin `8555dde..4eb41be` (0.46.0). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@8555ddeb8db13661d1d4759ab88f2f0cc782986f` (committed 2026-10-17, version
-0.46.0), analyzed 2026-10-17. Held in `jj_docs.UPSTREAM`. Previous pin: `fd68202`.
+`jj-vcs/jj@4eb41bedcb07869476b6d56000b5c1ef7fda1c86` (committed 2026-10-18, version
+0.46.0), analyzed 2026-10-18. Held in `jj_docs.UPSTREAM`. Previous pin: `8555dde`.
 
 ## §10 acceptance criteria
 
@@ -31,22 +31,23 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to sixty-first runs: pin bumped).
+      run: pin bumped; fiftieth to sixty-second runs: pin bumped).
 
-## Sixty-first run (2026-10-17)
+## Sixty-second run (2026-10-18)
 
-- `826e666` maintenance `fd68202..8555dde`. `Backend::gc` is back as an async trait method that
-  `jj util gc` calls with the index's heads (Git does the work, simple is a no-op, secret
-  delegates): util-gc (diagram box, new touchpoint row, root-filter link), backends (trait row,
-  §6 wording, `GitBackend` impl range), operations. Arg parsing moved to `cli/src/cli_args.rs`
-  (cli, version links). Timestamps serialize `+00:00` not `Z`: no wording affected. Registry: util
-  gc line. 81 pages remapped; protos unchanged. Links: 121 pages, 5,531, 0 bad. 390px OK.
+- `1a15c00` maintenance `8555dde..4eb41be`. `TreeBuilder` removed; `MergedTreeBuilder` and
+  `FilteredTreeWriter` use the new shared `core/src/tree_rewriter.rs` (trees builder paragraph,
+  restore link; `tree_rewriter.rs` added to trees and restore sources). Snapshot helpers moved to
+  `WorkspaceCommandEnvironment` (file-track, file-untrack, run, status links). `workspace remove`
+  now writes a hidden `SNAPSHOT OF REMOVED WORKSPACE` commit, removes stale workspaces and refuses
+  untracked files: page, diagrams, error row, example rewritten. Registry: workspace remove line.
+  72 pages remapped (73 files, over the 10-file guideline as before); protos unchanged. Links: 121
+  pages, 5,542, 0 bad. 390px OK.
 
-## Fifty-sixth to sixtieth runs (2026-10-12 to 2026-10-16)
+## Fifty-sixth to sixty-first runs (2026-10-12 to 2026-10-17)
 
-- `b5d9fcd` `df92b83..fd68202`: `config gc` collects workspace config dirs too; revsets jiff.
-
-- `ac97ee5` `0558176..86b7e2e` (modules to `core/src`), `970fe53` `..1776665` (sign-on-push),
+- `826e666` `..8555dde` (`Backend::gc`, `cli_args.rs`), `b5d9fcd` `df92b83..fd68202` (config gc),
+  `ac97ee5` `0558176..86b7e2e` (modules to `core/src`), `970fe53` `..1776665` (sign-on-push),
   `ca92ab5` `..9031d0a` (concurrent diff walk), `148c9e1` `..df92b83` (tree-read streams).
 
 ## Fifty-third to fifty-fifth runs (2026-10-09 to 2026-10-11)
@@ -129,8 +130,8 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
 
 ## Open gaps / questions for the owner
 
-- **`tree_builder` fix in `df92b83`.** Upstream fixed a `TreeBuilder` bug in this range; no page
-  describes that code path at that depth, so only ranges moved.
+- **`tree_rewriter.rs` depth.** The trees page summarizes the shared rewriter (visitor, dedup,
+  concurrency limit) but no page walks `rewrite_trees` step by step; add one only if asked.
 - **`jj util diff --tool`.** `show_diff_bytes` has a TODO and prints nothing for a tool format; the
   page says so rather than describing tool output.
 - **`jj debug object` help.** The enum's doc comment, "Show information about an operation and its
