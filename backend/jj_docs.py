@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "4eb41bedcb07869476b6d56000b5c1ef7fda1c86",
-    "commit_date": "2026-10-18",
+    "commit": "6bfd0a7d85e908e907f20a9b09b701edba68a11c",
+    "commit_date": "2026-10-19",
     "version": "0.46.0",
-    "analyzed_on": "2026-10-18",
+    "analyzed_on": "2026-10-19",
 }
 
 TOPICS = [
@@ -382,7 +382,7 @@ COMMANDS = [
         "category": 'Content and conflicts',
         "tier": 'A',
         "summary": 'Run a command across a set of revisions.',
-        "source": ('cli/src/commands/run.rs', 645),
+        "source": ('cli/src/commands/run.rs', 649),
     },
     {
         "command": 'resolve',
