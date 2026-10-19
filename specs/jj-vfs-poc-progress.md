@@ -3,13 +3,13 @@
 Running log for the daily jj-vfs-poc architecture Routine. Read this first, update it last.
 The contract is `specs/jj-vfs-poc.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-12 (fifth run, first weekly maintenance run). Upstream unchanged
+**Last updated:** 2026-10-19 (sixth run, weekly maintenance). Upstream unchanged
 since the pin; only the analyzed date moved. Every §5 page is live; the Routine is maintenance only.
 
 ## Upstream pin
 
 `jj-vcs/jj-vfs-poc@37b8f8625556778f5ce41cbb2d5220bcea245675` (committed 2026-09-03, crate
-`jjfsd` 0.1.0, `jj-lib` 0.43.0), analyzed 2026-10-12. Held in `jj_vfs_docs.UPSTREAM`.
+`jjfsd` 0.1.0, `jj-lib` 0.43.0), analyzed 2026-10-19. Held in `jj_vfs_docs.UPSTREAM`.
 jj-lib links point at the `v0.43.0` tag of `jj-vcs/jj`.
 
 ## §10 acceptance criteria
@@ -25,8 +25,14 @@ jj-lib links point at the `v0.43.0` tag of `jj-vcs/jj`.
 - [x] Homepage card links to `/jj-vfs-poc`.
 - [x] Mobile at 390px: no horizontal page scroll on `/jj-vfs-poc` and every ready page (checked
       in headless Chromium this run).
-- [x] The Routine has run in maintenance mode (second, third and fifth runs: no relevant upstream
+- [x] The Routine has run in maintenance mode (second, third, fifth and sixth runs: no relevant upstream
       change).
+
+## Sixth run (2026-10-19)
+
+- Upstream `HEAD` is still `37b8f86` (2026-09-03): no new commits, so no source set, `FUSE_OPS` or
+  jj-lib version changed. `analyzed_on` bumped to 2026-10-19 in the commit before this record.
+- Suite green (1035 tests); `/health`, `/`, `/jj`, `/jj-vfs-poc` and all 7 pages returned 200.
 
 ## Fifth run (2026-10-12)
 
