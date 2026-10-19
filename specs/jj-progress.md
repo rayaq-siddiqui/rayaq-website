@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-18 (sixty-second run): bumped the pin `8555dde..4eb41be` (0.46.0). **The
+**Last updated:** 2026-10-19 (sixty-third run): bumped the pin `4eb41be..6bfd0a7` (0.46.0). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@4eb41bedcb07869476b6d56000b5c1ef7fda1c86` (committed 2026-10-18, version
-0.46.0), analyzed 2026-10-18. Held in `jj_docs.UPSTREAM`. Previous pin: `8555dde`.
+`jj-vcs/jj@6bfd0a7d85e908e907f20a9b09b701edba68a11c` (committed 2026-10-19, version
+0.46.0), analyzed 2026-10-19. Held in `jj_docs.UPSTREAM`. Previous pin: `4eb41be`.
 
 ## §10 acceptance criteria
 
@@ -31,21 +31,20 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to sixty-second runs: pin bumped).
+      run: pin bumped; fiftieth to sixty-third runs: pin bumped).
 
-## Sixty-second run (2026-10-18)
+## Sixty-third run (2026-10-19)
 
-- `1a15c00` maintenance `8555dde..4eb41be`. `TreeBuilder` removed; `MergedTreeBuilder` and
-  `FilteredTreeWriter` use the new shared `core/src/tree_rewriter.rs` (trees builder paragraph,
-  restore link; `tree_rewriter.rs` added to trees and restore sources). Snapshot helpers moved to
-  `WorkspaceCommandEnvironment` (file-track, file-untrack, run, status links). `workspace remove`
-  now writes a hidden `SNAPSHOT OF REMOVED WORKSPACE` commit, removes stale workspaces and refuses
-  untracked files: page, diagrams, error row, example rewritten. Registry: workspace remove line.
-  72 pages remapped (73 files, over the 10-file guideline as before); protos unchanged. Links: 121
-  pages, 5,542, 0 bad. 390px OK.
+- `5a850df` maintenance `4eb41be..6bfd0a7` (two commits). `Revset::is_empty`/`count_estimate`
+  are now async (revsets page notes it); `TreeState::check_out`/`set_sparse_patterns` are now
+  async, with `.await` at every caller. 70 pages remapped, and ranges ending on edited lines
+  fixed by hand (file-edit, operation-diff, sparse-*). Registry: run line. Protos unchanged.
+  Links: 121 pages, 5,542, 0 bad. pytest 1035 passed; smoke test 123 routes OK.
 
-## Fifty-sixth to sixty-first runs (2026-10-12 to 2026-10-17)
+## Fifty-sixth to sixty-second runs (2026-10-12 to 2026-10-18)
 
+- `1a15c00` `8555dde..4eb41be` (`TreeBuilder` removed for `tree_rewriter.rs`; workspace remove
+  writes a hidden snapshot commit and refuses untracked files).
 - `826e666` `..8555dde` (`Backend::gc`, `cli_args.rs`), `b5d9fcd` `df92b83..fd68202` (config gc),
   `ac97ee5` `0558176..86b7e2e` (modules to `core/src`), `970fe53` `..1776665` (sign-on-push),
   `ca92ab5` `..9031d0a` (concurrent diff walk), `148c9e1` `..df92b83` (tree-read streams).
