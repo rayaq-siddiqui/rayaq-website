@@ -9,6 +9,7 @@ import jj_cloud_docs
 import leetcode_docs
 import ml_models_docs
 import rendered_pages
+import rml_docs
 import resume_data
 import static_assets
 from weather import get_weather_for_cities
@@ -102,6 +103,15 @@ def jj_cloud(slug):
     html = rendered_pages.get(
         ("jj-commit-cloud-poc", slug), lambda: jj_cloud_docs.render(slug, render_template)
     )
+    if html is None:
+        abort(404)
+    return html
+
+
+@app.route("/rml", defaults={"slug": None})
+@app.route("/rml/<slug>")
+def rml(slug):
+    html = rendered_pages.get(("rml", slug), lambda: rml_docs.render(slug, render_template))
     if html is None:
         abort(404)
     return html
