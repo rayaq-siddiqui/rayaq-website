@@ -3,7 +3,7 @@
 Running log for the rml build loop and the weekly Routine. Read this first, update it last.
 The contract is `specs/rml.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-20 (first run). Specs written; the scaffold and `tensors` are next.
+**Last updated:** 2026-10-20 (first run). Scaffold and `tensors` shipped; `runtime` is next.
 
 ## Upstream pin
 
@@ -18,15 +18,15 @@ links 404 until it is public.
 - [ ] Every §5 page exists, meets its "Must cover" column, and is marked ready.
 - [ ] `decoder` meets §8 with at least two SVG diagrams.
 - [ ] Every source link is pinned; §7.5 tests exist and pass.
-- [ ] Homepage card links to `/rml`.
-- [ ] Mobile at 390px: no horizontal page scroll.
+- [x] Homepage card links to `/rml`.
+- [x] Mobile at 390px: no horizontal page scroll (`/rml`, `/rml/tensors`; rerun per page).
 - [ ] The weekly Routine has run at least once and cloned rml.
 
 ## Queue
 
-1. Scaffold (module, routes, layout, index with §6 diagram, CSS, tests, homepage card,
-   `AGENTS.md` notes)
-2. `tensors`
+1. ~~Scaffold (module, routes, layout, index with §6 diagram, CSS, tests, homepage card,
+   `AGENTS.md` notes)~~
+2. ~~`tensors`~~
 3. `runtime`
 4. `linalg`
 5. `random`
@@ -46,6 +46,12 @@ links 404 until it is public.
 19. `examples`
 20. `testing`
 21. `graph-ir`
+
+## Log
+
+- 2026-10-20 — `00e22a1` spec and progress log; `8242e96` scaffold; `3155c71` `AGENTS.md`
+  notes; `d49afa8` `tensors` page, plus `rml_docs.page_link`, which renders plain text for
+  pages not yet ready so cross-links never 404.
 
 ## Deliberate deviations
 
