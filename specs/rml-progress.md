@@ -3,7 +3,7 @@
 Running log for the rml build loop and the weekly Routine. Read this first, update it last.
 The contract is `specs/rml.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-20 (first run). Scaffold, `tensors` and `runtime` shipped; `linalg` is next.
+**Last updated:** 2026-10-20 (first run). Scaffold, `tensors`, `runtime` and `linalg` shipped; `random` is next.
 
 ## Upstream pin
 
@@ -19,7 +19,7 @@ links 404 until it is public.
 - [ ] `decoder` meets §8 with at least two SVG diagrams.
 - [ ] Every source link is pinned; §7.5 tests exist and pass.
 - [x] Homepage card links to `/rml`.
-- [x] Mobile at 390px: no horizontal page scroll (`/rml`, `/rml/tensors`, `/rml/runtime`; rerun per page).
+- [x] Mobile at 390px: no horizontal page scroll (`/rml`, `/rml/tensors`, `/rml/runtime`, `/rml/linalg`; rerun per page).
 - [ ] The weekly Routine has run at least once and cloned rml.
 
 ## Queue
@@ -28,7 +28,7 @@ links 404 until it is public.
    `AGENTS.md` notes)~~
 2. ~~`tensors`~~
 3. ~~`runtime`~~
-4. `linalg`
+4. ~~`linalg`~~
 5. `random`
 6. `autograd`
 7. `nn`
@@ -58,6 +58,8 @@ links 404 until it is public.
   notes; `d49afa8` `tensors` page, plus `rml_docs.page_link`, which renders plain text for
   pages not yet ready so cross-links never 404.
 - 2026-10-20 — `032d685` `runtime` page (errors, allocation, arena, thread pool).
+- 2026-10-20 — `9b1b305` `linalg` page (Matrix, MatMul, blocked GEMM and benchmark, LU, QR,
+  Cholesky, Jacobi eigen and SVD, norms). No benchmark numbers are committed upstream, so none are quoted.
 
 ## Deliberate deviations
 
