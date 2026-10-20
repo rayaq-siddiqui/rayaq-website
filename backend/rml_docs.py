@@ -95,7 +95,7 @@ PAGES = [
         "summary": "Matrix, matmul and the blocked GEMM kernel, and the LU, QR, Cholesky, "
         "eigen and SVD decompositions plus norms.",
         "sources": ["rml/linalg"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "random",

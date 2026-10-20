@@ -1,0 +1,459 @@
+{% set d = "rml/linalg/" %}
+<header class="jj-header">
+  <h1>Linear algebra</h1>
+  <p class="tagline">
+    <code>rml/linalg</code> holds the matrix product every layer runs on and the classic factorizations:
+    LU, QR, Cholesky, a symmetric eigensolver, the SVD, and the norms built on it. The product is a blocked,
+    packed, threaded GEMM in f32. The factorizations copy into a plain double-precision <code>Matrix</code>.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: <code>MatMul</code> follows NumPy's rules (batch axes broadcast, vectors gain and lose an axis)
+  and calls <code>Gemm</code>, a Goto/BLIS-style kernel. It packs panels of A and B, keeps a 6×8 (SSE) or
+  8×12 (NEON) tile of C in vector registers, and splits disjoint tiles of C across the thread pool.
+  <code>GemmRef</code> is the scalar reference it is tested against. The decompositions work in
+  <code>double</code> on a <code>Matrix</code> and convert back to f32 tensors. LU uses partial pivoting, QR
+  uses Householder reflections, Cholesky needs no pivoting, and eigen and SVD use Jacobi rotations. Norms,
+  condition number, rank and pseudo-inverse are all read off the SVD.
+</p>
+
+<p>
+  Each header links to the /ml-models page it builds on:
+  {{ ml('matrix-multiplication', 'matrix multiplication') }},
+  {{ ml('matrix-decompositions', 'matrix decompositions') }},
+  {{ ml('linear-algebra-toolkit', 'the linear algebra toolkit') }} and
+  {{ ml('vectors-and-dot-products', 'vectors and dot products') }}. The tensors these functions take and
+  return are described on {{ link('tensors', 'Tensors and dtypes') }}. The thread pool that runs
+  <code>Gemm</code> is on {{ link('runtime', 'Errors, memory and threads', '#thread-pool') }}.
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 300" role="img" aria-labelledby="la-map-title la-map-desc">
+    <title id="la-map-title">Which function to call</title>
+    <desc id="la-map-desc">A map from the kind of problem to the rml/linalg function that solves it. Products go
+      through MatMul and Gemm. Square systems go through LU, symmetric positive definite systems through Cholesky,
+      overdetermined systems through QR least squares, symmetric spectra through Jacobi eigen, and everything
+      about size and rank through the SVD.</desc>
+    <rect class="d-box" x="20" y="20" width="170" height="44" rx="6"/>
+    <text x="105" y="40" text-anchor="middle">a product A·B</text>
+    <text class="d-muted" x="105" y="56" text-anchor="middle">any batch shape</text>
+    <rect class="d-box" x="20" y="80" width="170" height="44" rx="6"/>
+    <text x="105" y="100" text-anchor="middle">solve A x = b</text>
+    <text class="d-muted" x="105" y="116" text-anchor="middle">A square</text>
+    <rect class="d-box" x="20" y="140" width="170" height="44" rx="6"/>
+    <text x="105" y="160" text-anchor="middle">A symmetric, PD</text>
+    <text class="d-muted" x="105" y="176" text-anchor="middle">covariance, normal eqns</text>
+    <rect class="d-box" x="20" y="200" width="170" height="44" rx="6"/>
+    <text x="105" y="220" text-anchor="middle">fit min ‖A x − b‖</text>
+    <text class="d-muted" x="105" y="236" text-anchor="middle">A tall, full rank</text>
+    <rect class="d-box" x="20" y="260" width="170" height="30" rx="6"/>
+    <text x="105" y="280" text-anchor="middle">A symmetric: spectrum</text>
+
+    {% for y in [42, 102, 162, 222, 275] %}
+    <line class="d-line" x1="190" y1="{{ y }}" x2="250" y2="{{ y }}"/>
+    {% endfor %}
+
+    <rect class="d-box" x="250" y="20" width="160" height="44" rx="6"/>
+    <text x="330" y="40" text-anchor="middle">MatMul → Gemm</text>
+    <text class="d-muted" x="330" y="56" text-anchor="middle">f32, threaded</text>
+    <rect class="d-box" x="250" y="80" width="160" height="44" rx="6"/>
+    <text x="330" y="100" text-anchor="middle">LU, partial pivot</text>
+    <text class="d-muted" x="330" y="116" text-anchor="middle">Solve · Inverse · det</text>
+    <rect class="d-box" x="250" y="140" width="160" height="44" rx="6"/>
+    <text x="330" y="160" text-anchor="middle">Cholesky L Lᵀ</text>
+    <text class="d-muted" x="330" y="176" text-anchor="middle">half LU's work</text>
+    <rect class="d-box" x="250" y="200" width="160" height="44" rx="6"/>
+    <text x="330" y="220" text-anchor="middle">QR, Householder</text>
+    <text class="d-muted" x="330" y="236" text-anchor="middle">LeastSquares</text>
+    <rect class="d-box" x="250" y="260" width="160" height="30" rx="6"/>
+    <text x="330" y="280" text-anchor="middle">Jacobi eigen</text>
+
+    <rect class="d-accent" x="450" y="140" width="140" height="104" rx="6" fill-opacity="0.15"/>
+    <text x="520" y="162" text-anchor="middle">SVD (any shape)</text>
+    <text class="d-muted" x="520" y="182" text-anchor="middle">norms ‖·‖₂ ‖·‖*</text>
+    <text class="d-muted" x="520" y="200" text-anchor="middle">condition number</text>
+    <text class="d-muted" x="520" y="218" text-anchor="middle">rank</text>
+    <text class="d-muted" x="520" y="236" text-anchor="middle">pseudo-inverse</text>
+    <text class="d-muted" x="520" y="120" text-anchor="middle">rank-deficient or wide?</text>
+    <line class="d-line" x1="410" y1="222" x2="450" y2="222"/>
+  </svg>
+  <figcaption>Every box on the right is a public function in <code>rml/linalg</code>. All of them take and return
+    f32 tensors; everything but the product works in double internally.</figcaption>
+</figure>
+
+<h2 id="matrix">Matrix: the double-precision working type</h2>
+
+<p>
+  Tensors are f32, but factorizations lose digits to cancellation, so each decomposition copies its input into
+  a <code>Matrix</code>, works in <code>double</code>, and converts the result back
+  (<a href="{{ src(d ~ 'matrix.h', 4, 11) }}">matrix.h L4–11</a>). <code>Matrix</code> is deliberately plain:
+  row-major <code>std::vector&lt;double&gt;</code>, no views, no expression templates.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Matrix(rows, cols)</code>, <code>Identity(n)</code></td><td>Zeros, or the identity. The constructor checks the dimensions are non-negative.</td><td><a href="{{ src(d ~ 'matrix.cc', 14, 23) }}">matrix.cc L14</a></td></tr>
+      <tr><td><code>FromTensor</code></td><td>Copies an f32 tensor of rank 1 or 2, any strides. A vector becomes one column.</td><td><a href="{{ src(d ~ 'matrix.cc', 25, 35) }}">matrix.cc L25</a></td></tr>
+      <tr><td><code>ToTensor</code>, <code>ColumnToTensor</code></td><td>Back to a contiguous rank-2 tensor, or to rank 1 for a single column (checked).</td><td><a href="{{ src(d ~ 'matrix.cc', 37, 49) }}">matrix.cc L37</a></td></tr>
+      <tr><td><code>operator()(r, c)</code></td><td>Element access, bounds-checked by <code>RML_DCHECK</code> in debug builds.</td><td><a href="{{ src(d ~ 'matrix.h', 41, 48) }}">matrix.h L41</a></td></tr>
+      <tr><td><code>Transposed</code>, <code>MaxAbs</code>, <code>operator*</code></td><td>A copied transpose, the largest |entry| (used to scale tolerances), and a plain i-k-j product.</td><td><a href="{{ src(d ~ 'matrix.cc', 51, 75) }}">matrix.cc L51</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="matmul">MatMul: NumPy semantics</h2>
+
+<p>
+  <a href="{{ src(d ~ 'matmul.h') }}"><code>matmul.h</code></a> follows NumPy's <code>matmul</code>. The last
+  two axes are the matrix axes, and any leading batch axes broadcast against each other
+  (see {{ link('tensors', 'broadcasting', '#broadcasting') }}). A 1-D left operand is treated as a row vector
+  and a 1-D right operand as a column vector, and the added axis is removed from the result. Inputs may be
+  strided, so multiplying by a <code>Transpose</code> view costs no copy.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Function</th><th>Result</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Dot(a, b)</code></td><td>Inner product of two vectors, as a rank-0 tensor, through <code>GemmRef</code>.</td><td><a href="{{ src(d ~ 'matmul.cc', 81, 85) }}">matmul.cc L81</a></td></tr>
+      <tr><td><code>MatMul(a, b)</code></td><td>The batched product on the threaded <code>Gemm</code>.</td><td><a href="{{ src(d ~ 'matmul.cc', 87, 87) }}">matmul.cc L87</a></td></tr>
+      <tr><td><code>MatMulRef(a, b)</code></td><td>The same, on <code>GemmRef</code> with double accumulation: the ground truth in tests.</td><td><a href="{{ src(d ~ 'matmul.cc', 89, 89) }}">matmul.cc L89</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Both run through <code>BatchedMatMul</code>
+  (<a href="{{ src(d ~ 'matmul.cc', 32, 77) }}">matmul.cc L32–77</a>). It checks f32 and the inner
+  dimension, unsqueezes vector operands, broadcasts the batch shapes, and allocates the output. Then
+  <code>internal::ForEachRow&lt;3&gt;</code> walks every batch index with broadcast strides and builds a
+  <code>MatrixView</code> for each operand straight from the tensor's strides, so a broadcast operand is read
+  in place rather than copied. Finally the added vector axes are squeezed away.
+</p>
+
+<h2 id="gemm">GEMM</h2>
+
+<p>
+  <a href="{{ src(d ~ 'gemm.h') }}"><code>gemm.h</code></a> computes C = α·A·B + β·C on raw f32 memory.
+  Operands are <code>MatrixView</code>s: a pointer, a shape, and a row and column stride. Swapping the strides
+  is a transpose, so <code>Transposed()</code> is free. When β is 0, C is overwritten without being read, so it
+  may start as garbage or NaN. A mismatched inner dimension is a <code>RML_CHECK</code> failure.
+</p>
+
+<h3 id="gemm-ref">GemmRef</h3>
+
+<p>
+  The reference (<a href="{{ src(d ~ 'gemm.cc', 29, 42) }}">gemm.cc L29–42</a>) is the textbook triple loop.
+  It accumulates each dot product in <code>double</code> and then applies α and β. It is slow and exact
+  enough to test against.
+</p>
+
+<h3 id="blocked-gemm">The blocked kernel</h3>
+
+<p>
+  <code>Gemm</code> follows the Goto/BLIS scheme, which the comment at
+  <a href="{{ src(d ~ 'gemm.cc', 44, 61) }}">gemm.cc L44–61</a> lays out. C is cut into kMc×kNc blocks and
+  the shared dimension k into kKc slices. Each block of A is packed into kMr-row panels and each slice of B
+  into kNr-column panels. Both are laid out in the order the micro-kernel reads them, and zero-padded at the
+  edges so the kernel never branches on a partial tile.
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 390" role="img" aria-labelledby="la-gemm-title la-gemm-desc">
+    <title id="la-gemm-title">How Gemm blocks the product</title>
+    <desc id="la-gemm-desc">B's k-slice sits above C and A's k-slice to the left of C. One kMc by kNc block of C is
+      highlighted, with the A rows and B columns that feed it. Inside, one kMr by kNr micro-tile of C is held in
+      registers, fed by one packed A panel of kMr rows and one packed B panel of kNr columns.</desc>
+    <text class="d-muted" x="405" y="22" text-anchor="middle">B: one k-slice (kKc × n)</text>
+    <rect class="d-box" x="250" y="30" width="310" height="80"/>
+    <rect class="d-box" x="250" y="30" width="180" height="80" fill-opacity="0.15"/>
+    <rect class="d-accent" x="250" y="30" width="30" height="80"/>
+    <text x="340" y="75" text-anchor="middle">kNc = 192</text>
+    <text class="d-muted" x="574" y="74">kKc</text>
+
+    <text class="d-muted" x="130" y="350" text-anchor="middle">A: one k-slice (m × kKc)</text>
+    <rect class="d-box" x="60" y="130" width="140" height="200"/>
+    <rect class="d-box" x="60" y="130" width="140" height="100" fill-opacity="0.15"/>
+    <rect class="d-accent" x="60" y="130" width="140" height="20"/>
+    <text x="130" y="195" text-anchor="middle">kMc = 96</text>
+    <text class="d-muted" x="130" y="124" text-anchor="middle">kKc = 256</text>
+
+    <rect class="d-box" x="250" y="130" width="310" height="200"/>
+    <rect class="d-box" x="250" y="130" width="180" height="100" fill-opacity="0.15"/>
+    <rect class="d-accent" x="250" y="130" width="30" height="20"/>
+    <text x="340" y="195" text-anchor="middle">one C block</text>
+    <text x="405" y="290" text-anchor="middle">C (m × n)</text>
+    <line class="d-line" x1="280" y1="140" x2="470" y2="140"/>
+    <text x="474" y="144">kMr × kNr tile</text>
+    <text class="d-muted" x="474" y="160">in registers</text>
+
+    <text class="d-muted" x="30" y="370">accent: the A panel and B panel one micro-kernel call reads, and the C tile it updates</text>
+  </svg>
+  <figcaption>One unit of work owns one C block for one k-slice. It packs its A block (96×256 floats, 96 KB,
+    meant to stay in L2) and walks kMr×kNr tiles across it. Each step of the micro-kernel reads one B panel
+    (at most 256×12 floats, 12 KB, meant for L1).</figcaption>
+</figure>
+
+<p>
+  The micro-kernel (<a href="{{ src(d ~ 'gemm.cc', 85, 104) }}">gemm.cc L85–104</a>) holds a kMr×kNr tile
+  of C as kMr·kNr/4 four-float vectors (<code>Vec4</code>, a GCC vector extension, so the same source
+  compiles to SSE or NEON). For each k step it does one rank-1 update: kNr/4 vector loads of B, kMr broadcasts
+  of A, and kMr·kNr/4 multiply-adds. The tile size is chosen to fill the register file
+  (<a href="{{ src(d ~ 'gemm.cc', 66, 77) }}">gemm.cc L66–77</a>):
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Target</th><th>kMr × kNr</th><th>Vector registers</th><th>Budget</th></tr></thead>
+    <tbody>
+      <tr><td>x86-64 (SSE)</td><td>6 × 8</td><td>16</td><td>12 accumulators, 2 B vectors, 1 broadcast</td></tr>
+      <tr><td>aarch64 (NEON)</td><td>8 × 12</td><td>32</td><td>24 accumulators, 3 B vectors, 1–2 broadcasts. Half as many loads per multiply-add.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The packers (<a href="{{ src(d ~ 'gemm.cc', 106, 138) }}">gemm.cc L106–138</a>) copy through the views'
+  strides, which is how transposed operands are handled. <code>PackB</code> takes a <code>memcpy</code> fast
+  path when a panel is full and B's columns are contiguous. <code>StoreTile</code>
+  (<a href="{{ src(d ~ 'gemm.cc', 140, 155) }}">L140–155</a>) writes α·tile plus β·C on the first k-slice,
+  and adds α·tile on every later slice, so β is applied exactly once.
+</p>
+
+<h3 id="gemm-threads">Threading</h3>
+
+<p>
+  <code>Gemm</code> (<a href="{{ src(d ~ 'gemm.cc', 159, 212) }}">gemm.cc L159–212</a>) returns early when
+  m or n is 0, and only scales C by β when k is 0. For each k-slice, two parallel loops run:
+</p>
+
+<ol>
+  <li>B's slice is packed, split by column chunk (<a href="{{ src(d ~ 'gemm.cc', 177, 177) }}">L177</a>).
+    The packed buffer is a <code>std::vector</code> sized for one slice, allocated once per call.</li>
+  <li>The product runs over (row block, column chunk) pairs, which own disjoint tiles of C, so no
+    synchronization is needed (<a href="{{ src(d ~ 'gemm.cc', 183, 186) }}">L183–186</a>). Each pair packs
+    its own A block into a 64-byte-aligned stack buffer, and re-packs only when the row block changes. The
+    cost of re-packing A is 1/kNc of the pair's multiply-adds.</li>
+</ol>
+
+<p>
+  The grain is <code>max(1, 65536 / unit_flops)</code>, where a unit is one block's multiply-adds for this
+  slice. A unit is therefore about 64K multiply-adds at minimum, which keeps small products serial. Because
+  <code>ParallelFor</code>'s chunk boundaries depend only on the range, grain and thread count
+  ({{ link('runtime', 'chunking', '#chunking') }}), and each tile of C is summed by one thread in a fixed
+  order, the result does not change from run to run.
+</p>
+
+<h3 id="benchmark">The benchmark</h3>
+
+<p>
+  <a href="{{ src(d ~ 'gemm_benchmark.cc') }}"><code>gemm_benchmark.cc</code></a> is a Google Benchmark target
+  (<code>rml_cc_benchmark</code> in <a href="{{ src(d ~ 'BUILD.bazel', 55, 61) }}">BUILD.bazel L55</a>).
+  It fills square A and B from a fixed-seed <code>mt19937</code> and reports GFLOP/s, counting 2n³ flops per
+  product (<a href="{{ src(d ~ 'gemm_benchmark.cc', 25, 29) }}">L25–29</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Benchmark</th><th>Sizes n</th><th>Threads</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>BM_GemmRef</code></td><td>64, 128, 256</td><td>1</td><td><a href="{{ src(d ~ 'gemm_benchmark.cc', 31, 40) }}">L31</a></td></tr>
+      <tr><td><code>BM_Gemm</code></td><td>64, 256, 1024</td><td>1, 4 (wall-clock time)</td><td><a href="{{ src(d ~ 'gemm_benchmark.cc', 42, 57) }}">L42</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  No results are committed at the pin, so this page quotes none. Run it with
+  <code>bazel run --config=opt //rml/linalg:gemm_benchmark</code>.
+</p>
+
+<h2 id="lu">LU with partial pivoting</h2>
+
+<p>
+  <a href="{{ src(d ~ 'lu.h', 4, 13) }}"><code>lu.h</code></a> factors P·A = L·U. At each column, the row with
+  the largest |entry| becomes the pivot, so every multiplier in L is at most 1 in magnitude, which keeps
+  rounding error from growing. Once A is factored, each right-hand side costs two triangular solves, O(n²).
+  The determinant is the product of U's diagonal times the sign of the permutation.
+</p>
+
+<p>
+  <code>LuFactor</code> (<a href="{{ src(d ~ 'lu.cc', 18, 50) }}">lu.cc L18–50</a>) always succeeds. It
+  stores the result packed into one matrix, with U on and above the diagonal and L's multipliers below it
+  (<a href="{{ src(d ~ 'lu.h', 26, 32) }}">LuFactors</a>). A pivot no larger than
+  <code>MaxAbs · n · 64 · ε</code> marks the matrix singular, but elimination carries on.
+  <code>LuSolve</code> (<a href="{{ src(d ~ 'lu.cc', 52, 72) }}">L52–72</a>) then returns
+  <code>InvalidArgument</code> for a singular matrix, and <code>Determinant</code> returns 0.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Step on A = [[1, 2], [3, 4]]</th><th>State</th></tr></thead>
+    <tbody>
+      <tr><td>Column 0: the largest |entry| is 3, in row 1</td><td>Swap rows: perm = [1, 0], sign = −1</td></tr>
+      <tr><td>Multiplier for row 1: 1 / 3</td><td>Row 1 becomes [2 − 4/3] = [2/3], stored with 1/3 below the diagonal</td></tr>
+      <tr><td>Result</td><td>L = [[1, 0], [1/3, 1]], U = [[3, 4], [0, 2/3]]</td></tr>
+      <tr><td>Determinant</td><td>−1 · 3 · 2/3 = −2, which matches 1·4 − 2·3</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The tensor API (<a href="{{ src(d ~ 'lu.cc', 74, 115) }}">lu.cc L74–115</a>) is <code>LuDecompose</code>
+  (explicit L, U and the permutation), <code>Determinant</code>, <code>Solve</code> (b of shape [n] or
+  [n, k]) and <code>Inverse</code>. The last two return <code>Expected</code> and propagate the singular
+  error with <code>RML_ASSIGN_OR_RETURN</code>.
+</p>
+
+<h2 id="qr">QR and least squares</h2>
+
+<p>
+  <a href="{{ src(d ~ 'qr.h', 4, 13) }}"><code>qr.h</code></a> computes A = Q·R by Householder reflections.
+  Column j of R is made by one reflection H = I − 2vvᵀ, the mirror that sends the rest of column j onto the
+  first axis without touching earlier columns. Reflections are orthogonal, so they never amplify rounding
+  error. That is why QR, not the normal equations AᵀA·x = Aᵀb (which square the condition number), is the
+  way to fit least squares.
+</p>
+
+<ul>
+  <li><code>QrFactor</code> (<a href="{{ src(d ~ 'qr.cc', 34, 77) }}">qr.cc L34–77</a>) returns the reduced
+    form: Q is m×k with orthonormal columns and R is k×n, with k = min(m, n). Each reflection targets
+    −sign(x₀)·‖x‖, so forming v = x − αe₁ never cancels (<a href="{{ src(d ~ 'qr.cc', 50, 52) }}">L50–52</a>).
+    A zero column is skipped.</li>
+  <li>Q is built by applying the stored reflectors to the first k columns of the identity, in reverse order
+    (<a href="{{ src(d ~ 'qr.cc', 62, 68) }}">L62–68</a>). Each column is then signed so R's diagonal is
+    non-negative, which makes the factorization unique for a full-rank A
+    (<a href="{{ src(d ~ 'qr.cc', 70, 76) }}">L70–76</a>).</li>
+  <li><code>LeastSquares(a, b)</code> (<a href="{{ src(d ~ 'qr.cc', 85, 108) }}">L85–108</a>) returns the x
+    minimizing ‖a·x − b‖₂ by back-substituting R·x = Qᵀb. It returns <code>InvalidArgument</code> when a is
+    wider than tall, or when a diagonal entry of R is no larger than <code>MaxAbs(R) · m · 64 · ε</code>
+    (rank deficient). For those cases, use <code>PseudoInverse</code> (<a href="#norms">below</a>).</li>
+</ul>
+
+<h2 id="cholesky">Cholesky</h2>
+
+<p>
+  A symmetric positive definite matrix factors uniquely as A = L·Lᵀ, a kind of matrix square root
+  (<a href="{{ src(d ~ 'cholesky.h', 4, 12) }}">cholesky.h L4–12</a>). It costs half as much as LU and needs no
+  pivoting. It fails exactly when A is not positive definite, which makes it both the fastest solver for
+  normal equations and covariance matrices and the standard test for definiteness. Only the lower triangle
+  is read.
+</p>
+
+<p>
+  <code>CholeskyFactor</code> (<a href="{{ src(d ~ 'cholesky.cc', 13, 29) }}">cholesky.cc L13–29</a>) fills L
+  column by column. It returns <code>InvalidArgument</code> as soon as a diagonal value is not positive, and
+  the check is written <code>!(diagonal &gt; 0)</code> so a NaN fails it too. <code>CholeskySolve</code>
+  (<a href="{{ src(d ~ 'cholesky.cc', 31, 49) }}">L31–49</a>) solves L·y = b, then Lᵀ·x = y. The tensor
+  wrappers <code>Cholesky</code> and <code>CholeskySolve</code> follow at L51–64.
+</p>
+
+<h2 id="eigen">Symmetric eigendecomposition</h2>
+
+<p>
+  A symmetric A has real eigenvalues and an orthonormal basis of eigenvectors, A = V·diag(w)·Vᵀ.
+  <a href="{{ src(d ~ 'eigen.h', 4, 15) }}"><code>eigen.h</code></a> finds them with the cyclic Jacobi
+  method. Each step picks an off-diagonal pair (p, q) and rotates rows and columns p and q by the angle that
+  zeroes a<sub>pq</sub>. A rotation can refill entries zeroed earlier, but the off-diagonal sum of squares
+  falls with every step, and convergence is quadratic at the end. The product of the rotations is V. The
+  header notes it is slower than tridiagonal QR for large n, but simple and accurate to full relative
+  precision even for tiny eigenvalues.
+</p>
+
+<ul>
+  <li><code>SymmetricEigenFactor</code> (<a href="{{ src(d ~ 'eigen.cc', 32, 95) }}">eigen.cc L32–95</a>)
+    reads only the lower triangle. It sweeps over every pair until the off-diagonal sum of squares is below
+    ε² times the matrix's total, or 100 sweeps (<code>kMaxSweeps</code>) have run.</li>
+  <li>The rotation solves cot 2φ = θ with θ = (a<sub>qq</sub> − a<sub>pp</sub>) / 2a<sub>pq</sub>, taking the
+    smaller root for t = tan φ so |φ| ≤ π/4 (<a href="{{ src(d ~ 'eigen.cc', 51, 56) }}">L51–56</a>).</li>
+  <li>Eigenvalues come back ascending. Each eigenvector is signed so its largest-magnitude entry is
+    positive, which makes the output deterministic (<a href="{{ src(d ~ 'eigen.cc', 79, 93) }}">L79–93</a>).</li>
+</ul>
+
+<p>
+  Worked example: for [[2, 1], [1, 2]], θ = 0, so t = 1 and φ = 45°. One rotation diagonalizes it, giving
+  eigenvalues 1 and 3 with eigenvectors (1, −1)/√2 and (1, 1)/√2. This is the <code>KnownSpectrum</code> test.
+</p>
+
+<h2 id="svd">SVD</h2>
+
+<p>
+  Every m×n matrix factors as A = U·diag(s)·Vᵀ, with s ≥ 0 sorted descending. A rotates (Vᵀ), stretches
+  along the axes (s), and rotates again (U). <a href="{{ src(d ~ 'svd.h', 4, 14) }}"><code>svd.h</code></a>
+  uses one-sided (Hestenes) Jacobi, which orthogonalizes A's columns directly. Rotating columns p and q until
+  they are orthogonal is a Jacobi step on AᵀA without ever forming AᵀA, so no precision is lost to squaring.
+  Once all columns are orthogonal, their norms are the singular values, the normalized columns are U, and the
+  accumulated rotations are V.
+</p>
+
+<ul>
+  <li><code>TallSvd</code> (<a href="{{ src(d ~ 'svd.cc', 61, 118) }}">svd.cc L61–118</a>) sweeps until no
+    pair needs rotating: a pair is skipped once |γ| ≤ ε·√(αβ), where α and β are the columns' squared norms
+    and γ their dot product. It uses the same angle as the symmetric eigensolver.</li>
+  <li>A singular value no larger than <code>s_max · m · ε</code> counts as zero
+    (<a href="{{ src(d ~ 'svd.cc', 98, 98) }}">L98</a>). Its U column cannot be normalized, so
+    <code>CompleteColumn</code> (<a href="{{ src(d ~ 'svd.cc', 38, 59) }}">L38–59</a>) fills it with a unit
+    vector orthogonal to the rest, by Gram-Schmidt on the standard basis. U stays orthonormal even for a
+    rank-deficient A.</li>
+  <li>A wide matrix is handled by factoring its transpose and swapping U and V
+    (<a href="{{ src(d ~ 'svd.cc', 122, 139) }}">L122–139</a>). The result is the reduced SVD with
+    k = min(m, n), and each pair is signed so V's largest-magnitude entry is positive.</li>
+  <li><code>SvdDecompose</code> returns <code>u</code> [m, k], <code>s</code> [k] and <code>vt</code> [k, n];
+    <code>SingularValues</code> returns only s.</li>
+</ul>
+
+<h2 id="norms">Norms, condition number, rank, pseudo-inverse</h2>
+
+<p>
+  <a href="{{ src(d ~ 'norms.h', 4, 9) }}"><code>norms.h</code></a> measures size. The induced matrix norms
+  measure the most a matrix can stretch a vector. The condition number s<sub>max</sub> / s<sub>min</sub>
+  bounds how much relative error in b can grow in the solution of A·x = b.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Function</th><th>Value</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>VectorNorm(x, p)</code></td><td>(Σ|xᵢ|ᵖ)<sup>1/p</sup> over every element, p ≥ 1; p = ∞ gives max |xᵢ|. It divides by the largest entry first, so |x|ᵖ cannot overflow or underflow.</td><td><a href="{{ src('rml/linalg/norms.cc', 25, 41) }}">norms.cc L25</a></td></tr>
+      <tr><td><code>MatrixNorm(a, kFrobenius)</code></td><td>√(Σ a<sub>ij</sub>²), the vector 2-norm of the entries.</td><td rowspan="5"><a href="{{ src('rml/linalg/norms.cc', 43, 74) }}">norms.cc L43</a></td></tr>
+      <tr><td><code>kOne</code> / <code>kInf</code></td><td>The largest column sum / row sum of |a<sub>ij</sub>|.</td></tr>
+      <tr><td><code>kSpectral</code></td><td>The largest singular value.</td></tr>
+      <tr><td><code>kNuclear</code></td><td>The sum of the singular values.</td></tr>
+      <tr><td colspan="2">The kind is the enum <code>MatrixNormKind</code> (<a href="{{ src('rml/linalg/norms.h', 20, 26) }}">norms.h L20</a>); Frobenius is the default.</td></tr>
+      <tr><td><code>ConditionNumber(a)</code></td><td>s<sub>max</sub> / s<sub>min</sub>, or infinity when s<sub>min</sub> is 0.</td><td><a href="{{ src('rml/linalg/norms.cc', 76, 81) }}">norms.cc L76</a></td></tr>
+      <tr><td><code>MatrixRank(a, tol)</code></td><td>The count of singular values above tol. A negative tol means NumPy's default, s<sub>max</sub> · max(m, n) · ε<sub>f32</sub>.</td><td><a href="{{ src('rml/linalg/norms.cc', 83, 89) }}">norms.cc L83</a></td></tr>
+      <tr><td><code>PseudoInverse(a)</code></td><td>V·diag(1/s)·Uᵀ, with singular values at or below the default rank tolerance treated as zero. pinv(A)·b is the minimum-norm least-squares solution for any shape and rank.</td><td><a href="{{ src('rml/linalg/norms.cc', 91, 103) }}">norms.cc L91</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The rank tolerance uses f32 epsilon even though the SVD runs in double, because the input was f32 and
+  differences below its precision are noise (<a href="{{ src('rml/linalg/norms.cc', 17, 21) }}">norms.cc L17–21</a>).
+</p>
+
+<h2 id="tests">Tests</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Tests</th><th>What they pin down</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(d ~ 'matrix_test.cc') }}"><code>matrix_test.cc</code></a></td><td>4</td><td>Round trips through tensors, strided views and vectors, product, transpose and identity, and a mismatched product aborting.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'gemm_test.cc') }}"><code>gemm_test.cc</code></a></td><td>5</td><td>A known product; α, β and transposed views; β = 0 ignoring garbage in C; mismatched shapes aborting. Then <code>Gemm</code> against <code>GemmRef</code> over 14 cases (<a href="{{ src(d ~ 'gemm_test.cc', 99, 107) }}">L99</a>): empty m, n or k, every transpose combination, 1×1000 and 1000×1 shapes, k = 513 across slice edges, and 1 to 8 threads. C has three padding columns that must be left untouched.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'matmul_test.cc') }}"><code>matmul_test.cc</code></a></td><td>8</td><td>Dot, matrix products, vector operands dropping their axis, a transposed view with no copy, broadcast batch axes, a large product against <code>MatMulRef</code>, and mismatched shapes aborting.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'lu_test.cc') }}"><code>lu_test.cc</code></a></td><td>7</td><td>P·A = L·U, and solve and inverse at sizes 1 to 33; a vector right-hand side; pivoting past a zero diagonal; known determinants; singular matrices detected; non-square input aborting.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'qr_test.cc') }}"><code>qr_test.cc</code></a></td><td>5</td><td>Q orthonormal and R upper triangular for square, tall and wide shapes; a zero column; least squares recovering an exact linear model, leaving a residual orthogonal to the columns, and rejecting rank-deficient and wide inputs.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'cholesky_test.cc') }}"><code>cholesky_test.cc</code></a></td><td>4</td><td>L·Lᵀ = A and solves at sizes 1 to 40, a known factor, and matrices that are not positive definite rejected.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'eigen_test.cc') }}"><code>eigen_test.cc</code></a></td><td>4</td><td>Reconstruction at sizes 1 to 25, a known spectrum, repeated eigenvalues, and an eigenvalue near 1e-9 resolved to relative precision.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'svd_test.cc') }}"><code>svd_test.cc</code></a></td><td>4</td><td>Reconstruction for square, tall and wide shapes; known singular values; orthonormal factors for rank-deficient matrices; s² matching the eigenvalues of AᵀA.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'norms_test.cc') }}"><code>norms_test.cc</code></a></td><td>7</td><td>Common vector norms and no overflow on large entries; known matrix norms; condition number; rank; pseudo-inverse on square and least-squares problems and the Penrose conditions when rank deficient.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  How these run under sanitizers is on {{ link('testing', 'Testing') }}.
+</p>
