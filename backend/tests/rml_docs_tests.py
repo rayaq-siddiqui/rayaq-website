@@ -72,6 +72,14 @@ def test_ml_models_link_only_links_ready_pages(monkeypatch):
     assert str(rml_docs.ml_models_link("b", "B<")) == "B&lt;"
 
 
+def test_page_link_only_links_ready_pages(monkeypatch):
+    monkeypatch.setattr(rml_docs, "find_page", lambda slug: {"slug": slug} if slug == "a" else None)
+
+    assert str(rml_docs.page_link("a", "A")) == '<a href="/rml/a">A</a>'
+    assert str(rml_docs.page_link("a", "A", "#x")) == '<a href="/rml/a#x">A</a>'
+    assert str(rml_docs.page_link("b", "B<")) == "B&lt;"
+
+
 def test_find_page_only_returns_ready_pages(monkeypatch):
     pages = [
         {"slug": "a", "title": "A", "summary": "a", "sources": ["x"], "ready": True},

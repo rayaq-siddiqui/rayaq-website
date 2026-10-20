@@ -1,0 +1,346 @@
+{% set dh = "rml/core/dtype.h" %}
+{% set dc = "rml/core/dtype.cc" %}
+{% set sh = "rml/core/shape.h" %}
+{% set sc = "rml/core/shape.cc" %}
+{% set st = "rml/core/strided.h" %}
+{% set th = "rml/core/tensor.h" %}
+{% set tc = "rml/core/tensor.cc" %}
+{% set oh = "rml/core/ops.h" %}
+{% set oc = "rml/core/ops.cc" %}
+{% set ch = "rml/core/check.h" %}
+<header class="jj-header">
+  <h1>Tensors and dtypes</h1>
+  <p class="tagline">
+    <code>rml/core</code> is the layer everything else stands on. It defines seven dtypes, shapes of up to
+    eight dimensions, broadcasting, and a reference-counted <code>Tensor</code> whose views share storage.
+    It also holds the plain f32 ops that higher layers are tested against.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: a <code>Tensor</code> has a shared <code>Storage</code>, an element offset, a <code>Shape</code>,
+  <code>Strides</code> and a <code>DType</code>. Views such as transposes, slices and expands only change
+  the offset, shape and strides. Copies go through one loop, <code>ForEachRow</code>, which walks the
+  innermost axis row by row. Broadcasting gives a stretched axis stride 0. The reference ops are f32-only,
+  and quantized dtypes are stored but never computed on here. Contract violations abort through
+  <code>RML_CHECK</code>.
+</p>
+
+<p>
+  This page covers <a href="{{ tree('rml/core') }}"><code>rml/core</code></a> apart from the allocator,
+  status and thread pool, which are on {{ link('runtime', 'Runtime') }}. For the
+  ideas behind it, see {{ ml('tensors-and-shapes', 'Tensors and shapes') }} and
+  {{ ml('quantization', 'Quantization') }} in the ML models reference.
+</p>
+
+<h2 id="dtypes">The seven dtypes</h2>
+
+<p>
+  <code>DType</code> is a <code>uint8_t</code> enum. A table indexed by it holds each type's name, how many
+  elements a storage block has, how many bytes that block takes, and two flags. Plain types have one element
+  per block. The two GGML formats pack 32 elements into a block. Storage sizes are always computed from
+  this table, so a tensor's byte size is <code>numel / block_elems × block_bytes</code>.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>DType</th><th>Block</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>kF32</code></td><td>1 elem, 4 B</td><td>The only type the reference ops and autograd compute in.</td><td><a href="{{ src(dc, 18, 18) }}">L18</a></td></tr>
+      <tr><td><code>kF16</code></td><td>1 elem, 2 B</td><td>IEEE binary16 (<code>Float16</code>); the KV cache stores this.</td><td><a href="{{ src(dc, 19, 19) }}">L19</a></td></tr>
+      <tr><td><code>kBF16</code></td><td>1 elem, 2 B</td><td>bfloat16 (<code>BFloat16</code>), the dtype of most safetensors checkpoints.</td><td><a href="{{ src(dc, 20, 20) }}">L20</a></td></tr>
+      <tr><td><code>kI8</code></td><td>1 elem, 1 B</td><td>Signed bytes.</td><td><a href="{{ src(dc, 21, 21) }}">L21</a></td></tr>
+      <tr><td><code>kI32</code></td><td>1 elem, 4 B</td><td>Indices: token ids, <code>ArgMax</code> results, <code>IndexSelect</code> indices.</td><td><a href="{{ src(dc, 22, 22) }}">L22</a></td></tr>
+      <tr><td><code>kQ8_0</code></td><td>32 elems, 34 B</td><td>One f16 scale plus 32 <code>int8</code> values.</td><td><a href="{{ src(dc, 23, 23) }}">L23</a></td></tr>
+      <tr><td><code>kQ4_0</code></td><td>32 elems, 18 B</td><td>One f16 scale plus 32 four-bit values, two per byte.</td><td><a href="{{ src(dc, 24, 24) }}">L24</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>DType</code></td><td><code>enum class DType : std::uint8_t</code></td><td>The seven values above, in table order.</td><td><a href="{{ src(dh, 20, 28) }}">L20</a></td></tr>
+      <tr><td><code>DTypeBlockElems</code>, <code>DTypeBlockBytes</code>, <code>DTypeIsQuantized</code>, <code>DTypeIsFloating</code></td><td><code>(DType) -&gt; size_t / bool</code></td><td>Lookups into the table. Only f32, f16 and bf16 count as floating.</td><td><a href="{{ src(dh, 32, 36) }}">L32</a></td></tr>
+      <tr><td><code>DTypeStorageBytes</code></td><td><code>size_t DTypeStorageBytes(DType, size_t numel)</code></td><td>Bytes for <code>numel</code> elements. Aborts unless <code>numel</code> is a whole number of blocks.</td><td><a href="{{ src(dc, 37, 41) }}">L37</a></td></tr>
+      <tr><td><code>kDTypeOf&lt;T&gt;</code></td><td><code>template &lt;class T&gt;</code></td><td>Maps <code>float</code>, <code>Float16</code>, <code>BFloat16</code>, <code>int8_t</code> and <code>int32_t</code> to their dtype. The quantized types have no C++ element type, so there is no mapping for them.</td><td><a href="{{ src(dh, 84, 107) }}">L84</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="f16-bf16">f16 and bf16 rounding</h2>
+
+<p>
+  Both half types are a <code>uint16_t</code> of bits with <code>FromFloat</code> and <code>ToFloat</code>.
+  They differ in which bits of an f32 they keep. bf16 keeps f32's 8-bit exponent and cuts the mantissa
+  to 7 bits, so it has f32's range at lower precision. f16 has a 5-bit exponent and a 10-bit mantissa, so
+  it is more precise but overflows above 65504.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Float16::FromFloat</code></td><td><code>static Float16 FromFloat(float)</code></td><td>Handles inf and NaN first; NaN stays a quiet NaN. Values at or above 65520 become infinity, since that is the point where rounding would carry out of the largest finite half. Values too small for a normal half become subnormals by shifting the mantissa, with round to nearest, ties to even. Normal values round the same way.</td><td><a href="{{ src(dc, 43, 72) }}">L43</a></td></tr>
+      <tr><td><code>Float16::ToFloat</code></td><td><code>float ToFloat() const</code></td><td>Widens exactly. Subnormal halves are renormalized into normal floats.</td><td><a href="{{ src(dc, 74, 97) }}">L74</a></td></tr>
+      <tr><td><code>HalfToFloat</code></td><td><code>void HalfToFloat(const Float16*, float*, size_t n)</code></td><td>The bulk version, written branch-free so the compiler vectorizes it. It shifts the half's bits into f32 position and multiplies by 2<sup>112</sup> to fix the exponent bias, which also handles subnormals. Attention reads the f16 KV cache through it.</td><td><a href="{{ src(dc, 99, 111) }}">L99</a></td></tr>
+      <tr><td><code>BFloat16::FromFloat</code></td><td><code>static BFloat16 FromFloat(float)</code></td><td>Adds <code>0x7fff</code> plus the lowest kept bit, then takes the top 16 bits. That is round to nearest, ties to even, in one addition. NaN is forced quiet with <code>| 0x40</code> so rounding can't turn it into infinity.</td><td><a href="{{ src(dc, 113, 120) }}">L113</a></td></tr>
+      <tr><td><code>BFloat16::ToFloat</code></td><td><code>float ToFloat() const</code></td><td>A 16-bit left shift and a <code>bit_cast</code>; widening bf16 is free.</td><td><a href="{{ src(dh, 52, 59) }}">L52</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Because there are only 65,536 halves, the tests check every one.
+  <a href="{{ src('rml/core/dtype_test.cc', 54, 65) }}"><code>EveryHalfRoundTrips</code></a> converts each
+  half to f32 and back and expects the same bits. Other tests compare against the compiler's own
+  <code>_Float16</code> conversion and check the bulk path against <code>ToFloat</code> for every half. The
+  {{ ml('mixed-precision', 'Mixed precision') }} page explains why bf16 replaced f16 for training.
+</p>
+
+<h2 id="quantized-blocks">Quantized blocks</h2>
+
+<p>
+  rml stores two GGML block formats in <code>core</code> so that a tensor can hold quantized weights
+  straight out of a GGUF file. A block is 32 consecutive elements of a row with one f16 scale
+  <code>d</code>. The formulas are in the header comments.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>kQuantBlock</code></td><td><code>inline constexpr size_t = 32</code></td><td>Elements per block for both formats.</td><td><a href="{{ src(dh, 65, 65) }}">L65</a></td></tr>
+      <tr><td><code>BlockQ8_0</code></td><td><code>struct { Float16 d; int8_t qs[32]; }</code></td><td><code>x[i] = d × qs[i]</code>. 34 bytes, 8.5 bits per weight.</td><td><a href="{{ src(dh, 67, 71) }}">L67</a></td></tr>
+      <tr><td><code>BlockQ4_0</code></td><td><code>struct { Float16 d; uint8_t qs[16]; }</code></td><td><code>x[i] = d × ((qs[i] &amp; 0xF) − 8)</code> for the first 16 elements, and the high nibbles hold elements 16 to 31. 18 bytes, 4.5 bits per weight.</td><td><a href="{{ src(dh, 73, 78) }}">L73</a></td></tr>
+      <tr><td>size checks</td><td><code>static_assert</code></td><td>Pin the layouts at 2, 34 and 18 bytes so they match GGUF byte for byte.</td><td><a href="{{ src(dh, 80, 82) }}">L80</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <code>core</code> only stores and moves these blocks. Quantizing, dequantizing, the K-quant formats and the
+  dot products are on {{ link('quantization', 'Quantization') }}. Since a block can't
+  be split, every view of a quantized tensor must keep whole blocks along the last axis (see
+  <a href="#views-copies">Views and copies</a>).
+</p>
+
+<h2 id="shape-strides">Shape and strides</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Shape</code></td><td><code>class { array&lt;int64_t, 8&gt; dims_; int rank_; }</code></td><td>A fixed-capacity list of dimensions. It never allocates, so copying shapes in view code is cheap. <code>NumElements()</code> is 1 for a scalar.</td><td><a href="{{ src(sh, 21, 53) }}">L21</a></td></tr>
+      <tr><td><code>kMaxRank</code></td><td><code>static constexpr int = 8</code></td><td>The largest rank a tensor can have.</td><td><a href="{{ src(sh, 23, 23) }}">L23</a></td></tr>
+      <tr><td><code>Strides</code></td><td><code>using Strides = Shape</code></td><td>Strides are counted in elements, not bytes. For a quantized tensor that means elements, and the byte offset comes from <code>DTypeStorageBytes</code>.</td><td><a href="{{ src(sh, 55, 55) }}">L55</a></td></tr>
+      <tr><td><code>ContiguousStrides</code></td><td><code>Strides ContiguousStrides(const Shape&amp;)</code></td><td>Row-major strides: the last axis has stride 1, and each earlier axis multiplies in the sizes after it.</td><td><a href="{{ src(sc, 63, 71) }}">L63</a></td></tr>
+      <tr><td><code>NormalizeAxis</code></td><td><code>int NormalizeAxis(int axis, int rank)</code></td><td>Maps −1 to the last axis, and so on. Out-of-range axes abort.</td><td><a href="{{ src(sc, 73, 76) }}">L73</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 270" role="img" aria-labelledby="strides-title strides-desc">
+    <title id="strides-title">One buffer, two views</title>
+    <desc id="strides-desc">A buffer of six floats, 0 to 5. Read as a 2 by 3 tensor with strides 3 and 1, its rows are 0 1 2 and 3 4 5. Its transpose has shape 3 by 2 and strides 1 and 3, so its rows are 0 3, 1 4 and 2 5, with no copy.</desc>
+    <text x="20" y="28" class="d-muted">Storage (6 × f32)</text>
+    {% for i in range(6) %}
+    <rect class="d-box" x="{{ 20 + i * 50 }}" y="40" width="44" height="34" rx="4"/>
+    <text x="{{ 42 + i * 50 }}" y="62" text-anchor="middle">{{ i }}</text>
+    {% endfor %}
+    <text x="340" y="62" class="d-muted">offset 0</text>
+
+    <text x="20" y="118" class="d-muted">x: shape [2, 3], strides [3, 1]</text>
+    {% for r in range(2) %}{% for c in range(3) %}
+    <rect class="d-box" x="{{ 20 + c * 50 }}" y="{{ 130 + r * 44 }}" width="44" height="34" rx="4"/>
+    <text x="{{ 42 + c * 50 }}" y="{{ 152 + r * 44 }}" text-anchor="middle">{{ r * 3 + c }}</text>
+    {% endfor %}{% endfor %}
+
+    <text x="340" y="100" class="d-muted">x.Transpose(0, 1):</text>
+    <text x="340" y="118" class="d-muted">shape [3, 2], strides [1, 3]</text>
+    {% for r in range(3) %}{% for c in range(2) %}
+    <rect class="d-box" x="{{ 340 + c * 50 }}" y="{{ 140 + r * 40 }}" width="44" height="32" rx="4"/>
+    <text x="{{ 362 + c * 50 }}" y="{{ 161 + r * 40 }}" text-anchor="middle">{{ c * 3 + r }}</text>
+    {% endfor %}{% endfor %}
+    <text x="460" y="184" class="d-muted">same storage,</text>
+    <text x="460" y="202" class="d-muted">IsContiguous() = false</text>
+  </svg>
+  <figcaption>Element <code>[i, j]</code> lives at <code>offset + i·stride[0] + j·stride[1]</code>. A transpose swaps the strides and touches no data.</figcaption>
+</figure>
+
+<h2 id="broadcasting">Broadcasting</h2>
+
+<p>
+  rml follows NumPy. Shapes are aligned on the right, and each pair of dimensions must be equal or one of
+  them must be 1. A missing leading dimension counts as 1.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>BroadcastShapes</code></td><td><code>optional&lt;Shape&gt; BroadcastShapes(const Shape&amp; a, const Shape&amp; b)</code></td><td>The result shape, or <code>nullopt</code> when a pair of dimensions conflicts. <code>[4, 1, 3]</code> and <code>[2, 1]</code> give <code>[4, 2, 3]</code>.</td><td><a href="{{ src(sc, 78, 90) }}">L78</a></td></tr>
+      <tr><td><code>BroadcastStrides</code></td><td><code>Strides BroadcastStrides(const Shape&amp;, const Strides&amp;, const Shape&amp; target)</code></td><td>Strides that read a tensor as if it had the target shape. Added leading axes and stretched size-1 axes get stride 0, so the same element is read again. Anything that does not broadcast aborts.</td><td><a href="{{ src(sc, 92, 106) }}">L92</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Stride 0 is how broadcasting avoids copies. <code>Tensor::Expand</code> uses it to make a view, and the
+  binary ops use it to read both operands at the output shape. Writing through such a view would write the
+  same element several times, so the header says expanded tensors must not be written.
+</p>
+
+<h2 id="strided-rows">The row loop</h2>
+
+<p>
+  <a href="{{ src(st, 20, 49) }}"><code>internal::ForEachRow&lt;N&gt;</code></a> is the one loop for strided
+  data in <code>core</code>. Copies, dtype conversions, the binary ops and the reductions all go through it.
+  It takes a shape and N stride lists, one per operand. It then calls
+  <code>fn(offsets, n, inner_strides)</code> once for each row of the innermost axis, where
+  <code>offsets[k]</code> is where the row starts in operand <code>k</code>.
+</p>
+
+<ul>
+  <li>The outer axes advance like an odometer: add the axis stride, and when the index reaches the axis size,
+    subtract <code>stride × size</code> and carry to the next axis out (<a href="{{ src(st, 37, 46) }}">L37–46</a>).
+    There is no division or modulo per element.</li>
+  <li>A rank-0 tensor is a single row of one element, and a shape with zero elements makes no calls
+    (<a href="{{ src(st, 23, 28) }}">L23–28</a>).</li>
+  <li>The callback's inner loop is a plain counted loop over <code>n</code> elements with a fixed stride.
+    When every inner stride is 1, the compiler can vectorize it.</li>
+</ul>
+
+<h2 id="storage-tensor">Storage and Tensor</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Storage</code></td><td><code>class { byte* data_; size_t size_; bool owns_; shared_ptr&lt;const void&gt; owner_; }</code></td><td>A byte buffer held by <code>shared_ptr</code>. It owns 64-byte-aligned heap memory, or wraps external memory such as an mmapped weight file and keeps that file alive through <code>owner_</code>. It can't be copied.</td><td><a href="{{ src(th, 32, 57) }}">L32</a></td></tr>
+      <tr><td><code>Storage::Allocate</code>, <code>Storage::Wrap</code></td><td><code>static shared_ptr&lt;Storage&gt;</code></td><td><code>Allocate</code> returns null on failure instead of throwing. <code>Wrap</code> never frees the memory itself; dropping <code>owner_</code> does.</td><td><a href="{{ src(tc, 123, 137) }}">L123</a></td></tr>
+      <tr><td><code>Tensor</code></td><td><code>class { shared_ptr&lt;Storage&gt;; int64_t offset_; Shape; Strides; DType; }</code></td><td>A view into a storage. Copying a <code>Tensor</code> copies the view, not the data. The offset is in elements. A default-constructed tensor has no storage and <code>defined()</code> is false.</td><td><a href="{{ src(th, 59, 176) }}">L59</a></td></tr>
+      <tr><td><code>Empty</code>, <code>TryEmpty</code></td><td><code>static Tensor Empty(const Shape&amp;, DType = kF32)</code></td><td>Uninitialized, contiguous. <code>TryEmpty</code> returns <code>kOutOfMemory</code> through <code>Expected</code>; <code>Empty</code> aborts instead. <a href="{{ src('rml/quant/dequantize.cc', 275, 275) }}">Dequantize</a> uses the soft form.</td><td><a href="{{ src(tc, 141, 156) }}">L141</a></td></tr>
+      <tr><td><code>Zeros</code>, <code>Full</code>, <code>Scalar</code>, <code>Arange</code>, <code>FromValues</code></td><td><code>static Tensor</code></td><td>The usual factories. <code>FromValues</code> checks the value count against the shape.</td><td><a href="{{ src(th, 66, 84) }}">L66</a></td></tr>
+      <tr><td><code>FromBuffer</code></td><td><code>static Tensor FromBuffer(void*, const Shape&amp;, DType, shared_ptr&lt;const void&gt; owner)</code></td><td>A contiguous tensor over memory rml did not allocate. The GGUF and safetensors readers return their tensors this way, which is how weights stay mmapped (see {{ link('model-files', 'Model files') }}).</td><td><a href="{{ src(th, 86, 89) }}">L86</a></td></tr>
+      <tr><td><code>data&lt;T&gt;</code>, <code>raw_data</code></td><td><code>T* data() const</code></td><td>Pointer to the first element, after the offset. <code>data&lt;T&gt;</code> aborts if <code>T</code> is not the tensor's dtype, so a bf16 tensor can't be read as floats by mistake.</td><td><a href="{{ src(th, 105, 112) }}">L105</a></td></tr>
+      <tr><td><code>At&lt;T&gt;</code>, <code>Item</code></td><td><code>T&amp; At(initializer_list&lt;int64_t&gt;) const</code></td><td>Strided access by index, bounds-checked only in debug builds. Meant for tests and reference code, not kernels.</td><td><a href="{{ src(th, 114, 121) }}">L114</a></td></tr>
+      <tr><td><code>IsContiguous</code></td><td><code>bool IsContiguous() const</code></td><td>True when the strides are row-major. Axes of size 1 are skipped, since their stride never matters, and a tensor with zero elements is always contiguous.</td><td><a href="{{ src(tc, 189, 197) }}">L189</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="views-copies">Views and copies</h2>
+
+<p>
+  Every view method copies the <code>Tensor</code> (a <code>shared_ptr</code> copy) and edits the offset, shape
+  or strides. <code>SharesStorageWith</code> tells you whether two tensors are views of one buffer. Methods
+  that need whole blocks check for them on quantized tensors.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Copies?</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>View</code></td><td>never</td><td>New shape with contiguous strides. Aborts unless the tensor is contiguous and the element count matches. Accepts one <code>-1</code> dimension, inferred from the count.</td><td><a href="{{ src(tc, 231, 244) }}">L231</a></td></tr>
+      <tr><td><code>Reshape</code></td><td>only if not contiguous</td><td><code>View</code> when possible, otherwise <code>Contiguous().View(...)</code>, like <code>torch.reshape</code>.</td><td><a href="{{ src(tc, 246, 252) }}">L246</a></td></tr>
+      <tr><td><code>Transpose</code>, <code>Permute</code></td><td>never</td><td>Reorder shape and strides together. <code>Permute</code> aborts on a repeated axis. Neither works on quantized tensors, because that would move the block axis.</td><td><a href="{{ src(tc, 254, 281) }}">L254</a></td></tr>
+      <tr><td><code>Slice</code></td><td>never</td><td>Python slicing on one axis: negative bounds count from the end, out-of-range bounds clamp, and <code>step</code> multiplies the stride. On a quantized row, start and length must be whole blocks and the step must be 1.</td><td><a href="{{ src(tc, 283, 304) }}">L283</a></td></tr>
+      <tr><td><code>Select</code>, <code>Squeeze</code>, <code>Unsqueeze</code></td><td>never</td><td>Remove an axis at an index, remove a size-1 axis, or insert one.</td><td><a href="{{ src(tc, 306, 334) }}">L306</a></td></tr>
+      <tr><td><code>Expand</code></td><td>never</td><td>Broadcast to a shape by setting stride 0 (see <a href="#broadcasting">Broadcasting</a>).</td><td><a href="{{ src(tc, 336, 342) }}">L336</a></td></tr>
+      <tr><td><code>Contiguous</code></td><td>only if not contiguous</td><td>Returns <code>*this</code> when the tensor is already contiguous, so callers can use it freely before a kernel.</td><td><a href="{{ src(tc, 346, 346) }}">L346</a></td></tr>
+      <tr><td><code>Clone</code>, <code>CopyFrom</code></td><td>always</td><td>A fresh contiguous buffer, filled by <code>StridedCopy</code>. <code>CopyFrom</code> writes into an existing view, so a slice can be filled in place.</td><td><a href="{{ src(tc, 348, 359) }}">L348</a></td></tr>
+      <tr><td><code>To</code></td><td>always</td><td>Converts between f32, f16, bf16, i32 and i8; float to int truncates. Quantizing is not here, it is in <code>rml/quant</code>.</td><td><a href="{{ src(tc, 361, 379) }}">L361</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <a href="{{ src(tc, 60, 92) }}"><code>StridedCopy</code></a> has three paths. When both sides are contiguous
+  it is one <code>memcpy</code>. Quantized data is copied a row at a time with <code>memcpy</code>, and rows
+  must be contiguous because a block has no element stride. Everything else dispatches on the dtype and
+  copies element by element through <code>ForEachRow&lt;2&gt;</code>.
+</p>
+
+<h2 id="ops">Reference ops</h2>
+
+<p>
+  <a href="{{ src(oh) }}"><code>ops.h</code></a> is the f32 reference library. These ops are written to be
+  obviously correct, not fast. Autograd builds on them, and the fast kernels on
+  {{ link('kernels', 'Kernels') }} are tested against them. Each op returns a new
+  contiguous tensor and aborts on a non-f32 input.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Group</th><th>Ops</th><th>Notes</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Unary</td><td><code>Neg Abs Exp Log Sqrt Rsqrt Square Tanh Sigmoid Relu Silu Gelu Pow Clamp Sign</code></td><td><code>Gelu</code> is the tanh approximation used by GPT-2 and most LLMs. <code>Sign</code> keeps NaN as NaN.</td><td><a href="{{ src(oh, 20, 38) }}">L20</a></td></tr>
+      <tr><td>Binary</td><td><code>Add Sub Mul Div Maximum Minimum</code>, plus scalar <code>Add</code> and <code>Mul</code></td><td>Broadcast both operands to the output shape.</td><td><a href="{{ src(oh, 40, 49) }}">L40</a></td></tr>
+      <tr><td>Comparisons</td><td><code>Greater GreaterEqual Less LessEqual Equal Where</code></td><td>Return f32 masks of 0 and 1, so a mask multiplies straight into another tensor.</td><td><a href="{{ src(oh, 51, 61) }}">L51</a></td></tr>
+      <tr><td>Reductions</td><td><code>Sum Mean Max Min ArgMax</code>, <code>SumAll MeanAll MaxAll</code></td><td>Over one axis, optionally keeping it as size 1. <code>ArgMax</code> returns i32 and picks the first maximum.</td><td><a href="{{ src(oh, 63, 77) }}">L63</a></td></tr>
+      <tr><td>Normalizations</td><td><code>Softmax LogSoftmax</code></td><td>Subtract the max before <code>exp</code>.</td><td><a href="{{ src(oh, 79, 83) }}">L79</a></td></tr>
+      <tr><td>Gather / scatter</td><td><code>IndexSelect IndexAdd Concat</code></td><td><code>IndexSelect</code> is NumPy <code>take</code> (embedding lookup). <code>IndexAdd</code> is its adjoint, used for its gradient. <code>Concat</code> works for any dtype.</td><td><a href="{{ src(oh, 85, 96) }}">L85</a></td></tr>
+      <tr><td>Testing</td><td><code>AllClose</code></td><td><code>|a − b| ≤ atol + rtol·|b|</code> for every element.</td><td><a href="{{ src(oh, 98, 99) }}">L98</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>Three implementation details carry most of the file:</p>
+
+<ul>
+  <li><a href="{{ src(oc, 42, 63) }}"><code>Binary</code></a> computes the broadcast shape, builds three stride
+    lists (output, then <code>a</code> and <code>b</code> through <code>BroadcastStrides</code>), and runs the
+    element function in <code>ForEachRow&lt;3&gt;</code>. All six binary ops and the comparisons share it.</li>
+  <li><a href="{{ src(oc, 65, 86) }}"><code>ForEachReducedRow</code></a> permutes the reduced axis to the end
+    as a view, then walks rows with <code>ForEachRow&lt;1&gt;</code>. The remaining axes keep their order,
+    so the rows come out in the output's row-major order and need no index math.</li>
+  <li><a href="{{ src(oc, 111, 116) }}"><code>RowSum</code></a> accumulates in <code>double</code>, so summing
+    a long row doesn't lose the low-order bits a float accumulator would.</li>
+</ul>
+
+<p>
+  <a href="{{ src(oc, 312, 316) }}"><code>Softmax</code></a> is three lines built from the other ops:
+  <code>Sub(x, Max(x, axis, true))</code>, then <code>Exp</code>, then <code>Div</code> by the kept-dimension
+  <code>Sum</code>. Subtracting the max keeps <code>exp</code> from overflowing and doesn't change the result.
+  The keep-dim reductions broadcast back against the input through <code>Binary</code>.
+</p>
+
+<h2 id="checks">RML_CHECK</h2>
+
+<p>
+  rml has no exceptions. A broken contract, such as a shape mismatch, a wrong dtype or an out-of-range axis,
+  is a programming error. <a href="{{ src(ch, 17, 21) }}"><code>RML_CHECK(cond, message)</code></a> calls
+  <a href="{{ src('rml/core/check.cc', 9, 13) }}"><code>CheckFailed</code></a>, which prints the file, line,
+  condition and message to stderr and calls <code>abort()</code>. The failing branch is marked
+  <code>[[unlikely]]</code>. <a href="{{ src(ch, 23, 29) }}"><code>RML_DCHECK</code></a> compiles to nothing
+  under <code>NDEBUG</code>. It guards the per-element bounds checks in <code>At</code>, where a check in
+  release builds would cost too much.
+</p>
+
+<p>
+  Failures a caller can recover from, like running out of memory or a malformed file, go through
+  <code>Status</code> and <code>Expected&lt;T&gt;</code> instead. Those are on
+  {{ link('runtime', 'Runtime') }}.
+</p>
+
+<h2 id="tests">Tests</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Tests</th><th>What they pin down</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src('rml/core/dtype_test.cc') }}"><code>dtype_test.cc</code></a></td><td>9</td><td>Storage sizes, partial blocks aborting, ties to even, and every f16 and bf16 value round-tripping.</td></tr>
+      <tr><td><a href="{{ src('rml/core/shape_test.cc') }}"><code>shape_test.cc</code></a></td><td>8</td><td>The rank limit, contiguous strides, negative axes, and compatible and incompatible broadcasts.</td></tr>
+      <tr><td><a href="{{ src('rml/core/tensor_test.cc') }}"><code>tensor_test.cc</code></a></td><td>23</td><td>Which methods share storage and which copy:
+        <a href="{{ src('rml/core/tensor_test.cc', 72, 81) }}">transpose swaps strides</a>,
+        <a href="{{ src('rml/core/tensor_test.cc', 83, 90) }}">reshape of a non-contiguous tensor copies</a>,
+        <a href="{{ src('rml/core/tensor_test.cc', 137, 144) }}">expand uses zero strides</a>,
+        <a href="{{ src('rml/core/tensor_test.cc', 180, 189) }}"><code>FromBuffer</code> keeps its owner alive</a>, and
+        <a href="{{ src('rml/core/tensor_test.cc', 191, 199) }}">quantized views stay block-aligned</a>.</td></tr>
+      <tr><td><a href="{{ src('rml/core/ops_test.cc') }}"><code>ops_test.cc</code></a></td><td>24</td><td>Each op family against hand-computed values, ops on non-contiguous views, higher-rank broadcasting, softmax rows summing to one, and <code>IndexAdd</code> as the adjoint of <code>IndexSelect</code>.</td></tr>
+    </tbody>
+  </table>
+</div>

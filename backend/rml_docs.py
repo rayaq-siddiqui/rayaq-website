@@ -73,7 +73,7 @@ PAGES = [
             "rml/core/strided.h", "rml/core/tensor.h", "rml/core/tensor.cc", "rml/core/ops.h",
             "rml/core/ops.cc", "rml/core/check.h", "rml/core/check.cc",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "runtime",
@@ -294,6 +294,12 @@ def ml_models_link(slug, text):
     return Markup('<a href="/ml-models/{}">{}</a>').format(slug, text)
 
 
+def page_link(slug, text, anchor=""):
+    if find_page(slug) is None:
+        return escape(text)
+    return Markup('<a href="/rml/{}{}">{}</a>').format(slug, anchor, text)
+
+
 def pages_for(module):
     return [
         page
@@ -348,6 +354,7 @@ def render(slug, render_template):
         "src": source_url,
         "tree": tree_url,
         "ml": ml_models_link,
+        "link": page_link,
         "modules": MODULES,
         "pages_for": pages_for,
         "examples": EXAMPLES,
