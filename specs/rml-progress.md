@@ -47,6 +47,11 @@ links 404 until it is public.
 20. `testing`
 21. `graph-ir`
 
+## Weekly Routine
+
+"rayaq.ca/rml — architecture reference agent" (`trig_01S4ui62EMp6wDGtW96h22La`), Saturdays
+12:44 UTC, fresh session per run: builds up to three queued pages, then maintains the pin.
+
 ## Log
 
 - 2026-10-20 — `00e22a1` spec and progress log; `8242e96` scaffold; `3155c71` `AGENTS.md`
