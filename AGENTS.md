@@ -31,6 +31,8 @@ backend/            Flask app (Python) — all server-side logic
   leetcode_docs.py  The /leetcode section: problem lists, areas, page registry, learning path,
                      the PROBLEMS table (every Blind 75 / Grind 169 / NeetCode 150 / NeetCode 250 problem and
                      its home page), coverage, and page rendering (see "leetcode" below)
+  rml_docs.py       The /rml section: rml upstream pin, page registry, MODULES and EXAMPLES,
+                     pinned source/tree link helpers, and page rendering (see "rml" below)
   requirements.txt       Runtime deps
   requirements-dev.txt   Runtime + pytest, for local dev / CI
   pytest.ini         Configures pytest to discover *_tests.py (not the pytest default
@@ -50,6 +52,8 @@ backend/            Flask app (Python) — all server-side logic
                      becomes a server dependency
     leetcode_docs_tests.py Same checks for /leetcode, plus the PROBLEMS table, list sizes,
                      build-queue order and marks, and the page format
+    rml_docs_tests.py Same checks for /rml, plus module/example coverage and the
+                     decoder page's sections
 
 specs/
   jj.md               The rayaq.ca/jj product & technical spec — the contract the
@@ -61,6 +65,7 @@ specs/
                       /jj-commit-cloud-poc.
   ml-models.md / ml-models-progress.md   The same pair for /ml-models.
   leetcode.md / leetcode-progress.md   The same pair for /leetcode.
+  rml.md / rml-progress.md   The same pair for /rml.
 
 frontend/
   templates/         Jinja2 templates. One per route: home.html, weather.html,
@@ -68,11 +73,11 @@ frontend/
                      resume.html includes; jj/ holds the /jj layout
                      (base.html), index.html, and one fragment per /jj/<slug> page;
                      jj_dojo/, jj_vfs/ and jj_cloud/ are the same for /jj-dojo,
-                     /jj-vfs-poc and /jj-commit-cloud-poc; ml_models/ and leetcode/
-                     are the same for /ml-models and /leetcode
+                     /jj-vfs-poc and /jj-commit-cloud-poc; ml_models/, leetcode/
+                     and rml/ are the same for /ml-models, /leetcode and /rml
   static/            style.css (shared/global, plus the light/dark `--site-*` tokens and
                      homepage and /weather styles for pages with `<body class="site">`), resume.css, jj.css, jj_dojo.css,
-                     jj_vfs.css, jj_cloud.css, ml_models.css, leetcode.css,
+                     jj_vfs.css, jj_cloud.css, ml_models.css, leetcode.css, rml.css,
                      ml_models.js (optional step-through for /ml-models figures),
                      script.js (weather chart only)
 
@@ -109,6 +114,8 @@ vmrun.sh            Convenience wrapper: `./vmrun.sh '<command>'` runs a single 
 | `/ml-models/<slug>` | One deep-dive page per topic in `ml_models_docs.PAGES` that is marked ready; 404 otherwise |
 | `/leetcode` | LeetCode interview patterns reference: list coverage, learning path, pages by NeetCode roadmap topic |
 | `/leetcode/<slug>` | One pattern page per topic in `leetcode_docs.PAGES` that is marked ready; 404 otherwise |
+| `/rml` | rml (the owner's C++ ML library) architecture reference: goals, module-layering diagram, module map, pages by group |
+| `/rml/<slug>` | One deep-dive page per topic in `rml_docs.PAGES` that is marked ready; 404 otherwise |
 | `/health` | Returns `{"status": "ok"}`, 200. Used to verify a deploy actually succeeded. |
 
 ## Local development
@@ -249,6 +256,16 @@ Each call is one command over SSH — deliberately kept to single, auditable com
   ("rayaq.ca/leetcode — pattern reference agent", every 5 hours, fresh session per run, weekly audits once complete)
   researches the lists, then builds three queued pages per run; before pushing it runs
   `tools/leetcode/check_mobile.js` for the 390px overflow check.
+- **rml** (`rml_docs.py` + `templates/rml/` + `rml.css`): a static, source-linked reference to
+  rayaq-siddiqui/rml, the owner's C++20/Bazel machine learning library and LLM runtime, at
+  `/rml`. Read `specs/rml.md` first and `specs/rml-progress.md` for status and the build queue.
+  Every link goes through `rml_docs.source_url` or `rml_docs.tree_url`, pinned to
+  `rml_docs.UPSTREAM`; links to `/ml-models` go through `rml_docs.ml_models_link`, which only
+  links ready pages. Anything only rml's `docs/` describe (`backend`, `profile`, `rml/graph`,
+  the Phase 5 kernels) is marked *planned*. The section reuses `jj.css` and never edits other
+  sections' files. A weekly Routine ("rayaq.ca/rml — architecture reference agent", Saturdays)
+  clones rml, builds queued pages and follows the pin; before pushing it runs
+  `tools/rml/check_mobile.js` for the 390px overflow check.
 - Phone number is intentionally omitted from the public resume and homepage (privacy choice, since the repo is public). Don't add it back without checking with the site owner first.
 
 ## Conventions
