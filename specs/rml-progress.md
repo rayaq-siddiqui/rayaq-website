@@ -3,7 +3,7 @@
 Running log for the rml build loop and the weekly Routine. Read this first, update it last.
 The contract is `specs/rml.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-20 (first run). Scaffold and `tensors` shipped; `runtime` is next.
+**Last updated:** 2026-10-20 (first run). Scaffold, `tensors` and `runtime` shipped; `linalg` is next.
 
 ## Upstream pin
 
@@ -19,7 +19,7 @@ links 404 until it is public.
 - [ ] `decoder` meets §8 with at least two SVG diagrams.
 - [ ] Every source link is pinned; §7.5 tests exist and pass.
 - [x] Homepage card links to `/rml`.
-- [x] Mobile at 390px: no horizontal page scroll (`/rml`, `/rml/tensors`; rerun per page).
+- [x] Mobile at 390px: no horizontal page scroll (`/rml`, `/rml/tensors`, `/rml/runtime`; rerun per page).
 - [ ] The weekly Routine has run at least once and cloned rml.
 
 ## Queue
@@ -27,7 +27,7 @@ links 404 until it is public.
 1. ~~Scaffold (module, routes, layout, index with §6 diagram, CSS, tests, homepage card,
    `AGENTS.md` notes)~~
 2. ~~`tensors`~~
-3. `runtime`
+3. ~~`runtime`~~
 4. `linalg`
 5. `random`
 6. `autograd`
@@ -57,6 +57,7 @@ links 404 until it is public.
 - 2026-10-20 — `00e22a1` spec and progress log; `8242e96` scaffold; `3155c71` `AGENTS.md`
   notes; `d49afa8` `tensors` page, plus `rml_docs.page_link`, which renders plain text for
   pages not yet ready so cross-links never 404.
+- 2026-10-20 — `032d685` `runtime` page (errors, allocation, arena, thread pool).
 
 ## Deliberate deviations
 
@@ -65,4 +66,7 @@ links 404 until it is public.
 
 ## Open gaps / questions for the owner
 
-- None yet.
+- **Arena is unused outside `rml/core`.** `docs/architecture.md` says per-step scratch
+  comes from an arena reset each step, but no code outside `rml/core` uses `Arena` at the
+  pin. The `runtime` page presents it as available, not wired into decoding. Revisit when
+  the pin moves.
