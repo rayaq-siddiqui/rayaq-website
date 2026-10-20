@@ -1,0 +1,370 @@
+{% set sh = "rml/core/status.h" %}
+{% set sc = "rml/core/status.cc" %}
+{% set ah = "rml/core/allocator.h" %}
+{% set ac = "rml/core/allocator.cc" %}
+{% set th = "rml/core/thread_pool.h" %}
+{% set tc = "rml/core/thread_pool.cc" %}
+{% set arch = "docs/architecture.md" %}
+<header class="jj-header">
+  <h1>Errors, memory and threads</h1>
+  <p class="tagline">
+    Three small files in <code>rml/core</code> set the rules the rest of the library runs under: how a
+    function reports failure without throwing, where tensor memory comes from and how it is counted, and how
+    a loop is split across threads so the result is the same on every run.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: recoverable failures return <code>Status</code> or <code>Expected&lt;T&gt;</code>, and bugs
+  abort through <code>RML_CHECK</code>; nothing throws. Tensor buffers come from <code>AlignedAlloc</code>,
+  which hands out 64-byte-aligned blocks and keeps four process-wide counters. <code>Arena</code> is a bump
+  allocator over one such block. <code>ThreadPool::ParallelFor</code> cuts a range into chunks whose
+  boundaries depend only on the range, the grain and the thread count. Threads claim chunks from an atomic
+  counter, a dispatch allocates nothing, and a nested call runs inline.
+</p>
+
+<p>
+  The design notes are the Errors, Memory and Threads sections of
+  <a href="{{ src(arch, 52, 81) }}"><code>docs/architecture.md</code></a>. <code>RML_CHECK</code> itself is
+  covered on {{ link('tensors', 'Tensors and dtypes', '#checks') }}. For background, see
+  {{ ml('gpu-execution', 'GPU execution') }} (which <code>thread_pool.h</code> links to) and
+  {{ ml('reproducibility', 'Reproducibility') }} in the ML models reference.
+</p>
+
+<h2 id="errors">The error model</h2>
+
+<p>
+  rml splits failures in two. A failure caused by something outside the caller's control, such as a missing
+  file, a malformed header, an unsupported config or a failed large allocation, is returned as a value. A
+  failure caused by the caller breaking a contract, such as a shape mismatch, is a bug and aborts. The
+  header comment states the rule (<a href="{{ src(sh, 4, 6) }}">L4–6</a>): hot paths never throw.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Situation</th><th>Mechanism</th><th>What the caller sees</th></tr></thead>
+    <tbody>
+      <tr><td>Bad input from outside: file, config, out of memory</td><td><code>Status</code>, <code>Expected&lt;T&gt;</code></td><td>A value to check. Both types are <code>[[nodiscard]]</code>, so ignoring one is a compiler warning.</td></tr>
+      <tr><td>Contract violation by the calling code</td><td><code>RML_CHECK</code></td><td>The condition, message, file and line on stderr, then <code>abort()</code>.</td></tr>
+      <tr><td>Contract check too costly for release builds</td><td><code>RML_DCHECK</code></td><td>Same as <code>RML_CHECK</code> in debug builds; nothing under <code>NDEBUG</code>.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="status">Status</h3>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>StatusCode</code></td><td><code>enum class</code></td><td>Eight codes: <code>kOk</code>, <code>kInvalidArgument</code>, <code>kOutOfRange</code>, <code>kNotFound</code>, <code>kIoError</code>, <code>kUnsupported</code>, <code>kOutOfMemory</code>, <code>kInternal</code>.</td><td><a href="{{ src(sh, 17, 26) }}">L17</a></td></tr>
+      <tr><td><code>Status</code></td><td><code>class [[nodiscard]] { StatusCode code_; string message_; }</code></td><td>A default-constructed status is OK. <code>ok()</code>, <code>code()</code>, <code>message()</code>.</td><td><a href="{{ src(sh, 30, 45) }}">L30</a></td></tr>
+      <tr><td><code>operator==</code></td><td><code>bool (const Status&amp;, const Status&amp;)</code></td><td>Compares codes only. Two errors with different messages are equal, which keeps test expectations from depending on message wording.</td><td><a href="{{ src(sh, 40, 40) }}">L40</a></td></tr>
+      <tr><td><code>ToString</code></td><td><code>string ToString() const</code></td><td><code>"INVALID_ARGUMENT: message"</code>, or just the code name when the message is empty.</td><td><a href="{{ src(sc, 30, 37) }}">L30</a></td></tr>
+      <tr><td><code>OkStatus</code>, <code>InvalidArgumentError</code>, …, <code>InternalError</code></td><td><code>Status (string message)</code></td><td>One constructor function per code, in the Abseil style.</td><td><a href="{{ src(sh, 47, 66) }}">L47</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="expected">Expected&lt;T&gt;</h3>
+
+<p>
+  <code>std::expected</code> is C++23 and rml targets C++20, so
+  <a href="{{ src(sh, 68, 112) }}"><code>Expected&lt;T&gt;</code></a> is the subset rml needs, built on
+  <code>std::variant&lt;T, Status&gt;</code>. Index 0 is the value and index 1 the error.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Constructors</td><td><code>Expected(T)</code>, <code>Expected(Status)</code></td><td>Both implicit, so a function returning <code>Expected&lt;T&gt;</code> can <code>return value;</code> or <code>return SomeError(...);</code>. Building one from an OK status aborts: an <code>Expected</code> always holds a value or a real error.</td><td><a href="{{ src(sh, 73, 76) }}">L73</a></td></tr>
+      <tr><td><code>has_value</code>, <code>operator bool</code></td><td><code>bool</code></td><td>True when the variant holds a value.</td><td><a href="{{ src(sh, 78, 79) }}">L78</a></td></tr>
+      <tr><td><code>value</code>, <code>*</code>, <code>-&gt;</code></td><td>lvalue, const and rvalue overloads</td><td>Reading the value of an error aborts with the status string, so a missed check fails loudly instead of reading garbage. The rvalue overload moves out, so move-only types such as <code>unique_ptr</code> work.</td><td><a href="{{ src(sh, 81, 98) }}">L81</a></td></tr>
+      <tr><td><code>status</code></td><td><code>Status status() const</code></td><td>The error, or <code>OkStatus()</code> when there is a value.</td><td><a href="{{ src(sh, 100, 103) }}">L100</a></td></tr>
+      <tr><td><code>value_or</code></td><td><code>T value_or(U&amp;&amp;) const&amp;</code></td><td>The value, or the fallback converted to <code>T</code>.</td><td><a href="{{ src(sh, 105, 108) }}">L105</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="macros">Propagation macros</h3>
+
+<p>
+  Without exceptions, each fallible call needs a check and an early return. Two macros write that out.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Macro</th><th>Expands to</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>RML_RETURN_IF_ERROR(expr)</code></td><td>Evaluate <code>expr</code> into a <code>Status</code>; return it if it is not OK.</td><td><a href="{{ src(sh, 119, 123) }}">L119</a></td></tr>
+      <tr><td><code>RML_ASSIGN_OR_RETURN(lhs, expr)</code></td><td>Evaluate <code>expr</code> into a temporary named <code>rml_expected_&lt;line&gt;</code>; return its status if it has no value, otherwise move the value into <code>lhs</code>. <code>lhs</code> can be a declaration.</td><td><a href="{{ src(sh, 125, 131) }}">L125</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Loading a model is the heaviest user. <a href="{{ src('rml/llm/decoder.cc', 72, 74) }}"><code>DecoderLM::FromHf</code></a>
+  runs, in order, <code>RML_ASSIGN_OR_RETURN(ModelConfig config, LoadHfConfig(...))</code> and
+  <code>RML_ASSIGN_OR_RETURN(io::SafetensorsModel model, io::SafetensorsModel::Open(directory))</code>. Either
+  failure returns to the caller unchanged, with its code and message. See
+  {{ link('decoder', 'The decoder') }} and {{ link('model-files', 'Model files') }}.
+</p>
+
+<h2 id="aligned-alloc">Aligned allocation</h2>
+
+<p>
+  Every tensor buffer is 64-byte aligned: one cache line on x86 and Apple Silicon, and enough for any SIMD
+  load (<a href="{{ src(ah, 6, 9) }}">L6–9</a>). <code>Storage::Allocate</code>, which backs every
+  {{ link('tensors', 'Tensor', '#storage-tensor') }} rml allocates itself, calls
+  <a href="{{ src('rml/core/tensor.cc', 123, 124) }}"><code>AlignedAlloc</code></a>.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>kDefaultAlignment</code></td><td><code>inline constexpr size_t = 64</code></td><td>The alignment for tensor storage and arenas.</td><td><a href="{{ src(ah, 17, 17) }}">L17</a></td></tr>
+      <tr><td><code>AlignedAlloc</code></td><td><code>void* AlignedAlloc(size_t bytes, size_t alignment = 64)</code></td><td>Returns <code>nullptr</code> on failure, which <code>Tensor::TryEmpty</code> turns into <code>kOutOfMemory</code>. A non-power-of-two alignment aborts. A zero-byte request still returns a pointer that must be freed.</td><td><a href="{{ src(ac, 37, 55) }}">L37</a></td></tr>
+      <tr><td><code>AlignedFree</code></td><td><code>void AlignedFree(void*)</code></td><td>Reads the header just below the pointer, updates the counters, and frees the original <code>malloc</code> block. Null is a no-op.</td><td><a href="{{ src(ac, 57, 63) }}">L57</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <code>AlignedAlloc</code> over-allocates with <code>malloc</code> and rounds up inside the block. Just
+  below the pointer it returns, it stores a two-word
+  <a href="{{ src(ac, 14, 19) }}"><code>Header</code></a> holding the original <code>malloc</code> pointer and
+  the requested size. <code>AlignedFree</code> needs nothing else, so there is no lookup table and no
+  lock. Before calling <code>malloc</code>, it checks that <code>bytes</code> plus the overhead can't
+  overflow (<a href="{{ src(ac, 40, 41) }}">L40–41</a>).
+  <a href="{{ src('rml/core/allocator_test.cc', 36, 36) }}"><code>HugeRequestFails</code></a> asks for
+  <code>SIZE_MAX − 8</code> bytes and expects <code>nullptr</code>.
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 200" role="img" aria-labelledby="align-title align-desc">
+    <title id="align-title">The layout of one AlignedAlloc block</title>
+    <desc id="align-desc">malloc returns a raw block of bytes plus 16 plus alignment minus 1. The returned pointer is the first 64-byte boundary at least 16 bytes into the block. The 16 bytes just below it hold a Header with the raw pointer and the size. The bytes before the header are unused padding, and the user's bytes follow the pointer.</desc>
+    <text x="20" y="28" class="d-muted">malloc(bytes + sizeof(Header) + alignment − 1)</text>
+    <rect class="d-box" x="20" y="44" width="110" height="50" rx="4"/>
+    <text x="75" y="74" text-anchor="middle" class="d-muted">padding</text>
+    <rect class="d-box d-accent" x="130" y="44" width="120" height="50" rx="4"/>
+    <text x="190" y="66" text-anchor="middle">Header</text>
+    <text x="190" y="84" text-anchor="middle" class="d-muted">raw, bytes</text>
+    <rect class="d-box" x="250" y="44" width="370" height="50" rx="4"/>
+    <text x="435" y="74" text-anchor="middle">bytes the caller asked for</text>
+    <line class="d-line" x1="20" y1="104" x2="20" y2="130"/>
+    <text x="20" y="148" class="d-muted">raw</text>
+    <line class="d-line d-accent" x1="250" y1="104" x2="250" y2="130"/>
+    <text x="250" y="148" text-anchor="middle">returned pointer</text>
+    <text x="250" y="166" text-anchor="middle" class="d-muted">(a multiple of 64)</text>
+    <text x="430" y="148" class="d-muted">AlignedFree(p) reads</text>
+    <text x="430" y="166" class="d-muted">((Header*)p)[-1]</text>
+  </svg>
+  <figcaption>The header sits in the bytes the alignment would have wasted anyway, at most 63 + 16 per block.</figcaption>
+</figure>
+
+<h3 id="allocation-stats">The counters</h3>
+
+<p>
+  <a href="{{ src(ah, 25, 33) }}"><code>AllocationStats</code></a> is four process-wide numbers:
+  successful allocations, frees, live bytes and peak live bytes. They are relaxed atomics and always on.
+  Only the order of each counter's own updates matters, so no stronger memory order is needed. The peak is
+  raised with a <a href="{{ src(ac, 26, 31) }}">compare-and-swap loop</a> that retries only while the new
+  live total is still above the stored peak. <a href="{{ src(ac, 71, 73) }}"><code>ResetPeakAllocation</code></a>
+  sets the peak back to the current live bytes, so a test can measure the peak of one region.
+</p>
+
+<p>
+  These counters only see <code>AlignedAlloc</code>. Memory that is not tensor storage, like a
+  <code>std::vector</code> or mmapped weights wrapped with <code>Tensor::FromBuffer</code>, is not counted.
+  So the decoder's zero-allocation test uses a different tool:
+  <a href="{{ src('rml/llm/decoder_alloc_test.cc', 66, 89) }}"><code>DecodingAllocatesNothing</code></a>
+  replaces the global <code>operator new</code> with a counting one. It loads a model, runs a prompt and one
+  warm-up step, and then expects 16 more decode steps to add no allocations, with and without a thread
+  pool. See {{ link('models-memory', 'Models and memory') }} for the memory budget this protects.
+</p>
+
+<h3 id="arena">Arena</h3>
+
+<p>
+  <a href="{{ src(ah, 35, 71) }}"><code>Arena</code></a> is a bump allocator over one block from
+  <code>AlignedAlloc</code>. Allocating moves an offset forward, and memory comes back all at once.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Constructor</td><td><code>explicit Arena(size_t capacity_bytes)</code></td><td>One <code>AlignedAlloc</code>; aborts if it fails. Move-only.</td><td><a href="{{ src(ac, 75, 97) }}">L75</a></td></tr>
+      <tr><td><code>Allocate</code></td><td><code>void* Allocate(size_t bytes, size_t alignment = 64)</code></td><td>Rounds the current position up to <code>alignment</code> and moves past <code>bytes</code>. Returns <code>nullptr</code> when the arena is full; arenas are meant to be sized up front. Alignments above 64 align the absolute address, not the offset.</td><td><a href="{{ src(ac, 99, 110) }}">L99</a></td></tr>
+      <tr><td><code>AllocateArray&lt;T&gt;</code></td><td><code>T* AllocateArray(size_t count)</code></td><td>Typed form, aligned to at least 64.</td><td><a href="{{ src(ah, 52, 56) }}">L52</a></td></tr>
+      <tr><td><code>Mark</code>, <code>Rewind</code>, <code>Reset</code></td><td><code>Marker = size_t</code></td><td>A marker is the current offset. Rewinding frees everything allocated since it; rewinding forward aborts. <code>Reset</code> rewinds to zero.</td><td><a href="{{ src(ah, 58, 60) }}">L58</a></td></tr>
+      <tr><td><code>used</code>, <code>peak</code>, <code>capacity</code></td><td><code>size_t</code></td><td>The high-water mark is how an arena's size is meant to be chosen.</td><td><a href="{{ src(ah, 62, 64) }}">L62</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <a href="{{ src('rml/core/allocator_test.cc', 116, 125) }}"><code>AllocatingFromArenaDoesNotTouchHeap</code></a>
+  resets and allocates 100 times and checks that the allocation counter does not move. The design notes say
+  per-step scratch comes from an arena reset at each step (<a href="{{ src(arch, 62, 64) }}">L62–64</a>).
+  At this commit, though, no code outside <code>rml/core</code> uses <code>Arena</code>, so it is
+  available rather than wired into decoding.
+</p>
+
+<h2 id="thread-pool">ThreadPool</h2>
+
+<p>
+  <a href="{{ src(th, 27, 88) }}"><code>ThreadPool</code></a> starts <code>n − 1</code> worker threads that
+  wait on a condition variable. The thread calling <code>ParallelFor</code> works too, so
+  <code>ThreadPool(1)</code> has no workers and runs everything inline.
+  <a href="{{ src(tc, 47, 50) }}"><code>ThreadPool::Default()</code></a> is a process-wide pool sized by
+  <code>RML_NUM_THREADS</code>, or else by <code>hardware_concurrency()</code>. It is created on first use and
+  intentionally never destroyed.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>ThreadPool</code></td><td><code>explicit ThreadPool(int num_threads)</code></td><td><code>num_threads</code> counts the caller. Zero aborts. The destructor sets <code>stop_</code>, wakes everyone and joins.</td><td><a href="{{ src(tc, 32, 45) }}">L32</a></td></tr>
+      <tr><td><code>ParallelFor</code></td><td><code>void ParallelFor(int64_t begin, int64_t end, int64_t grain, Fn&amp;&amp; fn)</code></td><td>Calls <code>fn(lo, hi)</code> on disjoint chunks covering <code>[begin, end)</code> and returns when all have run.</td><td><a href="{{ src(th, 41, 64) }}">L41</a></td></tr>
+      <tr><td>free <code>ParallelFor</code></td><td>same signature</td><td>Runs on <code>ThreadPool::Default()</code>.</td><td><a href="{{ src(th, 90, 94) }}">L90</a></td></tr>
+      <tr><td><code>kChunksPerThread</code></td><td><code>constexpr int64_t = 4</code></td><td>At most four chunks per thread. More would smooth out uneven chunk costs; fewer would mean less per-chunk overhead.</td><td><a href="{{ src(tc, 18, 20) }}">L18</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="chunking">How a range is chunked</h3>
+
+<ol>
+  <li><a href="{{ src(tc, 52, 57) }}"><code>NumChunks</code></a> returns 1 when the pool has no workers or the
+    calling thread is already running a chunk. Otherwise it returns <code>n / grain</code>, clamped to
+    between 1 and <code>4 × num_threads</code>.</li>
+  <li>With one chunk, <code>ParallelFor</code> calls <code>fn(begin, end)</code> directly and never touches
+    the pool (<a href="{{ src(th, 48, 50) }}">L48–50</a>).</li>
+  <li>Otherwise <code>chunk_size = ⌈n / num_chunks⌉</code>, and the job runs <code>⌈n / chunk_size⌉</code>
+    chunks. Chunk <code>i</code> covers <code>[begin + i·chunk_size, min(that + chunk_size, end))</code>.
+    Only the last chunk can be short. Since <code>num_chunks ≤ n / grain</code>, every other chunk has at
+    least <code>grain</code> elements.</li>
+</ol>
+
+<p>
+  For example, <code>ParallelFor(0, 1000, 10, fn)</code> on a 4-thread pool gives <code>1000 / 10 = 100</code>,
+  clamped to 16 chunks. <code>chunk_size</code> is <code>⌈1000 / 16⌉ = 63</code>, so chunks 0 to 14 are 63
+  elements and chunk 15 is <code>[945, 1000)</code>, 55 elements. With <code>(0, 100, 1)</code>, the
+  same pool computes 16 chunks of <code>⌈100 / 16⌉ = 7</code>, but 7 × 15 is already 105, so it runs 15
+  chunks and the last is <code>[98, 100)</code>.
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 290" role="img" aria-labelledby="chunks-title chunks-desc">
+    <title id="chunks-title">ParallelFor(0, 1000, 10) on four threads</title>
+    <desc id="chunks-desc">The range 0 to 1000 is cut into 16 chunks: fifteen of 63 elements and a last one of 55. The boundaries are fixed. Four threads, the caller and three workers, each take the next chunk number from an atomic counter until it passes 15. Which thread runs which chunk changes from run to run.</desc>
+    <text x="20" y="26" class="d-muted">[0, 1000), grain 10, 4 threads → 16 chunks of 63 (last 55)</text>
+    {% for i in range(16) %}
+    <rect class="d-box" x="{{ 20 + i * 36 }}" y="40" width="{{ 32 if i < 15 else 28 }}" height="34" rx="3"/>
+    <text x="{{ 36 + i * 36 }}" y="62" text-anchor="middle">{{ i }}</text>
+    {% endfor %}
+    {% for i, start in [(0, 0), (5, 315), (10, 630), (15, 945)] %}
+    <text x="{{ 20 + i * 36 }}" y="92" class="d-muted">{{ start }}</text>
+    {% endfor %}
+
+    <text x="20" y="128" class="d-muted">next_chunk_.fetch_add(1): one possible run</text>
+    {% set lanes = [("caller", [0, 4, 9, 13]), ("worker 1", [1, 5, 8, 12]), ("worker 2", [2, 6, 10, 14]), ("worker 3", [3, 7, 11, 15])] %}
+    {% for name, chunks in lanes %}
+    {% set y = 144 + loop.index0 * 34 %}
+    <text x="20" y="{{ y + 17 }}">{{ name }}</text>
+    {% for c in chunks %}
+    <rect class="d-box{% if loop.first %} d-accent{% endif %}" x="{{ 110 + loop.index0 * 50 }}" y="{{ y }}" width="42" height="24" rx="3"/>
+    <text x="{{ 131 + loop.index0 * 50 }}" y="{{ y + 17 }}" text-anchor="middle">{{ c }}</text>
+    {% endfor %}
+    {% endfor %}
+    <text x="330" y="161" class="d-muted">each thread loops:</text>
+    <text x="330" y="179" class="d-muted">i = next_chunk_++</text>
+    <text x="330" y="197" class="d-muted">until i ≥ 16</text>
+  </svg>
+  <figcaption>The boundaries above never change for a given range, grain and thread count. Only the assignment of chunks to threads does.</figcaption>
+</figure>
+
+<h3 id="determinism">What is deterministic</h3>
+
+<p>
+  Chunk boundaries depend only on <code>begin</code>, <code>end</code>, <code>grain</code> and the thread
+  count (<a href="{{ src(th, 8, 10) }}">L8–10</a>). A kernel that writes each output element from inside one
+  chunk, and reduces in a fixed order within it, gets bit-identical results however the chunks are
+  scheduled. Changing the thread count changes the boundaries, so a reduction split across chunks can round
+  differently on 4 threads than on 8. <code>RML_NUM_THREADS</code> pins it. See
+  {{ ml('reproducibility', 'Reproducibility') }} for why floating-point order matters.
+</p>
+
+<h2 id="dispatch">Dispatch without allocation</h2>
+
+<p>
+  <code>ParallelFor</code> takes any callable, but the pool can't store a template type. Instead it builds a
+  <a href="{{ src(th, 67, 71) }}"><code>Job</code></a> on the caller's stack: a plain function pointer that
+  casts a <code>void*</code> back to the callable, plus the chunk layout. No <code>std::function</code>, so no
+  heap allocation. <a href="{{ src(tc, 59, 75) }}"><code>Run</code></a> then:
+</p>
+
+<ol>
+  <li>Locks <code>call_mutex_</code>, so two threads calling <code>ParallelFor</code> on the same pool take
+    turns rather than sharing workers.</li>
+  <li>Under <code>mutex_</code>, publishes the job, resets <code>next_chunk_</code> to 0, sets
+    <code>pending_workers_</code> to the worker count, bumps <code>generation_</code> and wakes the
+    workers.</li>
+  <li>Works on chunks itself through <a href="{{ src(tc, 77, 84) }}"><code>WorkOn</code></a>, which claims the
+    next index with <code>fetch_add</code> until none are left.</li>
+  <li>Waits until every worker has reported in, even ones that found no chunk left. The job lives in this
+    stack frame, so returning earlier would leave a worker holding a dangling pointer.</li>
+</ol>
+
+<p>
+  A <a href="{{ src(tc, 86, 103) }}">worker</a> sleeps until <code>generation_</code> changes or
+  <code>stop_</code> is set, runs <code>WorkOn</code>, then decrements <code>pending_workers_</code> and
+  signals the caller when it reaches zero. Each worker remembers the last generation it ran, so a wakeup
+  without a new job sends it back to sleep.
+</p>
+
+<h3 id="nesting">Nested calls</h3>
+
+<p>
+  A <code>thread_local</code> flag, <a href="{{ src(tc, 15, 16) }}"><code>in_parallel_region</code></a>, is set
+  while a thread runs chunks. A <code>ParallelFor</code> called from inside a chunk sees it, gets one chunk
+  from <code>NumChunks</code>, and runs inline. So a parallel kernel can call another parallel kernel, for
+  a kernel that calls GEMM from inside its own chunks, without deadlocking on <code>call_mutex_</code> or
+  oversubscribing the cores. The outer loop gets the parallelism.
+</p>
+
+<h2 id="users">Who uses it</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Caller</th><th>What is split</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>GEMM</td><td>Output row blocks. The grain is chosen so each unit is about 64K multiply-adds, which keeps small products serial. See {{ link('linalg', 'Linear algebra') }}.</td><td><a href="{{ src('rml/linalg/gemm.cc', 177, 186) }}">gemm.cc L177</a></td></tr>
+      <tr><td>Attention</td><td>(query position, KV head) pairs, grain 1. See {{ link('decoder', 'The decoder') }}.</td><td><a href="{{ src('rml/llm/attention.cc', 162, 162) }}">attention.cc L162</a></td></tr>
+      <tr><td>LLM kernels</td><td>Rows, grain 16. See {{ link('kernels', 'Kernels') }}.</td><td><a href="{{ src('rml/llm/kernels.cc', 154, 154) }}">kernels.cc L154</a></td></tr>
+      <tr><td>Classical models</td><td>Trees and prediction rows in a random forest, features (histogram building) and prediction rows in gradient boosting, query points in k-NN. See {{ link('classical', 'Classical ML') }}.</td><td><a href="{{ tree('rml/classical') }}">rml/classical</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="tests">Tests</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Tests</th><th>What they pin down</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src('rml/core/status_test.cc') }}"><code>status_test.cc</code></a></td><td>7</td><td>Default status is OK; codes and messages round-trip; <code>Expected</code> holds a value or an error; the macros propagate; move-only types work; <code>RML_CHECK</code> aborts with its message.</td></tr>
+      <tr><td><a href="{{ src('rml/core/allocator_test.cc') }}"><code>allocator_test.cc</code></a></td><td>13</td><td>Alignment, default of 64, null free, a huge request returning null, a bad alignment aborting, live and peak counters, arena bumping, large alignment, a full arena returning null, mark/rewind/reset, rewinding forward aborting, moves, and an arena that never touches the heap.</td></tr>
+      <tr><td><a href="{{ src('rml/core/thread_pool_test.cc') }}"><code>thread_pool_test.cc</code></a></td><td>9</td><td>Run with 1, 2, 4 and 8 threads (<a href="{{ src('rml/core/thread_pool_test.cc', 144, 144) }}">L144</a>): every index exactly once, offset ranges and grains, identical chunks across runs, nested calls inline, many loops back to back, concurrent callers, and a dispatch that allocates nothing, counted by a replaced <code>operator new</code>. Plus the default pool and a zero-thread pool aborting.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  How these run under sanitizers is on {{ link('testing', 'Testing') }}.
+</p>

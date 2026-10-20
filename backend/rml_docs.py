@@ -86,7 +86,7 @@ PAGES = [
             "rml/core/allocator.cc", "rml/core/thread_pool.h", "rml/core/thread_pool.cc",
             "docs/architecture.md",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "linalg",
