@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "6bfd0a7d85e908e907f20a9b09b701edba68a11c",
-    "commit_date": "2026-10-19",
+    "commit": "5176b1d8a3b0e569bb79b5e681c37874543ec617",
+    "commit_date": "2026-10-20",
     "version": "0.46.0",
-    "analyzed_on": "2026-10-19",
+    "analyzed_on": "2026-10-20",
 }
 
 TOPICS = [
@@ -97,7 +97,7 @@ TOPICS = [
         "summary": "Operations, their metadata, op heads, and how concurrent operations are detected and merged.",
         "sources": [
             "core/src/op_store.rs",
-            "lib/src/operation.rs",
+            "core/src/operation.rs",
             "lib/src/op_heads_store.rs",
             "lib/src/simple_op_heads_store.rs",
             "lib/src/simple_op_store.rs",
@@ -120,8 +120,8 @@ TOPICS = [
         "summary": "The View each operation points at: heads, bookmarks, tags, remotes, Git refs and working-copy commits.",
         "sources": [
             "core/src/op_store.rs",
-            "lib/src/view.rs",
-            "lib/src/refs.rs",
+            "core/src/view.rs",
+            "core/src/refs.rs",
             "docs/bookmarks.md",
             "core/src/merge.rs",
             "lib/src/repo.rs",
@@ -157,7 +157,7 @@ TOPICS = [
         "summary": "Index segments, the change-ID index, the changed-path index, and short ID prefixes.",
         "sources": [
             "core/src/index.rs",
-            "lib/src/index_store.rs",
+            "core/src/index_store.rs",
             "lib/src/default_index/",
             "lib/src/id_prefix.rs",
         ],
@@ -382,7 +382,7 @@ COMMANDS = [
         "category": 'Content and conflicts',
         "tier": 'A',
         "summary": 'Run a command across a set of revisions.',
-        "source": ('cli/src/commands/run.rs', 649),
+        "source": ('cli/src/commands/run.rs', 650),
     },
     {
         "command": 'resolve',
@@ -1119,7 +1119,7 @@ COMMAND_PAGE_OVERRIDES = {
         "sources": [
             "cli/src/commands/workspace/forget.rs",
             "lib/src/repo.rs",
-            "lib/src/view.rs",
+            "core/src/view.rs",
             "cli/src/git_util.rs",
             "cli/src/cli_util.rs",
         ],
@@ -1132,7 +1132,7 @@ COMMAND_PAGE_OVERRIDES = {
             "cli/src/commit_templater.rs",
             "cli/src/config/templates.toml",
             "lib/src/simple_workspace_store.rs",
-            "lib/src/view.rs",
+            "core/src/view.rs",
         ],
         "ready": True,
     },
@@ -1151,7 +1151,7 @@ COMMAND_PAGE_OVERRIDES = {
         "title": "How jj workspace rename works",
         "sources": [
             "cli/src/commands/workspace/rename.rs",
-            "lib/src/view.rs",
+            "core/src/view.rs",
             "lib/src/repo.rs",
             "lib/src/simple_workspace_store.rs",
         ],
@@ -1162,7 +1162,7 @@ COMMAND_PAGE_OVERRIDES = {
         "sources": [
             "cli/src/commands/workspace/root.rs",
             "lib/src/simple_workspace_store.rs",
-            "lib/src/view.rs",
+            "core/src/view.rs",
             "cli/src/cli_util.rs",
         ],
         "ready": True,
@@ -1302,7 +1302,7 @@ COMMAND_PAGE_OVERRIDES = {
             "cli/src/commands/git/remote/set_url.rs",
             "cli/src/commands/git/mod.rs",
             "lib/src/git.rs",
-            "lib/src/view.rs",
+            "core/src/view.rs",
         ],
         "ready": True,
     },
@@ -1362,7 +1362,7 @@ COMMAND_PAGE_OVERRIDES = {
         "sources": [
             "cli/src/commands/tag/delete.rs",
             "cli/src/commands/tag/mod.rs",
-            "lib/src/view.rs",
+            "core/src/view.rs",
         ],
         "ready": True,
     },
@@ -1371,7 +1371,7 @@ COMMAND_PAGE_OVERRIDES = {
         "sources": [
             "cli/src/commands/tag/set.rs",
             "lib/src/repo.rs",
-            "lib/src/view.rs",
+            "core/src/view.rs",
             "cli/src/cli_util.rs",
             "cli/src/config/revsets.toml",
         ],
@@ -1766,7 +1766,7 @@ COMMAND_PAGE_OVERRIDES = {
             "cli/src/commands/git/push.rs",
             "lib/src/git.rs",
             "lib/src/git_subprocess.rs",
-            "lib/src/refs.rs",
+            "core/src/refs.rs",
             "cli/src/git_util.rs",
             "cli/src/config/revsets.toml",
         ],
@@ -2031,7 +2031,7 @@ COMMAND_PAGE_OVERRIDES = {
         "sources": [
             "cli/src/commands/evolog.rs",
             "lib/src/evolution.rs",
-            "lib/src/operation.rs",
+            "core/src/operation.rs",
             "cli/src/diff_util.rs",
         ],
         "ready": True,
@@ -2053,7 +2053,7 @@ COMMAND_PAGE_OVERRIDES = {
             "cli/src/cli_util.rs",
             "lib/src/repo.rs",
             "lib/src/evolution.rs",
-            "lib/src/refs.rs",
+            "core/src/refs.rs",
         ],
         "ready": True,
     },
