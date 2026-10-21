@@ -3,7 +3,7 @@
 Running log for the rml build loop and the weekly Routine. Read this first, update it last.
 The contract is `specs/rml.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-20 (first run). Scaffold, `tensors`, `runtime` and `linalg` shipped; `random` is next.
+**Last updated:** 2026-10-21. Scaffold, `tensors`, `runtime`, `linalg` and `random` shipped; `autograd` is next.
 
 ## Upstream pin
 
@@ -19,7 +19,7 @@ links 404 until it is public.
 - [ ] `decoder` meets §8 with at least two SVG diagrams.
 - [ ] Every source link is pinned; §7.5 tests exist and pass.
 - [x] Homepage card links to `/rml`.
-- [x] Mobile at 390px: no horizontal page scroll (`/rml`, `/rml/tensors`, `/rml/runtime`, `/rml/linalg`; rerun per page).
+- [x] Mobile at 390px: no horizontal page scroll (`/rml`, `/rml/tensors`, `/rml/runtime`, `/rml/linalg`, `/rml/random`; rerun per page).
 - [ ] The weekly Routine has run at least once and cloned rml.
 
 ## Queue
@@ -29,7 +29,7 @@ links 404 until it is public.
 2. ~~`tensors`~~
 3. ~~`runtime`~~
 4. ~~`linalg`~~
-5. `random`
+5. ~~`random`~~
 6. `autograd`
 7. `nn`
 8. `training`
@@ -60,6 +60,8 @@ links 404 until it is public.
 - 2026-10-20 — `032d685` `runtime` page (errors, allocation, arena, thread pool).
 - 2026-10-20 — `9b1b305` `linalg` page (Matrix, MatMul, blocked GEMM and benchmark, LU, QR,
   Cholesky, Jacobi eigen and SVD, norms). No benchmark numbers are committed upstream, so none are quoted.
+- 2026-10-21 — `d98c9e8` fixed clipped labels and black-filled accent boxes in the `linalg`
+  diagrams; `b5ec1b2` `random` page (Philox, Generator, distributions, callers).
 
 ## Deliberate deviations
 
