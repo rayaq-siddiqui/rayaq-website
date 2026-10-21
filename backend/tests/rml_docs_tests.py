@@ -193,3 +193,18 @@ def test_decoder_page_has_its_sections_and_diagrams():
     positions = [body.index(f'<h2 id="{anchor}"') for anchor in DECODER_ANCHORS]
     assert positions == sorted(positions)
     assert body.count("<svg viewBox") >= 2
+
+
+def test_inference_stack_leads_the_section():
+    assert rml_docs.GROUPS[0] == "Inference stack"
+    assert rml_docs.PAGES[0]["slug"] == "stack"
+
+
+def test_stack_page_has_its_layer_diagram():
+    if rml_docs.find_page("stack") is None:
+        return
+    client = app_module.app.test_client()
+
+    body = client.get("/rml/stack").get_data(as_text=True)
+
+    assert "<svg viewBox" in body

@@ -6,14 +6,15 @@ import ml_models_docs
 
 UPSTREAM = {
     "repo": "https://github.com/rayaq-siddiqui/rml",
-    "commit": "927e1904d2d01c0317fb810b08c0815503fed7e8",
-    "commit_date": "2026-10-20",
+    "commit": "928a285de296cded11d01266b334b02a56e4375e",
+    "commit_date": "2026-10-21",
     "version": "0.1.0",
     "license": "Apache-2.0",
-    "analyzed_on": "2026-10-20",
+    "analyzed_on": "2026-10-21",
 }
 
 GROUPS = [
+    "Inference stack",
     "Foundations",
     "Learning",
     "Classical & retrieval",
@@ -51,17 +52,81 @@ MODULES = {
         "hf_tokenizer", "kernels", "kv_cache", "pretokenizer", "rope", "sampler", "speculative",
         "tokenizer", "unicode", "unicode_tables", "weight_source",
     ],
+    "rml/graph": ["executor", "graph", "ops", "shape_inference"],
     "rml/copts": ["rml"],
 }
 
 EXAMPLES = [
     "causal_inference", "char_gpt", "cnn", "collaborative_filtering", "diffusion",
     "diffusion_unet", "distillation", "distributed", "dpo", "drift", "encoder", "finetune",
-    "flow_matching", "gan", "gnn", "learning_to_rank", "mlp", "multimodal", "online_learning",
+    "flow_matching", "gan", "gnn", "graph_run", "learning_to_rank", "mlp", "multimodal", "online_learning",
     "rag", "rl", "rml_chat", "rnn", "serving", "ssm", "time_series", "two_tower", "vae", "vit",
 ]
 
 PAGES = [
+    {
+        "slug": "stack",
+        "title": "The inference stack",
+        "group": "Inference stack",
+        "summary": "Where rml is headed: framework models exported into rml-graph, lowered to a "
+        "fused kernel plan and benchmarked against PyTorch, JAX and TensorFlow, level by level.",
+        "sources": ["docs/progress.md", "docs/graph_ir.md", "README.md"],
+        "ready": False,
+    },
+    {
+        "slug": "exporters",
+        "title": "Exporters and the model zoo",
+        "group": "Inference stack",
+        "summary": "How tools/rml_export traces PyTorch, JAX and TensorFlow models into "
+        "rml-graph, the passes it runs, the shared zoo, and the golden fixtures.",
+        "sources": [
+            "tools/rml_export", "tools/make_graph_fixtures.py", "rml/graph/golden_test.cc",
+            "rml/graph/testdata",
+        ],
+        "ready": False,
+    },
+    {
+        "slug": "graph-ir",
+        "title": "The rml-graph IR",
+        "group": "Inference stack",
+        "summary": "The exported model format: JSON values, constants and nodes over mmapped "
+        "safetensors, the op set, loader validation and shape inference.",
+        "sources": [
+            "docs/graph_ir.md", "rml/graph/graph.h", "rml/graph/graph.cc",
+            "rml/graph/shape_inference.h", "rml/graph/shape_inference.cc",
+        ],
+        "ready": False,
+    },
+    {
+        "slug": "executor",
+        "title": "Executing a graph",
+        "group": "Inference stack",
+        "summary": "The executor's order and value lifetimes, how each op maps onto rml "
+        "kernels, the rml-graph-run tool, and the executor benchmark.",
+        "sources": [
+            "rml/graph/executor.h", "rml/graph/executor.cc", "rml/graph/ops.h",
+            "rml/graph/ops.cc", "rml/graph/executor_benchmark.cc", "examples/graph_run",
+        ],
+        "ready": False,
+    },
+    {
+        "slug": "lowering",
+        "title": "Lowering and fast CPU",
+        "group": "Inference stack",
+        "summary": "What runs today against the planned kernel-level IR, buffer planning, "
+        "fusion and SIMD GEMM, each tied to the benchmark gap it targets.",
+        "sources": ["docs/progress.md", "docs/bench/frameworks.md"],
+        "ready": False,
+    },
+    {
+        "slug": "benchmarks",
+        "title": "Benchmarks against the frameworks",
+        "group": "Inference stack",
+        "summary": "How each model is timed in PyTorch, JAX and TensorFlow, eager and "
+        "compiled, and in rml, and what the published results show.",
+        "sources": ["tools/bench_frameworks.py", "docs/bench/frameworks.md"],
+        "ready": False,
+    },
     {
         "slug": "tensors",
         "title": "Tensors and dtypes",
@@ -255,15 +320,6 @@ PAGES = [
             "tools/llm_reference.py", "tools/make_llm_fixtures.py",
             "tools/make_real_model_goldens.py",
         ],
-        "ready": False,
-    },
-    {
-        "slug": "graph-ir",
-        "title": "Graph IR (planned)",
-        "group": "Project",
-        "summary": "rml-graph, the planned format for models exported from Python "
-        "frameworks, as docs/graph_ir.md describes it.",
-        "sources": ["docs/graph_ir.md"],
         "ready": False,
     },
 ]
