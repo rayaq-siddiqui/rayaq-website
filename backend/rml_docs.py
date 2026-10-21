@@ -103,7 +103,7 @@ PAGES = [
         "group": "Foundations",
         "summary": "The Philox counter-based generator and the distributions sampled from it.",
         "sources": ["rml/random"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "autograd",

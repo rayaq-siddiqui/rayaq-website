@@ -1,0 +1,250 @@
+{% set d = "rml/random/" %}
+<header class="jj-header">
+  <h1>Random numbers</h1>
+  <p class="tagline">
+    <code>rml/random</code> is one generator and the distributions built on it. The generator is Philox4x32-10,
+    a counter-based design: the n-th random word is a pure function of (seed, stream, n), so any part of a
+    stream can be computed on its own and a generator's whole state is three integers.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: <code>Generator</code> encrypts a 128-bit counter with a 64-bit key (the seed) through ten Philox
+  rounds and hands out the four 32-bit lanes of each block as words. Skipping ahead is O(1) and so is saving
+  or restoring state. On top of the words sit exact conversions to float and double, unbiased integers by
+  rejection, and Box-Muller normals. <code>distributions.h</code> adds sampled tensors, Fisher-Yates
+  permutations, and normal, Bernoulli and categorical distributions with log-probability, entropy and KL
+  divergence in nats.
+</p>
+
+<p>
+  The headers link {{ ml('reproducibility', 'reproducibility') }},
+  {{ ml('probability-and-distributions', 'probability and distributions') }} and
+  {{ ml('entropy-and-kl', 'entropy and KL divergence') }} on /ml-models. Every sampler in rml takes a
+  <code>random::Generator&amp;</code>, so a fixed seed makes a whole run reproducible (<a href="#users">who
+  draws from it</a>).
+</p>
+
+<h2 id="why-counter">Why a counter-based generator</h2>
+
+<p>
+  A conventional generator such as <code>std::mt19937</code> carries a large state and steps it once per
+  draw, so draw n exists only after draws 0 through n − 1. Philox (Salmon et al., "Parallel Random Numbers:
+  As Easy as 1, 2, 3", SC 2011) is instead a keyed bijection on 128-bit counters
+  (<a href="{{ src(d ~ 'philox.h', 4, 12) }}">philox.h L4–12</a>). Block i of the stream is
+  Philox(counter = i, key = seed), computed directly with nothing carried over from block i − 1. Three
+  things follow:
+</p>
+
+<ul>
+  <li>Any element of a stream can be produced on its own, so <code>Skip</code> costs nothing.</li>
+  <li>Work split across threads can draw the same numbers a serial run would.</li>
+  <li>A generator's entire state is (seed, stream, position): three <code>uint64</code>s, trivially saved
+    in a checkpoint.</li>
+</ul>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 262" role="img" aria-labelledby="rn-stream-title rn-stream-desc">
+    <title id="rn-stream-title">How words map to Philox blocks</title>
+    <desc id="rn-stream-desc">Word position w selects block w divided by 4 and lane w modulo 4. The counter is
+      the 64-bit block number in its first two lanes and the 64-bit stream id in the last two; the key is the
+      64-bit seed. Ten Philox rounds turn the counter into four output words, which the generator returns in
+      lane order.</desc>
+    <text class="d-muted" x="20" y="24">counter (4 × 32 bits)</text>
+    {% for label in ["block lo", "block hi", "stream lo", "stream hi"] %}
+    <rect class="d-box" x="{{ 20 + loop.index0 * 84 }}" y="34" width="84" height="36"/>
+    <text x="{{ 62 + loop.index0 * 84 }}" y="57" text-anchor="middle">{{ label }}</text>
+    {% endfor %}
+    <text class="d-muted" x="400" y="24">key (2 × 32 bits)</text>
+    <rect class="d-box" x="400" y="34" width="84" height="36"/><text x="442" y="57" text-anchor="middle">seed lo</text>
+    <rect class="d-box" x="484" y="34" width="84" height="36"/><text x="526" y="57" text-anchor="middle">seed hi</text>
+
+    <line class="d-line" x1="188" y1="70" x2="270" y2="110"/>
+    <line class="d-line" x1="484" y1="70" x2="330" y2="110"/>
+    <rect class="d-box d-accent" x="190" y="110" width="220" height="40" rx="6" fill-opacity="0.15"/>
+    <text x="300" y="135" text-anchor="middle">Philox4x32: 10 rounds</text>
+    <line class="d-line" x1="300" y1="150" x2="300" y2="172"/>
+
+    {% for lane in range(4) %}
+    <rect class="d-box" x="{{ 160 + lane * 70 }}" y="172" width="70" height="36"/>
+    <text x="{{ 195 + lane * 70 }}" y="195" text-anchor="middle">lane {{ lane }}</text>
+    {% endfor %}
+    <text class="d-muted" x="20" y="195">one block</text>
+    <text class="d-muted" x="20" y="232">word w = lane (w mod 4) of block ⌊w / 4⌋</text>
+    <text class="d-muted" x="20" y="248">a new block is computed only when w mod 4 = 0</text>
+  </svg>
+  <figcaption>The word layout from <a href="{{ src(d ~ 'philox.h', 25, 27) }}">philox.h L25–27</a>. A
+    different <code>stream</code> with the same seed gives an independent sequence.</figcaption>
+</figure>
+
+<h2 id="philox">Philox4x32-10</h2>
+
+<p>
+  <code>Philox4x32</code> (<a href="{{ src(d ~ 'philox.cc', 33, 42) }}">philox.cc L33–42</a>) runs ten
+  rounds. Each round (<a href="{{ src(d ~ 'philox.cc', 24, 29) }}">L24–29</a>) multiplies two of the four
+  lanes by fixed odd constants, keeps both halves of each 64-bit product, and mixes them with the other two
+  lanes and the key:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Output lane</th><th>Value</th></tr></thead>
+    <tbody>
+      <tr><td>0</td><td>hi(M1 · c2) ⊕ c1 ⊕ k0</td></tr>
+      <tr><td>1</td><td>lo(M1 · c2)</td></tr>
+      <tr><td>2</td><td>hi(M0 · c0) ⊕ c3 ⊕ k1</td></tr>
+      <tr><td>3</td><td>lo(M0 · c0)</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  M0 = <code>0xD2511F53</code> and M1 = <code>0xCD9E8D57</code>
+  (<a href="{{ src(d ~ 'philox.cc', 12, 16) }}">L12–16</a>). Between rounds the key is bumped by two Weyl
+  constants, <code>0x9E3779B9</code> (the golden ratio) and <code>0xBB67AE85</code> (√3 − 1), each as a
+  32-bit fraction. The high half of each product depends on every bit of its input lane, which is where the mixing comes
+  from. The implementation is checked against three known-answer vectors from the Random123 reference
+  distribution.
+</p>
+
+<h2 id="generator">Generator</h2>
+
+<p>
+  <a href="{{ src(d ~ 'philox.h', 28, 62) }}"><code>Generator</code></a> holds the seed, the stream, the
+  number of words consumed, and the current four-word block. <code>Refill</code>
+  (<a href="{{ src(d ~ 'philox.cc', 46, 52) }}">philox.cc L46–52</a>) recomputes the block for
+  <code>position / 4</code>. Everything else is arithmetic on <code>position</code>:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Method</th><th>What it returns</th><th>Words used</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>NextU32</code></td><td>The next lane, refilling when the position is a multiple of 4.</td><td>1</td><td><a href="{{ src(d ~ 'philox.cc', 54, 57) }}">L54</a></td></tr>
+      <tr><td><code>NextU64</code></td><td>Two words, the first as the high half.</td><td>2</td><td><a href="{{ src(d ~ 'philox.cc', 59, 62) }}">L59</a></td></tr>
+      <tr><td><code>NextFloat</code></td><td>The top 24 bits × 2⁻²⁴: uniform in [0, 1), and every value is an exact float.</td><td>1</td><td><a href="{{ src(d ~ 'philox.cc', 64, 64) }}">L64</a></td></tr>
+      <tr><td><code>NextDouble</code></td><td>The top 53 bits of a u64 × 2⁻⁵³: uniform in [0, 1) at full double precision.</td><td>2</td><td><a href="{{ src(d ~ 'philox.cc', 66, 66) }}">L66</a></td></tr>
+      <tr><td><code>UniformInt(n)</code></td><td>Uniform in [0, n) with no modulo bias (<a href="#integers">below</a>). n = 0 aborts.</td><td>2 or more</td><td><a href="{{ src(d ~ 'philox.cc', 68, 76) }}">L68</a></td></tr>
+      <tr><td><code>NextNormal</code></td><td>A standard normal by Box-Muller (<a href="#normals">below</a>).</td><td>4</td><td><a href="{{ src(d ~ 'philox.cc', 78, 83) }}">L78</a></td></tr>
+      <tr><td><code>Skip(words)</code></td><td>Advances the position in O(1), refilling only if it lands mid-block.</td><td>—</td><td><a href="{{ src(d ~ 'philox.cc', 85, 88) }}">L85</a></td></tr>
+      <tr><td><code>state()</code>, <code>set_state</code></td><td>The (seed, stream, position) triple, and restoring it.</td><td>—</td><td><a href="{{ src(d ~ 'philox.cc', 90, 95) }}">L90</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="integers">Unbiased integers</h3>
+
+<p>
+  Taking <code>x % n</code> of a uniform 64-bit x would make the smallest residues slightly more likely
+  whenever n does not divide 2⁶⁴. <code>UniformInt</code> rejects the bottom 2⁶⁴ mod n values of the range,
+  computed in unsigned arithmetic as <code>-n % n</code>, and redraws. What remains is a whole multiple of n,
+  so every residue is equally likely. For n = 3 the threshold is 1: only x = 0 is rejected, a chance of
+  1 in 2⁶⁴, so a redraw almost never happens.
+</p>
+
+<h3 id="normals">Normals</h3>
+
+<p>
+  Box-Muller turns two uniforms into a standard normal:
+  z = √(−2 ln u₁) · cos(2π u₂). <code>NextNormal</code> takes u₁ = 1 − <code>NextDouble()</code>, which lies
+  in (0, 1], so the logarithm is always finite. It computes in double and rounds to float. The paired
+  sine value is not kept, so each normal costs two doubles (four words), and a draw never depends on whether
+  an earlier call left a cached value behind.
+</p>
+
+<h2 id="distributions">Distributions</h2>
+
+<p>
+  <a href="{{ src(d ~ 'distributions.h', 4, 9) }}"><code>distributions.h</code></a> fills tensors from a
+  <code>Generator</code> in row-major element order, so a fixed seed gives a fixed tensor. Entropy and KL
+  divergence are in nats.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>API</th><th>Behavior</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Uniform(shape, gen, low, high)</code></td><td>low + (high − low) · <code>NextFloat()</code> per element. Requires low ≤ high.</td><td><a href="{{ src(d ~ 'distributions.cc', 47, 53) }}">L47</a></td></tr>
+      <tr><td><code>Normal(shape, gen, mean, stddev)</code></td><td>mean + stddev · <code>NextNormal()</code>. Requires stddev ≥ 0.</td><td><a href="{{ src(d ~ 'distributions.cc', 55, 61) }}">L55</a></td></tr>
+      <tr><td><code>Permutation(n, gen)</code></td><td>Fisher-Yates: from the end, swap each slot i with a uniform j in [0, i]. Every one of the n! orders is equally likely.</td><td><a href="{{ src(d ~ 'distributions.cc', 63, 72) }}">L63</a></td></tr>
+      <tr><td><code>NormalDistribution</code></td><td>Scalar mean and stddev (stddev &gt; 0). <code>LogProb</code> = −z²/2 − ln σ − ln(2π)/2, entropy = ln(σ√(2πe)).</td><td><a href="{{ src(d ~ 'distributions.cc', 76, 100) }}">L76</a></td></tr>
+      <tr><td><code>Bernoulli</code></td><td>One probability per element, checked to be in [0, 1]. <code>FromLogits</code> applies a sigmoid. Samples are 0 or 1 as f32 (<code>NextFloat() &lt; p</code>). <code>LogProb</code> uses <code>log1p(−p)</code> for outcome 0 and rejects outcomes other than 0 and 1.</td><td><a href="{{ src(d ~ 'distributions.cc', 112, 154) }}">L112</a></td></tr>
+      <tr><td><code>Categorical</code></td><td>Over the last axis; leading axes are a batch. The constructor normalizes each row (non-negative, nonzero sum). <code>FromLogits</code> is a softmax. <code>Sample</code> returns i32 indices with the batch shape, and <code>LogProb</code> takes them back.</td><td><a href="{{ src(d ~ 'distributions.cc', 170, 245) }}">L170</a></td></tr>
+      <tr><td><code>KlDivergence(p, q)</code></td><td>For each pair of the same family. Zero exactly when p = q, and not symmetric.</td><td><a href="{{ src(d ~ 'distributions.h', 85, 88) }}">.h L85</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="categorical-sampling">Categorical sampling</h3>
+
+<p>
+  <code>Categorical::Sample</code> (<a href="{{ src(d ~ 'distributions.cc', 192, 213) }}">L192–213</a>)
+  inverts the CDF. It draws u = <code>NextDouble()</code> and walks the row, adding probabilities, until u
+  falls below the running sum. Zero-probability categories are skipped, so they can never be chosen. If
+  rounding leaves u above the final sum, the last category with nonzero probability is taken. For the row
+  [0.25, 0.5, 0, 0.25], u = 0.6 passes 0.25, stops at 0.75, and returns index 1.
+</p>
+
+<h3 id="entropy-kl">Entropy and KL edge cases</h3>
+
+<p>
+  Two helpers (<a href="{{ src(d ~ 'distributions.cc', 23, 31) }}">L23–31</a>) carry the limits that keep
+  entropy and KL finite where they should be. x log x is taken as 0 at x = 0, so a category with probability 0
+  adds nothing to the entropy. x log(x / y) is 0 when x = 0, and infinity when x &gt; 0 but y = 0. That is,
+  KL(p ‖ q) is infinite when p puts mass where q has none. Both sums are accumulated in double.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Family</th><th>KL(p ‖ q)</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Normal</td><td>ln(σ_q / σ_p) + (σ_p² + (μ_p − μ_q)²) / 2σ_q² − 1/2</td><td><a href="{{ src(d ~ 'distributions.cc', 102, 108) }}">L102</a></td></tr>
+      <tr><td>Bernoulli</td><td>p ln(p/q) + (1 − p) ln((1 − p)/(1 − q)), per element</td><td><a href="{{ src(d ~ 'distributions.cc', 156, 166) }}">L156</a></td></tr>
+      <tr><td>Categorical</td><td>Σₖ pₖ ln(pₖ / qₖ) over the last axis</td><td><a href="{{ src(d ~ 'distributions.cc', 247, 260) }}">L247</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="users">Who draws from it</h2>
+
+<p>
+  No module keeps a hidden global generator. Every caller takes a <code>random::Generator&amp;</code> or
+  owns one, so the seed is always visible at the call site:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Caller</th><th>What it samples</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Weight init</td><td>Xavier and Kaiming, uniform and normal; the <code>Linear</code>, <code>Conv2d</code>, <code>Embedding</code>, attention and recurrent constructors take a generator.</td><td><a href="{{ src('rml/nn/init.h', 36, 44) }}">nn/init.h L36</a></td></tr>
+      <tr><td>Dropout</td><td>Owns a generator seeded at construction and samples a <code>Bernoulli(1 − p)</code> keep mask.</td><td><a href="{{ src('rml/nn/dropout.cc', 15, 21) }}">nn/dropout.cc L15</a></td></tr>
+      <tr><td>Data splits</td><td>Train/test, stratified and k-fold splits.</td><td><a href="{{ src('rml/data/split.h', 25, 37) }}">data/split.h L25</a></td></tr>
+      <tr><td>Variational losses</td><td><code>ReparameterizedSample</code>: z = mean + exp(log_var / 2) · ε with ε ~ N(0, I).</td><td><a href="{{ src('rml/losses/variational.h', 30, 34) }}">losses/variational.h L30</a></td></tr>
+      <tr><td>Classical ML</td><td>k-means++ seeding, and feature subsampling when a tree grows (<code>GrowTree</code> draws only then).</td><td><a href="{{ src('rml/classical/kmeans.h', 64, 64) }}">classical/kmeans.h L64</a></td></tr>
+      <tr><td>LLM sampler</td><td>Owns a generator for temperature, top-k, top-p and min-p sampling.</td><td><a href="{{ src('rml/llm/sampler.h', 80, 80) }}">llm/sampler.h L80</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Those modules are covered on {{ link('nn', 'Neural network layers') }},
+  {{ link('data-metrics', 'Data and metrics') }}, {{ link('classical', 'Classical ML') }} and
+  {{ link('generation', 'Generation') }}.
+</p>
+
+<h2 id="tests">Tests</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Tests</th><th>What they pin down</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(d ~ 'philox_test.cc') }}"><code>philox_test.cc</code></a></td><td>8</td><td>Three Random123 known-answer vectors; words equal to the counter blocks for a given seed and stream; the same seed and stream repeating, and a different seed or stream not; <code>Skip</code> and state restore matching sequential draws; floats in [0, 1) with mean 0.5; <code>UniformInt</code> filling bins evenly and aborting on 0; normal mean, variance and fourth moment (3, a Gaussian's kurtosis).</td></tr>
+      <tr><td><a href="{{ src(d ~ 'distributions_test.cc') }}"><code>distributions_test.cc</code></a></td><td>13</td><td>Uniform range, moments and seeding; normal moments; permutations hold every index once and all 6 orders of 3 elements appear about equally often in 36,000 draws; normal log-probability, entropy and KL against the closed form and a Monte Carlo estimate; Bernoulli samples, log-probability (−∞ for an impossible outcome), entropy, logits and KL; categorical normalization, sampling in proportion, log-probability, entropy, KL and softmax logits; invalid inputs aborting.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Randomized tests elsewhere in rml use fixed seeds of this generator, so their failures reproduce. How
+  these run under sanitizers is on {{ link('testing', 'Testing') }}.
+</p>
