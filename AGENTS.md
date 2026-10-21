@@ -261,8 +261,10 @@ Each call is one command over SSH — deliberately kept to single, auditable com
   `/rml`. Read `specs/rml.md` first and `specs/rml-progress.md` for status and the build queue.
   Every link goes through `rml_docs.source_url` or `rml_docs.tree_url`, pinned to
   `rml_docs.UPSTREAM`; links to `/ml-models` go through `rml_docs.ml_models_link`, which only
-  links ready pages. Anything only rml's `docs/` describe (`backend`, `profile`, `rml/graph`,
-  the Phase 5 kernels) is marked *planned*. The section reuses `jj.css` and never edits other
+  links ready pages. Since spec v2 the section leads with the **Inference stack** group
+  (exporters, the rml-graph IR, the executor, lowering and benchmarks against PyTorch, JAX and
+  TensorFlow). Anything only rml's `docs/` describe (the StableHLO route, the kernel-level IR,
+  the fast-CPU work, `backend`, `profile`, the Phase 5 kernels) is marked *planned*. The section reuses `jj.css` and never edits other
   sections' files. A weekly Routine ("rayaq.ca/rml — architecture reference agent", Saturdays)
   clones rml, builds queued pages and follows the pin; before pushing it runs
   `tools/rml/check_mobile.js` for the 390px overflow check.
