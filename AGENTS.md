@@ -302,6 +302,13 @@ Each call is one command over SSH — deliberately kept to single, auditable com
   `git pull --ff-only origin main` fixes it. Never force-push, reset, or merge
   unrelated histories to "fix" a divergence you haven't confirmed on full history.
 
+- The owner is the author of every commit, and agents are only co-authors. Author
+  and commit as `Rayaq Siddiqui <rayaq05@hotmail.com>`, never as the agent's own
+  identity. Cloud containers default `user.name`/`user.email` to the agent, so run
+  `git config user.name "Rayaq Siddiqui"` and
+  `git config user.email rayaq05@hotmail.com` at the start of a session, and check
+  `git log -1 --format='%an <%ae>'` before pushing.
+
 - Every commit you create and push must include a `Co-Authored-By` trailer naming
   the model that contributed to it, not just the tool name (Claude Code or Codex).
   Use the actual model name and version available in the session and the
