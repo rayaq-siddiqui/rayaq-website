@@ -1,0 +1,269 @@
+{% set d = "rml/autograd/" %}
+<header class="jj-header">
+  <h1>Autograd</h1>
+  <p class="tagline">
+    <code>rml/autograd</code> is reverse-mode automatic differentiation in the style of PyTorch. Ops on
+    <code>Variable</code>s record a graph as they run; <code>Backward()</code> walks it from the output and
+    applies the chain rule at each step. Every layer, loss and optimizer in rml trains through it.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: a <code>Variable</code> is a tensor plus a gradient slot and a pointer to the <code>Node</code>
+  that produced it. Each differentiable op computes its value with the plain tensor op and calls
+  <code>MakeResult</code>, which records a Node holding a backward closure and edges to its inputs' Nodes.
+  Leaves get an <code>AccumulateGrad</code> Node. <code>Backward</code> counts incoming edges, runs each
+  Node once all of its gradient has arrived, sums gradients from different paths, and frees saved tensors
+  unless asked to keep them. User-defined ops subclass <code>Function</code>, and <code>GradCheck</code>
+  compares every gradient with central differences.
+</p>
+
+<p>
+  The headers link {{ ml('derivatives-and-gradients', 'derivatives and gradients') }},
+  {{ ml('chain-rule', 'the chain rule') }}, {{ ml('backpropagation', 'backpropagation') }} and
+  {{ ml('computation-graphs', 'computation graphs') }} on /ml-models. The values inside a
+  <code>Variable</code> are ordinary tensors ({{ link('tensors', 'Tensors and dtypes') }}), and the
+  matrix product is the one on {{ link('linalg', 'Linear algebra', '#matmul') }}.
+</p>
+
+<h2 id="variable">Variable</h2>
+
+<p>
+  <a href="{{ src(d ~ 'variable.h', 47, 96) }}"><code>Variable</code></a> is a handle to a shared
+  <code>VariableImpl</code> (<a href="{{ src(d ~ 'variable.cc', 20, 30) }}">variable.cc L20–30</a>): the
+  value, the gradient, a <code>requires_grad</code> flag, the producing Node (<code>grad_fn</code>), a weak
+  pointer to the leaf's gradient accumulator, and any hooks. Copying a <code>Variable</code> shares all of
+  it.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Member</th><th>Behavior</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Variable(value, requires_grad)</code></td><td>A leaf. Only f32 leaves may require grad.</td><td><a href="{{ src(d ~ 'variable.cc', 160, 180) }}">L160</a></td></tr>
+      <tr><td><code>requires_grad()</code>, <code>is_leaf()</code></td><td>A Variable requires grad if it has a <code>grad_fn</code> or is a leaf flagged so. A leaf is any Variable with no <code>grad_fn</code>. <code>set_requires_grad</code> on a non-leaf aborts.</td><td><a href="{{ src(d ~ 'variable.cc', 171, 182) }}">L171</a></td></tr>
+      <tr><td><code>grad()</code>, <code>ZeroGrad()</code>, <code>set_grad</code></td><td>The accumulated gradient, undefined until one arrives. <code>ZeroGrad</code> drops it rather than writing zeros. <code>set_grad</code> overwrites it, for example when an optimizer clips.</td><td><a href="{{ src(d ~ 'variable.cc', 189, 201) }}">L189</a></td></tr>
+      <tr><td><code>Backward(retain_graph)</code></td><td>For a one-element Variable: seeds with 1. The overload taking a tensor seeds with that gradient, which must match the shape.</td><td><a href="{{ src(d ~ 'variable.cc', 203, 215) }}">L203</a></td></tr>
+      <tr><td><code>Detach()</code></td><td>A new leaf over the same storage, cut from the graph.</td><td><a href="{{ src(d ~ 'variable.cc', 217, 217) }}">L217</a></td></tr>
+      <tr><td><code>RegisterHook</code></td><td>Calls a function on the gradient each time one is computed; returning a defined tensor replaces it.</td><td><a href="{{ src(d ~ 'variable.cc', 219, 226) }}">L219</a></td></tr>
+      <tr><td><code>RetainGrad()</code></td><td>Keeps a non-leaf's gradient in <code>grad()</code>, through a pre-hook on its Node that holds only a weak pointer back.</td><td><a href="{{ src(d ~ 'variable.cc', 228, 237) }}">L228</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="graph">Recording the graph</h2>
+
+<p>
+  The graph is built while the forward pass runs ("define by run"), so ordinary C++ control flow decides
+  its shape (<a href="{{ src(d ~ 'variable.h', 4, 21) }}">variable.h L4–21</a>). Every differentiable op,
+  built-in or user-defined, ends in
+  <a href="{{ src(d ~ 'variable.cc', 253, 269) }}"><code>MakeResult</code></a>. It wraps the computed value
+  in a new Variable, then looks up each input's <code>GradientEdge</code>
+  (<a href="{{ src(d ~ 'variable.cc', 241, 251) }}">L241–251</a>): the input's <code>grad_fn</code>, the
+  <code>AccumulateGrad</code> Node of a leaf that requires grad (created on first use and shared while it
+  lives), or null. If grad mode is off or every edge is null, the result is a plain leaf and the backward
+  closure is dropped. Otherwise the result gets a <code>FunctionNode</code> holding the closure, the edges
+  and the input shapes.
+</p>
+
+<p>
+  A <a href="{{ src(d ~ 'variable.h', 101, 127) }}"><code>Node</code></a> maps the gradient of its one
+  output to one gradient per input; <code>next_functions()[i]</code> is the Node that receives input i's
+  gradient. Edges point from outputs toward inputs, so the graph is owned from the top: a Variable keeps its
+  <code>grad_fn</code> alive, which keeps every Node beneath it alive. A leaf holds its accumulator only
+  weakly, so it does not keep a graph alive after the output is gone.
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 330" role="img" aria-labelledby="ag-graph-title ag-graph-desc">
+    <title id="ag-graph-title">The graph for L = sum(a · b + a)</title>
+    <desc id="ag-graph-desc">Leaves a and b each have an AccumulateGrad node. The Mul node points to both
+      accumulators. The Add node points to Mul and to a's accumulator. SumAll points to Add. With a = 2 and
+      b = 3, the gradient 1 enters SumAll, Add passes 1 to both of its inputs, Mul sends 3 to a and 2 to b,
+      and a's accumulator sums 1 and 3 into 4.</desc>
+    <rect class="d-box d-accent" x="250" y="20" width="140" height="40" rx="6"/>
+    <text x="320" y="45" text-anchor="middle">SumAll (root)</text>
+    <rect class="d-box" x="250" y="100" width="140" height="40" rx="6"/>
+    <text x="320" y="125" text-anchor="middle">Add</text>
+    <rect class="d-box" x="120" y="180" width="140" height="40" rx="6"/>
+    <text x="190" y="205" text-anchor="middle">Mul</text>
+    <rect class="d-box" x="80" y="260" width="200" height="40" rx="6"/>
+    <text x="180" y="285" text-anchor="middle">AccumulateGrad(a)</text>
+    <rect class="d-box" x="380" y="260" width="200" height="40" rx="6"/>
+    <text x="480" y="285" text-anchor="middle">AccumulateGrad(b)</text>
+
+    <line class="d-line" x1="320" y1="60" x2="320" y2="100"/>
+    <text class="d-muted" x="330" y="85">g = 1</text>
+    <line class="d-line" x1="290" y1="140" x2="210" y2="180"/>
+    <text class="d-muted" x="200" y="160">1</text>
+    <line class="d-line" x1="360" y1="140" x2="250" y2="260"/>
+    <text class="d-muted" x="318" y="200">1</text>
+    <line class="d-line" x1="170" y1="220" x2="170" y2="260"/>
+    <text class="d-muted" x="100" y="245">g·b = 3</text>
+    <line class="d-line" x1="240" y1="220" x2="450" y2="260"/>
+    <text class="d-muted" x="360" y="235">g·a = 2</text>
+
+    <text class="d-muted" x="430" y="110">a = 2, b = 3, L = 8</text>
+    <text class="d-muted" x="430" y="130">∂L/∂a = 1 + 3 = 4</text>
+    <text class="d-muted" x="430" y="150">∂L/∂b = 2</text>
+  </svg>
+  <figcaption>Arrows follow <code>next_functions()</code>, from each Node to the Nodes of its inputs, and
+    carry the gradient each one sends. Two paths reach <code>AccumulateGrad(a)</code>, so it waits for both
+    and receives their sum.</figcaption>
+</figure>
+
+<h2 id="backward">The backward pass</h2>
+
+<p>
+  <code>RunBackward</code> (<a href="{{ src(d ~ 'variable.cc', 90, 139) }}">variable.cc L90–139</a>) works
+  in two phases:
+</p>
+
+<ol>
+  <li><strong>Count.</strong> A breadth-first walk from the root counts, for every Node, how many edges
+    lead into it. A Node may run only after that many gradient contributions have arrived, which is a
+    topological order without sorting.</li>
+  <li><strong>Run.</strong> Starting from the root with the seed, it pops a ready Node, runs its pre-hooks
+    and backward function (<code>Apply</code>), and checks that it returned one f32 gradient per input with
+    the input's recorded shape. Each gradient is added into the input's pending slot, and an input whose
+    count reaches zero becomes ready. If no path delivered a gradient to a Node, it is skipped, but its
+    inputs' counts still drop.</li>
+</ol>
+
+<p>
+  Tracing the figure: SumAll runs on 1 and passes 1 to Add. Add passes 1 to Mul and to
+  <code>AccumulateGrad(a)</code>, whose count drops from 2 to 1, so it waits. Mul sends g·b = 3 to
+  <code>a</code> (pending 1 + 3 = 4, count 0, ready) and g·a = 2 to <code>b</code>. The accumulators then
+  run once each and store 2 and 4.
+</p>
+
+<p>
+  <code>AccumulateGrad</code> (<a href="{{ src(d ~ 'variable.cc', 70, 88) }}">L70–88</a>) runs the leaf's
+  hooks, then adds into <code>grad()</code>. The first gradient is cloned, because it may be shared with
+  another branch and the leaf's owner is allowed to change <code>grad()</code> in place. Gradients
+  accumulate across calls until <code>ZeroGrad</code>, as in PyTorch.
+</p>
+
+<p>
+  Unless <code>retain_graph</code> is set, every Node visited is then released: a <code>FunctionNode</code>
+  drops its closure and with it the tensors it captured
+  (<a href="{{ src(d ~ 'variable.cc', 42, 68) }}">L42–68</a>). A second <code>Backward</code> through the
+  same graph aborts with a message that says to pass <code>retain_graph = true</code>.
+</p>
+
+<h3 id="grad-mode">Grad mode</h3>
+
+<p>
+  Recording is on by default and tracked per thread (a <code>thread_local</code> flag,
+  <a href="{{ src(d ~ 'variable.cc', 271, 277) }}">L271–277</a>). <code>NoGradGuard</code> turns it off
+  for its scope and restores the previous value, so guards nest. Under a guard, <code>MakeResult</code>
+  returns plain leaves and records nothing, which is how evaluation and parameter updates avoid building a
+  graph.
+</p>
+
+<h2 id="ops">The differentiable ops</h2>
+
+<p>
+  <a href="{{ src(d ~ 'ops.h') }}"><code>ops.h</code></a> mirrors <code>rml/core/ops.h</code> and
+  <code>linalg::MatMul</code>. Each op computes its value with the tensor op, then records a closure that
+  captures only what its derivative needs: shapes for <code>Add</code>, both operands for <code>Mul</code>,
+  the output for <code>Softmax</code>. The header comment beside each op states its derivative, with g the
+  gradient arriving from the output. A closure skips any input whose <code>needs_grad</code> flag is false.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Group</th><th>Ops</th><th>Gradient</th></tr></thead>
+    <tbody>
+      <tr><td>Binary, broadcasting</td><td><code>Add</code>, <code>Sub</code>, <code>Mul</code>, <code>Div</code>, <code>Maximum</code>, <code>Minimum</code>, scalar <code>Add</code>/<code>Mul</code>, and the operators <code>+ − * /</code></td><td>For example da = g·b and db = g·a for <code>Mul</code>, each summed back to its operand's shape. On a tie, <code>Maximum</code> and <code>Minimum</code> send the gradient to the first operand.</td></tr>
+      <tr><td>Unary</td><td><code>Neg</code>, <code>Exp</code>, <code>Log</code>, <code>Sqrt</code>, <code>Square</code>, <code>Pow</code>, <code>Abs</code>, <code>Tanh</code>, <code>Sigmoid</code>, <code>Relu</code>, <code>Silu</code>, <code>Gelu</code>, <code>Clamp</code></td><td>g times the local derivative. <code>Abs</code> and <code>Relu</code> give 0 at the kink. <code>Gelu</code> differentiates the tanh approximation (<a href="{{ src(d ~ 'ops.cc', 199, 214) }}">ops.cc L199</a>).</td></tr>
+      <tr><td>Reductions</td><td><code>Sum</code>, <code>Mean</code> (one axis), <code>SumAll</code>, <code>MeanAll</code></td><td>g spread back over the reduced axis, divided by n for a mean (<a href="{{ src(d ~ 'ops.cc', 222, 265) }}">L222</a>).</td></tr>
+      <tr><td>Along an axis</td><td><code>Softmax</code>, <code>LogSoftmax</code>, <code>IndexSelect</code></td><td>y (g − Σ g y) for softmax and g − softmax(x) Σ g for log-softmax (<a href="{{ src(d ~ 'ops.cc', 269, 285) }}">L269</a>). <code>IndexSelect</code> scatter-adds g, so repeated indices sum.</td></tr>
+      <tr><td>Linear algebra</td><td><code>MatMul</code></td><td>dA = g Bᵀ and dB = Aᵀ g (<a href="#matmul-grad">below</a>).</td></tr>
+      <tr><td>Views</td><td><code>Reshape</code>, <code>Transpose</code>, <code>Permute</code>, <code>Slice</code>, <code>Select</code>, <code>Squeeze</code>, <code>Unsqueeze</code>, <code>Expand</code>, <code>Concat</code></td><td>g passed back through the inverse view. For a view that picks part of x, the gradient is zeros with g written into that part (<a href="{{ src(d ~ 'ops.cc', 341, 352) }}">L341</a>). <code>Concat</code> hands each input its slice of g.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="broadcasting">Gradients of broadcast operands</h3>
+
+<p>
+  When an operand was broadcast, each of its elements fed every output element along the stretched axes,
+  so its gradient is the sum over those axes. <code>internal::SumTo</code>
+  (<a href="{{ src(d ~ 'ops.cc', 24, 36) }}">ops.cc L24–36</a>) undoes a broadcast: it sums away the extra
+  leading axes, then sums with <code>keep_dim</code> every axis that is 1 in the target shape but not in
+  the gradient. Adding a bias of shape [4] to activations of shape [32, 4] therefore gives the bias a
+  gradient of shape [4], the column sums of g. See {{ link('tensors', 'broadcasting', '#broadcasting') }}
+  for the forward rule.
+</p>
+
+<h3 id="matmul-grad">MatMul</h3>
+
+<p>
+  <code>MatMul</code>'s backward (<a href="{{ src(d ~ 'ops.cc', 289, 310) }}">ops.cc L289–310</a>)
+  promotes vector operands to matrices exactly as the forward pass did, reshapes g to match, and computes
+  dA = g·Bᵀ and dB = Aᵀ·g as batched products. It sums them over broadcast batch axes with
+  <code>SumTo</code> and reshapes back to each operand's original shape. Both products run on the threaded
+  GEMM.
+</p>
+
+<h2 id="function">User-defined ops: Function</h2>
+
+<p>
+  <a href="{{ src(d ~ 'function.h', 4, 24) }}"><code>Function</code></a> works like
+  <code>torch.autograd.Function</code>. A subclass computes the value in <code>Forward</code>, keeps what
+  <code>Backward</code> will need as members, and returns one gradient per input from
+  <code>Backward</code>. <code>Apply</code> (<a href="{{ src(d ~ 'function.cc', 15, 31) }}">function.cc
+  L15–31</a>) runs <code>Forward</code> under a <code>NoGradGuard</code>, so its internals record nothing,
+  then records a single Node named after the Function. When the graph is released, the Node's closure (and
+  so the Function with its saved members) is freed.
+</p>
+
+<p>
+  rml uses this where one fused backward is simpler or cheaper than a chain of small ops: the im2col
+  unfold, patch rows and max pooling in <a href="{{ src('rml/nn/conv.cc', 236, 266) }}"><code>nn/conv.cc</code></a>,
+  and sigmoid cross-entropy in <a href="{{ src('rml/losses/classification.cc', 64, 64) }}"><code>losses/classification.cc</code></a>
+  (see {{ link('nn', 'Neural network layers') }}).
+</p>
+
+<h2 id="grad-check">Gradient checking</h2>
+
+<p>
+  rml's rule is that every differentiable op gets a numerical gradient check.
+  <a href="{{ src(d ~ 'grad_check.h', 4, 48) }}"><code>grad_check.h</code></a> compares autograd's
+  gradients with central differences,
+  ∂L/∂xᵢ ≈ (L(x + ε eᵢ) − L(x − ε eᵢ)) / 2ε, whose error shrinks as ε².
+</p>
+
+<ul>
+  <li>The function may return any shape. It is reduced to L = Σ w ⊙ f(inputs) with fixed pseudo-random
+    weights w in [−1, 1), so every output element counts, and swapping two output elements would change the
+    gradient (<a href="{{ src(d ~ 'grad_check.cc', 22, 41) }}">grad_check.cc L22–41</a>). The weights come
+    from raw <code>mt19937</code> bits because the standard distributions differ between standard
+    libraries.</li>
+  <li><code>GradCheckVariables</code> (<a href="{{ src(d ~ 'grad_check.cc', 45, 82) }}">L45–82</a>) runs
+    one <code>Backward</code> for the analytic gradient, then, under <code>NoGradGuard</code>, nudges each
+    element by ±ε in place, re-evaluates, and restores it. An element passes when
+    |analytic − numeric| ≤ atol + rtol·|numeric|, with defaults ε = 10⁻³, atol = 10⁻³ and rtol = 10⁻².
+    The first failure comes back as a <code>Status</code> naming the input and element.</li>
+  <li><code>GradCheck</code> does the same for fresh copies of some tensors. <code>GradCheckVariables</code>
+    is for Variables that already exist, such as a module's parameters, which <code>fn</code> reads by
+    capture.</li>
+</ul>
+
+<h2 id="tests">Tests</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Tests</th><th>What they pin down</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(d ~ 'variable_test.cc') }}"><code>variable_test.cc</code></a></td><td>17</td><td>Leaf properties; the chain rule through two ops; recorded nodes and edges; ops on constants recording nothing; gradients from several paths summed and a diamond graph running each Node once; accumulation until <code>ZeroGrad</code>; <code>retain_graph</code> allowing a second backward, and a freed graph aborting; non-scalar backward needing a seed; <code>NoGradGuard</code>; <code>Detach</code> sharing storage; hooks replacing gradients; <code>RetainGrad</code>; the graph not outliving its output.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'function_test.cc') }}"><code>function_test.cc</code></a></td><td>6</td><td>A Function records one named Node, passes a gradient check, and is caught by the check when its backward is wrong; an undefined gradient means none; <code>Forward</code> records nothing; a check on an output that does not require grad is rejected.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'ops_test.cc') }}"><code>ops_test.cc</code></a></td><td>16</td><td>Every op against central differences: a parameterized sweep of smooth unary ops, kinked ops away from the kink, <code>Pow</code>, broadcasting binary ops, ties in <code>Maximum</code>, scalar operands and operators, reductions, softmax, <code>MatMul</code> shapes, views, <code>IndexSelect</code> with repeated indices, <code>Concat</code>, a composed network layer, in-place perturbation of existing Variables, and <code>SumTo</code>.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  How these run under sanitizers is on {{ link('testing', 'Testing') }}.
+</p>

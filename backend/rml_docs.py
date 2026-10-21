@@ -112,7 +112,7 @@ PAGES = [
         "summary": "Variables, functions and the backward pass over a dynamic graph, the "
         "differentiable ops, and numerical gradient checking.",
         "sources": ["rml/autograd"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "nn",
