@@ -7,13 +7,13 @@ import resume_data
 PHONE_NUMBER = re.compile(r"\(?\b\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b")
 
 PROJECT_LINKS = [
+    "/rml",
     "/leetcode",
     "/ml-models",
     "/jj",
     "/jj-dojo",
     "/jj-vfs-poc",
     "/jj-commit-cloud-poc",
-    "/rml",
     "/weather",
 ]
 
