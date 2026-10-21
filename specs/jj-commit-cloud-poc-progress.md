@@ -3,7 +3,7 @@
 Running log for the daily jj-commit-cloud-poc architecture Routine. Read this first, update it last.
 The contract is `specs/jj-commit-cloud-poc.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-14 (sixth run). Upstream unchanged since the pin; maintenance only, no
+**Last updated:** 2026-10-21 (seventh run). Upstream unchanged since the pin; maintenance only, no
 page changes. The build is complete.
 
 ## Upstream pin
@@ -25,8 +25,13 @@ at the `v0.43.0` tag of `jj-vcs/jj`.
 - [x] Homepage card links to `/jj-commit-cloud-poc`.
 - [x] Mobile at 390px: no horizontal page scroll on the index and every ready page (headless
       Chromium, fourth run; no page changed since).
-- [x] The daily Routine has run in maintenance mode (runs two to six: no upstream
+- [x] The daily Routine has run in maintenance mode (runs two to seven: no upstream
       change).
+
+## Seventh run (2026-10-21)
+
+Weekly maintenance: upstream `HEAD` still at `4b1c77b` (jj-lib 0.43.0), so the pin and every page
+stayed. Suite green (1058 tests). Only this file changed.
 
 ## Sixth run (2026-10-14)
 
