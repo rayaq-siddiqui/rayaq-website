@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-20 (sixty-fourth run): bumped the pin `6bfd0a7..5176b1d` (0.46.0). **The
+**Last updated:** 2026-10-21 (sixty-fifth run): bumped the pin `5176b1d..7f96d3e` (0.46.0). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@5176b1d8a3b0e569bb79b5e681c37874543ec617` (committed 2026-10-20, version
-0.46.0), analyzed 2026-10-20. Held in `jj_docs.UPSTREAM`. Previous pin: `6bfd0a7`.
+`jj-vcs/jj@7f96d3ebad9049ccf363973ca7e534e595c3c48b` (committed 2026-10-21, version
+0.46.0), analyzed 2026-10-21. Held in `jj_docs.UPSTREAM`. Previous pin: `5176b1d`.
 
 ## §10 acceptance criteria
 
@@ -31,21 +31,21 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to sixty-fourth runs: pin bumped).
+      run: pin bumped; fiftieth to sixty-fifth runs: pin bumped).
 
-## Sixty-fourth run (2026-10-20)
+## Sixty-fourth and sixty-fifth runs (2026-10-20 to 2026-10-21)
 
+- `60897df` `5176b1d..7f96d3e`: only `flake.lock` changed; pin and dates bumped, no pages.
 - `117f376` maintenance `6bfd0a7..5176b1d`. `index_store`, `iter_util`, `operation`, `refs`, `view`
   moved to `core/src` (jj-lib re-exports them; `specs/jj.md` still names `lib/src`). `MergedTree`
   `*_stream` methods renamed without the suffix; `Tree::entries_matching` is an `OrderedTreeWalk`
   stream; `jj run` pool uses `ui.conflict-marker-style` (run page notes it). 35 templates remapped
-  (36 files, over the 10-file guideline); registry run line; protos unchanged. All checks green.
+  (36 files, over the 10-file guideline); registry run line; protos unchanged.
 
 ## Fifty-sixth to sixty-third runs (2026-10-12 to 2026-10-19)
 
 - `5a850df` `4eb41be..6bfd0a7` (async `Revset::is_empty`/`count_estimate`, `TreeState::check_out`).
-- `1a15c00` `8555dde..4eb41be` (`TreeBuilder` removed for `tree_rewriter.rs`; workspace remove
-  writes a hidden snapshot commit and refuses untracked files).
+- `1a15c00` `8555dde..4eb41be` (`TreeBuilder` gone for `tree_rewriter.rs`; workspace remove snapshots).
 - `826e666` `..8555dde` (`Backend::gc`, `cli_args.rs`), `b5d9fcd` `df92b83..fd68202` (config gc),
   `ac97ee5` `0558176..86b7e2e` (modules to `core/src`), `970fe53` `..1776665` (sign-on-push),
   `ca92ab5` `..9031d0a` (concurrent diff walk), `148c9e1` `..df92b83` (tree-read streams).
