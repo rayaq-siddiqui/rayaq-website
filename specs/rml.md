@@ -1,6 +1,6 @@
 # rayaq.ca/rml — rml architecture reference
 
-**Status:** approved for build · **Owner:** Rayaq Siddiqui · **Spec version:** 1 (2026-10-20)
+**Status:** approved for build · **Owner:** Rayaq Siddiqui · **Spec version:** 2 (2026-10-21)
 
 This is the product and technical contract for `rayaq.ca/rml`. The build loop and the
 weekly Routine build and maintain the section against it. Build progress lives in
@@ -19,6 +19,15 @@ decoder models. `/rml` is a source-linked architecture reference to it, in the s
 lives, how the modules layer, and how one token of LLM decode actually happens, with every
 claim one click from the pinned line that backs it.
 
+**Direction (v2).** rml is becoming a layered, MLIR-style inference stack. Every neural model
+on `/ml-models` is defined in PyTorch, JAX and TensorFlow, exported (through StableHLO from
+each framework's production tooling, alongside the direct exporters) into rml's own graph
+IR, and checked against each framework's outputs. Inside rml, that graph lowers to a fused,
+buffer-planned, threaded kernel-level plan with SIMD GEMM, aiming to beat the frameworks'
+eager and compiled modes on CPU, with every model benchmarked against them. The
+**Inference stack** group comes first in the section and in the build queue; the library
+and LLM-runtime pages remain, after it.
+
 Where a page explains a concept that `/ml-models` teaches, it links there rather than
 re-teaching it.
 
@@ -28,7 +37,8 @@ re-teaching it.
 - API documentation for every function. Pages explain design and data flow, and link to
   headers for the full surface.
 - Benchmarks run by this site. Numbers come only from rml's own docs or tests, cited.
-- Anything about the Python reference tools beyond what they generate and why.
+- Python tools beyond what they generate and why. The exception is `tools/rml_export/`
+  and `tools/bench_frameworks.py`, which are part of the inference stack and get full pages.
 
 ## 3. Hard constraints
 
@@ -48,9 +58,10 @@ re-teaching it.
    unsure, omit and log the gap in the progress file.
 6. **Planned is not implemented.** Anything that appears only in rml's `docs/` and is
    missing from the source tree at the pin is marked *planned*, never described as working.
-   At spec time that includes `rml/graph` and `tools/rml_export/` (`docs/graph_ir.md`), the
-   `backend` and `profile` modules named in `docs/architecture.md`, and the kernels
-   `docs/kernels.md` lists as planned. When a later pin adds them, the page flips them.
+   At spec v2 that includes the StableHLO import route, the kernel-level IR, the fast-CPU
+   items and the unbuilt zoo models in `docs/progress.md`, the `backend` and `profile`
+   modules named in `docs/architecture.md`, and the kernels `docs/kernels.md` lists as
+   planned. When a later pin adds them, the page flips them.
 7. **Licensing.** rml is Apache-2.0. Every page footer says "Describes
    rayaq-siddiqui/rml at `<sha12>`, Apache-2.0". Code excerpts stay short.
 8. **Section isolation.** Several Routines push to this repo. This section owns only its
@@ -61,10 +72,10 @@ re-teaching it.
 
 ## 4. Information architecture
 
-- `/rml` — overview, the library's two goals (a readable from-scratch ML library, and a
-  fast CPU runtime for real open-weight LLMs), the module-layering diagram (§6), and the
-  page index grouped as **Foundations**, **Learning**, **Classical & retrieval**,
-  **LLM runtime** and **Project**.
+- `/rml` — overview, the inference-stack direction (§1), the library's two goals (a
+  readable from-scratch ML library, and a fast CPU runtime for real open-weight LLMs), the
+  module-layering diagram (§6), and the page index grouped as **Inference stack**,
+  **Foundations**, **Learning**, **Classical & retrieval**, **LLM runtime** and **Project**.
 - `/rml/<slug>` — one deep-dive page per §5 row. Each page starts with a `<header>` (title
   and tagline), has an on-page table of contents built from its `h2`/`h3` ids, and ends
   with previous/next links.
@@ -72,10 +83,17 @@ re-teaching it.
 
 ## 5. Page inventory
 
-Build order is the table order.
+Rows 1–4 and 11 shipped before v2. The build queue in the progress file orders the rest,
+Inference stack first.
 
 | # | Slug | Group | Must cover | Source set |
 |---|---|---|---|---|
+| S1 | `stack` | Inference stack | the direction (§1); the levels from framework model to kernel (framework, StableHLO or direct exporter, rml-graph, kernel-level plan, kernels) drawn as an SVG, each marked built or *planned*; why MLIR-style layering; inference only, what stays out (classical ML, KV-cache decoding, sampling loops); the model plan against `/ml-models` | `docs/progress.md` (front-end sections), `docs/graph_ir.md`, `README.md` |
+| S2 | `exporters` | Inference stack | `tools/rml_export/`: the shared graph builder, the PyTorch (`torch.export`), JAX (jaxpr) and TensorFlow (GraphDef) exporters, export passes such as transpose sinking, the zoo defined identically in three frameworks, fixture generation and golden tests; the StableHLO route marked *planned* until it lands | `tools/rml_export/`, `tools/make_graph_fixtures.py`, `rml/graph/golden_test.cc`, `rml/graph/testdata` |
+| S3 | `graph-ir` | Inference stack | the rml-graph format (JSON plus mmapped safetensors), values, constants, nodes, dtypes, the op set, loader validation, shape inference | `docs/graph_ir.md`, `rml/graph` graph, shape_inference |
+| S4 | `executor` | Inference stack | the executor (order, value lifetimes, views), how each op maps onto rml kernels, `rml-graph-run`, the executor benchmark | `rml/graph` executor, ops, executor_benchmark; `examples/graph_run` |
+| S5 | `lowering` | Inference stack | what runs today versus the planned kernel-level IR (fused elementwise loops, buffers planned at load, threading, textual dumps) and fast-CPU work (packed SIMD GEMM with runtime dispatch and an M = 1 path, threaded elementwise kernels, export-time fusion), each tied to the benchmark gap it targets | `docs/progress.md`, `docs/bench/frameworks.md` |
+| S6 | `benchmarks` | Inference stack | `tools/bench_frameworks.py` method (eager and compiled per framework, correctness gate, threads), the results in `docs/bench/frameworks.md` quoted with machine and versions, where rml wins and loses and why | `tools/bench_frameworks.py`, `docs/bench/frameworks.md` |
 | 1 | `tensors` | Foundations | dtypes and their storage (f16/bf16 rounding, Q8_0/Q4_0 blocks), `Shape`/`Strides`, broadcasting, `ForEachRow`, `Storage` and `Tensor`, views vs copies, the f32 reference ops, `RML_CHECK` | `rml/core` dtype, shape, strided, tensor, ops, check |
 | 2 | `runtime` | Foundations | `Status`/`Expected`, the no-throw error model, aligned allocation and its counters, `ThreadPool`/`ParallelFor` chunking and determinism | `rml/core` status, allocator, thread_pool; `docs/architecture.md` Errors, Memory, Threads |
 | 3 | `linalg` | Foundations | `Matrix`, matmul and the blocked GEMM (with its benchmark), LU, QR, Cholesky, eigen, SVD, norms | `rml/linalg` |
@@ -95,7 +113,6 @@ Build order is the table order.
 | 17 | `models-memory` | Project | `docs/models.md`: supported model families, memory budgets, status per model | `docs/models.md`, `README.md` |
 | 18 | `examples` | Project | every directory in `examples/`, what it builds, and the `/ml-models` concept it demonstrates | `examples/` |
 | 19 | `testing` | Project | Bazel module and copts, GoogleTest and Google Benchmark, death tests, golden LLM tests and the tools that make them, CI | `MODULE.bazel`, `rml/copts/rml.bzl`, `tools/`, `.github/workflows/ci.yml` |
-| 20 | `graph-ir` | Project | `docs/graph_ir.md`; the whole page is *planned* until the code lands | `docs/graph_ir.md` |
 
 **New code upstream.** When the pin moves and a new module under `rml/` or a new
 directory under `examples/` appears, it is added to `MODULES`/`EXAMPLES` and claimed by a
@@ -105,8 +122,8 @@ page's source set (an existing page, or a new queued row recorded in the progres
 
 The index carries one inline SVG of the module layering from `docs/architecture.md`:
 `core` at the bottom, then `linalg`, `random`, `autograd`, `nn`/`losses`/`optim`,
-`data`/`metrics`/`classical`, `retrieval`, `quant`, `io`, `llm` at the top, with `backend`
-and `profile` drawn dashed as *planned*. Every box links to its page when ready, otherwise
+`data`/`metrics`/`classical`, `retrieval`, `quant`, `io`, and `llm` and `graph` side by
+side at the top, with `backend` and `profile` drawn dashed as *planned*. Every box links to its page when ready, otherwise
 to the module's pinned source tree. The SVG has `role="img"`, a `<title>` and a `<desc>`.
 
 ## 7. Technical design
@@ -160,6 +177,7 @@ through them. `ml_models_link(slug, text)` links `/ml-models/<slug>` only when
 - The index lists every page; every page shows `commit[:12]` and "Apache-2.0".
 - Every `MODULES` and `EXAMPLES` entry is claimed by some page's sources.
 - `decoder`, once ready, has the §8 `h2` anchors and at least two `<svg viewBox`.
+- `stack`, once ready, has at least one `<svg viewBox`.
 - The index SVG has `role="img"`, `<title>` and `<desc>`.
 - The homepage links to `/rml`.
 
@@ -197,6 +215,7 @@ The flagship page. `h2` sections with these ids, in order, all sourced:
 - [ ] `/rml` renders the §6 diagram and lists every §5 page.
 - [ ] Every §5 page exists, meets its "Must cover" column, and is marked ready.
 - [ ] `decoder` meets §8 with at least two SVG diagrams.
+- [ ] Every Inference stack page is ready and `stack` has its layer diagram.
 - [ ] Every source link is pinned; §7.5 tests exist and pass.
 - [ ] Homepage card links to `/rml`.
 - [ ] Mobile at 390px: no horizontal page scroll (`tools/rml/check_mobile.js`).
