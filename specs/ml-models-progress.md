@@ -4,9 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-15 (first weekly audit). Spec v2 widens the section from model
-architectures to all of machine learning: 12 areas, 94 pages, a seven-step learning path and a
-fixed page format. Every queue item is ready (1-94; the audit added `matrix-decompositions`).
+**Last updated:** 2026-10-22 (second weekly audit). Spec v2 widens the section from model
+architectures to all of machine learning: 12 areas, 95 pages, a seven-step learning path and a
+fixed page format. Every queue item is ready (1-95; audits added `matrix-decompositions` and
+`iterative-solvers`).
 Nothing is queued, so the next run is the next weekly audit (spec §8.1).
 
 ## Pins
@@ -42,8 +43,8 @@ pull, clone the pins, build the `← next` page to §6, maintain the pins, recor
 and push small commits to `main`. The phone check before each push is
 `NODE_PATH=$(npm root -g) node tools/ml_models/check_mobile.js / /ml-models <ready pages>`.
 
-The first audit had no tool to change a trigger's schedule, so the trigger still fires every
-5 hours. Until the owner switches it to weekly, a run that finds the last audit row less than
+Neither audit so far (2026-10-15, 2026-10-22) had a tool to change a trigger's schedule, so
+the trigger still fires every 5 hours. Until the owner switches it to weekly, a run that finds the last audit row less than
 seven days old should record nothing and stop.
 
 ## §9 acceptance criteria
@@ -223,15 +224,27 @@ Open gaps from these runs:
 
 | Date | Checked | Found | Added |
 |---|---|---|---|
+| 2026-10-22 | Pins (`git ls-remote --tags`); Hugging Face model cards and reports for recent open-weight releases; the foundations area for numerical linear algebra beyond factorizations | No pin moved (PyTorch v2.15.0 is still rc7). DeepSeek-V4.1-Flash has weights and a report (cross-layer KV sharing, FP4 KV cache); Muse Spark Open, Reflection Beam and Mistral Large 4 have no report or open weights yet, so they were skipped. Foundations had no iterative solvers (CG, Krylov, preconditioning) | `15c05d9` a cross-layer sharing and FP4 section on `kv-cache` plus its `UPCOMING_MODELS` entry; `ab96a0f` the `iterative-solvers` page (§5 row, registry, queue 95) |
 | 2026-10-15 | Pins (`git ls-remote --tags`); the Kimi K2, DeepSeek-V3.2-Exp and MiMo-V2-Flash reports; `torch/optim/_muon.py`; the foundations area against `torch.linalg` | No pin moved (PyTorch v2.15.0 is still rc only). Muon and QK-Clip had no coverage; foundations stopped at eigen/SVD with no LU, QR, Cholesky, least squares or matrix norms | `063d6ab` three `UPCOMING_MODELS` entries; `045a59f` a Muon/QK-Clip section on `optimizers`; `736023a` the `matrix-decompositions` page (§5 row, registry, queue 94) |
 
-Notes from the 2026-10-15 audit:
+Notes from the 2026-10-22 audit:
 
-- arxiv.org is still unreachable, so the model reports were read as the PDFs in their GitHub
-  repositories. DeepSeek-V3.2-Exp has no arXiv id there, so its entry has no link.
-- Muon at the pin: `_zeropower_via_newtonschulz` 31-70 (coefficients 3.4445, −4.7750, 2.0315),
-  `_adjust_lr` 73-86, `Muon` 89-205, docstring 208-315, `_single_tensor_muon` 318-351. The
-  docstring routes biases, embeddings and other non-2-D parameters to AdamW.
+- WebFetch could not reach most domains, so reports were read through Hugging Face. The
+  DeepSeek-V4.1-Flash report link is pinned to HF commit `314113f8`, not `blob/main`.
+- Linked at the pins: scikit-learn `utils/optimize.py` `_cg` 173-259 and `_newton_cg`
+  262-403, `linear_model/_ridge.py` `_solve_sparse_cg` 86-156 and `_solve_lsqr` 159-212;
+  PyTorch `_lobpcg.py` `lobpcg` 343-580 and `_lobpcg` 583-697, `autograd/functional.py`
+  `vhp` 997-1093 and `hvp` 1098-1210.
+- Gaps: Hestenes–Stiefel, Shewchuk, Saad, Paige–Saunders, Knyazev, Pearlmutter, Martens and
+  GPyTorch are cited from memory without links (the GPyTorch arXiv id could not be verified).
+  The FP4 layout (E2M1 values, one E4M3 scale per 16) follows the DeepSeek report.
+- Candidate for a later audit: numerical precision in linear algebra beyond `mixed-precision`.
+
+Notes from the 2026-10-15 audit (condensed):
+
+- arxiv.org is unreachable, so model reports were read as PDFs in their GitHub repositories.
+- Muon at the pin: `_zeropower_via_newtonschulz` 31-70, `_adjust_lr` 73-86, `Muon` 89-205,
+  `_single_tensor_muon` 318-351.
 - `torch/linalg/__init__.py` docstring ranges at v2.14.1: `cholesky` 71-146, `cholesky_ex`
   148-212, `eigh` 642-763, `lstsq` 1078-1200, `norm` 1353-1489, `matrix_norm` 1570-1644, `svd`
   1734-1886, `cond` 1938-2054, `solve` 2260-2363, `solve_triangular` 2365-2443, `lu_factor`
@@ -243,8 +256,6 @@ Notes from the 2026-10-15 audit:
 - Gaps: the Muon post, Moonshot's scaling paper, *Deriving Muon*, Trefethen–Bau, Golub–Van
   Loan, Higham, Läuchli and Rasmussen–Williams are cited from memory. Neither the Muon nor the
   decompositions snippet was run under real PyTorch (the wheel download is still blocked).
-- Candidates for later audits: a page on iterative solvers (conjugate gradient, Lanczos) and
-  one on numerical precision in linear algebra beyond `mixed-precision`.
 
 ## Queue
 
