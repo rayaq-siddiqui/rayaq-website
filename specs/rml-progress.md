@@ -3,7 +3,7 @@
 Running log for the rml build loop and the weekly Routine. Read this first, update it last.
 The contract is `specs/rml.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-21. Spec v2: the Inference stack group leads the queue. Scaffold, `tensors`, `runtime`, `linalg`, `random` and `autograd` shipped; `stack` is next.
+**Last updated:** 2026-10-22. Spec v2: the Inference stack group leads the queue. Scaffold, `tensors`, `runtime`, `linalg`, `random`, `autograd` and `stack` shipped; `exporters` is next.
 
 ## Upstream pin
 
@@ -21,7 +21,7 @@ links 404 until it is public.
 - [ ] Every Inference stack page is ready and `stack` has its layer diagram.
 - [ ] Every source link is pinned; §7.5 tests exist and pass.
 - [x] Homepage card links to `/rml`.
-- [x] Mobile at 390px: no horizontal page scroll (`/rml`, `/rml/tensors`, `/rml/runtime`, `/rml/linalg`, `/rml/random`, `/rml/autograd`; rerun per page).
+- [x] Mobile at 390px: no horizontal page scroll (`/rml`, `/rml/tensors`, `/rml/runtime`, `/rml/linalg`, `/rml/random`, `/rml/autograd`, `/rml/stack`; rerun per page).
 - [ ] The weekly Routine has run at least once and cloned rml.
 
 ## Queue
@@ -38,7 +38,7 @@ Shipped before spec v2:
 
 Spec v2 order, Inference stack first:
 
-7. `stack`
+7. ~~`stack`~~
 8. `exporters`
 9. `graph-ir`
 10. `executor`
@@ -80,6 +80,7 @@ Spec v2 order, Inference stack first:
   inference stack). Re-pin to `928a285` with the Inference stack group, `rml/graph` and
   `examples/graph_run` in the registry, the index rewritten, and the runtime page's arena
   citation corrected.
+- 2026-10-22 — `e0c793d` `stack` page (levels diagram, scope, zoo plan, first results).
 
 ## Deliberate deviations
 
