@@ -5924,3 +5924,58 @@ def test_fp4_block_quantize_snaps_to_the_e2m1_grid():
     assert round(result["max_error"], 2) == 0.15
     for value, restored in zip(ml_models_docs.FP4_BLOCK_EXAMPLE, result["restored"]):
         assert value * restored >= 0
+
+
+def test_conjugate_gradient_solves_the_2x2_example_in_two_steps():
+    ex = ml_models_docs.ITERATIVE_EXAMPLE
+    run = ml_models_docs.iterative_example()["small"]
+
+    assert run["cg"]["steps"] == 2
+    assert run["cg"]["x"] == pytest.approx([2.0, -2.0])
+    assert run["cg"]["path"][1] == pytest.approx([0.08, -0.6133333333])
+    assert abs(run["conjugacy"]) < 1e-12
+    assert run["eigen"]["values"] == pytest.approx([2.0, 7.0])
+    assert run["kappa"] == pytest.approx(3.5)
+    assert run["sd"]["path"][1] == run["cg"]["path"][1]
+    assert run["sd"]["steps"] == 10
+    for before, after in zip(run["sd"]["path"], run["sd"]["path"][1:]):
+        step = [a - b for a, b in zip(after, before)]
+        residual = [b - sum(a * x for a, x in zip(row, before)) for row, b in zip(ex["a"], ex["b"])]
+        assert step[0] * residual[1] == pytest.approx(step[1] * residual[0])
+
+
+def test_steepest_descent_steps_are_orthogonal():
+    run = ml_models_docs.steepest_descent([[3.0, 2.0], [2.0, 6.0]], [2.0, -8.0], [-2.0, -2.0], tol=1e-6)
+    steps = [[a - b for a, b in zip(q, p)] for p, q in zip(run["path"], run["path"][1:])]
+
+    for first, second in zip(steps, steps[1:]):
+        assert ml_models_docs.dot_product(first, second) == pytest.approx(0, abs=1e-12)
+
+
+def test_preconditioning_cuts_cg_steps_on_the_scaled_system():
+    run = ml_models_docs.iterative_example()["large"]
+
+    assert [run[key]["steps"] for key in ["sd", "cg", "pcg"]] == [1460, 30, 20]
+    assert run["kappa"] == pytest.approx(177.72, abs=0.01)
+    assert run["kappa_jacobi"] == pytest.approx(4.965, abs=0.001)
+    assert (run["sd_bound"], run["cg_bound"], run["pcg_bound"]) == (1637, 128, 20)
+    assert run["sd"]["steps"] <= run["sd_bound"] and run["cg"]["steps"] <= run["cg_bound"]
+    assert run["error"] < 1e-8
+    assert all(r <= 1e-8 for r in [run["sd"]["residuals"][-1], run["cg"]["residuals"][-1], run["pcg"]["residuals"][-1]])
+
+
+def test_cg_is_exact_in_n_steps_and_the_bounds_grow_with_kappa():
+    matrix = ml_models_docs.scaled_tridiagonal([1.0, 2.0, 3.0, 4.0, 5.0])
+    run = ml_models_docs.conjugate_gradient(matrix, [1.0] * 5, [0.0] * 5, tol=1e-12)
+
+    assert run["steps"] <= 5
+    assert ml_models_docs.cg_steps_bound(100, 1e-6) < ml_models_docs.cg_steps_bound(10_000, 1e-6)
+    assert ml_models_docs.cg_steps_bound(10_000, 1e-6) < ml_models_docs.steepest_descent_steps_bound(10_000, 1e-6)
+
+
+def test_quadratic_contour_lies_on_its_level_set():
+    a, center = [[3.0, 2.0], [2.0, 6.0]], [2.0, -2.0]
+
+    for point in ml_models_docs.quadratic_contour(a, center, 4.0, count=12):
+        e = [p - c for p, c in zip(point, center)]
+        assert 0.5 * sum(e[i] * a[i][j] * e[j] for i in range(2) for j in range(2)) == pytest.approx(4.0)

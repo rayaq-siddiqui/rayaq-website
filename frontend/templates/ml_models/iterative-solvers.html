@@ -1,0 +1,466 @@
+{% set ex = iterative_settings %}
+{% set run = iterative_example(ex) %}
+{% set sm = run.small %}
+{% set lg = run.large %}
+{% macro n(x) -%}{% if x == x|round %}{{ "%g"|format(x) }}{% else %}{{ "%.4g"|format(x) }}{% endif %}{%- endmacro %}
+{% macro vec(v) -%}[{% for x in v %}{{ n(x) }}{% if not loop.last %}, {% endif %}{% endfor %}]{%- endmacro %}
+{% macro mat(m) -%}[{% for row in m %}{{ vec(row) }}{% if not loop.last %}, {% endif %}{% endfor %}]{%- endmacro %}
+{% macro f(x) -%}{{ "{:,}".format(x) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Iterative solvers: conjugate gradient and Krylov methods</h1>
+  <p class="tagline">
+    LU and Cholesky solve a linear system exactly, but they need the whole matrix and n³ work.
+    When the matrix is huge, sparse, or never written down at all, as with the Hessian of a
+    neural network, the tool is an iterative solver that only ever multiplies the matrix by a
+    vector. This page derives conjugate gradient from steepest descent, runs both on a 2 × 2 and
+    a 40 × 40 system, shows what a preconditioner buys, and follows the same ideas into
+    scikit-learn's ridge and Newton-CG solvers and PyTorch's <code>lobpcg</code> and
+    Hessian-vector products.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  The <a href="{{ url_for('ml_models', slug='matrix-decompositions') }}">direct methods</a> factor
+  A once and then solve by substitution. For an n × n dense matrix that costs about n³/3
+  operations and n² numbers of memory. At n = 10⁵ that is 3 × 10¹⁴ operations and 80 GB in
+  float64, and machine learning meets far bigger systems: the Hessian of a model with 10⁸
+  parameters has 10¹⁶ entries, so it can never be stored, let alone factored. Yet second-order
+  optimizers, Gaussian processes, ridge regression on sparse text features and spectral methods
+  all need to solve Ax = b or find a few eigenvectors of A.
+</p>
+<p>
+  What these matrices do allow is cheap <em>products</em>. A sparse matrix with a few nonzeros
+  per row multiplies a vector in O(nnz) time. XᵀX + αI multiplies a vector as Xᵀ(Xv) + αv
+  without ever being formed. And automatic differentiation computes a Hessian-vector product
+  Hv for about the cost of two gradients. An iterative solver is an algorithm that needs nothing
+  else.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  For a symmetric positive-definite A, solving Ax = b is the same as minimizing the quadratic
+  bowl f(x) = ½xᵀAx − bᵀx, because its gradient is Ax − b. The residual r = b − Ax is the
+  negative gradient, so the obvious method is
+  <a href="{{ url_for('ml_models', slug='derivatives-and-gradients') }}">gradient descent</a> with
+  the best step length along r. That is <strong>steepest descent</strong>, and on a stretched bowl
+  it zig-zags: each exact line search ends where the new gradient is perpendicular to the old
+  one, so it keeps undoing part of its previous progress.
+</p>
+<p>
+  <strong>Conjugate gradient</strong> (CG) fixes this by choosing each new direction so that
+  minimizing along it never spoils the minimization already done along the earlier ones. The
+  directions are not perpendicular but <em>A-conjugate</em>, p<sub>i</sub>ᵀAp<sub>j</sub> = 0:
+  perpendicular after the bowl is stretched back into a round one. In n dimensions there are only
+  n such directions, so CG reaches the exact answer in at most n steps, and usually is close long
+  before.
+</p>
+
+<div class="jj-diagram">
+  {% set lo1, hi2, sc = -3.5, 1.5, 28 %}
+  <svg viewBox="0 0 680 270" role="img" aria-labelledby="it-paths-title it-paths-desc">
+    <title id="it-paths-title">Steepest descent and conjugate gradient on the same 2 × 2 system</title>
+    <desc id="it-paths-desc">
+      Two copies of the elliptical contours of f(x) = ½xᵀAx − bᵀx for A = {{ mat(ex.a) }} and
+      b = {{ vec(ex.b) }}, centred on the solution {{ vec(sm.cg.x) }}. Both methods start at
+      {{ vec(ex.start) }}. On the left steepest descent zig-zags with each step at a right angle to
+      the previous one and needs {{ sm.sd.steps }} steps to get within 0.1% of the answer. On the
+      right conjugate gradient takes the same first step, then a second step in a conjugate
+      direction that lands exactly on the solution.
+    </desc>
+    {% for name, path, ox in [("Steepest descent: " ~ sm.sd.steps ~ " steps to 0.1%", sm.sd.path[:9], 20), ("Conjugate gradient: 2 steps, exact", sm.cg.path, 352)] %}
+      {% set oy = 40 %}
+      <text x="{{ ox + 154 }}" y="24" font-size="12" text-anchor="middle">{{ name }}</text>
+      <rect x="{{ ox }}" y="{{ oy }}" width="308" height="196" rx="4" fill="none" class="d-line" opacity="0.35"></rect>
+      {% for level in [0.5, 2, 6, 12, 24] %}
+        <polyline points="{% for p in quadratic_contour(ex.a, sm.cg.x, level) %}{{ '%.1f'|format(ox + (p[0] - lo1) * sc) }},{{ '%.1f'|format(oy + (hi2 - p[1]) * sc) }} {% endfor %}" fill="none" class="d-line" opacity="0.35"></polyline>
+      {% endfor %}
+      <polyline points="{% for p in path %}{{ '%.1f'|format(ox + (p[0] - lo1) * sc) }},{{ '%.1f'|format(oy + (hi2 - p[1]) * sc) }} {% endfor %}" fill="none" stroke-width="2" style="stroke: {{ 'var(--jj-amber)' if loop.first else 'var(--jj-green)' }}"></polyline>
+      {% for p in path %}<circle cx="{{ '%.1f'|format(ox + (p[0] - lo1) * sc) }}" cy="{{ '%.1f'|format(oy + (hi2 - p[1]) * sc) }}" r="3" style="fill: {{ 'var(--jj-amber)' if ox == 20 else 'var(--jj-green)' }}"></circle>{% endfor %}
+      <text x="{{ '%.1f'|format(ox + (ex.start[0] - lo1) * sc - 6) }}" y="{{ '%.1f'|format(oy + (hi2 - ex.start[1]) * sc + 16) }}" font-size="11" text-anchor="middle" class="d-muted">start</text>
+      <text x="{{ '%.1f'|format(ox + (sm.cg.x[0] - lo1) * sc + 8) }}" y="{{ '%.1f'|format(oy + (hi2 - sm.cg.x[1]) * sc - 8) }}" font-size="11" class="d-muted">x*</text>
+    {% endfor %}
+    <text x="340" y="258" font-size="11" text-anchor="middle" class="d-muted">contours of f; the long axis follows the eigenvector of λ = {{ n(sm.eigen["values"][0]) }}, the short one λ = {{ n(sm.eigen["values"][1]) }}; κ = {{ n(sm.kappa) }}</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Both runs computed by <code>steepest_descent</code> and <code>conjugate_gradient</code> in the
+  page's helpers. The first step is identical, since CG's first direction is the residual. After
+  that, steepest descent turns 90° every step, while CG's second direction p₂ satisfies
+  p₁ᵀAp₂ = {{ "%.0e"|format(sm.conjugacy|abs) }}, zero up to rounding.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="matrix-free">Matrix-free: only A·v</h3>
+
+<p>
+  Every method on this page touches A through one operation, v ↦ Av, plus a handful of vector
+  additions and dot products. Each iteration costs one product and O(n) extra work, and the
+  memory is a few vectors of length n. Libraries make this explicit:
+  SciPy's <code>LinearOperator</code>, which scikit-learn wraps around XᵀX + αI, and a closure
+  over autograd for a Hessian. How fast the method converges depends on A's eigenvalues, measured
+  by the condition number κ = λ<sub>max</sub>/λ<sub>min</sub>.
+</p>
+
+<h3 id="steepest-descent">Steepest descent</h3>
+
+<p>
+  From x<sub>k</sub> with residual r<sub>k</sub> = b − Ax<sub>k</sub>, step along r<sub>k</sub> by
+  the α that minimizes f on that line: α<sub>k</sub> = r<sub>k</sub>ᵀr<sub>k</sub> /
+  r<sub>k</sub>ᵀAr<sub>k</sub>. Then x<sub>k+1</sub> = x<sub>k</sub> + α<sub>k</sub>r<sub>k</sub>
+  and r<sub>k+1</sub> = r<sub>k</sub> − α<sub>k</sub>Ar<sub>k</sub>, reusing the one product.
+  The exact line search makes consecutive residuals orthogonal, which is the zig-zag. The error,
+  measured in the A-norm ‖e‖<sub>A</sub> = √(eᵀAe), shrinks by at least a factor
+  (κ − 1)/(κ + 1) per step. At κ = 100 that is 0.98: about 115 steps per factor of 10.
+</p>
+
+<h3 id="conjugate-gradient">Conjugate gradient</h3>
+
+<p>
+  CG (Hestenes and Stiefel, 1952) keeps the residual but builds each search direction from it and
+  the previous direction:
+</p>
+<ol>
+  <li>r₀ = b − Ax₀, p₀ = r₀.</li>
+  <li>α<sub>k</sub> = r<sub>k</sub>ᵀr<sub>k</sub> / p<sub>k</sub>ᵀAp<sub>k</sub>;
+    x<sub>k+1</sub> = x<sub>k</sub> + α<sub>k</sub>p<sub>k</sub>;
+    r<sub>k+1</sub> = r<sub>k</sub> − α<sub>k</sub>Ap<sub>k</sub>.</li>
+  <li>β<sub>k</sub> = r<sub>k+1</sub>ᵀr<sub>k+1</sub> / r<sub>k</sub>ᵀr<sub>k</sub>;
+    p<sub>k+1</sub> = r<sub>k+1</sub> + β<sub>k</sub>p<sub>k</sub>.</li>
+</ol>
+<p>
+  That short recurrence is enough to make every new direction A-conjugate to <em>all</em> earlier
+  ones, not just the last, because A is symmetric. Two consequences follow. After k steps,
+  x<sub>k</sub> is the point that minimizes ‖x − x*‖<sub>A</sub> over everything reachable from x₀
+  in the <strong>Krylov subspace</strong> span{r₀, Ar₀, A²r₀, …, A<sup>k−1</sup>r₀}, the best
+  answer any method could build from k products. And in exact arithmetic CG terminates in at most
+  n steps, or in as many steps as A has distinct eigenvalues. The general error bound is
+</p>
+<p class="ml-equation">
+  ‖x<sub>k</sub> − x*‖<sub>A</sub> ≤ 2 ((√κ − 1)/(√κ + 1))<sup>k</sup> ‖x₀ − x*‖<sub>A</sub>,
+</p>
+<p>
+  so the number of steps grows with √κ instead of κ: at κ = 100 the factor is 9/11 ≈ 0.82,
+  about 12 steps per factor of 10. In floating point the conjugacy slowly decays and CG can need
+  more than n steps, but it still converges, and in practice it is stopped long before n.
+</p>
+
+<h3 id="preconditioning">Preconditioning</h3>
+
+<p>
+  If κ is the problem, change the system. With a matrix M ≈ A that is cheap to invert, CG on
+  M<sup>−1</sup>A converges at the rate set by κ(M<sup>−1</sup>A). The algorithm changes in one
+  line: each new residual is passed through z = M<sup>−1</sup>r before it is used to build the
+  direction. The simplest choice is <strong>Jacobi</strong>, M = diag(A), which fixes badly scaled
+  variables for free. Stronger ones are incomplete Cholesky (Cholesky that keeps A's sparsity
+  pattern), multigrid, and in optimization the diagonal or Kronecker-factored curvature estimates
+  that Adam, Shampoo and K-FAC maintain. A good preconditioner is the main lever: it can turn
+  thousands of iterations into tens.
+</p>
+
+<h3 id="krylov-family">The Krylov family</h3>
+
+<p>
+  CG is one member of a family that all search the same Krylov subspace and differ in what
+  matrix they accept and what they minimize:
+</p>
+<ul>
+  <li><strong>MINRES</strong> minimizes ‖r‖ for symmetric matrices that are indefinite, where CG's
+  bowl has no bottom. <strong>GMRES</strong> does the same for any square matrix, at the price of
+  storing every direction.</li>
+  <li><strong>CGLS and LSQR</strong> solve least squares min ‖Ax − b‖ as CG on AᵀA without
+  forming it or squaring the condition number in the arithmetic; LSQR's <code>damp</code>
+  argument adds a ridge penalty.</li>
+  <li><strong>Lanczos</strong> runs the same three-term recurrence to build an orthonormal basis
+  in which A is tridiagonal; the eigenvalues of that small tridiagonal matrix converge to A's
+  extreme eigenvalues within a few dozen products. It is CG's twin: CG's α and β are the entries
+  of that tridiagonal matrix.</li>
+  <li><strong>LOBPCG</strong> (Knyazev, 2001) finds a block of extreme eigenpairs by minimizing
+  the Rayleigh quotient xᵀAx/xᵀx over the current vectors, their residuals and the previous
+  vectors, accepts a preconditioner, and is what <code>torch.lobpcg</code> implements.</li>
+</ul>
+
+<h3 id="where-they-appear">Where they appear in ML</h3>
+
+<ul>
+  <li><strong>Ridge regression.</strong> scikit-learn's <code>Ridge(solver="sparse_cg")</code>
+  wraps the product v ↦ Xᵀ(Xv) + αv in a <code>LinearOperator</code> and hands it to SciPy's CG
+  (<a href="{{ skl('sklearn/linear_model/_ridge.py', 86, 156) }}"><code>_solve_sparse_cg</code></a>);
+  with more features than samples it switches to the n_samples × n_samples kernel form
+  XXᵀ + αI. <code>solver="lsqr"</code> calls LSQR with damp = √α
+  (<a href="{{ skl('sklearn/linear_model/_ridge.py', 159, 212) }}"><code>_solve_lsqr</code></a>).
+  Both keep a sparse X sparse.</li>
+  <li><strong>Newton-CG.</strong> <code>LogisticRegression(solver="newton-cg")</code> computes each
+  Newton step by solving H s = −g approximately with an inner CG over Hessian-vector products
+  (<a href="{{ skl('sklearn/utils/optimize.py', 173, 259) }}"><code>_cg</code></a>), stopping when
+  the residual's 1-norm drops below min(0.5, √‖g‖₁)·‖g‖₁ and bailing out on zero or negative
+  curvature, then line-searches along s
+  (<a href="{{ skl('sklearn/utils/optimize.py', 262, 403) }}"><code>_newton_cg</code></a>). This is
+  <em>truncated</em> Newton: loose solves far from the optimum, tighter ones near it.</li>
+  <li><strong>Hessian-free optimization.</strong> The same idea for neural networks (Martens,
+  2010): Hessian- or Gauss-Newton-vector products from autograd, a damped CG inner loop, no
+  Hessian ever stored. PyTorch exposes the product as
+  <a href="{{ src('torch/autograd/functional.py', 1098, 1210) }}"><code>autograd.functional.hvp</code></a>
+  and its transpose
+  <a href="{{ src('torch/autograd/functional.py', 997, 1093) }}"><code>vhp</code></a>.
+  Influence functions and implicit differentiation solve Hx = v the same way.</li>
+  <li><strong>Gaussian processes.</strong> Exact GP inference needs (K + σ²I)⁻¹y and log det. GPyTorch
+  replaces the Cholesky with batched, preconditioned CG plus Lanczos for the log-determinant, which
+  turns O(n³) into products a GPU does well (Gardner et al., 2018).</li>
+  <li><strong>Spectral methods.</strong> Spectral clustering, Laplacian eigenmaps and the top
+  Hessian eigenvalues used to study sharpness all need only a few extreme eigenpairs:
+  <a href="{{ src('torch/_lobpcg.py', 343, 580) }}"><code>torch.lobpcg</code></a> computes the k
+  largest or smallest of a dense or sparse symmetric matrix.</li>
+</ul>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>_cg</code></td>
+        <td><code>fhess_p</code> callable, <code>fgrad [n]</code>, <code>maxiter</code>, <code>tol</code></td>
+        <td>CG on H x = −g using only Hessian-vector products; stops on sum |r| ≤ tol or curvature ≤ 16·eps·‖p‖² (capped CG), falling back to the steepest-descent step if the first direction has negative curvature.</td>
+        <td><a href="{{ skl('sklearn/utils/optimize.py', 173, 259) }}"><code>optimize.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_newton_cg</code></td>
+        <td><code>grad_hess</code>, <code>func</code>, <code>grad</code>, <code>x0</code>, <code>tol=1e-4</code>, <code>maxiter=100</code>, <code>maxinner=200</code></td>
+        <td>Truncated Newton: an inner <code>_cg</code> solve with tolerance min(0.5, √‖g‖₁)·‖g‖₁, then a Wolfe line search.</td>
+        <td><a href="{{ skl('sklearn/utils/optimize.py', 262, 403) }}"><code>optimize.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_solve_sparse_cg</code></td>
+        <td><code>X [n_samples, n_features]</code>, <code>alpha</code>, <code>tol=1e-4</code></td>
+        <td>Ridge by CG on (XᵀX + αI)w = Xᵀy, or on the kernel form when n_features &gt; n_samples; X is never densified.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_ridge.py', 86, 156) }}"><code>_ridge.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_solve_lsqr</code></td>
+        <td><code>X</code>, <code>alpha</code>, damp = √α, <code>atol = btol = tol</code></td>
+        <td>Ridge as damped least squares with SciPy's LSQR; returns the iteration counts too.</td>
+        <td><a href="{{ skl('sklearn/linear_model/_ridge.py', 159, 212) }}"><code>_ridge.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>torch.lobpcg</code></td>
+        <td><code>A [*, m, m]</code>, <code>k</code>, <code>B</code>, <code>X [*, m, n]</code>, <code>iK</code> (preconditioner), <code>largest=True</code>, <code>method="ortho"</code></td>
+        <td>k extreme eigenpairs of a symmetric (generalized) eigenproblem; needs m ≥ 3n; default tol = √(float eps), niter = 1000.</td>
+        <td><a href="{{ src('torch/_lobpcg.py', 343, 580) }}"><code>_lobpcg.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>autograd.functional.hvp</code></td>
+        <td><code>func</code>, <code>inputs</code>, <code>v</code> → <code>(func(inputs), H·v)</code></td>
+        <td>Hessian-vector product by double backward, without forming H; the docstring notes <code>vhp</code> is faster and equal for twice-differentiable functions.</td>
+        <td><a href="{{ src('torch/autograd/functional.py', 1098, 1210) }}"><code>functional.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="jj-diagram">
+  {% set ox, oy, w, h = 60, 30, 560, 200 %}
+  {% set top, bottom, last = 1, -9, 60 %}
+  {% macro px(k) -%}{{ '%.1f'|format(ox + w * k / last) }}{%- endmacro %}
+  {% macro py(r) -%}{{ '%.1f'|format(oy + h * (top - [log10([r, 1e-12]|max), bottom]|max) / (top - bottom)) }}{%- endmacro %}
+  <svg viewBox="0 0 680 280" role="img" aria-labelledby="it-conv-title it-conv-desc">
+    <title id="it-conv-title">Relative residual against iterations on the 40 × 40 system</title>
+    <desc id="it-conv-desc">
+      A log-scale plot of ‖r‖/‖r₀‖ over the first {{ last }} iterations for the 40 × 40 example
+      with κ ≈ {{ "%.0f"|format(lg.kappa) }}. Steepest descent falls slowly and is still far from
+      10⁻⁸ at iteration {{ last }}; it needs {{ f(lg.sd.steps) }} steps. Conjugate gradient
+      reaches 10⁻⁸ in {{ lg.cg.steps }} steps, and Jacobi-preconditioned CG, with κ ≈
+      {{ "%.1f"|format(lg.kappa_jacobi) }}, in {{ lg.pcg.steps }}.
+    </desc>
+    <g font-size="11">
+      {% for e in range(top, bottom - 1, -2) %}
+        <path d="M{{ ox }} {{ py(10.0 ** e) }} L{{ ox + w }} {{ py(10.0 ** e) }}" class="d-line" opacity="0.2" fill="none"></path>
+        <text x="{{ ox - 6 }}" y="{{ py(10.0 ** e)|float + 4 }}" text-anchor="end" class="d-muted">1e{{ e }}</text>
+      {% endfor %}
+      {% for k in range(0, last + 1, 10) %}
+        <text x="{{ px(k) }}" y="{{ oy + h + 16 }}" text-anchor="middle" class="d-muted">{{ k }}</text>
+      {% endfor %}
+      <text x="{{ ox + w / 2 }}" y="{{ oy + h + 34 }}" text-anchor="middle" class="d-muted">iteration (one matrix-vector product each)</text>
+      <path d="M{{ ox }} {{ py(ex.tol) }} L{{ ox + w }} {{ py(ex.tol) }}" class="d-line" stroke-dasharray="4 3" fill="none"></path>
+      {% for key, label, colour in [("sd", "steepest descent", "var(--jj-amber)"), ("cg", "CG", "var(--jj-accent)"), ("pcg", "Jacobi-preconditioned CG", "var(--jj-green)")] %}
+        {% set res = lg[key].residuals[:last + 1] %}
+        <polyline points="{% for r in res %}{{ px(loop.index0) }},{{ py(r) }} {% endfor %}" fill="none" stroke-width="2" style="stroke: {{ colour }}"></polyline>
+        <text x="{{ ox + w - 4 }}" y="{{ oy + 100 + 15 * loop.index0 }}" text-anchor="end" style="fill: {{ colour }}">{{ label }}: {{ f(lg[key].steps) }} steps</text>
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+<p class="ml-caption">
+  The dashed line is the 10⁻⁸ target. CG's residual is not monotone, since CG minimizes the error in
+  the A-norm, not ‖r‖; it can rise for a few steps and still be making progress.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-2x2">Two steps of CG by hand</h3>
+  <p>
+    Solve Ax = b with A = {{ mat(ex.a) }}, b = {{ vec(ex.b) }}, from x₀ = {{ vec(ex.start) }}.
+    A's eigenvalues are {{ n(sm.eigen["values"][0]) }} and {{ n(sm.eigen["values"][1]) }}, so
+    κ = {{ n(sm.kappa) }}.
+  </p>
+  <ol>
+    <li>r₀ = b − Ax₀ = {{ vec(ex.b) }} − [−10, −16] = {{ vec(sm.first_residual) }}, and p₀ = r₀.</li>
+    <li>Ap₀ = [52, 72], r₀ᵀr₀ = 208 and p₀ᵀAp₀ = 12·52 + 8·72 = 1,200, so
+      α₀ = 208/1,200 = {{ n(sm.cg.alphas[0]) }}, giving x₁ = {{ vec(sm.cg.path[1]) }}.
+      Steepest descent takes exactly this step too.</li>
+    <li>r₁ = r₀ − α₀Ap₀ = [12 − 9.013, 8 − 12.48] ≈ [2.987, −4.48], so β₀ = r₁ᵀr₁ / r₀ᵀr₀ ≈
+      28.99/208 ≈ 0.139 and p₁ = r₁ + β₀p₀ ≈ [4.659, −3.365].</li>
+    <li>α₁ = r₁ᵀr₁ / p₁ᵀAp₁ ≈ 28.99/70.35 = {{ n(sm.cg.alphas[1]) }} gives x₂ = {{ vec(sm.cg.path[2]) }}: the
+      exact solution, after two products with A, as CG promises for a 2 × 2 system.</li>
+  </ol>
+  <p>
+    Steepest descent from the same start needs {{ sm.sd.steps }} steps to bring ‖r‖ below 0.1% of
+    ‖r₀‖. Its rate bound here is (κ − 1)/(κ + 1) = {{ n((sm.kappa - 1) / (sm.kappa + 1)) }} per step.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-preconditioned">A badly scaled 40 × 40 system</h3>
+  <p>
+    Take the tridiagonal matrix T with 3 on the diagonal and −1 beside it, and rescale its rows and
+    columns by s = {{ ex.scales[:8]|join(", ") }}, … (sᵢ = 1 + (7i mod 11)), so
+    A<sub>ij</sub> = s<sub>i</sub>T<sub>ij</sub>s<sub>j</sub>. This is what unnormalized features
+    do to XᵀX. Solve Ax = 1 from x₀ = 0 to a relative residual of 10⁻⁸:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Method</th><th>κ that governs it</th><th>Bound on steps</th><th>Actual steps</th></tr></thead>
+      <tbody>
+        <tr><td>Steepest descent</td><td>{{ "%.1f"|format(lg.kappa) }}</td><td>{{ f(lg.sd_bound) }}</td><td>{{ f(lg.sd.steps) }}</td></tr>
+        <tr><td>Conjugate gradient</td><td>{{ "%.1f"|format(lg.kappa) }}</td><td>{{ lg.cg_bound }} (and ≤ 40 in exact arithmetic)</td><td>{{ lg.cg.steps }}</td></tr>
+        <tr><td>CG with Jacobi, M = diag(A)</td><td>{{ "%.2f"|format(lg.kappa_jacobi) }}</td><td>{{ lg.pcg_bound }}</td><td>{{ lg.pcg.steps }}</td></tr>
+        <tr><td>LU, for comparison</td><td>—</td><td>—</td><td>one factorization, ≈ 40³/3 ≈ 21,000 multiply-adds</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Steepest descent lands close to its κ bound. CG beats its √κ bound by a factor of four, because
+    the bound assumes the worst spread of eigenvalues and this matrix's are clustered. Jacobi
+    scaling undoes the s<sub>i</sub> exactly, leaving D<sup>−½</sup>AD<sup>−½</sup> with κ ≈
+    {{ "%.2f"|format(lg.kappa_jacobi) }}, essentially T's own, and CG then needs {{ lg.pcg.steps }}
+    products of a matrix with three nonzeros per row. The preconditioned answer agrees with LU's to
+    {{ "%.0e"|format(lg.error) }}.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code class="language-python">def conjugate_gradient(matvec, b, x, tol=1e-8, max_steps=1000, inv_diag=None):
+    dot = lambda u, v: sum(p * q for p, q in zip(u, v))
+    r = [bi - ai for bi, ai in zip(b, matvec(x))]
+    z = r if inv_diag is None else [m * ri for m, ri in zip(inv_diag, r)]
+    p, rz, r0 = list(z), dot(r, z), dot(r, r) ** 0.5
+    for _ in range(max_steps):
+        if dot(r, r) ** 0.5 &lt;= tol * r0:
+            break
+        ap = matvec(p)                      # the only use of A
+        alpha = rz / dot(p, ap)
+        x = [xi + alpha * pi for xi, pi in zip(x, p)]
+        r = [ri - alpha * api for ri, api in zip(r, ap)]
+        z = r if inv_diag is None else [m * ri for m, ri in zip(inv_diag, r)]
+        rz, rz_old = dot(r, z), rz
+        p = [zi + (rz / rz_old) * pi for zi, pi in zip(z, p)]
+    return x
+
+A = [[3., 2.], [2., 6.]]
+conjugate_gradient(lambda v: [sum(a * x for a, x in zip(row, v)) for row in A], [2., -8.], [-2., -2.])
+# [2.0, -2.0] after two steps</code></pre>
+
+<p>Matrix-free with PyTorch: a Newton step on a loss, using Hessian-vector products from autograd.</p>
+
+<pre><code class="language-python">import torch
+from torch.autograd.functional import hvp
+
+def loss(w):
+    return torch.nn.functional.softplus(-y * (X @ w)).mean() + 1e-3 * w.square().sum()
+
+w = torch.zeros(X.shape[1], dtype=torch.float64)
+g = torch.func.grad(loss)(w)
+step = conjugate_gradient(lambda v: hvp(loss, w, torch.tensor(v, dtype=w.dtype))[1].tolist(),
+                          (-g).tolist(), [0.0] * len(w), tol=1e-4)
+
+# extreme eigenpairs of a large symmetric matrix, dense or sparse
+E, V = torch.lobpcg(S, k=4, largest=True)    # S: [m, m] with m &gt;= 3 * 4
+
+# the same solvers in scikit-learn
+from sklearn.linear_model import LogisticRegression, Ridge
+Ridge(alpha=1.0, solver="sparse_cg").fit(X_sparse, y)    # CG on X^T X + alpha I, never formed
+LogisticRegression(solver="newton-cg").fit(X, y)         # inner CG on Hessian-vector products</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Direct or iterative.</strong> Below a few thousand unknowns with a dense matrix, a
+    Cholesky or LU factorization is faster, exact and reusable for many right-hand sides. Iterative
+    methods win when the matrix is sparse, structured or implicit, when an approximate answer is
+    enough, or when memory rules out n².
+  </li>
+  <li>
+    <strong>Convergence depends on the spectrum.</strong> CG is fast when κ is small or the
+    eigenvalues are clustered, and slow otherwise; there is no fixed cost. Budget for a
+    preconditioner before tuning anything else.
+  </li>
+  <li>
+    <strong>Symmetric positive-definite only.</strong> CG can fail silently on an indefinite or
+    non-symmetric A: pᵀAp ≤ 0 breaks its step. Use MINRES or GMRES there, and in optimization treat
+    negative curvature as a signal, as scikit-learn's capped CG does.
+  </li>
+  <li>
+    <strong>Floating point.</strong> Conjugacy decays with rounding, so CG may need more than n
+    steps and Lanczos produces spurious copies of converged eigenvalues unless it re-orthogonalizes.
+    Low precision makes both worse; these solvers usually run in float32 or float64.
+  </li>
+  <li>
+    <strong>Stopping rules.</strong> The residual is not the error: a small ‖r‖ can hide a large
+    error when κ is large. Inside an outer optimizer, solve loosely early and tightly late
+    (truncated Newton), since accuracy beyond the outer step's needs is wasted.
+  </li>
+</ul>
+
+<h3 id="check-yourself">Check yourself</h3>
+
+<details class="ml-quiz">
+  <summary>A 10⁶ × 10⁶ sparse SPD matrix has 5 nonzeros per row and κ = 10⁴. Roughly how much work is CG to 10⁻⁶?</summary>
+  <p>The √κ bound gives about ½·100·ln(2·10⁶) ≈ 730 iterations, each one product of 5·10⁶ multiply-adds plus a few vector operations, so a few times 10⁹ operations in all. A dense Cholesky would be 3·10¹⁷ and would not fit in memory.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does CG solve any 2 × 2 SPD system in at most two steps, while steepest descent may need many?</summary>
+  <p>CG's two directions are A-conjugate, so minimizing along the second never undoes the first: after two steps it has minimized f over the whole plane. Steepest descent only ever minimizes along one direction at a time, and on a stretched bowl each step partly undoes the last.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Newton-CG on a non-convex loss hits pᵀHp &lt; 0 inside its inner loop. What should it do?</summary>
+  <p>Stop the inner CG: the quadratic model has no minimum along p. Return the step built so far, or, at the first iteration, the steepest-descent direction, which is what scikit-learn's <code>_cg</code> does. Trust-region variants instead move along p to the boundary.</p>
+</details>
+<details class="ml-quiz">
+  <summary>A design matrix's columns are on very different scales. Which preconditioner is free, and what does it correspond to in data terms?</summary>
+  <p>Jacobi, dividing by the diagonal of XᵀX, which is each column's squared norm. It is the solver-side version of standardizing the features.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Hestenes and Stiefel. <em>Methods of Conjugate Gradients for Solving Linear Systems.</em> Journal of Research of the National Bureau of Standards 49(6), 409–436, 1952.</li>
+  <li>Shewchuk. <em>An Introduction to the Conjugate Gradient Method Without the Agonizing Pain.</em> Carnegie Mellon University technical report CMU-CS-94-125, 1994. The 2 × 2 example above is its running example.</li>
+  <li>Saad. <em>Iterative Methods for Sparse Linear Systems</em>, 2nd ed. SIAM, 2003: chapters 6 (Krylov subspaces, CG, GMRES) and 9–10 (preconditioning).</li>
+  <li>Paige and Saunders. <em>LSQR: An Algorithm for Sparse Linear Equations and Sparse Least Squares.</em> ACM Transactions on Mathematical Software 8(1), 43–71, 1982.</li>
+  <li>Knyazev. <em>Toward the Optimal Preconditioned Eigensolver: Locally Optimal Block Preconditioned Conjugate Gradient Method.</em> SIAM Journal on Scientific Computing 23(2), 517–541, 2001.</li>
+  <li>Pearlmutter. <em>Fast Exact Multiplication by the Hessian.</em> Neural Computation 6(1), 147–160, 1994.</li>
+  <li>Martens. <em>Deep Learning via Hessian-Free Optimization.</em> ICML, 2010.</li>
+  <li>Gardner, Pleiss, Bindel, Weinberger and Wilson. <em>GPyTorch: Blackbox Matrix-Matrix Gaussian Process Inference with GPU Acceleration.</em> NeurIPS, 2018.</li>
+  <li>Royer, O'Neill and Wright. <em>A Newton-CG Algorithm with Complexity Guarantees for Smooth Unconstrained Optimization.</em> 2018 (<a href="https://arxiv.org/abs/1803.02924">arXiv 1803.02924</a>), the capped CG cited in scikit-learn's <code>_cg</code>.</li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/utils/optimize.py', 173, 259) }}"><code>_cg</code></a>, <a href="{{ skl('sklearn/utils/optimize.py', 262, 403) }}"><code>_newton_cg</code></a>, <a href="{{ skl('sklearn/linear_model/_ridge.py', 86, 156) }}"><code>_solve_sparse_cg</code></a>, <a href="{{ skl('sklearn/linear_model/_ridge.py', 159, 212) }}"><code>_solve_lsqr</code></a>.</li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/_lobpcg.py', 343, 580) }}"><code>torch.lobpcg</code></a>, <a href="{{ src('torch/_lobpcg.py', 583, 697) }}"><code>_lobpcg</code></a>, <a href="{{ src('torch/autograd/functional.py', 1098, 1210) }}"><code>autograd.functional.hvp</code></a>, <a href="{{ src('torch/autograd/functional.py', 997, 1093) }}"><code>vhp</code></a>.</li>
+</ul>

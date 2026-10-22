@@ -179,6 +179,21 @@ PAGES = [
         "ready": True,
     },
     {
+        "slug": "iterative-solvers",
+        "title": "Iterative solvers: conjugate gradient and Krylov methods",
+        "area": "foundations",
+        "level": "advanced",
+        "summary": "Solving huge or matrix-free linear systems and eigenproblems with nothing but matrix-vector products.",
+        "prerequisites": ["matrix-decompositions", "derivatives-and-gradients"],
+        "sources": [
+            "sklearn:sklearn/utils/optimize.py",
+            "sklearn:sklearn/linear_model/_ridge.py",
+            "pytorch:torch/_lobpcg.py",
+            "pytorch:torch/autograd/functional.py",
+        ],
+        "ready": True,
+    },
+    {
         "slug": "derivatives-and-gradients",
         "title": "Derivatives and gradients",
         "area": "foundations",
@@ -2504,6 +2519,126 @@ def decomposition_example(ex=DECOMPOSITION_EXAMPLE):
         "hilbert_modified": orthogonality_loss(gram_schmidt(hilbert)["Q"]),
         "sampling": correlated_samples(ex["spd"], ex["samples"], ex["seed"]),
     }
+
+
+ITERATIVE_EXAMPLE = {
+    "a": [[3.0, 2.0], [2.0, 6.0]],
+    "b": [2.0, -8.0],
+    "start": [-2.0, -2.0],
+    "scales": [1 + 7 * i % 11 for i in range(40)],
+    "tol": 1e-8,
+}
+
+
+def _matvec(matrix, vector):
+    return [dot_product(row, vector) for row in matrix]
+
+
+def steepest_descent(matrix, b, start, tol=1e-8, max_steps=10_000):
+    x = list(map(float, start))
+    r = [bi - ai for bi, ai in zip(b, _matvec(matrix, x))]
+    first = vector_norm(r)
+    path, residuals = [list(x)], [1.0]
+    while residuals[-1] > tol and len(path) <= max_steps:
+        ar = _matvec(matrix, r)
+        alpha = dot_product(r, r) / dot_product(r, ar)
+        x = [xi + alpha * ri for xi, ri in zip(x, r)]
+        r = [ri - alpha * ari for ri, ari in zip(r, ar)]
+        path.append(list(x))
+        residuals.append(vector_norm(r) / first)
+    return {"x": x, "path": path, "residuals": residuals, "steps": len(path) - 1, "matvecs": len(path) - 1}
+
+
+def conjugate_gradient(matrix, b, start, tol=1e-8, max_steps=None, preconditioner=None):
+    n = len(b)
+    inverse_diagonal = [1 / matrix[i][i] for i in range(n)] if preconditioner == "jacobi" else [1.0] * n
+    x = list(map(float, start))
+    r = [bi - ai for bi, ai in zip(b, _matvec(matrix, x))]
+    z = [m * ri for m, ri in zip(inverse_diagonal, r)]
+    p = list(z)
+    rz = dot_product(r, z)
+    first = vector_norm(r)
+    path, residuals, alphas = [list(x)], [1.0], []
+    limit = max_steps if max_steps is not None else 10 * n
+    while residuals[-1] > tol and len(path) <= limit:
+        ap = _matvec(matrix, p)
+        alpha = rz / dot_product(p, ap)
+        x = [xi + alpha * pi for xi, pi in zip(x, p)]
+        r = [ri - alpha * api for ri, api in zip(r, ap)]
+        z = [m * ri for m, ri in zip(inverse_diagonal, r)]
+        rz_next = dot_product(r, z)
+        p = [zi + (rz_next / rz) * pi for zi, pi in zip(z, p)]
+        rz = rz_next
+        alphas.append(alpha)
+        path.append(list(x))
+        residuals.append(vector_norm(r) / first)
+    return {"x": x, "path": path, "residuals": residuals, "steps": len(path) - 1, "matvecs": len(path) - 1,
+            "alphas": alphas}
+
+
+def scaled_tridiagonal(scales, diagonal=3.0, off=-1.0):
+    n = len(scales)
+    return [[scales[i] * scales[j] * (diagonal if i == j else off if abs(i - j) == 1 else 0.0)
+             for j in range(n)] for i in range(n)]
+
+
+def spd_condition_number(matrix):
+    values = jacobi_eigh(matrix)["values"]
+    return values[-1] / values[0]
+
+
+def cg_steps_bound(kappa, tol):
+    rate = (math.sqrt(kappa) - 1) / (math.sqrt(kappa) + 1)
+    return math.ceil(math.log(tol / 2) / math.log(rate))
+
+
+def steepest_descent_steps_bound(kappa, tol):
+    return math.ceil(math.log(tol) / math.log((kappa - 1) / (kappa + 1)))
+
+
+def quadratic_contour(matrix, center, level, count=72):
+    eigen = jacobi_eigh(matrix)
+    radii = [math.sqrt(2 * level / value) for value in eigen["values"]]
+    first, second = eigen["vectors"]
+    points = []
+    for k in range(count + 1):
+        t = 2 * math.pi * k / count
+        a, b = radii[0] * math.cos(t), radii[1] * math.sin(t)
+        points.append([center[i] + a * first[i] + b * second[i] for i in range(2)])
+    return points
+
+
+def iterative_example(ex=ITERATIVE_EXAMPLE):
+    small = {
+        "sd": steepest_descent(ex["a"], ex["b"], ex["start"], tol=1e-3),
+        "cg": conjugate_gradient(ex["a"], ex["b"], ex["start"]),
+        "eigen": jacobi_eigh(ex["a"]),
+    }
+    small["kappa"] = small["eigen"]["values"][-1] / small["eigen"]["values"][0]
+    first = [b - a for b, a in zip(ex["b"], _matvec(ex["a"], ex["start"]))]
+    second_direction = [p1 - p0 for p1, p0 in zip(small["cg"]["path"][2], small["cg"]["path"][1])]
+    first_direction = [p1 - p0 for p1, p0 in zip(small["cg"]["path"][1], small["cg"]["path"][0])]
+    small["conjugacy"] = dot_product(first_direction, _matvec(ex["a"], second_direction))
+    small["first_residual"] = first
+    matrix = scaled_tridiagonal(ex["scales"])
+    b = [1.0] * len(ex["scales"])
+    zero = [0.0] * len(b)
+    d = [1 / math.sqrt(matrix[i][i]) for i in range(len(b))]
+    scaled = [[d[i] * matrix[i][j] * d[j] for j in range(len(b))] for i in range(len(b))]
+    large = {
+        "matrix": matrix,
+        "sd": steepest_descent(matrix, b, zero, tol=ex["tol"], max_steps=20_000),
+        "cg": conjugate_gradient(matrix, b, zero, tol=ex["tol"]),
+        "pcg": conjugate_gradient(matrix, b, zero, tol=ex["tol"], preconditioner="jacobi"),
+        "kappa": spd_condition_number(matrix),
+        "kappa_jacobi": spd_condition_number(scaled),
+    }
+    large["exact"] = lu_solve(lu_factor(matrix), b)
+    large["error"] = max(abs(x - y) for x, y in zip(large["pcg"]["x"], large["exact"]))
+    large["cg_bound"] = cg_steps_bound(large["kappa"], ex["tol"])
+    large["pcg_bound"] = cg_steps_bound(large["kappa_jacobi"], ex["tol"])
+    large["sd_bound"] = steepest_descent_steps_bound(large["kappa"], ex["tol"])
+    return {"small": small, "large": large}
 
 
 def unit_circle_image(matrix, count=72):
@@ -15061,6 +15196,9 @@ def render(slug, render_template):
         "condition_example": CONDITION_EXAMPLE,
         "decomposition_settings": DECOMPOSITION_EXAMPLE,
         "decomposition_example": decomposition_example,
+        "iterative_settings": ITERATIVE_EXAMPLE,
+        "iterative_example": iterative_example,
+        "quadratic_contour": quadratic_contour,
         "jacobi_eigh": jacobi_eigh,
         "power_iteration": power_iteration,
         "svd": svd,

@@ -342,6 +342,7 @@ Notes from the 2026-10-15 audit:
 92. `state-space-models` ✓
 93. `profiling` ✓
 94. `matrix-decompositions` ✓
+95. `iterative-solvers` ✓
 
 Nothing is queued. Each audit appends at most two pages here. From now on the Routine runs the weekly audit (spec §8.1): for each pin it checks for a newer stable release (never an rc, beta or dev tag). When one
 exists, it diffs every file the ready pages link to between the pin and that tag, updates the

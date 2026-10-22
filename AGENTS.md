@@ -227,7 +227,7 @@ Each call is one command over SSH — deliberately kept to single, auditable com
   a static reference for learning or refreshing anything in machine learning, at `/ml-models`:
   12 areas (math foundations through classical ML, neural networks, architectures, generative
   models, language models, retrieval, training systems, inference and specialized learning),
-  94 registered pages with levels and prerequisites, and a seven-step learning path. Read
+  95 registered pages with levels and prerequisites, and a seven-step learning path. Read
   `specs/ml-models.md` first and `specs/ml-models-progress.md` for status and the build queue.
   Every page follows the spec's §6 format (problem, intuition, mechanics, worked example,
   implementation, tradeoffs, connections, references). Every code link goes through
