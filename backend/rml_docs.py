@@ -71,7 +71,7 @@ PAGES = [
         "summary": "Where rml is headed: framework models exported into rml-graph, lowered to a "
         "fused kernel plan and benchmarked against PyTorch, JAX and TensorFlow, level by level.",
         "sources": ["docs/progress.md", "docs/graph_ir.md", "README.md"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "exporters",

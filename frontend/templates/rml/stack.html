@@ -1,0 +1,189 @@
+{% set prog = "docs/progress.md" %}
+{% set ir = "docs/graph_ir.md" %}
+{% set bench = "docs/bench/frameworks.md" %}
+<header class="jj-header">
+  <h1>The inference stack</h1>
+  <p class="tagline">
+    rml is becoming a layered, MLIR-style inference stack: models defined in PyTorch, JAX and TensorFlow
+    are exported into rml's own graph IR, checked against each framework, and lowered to kernels that aim to
+    beat the frameworks on CPU. This page walks the levels and marks which exist at this commit.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: a model is written once per framework, from shared weights. An offline Python exporter traces
+  it into <code>rml-graph</code>, a JSON op list over mmapped safetensors weights. From there rml runs it
+  in C++ with no Python, and a golden test checks the result against the framework's own output. Today
+  the graph runs op by op on rml's readable kernels. The plan adds a StableHLO import route above the
+  graph, and a fused, buffer-planned, threaded kernel-level plan below it. Every model is benchmarked
+  against each framework's eager and compiled modes.
+</p>
+
+<h2 id="direction">The direction</h2>
+
+<p>
+  rml's plan (<a href="{{ src(prog, 135, 146) }}">docs/progress.md L135–146</a>) extends the Python front
+  ends to every neural model on the <a href="{{ url_for('ml_models') }}">ML models</a> reference. Three
+  commitments shape it:
+</p>
+
+<ul>
+  <li><strong>Three frameworks, one model.</strong> Each model is defined in PyTorch, JAX and TensorFlow,
+    exported, checked against the framework, and benchmarked on CPU.</li>
+  <li><strong>Layered like MLIR.</strong> Frameworks hand over StableHLO through their own production
+    exporters, which is what an MLIR pipeline consumes. <code>tools/</code> lowers it to rml-graph, and
+    inside rml, rml-graph lowers to a kernel-level plan that runs fused, threaded kernels.</li>
+  <li><strong>Two routes, cross-checked.</strong> The direct per-framework exporters stay as a second way
+    in, and the two routes are checked against each other.</li>
+</ul>
+
+<h2 id="levels">The levels</h2>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 470" role="img" aria-labelledby="st-title st-desc">
+    <title id="st-title">From a framework model to rml kernels</title>
+    <desc id="st-desc">Five levels from top to bottom. A model in PyTorch, JAX or TensorFlow. Two export
+      routes: the direct exporters, which exist, and the StableHLO route, which is planned. The rml-graph
+      file, which exists, with its loader and shape inference. A kernel-level plan with fused loops and
+      planned buffers, which is planned. Kernels at the bottom: the executor runs rml's readable kernels
+      today, and SIMD GEMM and threaded elementwise kernels are planned. On the right, the golden test
+      compares rml's output with the framework's, and the benchmark times both.</desc>
+
+    <rect class="d-box" x="20" y="20" width="400" height="50" rx="6"/>
+    <text x="220" y="41" text-anchor="middle">model in PyTorch · JAX · TensorFlow</text>
+    <text class="d-muted" x="220" y="59" text-anchor="middle" font-size="12">tools/rml_export/zoo, shared weights</text>
+
+    <line class="d-line" x1="117" y1="70" x2="117" y2="100"/>
+    <line class="d-line" x1="322" y1="70" x2="322" y2="100"/>
+    <rect class="d-box" x="20" y="100" width="195" height="54" rx="6"/>
+    <text x="117" y="122" text-anchor="middle">direct exporters</text>
+    <text class="d-muted" x="117" y="141" text-anchor="middle" font-size="12">torch.export · jaxpr · GraphDef</text>
+    <rect class="rml-planned" x="225" y="100" width="195" height="54" rx="6"/>
+    <text x="322" y="122" text-anchor="middle">StableHLO route</text>
+    <text class="d-muted" x="322" y="141" text-anchor="middle" font-size="12">planned</text>
+
+    <line class="d-line" x1="117" y1="154" x2="190" y2="190"/>
+    <line class="d-line" x1="322" y1="154" x2="250" y2="190"/>
+    <rect class="d-box d-accent" x="20" y="190" width="400" height="54" rx="6"/>
+    <text x="220" y="212" text-anchor="middle">rml-graph: JSON ops + safetensors</text>
+    <text class="d-muted" x="220" y="231" text-anchor="middle" font-size="12">loader · validation · shape inference</text>
+
+    <line class="d-line" x1="220" y1="244" x2="220" y2="280"/>
+    <rect class="rml-planned" x="20" y="280" width="400" height="54" rx="6"/>
+    <text x="220" y="302" text-anchor="middle">kernel-level plan</text>
+    <text class="d-muted" x="220" y="321" text-anchor="middle" font-size="12">planned: fused loops · buffers planned at load · threads</text>
+
+    <line class="d-line" x1="220" y1="334" x2="220" y2="370"/>
+    <rect class="d-box" x="20" y="370" width="195" height="54" rx="6"/>
+    <text x="117" y="392" text-anchor="middle">executor, op by op</text>
+    <text class="d-muted" x="117" y="411" text-anchor="middle" font-size="12">core ops · GEMM · conv</text>
+    <rect class="rml-planned" x="225" y="370" width="195" height="54" rx="6"/>
+    <text x="322" y="392" text-anchor="middle">fast CPU kernels</text>
+    <text class="d-muted" x="322" y="411" text-anchor="middle" font-size="12">planned: SIMD GEMM</text>
+
+    <rect class="d-box" x="450" y="150" width="140" height="64" rx="6"/>
+    <text x="520" y="174" text-anchor="middle">golden test</text>
+    <text class="d-muted" x="520" y="193" text-anchor="middle" font-size="12">rml vs framework</text>
+    <rect class="d-box" x="450" y="236" width="140" height="64" rx="6"/>
+    <text x="520" y="260" text-anchor="middle">benchmark</text>
+    <text class="d-muted" x="520" y="279" text-anchor="middle" font-size="12">eager, compiled, rml</text>
+    <line class="d-line" x1="420" y1="45" x2="520" y2="45"/>
+    <line class="d-line" x1="520" y1="45" x2="520" y2="150"/>
+    <line class="d-line" x1="420" y1="397" x2="520" y2="397"/>
+    <line class="d-line" x1="520" y1="397" x2="520" y2="300"/>
+    <text class="d-muted" x="20" y="455" font-size="12">solid: exists at this commit · dashed: planned in docs/progress.md</text>
+  </svg>
+  <figcaption>The accent box is the contract between the two halves: everything above it is offline
+    Python, everything below it is C++ with no Python.</figcaption>
+</figure>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Level</th><th>What it is</th><th>Status</th><th>Page</th></tr></thead>
+    <tbody>
+      <tr><td>Framework model</td><td>The same network written in each framework, built from one set of seeded NumPy weights (<a href="{{ src('tools/rml_export/zoo/weights.py', 11, 33) }}">zoo/weights.py</a>)</td><td>4 models</td><td>{{ link('exporters', 'Exporters and the model zoo', '') }}</td></tr>
+      <tr><td>Direct exporters</td><td>Trace each framework's own graph and lower its ops onto the rml-graph op set (<a href="{{ tree('tools/rml_export') }}">tools/rml_export</a>)</td><td>Built</td><td>{{ link('exporters', 'Exporters and the model zoo', '') }}</td></tr>
+      <tr><td>StableHLO route</td><td><code>from_stablehlo.py</code> lowering StableHLO from torch-mlir, <code>jax.export</code> and TF's compiler IR (<a href="{{ src(prog, 157, 157) }}">progress.md L157</a>)</td><td><em>Planned</em></td><td>{{ link('exporters', 'Exporters and the model zoo', '') }}</td></tr>
+      <tr><td>rml-graph</td><td>A model as two files: a JSON op list and a safetensors file loaded by <code>mmap</code> (<a href="{{ src(ir, 8, 11) }}">graph_ir.md L8–11</a>)</td><td>Built</td><td>{{ link('graph-ir', 'The rml-graph IR', '') }}</td></tr>
+      <tr><td>Kernel-level plan</td><td>Fused elementwise loops, buffers planned at load, threaded, with a textual dump of each level (<a href="{{ src(prog, 158, 158) }}">progress.md L158</a>)</td><td><em>Planned</em></td><td>{{ link('lowering', 'Lowering and fast CPU', '') }}</td></tr>
+      <tr><td>Kernels</td><td>Today the executor calls rml's readable kernels op by op (<a href="{{ src(ir, 93, 102) }}">graph_ir.md L93–102</a>). Packed SIMD GEMM, threaded elementwise kernels and export-time fusion are planned (<a href="{{ src(prog, 159, 161) }}">L159–161</a>).</td><td>Partly built</td><td>{{ link('executor', 'Executing a graph', '') }}, {{ link('lowering', 'Lowering and fast CPU', '') }}</td></tr>
+      <tr><td>Checks</td><td>Golden tests against each framework's output, and timings against its eager and compiled modes</td><td>Built</td><td>{{ link('benchmarks', 'Benchmarks against the frameworks', '') }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="why-layers">Why layers</h2>
+
+<p>
+  Each level has one job, so each can be tested on its own. The framework-facing work stays in offline
+  Python, where the frameworks live. The format in the middle is small on purpose
+  (<a href="{{ src(ir, 87, 91) }}">graph_ir.md L87–91</a>): exporters lower framework ops onto it, so
+  JAX's <code>dot_general</code> becomes <code>transpose</code> + <code>reshape</code> + <code>matmul</code>,
+  and an op an exporter cannot lower fails the export with the framework's op name. There is no silent
+  fallback. Below the format, optimization happens in rml without touching any exporter.
+</p>
+
+<p>
+  StableHLO is the planned front door because each framework already produces it with its production
+  tooling, and it is the input an MLIR pipeline expects. Keeping the direct exporters as well gives two
+  independent routes into the same IR, which the plan checks against each other.
+</p>
+
+<h2 id="scope">What stays out</h2>
+
+<ul>
+  <li><strong>Training.</strong> The format is inference only: there is no backward pass
+    (<a href="{{ src(ir, 6, 6) }}">graph_ir.md L6</a>). Training in rml goes through
+    {{ link('autograd', 'Autograd') }}.</li>
+  <li><strong>Classical ML and KV-cache decoding</strong> stay out of the graph stack
+    (<a href="{{ src(prog, 143, 146) }}">progress.md L143–146</a>). LLM decoding keeps its own
+    allocation-free loop in <code>rml/llm</code>; the graph executor is a general model runner.</li>
+  <li><strong>Sampling loops</strong> stay outside the graph. The exported network is one step, and noise
+    is an input, so a diffusion sampler calls the graph once per step.</li>
+</ul>
+
+<h2 id="models">The model plan</h2>
+
+<p>
+  Four models exist in all three frameworks at this commit, each in a "tiny" size committed as a test
+  fixture and a "bench" size that is timed. The rest of the plan
+  (<a href="{{ src(prog, 151, 156) }}">progress.md L151–156</a>) brings in the architectures the
+  /ml-models reference teaches.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Models</th><th>Status</th><th>Concept</th></tr></thead>
+    <tbody>
+      <tr><td><code>mlp</code>, <code>layernorm_gelu</code></td><td>Built</td><td>{{ ml('neural-networks', 'Neural networks') }}</td></tr>
+      <tr><td><code>cnn</code></td><td>Built</td><td>{{ ml('cnns', 'CNNs') }}</td></tr>
+      <tr><td><code>transformer_block</code></td><td>Built</td><td>{{ ml('transformer', 'The transformer') }}</td></tr>
+      <tr><td><code>vit</code>, <code>encoder</code>, <code>tiny_gpt</code></td><td><em>Planned</em></td><td>{{ ml('vision-transformer', 'Vision transformer') }}, {{ ml('encoder-only', 'Encoder-only models') }}, {{ ml('decoder-only-llm', 'Decoder-only LLMs') }}</td></tr>
+      <tr><td><code>rnn</code>, <code>lstm</code>, <code>ssm</code></td><td><em>Planned</em></td><td>{{ ml('rnns-and-lstms', 'RNNs and LSTMs') }}, {{ ml('state-space-models', 'State space models') }}</td></tr>
+      <tr><td><code>autoencoder</code>, <code>vae</code>, <code>gan_generator</code></td><td><em>Planned</em></td><td>{{ ml('autoencoders', 'Autoencoders') }}, {{ ml('variational-autoencoders', 'VAEs') }}, {{ ml('gans', 'GANs') }}</td></tr>
+      <tr><td><code>diffusion_mlp</code>, <code>unet</code></td><td><em>Planned</em></td><td>{{ ml('diffusion-models', 'Diffusion models') }}, {{ ml('diffusion-unet', 'The diffusion U-Net') }}</td></tr>
+      <tr><td><code>gcn</code>, <code>two_tower</code>, <code>clip</code></td><td><em>Planned</em></td><td>{{ ml('graph-neural-networks', 'Graph neural networks') }}, {{ ml('two-tower-models', 'Two-tower models') }}, {{ ml('multimodal-models', 'Multimodal models') }}</td></tr>
+      <tr><td><code>moe</code></td><td><em>Planned</em></td><td>{{ ml('mixture-of-experts', 'Mixture of experts') }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="status">Where it stands</h2>
+
+<p>
+  The first benchmark run (<a href="{{ src(prog, 128, 133) }}">progress.md L128–133</a>, on a 4-vCPU
+  Linux container) shows the shape of the remaining work. rml beats every framework only on the batch-1
+  CNN, by 1.6–3.5× on one thread, where per-call overhead dominates. It is 2–20× slower wherever GEMM
+  dominates, because only GEMM is threaded and the JAX and TensorFlow graphs arrive with layer norm,
+  softmax and GELU decomposed into chains of small ops
+  (<a href="{{ src(bench, 55, 86) }}">frameworks.md findings</a>). The planned levels target exactly those
+  gaps: a packed SIMD GEMM, threaded kernels over buffers planned at load, and fusion of the decomposed
+  patterns. {{ link('benchmarks', 'Benchmarks against the frameworks', '') }} has the numbers, and
+  {{ link('lowering', 'Lowering and fast CPU', '') }} the plan.
+</p>
+
+<p>
+  Apple Silicon numbers (NEON, Accelerate) have not been produced yet, and GitHub CI has failed before any
+  job starts since October 17, so these changes are verified only in rml's Linux container
+  (<a href="{{ src(prog, 164, 166) }}">progress.md L164–166</a>).
+</p>
