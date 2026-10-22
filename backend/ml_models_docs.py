@@ -1448,6 +1448,7 @@ UPCOMING_MODELS = [
             {"name": "Kimi K2", "year": "2025", "idea": "A 1T-total, 32B-active MoE pre-trained on 15.5T tokens with MuonClip: Muon plus QK-Clip, which rescales query and key weights whenever a head's max attention logit passes a threshold.", "paper": "Kimi Team, Kimi K2: Open Agentic Intelligence, 2025", "url": _arxiv("2507.20534"), "slug": "optimizers"},
             {"name": "DeepSeek-V3.2-Exp", "year": "2025", "idea": "DeepSeek Sparse Attention: a small ReLU \"lightning indexer\" scores earlier tokens and each query attends only to its top-k (2,048) of them.", "paper": "DeepSeek-AI, DeepSeek-V3.2-Exp: Boosting Long-Context Efficiency with DeepSeek Sparse Attention, 2025 (report in the model's GitHub repository)", "url": None, "slug": "attention"},
             {"name": "MiMo-V2-Flash", "year": "2026", "idea": "309B total, 15B active; five 128-token sliding-window layers per global layer with a learnable attention sink, and its multi-token-prediction heads reused as a speculative-decoding draft.", "paper": "LLM-Core Xiaomi, MiMo-V2-Flash Technical Report, 2026", "url": _arxiv("2601.02780"), "slug": "decoding"},
+            {"name": "DeepSeek-V4.1-Flash", "year": "2026", "idea": "Shrinks the KV cache along all three of its axes: decoder layers reuse the global K/V the middle layer computed (a causal encoder-decoder after YOCO), most attention layers reuse a neighbour's cache and top-k indices, and the main cache is stored in FP4 with one 8-bit scale per 16 channels, about 890 bytes of global KV per token.", "paper": "DeepSeek-AI, DeepSeek-V4.1-Flash: Pushing the Limits of KV Cache Compression, 2026 (report in the model's Hugging Face repository)", "url": None, "slug": "kv-cache"},
         ],
     },
 ]
@@ -3963,6 +3964,61 @@ def kv_cache_total_bytes(config, kv_heads, seq_len, batch=1):
         config["layers"], kv_heads, config["head_dim"], config["bytes_per_value"]
     )
     return per_token * seq_len * batch
+
+
+def shared_kv_bytes_per_token(config, kv_heads, layer_share=1, value_bits=16, block=None, scale_bits=0):
+    if config["layers"] % layer_share:
+        raise ValueError("layers must be a multiple of the sharing factor")
+    values = 2 * (config["layers"] // layer_share) * kv_heads * config["head_dim"]
+    scales = values // block if block else 0
+    return (values * value_bits + scales * scale_bits) / 8
+
+
+def kv_shrink_steps(config):
+    steps = [
+        ("Multi-head attention, 16-bit", config["q_heads"], 1, 16, None, 0),
+        ("Grouped-query attention", config["kv_heads"], 1, 16, None, 0),
+        ("Share each K/V across 2 layers", config["kv_heads"], 2, 16, None, 0),
+        ("Store values in FP8", config["kv_heads"], 2, 8, None, 0),
+        ("FP4 values, one 8-bit scale per 16", config["kv_heads"], 2, 4, 16, 8),
+    ]
+    rows = []
+    for name, kv_heads, share, bits, block, scale_bits in steps:
+        size = shared_kv_bytes_per_token(config, kv_heads, share, bits, block, scale_bits)
+        rows.append({"name": name, "kv_heads": kv_heads, "share": share,
+                     "bits": bits + (scale_bits / block if block else 0), "bytes": size})
+    return rows
+
+
+FP4_E2M1_GRID = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
+
+FP4_BLOCK_EXAMPLE = [0.12, -0.83, 0.40, 1.95, -0.07, 0.66, -1.30, 0.25,
+                     0.91, -0.48, 0.03, 1.10, -0.21, 0.58, -0.95, 0.34]
+
+
+def round_to_e4m3(x):
+    if x <= 0:
+        raise ValueError("scales are positive")
+    if x >= 448:
+        return 448.0
+    exponent = max(math.floor(math.log2(x)), -6)
+    step = 2.0 ** (exponent - 3)
+    return min(round(x / step) * step, 448.0)
+
+
+def fp4_block_quantize(values):
+    amax = max(abs(v) for v in values)
+    scale = round_to_e4m3(amax / FP4_E2M1_GRID[-1])
+    codes, restored = [], []
+    for v in values:
+        level = min(FP4_E2M1_GRID, key=lambda g: abs(abs(v) / scale - g))
+        code = -level if v < 0 and level else level
+        codes.append(code)
+        restored.append(code * scale)
+    errors = [abs(a - b) for a, b in zip(values, restored)]
+    return {"amax": amax, "scale": scale, "codes": codes, "restored": restored,
+            "max_error": max(errors), "mean_error": sum(errors) / len(errors),
+            "bits": 4 * len(values) + 8, "max_magnitude": 448.0 * FP4_E2M1_GRID[-1]}
 
 
 def decode_attention_intensity(q_heads, kv_heads, bytes_per_value):
@@ -14811,6 +14867,9 @@ def render(slug, render_template):
         "paged_example": PAGED_EXAMPLE,
         "cached_decode": cached_decode,
         "kv_cache_total_bytes": kv_cache_total_bytes,
+        "kv_shrink_steps": kv_shrink_steps,
+        "fp4_block_example": FP4_BLOCK_EXAMPLE,
+        "fp4_block_quantize": fp4_block_quantize,
         "decode_attention_intensity": decode_attention_intensity,
         "paged_allocation": paged_allocation,
         "learning_points": LEARNING_POINTS,

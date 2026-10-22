@@ -5,6 +5,8 @@
 {% set mha_tok = kv_cache_bytes_per_token(cfg.layers, cfg.q_heads, cfg.head_dim, cfg.bytes_per_value) %}
 {% set mqa_tok = kv_cache_bytes_per_token(cfg.layers, 1, cfg.head_dim, cfg.bytes_per_value) %}
 {% set gib = 1024 ** 3 %}
+{% set shrink = kv_shrink_steps(cfg) %}
+{% set fq = fp4_block_quantize(fp4_block_example) %}
 {% set pg = paged_allocation(paged_example.lengths, paged_example.block_size, paged_example.reserved) %}
 {% macro f(x) -%}{{ "{:,}".format(x) }}{%- endmacro %}
 <header class="jj-header">
@@ -139,6 +141,75 @@
   </svg>
 </div>
 
+<h3 id="cross-layer">Sharing the cache across layers, and storing it in 4 bits</h3>
+<p>
+  The per-token size is a product, 2 × layers × H<sub>kv</sub> × head width × bits, and GQA attacks only one factor.
+  The others can shrink too. <strong>Cross-layer attention</strong> (CLA, Brandon et al. 2024) lets a group of adjacent
+  layers share one set of keys and values: only the first layer in the group projects and caches K and V, and the
+  others attend to them with their own queries. Sharing across pairs halves the cache again, on top of GQA.
+  <strong>You Only Cache Once</strong> (YOCO, Sun et al. 2024) takes it to the limit: the bottom half of the network is a
+  self-decoder with cheap local attention, and the middle layer's output is projected once into a single global K/V that
+  every upper layer cross-attends to. The upper layers no longer need the prompt run through them to build their own
+  caches, so prefill does roughly half the work as well.
+</p>
+<p>
+  DeepSeek-V4.1-Flash (2026) combines all three axes. Its report frames them as entry size (GQA, latent attention),
+  sequence (keeping one compressed entry per m tokens) and layer (cache reuse). It splits its 40 layers into a
+  <em>causal encoder-decoder</em> after YOCO: the 20 decoder layers project their global K/V from the hidden state at
+  layer 20, so a prompt only passes through the encoder half to fill them. Inside each half, most layers reuse a
+  neighbour's work: a <em>Full</em> layer computes its own compressed K/V, sparse-attention indexer keys and top-k
+  selection, a <em>Reindex</em> layer keeps the K/V but picks its own top-k, and a <em>Reuse</em> layer takes both.
+  Finally the main cache is stored in <strong>FP4</strong>: E2M1 values (sign, 2 exponent bits, 1 mantissa bit,
+  so magnitudes 0 to 6) with one E4M3 scale shared by every 16 channels, 4.5 bits per value. The values are quantized
+  after rotary embeddings and the model is trained for it with quantization-aware training; the small sliding-window
+  cache stays in FP8. The report gives about 890 bytes of global K/V per token, a quarter of its predecessor's.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 700 250" role="img" aria-labelledby="kv-layers-title kv-layers-desc">
+    <title id="kv-layers-title">Which layers write a K/V cache: standard, cross-layer attention, and a causal encoder-decoder</title>
+    <desc id="kv-layers-desc">
+      Three stacks of eight layers. In the standard stack every layer writes its own cache, eight caches. With
+      cross-layer attention in pairs, the lower layer of each pair writes a cache that both layers read, four caches.
+      In the encoder-decoder stack the lower layers keep small local caches and the middle layer's output is
+      projected into one global cache that all four upper layers read.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      {% for name, x0 in [("Standard: 8 caches", 20), ("CLA pairs: 4 caches", 255), ("Encoder-decoder: 1 global", 490)] %}
+        <text x="{{ x0 + 95 }}" y="18">{{ name }}</text>
+        {% for layer in range(8) %}
+          {% set y = 212 - layer * 24 %}
+          <rect x="{{ x0 }}" y="{{ y }}" width="90" height="19" rx="3" class="d-box ml-op"></rect>
+          <text x="{{ x0 + 45 }}" y="{{ y + 13 }}">layer {{ layer + 1 }}</text>
+        {% endfor %}
+      {% endfor %}
+      {% for layer in range(8) %}
+        {% set y = 212 - layer * 24 %}
+        <path d="M110 {{ y + 9 }} L130 {{ y + 9 }}" class="d-line" fill="none"></path>
+        <rect x="130" y="{{ y }}" width="60" height="19" rx="3" class="d-box ml-tensor"></rect>
+        <text x="160" y="{{ y + 13 }}">K/V</text>
+        <path d="M345 {{ y + 9 }} L365 {{ y + 9 }}" class="d-line" fill="none"{% if layer % 2 %} stroke-dasharray="3 2"{% endif %}></path>
+        {% if layer % 2 == 0 %}
+          <rect x="365" y="{{ y - 24 }}" width="60" height="43" rx="3" class="d-box ml-tensor"></rect>
+          <text x="395" y="{{ y + 1 }}">K/V</text>
+        {% endif %}
+      {% endfor %}
+      {% for layer in range(3) %}
+        {% set y = 212 - layer * 24 %}
+        <path d="M580 {{ y + 9 }} L600 {{ y + 9 }}" class="d-line" fill="none"></path>
+        <rect x="600" y="{{ y }}" width="44" height="19" rx="3" class="d-box ml-tensor"></rect>
+        <text x="622" y="{{ y + 13 }}">local</text>
+      {% endfor %}
+      <path d="M580 149 L660 149 L660 131" class="d-line" fill="none"></path>
+      <rect x="610" y="44" width="78" height="87" rx="3" class="d-box ml-tensor"></rect>
+      <text x="649" y="84">global</text>
+      <text x="649" y="99">K/V</text>
+      {% for layer in range(4, 8) %}<path d="M580 {{ 221 - layer * 24 }} L610 {{ 221 - layer * 24 }}" class="d-line" fill="none" stroke-dasharray="3 2"></path>{% endfor %}
+      <text x="350" y="246" class="d-muted">solid: layer writes the cache · dashed: layer only reads a cache written below it</text>
+    </g>
+  </svg>
+</div>
+
 <h3 id="paged">Paged attention</h3>
 <p>
   A serving system holds many sequences of different, unknown final lengths. Reserving one contiguous
@@ -233,6 +304,32 @@
 </div>
 
 <div class="ml-worked">
+  <h3 id="worked-shrink">Multiplying the savings</h3>
+  <p>
+    Start from the same {{ cfg.layers }}-layer configuration and apply one factor at a time:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Step</th><th>K/V heads</th><th>Layers per cache</th><th>Bits per value</th><th>Bytes per token</th><th>× smaller than MHA</th></tr></thead>
+      <tbody>
+        {% for row in shrink %}
+        <tr><td>{{ row.name }}</td><td>{{ row.kv_heads }}</td><td>{{ row.share }}</td><td>{{ "%g"|format(row.bits) }}</td><td>{{ f(row.bytes|int) }}</td><td>{{ "%.1f"|format(shrink[0].bytes / row.bytes) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The scales are why FP4 costs 4.5 bits, not 4: every 16 values carry one 8-bit scale. Quantizing one block of 16
+    values whose largest magnitude is {{ fq.amax }}: the scale is {{ fq.amax }}/6 rounded to E4M3, {{ fq.scale }}, and each
+    value divided by it snaps to the nearest of ±0, 0.5, 1, 1.5, 2, 3, 4 or 6. The codes are
+    {{ fq.codes|join(", ") }}. Multiplied back, the largest error is {{ "%.2f"|format(fq.max_error) }} and the mean
+    {{ "%.3f"|format(fq.mean_error) }}; the block takes {{ fq.bits }} bits instead of 256 in bf16. The scale's own range caps
+    what a block can hold at 448 × 6 = {{ f(fq.max_magnitude|int) }}, and the coarse grid is why the model is trained
+    with quantization in the loop rather than quantized afterwards.
+  </p>
+</div>
+
+<div class="ml-worked">
   <h3 id="worked-paged">Paged versus contiguous</h3>
   <p>
     Four sequences have {{ paged_example.lengths|join(", ") }} tokens so far, {{ pg.used }} in all. Reserving
@@ -288,7 +385,11 @@ class CachedAttention(torch.nn.Module):
   <li><strong>MQA and GQA</strong> shrink the cache by H<sub>q</sub>/H<sub>kv</sub> at some loss in quality that grows as the
     K/V heads shrink; GQA is the usual compromise. A model must be trained with the choice (or converted and
     fine-tuned), since the projections differ.</li>
-  <li><strong>Precision.</strong> Storing the cache in 8-bit or lower cuts memory again, trading accuracy; see quantization.</li>
+  <li><strong>Precision.</strong> Storing the cache in 8-bit or lower cuts memory again, trading accuracy; see quantization.
+    At 4 bits the per-block scales are essential and the model generally has to be trained for it.</li>
+  <li><strong>Sharing across layers</strong> (CLA, YOCO-style encoder-decoders) divides the cache by the sharing factor
+    and, for YOCO, roughly halves prefill, but the layers that read a shared cache lose their own view of the prefix,
+    which costs quality, and the architecture must be chosen before pre-training.</li>
   <li><strong>Paging</strong> improves utilisation and allows prefix sharing, at the cost of a more complex attention kernel
     that follows the block table.</li>
   <li><strong>Pitfalls.</strong> Passing <code>is_causal=True</code> with a one-token query and a longer key
@@ -321,6 +422,9 @@ class CachedAttention(torch.nn.Module):
   <li>Shazeer. <em>Fast Transformer Decoding: One Write-Head is All You Need</em> (multi-query attention). 2019 (<a href="https://arxiv.org/abs/1911.02150">arXiv 1911.02150</a>).</li>
   <li>Ainslie et al. <em>GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints.</em> EMNLP, 2023 (<a href="https://arxiv.org/abs/2305.13245">arXiv 2305.13245</a>).</li>
   <li>Kwon et al. <em>Efficient Memory Management for Large Language Model Serving with PagedAttention.</em> SOSP, 2023 (<a href="https://arxiv.org/abs/2309.06180">arXiv 2309.06180</a>).</li>
+  <li>Brandon, Mishra, Nrusimha, Panda and Ragan-Kelley. <em>Reducing Transformer Key-Value Cache Size with Cross-Layer Attention.</em> NeurIPS, 2024 (<a href="https://arxiv.org/abs/2405.12981">arXiv 2405.12981</a>).</li>
+  <li>Sun, Dong, Zhu, Huang, Wang, Ma, Zhang, Wang and Wei. <em>You Only Cache Once: Decoder-Decoder Architectures for Language Models.</em> NeurIPS, 2024 (<a href="https://arxiv.org/abs/2405.05254">arXiv 2405.05254</a>).</li>
+  <li>DeepSeek-AI. <em>DeepSeek-V4.1-Flash: Pushing the Limits of KV Cache Compression.</em> 2026 (<a href="https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/314113f8a7dadb388215396ba5fbee2c610a04d6/DeepSeek_V41_Tech_Report.pdf">technical report</a>).</li>
   <li>Vaswani et al. <em>Attention Is All You Need.</em> NeurIPS, 2017 (<a href="https://arxiv.org/abs/1706.03762">arXiv 1706.03762</a>).</li>
   <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/nn/functional.py', 6367, 6406) }}"><code>scaled_dot_product_attention</code></a>, <a href="{{ src('torch/nn/modules/activation.py', 1090, 1573) }}"><code>MultiheadAttention</code></a>.</li>
 </ul>

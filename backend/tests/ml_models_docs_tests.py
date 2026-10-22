@@ -5894,3 +5894,33 @@ def test_error_exponent_clamps_to_the_plot_floor():
     rows = ml_models_docs.least_squares_errors([1e-2, 1e-8])
     assert rows[0]["qr_log"] == -16.0 or rows[0]["qr_log"] < -15
     assert rows[1]["normal_log"] is None
+
+
+def test_kv_shrink_steps_multiply_heads_layers_and_bits():
+    rows = ml_models_docs.kv_shrink_steps(ml_models_docs.KV_CONFIG)
+
+    assert [row["bytes"] for row in rows] == [524288, 131072, 65536, 32768, 18432]
+    assert rows[-1]["bits"] == 4.5
+    assert rows[1]["bytes"] == ml_models_docs.kv_cache_bytes_per_token(32, 8, 128, 2)
+    with pytest.raises(ValueError):
+        ml_models_docs.shared_kv_bytes_per_token(ml_models_docs.KV_CONFIG, 8, layer_share=3)
+
+
+def test_e4m3_rounding_keeps_three_mantissa_bits():
+    assert ml_models_docs.round_to_e4m3(0.325) == 0.3125
+    assert ml_models_docs.round_to_e4m3(1.0) == 1.0
+    assert ml_models_docs.round_to_e4m3(1.07) == 1.125
+    assert ml_models_docs.round_to_e4m3(1000) == 448.0
+
+
+def test_fp4_block_quantize_snaps_to_the_e2m1_grid():
+    result = ml_models_docs.fp4_block_quantize(ml_models_docs.FP4_BLOCK_EXAMPLE)
+
+    assert result["scale"] == 0.3125
+    assert all(abs(code) in ml_models_docs.FP4_E2M1_GRID for code in result["codes"])
+    assert result["codes"][3] == 6.0 and result["codes"][4] == 0.0
+    assert result["bits"] / len(ml_models_docs.FP4_BLOCK_EXAMPLE) == 4.5
+    assert result["max_magnitude"] == 2688
+    assert round(result["max_error"], 2) == 0.15
+    for value, restored in zip(ml_models_docs.FP4_BLOCK_EXAMPLE, result["restored"]):
+        assert value * restored >= 0
