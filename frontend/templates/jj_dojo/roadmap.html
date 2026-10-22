@@ -161,7 +161,7 @@
     <thead><tr><th>Milestone</th><th>Goal</th><th>Items</th><th>At this pin</th></tr></thead>
     <tbody>
       <tr><td>M1<br>Oct–Nov 2026</td><td>Show the commit graph and modified files, without refreshes</td><td>Open-source the commit graph <em>[Done]</em>; the jj subprocess client <em>[In progress]</em>; upstream the "Open Diff" commands</td><td>The graph has landed. <code>SubprocessClient</code> has landed and is tested, but the graph doesn't use it yet. The "Open Diff" commands haven't landed.</td></tr>
-      <tr><td>M2<br>Nov 2026–Feb 2027</td><td>Support refreshes</td><td>FileSystemWatcher <em>[In progress]</em>; upstream PendingSnapshotsManager; JJ PubSub; multi-workspace support</td><td>The watcher has landed but isn't wired in. JJ PubSub has an interface only.</td></tr>
+      <tr><td>M2<br>Nov 2026–Feb 2027</td><td>Support refreshes</td><td>FileSystemWatcher <em>[In progress]</em>; upstream PendingSnapshotsManager; JJ PubSub; multi-workspace support</td><td>The watcher has landed but isn't wired in. JJ PubSub has an interface only. <code>SubprocessClient</code> can now add workspaces and reports each commit's working copies, but nothing uses that yet.</td></tr>
       <tr><td>M3<br>Feb–Apr 2027</td><td>Basic mutating operations</td><td>Upstream ActionsQueue; <code>jj new</code>/<code>edit</code>/<code>squash</code> commands; <code>jj describe</code>/<code>commit</code> commands with the commit dialog webview</td><td><span class="dojo-planned-badge">planned</span></td></tr>
       <tr><td>M4<br>Apr–Jun 2027</td><td>Forge integration</td><td>Publishing to GitHub, and possibly Gerrit; upload and sync</td><td><span class="dojo-planned-badge">planned</span></td></tr>
     </tbody>
@@ -171,78 +171,128 @@
 <h2 id="subprocess-client">3. The subprocess client so far</h2>
 
 <p class="jj-source">
-  <a href="{{ src(client) }}">client.ts</a> (45 lines),
-  <a href="{{ src(sclient) }}">subprocess_client.ts</a> (161 lines),
-  <a href="{{ src(sub) }}">subprocess_util.ts</a> (40 lines), their tests,
-  <a href="{{ src(api) }}">src/api/api.ts</a> and <a href="{{ src(subbuild, 20, 55) }}">BUILD.bazel</a>
+  <a href="{{ src(client) }}">client.ts</a> (51 lines),
+  <a href="{{ src(sclient) }}">subprocess_client.ts</a> (348 lines),
+  <a href="{{ src(sub) }}">subprocess_util.ts</a> (41 lines), their tests,
+  <a href="{{ src(api) }}">src/api/api.ts</a> and <a href="{{ src(subbuild, 21, 59) }}">BUILD.bazel</a>
 </p>
 
 <p>
-  The <a href="{{ src(client, 22, 45) }}"><code>Client</code></a> interface has one method,
-  <code>getWorkspaceState</code>. It snapshots the working copy <em>without publishing an operation</em>
+  The <a href="{{ src(client, 23, 51) }}"><code>Client</code></a> interface has two methods.
+  <code>getWorkspaceState</code> snapshots the working copy <em>without publishing an operation</em>
   and returns a <code>RepoState</code>, which is just a list of commits. Its doc comment explains the
   optional <code>lastKnownUnpublishedOperation</code> argument. Because an unpublished snapshot is never
   remembered, jj keeps snapshotting the same files again, which caused "resource exhaustion issues
   internally inside Google". The internal extension passes the last unpublished operation to its server as
   the base to snapshot on top of. The CLI can't do that, so the CLI implementation ignores the argument
-  (<a href="{{ src(client, 23, 40) }}">source</a>).
+  (<a href="{{ src(client, 24, 41) }}">source</a>). <code>workspaceAdd</code> is "the equivalent of
+  <code>jj workspace add &lt;workspaceRoot&gt;</code>" and returns the new <code>WorkingCopy</code>
+  (<a href="{{ src(client, 47, 50) }}">source</a>).
 </p>
 
 <p>
-  The types it returns live in a new <code>//src/api</code> package. A
-  <a href="{{ src(api, 43, 92) }}"><code>Commit</code></a> carries its ID and change ID, parent and child
-  IDs, whether it is the working copy, its description, author and committer times in milliseconds,
-  conflict and divergence flags, the display ID with how much of it to highlight, and the change offset
-  when the change is divergent. <code>CommitId</code>, <code>ChangeId</code> and <code>OperationId</code>
-  are small classes that wrap a hex string so they can be map keys
-  (<a href="{{ src(api, 19, 41) }}">source</a>). These are not the commit graph's own
-  <a href="{{ page('graph-protocol') }}">protocol types</a>; nothing converts one into the other yet.
+  The types it returns live in the <code>//src/api</code> package. A
+  <a href="{{ src(api, 45, 123) }}"><code>Commit</code></a> carries:
+</p>
+
+<ul>
+  <li>its ID and change ID, <code>parentIds</code> and <code>childIds</code>;</li>
+  <li>whether it is the working copy (<code>active</code>) or a parent of it
+    (<code>isWorkingCopyParentCommit</code>);</li>
+  <li>its full description and a <code>descriptionTitle</code>, "usually" the first line;</li>
+  <li>author and committer times in milliseconds, and conflict and divergence flags;</li>
+  <li>the display ID with how much of it to highlight, and the change offset when the change is
+    divergent;</li>
+  <li>its <code>bookmarks</code>, each with a name, an optional remote, <code>needsUpload</code> (jj's
+    <code>*</code>) and <code>isConflicted</code> (<a href="{{ src(api, 147, 159) }}">source</a>);</li>
+  <li><code>ancestors</code> and <code>descendants</code>, read-only sets of commit IDs that include the
+    commit itself;</li>
+  <li><code>workingCopies</code>: the workspaces whose working copy it is, each with a jj workspace name,
+    an optional root path and a display name (<a href="{{ src(api, 161, 180) }}">source</a>).</li>
+</ul>
+
+<p>
+  <code>CommitId</code>, <code>ChangeId</code> and <code>OperationId</code> are small classes that wrap a
+  hex string and implement <code>HashMapKey</code>, so they can be <a href="{{ page('utils') }}#hashmap">
+  <code>HashMap</code></a> keys (<a href="{{ src(api, 21, 43) }}">source</a>). A <code>MutableCommit</code>
+  mapped type drops the <code>readonly</code>s and turns the read-only sets into <code>HashSet</code>s, so
+  the client can fill them in (<a href="{{ src(api, 125, 130) }}">source</a>). These are not the commit
+  graph's own <a href="{{ page('graph-protocol') }}">protocol types</a>; nothing converts one into the other
+  yet.
 </p>
 
 <p>
-  <a href="{{ src(sclient, 22, 32) }}"><code>SubprocessClient</code></a> answers with two <code>jj</code>
-  calls:
+  <a href="{{ src(sclient, 41, 117) }}"><code>SubprocessClient</code></a> answers
+  <code>getWorkspaceState</code> with two <code>jj</code> calls:
 </p>
 
 <ol>
-  <li><a href="{{ src(sclient, 48, 67) }}"><code>snapshotWithoutIntegrating</code></a> runs
+  <li><a href="{{ src(sclient, 174, 193) }}"><code>snapshotWithoutIntegrating</code></a> runs
     <code>jj --no-integrate-operation op log -n=1 --no-graph -T=id</code>. Running any command snapshots
     the working copy, and <code>--no-integrate-operation</code> keeps the resulting operation out of the
     op log, so this returns the ID of an unpublished operation (see
     <a href="{{ url_for('jj', slug='operations') }}">operations</a>). A TODO notes that
     <code>--no-graph</code> drops jj's elided edges, which the commit graph can't draw either.</li>
-  <li><a href="{{ src(sclient, 69, 133) }}"><code>getCommits</code></a> runs
+  <li><a href="{{ src(sclient, 195, 300) }}"><code>getCommits</code></a> runs
     <code>jj --at-op &lt;op&gt; log --no-graph</code> with a template that prints one JSON object per
-    commit (<a href="{{ src(sclient, 73, 101) }}">source</a>). No revset is passed, so it shows whatever the
-    user's default <code>log</code> revset selects. It then builds each commit's child list from the parent
-    lists, and makes every display ID as long as the longest shortest unique prefix, and at least 4
-    characters (<a href="{{ src(sclient, 112, 129) }}">source</a>). A divergent commit's display ID gets
-    <code>/&lt;offset&gt;</code> appended (<a href="{{ src(sclient, 135, 161) }}">source</a>).</li>
+    commit, including its bookmarks and working copies (<a href="{{ src(sclient, 209, 235) }}">source</a>).
+    The template is built field by field by
+    <a href="{{ src(sclient, 147, 172) }}"><code>toJsonObjectTemplate</code></a>. No revset is passed, so it
+    shows whatever the user's default <code>log</code> revset selects. It then:
+    <ul>
+      <li>makes every display ID as long as the longest shortest unique prefix, and at least 4 characters
+        (<a href="{{ src(sclient, 246, 253) }}">source</a>);</li>
+      <li>builds each commit's child list from the parent lists, and marks the working copy's parents
+        (<a href="{{ src(sclient, 255, 271) }}">source</a>);</li>
+      <li>gives the working-copy commit a <code>default</code> workspace rooted at the client's directory
+        when jj reports none, which jj does when there is only one workspace. A comment admits this is
+        "technically not correct" for a renamed default workspace
+        (<a href="{{ src(sclient, 273, 285) }}">source</a>);</li>
+      <li>fills in every commit's ancestors and descendants with
+        <a href="{{ page('utils') }}#commit-topology"><code>commit_topology</code></a>
+        (<a href="{{ src(sclient, 296, 299) }}">source</a>).</li>
+    </ul>
+    <a href="{{ src(sclient, 302, 340) }}"><code>rawCommitToApiCommit</code></a> appends
+    <code>/&lt;offset&gt;</code> to a divergent commit's display ID, takes the first line as the title, and
+    sets <code>needsUpload</code> for a local bookmark that is neither synced nor conflicted.</li>
 </ol>
 
 <p>
-  Every call goes through <a href="{{ src(sub, 24, 40) }}"><code>subprocess</code></a>, Node's
+  <a href="{{ src(sclient, 52, 87) }}"><code>workspaceAdd</code></a> runs
+  <code>jj workspace add --name=&lt;basename&gt; -- &lt;root&gt;</code>. It names the workspace after the
+  last path component itself, because <code>jj workspace add</code> prints nothing machine-readable, then
+  finds that name in <code>jj workspace list --ignore-working-copy</code> and returns it. The
+  <code>--</code> keeps a path that starts with <code>-</code> from being read as a flag. If the new
+  workspace isn't listed, it throws through <code>logAndShowInternalError</code> (see
+  <a href="{{ page('activation') }}">activation</a>), which is why the target now depends on
+  <code>//src/logging</code>.
+</p>
+
+<p>
+  Every call goes through <a href="{{ src(sub, 25, 41) }}"><code>subprocess</code></a>, Node's
   <code>execFile</code> promisified with a 10-second timeout. It runs the command directly, with no shell.
-  A comment now notes that <code>execFile</code>'s 1 MiB output limit "might cause problems" for large
-  descriptions or file contents (<a href="{{ src(sub, 34, 35) }}">source</a>). The helper's only dependency is
+  A comment notes that <code>execFile</code>'s 1 MiB output limit "might cause problems" for large
+  descriptions or file contents (<a href="{{ src(sub, 35, 36) }}">source</a>). The helper's only dependency is
   <code>@types/node</code>, so under the <a href="{{ page('build-and-test') }}#deps"><code>deps</code>
   scheme</a> it belongs on the external-only side. The interface target <code>client</code> depends only on
   <code>//src/api</code>.
 </p>
 
 <p>
-  The six <code>SubprocessClient</code> tests run the pinned <code>jj</code> (see
-  <a href="{{ page('build-and-test') }}#rule-jj">the jj rule</a>) in a fresh repository from
-  <a href="{{ page('build-and-test') }}#new-repo"><code>newRepo</code></a>. They cover a new repository,
-  a description, a description that is binary data, divergent commits with their change offsets, and a
-  conflict. The last test reads the op log the same unpublished way. A clean working copy adds no
-  operation. A dirty file shows one "snapshot working copy" operation on top, and once the file is
-  removed, the op log is back to what it was. Nothing was ever published
-  (<a href="{{ src(sctest, 150, 191) }}">source</a>). The
-  <code>subprocess_util</code> test still runs <code>jj version</code>
-  (<a href="{{ src(subtest, 22, 31) }}">source</a>). No file outside <code>src/client/</code> imports
-  the client, and <code>//src</code>'s <code>deps</code> don't include it
-  (<a href="{{ src(srcbuild, 26, 37) }}">source</a>).
+  The fifteen <code>SubprocessClient</code> tests run the pinned <code>jj</code> (see
+  <a href="{{ page('build-and-test') }}#rule-jj">the jj rule</a>) in fresh repositories from
+  <a href="{{ page('build-and-test') }}#new-repo"><code>newRepo</code></a>. Ten cover a new repository,
+  descriptions (including binary data and a multi-line title), divergent commits with their change
+  offsets, a conflict, ancestors and descendants across several commits, a second workspace, and a
+  workspace path that starts with <code>-</code>. The snapshot test reads the op log the same unpublished
+  way. A clean working copy adds no operation. A dirty file shows one "snapshot working copy" operation on
+  top, and once the file is removed, the op log is back to what it was. Nothing was ever published
+  (<a href="{{ src(sctest, 193, 234) }}">source</a>). Five more run against a local repository with a
+  remote and check local, conflicted, synced, unsynced and diverged remote bookmarks
+  (<a href="{{ src(sctest, 344, 495) }}">source</a>). The <code>subprocess_util</code> test still runs
+  <code>jj version</code> (<a href="{{ src(subtest, 23, 32) }}">source</a>). No file outside
+  <code>src/client/</code> imports the client, and <code>//src</code>'s <code>deps</code> don't include it
+  (<a href="{{ src(srcbuild, 27, 40) }}">source</a>).
 </p>
 
 <h2 id="interfaces">4. Interfaces without implementations</h2>
@@ -256,9 +306,9 @@
   <table>
     <thead><tr><th>Interface</th><th>Method</th><th>Purpose</th><th>Source</th></tr></thead>
     <tbody>
-      <tr><td><code>OpHeadWatcher</code></td><td><code>subscribe(cb)</code></td><td>Calls back when the repository's global op head changes. "Global" means the op head that all workspaces share. This matches the plan's JJ PubSub.</td><td><a href="{{ src(ophead, 19, 32) }}">19–32</a></td></tr>
-      <tr><td><code>NetworkReconnectWatcher</code></td><td><code>subscribe(cb)</code></td><td>Calls back when the network reconnects. Not in the plan.</td><td><a href="{{ src(netwatch, 19, 34) }}">19–34</a></td></tr>
-      <tr><td><code>Telemetry</code></td><td><code>logAction(commandName, uiLatencyMillis)</code></td><td>Records how long a command took. Not in the plan.</td><td><a href="{{ src(telemetry, 17, 28) }}">17–28</a></td></tr>
+      <tr><td><code>OpHeadWatcher</code></td><td><code>subscribe(cb)</code></td><td>Calls back when the repository's global op head changes. "Global" means the op head that all workspaces share. This matches the plan's JJ PubSub.</td><td><a href="{{ src(ophead, 20, 33) }}">20–33</a></td></tr>
+      <tr><td><code>NetworkReconnectWatcher</code></td><td><code>subscribe(cb)</code></td><td>Calls back when the network reconnects. Not in the plan.</td><td><a href="{{ src(netwatch, 20, 35) }}">20–35</a></td></tr>
+      <tr><td><code>Telemetry</code></td><td><code>logAction(commandName, uiLatencyMillis)</code></td><td>Records how long a command took. Not in the plan.</td><td><a href="{{ src(telemetry, 18, 29) }}">18–29</a></td></tr>
     </tbody>
   </table>
 </div>
@@ -276,9 +326,9 @@
   The package follows the interface/implementation split from the plan's design notes. The
   <code>file_system_watcher</code> target holds only the interface and depends only on
   <code>@types/vscode</code>. <code>local_file_system_watcher</code> adds <code>@parcel/watcher</code>,
-  <code>@types/node</code> and the logging and error packages (<a href="{{ src(fswbuild, 20, 39) }}">source</a>).
+  <code>@types/node</code> and the logging and error packages (<a href="{{ src(fswbuild, 21, 40) }}">source</a>).
   The interface's doc comment says the abstraction exists so the extension can work with virtual file
-  systems, and that internally it corresponds to a citc pubsub (<a href="{{ src(fsw, 19, 23) }}">source</a>).
+  systems, and that internally it corresponds to a citc pubsub (<a href="{{ src(fsw, 20, 24) }}">source</a>).
 </p>
 
 <h3 id="fsw-interface">The interface</h3>
@@ -287,11 +337,11 @@
   <table>
     <thead><tr><th>Field</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
     <tbody>
-      <tr><td><code>FileSystemWatcher.subscribe(cb)</code></td><td><code>vscode.Disposable</code></td><td>Registers a callback. An <code>undefined</code> delta means "anything may have changed", for example after a network interruption or an OS event-queue overflow.</td><td><a href="{{ src(fsw, 24, 38) }}">24–38</a></td></tr>
-      <tr><td><code>FileChangeType</code></td><td>enum</td><td><code>ADDED</code>, <code>MODIFIED</code>, <code>DELETED</code></td><td><a href="{{ src(fsw, 40, 44) }}">40–44</a></td></tr>
-      <tr><td><code>SnapshotDelta.stateChanged</code></td><td><code>boolean</code></td><td>True when <code>.jj/working_copy/checkout</code> changed, meaning jj itself moved the working copy (see <a href="{{ url_for('jj', slug='working-copy') }}">working copy</a>).</td><td><a href="{{ src(fsw, 47, 48) }}">47–48</a></td></tr>
-      <tr><td><code>SnapshotDelta.snapshotNumber</code></td><td><code>number</code></td><td>Must increase monotonically.</td><td><a href="{{ src(fsw, 49, 50) }}">49–50</a></td></tr>
-      <tr><td><code>SnapshotDelta.fileChanges</code></td><td><code>readonly FileChange[]</code></td><td>Each change's <code>path</code>, relative to the workspace root, and <code>type</code>.</td><td><a href="{{ src(fsw, 51, 58) }}">51–58</a></td></tr>
+      <tr><td><code>FileSystemWatcher.subscribe(cb)</code></td><td><code>vscode.Disposable</code></td><td>Registers a callback. An <code>undefined</code> delta means "anything may have changed", for example after a network interruption or an OS event-queue overflow.</td><td><a href="{{ src(fsw, 25, 39) }}">25–39</a></td></tr>
+      <tr><td><code>FileChangeType</code></td><td>enum</td><td><code>ADDED</code>, <code>MODIFIED</code>, <code>DELETED</code></td><td><a href="{{ src(fsw, 41, 45) }}">41–45</a></td></tr>
+      <tr><td><code>SnapshotDelta.stateChanged</code></td><td><code>boolean</code></td><td>True when <code>.jj/working_copy/checkout</code> changed, meaning jj itself moved the working copy (see <a href="{{ url_for('jj', slug='working-copy') }}">working copy</a>).</td><td><a href="{{ src(fsw, 48, 49) }}">48–49</a></td></tr>
+      <tr><td><code>SnapshotDelta.snapshotNumber</code></td><td><code>number</code></td><td>Must increase monotonically.</td><td><a href="{{ src(fsw, 50, 51) }}">50–51</a></td></tr>
+      <tr><td><code>SnapshotDelta.fileChanges</code></td><td><code>readonly FileChange[]</code></td><td>Each change's <code>path</code>, relative to the workspace root, and <code>type</code>.</td><td><a href="{{ src(fsw, 52, 59) }}">52–59</a></td></tr>
     </tbody>
   </table>
 </div>
@@ -301,7 +351,7 @@
 <p>
   Its doc comment explains why it uses <code>@parcel/watcher</code> rather than VS Code's
   <code>createFileSystemWatcher</code>: parcel supports exclusions, which are needed to ignore changes to
-  gitignored files, and VS Code has no plans to add them (<a href="{{ src(local, 40, 47) }}">source</a>).
+  gitignored files, and VS Code has no plans to add them (<a href="{{ src(local, 41, 48) }}">source</a>).
 </p>
 
 <ol>
@@ -312,16 +362,16 @@
     replacement <code>subscribe</code>. Once the subscription is ready, it logs the path and every
     subscriber gets <code>undefined</code>, so nothing that happened during setup is missed. If subscribing
     fails, the error is logged and shown to the user, and not rethrown
-    (<a href="{{ src(local, 80, 132) }}">source</a>).</li>
+    (<a href="{{ src(local, 81, 133) }}">source</a>).</li>
   <li><strong>Each batch of parcel events</strong> becomes one <code>SnapshotDelta</code> with the next
     counter value. Each path is made relative to the watched directory. <code>stateChanged</code> is set
     when an event's path is exactly <code>&lt;dir&gt;/.jj/working_copy/checkout</code>. A parcel error is logged and sent to subscribers
-    as <code>undefined</code> (<a href="{{ src(local, 110, 118) }}">source</a>,
-    <a href="{{ src(local, 162, 179) }}">source</a>).</li>
+    as <code>undefined</code> (<a href="{{ src(local, 111, 119) }}">source</a>,
+    <a href="{{ src(local, 163, 180) }}">source</a>).</li>
   <li><strong>Fan-out</strong> calls every callback and logs any exception it throws, so one failing
-    subscriber doesn't starve the others (<a href="{{ src(local, 181, 192) }}">source</a>).</li>
+    subscriber doesn't starve the others (<a href="{{ src(local, 182, 193) }}">source</a>).</li>
   <li><strong>Dispose</strong> clears the callbacks, swaps in a no-op subscription so repeated calls are
-    harmless, and then unsubscribes, logging any failure (<a href="{{ src(local, 145, 160) }}">source</a>).</li>
+    harmless, and then unsubscribes, logging any failure (<a href="{{ src(local, 146, 161) }}">source</a>).</li>
 </ol>
 
 <p>
@@ -330,16 +380,16 @@
   (<a href="{{ page('build-and-test') }}#fake-api">fake API</a>). Besides the three change types, they
   check that <code>stateChanged</code> fires for the workspace's own checkout file but not for a nested
   workspace's or for <code>foo.jj/working_copy/checkout</code>
-  (<a href="{{ src(localtest, 152, 222) }}">source</a>). The others cover subscriber isolation, disposal
+  (<a href="{{ src(localtest, 153, 223) }}">source</a>). The others cover subscriber isolation, disposal
   in every order, the error path, and the new path handling: a relative path is rejected, a trailing
   slash is ignored, and a directory opened through a symlink still produces events
-  (<a href="{{ src(localtest, 470, 530) }}">source</a>).
+  (<a href="{{ src(localtest, 471, 531) }}">source</a>).
 </p>
 
 <p>
   <code>//src</code> lists <code>//src/file_system_watcher</code> in its <code>deps</code>, which is the
   interface target, but nothing in the extension creates a watcher yet
-  (<a href="{{ src(srcbuild, 26, 37) }}">source</a>).
+  (<a href="{{ src(srcbuild, 27, 40) }}">source</a>).
 </p>
 
 <h2 id="design">6. Design considerations</h2>
@@ -378,7 +428,7 @@
 <ul>
   <li><strong>Exclusions are the reason for parcel, but none are passed.</strong> The watcher picks
     <code>@parcel/watcher</code> for its exclusion support, yet calls <code>subscribe</code> with no
-    <code>ignore</code> option (<a href="{{ src(local, 108, 110) }}">source</a>). As written, gitignored build
+    <code>ignore</code> option (<a href="{{ src(local, 109, 111) }}">source</a>). As written, gitignored build
     output and every write under <code>.jj/</code> produce events.</li>
   <li><strong>A native module in a package that ships no dependencies.</strong>
     <code>@parcel/watcher</code> is a native npm package, and the <code>.vsix</code> is built with
@@ -386,7 +436,7 @@
     (<a href="{{ page('build-and-test') }}#gaps">build and test</a>).</li>
   <li><strong>The subprocess helper's limits.</strong> It keeps <code>execFile</code>'s default output
     buffer, which Node caps at 1 MiB, and a fixed 10-second timeout. An upstream comment now acknowledges
-    the buffer limit (<a href="{{ src(sub, 34, 35) }}">source</a>). <code>getCommits</code> prints the
+    the buffer limit (<a href="{{ src(sub, 35, 36) }}">source</a>). <code>getCommits</code> prints the
     whole log in one call, so a large repository or long descriptions would make it reject.</li>
   <li><strong>Two commit types.</strong> The client returns <code>//src/api</code> commits, while the graph
     takes its own protocol types. Something still has to convert one into the other before the graph can

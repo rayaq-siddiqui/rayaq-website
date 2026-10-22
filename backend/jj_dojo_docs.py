@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj-dojo",
-    "commit": "5fecc7aef52a54ff575ac9b6d999443bffc94f2a",
-    "commit_date": "2026-10-12",
+    "commit": "4cff5a1c554863c1be7ae9dea240372028522a8d",
+    "commit_date": "2026-10-20",
     "version": "0.0.1",
-    "analyzed_on": "2026-10-15",
+    "analyzed_on": "2026-10-22",
 }
 
 PAGES = [

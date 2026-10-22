@@ -5,23 +5,29 @@
 {% set hst = dir ~ "hashset_test.ts" %}
 {% set disp = dir ~ "dispose.ts" %}
 {% set build = dir ~ "BUILD.bazel" %}
+{% set topo = dir ~ "commit_topology.ts" %}
+{% set topot = dir ~ "commit_topology_test.ts" %}
 {% set gcheck = "src/ui/commit_graph/utils/check.ts" %}
 {% set gtime = "src/ui/commit_graph/utils/time.ts" %}
 <header class="jj-header">
   <h1>Shared utilities</h1>
   <p class="tagline">
-    The small helpers in <code>src/utils/</code>: a map and a set that compare keys by value, the
-    exhaustiveness checks, disposal of a list of disposables, and relative timestamps.
+    The small helpers in <code>src/utils/</code>: a map and a set that compare keys by value, commit
+    topology (ancestors, descendants, the working copy), the exhaustiveness checks, disposal of a list
+    of disposables, and relative timestamps.
   </p>
 </header>
 
 <p class="jj-note">
   In short: JavaScript's <code>Map</code> and <code>Set</code> compare object keys by identity, so two
   equal <code>vscode.Uri</code>s are different keys. <code>HashMap</code> and <code>HashSet</code> key on
-  <code>toString()</code> instead. <code>dispose</code> disposes everything in an array and empties it.
+  <code>toString()</code> instead, and each has a read-only interface that the
+  <a href="{{ url_for('jj_dojo', slug='roadmap') }}#subprocess-client"><code>Commit</code></a> type uses.
+  <code>commit_topology</code> fills in every commit's ancestor and descendant sets and finds the working
+  copy and its parent. <code>dispose</code> disposes everything in an array and empties it.
   <code>check.ts</code> and <code>time.ts</code> just re-export the commit graph's own copies, which give
-  compile-time exhaustive <code>switch</code> checks and Mercurial-style "5 minutes ago" strings. Only
-  <code>HashMap</code> and <code>dispose</code> are imported anywhere outside the directory at this pin.
+  compile-time exhaustive <code>switch</code> checks and Mercurial-style "5 minutes ago" strings.
+  <code>check</code> and <code>time</code> are the only files nothing imports at this pin.
 </p>
 
 <h2 id="files">1. Files and who uses them</h2>
@@ -30,9 +36,10 @@
   <table>
     <thead><tr><th>File</th><th>Exports</th><th>Imported by</th></tr></thead>
     <tbody>
-      <tr><td><a href="{{ src(hm) }}">hashmap.ts</a></td><td><code>HashMap</code>, <code>HashMapKey</code></td><td><code>ConflictTracker</code>, keyed by document URI (<a href="{{ src('src/ui/merge_conflict/tracker.ts', 44) }}">tracker.ts</a>, see <a href="{{ url_for('jj_dojo', slug='merge-conflicts') }}">merge-conflicts</a>). Also <code>hashset.ts</code>.</td></tr>
-      <tr><td><a href="{{ src(hs) }}">hashset.ts</a></td><td><code>HashSet</code></td><td>Its test only.</td></tr>
-      <tr><td><a href="{{ src(disp) }}">dispose.ts</a></td><td><code>dispose</code></td><td>The UI bundle's <code>dispose()</code> (<a href="{{ src('src/ui/ui.ts', 30, 32) }}">ui.ts</a>) and the graph view's teardown when its webview is disposed (<a href="{{ src('src/ui/commit_graph_provider/commit_graph_provider.ts', 69) }}">commit_graph_provider.ts</a>).</td></tr>
+      <tr><td><a href="{{ src(hm) }}">hashmap.ts</a></td><td><code>HashMap</code>, <code>ReadonlyHashMap</code>, <code>HashMapKey</code></td><td><code>ConflictTracker</code>, keyed by document URI (<a href="{{ src('src/ui/merge_conflict/tracker.ts', 45) }}">tracker.ts</a>, see <a href="{{ url_for('jj_dojo', slug='merge-conflicts') }}">merge-conflicts</a>), <code>SubprocessClient</code>, <code>hashset.ts</code> and <code>commit_topology.ts</code>.</td></tr>
+      <tr><td><a href="{{ src(hs) }}">hashset.ts</a></td><td><code>HashSet</code>, <code>ReadonlyHashSet</code></td><td><code>api.ts</code>, for <code>Commit.ancestors</code> and <code>descendants</code> (<a href="{{ src('src/api/api.ts', 116, 119) }}">api.ts</a>), <code>SubprocessClient</code>, the <code>fakeCommit</code> test fake, and the not-yet-wired <a href="{{ url_for('jj_dojo', slug='graph-protocol') }}#multi-select"><code>MultiSelectManager</code></a>.</td></tr>
+      <tr><td><a href="{{ src(topo) }}">commit_topology.ts</a></td><td>Six functions, see <a href="#commit-topology">§4</a></td><td><code>SubprocessClient.getCommits</code>, which uses three of them (<a href="{{ src('src/client/subprocess_client.ts', 296, 298) }}">subprocess_client.ts</a>).</td></tr>
+      <tr><td><a href="{{ src(disp) }}">dispose.ts</a></td><td><code>dispose</code></td><td>The UI bundle's <code>dispose()</code> (<a href="{{ src('src/ui/ui.ts', 31, 33) }}">ui.ts</a>) and the graph view's teardown when its webview is disposed (<a href="{{ src('src/ui/commit_graph_provider/commit_graph_provider.ts', 70) }}">commit_graph_provider.ts</a>).</td></tr>
       <tr><td><a href="{{ src(dir ~ 'check.ts') }}">check.ts</a></td><td>Everything in <a href="{{ src(gcheck) }}"><code>commit_graph/utils/check.ts</code></a></td><td>Nothing. The graph components import the original directly.</td></tr>
       <tr><td><a href="{{ src(dir ~ 'time.ts') }}">time.ts</a></td><td>Everything in <a href="{{ src(gtime) }}"><code>commit_graph/utils/time.ts</code></a></td><td>Nothing. <code>jj-time-ago-text</code> imports the original directly.</td></tr>
     </tbody>
@@ -42,9 +49,10 @@
 <p>
   The re-exports exist because of Bazel visibility. <code>//src/ui/commit_graph/utils</code> is visible
   only to <code>//src/utils</code> and to the commit graph's own packages
-  (<a href="{{ src('src/ui/commit_graph/utils/BUILD.bazel', 18, 25) }}">BUILD.bazel</a>).
-  <code>//src/utils</code> is public and depends on it (<a href="{{ src(build, 18, 26) }}">BUILD.bazel</a>),
-  so it is the route for any other code to reach those helpers.
+  (<a href="{{ src('src/ui/commit_graph/utils/BUILD.bazel', 19, 26) }}">BUILD.bazel</a>).
+  <code>//src/utils</code> is public and depends on it (<a href="{{ src(build, 19) }}">BUILD.bazel</a>,
+  <a href="{{ src(build, 46, 60) }}">target</a>), so it is the route for any other code to reach those
+  helpers.
 </p>
 
 <h2 id="hashmap">2. <code>HashMap</code></h2>
@@ -53,41 +61,49 @@
   A thin wrapper over <code>Map&lt;string, [Key, Value]&gt;</code>. Every operation calls
   <code>key.toString()</code> and uses the result as the real key. The original key object is stored next
   to the value so <code>keys()</code> and <code>entries()</code> can hand it back
-  (<a href="{{ src(hm, 17, 88) }}">source</a>). Two keys are "equal" exactly when their strings are.
+  (<a href="{{ src(hm, 34, 112) }}">source</a>). Two keys are "equal" exactly when their strings are.
 </p>
 
 <h3 id="type-HashMapKey"><code>HashMapKey</code></h3>
-<p class="jj-source"><a href="{{ src(hm, 126, 131) }}">hashmap.ts, lines 126–131</a></p>
+<p class="jj-source"><a href="{{ src(hm, 150, 155) }}">hashmap.ts, lines 150–155</a></p>
 <div class="jj-table-wrap">
   <table>
     <thead><tr><th>Member</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
     <tbody>
-      <tr><td><code>toString</code></td><td><code>() =&gt; string</code></td><td>The identity of the key. It must be stable while the key is in the map, and different for keys that should differ.</td><td><a href="{{ src(hm, 130) }}">L130</a></td></tr>
+      <tr><td><code>toString</code></td><td><code>() =&gt; string</code></td><td>The identity of the key. It must be stable while the key is in the map, and different for keys that should differ.</td><td><a href="{{ src(hm, 154) }}">L154</a></td></tr>
     </tbody>
   </table>
 </div>
 
 <h3 id="hashmap-api">Methods</h3>
-<p class="jj-source"><a href="{{ src(hm, 25, 88) }}">hashmap.ts, lines 25–88</a></p>
+<p class="jj-source"><a href="{{ src(hm, 42, 112) }}">hashmap.ts, lines 42–112</a></p>
 <div class="jj-table-wrap">
   <table>
     <thead><tr><th>Member</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
     <tbody>
-      <tr><td><code>constructor</code></td><td><code>(iterable?: Iterable&lt;[Key, Value]&gt;)</code></td><td>Calls <code>set</code> for each pair. A later duplicate wins.</td><td><a href="{{ src(hm, 28, 34) }}">L28–34</a></td></tr>
-      <tr><td><code>set</code></td><td><code>(key, value) =&gt; void</code></td><td>Stores the pair. A replaced entry keeps its position in iteration order, but its stored key object becomes the new one.</td><td><a href="{{ src(hm, 36, 38) }}">L36–38</a></td></tr>
-      <tr><td><code>has</code>, <code>get</code>, <code>delete</code></td><td><code>(key) =&gt; …</code></td><td>As on <code>Map</code>, by string.</td><td><a href="{{ src(hm, 40, 54) }}">L40–54</a></td></tr>
-      <tr><td><code>keys</code>, <code>values</code></td><td><code>() =&gt; IterableIterator</code></td><td>Wrap the inner <code>values()</code> iterator and project the key or the value.</td><td><a href="{{ src(hm, 56, 62) }}">L56–62</a></td></tr>
-      <tr><td><code>entries</code></td><td><code>() =&gt; IterableIterator&lt;[Key, Value]&gt;</code></td><td>The stored tuples themselves, not copies.</td><td><a href="{{ src(hm, 64, 66) }}">L64–66</a></td></tr>
-      <tr><td><code>clear</code></td><td><code>() =&gt; void</code></td><td>Empties the map.</td><td><a href="{{ src(hm, 68, 70) }}">L68–70</a></td></tr>
-      <tr><td><code>size</code></td><td><code>() =&gt; number</code></td><td>A method, unlike <code>Map.size</code>.</td><td><a href="{{ src(hm, 72, 74) }}">L72–74</a></td></tr>
-      <tr><td><code>putIfAbsent</code></td><td><code>(key, value) =&gt; Value</code></td><td>Returns the existing value if the key is present. Otherwise stores and returns the new one.</td><td><a href="{{ src(hm, 76, 87) }}">L76–87</a></td></tr>
+      <tr><td><code>constructor</code></td><td><code>(iterable?: Iterable&lt;[Key, Value]&gt;)</code></td><td>Calls <code>set</code> for each pair. A later duplicate wins.</td><td><a href="{{ src(hm, 48, 54) }}">L48–54</a></td></tr>
+      <tr><td><code>set</code></td><td><code>(key, value) =&gt; void</code></td><td>Stores the pair. A replaced entry keeps its position in iteration order, but its stored key object becomes the new one.</td><td><a href="{{ src(hm, 56, 58) }}">L56–58</a></td></tr>
+      <tr><td><code>has</code>, <code>get</code>, <code>delete</code></td><td><code>(key) =&gt; …</code></td><td>As on <code>Map</code>, by string.</td><td><a href="{{ src(hm, 60, 74) }}">L60–74</a></td></tr>
+      <tr><td><code>keys</code>, <code>values</code></td><td><code>() =&gt; IterableIterator</code></td><td>Wrap the inner <code>values()</code> iterator and project the key or the value.</td><td><a href="{{ src(hm, 76, 82) }}">L76–82</a></td></tr>
+      <tr><td><code>entries</code></td><td><code>() =&gt; IterableIterator&lt;[Key, Value]&gt;</code></td><td>The stored tuples themselves, not copies.</td><td><a href="{{ src(hm, 84, 86) }}">L84–86</a></td></tr>
+      <tr><td><code>[Symbol.iterator]</code></td><td><code>() =&gt; IterableIterator&lt;[Key, Value]&gt;</code></td><td>Returns <code>entries()</code>, so the map works directly in <code>for … of</code> and can be passed to another map's constructor.</td><td><a href="{{ src(hm, 88, 90) }}">L88–90</a></td></tr>
+      <tr><td><code>clear</code></td><td><code>() =&gt; void</code></td><td>Empties the map.</td><td><a href="{{ src(hm, 92, 94) }}">L92–94</a></td></tr>
+      <tr><td><code>size</code></td><td><code>() =&gt; number</code></td><td>A method, unlike <code>Map.size</code>.</td><td><a href="{{ src(hm, 96, 98) }}">L96–98</a></td></tr>
+      <tr><td><code>putIfAbsent</code></td><td><code>(key, value) =&gt; Value</code></td><td>Returns the existing value if the key is present. Otherwise stores and returns the new one.</td><td><a href="{{ src(hm, 104, 111) }}">L104–111</a></td></tr>
     </tbody>
   </table>
 </div>
 
 <p>
+  <code>ReadonlyHashMap</code> is the same surface minus <code>set</code>, <code>delete</code>,
+  <code>clear</code> and <code>putIfAbsent</code> (<a href="{{ src(hm, 18, 32) }}">source</a>).
+  <code>HashMap</code> implements it, so a function can take a map it promises not to change, as
+  <code>calculateAncestors</code> does.
+</p>
+
+<p>
   The two private iterator classes implement both <code>next()</code> and
-  <code>[Symbol.iterator]</code> over the same inner iterator (<a href="{{ src(hm, 90, 124) }}">source</a>).
+  <code>[Symbol.iterator]</code> over the same inner iterator (<a href="{{ src(hm, 114, 148) }}">source</a>).
   <code>for … of</code> and spreading go through the generator. Calling <code>next()</code> by hand goes
   through the method instead.
 </p>
@@ -98,11 +114,55 @@
   A <code>HashMap&lt;Key, void&gt;</code> with set-shaped methods: <code>add</code>, <code>has</code>,
   <code>delete</code>, <code>clear</code>, <code>size()</code>, <code>keys()</code>, and
   <code>[Symbol.iterator]</code>, so it can be used directly in <code>for … of</code>. The constructor adds
-  each element of an optional iterable (<a href="{{ src(hs, 19, 64) }}">source</a>). It has no
+  each element of an optional iterable (<a href="{{ src(hs, 30, 75) }}">source</a>). It has no
   <code>values</code>, <code>entries</code> or <code>forEach</code>.
 </p>
 
-<h2 id="check">4. <code>check</code>: exhaustiveness helpers</h2>
+<p>
+  <code>ReadonlyHashSet</code> keeps only <code>[Symbol.iterator]</code>, <code>keys</code>,
+  <code>has</code> and <code>size</code> (<a href="{{ src(hs, 20, 28) }}">source</a>). The public
+  <code>Commit</code> type exposes <code>ancestors</code> and <code>descendants</code> through it, and
+  <code>MutableCommit</code> maps each such field back to a writable <code>HashSet</code> so the client can
+  fill them in (<a href="{{ src('src/api/api.ts', 125, 130) }}">api.ts</a>).
+</p>
+
+<h2 id="commit-topology">4. <code>commit_topology</code></h2>
+
+<p>
+  Functions over a list of <code>Commit</code>s (<a href="{{ src(topo, 17, 219) }}">source</a>). Upstream
+  says it was copied from Google's internal code with few changes, and added the
+  <code>ancestors</code> and <code>descendants</code> fields after it. Only the two <code>calculate…</code>
+  functions and <code>getCommitIdToCommitMap</code> are called, from the end of
+  <code>SubprocessClient.getCommits</code>; the other three are used only by their tests or not at all.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Function</th><th>What it does</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>getWorkingCopyCommit(commits)</code></td><td>The commit with <code>active</code> set. Throws, through <code>logAndShowInternalError</code>, if there is none.</td><td><a href="{{ src(topo, 22, 32) }}">L22–32</a></td></tr>
+      <tr><td><code>getOnlyWorkingCopyParentCommit(commits, wc)</code></td><td>The working copy's parent when it has exactly one and that parent is in the list. Throws if it has no parents; returns <code>undefined</code> for a merge.</td><td><a href="{{ src(topo, 34, 53) }}">L34–53</a></td></tr>
+      <tr><td><code>getCommitIdToCommitMap(commits)</code></td><td>A <code>HashMap</code> from commit ID to commit.</td><td><a href="{{ src(topo, 55, 66) }}">L55–66</a></td></tr>
+      <tr><td><code>calculateAncestors(commitMap)</code></td><td>Fills each commit's <code>ancestors</code>: itself, plus the ancestors of every parent. See below.</td><td><a href="{{ src(topo, 68, 115) }}">L68–115</a></td></tr>
+      <tr><td><code>calculateDescendants(commitMap)</code></td><td>The mirror image over <code>childIds</code>: itself, plus the descendants of every child.</td><td><a href="{{ src(topo, 117, 165) }}">L117–165</a></td></tr>
+      <tr><td><code>getChangeIdToCommitsMap(commits)</code></td><td>A <code>HashMap</code> from change ID to every commit with it, in list order. More than one entry means the change is divergent.</td><td><a href="{{ src(topo, 167, 183) }}">L167–183</a></td></tr>
+      <tr><td><code>getEvolvedCommit(commits, original)</code></td><td>Follows a remembered commit across a refresh. Still present by commit ID: itself. Otherwise the one commit with its change ID. Gone, or divergent: <code>undefined</code>, and the comment says the caller then falls back to the working copy's parent.</td><td><a href="{{ src(topo, 185, 219) }}">L185–219</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Both <code>calculate…</code> functions are an iterative post-order depth-first search, so a long
+  history can't overflow the call stack. For each commit they keep an explicit stack. A commit whose set
+  is already non-empty is finished and is popped. Otherwise every parent that is in the map and not yet
+  finished is pushed, and the commit is revisited later. Once none are pushed, the commit's set becomes
+  itself plus the union of its parents' sets, so each set is computed once and reused, whatever order
+  the map iterates in. A parent ID that isn't in the map, such as a public base outside the revset, is
+  added as-is but not followed. A non-empty set doubles as the "visited" mark, which works because every
+  finished set contains at least the commit itself.
+</p>
+
+<h2 id="check">5. <code>check</code>: exhaustiveness helpers</h2>
 
 <p>
   Re-exported unchanged from the commit graph (<a href="{{ src(dir ~ 'check.ts', 17) }}">source</a>).
@@ -115,10 +175,10 @@
   <table>
     <thead><tr><th>Member</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
     <tbody>
-      <tr><td><code>checkExhaustive</code></td><td><code>(value: never, msg?) =&gt; never</code></td><td>Compile-time check that always throws at runtime, with <code>unexpected value …!</code> by default. Used in the graph's row title, lines and drag-and-drop code.</td><td><a href="{{ src(gcheck, 62, 64) }}">L62–64</a></td></tr>
-      <tr><td><code>checkExhaustiveAllowing</code></td><td><code>&lt;Allowed&gt;(value, msg?) =&gt; never</code></td><td>The same, but values of <code>Allowed</code> also type-check, for enum members that "can't happen".</td><td><a href="{{ src(gcheck, 96, 101) }}">L96–101</a></td></tr>
-      <tr><td><code>LegacyIncorrectUsage</code></td><td><code>unknown</code></td><td>Placeholder type argument for old call sites. Unused here.</td><td><a href="{{ src(gcheck, 114) }}">L114</a></td></tr>
-      <tr><td><code>assumeExhaustive</code>, <code>assumeExhaustiveAllowing</code></td><td><code>(value) =&gt; void</code></td><td>Compile-time check only. A no-op at runtime, for switches that fall back to a default instead of failing.</td><td><a href="{{ src(gcheck, 139, 167) }}">L139–167</a></td></tr>
+      <tr><td><code>checkExhaustive</code></td><td><code>(value: never, msg?) =&gt; never</code></td><td>Compile-time check that always throws at runtime, with <code>unexpected value …!</code> by default. Used in the graph's row title, lines and drag-and-drop code.</td><td><a href="{{ src(gcheck, 63, 65) }}">L62–64</a></td></tr>
+      <tr><td><code>checkExhaustiveAllowing</code></td><td><code>&lt;Allowed&gt;(value, msg?) =&gt; never</code></td><td>The same, but values of <code>Allowed</code> also type-check, for enum members that "can't happen".</td><td><a href="{{ src(gcheck, 97, 102) }}">L96–101</a></td></tr>
+      <tr><td><code>LegacyIncorrectUsage</code></td><td><code>unknown</code></td><td>Placeholder type argument for old call sites. Unused here.</td><td><a href="{{ src(gcheck, 115) }}">L114</a></td></tr>
+      <tr><td><code>assumeExhaustive</code>, <code>assumeExhaustiveAllowing</code></td><td><code>(value) =&gt; void</code></td><td>Compile-time check only. A no-op at runtime, for switches that fall back to a default instead of failing.</td><td><a href="{{ src(gcheck, 140, 168) }}">L139–167</a></td></tr>
     </tbody>
   </table>
 </div>
@@ -128,7 +188,7 @@
   Google's internal TypeScript tooling and has no public counterpart here.
 </p>
 
-<h2 id="dispose">5. <code>dispose</code></h2>
+<h2 id="dispose">6. <code>dispose</code></h2>
 
 <p>
   <code>dispose(disposables)</code> calls <code>dispose()</code> on each element in order, then sets the
@@ -137,11 +197,11 @@
   remaining elements aren't disposed and the array isn't emptied.
 </p>
 
-<h2 id="time">6. <code>time</code>: relative timestamps</h2>
+<h2 id="time">7. <code>time</code>: relative timestamps</h2>
 
 <p>
   <code>age(unixSeconds)</code> deliberately mirrors Mercurial's <code>age</code> template filter, so the
-  graph reads like <code>hg xl</code> (<a href="{{ src(gtime, 43, 96) }}">source</a>). The graph webview
+  graph reads like <code>hg xl</code> (<a href="{{ src(gtime, 44, 97) }}">source</a>). The graph webview
   shows it through <code>jj-time-ago-text</code> (<a href="{{ url_for('jj_dojo', slug='graph-webview') }}#utils">graph-webview</a>).
 </p>
 
@@ -150,48 +210,63 @@
   <li>More than 30 years in the future is <code>in the distant future</code>. More than two years in the
     past is <code>Date.toDateString()</code>, for example <code>Tue Mar 03 2020</code>.</li>
   <li>Otherwise it picks the largest unit that fits at least twice: years of 365 days, months of 30 days,
-    weeks, days, hours, minutes, seconds (<a href="{{ src(gtime, 26, 34) }}">table</a>). So 90 seconds
+    weeks, days, hours, minutes, seconds (<a href="{{ src(gtime, 27, 35) }}">table</a>). So 90 seconds
     is <code>90 seconds ago</code>, and 13 days is <code>13 days ago</code>, not <code>1 week ago</code>. A
     future date gets <code>… from now</code>.</li>
 </ol>
 
-<h2 id="tests">7. Tests and build</h2>
+<h2 id="tests">8. Tests and build</h2>
 
 <div class="jj-table-wrap">
   <table>
     <thead><tr><th>Test</th><th>Checks</th><th>Source</th></tr></thead>
     <tbody>
-      <tr><td>HashMap finds the value</td><td>A different instance with the same string finds and overwrites the entry.</td><td><a href="{{ src(hmt, 27, 36) }}">27–36</a></td></tr>
-      <tr><td>HashMap iterates correctly</td><td><code>keys</code>, <code>values</code> and <code>entries</code> each yield the three entries.</td><td><a href="{{ src(hmt, 38, 73) }}">38–73</a></td></tr>
-      <tr><td>HashMap putIfAbsent works correctly</td><td>The second call returns the first value.</td><td><a href="{{ src(hmt, 75, 79) }}">75–79</a></td></tr>
-      <tr><td>HashSet finds elements correctly</td><td>Membership by string.</td><td><a href="{{ src(hst, 29, 33) }}">29–33</a></td></tr>
-      <tr><td>HashSet iterates correctly</td><td><code>for … of</code> yields three keys.</td><td><a href="{{ src(hst, 35, 49) }}">35–49</a></td></tr>
+      <tr><td>HashMap finds the value</td><td>A different instance with the same string finds and overwrites the entry.</td><td><a href="{{ src(hmt, 28, 37) }}">28–37</a></td></tr>
+      <tr><td>HashMap iterates correctly</td><td><code>keys</code>, <code>values</code> and <code>entries</code> each yield the three entries.</td><td><a href="{{ src(hmt, 39, 83) }}">39–83</a></td></tr>
+      <tr><td>HashMap [Symbol.iterator] works correctly</td><td><code>for … of</code> over the map yields the three pairs.</td><td><a href="{{ src(hmt, 85, 112) }}">85–112</a></td></tr>
+      <tr><td>HashMap putIfAbsent works correctly</td><td>The second call returns the first value.</td><td><a href="{{ src(hmt, 114, 118) }}">114–118</a></td></tr>
+      <tr><td>HashSet finds elements correctly</td><td>Membership by string.</td><td><a href="{{ src(hst, 30, 34) }}">30–34</a></td></tr>
+      <tr><td>HashSet iterates correctly</td><td><code>for … of</code> yields three keys.</td><td><a href="{{ src(hst, 36, 50) }}">36–50</a></td></tr>
+      <tr><td>getOnlyWorkingCopyParentCommit (3 tests)</td><td>Parent missing from the list, one parent, a merge.</td><td><a href="{{ src(topot, 32, 76) }}">32–76</a></td></tr>
+      <tr><td>getEvolvedCommit (2 tests)</td><td>Unchanged commit; a rewritten commit found by change ID.</td><td><a href="{{ src(topot, 78, 105) }}">78–105</a></td></tr>
+      <tr><td>calculateAncestors (7 tests)</td><td>A root, a chain, a diamond with no duplicates, a parent outside the map, no leakage to children or sibling branches, reuse of a parent's set, and a deep chain without stack overflow.</td><td><a href="{{ src(topot, 107, 273) }}">107–273</a></td></tr>
+      <tr><td>calculateDescendants (7 tests)</td><td>The same seven cases, mirrored over children.</td><td><a href="{{ src(topot, 275, 441) }}">275–441</a></td></tr>
     </tbody>
   </table>
 </div>
 
 <p>
   <code>time.ts</code> has its tests next to the original in <code>src/ui/commit_graph/utils/</code>.
-  <code>dispose</code> and <code>check</code> have none. The <code>ts_library</code>'s <code>srcs</code> is
-  <code>glob(["*.ts"])</code>, and the <code>ts_library</code> macro drops the <code>*_test.ts</code> files
-  from it, so they compile only into the <code>tests</code> target
-  (<a href="{{ src(build, 18, 32) }}">BUILD.bazel</a>).
+  <code>dispose</code>, <code>check</code>, <code>getWorkingCopyCommit</code>,
+  <code>getCommitIdToCommitMap</code> and <code>getChangeIdToCommitsMap</code> have none of their own. The
+  topology tests build commits with the <code>fakeCommit</code> fake from <code>//src/testing</code>.
 </p>
 
-<h2 id="gaps">8. Loose ends at this pin</h2>
+<p>
+  <code>hashmap</code>, <code>hashset</code> and <code>commit_topology</code> are now their own
+  <code>ts_library</code> targets, "to avoid circular dependencies with api.ts": <code>api.ts</code> needs
+  <code>HashSet</code>, and <code>commit_topology</code> needs <code>//src/api</code>
+  (<a href="{{ src(build, 21, 44) }}">BUILD.bazel</a>). The <code>utils</code> target globs the rest of
+  <code>*.ts</code>, excluding those three, and the <code>ts_library</code> macro drops the
+  <code>*_test.ts</code> files from it, so they compile only into the <code>tests</code> target
+  (<a href="{{ src(build, 46, 70) }}">BUILD.bazel</a>).
+</p>
+
+<h2 id="gaps">9. Loose ends at this pin</h2>
 
 <ul>
-  <li><strong>Unused exports.</strong> <code>HashSet</code> and the <code>check</code> and <code>time</code>
-    re-exports have no importers.</li>
+  <li><strong>Unused exports.</strong> The <code>check</code> and <code>time</code> re-exports have no
+    importers, and <code>getWorkingCopyCommit</code>, <code>getOnlyWorkingCopyParentCommit</code>,
+    <code>getChangeIdToCommitsMap</code> and <code>getEvolvedCommit</code> have no callers outside tests.</li>
   <li><strong><code>toString</code> is not checked.</strong> Every object has one, so the type system
     accepts a key whose <code>toString</code> is the default <code>[object Object]</code>. All such keys
     would collapse into one entry. <code>vscode.Uri</code>, the only key type used, has a real one.</li>
   <li><strong><code>ValueIterator.next()</code> at the end.</strong> It reads <code>next.value[1]</code>
     without the <code>?.</code> that <code>KeyIterator</code> has, so calling <code>next()</code> by hand
-    past the last value throws a <code>TypeError</code> (<a href="{{ src(hm, 111, 117) }}">source</a>).
+    past the last value throws a <code>TypeError</code> (<a href="{{ src(hm, 135, 141) }}">source</a>).
     <code>for … of</code> isn't affected.</li>
   <li><strong>Shared tuples.</strong> <code>entries()</code> yields the stored <code>[key, value]</code>
     arrays, so a caller that mutates one changes the map without updating its string key.</li>
   <li><code>HashSet</code>'s iterator comment still calls it "the ImmutableSet"
-    (<a href="{{ src(hs, 36) }}">source</a>).</li>
+    (<a href="{{ src(hs, 47) }}">source</a>).</li>
 </ul>
