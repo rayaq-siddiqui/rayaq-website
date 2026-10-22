@@ -3,13 +3,13 @@
 Running log for the weekly jj-dojo maintenance Routine. Read this first, update it last.
 The contract is `specs/jj-dojo.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-15 (eighth run, weekly maintenance). **The build is complete:** all nine §5 pages are
+**Last updated:** 2026-10-22 (ninth run, weekly maintenance). **The build is complete:** all nine §5 pages are
 ready and every §10 criterion is met. From here the Routine runs weekly in maintenance mode only.
 
 ## Upstream pin
 
-`jj-vcs/jj-dojo@5fecc7aef52a54ff575ac9b6d999443bffc94f2a` (committed 2026-10-12), analyzed
-2026-10-15. `package.json` version still 0.0.1. Held in `jj_dojo_docs.UPSTREAM`.
+`jj-vcs/jj-dojo@4cff5a1c554863c1be7ae9dea240372028522a8d` (committed 2026-10-20), analyzed
+2026-10-22. `package.json` version still 0.0.1. Held in `jj_dojo_docs.UPSTREAM`.
 
 ## §10 acceptance criteria
 
@@ -25,7 +25,18 @@ ready and every §10 criterion is met. From here the Routine runs weekly in main
 - [x] Mobile at 390px: no horizontal page scroll on `/jj-dojo` and every ready page (checked in
       headless Chromium this run).
 - [x] The Routine has run in maintenance mode (second to fourth runs: no upstream change;
-      fifth and eighth runs: pin bumped; sixth and seventh runs: no upstream change). It now runs weekly.
+      fifth, eighth and ninth runs: pin bumped; sixth and seventh runs: no upstream change). It now runs weekly.
+
+## Ninth run (2026-10-22): maintenance
+
+| Commit | What |
+|---|---|
+| `a74e0be` | Pin bump `5fecc7a` → `4cff5a1` across ten pages. `utils` gains the commit-topology helpers and their 19 tests; `graph-protocol` the multi-select message pair; `graph-layout` and `graph-webview` the one-SVG-per-tile rendering (priority-sorted `<g>` line groups, z-index from the top priority) and the hint renderers as functions; `build-and-test` the `license_header.txt` template (`npm run addlicense` now fixes, CI checks), `fakeCommit`, `newRepo({remote})`, the Git ≥ 2.41 `PATH` fix and the sixth `//src/testing` user; `roadmap` and index status rows. Every displayed line range now matches its link |
+| `record progress` | `L…` labels on `graph-protocol` and `utils` re-synced to their (already correct) links, plus this log |
+
+Nothing moved from planned to implemented: the new code is helpers and protocol messages that
+activation does not reach. `PROTOCOL_TYPES` unchanged (`api/` only gained license lines). Suite
+green (1058 tests across all sections); smoke test, pinned-link check (793 links) and 390 px check on all ten pages pass.
 
 ## Eighth run (2026-10-15): maintenance
 
@@ -40,12 +51,6 @@ but now on `roadmap`: `NetworkReconnectWatcher` and `Telemetry` interfaces. Suit
 tests across all sections); smoke test and pinned-link check pass; 390 px check clean on all
 ten changed pages.
 
-## Seventh run (2026-10-08): maintenance
-
-Upstream `HEAD` is still `67c5c1f` (committed 2026-10-06, `package.json` version 0.0.1), so no
-source set changed and the pin stayed. Nothing moved from planned to implemented. Suite green
-(319 tests across all sections); no page content changed.
-
 ## Sixth run (2026-10-08): build complete
 
 | Commit | What |
@@ -55,11 +60,9 @@ source set changed and the pin stayed. Nothing moved from planned to implemented
 | `fa0c1b6` | `build-and-test` page: `MODULE.bazel`, root targets, the `deps` scheme, the in-repo Bazel rules, the pinned `jj`, the Jasmine helpers and fake VS Code API, CI, the enum generator. Also fixed a wrong claim on `utils` (the `ts_library` macro drops `*_test.ts`) and linked `icon-theme`'s tests to the new page |
 | `a7e00b3` | `roadmap` page: the three layers with a status SVG, milestones, `src/client/` and `src/file_system_watcher/` (the deliberate addition), design considerations including the read-only jj flags |
 
-Maintenance: upstream `HEAD` still at `67c5c1f`, so the pin stayed. Mobile check (390 px,
+Maintenance: upstream `HEAD` still at `67c5c1f`, so the pin stayed (also on the seventh run,
+2026-10-08). Mobile check (390 px,
 headless Chromium): no page overflow on any of the four new pages.
-
-Scheduling: the owner moved this Routine from daily to weekly and from building to
-maintenance only.
 
 ## Fifth run (2026-10-07)
 
@@ -68,11 +71,7 @@ maintenance only.
 | `d27aaa7` | Pin bump `978c25d` → `67c5c1f`: `activation` gains the `@parcel/watcher` dependency row; index gains repository-map rows for `src/client/` and `src/file_system_watcher/` and mentions them as unwired pieces of the planned layers |
 | `311c9a3` | `graph-webview` page: page and app shell, graphs and rows, display ID, chips, top bar, callouts, focus-mode text, search, drag and drop (targets, state, command table, hints), context menus, resize controller, untrusted text, theme colours, helpers and tests; component-tree and drag-and-drop SVGs; required-sections test |
 
-Maintenance: upstream moved by commits adding `src/client/subprocess_util.ts`,
-`src/file_system_watcher/` (interface plus a `@parcel/watcher` implementation) and the
-dependency. None of it is wired into activation, so no existing page's claims changed beyond
-the rows above. Mobile check (390 px, headless Chromium): no page overflow on `/jj-dojo` or
-`graph-webview`.
+Upstream added `src/client/subprocess_util.ts` and `src/file_system_watcher/`, none wired in.
 
 ## Second to fourth runs (2026-10-03 to 10-05)
 
@@ -81,8 +80,6 @@ the rows above. Mobile check (390 px, headless Chromium): no page overflow on `/
 | `1f2a888` | `graph-protocol` page: both RPC interfaces, transport, handshake sequence diagram, entry points, every wire type |
 | `6d109d3` | `activation` page: `package.json`, `activate`/`deactivate`, registration order, `Disposable` tree, logging, errors; activation SVG |
 | `7c46312` | `merge-conflicts` page: marker grammar, parser vectors, tracker, decorations, CodeLens, resolver; data-flow SVG |
-
-Maintenance: upstream `HEAD` stayed at `978c25d` on all three runs.
 
 The type tables on `graph-protocol` were generated from `api/types.ts` by a scratch parser that
 fails if any field lacks a description. Regenerate them that way when the types change.
@@ -194,6 +191,10 @@ into activation, propose a page for it here first.
 - **`@parcel/watcher` loose ends.** The `vsix` target has a TODO about packaging the native module,
   and `LocalFileSystemWatcher` subscribes without an ignore list. Both are on `roadmap#gaps`.
   The earlier symlink gap is resolved: since `5fecc7a` the watcher `realpath`s its root.
+- **Multi-select is not wired (`graph-protocol`).** `MultiSelectManager` landed with tests, but
+  nothing else constructs it, so the host still ignores `$onClick`. Revisit when it is wired in.
+- **Unused topology helpers (`utils`).** Four commit-topology functions have no callers outside
+  their tests; only `SubprocessClient.getCommits` uses the rest. The page states this.
 - **`//:test` does not exist (`build-and-test`).** The spec's "Must cover" names a `//:test`
   target. There is none at this pin: `npm test` runs `bazel test //...` over ten `:tests` targets.
   The page describes what exists.
