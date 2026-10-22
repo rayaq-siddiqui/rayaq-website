@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-21 (sixty-fifth run): bumped the pin `5176b1d..7f96d3e` (0.46.0). **The
+**Last updated:** 2026-10-22 (sixty-sixth run): followed upstream `7f96d3e..c84cc0a` (0.46.0). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@7f96d3ebad9049ccf363973ca7e534e595c3c48b` (committed 2026-10-21, version
-0.46.0), analyzed 2026-10-21. Held in `jj_docs.UPSTREAM`. Previous pin: `5176b1d`.
+`jj-vcs/jj@c84cc0afe07a38d78aeeed67cf704b77e242bb05` (committed 2026-10-22, version
+0.46.0), analyzed 2026-10-22. Held in `jj_docs.UPSTREAM`. Previous pin: `7f96d3e`.
 
 ## §10 acceptance criteria
 
@@ -31,10 +31,13 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to sixty-fifth runs: pin bumped).
+      run: pin bumped; fiftieth to sixty-sixth runs: pin bumped).
 
-## Sixty-fourth and sixty-fifth runs (2026-10-20 to 2026-10-21)
+## Sixty-fourth to sixty-sixth runs (2026-10-20 to 2026-10-22)
 
+- `cdc336a` `7f96d3e..c84cc0a`: `SimpleOpStore` bodies moved to an inherent impl (gc drops
+  `block_on`); revset parser rejects nesting past `MAX_TREE_DEPTH` (256), now on revsets. Links
+  re-pointed on operations, protobufs, storage, util-gc, revsets; registry and protos unchanged.
 - `60897df` `5176b1d..7f96d3e`: only `flake.lock` changed; pin and dates bumped, no pages.
 - `117f376` maintenance `6bfd0a7..5176b1d`. `index_store`, `iter_util`, `operation`, `refs`, `view`
   moved to `core/src` (jj-lib re-exports them; `specs/jj.md` still names `lib/src`). `MergedTree`
