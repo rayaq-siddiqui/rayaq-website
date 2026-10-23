@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-22 (sixty-sixth run): followed upstream `7f96d3e..c84cc0a` (0.46.0). **The
+**Last updated:** 2026-10-23 (sixty-seventh run): followed upstream `c84cc0a..9ab2e84` (0.46.0). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@c84cc0afe07a38d78aeeed67cf704b77e242bb05` (committed 2026-10-22, version
-0.46.0), analyzed 2026-10-22. Held in `jj_docs.UPSTREAM`. Previous pin: `7f96d3e`.
+`jj-vcs/jj@9ab2e8406fd8764d2bbf0099ce7399794a799c64` (committed 2026-10-23, version
+0.46.0), analyzed 2026-10-23. Held in `jj_docs.UPSTREAM`. Previous pin: `c84cc0a`.
 
 ## §10 acceptance criteria
 
@@ -31,10 +31,14 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to sixty-sixth runs: pin bumped).
+      run: pin bumped; fiftieth to sixty-seventh runs: pin bumped).
 
-## Sixty-fourth to sixty-sixth runs (2026-10-20 to 2026-10-22)
+## Sixty-fourth to sixty-seventh runs (2026-10-20 to 2026-10-23)
 
+- `ad64adf` `c84cc0a..9ab2e84`: git export deletes refs in one `edit_references` transaction
+  (`delete_git_refs`, one-at-a-time fallback), on git-export; `TreeEntry` gains `removed_values`/
+  `added_values` and `TreeValue` gets methods, on file-list. 18 templates remapped; registry and
+  protos unchanged. Fileset/template nesting limits (CHANGELOG) not yet described anywhere.
 - `cdc336a` `7f96d3e..c84cc0a`: `SimpleOpStore` bodies moved to an inherent impl (gc drops
   `block_on`); revset parser rejects nesting past `MAX_TREE_DEPTH` (256), now on revsets. Links
   re-pointed on operations, protobufs, storage, util-gc, revsets; registry and protos unchanged.
@@ -45,16 +49,13 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
   stream; `jj run` pool uses `ui.conflict-marker-style` (run page notes it). 35 templates remapped
   (36 files, over the 10-file guideline); registry run line; protos unchanged.
 
-## Fifty-sixth to sixty-third runs (2026-10-12 to 2026-10-19)
+## Fifty-third to sixty-third runs (2026-10-09 to 2026-10-19)
 
 - `5a850df` `4eb41be..6bfd0a7` (async `Revset::is_empty`/`count_estimate`, `TreeState::check_out`).
 - `1a15c00` `8555dde..4eb41be` (`TreeBuilder` gone for `tree_rewriter.rs`; workspace remove snapshots).
 - `826e666` `..8555dde` (`Backend::gc`, `cli_args.rs`), `b5d9fcd` `df92b83..fd68202` (config gc),
   `ac97ee5` `0558176..86b7e2e` (modules to `core/src`), `970fe53` `..1776665` (sign-on-push),
   `ca92ab5` `..9031d0a` (concurrent diff walk), `148c9e1` `..df92b83` (tree-read streams).
-
-## Fifty-third to fifty-fifth runs (2026-10-09 to 2026-10-11)
-
 - `c3d8c40` `26bcd69..da1d234` (ranges only). `b4bc7c5` `da1d234..889e5a6` (refactor wave, `git fetch`
   output; about 570 ranges). `937e560` `889e5a6..0558176`: `resolve` `:editor`, tree merges.
 
