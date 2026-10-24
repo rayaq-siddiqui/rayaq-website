@@ -100,7 +100,7 @@ PAGES = [
             "docs/graph_ir.md", "rml/graph/graph.h", "rml/graph/graph.cc",
             "rml/graph/shape_inference.h", "rml/graph/shape_inference.cc",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "executor",

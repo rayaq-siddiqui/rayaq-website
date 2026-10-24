@@ -1,0 +1,285 @@
+{% set g = "rml/graph/" %}
+{% set ir = "docs/graph_ir.md" %}
+<header class="jj-header">
+  <h1>The rml-graph IR</h1>
+  <p class="tagline">
+    rml-graph is the contract between the Python exporters and the C++ runtime: a model as a flat,
+    topologically ordered list of ops over typed values, with its weights in a safetensors file that is
+    mapped, not read. This page covers the format, the op set, and the two passes that check a graph before
+    anything runs: the loader and shape inference.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: a model is <code>&lt;stem&gt;.json</code> plus <code>&lt;stem&gt;.safetensors</code>. The JSON lists
+  values (a name, a dtype of <code>f32</code> or <code>i32</code>, and a static shape), the graph's inputs
+  and outputs, constants bound to stored tensors or inline data, and nodes in topological order.
+  <code>LoadGraph</code> maps the weights and <code>ParseGraph</code> checks structure: every value is
+  defined exactly once and before it is read, and every constant matches its recorded type. Op semantics
+  come second: <code>InferTypes</code> compiles each node against its inputs' types and rejects any op,
+  arity, attribute or recorded shape that disagrees with rml's own rules. A graph that passes both never
+  aborts at run time.
+</p>
+
+<p>
+  The format sits in the middle of {{ link('stack', 'the inference stack') }}: the
+  {{ link('exporters', 'exporters') }} write it, and {{ link('executor', 'the executor') }} runs it. The idea of
+  a model as a dataflow graph is on {{ ml('computation-graphs', 'computation graphs') }}, which the header of
+  <a href="{{ src(g ~ 'graph.h', 4, 10) }}">graph.h</a> links.
+</p>
+
+<h2 id="files">Two files</h2>
+
+<p>
+  A model is two files that share a stem (<a href="{{ src(ir, 27, 30) }}">graph_ir.md L27–30</a>):
+  <code>&lt;stem&gt;.json</code> holds the graph and <code>&lt;stem&gt;.safetensors</code> holds every weight and
+  large constant. The format is inference only, with no backward pass
+  (<a href="{{ src(ir, 3, 6) }}">L3–6</a>), and both export routes, direct and StableHLO, write the same
+  format (<a href="{{ src(ir, 8, 25) }}">L8–25</a>).
+</p>
+
+<p>
+  <a href="{{ src(g ~ 'graph.cc', 208, 225) }}"><code>LoadGraph(stem)</code></a> reads the JSON into a string,
+  opens the safetensors file through <code>io::SafetensorsReader</code> only if it exists, and hands both to
+  <code>ParseGraph</code>, prefixing any error with the JSON path. A stored constant comes back from
+  <a href="{{ src('rml/io/safetensors.cc', 187, 201) }}"><code>SafetensorsReader::Get</code></a> as a tensor
+  view onto the mapped bytes that shares ownership of the mapping, so the weights stay mapped for as long as
+  the graph holds them, even after the reader itself is gone. The one exception is a tensor misaligned for
+  its element type, which is copied rather than read with unaligned loads. How the mapping works is on
+  {{ link('model-files', 'Model files') }}.
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 400" role="img" aria-labelledby="gi-load-title gi-load-desc">
+    <title id="gi-load-title">From two files to a checked graph</title>
+    <desc id="gi-load-desc">The JSON file is read into a string and the safetensors file is mapped. ParseGraph
+      checks structure and binds each constant either to a view of the mapping or to inline data, producing
+      a Graph of values, inputs, outputs, constants and nodes. Executor::Create then runs InferTypes, which
+      compiles every node with CompileOp against its inputs' types and compares each inferred output with
+      the recorded one. Only a graph that passes both checks reaches the executor.</desc>
+
+    <rect class="d-box" x="20" y="20" width="200" height="54" rx="6"/>
+    <text x="120" y="42" text-anchor="middle">&lt;stem&gt;.json</text>
+    <text class="d-muted" x="120" y="61" text-anchor="middle" font-size="12">read into a string</text>
+    <rect class="d-box" x="380" y="20" width="220" height="54" rx="6"/>
+    <text x="490" y="42" text-anchor="middle">&lt;stem&gt;.safetensors</text>
+    <text class="d-muted" x="490" y="61" text-anchor="middle" font-size="12">mmap, read-only</text>
+
+    <line class="d-line" x1="120" y1="74" x2="120" y2="110"/>
+    <line class="d-line" x1="490" y1="74" x2="490" y2="110"/>
+    <rect class="d-box d-accent" x="20" y="110" width="580" height="70" rx="6"/>
+    <text x="310" y="134" text-anchor="middle">ParseGraph: structure</text>
+    <text class="d-muted" x="310" y="153" text-anchor="middle" font-size="12">format and version · ids in range · defined once, before use</text>
+    <text class="d-muted" x="310" y="170" text-anchor="middle" font-size="12">constants: a view of the mapping, or inline data, matching their type</text>
+
+    <line class="d-line" x1="310" y1="180" x2="310" y2="210"/>
+    <rect class="d-box" x="20" y="210" width="580" height="54" rx="6"/>
+    <text x="310" y="232" text-anchor="middle">Graph</text>
+    <text class="d-muted" x="310" y="251" text-anchor="middle" font-size="12">values · inputs · outputs · constants · nodes (topological)</text>
+
+    <line class="d-line" x1="310" y1="264" x2="310" y2="294"/>
+    <rect class="d-box d-accent" x="20" y="294" width="580" height="70" rx="6"/>
+    <text x="310" y="318" text-anchor="middle">InferTypes: semantics, in Executor::Create</text>
+    <text class="d-muted" x="310" y="337" text-anchor="middle" font-size="12">CompileOp per node: known op · arity · attributes · input types</text>
+    <text class="d-muted" x="310" y="354" text-anchor="middle" font-size="12">inferred dtype and shape must equal the recorded ones</text>
+
+    <text class="d-muted" x="20" y="390" font-size="12">every failure is a Status naming the value or node; nothing aborts</text>
+  </svg>
+  <figcaption>Structure is checked when the graph is parsed, and op semantics when an executor is built from
+    it (<a href="{{ src(g ~ 'graph.h', 8, 10) }}">graph.h L8–10</a>).</figcaption>
+</figure>
+
+<h2 id="json">The JSON layout</h2>
+
+<p>
+  The top-level object carries <code>"format": "rml-graph"</code>, <code>"version": 1</code>, an optional
+  <code>producer</code> string, and the arrays <code>values</code>, <code>inputs</code>,
+  <code>outputs</code>, <code>constants</code> and <code>nodes</code>
+  (<a href="{{ src(ir, 34, 54) }}">graph_ir.md L34–54</a>). The rules
+  (<a href="{{ src(ir, 56, 63) }}">L56–63</a>):
+</p>
+
+<ul>
+  <li>A value's id is its index in <code>values</code>, and every value is produced exactly once: as a graph
+    input, a constant, or a node output.</li>
+  <li>Shapes are static. Exporters trace at a fixed batch size, which is why each zoo model ships one
+    fixture per size.</li>
+  <li><code>dtype</code> is <code>"f32"</code> or <code>"i32"</code>. Exporters turn booleans into f32 masks
+    of 0 and 1, and 64-bit integers into i32.</li>
+  <li>Nodes are in topological order: a node may only read values defined before it.</li>
+</ul>
+
+<p>
+  In C++ the parsed graph is three small structs
+  (<a href="{{ src(g ~ 'graph.h', 28, 51) }}">graph.h L28–51</a>):
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>ValueInfo</code></td><td><code>name</code>, <code>DType dtype = kF32</code>, <code>Shape shape</code></td><td>One entry of <code>values</code>. Unnamed values get <code>"v&lt;id&gt;"</code>.</td><td><a href="{{ src(g ~ 'graph.h', 28, 32) }}">graph.h L28</a></td></tr>
+      <tr><td><code>Node</code></td><td><code>op</code>, <code>inputs</code>, <code>outputs</code>: value ids, <code>Json attrs</code></td><td>One op application. <code>attrs</code> stays as JSON until the op compiles it.</td><td><a href="{{ src(g ~ 'graph.h', 37, 42) }}">L37</a></td></tr>
+      <tr><td><code>Graph</code></td><td><code>producer</code>, <code>values</code>, <code>inputs</code>, <code>outputs</code>, <code>constants</code>: <code>(id, Tensor)</code> pairs, <code>nodes</code></td><td>The whole model; nodes in topological order.</td><td><a href="{{ src(g ~ 'graph.h', 44, 51) }}">L44</a></td></tr>
+      <tr><td><code>ParseGraph</code></td><td><code>Expected&lt;Graph&gt;(string_view json, const io::SafetensorsReader* weights)</code></td><td>Parses and checks structure. <code>weights</code> may be null when no constant names a stored tensor.</td><td><a href="{{ src(g ~ 'graph.h', 53, 54) }}">L53</a></td></tr>
+      <tr><td><code>LoadGraph</code></td><td><code>Expected&lt;Graph&gt;(const string&amp; stem)</code></td><td>Reads <code>&lt;stem&gt;.json</code> and maps <code>&lt;stem&gt;.safetensors</code> when it exists.</td><td><a href="{{ src(g ~ 'graph.h', 56, 57) }}">L56</a></td></tr>
+      <tr><td><code>TypeString</code></td><td><code>string(DType, const Shape&amp;)</code></td><td><code>"f32 [2, 3]"</code>, used in every type error.</td><td><a href="{{ src(g ~ 'graph.h', 34, 35) }}">L34</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="worked-example">Worked example: the tiny MLP</h3>
+
+<p>
+  The committed PyTorch MLP fixture,
+  <a href="{{ src(g ~ 'testdata/torch_mlp.json') }}"><code>testdata/torch_mlp.json</code></a>, has 15 values,
+  6 constants and 8 nodes. Its input <code>x</code> is <code>f32 [2, 12]</code> (batch 2) and its output is
+  value 14, <code>f32 [2, 4]</code>. The first layer reads:
+</p>
+
+<pre><code>{"name": "x",  "dtype": "f32", "shape": [2, 12]}       value 3, the graph input
+{"name": "v7", "dtype": "f32", "shape": [12, 16]}      value 4, constant "const.4"
+{"op": "matmul", "inputs": [3, 4], "outputs": [5]}     [2, 12] x [12, 16] -> [2, 16]
+{"op": "add",    "inputs": [5, 0], "outputs": [6]}     + layers.0.bias [16], broadcast
+{"op": "relu",   "inputs": [6],    "outputs": [7]}</code></pre>
+
+<p>
+  The pattern repeats for the second and third layers, the last ending in an <code>add</code> with no
+  activation. Each weight is stored in the safetensors file under a <code>const.&lt;id&gt;</code> name, and
+  the biases keep their PyTorch parameter names. Shape inference re-derives every recorded shape here:
+  <code>matmul</code> gives <code>[2, 16]</code> from NumPy rules, the bias add broadcasts <code>[16]</code>
+  against it, and <code>relu</code> keeps its input's shape.
+</p>
+
+<h2 id="loader">Loader validation</h2>
+
+<p>
+  <a href="{{ src(g ~ 'graph.cc', 89, 206) }}"><code>ParseGraph</code></a> parses with nlohmann/json's
+  non-throwing mode, so malformed text is a <code>Status</code>, not an exception. It then checks, in order:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Check</th><th>Error</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>The text is a JSON object with <code>format == "rml-graph"</code></td><td>InvalidArgument</td><td><a href="{{ src(g ~ 'graph.cc', 90, 96) }}">L90–96</a></td></tr>
+      <tr><td><code>version == 1</code></td><td>Unsupported</td><td><a href="{{ src(g ~ 'graph.cc', 97, 99) }}">L97–99</a></td></tr>
+      <tr><td><code>values</code>, <code>inputs</code>, <code>outputs</code> and <code>nodes</code> are arrays (<code>constants</code> is optional)</td><td>InvalidArgument</td><td><a href="{{ src(g ~ 'graph.cc', 100, 104) }}">L100–104</a></td></tr>
+      <tr><td>Each value has dtype <code>f32</code> or <code>i32</code> and a shape of non-negative integers whose dimensions and element count stay at or below 2<sup>40</sup></td><td>InvalidArgument</td><td><a href="{{ src(g ~ 'graph.cc', 23, 45) }}">L23–45</a>, <a href="{{ src(g ~ 'graph.cc', 110, 124) }}">L110–124</a></td></tr>
+      <tr><td>Every id in <code>inputs</code>, <code>outputs</code> and node lists is in [0, number of values)</td><td>InvalidArgument</td><td><a href="{{ src(g ~ 'graph.cc', 47, 59) }}">L47–59</a></td></tr>
+      <tr><td>No value is defined twice: graph inputs first, then constants, then node outputs</td><td>InvalidArgument, naming both definers</td><td><a href="{{ src(g ~ 'graph.cc', 126, 137) }}">L126–137</a></td></tr>
+      <tr><td>A constant names a stored <code>tensor</code> (which needs a weights file) or carries inline <code>data</code> with exactly as many numbers as its shape, integers for i32</td><td>InvalidArgument, or NotFound from the reader</td><td><a href="{{ src(g ~ 'graph.cc', 139, 162) }}">L139–162</a>, <a href="{{ src(g ~ 'graph.cc', 61, 81) }}">L61–81</a></td></tr>
+      <tr><td>A constant's tensor has exactly its recorded dtype and shape</td><td>InvalidArgument</td><td><a href="{{ src(g ~ 'graph.cc', 163, 168) }}">L163–168</a></td></tr>
+      <tr><td>Each node has an <code>op</code> string, <code>inputs</code> and <code>outputs</code>, reads only values already defined, and has object <code>attrs</code> if any</td><td>InvalidArgument</td><td><a href="{{ src(g ~ 'graph.cc', 171, 196) }}">L171–196</a></td></tr>
+      <tr><td>Every graph output is defined somewhere</td><td>InvalidArgument</td><td><a href="{{ src(g ~ 'graph.cc', 198, 204) }}">L198–204</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Because nodes are read in file order and a read of an undefined value fails, topological order is
+  enforced by the same pass that parses, with no separate sort. The loader does not look at op names:
+  <code>graph_ir.md</code> lists unknown ops and bad attributes among the loader's rejections
+  (<a href="{{ src(ir, 65, 68) }}">L65–68</a>), and in the code those checks run in the second pass, when an
+  executor is built.
+</p>
+
+<h2 id="ops">The op set</h2>
+
+<p>
+  Binary ops broadcast with NumPy rules, axes may be negative, and unless stated otherwise inputs and outputs
+  are f32 with one output per op (<a href="{{ src(ir, 72, 74) }}">graph_ir.md L72–74</a>). The full table,
+  with every attribute, is <a href="{{ src(ir, 76, 104) }}">graph_ir.md L76–104</a>. In
+  <code>ops.cc</code> the set is three tables, and
+  <a href="{{ src(g ~ 'ops.cc', 912, 914) }}"><code>IsKnownOp</code></a> is membership in any of them:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Family</th><th>Ops</th><th>Attributes</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Unary elementwise</td><td><code>neg</code> <code>abs</code> <code>exp</code> <code>log</code> <code>sqrt</code> <code>rsqrt</code> <code>tanh</code> <code>sigmoid</code> <code>relu</code> <code>silu</code> <code>erf</code> <code>sin</code> <code>cos</code></td><td>none</td><td><a href="{{ src(g ~ 'ops.cc', 231, 248) }}">UnaryOps</a></td></tr>
+      <tr><td>Binary, broadcasting</td><td><code>add</code> <code>sub</code> <code>mul</code> <code>div</code> <code>maximum</code> <code>minimum</code>; comparisons <code>greater</code> <code>greater_equal</code> <code>less</code> <code>less_equal</code> <code>equal</code> giving an f32 mask</td><td>none</td><td><a href="{{ src(g ~ 'ops.cc', 250, 260) }}">BinaryOps</a></td></tr>
+      <tr><td>Other elementwise</td><td><code>gelu</code>, <code>pow</code> (scalar exponent), <code>clamp</code>, <code>where</code> (three inputs)</td><td><code>approximate</code>; <code>exponent</code>; <code>min</code>, <code>max</code></td><td><a href="{{ src(g ~ 'ops.cc', 859, 862) }}">OtherOps</a></td></tr>
+      <tr><td>Reductions</td><td><code>reduce_sum</code> <code>reduce_mean</code> <code>reduce_max</code> <code>reduce_min</code>, <code>argmax</code> (i32 out), <code>top_k</code> (two outputs: values and i32 indices)</td><td><code>axes</code>, <code>keep_dims</code>; <code>axis</code>; <code>k</code></td><td><a href="{{ src(g ~ 'ops.cc', 863, 867) }}">L863–867</a>, <a href="{{ src(g ~ 'ops.cc', 879, 879) }}">L879</a></td></tr>
+      <tr><td>Normalization</td><td><code>softmax</code>, <code>log_softmax</code>, <code>layer_norm</code> (weight and bias optional), <code>rms_norm</code></td><td><code>axis</code>; <code>num_axes</code>, <code>eps</code></td><td><a href="{{ src(g ~ 'ops.cc', 868, 869) }}">L868</a>, <a href="{{ src(g ~ 'ops.cc', 881, 882) }}">L881</a></td></tr>
+      <tr><td>Linear algebra and attention</td><td><code>matmul</code> (NumPy semantics), <code>sdpa</code> (q, k, v and an optional mask)</td><td><code>causal</code>, <code>scale</code> (default 1/√D)</td><td><a href="{{ src(g ~ 'ops.cc', 870, 870) }}">L870</a>, <a href="{{ src(g ~ 'ops.cc', 887, 887) }}">L887</a></td></tr>
+      <tr><td>Convolution and pooling</td><td><code>conv2d</code> (NCHW, OIHW, square kernel, optional bias), <code>max_pool2d</code>, <code>avg_pool2d</code></td><td><code>stride</code>, <code>padding</code>; <code>kernel</code>, <code>stride</code></td><td><a href="{{ src(g ~ 'ops.cc', 883, 885) }}">L883–885</a></td></tr>
+      <tr><td>Shape and data movement</td><td><code>reshape</code> <code>transpose</code> <code>broadcast_to</code> <code>slice</code> <code>concat</code> <code>squeeze</code> <code>unsqueeze</code> <code>gather</code> <code>iota</code> <code>convert</code></td><td><code>shape</code>; <code>perm</code>; <code>axes</code>, <code>starts</code>, <code>ends</code>, <code>steps</code>; <code>axis</code>; <code>dtype</code></td><td><a href="{{ src(g ~ 'ops.cc', 871, 878) }}">L871–878</a>, <a href="{{ src(g ~ 'ops.cc', 880, 880) }}">L880</a>, <a href="{{ src(g ~ 'ops.cc', 886, 886) }}">L886</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Only the shape and data-movement ops take i32 values (<code>gather</code> takes them as its index);
+  everything else is f32 only, which <code>OtherOps</code> records per op in an <code>OpSpec</code> next to its minimum and maximum
+  input count (<a href="{{ src(g ~ 'ops.cc', 849, 854) }}">ops.cc L849–854</a>). The set is small on
+  purpose. Exporters lower framework ops onto it, so JAX's <code>dot_general</code> becomes
+  <code>transpose</code> + <code>reshape</code> + <code>matmul</code> and TensorFlow's NHWC convolutions become
+  <code>transpose</code> + <code>conv2d</code> + <code>transpose</code>, and an op an exporter cannot lower fails
+  the export with the framework's op name (<a href="{{ src(ir, 106, 110) }}">graph_ir.md L106–110</a>).
+</p>
+
+<h2 id="shape-inference">Shape inference</h2>
+
+<p>
+  <a href="{{ src(g ~ 'shape_inference.cc', 13, 35) }}"><code>InferTypes(graph)</code></a> starts from the
+  recorded types of every value, then walks the nodes in order. For each node it gathers its inputs' types,
+  calls <code>CompileOp</code>, and compares every inferred output with the type the exporter recorded. The
+  first disagreement fails with the node's index and op, for example "node 3 (matmul) produces f32 [2, 16]
+  but v12 is recorded as f32 [2, 8]" (<a href="{{ src(g ~ 'shape_inference.cc', 27, 31) }}">L27–31</a>).
+  Names are kept, so the returned vector is the graph's <code>values</code> with every type confirmed
+  (<a href="{{ src(g ~ 'shape_inference.h', 13, 17) }}">shape_inference.h L13–17</a>).
+  <a href="{{ src(g ~ 'executor.cc', 21, 22) }}"><code>Executor::Create</code></a> calls it first, so no
+  executor exists for a graph whose shapes do not check.
+</p>
+
+<p>
+  Shape rules and kernels live together. <a href="{{ src(g ~ 'ops.h', 27, 38) }}"><code>CompileOp</code></a>
+  returns a <code>CompiledOp</code>: the output types and the <code>Kernel</code> that will run the node. One
+  function therefore decides both what an op produces and how it is computed, so they cannot drift apart.
+  <a href="{{ src(g ~ 'ops.cc', 950, 996) }}"><code>CompileAny</code></a> dispatches on the op name: unary
+  ops need one f32 input and keep its shape, binary ops need two and take the broadcast shape
+  (<a href="{{ src(g ~ 'ops.cc', 262, 272) }}">Broadcast</a>), and the rest go through their
+  <code>OpSpec</code>, which checks arity and dtype before the op's own compiler runs. An unknown name is
+  <code>Unsupported</code>. <code>CompileOp</code> then requires the node to list exactly as many outputs as
+  the op produces (<a href="{{ src(g ~ 'ops.cc', 922, 928) }}">L922–928</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Op</th><th>Rule</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>attributes</td><td>An <code>Attrs</code> reader returns typed values or an error naming the op and key ("attribute "axes" must be an array of integers"). Axes are checked against the rank and normalized from negative.</td><td><a href="{{ src(g ~ 'ops.cc', 44, 100) }}">L44–100</a></td></tr>
+      <tr><td><code>reduce_*</code></td><td>Each axis once; reduced axes kept as 1 or dropped by <code>keep_dims</code>; max and min reject an empty axis.</td><td><a href="{{ src(g ~ 'ops.cc', 322, 345) }}">L322–345</a></td></tr>
+      <tr><td><code>matmul</code></td><td>A 1-D operand is promoted (a row for a, a column for b) and the added axis removed from the result; inner dimensions must match; batch axes broadcast.</td><td><a href="{{ src(g ~ 'ops.cc', 425, 446) }}">L425–446</a></td></tr>
+      <tr><td><code>reshape</code></td><td>Non-negative dimensions with the same element count.</td><td><a href="{{ src(g ~ 'ops.cc', 448, 459) }}">L448–459</a></td></tr>
+      <tr><td><code>conv2d</code></td><td>x <code>[N, C, H, W]</code>, w <code>[O, C, k, k]</code>, bias <code>[O]</code>; stride ≥ 1, padding ≥ 0, kernel fits the padded image; out <code>[N, O, (H + 2p − k)/s + 1, (W + 2p − k)/s + 1]</code>.</td><td><a href="{{ src(g ~ 'ops.cc', 634, 657) }}">L634–657</a></td></tr>
+      <tr><td><code>gather</code></td><td>f32 x and i32 index; out is x's shape with the gathered axis replaced by the index's shape.</td><td><a href="{{ src(g ~ 'ops.cc', 675, 700) }}">L675–700</a></td></tr>
+      <tr><td><code>sdpa</code></td><td>q <code>[..., Tq, D]</code>, k <code>[..., Tk, D]</code>, v <code>[..., Tk, Dv]</code> of one rank; batch axes broadcast; a mask must broadcast to <code>[Tq, Tk]</code>.</td><td><a href="{{ src(g ~ 'ops.cc', 749, 780) }}">L749–780</a></td></tr>
+      <tr><td><code>top_k</code></td><td>Rank ≥ 1 and 0 ≤ k ≤ the last axis; two outputs of the same shape, f32 values and i32 indices, ties to the lower index.</td><td><a href="{{ src(g ~ 'ops.cc', 802, 839) }}">L802–839</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Static checking leaves one thing for run time: data the loader cannot see. A <code>Kernel</code> fails
+  only on such data (<a href="{{ src(g ~ 'ops.h', 22, 25) }}">ops.h L22–25</a>), and the one case is a
+  <code>gather</code> index outside its axis, which returns <code>OutOfRange</code> instead of reading out of
+  bounds (<a href="{{ src(g ~ 'ops.cc', 689, 699) }}">ops.cc L689–699</a>). The kernels themselves, the
+  constant-weight packing <code>CompileOp</code> does for <code>matmul</code>, and the fast-path layouts
+  belong to {{ link('executor', 'Executing a graph') }}.
+</p>
+
+<h2 id="tests">Tests</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Tests</th><th>What they pin down</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(g ~ 'graph_test.cc') }}"><code>graph_test.cc</code></a></td><td>7, one a sweep of 14 cases</td><td>Values, constants and nodes parse; unnamed values are named by id; 14 malformed graphs are rejected (not JSON, wrong format or version, missing <code>nodes</code>, a bad dtype, a negative dimension, an id out of range, a value defined twice or read before definition, an output never defined, inline data of the wrong length, a tensor constant without a weights file, a node without an op, non-object attrs); constants bind to a real safetensors file, and a stored shape that differs, a missing tensor and a missing file are errors.</td></tr>
+      <tr><td><a href="{{ src(g ~ 'executor_test.cc', 459, 590) }}"><code>executor_test.cc</code></a></td><td>28 in the file; shape inference in <code>InferTypesReturnsEveryValue</code> and a sweep of 14 <code>Create</code> errors</td><td>The <code>Create</code> sweep rejects an unknown op, a recorded shape or dtype that disagrees, wrong arity, a missing attribute, a duplicate reduce axis, a matmul inner mismatch, a bad permutation, a reshape that changes the count, a zero slice step, a conv channel mismatch, a layer norm weight without bias, an sdpa key-width mismatch and a concat off-axis mismatch. Separate tests cover <code>top_k</code> with k past the axis, a node listing the wrong number of outputs, and an out-of-range gather index. The op-by-op tests are on {{ link('executor', 'Executing a graph') }}.</td></tr>
+      <tr><td><a href="{{ src(g ~ 'golden_test.cc') }}"><code>golden_test.cc</code></a></td><td>2</td><td>A sweep over every committed fixture in <code>testdata/</code>: each loads, builds an executor (so passes shape inference) and matches its framework's golden outputs; a second test requires a fixture for every framework and zoo model. How the fixtures are made is on {{ link('exporters', 'Exporters and the model zoo') }}.</td></tr>
+    </tbody>
+  </table>
+</div>
