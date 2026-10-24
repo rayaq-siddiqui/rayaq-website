@@ -195,7 +195,7 @@ PAGES = [
         "summary": "Module and every layer: linear, activations, initialization, convolution, "
         "embedding, normalization, dropout, recurrent, attention and transformer blocks.",
         "sources": ["rml/nn"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "training",

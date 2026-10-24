@@ -1,0 +1,428 @@
+{% set d = "rml/nn/" %}
+<header class="jj-header">
+  <h1>Neural network layers</h1>
+  <p class="tagline">
+    <code>rml/nn</code> is the training-side layer library: a <code>Module</code> base that owns parameters
+    and children, and the layers built on it, from <code>Linear</code> to a pre-norm Transformer block. Every
+    layer is a few autograd ops, so its gradient comes from {{ link('autograd', 'Autograd') }} and is checked
+    numerically.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: a module registers its parameters, buffers and child modules in its constructor, which gives every
+  parameter a dotted path such as <code>attn.qkv.weight</code>; optimizers iterate that list and checkpoints
+  are keyed by it. <code>UnaryModule</code> is the one-input, one-output shape that <code>Sequential</code>
+  chains. The layers are <code>Linear</code>, five activation modules, Xavier and Kaiming initializers,
+  <code>Conv2d</code> by patch rows and one matrix product, <code>MaxPool2d</code>, <code>Flatten</code>,
+  <code>Embedding</code>, <code>LayerNorm</code> and <code>RMSNorm</code>, <code>Dropout</code>, RNN and LSTM
+  cells and layers, scaled dot-product and multi-head attention, and <code>TransformerBlock</code>. None of it
+  is on the inference path: the graph executor and the LLM decoder have their own kernels.
+</p>
+
+<p>
+  Each header links its concept page on /ml-models: {{ ml('neurons-and-layers', 'neurons and layers') }},
+  {{ ml('activation-functions', 'activation functions') }}, {{ ml('initialization', 'initialization') }},
+  {{ ml('cnns', 'CNNs') }}, {{ ml('embeddings', 'embeddings') }},
+  {{ ml('regularization', 'regularization') }}, {{ ml('layernorm-and-residuals', 'layer norm and residuals') }},
+  {{ ml('rnns-and-lstms', 'RNNs and LSTMs') }}, {{ ml('attention', 'attention') }} and
+  {{ ml('transformer', 'the Transformer') }}. The losses and optimizers that train these layers are on
+  {{ link('training', 'Losses and optimizers') }}.
+</p>
+
+<h2 id="module">Module</h2>
+
+<p>
+  <a href="{{ src(d ~ 'module.h', 26, 72) }}"><code>Module</code></a> is non-copyable and holds three ordered
+  lists: parameters, buffers and named children, plus a <code>training_</code> flag that starts true. A
+  subclass fills them in its constructor through the protected <code>Register*</code> calls
+  (<a href="{{ src(d ~ 'module.h', 4, 10) }}">module.h L4–10</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>NamedParameters</code></td><td><code>vector&lt;pair&lt;string, Variable&gt;&gt;() const</code></td><td>Every parameter of the module and its descendants, depth first in registration order, named by dotted path. The <code>Variable</code>s share state with the module's, so an optimizer updating them updates the module.</td><td><a href="{{ src(d ~ 'module.h', 32, 35) }}">module.h L32</a></td></tr>
+      <tr><td><code>Parameters</code>, <code>NumParameters</code></td><td><code>vector&lt;Variable&gt;()</code>, <code>int64_t()</code></td><td>The same list without names, and the total element count.</td><td><a href="{{ src(d ~ 'module.cc', 22, 32) }}">module.cc L22–32</a></td></tr>
+      <tr><td><code>NamedBuffers</code></td><td><code>vector&lt;pair&lt;string, Tensor&gt;&gt;() const</code></td><td>Non-trainable state that belongs in a checkpoint (running statistics, fixed tables), named the same way.</td><td><a href="{{ src(d ~ 'module.h', 39, 41) }}">module.h L39</a></td></tr>
+      <tr><td><code>Train</code>, <code>Eval</code>, <code>is_training</code></td><td><code>void(bool = true)</code></td><td>Sets the flag on this module and every descendant; <code>Dropout</code> reads it.</td><td><a href="{{ src(d ~ 'module.cc', 40, 43) }}">module.cc L40–43</a></td></tr>
+      <tr><td><code>ZeroGrad</code></td><td><code>void()</code></td><td>Clears every parameter's gradient.</td><td><a href="{{ src(d ~ 'module.cc', 45, 47) }}">L45–47</a></td></tr>
+      <tr><td><code>RegisterParameter</code></td><td><code>Variable(string, Tensor)</code></td><td>Wraps the tensor in a <code>Variable</code> with <code>requires_grad</code>; a name registered twice is an <code>RML_CHECK</code> failure.</td><td><a href="{{ src(d ~ 'module.cc', 49, 56) }}">L49–56</a></td></tr>
+      <tr><td><code>RegisterBuffer</code></td><td><code>Tensor(string, Tensor)</code></td><td>Records a tensor that is saved but not trained.</td><td><a href="{{ src(d ~ 'module.cc', 58, 61) }}">L58–61</a></td></tr>
+      <tr><td><code>RegisterModule</code></td><td><code>shared_ptr&lt;M&gt;(string, shared_ptr&lt;M&gt;)</code></td><td>Adds a named child and returns it, so a constructor can write <code>fc_ = RegisterModule("fc", ...)</code>.</td><td><a href="{{ src(d ~ 'module.h', 56, 60) }}">module.h L56–60</a></td></tr>
+      <tr><td><code>CopyParameters</code></td><td><code>void(const Module&amp; from, Module&amp; to)</code></td><td>Copies every parameter and buffer value into a module with the same names in the same order; any mismatch in count or name is an <code>RML_CHECK</code> failure. Values are copied, not storage.</td><td><a href="{{ src(d ~ 'module.cc', 75, 92) }}">module.cc L75–92</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Names come from <code>CollectParameters</code>, which emits this module's own parameters with the prefix,
+  then recurses into each child with <code>prefix + name + "."</code>
+  (<a href="{{ src(d ~ 'module.cc', 63, 73) }}">L63–73</a>). That order is what <code>CopyParameters</code>
+  compares, and what {{ link('model-files', 'checkpoints') }} are keyed by:
+  <code>SaveCheckpoint</code> and <code>LoadCheckpoint</code> take an <code>nn::Module</code>
+  (<a href="{{ src('rml/io/checkpoint.h', 23, 31) }}">rml/io/checkpoint.h L23–31</a>).
+</p>
+
+<h3 id="sequential">UnaryModule, Sequential and Lambda</h3>
+
+<p>
+  <code>UnaryModule</code> adds a pure virtual <code>Forward(const Variable&amp;)</code> and an
+  <code>operator()</code> that calls it (<a href="{{ src(d ~ 'module.h', 78, 83) }}">module.h L78–83</a>).
+  <code>Sequential</code> applies its children in order and names them <code>"0"</code>, <code>"1"</code>, …
+  as they are appended, so its parameters read <code>0.weight</code>, <code>2.bias</code>; appending a null
+  layer fails a check (<a href="{{ src(d ~ 'module.h', 85, 99) }}">L85–99</a>,
+  <a href="{{ src(d ~ 'module.cc', 94, 107) }}">module.cc L94–107</a>). <code>Lambda</code> wraps a
+  parameter-free function, such as a reshape, as a module (<a href="{{ src(d ~ 'module.h', 101, 109) }}">L101–109</a>).
+  Layers that take something other than one <code>Variable</code> (<code>Embedding</code>'s ids, the recurrent
+  cells' state) derive from <code>Module</code> directly.
+</p>
+
+<h2 id="linear">Linear and activations</h2>
+
+<p>
+  <a href="{{ src(d ~ 'linear.h', 19, 37) }}"><code>Linear(in_features, out_features, gen, {bias})</code></a>
+  holds <code>W</code> as <code>[out, in]</code> and computes <code>y = x Wᵀ + b</code> over the last axis, so
+  any leading batch axes pass through (<a href="{{ src(d ~ 'linear.cc', 29, 35) }}">linear.cc L29–35</a>). Both
+  <code>W</code> and <code>b</code> start uniform on [−1/√in, 1/√in]
+  (<a href="{{ src(d ~ 'linear.cc', 16, 27) }}">L16–27</a>), which the header notes gives each output a
+  variance of about Var(x)/3 whatever the width (<a href="{{ src(d ~ 'linear.h', 21, 23) }}">linear.h
+  L21–23</a>). An input whose last axis is not <code>in_features</code> fails a check.
+</p>
+
+<p>
+  <a href="{{ src(d ~ 'activation.h', 15, 25) }}"><code>Activation&lt;kFn&gt;</code></a> is a template over
+  a function pointer, so each activation module is one alias: <code>Relu</code>, <code>Tanh</code>,
+  <code>Sigmoid</code>, <code>Gelu</code> and <code>Silu</code> forward to the autograd op of the same name,
+  where the derivatives are written ({{ link('autograd', 'Autograd', '#ops') }}).
+</p>
+
+<h2 id="init">Initialization</h2>
+
+<p>
+  <a href="{{ src(d ~ 'init.h', 4, 11) }}">init.h</a> states the goal: keep the variance of activations
+  forward and of gradients backward roughly constant from layer to layer. Weights follow the
+  <code>[out, in, …]</code> layout, and the receptive field is the product of the trailing axes.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>ComputeFans</code></td><td><code>Fans(const Shape&amp;)</code></td><td><code>fan_in</code> = shape[1] × receptive field, <code>fan_out</code> = shape[0] × receptive field; a rank-1 shape gives both as its length.</td><td><a href="{{ src(d ~ 'init.cc', 15, 21) }}">init.cc L15–21</a></td></tr>
+      <tr><td><code>Gain</code></td><td><code>float(Nonlinearity, float negative_slope = 0.01)</code></td><td>1 for <code>kLinear</code> and <code>kSigmoid</code>, 5/3 for <code>kTanh</code>, √2 for <code>kRelu</code>, √(2 / (1 + slope²)) for <code>kLeakyRelu</code>.</td><td><a href="{{ src(d ~ 'init.cc', 23, 36) }}">L23–36</a></td></tr>
+      <tr><td><code>XavierUniform</code>, <code>XavierNormal</code></td><td><code>Tensor(const Shape&amp;, Generator&amp;, float gain = 1)</code></td><td>Glorot and Bengio (2010): std = gain · √(2 / (fan_in + fan_out)).</td><td><a href="{{ src(d ~ 'init.cc', 46, 63) }}">L46–63</a></td></tr>
+      <tr><td><code>KaimingUniform</code>, <code>KaimingNormal</code></td><td><code>Tensor(const Shape&amp;, Generator&amp;, Nonlinearity = kRelu)</code></td><td>He et al. (2015): std = Gain(nonlinearity) / √fan_in. A leaky ReLU gets the default slope of 0.01.</td><td><a href="{{ src(d ~ 'init.cc', 51, 71) }}">L51–71</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The uniform forms draw from [−√3·std, √3·std], since a uniform on [−a, a] has variance a²/3
+  (<a href="{{ src(d ~ 'init.cc', 40, 44) }}">L40–44</a>). All four draw from the counter-based generator on
+  {{ link('random', 'Random numbers') }}, so the same seed gives the same weights. The layers themselves do not
+  call these: <code>Linear</code>, <code>Conv2d</code> and the recurrent layers use their own uniform bound,
+  and the initializers are there for code that wants a specific scheme.
+</p>
+
+<p>
+  <strong>Worked example.</strong> A <code>[128, 256]</code> weight: fan_in = 256, fan_out = 128. Kaiming with
+  ReLU gives std = √2 / 16 ≈ 0.0884; Xavier gives √(2 / 384) ≈ 0.0722; <code>Linear(256, 128)</code>'s own
+  bound is 1/16 = 0.0625, a standard deviation of 0.0625 / √3 ≈ 0.0361.
+</p>
+
+<h2 id="conv">Convolution and pooling</h2>
+
+<p>
+  The header describes convolution as unfold (im2col) followed by one matrix product
+  (<a href="{{ src(d ~ 'conv.h', 8, 12) }}">conv.h L8–12</a>). The code goes one step further.
+  <code>Conv2dFunctional(x, weight, bias, stride, padding)</code> takes x <code>[N, C, H, W]</code> and a square
+  weight <code>[O, C, k, k]</code> and builds the patches as <em>rows</em>, <code>[N·OH·OW, C·k·k]</code>, with a
+  private <code>PatchRowsFunction</code>, written sequentially so it needs neither a zero fill nor a transposed
+  copy (<a href="{{ src(d ~ 'conv.cc', 109, 176) }}">conv.cc L109–176</a>). One product with the reshaped,
+  transposed filters covers the whole batch, the bias is added per output channel, and a reshape and transpose
+  return <code>[N, O, OH, OW]</code> (<a href="{{ src(d ~ 'conv.cc', 239, 263) }}">L239–263</a>). Each output
+  side is (H + 2·padding − k) / stride + 1 (<a href="{{ src(d ~ 'conv.cc', 29, 41) }}">L29–41</a>).
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 300" role="img" aria-labelledby="nn-conv-title nn-conv-desc">
+    <title id="nn-conv-title">Conv2d as patch rows times filters</title>
+    <desc id="nn-conv-desc">An input of shape N, C, H, W is turned by PatchRows into a matrix with one row per
+      output position of every image, N times OH times OW rows, and C times k times k columns. The weight of
+      shape O, C, k, k is reshaped to O by C k k and transposed. Their product is N OH OW by O, which gets the
+      bias and is reshaped and transposed to N, O, OH, OW. The backward pass of PatchRows adds each row entry
+      back to the pixel it read.</desc>
+
+    <rect class="d-box" x="20" y="30" width="150" height="50" rx="5"/>
+    <text x="95" y="52" text-anchor="middle">x</text>
+    <text class="d-muted" x="95" y="70" text-anchor="middle" font-size="12">[N, C, H, W]</text>
+    <line class="d-line" x1="95" y1="80" x2="95" y2="112"/>
+    <text class="d-muted" x="104" y="101" font-size="12">PatchRows</text>
+
+    <rect class="d-box d-accent" x="20" y="112" width="150" height="110" rx="5"/>
+    <text x="95" y="146" text-anchor="middle">patch rows</text>
+    <text class="d-muted" x="95" y="168" text-anchor="middle" font-size="12">[N·OH·OW, C·k·k]</text>
+    <text class="d-muted" x="95" y="190" text-anchor="middle" font-size="12">one row per output</text>
+    <text class="d-muted" x="95" y="206" text-anchor="middle" font-size="12">position, 0 for padding</text>
+
+    <text x="200" y="172" text-anchor="middle">×</text>
+
+    <rect class="d-box" x="230" y="30" width="150" height="50" rx="5"/>
+    <text x="305" y="52" text-anchor="middle">weight</text>
+    <text class="d-muted" x="305" y="70" text-anchor="middle" font-size="12">[O, C, k, k]</text>
+    <line class="d-line" x1="305" y1="80" x2="305" y2="112"/>
+    <text class="d-muted" x="314" y="101" font-size="12">reshape, transpose</text>
+
+    <rect class="d-box" x="230" y="112" width="150" height="110" rx="5"/>
+    <text x="305" y="146" text-anchor="middle">filters</text>
+    <text class="d-muted" x="305" y="168" text-anchor="middle" font-size="12">[C·k·k, O]</text>
+
+    <text x="410" y="172" text-anchor="middle">=</text>
+
+    <rect class="d-box" x="440" y="112" width="160" height="110" rx="5"/>
+    <text x="520" y="146" text-anchor="middle">y</text>
+    <text class="d-muted" x="520" y="168" text-anchor="middle" font-size="12">[N·OH·OW, O]</text>
+    <text class="d-muted" x="520" y="190" text-anchor="middle" font-size="12">+ bias [O]</text>
+    <line class="d-line" x1="520" y1="222" x2="520" y2="244"/>
+    <rect class="d-box" x="440" y="244" width="160" height="44" rx="5"/>
+    <text x="520" y="263" text-anchor="middle">[N, O, OH, OW]</text>
+    <text class="d-muted" x="520" y="280" text-anchor="middle" font-size="12">reshape, transpose</text>
+
+    <text class="d-muted" x="20" y="258" font-size="12">backward: each row entry</text>
+    <text class="d-muted" x="20" y="274" font-size="12">is added back to the pixel</text>
+    <text class="d-muted" x="20" y="290" font-size="12">it read (overlaps sum)</text>
+  </svg>
+  <figcaption>One matrix product for the whole batch instead of one per image
+    (<a href="{{ src(d ~ 'conv.cc', 248, 256) }}">conv.cc L248–256</a>). The matrix product is the GEMM on
+    {{ link('linalg', 'Linear algebra', '#gemm') }}.</figcaption>
+</figure>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Conv2dOptions</code></td><td><code>stride</code> = 1, <code>padding</code> = 0, <code>bias</code> = true</td><td>Padding is zeros on every side.</td><td><a href="{{ src(d ~ 'conv.h', 22, 26) }}">conv.h L22</a></td></tr>
+      <tr><td><code>Conv2d</code></td><td><code>(in_channels, out_channels, kernel, gen, options)</code></td><td>Weight and bias uniform on [−1/√fan_in, 1/√fan_in] with fan_in = in·k·k.</td><td><a href="{{ src(d ~ 'conv.cc', 270, 286) }}">conv.cc L270–286</a></td></tr>
+      <tr><td><code>Unfold</code></td><td><code>Variable(x, kernel, stride = 1, padding = 0)</code></td><td>The public im2col: <code>[N, C, H, W]</code> to <code>[N, C·k·k, OH·OW]</code>, row c·k·k + i·k + j holding channel c at offset (i, j). Its backward adds columns back where patches overlap. Not used by <code>Conv2d</code> itself.</td><td><a href="{{ src(d ~ 'conv.cc', 66, 107) }}">L66–107</a></td></tr>
+      <tr><td><code>MaxPool2dFunctional</code>, <code>MaxPool2d</code></td><td><code>(x, kernel, stride = 0)</code></td><td>The maximum of each window, stride defaulting to the kernel, no padding. Forward stores the flat index of the first maximum in each window; backward adds the gradient there.</td><td><a href="{{ src(d ~ 'conv.cc', 178, 231) }}">L178–231</a></td></tr>
+      <tr><td><code>Flatten</code></td><td><code>[N, …] → [N, rest]</code></td><td>Between the convolutional and fully connected layers.</td><td><a href="{{ src(d ~ 'conv.cc', 288, 291) }}">L288–291</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <strong>Worked example.</strong> A 28 × 28 image through <code>Conv2d(1, 8, 3, gen, {.stride = 2, .padding =
+  1})</code>: each side is (28 + 2 − 3) / 2 + 1 = 14, so the patch rows are <code>[N·196, 9]</code>, the
+  filters <code>[9, 8]</code>, and the result <code>[N, 8, 14, 14]</code>.
+</p>
+
+<h2 id="embedding">Embedding</h2>
+
+<p>
+  <a href="{{ src(d ~ 'embedding.h', 18, 34) }}"><code>Embedding(num_embeddings, embedding_dim, gen, stddev =
+  1)</code></a> is a <code>[num, dim]</code> table initialized N(0, stddev²). <code>Forward</code> takes an i32
+  ids tensor of any shape and returns that shape with <code>dim</code> appended, by
+  <code>autograd::IndexSelect</code> on axis 0 (<a href="{{ src(d ~ 'embedding.cc', 16, 25) }}">embedding.cc
+  L16–25</a>). The header's point: it equals a <code>Linear</code> on one-hot inputs without making the
+  one-hots, gathering rows forward and scatter-adding into them backward, so a repeated id accumulates its
+  gradient (<a href="{{ src(d ~ 'embedding.h', 4, 7) }}">embedding.h L4–7</a>).
+</p>
+
+<h2 id="normalization">Normalization</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>LayerNorm</code></td><td><code>(dim, eps = 1e-5, affine = true)</code></td><td>(x − mean) / √(var + eps) · weight + bias over the last axis, with the biased variance (divide by n). Weight starts at 1 and bias at 0; without <code>affine</code> neither exists.</td><td><a href="{{ src(d ~ 'normalization.cc', 23, 37) }}">normalization.cc L23–37</a></td></tr>
+      <tr><td><code>RMSNorm</code></td><td><code>(dim, eps = 1e-6)</code></td><td>x / √(mean(x²) + eps) · weight: no centring and no bias, as Llama-family models use.</td><td><a href="{{ src(d ~ 'normalization.cc', 39, 47) }}">L39–47</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Both are written as autograd ops (<code>Mean</code>, <code>Square</code>, <code>Pow(·, −0.5)</code>), so their
+  gradients come for free and are checked numerically. The graph executor's layer norm is a separate fast kernel
+  ({{ link('lowering', 'Lowering and fast CPU', '#kernels') }}).
+</p>
+
+<h2 id="dropout">Dropout</h2>
+
+<p>
+  <a href="{{ src(d ~ 'dropout.h', 18, 32) }}"><code>Dropout(p, seed = 0)</code></a> requires p in [0, 1). In
+  training mode it draws a Bernoulli(1 − p) keep mask from its own generator and multiplies by
+  mask / (1 − p), so the expected activation is unchanged and evaluation needs no rescaling; in eval mode, or
+  when p is 0, it returns x unchanged (<a href="{{ src(d ~ 'dropout.cc', 15, 23) }}">dropout.cc L15–23</a>).
+  Owning its generator makes a run reproducible from the seed alone.
+</p>
+
+<h2 id="recurrent">Recurrent layers</h2>
+
+<p>
+  The header gives the equations and the reason for the LSTM
+  (<a href="{{ src(d ~ 'recurrent.h', 9, 18) }}">recurrent.h L9–18</a>): an RNN's h′ = tanh(x W<sub>ih</sub>ᵀ +
+  h W<sub>hh</sub>ᵀ + b) multiplies one Jacobian per step on the way back, so distant gradients shrink or
+  explode; an LSTM's cell state changes additively, c′ = σ(f)·c + σ(i)·tanh(g), h′ = σ(o)·tanh(c′), so while
+  the forget gate stays near 1 the gradient through c passes almost unchanged.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>RnnCell</code></td><td><code>Forward(x [B, in], h [B, H]) → h′</code></td><td><code>weight_ih</code> [H, in], <code>weight_hh</code> [H, H], <code>bias</code> [H].</td><td><a href="{{ src(d ~ 'recurrent.cc', 70, 81) }}">recurrent.cc L70–81</a></td></tr>
+      <tr><td><code>LstmCell</code></td><td><code>Forward(x, LstmState{h, c}) → LstmState</code></td><td>Weights <code>[4H, in]</code> and <code>[4H, H]</code>, bias <code>[4H]</code>; rows [0, H), [H, 2H), [2H, 3H), [3H, 4H) are the input, forget, candidate and output gates. One affine map makes all four, then four slices.</td><td><a href="{{ src(d ~ 'recurrent.cc', 93, 105) }}">L93–105</a></td></tr>
+      <tr><td><code>Rnn</code>, <code>Lstm</code></td><td><code>Forward(x [B, T, in]) → [B, T, H]</code></td><td>Unroll the cell over time, selecting step t, and concatenate every step's h.</td><td><a href="{{ src(d ~ 'recurrent.cc', 57, 66) }}">L57–66</a></td></tr>
+      <tr><td>Stateful <code>Forward</code></td><td><code>(x, Variable&amp; h)</code>, <code>(x, LstmState&amp;)</code></td><td>Starts from the given state (zeros where undefined) and leaves the final state in it, so a long sequence can be fed in pieces.</td><td><a href="{{ src(d ~ 'recurrent.cc', 115, 140) }}">L115–140</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Every weight and bias starts uniform on [−1/√H, 1/√H] (<a href="{{ src(d ~ 'recurrent.cc', 26, 31) }}">L26–31</a>),
+  except that the LSTM's forget-gate bias, rows [H, 2H), starts at 1, so the cell begins by keeping its memory
+  (Jozefowicz et al. 2015; <a href="{{ src(d ~ 'recurrent.cc', 83, 91) }}">L83–91</a>). The same cell, exported
+  from PyTorch, is the graph that runtime fusion handles on
+  {{ link('lowering', 'Lowering and fast CPU', '#lstm') }}.
+</p>
+
+<h2 id="attention">Attention</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>CausalMask</code></td><td><code>Tensor(int64_t tq, int64_t tk)</code></td><td><code>[tq, tk]</code> additive mask, 0 where query i may see key j and −∞ elsewhere. Queries align to the end of the keys: query i sits at position tk − tq + i, so a cached prefix works. Needs tk ≥ tq.</td><td><a href="{{ src(d ~ 'attention.cc', 19, 28) }}">attention.cc L19–28</a></td></tr>
+      <tr><td><code>ScaledDotProductAttention</code></td><td><code>Variable(q, k, v, bool causal)</code></td><td>softmax(q kᵀ / √d + mask) v over the last two axes, leading axes broadcasting. Dividing by √d keeps the logits' variance near 1 so the softmax does not saturate as d grows.</td><td><a href="{{ src(d ~ 'attention.cc', 30, 41) }}">L30–41</a></td></tr>
+      <tr><td><code>MultiheadAttentionOptions</code></td><td><code>causal</code> = true, <code>bias</code> = true</td><td>Passed to both projections.</td><td><a href="{{ src(d ~ 'attention.h', 35, 38) }}">attention.h L35</a></td></tr>
+      <tr><td><code>MultiheadAttention</code></td><td><code>(embed_dim, num_heads, gen, options)</code>; <code>Forward([B, T, E])</code></td><td>One <code>Linear(E, 3E)</code> named <code>qkv</code> makes q, k and v for every head; each is sliced, reshaped to <code>[B, T, heads, E/heads]</code> and transposed to <code>[B, heads, T, E/heads]</code>; the heads attend, merge back to <code>[B, T, E]</code> and pass through <code>Linear(E, E)</code> named <code>out</code>. <code>num_heads</code> must divide E.</td><td><a href="{{ src(d ~ 'attention.cc', 43, 74) }}">L43–74</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <strong>Worked example.</strong> <code>CausalMask(2, 4)</code>, two new queries after a cached prefix of two
+  keys: query 0 sits at position 2 and sees keys 0–2, query 1 at position 3 sees all four.
+</p>
+
+<pre><code>[[0, 0, 0, -inf],
+ [0, 0, 0,    0]]</code></pre>
+
+<p>
+  The header calls this "the readable training version" and says the inference engine's fused kernel in
+  <code>rml/backend</code> is tested against it (<a href="{{ src(d ~ 'attention.h', 9, 10) }}">attention.h
+  L9–10</a>). At this commit <code>rml/backend</code> does not exist, so that is <em>planned</em>; the LLM
+  decoder's attention on {{ link('decoder', 'The decoder') }} is its own code and includes nothing from
+  <code>rml/nn</code>.
+</p>
+
+<h2 id="transformer">TransformerBlock</h2>
+
+<p>
+  <a href="{{ src(d ~ 'transformer.h', 31, 47) }}"><code>TransformerBlock(embed_dim, num_heads, gen,
+  {mlp_ratio = 4, causal = true})</code></a> is the pre-norm block of GPT-2 and its successors
+  (<a href="{{ src(d ~ 'transformer.h', 4, 9) }}">transformer.h L4–9</a>): normalize before each sublayer and
+  add its output back, which leaves an unnormalized residual path from input to output. The whole forward
+  pass is two lines (<a href="{{ src(d ~ 'transformer.cc', 29, 32) }}">transformer.cc L29–32</a>).
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 400" role="img" aria-labelledby="nn-block-title nn-block-desc">
+    <title id="nn-block-title">TransformerBlock's forward pass and parameter names</title>
+    <desc id="nn-block-desc">x enters a residual stream. The first branch applies ln1, then attn, which is
+      attn.qkv, scaled dot-product attention per head and attn.out, and adds the result back to give h. The
+      second branch applies ln2, then fc, GELU and proj, and adds the result back to h to give the output.
+      Each box is labelled with the parameter prefix it registers.</desc>
+
+    <text x="110" y="24" text-anchor="middle">residual stream</text>
+    <text x="400" y="24" text-anchor="middle">sublayers (registered names)</text>
+
+    <rect class="d-box" x="60" y="36" width="100" height="32" rx="5"/>
+    <text x="110" y="57" text-anchor="middle">x [B, T, E]</text>
+    <line class="d-line" x1="110" y1="68" x2="110" y2="176"/>
+
+    <line class="d-line" x1="110" y1="84" x2="250" y2="84"/>
+    <rect class="d-box" x="250" y="68" width="300" height="32" rx="5"/>
+    <text x="400" y="89" text-anchor="middle">ln1: LayerNorm(E)</text>
+    <line class="d-line" x1="400" y1="100" x2="400" y2="112"/>
+    <rect class="d-box d-accent" x="250" y="112" width="300" height="52" rx="5"/>
+    <text x="400" y="133" text-anchor="middle">attn: qkv → heads → out</text>
+    <text class="d-muted" x="400" y="153" text-anchor="middle" font-size="12">Linear(E, 3E), causal attention, Linear(E, E)</text>
+    <line class="d-line" x1="250" y1="150" x2="132" y2="190"/>
+
+    <circle class="d-box" cx="110" cy="190" r="14"/>
+    <text x="110" y="195" text-anchor="middle">+</text>
+    <text class="d-muted" x="140" y="214" font-size="12">h</text>
+    <line class="d-line" x1="110" y1="204" x2="110" y2="324"/>
+
+    <line class="d-line" x1="110" y1="232" x2="250" y2="232"/>
+    <rect class="d-box" x="250" y="216" width="300" height="32" rx="5"/>
+    <text x="400" y="237" text-anchor="middle">ln2: LayerNorm(E)</text>
+    <line class="d-line" x1="400" y1="248" x2="400" y2="260"/>
+    <rect class="d-box d-accent" x="250" y="260" width="300" height="52" rx="5"/>
+    <text x="400" y="281" text-anchor="middle">fc → GELU → proj</text>
+    <text class="d-muted" x="400" y="301" text-anchor="middle" font-size="12">Linear(E, 4E), Linear(4E, E)</text>
+    <line class="d-line" x1="250" y1="298" x2="132" y2="338"/>
+
+    <circle class="d-box" cx="110" cy="338" r="14"/>
+    <text x="110" y="343" text-anchor="middle">+</text>
+    <line class="d-line" x1="110" y1="352" x2="110" y2="362"/>
+    <rect class="d-box" x="60" y="362" width="100" height="32" rx="5"/>
+    <text x="110" y="383" text-anchor="middle">y [B, T, E]</text>
+    <text class="d-muted" x="250" y="384" font-size="12">E = 8, 2 heads: 872 parameters</text>
+  </svg>
+  <figcaption>x + attn(ln1(x)), then h + proj(GELU(fc(ln2(h)))). The names in each box are the prefixes
+    <code>NamedParameters</code> reports, in this order.</figcaption>
+</figure>
+
+<p>
+  <strong>Worked example.</strong> <code>TransformerBlock(8, 2, gen)</code> reports twelve parameters in
+  registration order: <code>ln1.weight</code>, <code>ln1.bias</code>, <code>attn.qkv.weight</code>,
+  <code>attn.qkv.bias</code>, <code>attn.out.weight</code>, <code>attn.out.bias</code>, <code>ln2.weight</code>,
+  <code>ln2.bias</code>, <code>fc.weight</code>, <code>fc.bias</code>, <code>proj.weight</code>,
+  <code>proj.bias</code>. With d = 8 the count is 4d for the two norms, 4d² + 4d for attention and 8d² + 5d for the
+  MLP: 32 + 288 + 552 = 872 (<a href="{{ src(d ~ 'transformer_test.cc', 19, 31) }}">transformer_test.cc
+  L19–31</a>).
+</p>
+
+<h2 id="users">Who uses it</h2>
+
+<p>
+  Inside the library, only <a href="{{ src('rml/io/checkpoint.h', 23, 31) }}"><code>rml/io/checkpoint</code></a>
+  depends on <code>rml/nn</code>. The rest of its users are the training demos in <code>examples/</code>:
+  <code>mlp</code>, <code>cnn</code>, <code>rnn</code>, <code>ssm</code>, <code>encoder</code>,
+  <code>char_gpt</code>, <code>vit</code>, <code>vae</code>, <code>gan</code>, <code>diffusion</code>,
+  <code>diffusion_unet</code>, <code>flow_matching</code>, <code>gnn</code>, <code>two_tower</code>,
+  <code>multimodal</code>, <code>rag</code>, <code>distillation</code>, <code>finetune</code> and
+  <code>dpo</code> ({{ link('examples', 'Examples') }}). The inference stack does not use it: exported models
+  run on the graph executor's kernels ({{ link('executor', 'Executing a graph') }}).
+</p>
+
+<h2 id="tests">Tests</h2>
+
+<p>
+  Every layer with parameters gets a numerical gradient check of its input and parameters through
+  {{ link('autograd', 'GradCheck', '#grad-check') }}, and forward results are compared with the definition
+  written out in the test.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Tests</th><th>What they pin down</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(d ~ 'module_test.cc') }}"><code>module_test.cc</code></a></td><td>7</td><td>Dotted names in registration order, parameter and buffer counts; parameters share state with the module; <code>CopyParameters</code> copies values, not storage, and dies on mismatched modules; train and eval reach every child; <code>Sequential</code> names by index; a duplicate parameter name dies.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'linear_test.cc') }}"><code>linear_test.cc</code></a></td><td>5</td><td>x Wᵀ + b; initial weights within 1/√fan_in; leading batch axes; gradients; a wrong input width dies.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'activation_test.cc') }}"><code>activation_test.cc</code></a></td><td>2</td><td>Modules match their ops and compose in <code>Sequential</code>.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'init_test.cc') }}"><code>init_test.cc</code></a></td><td>5</td><td>Fans and gains; sample variances of all four initializers within 2% of their formulas; uniform draws inside their bound; same seed, same weights.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'conv_test.cc') }}"><code>conv_test.cc</code></a></td><td>8</td><td>Conv against a direct six-loop reference within 1e-5 and its gradients, over six (kernel, stride, padding) geometries from (1, 1, 0) to (5, 1, 2); <code>Unfold</code> columns and their overlapping gradient; max pool values and gradient to the maximum; <code>Flatten</code>; bad shapes die.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'embedding_test.cc') }}"><code>embedding_test.cc</code></a></td><td>4</td><td>Row lookup; repeated ids accumulate gradient; numerical gradient; an out-of-range id dies.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'normalization_test.cc') }}"><code>normalization_test.cc</code></a></td><td>5</td><td>Layer-normed rows have zero mean and unit variance; affine and plain forms; RMS division; numerical gradients of both; wrong width dies.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'dropout_test.cc') }}"><code>dropout_test.cc</code></a></td><td>5</td><td>p = 0.25 on 10,000 ones zeroes 2,500 ± 200 and scales survivors to 1/0.75; identity in eval mode; the gradient follows the mask; same seed, same mask; p = 1 dies.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'recurrent_test.cc') }}"><code>recurrent_test.cc</code></a></td><td>8</td><td>RNN and LSTM cells against their equations; the forget bias starts at 1; gradients through time; state carried across chunks equals one long sequence; bad shapes die.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'attention_test.cc') }}"><code>attention_test.cc</code></a></td><td>10</td><td>The causal mask, including a cached prefix; attention against the written formula within 1e-5; the first causal query sees only the first value; gradients; multi-head shape and parameter count; causal output ignores later tokens and bidirectional output sees them; a width the heads don't divide dies.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'transformer_test.cc') }}"><code>transformer_test.cc</code></a></td><td>3</td><td>Parameter names and count; shape kept and causality; gradients of input and parameters.</td></tr>
+    </tbody>
+  </table>
+</div>
