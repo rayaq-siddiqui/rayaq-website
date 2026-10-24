@@ -6,7 +6,7 @@ import ml_models_docs
 
 UPSTREAM = {
     "repo": "https://github.com/rayaq-siddiqui/rml",
-    "commit": "a948ac77c2dc0692c8bffa7fba81943bf97ef847",
+    "commit": "22c99d34d69cc591201e729f68707dc86381adb7",
     "commit_date": "2026-10-24",
     "version": "0.1.0",
     "license": "Apache-2.0",

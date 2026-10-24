@@ -38,7 +38,7 @@
   (<a href="{{ src(prog, 128, 133) }}">progress.md L128–133</a>): rml beat every framework only on the
   batch-1 CNN, and was 2–20× slower wherever GEMM dominated. Only GEMM was threaded, and the JAX and
   TensorFlow graphs arrived with layer norm, softmax and GELU decomposed. The plan that followed
-  (<a href="{{ src(prog, 157, 166) }}">L157–166</a>) has one item per gap:
+  (<a href="{{ src(prog, 157, 167) }}">L157–167</a>) has one item per gap:
 </p>
 
 <div class="jj-table-wrap">
@@ -49,8 +49,9 @@
       <tr><td>Only GEMM threaded</td><td>Threaded, vectorized elementwise, softmax, norm and reduction kernels used by the executor (<a href="{{ src(prog, 160, 160) }}">L160</a>)</td><td>Built</td><td><a href="#kernels">Vectorized kernels</a></td></tr>
       <tr><td>Decomposed patterns as chains of small ops</td><td>Elementwise fusion at run time (<a href="{{ src(prog, 158, 158) }}">L158</a>, <a href="{{ src(prog, 161, 161) }}">L161</a>), and mean and softmax fusion at export (<a href="{{ src(prog, 162, 162) }}">L162</a>)</td><td>Built</td><td><a href="#fusion">Fused programs</a>, <a href="#export-fusion">At export</a></td></tr>
       <tr><td>Allocation per op</td><td>Buffers reused across runs through a <code>BufferPool</code> (<a href="{{ src(prog, 161, 161) }}">L161</a>)</td><td>Built</td><td><a href="#buffers">Buffers</a></td></tr>
+      <tr><td>Weights repacked on every call; an LSTM step split into many small ops</td><td>Constant matmul weights packed once at compile time, and fusion groups with independent members, several outputs, leading-1 reshapes and row-strided slice views (<a href="{{ src(prog, 165, 165) }}">L165</a>)</td><td>Built</td><td><a href="#lstm">An LSTM step</a>, <a href="#gemm">SIMD GEMM</a></td></tr>
       <tr><td>Layer norm and GELU still decomposed</td><td><code>fuse_layer_norm</code> and <code>fuse_gelu</code> in <code>passes.py</code>; the checklist still lists the item as open (<a href="{{ src(prog, 163, 163) }}">L163</a>)</td><td>In progress</td><td><a href="#export-fusion">At export</a></td></tr>
-      <tr><td>Four threads slower than one on small cells</td><td>Larger grains so small ops stay on the calling thread; the checklist item is open (<a href="{{ src(prog, 165, 165) }}">L165</a>)</td><td>In progress</td><td><a href="#threads">Threads</a></td></tr>
+      <tr><td>Four threads slower than one on small cells</td><td>Larger grains so small ops stay on the calling thread; the checklist item is open (<a href="{{ src(prog, 166, 166) }}">L166</a>)</td><td>In progress</td><td><a href="#threads">Threads</a></td></tr>
     </tbody>
   </table>
 </div>
@@ -62,9 +63,17 @@
   rml-graph. A run of consecutive elementwise nodes with one output shape (a GELU written out as
   <code>tanh</code>, <code>pow</code>, <code>mul</code> and <code>add</code>; a layer norm's subtract, scale and
   shift; a bias add followed by an activation) becomes one program. The program streams the output in tiles
-  small enough to stay in L1, keeps every intermediate in a tile buffer and writes only the final value,
-  which removes the intermediate tensors and all but one pass over memory, whichever framework the graph came
-  from.
+  small enough to stay in L1, keeps every intermediate in a tile buffer and writes only the values read
+  outside it, which removes the intermediate tensors and all but one pass over memory, whichever framework the
+  graph came from.
+</p>
+
+<p>
+  Members need not feed each other (<a href="{{ src(g ~ 'fusion.h', 14, 19) }}">fusion.h L14–19</a>). Shapes
+  are compared without leading 1s, so a reshape that only adds or drops them joins as a copy; an LSTM cell's
+  four gate activations and its state update form one group whose outputs are the new cell and hidden states;
+  and inputs that are row-strided views, such as the four gate slices of one matmul result, are read in place
+  rather than copied.
 </p>
 
 <h3 id="grouping">Finding groups</h3>
@@ -76,25 +85,32 @@
     <code>clamp</code> are not.</li>
   <li><strong>Fusible nodes.</strong> One f32 output of the group's shape; unary inputs of exactly that shape;
     binary inputs laid out as the full output, a row repeated per row, one value per row, or a scalar, the same
-    layouts the binary fast path takes (<a href="{{ src(fu, 87, 106) }}">L87–106</a>).</li>
-  <li><strong>Growing.</strong> Starting from a fusible node, <code>FindFusionGroups</code> extends over the
-    following nodes while each is fusible and reads something the group already made
-    (<a href="{{ src(fu, 137, 148) }}">L137–148</a>).</li>
-  <li><strong>Trimming.</strong> It keeps the longest prefix whose intermediates are read only inside it and
-    are not graph outputs, and drops groups shorter than two
-    (<a href="{{ src(fu, 149, 164) }}">L149–164</a>). Each member's operands become references to an earlier
-    step or to an outside input with its layout (<a href="{{ src(fu, 166, 201) }}">L166–201</a>).</li>
+    layouts the binary fast path takes (<a href="{{ src(fu, 102, 126) }}">L102–126</a>). Shapes are canonical, with leading 1s dropped
+    (<a href="{{ src(fu, 90, 96) }}">L90–96</a>). A <code>reshape</code>, <code>squeeze</code> or
+    <code>unsqueeze</code> joins only when it reads a value the group made, so a reshape of an outside value
+    stays a free view. A group holds at most <code>kMaxSteps</code> = 48 steps, whose tile buffers stay within
+    L2 (<a href="{{ src(fu, 87, 88) }}">L87–88</a>).</li>
+  <li><strong>Growing.</strong> Starting from a fusible node, <code>FindFusionGroups</code> takes every
+    following node of the same shape while each is fusible, connected to the group or not
+    (<a href="{{ src(fu, 181, 189) }}">L181–189</a>).</li>
+  <li><strong>Trimming.</strong> It drops trailing reshapes, which would only copy what the step before wrote,
+    and groups shorter than two (<a href="{{ src(fu, 190, 195) }}">L190–195</a>). Each member's operands
+    become references to an earlier step or to an outside input with its layout
+    (<a href="{{ src(fu, 202, 233) }}">L202–233</a>).</li>
+  <li><strong>Outputs.</strong> A member's value becomes an output of the group when it is the last member, a
+    graph output, unread, or read by a node after the group; every other value lives only in a tile buffer
+    (<a href="{{ src(fu, 234, 241) }}">L234–241</a>).</li>
 </ul>
 
 <div class="jj-table-wrap">
   <table>
     <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
     <tbody>
-      <tr><td><code>FusedOperand</code></td><td><code>kind</code> (<code>kStep</code>, <code>kInput</code>), <code>index</code>, <code>layout</code></td><td>An earlier step of the program, or an entry of the group's inputs with its broadcast layout.</td><td><a href="{{ src(g ~ 'fusion.h', 24, 29) }}">fusion.h L24</a></td></tr>
-      <tr><td><code>FusedStep</code></td><td><code>unary</code>, <code>copy</code>, <code>unary_op</code>, <code>binary_op</code>, <code>a</code>, <code>b</code></td><td>One instruction; <code>copy</code> is <code>pow</code> with exponent 1.</td><td><a href="{{ src(g ~ 'fusion.h', 31, 38) }}">L31</a></td></tr>
-      <tr><td><code>FusedGroup</code></td><td><code>nodes</code>, <code>inputs</code>, <code>output</code>, <code>shape</code>, <code>program</code></td><td>The nodes covered, the values read from outside, the one value produced; <code>Label</code> gives <code>"fused(mul,add,tanh)"</code>.</td><td><a href="{{ src(g ~ 'fusion.h', 40, 47) }}">L40</a></td></tr>
-      <tr><td><code>FindFusionGroups</code></td><td><code>vector&lt;FusedGroup&gt;(const Graph&amp;, const vector&lt;ValueInfo&gt;&amp; types)</code></td><td>Groups of two or more consecutive fusible nodes.</td><td><a href="{{ src(g ~ 'fusion.h', 50, 52) }}">L50</a></td></tr>
-      <tr><td><code>MakeFusedKernel</code></td><td><code>Kernel(const FusedGroup&amp;)</code></td><td>The kernel that evaluates a group; inputs follow <code>group.inputs</code>.</td><td><a href="{{ src(g ~ 'fusion.h', 54, 55) }}">L54</a></td></tr>
+      <tr><td><code>FusedOperand</code></td><td><code>kind</code> (<code>kStep</code>, <code>kInput</code>), <code>index</code>, <code>layout</code></td><td>An earlier step of the program, or an entry of the group's inputs with its broadcast layout.</td><td><a href="{{ src(g ~ 'fusion.h', 31, 36) }}">fusion.h L31</a></td></tr>
+      <tr><td><code>FusedStep</code></td><td><code>unary</code>, <code>copy</code>, <code>unary_op</code>, <code>binary_op</code>, <code>a</code>, <code>b</code>, <code>output</code></td><td>One instruction; <code>copy</code> is <code>pow</code> with exponent 1 or a reshape. <code>output</code> indexes the group's outputs, or is −1 for a tile buffer.</td><td><a href="{{ src(g ~ 'fusion.h', 38, 46) }}">L38</a></td></tr>
+      <tr><td><code>FusedGroup</code></td><td><code>nodes</code>, <code>inputs</code>, <code>outputs</code>, <code>output_shapes</code>, <code>shape</code>, <code>program</code></td><td>The nodes covered, the values read from outside, the values read outside the group in step order, and the shared shape without leading 1s; <code>Label</code> gives <code>"fused(mul,add,tanh)"</code>.</td><td><a href="{{ src(g ~ 'fusion.h', 48, 57) }}">L48</a></td></tr>
+      <tr><td><code>FindFusionGroups</code></td><td><code>vector&lt;FusedGroup&gt;(const Graph&amp;, const vector&lt;ValueInfo&gt;&amp; types)</code></td><td>Groups of two or more consecutive fusible nodes of one shape.</td><td><a href="{{ src(g ~ 'fusion.h', 59, 61) }}">L59</a></td></tr>
+      <tr><td><code>MakeFusedKernel</code></td><td><code>Kernel(const FusedGroup&amp;)</code></td><td>The kernel that evaluates a group; inputs follow <code>group.inputs</code>, outputs <code>group.outputs</code>.</td><td><a href="{{ src(g ~ 'fusion.h', 63, 65) }}">L63</a></td></tr>
     </tbody>
   </table>
 </div>
@@ -102,16 +118,19 @@
 <h3 id="tiles">Running a program</h3>
 
 <p>
-  <a href="{{ src(fu, 207, 291) }}"><code>MakeFusedKernel</code></a> views the output as rows of its last axis
-  when any input is a row or column operand, and otherwise as one long row
-  (<a href="{{ src(fu, 210, 220) }}">L210–220</a>). It cuts rows into tiles of <code>kTile</code> = 512 floats,
+  <a href="{{ src(fu, 252, 366) }}"><code>MakeFusedKernel</code></a> views the output as rows of its last axis
+  when any input is a row or column operand or a row-strided view, and otherwise as one long row
+  (<a href="{{ src(fu, 255, 263) }}">L255–263</a>, <a href="{{ src(fu, 277, 290) }}">L277–290</a>). A full-size
+  input is read in place when its last axis is contiguous and its other axes collapse into one evenly strided
+  row axis; anything else is copied contiguous first (<a href="{{ src(fu, 128, 147) }}">L128–147</a>). It cuts
+  rows into tiles of <code>kTile</code> = 512 floats,
   chosen so a program of a few dozen steps keeps every tile buffer in L1
   (<a href="{{ src(fu, 25, 26) }}">L25–26</a>). Each task allocates <code>steps × 512</code> floats of tile
   buffers once, then for each tile runs the program step by step with <code>UnaryTile</code> or
   <code>BinaryTile</code>. A step's operand is a tile buffer, the matching slice of a full input, the row
-  slice of a bias, or one broadcast value; the last step writes straight into the output
-  (<a href="{{ src(fu, 237, 287) }}">L237–287</a>). Tiles are split over the pool with a grain of about 64K
-  element-steps per task (<a href="{{ src(fu, 232, 236) }}">L232–236</a>).
+  slice of a bias, or one broadcast value; a step that makes one of the group's outputs writes straight into
+  that output tensor instead of a tile buffer (<a href="{{ src(fu, 297, 361) }}">L297–361</a>). Tiles are split
+  over the pool with a grain of about 64K element-steps per task (<a href="{{ src(fu, 302, 306) }}">L302–306</a>).
 </p>
 
 <figure class="jj-diagram">
@@ -180,6 +199,35 @@
   ({{ link('executor', 'Executing a graph', '#graph-run') }}).
 </p>
 
+<h3 id="lstm">An LSTM step</h3>
+
+<p>
+  <code>FusesAnLstmCellAcrossItsGateSlices</code> builds one LSTM step as PyTorch exports it and checks the
+  steps the executor makes, for batch × hidden of 64 × 256, 3 × 5 and 1 × 700
+  (<a href="{{ src(g ~ 'fusion_test.cc', 145, 205) }}">fusion_test.cc L145–205</a>). Sixteen nodes become six
+  steps:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Step</th><th>Nodes</th><th>What happens</th></tr></thead>
+    <tbody>
+      <tr><td>0</td><td><code>fused(add,reshape,add)</code></td><td>The hidden projection gets its bias, a reshape adds a leading 1 (a copy, since <code>[1, b, 4h]</code> and <code>[b, 4h]</code> are one canonical shape), and the input projection is added. One output: the gate pre-activations.</td></tr>
+      <tr><td>1–4</td><td>four <code>slice</code></td><td>One gate each along the last axis. Slices are free views, so each is a row-strided window into step 0's result.</td></tr>
+      <tr><td>5</td><td>9 nodes: <code>sigmoid</code> ×3, <code>tanh</code>, <code>mul</code>, <code>mul</code>, <code>add</code>, <code>tanh</code>, <code>mul</code></td><td>The four gate activations do not depend on each other, yet join one group, which reads the slices in place. The new cell state is read after the group and is a graph output, so it is written out alongside the new hidden state: two outputs.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Before this, every member had to read something the group made and a group had one output, so the gate
+  activations, which do not feed each other, ran as separate steps, and a fused step copied any strided input
+  into a contiguous tensor first. rml's checklist puts the change at about 39 to 26 ms for
+  the PyTorch, JAX and TensorFlow <code>lstm</code> models at batch 64, and the weight packing below at 49 to
+  35 ms for <code>torch_lstm_b64</code> on 4 threads (<a href="{{ src(prog, 165, 165) }}">progress.md L165</a>).
+  <code>docs/bench/frameworks.md</code> has not been re-run since, so the tables below predate both.
+</p>
+
 <h2 id="kernels">Vectorized kernels</h2>
 
 <p>
@@ -235,12 +283,14 @@
 
 <p>
   The GEMM that <code>matmul</code>, <code>conv2d</code> and <code>sdpa</code> reach is described in full on
-  {{ link('linalg', 'Linear algebra', '#gemm') }}. In short (<a href="{{ src(kd, 19, 68) }}">kernels.md
-  L19–68</a>): the micro-kernel is chosen at run time from AVX-512 (12 × 32 tile), AVX2 + FMA (6 × 16) or the
+  {{ link('linalg', 'Linear algebra', '#gemm') }}. In short (<a href="{{ src(kd, 19, 72) }}">kernels.md
+  L19–72</a>): the micro-kernel is chosen at run time from AVX-512 (12 × 32 tile), AVX2 + FMA (6 × 16) or the
   portable vector-extension kernel; a single-row product skips packing and streams B once as axpys; products
   of at most 32 rows also skip packing and keep an 8 × 48 or 4 × 24 tile of C in registers. In the graph, a
   constant <code>matmul</code> weight is packed once when the executor is built rather than on every call
-  (<a href="{{ src('rml/graph/ops.cc', 929, 944) }}">ops.cc L929–944</a>).
+  (<a href="{{ src('rml/graph/ops.cc', 929, 944) }}">ops.cc L929–944</a>). In two interleaved runs on four
+  threads that took <code>torch_lstm_b64</code> from 53 / 45 ms to 33 / 37 ms and <code>torch_mlp_b64</code>
+  from 1.05 / 1.39 ms to 0.82 / 0.82 ms (<a href="{{ src(kd, 67, 70) }}">kernels.md L67–70</a>).
 </p>
 
 <div class="jj-table-wrap">
@@ -256,7 +306,7 @@
 </div>
 
 <p>
-  From <a href="{{ src(kd, 87, 98) }}">kernels.md L87–98</a>: the AVX-512 kernel is 6–7× the SSE-only kernel
+  From <a href="{{ src(kd, 91, 102) }}">kernels.md L91–102</a>: the AVX-512 kernel is 6–7× the SSE-only kernel
   it replaced (16.5 and 60 GFLOP/s for 1024³). The few-row path took the batch-8 <code>gan_generator</code>
   graph from 0.50 to 0.15 ms and the RNN from 4.1 to 1.9 ms on one thread
   (<a href="{{ src(kd, 58, 63) }}">L58–63</a>).
@@ -308,7 +358,7 @@
   workers also spin briefly before sleeping. The open item is the result: on the latest run, four threads is
   slower than one in 51 of 171 rml cells, almost all at batch 1 with sub-millisecond times
   (<a href="{{ src(bench, 374, 375) }}">frameworks.md L374–375</a>). The checklist line quotes 92 of 171 from
-  an earlier run (<a href="{{ src(prog, 165, 165) }}">progress.md L165</a>).
+  an earlier run (<a href="{{ src(prog, 166, 166) }}">progress.md L166</a>).
 </p>
 
 <h2 id="results">Where it stands</h2>
@@ -349,7 +399,7 @@
     <thead><tr><th>File</th><th>Tests</th><th>What they pin down</th></tr></thead>
     <tbody>
       <tr><td><a href="{{ src(g ~ 'kernels_test.cc') }}"><code>kernels_test.cc</code></a></td><td>7</td><td>Every unary function, binary op and operand layout, and softmax, layer norm and each reduction against its scalar reference within a stated absolute plus relative tolerance, with matching infinities and NaNs; exact and limiting values of the fast exp, tanh and erf (exp(−∞) = 0, no cancellation in tanh near 0); im2col against its definition, and position ranges as slices of the whole; both pools against the reference.</td></tr>
-      <tr><td><a href="{{ src(g ~ 'fusion_test.cc') }}"><code>fusion_test.cc</code></a></td><td>3</td><td>A written-out GELU with broadcast operands becomes one 10-node step, for shapes up to 64 × 3000, and matches the unfused run within 1e-6; a value read outside a group ends it; every committed fixture gives the same outputs fused and unfused, and fusion shortens at least 20 of them.</td></tr>
+      <tr><td><a href="{{ src(g ~ 'fusion_test.cc') }}"><code>fusion_test.cc</code></a></td><td>4</td><td>A written-out GELU with broadcast operands becomes one 10-node step, for shapes up to 64 × 3000, and matches the unfused run within 1e-6; a value read outside a group becomes a second output of the same step; an LSTM step becomes six steps, the cell update one 9-node step reading its gate slices in place; every committed fixture gives the same outputs fused and unfused, and fusion shortens at least 20 of them.</td></tr>
       <tr><td><a href="{{ src(g ~ 'kernels_benchmark.cc') }}"><code>kernels_benchmark.cc</code></a></td><td>benchmark</td><td>Fast kernels against their references on 1M-element tensors, on 1 and 4 threads: exp, tanh and both GELUs, softmax, layer norm and a bias add. rml commits no results for it.</td></tr>
     </tbody>
   </table>
