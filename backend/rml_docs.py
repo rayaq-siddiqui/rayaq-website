@@ -123,9 +123,9 @@ PAGES = [
         "sources": [
             "docs/progress.md", "docs/bench/frameworks.md", "rml/graph/fusion.h",
             "rml/graph/fusion.cc", "rml/graph/kernels.h", "rml/graph/kernels.cc",
-            "rml/graph/kernels_benchmark.cc",
+            "rml/graph/kernels_benchmark.cc", "docs/kernels.md",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "benchmarks",

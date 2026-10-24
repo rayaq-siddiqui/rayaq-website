@@ -1,0 +1,356 @@
+{% set g = "rml/graph/" %}
+{% set fu = "rml/graph/fusion.cc" %}
+{% set kc = "rml/graph/kernels.cc" %}
+{% set prog = "docs/progress.md" %}
+{% set bench = "docs/bench/frameworks.md" %}
+{% set kd = "docs/kernels.md" %}
+{% set passes = "tools/rml_export/passes.py" %}
+<header class="jj-header">
+  <h1>Lowering and fast CPU</h1>
+  <p class="tagline">
+    Below rml-graph sits a kernel-level layer: runs of elementwise nodes become fused programs over row
+    tiles, the rest run on vectorized, threaded kernels and a packed SIMD GEMM, and buffers are reused
+    across runs. This page takes each piece in turn and ties it to the benchmark gap it was built to close.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: the first benchmark found rml slow wherever GEMM dominated, single-threaded outside GEMM, and
+  slowed by JAX and TensorFlow graphs that spell out layer norm, softmax and GELU as chains of small ops.
+  Four pieces answer it. <code>rml/graph/fusion</code> turns a run of elementwise nodes into one program that
+  streams 512-element tiles through L1 and writes only the final value. <code>rml/graph/kernels</code> gives
+  elementwise math, softmax, layer norm and row reductions loops compiled per instruction set with
+  branch-free polynomials, split over threads only in chunks large enough to pay for waking them. The GEMM
+  gained AVX-512 and AVX2 micro-kernels, a matrix-vector path and a few-row path. And the exporters fuse the
+  spelled-out patterns back into single ops before rml ever sees them.
+</p>
+
+<p>
+  The levels above are on {{ link('stack', 'The inference stack') }}; the executor that calls these pieces is
+  on {{ link('executor', 'Executing a graph') }}. Why fusing helps at all is the memory-traffic argument on
+  {{ ml('gpu-execution', 'GPU execution') }}, which applies to CPU caches the same way.
+</p>
+
+<h2 id="gaps">The gaps</h2>
+
+<p>
+  The first framework benchmark, on rml's 4-vCPU Linux container, set the agenda
+  (<a href="{{ src(prog, 128, 133) }}">progress.md L128–133</a>): rml beat every framework only on the
+  batch-1 CNN, and was 2–20× slower wherever GEMM dominated. Only GEMM was threaded, and the JAX and
+  TensorFlow graphs arrived with layer norm, softmax and GELU decomposed. The plan that followed
+  (<a href="{{ src(prog, 157, 166) }}">L157–166</a>) has one item per gap:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Gap</th><th>What landed</th><th>Status</th><th>Section</th></tr></thead>
+    <tbody>
+      <tr><td>GEMM-bound models 2–20× slower</td><td>Packed SIMD GEMM with run-time dispatch, an M = 1 path and a few-row path, checked against <code>GemmRef</code> (<a href="{{ src(prog, 159, 159) }}">L159</a>)</td><td>Built</td><td><a href="#gemm">SIMD GEMM</a></td></tr>
+      <tr><td>Only GEMM threaded</td><td>Threaded, vectorized elementwise, softmax, norm and reduction kernels used by the executor (<a href="{{ src(prog, 160, 160) }}">L160</a>)</td><td>Built</td><td><a href="#kernels">Vectorized kernels</a></td></tr>
+      <tr><td>Decomposed patterns as chains of small ops</td><td>Elementwise fusion at run time (<a href="{{ src(prog, 158, 158) }}">L158</a>, <a href="{{ src(prog, 161, 161) }}">L161</a>), and mean and softmax fusion at export (<a href="{{ src(prog, 162, 162) }}">L162</a>)</td><td>Built</td><td><a href="#fusion">Fused programs</a>, <a href="#export-fusion">At export</a></td></tr>
+      <tr><td>Allocation per op</td><td>Buffers reused across runs through a <code>BufferPool</code> (<a href="{{ src(prog, 161, 161) }}">L161</a>)</td><td>Built</td><td><a href="#buffers">Buffers</a></td></tr>
+      <tr><td>Layer norm and GELU still decomposed</td><td><code>fuse_layer_norm</code> and <code>fuse_gelu</code> in <code>passes.py</code>; the checklist still lists the item as open (<a href="{{ src(prog, 163, 163) }}">L163</a>)</td><td>In progress</td><td><a href="#export-fusion">At export</a></td></tr>
+      <tr><td>Four threads slower than one on small cells</td><td>Larger grains so small ops stay on the calling thread; the checklist item is open (<a href="{{ src(prog, 165, 165) }}">L165</a>)</td><td>In progress</td><td><a href="#threads">Threads</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="fusion">Fused programs</h2>
+
+<p>
+  <a href="{{ src(g ~ 'fusion.h', 4, 12) }}"><code>fusion.h</code></a> calls this the kernel-level layer below
+  rml-graph. A run of consecutive elementwise nodes with one output shape (a GELU written out as
+  <code>tanh</code>, <code>pow</code>, <code>mul</code> and <code>add</code>; a layer norm's subtract, scale and
+  shift; a bias add followed by an activation) becomes one program. The program streams the output in tiles
+  small enough to stay in L1, keeps every intermediate in a tile buffer and writes only the final value,
+  which removes the intermediate tensors and all but one pass over memory, whichever framework the graph came
+  from.
+</p>
+
+<h3 id="grouping">Finding groups</h3>
+
+<ul>
+  <li><strong>Fusible ops.</strong> The 13 unary ops, the six arithmetic binary ops, <code>gelu</code> in either
+    form, and <code>pow</code> with an exponent of 2, 3, 0.5, −0.5 or −1 (or 1, a copy)
+    (<a href="{{ src(fu, 35, 85) }}">fusion.cc L35–85</a>). Comparisons, <code>where</code> and
+    <code>clamp</code> are not.</li>
+  <li><strong>Fusible nodes.</strong> One f32 output of the group's shape; unary inputs of exactly that shape;
+    binary inputs laid out as the full output, a row repeated per row, one value per row, or a scalar, the same
+    layouts the binary fast path takes (<a href="{{ src(fu, 87, 106) }}">L87–106</a>).</li>
+  <li><strong>Growing.</strong> Starting from a fusible node, <code>FindFusionGroups</code> extends over the
+    following nodes while each is fusible and reads something the group already made
+    (<a href="{{ src(fu, 137, 148) }}">L137–148</a>).</li>
+  <li><strong>Trimming.</strong> It keeps the longest prefix whose intermediates are read only inside it and
+    are not graph outputs, and drops groups shorter than two
+    (<a href="{{ src(fu, 149, 164) }}">L149–164</a>). Each member's operands become references to an earlier
+    step or to an outside input with its layout (<a href="{{ src(fu, 166, 201) }}">L166–201</a>).</li>
+</ul>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>FusedOperand</code></td><td><code>kind</code> (<code>kStep</code>, <code>kInput</code>), <code>index</code>, <code>layout</code></td><td>An earlier step of the program, or an entry of the group's inputs with its broadcast layout.</td><td><a href="{{ src(g ~ 'fusion.h', 24, 29) }}">fusion.h L24</a></td></tr>
+      <tr><td><code>FusedStep</code></td><td><code>unary</code>, <code>copy</code>, <code>unary_op</code>, <code>binary_op</code>, <code>a</code>, <code>b</code></td><td>One instruction; <code>copy</code> is <code>pow</code> with exponent 1.</td><td><a href="{{ src(g ~ 'fusion.h', 31, 38) }}">L31</a></td></tr>
+      <tr><td><code>FusedGroup</code></td><td><code>nodes</code>, <code>inputs</code>, <code>output</code>, <code>shape</code>, <code>program</code></td><td>The nodes covered, the values read from outside, the one value produced; <code>Label</code> gives <code>"fused(mul,add,tanh)"</code>.</td><td><a href="{{ src(g ~ 'fusion.h', 40, 47) }}">L40</a></td></tr>
+      <tr><td><code>FindFusionGroups</code></td><td><code>vector&lt;FusedGroup&gt;(const Graph&amp;, const vector&lt;ValueInfo&gt;&amp; types)</code></td><td>Groups of two or more consecutive fusible nodes.</td><td><a href="{{ src(g ~ 'fusion.h', 50, 52) }}">L50</a></td></tr>
+      <tr><td><code>MakeFusedKernel</code></td><td><code>Kernel(const FusedGroup&amp;)</code></td><td>The kernel that evaluates a group; inputs follow <code>group.inputs</code>.</td><td><a href="{{ src(g ~ 'fusion.h', 54, 55) }}">L54</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="tiles">Running a program</h3>
+
+<p>
+  <a href="{{ src(fu, 207, 291) }}"><code>MakeFusedKernel</code></a> views the output as rows of its last axis
+  when any input is a row or column operand, and otherwise as one long row
+  (<a href="{{ src(fu, 210, 220) }}">L210–220</a>). It cuts rows into tiles of <code>kTile</code> = 512 floats,
+  chosen so a program of a few dozen steps keeps every tile buffer in L1
+  (<a href="{{ src(fu, 25, 26) }}">L25–26</a>). Each task allocates <code>steps × 512</code> floats of tile
+  buffers once, then for each tile runs the program step by step with <code>UnaryTile</code> or
+  <code>BinaryTile</code>. A step's operand is a tile buffer, the matching slice of a full input, the row
+  slice of a bias, or one broadcast value; the last step writes straight into the output
+  (<a href="{{ src(fu, 237, 287) }}">L237–287</a>). Tiles are split over the pool with a grain of about 64K
+  element-steps per task (<a href="{{ src(fu, 232, 236) }}">L232–236</a>).
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 420" role="img" aria-labelledby="lw-fuse-title lw-fuse-desc">
+    <title id="lw-fuse-title">A written-out GELU before and after fusion</title>
+    <desc id="lw-fuse-desc">On the left, unfused: x passes through pow, mul, add, mul, tanh, add and mul nodes,
+      each writing a full tensor to memory that the next reads back. On the right, fused: one step streams
+      512-element tiles of x through the same program, keeping each intermediate in a tile buffer that stays in
+      L1, and writes only the final tile of y to memory.</desc>
+
+    <text x="150" y="24" text-anchor="middle">unfused: one tensor per node</text>
+    <text x="460" y="24" text-anchor="middle">fused: one step, tiles in L1</text>
+
+    <rect class="d-box" x="40" y="40" width="220" height="30" rx="5"/>
+    <text x="150" y="60" text-anchor="middle">x</text>
+    <rect class="d-box" x="40" y="84" width="220" height="30" rx="5"/>
+    <text x="150" y="104" text-anchor="middle">pow(x, 3) → tensor</text>
+    <rect class="d-box" x="40" y="128" width="220" height="30" rx="5"/>
+    <text x="150" y="148" text-anchor="middle">mul 0.044715 → tensor</text>
+    <rect class="d-box" x="40" y="172" width="220" height="30" rx="5"/>
+    <text x="150" y="192" text-anchor="middle">add x → tensor</text>
+    <rect class="d-box" x="40" y="216" width="220" height="30" rx="5"/>
+    <text x="150" y="236" text-anchor="middle">mul √(2/π) → tensor</text>
+    <rect class="d-box" x="40" y="260" width="220" height="30" rx="5"/>
+    <text x="150" y="280" text-anchor="middle">tanh → tensor</text>
+    <rect class="d-box" x="40" y="304" width="220" height="30" rx="5"/>
+    <text x="150" y="324" text-anchor="middle">add 1, mul 0.5 x → y</text>
+    <line class="d-line" x1="150" y1="70" x2="150" y2="84"/>
+    <line class="d-line" x1="150" y1="114" x2="150" y2="128"/>
+    <line class="d-line" x1="150" y1="158" x2="150" y2="172"/>
+    <line class="d-line" x1="150" y1="202" x2="150" y2="216"/>
+    <line class="d-line" x1="150" y1="246" x2="150" y2="260"/>
+    <line class="d-line" x1="150" y1="290" x2="150" y2="304"/>
+    <text class="d-muted" x="150" y="356" text-anchor="middle" font-size="12">every link is a full pass</text>
+    <text class="d-muted" x="150" y="372" text-anchor="middle" font-size="12">over memory</text>
+
+    <rect class="d-box" x="340" y="40" width="240" height="30" rx="5"/>
+    <text x="460" y="60" text-anchor="middle">x, one 512-float tile</text>
+    <line class="d-line" x1="460" y1="70" x2="460" y2="96"/>
+    <rect class="d-box d-accent" x="340" y="96" width="240" height="196" rx="6"/>
+    <text x="460" y="120" text-anchor="middle">fused(pow,mul,add,…)</text>
+    <text class="d-muted" x="460" y="146" text-anchor="middle" font-size="12">step 0 → tile buffer 0</text>
+    <text class="d-muted" x="460" y="166" text-anchor="middle" font-size="12">step 1 → tile buffer 1</text>
+    <text class="d-muted" x="460" y="186" text-anchor="middle" font-size="12">…</text>
+    <text class="d-muted" x="460" y="206" text-anchor="middle" font-size="12">operands: a buffer, x's tile,</text>
+    <text class="d-muted" x="460" y="224" text-anchor="middle" font-size="12">a bias row, or one value</text>
+    <text class="d-muted" x="460" y="252" text-anchor="middle" font-size="12">steps × 512 floats per task,</text>
+    <text class="d-muted" x="460" y="270" text-anchor="middle" font-size="12">reused for every tile</text>
+    <line class="d-line" x1="460" y1="292" x2="460" y2="304"/>
+    <rect class="d-box" x="340" y="304" width="240" height="30" rx="5"/>
+    <text x="460" y="324" text-anchor="middle">last step writes y's tile</text>
+    <text class="d-muted" x="460" y="356" text-anchor="middle" font-size="12">one read of x, one write of y;</text>
+    <text class="d-muted" x="460" y="372" text-anchor="middle" font-size="12">tiles run in parallel</text>
+    <text class="d-muted" x="20" y="404" font-size="12">fusion_test's GELU chain is 10 nodes; this sketch merges the last few</text>
+  </svg>
+  <figcaption>The tanh form of GELU, 0.5 x (1 + tanh(√(2/π) (x + 0.044715 x³))), written out as elementwise
+    nodes: what runtime fusion catches when no export pass has rewritten it. <code>FusesAWrittenOutGeluAndBroadcastOperandsIntoOneStep</code>
+    checks that such a chain becomes one step labelled <code>fused(pow,mul,add…</code>.</figcaption>
+</figure>
+
+<p>
+  Fusion is on by default. <code>rml-graph-run --no-fusion</code> turns it off and <code>--profile</code> shows
+  each fused program as its own row, which is the textual view of this layer the plan asked for
+  (<a href="{{ src(prog, 158, 158) }}">progress.md L158</a>). There is no separate dump of a lowered IR: the
+  layer is the executor's step list, and <code>step_info()</code> is how it is read
+  ({{ link('executor', 'Executing a graph', '#graph-run') }}).
+</p>
+
+<h2 id="kernels">Vectorized kernels</h2>
+
+<p>
+  <a href="{{ src(g ~ 'kernels.h', 4, 12) }}"><code>rml/graph/kernels.h</code></a> holds the executor's hot
+  non-GEMM ops. The design is in one comment block (<a href="{{ src(kc, 11, 26) }}">kernels.cc L11–26</a>):
+</p>
+
+<ul>
+  <li><strong>One build, three instruction sets.</strong> Each loop is marked
+    <code>target_clones("avx512f", "avx2", "default")</code> on ELF x86-64, and the dynamic loader picks the
+    best clone. Elsewhere, and in ASan and TSan builds (whose runtimes start after the ifunc resolvers run), it
+    is one plain function.</li>
+  <li><strong>Vectorizable without <code>-ffast-math</code>.</strong> No calls and no branches inside the
+    loops (selects instead), and reductions spread over <code>kLanes</code> = 16 independent accumulators,
+    which keeps the rounding order fixed.</li>
+  <li><strong>Branch-free math.</strong> <code>exp</code> by range reduction and a degree-6 Cephes polynomial
+    (about 1 ulp); <code>tanh</code> as an odd polynomial below 0.625 and 1 − 2/(e<sup>2x</sup> + 1) above,
+    both computed and one selected; <code>erf</code> as a Cephes polynomial below 1 and Abramowitz and
+    Stegun 7.1.26 beyond (<a href="{{ src(kc, 36, 108) }}">L36–108</a>).</li>
+  <li><strong>Double where it matters.</strong> Row sums accumulate in double lanes, because a float sum over
+    thousands of terms drifts past the 1e-5 the graph tests allow
+    (<a href="{{ src(kc, 266, 279) }}">L266–279</a>), and layer norm splits the mean into a float and its
+    rounding residual for rows with a tiny spread (<a href="{{ src(kc, 332, 344) }}">L332–344</a>).</li>
+  <li><strong>Chunks that pay for themselves.</strong> Work is split in chunks of <code>kChunk</code> =
+    2<sup>16</sup> elements, or enough rows to cover that (<a href="{{ src(kc, 31, 34) }}">L31–34</a>,
+    <a href="{{ src(kc, 112, 130) }}">L112–130</a>). Since <code>ParallelFor</code> runs a single chunk on the
+    caller (<a href="{{ src('rml/core/thread_pool.h', 49, 56) }}">thread_pool.h L49–56</a>), a tensor of up to
+    65,536 floats never wakes the pool.</li>
+</ul>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Kernel</th><th>Computes</th><th>Reference</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>UnaryFast</code></td><td>18 functions: the 13 unary ops, both GELUs, square, cube, reciprocal</td><td><code>UnaryRef</code>, libm in double</td><td><a href="{{ src(kc, 548, 551) }}">L548</a></td></tr>
+      <tr><td><code>BinaryFast</code></td><td>add, sub, mul, div, max, min over <code>[rows, n]</code> with full, row, column or scalar operands</td><td><code>BinaryRef</code></td><td><a href="{{ src(kc, 563, 570) }}">L563</a></td></tr>
+      <tr><td><code>SoftmaxFast</code></td><td>Softmax or log-softmax per row: max, exp-shifted sum in double, scale</td><td><code>SoftmaxRef</code></td><td><a href="{{ src(kc, 586, 600) }}">L586–600</a></td></tr>
+      <tr><td><code>LayerNormFast</code></td><td>(x − mean) / √(var + eps) per row, then weight and bias when given</td><td><code>LayerNormRef</code></td><td><a href="{{ src(kc, 620, 649) }}">L620</a></td></tr>
+      <tr><td><code>ReduceRowsFast</code></td><td>Sum, mean, max or min of each row</td><td><code>ReduceRowsRef</code></td><td><a href="{{ src(kc, 651, 670) }}">L651</a></td></tr>
+      <tr><td><code>Pool2dFast</code></td><td>Max or average over k × k windows of independent planes</td><td><code>Pool2dRef</code></td><td><a href="{{ src(kc, 510, 518) }}">L510</a></td></tr>
+      <tr><td><code>Im2ColPositions</code></td><td>One image's patch columns for a range of output positions, for conv2d by GEMM</td><td><code>Im2Col</code></td><td><a href="{{ src(kc, 446, 485) }}">L446</a></td></tr>
+      <tr><td><code>UnaryTile</code>, <code>BinaryTile</code></td><td>Single-threaded loops over one tile, the steps of fused programs</td><td>the same references</td><td><a href="{{ src(kc, 520, 538) }}">L520–538</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  rml's own number for this work: PyTorch's batch-8 transformer block went from 23 ms to 6.7 ms on 4 threads
+  once the executor used these kernels (<a href="{{ src(prog, 160, 160) }}">progress.md L160</a>).
+</p>
+
+<h2 id="gemm">SIMD GEMM</h2>
+
+<p>
+  The GEMM that <code>matmul</code>, <code>conv2d</code> and <code>sdpa</code> reach is described in full on
+  {{ link('linalg', 'Linear algebra', '#gemm') }}. In short (<a href="{{ src(kd, 19, 68) }}">kernels.md
+  L19–68</a>): the micro-kernel is chosen at run time from AVX-512 (12 × 32 tile), AVX2 + FMA (6 × 16) or the
+  portable vector-extension kernel; a single-row product skips packing and streams B once as axpys; products
+  of at most 32 rows also skip packing and keep an 8 × 48 or 4 × 24 tile of C in registers. In the graph, a
+  constant <code>matmul</code> weight is packed once when the executor is built rather than on every call
+  (<a href="{{ src('rml/graph/ops.cc', 929, 944) }}">ops.cc L929–944</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Linux x86_64 container (4 vCPUs, Xeon @ 2.8 GHz, AVX-512), GCC 13 <code>-O3</code></th><th>1 thread</th><th>4 threads</th></tr></thead>
+    <tbody>
+      <tr><td><code>Gemm</code> 1024³</td><td>113 GFLOP/s</td><td>376 GFLOP/s</td></tr>
+      <tr><td><code>Gemm</code> 256³</td><td>117 GFLOP/s</td><td>152 GFLOP/s</td></tr>
+      <tr><td><code>Gemm</code> 1 × 4096 × 4096 (matrix-vector)</td><td>19 GB/s</td><td>60 GB/s</td></tr>
+      <tr><td><code>GemmRef</code> 256³</td><td>1.5 GFLOP/s</td><td>—</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  From <a href="{{ src(kd, 87, 98) }}">kernels.md L87–98</a>: the AVX-512 kernel is 6–7× the SSE-only kernel
+  it replaced (16.5 and 60 GFLOP/s for 1024³). The few-row path took the batch-8 <code>gan_generator</code>
+  graph from 0.50 to 0.15 ms and the RNN from 4.1 to 1.9 ms on one thread
+  (<a href="{{ src(kd, 58, 63) }}">L58–63</a>).
+</p>
+
+<h2 id="buffers">Buffers</h2>
+
+<p>
+  The plan named "buffers planned at load". What landed is reuse rather than a static plan: each executor owns
+  a <code>BufferPool</code>, every tensor a run allocates on the calling thread comes from it, and each freed
+  buffer goes back keyed by its exact size, so a model with static shapes allocates nothing new after its
+  first run ({{ link('runtime', 'BufferPool', '#buffer-pool') }},
+  {{ link('executor', 'Executing a graph', '#lifetimes') }}). Releases are planned at load: each step knows
+  which values it is the last to read. Two other things are prepared once at load: the fusion programs, and
+  packed constant weights.
+</p>
+
+<h2 id="export-fusion">Fusion at export</h2>
+
+<p>
+  Runtime fusion covers only runs of elementwise nodes. A spelled-out softmax or layer norm also needs row
+  reductions, which split it into several steps, while the single op runs on one kernel from the table above.
+  So the exporters' clean-up passes, run on both routes, rewrite the patterns back into single ops (<a href="{{ src(passes, 523, 528) }}">passes.py L523–528</a>):
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Pass</th><th>Rewrites</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>fuse_reductions</code></td><td><code>reduce_sum(x) / N</code> to <code>reduce_mean(x)</code>, and <code>exp(x − max x) / sum exp(x − max x)</code> over one axis to <code>softmax(x)</code></td><td><a href="{{ src(passes, 243, 282) }}">L243–282</a></td></tr>
+      <tr><td><code>fuse_layer_norm</code></td><td><code>(x − mean x) · rsqrt(mean (x − mean x)² + eps)</code> over the last axis to <code>layer_norm</code>, folding a following constant weight and bias</td><td><a href="{{ src(passes, 368, 409) }}">L368–409</a></td></tr>
+      <tr><td><code>fuse_gelu</code></td><td><code>0.5 x (1 + tanh(…))</code> and <code>0.5 x (1 + erf(…))</code>, multiplied in any order, to <code>gelu</code></td><td><a href="{{ src(passes, 464, 485) }}">L464–485</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  All three are in the pass loop at this commit. rml's checklist still marks export-time layer norm and GELU
+  fusion as open (<a href="{{ src(prog, 163, 163) }}">progress.md L163</a>), so this page calls it in
+  progress. The passes themselves are on {{ link('exporters', 'Exporters and the model zoo') }}.
+</p>
+
+<h2 id="threads">Threads</h2>
+
+<p>
+  A pool wake costs more than a few microseconds of work, so every parallel loop now has a grain sized to pay
+  for one: 2<sup>16</sup> elements in the graph kernels, about 64K element-steps in fused programs, and larger
+  grains in the GEMM ({{ link('runtime', 'Errors, memory and threads', '#users') }} lists each). Pool
+  workers also spin briefly before sleeping. The open item is the result: on the latest run, four threads is
+  slower than one in 51 of 171 rml cells, almost all at batch 1 with sub-millisecond times
+  (<a href="{{ src(bench, 374, 375) }}">frameworks.md L374–375</a>). The checklist line quotes 92 of 171 from
+  an earlier run (<a href="{{ src(prog, 165, 165) }}">progress.md L165</a>).
+</p>
+
+<h2 id="results">Where it stands</h2>
+
+<p>
+  Geometric mean over the 19 models of the faster framework mode's time divided by rml's (above 1, rml is
+  faster), with the number of models where rml wins, on the Xeon container with torch 2.14.1, jax 0.12.0 and
+  tensorflow 2.21.0 (<a href="{{ src(bench, 5, 7) }}">frameworks.md L5–7</a>,
+  <a href="{{ src(bench, 349, 361) }}">L349–361</a>):
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Threads</th><th>Batch</th><th>vs PyTorch</th><th>vs JAX</th><th>vs TensorFlow</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>1</td><td>1.51, 15/19</td><td>1.08, 9/19</td><td>2.79, 14/19</td></tr>
+      <tr><td>1</td><td>8</td><td>1.26, 11/19</td><td>1.18, 11/19</td><td>1.97, 11/19</td></tr>
+      <tr><td>1</td><td>64</td><td>0.86, 4/19</td><td>1.01, 9/19</td><td>1.10, 10/19</td></tr>
+      <tr><td>4</td><td>1</td><td>1.69, 8/19</td><td>1.10, 9/19</td><td>2.64, 15/19</td></tr>
+      <tr><td>4</td><td>8</td><td>0.97, 9/19</td><td>1.36, 13/19</td><td>2.44, 15/19</td></tr>
+      <tr><td>4</td><td>64</td><td>0.71, 3/19</td><td>1.03, 10/19</td><td>1.09, 13/19</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The remaining gaps are named in the findings (<a href="{{ src(bench, 370, 373) }}">L370–373</a>): the LSTM
+  against PyTorch's fused ATen LSTM, the U-Net's convolutions, the RNN, and PyTorch at batch 64 on 4 threads.
+  None of these has a checklist item yet. Cell by cell results and the method are on
+  {{ link('benchmarks', 'Benchmarks against the frameworks') }}. Apple Silicon numbers (NEON, Accelerate) have
+  not been produced (<a href="{{ src(bench, 345, 347) }}">L345–347</a>).
+</p>
+
+<h2 id="tests">Tests</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Tests</th><th>What they pin down</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(g ~ 'kernels_test.cc') }}"><code>kernels_test.cc</code></a></td><td>7</td><td>Every unary function, binary op and operand layout, and softmax, layer norm and each reduction against its scalar reference within a stated absolute plus relative tolerance, with matching infinities and NaNs; exact and limiting values of the fast exp, tanh and erf (exp(−∞) = 0, no cancellation in tanh near 0); im2col against its definition, and position ranges as slices of the whole; both pools against the reference.</td></tr>
+      <tr><td><a href="{{ src(g ~ 'fusion_test.cc') }}"><code>fusion_test.cc</code></a></td><td>3</td><td>A written-out GELU with broadcast operands becomes one 10-node step, for shapes up to 64 × 3000, and matches the unfused run within 1e-6; a value read outside a group ends it; every committed fixture gives the same outputs fused and unfused, and fusion shortens at least 20 of them.</td></tr>
+      <tr><td><a href="{{ src(g ~ 'kernels_benchmark.cc') }}"><code>kernels_benchmark.cc</code></a></td><td>benchmark</td><td>Fast kernels against their references on 1M-element tensors, on 1 and 4 threads: exp, tanh and both GELUs, softmax, layer norm and a bias add. rml commits no results for it.</td></tr>
+    </tbody>
+  </table>
+</div>
