@@ -83,7 +83,7 @@ PAGES = [
             "tools/rml_export", "tools/make_graph_fixtures.py", "rml/graph/golden_test.cc",
             "rml/graph/testdata",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "graph-ir",

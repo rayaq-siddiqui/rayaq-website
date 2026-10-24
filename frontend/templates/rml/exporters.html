@@ -1,0 +1,232 @@
+{% set ex = "tools/rml_export/" %}
+{% set common = "tools/rml_export/common.py" %}
+{% set passes = "tools/rml_export/passes.py" %}
+{% set fx = "tools/make_graph_fixtures.py" %}
+<header class="jj-header">
+  <h1>Exporters and the model zoo</h1>
+  <p class="tagline">
+    <code>tools/rml_export/</code> is the offline Python half of the inference stack. It traces a model in
+    PyTorch, JAX or TensorFlow, lowers each framework op onto the rml-graph op set, checks every step against
+    the framework, and writes the graph file rml loads. The zoo defines the same models in all three.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: each exporter walks its framework's own traced graph (an ATen <code>ExportedProgram</code>, a
+  jaxpr, or a frozen <code>GraphDef</code>) and calls one shared <code>Builder</code>. The builder computes a
+  NumPy example value for every op, so each lowering is shape-checked against the framework node by node,
+  and ops on constants fold away. Clean-up passes then remove redundant reshapes and transposes before the
+  graph is written as JSON plus safetensors. A fixture script exports the four zoo models from all three
+  frameworks and saves each framework's outputs, which a C++ golden test compares with rml's. The
+  StableHLO route is <em>planned</em>.
+</p>
+
+<p>
+  Everything here runs offline in a virtualenv pinned by
+  <a href="{{ src('tools/requirements-export.txt') }}"><code>tools/requirements-export.txt</code></a>
+  (NumPy, PyTorch, JAX and TensorFlow); rml itself never links or needs Python. The format the exporters
+  write is described on {{ link('graph-ir', 'The rml-graph IR') }}, and where this fits in the whole stack
+  on {{ link('stack', 'The inference stack') }}.
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 420" role="img" aria-labelledby="ex-title ex-desc">
+    <title id="ex-title">From a framework model to a checked rml-graph file</title>
+    <desc id="ex-desc">Three exporters: from_torch traces with torch.export and lowers core ATen ops,
+      from_jax traces a jaxpr and lowers primitives, and from_tf freezes a GraphDef and lowers TF ops. All
+      three call the shared Builder, which computes a NumPy example per op, checks shapes against the
+      framework and folds constants. passes.py then simplifies shape ops, sinks transposes and removes dead
+      code. The result is written as JSON and safetensors, together with a golden file of the framework's
+      inputs and outputs. The fixture script compares the NumPy evaluation with the framework, and the C++
+      golden test compares rml's output with the framework.</desc>
+
+    <rect class="d-box" x="20" y="20" width="180" height="58" rx="6"/>
+    <text x="110" y="43" text-anchor="middle">from_torch.py</text>
+    <text class="d-muted" x="110" y="63" text-anchor="middle" font-size="12">torch.export → core ATen</text>
+    <rect class="d-box" x="215" y="20" width="180" height="58" rx="6"/>
+    <text x="305" y="43" text-anchor="middle">from_jax.py</text>
+    <text class="d-muted" x="305" y="63" text-anchor="middle" font-size="12">make_jaxpr → primitives</text>
+    <rect class="d-box" x="410" y="20" width="180" height="58" rx="6"/>
+    <text x="500" y="43" text-anchor="middle">from_tf.py</text>
+    <text class="d-muted" x="500" y="63" text-anchor="middle" font-size="12">frozen GraphDef → TF ops</text>
+
+    <line class="d-line" x1="110" y1="78" x2="250" y2="110"/>
+    <line class="d-line" x1="305" y1="78" x2="305" y2="110"/>
+    <line class="d-line" x1="500" y1="78" x2="360" y2="110"/>
+
+    <rect class="d-box d-accent" x="120" y="110" width="370" height="72" rx="6"/>
+    <text x="305" y="134" text-anchor="middle">common.Builder.op()</text>
+    <text class="d-muted" x="305" y="153" text-anchor="middle" font-size="12">NumPy example per op · shape check vs framework</text>
+    <text class="d-muted" x="305" y="170" text-anchor="middle" font-size="12">all-constant inputs fold to a constant</text>
+
+    <line class="d-line" x1="305" y1="182" x2="305" y2="210"/>
+    <rect class="d-box" x="120" y="210" width="370" height="56" rx="6"/>
+    <text x="305" y="233" text-anchor="middle">passes.run_passes()</text>
+    <text class="d-muted" x="305" y="252" text-anchor="middle" font-size="12">fold shape ops · sink transposes · drop dead code</text>
+
+    <line class="d-line" x1="305" y1="266" x2="305" y2="294"/>
+    <rect class="d-box" x="20" y="294" width="275" height="56" rx="6"/>
+    <text x="157" y="317" text-anchor="middle">&lt;stem&gt;.json + .safetensors</text>
+    <text class="d-muted" x="157" y="336" text-anchor="middle" font-size="12">the graph rml loads</text>
+    <rect class="d-box" x="315" y="294" width="275" height="56" rx="6"/>
+    <text x="452" y="317" text-anchor="middle">&lt;stem&gt;.golden.safetensors</text>
+    <text class="d-muted" x="452" y="336" text-anchor="middle" font-size="12">the framework's inputs and outputs</text>
+    <line class="d-line" x1="305" y1="294" x2="157" y2="294"/>
+    <line class="d-line" x1="305" y1="294" x2="452" y2="294"/>
+
+    <text class="d-muted" x="20" y="378" font-size="12">checked twice: the NumPy evaluation against the framework (Python),</text>
+    <text class="d-muted" x="20" y="396" font-size="12">then rml's executor against the golden outputs (golden_test.cc, C++)</text>
+  </svg>
+  <figcaption>Every exporter ends in the same builder and passes, so the three routes produce the same kind
+    of file and are checked the same way.</figcaption>
+</figure>
+
+<h2 id="builder">The shared builder</h2>
+
+<p>
+  <a href="{{ src(common, 1, 8) }}"><code>common.py</code></a> holds the <code>Builder</code> that every
+  exporter calls once per lowered op, and a NumPy reference implementation of every IR op
+  (<code>REFERENCE</code>, <a href="{{ src(common, 163, 163) }}">L163</a>). Carrying a concrete example
+  value for every graph value is the central idea: it gives each value its recorded shape and dtype, it
+  lets an exporter check its lowering against the framework node by node, and it folds constants.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Piece</th><th>Behavior</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>canonical</code></td><td>Maps arrays onto the IR's two dtypes: floats and booleans to f32, integers to i32. An integer constant outside the i32 range is an <code>ExportError</code>.</td><td><a href="{{ src(common, 28, 39) }}">L28</a></td></tr>
+      <tr><td><code>Builder.op</code></td><td>Rejects an op rml-graph does not have, computes the output's example with the NumPy reference, and returns a constant instead of a node when every input is constant. Ops that need f32 reject i32 inputs.</td><td><a href="{{ src(common, 279, 291) }}">L279</a></td></tr>
+      <tr><td><code>Builder.output</code></td><td>An output that is an input or a constant is routed through an identity reshape, because graph outputs must be computed.</td><td><a href="{{ src(common, 293, 303) }}">L293</a></td></tr>
+      <tr><td><code>Builder.evaluate</code></td><td>Runs the whole graph on new inputs with the NumPy reference ops, so a written graph can be checked against the framework on any batch.</td><td><a href="{{ src(common, 305, 312) }}">L305</a></td></tr>
+      <tr><td><code>Builder.write</code></td><td>Runs the passes, renumbers values densely, inlines small finite unnamed constants (at most 16 elements) in the JSON and stores the rest in safetensors. JSON has no infinities, so non-finite constants always go in the weights file.</td><td><a href="{{ src(common, 314, 366) }}">L314</a></td></tr>
+      <tr><td><code>dump_json</code></td><td>One node or value per line, for readable diffs and small files.</td><td><a href="{{ src(common, 368, 383) }}">L368</a></td></tr>
+      <tr><td><code>write_safetensors</code></td><td>Writes F32 and I32 tensors in order, with every data offset 64-byte aligned.</td><td><a href="{{ src(common, 386, 404) }}">L386</a></td></tr>
+      <tr><td><code>write_golden</code>, <code>check_close</code></td><td>Save the framework's inputs and outputs as <code>input.i</code> / <code>output.i</code>, and compare arrays within atol 1e-5 + rtol 1e-4.</td><td><a href="{{ src(common, 421, 436) }}">L421</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="exporters">Three exporters</h2>
+
+<p>
+  Each exporter starts from the graph its framework already produces, so it sees what the framework would
+  run, not a re-trace of Python code. Each one lowers op by op, checks every lowered value's shape against
+  the framework's recorded shape, and raises <code>ExportError</code> naming the framework op when it has
+  no lowering. There is no silent fallback.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Exporter</th><th>Starts from</th><th>Notable lowerings</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>PyTorch</td><td><code>torch.export.export</code>, then the default decompositions to core ATen. Scaled dot-product attention is removed from the decomposition table, so it stays one <code>sdpa</code> op instead of a masked-softmax chain.</td><td>Parameters and buffers become named constants. A node whose inputs are all constant runs in torch itself (<code>_fold</code>), which handles masks and aranges.</td><td><a href="{{ src(ex ~ 'from_torch.py', 295, 335) }}">from_torch.py L295</a></td></tr>
+      <tr><td>JAX</td><td><code>jax.make_jaxpr(fn)(params, *inputs)</code>. Nested calls (<code>jit</code>, <code>pjit</code>, <code>custom_jvp_call</code>, <code>custom_vjp_call</code>, <code>remat</code> and others) are inlined.</td><td><code>dot_general</code> becomes <code>transpose</code> + <code>reshape</code> + <code>matmul</code> + <code>reshape</code> (<a href="{{ src(ex ~ 'from_jax.py', 62, 75) }}">L62–75</a>); convolutions and <code>reduce_window</code> map onto NCHW <code>conv2d</code> and pools. Parameter leaves are named by their pytree path.</td><td><a href="{{ src(ex ~ 'from_jax.py', 228, 275) }}">from_jax.py L228</a></td></tr>
+      <tr><td>TensorFlow</td><td><code>tf.function</code> traced at fixed input shapes, then <code>convert_variables_to_constants_v2</code> freezes variables into <code>Const</code> ops, walked in topological order.</td><td>NHWC <code>Conv2D</code> and pools become <code>transpose</code> + NCHW op + <code>transpose</code>; SAME padding must be symmetric (<a href="{{ src(ex ~ 'from_tf.py', 57, 100) }}">L57–100</a>).</td><td><a href="{{ src(ex ~ 'from_tf.py', 217, 248) }}">from_tf.py L217</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The planned StableHLO route (<code>from_stablehlo.py</code>, lowering StableHLO from torch-mlir,
+  <code>jax.export</code> and TensorFlow's compiler IR) would add a fourth way in, with fixtures for both
+  routes so they can be checked against each other
+  (<a href="{{ src('docs/progress.md', 157, 157) }}">progress.md L157</a>). It is not in the tree at this
+  commit.
+</p>
+
+<h2 id="passes">Clean-up passes</h2>
+
+<p>
+  Lowering leaves debris: identity reshapes, stacked transposes, and the NHWC ↔ NCHW pairs TensorFlow's
+  convolutions produce. <a href="{{ src(passes, 1, 8) }}"><code>passes.py</code></a> removes it before the
+  graph is written, repeating until nothing changes (<a href="{{ src(passes, 121, 124) }}">L121–124</a>):
+</p>
+
+<ul>
+  <li><code>simplify_shape_ops</code> (<a href="{{ src(passes, 33, 61) }}">L33–61</a>) drops identity
+    reshapes and transposes, collapses reshape-of-reshape into one, and composes two transposes into one,
+    since transpose(transpose(y, p), q) = transpose(y, p[q]).</li>
+  <li><code>sink_transposes</code> (<a href="{{ src(passes, 64, 104) }}">L64–104</a>) rewrites
+    f(transpose(x)) as transpose(f(x)) for elementwise f. For a binary op the other operand must be a
+    constant, which is permuted to match, and only transposes with a single reader move, so nothing is
+    duplicated. Sinking a transpose below a conv's bias add and ReLU brings it next to the inverse
+    transpose of the following layer, where the two cancel.</li>
+  <li><code>eliminate_dead_code</code> (<a href="{{ src(passes, 107, 118) }}">L107–118</a>) drops nodes
+    and constants nothing reads.</li>
+</ul>
+
+<p>
+  The passes do not yet fuse decomposed patterns. JAX and TensorFlow hand over layer norm, softmax and
+  tanh-GELU as chains of elementwise ops, which is why the tiny transformer block exports to 76 nodes from
+  JAX and 54 from TensorFlow, against 32 from PyTorch. Fusing those patterns at export is planned work (see
+  {{ link('lowering', 'Lowering and fast CPU') }}).
+</p>
+
+<h2 id="zoo">The zoo</h2>
+
+<p>
+  <a href="{{ tree('tools/rml_export/zoo') }}"><code>tools/rml_export/zoo/</code></a> defines each model once
+  per framework (<code>torch_zoo.py</code>, <code>jax_zoo.py</code>, <code>tf_zoo.py</code>). All three
+  load their parameters from <code>weights()</code>, which draws them from a NumPy generator seeded per
+  model, so the three definitions compute the same function from identical weights
+  (<a href="{{ src(ex ~ 'zoo/weights.py', 1, 7) }}">weights.py L1–7</a>). Each model has a "tiny" size,
+  committed as a test fixture, and a "bench" size, which is timed
+  (<a href="{{ src(ex ~ 'zoo/weights.py', 11, 33) }}">L11–33</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Model</th><th>Tiny</th><th>Bench</th><th>Nodes (torch · jax · tf, tiny)</th></tr></thead>
+    <tbody>
+      <tr><td><code>mlp</code></td><td>12 → 16 → 16 → 4</td><td>784 → 512 → 256 → 10</td><td>8 · 8 · 8</td></tr>
+      <tr><td><code>cnn</code></td><td>8×8 image, channels 1, 3, 4, 5 classes</td><td>28×28, channels 1, 16, 32, 10 classes</td><td>10 · 20 · 12</td></tr>
+      <tr><td><code>transformer_block</code></td><td>seq 5, dim 8, 2 heads, hidden 16</td><td>seq 64, dim 256, 4 heads, hidden 1024</td><td>32 · 76 · 54</td></tr>
+      <tr><td><code>layernorm_gelu</code></td><td>seq 3, dim 8, hidden 12</td><td>seq 64, dim 512, hidden 2048</td><td>6 · 26 · 20</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Node counts are read from the committed fixtures in
+  <a href="{{ tree('rml/graph/testdata') }}"><code>rml/graph/testdata</code></a>. The rest of the zoo, from
+  vision transformers to mixture of experts, is <em>planned</em>; the list is on
+  {{ link('stack', 'The inference stack', '#models') }}.
+</p>
+
+<h2 id="fixtures">Fixtures and golden tests</h2>
+
+<p>
+  <a href="{{ src(fx, 1, 12) }}"><code>make_graph_fixtures.py</code></a> exports every tiny zoo model from
+  every framework (<a href="{{ src(fx, 60, 74) }}">L60–74</a>). For each one it draws a batch of 2 inputs,
+  exports the graph and runs the framework, writes <code>&lt;framework&gt;_&lt;model&gt;.json</code> and
+  <code>.safetensors</code>, evaluates the written graph with the NumPy reference ops and requires it to
+  match the framework, and finally writes the framework's inputs and outputs to
+  <code>.golden.safetensors</code>.
+</p>
+
+<p>
+  <a href="{{ src('rml/graph/golden_test.cc', 1, 81) }}"><code>golden_test.cc</code></a> closes the loop in C++
+  with no Python. It loads each fixture, runs it through rml's executor on the golden inputs, and requires
+  every output element within 1e-5 of the framework's
+  (<a href="{{ src('rml/graph/golden_test.cc', 20, 54) }}">L20–54</a>). Its cases are every
+  <code>.json</code> in the testdata directory, so a new fixture is tested without editing the test, and a
+  second test fails if any framework and model pair is missing
+  (<a href="{{ src('rml/graph/golden_test.cc', 56, 78) }}">L56–78</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Check</th><th>Compares</th><th>Tolerance</th></tr></thead>
+    <tbody>
+      <tr><td>Per op, while exporting</td><td>Each lowered value's shape against the framework's recorded shape</td><td>Exact</td></tr>
+      <tr><td><code>make_graph_fixtures.py</code></td><td>The written graph, evaluated in NumPy, against the framework's outputs</td><td>1e-5 + 1e-4 |x|</td></tr>
+      <tr><td><code>golden_test.cc</code></td><td>rml's executor against the framework's outputs</td><td>1e-5 absolute</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Benchmarks reuse the same exporters at the bench sizes; how they are timed is on
+  {{ link('benchmarks', 'Benchmarks against the frameworks') }}.
+</p>
