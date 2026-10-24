@@ -1,17 +1,17 @@
 # rayaq.ca/rml — build progress
 
 Running log for the rml build loop and the daily Routine. Read this first, update it last.
-The contract is `specs/rml.md` (spec v1); this file records where the build actually stands.
+The contract is `specs/rml.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-24 (daily run). Pin moved to `a948ac7`; `graph-ir`, `executor` and `lowering` shipped. The next run follows upstream, then builds `benchmarks`, `nn`, `training`.
+**Last updated:** 2026-10-24 (second daily run). Pin moved to `22c99d3`; `benchmarks`, `nn` and `training` shipped. The next run follows upstream, then builds `data-metrics`, `classical`, `retrieval`.
 
 ## Upstream pin
 
-`rayaq-siddiqui/rml@a948ac77c2dc0692c8bffa7fba81943bf97ef847` (committed 2026-10-24,
-"perf: pack constant matmul weights once at load"), rml 0.1.0, Apache-2.0, analyzed
-2026-10-24. Moved from `928a285` (44 commits: the StableHLO route, 15 new zoo models, the
-fusion layer, the graph kernels, `BufferPool`, the AVX-512/AVX2 GEMM and packed weights, and
-a rewritten `docs/bench/frameworks.md`). Held in `rml_docs.UPSTREAM`. The repository is
+`rayaq-siddiqui/rml@22c99d34d69cc591201e729f68707dc86381adb7` (committed 2026-10-24,
+"graph: fuse an LSTM step across its gate slices"), rml 0.1.0, Apache-2.0, analyzed
+2026-10-24. Moved from `a948ac7` (3 commits: multi-output fusion groups with independent
+members, leading-1 reshapes and row-strided views; `docs/kernels.md` packed-weight timings; the
+export venv on Python 3.12). Held in `rml_docs.UPSTREAM`. The repository is
 private, so pinned links 404 until it is public.
 
 ## §10 acceptance criteria
@@ -22,7 +22,7 @@ private, so pinned links 404 until it is public.
 - [ ] Every Inference stack page is ready and `stack` has its layer diagram.
 - [ ] Every source link is pinned; §7.5 tests exist and pass.
 - [x] Homepage card links to `/rml`.
-- [x] Mobile at 390px: no horizontal page scroll (`/rml`, `/rml/tensors`, `/rml/runtime`, `/rml/linalg`, `/rml/random`, `/rml/autograd`, `/rml/stack`, `/rml/exporters`, `/rml/graph-ir`, `/rml/executor`, `/rml/lowering`; rerun per page).
+- [x] Mobile at 390px: no horizontal page scroll (`/rml`, `/rml/tensors`, `/rml/runtime`, `/rml/linalg`, `/rml/random`, `/rml/autograd`, `/rml/stack`, `/rml/exporters`, `/rml/graph-ir`, `/rml/executor`, `/rml/lowering`, `/rml/benchmarks`, `/rml/nn`, `/rml/training`; rerun per page).
 - [x] The daily Routine has run at least once and cloned rml.
 
 ## Queue
@@ -44,9 +44,9 @@ Spec v2 order, Inference stack first:
 9. ~~`graph-ir`~~
 10. ~~`executor`~~
 11. ~~`lowering`~~
-12. `benchmarks`
-13. `nn`
-14. `training`
+12. ~~`benchmarks`~~
+13. ~~`nn`~~
+14. ~~`training`~~
 15. `data-metrics`
 16. `classical`
 17. `retrieval`
@@ -97,6 +97,12 @@ session-only `/loop` jobs that built pages earlier are retired.
   tensors (line ranges, pooled storage), index; `buffer_pool`, `fusion`, `kernels` added to
   `MODULES`. `3b6553e` `graph-ir` page; `f782b89` `executor` page; `628e0ac` `lowering`
   page; `a81aba6` AGENTS.md note. All 1066 tests pass; mobile check passes on every ready page.
+- 2026-10-24 — second daily run. `6b5ef5c` follow upstream to `22c99d3`: lowering (grouping
+  rules, `FusedGroup` outputs, row-strided inputs, new "An LSTM step" section, packed-weight
+  timings, line ranges), executor and stack (multi-output groups), linalg (packed-weight
+  timings), exporters (Python 3.12 venv), runtime, index; `docs/progress.md` and
+  `docs/kernels.md` line ranges moved everywhere. `3abe91e` `benchmarks` page; `ff29950` `nn`
+  page; `c81dae4` `training` page. All 1066 tests pass; mobile check passes on every ready page.
 
 ## Deliberate deviations
 
@@ -106,10 +112,10 @@ session-only `/loop` jobs that built pages earlier are retired.
 
 ## Open gaps / questions for the owner
 
-- **rml's checklist lags its code.** At `a948ac7`, `docs/progress.md` L163 (export-time layer
-  norm and GELU fusion) and L165 (small ops on the calling thread) are unchecked, though
-  `passes.py` has `fuse_layer_norm`/`fuse_gelu` and the grains landed; L165 also quotes 92 of
-  171 slow 4-thread cells where `frameworks.md` now says 51. L166 (time the StableHLO route)
+- **rml's checklist lags its code.** At `22c99d3`, `docs/progress.md` L163 (export-time layer
+  norm and GELU fusion) and L166 (small ops on the calling thread) are unchecked, though
+  `passes.py` has `fuse_layer_norm`/`fuse_gelu` and the grains landed; L166 also quotes 92 of
+  171 slow 4-thread cells where `frameworks.md` now says 51. L167 (time the StableHLO route)
   is unchecked though `frameworks.md` has that table. The pages call the first two "in
   progress" and quote `frameworks.md`. `docs/graph_ir.md`'s Execution section still says ops
   call `rml/nn`'s conv and pool and that the loader rejects unknown ops; the pages describe
@@ -117,6 +123,16 @@ session-only `/loop` jobs that built pages earlier are retired.
 - **Spec §3.6 lists landed work as planned.** It names the StableHLO route, the kernel-level
   IR and the fast-CPU items as planned at spec v2; all have landed. The section follows
   §3.6's rule (flip when landed); the owner may want to refresh that sentence.
+- **The benchmark report predates the LSTM work.** `docs/progress.md` L165 and
+  `docs/kernels.md` L67–70 quote LSTM and MLP speedups from packed weights and multi-output
+  fusion, but `docs/bench/frameworks.md` was not re-run, so `benchmarks` and `lowering` quote
+  the report's older LSTM cells and give the newer numbers separately. Update both pages when
+  the report is regenerated.
+- **`rml/nn/attention.h` names a module that does not exist.** Its L9–10 say the inference
+  engine's fused attention kernel in `rml/backend` is tested against the readable version;
+  there is no `rml/backend` at the pin and `rml/llm` includes nothing from `rml/nn`. The `nn`
+  page marks it planned. Likewise `conv.h` describes Conv2d as unfold plus a product while the
+  code builds patch rows (`PatchRowsFunction`); the page describes the code.
 - **Arena is unused outside `rml/core`.** `docs/architecture.md` says per-step scratch
   comes from an arena reset each step, but no code outside `rml/core` uses `Arena` at the
   pin (re-checked at `a948ac7`; the graph executor uses a `BufferPool` instead). The
