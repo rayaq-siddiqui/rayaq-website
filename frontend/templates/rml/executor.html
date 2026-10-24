@@ -1,0 +1,294 @@
+{% set g = "rml/graph/" %}
+{% set ex = "rml/graph/executor.cc" %}
+{% set ops = "rml/graph/ops.cc" %}
+{% set gr = "examples/graph_run/" %}
+<header class="jj-header">
+  <h1>Executing a graph</h1>
+  <p class="tagline">
+    <code>rml::graph::Executor</code> turns a checked rml-graph into a list of steps once, then runs them in
+    order on every call. This page covers how it is built, how values live and die during a run, how each op
+    maps onto rml's kernels, the <code>rml-graph-run</code> tool and the executor benchmark.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: <code>Executor::Create</code> runs shape inference, optionally groups runs of elementwise nodes
+  into fused steps, compiles every other node into a kernel closure, and records for each step which values
+  it is the last to read. <code>Run</code> checks the inputs against their recorded types, binds the
+  constants, and calls the steps in order, dropping each value right after its last reader. Buffers freed
+  that way go to the executor's <code>BufferPool</code>, so the next run reuses them instead of allocating.
+  Shape ops return views, elementwise, softmax, norm and reduction ops run on vectorized threaded kernels,
+  <code>matmul</code> and <code>conv2d</code> go through the GEMM, and a constant <code>matmul</code> weight is
+  packed once at load.
+</p>
+
+<p>
+  The graph it runs is described on {{ link('graph-ir', 'The rml-graph IR') }}; what fusion and the fast
+  kernels do inside a step is on {{ link('lowering', 'Lowering and fast CPU') }}. The executor is a general
+  model runner, not the allocation-free LLM decode loop, which stays in <code>rml/llm</code>
+  (<a href="{{ src('docs/graph_ir.md', 118, 119) }}">graph_ir.md L118–119</a>).
+</p>
+
+<h2 id="api">The interface</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>ExecutorOptions</code></td><td><code>bool fuse = true</code></td><td>Fuse runs of elementwise nodes into single tiled programs.</td><td><a href="{{ src(g ~ 'executor.h', 23, 26) }}">executor.h L23</a></td></tr>
+      <tr><td><code>Create</code></td><td><code>static Expected&lt;Executor&gt;(Graph, ExecutorOptions = {})</code></td><td>Checks and compiles the graph; takes ownership of it.</td><td><a href="{{ src(g ~ 'executor.h', 30, 30) }}">L30</a></td></tr>
+      <tr><td><code>Run</code></td><td><code>Expected&lt;vector&lt;Tensor&gt;&gt;(span&lt;const Tensor&gt; inputs) const</code></td><td>Inputs follow <code>graph().inputs</code> and must match their recorded dtype and shape. Outputs are contiguous.</td><td><a href="{{ src(g ~ 'executor.h', 32, 34) }}">L32</a></td></tr>
+      <tr><td><code>RunProfiled</code></td><td><code>(inputs, vector&lt;double&gt;&amp; step_ms) const</code></td><td>Run, adding each step's wall time in milliseconds to <code>step_ms[i]</code>.</td><td><a href="{{ src(g ~ 'executor.h', 36, 39) }}">L36</a></td></tr>
+      <tr><td><code>step_info()</code></td><td><code>vector&lt;StepInfo&gt;</code>: <code>label</code>, <code>nodes</code></td><td>What each step runs: one node's op, or <code>"fused(...)"</code>, and how many graph nodes it covers.</td><td><a href="{{ src(g ~ 'executor.h', 41, 47) }}">L41</a></td></tr>
+      <tr><td><code>Step</code> (private)</td><td><code>info</code>, <code>Kernel kernel</code>, <code>inputs</code>, <code>outputs</code>, <code>release</code></td><td>One unit of a run. <code>release</code> lists the values whose last reader is this step.</td><td><a href="{{ src(g ~ 'executor.h', 52, 58) }}">L52</a></td></tr>
+      <tr><td><code>pool_</code> (private)</td><td><code>shared_ptr&lt;BufferPool&gt;</code></td><td>Where one run's intermediates go for the next run to reuse.</td><td><a href="{{ src(g ~ 'executor.h', 66, 67) }}">L66</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <code>Run</code> is <code>const</code> and keeps every per-call value in locals, so the compiled steps are
+  never modified by a run.
+</p>
+
+<h2 id="create">Building the step list</h2>
+
+<p>
+  <a href="{{ src(ex, 21, 73) }}"><code>Executor::Create</code></a> does all the work that does not depend
+  on input data, once:
+</p>
+
+<ol>
+  <li><strong>Check.</strong> <code>InferTypes</code> confirms every op, attribute and recorded type
+    (<a href="{{ src(ex, 22, 22) }}">L22</a>), so an executor never exists for a graph that would fail
+    later.</li>
+  <li><strong>Pin.</strong> Graph outputs and constants are marked as never released
+    (<a href="{{ src(ex, 25, 33) }}">L25–33</a>).</li>
+  <li><strong>Fuse.</strong> With <code>fuse</code> on, <code>FindFusionGroups</code> picks runs of two or
+    more consecutive elementwise nodes with one output shape whose intermediates are read only inside the
+    run (<a href="{{ src(ex, 35, 38) }}">L35–38</a>). Each group becomes one step labelled
+    <code>fused(...)</code> with a kernel from <code>MakeFusedKernel</code>, and the nodes it covers are
+    skipped (<a href="{{ src(ex, 42, 51) }}">L42–51</a>).</li>
+  <li><strong>Compile.</strong> Every other node becomes one step whose kernel comes from
+    <code>CompileOp</code>, which is also told which inputs are graph constants so it can prepare them once
+    (<a href="{{ src(ex, 52, 64) }}">L52–64</a>).</li>
+  <li><strong>Plan releases.</strong> While building, each step overwrites <code>last_reader</code> for
+    every value it reads. Afterwards each value that is read and not pinned is added to the
+    <code>release</code> list of its last reader (<a href="{{ src(ex, 66, 70) }}">L66–70</a>).</li>
+</ol>
+
+<h2 id="run">A run</h2>
+
+<p>
+  <a href="{{ src(ex, 91, 135) }}"><code>RunImpl</code></a>, behind both <code>Run</code> and
+  <code>RunProfiled</code>:
+</p>
+
+<ol>
+  <li>Installs the executor's pool with a <code>ScopedBufferPool</code> for the length of the run
+    (<a href="{{ src(ex, 93, 93) }}">L93</a>). From here every <code>Tensor::Empty</code> on this thread
+    draws from that pool ({{ link('runtime', 'BufferPool', '#buffer-pool') }}).</li>
+  <li>Checks the input count and each input's dtype and shape, naming the value on a mismatch, and binds
+    the inputs and constants into a vector indexed by value id
+    (<a href="{{ src(ex, 94, 108) }}">L94–108</a>).</li>
+  <li>For each step: gathers its inputs, calls the kernel, stores its outputs, then resets every value in its
+    <code>release</code> list to an empty tensor (<a href="{{ src(ex, 112, 122) }}">L112–122</a>). A
+    kernel error returns at once. With profiling on, the step's wall time is added to its slot
+    (<a href="{{ src(ex, 123, 127) }}">L123–127</a>).</li>
+  <li>Returns each graph output made contiguous (<a href="{{ src(ex, 131, 134) }}">L131–134</a>), so a
+    view never leaks out of the executor.</li>
+</ol>
+
+<h3 id="lifetimes">Value lifetimes</h3>
+
+<p>
+  Values are reference-counted tensors, so resetting a slot frees the buffer only when nothing else holds it.
+  A view keeps its base alive, and an output that is a view of an intermediate keeps that intermediate's
+  storage until the output is copied at the end. Peak memory therefore follows the graph's live set, not its
+  total size (<a href="{{ src('docs/graph_ir.md', 115, 117) }}">graph_ir.md L115–117</a>). When the last
+  reference to a pooled buffer goes, the buffer returns to the executor's pool, sized by its byte count, and
+  the next allocation of that size, in this run or the next, takes it back.
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 380" role="img" aria-labelledby="ex-run-title ex-run-desc">
+    <title id="ex-run-title">One run of a two-step program</title>
+    <desc id="ex-run-desc">The test graph from executor_test: x times a constant W, plus a constant b, relu,
+      plus x. Create turns it into two steps: a matmul step, and one fused step covering add, relu and add.
+      During a run, after the matmul step the value x·W is live; the fused step reads it, b and x, writes the
+      output, and releases x·W and x. Constants W and b and the output are pinned and never released.
+      Released buffers return to the executor's BufferPool for the next run.</desc>
+
+    <text class="d-muted" x="20" y="24" font-size="12">graph: y = relu(x·W + b) + x, with W and b constants</text>
+
+    <rect class="d-box" x="20" y="40" width="120" height="44" rx="6"/>
+    <text x="80" y="67" text-anchor="middle">x [1, 2]</text>
+    <rect class="d-box" x="20" y="100" width="120" height="44" rx="6"/>
+    <text x="80" y="121" text-anchor="middle">W [2, 2]</text>
+    <text class="d-muted" x="80" y="137" text-anchor="middle" font-size="12">pinned</text>
+    <rect class="d-box" x="20" y="160" width="120" height="44" rx="6"/>
+    <text x="80" y="181" text-anchor="middle">b [2]</text>
+    <text class="d-muted" x="80" y="197" text-anchor="middle" font-size="12">pinned</text>
+
+    <line class="d-line" x1="140" y1="72" x2="200" y2="112"/>
+    <line class="d-line" x1="140" y1="122" x2="200" y2="122"/>
+    <rect class="d-box d-accent" x="200" y="100" width="140" height="54" rx="6"/>
+    <text x="270" y="122" text-anchor="middle">step 0: matmul</text>
+    <text class="d-muted" x="270" y="141" text-anchor="middle" font-size="12">writes x·W</text>
+
+    <polyline class="d-line" points="140,52 480,52 480,100"/>
+    <line class="d-line" x1="340" y1="127" x2="400" y2="127"/>
+    <line class="d-line" x1="140" y1="182" x2="400" y2="160"/>
+    <rect class="d-box d-accent" x="400" y="100" width="200" height="88" rx="6"/>
+    <text x="500" y="122" text-anchor="middle">step 1: fused</text>
+    <text class="d-muted" x="500" y="141" text-anchor="middle" font-size="12">add, relu, add</text>
+    <text class="d-muted" x="500" y="158" text-anchor="middle" font-size="12">writes y [1, 2], pinned</text>
+    <text class="d-muted" x="500" y="175" text-anchor="middle" font-size="12">then releases x·W and x</text>
+
+    <rect class="d-box" x="20" y="240" width="580" height="54" rx="6"/>
+    <text x="310" y="262" text-anchor="middle">executor's BufferPool</text>
+    <text class="d-muted" x="310" y="281" text-anchor="middle" font-size="12">released buffers wait here; the next run's allocations of the same size take them</text>
+    <line class="d-line" x1="270" y1="154" x2="270" y2="240"/>
+    <line class="d-line" x1="500" y1="188" x2="500" y2="240"/>
+
+    <text class="d-muted" x="20" y="326" font-size="12">x·W never leaves the executor; the add, relu and add between it and y</text>
+    <text class="d-muted" x="20" y="344" font-size="12">run inside one fused step, so their intermediates are tile buffers, not tensors</text>
+  </svg>
+  <figcaption>The graph is the one in <a href="{{ src(g ~ 'executor_test.cc', 430, 458) }}">executor_test.cc
+    L430–458</a>, run twice to check that a second run over reused buffers gives the same answer.</figcaption>
+</figure>
+
+<h2 id="ops">How ops map onto kernels</h2>
+
+<p>
+  Each op's compiler in <code>ops.cc</code> returns the kernel as a closure over its attributes, so a run does
+  no attribute parsing or dispatch beyond one call per step. The fast paths work on contiguous f32 data: a
+  strided input is copied to contiguous first, which costs less than the generic strided loops
+  (<a href="{{ src(ops, 125, 126) }}">ops.cc L125–126</a>). The kernels named <code>*Fast</code> are in
+  <a href="{{ src(g ~ 'kernels.h', 4, 12) }}"><code>rml/graph/kernels.h</code></a>.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Ops</th><th>Kernel</th><th>Notes</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>13 unary ops, <code>gelu</code></td><td><code>kernels::UnaryFast</code></td><td>Vectorized and threaded; <code>gelu</code> picks its tanh or erf form at compile time.</td><td><a href="{{ src(ops, 127, 137) }}">L127–137</a>, <a href="{{ src(ops, 276, 285) }}">L276</a></td></tr>
+      <tr><td><code>pow</code></td><td><code>UnaryFast</code> or <code>rml::Pow</code></td><td>Exponents 2, 3, 0.5, −0.5 and −1 map to square, cube, sqrt, rsqrt and reciprocal; 1 returns the input; anything else uses the core op.</td><td><a href="{{ src(ops, 287, 302) }}">L287–302</a></td></tr>
+      <tr><td><code>add</code> <code>sub</code> <code>mul</code> <code>div</code> <code>maximum</code> <code>minimum</code></td><td><code>kernels::BinaryFast</code></td><td>When each operand is the full output, a row repeated per row (a bias), one value per row, or a scalar (<code>FastOperandLayout</code>). Any other broadcast falls back to the core op.</td><td><a href="{{ src(ops, 964, 989) }}">L964–989</a>, <a href="{{ src(ops, 894, 910) }}">L894</a></td></tr>
+      <tr><td>comparisons, <code>where</code>, <code>clamp</code>, <code>argmax</code></td><td><code>rml/core/ops.h</code></td><td>The readable reference ops, which broadcast and stride generally.</td><td><a href="{{ src(ops, 250, 260) }}">L250</a>, <a href="{{ src(ops, 304, 317) }}">L304–317</a></td></tr>
+      <tr><td><code>reduce_*</code></td><td><code>kernels::ReduceRowsFast</code> or core reductions</td><td>Reducing a trailing block of axes is a row reduction; otherwise one axis at a time with <code>keep_dim</code>, then a reshape.</td><td><a href="{{ src(ops, 345, 389) }}">L345–389</a></td></tr>
+      <tr><td><code>softmax</code>, <code>log_softmax</code></td><td><code>kernels::SoftmaxFast</code> or core</td><td>Fast along the last axis only.</td><td><a href="{{ src(ops, 410, 423) }}">L410–423</a></td></tr>
+      <tr><td><code>layer_norm</code></td><td><code>kernels::LayerNormFast</code></td><td>Rows of the product of the last <code>num_axes</code> dimensions.</td><td><a href="{{ src(ops, 606, 632) }}">L606–632</a></td></tr>
+      <tr><td><code>rms_norm</code></td><td>an inline loop</td><td>Accumulates the squares in double per row.</td><td><a href="{{ src(ops, 702, 729) }}">L702–729</a></td></tr>
+      <tr><td><code>matmul</code></td><td><code>linalg::MatMul</code>, or <code>MatMulPacked</code></td><td>NumPy semantics through the GEMM. A constant 2-D f32 weight with enough rows that the GEMM would pack it every call is packed once at compile time.</td><td><a href="{{ src(ops, 425, 446) }}">L425–446</a>, <a href="{{ src(ops, 929, 944) }}">L929–944</a></td></tr>
+      <tr><td><code>conv2d</code></td><td><code>Im2ColPositions</code> + <code>linalg::Gemm</code></td><td>One product per image: filters <code>[O, C k k]</code> times patch columns gives <code>[O, OH OW]</code>, already NCHW. Patches are built in runs of output positions that fit in 1 MB (half a typical L2); a 1×1, stride-1, unpadded convolution reads the image directly. Units run in parallel when there are enough for every thread.</td><td><a href="{{ src(ops, 157, 219) }}">L157–219</a></td></tr>
+      <tr><td><code>max_pool2d</code>, <code>avg_pool2d</code></td><td><code>kernels::Pool2dFast</code></td><td>Each N·C plane independently.</td><td><a href="{{ src(ops, 221, 229) }}">L221–229</a></td></tr>
+      <tr><td><code>sdpa</code></td><td><code>MatMul</code>, <code>SoftmaxFast</code>, <code>MatMul</code></td><td>Scores <code>q kᵀ · scale</code> (+ mask) are materialized; a causal mask sets <code>j &gt; i + (Tk − Tq)</code> to −∞, aligned to the last query.</td><td><a href="{{ src(ops, 780, 800) }}">L780–800</a></td></tr>
+      <tr><td><code>top_k</code></td><td>an inline sort per row</td><td>Descending, ties to the lower index; values and i32 indices.</td><td><a href="{{ src(ops, 802, 839) }}">L802–839</a></td></tr>
+      <tr><td><code>gather</code></td><td><code>rml::IndexSelect</code></td><td>Checks every index first and returns <code>OutOfRange</code> rather than reading out of bounds.</td><td><a href="{{ src(ops, 675, 700) }}">L675–700</a></td></tr>
+      <tr><td><code>concat</code>, <code>iota</code>, <code>convert</code></td><td><code>rml::Concat</code>, a fill loop, <code>Tensor::To</code></td><td>Copies.</td><td><a href="{{ src(ops, 528, 549) }}">L528</a>, <a href="{{ src(ops, 576, 604) }}">L576</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="views">Views</h3>
+
+<p>
+  Shape ops cost no copy (<a href="{{ src('docs/graph_ir.md', 117, 118) }}">graph_ir.md L117–118</a>). Each
+  returns a tensor sharing its input's storage with new shape and strides, as described on
+  {{ link('tensors', 'Tensors and dtypes', '#views-copies') }}:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Op</th><th>Tensor call</th><th>Copies when</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>reshape</code></td><td><code>Reshape(out)</code></td><td>The input is not contiguous (<a href="{{ src('rml/core/tensor.cc', 272, 274) }}">tensor.cc L272–274</a>).</td><td><a href="{{ src(ops, 448, 459) }}">L448</a></td></tr>
+      <tr><td><code>transpose</code></td><td><code>Permute(perm)</code></td><td>Never.</td><td><a href="{{ src(ops, 461, 479) }}">L461</a></td></tr>
+      <tr><td><code>broadcast_to</code></td><td><code>Expand(out)</code></td><td>Never; broadcast axes get stride 0.</td><td><a href="{{ src(ops, 481, 490) }}">L481</a></td></tr>
+      <tr><td><code>slice</code></td><td><code>Slice(axis, start, end, step)</code> per cut</td><td>Never; starts and ends are clamped to the axis at compile time.</td><td><a href="{{ src(ops, 492, 526) }}">L492</a></td></tr>
+      <tr><td><code>squeeze</code>, <code>unsqueeze</code></td><td><code>Squeeze</code>, <code>Unsqueeze</code></td><td>Never.</td><td><a href="{{ src(ops, 551, 573) }}">L551–573</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  A view is paid for by its reader: the next fast kernel copies a strided input to contiguous, and the
+  executor makes graph outputs contiguous before returning them. A chain of shape ops therefore costs at
+  most one copy, made by whichever op first needs contiguous data.
+</p>
+
+<h2 id="graph-run">rml-graph-run</h2>
+
+<p>
+  <code>examples/graph_run</code> builds <code>//examples/graph_run:rml-graph-run</code>
+  (<a href="{{ src(gr ~ 'BUILD.bazel', 27, 27) }}">BUILD.bazel L27</a>), which runs one exported model and
+  prints one line of JSON. Its logic lives in a library, <code>graph_run.h</code>, so the test can drive it
+  without the command line (<a href="{{ src(gr ~ 'graph_run.h', 4, 64) }}">graph_run.h L4–64</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Default</th><th>Effect</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>STEM</code></td><td>required</td><td>Names <code>STEM.json</code> and <code>STEM.safetensors</code>.</td><td rowspan="9"><a href="{{ src(gr ~ 'main.cc', 28, 40) }}">main.cc L28–40</a></td></tr>
+      <tr><td><code>--inputs FILE</code></td><td>zeros</td><td>A safetensors file holding <code>input.0</code>, <code>input.1</code>, …; without it every input is zeros of its recorded type.</td></tr>
+      <tr><td><code>--check</code></td><td>off</td><td>Compares outputs with <code>output.0</code>, … in the <code>--inputs</code> file and reports <code>max_abs_error</code>; requires <code>--inputs</code>.</td></tr>
+      <tr><td><code>--outputs FILE</code></td><td>none</td><td>Writes the outputs as <code>output.0</code>, ….</td></tr>
+      <tr><td><code>--bench N</code></td><td>0</td><td>Times N runs after the warmup.</td></tr>
+      <tr><td><code>--warmup N</code></td><td>10</td><td>Untimed runs before timing.</td></tr>
+      <tr><td><code>--threads N</code></td><td>all cores</td><td>Sets <code>RML_NUM_THREADS</code> before the process-wide pool first reads it.</td></tr>
+      <tr><td><code>--profile N</code></td><td>0</td><td>Times each step over N runs and adds <code>profile</code> to the JSON.</td></tr>
+      <tr><td><code>--no-fusion</code></td><td>off</td><td>Runs every node on its own.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <code>main</code> times <code>LoadGraph</code> plus <code>Executor::Create</code> as <code>load_ms</code>, runs
+  once, then optionally checks, benchmarks and profiles
+  (<a href="{{ src(gr ~ 'main.cc', 109, 161) }}">main.cc L109–161</a>). <code>Time</code> runs the warmup,
+  then times each call with <code>steady_clock</code> (<a href="{{ src(gr ~ 'graph_run.cc', 87, 100) }}">graph_run.cc
+  L87–100</a>), and <code>Summarize</code> reports iterations, mean, min, p10, median and p90 by nearest rank.
+  <code>ProfileOps</code> sums <code>RunProfiled</code>'s step times by step label, so all matmul steps share one
+  row and each distinct fused program has its own, sorted slowest first with the node count each row covers
+  (<a href="{{ src(gr ~ 'graph_run.cc', 102, 121) }}">L102–121</a>). The JSON keys are <code>model</code>,
+  <code>threads</code>, <code>load_ms</code>, then <code>max_abs_error</code>, the latency fields and
+  <code>profile</code> when present (<a href="{{ src(gr ~ 'graph_run.cc', 123, 144) }}">L123–144</a>).
+  <code>tools/bench_frameworks.py</code> reads this line for its rml cells
+  ({{ link('benchmarks', 'Benchmarks against the frameworks') }}).
+</p>
+
+<pre><code>bazel run --config=opt //examples/graph_run:rml-graph-run -- \
+  $PWD/rml/graph/testdata/torch_cnn --inputs $PWD/rml/graph/testdata/torch_cnn.golden.safetensors \
+  --check --bench 100 --threads 1</code></pre>
+
+<p>
+  That invocation is from rml's <a href="{{ src('README.md', 274, 276) }}">README</a>.
+</p>
+
+<h2 id="benchmark">The executor benchmark</h2>
+
+<p>
+  <a href="{{ src(g ~ 'executor_benchmark.cc', 1, 64) }}"><code>executor_benchmark.cc</code></a> registers one
+  Google Benchmark per <code>.json</code> in <code>$RML_GRAPH_DIR</code>, or in
+  <code>rml/graph/testdata</code> when it is unset, for example the <code>models/graphs</code> directory that
+  <code>tools/bench_frameworks.py --export-only</code> fills (L1–3). Each graph is loaded and compiled once at
+  registration, and graphs that fail to load are skipped. The timed loop calls <code>Run</code> on inputs filled
+  with 0.5, so it measures steady-state runs with the buffer pool warm, reported in microseconds
+  (<a href="{{ src(g ~ 'executor_benchmark.cc', 22, 56) }}">L22–56</a>). rml commits no results for it;
+  published timings come from <code>rml-graph-run</code> through the framework benchmark.
+</p>
+
+<h2 id="tests">Tests</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Tests</th><th>What they pin down</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(g ~ 'executor_test.cc') }}"><code>executor_test.cc</code></a></td><td>28</td><td>Every op against the core reference ops or a direct loop: unary and broadcasting binary sweeps, both GELU forms, pow and clamp, where, multi-axis reductions, argmax as i32, softmax and log-softmax, matmul batch and vector broadcasting, a constant weight packed once, shape ops, Python slicing, concat, iota, conv2d against a direct loop, pools, gather and its out-of-range error, layer norm over trailing axes, RMS norm, sdpa against its composition, top-k against a stable sort; a chain run twice that releases intermediates; and the <code>Create</code> and input-type errors listed on {{ link('graph-ir', 'The rml-graph IR', '#tests') }}.</td></tr>
+      <tr><td><a href="{{ src(gr ~ 'graph_run_test.cc') }}"><code>graph_run_test.cc</code></a></td><td>7</td><td>A fixture checks against its golden outputs; written outputs read back as their own reference; the profile covers every node; inputs default to zeros; a missing reference is an error; nearest-rank quantiles; timing and the JSON report.</td></tr>
+      <tr><td><a href="{{ src(g ~ 'golden_test.cc') }}"><code>golden_test.cc</code></a>, <a href="{{ src(g ~ 'cross_framework_test.cc') }}"><code>cross_framework_test.cc</code></a></td><td>2 + 2</td><td>Every committed fixture through the executor against its framework, and every route of a model against the others; see {{ link('exporters', 'Exporters and the model zoo') }}.</td></tr>
+    </tbody>
+  </table>
+</div>

@@ -112,7 +112,7 @@ PAGES = [
             "rml/graph/executor.h", "rml/graph/executor.cc", "rml/graph/ops.h",
             "rml/graph/ops.cc", "rml/graph/executor_benchmark.cc", "examples/graph_run",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "lowering",
