@@ -3,7 +3,7 @@
 Running log for the rml build loop and the daily Routine. Read this first, update it last.
 The contract is `specs/rml.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-24. Spec v2: the Inference stack group leads the queue. Scaffold, `tensors`, `runtime`, `linalg`, `random`, `autograd`, `stack` and `exporters` shipped; `graph-ir` is next.
+**Last updated:** 2026-10-24. Spec v2: the Inference stack group leads the queue. Scaffold, `tensors`, `runtime`, `linalg`, `random`, `autograd`, `stack` and `exporters` shipped; `graph-ir` is next. The 2026-10-24 scheduled run could not clone rml (see gaps), so nothing was built; the next run follows upstream, then builds `graph-ir`, `executor`, `lowering`.
 
 ## Upstream pin
 
@@ -85,6 +85,10 @@ session-only `/loop` jobs that built pages earlier are retired.
   citation corrected.
 - 2026-10-22 — `e0c793d` `stack` page (levels diagram, scope, zoo plan, first results).
 - 2026-10-24 — `2daeab6` `exporters` page (builder, three exporters, passes, zoo, golden fixtures).
+- 2026-10-24 — first daily scheduled run: blocked. The session had no access to
+  `rayaq-siddiqui/rml` (git clone asked for credentials; GitHub access was scoped to
+  `rayaq-website` only, and no `add_repo` tool was available). Pin unchanged, no pages built;
+  all 1066 tests passed.
 
 ## Deliberate deviations
 
@@ -93,6 +97,9 @@ session-only `/loop` jobs that built pages earlier are retired.
 
 ## Open gaps / questions for the owner
 
+- **The scheduled Routine cannot read rml.** On 2026-10-24 the session's GitHub access was
+  scoped to `rayaq-website` only, so cloning the private `rayaq-siddiqui/rml` failed. Add
+  rml (read) to the Routine's repositories/environment so it can follow upstream and build.
 - **Arena is unused outside `rml/core`.** `docs/architecture.md` says per-step scratch
   comes from an arena reset each step, but no code outside `rml/core` uses `Arena` at the
   pin. The `runtime` page presents it as available, not wired into decoding. Revisit when
