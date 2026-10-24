@@ -263,8 +263,8 @@ Each call is one command over SSH — deliberately kept to single, auditable com
   `rml_docs.UPSTREAM`; links to `/ml-models` go through `rml_docs.ml_models_link`, which only
   links ready pages. Since spec v2 the section leads with the **Inference stack** group
   (exporters, the rml-graph IR, the executor, lowering and benchmarks against PyTorch, JAX and
-  TensorFlow). Anything only rml's `docs/` describe (the StableHLO route, the kernel-level IR,
-  the fast-CPU work, `backend`, `profile`, the Phase 5 kernels) is marked *planned*. The section reuses `jj.css` and never edits other
+  TensorFlow). Anything only rml's `docs/` describe (`backend`, `profile`, the Phase 5 kernels) is
+  marked *planned*; the StableHLO route, the fusion layer and the fast-CPU kernels have landed. The section reuses `jj.css` and never edits other
   sections' files. A daily Routine ("rayaq.ca/rml — architecture reference agent", 12:44 UTC)
   clones rml, follows upstream changes, builds queued pages and moves the pin; before pushing it runs
   `tools/rml/check_mobile.js` for the 390px overflow check.
