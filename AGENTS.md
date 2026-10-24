@@ -265,8 +265,8 @@ Each call is one command over SSH — deliberately kept to single, auditable com
   (exporters, the rml-graph IR, the executor, lowering and benchmarks against PyTorch, JAX and
   TensorFlow). Anything only rml's `docs/` describe (the StableHLO route, the kernel-level IR,
   the fast-CPU work, `backend`, `profile`, the Phase 5 kernels) is marked *planned*. The section reuses `jj.css` and never edits other
-  sections' files. A weekly Routine ("rayaq.ca/rml — architecture reference agent", Saturdays)
-  clones rml, builds queued pages and follows the pin; before pushing it runs
+  sections' files. A daily Routine ("rayaq.ca/rml — architecture reference agent", 12:44 UTC)
+  clones rml, follows upstream changes, builds queued pages and moves the pin; before pushing it runs
   `tools/rml/check_mobile.js` for the 390px overflow check.
 - Phone number is intentionally omitted from the public resume and homepage (privacy choice, since the repo is public). Don't add it back without checking with the site owner first.
 

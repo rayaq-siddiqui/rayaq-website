@@ -3,7 +3,7 @@
 **Status:** approved for build · **Owner:** Rayaq Siddiqui · **Spec version:** 2 (2026-10-21)
 
 This is the product and technical contract for `rayaq.ca/rml`. The build loop and the
-weekly Routine build and maintain the section against it. Build progress lives in
+daily Routine build and maintain the section against it. Build progress lives in
 `specs/rml-progress.md`. Don't edit this spec without the owner's say-so. If the code and
 the spec disagree, fix the code or record a deliberate deviation in the progress file.
 
@@ -203,11 +203,12 @@ The flagship page. `h2` sections with these ids, in order, all sourced:
   queued page, sets `"ready": True`, runs the tests, checks the 200s and 390px, updates the
   progress file and pushes `rml: <page>` to `main`. When nothing is queued it prints
   "rml build complete" and stops.
-- **Weekly Routine** ("rayaq.ca/rml — architecture reference agent", Saturdays 13:00 UTC):
-  pulls, runs the tests, builds the next queued page if any; otherwise diffs upstream
-  `HEAD` against the pin over each page's source set, updates affected pages, queues pages
-  for new modules or examples, flips *planned* items that have landed, and bumps `UPSTREAM`
-  in the same commit. It pushes small commits straight to `main` (merge, never rebase or
+- **Daily Routine** ("rayaq.ca/rml — architecture reference agent", daily 12:44 UTC, Opus
+  5.5): pulls and runs the tests, then first follows upstream: diffs rml's `HEAD` against
+  the pin over each ready page's source set, updates affected pages, queues pages for new
+  modules or examples, flips *planned* items that have landed, and bumps `UPSTREAM` in the
+  same commit. Then it builds up to three queued pages. Once the queue is empty it keeps
+  following upstream every day. It pushes small commits straight to `main` (merge, never rebase or
   force) and finishes with an `rml: record progress` commit.
 
 ## 10. Acceptance criteria
@@ -219,4 +220,4 @@ The flagship page. `h2` sections with these ids, in order, all sourced:
 - [ ] Every source link is pinned; §7.5 tests exist and pass.
 - [ ] Homepage card links to `/rml`.
 - [ ] Mobile at 390px: no horizontal page scroll (`tools/rml/check_mobile.js`).
-- [ ] The weekly Routine has run at least once and cloned rml.
+- [ ] The daily Routine has run at least once and cloned rml.
