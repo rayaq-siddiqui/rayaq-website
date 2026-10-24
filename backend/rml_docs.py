@@ -204,7 +204,7 @@ PAGES = [
         "summary": "Classification, regression, contrastive and variational losses, and SGD, "
         "Adam, RMSprop, schedules, clipping and gradient accumulation.",
         "sources": ["rml/losses", "rml/optim"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "data-metrics",

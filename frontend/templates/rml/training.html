@@ -1,0 +1,359 @@
+{% set l = "rml/losses/" %}
+{% set o = "rml/optim/" %}
+<header class="jj-header">
+  <h1>Losses and optimizers</h1>
+  <p class="tagline">
+    <code>rml/losses</code> turns a model's output and a target into one differentiable number, and
+    <code>rml/optim</code> turns that number's gradients into parameter updates. Together with
+    {{ link('nn', 'the layers') }} and {{ link('autograd', 'autograd') }} they make rml's training loop.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: every loss is built from autograd ops (two hand-written nodes where composing ops would get the
+  gradient wrong) and ends in a shared <code>Reduce</code> step: mean, sum or none. Classification losses take
+  logits, so log-softmax and log-sigmoid never overflow; cross-entropy adds ignored rows and label smoothing.
+  There are regression losses (MSE, MAE, Huber), pair losses (contrastive, InfoNCE) and the two VAE pieces.
+  Optimizers share one base class that skips parameters without a gradient, keeps per-parameter state in named
+  slots for checkpoints, and calls one virtual <code>Update</code> per parameter: SGD with momentum and
+  Nesterov, Adam, AdamW and RMSProp. Schedules are pure functions of the step; clipping and gradient
+  accumulation are small helpers around the same loop.
+</p>
+
+<p>
+  The concepts are on /ml-models: {{ ml('loss-functions', 'loss functions') }},
+  {{ ml('entropy-and-kl', 'entropy and KL') }}, {{ ml('variational-autoencoders', 'variational autoencoders') }},
+  {{ ml('optimizers', 'optimizers') }}, {{ ml('learning-rate-schedules', 'learning-rate schedules') }},
+  {{ ml('training-loop', 'the training loop') }} and {{ ml('gradient-accumulation', 'gradient accumulation') }}.
+</p>
+
+<h2 id="loop">One training step</h2>
+
+<p>
+  The optimizer header gives the loop: <code>ZeroGrad()</code>, forward, <code>loss.Backward()</code>,
+  <code>Step()</code> (<a href="{{ src(o ~ 'optimizer.h', 4, 9) }}">optimizer.h L4–9</a>). The optimizer holds
+  the same <code>Variable</code>s as the model, which share storage with it, so updating them in place updates
+  the model.
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 300" role="img" aria-labelledby="tr-loop-title tr-loop-desc">
+    <title id="tr-loop-title">One training step through nn, losses and optim</title>
+    <desc id="tr-loop-desc">set_lr from a schedule, then ZeroGrad clears the gradients. The model's forward
+      pass produces logits, a loss reduces them against the targets to one number, and Backward fills each
+      parameter's gradient. Optionally ClipGradNorm scales the gradients down. Step then calls Update for every
+      parameter with a gradient, reading and writing its slots such as Adam's exp_avg and exp_avg_sq. With a
+      GradientAccumulator, Backward runs on k micro-batches before one Step.</desc>
+
+    <rect class="d-box" x="20" y="24" width="180" height="40" rx="5"/>
+    <text x="110" y="49" text-anchor="middle">set_lr(schedule(step))</text>
+    <line class="d-line" x1="200" y1="44" x2="230" y2="44"/>
+    <rect class="d-box" x="230" y="24" width="160" height="40" rx="5"/>
+    <text x="310" y="49" text-anchor="middle">ZeroGrad()</text>
+    <line class="d-line" x1="390" y1="44" x2="420" y2="44"/>
+    <rect class="d-box" x="420" y="24" width="180" height="40" rx="5"/>
+    <text x="510" y="49" text-anchor="middle">model(x): rml/nn</text>
+
+    <line class="d-line" x1="510" y1="64" x2="510" y2="96"/>
+    <rect class="d-box d-accent" x="420" y="96" width="180" height="52" rx="5"/>
+    <text x="510" y="118" text-anchor="middle">loss: rml/losses</text>
+    <text class="d-muted" x="510" y="137" text-anchor="middle" font-size="12">per element, then Reduce</text>
+    <line class="d-line" x1="420" y1="122" x2="390" y2="122"/>
+    <rect class="d-box" x="230" y="96" width="160" height="52" rx="5"/>
+    <text x="310" y="118" text-anchor="middle">loss.Backward()</text>
+    <text class="d-muted" x="310" y="137" text-anchor="middle" font-size="12">fills every p.grad()</text>
+    <line class="d-line" x1="230" y1="122" x2="200" y2="122"/>
+    <rect class="d-box" x="20" y="96" width="180" height="52" rx="5"/>
+    <text x="110" y="118" text-anchor="middle">ClipGradNorm</text>
+    <text class="d-muted" x="110" y="137" text-anchor="middle" font-size="12">optional, returns the norm</text>
+
+    <line class="d-line" x1="110" y1="148" x2="110" y2="180"/>
+    <rect class="d-box d-accent" x="20" y="180" width="580" height="64" rx="6"/>
+    <text x="310" y="202" text-anchor="middle">Step(): ++step_count, then Update(i, param, grad, n)</text>
+    <text class="d-muted" x="310" y="221" text-anchor="middle" font-size="12">for each parameter with a gradient; state lives in named slots:</text>
+    <text class="d-muted" x="310" y="237" text-anchor="middle" font-size="12">momentum, exp_avg, exp_avg_sq, square_avg</text>
+
+    <text class="d-muted" x="20" y="272" font-size="12">GradientAccumulator: scale each micro-batch's loss by 1/k and run Backward</text>
+    <text class="d-muted" x="20" y="290" font-size="12">k times (gradients add), then one Step and ZeroGrad.</text>
+  </svg>
+  <figcaption>The pieces of one step and the module each comes from. A checkpoint saves the model's parameters
+    and the optimizer's <code>NamedState</code> together (<a href="{{ src('rml/io/checkpoint.h', 4, 11) }}">rml/io/checkpoint.h
+    L4–11</a>).</figcaption>
+</figure>
+
+<h2 id="reduction">Reductions</h2>
+
+<p>
+  Every loss ends in <a href="{{ src(l ~ 'reduction.h', 13, 22) }}"><code>Reduce(per_element, reduction,
+  count = 0)</code></a>. <code>kMean</code>, the default, averages so the scale ignores batch size;
+  <code>kSum</code> adds; <code>kNone</code> returns the per-element losses. When <code>count</code> is positive,
+  <code>kMean</code> divides the sum by it instead of by the element count, which is how cross-entropy averages
+  over the rows it did not ignore (<a href="{{ src(l ~ 'reduction.cc', 8, 19) }}">reduction.cc L8–19</a>).
+</p>
+
+<h2 id="classification">Classification losses</h2>
+
+<p>
+  These take logits, not probabilities, so the log of a softmax or sigmoid is computed in a form that cannot
+  overflow or take log(0) (<a href="{{ src(l ~ 'classification.h', 4, 8) }}">classification.h L4–8</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>BinaryCrossEntropyWithLogits</code></td><td><code>(logits, Tensor targets, reduction = kMean)</code></td><td>−[y log σ(x) + (1 − y) log(1 − σ(x))] per element, targets in [0, 1] shaped like the logits, computed as max(x, 0) − x·y + log(1 + e<sup>−|x|</sup>).</td><td><a href="{{ src(l ~ 'classification.cc', 60, 66) }}">classification.cc L60–66</a></td></tr>
+      <tr><td><code>CrossEntropyWithLogits</code></td><td><code>(logits [..., C], i32 targets [...], CrossEntropyOptions)</code></td><td>−log softmax(logits)[target]; every leading axis is a row. <code>kNone</code> returns the targets' shape.</td><td><a href="{{ src(l ~ 'classification.cc', 68, 109) }}">L68–109</a></td></tr>
+      <tr><td><code>CrossEntropyOptions</code></td><td><code>ignore_index</code> = −100, <code>label_smoothing</code> = 0, <code>reduction</code> = kMean</td><td>Rows whose target is <code>ignore_index</code> contribute nothing and are left out of the mean (padding tokens). Smoothing trains against (1 − ε)·one_hot + ε/C, which stops logits growing without bound.</td><td><a href="{{ src(l ~ 'classification.h', 24, 32) }}">classification.h L24–32</a></td></tr>
+      <tr><td><code>HingeLoss</code></td><td><code>(scores, Tensor targets in {−1, +1}, reduction)</code></td><td>max(0, 1 − y·s): zero once an example is classified with margin 1, as in a linear SVM.</td><td><a href="{{ src(l ~ 'classification.cc', 111, 114) }}">L111–114</a></td></tr>
+      <tr><td><code>KlDivLoss</code></td><td><code>(log_q, Tensor p, reduction)</code></td><td>KL(p ‖ q) = Σ<sub>c</sub> p<sub>c</sub>(log p<sub>c</sub> − log q<sub>c</sub>) along the last axis, with q as log-probabilities and 0 log 0 = 0; <code>kMean</code> averages over rows, so the result is a per-example divergence.</td><td><a href="{{ src(l ~ 'classification.cc', 116, 124) }}">L116–124</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="bce-node">Why binary cross-entropy is a hand-written node</h3>
+
+<p>
+  Composing <code>max</code>, <code>abs</code> and <code>log1p</code> from autograd ops gets the gradient wrong at
+  x = 0, where <code>abs</code> has a kink that cancels in the true derivative. So
+  <code>SigmoidCrossEntropy</code> is a <code>Function</code> whose forward loop is the stable formula and whose
+  backward is σ(x) − y directly; the target gets no gradient
+  (<a href="{{ src(l ~ 'classification.cc', 29, 56) }}">L29–56</a>). A test checks that gradient at zero
+  (<code>GradientIsSigmoidMinusTargetIncludingAtZero</code>). How a custom <code>Function</code> plugs into the
+  graph is on {{ link('autograd', 'Autograd', '#function') }}.
+</p>
+
+<h3 id="cross-entropy">Cross-entropy step by step</h3>
+
+<ol>
+  <li>For each row, check the target is in range or equal to <code>ignore_index</code>, and record the flat
+    index row·C + target (0 for an ignored row) and a keep mask of 1 or 0
+    (<a href="{{ src(l ~ 'classification.cc', 80, 96) }}">L80–96</a>).</li>
+  <li>Take <code>LogSoftmax</code> over the class axis, flatten it, and gather the target entries with
+    <code>IndexSelect</code>; negate (<a href="{{ src(l ~ 'classification.cc', 98, 101) }}">L98–101</a>).</li>
+  <li>With smoothing ε, the loss against the uniform part is −mean<sub>c</sub> log p<sub>c</sub>, so each row
+    becomes (1 − ε)·nll − ε·mean<sub>c</sub> log p<sub>c</sub> (<a href="{{ src(l ~ 'classification.cc', 102, 106) }}">L102–106</a>).</li>
+  <li>Multiply by the mask and reduce, passing the number of kept rows (at least 1) as the mean's count
+    (<a href="{{ src(l ~ 'classification.cc', 107, 108) }}">L107–108</a>).</li>
+</ol>
+
+<p>
+  <strong>Worked example.</strong> Three rows with targets <code>[2, −100, 0]</code>: the middle row gathers
+  index 0, is zeroed by the mask, and the mean divides by 2, not 3. With label smoothing 0.1 and C = 4, the
+  effective target for a row whose label is 2 is 0.025 on classes 0, 1 and 3 and 0.925 on class 2.
+</p>
+
+<h2 id="regression">Regression losses</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Per element</th><th>Why</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>MseLoss(prediction, target, reduction)</code></td><td>(p − y)²</td><td>The maximum-likelihood loss under Gaussian noise; large errors dominate.</td><td><a href="{{ src(l ~ 'regression.cc', 21, 23) }}">regression.cc L21–23</a></td></tr>
+      <tr><td><code>MaeLoss(prediction, target, reduction)</code></td><td>|p − y|</td><td>Laplace noise: robust to outliers, minimized by the median rather than the mean.</td><td><a href="{{ src(l ~ 'regression.cc', 25, 27) }}">L25–27</a></td></tr>
+      <tr><td><code>HuberLoss(prediction, target, delta = 1, reduction)</code></td><td>½q² + δ(|r| − q) with q = min(|r|, δ)</td><td>Quadratic inside δ and linear beyond, with value and slope continuous. δ must be positive.</td><td><a href="{{ src(l ~ 'regression.cc', 29, 37) }}">L29–37</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Each treats the target as a constant and checks that the shapes match
+  (<a href="{{ src(l ~ 'regression.cc', 12, 17) }}">L12–17</a>). Huber is written with a clamp rather than a
+  branch: for |r| = 3 and δ = 1, q = 1 and the loss is 0.5 + 2 = 2.5, the linear tail; for |r| = 0.5, q = 0.5 and
+  the loss is 0.125, half the squared error.
+</p>
+
+<h2 id="contrastive">Pair losses</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>ContrastiveLoss</code></td><td><code>(a [N, D], b [N, D], Tensor same [N], margin = 1, reduction)</code></td><td>Hadsell, Chopra and LeCun (2006): d² for a matching pair, max(0, margin − d)² otherwise, with d = ‖a − b‖. Dissimilar pairs farther apart than the margin cost nothing.</td><td><a href="{{ src(l ~ 'contrastive.cc', 30, 40) }}">contrastive.cc L30–40</a></td></tr>
+      <tr><td><code>InfoNceLoss</code></td><td><code>(anchors [N, D], positives [N, D], temperature = 0.1)</code></td><td>The CLIP and SimCLR objective: L2-normalize both, take the [N, N] cosine similarities divided by the temperature, and apply cross-entropy with target i for row i, so every other row in the batch is a negative.</td><td><a href="{{ src(l ~ 'contrastive.cc', 42, 53) }}">L42–53</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Both add 10<sup>−12</sup> inside a square root, which keeps the gradient finite for a zero vector or a pair at
+  distance zero (<a href="{{ src(l ~ 'contrastive.cc', 23, 26) }}">L23–26</a>,
+  <a href="{{ src(l ~ 'contrastive.cc', 34, 35) }}">L34–35</a>). InfoNCE reuses cross-entropy, so it always takes
+  the mean over the batch.
+</p>
+
+<h2 id="variational">Variational pieces</h2>
+
+<p>
+  A variational autoencoder's encoder outputs a mean and a log variance per latent dimension, defining
+  q(z | x) = N(mean, exp(log_var)); training maximizes the ELBO, a reconstruction term estimated from one sample
+  minus KL(q ‖ N(0, I)) (<a href="{{ src(l ~ 'variational.h', 9, 14) }}">variational.h L9–14</a>). rml provides
+  the two pieces the autoencoder lacks:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>GaussianKlToStandardNormal</code></td><td><code>(mean, log_var, reduction = kMean)</code></td><td>(exp(log_var) + mean² − 1 − log_var) / 2 per element, zero exactly at mean = 0, log_var = 0. For a [batch, latent] input, <code>kSum</code> divided by the batch size is the per-example KL the ELBO subtracts.</td><td><a href="{{ src(l ~ 'variational.cc', 21, 26) }}">variational.cc L21–26</a></td></tr>
+      <tr><td><code>ReparameterizedSample</code></td><td><code>(mean, log_var, Generator&amp;)</code></td><td>z = mean + exp(log_var / 2)·ε with ε ~ N(0, I) as a constant, so dz/dmean = 1 and dz/dlog_var = (z − mean)/2 and gradients pass through the sampling step.</td><td><a href="{{ src(l ~ 'variational.cc', 28, 33) }}">L28–33</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="optimizer">The Optimizer base</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Constructor</td><td><code>Optimizer(vector&lt;Variable&gt; params, float lr)</code></td><td>Every parameter must be a defined leaf that requires grad, contiguous f32; lr must be non-negative. All are <code>RML_CHECK</code>s.</td><td><a href="{{ src(o ~ 'optimizer.cc', 18, 26) }}">optimizer.cc L18–26</a></td></tr>
+      <tr><td><code>Step</code></td><td><code>void()</code></td><td>Increments <code>step_count</code> first, then calls <code>Update</code> for each parameter whose gradient is defined, with a contiguous copy of the gradient; parameters unused in this step's graph are left alone.</td><td><a href="{{ src(o ~ 'optimizer.cc', 28, 36) }}">L28–36</a></td></tr>
+      <tr><td><code>ZeroGrad</code>, <code>lr</code>, <code>set_lr</code>, <code>step_count</code>, <code>params</code></td><td></td><td>Schedules call <code>set_lr</code> before each step.</td><td><a href="{{ src(o ~ 'optimizer.h', 35, 43) }}">optimizer.h L35–43</a></td></tr>
+      <tr><td><code>AddSlot</code>, <code>State</code>, <code>IsFresh</code></td><td><code>int(string)</code>, <code>float*(int, size_t)</code>, <code>bool(int, size_t) const</code></td><td>A subclass declares named per-parameter buffers; <code>State</code> creates a zero buffer on first use, and <code>IsFresh</code> says whether it has been created yet.</td><td><a href="{{ src(o ~ 'optimizer.cc', 42, 55) }}">L42–55</a></td></tr>
+      <tr><td><code>Update</code></td><td><code>virtual void(size_t index, float* param, const float* grad, int64_t n)</code></td><td>The one method a subclass writes: update n values in place. <code>step_count()</code> already counts this step.</td><td><a href="{{ src(o ~ 'optimizer.h', 61, 63) }}">optimizer.h L61–63</a></td></tr>
+      <tr><td><code>NamedState</code></td><td><code>vector&lt;pair&lt;string, Tensor&gt;&gt;() const</code></td><td><code>"step"</code> as a scalar, then <code>"&lt;slot&gt;.&lt;parameter index&gt;"</code> for every buffer created so far.</td><td><a href="{{ src(o ~ 'optimizer.cc', 57, 68) }}">L57–68</a></td></tr>
+      <tr><td><code>LoadState</code></td><td><code>Status(span&lt;const pair&lt;string, Tensor&gt;&gt;)</code></td><td>Restores that list, cloning each tensor; an unknown slot, a non-numeric or out-of-range index, or a dtype or shape that does not fit returns <code>InvalidArgumentError</code>.</td><td><a href="{{ src(o ~ 'optimizer.cc', 70, 95) }}">L70–95</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <code>NamedState</code> is what a checkpoint stores under <code>optim.</code> keys next to the model's
+  <code>model.</code> keys, so training resumes exactly where it stopped
+  (<a href="{{ src('rml/io/checkpoint.h', 22, 32) }}">checkpoint.h L22–32</a>; see
+  {{ link('model-files', 'Model files') }}). An Adam optimizer over two parameters that has stepped once saves
+  <code>step</code>, <code>exp_avg.0</code>, <code>exp_avg.1</code>, <code>exp_avg_sq.0</code> and
+  <code>exp_avg_sq.1</code>.
+</p>
+
+<h2 id="optimizers">The optimizers</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Optimizer</th><th>Options (defaults)</th><th>Update for each element</th><th>Slots</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Sgd</code></td><td>lr 0.01, momentum 0, dampening 0, weight_decay 0, nesterov false</td><td>g = grad + wd·p. Without momentum p −= lr·g. With it, b = g on the first step and μb + (1 − dampening)g after; p −= lr·(g + μb) for Nesterov, else lr·b.</td><td><code>momentum</code></td><td><a href="{{ src(o ~ 'sgd.cc', 14, 38) }}">sgd.cc L14–38</a></td></tr>
+      <tr><td><code>Adam</code></td><td>lr 1e-3, beta1 0.9, beta2 0.999, eps 1e-8, weight_decay 0</td><td>g = grad + wd·p; m = β₁m + (1 − β₁)g; v = β₂v + (1 − β₂)g²; p −= lr·(m / (1 − β₁ᵗ)) / (√(v / (1 − β₂ᵗ)) + eps).</td><td><code>exp_avg</code>, <code>exp_avg_sq</code></td><td><a href="{{ src(o ~ 'adam.cc', 18, 51) }}">adam.cc L18–51</a></td></tr>
+      <tr><td><code>AdamW</code></td><td>as Adam, weight_decay 0.01</td><td>p −= lr·wd·p first, then Adam's update on the raw gradient: decay decoupled from the adaptive scaling.</td><td>as Adam</td><td><a href="{{ src(o ~ 'adam.cc', 53, 60) }}">L53–60</a></td></tr>
+      <tr><td><code>RmsProp</code></td><td>lr 0.01, alpha 0.99, eps 1e-8, weight_decay 0, momentum 0</td><td>g = grad + wd·p; v = αv + (1 − α)g²; d = g / (√v + eps); with momentum b = μb + d and p −= lr·b, else p −= lr·d.</td><td><code>square_avg</code>, <code>momentum</code> (only created when momentum &gt; 0)</td><td><a href="{{ src(o ~ 'rmsprop.cc', 15, 39) }}">rmsprop.cc L15–39</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The headers say why each exists. Momentum averages gradients over about 1/(1 − momentum) steps, damping
+  oscillation across a ravine and speeding travel along it (<a href="{{ src(o ~ 'sgd.h', 7, 13) }}">sgd.h
+  L7–13</a>). Adam is momentum with a per-parameter step size; its L2 weight decay is weakened by the adaptive
+  scaling for parameters with large gradients, which is why AdamW decouples it and why transformer training
+  uses AdamW (<a href="{{ src(o ~ 'adam.h', 7, 14) }}">adam.h L7–14</a>). RMSProp divides each gradient by a
+  running RMS so every parameter moves at a similar rate (<a href="{{ src(o ~ 'rmsprop.h', 4, 11) }}">rmsprop.h
+  L4–11</a>). Constructors check their ranges: Nesterov needs momentum &gt; 0 and no dampening, Adam's betas lie
+  in [0, 1), RMSProp's alpha too, and every eps is positive.
+</p>
+
+<p>
+  <strong>Worked example.</strong> Adam's first step: with m and v starting at zero, the corrected m̂ = g and
+  v̂ = g², so the step is lr·g / (|g| + eps), almost exactly lr·sign(g). A parameter at 1 with gradient 100 and
+  another with gradient −0.001 both move by 0.01 at lr = 0.01, to 0.99 and 1.01; that is the test
+  <code>FirstStepHasMagnitudeLr</code> (<a href="{{ src(o ~ 'optimizer_test.cc', 84, 92) }}">optimizer_test.cc
+  L84–92</a>).
+</p>
+
+<h2 id="schedules">Learning-rate schedules</h2>
+
+<p>
+  Schedules are pure functions of the step, 0 for the first, and the caller writes
+  <code>optimizer.set_lr(Schedule(step, ...))</code> before each <code>Step()</code>
+  (<a href="{{ src(o ~ 'schedule.h', 4, 6) }}">schedule.h L4–6</a>). Both curved schedules use one helper that
+  moves from a start to an end value along half a cosine (<a href="{{ src(o ~ 'schedule.cc', 13, 17) }}">schedule.cc L13–17</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>WarmupCosine</code></td><td><code>float(step, base_lr, warmup_steps, total_steps, min_lr = 0)</code></td><td>base_lr·(step + 1)/warmup for the first <code>warmup_steps</code>, then a cosine from base_lr to min_lr at <code>total_steps</code>, holding min_lr after. Warmup keeps Adam's first, poorly informed steps small.</td><td><a href="{{ src(o ~ 'schedule.cc', 21, 31) }}">L21–31</a></td></tr>
+      <tr><td><code>StepDecay</code></td><td><code>float(step, base_lr, step_size, gamma = 0.1)</code></td><td>base_lr·gamma<sup>⌊step / step_size⌋</sup>.</td><td><a href="{{ src(o ~ 'schedule.cc', 33, 36) }}">L33–36</a></td></tr>
+      <tr><td><code>OneCycle</code></td><td><code>float(step, max_lr, total_steps, {pct_start 0.3, div_factor 25, final_div_factor 1e4})</code></td><td>Smith (2018): cosine up from max_lr/25 to max_lr over the first 30% of steps, then cosine down to max_lr/25/10⁴.</td><td><a href="{{ src(o ~ 'schedule.cc', 38, 48) }}">L38–48</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 400" role="img" aria-labelledby="tr-lr-title tr-lr-desc">
+    <title id="tr-lr-title">WarmupCosine and OneCycle learning rates by step</title>
+    <desc id="tr-lr-desc">Top: WarmupCosine with base rate 1, 10 warmup steps, 110 total steps and a minimum of
+      0.1. The rate rises linearly from 0.1 to 1 by step 9, then falls along a cosine to 0.1 at step 110 and stays
+      there. Bottom: OneCycle with a maximum of 1 over 100 steps. The rate starts at 0.04, rises along a cosine
+      to 1 at step 29, then falls along a cosine to 0.000004 at step 99.</desc>
+
+    <text x="70" y="30">WarmupCosine(step, 1, 10, 110, 0.1)</text>
+    <line class="d-line" x1="70" y1="170" x2="580" y2="170"/>
+    <line class="d-line" x1="70" y1="50" x2="70" y2="170"/>
+    <text class="d-muted" x="62" y="54" text-anchor="end" font-size="12">1</text>
+    <text class="d-muted" x="62" y="174" text-anchor="end" font-size="12">0</text>
+    <text class="d-muted" x="70" y="188" text-anchor="middle" font-size="12">0</text>
+    <text class="d-muted" x="112" y="188" text-anchor="middle" font-size="12">10</text>
+    <text class="d-muted" x="528" y="188" text-anchor="middle" font-size="12">110</text>
+    <polyline class="d-accent" fill="none" stroke-width="2.5" points="70.0,158.0 78.3,134.0 86.7,110.0 95.0,86.0 103.3,62.0 111.7,50.0 120.0,50.1 128.3,50.4 136.7,51.0 145.0,51.7 153.3,52.6 161.7,53.8 170.0,55.1 178.3,56.7 186.7,58.4 195.0,60.3 203.3,62.4 211.7,64.6 220.0,67.0 228.3,69.6 236.7,72.3 245.0,75.1 253.3,78.0 261.7,81.0 270.0,84.1 278.3,87.3 286.7,90.6 295.0,93.9 303.3,97.2 311.7,100.6 320.0,104.0 328.3,107.4 336.7,110.8 345.0,114.1 353.3,117.4 361.7,120.7 370.0,123.9 378.3,127.0 386.7,130.0 395.0,132.9 403.3,135.7 411.7,138.4 420.0,141.0 428.3,143.4 436.7,145.6 445.0,147.7 453.3,149.6 461.7,151.3 470.0,152.9 478.3,154.2 486.7,155.4 495.0,156.3 503.3,157.0 511.7,157.6 520.0,157.9 528.3,158.0 536.7,158.0 545.0,158.0 553.3,158.0 561.7,158.0 570.0,158.0"/>
+    <text class="d-muted" x="300" y="78" font-size="12">step 60: 0.55</text>
+    <text class="d-muted" x="420" y="128" font-size="12">holds 0.1 after step 110</text>
+
+    <text x="70" y="216">OneCycle(step, 1, 100)</text>
+    <line class="d-line" x1="70" y1="350" x2="580" y2="350"/>
+    <line class="d-line" x1="70" y1="230" x2="70" y2="350"/>
+    <text class="d-muted" x="62" y="234" text-anchor="end" font-size="12">1</text>
+    <text class="d-muted" x="62" y="354" text-anchor="end" font-size="12">0</text>
+    <text class="d-muted" x="70" y="368" text-anchor="middle" font-size="12">0</text>
+    <text class="d-muted" x="216" y="368" text-anchor="middle" font-size="12">29</text>
+    <text class="d-muted" x="570" y="368" text-anchor="middle" font-size="12">99</text>
+    <polyline class="d-accent" fill="none" stroke-width="2.5" points="70.0,345.2 75.1,344.9 80.1,343.9 85.2,342.2 90.2,339.9 95.3,337.0 100.3,333.5 105.4,329.4 110.4,324.9 115.5,319.9 120.5,314.6 125.6,308.9 130.6,303.0 135.7,296.9 140.7,290.7 145.8,284.5 150.8,278.3 155.9,272.2 160.9,266.3 166.0,260.6 171.0,255.3 176.1,250.3 181.1,245.8 186.2,241.7 191.2,238.2 196.3,235.3 201.3,233.0 206.4,231.3 211.4,230.3 216.5,230.0 221.5,230.1 226.6,230.2 231.6,230.5 236.7,231.0 241.7,231.5 246.8,232.2 251.8,232.9 256.9,233.8 261.9,234.8 267.0,235.9 272.0,237.2 277.1,238.5 282.1,239.9 287.2,241.5 292.2,243.1 297.3,244.8 302.3,246.6 307.4,248.5 312.4,250.5 317.5,252.6 322.5,254.7 327.6,256.9 332.6,259.2 337.7,261.6 342.7,264.0 347.8,266.4 352.8,268.9 357.9,271.5 362.9,274.0 368.0,276.6 373.0,279.3 378.1,281.9 383.1,284.6 388.2,287.3 393.2,290.0 398.3,292.7 403.3,295.4 408.4,298.1 413.4,300.7 418.5,303.4 423.5,306.0 428.6,308.5 433.6,311.1 438.7,313.6 443.7,316.0 448.8,318.4 453.8,320.8 458.9,323.1 463.9,325.3 469.0,327.4 474.0,329.5 479.1,331.5 484.1,333.4 489.2,335.2 494.2,336.9 499.3,338.5 504.3,340.1 509.4,341.5 514.4,342.8 519.5,344.1 524.5,345.2 529.6,346.2 534.6,347.1 539.7,347.8 544.7,348.5 549.8,349.0 554.8,349.5 559.9,349.8 564.9,349.9 570.0,350.0"/>
+    <text class="d-muted" x="240" y="330" font-size="12">starts at 0.04, peaks at step 29</text>
+    <text class="d-muted" x="470" y="300" font-size="12">ends at 4e-6</text>
+    <text class="d-muted" x="70" y="392" font-size="12">Curves computed from schedule.cc's formulas with the arguments shown.</text>
+  </svg>
+  <figcaption>The two curved schedules with the arguments their tests use (<a href="{{ src(o ~ 'schedule_test.cc', 8, 47) }}">schedule_test.cc
+    L8–47</a>; the top curve sets min_lr = 0.1, where the test's step-60 check uses 0 and gets 0.5).</figcaption>
+</figure>
+
+<h2 id="clipping">Clipping and accumulation</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>ClipGradNorm</code></td><td><code>float(span&lt;const Variable&gt; params, float max_norm)</code></td><td>Sums squares over every defined gradient in double, and if the global L2 norm exceeds <code>max_norm</code>, scales all gradients by max_norm / (norm + 10<sup>−6</sup>), keeping the update's direction. Returns the norm before clipping, worth logging since spikes in it precede divergence.</td><td><a href="{{ src(o ~ 'clip.cc', 13, 28) }}">clip.cc L13–28</a></td></tr>
+      <tr><td><code>ClipGradValue</code></td><td><code>void(span&lt;const Variable&gt;, float clip)</code></td><td>Clamps each gradient element to [−clip, clip], which changes the direction.</td><td><a href="{{ src(o ~ 'clip.cc', 30, 35) }}">L30–35</a></td></tr>
+      <tr><td><code>GradientAccumulator</code></td><td><code>(Optimizer&amp;, int micro_batches)</code>; <code>loss_scale()</code>, <code>bool Step()</code></td><td>Backward adds into <code>grad()</code>, so scaling each micro-batch's loss by 1/k and stepping on every k-th call gives exactly the gradient of the mean loss over all k. <code>Step()</code> counts a micro-batch and, on the k-th, steps the optimizer, zeroes the gradients and returns true.</td><td><a href="{{ src(o ~ 'accumulation.h', 4, 14) }}">accumulation.h L4–14</a>, <a href="{{ src(o ~ 'accumulation.cc', 13, 19) }}">.cc L13–19</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="users">Who uses it</h2>
+
+<p>
+  <code>rml/io</code>'s checkpoint is the one library user of <code>rml/optim</code>, through
+  <code>Optimizer*</code> arguments that may be null to save only the model. The training demos in
+  {{ link('examples', 'examples/') }} are the rest: the same nineteen directories that use {{ link('nn', 'rml/nn') }}
+  pick their losses and optimizers here. The inference stack never trains, so nothing on
+  {{ link('stack', 'The inference stack') }} uses either module.
+</p>
+
+<h2 id="tests">Tests</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Tests</th><th>What they pin down</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(l ~ 'classification_test.cc') }}"><code>classification_test.cc</code></a></td><td>12</td><td>BCE against its definition and its gradient σ(x) − y, including at 0; cross-entropy as −log softmax at the target, ignored rows left out of the mean, label smoothing mixing in the uniform target, leading axes as rows, gradients; hinge zero beyond the margin; KL against the distributions module and its gradient; bad targets die.</td></tr>
+      <tr><td><a href="{{ src(l ~ 'regression_test.cc') }}"><code>regression_test.cc</code></a></td><td>6</td><td>MSE and MAE averages; Huber quadratic inside δ and linear outside, and half the MSE with a large δ; gradients; mismatched shapes die.</td></tr>
+      <tr><td><a href="{{ src(l ~ 'contrastive_test.cc') }}"><code>contrastive_test.cc</code></a></td><td>4</td><td>Contrastive loss pulls similar and pushes dissimilar pairs only within the margin; aligned InfoNCE pairs cost less than shuffled ones; gradients of both.</td></tr>
+      <tr><td><a href="{{ src(l ~ 'variational_test.cc') }}"><code>variational_test.cc</code></a></td><td>6</td><td>The KL against its closed form, non-negative, numerical gradients; the reparameterized sample's mean and variance, and its gradients with a fixed noise draw; mismatched shapes die.</td></tr>
+      <tr><td><a href="{{ src(o ~ 'optimizer_test.cc') }}"><code>optimizer_test.cc</code></a></td><td>15</td><td>Plain, momentum, Nesterov and weight-decayed SGD steps; RMSProp's first step; Adam's first step of magnitude lr and agreement with a reference loop; AdamW's decoupled decay; skipped parameters without gradients; every optimizer converging on a quadratic; state round-tripping through <code>NamedState</code>, and <code>LoadState</code> rejecting mismatches; Nesterov without momentum, and parameters that do not require grad, die.</td></tr>
+      <tr><td><a href="{{ src(o ~ 'schedule_test.cc') }}"><code>schedule_test.cc</code></a></td><td>6</td><td>Warmup then cosine, with and without warmup, monotone after warmup; step decay; one-cycle rising to max at step 29 of 100 and ending at max/25/10⁴; bad arguments die.</td></tr>
+      <tr><td><a href="{{ src(o ~ 'clip_test.cc') }}"><code>clip_test.cc</code></a></td><td>4</td><td>Norm clipping scales every gradient together, leaves small ones alone and skips parameters without a gradient; value clipping clamps each element.</td></tr>
+      <tr><td><a href="{{ src(o ~ 'accumulation_test.cc') }}"><code>accumulation_test.cc</code></a></td><td>1</td><td>Micro-batches give the same update as the full batch.</td></tr>
+    </tbody>
+  </table>
+</div>
