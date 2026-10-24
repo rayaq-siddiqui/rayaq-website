@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-17 (ninth audit run). All 58 pages are ready and the queue is empty. This audit found and fixed one gap (two problem insights that described an incomplete algorithm). This session also had no `update_trigger` tool, so the schedule may still be every 5 hours (see Known gaps). **The next run is an audit run** (spec §8.1). Before any other work, it moves this Routine to weekly: `update_trigger` on `trig_01XkmtUwbN1iL5esk5KeGRPa` with `CRON_TZ=America/Los_Angeles 14 4 * * 2`.
+**Last updated:** 2026-10-24 (tenth audit run). All 58 pages are ready and the queue is empty. This audit found no gaps, so **the build is complete**. This session had no `update_trigger` tool either, so the schedule may still be every 5 hours (see Known gaps). **The next run is an audit run** (spec §8.1). Before any other work, it moves this Routine to weekly: `update_trigger` on `trig_01XkmtUwbN1iL5esk5KeGRPa` with `CRON_TZ=America/Los_Angeles 14 4 * * 2`.
 
 ## The Routine
 
@@ -187,7 +187,8 @@ build once research is done.
   recorded the request had no `update_trigger` tool. The next run calls `update_trigger` on
   `trig_01XkmtUwbN1iL5esk5KeGRPa` with `CRON_TZ=America/Los_Angeles 14 4 * * 2` and clears this
   gap. If it can't, the owner can change the schedule by hand under the Routine's settings at
-  claude.ai/code. The seventh, eighth and ninth audits' sessions had no `update_trigger` tool either.
+  claude.ai/code. The seventh through tenth audits' sessions had no `update_trigger` tool either. The build is
+  complete (tenth audit), so the 5-hour schedule now only re-runs audits; please move it to weekly by hand.
 
 ## Run log
 
@@ -529,3 +530,17 @@ helpers changed. Coverage is unchanged at 100% (Blind 75 75/75, Grind 169 169/16
 150/150, NeetCode 250 250/250). pytest green (1035 passed); every ready page returns 200 and the
 phone check passed on `/`, `/leetcode` and every ready page. This session had no `update_trigger`
 tool. Next: another audit run, which moves the schedule first.
+
+### 2026-10-24 — audit run (tenth)
+
+Tenth audit run: **complete**, no gaps found and no content changed. New checks this run: list
+membership of every `PROBLEMS` entry against NeetCode's `.problemSiteData.json` `blind75` and
+`neetcode150` flags (75 and 150, identical); tag balance and block elements nested in `<p>` on
+`/leetcode` and all 58 pages (none); code blocks in Intuition (none; inline `<code>` marks only
+variables and expressions); one `<h1>`, `lang`, and unique `<title>` and meta description per page;
+every quiz has a `<summary>`; every page's code runs with warnings as errors (only the documented
+`CODE_PLACEHOLDERS` stop it); every prerequisite is linked from its page and is no harder than it.
+Coverage is unchanged at 100% (Blind 75 75/75, Grind 169 169/169, NeetCode 150 150/150, NeetCode
+250 250/250). pytest green (1066 passed); every ready page returns 200 and the phone check passed
+on `/`, `/leetcode` and every ready page. This session had no `update_trigger` tool, so the
+schedule could not be moved to weekly. Next: another audit run, which moves the schedule first.
