@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "9ab2e8406fd8764d2bbf0099ce7399794a799c64",
-    "commit_date": "2026-10-23",
+    "commit": "4142aa850770682c9cb3b9057f4bd1bd8d6403d9",
+    "commit_date": "2026-10-24",
     "version": "0.46.0",
-    "analyzed_on": "2026-10-23",
+    "analyzed_on": "2026-10-24",
 }
 
 TOPICS = [
@@ -564,7 +564,7 @@ COMMANDS = [
         "category": 'Operation log',
         "tier": 'B',
         "summary": 'Compare changes to the repository between two operations',
-        "source": ('cli/src/commands/operation/diff.rs', 70),
+        "source": ('cli/src/commands/operation/diff.rs', 72),
     },
     {
         "command": 'operation integrate',
@@ -711,7 +711,7 @@ COMMANDS = [
         "category": 'Git and remotes',
         "tier": 'A',
         "summary": 'Create a new repo backed by a clone of a Git repo',
-        "source": ('cli/src/commands/git/clone.rs', 58),
+        "source": ('cli/src/commands/git/clone.rs', 59),
     },
     {
         "command": 'git colocation',
@@ -746,7 +746,7 @@ COMMANDS = [
         "category": 'Git and remotes',
         "tier": 'A',
         "summary": 'Create a new Git backed repo.',
-        "source": ('cli/src/commands/git/init.rs', 66),
+        "source": ('cli/src/commands/git/init.rs', 67),
     },
     {
         "command": 'git push',
