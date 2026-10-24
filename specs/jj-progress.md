@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-23 (sixty-seventh run): followed upstream `c84cc0a..9ab2e84` (0.46.0). **The
+**Last updated:** 2026-10-24 (sixty-eighth run): followed upstream `9ab2e84..4142aa8` (0.46.0). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@9ab2e8406fd8764d2bbf0099ce7399794a799c64` (committed 2026-10-23, version
-0.46.0), analyzed 2026-10-23. Held in `jj_docs.UPSTREAM`. Previous pin: `c84cc0a`.
+`jj-vcs/jj@4142aa850770682c9cb3b9057f4bd1bd8d6403d9` (committed 2026-10-24, version
+0.46.0), analyzed 2026-10-24. Held in `jj_docs.UPSTREAM`. Previous pin: `9ab2e84`.
 
 ## §10 acceptance criteria
 
@@ -31,10 +31,15 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to sixty-seventh runs: pin bumped).
+      run: pin bumped; fiftieth to sixty-eighth runs: pin bumped).
 
-## Sixty-fourth to sixty-seventh runs (2026-10-20 to 2026-10-23)
+## Sixty-fourth to sixty-eighth runs (2026-10-20 to 2026-10-24)
 
+- `b70be32` `9ab2e84..4142aa8`: store caches are `CachedLoader` LRUs sharing concurrent loads
+  (backends); evolog, log graph mode and op diff load commits concurrently (evolog, log,
+  operation-diff); Git backend drops the root from merge parents instead of erroring (backends,
+  commits); op log/show pass the workspace name to `merge_operations`. 3 registry source lines
+  moved; protos unchanged; 32 files (relinks). `templates.toml` alias refactor quoted nowhere.
 - `ad64adf` `c84cc0a..9ab2e84`: git export deletes refs in one `edit_references` transaction
   (`delete_git_refs`, one-at-a-time fallback), on git-export; `TreeEntry` gains `removed_values`/
   `added_values` and `TreeValue` gets methods, on file-list. 18 templates remapped; registry and
@@ -43,21 +48,15 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
   `block_on`); revset parser rejects nesting past `MAX_TREE_DEPTH` (256), now on revsets. Links
   re-pointed on operations, protobufs, storage, util-gc, revsets; registry and protos unchanged.
 - `60897df` `5176b1d..7f96d3e`: only `flake.lock` changed; pin and dates bumped, no pages.
-- `117f376` maintenance `6bfd0a7..5176b1d`. `index_store`, `iter_util`, `operation`, `refs`, `view`
-  moved to `core/src` (jj-lib re-exports them; `specs/jj.md` still names `lib/src`). `MergedTree`
-  `*_stream` methods renamed without the suffix; `Tree::entries_matching` is an `OrderedTreeWalk`
-  stream; `jj run` pool uses `ui.conflict-marker-style` (run page notes it). 35 templates remapped
-  (36 files, over the 10-file guideline); registry run line; protos unchanged.
+- `117f376` `6bfd0a7..5176b1d`: five modules moved to `core/src` (`specs/jj.md` still names
+  `lib/src`); `MergedTree` `*_stream` methods renamed; `jj run` uses `ui.conflict-marker-style`.
 
 ## Fifty-third to sixty-third runs (2026-10-09 to 2026-10-19)
 
-- `5a850df` `4eb41be..6bfd0a7` (async `Revset::is_empty`/`count_estimate`, `TreeState::check_out`).
-- `1a15c00` `8555dde..4eb41be` (`TreeBuilder` gone for `tree_rewriter.rs`; workspace remove snapshots).
-- `826e666` `..8555dde` (`Backend::gc`, `cli_args.rs`), `b5d9fcd` `df92b83..fd68202` (config gc),
-  `ac97ee5` `0558176..86b7e2e` (modules to `core/src`), `970fe53` `..1776665` (sign-on-push),
-  `ca92ab5` `..9031d0a` (concurrent diff walk), `148c9e1` `..df92b83` (tree-read streams).
-- `c3d8c40` `26bcd69..da1d234` (ranges only). `b4bc7c5` `da1d234..889e5a6` (refactor wave, `git fetch`
-  output; about 570 ranges). `937e560` `889e5a6..0558176`: `resolve` `:editor`, tree merges.
+- `5a850df` `..6bfd0a7` (async revset counts), `1a15c00` `..4eb41be` (`tree_rewriter.rs`),
+  `826e666` `..8555dde` (`Backend::gc`), `b5d9fcd` (config gc), `ac97ee5` (modules to `core/src`),
+  `970fe53` (sign-on-push), `ca92ab5` (concurrent diff walk), `148c9e1` (tree-read streams),
+  `c3d8c40`/`b4bc7c5` (ranges; refactor wave), `937e560` `..0558176` (`resolve` `:editor`).
 
 ## Fiftieth to fifty-second runs (2026-10-06 to 2026-10-08)
 
