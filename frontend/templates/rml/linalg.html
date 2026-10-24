@@ -3,19 +3,22 @@
   <h1>Linear algebra</h1>
   <p class="tagline">
     <code>rml/linalg</code> holds the matrix product every layer runs on and the classic factorizations:
-    LU, QR, Cholesky, a symmetric eigensolver, the SVD, and the norms built on it. The product is a blocked,
-    packed, threaded GEMM in f32. The factorizations copy into a plain double-precision <code>Matrix</code>.
+    LU, QR, Cholesky, a symmetric eigensolver, the SVD, and the norms built on it. The product is a SIMD, packed,
+    threaded GEMM in f32 with its kernel chosen at run time. The factorizations copy into a plain double-precision <code>Matrix</code>.
   </p>
 </header>
 
 <p class="jj-note">
   In short: <code>MatMul</code> follows NumPy's rules (batch axes broadcast, vectors gain and lose an axis)
-  and calls <code>Gemm</code>, a Goto/BLIS-style kernel. It packs panels of A and B, keeps a 6×8 (SSE) or
-  8×12 (NEON) tile of C in vector registers, and splits disjoint tiles of C across the thread pool.
-  <code>GemmRef</code> is the scalar reference it is tested against. The decompositions work in
-  <code>double</code> on a <code>Matrix</code> and convert back to f32 tensors. LU uses partial pivoting, QR
-  uses Householder reflections, Cholesky needs no pivoting, and eigen and SVD use Jacobi rotations. Norms,
-  condition number, rank and pseudo-inverse are all read off the SVD.
+  and calls <code>Gemm</code>, folding a batched <code>x @ W</code> into one product and spreading many small
+  products across threads. <code>Gemm</code> picks its micro-kernel at run time (AVX-512 12×32, AVX2 6×16, or a
+  portable 6×8 SSE / 8×12 NEON tile) and its path from the shape: one row of A streams B through an axpy, up
+  to 32 rows stream B through register tiles, and anything larger runs the Goto/BLIS driver that packs panels
+  of A and B and splits disjoint tiles of C across the thread pool. <code>PackedB</code> packs a constant
+  weight once. <code>GemmRef</code> is the scalar reference every kernel is tested against. The
+  decompositions work in <code>double</code> on a <code>Matrix</code> and convert back to f32 tensors. LU uses
+  partial pivoting, QR uses Householder reflections, Cholesky needs no pivoting, and eigen and SVD use Jacobi
+  rotations. Norms, condition number, rank and pseudo-inverse are all read off the SVD.
 </p>
 
 <p>
@@ -119,55 +122,137 @@
   <table>
     <thead><tr><th>Function</th><th>Result</th><th>Source</th></tr></thead>
     <tbody>
-      <tr><td><code>Dot(a, b)</code></td><td>Inner product of two vectors, as a rank-0 tensor, through <code>GemmRef</code>.</td><td><a href="{{ src(d ~ 'matmul.cc', 81, 85) }}">matmul.cc L81</a></td></tr>
-      <tr><td><code>MatMul(a, b)</code></td><td>The batched product on the threaded <code>Gemm</code>.</td><td><a href="{{ src(d ~ 'matmul.cc', 87, 87) }}">matmul.cc L87</a></td></tr>
-      <tr><td><code>MatMulRef(a, b)</code></td><td>The same, on <code>GemmRef</code> with double accumulation: the ground truth in tests.</td><td><a href="{{ src(d ~ 'matmul.cc', 89, 89) }}">matmul.cc L89</a></td></tr>
+      <tr><td><code>Dot(a, b)</code></td><td>Inner product of two vectors, as a rank-0 tensor, through <code>GemmRef</code>.</td><td><a href="{{ src(d ~ 'matmul.cc', 122, 126) }}">matmul.cc L122</a></td></tr>
+      <tr><td><code>MatMul(a, b)</code></td><td>The batched product on the threaded <code>Gemm</code> and the default pool.</td><td><a href="{{ src(d ~ 'matmul.cc', 128, 128) }}">matmul.cc L128</a></td></tr>
+      <tr><td><code>MatMulRef(a, b)</code></td><td>The same, on <code>GemmRef</code> with double accumulation: the ground truth in tests.</td><td><a href="{{ src(d ~ 'matmul.cc', 130, 130) }}">matmul.cc L130</a></td></tr>
+      <tr><td><code>MatMulPacked(a, b)</code></td><td>a [..., m, k] times a <a href="#packed-b"><code>PackedB</code></a> weight [k, n], as one product over all of a's rows (a is made contiguous first). a must be f32 of rank ≥ 2.</td><td><a href="{{ src(d ~ 'matmul.cc', 132, 144) }}">matmul.cc L132</a></td></tr>
     </tbody>
   </table>
 </div>
 
 <p>
-  Both run through <code>BatchedMatMul</code>
-  (<a href="{{ src(d ~ 'matmul.cc', 32, 77) }}">matmul.cc L32–77</a>). It checks f32 and the inner
-  dimension, unsqueezes vector operands, broadcasts the batch shapes, and allocates the output. Then
-  <code>internal::ForEachRow&lt;3&gt;</code> walks every batch index with broadcast strides and builds a
-  <code>MatrixView</code> for each operand straight from the tensor's strides, so a broadcast operand is read
-  in place rather than copied. Finally the added vector axes are squeezed away.
+  The first three run through <code>BatchedMatMul</code>
+  (<a href="{{ src(d ~ 'matmul.cc', 36, 118) }}">matmul.cc L36–118</a>). It checks f32 and the inner
+  dimension, unsqueezes vector operands, broadcasts the batch shapes, and allocates the output. Then it picks
+  one of three ways to run the batch:
+</p>
+
+<ol>
+  <li><strong>Fold the batch into the rows.</strong> When B is a single 2-D matrix shared by every batch (the
+    <code>x @ W</code> of a linear layer) and A's rows are evenly spaced across all its batch axes, the batch
+    is one tall matrix of batch·m rows, so one <code>Gemm</code> call does the whole product and B is packed
+    once instead of once per batch (<a href="{{ src(d ~ 'matmul.cc', 67, 82) }}">L67–82</a>).</li>
+  <li><strong>Many small products in parallel.</strong> Otherwise <code>internal::ForEachRow&lt;3&gt;</code>
+    collects every batch's offsets with broadcast strides, and a <code>MatrixView</code> is built for each
+    operand straight from the tensor's strides, so a broadcast operand is read in place rather than copied.
+    When there are several batches and each product has fewer than 2²² multiply-adds (attention heads), the
+    batches are split across the default pool with a grain of about 2²⁰ multiply-adds per task, and each
+    product then runs on one thread, because a parallel loop nested in a running chunk executes inline
+    (<a href="{{ src(d ~ 'matmul.cc', 84, 110) }}">L84–110</a>).</li>
+  <li><strong>One product at a time</strong>, each on the threaded <code>Gemm</code>, for large products or a
+    reference run (<a href="{{ src(d ~ 'matmul.cc', 111, 113) }}">L111–113</a>).</li>
+</ol>
+
+<p>
+  Finally the added vector axes are squeezed away.
 </p>
 
 <h2 id="gemm">GEMM</h2>
 
 <p>
-  <a href="{{ src(d ~ 'gemm.h') }}"><code>gemm.h</code></a> computes C = α·A·B + β·C on raw f32 memory.
+  <a href="{{ src(d ~ 'gemm.h', 1, 49) }}"><code>gemm.h</code></a> computes C = α·A·B + β·C on raw f32 memory.
   Operands are <code>MatrixView</code>s: a pointer, a shape, and a row and column stride. Swapping the strides
   is a transpose, so <code>Transposed()</code> is free. When β is 0, C is overwritten without being read, so it
-  may start as garbage or NaN. A mismatched inner dimension is a <code>RML_CHECK</code> failure.
+  may start as garbage or NaN. A mismatched inner dimension, or an <code>ldc</code> smaller than C's columns,
+  is a <code>RML_CHECK</code> failure (<a href="{{ src(d ~ 'gemm.cc', 18, 21) }}">gemm.cc L18–21</a>).
 </p>
 
 <h3 id="gemm-ref">GemmRef</h3>
 
 <p>
-  The reference (<a href="{{ src(d ~ 'gemm.cc', 29, 42) }}">gemm.cc L29–42</a>) is the textbook triple loop.
+  The reference (<a href="{{ src(d ~ 'gemm.cc', 33, 46) }}">gemm.cc L33–46</a>) is the textbook triple loop.
   It accumulates each dot product in <code>double</code> and then applies α and β. It is slow and exact
-  enough to test against.
+  enough that the tolerance on every faster path reflects only that path's own rounding.
 </p>
+
+<h3 id="gemm-dispatch">Kernels and dispatch</h3>
+
+<p>
+  <code>Gemm</code> is <code>internal::GemmWithKernel(kAuto, …)</code>
+  (<a href="{{ src(d ~ 'gemm.cc', 626, 629) }}">gemm.cc L626–629</a>). The kernel enum is
+  <code>GemmKernel { kAuto, kPortable, kAvx2, kAvx512 }</code>
+  (<a href="{{ src(d ~ 'gemm.h', 83, 96) }}">gemm.h L83–96</a>). <code>GemmKernelSupported</code> asks the CPU
+  through <code>__builtin_cpu_supports</code> (AVX2 needs <code>avx2</code> and <code>fma</code>, AVX-512 needs
+  <code>avx512f</code>; neither exists off x86-64), and <code>BestGemmKernel</code> caches the widest supported
+  one in a function-local static (<a href="{{ src(d ~ 'gemm.cc', 547, 573) }}">gemm.cc L547–573</a>). The x86
+  kernels are compiled with <code>__attribute__((target(...)))</code>, so the baseline build still runs on any
+  x86-64. Tests and benchmarks can force a kernel through <code>GemmWithKernel</code>, which
+  <code>RML_CHECK</code>s that the CPU can run it.
+</p>
+
+<p>
+  <code>GemmWithKernel</code> (<a href="{{ src(d ~ 'gemm.cc', 575, 620) }}">gemm.cc L575–620</a>) returns early
+  when m or n is 0 and only scales C by β when k is 0. Then the shape of A picks the path:
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 230" role="img" aria-labelledby="la-dispatch-title la-dispatch-desc">
+    <title id="la-dispatch-title">How Gemm picks a path</title>
+    <desc id="la-dispatch-desc">Gemm first resolves the kernel (AVX-512, AVX2 or portable) from the CPU. A single
+      row of A with contiguous B columns goes to GemvRows, which streams B row by row. At most 32 rows with
+      contiguous B goes to SmallM, which streams B through register tiles. Anything larger goes to the blocked
+      Goto/BLIS driver, which packs A and B, or reads a PackedB packed ahead of time.</desc>
+    <rect class="d-box" x="20" y="90" width="150" height="50" rx="6"/>
+    <text x="95" y="111" text-anchor="middle">Gemm(a, b, c)</text>
+    <text class="d-muted" x="95" y="128" text-anchor="middle">BestGemmKernel()</text>
+
+    <line class="d-line" x1="170" y1="115" x2="210" y2="40"/>
+    <line class="d-line" x1="170" y1="115" x2="210" y2="115"/>
+    <line class="d-line" x1="170" y1="115" x2="210" y2="190"/>
+
+    <rect class="d-box" x="210" y="15" width="380" height="50" rx="6"/>
+    <text x="400" y="36" text-anchor="middle">m = 1 → GemvRows</text>
+    <text class="d-muted" x="400" y="53" text-anchor="middle">axpy each row of B into chunks of c; no packing</text>
+
+    <rect class="d-box" x="210" y="90" width="380" height="50" rx="6"/>
+    <text x="400" y="111" text-anchor="middle">m ≤ 32 → SmallM</text>
+    <text class="d-muted" x="400" y="128" text-anchor="middle">8×48 / 4×24 register tiles stream B; no packing</text>
+
+    <rect class="d-box d-accent" x="210" y="165" width="380" height="50" rx="6" fill-opacity="0.15"/>
+    <text x="400" y="186" text-anchor="middle">m &gt; 32 → Blocked&lt;Kernel&gt;</text>
+    <text class="d-muted" x="400" y="203" text-anchor="middle">packs A and B, or reads a PackedB</text>
+  </svg>
+  <figcaption>The two streaming paths need B's columns to be contiguous (<code>col_stride == 1</code>); a
+    transposed B always takes the blocked driver, whose packers read any strides.</figcaption>
+</figure>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Path</th><th>When</th><th>What it does</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>GemvRows</code></td><td>m = 1, B's columns contiguous</td><td>A matrix-vector product (the decode step of every layer). Each row of B is added, scaled by one element of a, into a chunk of c, so B is read once, in order. The axpy is one loop compiled three times, for the baseline, AVX2+FMA and AVX-512 targets. Chunks are 256 to 1024 columns, a multiple of 16, about two per thread, so a task's c stays in L1 (4 KB).</td><td><a href="{{ src(d ~ 'gemm.cc', 320, 372) }}">gemm.cc L320–372</a></td></tr>
+      <tr><td><code>SmallM</code></td><td>m ≤ <code>kSmallM</code> = 32, B's columns contiguous</td><td>Packing B costs about as much as the m·k·n multiply-adds here, so B is read where it lies. A tile of up to 8 rows × 48 columns (AVX-512: 24 zmm accumulators, 3 B vectors, 1 broadcast) or 4 × 24 (AVX2: 12 ymm) stays in registers; partial tiles use masked loads and stores. Rows 8 steps of k ahead are prefetched by hand. The portable tile is 8 × 64, accumulated in memory. Row tiles vary fastest, so tiles sharing a column panel of B run back to back.</td><td><a href="{{ src(d ~ 'gemm.cc', 374, 541) }}">gemm.cc L374–541</a></td></tr>
+      <tr><td><code>Blocked&lt;Kernel&gt;</code></td><td>everything else</td><td>The Goto/BLIS driver below, on the AVX-512, AVX2 or portable micro-kernel.</td><td><a href="{{ src(d ~ 'gemm.cc', 262, 318) }}">gemm.cc L262–318</a></td></tr>
+    </tbody>
+  </table>
+</div>
 
 <h3 id="blocked-gemm">The blocked kernel</h3>
 
 <p>
-  <code>Gemm</code> follows the Goto/BLIS scheme, which the comment at
-  <a href="{{ src(d ~ 'gemm.cc', 44, 61) }}">gemm.cc L44–61</a> lays out. C is cut into kMc×kNc blocks and
-  the shared dimension k into kKc slices. Each block of A is packed into kMr-row panels and each slice of B
-  into kNr-column panels. Both are laid out in the order the micro-kernel reads them, and zero-padded at the
-  edges so the kernel never branches on a partial tile.
+  The blocked driver follows the Goto/BLIS scheme, which the comment at
+  <a href="{{ src(d ~ 'gemm.cc', 48, 73) }}">gemm.cc L48–73</a> lays out. C is cut into kMc×kNc blocks and
+  the shared dimension k into kKc slices (<a href="{{ src(d ~ 'gemm.cc', 76, 78) }}">L76–78</a>). Each block of
+  A is packed into Mr-row panels and each slice of B into Nr-column panels. Both are laid out in the order the
+  micro-kernel reads them, and zero-padded at the edges so the kernel never branches on a partial tile.
 </p>
 
 <figure class="jj-diagram">
   <svg viewBox="0 0 640 390" role="img" aria-labelledby="la-gemm-title la-gemm-desc">
     <title id="la-gemm-title">How Gemm blocks the product</title>
     <desc id="la-gemm-desc">B's k-slice sits above C and A's k-slice to the left of C. One kMc by kNc block of C is
-      highlighted, with the A rows and B columns that feed it. Inside, one kMr by kNr micro-tile of C is held in
-      registers, fed by one packed A panel of kMr rows and one packed B panel of kNr columns.</desc>
+      highlighted, with the A rows and B columns that feed it. Inside, one Mr by Nr micro-tile of C is held in
+      registers, fed by one packed A panel of Mr rows and one packed B panel of Nr columns.</desc>
     <text class="d-muted" x="405" y="22" text-anchor="middle">B: one k-slice (kKc × n)</text>
     <rect class="d-box" x="250" y="30" width="310" height="80"/>
     <rect class="d-box" x="250" y="30" width="180" height="80" fill-opacity="0.15"/>
@@ -187,61 +272,86 @@
     <text x="340" y="195" text-anchor="middle">one C block</text>
     <text x="405" y="290" text-anchor="middle">C (m × n)</text>
     <line class="d-line" x1="280" y1="140" x2="470" y2="140"/>
-    <text x="474" y="144">kMr × kNr tile</text>
+    <text x="474" y="144">Mr × Nr tile</text>
     <text class="d-muted" x="474" y="160">in registers</text>
 
     <text class="d-muted" x="30" y="370">outlined: the panels one micro-kernel call reads, and the tile it updates</text>
   </svg>
   <figcaption>One unit of work owns one C block for one k-slice. It packs its A block (96×256 floats, 96 KB,
-    meant to stay in L2) and walks kMr×kNr tiles across it. Each step of the micro-kernel reads one B panel
-    (at most 256×12 floats, 12 KB, meant for L1).</figcaption>
+    meant to stay in L2) and walks Mr×Nr tiles across it. Each micro-kernel call reads one B panel
+    (at most 256×32 floats, 32 KB, meant for L1).</figcaption>
 </figure>
 
 <p>
-  The micro-kernel (<a href="{{ src(d ~ 'gemm.cc', 85, 104) }}">gemm.cc L85–104</a>) holds a kMr×kNr tile
-  of C as kMr·kNr/4 four-float vectors (<code>Vec4</code>, a GCC vector extension, so the same source
-  compiles to SSE or NEON). For each k step it does one rank-1 update: kNr/4 vector loads of B, kMr broadcasts
-  of A, and kMr·kNr/4 multiply-adds. The tile size is chosen to fill the register file
-  (<a href="{{ src(d ~ 'gemm.cc', 66, 77) }}">gemm.cc L66–77</a>):
+  Each micro-kernel holds an Mr×Nr tile of C in vector registers. For each k step it does one rank-1 update:
+  Nr/width vector loads of B, Mr broadcasts of A, and Mr·Nr/width multiply-adds. The tile size is chosen to
+  fill the register file:
 </p>
 
 <div class="jj-table-wrap">
   <table>
-    <thead><tr><th>Target</th><th>kMr × kNr</th><th>Vector registers</th><th>Budget</th></tr></thead>
+    <thead><tr><th>Kernel</th><th>Mr × Nr</th><th>Register budget</th><th>Source</th></tr></thead>
     <tbody>
-      <tr><td>x86-64 (SSE)</td><td>6 × 8</td><td>16</td><td>12 accumulators, 2 B vectors, 1 broadcast</td></tr>
-      <tr><td>aarch64 (NEON)</td><td>8 × 12</td><td>32</td><td>24 accumulators, 3 B vectors, 1–2 broadcasts. Half as many loads per multiply-add.</td></tr>
+      <tr><td>AVX-512 (<code>_mm512_fmadd_ps</code>)</td><td>12 × 32</td><td>24 of the 32 zmm registers as accumulators, 2 B vectors, 1 broadcast: 768 flops per k step from 14 loads.</td><td><a href="{{ src(d ~ 'gemm.cc', 158, 186) }}">gemm.cc L158</a></td></tr>
+      <tr><td>AVX2 + FMA</td><td>6 × 16</td><td>12 of the 16 ymm registers, 2 B vectors, 1 broadcast: two FMAs per broadcast.</td><td><a href="{{ src(d ~ 'gemm.cc', 128, 156) }}">gemm.cc L128</a></td></tr>
+      <tr><td>Portable, x86-64 (SSE)</td><td>6 × 8</td><td>Four-float <code>Vec4</code> (a GCC vector extension): 12 accumulators of 16 registers, 2 B vectors, 1 broadcast.</td><td rowspan="2"><a href="{{ src(d ~ 'gemm.cc', 87, 125) }}">gemm.cc L87</a></td></tr>
+      <tr><td>Portable, aarch64 (NEON)</td><td>8 × 12</td><td>24 accumulators of 32 registers, 3 B vectors, 1–2 broadcasts.</td></tr>
     </tbody>
   </table>
 </div>
 
 <p>
-  The packers (<a href="{{ src(d ~ 'gemm.cc', 106, 138) }}">gemm.cc L106–138</a>) copy through the views'
+  The packers (<a href="{{ src(d ~ 'gemm.cc', 189, 223) }}">gemm.cc L189–223</a>) copy through the views'
   strides, which is how transposed operands are handled. <code>PackB</code> takes a <code>memcpy</code> fast
   path when a panel is full and B's columns are contiguous. <code>StoreTile</code>
-  (<a href="{{ src(d ~ 'gemm.cc', 140, 155) }}">L140–155</a>) writes α·tile plus β·C on the first k-slice,
+  (<a href="{{ src(d ~ 'gemm.cc', 225, 241) }}">L225–241</a>) writes α·tile plus β·C on the first k-slice,
   and adds α·tile on every later slice, so β is applied exactly once.
+</p>
+
+<h3 id="packed-b">PackedB: packing a weight once</h3>
+
+<p>
+  For more than 32 rows the blocked driver repacks B on every call. A model's constant weight never changes,
+  so <code>PackedB</code> (<a href="{{ src(d ~ 'gemm.h', 55, 81) }}">gemm.h L55–81</a>) packs it once for the
+  kernel chosen when it is made: every k-slice's panels, laid out at offset p0·padded_n as the driver expects
+  (<code>PackAllB</code>, <a href="{{ src(d ~ 'gemm.cc', 243, 260) }}">gemm.cc L243–260</a>).
+  <code>GemmPackedB</code> (<a href="{{ src(d ~ 'gemm.cc', 653, 671) }}">L653–671</a>) passes the packed
+  buffer to <code>Blocked</code>, or falls back to <code>GemmWithKernel</code> on the original view when A has
+  32 rows or fewer (where B is streamed, not packed) or k or n is 0. That is why the original B must stay alive
+  and unchanged. <code>GemmPacksB(rows)</code> (<a href="{{ src(d ~ 'gemm.cc', 631, 631) }}">L631</a>) says
+  whether packing is worth it.
+</p>
+
+<p>
+  Its caller is the graph executor's op compiler: a <code>matmul</code> node whose second input is a constant
+  2-D f32 weight, with enough rows that <code>GemmPacksB</code> holds, gets a kernel that calls
+  <code>MatMulPacked</code> on a <code>PackedB</code> made at load
+  (<a href="{{ src('rml/graph/ops.cc', 929, 944) }}">rml/graph/ops.cc L929–944</a>).
 </p>
 
 <h3 id="gemm-threads">Threading</h3>
 
 <p>
-  <code>Gemm</code> (<a href="{{ src(d ~ 'gemm.cc', 159, 212) }}">gemm.cc L159–212</a>) returns early when
-  m or n is 0, and only scales C by β when k is 0. For each k-slice, two parallel loops run:
+  For each k-slice the blocked driver (<a href="{{ src(d ~ 'gemm.cc', 277, 317) }}">gemm.cc L277–317</a>) runs
+  up to two parallel loops:
 </p>
 
 <ol>
-  <li>B's slice is packed, split by column chunk (<a href="{{ src(d ~ 'gemm.cc', 177, 177) }}">L177</a>).
-    The packed buffer is a <code>std::vector</code> sized for one slice, allocated once per call.</li>
+  <li>Unless B was packed ahead of time, B's slice is packed, split by column chunk. Packing is a copy, so it
+    is threaded only when the slice has at least 2¹⁸ elements (<code>kParallelPackElements</code>); otherwise
+    one task packs it all (<a href="{{ src(d ~ 'gemm.cc', 280, 289) }}">L280–289</a>). The packed buffer is a
+    <code>std::vector</code> sized for one slice, allocated once per call.</li>
   <li>The product runs over (row block, column chunk) pairs, which own disjoint tiles of C, so no
-    synchronization is needed (<a href="{{ src(d ~ 'gemm.cc', 183, 186) }}">L183–186</a>). Each pair packs
-    its own A block into a 64-byte-aligned stack buffer, and re-packs only when the row block changes. The
+    synchronization is needed (<a href="{{ src(d ~ 'gemm.cc', 290, 316) }}">L290–316</a>). Each task packs
+    its A block into a 64-byte-aligned stack buffer, and re-packs only when the row block changes. The
     cost of re-packing A is 1/kNc of the pair's multiply-adds.</li>
 </ol>
 
 <p>
-  The grain is <code>max(1, 65536 / unit_flops)</code>, where a unit is one block's multiply-adds for this
-  slice. A unit is therefore about 64K multiply-adds at minimum, which keeps small products serial. Because
+  The grain is <code>max(1, kMinTaskMacs / unit_flops)</code>, where a unit is one block's multiply-adds for
+  this slice and <code>kMinTaskMacs</code> is 2²⁰. Waking the pool's workers costs tens of microseconds, so
+  every task gets about a million multiply-adds and small products run on the calling thread
+  (<a href="{{ src(d ~ 'gemm.cc', 80, 85) }}">L80–85</a>). The streaming paths use the same floor. Because
   <code>ParallelFor</code>'s chunk boundaries depend only on the range, grain and thread count
   ({{ link('runtime', 'chunking', '#chunking') }}), and each tile of C is summed by one thread in a fixed
   order, the result does not change from run to run.
@@ -251,23 +361,49 @@
 
 <p>
   <a href="{{ src(d ~ 'gemm_benchmark.cc') }}"><code>gemm_benchmark.cc</code></a> is a Google Benchmark target
-  (<code>rml_cc_benchmark</code> in <a href="{{ src(d ~ 'BUILD.bazel', 55, 61) }}">BUILD.bazel L55</a>).
-  It fills square A and B from a fixed-seed <code>mt19937</code> and reports GFLOP/s, counting 2n³ flops per
-  product (<a href="{{ src(d ~ 'gemm_benchmark.cc', 25, 29) }}">L25–29</a>).
+  (<code>rml_cc_benchmark</code> in <a href="{{ src(d ~ 'BUILD.bazel', 56, 62) }}">BUILD.bazel L56</a>).
+  It fills A and B from a fixed-seed <code>mt19937</code> and reports GFLOP/s, counting 2·m·k·n flops per
+  product (<a href="{{ src(d ~ 'gemm_benchmark.cc', 25, 29) }}">L25–29</a>), or GB/s of B read for the
+  matrix-vector case.
 </p>
 
 <div class="jj-table-wrap">
   <table>
-    <thead><tr><th>Benchmark</th><th>Sizes n</th><th>Threads</th><th>Source</th></tr></thead>
+    <thead><tr><th>Benchmark</th><th>Shapes</th><th>Threads</th><th>Source</th></tr></thead>
     <tbody>
-      <tr><td><code>BM_GemmRef</code></td><td>64, 128, 256</td><td>1</td><td><a href="{{ src(d ~ 'gemm_benchmark.cc', 31, 40) }}">L31</a></td></tr>
-      <tr><td><code>BM_Gemm</code></td><td>64, 256, 1024</td><td>1, 4 (wall-clock time)</td><td><a href="{{ src(d ~ 'gemm_benchmark.cc', 42, 57) }}">L42</a></td></tr>
+      <tr><td><code>BM_GemmRef</code></td><td>n³ for n = 64, 128, 256</td><td>1</td><td><a href="{{ src(d ~ 'gemm_benchmark.cc', 31, 40) }}">L31</a></td></tr>
+      <tr><td><code>BM_Gemm</code></td><td>n³ for n = 64, 256, 1024</td><td>1, 4 (wall-clock time)</td><td><a href="{{ src(d ~ 'gemm_benchmark.cc', 42, 57) }}">L42</a></td></tr>
+      <tr><td><code>BM_Gemv</code></td><td>1 × n × n for n = 1024, 4096 (the decode shape)</td><td>1, 4</td><td><a href="{{ src(d ~ 'gemm_benchmark.cc', 59, 76) }}">L59</a></td></tr>
+      <tr><td><code>BM_GemmFewRows</code></td><td>8 × 256 × 1024, 8 × 512 × 784, 4 × 1024 × 1024 (1 and 4 threads); 16, 32 and 64 × 864 × 303 (1 thread)</td><td>1, 4</td><td><a href="{{ src(d ~ 'gemm_benchmark.cc', 78, 102) }}">L78</a></td></tr>
     </tbody>
   </table>
 </div>
 
 <p>
-  No results are committed at the pin, so this page quotes none. Run it with
+  rml's <a href="{{ src('docs/kernels.md', 87, 98) }}"><code>docs/kernels.md</code></a> records these results
+  on its Linux x86_64 development container (4 vCPUs, Xeon at 2.8 GHz with AVX-512, GCC 13 <code>-O3</code>),
+  which is not the Apple Silicon target:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Benchmark</th><th>1 thread</th><th>4 threads</th></tr></thead>
+    <tbody>
+      <tr><td><code>GemmRef</code> 256³</td><td>1.5 GFLOP/s</td><td>—</td></tr>
+      <tr><td><code>Gemm</code> 64³</td><td>67 GFLOP/s</td><td>67 GFLOP/s</td></tr>
+      <tr><td><code>Gemm</code> 256³</td><td>117 GFLOP/s</td><td>152 GFLOP/s</td></tr>
+      <tr><td><code>Gemm</code> 1024³</td><td>113 GFLOP/s</td><td>376 GFLOP/s</td></tr>
+      <tr><td><code>Gemm</code> 1 × 1024 × 1024</td><td>26 GB/s</td><td>33 GB/s</td></tr>
+      <tr><td><code>Gemm</code> 1 × 4096 × 4096</td><td>19 GB/s</td><td>60 GB/s</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The same doc puts the AVX-512 kernel at 6–7× the SSE-only portable kernel it replaced (16.5 and 60 GFLOP/s
+  for 1024³ on 1 and 4 threads). For the streaming path it gives 80 GFLOP/s for 8 × 256 × 1024 on one core,
+  and 88–89 GFLOP/s at 16 and 32 rows of 864 × 303 against 41–60 packed; at 64 rows packing wins again (72
+  against 67) (<a href="{{ src('docs/kernels.md', 48, 63) }}">kernels.md L48–63</a>). Run it with
   <code>bazel run --config=opt //rml/linalg:gemm_benchmark</code>.
 </p>
 
@@ -442,8 +578,8 @@
     <thead><tr><th>File</th><th>Tests</th><th>What they pin down</th></tr></thead>
     <tbody>
       <tr><td><a href="{{ src(d ~ 'matrix_test.cc') }}"><code>matrix_test.cc</code></a></td><td>4</td><td>Round trips through tensors, strided views and vectors, product, transpose and identity, and a mismatched product aborting.</td></tr>
-      <tr><td><a href="{{ src(d ~ 'gemm_test.cc') }}"><code>gemm_test.cc</code></a></td><td>5</td><td>A known product; α, β and transposed views; β = 0 ignoring garbage in C; mismatched shapes aborting. Then <code>Gemm</code> against <code>GemmRef</code> over 14 cases (<a href="{{ src(d ~ 'gemm_test.cc', 99, 107) }}">L99</a>): empty m, n or k, every transpose combination, 1×1000 and 1000×1 shapes, k = 513 across slice edges, and 1 to 8 threads. C has three padding columns that must be left untouched.</td></tr>
-      <tr><td><a href="{{ src(d ~ 'matmul_test.cc') }}"><code>matmul_test.cc</code></a></td><td>8</td><td>Dot, matrix products, vector operands dropping their axis, a transposed view with no copy, broadcast batch axes, a large product against <code>MatMulRef</code>, and mismatched shapes aborting.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'gemm_test.cc') }}"><code>gemm_test.cc</code></a></td><td>6</td><td>A known product; α, β and transposed views; β = 0 ignoring garbage in C; mismatched shapes aborting; <code>BestGemmKernel</code> never <code>kAuto</code> and always supported. Then every kernel (<code>kAuto</code>, portable, AVX2, AVX-512, each skipped when the CPU lacks it) against <code>GemmRef</code>, both through <code>GemmWithKernel</code> and through a <code>PackedB</code>, over 29 cases (<a href="{{ src(d ~ 'gemm_test.cc', 112, 134) }}">L112–134</a>): empty m, n or k, every transpose combination, single-row products, 2 to 25 rows through the streaming path with full and partial column tiles, more than 32 rows through the blocked driver, k = 513 across slice edges, and 1 to 8 threads. The tolerance is 4e-6·(k + 1), and C has three padding columns that must be left untouched.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'matmul_test.cc') }}"><code>matmul_test.cc</code></a></td><td>10</td><td>Dot, matrix products, vector operands dropping their axis, a transposed view with no copy, broadcast batch axes, a matrix broadcast against a batch, a shared weight with contiguous, permuted and row-strided batches (folded and per-batch paths agreeing), many small attention-shaped products in parallel, a large product against <code>MatMulRef</code>, and mismatched shapes aborting.</td></tr>
       <tr><td><a href="{{ src(d ~ 'lu_test.cc') }}"><code>lu_test.cc</code></a></td><td>7</td><td>P·A = L·U, and solve and inverse at sizes 1 to 33; a vector right-hand side; pivoting past a zero diagonal; known determinants; singular matrices detected; non-square input aborting.</td></tr>
       <tr><td><a href="{{ src(d ~ 'qr_test.cc') }}"><code>qr_test.cc</code></a></td><td>5</td><td>Q orthonormal and R upper triangular for square, tall and wide shapes; a zero column; least squares recovering an exact linear model, leaving a residual orthogonal to the columns, and rejecting rank-deficient and wide inputs.</td></tr>
       <tr><td><a href="{{ src(d ~ 'cholesky_test.cc') }}"><code>cholesky_test.cc</code></a></td><td>4</td><td>L·Lᵀ = A and solves at sizes 1 to 40, a known factor, and matrices that are not positive definite rejected.</td></tr>

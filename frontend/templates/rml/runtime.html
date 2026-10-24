@@ -5,10 +5,12 @@
 {% set th = "rml/core/thread_pool.h" %}
 {% set tc = "rml/core/thread_pool.cc" %}
 {% set arch = "docs/architecture.md" %}
+{% set bh = "rml/core/buffer_pool.h" %}
+{% set bc = "rml/core/buffer_pool.cc" %}
 <header class="jj-header">
   <h1>Errors, memory and threads</h1>
   <p class="tagline">
-    Three small files in <code>rml/core</code> set the rules the rest of the library runs under: how a
+    A few small files in <code>rml/core</code> set the rules the rest of the library runs under: how a
     function reports failure without throwing, where tensor memory comes from and how it is counted, and how
     a loop is split across threads so the result is the same on every run.
   </p>
@@ -18,9 +20,11 @@
   In short: recoverable failures return <code>Status</code> or <code>Expected&lt;T&gt;</code>, and bugs
   abort through <code>RML_CHECK</code>; nothing throws. Tensor buffers come from <code>AlignedAlloc</code>,
   which hands out 64-byte-aligned blocks and keeps four process-wide counters. <code>Arena</code> is a bump
-  allocator over one such block. <code>ThreadPool::ParallelFor</code> cuts a range into chunks whose
+  allocator over one such block, and a thread-scoped <code>BufferPool</code> recycles freed tensor buffers
+  by size. <code>ThreadPool::ParallelFor</code> cuts a range into chunks whose
   boundaries depend only on the range, the grain and the thread count. Threads claim chunks from an atomic
-  counter, a dispatch allocates nothing, and a nested call runs inline.
+  counter, idle workers spin briefly before sleeping, a dispatch allocates nothing, and a nested call runs
+  inline.
 </p>
 
 <p>
@@ -117,7 +121,8 @@
   Every tensor buffer is 64-byte aligned: one cache line on x86 and Apple Silicon, and enough for any SIMD
   load (<a href="{{ src(ah, 6, 9) }}">L6–9</a>). <code>Storage::Allocate</code>, which backs every
   {{ link('tensors', 'Tensor', '#storage-tensor') }} rml allocates itself, calls
-  <a href="{{ src('rml/core/tensor.cc', 123, 124) }}"><code>AlignedAlloc</code></a>.
+  <a href="{{ src('rml/core/tensor.cc', 150, 151) }}"><code>AlignedAlloc</code></a>, unless a
+  <a href="#buffer-pool"><code>BufferPool</code></a> is installed on the thread.
 </p>
 
 <div class="jj-table-wrap">
@@ -211,16 +216,54 @@
   resets and allocates 100 times and checks that the allocation counter does not move. The design notes say
   per-step scratch comes from an arena reset at each step (<a href="{{ src(arch, 66, 67) }}">L66–67</a>).
   At this commit, though, no code outside <code>rml/core</code> uses <code>Arena</code>, so it is
-  available rather than wired into decoding.
+  available rather than wired into decoding. The graph executor reuses memory through a
+  <a href="#buffer-pool"><code>BufferPool</code></a> instead.
+</p>
+
+<h3 id="buffer-pool">BufferPool</h3>
+
+<p>
+  A model run with static shapes allocates the same sizes every time.
+  <a href="{{ src(bh, 21, 42) }}"><code>BufferPool</code></a> caches freed tensor buffers keyed by exact
+  size, so later runs reuse warm memory instead of mapping and faulting in fresh pages for every op
+  (<a href="{{ src(bh, 4, 11) }}">L4–11</a>). It is opt-in per thread: while a
+  <code>ScopedBufferPool</code> is alive, every <code>Storage::Allocate</code> on that thread draws from
+  the pool.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Acquire</code></td><td><code>void* Acquire(size_t bytes)</code></td><td>Pops a cached block of exactly <code>bytes</code> under the pool's mutex, or falls through to <code>AlignedAlloc</code>; null if that fails. A block is never handed out for a different size.</td><td><a href="{{ src(bc, 24, 36) }}">L24</a></td></tr>
+      <tr><td><code>Release</code></td><td><code>void Release(void* ptr, size_t bytes)</code></td><td>Pushes the block onto that size's free list. Thread-safe, so a tensor can die on any thread.</td><td><a href="{{ src(bc, 38, 42) }}">L38</a></td></tr>
+      <tr><td><code>cached_bytes</code>, <code>cached_blocks</code></td><td><code>size_t</code></td><td>What is sitting in the free lists. The destructor <code>AlignedFree</code>s all of it.</td><td><a href="{{ src(bc, 18, 22) }}">L18</a></td></tr>
+      <tr><td><code>CurrentBufferPool</code>, <code>CurrentBufferPoolShared</code></td><td><code>BufferPool*</code>, <code>shared_ptr&lt;BufferPool&gt;</code></td><td>The pool installed on this thread, a <code>thread_local shared_ptr</code>, or null.</td><td><a href="{{ src(bc, 14, 14) }}">L14</a></td></tr>
+      <tr><td><code>ScopedBufferPool</code></td><td><code>explicit ScopedBufferPool(shared_ptr&lt;BufferPool&gt;)</code></td><td>Swaps the pool in and restores the previous one on destruction, so scopes nest.</td><td><a href="{{ src(bc, 59, 62) }}">L59</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The hand-back happens in <code>tensor.cc</code>. A pooled
+  <a href="{{ src('rml/core/tensor.cc', 143, 153) }}"><code>Storage::Allocate</code></a> wraps the block
+  with a <a href="{{ src('rml/core/tensor.cc', 124, 141) }}"><code>PooledBlock</code></a> owner that holds a
+  <code>shared_ptr</code> to the pool and calls <code>Release</code> in its destructor. So a tensor that
+  outlives the scope still returns its buffer when it dies, and it keeps the pool alive until then.
+  Blocks come from <code>AlignedAlloc</code>, so a cache miss shows up in the allocation counters and a
+  reused block does not. The one caller at this commit is the graph executor, which keeps a
+  <code>shared_ptr&lt;BufferPool&gt;</code> and opens a <code>ScopedBufferPool</code> at the start of each
+  run (<a href="{{ src('rml/graph/executor.cc', 93, 93) }}">executor.cc L93</a>); see
+  {{ link('executor', 'Executing a graph') }}.
 </p>
 
 <h2 id="thread-pool">ThreadPool</h2>
 
 <p>
-  <a href="{{ src(th, 27, 88) }}"><code>ThreadPool</code></a> starts <code>n − 1</code> worker threads that
-  wait on a condition variable. The thread calling <code>ParallelFor</code> works too, so
+  <a href="{{ src(th, 33, 94) }}"><code>ThreadPool</code></a> starts <code>n − 1</code> worker threads that
+  spin for a short while after each loop and then sleep on a condition variable. The thread calling <code>ParallelFor</code> works too, so
   <code>ThreadPool(1)</code> has no workers and runs everything inline.
-  <a href="{{ src(tc, 47, 50) }}"><code>ThreadPool::Default()</code></a> is a process-wide pool sized by
+  <a href="{{ src(tc, 62, 65) }}"><code>ThreadPool::Default()</code></a> is a process-wide pool sized by
   <code>RML_NUM_THREADS</code>, or else by <code>hardware_concurrency()</code>. It is created on first use and
   intentionally never destroyed.
 </p>
@@ -229,10 +272,11 @@
   <table>
     <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
     <tbody>
-      <tr><td><code>ThreadPool</code></td><td><code>explicit ThreadPool(int num_threads)</code></td><td><code>num_threads</code> counts the caller. Zero aborts. The destructor sets <code>stop_</code>, wakes everyone and joins.</td><td><a href="{{ src(tc, 32, 45) }}">L32</a></td></tr>
-      <tr><td><code>ParallelFor</code></td><td><code>void ParallelFor(int64_t begin, int64_t end, int64_t grain, Fn&amp;&amp; fn)</code></td><td>Calls <code>fn(lo, hi)</code> on disjoint chunks covering <code>[begin, end)</code> and returns when all have run.</td><td><a href="{{ src(th, 41, 64) }}">L41</a></td></tr>
-      <tr><td>free <code>ParallelFor</code></td><td>same signature</td><td>Runs on <code>ThreadPool::Default()</code>.</td><td><a href="{{ src(th, 90, 94) }}">L90</a></td></tr>
-      <tr><td><code>kChunksPerThread</code></td><td><code>constexpr int64_t = 4</code></td><td>At most four chunks per thread. More would smooth out uneven chunk costs; fewer would mean less per-chunk overhead.</td><td><a href="{{ src(tc, 18, 20) }}">L18</a></td></tr>
+      <tr><td><code>ThreadPool</code></td><td><code>explicit ThreadPool(int num_threads)</code></td><td><code>num_threads</code> counts the caller. Zero aborts. The destructor sets the atomic <code>stop_</code>, wakes any sleepers and joins.</td><td><a href="{{ src(tc, 49, 60) }}">L49</a></td></tr>
+      <tr><td><code>ParallelFor</code></td><td><code>void ParallelFor(int64_t begin, int64_t end, int64_t grain, Fn&amp;&amp; fn)</code></td><td>Calls <code>fn(lo, hi)</code> on disjoint chunks covering <code>[begin, end)</code> and returns when all have run.</td><td><a href="{{ src(th, 47, 70) }}">L47</a></td></tr>
+      <tr><td>free <code>ParallelFor</code></td><td>same signature</td><td>Runs on <code>ThreadPool::Default()</code>.</td><td><a href="{{ src(th, 96, 100) }}">L96</a></td></tr>
+      <tr><td><code>RML_THREAD_SPIN_US</code></td><td>environment variable, microseconds</td><td>How long an idle worker spins before it sleeps; default 50, and 0 sleeps at once. The source comment measures spinning as 15–25% faster for models of many small ops on an idle machine and up to 25% slower on one whose cores are busy with other work.</td><td><a href="{{ src(tc, 27, 37) }}">L27</a></td></tr>
+      <tr><td><code>kChunksPerThread</code></td><td><code>constexpr int64_t = 4</code></td><td>At most four chunks per thread. More would smooth out uneven chunk costs; fewer would mean less per-chunk overhead.</td><td><a href="{{ src(tc, 19, 21) }}">L19</a></td></tr>
     </tbody>
   </table>
 </div>
@@ -240,11 +284,11 @@
 <h3 id="chunking">How a range is chunked</h3>
 
 <ol>
-  <li><a href="{{ src(tc, 52, 57) }}"><code>NumChunks</code></a> returns 1 when the pool has no workers or the
+  <li><a href="{{ src(tc, 67, 72) }}"><code>NumChunks</code></a> returns 1 when the pool has no workers or the
     calling thread is already running a chunk. Otherwise it returns <code>n / grain</code>, clamped to
     between 1 and <code>4 × num_threads</code>.</li>
   <li>With one chunk, <code>ParallelFor</code> calls <code>fn(begin, end)</code> directly and never touches
-    the pool (<a href="{{ src(th, 48, 50) }}">L48–50</a>).</li>
+    the pool (<a href="{{ src(th, 54, 57) }}">L54–57</a>).</li>
   <li>Otherwise <code>chunk_size = ⌈n / num_chunks⌉</code>, and the job runs <code>⌈n / chunk_size⌉</code>
     chunks. Chunk <code>i</code> covers <code>[begin + i·chunk_size, min(that + chunk_size, end))</code>.
     Only the last chunk can be short. Since <code>num_chunks ≤ n / grain</code>, every other chunk has at
@@ -293,7 +337,7 @@
 
 <p>
   Chunk boundaries depend only on <code>begin</code>, <code>end</code>, <code>grain</code> and the thread
-  count (<a href="{{ src(th, 8, 10) }}">L8–10</a>). A kernel that writes each output element from inside one
+  count (<a href="{{ src(th, 8, 11) }}">L8–11</a>). A kernel that writes each output element from inside one
   chunk, and reduces in a fixed order within it, gets bit-identical results however the chunks are
   scheduled. Changing the thread count changes the boundaries, so a reduction split across chunks can round
   differently on 4 threads than on 8. <code>RML_NUM_THREADS</code> pins it. See
@@ -304,34 +348,43 @@
 
 <p>
   <code>ParallelFor</code> takes any callable, but the pool can't store a template type. Instead it builds a
-  <a href="{{ src(th, 67, 71) }}"><code>Job</code></a> on the caller's stack: a plain function pointer that
+  <a href="{{ src(th, 73, 77) }}"><code>Job</code></a> on the caller's stack: a plain function pointer that
   casts a <code>void*</code> back to the callable, plus the chunk layout. No <code>std::function</code>, so no
-  heap allocation. <a href="{{ src(tc, 59, 75) }}"><code>Run</code></a> then:
+  heap allocation. <a href="{{ src(tc, 74, 96) }}"><code>Run</code></a> then:
 </p>
 
 <ol>
   <li>Locks <code>call_mutex_</code>, so two threads calling <code>ParallelFor</code> on the same pool take
     turns rather than sharing workers.</li>
-  <li>Under <code>mutex_</code>, publishes the job, resets <code>next_chunk_</code> to 0, sets
-    <code>pending_workers_</code> to the worker count, bumps <code>generation_</code> and wakes the
-    workers.</li>
-  <li>Works on chunks itself through <a href="{{ src(tc, 77, 84) }}"><code>WorkOn</code></a>, which claims the
+  <li>Publishes the job, resets <code>next_chunk_</code> to 0 and sets <code>pending_workers_</code> to the
+    worker count, all atomics, then bumps <code>generation_</code>. Spinning workers see the new generation
+    on their own; only if <code>sleeping_workers_</code> is above zero does it take <code>sleep_mutex_</code>
+    and notify the condition variable.</li>
+  <li>Works on chunks itself through <a href="{{ src(tc, 98, 105) }}"><code>WorkOn</code></a>, which claims the
     next index with <code>fetch_add</code> until none are left.</li>
-  <li>Waits until every worker has reported in, even ones that found no chunk left. The job lives in this
-    stack frame, so returning earlier would leave a worker holding a dangling pointer.</li>
+  <li>Spins until <code>pending_workers_</code> reaches zero, yielding its core after
+    <code>kSpinsBeforeYield</code> = 256 polls (<a href="{{ src(tc, 23, 25) }}">L23–25</a>). It waits for
+    every worker to leave the job, even ones that found no chunk left: the job lives in this stack frame,
+    so returning earlier would leave a worker holding a dangling pointer.</li>
 </ol>
 
 <p>
-  A <a href="{{ src(tc, 86, 103) }}">worker</a> sleeps until <code>generation_</code> changes or
-  <code>stop_</code> is set, runs <code>WorkOn</code>, then decrements <code>pending_workers_</code> and
-  signals the caller when it reaches zero. Each worker remembers the last generation it ran, so a wakeup
-  without a new job sends it back to sleep.
+  A <a href="{{ src(tc, 107, 131) }}">worker</a> first spins on <code>generation_</code> for up to
+  <code>RML_THREAD_SPIN_US</code>, checking the clock every 64 polls, since in a model the next parallel
+  loop usually follows within microseconds. If nothing arrives it increments
+  <code>sleeping_workers_</code> and waits on the condition variable until <code>generation_</code> changes
+  or <code>stop_</code> is set. It then runs <code>WorkOn</code> and decrements
+  <code>pending_workers_</code> with release order, which the caller's acquire load pairs with. Each worker
+  remembers the last generation it ran, so a wakeup without a new job sends it back to waiting. The
+  <code>generation_</code> bump and the sleeper's increment are sequentially consistent, so either the
+  sleeper sees the new job or the caller sees it asleep and wakes it
+  (<a href="{{ src(tc, 79, 88) }}">L79–88</a>).
 </p>
 
 <h3 id="nesting">Nested calls</h3>
 
 <p>
-  A <code>thread_local</code> flag, <a href="{{ src(tc, 15, 16) }}"><code>in_parallel_region</code></a>, is set
+  A <code>thread_local</code> flag, <a href="{{ src(tc, 16, 17) }}"><code>in_parallel_region</code></a>, is set
   while a thread runs chunks. A <code>ParallelFor</code> called from inside a chunk sees it, gets one chunk
   from <code>NumChunks</code>, and runs inline. So a parallel kernel can call another parallel kernel, for
   a kernel that calls GEMM from inside its own chunks, without deadlocking on <code>call_mutex_</code> or
@@ -344,7 +397,10 @@
   <table>
     <thead><tr><th>Caller</th><th>What is split</th><th>Source</th></tr></thead>
     <tbody>
-      <tr><td>GEMM</td><td>Output row blocks. The grain is chosen so each unit is about 64K multiply-adds, which keeps small products serial. See {{ link('linalg', 'Linear algebra') }}.</td><td><a href="{{ src('rml/linalg/gemm.cc', 177, 186) }}">gemm.cc L177</a></td></tr>
+      <tr><td>GEMM</td><td>Units of one row block by one column chunk. The grain gives each task at least <code>kMinTaskMacs</code> = 2<sup>20</sup> multiply-adds, which keeps small products on the calling thread; packing B is threaded only when its panel has at least 2<sup>18</sup> elements. The few-row and one-row paths split column tiles the same way. See {{ link('linalg', 'Linear algebra') }}.</td><td><a href="{{ src('rml/linalg/gemm.cc', 277, 292) }}">gemm.cc L277</a></td></tr>
+      <tr><td>Batched matmul</td><td>When every product in a batch is under 2<sup>22</sup> multiply-adds (attention heads, say), the batch is split across threads with about 2<sup>20</sup> multiply-adds per task, and each product runs on one thread. See {{ link('linalg', 'Linear algebra') }}.</td><td><a href="{{ src('rml/linalg/matmul.cc', 101, 111) }}">matmul.cc L101</a></td></tr>
+      <tr><td>Graph kernels</td><td>Elementwise ops in chunks of 2<sup>16</sup> elements; softmax, norms and reductions by rows, enough rows per task to cover a chunk. See {{ link('executor', 'Executing a graph') }}.</td><td><a href="{{ src('rml/graph/kernels.cc', 112, 130) }}">kernels.cc L112</a></td></tr>
+      <tr><td>Fused programs</td><td>Row tiles of 512 elements, about 64K element-steps per task. See {{ link('lowering', 'Lowering and fast CPU') }}.</td><td><a href="{{ src('rml/graph/fusion.cc', 233, 236) }}">fusion.cc L233</a></td></tr>
       <tr><td>Attention</td><td>(query position, KV head) pairs, grain 1. See {{ link('decoder', 'The decoder') }}.</td><td><a href="{{ src('rml/llm/attention.cc', 162, 162) }}">attention.cc L162</a></td></tr>
       <tr><td>LLM kernels</td><td>Rows, grain 16. See {{ link('kernels', 'Kernels') }}.</td><td><a href="{{ src('rml/llm/kernels.cc', 154, 154) }}">kernels.cc L154</a></td></tr>
       <tr><td>Classical models</td><td>Trees and prediction rows in a random forest, features (histogram building) and prediction rows in gradient boosting, query points in k-NN. See {{ link('classical', 'Classical ML') }}.</td><td><a href="{{ tree('rml/classical') }}">rml/classical</a></td></tr>
@@ -360,6 +416,7 @@
     <tbody>
       <tr><td><a href="{{ src('rml/core/status_test.cc') }}"><code>status_test.cc</code></a></td><td>7</td><td>Default status is OK; codes and messages round-trip; <code>Expected</code> holds a value or an error; the macros propagate; move-only types work; <code>RML_CHECK</code> aborts with its message.</td></tr>
       <tr><td><a href="{{ src('rml/core/allocator_test.cc') }}"><code>allocator_test.cc</code></a></td><td>13</td><td>Alignment, default of 64, null free, a huge request returning null, a bad alignment aborting, live and peak counters, arena bumping, large alignment, a full arena returning null, mark/rewind/reset, rewinding forward aborting, moves, and an arena that never touches the heap.</td></tr>
+      <tr><td><a href="{{ src('rml/core/buffer_pool_test.cc') }}"><code>buffer_pool_test.cc</code></a></td><td>6</td><td>A block comes back for the same size and never for another; tensors in a scope draw from the pool and reuse the same warm block; a tensor outliving the scope, or the pool handle, returns its buffer later; scopes nest; releases from four threads all land in the pool.</td></tr>
       <tr><td><a href="{{ src('rml/core/thread_pool_test.cc') }}"><code>thread_pool_test.cc</code></a></td><td>9</td><td>Run with 1, 2, 4 and 8 threads (<a href="{{ src('rml/core/thread_pool_test.cc', 144, 144) }}">L144</a>): every index exactly once, offset ranges and grains, identical chunks across runs, nested calls inline, many loops back to back, concurrent callers, and a dispatch that allocates nothing, counted by a replaced <code>operator new</code>. Plus the default pool and a zero-thread pool aborting.</td></tr>
     </tbody>
   </table>

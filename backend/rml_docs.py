@@ -6,11 +6,11 @@ import ml_models_docs
 
 UPSTREAM = {
     "repo": "https://github.com/rayaq-siddiqui/rml",
-    "commit": "928a285de296cded11d01266b334b02a56e4375e",
-    "commit_date": "2026-10-21",
+    "commit": "a948ac77c2dc0692c8bffa7fba81943bf97ef847",
+    "commit_date": "2026-10-24",
     "version": "0.1.0",
     "license": "Apache-2.0",
-    "analyzed_on": "2026-10-21",
+    "analyzed_on": "2026-10-24",
 }
 
 GROUPS = [
@@ -24,8 +24,8 @@ GROUPS = [
 
 MODULES = {
     "rml/core": [
-        "allocator", "check", "dtype", "ops", "shape", "status", "strided", "tensor",
-        "thread_pool",
+        "allocator", "buffer_pool", "check", "dtype", "ops", "shape", "status", "strided",
+        "tensor", "thread_pool",
     ],
     "rml/linalg": [
         "cholesky", "eigen", "gemm", "lu", "matmul", "matrix", "norms", "qr", "svd",
@@ -52,7 +52,7 @@ MODULES = {
         "hf_tokenizer", "kernels", "kv_cache", "pretokenizer", "rope", "sampler", "speculative",
         "tokenizer", "unicode", "unicode_tables", "weight_source",
     ],
-    "rml/graph": ["executor", "graph", "ops", "shape_inference"],
+    "rml/graph": ["executor", "fusion", "graph", "kernels", "ops", "shape_inference"],
     "rml/copts": ["rml"],
 }
 
@@ -70,7 +70,10 @@ PAGES = [
         "group": "Inference stack",
         "summary": "Where rml is headed: framework models exported into rml-graph, lowered to a "
         "fused kernel plan and benchmarked against PyTorch, JAX and TensorFlow, level by level.",
-        "sources": ["docs/progress.md", "docs/graph_ir.md", "README.md"],
+        "sources": [
+            "docs/progress.md", "docs/graph_ir.md", "README.md", "docs/bench/frameworks.md",
+            "rml/graph/fusion.h",
+        ],
         "ready": True,
     },
     {
@@ -81,7 +84,9 @@ PAGES = [
         "rml-graph, the passes it runs, the shared zoo, and the golden fixtures.",
         "sources": [
             "tools/rml_export", "tools/make_graph_fixtures.py", "rml/graph/golden_test.cc",
-            "rml/graph/testdata",
+            "rml/graph/testdata", "rml/graph/cross_framework_test.cc",
+            "tools/cross_framework_test.py", "tools/rml_infer_example.py",
+            "tools/requirements-export.txt",
         ],
         "ready": True,
     },
@@ -113,9 +118,13 @@ PAGES = [
         "slug": "lowering",
         "title": "Lowering and fast CPU",
         "group": "Inference stack",
-        "summary": "What runs today against the planned kernel-level IR, buffer planning, "
-        "fusion and SIMD GEMM, each tied to the benchmark gap it targets.",
-        "sources": ["docs/progress.md", "docs/bench/frameworks.md"],
+        "summary": "The kernel-level layer below rml-graph: fused elementwise programs, "
+        "threaded vectorized kernels, buffer reuse and SIMD GEMM, each tied to the gap it targets.",
+        "sources": [
+            "docs/progress.md", "docs/bench/frameworks.md", "rml/graph/fusion.h",
+            "rml/graph/fusion.cc", "rml/graph/kernels.h", "rml/graph/kernels.cc",
+            "rml/graph/kernels_benchmark.cc",
+        ],
         "ready": False,
     },
     {
@@ -148,8 +157,8 @@ PAGES = [
         "counters, and the ThreadPool whose ParallelFor gives reproducible results.",
         "sources": [
             "rml/core/status.h", "rml/core/status.cc", "rml/core/allocator.h",
-            "rml/core/allocator.cc", "rml/core/thread_pool.h", "rml/core/thread_pool.cc",
-            "docs/architecture.md",
+            "rml/core/allocator.cc", "rml/core/buffer_pool.h", "rml/core/buffer_pool.cc",
+            "rml/core/thread_pool.h", "rml/core/thread_pool.cc", "docs/architecture.md",
         ],
         "ready": True,
     },
@@ -159,7 +168,7 @@ PAGES = [
         "group": "Foundations",
         "summary": "Matrix, matmul and the blocked GEMM kernel, and the LU, QR, Cholesky, "
         "eigen and SVD decompositions plus norms.",
-        "sources": ["rml/linalg"],
+        "sources": ["rml/linalg", "docs/kernels.md"],
         "ready": True,
     },
     {
