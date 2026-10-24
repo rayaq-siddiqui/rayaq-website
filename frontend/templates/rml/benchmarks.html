@@ -1,0 +1,375 @@
+{% set bf = "tools/bench_frameworks.py" %}
+{% set fw = "docs/bench/frameworks.md" %}
+{% set gr = "examples/graph_run/" %}
+<header class="jj-header">
+  <h1>Benchmarks against the frameworks</h1>
+  <p class="tagline">
+    <code>tools/bench_frameworks.py</code> times all 19 zoo models in PyTorch, JAX and TensorFlow, eagerly and
+    compiled, and in rml from each framework's export, after checking that every result agrees. This page
+    walks through that method, then reads the published results: what machine, which versions, where rml
+    wins, where it trails, and why.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: each framework runs in its own process, confined with <code>sched_setaffinity</code> to as many
+  CPUs as the thread count, and every timed result first passes a correctness gate against the framework's
+  eager output. The latest run, on a shared 4-vCPU Xeon container with torch 2.14.1, jax 0.12.0 and
+  tensorflow 2.21.0, puts rml ahead of jax.jit and TensorFlow on average at every batch and thread count, and
+  ahead of PyTorch at batch 1 and 8 on one thread. Small MLP-shaped models are its strongest; the LSTM, the
+  U-Net, the RNN and PyTorch at batch 64 are where it still trails. Four threads is slower than one in 51 of
+  171 rml cells, and the StableHLO route runs within 1–12% of the direct exporters.
+</p>
+
+<p>
+  The models are defined on {{ link('exporters', 'Exporters and the model zoo') }}, the runner that times rml
+  is <code>rml-graph-run</code> on {{ link('executor', 'Executing a graph', '#graph-run') }}, and the
+  optimizations each gap prompted are on {{ link('lowering', 'Lowering and fast CPU') }}. How CPU and GPU
+  frameworks schedule work in general is on {{ ml('gpu-execution', 'GPU execution') }}.
+</p>
+
+<h2 id="method">The method</h2>
+
+<p>
+  The script's docstring states the whole method (<a href="{{ src(bf, 1, 22) }}">bench_frameworks.py
+  L1–22</a>). For each framework, model (at its bench size) and batch size it exports the model to
+  <code>models/graphs/&lt;framework&gt;_&lt;model&gt;_b&lt;batch&gt;</code> with a golden file of the
+  framework's outputs, then times three things at each thread count: the framework eagerly, the framework
+  compiled, and rml running the exported graph.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Framework</th><th>Eager</th><th>Compiled</th><th>Waits on</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>PyTorch</td><td><code>module(*x)</code> under <code>torch.no_grad()</code></td><td><code>torch.compile(module)</code></td><td><code>y.numpy()</code></td><td><a href="{{ src(bf, 99, 116) }}">L99–116</a></td></tr>
+      <tr><td>JAX</td><td><code>fn(params, *x)</code> inside <code>jax.disable_jit()</code>, op by op</td><td><code>jax.jit(fn)</code></td><td><code>block_until_ready()</code></td><td><a href="{{ src(bf, 117, 130) }}">L117–130</a></td></tr>
+      <tr><td>TensorFlow</td><td><code>module(*x)</code></td><td><code>tf.function(module, jit_compile=True)</code> (XLA)</td><td><code>y.numpy()</code></td><td><a href="{{ src(bf, 131, 138) }}">L131–138</a></td></tr>
+      <tr><td>rml</td><td colspan="2"><code>rml-graph-run &lt;graph&gt; --inputs &lt;golden&gt; --check --threads N --warmup 5 --bench 50</code>, once on the direct export and once on the StableHLO one</td><td>the run returns</td><td><a href="{{ src(bf, 268, 281) }}">L268–281</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 420" role="img" aria-labelledby="bf-title bf-desc">
+    <title id="bf-title">How bench_frameworks.py runs a sweep</title>
+    <desc id="bf-desc">The driver first runs one export worker per framework on all CPUs, which writes each
+      model's direct and StableHLO graphs with golden outputs to models/graphs. Then, for each thread count, it
+      runs a framework worker confined to that many CPUs, which gates the compiled output against eager and
+      times both modes, and rml-graph-run on the direct and StableHLO graphs, also confined and gated against
+      the golden file. Every finished cell is appended to results.jsonl, from which the driver writes
+      docs/bench/frameworks.md.</desc>
+
+    <rect class="d-box" x="200" y="16" width="240" height="34" rx="5"/>
+    <text x="320" y="38" text-anchor="middle">bench_frameworks.py (driver)</text>
+    <line class="d-line" x1="320" y1="50" x2="320" y2="76"/>
+
+    <rect class="d-box" x="40" y="76" width="560" height="56" rx="6"/>
+    <text x="320" y="98" text-anchor="middle">1. export: one worker per framework, all CPUs</text>
+    <text class="d-muted" x="320" y="120" text-anchor="middle" font-size="12">models/graphs/&lt;fw&gt;_&lt;model&gt;_b&lt;batch&gt; and stablehlo_…, each with a golden file</text>
+
+    <text class="d-muted" x="320" y="160" text-anchor="middle" font-size="12">for each thread count (1, then 4), every process confined to that many CPUs</text>
+    <line class="d-line" x1="170" y1="132" x2="170" y2="146"/>
+    <line class="d-line" x1="470" y1="132" x2="470" y2="146"/>
+    <line class="d-line" x1="170" y1="166" x2="170" y2="172"/>
+    <line class="d-line" x1="470" y1="166" x2="470" y2="172"/>
+
+    <rect class="d-box" x="40" y="172" width="260" height="124" rx="6"/>
+    <text x="170" y="196" text-anchor="middle">2. framework worker</text>
+    <text class="d-muted" x="170" y="220" text-anchor="middle" font-size="12">eager and compiled callables</text>
+    <text class="d-muted" x="170" y="240" text-anchor="middle" font-size="12">gate: compiled against eager</text>
+    <text class="d-muted" x="170" y="260" text-anchor="middle" font-size="12">5 warmups, then 10 to 200 runs</text>
+    <text class="d-muted" x="170" y="280" text-anchor="middle" font-size="12">for at least 1 s</text>
+
+    <rect class="d-box" x="340" y="172" width="260" height="124" rx="6"/>
+    <text x="470" y="196" text-anchor="middle">3. rml-graph-run --check</text>
+    <text class="d-muted" x="470" y="220" text-anchor="middle" font-size="12">direct graph, then StableHLO graph</text>
+    <text class="d-muted" x="470" y="240" text-anchor="middle" font-size="12">gate: against the golden file</text>
+    <text class="d-muted" x="470" y="260" text-anchor="middle" font-size="12">5 warmups, then exactly 50 runs</text>
+    <text class="d-muted" x="470" y="280" text-anchor="middle" font-size="12">timed inside the binary</text>
+
+    <line class="d-line" x1="170" y1="296" x2="170" y2="320"/>
+    <line class="d-line" x1="470" y1="296" x2="470" y2="320"/>
+    <rect class="d-box" x="100" y="320" width="440" height="34" rx="5"/>
+    <text x="320" y="342" text-anchor="middle">results.jsonl: one line per finished cell</text>
+    <line class="d-line" x1="320" y1="354" x2="320" y2="374"/>
+    <rect class="d-box d-accent" x="180" y="374" width="280" height="34" rx="5"/>
+    <text x="320" y="396" text-anchor="middle">docs/bench/frameworks.md</text>
+  </svg>
+  <figcaption>One sweep. Exports run once, unconfined; every timed process is confined to its thread count.
+    The driver times all frameworks at one thread before moving to four (<a href="{{ src(bf, 403, 443) }}">L403–443</a>).</figcaption>
+</figure>
+
+<h3 id="threads">Processes and threads</h3>
+
+<p>
+  Each framework runs in a subprocess, so its thread pool is set before the framework starts
+  (<a href="{{ src(bf, 252, 265) }}">L252–265</a>). The driver sets <code>OMP_NUM_THREADS</code> and
+  <code>MKL_NUM_THREADS</code>, and for JAX an <code>XLA_FLAGS</code> with
+  <code>intra_op_parallelism_threads</code>; inside the worker, PyTorch gets
+  <code>set_num_threads</code> and one inter-op thread, TensorFlow one inter-op thread and N intra-op threads
+  (<a href="{{ src(bf, 84, 94) }}">L84–94</a>). None of that is trusted alone: <code>pinned(threads)</code>
+  confines each timed child, and each <code>rml-graph-run</code>, to the first N CPUs with
+  <code>os.sched_setaffinity</code>, because recent JAX ignores the XLA thread flag and runs its matmuls on
+  every core (<a href="{{ src(bf, 242, 249) }}">L242–249</a>). rml's findings record what this fixed: before,
+  JAX's "1-thread" cells ran on about 3 cores (<a href="{{ src(fw, 342, 344) }}">frameworks.md L342–344</a>).
+  The thread counts default to 1 and every core (<a href="{{ src(bf, 403, 404) }}">L403–404</a>).
+</p>
+
+<h3 id="gate">The correctness gate</h3>
+
+<p>
+  Nothing is timed until it is right. In the framework worker the eager output is the reference, and the
+  compiled output must satisfy |got − want| ≤ 10<sup>−4</sup> + 10<sup>−3</sup>·|want| at every element, or
+  the sweep stops (<a href="{{ src(bf, 53, 60) }}">L53–60</a>, <a href="{{ src(bf, 226, 228) }}">L226–228</a>).
+  The golden file rml checks against holds the framework's own outputs, written at export
+  (<a href="{{ src(bf, 141, 168) }}">L141–168</a>). <code>rml-graph-run --check</code> reports its largest
+  absolute error, which must be at most 10<sup>−4</sup> + 10<sup>−3</sup> times the largest |want| of the
+  first output, a bound over the whole tensor rather than per element (<a href="{{ src(bf, 277, 280) }}">L277–280</a>).
+</p>
+
+<h3 id="timing">Timing</h3>
+
+<p>
+  A framework cell runs its callable five times untimed, then times runs until it has at least
+  <code>--min-runs</code> (10) and has spent <code>--budget</code> (1 s), up to <code>--max-runs</code> (200),
+  waiting on the result each time so asynchronous dispatch is counted (<a href="{{ src(bf, 63, 72) }}">L63–72</a>).
+  rml runs exactly <code>--rml-runs</code> (50) after the same warmup, timed with
+  <code>steady_clock</code> inside the binary, so process start and graph load are outside the number
+  (<a href="{{ src(gr ~ 'graph_run.cc', 87, 100) }}">graph_run.cc L87–100</a>). Both sides report p10, median and
+  p90 by nearest rank: the value at index ⌈q·n⌉ − 1 of the sorted times
+  (<a href="{{ src(bf, 75, 78) }}">L75–78</a>, <a href="{{ src(gr ~ 'graph_run.cc', 68, 85) }}">graph_run.cc L68–85</a>).
+  The inputs are the same for every route: <code>example_inputs(model, "bench", batch, seed=1)</code>
+  (<a href="{{ src(bf, 219, 219) }}">L219</a>).
+</p>
+
+<h3 id="sweep">Resuming and options</h3>
+
+<p>
+  A full sweep is long, so every finished cell is appended to <code>models/graphs/results.jsonl</code> and
+  flushed to disk at once (<a href="{{ src(bf, 41, 44) }}">L41–44</a>, <a href="{{ src(bf, 195, 210) }}">L195–210</a>).
+  The table is written from that file, not from memory (<a href="{{ src(bf, 438, 442) }}">L438–442</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>--frameworks</code>, <code>--models</code></td><td>all three, all 19</td><td>Which cells to run.</td></tr>
+      <tr><td><code>--batches</code></td><td><code>1,8,64</code></td><td>Batch sizes.</td></tr>
+      <tr><td><code>--threads</code></td><td><code>1,all</code></td><td>Comma list; <code>all</code> is <code>os.cpu_count()</code>.</td></tr>
+      <tr><td><code>--min-runs</code>, <code>--max-runs</code>, <code>--budget</code></td><td>10, 200, 1.0 s</td><td>Framework timing bounds.</td></tr>
+      <tr><td><code>--rml-runs</code>, <code>--warmup</code></td><td>50, 5</td><td>rml timed runs; warmups on both sides.</td></tr>
+      <tr><td><code>--rml-bin</code></td><td>the opt build</td><td><code>common.rml_graph_run_binary</code> asks Bazel for the <code>--config=opt</code> binary, since <code>.bazel/bin</code> may hold a debug or sanitizer build; <code>RML_GRAPH_RUN</code> overrides it (<a href="{{ src('tools/rml_export/common.py', 392, 399) }}">common.py L392–399</a>).</td></tr>
+      <tr><td><code>--export-only</code>, <code>--skip-export</code></td><td>off</td><td>Only write the graphs, or reuse them.</td></tr>
+      <tr><td><code>--resume</code></td><td>off</td><td>Keep the cells already in <code>results.jsonl</code>; otherwise it is deleted first.</td></tr>
+      <tr><td><code>--redo-rml</code></td><td>off</td><td>Keep the framework cells and re-time every rml cell, which is how a runtime change is measured without re-running the frameworks.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>Flags are parsed at <a href="{{ src(bf, 378, 398) }}">L378–398</a>. From rml's root, in the export virtualenv:</p>
+
+<pre><code>bazel build --config=opt //examples/graph_run:rml-graph-run
+~/.venvs/rml-export/bin/python tools/bench_frameworks.py --out docs/bench/frameworks.md</code></pre>
+
+<h2 id="results">The results</h2>
+
+<p>
+  The committed report (<a href="{{ src(fw, 1, 7) }}">frameworks.md L1–7</a>) was produced on an
+  <strong>Intel Xeon @ 2.10 GHz, 4 logical CPUs, Linux x86_64</strong>, with <strong>torch 2.14.1+cu130, jax
+  0.12.0 and tensorflow 2.21.0</strong>, rml built with <code>--config=opt</code>, at 1 and 4 threads. Every
+  value is f32 on CPU. Each model has a table of nine columns per batch and thread count: both modes of each
+  framework and rml from that framework's export, as median (p10–p90) milliseconds; after each rml time, the
+  faster of that framework's two modes divided by rml's time, so above 1× rml is faster
+  (<a href="{{ src(fw, 218, 218) }}">L218</a>).
+</p>
+
+<p>
+  The summary is a geometric mean over the 19 models of the faster framework mode's time divided by rml's,
+  with the number of models rml wins. In parentheses, the run before the few-row GEMM register fix, the
+  L2-pipelined conv2d and the shared LSTM weights (<a href="{{ src(fw, 349, 361) }}">L349–361</a>):
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Threads</th><th>Batch</th><th>vs PyTorch</th><th>vs JAX</th><th>vs TensorFlow</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>1</td><td>1.51, 15/19 (1.28)</td><td>1.08, 9/19 (0.97)</td><td>2.79, 14/19 (2.63)</td></tr>
+      <tr><td>1</td><td>8</td><td>1.26, 11/19 (0.84)</td><td>1.18, 11/19 (0.78)</td><td>1.97, 11/19 (1.51)</td></tr>
+      <tr><td>1</td><td>64</td><td>0.86, 4/19 (0.78)</td><td>1.01, 9/19 (0.95)</td><td>1.10, 10/19 (1.02)</td></tr>
+      <tr><td>4</td><td>1</td><td>1.69, 8/19 (1.40)</td><td>1.10, 9/19 (0.95)</td><td>2.64, 15/19 (2.58)</td></tr>
+      <tr><td>4</td><td>8</td><td>0.97, 9/19 (0.62)</td><td>1.36, 13/19 (0.98)</td><td>2.44, 15/19 (1.84)</td></tr>
+      <tr><td>4</td><td>64</td><td>0.71, 3/19 (0.63)</td><td>1.03, 10/19 (0.95)</td><td>1.09, 13/19 (0.99)</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Taken cell by cell against the fastest framework and mode, rml wins 38 of the 114 (model, batch, threads)
+  cells, up from 22, and its geometric mean against that best is 0.91
+  (<a href="{{ src(fw, 363, 366) }}">L363–366</a>). Every number on this page is from that file; the
+  constant-weight packing and multi-output LSTM fusion landed after it was written and are not in it (see
+  {{ link('lowering', 'Lowering and fast CPU', '#lstm') }}).
+</p>
+
+<h3 id="per-model">Model by model</h3>
+
+<p>
+  The factor for each framework at the two corners of the sweep, copied from each model's table: batch 1 on
+  one thread, where per-op overhead dominates, and batch 64 on four threads, where arithmetic and threading
+  do.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Model</th><th>b1 t1 vs torch</th><th>vs jax</th><th>vs tf</th><th>b64 t4 vs torch</th><th>vs jax</th><th>vs tf</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(fw, 9, 18) }}"><code>mlp</code></a></td><td>1.7×</td><td>1.9×</td><td>8.4×</td><td>0.42×</td><td>0.46×</td><td>1.3×</td></tr>
+      <tr><td><a href="{{ src(fw, 20, 29) }}"><code>cnn</code></a></td><td>1.4×</td><td>1.2×</td><td>2.6×</td><td>0.6×</td><td>0.86×</td><td>0.86×</td></tr>
+      <tr><td><a href="{{ src(fw, 31, 40) }}"><code>transformer_block</code></a></td><td>1.1×</td><td>0.82×</td><td>1.2×</td><td>0.93×</td><td>1×</td><td>0.96×</td></tr>
+      <tr><td><a href="{{ src(fw, 42, 51) }}"><code>layernorm_gelu</code></a></td><td>1.1×</td><td>0.86×</td><td>1.5×</td><td>1.1×</td><td>1.9×</td><td>1.5×</td></tr>
+      <tr><td><a href="{{ src(fw, 53, 62) }}"><code>vit</code></a></td><td>1.4×</td><td>0.81×</td><td>1.1×</td><td>0.85×</td><td>1.6×</td><td>1×</td></tr>
+      <tr><td><a href="{{ src(fw, 64, 73) }}"><code>encoder</code></a></td><td>0.84×</td><td>0.68×</td><td>0.96×</td><td>0.84×</td><td>1.7×</td><td>1.1×</td></tr>
+      <tr><td><a href="{{ src(fw, 75, 84) }}"><code>tiny_gpt</code></a></td><td>0.88×</td><td>0.71×</td><td>0.96×</td><td>0.76×</td><td>1.5×</td><td>1×</td></tr>
+      <tr><td><a href="{{ src(fw, 86, 95) }}"><code>rnn</code></a></td><td>1.5×</td><td>0.46×</td><td>1.3×</td><td>0.4×</td><td>0.64×</td><td>0.58×</td></tr>
+      <tr><td><a href="{{ src(fw, 97, 106) }}"><code>lstm</code></a></td><td>0.89×</td><td>0.55×</td><td>0.8×</td><td>0.21×</td><td>0.89×</td><td>0.55×</td></tr>
+      <tr><td><a href="{{ src(fw, 108, 117) }}"><code>ssm</code></a></td><td>1.2×</td><td>0.51×</td><td>5.1×</td><td>0.37×</td><td>1.9×</td><td>5.5×</td></tr>
+      <tr><td><a href="{{ src(fw, 119, 128) }}"><code>autoencoder</code></a></td><td>2.1×</td><td>2.2×</td><td>4.8×</td><td>0.47×</td><td>0.62×</td><td>1×</td></tr>
+      <tr><td><a href="{{ src(fw, 130, 139) }}"><code>vae</code></a></td><td>2.1×</td><td>1.9×</td><td>4.9×</td><td>0.5×</td><td>0.64×</td><td>1.1×</td></tr>
+      <tr><td><a href="{{ src(fw, 141, 150) }}"><code>gan_generator</code></a></td><td>1.7×</td><td>1.8×</td><td>8.4×</td><td>0.51×</td><td>0.88×</td><td>1.2×</td></tr>
+      <tr><td><a href="{{ src(fw, 152, 161) }}"><code>diffusion_mlp</code></a></td><td>2.5×</td><td>3.9×</td><td>20×</td><td>0.76×</td><td>1×</td><td>1.9×</td></tr>
+      <tr><td><a href="{{ src(fw, 163, 172) }}"><code>unet</code></a></td><td>0.7×</td><td>0.57×</td><td>0.94×</td><td>3.4×</td><td>0.76×</td><td>0.34×</td></tr>
+      <tr><td><a href="{{ src(fw, 174, 183) }}"><code>gcn</code></a></td><td>1.2×</td><td>1.1×</td><td>2.6×</td><td>3.8×</td><td>0.63×</td><td>0.49×</td></tr>
+      <tr><td><a href="{{ src(fw, 185, 194) }}"><code>two_tower</code></a></td><td>5.2×</td><td>2.2×</td><td>19×</td><td>0.48×</td><td>1.8×</td><td>2.6×</td></tr>
+      <tr><td><a href="{{ src(fw, 196, 205) }}"><code>clip</code></a></td><td>4.3×</td><td>1.8×</td><td>8.1×</td><td>0.85×</td><td>1.3×</td><td>1.3×</td></tr>
+      <tr><td><a href="{{ src(fw, 207, 216) }}"><code>moe</code></a></td><td>1.4×</td><td>0.8×</td><td>0.99×</td><td>0.74×</td><td>1.4×</td><td>1×</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The two corners tell different stories. At batch 1 on one thread rml beats PyTorch on 15 of 19 models and
+  TensorFlow on 14. At batch 64 on four threads, where large GEMMs and convolutions dominate, it beats
+  PyTorch on only 3 of 19 while still edging out JAX and TensorFlow on average
+  (<a href="{{ src(fw, 356, 361) }}">L356–361</a>).
+</p>
+
+<h2 id="wins">Where rml wins</h2>
+
+<ul>
+  <li><strong>Small and medium MLP-shaped models</strong>, as a geometric mean over batches and threads
+    against the best framework: <code>two_tower</code> 2.2×, <code>diffusion_mlp</code> 1.7×,
+    <code>clip</code> 1.2×, and <code>autoencoder</code>, <code>mlp</code>, <code>gan_generator</code> and
+    <code>vae</code> 1.1× (<a href="{{ src(fw, 367, 369) }}">L367–369</a>). These are a handful of matmuls and
+    elementwise activations, the shapes the few-row GEMM path and fused programs on
+    {{ link('lowering', 'Lowering and fast CPU') }} were built for.</li>
+  <li><strong>Against TensorFlow</strong> by large factors at small batch, in both its modes;
+    <code>diffusion_mlp</code> at batch 1 is 0.0304 ms in rml against 1.26 ms
+    TF eager and 0.611 ms TF XLA (<a href="{{ src(fw, 156, 156) }}">L156</a>).</li>
+  <li><strong>Graphs that arrive decomposed.</strong> <code>layernorm_gelu</code> at batch 64 on four threads
+    runs in 29.8 ms from JAX's export against 56.6 ms for jax.jit (1.9×), and 29.5 ms from TensorFlow's against
+    44.2 ms for TF XLA (<a href="{{ src(fw, 51, 51) }}">L51</a>). JAX and TensorFlow hand this model over
+    with layer norm and GELU written out, and rml's export passes fuse both back into single ops before rml
+    runs it.</li>
+</ul>
+
+<h2 id="losses">Where it trails, and why</h2>
+
+<p>The findings name four gaps (<a href="{{ src(fw, 370, 373) }}">L370–373</a>):</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Gap</th><th>Factor vs best</th><th>Why, per rml's findings</th></tr></thead>
+    <tbody>
+      <tr><td><code>lstm</code></td><td>0.49×</td><td>Against PyTorch's fused ATen LSTM.</td></tr>
+      <tr><td><code>unet</code></td><td>0.57×</td><td>Its convolutions.</td></tr>
+      <tr><td><code>rnn</code></td><td>0.68×</td><td>Named without a cause.</td></tr>
+      <tr><td>Attention models at batch 64, 4 threads</td><td>0.80–0.87×</td><td>Named without a cause; PyTorch at batch 64 is the remaining gap overall (0.71 on 4 threads).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="lstm">Worked example: the LSTM</h3>
+
+<p>
+  The <code>lstm</code> rows at batch 64 (<a href="{{ src(fw, 105, 106) }}">L105–106</a>), median milliseconds:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Threads</th><th>torch eager</th><th>torch.compile</th><th>rml ← torch</th><th>jax.jit</th><th>rml ← jax</th><th>TF XLA</th><th>rml ← tf</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>26.7</td><td>25.6</td><td>59.5 (0.43×)</td><td>34.6</td><td>47.6 (0.73×)</td><td>35.7</td><td>45.7 (0.78×)</td></tr>
+      <tr><td>4</td><td>8.81</td><td>9.82</td><td>41.9 (0.21×)</td><td>36.4</td><td>40.7 (0.89×)</td><td>22</td><td>40.3 (0.55×)</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Reading it: rml is close to jax.jit and far behind PyTorch, whose fused ATen LSTM scales from 26.7 to
+  8.81 ms with four threads where rml only goes from 59.5 to 41.9. The work after this report goes straight at it: constant weights packed once,
+  and each step's gates and cell update fused into one program reading the gate slices in place. rml's own
+  checklist puts those at 49 to 35 ms and about 39 to 26 ms for the batch-64 LSTMs on four threads
+  (<a href="{{ src('docs/progress.md', 165, 165) }}">progress.md L165</a>), but this table has not been re-run.
+</p>
+
+<h3 id="thread-scaling">Four threads slower than one</h3>
+
+<p>
+  Four threads is slower than one in 51 of rml's 171 cells (19 models × 3 batches × 3 exports), almost all
+  at batch 1 with sub-millisecond times (<a href="{{ src(fw, 374, 375) }}">L374–375</a>): <code>mlp</code>
+  from PyTorch at batch 1 is 0.0773 ms on one thread and 0.0657 on four, but <code>cnn</code> stays at 0.147
+  and <code>lstm</code> goes from 1.82 to 2.26 (<a href="{{ src(fw, 13, 14) }}">L13–14</a>,
+  <a href="{{ src(fw, 24, 25) }}">L24–25</a>, <a href="{{ src(fw, 101, 102) }}">L101–102</a>). Waking a pool
+  costs more than such work saves; the grains that keep small ops on the calling thread are on
+  {{ link('lowering', 'Lowering and fast CPU', '#threads') }}.
+</p>
+
+<h2 id="routes">Direct against StableHLO</h2>
+
+<p>
+  The report also times rml on the graph each framework's StableHLO lowered to, against the direct export of
+  the same model (<a href="{{ src(fw, 220, 339) }}">L220–339</a>). The factor is direct / StableHLO, so above 1×
+  the StableHLO graph runs faster. The geometric means are 0.94 for PyTorch, 0.88 for JAX and 0.99 for
+  TensorFlow: the StableHLO route is within 1–12% of the direct one (<a href="{{ src(fw, 376, 377) }}">L376–377</a>).
+  Single cells swing both ways; <code>mlp</code> at batch 1 on one thread is 0.0773 ms direct and 0.0625 ms
+  through StableHLO from PyTorch (<a href="{{ src(fw, 226, 226) }}">L226</a>). Both routes are described on
+  {{ link('exporters', 'Exporters and the model zoo') }}.
+</p>
+
+<h2 id="caveats">Reading the numbers</h2>
+
+<ul>
+  <li><strong>A shared machine.</strong> The container is a shared 4-vCPU cloud VM where single cells vary by
+    up to about 30% between runs, so rml's notes say to compare the means
+    (<a href="{{ src(fw, 345, 347) }}">L345–347</a>).</li>
+  <li><strong>Outlier cells.</strong> A few framework cells are far off their neighbours: PyTorch on
+    <code>vit</code> at batch 1 on four threads takes 344 ms eager against 5.51 ms on one thread, giving rml
+    83× (<a href="{{ src(fw, 57, 58) }}">L57–58</a>), and PyTorch on <code>unet</code> at batch 1 on four
+    threads 151 ms (<a href="{{ src(fw, 168, 168) }}">L168</a>). The report does not explain them; the
+    geometric means are less sensitive to them than any single cell.</li>
+  <li><strong>Mixed sweeps.</strong> The framework cells come from the full sweep with the 1-thread cells
+    re-run pinned; every rml cell is from the current runtime and exporters
+    (<a href="{{ src(fw, 344, 345) }}">L344–345</a>).</li>
+  <li><strong>Not the target hardware.</strong> Apple Silicon numbers, with NEON and Accelerate, have not been
+    produced (<a href="{{ src(fw, 347, 347) }}">L347</a>).</li>
+</ul>
+
+<h2 id="checks">Checks</h2>
+
+<p>
+  The script has no unit tests of its own; its correctness gate is the check, and the sweep stops at the first
+  failure. The agreement it relies on is tested elsewhere:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Check</th><th>What it pins down</th></tr></thead>
+    <tbody>
+      <tr><td>The gate (<a href="{{ src(bf, 53, 60) }}">L53–60</a>, <a href="{{ src(bf, 277, 280) }}">L277–280</a>)</td><td>Every timed compiled and rml result matches the framework's eager output at bench size before it is timed.</td></tr>
+      <tr><td><a href="{{ src('rml/graph/cross_framework_test.cc') }}"><code>cross_framework_test.cc</code></a></td><td>The committed tiny exports from all three frameworks, by both routes, agree within 1e-5, without Python. See {{ link('exporters', 'Exporters and the model zoo', '#fixtures') }}.</td></tr>
+      <tr><td><a href="{{ src(gr ~ 'graph_run_test.cc') }}"><code>graph_run_test.cc</code></a></td><td>The runner's nearest-rank quantiles and its JSON report, which the script parses.</td></tr>
+    </tbody>
+  </table>
+</div>

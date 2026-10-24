@@ -134,7 +134,7 @@ PAGES = [
         "summary": "How each model is timed in PyTorch, JAX and TensorFlow, eager and "
         "compiled, and in rml, and what the published results show.",
         "sources": ["tools/bench_frameworks.py", "docs/bench/frameworks.md"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "tensors",
