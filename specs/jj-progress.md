@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-24 (sixty-eighth run): followed upstream `9ab2e84..4142aa8` (0.46.0). **The
+**Last updated:** 2026-10-25 (sixty-ninth run): followed upstream `4142aa8..d1878e6` (0.46.0). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@4142aa850770682c9cb3b9057f4bd1bd8d6403d9` (committed 2026-10-24, version
-0.46.0), analyzed 2026-10-24. Held in `jj_docs.UPSTREAM`. Previous pin: `9ab2e84`.
+`jj-vcs/jj@d1878e6b21884d9dbeb3280938228a93799de28c` (committed 2026-10-25, version
+0.46.0), analyzed 2026-10-25. Held in `jj_docs.UPSTREAM`. Previous pin: `4142aa8`.
 
 ## §10 acceptance criteria
 
@@ -31,10 +31,14 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to sixty-eighth runs: pin bumped).
+      run: pin bumped; fiftieth to sixty-ninth runs: pin bumped).
 
-## Sixty-fourth to sixty-eighth runs (2026-10-20 to 2026-10-24)
+## Sixty-fourth to sixty-ninth runs (2026-10-20 to 2026-10-25)
 
+- `e65bbae` `4142aa8..d1878e6`: push stops updating Git's `refs/remotes/*` (negative fetch
+  refspec) and commits if all ok or some pushed (git-push); `WorkspaceRef.current_workspace()`
+  and the default list's `(current)` marker (workspace-list); op-store temp files get default
+  permissions (storage). 42 templates remapped; registry and protos unchanged.
 - `b70be32` `9ab2e84..4142aa8`: store caches are `CachedLoader` LRUs sharing concurrent loads
   (backends); evolog, log graph mode and op diff load commits concurrently (evolog, log,
   operation-diff); Git backend drops the root from merge parents instead of erroring (backends,
@@ -47,9 +51,8 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
 - `cdc336a` `7f96d3e..c84cc0a`: `SimpleOpStore` bodies moved to an inherent impl (gc drops
   `block_on`); revset parser rejects nesting past `MAX_TREE_DEPTH` (256), now on revsets. Links
   re-pointed on operations, protobufs, storage, util-gc, revsets; registry and protos unchanged.
-- `60897df` `5176b1d..7f96d3e`: only `flake.lock` changed; pin and dates bumped, no pages.
-- `117f376` `6bfd0a7..5176b1d`: five modules moved to `core/src` (`specs/jj.md` still names
-  `lib/src`); `MergedTree` `*_stream` methods renamed; `jj run` uses `ui.conflict-marker-style`.
+- `60897df` `..7f96d3e` (`flake.lock` only); `117f376` `..5176b1d` (five modules to `core/src`,
+  `specs/jj.md` still names `lib/src`; `*_stream` renames; `jj run` marker style).
 
 ## Fifty-third to sixty-third runs (2026-10-09 to 2026-10-19)
 
