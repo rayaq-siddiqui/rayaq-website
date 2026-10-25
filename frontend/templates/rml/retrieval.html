@@ -1,0 +1,279 @@
+{% set r = "rml/retrieval/" %}
+{% set tt = "examples/two_tower/" %}
+<header class="jj-header">
+  <h1>Retrieval</h1>
+  <p class="tagline">
+    <code>rml/retrieval</code> finds the stored embedding vectors most similar to a query: exactly, by scoring
+    every one, or approximately, by scanning only the few clusters of an inverted-file index that lie closest to
+    the query.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: three metrics (inner product, cosine, negated squared L2) are all scored so that higher means more
+  similar, and cosine is turned into an inner product by storing every vector at unit length. A size-k min-heap,
+  <code>internal::TopK</code>, keeps the best results with ties broken towards the lower id. <code>FlatIndex</code>
+  scores every stored vector, O(n·d) per query, and is the exact baseline. <code>IvfIndex</code> trains
+  <code>num_lists</code> centroids with {{ link('classical', 'rml/classical') }}'s k-means, files each added vector
+  under its nearest centroid, and at search time scans only the <code>num_probes</code> lists whose centroids score
+  best; probing every list gives back the exact answer. Both are plain single-threaded C++ over
+  <code>std::vector&lt;float&gt;</code>, and errors come back as <code>Status</code>.
+</p>
+
+<p>
+  The concepts are on /ml-models: {{ ml('embeddings', 'embeddings') }},
+  {{ ml('similarity-search', 'similarity search') }}, {{ ml('vector-indexes', 'vector indexes') }},
+  {{ ml('clustering', 'clustering') }}, {{ ml('two-tower-models', 'two-tower models') }} and
+  {{ ml('retrieval-augmented-generation', 'retrieval-augmented generation') }}. The module is two libraries,
+  <code>similarity</code> and <code>ivf</code>, each with its own test
+  (<a href="{{ src(r ~ 'BUILD.bazel') }}">BUILD.bazel</a>).
+</p>
+
+<h2 id="metrics">Metrics and scores</h2>
+
+<p>
+  Every search returns <code>Neighbor{id, score}</code> with a higher score meaning more similar, so one heap and
+  one ordering serve all three metrics (<a href="{{ src(r ~ 'similarity.h', 7, 12) }}">similarity.h L7–12</a>).
+  That is why L2 is negated: the nearest vector has the largest −|q − x|².
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Metric</code></td><td><code>enum class { kInnerProduct, kCosine, kL2 }</code></td><td>Inner product ⟨q, x⟩, what a model trained with dot-product scores wants; cosine ⟨q, x⟩ / (|q| |x|), where only direction counts; L2 as −|q − x|².</td><td><a href="{{ src(r ~ 'similarity.h', 26, 26) }}">similarity.h L26</a></td></tr>
+      <tr><td><code>Neighbor</code></td><td><code>struct { int64_t id; float score; }</code></td><td>One result; defaulted <code>==</code> so tests compare whole result lists.</td><td><a href="{{ src(r ~ 'similarity.h', 28, 33) }}">L28–33</a></td></tr>
+      <tr><td><code>Similarity</code></td><td><code>float(Metric, span&lt;const float&gt; q, span&lt;const float&gt; x)</code></td><td>The score of <code>x</code> for <code>q</code>. Different lengths are a programmer error (<code>RML_CHECK</code>). Cosine with a zero vector scores 0 rather than dividing by zero. Sums accumulate in <code>float</code>, one element at a time.</td><td><a href="{{ src(r ~ 'similarity.h', 35, 36) }}">.h L35–36</a>, <a href="{{ src(r ~ 'similarity.cc', 39, 55) }}">.cc L39–55</a></td></tr>
+      <tr><td><code>SearchResults</code></td><td><code>vector&lt;vector&lt;Neighbor&gt;&gt;</code></td><td>The k best for each query row, best first.</td><td><a href="{{ src(r ~ 'similarity.h', 38, 39) }}">.h L38–39</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="metric-example">A worked example</h3>
+
+<p>
+  The metric test scores q = (1, 2, 2) against x = (2, 0, 1)
+  (<a href="{{ src(r ~ 'similarity_test.cc', 20, 27) }}">similarity_test.cc L20–27</a>):
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Metric</th><th>Computation</th><th>Score</th></tr></thead>
+    <tbody>
+      <tr><td><code>kInnerProduct</code></td><td>1·2 + 2·0 + 2·1</td><td>4</td></tr>
+      <tr><td><code>kCosine</code></td><td>4 / (|q| |x|) = 4 / (3 · √5)</td><td>≈ 0.596</td></tr>
+      <tr><td><code>kL2</code></td><td>−((1−2)² + (2−0)² + (2−1)²)</td><td>−6</td></tr>
+      <tr><td><code>kCosine</code> against (0, 0, 0)</td><td>norms are 0</td><td>0</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Cosine and inner product can disagree on the winner. With stored vectors (1, 0) and (10, 10) and the query
+  (1, 0.1), cosine picks id 0 (almost the same direction) while inner product picks id 1 (much longer)
+  (<a href="{{ src(r ~ 'similarity_test.cc', 86, 95) }}">similarity_test.cc L86–95</a>).
+</p>
+
+<h2 id="topk">Keeping the k best</h2>
+
+<p>
+  <code>internal::TopK</code> is a min-heap of at most k results ordered by <code>Better</code>: higher score
+  first, then lower id (<a href="{{ src(r ~ 'similarity.cc', 20, 23) }}">similarity.cc L20–23</a>). Because the
+  heap's comparator is "better", the front of the heap is the <em>worst</em> result kept, so each push is one
+  comparison against it and, if the candidate wins, a pop and a push: O(log k) per scored vector and O(k) memory
+  however many vectors are scored.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>TopK</code></td><td><code>explicit TopK(int64_t k)</code></td><td>k must be positive (<code>RML_CHECK</code>).</td><td><a href="{{ src(r ~ 'similarity.h', 63, 74) }}">.h L63–74</a>, <a href="{{ src(r ~ 'similarity.cc', 59, 61) }}">.cc L59–61</a></td></tr>
+      <tr><td><code>Push</code></td><td><code>void(int64_t id, float score)</code></td><td>Fills the heap up to k, then replaces the front only when the candidate is strictly better, so an equal score with a higher id never displaces a lower one.</td><td><a href="{{ src(r ~ 'similarity.cc', 63, 73) }}">.cc L63–73</a></td></tr>
+      <tr><td><code>Take</code></td><td><code>vector&lt;Neighbor&gt;()</code></td><td>Sorts best first and moves the heap out, leaving it empty.</td><td><a href="{{ src(r ~ 'similarity.cc', 75, 78) }}">.cc L75–78</a></td></tr>
+      <tr><td><code>PrepareRows</code></td><td><code>Expected&lt;vector&lt;float&gt;&gt;(const Tensor&amp;, int64_t dim, Metric, const char* what)</code></td><td>The shared input check: <code>InvalidArgument</code> unless the tensor is f32 of rank 2 with <code>dim</code> columns, naming <code>what</code> and the shape it got. Copies the rows out contiguously (views are materialized with <code>Contiguous()</code>) and, under cosine, normalizes each row; a zero row stays zero.</td><td><a href="{{ src(r ~ 'similarity.h', 76, 79) }}">.h L76–79</a>, <a href="{{ src(r ~ 'similarity.cc', 80, 94) }}">.cc L80–94</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The test pushes scores 0.5, 2, 1, 2, −1, 1 for ids 0–5 into a TopK of 3 and gets
+  {(1, 2), (3, 2), (2, 1)}: both 2s, and of the two 1s the lower id
+  (<a href="{{ src(r ~ 'similarity_test.cc', 34, 39) }}">similarity_test.cc L34–39</a>).
+</p>
+
+<h2 id="flat">FlatIndex: exact search</h2>
+
+<p>
+  <code>FlatIndex</code> stores every vector in one row-major <code>std::vector&lt;float&gt;</code>, unit length
+  under cosine, and compares each query with all of them (<a href="{{ src(r ~ 'similarity.h', 13, 15) }}">similarity.h
+  L13–15</a>). It is always exact, and it is what the IVF tests measure recall against.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>constructor</td><td><code>FlatIndex(int64_t dim, Metric metric)</code></td><td><code>dim</code> must be positive (<code>RML_CHECK</code>).</td><td><a href="{{ src(r ~ 'similarity.h', 41, 59) }}">.h L41–59</a>, <a href="{{ src(r ~ 'similarity.cc', 98, 100) }}">.cc L98–100</a></td></tr>
+      <tr><td><code>Add</code></td><td><code>Status(const Tensor&amp; vectors)</code></td><td>Appends the rows of f32 [n, dim]; ids continue from <code>size()</code>, so adding in two parts gives the same ids as one.</td><td><a href="{{ src(r ~ 'similarity.cc', 102, 107) }}">.cc L102–107</a></td></tr>
+      <tr><td><code>Search</code></td><td><code>Expected&lt;SearchResults&gt;(const Tensor&amp; queries, int64_t k) const</code></td><td>For each row of f32 [m, dim], the min(k, size()) best stored vectors, ties towards the lower id. k ≤ 0 is <code>InvalidArgument</code>. Under cosine both sides are already unit length, so it scores with plain inner product. An empty index returns empty lists.</td><td><a href="{{ src(r ~ 'similarity.h', 47, 49) }}">.h L47–49</a>, <a href="{{ src(r ~ 'similarity.cc', 109, 128) }}">.cc L109–128</a></td></tr>
+      <tr><td>accessors</td><td><code>dim()</code>, <code>metric()</code>, <code>size()</code></td><td><code>size()</code> is the stored floats divided by <code>dim</code>.</td><td><a href="{{ src(r ~ 'similarity.h', 51, 53) }}">.h L51–53</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="ivf">IvfIndex: the inverted file</h2>
+
+<p>
+  An inverted-file index splits the stored vectors into <code>num_lists</code> clusters and, for each query,
+  scores only the vectors in the <code>num_probes</code> clusters whose centroids look best, about
+  num_probes / num_lists of the data. A true neighbour just across a cluster boundary is missed, so recall trades
+  against speed through <code>num_probes</code> (<a href="{{ src(r ~ 'ivf.h', 4, 16) }}">ivf.h L4–16</a>).
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 340" role="img" aria-labelledby="rt-ivf-title rt-ivf-desc">
+    <title id="rt-ivf-title">Train, Add and Search in IvfIndex</title>
+    <desc id="rt-ivf-desc">Train prepares the sample rows, normalizing them under cosine, and runs k-means with
+      k equal to num_lists, one init and at most 50 iterations, keeping the centers as centroids and emptying the
+      lists. Add files each prepared row under its single nearest centroid, appending its id and vector to that
+      list. Search ranks all centroids for the query with a TopK of num_probes, scans every vector in those lists
+      with a TopK of k, and reports how many vectors were scored.</desc>
+
+    <text x="20" y="22" font-weight="bold">Train(sample)</text>
+    <rect class="d-box" x="20" y="34" width="170" height="44" rx="5"/>
+    <text x="105" y="54" text-anchor="middle">PrepareRows</text>
+    <text class="d-muted" x="105" y="70" text-anchor="middle" font-size="12">unit length if kCosine</text>
+    <line class="d-line" x1="190" y1="56" x2="220" y2="56"/>
+    <rect class="d-box d-accent" x="220" y="34" width="190" height="44" rx="5"/>
+    <text x="315" y="54" text-anchor="middle">classical::KMeans</text>
+    <text class="d-muted" x="315" y="70" text-anchor="middle" font-size="12">k = num_lists, 1 init, ≤ 50 iters</text>
+    <line class="d-line" x1="410" y1="56" x2="440" y2="56"/>
+    <rect class="d-box" x="440" y="34" width="160" height="44" rx="5"/>
+    <text x="520" y="54" text-anchor="middle">centroids_</text>
+    <text class="d-muted" x="520" y="70" text-anchor="middle" font-size="12">[num_lists, dim]</text>
+
+    <text x="20" y="114" font-weight="bold">Add(vectors)</text>
+    <rect class="d-box" x="20" y="126" width="170" height="44" rx="5"/>
+    <text x="105" y="146" text-anchor="middle">each prepared row</text>
+    <text class="d-muted" x="105" y="162" text-anchor="middle" font-size="12">id = size_++</text>
+    <line class="d-line" x1="190" y1="148" x2="220" y2="148"/>
+    <rect class="d-box" x="220" y="126" width="190" height="44" rx="5"/>
+    <text x="315" y="146" text-anchor="middle">NearestLists(row, 1)</text>
+    <text class="d-muted" x="315" y="162" text-anchor="middle" font-size="12">best centroid by the metric</text>
+    <line class="d-line" x1="410" y1="148" x2="440" y2="148"/>
+    <rect class="d-box" x="440" y="126" width="160" height="44" rx="5"/>
+    <text x="520" y="146" text-anchor="middle">lists_[c]</text>
+    <text class="d-muted" x="520" y="162" text-anchor="middle" font-size="12">append id and vector</text>
+
+    <text x="20" y="206" font-weight="bold">Search(queries, k, &amp;scanned)</text>
+    <rect class="d-box" x="20" y="218" width="170" height="44" rx="5"/>
+    <text x="105" y="238" text-anchor="middle">each query row</text>
+    <text class="d-muted" x="105" y="254" text-anchor="middle" font-size="12">PrepareRows</text>
+    <line class="d-line" x1="190" y1="240" x2="220" y2="240"/>
+    <rect class="d-box" x="220" y="218" width="190" height="44" rx="5"/>
+    <text x="315" y="238" text-anchor="middle" font-size="13">NearestLists(q, num_probes)</text>
+    <text class="d-muted" x="315" y="254" text-anchor="middle" font-size="12">scores every centroid</text>
+    <line class="d-line" x1="410" y1="240" x2="440" y2="240"/>
+    <rect class="d-box d-accent" x="440" y="218" width="160" height="44" rx="5"/>
+    <text x="520" y="238" text-anchor="middle">scan those lists</text>
+    <text class="d-muted" x="520" y="254" text-anchor="middle" font-size="12">TopK(k) over their vectors</text>
+
+    <text class="d-muted" x="20" y="296" font-size="12">Train also empties every list. Cost per query: num_lists centroid scores,</text>
+    <text class="d-muted" x="20" y="314" font-size="12">plus the vectors in num_probes lists; probing all lists equals FlatIndex.</text>
+  </svg>
+  <figcaption>The three operations and what each touches. <code>NearestLists</code> is a <code>TopK</code> over
+    centroid ids (<a href="{{ src(r ~ 'ivf.cc', 56, 68) }}">ivf.cc L56–68</a>).</figcaption>
+</figure>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Options</code></td><td><code>num_lists = 16</code>, <code>num_probes = 1</code>, <code>seed = 0</code></td><td>Cluster count, lists scanned per query, and the k-means seed.</td><td><a href="{{ src(r ~ 'ivf.h', 29, 33) }}">ivf.h L29–33</a></td></tr>
+      <tr><td>constructor</td><td><code>IvfIndex(int64_t dim, Metric, const Options&amp;)</code></td><td><code>dim</code> and <code>num_lists</code> must be positive, and the probe count goes through <code>set_num_probes</code>.</td><td><a href="{{ src(r ~ 'ivf.cc', 26, 31) }}">ivf.cc L26–31</a></td></tr>
+      <tr><td><code>Train</code></td><td><code>Status(const Tensor&amp; sample)</code></td><td>Needs at least <code>num_lists</code> rows, else <code>InvalidArgument</code>. Runs <code>classical::KMeans</code> with <code>k = num_lists</code>, <code>num_init = 1</code>, <code>max_iterations = 50</code> and the options' seed (k-means' own defaults are 4 inits and 300 iterations), copies the centers into <code>centroids_</code>, and resets every list and <code>size_</code>, so training again drops what was added.</td><td><a href="{{ src(r ~ 'ivf.cc', 39, 54) }}">.cc L39–54</a>, <a href="{{ src('rml/classical/kmeans.h', 30, 38) }}">kmeans.h L30–38</a></td></tr>
+      <tr><td><code>Add</code></td><td><code>Status(const Tensor&amp; vectors)</code></td><td><code>InvalidArgument</code> before <code>Train</code>. Each row goes to its single nearest list with the next id.</td><td><a href="{{ src(r ~ 'ivf.cc', 70, 82) }}">.cc L70–82</a></td></tr>
+      <tr><td><code>Search</code></td><td><code>Expected&lt;SearchResults&gt;(const Tensor&amp; queries, int64_t k, int64_t* scanned = nullptr) const</code></td><td>The min(k, scanned) best vectors in the probed lists, best first. <code>scanned</code>, when given, receives the total vectors scored over all queries. Fails before training or with k ≤ 0.</td><td><a href="{{ src(r ~ 'ivf.h', 43, 47) }}">.h L43–47</a>, <a href="{{ src(r ~ 'ivf.cc', 84, 108) }}">.cc L84–108</a></td></tr>
+      <tr><td><code>set_num_probes</code></td><td><code>void(int64_t)</code></td><td>Must be in [1, num_lists] (<code>RML_CHECK</code>); changes recall without retraining.</td><td><a href="{{ src(r ~ 'ivf.cc', 33, 37) }}">.cc L33–37</a></td></tr>
+      <tr><td>accessors</td><td><code>trained()</code>, <code>size()</code>, <code>ListSizes()</code></td><td>Trained once centroids exist; <code>ListSizes</code> gives how many vectors each list holds.</td><td><a href="{{ src(r ~ 'ivf.h', 49, 53) }}">.h L49–53</a>, <a href="{{ src(r ~ 'ivf.cc', 110, 114) }}">.cc L110–114</a></td></tr>
+      <tr><td>storage</td><td><code>struct List { ids; vectors; }</code></td><td>One row-major vector block per list with the ids beside it; centroids are row-major [num_lists, dim].</td><td><a href="{{ src(r ~ 'ivf.h', 56, 70) }}">.h L56–70</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="ivf-metrics">How the metric reaches the clusters</h3>
+
+<p>
+  Under cosine every vector is unit length before k-means sees it, so the clustering, the assignment and the
+  scan all work on directions (<a href="{{ src(r ~ 'ivf.h', 15, 16) }}">ivf.h L15–16</a>). The centroids are means
+  of unit vectors and are not normalized again; ranking them by inner product still works because the query is
+  unit length (<a href="{{ src(r ~ 'ivf.cc', 60, 62) }}">ivf.cc L60–62</a>). <code>ScoringMetric</code> maps
+  cosine to inner product everywhere else (<a href="{{ src(r ~ 'ivf.cc', 19, 22) }}">L19–22</a>).
+</p>
+
+<p>
+  The centroids always come from k-means, which clusters by Euclidean distance, but lists are assigned and
+  probed with the index's own metric. Under <code>kL2</code> the two agree. Under <code>kInnerProduct</code> a
+  vector goes to the centroid with the largest inner product, which favours long centroids, so the lists need not
+  match k-means' own labels; the parameterized tests show recall still rises with probes for all three metrics.
+</p>
+
+<h3 id="recall">Recall against probes</h3>
+
+<p>
+  <code>ivf_test</code> builds 4,096 points around 32 shared, overlapping centers in 16 dimensions, plus 100
+  queries from the same distribution, and indexes them with 32 lists
+  (<a href="{{ src(r ~ 'ivf_test.cc', 20, 38) }}">ivf_test.cc L20–38</a>,
+  <a href="{{ src(r ~ 'ivf_test.cc', 52, 68) }}">L52–68</a>). Recall is the share of the exact top 10 that IVF
+  returns. The asserted bounds, for every metric (<a href="{{ src(r ~ 'ivf_test.cc', 92, 115) }}">L92–115</a>):
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>num_probes</th><th>Share of data scanned (about)</th><th>Asserted recall@10</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>1/32</td><td>below 0.85: overlapping clusters put many neighbours in other lists</td></tr>
+      <tr><td>2</td><td>1/16</td><td>at least the 1-probe recall</td></tr>
+      <tr><td>4</td><td>1/8 (asserted under 1/6)</td><td>at least 0.9</td></tr>
+      <tr><td>8</td><td>1/4</td><td>at least 0.95</td></tr>
+      <tr><td>32</td><td>all 409,600 scores</td><td>exact: same ids as <code>FlatIndex</code>, scores within 10<sup>−4</sup></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The scanned shares in the middle column are num_probes / num_lists, which is what the lists average; only the
+  1/6 bound at 4 probes and the full count at 32 are checked.
+</p>
+
+<h2 id="users">Who uses it</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Caller</th><th>Index</th><th>How</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>examples/rag</code></td><td><code>FlatIndex</code>, cosine</td><td>The knowledge base adds one embedding per entity at construction, and <code>Retrieve</code> returns the top-k entity ids per question for the reader to condition on.</td><td><a href="{{ src('examples/rag/rag.cc', 43, 53) }}">rag.cc L43–53</a>, <a href="{{ src('examples/rag/rag.cc', 59, 69) }}">L59–69</a></td></tr>
+      <tr><td><code>examples/two_tower</code></td><td><code>IvfIndex</code>, inner product</td><td>Serves the trained item embeddings with 32 lists and 8 probes by default, and compares the top 10 for each test user against the exact top 10 of the same embeddings, recording recall and the fraction of items scored.</td><td><a href="{{ src(tt ~ 'two_tower.h', 112, 119) }}">two_tower.h L112–119</a>, <a href="{{ src(tt ~ 'two_tower.cc', 258, 293) }}">two_tower.cc L258–293</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The two-tower header records that the IVF index finds 79% to 95% of the exact top 10 over seeds 0 to 3 while
+  scoring 10% to 24% of the items (<a href="{{ src(tt ~ 'two_tower.h', 37, 40) }}">two_tower.h L37–40</a>).
+  Nothing in {{ link('stack', 'the inference stack') }} or the LLM runtime uses this module. The examples are
+  described on {{ link('examples', 'Examples') }}.
+</p>
+
+<h2 id="tests">Tests</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Tests</th><th>What they pin down</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(r ~ 'similarity_test.cc') }}"><code>similarity_test.cc</code></a></td><td>7 (one parameterized over the 3 metrics)</td><td>Each metric's score, and cosine with a zero vector; vectors of different lengths die; TopK keeps the best and breaks ties by id; <code>FlatIndex</code> matches a stable-sorted brute force for every metric, with ids continuing across two <code>Add</code>s; cosine ignores length where inner product does not; at most <code>size()</code> results, including from an empty index; wrong widths, ranks and k ≤ 0 are <code>InvalidArgument</code>.</td></tr>
+      <tr><td><a href="{{ src(r ~ 'ivf_test.cc') }}"><code>ivf_test.cc</code></a></td><td>5 (three parameterized over the 3 metrics)</td><td>Every vector filed exactly once; probing all 32 lists is exact; recall never falls as probes grow and meets the bounds above; <code>Add</code> and <code>Search</code> before <code>Train</code>, too few sample rows and the wrong width fail; probe counts of 0 or above <code>num_lists</code> die.</td></tr>
+    </tbody>
+  </table>
+</div>

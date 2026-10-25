@@ -232,7 +232,7 @@ PAGES = [
         "group": "Classical & retrieval",
         "summary": "Similarity functions and the inverted-file (IVF) vector index.",
         "sources": ["rml/retrieval"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "quantization",
