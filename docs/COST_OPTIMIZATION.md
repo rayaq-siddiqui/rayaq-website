@@ -4,18 +4,22 @@ Maintained by the weekly "rayaq.ca — weekly server cost optimization" Routine.
 each run; **Considered and rejected** carries forward. Scope is application code only —
 server configuration (Caddy, gunicorn, systemd, the VM) is out of scope by the owner's choice.
 
-## 2026-10-18
+## 2026-10-25
 
-**Verdict:** no change landed. The hot paths haven't changed since last week, and nothing
-measured is big enough to justify new code. The weather outage item still needs the owner.
-`/assembly-agents` and `showcase.json` still don't exist in the app, so the smoke list's
-404 there is expected.
+**Verdict:** one fix landed: the slowest cold render on the site (`/leetcode/segment-trees`)
+went from 5.6 s to 0.47 s with byte-identical output. `/assembly-agents` and
+`showcase.json` still don't exist in the app, so the smoke list's 404 there is expected.
 
 ### Landed
 
-Nothing this run. Last week's `13982b3` (cached reference pages kept as UTF-8 bytes) is
-still the most recent optimization. With 302 ready pages the cache now holds **15.2 MB**
-of bytes; as a str cache it would hold about 30 MB.
+- **`e3bfcef` perf: build each segment tree once when sizing queries.**
+  `segment_tree_sizes` traced every (left, right) range through `segment_query_trace`, and
+  each trace rebuilt the tree: ~33k rebuilds for n = 256. The first render blocked the only
+  sync worker for **5587 ms → 465 ms**. The HTML is byte-identical, and a new test checks
+  the shared tree against per-range tracing for n = 1..16.
+
+Warm requests are unchanged: `/` 0.22 ms, `/resume` 0.35 ms, and cached reference pages
+(310 ready, `/rml` included) and `/health` about 0.12 ms.
 
 ### Needs the owner
 
@@ -30,6 +34,12 @@ of bytes; as a str cache it would hold about 30 MB.
    `tf_tier.png` (231 KB) came in with `e476f70`. Nothing references them and Flask doesn't
    serve `backend/`, so they cost nothing at runtime, only clone and pull size. They came
    from another Routine's commit, so they're left for the owner to delete.
+3. **Slow first renders of simulation pages in `/ml-models`.** Four pages run real
+   simulations at render time: random-forests 1292 ms, distillation 1085 ms,
+   vector-indexes 912 ms, diffusion-models 759 ms (about 1M `random.gauss` calls). Each costs
+   that once per worker start. Making them faster means precomputing their figures offline
+   into committed data, the way torch figures already are, or changing the simulations,
+   and either risks float-level changes to the pages. That is the ml-models Routine's call.
 
 ### Considered and rejected
 
@@ -56,4 +66,5 @@ of bytes; as a str cache it would hold about 30 MB.
 ### Already optimal
 
 Versioned static assets with year-long caching, the per-city weather TTL cache, and the
-reference page cache (bytes, bounded by the number of ready pages, 302 today).
+reference page cache (bytes, bounded by the number of ready pages, 310 today, `/rml`
+included).
