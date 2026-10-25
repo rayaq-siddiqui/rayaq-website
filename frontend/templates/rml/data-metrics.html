@@ -1,0 +1,427 @@
+{% set d = "rml/data/" %}
+{% set m = "rml/metrics/" %}
+<header class="jj-header">
+  <h1>Data and metrics</h1>
+  <p class="tagline">
+    <code>rml/data</code> gets examples into a training loop: datasets, a seeded loader, preprocessing fitted on
+    the training rows and leak-free splits. <code>rml/metrics</code> scores what comes out: hard-label,
+    regression, threshold-free ranking and probability metrics, each checked against scikit-learn's own
+    documented examples.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: a <code>Dataset</code> is a list of examples, each a fixed number of tensors, and a
+  <code>DataLoader</code> walks it in batches by stacking each field along a new axis 0. Shuffling draws epoch
+  <em>e</em>'s order from <code>Generator(seed, e)</code>, so any epoch can be replayed without running the ones
+  before it. Scalers and the imputer work column by column on f32 <code>[N, D]</code> matrices and are fitted on
+  the training split only; splits and k-folds are plain index lists, optionally stratified by class. The metrics
+  copy their inputs into flat vectors of doubles, compute in double, and return a <code>float</code>. They follow
+  scikit-learn's conventions: a zero denominator gives 0, micro-averaged scores equal accuracy, and average
+  precision is the step-wise sum rather than an interpolated area. The thirteen training demos use the dataset
+  and loader; nothing in the library or the examples calls preprocessing, splits or metrics yet.
+</p>
+
+<p>
+  The concepts are on /ml-models: {{ ml('data-loading-and-batching', 'data loading and batching') }},
+  {{ ml('preprocessing', 'preprocessing') }}, {{ ml('missing-data', 'missing data') }},
+  {{ ml('class-imbalance', 'class imbalance') }}, {{ ml('data-splits', 'data splits') }},
+  {{ ml('cross-validation', 'cross-validation') }}, {{ ml('classification-metrics', 'classification metrics') }},
+  {{ ml('regression-metrics', 'regression metrics') }} and {{ ml('calibration', 'calibration') }}.
+</p>
+
+<h2 id="data">Datasets and the loader</h2>
+
+<p>
+  <code>rml::data</code> has three libraries, <code>dataset</code>, <code>preprocessing</code> and
+  <code>split</code>, each depending only on <code>rml/core</code> and, for the two that shuffle,
+  {{ link('random', 'rml/random') }} (<a href="{{ src(d ~ 'BUILD.bazel') }}">BUILD.bazel</a>). The header's
+  usage comment is the whole loop (<a href="{{ src(d ~ 'dataset.h', 79, 85) }}">dataset.h L79–85</a>):
+  construct a loader once, then per epoch call <code>StartEpoch(epoch)</code> and <code>Next(batch)</code> until it
+  returns false.
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 330" role="img" aria-labelledby="dm-load-title dm-load-desc">
+    <title id="dm-load-title">From tensors to batches</title>
+    <desc id="dm-load-desc">A TensorDataset holds fields such as features [N, D] and labels [N] that share their
+      first dimension. A split produces train and test index lists, and a Subset restricts the dataset to one
+      of them. The DataLoader's StartEpoch(e) builds the order: a permutation drawn from Generator(seed, e) when
+      shuffling, otherwise 0 to n minus 1. Each Next call takes the next batch_size indices of that order and
+      calls GetBatch, which for a TensorDataset copies those rows of every field with GatherRows, giving a batch
+      of [B, D] and [B]. A scaler is fitted on the training rows only and then applied to every split.</desc>
+
+    <rect class="d-box" x="20" y="20" width="180" height="62" rx="5"/>
+    <text x="110" y="43" text-anchor="middle">TensorDataset</text>
+    <text class="d-muted" x="110" y="63" text-anchor="middle" font-size="12">x [N, D], y [N]</text>
+    <line class="d-line" x1="200" y1="51" x2="230" y2="51"/>
+    <rect class="d-box" x="230" y="20" width="170" height="62" rx="5"/>
+    <text x="315" y="43" text-anchor="middle">Split / KFold</text>
+    <text class="d-muted" x="315" y="63" text-anchor="middle" font-size="12">train, test index lists</text>
+    <line class="d-line" x1="400" y1="51" x2="430" y2="51"/>
+    <rect class="d-box" x="430" y="20" width="170" height="62" rx="5"/>
+    <text x="515" y="43" text-anchor="middle">Subset(base, train)</text>
+    <text class="d-muted" x="515" y="63" text-anchor="middle" font-size="12">maps i to indices[i]</text>
+
+    <line class="d-line" x1="515" y1="82" x2="515" y2="112"/>
+    <rect class="d-box d-accent" x="230" y="112" width="370" height="62" rx="5"/>
+    <text x="415" y="135" text-anchor="middle">DataLoader::StartEpoch(e)</text>
+    <text class="d-muted" x="415" y="155" text-anchor="middle" font-size="12">order = Permutation(n, Generator(seed, e)), position = 0</text>
+    <rect class="d-box" x="20" y="112" width="180" height="62" rx="5"/>
+    <text x="110" y="135" text-anchor="middle">shuffle = false</text>
+    <text class="d-muted" x="110" y="155" text-anchor="middle" font-size="12">order = 0, 1, …, n − 1</text>
+    <line class="d-line" x1="200" y1="143" x2="230" y2="143"/>
+
+    <line class="d-line" x1="415" y1="174" x2="415" y2="204"/>
+    <rect class="d-box" x="230" y="204" width="370" height="62" rx="5"/>
+    <text x="415" y="227" text-anchor="middle">Next(batch): GetBatch(order[pos, pos + B))</text>
+    <text class="d-muted" x="415" y="247" text-anchor="middle" font-size="12">drop_last stops before a short final batch</text>
+    <line class="d-line" x1="230" y1="235" x2="200" y2="235"/>
+    <rect class="d-box" x="20" y="204" width="180" height="62" rx="5"/>
+    <text x="110" y="227" text-anchor="middle">GatherRows per field</text>
+    <text class="d-muted" x="110" y="247" text-anchor="middle" font-size="12">batch: [B, D], [B]</text>
+
+    <text class="d-muted" x="20" y="296" font-size="12">Preprocessing sits beside this: Fit() a scaler or imputer on the training rows,</text>
+    <text class="d-muted" x="20" y="314" font-size="12">then Transform() train, validation and test alike (preprocessing.h L9–10).</text>
+  </svg>
+  <figcaption>The path from tensors to a batch. Only the loader shuffles; splits shuffle once when they are
+    made, with their own generator.</figcaption>
+</figure>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>GatherRows</code></td><td><code>Tensor(const Tensor&amp; x, span&lt;const int64_t&gt; rows)</code></td><td>Copies the chosen rows along axis 0 into a new contiguous <code>[rows.size(), x.shape[1:]…]</code> tensor with one <code>memcpy</code> per row, for any non-quantized dtype. A strided view is made contiguous first; an out-of-range row dies.</td><td><a href="{{ src(d ~ 'dataset.cc', 36, 53) }}">dataset.cc L36–53</a></td></tr>
+      <tr><td><code>Stack</code></td><td><code>Tensor(span&lt;const Tensor&gt;)</code></td><td>Stacks equally shaped, same-dtype tensors along a new axis 0.</td><td><a href="{{ src(d ~ 'dataset.cc', 55, 68) }}">L55–68</a></td></tr>
+      <tr><td><code>Dataset</code></td><td><code>size()</code>, <code>Get(index)</code>, virtual <code>GetBatch(indices)</code></td><td>The interface. The default <code>GetBatch</code> calls <code>Get</code> for each index and stacks each field; in-memory datasets override it.</td><td><a href="{{ src(d ~ 'dataset.h', 28, 38) }}">dataset.h L28–38</a>, <a href="{{ src(d ~ 'dataset.cc', 70, 82) }}">.cc L70–82</a></td></tr>
+      <tr><td><code>TensorDataset</code></td><td><code>explicit TensorDataset(vector&lt;Tensor&gt; fields)</code></td><td>Examples are the rows of tensors that share their first dimension. <code>Get</code> returns <code>Select(0, index)</code> views; <code>GetBatch</code> is one <code>GatherRows</code> per field.</td><td><a href="{{ src(d ~ 'dataset.cc', 84, 105) }}">dataset.cc L84–105</a></td></tr>
+      <tr><td><code>Subset</code></td><td><code>Subset(const Dataset&amp; base, vector&lt;int64_t&gt; indices)</code></td><td>One side of a split: maps its own indices into the base's, which must outlive it, and forwards a whole batch to the base's <code>GetBatch</code>.</td><td><a href="{{ src(d ~ 'dataset.cc', 107, 129) }}">L107–129</a></td></tr>
+      <tr><td><code>DataLoaderOptions</code></td><td><code>batch_size</code> = 32, <code>shuffle</code> = true, <code>drop_last</code> = false, <code>seed</code> = 0</td><td><code>drop_last</code> drops a final short batch so every batch has the same shape.</td><td><a href="{{ src(d ~ 'dataset.h', 71, 77) }}">dataset.h L71–77</a></td></tr>
+      <tr><td><code>DataLoader</code></td><td><code>(const Dataset&amp;, DataLoaderOptions = {})</code>; <code>num_batches()</code>, <code>StartEpoch(epoch)</code>, <code>bool Next(vector&lt;Tensor&gt;&amp;)</code></td><td>The constructor calls <code>StartEpoch(0)</code>. <code>num_batches</code> is n / B with <code>drop_last</code>, otherwise ⌈n / B⌉. <code>Next</code> fills the batch and advances, or returns false at the end of the epoch.</td><td><a href="{{ src(d ~ 'dataset.cc', 131, 165) }}">dataset.cc L131–165</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="epochs">Why epoch e has its own generator</h3>
+
+<p>
+  <code>StartEpoch</code> builds a fresh <code>random::Generator(seed, epoch)</code> and draws
+  <code>random::Permutation(size, gen)</code> from it (<a href="{{ src(d ~ 'dataset.cc', 143, 153) }}">dataset.cc
+  L143–153</a>). Philox is counter-based, so the epoch number picks an independent stream instead of continuing
+  one shared stream: epoch 1's order is the same whether or not epoch 0 ran first, and training resumed from a
+  checkpoint replays exactly (<a href="{{ src(d ~ 'dataset.h', 7, 11) }}">dataset.h L7–11</a>). The test
+  <code>ShuffleIsAPermutationFixedPerEpoch</code> checks exactly that with two loaders. How the streams work is on
+  {{ link('random', 'Random numbers') }}.
+</p>
+
+<p>
+  Each batch is a fresh copy: <code>GatherRows</code> allocates its output, so a batch never aliases the dataset
+  and the model can do anything with it. The training loop that consumes the batch is on
+  {{ link('training', 'Losses and optimizers', '#loop') }}.
+</p>
+
+<h2 id="preprocessing">Preprocessing</h2>
+
+<p>
+  Every transformer checks for an f32 rank-2 matrix and, after <code>Fit</code>, that the column count matches
+  (<a href="{{ src(d ~ 'preprocessing.cc', 18, 27) }}">preprocessing.cc L18–27</a>); calling
+  <code>Transform</code> before <code>Fit</code> dies with "call Fit() first". The scalers are written with the
+  broadcasting ops from {{ link('tensors', 'rml/core', '#ops') }}, so a <code>[D]</code> statistic applies to every
+  row.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>StandardScaler</code></td><td><code>Fit(x)</code>, <code>Transform(x)</code>, <code>InverseTransform(z)</code>; <code>mean()</code>, <code>stddev()</code></td><td>(x − mean) / std per column, with the population standard deviation (divide by N). A constant column gets std 1, so it maps to 0 instead of dividing by zero.</td><td><a href="{{ src(d ~ 'preprocessing.cc', 36, 51) }}">preprocessing.cc L36–51</a></td></tr>
+      <tr><td><code>MinMaxScaler</code></td><td><code>explicit MinMaxScaler(float lo = 0, float hi = 1)</code></td><td>lo + (x − min) / (max − min) · (hi − lo) per column; a constant column's range becomes 1, so it maps to lo. <code>lo &lt; hi</code> is checked.</td><td><a href="{{ src(d ~ 'preprocessing.cc', 53, 72) }}">L53–72</a></td></tr>
+      <tr><td><code>MeanImputer</code></td><td><code>Fit(x)</code>, <code>Transform(x)</code>; <code>fill()</code></td><td>Each column's mean over its non-NaN training values, summed in double (0 for a column with none). <code>Transform</code> clones the input and replaces every NaN with its column's fill.</td><td><a href="{{ src(d ~ 'preprocessing.cc', 74, 106) }}">L74–106</a></td></tr>
+      <tr><td><code>OneHot</code></td><td><code>Tensor(const Tensor&amp; labels, int64_t num_classes)</code></td><td>i32 labels of any shape <code>[...]</code> to f32 <code>[..., num_classes]</code> with a single 1 per row.</td><td><a href="{{ src(d ~ 'preprocessing.cc', 108, 123) }}">L108–123</a></td></tr>
+      <tr><td><code>BalancedClassWeights</code></td><td><code>Tensor(const Tensor&amp; labels, int64_t num_classes)</code></td><td>Per-class loss weights n / (num_classes · count<sub>c</sub>) for 1-D i32 labels, so each class contributes equally in total; a class that never appears gets 0.</td><td><a href="{{ src(d ~ 'preprocessing.cc', 125, 146) }}">L125–146</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  For example, labels <code>{0, 0, 0, 1}</code> with two classes give weights 4 / (2 · 3) = 0.667 and
+  4 / (2 · 1) = 2: three class-0 rows and one class-1 row then each total 2.
+</p>
+
+<h2 id="splits">Splits and cross-validation</h2>
+
+<p>
+  A <code>Split</code> is two index lists, <code>train</code> and <code>test</code>
+  (<a href="{{ src(d ~ 'split.h', 19, 22) }}">split.h L19–22</a>). The header's rule is to split before fitting
+  anything, scalers included, since statistics over the test rows leak them into training
+  (<a href="{{ src(d ~ 'split.h', 8, 9) }}">L8–9</a>). The indices feed a <a href="#data"><code>Subset</code></a> or
+  <code>GatherRows</code>.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Function</th><th>Signature</th><th>What it does</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>TrainTestSplit</code></td><td><code>Split(int64_t n, double test_fraction, Generator&amp;)</code></td><td>Permutes 0..n−1 and holds out the first round(n · test_fraction). The fraction must be in [0, 1].</td><td><a href="{{ src(d ~ 'split.cc', 62, 71) }}">split.cc L62–71</a></td></tr>
+      <tr><td><code>StratifiedSplit</code></td><td><code>Split(const Tensor&amp; labels, double test_fraction, Generator&amp;)</code></td><td>Groups the 1-D i32 labels by class (in label order), shuffles each group, and holds out round(size · fraction) of each, so rare classes appear on both sides.</td><td><a href="{{ src(d ~ 'split.cc', 24, 41) }}">L24–41</a>, <a href="{{ src(d ~ 'split.cc', 73, 83) }}">L73–83</a></td></tr>
+      <tr><td><code>KFold</code></td><td><code>vector&lt;Split&gt;(int64_t n, int k, Generator* gen = nullptr)</code></td><td>Cuts the order into k contiguous chunks, the first n % k one larger; fold i tests on chunk i and trains on the rest. A null generator keeps 0..n−1. Needs 2 ≤ k ≤ n.</td><td><a href="{{ src(d ~ 'split.cc', 85, 102) }}">L85–102</a></td></tr>
+      <tr><td><code>StratifiedKFold</code></td><td><code>vector&lt;Split&gt;(const Tensor&amp; labels, int k, Generator&amp;)</code></td><td>Deals every shuffled class round-robin into the k chunks, continuing where the previous class stopped, so fold sizes stay within one of each other and each fold holds about 1/k of every class.</td><td><a href="{{ src(d ~ 'split.cc', 104, 118) }}">L104–118</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Both k-fold variants finish in <code>FoldsFromChunks</code>, which records each index's fold, sorts each test
+  chunk, and lists the remaining indices in increasing order as that fold's training set
+  (<a href="{{ src(d ~ 'split.cc', 43, 58) }}">split.cc L43–58</a>). The two single splits keep their shuffled order.
+</p>
+
+<h2 id="metrics">How the metrics read their inputs</h2>
+
+<p>
+  <code>rml::metrics</code> has four public libraries and one private helper, <code>inputs</code>, which every
+  metric goes through (<a href="{{ src(m ~ 'inputs.cc', 12, 34) }}">inputs.cc L12–34</a>):
+  <code>LabelVector</code> checks for a rank-1 i32 tensor, <code>ValueVector</code> takes every element of an f32
+  tensor of any shape as a double, and <code>BinaryLabelVector</code> also checks the labels are 0 or 1. So all
+  arithmetic is in double, inputs can be strided views, and the result is converted to <code>float</code> once at
+  the end. Nothing here is differentiable; for training objectives see {{ link('training', 'the losses') }}.
+</p>
+
+<h2 id="classification">Classification metrics</h2>
+
+<p>
+  Everything starts from the confusion matrix C, where C[i][j] counts true class i predicted as j
+  (<a href="{{ src(m ~ 'classification.h', 7, 13) }}">classification.h L7–13</a>). Precision for class c is
+  C[c][c] over column c's sum, recall is C[c][c] over row c's sum, and any ratio with a zero denominator is 0, as in
+  scikit-learn (<code>SafeRatio</code>, <a href="{{ src(m ~ 'classification.cc', 17, 19) }}">classification.cc
+  L17–19</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>ConfusionMatrix</code></td><td><code>Tensor(y_true, y_pred, int num_classes)</code></td><td>i32 <code>[num_classes, num_classes]</code>, rows true, columns predicted; an out-of-range label dies.</td><td><a href="{{ src(m ~ 'classification.cc', 34, 47) }}">classification.cc L34–47</a></td></tr>
+      <tr><td><code>Accuracy</code></td><td><code>float(y_true, y_pred)</code></td><td>The fraction of matches; needs at least one example.</td><td><a href="{{ src(m ~ 'classification.cc', 49, 57) }}">L49–57</a></td></tr>
+      <tr><td><code>BalancedAccuracy</code></td><td><code>float(y_true, y_pred, int num_classes)</code></td><td>The mean recall over the classes that appear in <code>y_true</code>, robust to imbalance.</td><td><a href="{{ src(m ~ 'classification.cc', 59, 68) }}">L59–68</a></td></tr>
+      <tr><td><code>ClassScores</code>, <code>PerClassScores</code></td><td><code>{precision, recall, f1, support}</code>; <code>vector&lt;ClassScores&gt;(const Tensor&amp; confusion)</code></td><td>Per-class scores from a square i32 confusion matrix; <code>support</code> is the number of true examples of the class.</td><td><a href="{{ src(m ~ 'classification.h', 30, 38) }}">.h L30–38</a>, <a href="{{ src(m ~ 'classification.cc', 70, 89) }}">.cc L70–89</a></td></tr>
+      <tr><td><code>Average</code></td><td><code>kBinary</code>, <code>kMicro</code>, <code>kMacro</code>, <code>kWeighted</code></td><td>The positive class alone; pooled counts; the unweighted mean of per-class scores; the support-weighted mean.</td><td><a href="{{ src(m ~ 'classification.h', 40, 45) }}">.h L40–45</a></td></tr>
+      <tr><td><code>PrecisionRecallF1</code></td><td><code>ClassScores(y_true, y_pred, num_classes, Average = kMacro, int positive_class = 1)</code></td><td>Micro returns accuracy for all three, since every false positive for one class is a false negative for another. Macro and weighted F1 average the per-class F1 values, as scikit-learn does, rather than taking the F1 of the averaged precision and recall.</td><td><a href="{{ src(m ~ 'classification.cc', 91, 122) }}">.cc L91–122</a></td></tr>
+      <tr><td><code>FBeta</code></td><td><code>float(precision, recall, beta)</code></td><td>(1 + β²) P R / (β² P + R); β &gt; 1 weights recall more.</td><td><a href="{{ src(m ~ 'classification.cc', 124, 128) }}">L124–128</a></td></tr>
+      <tr><td><code>MatthewsCorrelation</code></td><td><code>float(y_true, y_pred, int num_classes)</code></td><td>Gorodkin's R<sub>K</sub>: (c·s − Σ t<sub>k</sub>p<sub>k</sub>) / √((s² − Σ t<sub>k</sub>²)(s² − Σ p<sub>k</sub>²)) with true counts t, predicted counts p, c correct of s. +1 perfect, 0 chance, −1 inverse; 0 when a side is constant.</td><td><a href="{{ src(m ~ 'classification.cc', 130, 158) }}">L130–158</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="classification-example">Worked example</h3>
+
+<p>
+  The tests use ten labels over three classes (<a href="{{ src(m ~ 'classification_test.cc', 18, 20) }}">classification_test.cc
+  L18–20</a>): <code>y_true = {0,0,0,1,1,1,1,2,2,2}</code>, <code>y_pred = {0,1,0,1,1,2,1,2,0,2}</code>.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>true \ predicted</th><th>0</th><th>1</th><th>2</th><th>recall</th></tr></thead>
+    <tbody>
+      <tr><td>0</td><td>2</td><td>1</td><td>0</td><td>2/3</td></tr>
+      <tr><td>1</td><td>0</td><td>3</td><td>1</td><td>3/4</td></tr>
+      <tr><td>2</td><td>1</td><td>0</td><td>2</td><td>2/3</td></tr>
+      <tr><td>precision</td><td>2/3</td><td>3/4</td><td>2/3</td><td></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<ul>
+  <li>Accuracy is 7/10 = 0.7, and so is every micro-averaged score.</li>
+  <li>Macro precision, recall and F1 are (2/3 + 3/4 + 2/3) / 3 = 0.6944, scikit-learn's value; balanced accuracy is
+    the same mean of recalls.</li>
+  <li>Weighted recall is (3 · 2/3 + 4 · 3/4 + 3 · 2/3) / 10 = 0.7.</li>
+  <li>For MCC, t = p = (3, 4, 3), so Σ t<sub>k</sub>p<sub>k</sub> = Σ t<sub>k</sub>² = 34, and
+    R<sub>K</sub> = (7 · 10 − 34) / (100 − 34) = 36/66 ≈ 0.545
+    (<a href="{{ src(m ~ 'classification_test.cc', 83, 90) }}">L83–90</a>).</li>
+</ul>
+
+<h2 id="regression">Regression metrics</h2>
+
+<p>
+  Inputs are f32 tensors of equal shape, of any rank, compared element by element; at least one value is needed
+  (<a href="{{ src(m ~ 'regression.cc', 19, 23) }}">regression.cc L19–23</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Function</th><th>Definition</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>MeanSquaredError</code>, <code>RootMeanSquaredError</code></td><td>mean (y − ŷ)², and its square root.</td><td><a href="{{ src(m ~ 'regression.cc', 47, 56) }}">regression.cc L47–56</a></td></tr>
+      <tr><td><code>MeanAbsoluteError</code></td><td>mean |y − ŷ|, robust to outliers.</td><td><a href="{{ src(m ~ 'regression.cc', 58, 63) }}">L58–63</a></td></tr>
+      <tr><td><code>MeanAbsolutePercentageError</code></td><td>mean |y − ŷ| / max(|y|, ε), with ε the double machine epsilon, as a fraction rather than a percentage.</td><td><a href="{{ src(m ~ 'regression.cc', 65, 73) }}">L65–73</a></td></tr>
+      <tr><td><code>MedianAbsoluteError</code></td><td>The median of |y − ŷ|, averaging the middle two for an even count.</td><td><a href="{{ src(m ~ 'regression.cc', 75, 83) }}">L75–83</a></td></tr>
+      <tr><td><code>R2Score</code></td><td>1 − SS<sub>res</sub> / SS<sub>tot</sub>: 1 perfect, 0 no better than predicting the mean, negative when worse. For a constant <code>y_true</code> it returns 1 for a perfect prediction and 0 otherwise, as scikit-learn does.</td><td><a href="{{ src(m ~ 'regression.cc', 38, 43) }}">L38–43</a>, <a href="{{ src(m ~ 'regression.cc', 85, 95) }}">L85–95</a></td></tr>
+      <tr><td><code>ExplainedVariance</code></td><td>1 − Var(y − ŷ) / Var(y): R² without penalizing a constant bias.</td><td><a href="{{ src(m ~ 'regression.cc', 97, 102) }}">L97–102</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  With scikit-learn's documentation example <code>y = {3, −0.5, 2, 7}</code>, <code>ŷ = {2.5, 0, 2, 8}</code>, the
+  errors are 0.5, 0.5, 0 and 1: MSE 0.375, MAE 0.5, median absolute error 0.5, R² 0.9486 and explained variance
+  0.9572 (<a href="{{ src(m ~ 'regression_test.cc', 12, 26) }}">regression_test.cc L12–26</a>). Shifting every
+  prediction by one, <code>{4, 0.5, 3, 8}</code>, leaves explained variance at exactly 1.
+</p>
+
+<h2 id="ranking">Ranking metrics: ROC and precision-recall</h2>
+
+<p>
+  A score can be cut at any threshold t, predicting positive when score ≥ t. Every curve here comes from one sweep
+  (<a href="{{ src(m ~ 'ranking.cc', 25, 56) }}">ranking.cc L25–56</a>): stable-sort the scores in decreasing order,
+  start with a point at threshold +∞ where nothing is positive, then walk down counting true and false positives.
+  Tied scores move together, so a point is emitted only after the last of a tie, which is why ties count half in
+  the ROC area.
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 300" role="img" aria-labelledby="dm-roc-title dm-roc-desc">
+    <title id="dm-roc-title">The ROC sweep for the scikit-learn example</title>
+    <desc id="dm-roc-desc">Labels 0, 0, 1, 1 with scores 0.1, 0.4, 0.35 and 0.8. Sorted by decreasing score the
+      labels are 1 at 0.8, 0 at 0.4, 1 at 0.35 and 0 at 0.1. The sweep gives five points (FPR, TPR): (0, 0) at
+      threshold infinity, (0, 0.5) at 0.8, (0.5, 0.5) at 0.4, (0.5, 1) at 0.35 and (1, 1) at 0.1. The staircase
+      encloses an area of 0.75 under it, above the dashed chance diagonal, which is the ROC AUC.</desc>
+
+    <polygon class="d-box" points="70,250 70,150 170,150 170,50 270,50 270,250"/>
+    <line class="d-line" x1="70" y1="250" x2="270" y2="250"/>
+    <line class="d-line" x1="70" y1="250" x2="70" y2="50"/>
+    <line class="d-line" x1="70" y1="250" x2="270" y2="50" stroke-dasharray="4 4"/>
+    <polyline class="d-accent" fill="none" stroke-width="2.5" points="70,250 70,150 170,150 170,50 270,50"/>
+    <circle class="d-accent" cx="70" cy="250" r="4" fill="none"/>
+    <circle class="d-accent" cx="70" cy="150" r="4" fill="none"/>
+    <circle class="d-accent" cx="170" cy="150" r="4" fill="none"/>
+    <circle class="d-accent" cx="170" cy="50" r="4" fill="none"/>
+    <circle class="d-accent" cx="270" cy="50" r="4" fill="none"/>
+    <text class="d-muted" x="70" y="268" text-anchor="middle" font-size="12">0</text>
+    <text class="d-muted" x="170" y="268" text-anchor="middle" font-size="12">0.5</text>
+    <text class="d-muted" x="270" y="268" text-anchor="middle" font-size="12">1</text>
+    <text class="d-muted" x="170" y="288" text-anchor="middle" font-size="12">false positive rate</text>
+    <text class="d-muted" x="60" y="254" text-anchor="end" font-size="12">0</text>
+    <text class="d-muted" x="60" y="154" text-anchor="end" font-size="12">0.5</text>
+    <text class="d-muted" x="60" y="54" text-anchor="end" font-size="12">1</text>
+    <text class="d-muted" x="22" y="150" text-anchor="middle" font-size="12" transform="rotate(-90 22 150)">true positive rate</text>
+    <text x="220" y="200" text-anchor="middle">AUC 0.75</text>
+
+    <text x="310" y="40">threshold</text>
+    <text x="390" y="40">label</text>
+    <text x="445" y="40">TP, FP</text>
+    <text x="515" y="40">FPR, TPR</text>
+    <line class="d-line" x1="310" y1="50" x2="600" y2="50"/>
+    <text class="d-muted" x="310" y="74" font-size="13">+∞</text>
+    <text class="d-muted" x="390" y="74" font-size="13">—</text>
+    <text class="d-muted" x="445" y="74" font-size="13">0, 0</text>
+    <text class="d-muted" x="515" y="74" font-size="13">0, 0</text>
+    <text x="310" y="100" font-size="13">0.8</text>
+    <text x="390" y="100" font-size="13">1</text>
+    <text x="445" y="100" font-size="13">1, 0</text>
+    <text x="515" y="100" font-size="13">0, 0.5</text>
+    <text x="310" y="126" font-size="13">0.4</text>
+    <text x="390" y="126" font-size="13">0</text>
+    <text x="445" y="126" font-size="13">1, 1</text>
+    <text x="515" y="126" font-size="13">0.5, 0.5</text>
+    <text x="310" y="152" font-size="13">0.35</text>
+    <text x="390" y="152" font-size="13">1</text>
+    <text x="445" y="152" font-size="13">2, 1</text>
+    <text x="515" y="152" font-size="13">0.5, 1</text>
+    <text x="310" y="178" font-size="13">0.1</text>
+    <text x="390" y="178" font-size="13">0</text>
+    <text x="445" y="178" font-size="13">2, 2</text>
+    <text x="515" y="178" font-size="13">1, 1</text>
+    <text class="d-muted" x="310" y="216" font-size="12">Precision at each point is TP / (TP + FP):</text>
+    <text class="d-muted" x="310" y="234" font-size="12">1, 1, 0.5, 2/3, 0.5, so average precision is</text>
+    <text class="d-muted" x="310" y="252" font-size="12">0.5 · 1 + 0.5 · 2/3 = 0.8333.</text>
+  </svg>
+  <figcaption>scikit-learn's documentation example, used by <code>ranking_test.cc</code>
+    (<a href="{{ src(m ~ 'ranking_test.cc', 24, 37) }}">L24–37</a>, <a href="{{ src(m ~ 'ranking_test.cc', 71, 85) }}">L71–85</a>).
+    Each row of the sweep is one point of both curves.</figcaption>
+</figure>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Function</th><th>Returns</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>RocCurve</code></td><td><code>Roc{fpr, tpr, thresholds}</code></td><td>TP and FP counts divided by the totals; a rate is NaN when its class is absent.</td><td><a href="{{ src(m ~ 'ranking.cc', 68, 80) }}">ranking.cc L68–80</a></td></tr>
+      <tr><td><code>RocAuc</code></td><td><code>float</code></td><td>The trapezoid area under the ROC curve, which equals the probability that a random positive outranks a random negative, ties counting half. NaN unless both classes are present.</td><td><a href="{{ src(m ~ 'ranking.cc', 82, 88) }}">L82–88</a></td></tr>
+      <tr><td><code>PrecisionRecallCurve</code></td><td><code>PrecisionRecall{precision, recall, thresholds}</code></td><td>Starts at (recall 0, precision 1), then TP / (TP + FP) and TP / positives at each threshold.</td><td><a href="{{ src(m ~ 'ranking.cc', 90, 102) }}">L90–102</a></td></tr>
+      <tr><td><code>AveragePrecision</code></td><td><code>float</code></td><td>Σ (R<sub>n</sub> − R<sub>n−1</sub>) P<sub>n</sub>: each threshold's precision weighted by the recall it adds. This is scikit-learn's <code>average_precision_score</code>; it does not interpolate, so it is not optimistic. NaN without positives.</td><td><a href="{{ src(m ~ 'ranking.cc', 104, 112) }}">L104–112</a></td></tr>
+      <tr><td><code>PrAuc</code></td><td><code>float</code></td><td>The trapezoid area under the precision-recall curve. It interpolates linearly between points and can overstate performance; the header says to prefer <code>AveragePrecision</code>. For the example it is 0.5 + 0.25 · (0.5 + 2/3) ≈ 0.792.</td><td><a href="{{ src(m ~ 'ranking.h', 45, 48) }}">.h L45–48</a>, <a href="{{ src(m ~ 'ranking.cc', 114, 118) }}">.cc L114–118</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The precision-recall curve suits rare positives better than ROC, because precision ignores the many easy
+  negatives (<a href="{{ src(m ~ 'ranking.h', 7, 16) }}">ranking.h L7–16</a>). A test computes the ROC AUC as the
+  fraction of winning positive-negative pairs on random data and checks the two agree to 10<sup>−6</sup>
+  (<code>MatchesPairwiseRanking</code>).
+</p>
+
+<h2 id="calibration">Probability metrics and calibration</h2>
+
+<p>
+  These take i32 labels and <code>probs</code> that are either rank 1, the probability of class 1 for binary
+  labels, or <code>[n, num_classes]</code> rows (<a href="{{ src(m ~ 'calibration.h', 14, 16) }}">calibration.h
+  L14–16</a>). A private <code>Rows</code> helper expands rank-1 input to rows [1 − p, p], so one code path serves
+  both (<a href="{{ src(m ~ 'calibration.cc', 16, 48) }}">calibration.cc L16–48</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>LogLoss</code></td><td><code>float(y_true, probs, double eps = 1e-15)</code></td><td>mean −log p(true class), with p clamped to [eps, 1 − eps] so a confident mistake costs a large but finite amount.</td><td><a href="{{ src(m ~ 'calibration.cc', 52, 60) }}">calibration.cc L52–60</a></td></tr>
+      <tr><td><code>BrierScore</code></td><td><code>float(y_true, probs)</code></td><td>The mean squared distance between the probability row and the one-hot label, summed over classes. For rank-1 input the expansion counts each error twice, so the total is halved, giving mean (p − y)², scikit-learn's <code>brier_score_loss</code>.</td><td><a href="{{ src(m ~ 'calibration.cc', 62, 75) }}">L62–75</a></td></tr>
+      <tr><td><code>ReliabilityBin</code></td><td><code>{lower, upper, confidence, accuracy, count}</code></td><td>Confidences in (lower, upper]; the first bin also takes 0. Empty bins report 0 confidence and accuracy.</td><td><a href="{{ src(m ~ 'calibration.h', 34, 40) }}">calibration.h L34–40</a></td></tr>
+      <tr><td><code>ReliabilityDiagram</code></td><td><code>vector&lt;ReliabilityBin&gt;(y_true, probs, int num_bins = 15)</code></td><td>Top-label reliability: each prediction is its most likely class (the first on a tie), with that probability as its confidence, placed in bin ⌈conf · B⌉ − 1 clamped to [0, B − 1].</td><td><a href="{{ src(m ~ 'calibration.cc', 77, 111) }}">calibration.cc L77–111</a></td></tr>
+      <tr><td><code>ExpectedCalibrationError</code></td><td><code>float(y_true, probs, int num_bins = 15)</code></td><td>Σ<sub>b</sub> (n<sub>b</sub> / n) |accuracy<sub>b</sub> − confidence<sub>b</sub>| over the reliability bins (Guo et al., 2017).</td><td><a href="{{ src(m ~ 'calibration.cc', 113, 122) }}">L113–122</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  In the test with four binary rows and four bins (<a href="{{ src(m ~ 'calibration_test.cc', 46, 62) }}">calibration_test.cc
+  L46–62</a>), the top-label confidences are 0.9 (right), 0.7 (right), 0.65 (wrong) and 0.8 (wrong). Bin (0.5, 0.75]
+  holds 0.7 and 0.65: confidence 0.675, accuracy 0.5. Bin (0.75, 1] holds 0.9 and 0.8: confidence 0.85, accuracy
+  0.5. ECE = 0.5 · 0.175 + 0.5 · 0.35 = 0.2625.
+</p>
+
+<h2 id="users">Who uses it</h2>
+
+<p>
+  <code>TensorDataset</code> and <code>DataLoader</code> are used by thirteen training demos in
+  {{ link('examples', 'examples/') }}: <code>cnn</code>, <code>diffusion</code>, <code>diffusion_unet</code>,
+  <code>dpo</code>, <code>encoder</code>, <code>finetune</code>, <code>flow_matching</code>, <code>mlp</code>,
+  <code>rag</code>, <code>rnn</code>, <code>ssm</code>, <code>vae</code> and <code>vit</code>. At the pin no library
+  code and no example includes <code>preprocessing.h</code>, <code>split.h</code> or any <code>rml/metrics</code>
+  header; their tests are their only callers. {{ link('classical', 'The classical models') }} are checked against
+  scikit-learn fixtures with their own assertions rather than through these metrics.
+</p>
+
+<h2 id="tests">Tests</h2>
+
+<p>
+  The metric tests use scikit-learn's documented examples, with the reference values written into the test
+  comments, rather than generated fixtures.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Tests</th><th>What they pin down</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(d ~ 'dataset_test.cc') }}"><code>dataset_test.cc</code></a></td><td>8</td><td><code>GatherRows</code> on f32 and i32 tensors and on a transposed view; <code>Stack</code>'s leading axis; <code>Get</code> and <code>GetBatch</code> agreeing; <code>Subset</code> remapping; sequential batches covering every example, <code>drop_last</code> keeping batches full, and the shuffle being a permutation that is fixed per epoch.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'preprocessing_test.cc') }}"><code>preprocessing_test.cc</code></a></td><td>6</td><td>Zero mean and unit variance after <code>StandardScaler</code>, its constant column mapping to 0 and its inverse round-tripping; <code>MinMaxScaler</code> mapping to its range; transforming before <code>Fit</code> or with other columns dies; NaNs filled with training means; one-hot keeping leading axes; balanced weights inversely proportional to counts.</td></tr>
+      <tr><td><a href="{{ src(d ~ 'split_test.cc') }}"><code>split_test.cc</code></a></td><td>7</td><td>The held-out fraction and the same split from the same seed; stratified class proportions; k folds partitioning the indices, shuffled with a generator; every stratified fold seeing every class; k = 1 dies.</td></tr>
+      <tr><td><a href="{{ src(m ~ 'classification_test.cc') }}"><code>classification_test.cc</code></a></td><td>8</td><td>The worked example above: confusion matrix, accuracy and balanced accuracy, per-class and macro, weighted and micro scores, binary scores and zero division, F-beta, MCC including ±1 and a constant prediction; out-of-range labels die.</td></tr>
+      <tr><td><a href="{{ src(m ~ 'regression_test.cc') }}"><code>regression_test.cc</code></a></td><td>4</td><td>scikit-learn's values for every metric; R² baselines (1, 0 for the mean, negative, and the constant-target rule); explained variance ignoring a bias; matrices accepted and mismatched shapes rejected.</td></tr>
+      <tr><td><a href="{{ src(m ~ 'ranking_test.cc') }}"><code>ranking_test.cc</code></a></td><td>6</td><td>ROC points and AUC 0.75; ties counting half; AUC equal to pairwise ranking on random data; NaN with one class; the precision-recall curve, average precision 0.8333 and PR-AUC; a perfect ranking scoring 1.</td></tr>
+      <tr><td><a href="{{ src(m ~ 'calibration_test.cc') }}"><code>calibration_test.cc</code></a></td><td>5</td><td>Binary and multiclass log loss agreeing and certain mistakes clipped; Brier 0.0375 (scikit-learn's example) and a multiclass value; the reliability bins and ECE above; labels drawn at their stated probability (n = 20000) giving ECE near 0, while an always-99%-sure model is far off.</td></tr>
+    </tbody>
+  </table>
+</div>

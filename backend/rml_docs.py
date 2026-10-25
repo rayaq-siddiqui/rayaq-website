@@ -215,7 +215,7 @@ PAGES = [
         "summary": "Datasets, preprocessing and splits, and the classification, regression, "
         "ranking and calibration metrics.",
         "sources": ["rml/data", "rml/metrics"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "classical",
