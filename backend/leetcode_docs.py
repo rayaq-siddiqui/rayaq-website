@@ -7140,8 +7140,11 @@ def segment_tree_of(nums, combine="sum"):
 
 def segment_query_trace(nums, left, right, combine="sum"):
     """Every node a range query visits, in visit order: a node outside [left, right] contributes nothing, one inside contributes its stored value, and one that straddles a bound splits into its children."""
-    op = SEGMENT_COMBINE[combine]
     tree = {entry["node"]: entry for entry in segment_tree_of(nums, combine)}
+    return _trace_query(tree, left, right, SEGMENT_COMBINE[combine])
+
+
+def _trace_query(tree, left, right, op):
     visits = []
 
     def query(node):
@@ -7180,10 +7183,11 @@ def segment_tree_sizes(sizes):
     """For each n: nodes in the tree, the largest node index (why arrays are sized 4n) and the most nodes any single range query visits, found by trying every range."""
     rows = []
     for n in sizes:
-        nums = [0] * n
-        tree = segment_tree_of(nums)
+        tree = segment_tree_of([0] * n)
+        by_node = {entry["node"]: entry for entry in tree}
+        op = SEGMENT_COMBINE["sum"]
         worst = max(
-            len(segment_query_trace(nums, left, right)["visits"])
+            len(_trace_query(by_node, left, right, op)["visits"])
             for left in range(n) for right in range(left, n)
         )
         rows.append({"n": n, "nodes": len(tree), "largest_index": tree[-1]["node"],

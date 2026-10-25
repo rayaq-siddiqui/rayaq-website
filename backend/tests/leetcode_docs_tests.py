@@ -1879,6 +1879,16 @@ def test_segment_trees_helpers_match_the_page():
     assert "Beyond the interview" in body
 
 
+def test_segment_tree_sizes_matches_tracing_every_range_from_scratch():
+    for n in range(1, 17):
+        nums = [0] * n
+        worst = max(
+            len(leetcode_docs.segment_query_trace(nums, left, right)["visits"])
+            for left in range(n) for right in range(left, n)
+        )
+        assert leetcode_docs.segment_tree_sizes([n])[0]["worst_visits"] == worst
+
+
 def test_fenwick_trees_helpers_match_the_page():
     nums = [5, 8, 6, 3, 2, 7, 2, 6]
     tree = leetcode_docs.fenwick_tree_of(nums)
