@@ -38,7 +38,7 @@
   (<a href="{{ src(prog, 128, 133) }}">progress.md L128–133</a>): rml beat every framework only on the
   batch-1 CNN, and was 2–20× slower wherever GEMM dominated. Only GEMM was threaded, and the JAX and
   TensorFlow graphs arrived with layer norm, softmax and GELU decomposed. The plan that followed
-  (<a href="{{ src(prog, 157, 167) }}">L157–167</a>) has one item per gap:
+  (<a href="{{ src(prog, 157, 170) }}">L157–170</a>) has one item per gap:
 </p>
 
 <div class="jj-table-wrap">
@@ -50,8 +50,10 @@
       <tr><td>Decomposed patterns as chains of small ops</td><td>Elementwise fusion at run time (<a href="{{ src(prog, 158, 158) }}">L158</a>, <a href="{{ src(prog, 161, 161) }}">L161</a>), and mean and softmax fusion at export (<a href="{{ src(prog, 162, 162) }}">L162</a>)</td><td>Built</td><td><a href="#fusion">Fused programs</a>, <a href="#export-fusion">At export</a></td></tr>
       <tr><td>Allocation per op</td><td>Buffers reused across runs through a <code>BufferPool</code> (<a href="{{ src(prog, 161, 161) }}">L161</a>)</td><td>Built</td><td><a href="#buffers">Buffers</a></td></tr>
       <tr><td>Weights repacked on every call; an LSTM step split into many small ops</td><td>Constant matmul weights packed once at compile time, and fusion groups with independent members, several outputs, leading-1 reshapes and row-strided slice views (<a href="{{ src(prog, 165, 165) }}">L165</a>)</td><td>Built</td><td><a href="#lstm">An LSTM step</a>, <a href="#gemm">SIMD GEMM</a></td></tr>
-      <tr><td>Layer norm and GELU still decomposed</td><td><code>fuse_layer_norm</code> and <code>fuse_gelu</code> in <code>passes.py</code>; the checklist still lists the item as open (<a href="{{ src(prog, 163, 163) }}">L163</a>)</td><td>In progress</td><td><a href="#export-fusion">At export</a></td></tr>
-      <tr><td>Four threads slower than one on small cells</td><td>Larger grains so small ops stay on the calling thread; the checklist item is open (<a href="{{ src(prog, 166, 166) }}">L166</a>)</td><td>In progress</td><td><a href="#threads">Threads</a></td></tr>
+      <tr><td>Layer norm and GELU still decomposed</td><td><code>fuse_layer_norm</code> and <code>fuse_gelu</code> in <code>passes.py</code> (<a href="{{ src(prog, 163, 163) }}">L163</a>)</td><td>Built</td><td><a href="#export-fusion">At export</a></td></tr>
+      <tr><td>Threads idle on few-task GEMMs (an RNN step at batch 64)</td><td>GEMM column chunks balanced across threads, <code>torch_rnn_b64</code> about 15 to 8.5 ms on 4 threads; folding the recurrence adds into the step GEMM gave nothing and was dropped (<a href="{{ src(prog, 166, 166) }}">L166</a>)</td><td>Built</td><td><a href="#gemm">SIMD GEMM</a></td></tr>
+      <tr><td>Slow view copies and separate conv bias adds (the U-Net)</td><td>A coalesced, blocked, threaded strided copy, and a per-channel constant add folded into the conv before it, <code>tf</code>/<code>jax</code> <code>unet_b64</code> about 46 to 37 ms on 4 threads (<a href="{{ src(prog, 167, 167) }}">L167</a>)</td><td>Built</td><td><a href="#conv-bias">Conv bias</a>, <a href="#buffers">Buffers</a></td></tr>
+      <tr><td>Four threads slower than one on small cells</td><td>Larger grains so small ops stay on the calling thread; the checklist item is open, now at 38 of 171 cells (<a href="{{ src(prog, 169, 169) }}">L169</a>)</td><td>In progress</td><td><a href="#threads">Threads</a></td></tr>
     </tbody>
   </table>
 </div>
@@ -225,7 +227,8 @@
   into a contiguous tensor first. rml's checklist puts the change at about 39 to 26 ms for
   the PyTorch, JAX and TensorFlow <code>lstm</code> models at batch 64, and the weight packing below at 49 to
   35 ms for <code>torch_lstm_b64</code> on 4 threads (<a href="{{ src(prog, 165, 165) }}">progress.md L165</a>).
-  <code>docs/bench/frameworks.md</code> has not been re-run since, so the tables below predate both.
+  The re-run report has <code>torch_lstm_b64</code> at 12.8 ms on 4 threads, against 8.81 for PyTorch eager
+  (<a href="{{ src(bench, 106, 106) }}">frameworks.md L106</a>); see <a href="#results">Where it stands</a>.
 </p>
 
 <h2 id="kernels">Vectorized kernels</h2>
@@ -283,14 +286,27 @@
 
 <p>
   The GEMM that <code>matmul</code>, <code>conv2d</code> and <code>sdpa</code> reach is described in full on
-  {{ link('linalg', 'Linear algebra', '#gemm') }}. In short (<a href="{{ src(kd, 19, 72) }}">kernels.md
-  L19–72</a>): the micro-kernel is chosen at run time from AVX-512 (12 × 32 tile), AVX2 + FMA (6 × 16) or the
+  {{ link('linalg', 'Linear algebra', '#gemm') }}. In short (<a href="{{ src(kd, 19, 80) }}">kernels.md
+  L19–80</a>): the micro-kernel is chosen at run time from AVX-512 (12 × 32 tile), AVX2 + FMA (6 × 16) or the
   portable vector-extension kernel; a single-row product skips packing and streams B once as axpys; products
   of at most 32 rows also skip packing and keep an 8 × 48 or 4 × 24 tile of C in registers. In the graph, a
   constant <code>matmul</code> weight is packed once when the executor is built rather than on every call
   (<a href="{{ src('rml/graph/ops.cc', 929, 944) }}">ops.cc L929–944</a>). In two interleaved runs on four
   threads that took <code>torch_lstm_b64</code> from 53 / 45 ms to 33 / 37 ms and <code>torch_mlp_b64</code>
-  from 1.05 / 1.39 ms to 0.82 / 0.82 ms (<a href="{{ src(kd, 67, 70) }}">kernels.md L67–70</a>).
+  from 1.05 / 1.39 ms to 0.82 / 0.82 ms (<a href="{{ src(kd, 75, 78) }}">kernels.md L75–78</a>). When a
+  product has fewer than four (row block, column chunk) units per thread, the driver widens each task's
+  column chunk, up to four times, to the width whose slowest thread computes the fewest panels; that took
+  <code>torch_rnn_b64</code> from 10.5 / 9.8 ms to 5.2 / 5.0 ms on four threads
+  (<a href="{{ src(kd, 67, 74) }}">kernels.md L67–74</a>,
+  {{ link('linalg', 'details', '#gemm-threads') }}).
+</p>
+
+<p>
+  Folding the recurrence's adds into the step GEMM (prefilling C and running with β = 1, then also the
+  activation as an epilogue, then all column slices in one dispatch) was tried three ways and dropped: in
+  <code>BM_RnnSteps</code> a step took 54–62 µs fused against 58–62 µs unfused on 4 threads, because the
+  per-step GEMM already runs at 245–290 GFLOP/s, about the machine's peak
+  (<a href="{{ src(kd, 258, 273) }}">kernels.md L258–273</a>).
 </p>
 
 <div class="jj-table-wrap">
@@ -306,10 +322,24 @@
 </div>
 
 <p>
-  From <a href="{{ src(kd, 91, 102) }}">kernels.md L91–102</a>: the AVX-512 kernel is 6–7× the SSE-only kernel
+  From <a href="{{ src(kd, 99, 110) }}">kernels.md L99–110</a>: the AVX-512 kernel is 6–7× the SSE-only kernel
   it replaced (16.5 and 60 GFLOP/s for 1024³). The few-row path took the batch-8 <code>gan_generator</code>
   graph from 0.50 to 0.15 ms and the RNN from 4.1 to 1.9 ms on one thread
   (<a href="{{ src(kd, 58, 63) }}">L58–63</a>).
+</p>
+
+<h2 id="conv-bias">Conv bias</h2>
+
+<p>
+  JAX and TensorFlow export a convolution's bias as a separate <code>add</code> of a per-channel constant.
+  With fusion on, the executor folds that add into the <code>conv2d</code> before it, which already takes an
+  optional bias input, so the conv writes biased output in one pass: one <code>conv2d+add</code> step instead
+  of two. It applies only when the conv has no bias of its own, its output is read only by the add and is not a
+  graph output, and the constant is f32 with shape <code>[O]</code>, <code>[O, 1, 1]</code> or
+  <code>[1, O, 1, 1]</code> (<a href="{{ src('rml/graph/executor.cc', 23, 52) }}">executor.cc L23–52</a>,
+  {{ link('executor', 'Executing a graph', '#create') }}). Together with the strided copy below, rml's checklist
+  puts <code>tf</code>/<code>jax</code> <code>unet_b64</code> at about 46 to 37 ms on 4 threads
+  (<a href="{{ src(prog, 167, 167) }}">progress.md L167</a>).
 </p>
 
 <h2 id="buffers">Buffers</h2>
@@ -322,6 +352,15 @@
   {{ link('executor', 'Executing a graph', '#lifetimes') }}). Releases are planned at load: each step knows
   which values it is the last to read. Two other things are prepared once at load: the fusion programs, and
   packed constant weights.
+</p>
+
+<p>
+  Views that must be materialized (a reshape of a broadcast, a concat, a conv input) go through
+  <code>StridedCopy</code>, which now merges axes, copies two-axis blocks with <code>memcpy</code> or
+  <code>fill_n</code> rows, and threads copies of 64K elements or more
+  ({{ link('tensors', 'Tensors and dtypes', '#views-copies') }}). On the U-Net graphs at batch 64 and 4 threads,
+  the upsample's reshape went from 8.2 to 1.7 ms (PyTorch) and 7.5 to 1.6 ms (TensorFlow)
+  (<a href="{{ src(kd, 230, 256) }}">kernels.md L230–256</a>).
 </p>
 
 <h2 id="export-fusion">Fusion at export</h2>
@@ -344,9 +383,9 @@
 </div>
 
 <p>
-  All three are in the pass loop at this commit. rml's checklist still marks export-time layer norm and GELU
-  fusion as open (<a href="{{ src(prog, 163, 163) }}">progress.md L163</a>), so this page calls it in
-  progress. The passes themselves are on {{ link('exporters', 'Exporters and the model zoo') }}.
+  All three are in the pass loop at this commit, and rml's checklist marks export-time layer norm and GELU
+  fusion done (<a href="{{ src(prog, 163, 163) }}">progress.md L163</a>). The passes themselves are on
+  {{ link('exporters', 'Exporters and the model zoo') }}.
 </p>
 
 <h2 id="threads">Threads</h2>
@@ -356,40 +395,43 @@
   for one: 2<sup>16</sup> elements in the graph kernels, about 64K element-steps in fused programs, and larger
   grains in the GEMM ({{ link('runtime', 'Errors, memory and threads', '#users') }} lists each). Pool
   workers also spin briefly before sleeping. The open item is the result: on the latest run, four threads is
-  slower than one in 51 of 171 rml cells, almost all at batch 1 with sub-millisecond times
-  (<a href="{{ src(bench, 374, 375) }}">frameworks.md L374–375</a>). The checklist line quotes 92 of 171 from
-  an earlier run (<a href="{{ src(prog, 166, 166) }}">progress.md L166</a>).
+  slower than one in 38 of 171 rml cells, down from 51, almost all at batch 1 with sub-millisecond times
+  (<a href="{{ src(bench, 374, 375) }}">frameworks.md L374–375</a>,
+  <a href="{{ src(prog, 169, 169) }}">progress.md L169</a>).
 </p>
 
 <h2 id="results">Where it stands</h2>
 
 <p>
   Geometric mean over the 19 models of the faster framework mode's time divided by rml's (above 1, rml is
-  faster), with the number of models where rml wins, on the Xeon container with torch 2.14.1, jax 0.12.0 and
-  tensorflow 2.21.0 (<a href="{{ src(bench, 5, 7) }}">frameworks.md L5–7</a>,
-  <a href="{{ src(bench, 349, 361) }}">L349–361</a>):
+  faster), with the number of models where rml wins and, in parentheses, the previous run's mean, on the Xeon
+  container with torch 2.14.1, jax 0.12.0 and tensorflow 2.21.0. The framework cells are from the earlier
+  sweep and every rml cell was re-timed on the current runtime
+  (<a href="{{ src(bench, 5, 7) }}">frameworks.md L5–7</a>, <a href="{{ src(bench, 343, 361) }}">L343–361</a>):
 </p>
 
 <div class="jj-table-wrap">
   <table>
     <thead><tr><th>Threads</th><th>Batch</th><th>vs PyTorch</th><th>vs JAX</th><th>vs TensorFlow</th></tr></thead>
     <tbody>
-      <tr><td>1</td><td>1</td><td>1.51, 15/19</td><td>1.08, 9/19</td><td>2.79, 14/19</td></tr>
-      <tr><td>1</td><td>8</td><td>1.26, 11/19</td><td>1.18, 11/19</td><td>1.97, 11/19</td></tr>
-      <tr><td>1</td><td>64</td><td>0.86, 4/19</td><td>1.01, 9/19</td><td>1.10, 10/19</td></tr>
-      <tr><td>4</td><td>1</td><td>1.69, 8/19</td><td>1.10, 9/19</td><td>2.64, 15/19</td></tr>
-      <tr><td>4</td><td>8</td><td>0.97, 9/19</td><td>1.36, 13/19</td><td>2.44, 15/19</td></tr>
-      <tr><td>4</td><td>64</td><td>0.71, 3/19</td><td>1.03, 10/19</td><td>1.09, 13/19</td></tr>
+      <tr><td>1</td><td>1</td><td>1.92, 19/19 (1.51)</td><td>1.49, 15/19 (1.08)</td><td>2.71, 16/19 (2.79)</td></tr>
+      <tr><td>1</td><td>8</td><td>1.65, 18/19 (1.26)</td><td>1.62, 16/19 (1.18)</td><td>1.99, 15/19 (1.97)</td></tr>
+      <tr><td>1</td><td>64</td><td>1.16, 15/19 (0.86)</td><td>1.46, 16/19 (1.01)</td><td>1.21, 12/19 (1.10)</td></tr>
+      <tr><td>4</td><td>1</td><td>2.39, 11/19 (1.69)</td><td>1.56, 16/19 (1.10)</td><td>3.93, 18/19 (2.64)</td></tr>
+      <tr><td>4</td><td>8</td><td>1.21, 10/19 (0.97)</td><td>1.84, 17/19 (1.36)</td><td>3.45, 19/19 (2.44)</td></tr>
+      <tr><td>4</td><td>64</td><td>1.12, 8/19 (0.71)</td><td>1.71, 17/19 (1.03)</td><td>1.92, 17/19 (1.09)</td></tr>
     </tbody>
   </table>
 </div>
 
 <p>
-  The remaining gaps are named in the findings (<a href="{{ src(bench, 370, 373) }}">L370–373</a>): the LSTM
-  against PyTorch's fused ATen LSTM, the U-Net's convolutions, the RNN, and PyTorch at batch 64 on 4 threads.
-  None of these has a checklist item yet. Cell by cell results and the method are on
+  Against the fastest framework and mode per cell, rml now wins 80 of 114 cells, with a geometric mean of 1.31
+  (<a href="{{ src(bench, 363, 366) }}">L363–366</a>). The models still behind the best framework are named in
+  the findings (<a href="{{ src(bench, 371, 373) }}">L371–373</a>): the LSTM (0.76×, against PyTorch's fused
+  ATen LSTM), the U-Net (0.79×, its convolutions), the SSM, the CNN, and the RNN and GCN. None of these has a
+  checklist item yet. Cell by cell results and the method are on
   {{ link('benchmarks', 'Benchmarks against the frameworks') }}. Apple Silicon numbers (NEON, Accelerate) have
-  not been produced (<a href="{{ src(bench, 345, 347) }}">L345–347</a>).
+  not been produced (<a href="{{ src(bench, 347, 347) }}">L347</a>).
 </p>
 
 <h2 id="tests">Tests</h2>
@@ -399,7 +441,7 @@
     <thead><tr><th>File</th><th>Tests</th><th>What they pin down</th></tr></thead>
     <tbody>
       <tr><td><a href="{{ src(g ~ 'kernels_test.cc') }}"><code>kernels_test.cc</code></a></td><td>7</td><td>Every unary function, binary op and operand layout, and softmax, layer norm and each reduction against its scalar reference within a stated absolute plus relative tolerance, with matching infinities and NaNs; exact and limiting values of the fast exp, tanh and erf (exp(−∞) = 0, no cancellation in tanh near 0); im2col against its definition, and position ranges as slices of the whole; both pools against the reference.</td></tr>
-      <tr><td><a href="{{ src(g ~ 'fusion_test.cc') }}"><code>fusion_test.cc</code></a></td><td>4</td><td>A written-out GELU with broadcast operands becomes one 10-node step, for shapes up to 64 × 3000, and matches the unfused run within 1e-6; a value read outside a group becomes a second output of the same step; an LSTM step becomes six steps, the cell update one 9-node step reading its gate slices in place; every committed fixture gives the same outputs fused and unfused, and fusion shortens at least 20 of them.</td></tr>
+      <tr><td><a href="{{ src(g ~ 'fusion_test.cc') }}"><code>fusion_test.cc</code></a></td><td>5</td><td>A written-out GELU with broadcast operands becomes one 10-node step, for shapes up to 64 × 3000, and matches the unfused run within 1e-6; a value read outside a group becomes a second output of the same step; an LSTM step becomes six steps, the cell update one 9-node step reading its gate slices in place; a conv2d followed by a per-channel constant add, with the bias as <code>[1, 5, 1, 1]</code> or <code>[5, 1, 1]</code>, becomes one <code>conv2d+add</code> step matching the unfused run within 1e-6, and stays two steps when the conv's own output is a graph output (<a href="{{ src(g ~ 'fusion_test.cc', 207, 244) }}">L207–244</a>); every committed fixture gives the same outputs fused and unfused, and fusion shortens at least 20 of them.</td></tr>
       <tr><td><a href="{{ src(g ~ 'kernels_benchmark.cc') }}"><code>kernels_benchmark.cc</code></a></td><td>benchmark</td><td>Fast kernels against their references on 1M-element tensors, on 1 and 4 threads: exp, tanh and both GELUs, softmax, layer norm and a bias add. rml commits no results for it.</td></tr>
     </tbody>
   </table>

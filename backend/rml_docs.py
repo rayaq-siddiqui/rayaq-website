@@ -6,11 +6,11 @@ import ml_models_docs
 
 UPSTREAM = {
     "repo": "https://github.com/rayaq-siddiqui/rml",
-    "commit": "22c99d34d69cc591201e729f68707dc86381adb7",
-    "commit_date": "2026-10-24",
+    "commit": "2b04eb6a782de499de7865cefb7ccae7275acf24",
+    "commit_date": "2026-10-25",
     "version": "0.1.0",
     "license": "Apache-2.0",
-    "analyzed_on": "2026-10-24",
+    "analyzed_on": "2026-10-25",
 }
 
 GROUPS = [
@@ -60,7 +60,8 @@ EXAMPLES = [
     "causal_inference", "char_gpt", "cnn", "collaborative_filtering", "diffusion",
     "diffusion_unet", "distillation", "distributed", "dpo", "drift", "encoder", "finetune",
     "flow_matching", "gan", "gnn", "graph_run", "learning_to_rank", "mlp", "multimodal", "online_learning",
-    "rag", "rl", "rml_chat", "rnn", "serving", "ssm", "time_series", "two_tower", "vae", "vit",
+    "rag", "rl", "rml_chat", "rnn", "serving", "ssm", "time_series", "tiny_models", "tiny_net",
+    "two_tower", "vae", "vit",
 ]
 
 PAGES = [
@@ -86,7 +87,8 @@ PAGES = [
             "tools/rml_export", "tools/make_graph_fixtures.py", "rml/graph/golden_test.cc",
             "rml/graph/testdata", "rml/graph/cross_framework_test.cc",
             "tools/cross_framework_test.py", "tools/rml_infer_example.py",
-            "tools/requirements-export.txt",
+            "tools/requirements-export.txt", "examples/tiny_net", "examples/tiny_models",
+            "tools/make_tiny_net.py", "tools/make_tiny_models.py",
         ],
         "ready": True,
     },

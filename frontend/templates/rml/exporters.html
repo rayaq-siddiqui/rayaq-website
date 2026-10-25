@@ -216,9 +216,8 @@
 <p>
   The fusions are why the three frameworks now export the tiny transformer block to similar sizes: 32 nodes
   from PyTorch, 42 from JAX and 29 from TensorFlow, where JAX and TensorFlow hand over layer norm, softmax
-  and GELU decomposed. rml's own <code>docs/progress.md</code> still lists export-time fusion of layer norm
-  and GELU as open (<a href="{{ src('docs/progress.md', 163, 163) }}">L163</a>), but both passes are in
-  <code>passes.py</code> at this commit. Fusion inside rml, below the graph, is on
+  and GELU decomposed. rml's own <code>docs/progress.md</code> checks off export-time fusion of layer norm and
+  GELU (<a href="{{ src('docs/progress.md', 163, 163) }}">L163</a>). Fusion inside rml, below the graph, is on
   {{ link('lowering', 'Lowering and fast CPU') }}.
 </p>
 
@@ -274,7 +273,7 @@
 
 <p>
   Which <code>/ml-models</code> page each model covers is mapped in rml's
-  <a href="{{ src('docs/progress.md', 182, 200) }}"><code>docs/progress.md</code></a>.
+  <a href="{{ src('docs/progress.md', 187, 205) }}"><code>docs/progress.md</code></a>.
 </p>
 
 <h2 id="fixtures">Fixtures and golden tests</h2>
@@ -341,8 +340,47 @@
   the same idea as a short end-to-end demonstration: one small classifier (dense, layer norm, tanh-GELU,
   dense, softmax) written the ordinary way in PyTorch, JAX and TensorFlow on shared weights, lowered by the
   direct exporters, run by <code>rml-graph-run</code>, and printed with a table of pairwise maximum
-  differences that must all be within 1e-5 (<a href="{{ src('tools/rml_infer_example.py', 148, 179) }}">L148–178</a>).
+  differences that must all be within 1e-5 (<a href="{{ src('tools/rml_infer_example.py', 148, 179) }}">L148–179</a>).
 </p>
+
+<h2 id="tiny-examples">Exact tiny examples</h2>
+
+<p>
+  Two examples run framework-defined models from C++ with no tolerance at all. Each model is written once
+  per framework on the same non-zero dummy weights, exported by the direct exporters, run by the
+  executor, and compared bit for bit, fused and unfused. That works because the dummy values make every op
+  exact in f32, so the output has one value whatever the summation order, fusion, threading or exp and tanh
+  approximation (<a href="{{ src('examples/tiny_models/tiny_models.h', 1, 10) }}">tiny_models.h L1–10</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Example</th><th>Model</th><th>Why it is exact</th><th>Nodes (torch · jax · tf)</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ tree('examples/tiny_net') }}"><code>tiny_net</code></a></td><td>x[2, 4] → Dense(4, 8) → ReLU → Dense(8, 3)</td><td>Weights, biases and input are non-zero multiples of 1/8, so every product and partial sum is exact (<a href="{{ src('examples/tiny_net/tiny_net.h', 1, 8) }}">tiny_net.h L1–8</a>).</td><td>5 · 5 · 5</td></tr>
+      <tr><td rowspan="3"><a href="{{ tree('examples/tiny_models') }}"><code>tiny_models</code></a></td><td>CNN: x[2, 1, 6, 6] → conv 3×3 → ReLU → max pool 2 → dense → y[2, 3]</td><td>Multiples of 1/8 again.</td><td>6 · 7 · 7</td></tr>
+      <tr><td>LSTM: x[2, 12, 3] → LSTM (hidden 2) → last h → dense → y[2, 3]</td><td>Every gate pre-activation is exactly 0 or far enough into saturation (20 for sigmoid, 10 for tanh) that f32 sigmoid rounds to exactly 1 and tanh to ±1; the input bias of three gates is solved so their pre-activation on the last step of row 0 is exactly 0.</td><td>246 · 242 · 241</td></tr>
+      <tr><td>Transformer: x[2, 3, 8] → pre-norm causal 2-head block → y[2, 3, 8]</td><td>Layer-norm rows have variance exactly 1 or 4, the head dim of 4 makes the 1/√4 scale exact, and one score per attention row is at least 40 above the rest, so softmax is one-hot.</td><td>32 · 42 · 29</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The generators, <a href="{{ src('tools/make_tiny_net.py', 1, 16) }}"><code>make_tiny_net.py</code></a> and
+  <a href="{{ src('tools/make_tiny_models.py', 1, 36) }}"><code>make_tiny_models.py</code></a>, check each
+  framework's output and each written graph (evaluated in NumPy) against a NumPy reference with
+  <code>np.array_equal</code>, then print the reference as C++ literals for the tests
+  (<a href="{{ src('tools/make_tiny_net.py', 103, 119) }}">make_tiny_net.py L103–119</a>). The C++ side repeats
+  the input formulas, and <code>tiny_net</code> also has a plain-loop <code>ReferenceForward</code>
+  (<a href="{{ src('examples/tiny_net/tiny_net.cc', 51, 71) }}">tiny_net.cc L51–71</a>). Building them found one
+  framework detail: <code>torch.nn.LayerNorm</code>'s one-pass CPU kernel rounds the variance by an ulp once a
+  row's mean exceeds about 1/6, so the PyTorch block uses a two-pass layer norm like JAX and TensorFlow
+  (<a href="{{ src('tools/make_tiny_models.py', 338, 351) }}">make_tiny_models.py L338–351</a>,
+  <a href="{{ src('docs/progress.md', 172, 172) }}">progress.md L172</a>).
+</p>
+
+<pre><code>bazel run //examples/tiny_net:tiny-net         # three exports, exact check
+bazel run //examples/tiny_models:tiny-models   # nine exports, exact check</code></pre>
 
 <h2 id="tests">Tests</h2>
 
@@ -355,6 +393,7 @@
       <tr><td><code>golden_test.cc</code></td><td>rml's executor against the framework's outputs, every fixture</td><td>1e-5 absolute</td><td><a href="{{ src('rml/graph/golden_test.cc', 25, 54) }}">L25</a></td></tr>
       <tr><td><code>cross_framework_test.cc</code></td><td>All twelve results per model, pairwise</td><td>1e-5 absolute</td><td><a href="{{ src('rml/graph/cross_framework_test.cc', 80, 136) }}">L80</a></td></tr>
       <tr><td><code>cross_framework_test.py</code></td><td>Three live frameworks and six rml runs, nine input cases, determinism, unsupported ops</td><td>1e-5 + 1e-5 |b| (bench 1e-4)</td><td><a href="{{ src(xft, 184, 211) }}">L184</a></td></tr>
+      <tr><td><code>tiny_net_test.cc</code>, <code>tiny_models_test.cc</code></td><td>Three and nine framework exports run by the executor, fused and unfused, against the exact reference output</td><td>Bit for bit</td><td><a href="{{ src('examples/tiny_models/tiny_models_test.cc', 38, 58) }}">L38</a></td></tr>
       <tr><td><code>rml_infer_example.py</code></td><td>One classifier in three frameworks and in rml</td><td>1e-5 absolute</td><td><a href="{{ src('tools/rml_infer_example.py', 148, 179) }}">L148</a></td></tr>
     </tbody>
   </table>

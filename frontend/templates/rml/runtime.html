@@ -121,7 +121,7 @@
   Every tensor buffer is 64-byte aligned: one cache line on x86 and Apple Silicon, and enough for any SIMD
   load (<a href="{{ src(ah, 6, 9) }}">L6–9</a>). <code>Storage::Allocate</code>, which backs every
   {{ link('tensors', 'Tensor', '#storage-tensor') }} rml allocates itself, calls
-  <a href="{{ src('rml/core/tensor.cc', 150, 151) }}"><code>AlignedAlloc</code></a>, unless a
+  <a href="{{ src('rml/core/tensor.cc', 242, 243) }}"><code>AlignedAlloc</code></a>, unless a
   <a href="#buffer-pool"><code>BufferPool</code></a> is installed on the thread.
 </p>
 
@@ -246,14 +246,14 @@
 
 <p>
   The hand-back happens in <code>tensor.cc</code>. A pooled
-  <a href="{{ src('rml/core/tensor.cc', 143, 153) }}"><code>Storage::Allocate</code></a> wraps the block
-  with a <a href="{{ src('rml/core/tensor.cc', 124, 141) }}"><code>PooledBlock</code></a> owner that holds a
+  <a href="{{ src('rml/core/tensor.cc', 235, 245) }}"><code>Storage::Allocate</code></a> wraps the block
+  with a <a href="{{ src('rml/core/tensor.cc', 216, 233) }}"><code>PooledBlock</code></a> owner that holds a
   <code>shared_ptr</code> to the pool and calls <code>Release</code> in its destructor. So a tensor that
   outlives the scope still returns its buffer when it dies, and it keeps the pool alive until then.
   Blocks come from <code>AlignedAlloc</code>, so a cache miss shows up in the allocation counters and a
   reused block does not. The one caller at this commit is the graph executor, which keeps a
   <code>shared_ptr&lt;BufferPool&gt;</code> and opens a <code>ScopedBufferPool</code> at the start of each
-  run (<a href="{{ src('rml/graph/executor.cc', 93, 93) }}">executor.cc L93</a>); see
+  run (<a href="{{ src('rml/graph/executor.cc', 156, 156) }}">executor.cc L156</a>); see
   {{ link('executor', 'Executing a graph') }}.
 </p>
 
@@ -397,8 +397,9 @@
   <table>
     <thead><tr><th>Caller</th><th>What is split</th><th>Source</th></tr></thead>
     <tbody>
-      <tr><td>GEMM</td><td>Units of one row block by one column chunk. The grain gives each task at least <code>kMinTaskMacs</code> = 2<sup>20</sup> multiply-adds, which keeps small products on the calling thread; packing B is threaded only when its panel has at least 2<sup>18</sup> elements. The few-row and one-row paths split column tiles the same way. See {{ link('linalg', 'Linear algebra') }}.</td><td><a href="{{ src('rml/linalg/gemm.cc', 277, 292) }}">gemm.cc L277</a></td></tr>
+      <tr><td>GEMM</td><td>Units of one row block by one column chunk. The grain gives each task at least <code>kMinTaskMacs</code> = 2<sup>20</sup> multiply-adds, which keeps small products on the calling thread; packing B is threaded only when its panel has at least 2<sup>18</sup> elements. With fewer than four units per thread the column chunk is widened, up to four times, so threads finish together. The few-row and one-row paths split column tiles the same way. See {{ link('linalg', 'Linear algebra', '#gemm-threads') }}.</td><td><a href="{{ src('rml/linalg/gemm.cc', 307, 347) }}">gemm.cc L307</a></td></tr>
       <tr><td>Batched matmul</td><td>When every product in a batch is under 2<sup>22</sup> multiply-adds (attention heads, say), the batch is split across threads with about 2<sup>20</sup> multiply-adds per task, and each product runs on one thread. See {{ link('linalg', 'Linear algebra') }}.</td><td><a href="{{ src('rml/linalg/matmul.cc', 101, 111) }}">matmul.cc L101</a></td></tr>
+      <tr><td>Strided copies</td><td>Outer blocks of a copy once it has 2<sup>16</sup> elements, about 64K elements per task, on the default pool. See {{ link('tensors', 'Tensors', '#views-copies') }}.</td><td><a href="{{ src('rml/core/tensor.cc', 139, 159) }}">tensor.cc L139</a></td></tr>
       <tr><td>Graph kernels</td><td>Elementwise ops in chunks of 2<sup>16</sup> elements; softmax, norms and reductions by rows, enough rows per task to cover a chunk. See {{ link('executor', 'Executing a graph') }}.</td><td><a href="{{ src('rml/graph/kernels.cc', 112, 130) }}">kernels.cc L112</a></td></tr>
       <tr><td>Fused programs</td><td>Row tiles of 512 elements, about 64K element-steps per task. See {{ link('lowering', 'Lowering and fast CPU') }}.</td><td><a href="{{ src('rml/graph/fusion.cc', 302, 306) }}">fusion.cc L302</a></td></tr>
       <tr><td>Attention</td><td>(query position, KV head) pairs, grain 1. See {{ link('decoder', 'The decoder') }}.</td><td><a href="{{ src('rml/llm/attention.cc', 162, 162) }}">attention.cc L162</a></td></tr>
@@ -418,6 +419,7 @@
       <tr><td><a href="{{ src('rml/core/allocator_test.cc') }}"><code>allocator_test.cc</code></a></td><td>13</td><td>Alignment, default of 64, null free, a huge request returning null, a bad alignment aborting, live and peak counters, arena bumping, large alignment, a full arena returning null, mark/rewind/reset, rewinding forward aborting, moves, and an arena that never touches the heap.</td></tr>
       <tr><td><a href="{{ src('rml/core/buffer_pool_test.cc') }}"><code>buffer_pool_test.cc</code></a></td><td>6</td><td>A block comes back for the same size and never for another; tensors in a scope draw from the pool and reuse the same warm block; a tensor outliving the scope, or the pool handle, returns its buffer later; scopes nest; releases from four threads all land in the pool.</td></tr>
       <tr><td><a href="{{ src('rml/core/thread_pool_test.cc') }}"><code>thread_pool_test.cc</code></a></td><td>9</td><td>Run with 1, 2, 4 and 8 threads (<a href="{{ src('rml/core/thread_pool_test.cc', 144, 144) }}">L144</a>): every index exactly once, offset ranges and grains, identical chunks across runs, nested calls inline, many loops back to back, concurrent callers, and a dispatch that allocates nothing, counted by a replaced <code>operator new</code>. Plus the default pool and a zero-thread pool aborting.</td></tr>
+      <tr><td><a href="{{ src('rml/core/thread_pool_benchmark.cc') }}"><code>thread_pool_benchmark.cc</code></a></td><td>benchmark</td><td><code>BM_ParallelForEqualTasks</code>: one <code>ParallelFor</code> of one equal compute-only task per thread, 0, 5,000 or 50,000 dependent multiply-adds each, on 1 and 4 threads; the time above one task's is the cost of handing work to the pool (<a href="{{ src('rml/core/thread_pool_benchmark.cc', 16, 34) }}">L16–34</a>). rml commits no results for it.</td></tr>
     </tbody>
   </table>
 </div>

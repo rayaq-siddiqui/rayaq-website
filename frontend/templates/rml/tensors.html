@@ -20,8 +20,8 @@
 <p class="jj-note">
   In short: a <code>Tensor</code> has a shared <code>Storage</code>, an element offset, a <code>Shape</code>,
   <code>Strides</code> and a <code>DType</code>. Views such as transposes, slices and expands only change
-  the offset, shape and strides. Copies go through one loop, <code>ForEachRow</code>, which walks the
-  innermost axis row by row. Broadcasting gives a stretched axis stride 0. The reference ops are f32-only,
+  the offset, shape and strides. One loop, <code>ForEachRow</code>, walks strided data row by row for
+  conversions and the ops; plain copies merge axes first and copy two-axis blocks, threaded when large. Broadcasting gives a stretched axis stride 0. The reference ops are f32-only,
   and quantized dtypes are stored but never computed on here. Contract violations abort through
   <code>RML_CHECK</code>.
 </p>
@@ -197,7 +197,8 @@
 
 <p>
   <a href="{{ src(st, 20, 49) }}"><code>internal::ForEachRow&lt;N&gt;</code></a> is the one loop for strided
-  data in <code>core</code>. Copies, dtype conversions, the binary ops and the reductions all go through it.
+  data in <code>core</code>. Dtype conversions, quantized copies, the binary ops and the reductions all go
+  through it; plain copies use their own blocked path (see <a href="#views-copies">below</a>).
   It takes a shape and N stride lists, one per operand. It then calls
   <code>fn(offsets, n, inner_strides)</code> once for each row of the innermost axis, where
   <code>offsets[k]</code> is where the row starts in operand <code>k</code>.
@@ -220,14 +221,14 @@
     <thead><tr><th>Item</th><th>Type/Signature</th><th>Meaning</th><th>Source</th></tr></thead>
     <tbody>
       <tr><td><code>Storage</code></td><td><code>class { byte* data_; size_t size_; bool owns_; shared_ptr&lt;const void&gt; owner_; }</code></td><td>A byte buffer held by <code>shared_ptr</code>. It owns 64-byte-aligned heap memory, or wraps external memory such as an mmapped weight file and keeps that file alive through <code>owner_</code>. It can't be copied.</td><td><a href="{{ src(th, 32, 57) }}">L32</a></td></tr>
-      <tr><td><code>Storage::Allocate</code>, <code>Storage::Wrap</code></td><td><code>static shared_ptr&lt;Storage&gt;</code></td><td><code>Allocate</code> returns null on failure instead of throwing. While a <code>ScopedBufferPool</code> is active on the thread it takes the block from that <code>BufferPool</code> and hands it back when the storage dies (see {{ link('runtime', 'Runtime', '#buffer-pool') }}). <code>Wrap</code> never frees the memory itself; dropping <code>owner_</code> does.</td><td><a href="{{ src(tc, 143, 163) }}">L143</a></td></tr>
+      <tr><td><code>Storage::Allocate</code>, <code>Storage::Wrap</code></td><td><code>static shared_ptr&lt;Storage&gt;</code></td><td><code>Allocate</code> returns null on failure instead of throwing. While a <code>ScopedBufferPool</code> is active on the thread it takes the block from that <code>BufferPool</code> and hands it back when the storage dies (see {{ link('runtime', 'Runtime', '#buffer-pool') }}). <code>Wrap</code> never frees the memory itself; dropping <code>owner_</code> does.</td><td><a href="{{ src(tc, 235, 255) }}">L235</a></td></tr>
       <tr><td><code>Tensor</code></td><td><code>class { shared_ptr&lt;Storage&gt;; int64_t offset_; Shape; Strides; DType; }</code></td><td>A view into a storage. Copying a <code>Tensor</code> copies the view, not the data. The offset is in elements. A default-constructed tensor has no storage and <code>defined()</code> is false.</td><td><a href="{{ src(th, 59, 176) }}">L59</a></td></tr>
-      <tr><td><code>Empty</code>, <code>TryEmpty</code></td><td><code>static Tensor Empty(const Shape&amp;, DType = kF32)</code></td><td>Uninitialized, contiguous. <code>TryEmpty</code> returns <code>kOutOfMemory</code> through <code>Expected</code>; <code>Empty</code> aborts instead. <a href="{{ src('rml/quant/dequantize.cc', 275, 275) }}">Dequantize</a> uses the soft form.</td><td><a href="{{ src(tc, 167, 182) }}">L167</a></td></tr>
+      <tr><td><code>Empty</code>, <code>TryEmpty</code></td><td><code>static Tensor Empty(const Shape&amp;, DType = kF32)</code></td><td>Uninitialized, contiguous. <code>TryEmpty</code> returns <code>kOutOfMemory</code> through <code>Expected</code>; <code>Empty</code> aborts instead. <a href="{{ src('rml/quant/dequantize.cc', 275, 275) }}">Dequantize</a> uses the soft form.</td><td><a href="{{ src(tc, 259, 274) }}">L259</a></td></tr>
       <tr><td><code>Zeros</code>, <code>Full</code>, <code>Scalar</code>, <code>Arange</code>, <code>FromValues</code></td><td><code>static Tensor</code></td><td>The usual factories. <code>FromValues</code> checks the value count against the shape.</td><td><a href="{{ src(th, 66, 84) }}">L66</a></td></tr>
       <tr><td><code>FromBuffer</code></td><td><code>static Tensor FromBuffer(void*, const Shape&amp;, DType, shared_ptr&lt;const void&gt; owner)</code></td><td>A contiguous tensor over memory rml did not allocate. The GGUF and safetensors readers return their tensors this way, which is how weights stay mmapped (see {{ link('model-files', 'Model files') }}).</td><td><a href="{{ src(th, 86, 89) }}">L86</a></td></tr>
       <tr><td><code>data&lt;T&gt;</code>, <code>raw_data</code></td><td><code>T* data() const</code></td><td>Pointer to the first element, after the offset. <code>data&lt;T&gt;</code> aborts if <code>T</code> is not the tensor's dtype, so a bf16 tensor can't be read as floats by mistake.</td><td><a href="{{ src(th, 105, 112) }}">L105</a></td></tr>
       <tr><td><code>At&lt;T&gt;</code>, <code>Item</code></td><td><code>T&amp; At(initializer_list&lt;int64_t&gt;) const</code></td><td>Strided access by index, bounds-checked only in debug builds. Meant for tests and reference code, not kernels.</td><td><a href="{{ src(th, 114, 121) }}">L114</a></td></tr>
-      <tr><td><code>IsContiguous</code></td><td><code>bool IsContiguous() const</code></td><td>True when the strides are row-major. Axes of size 1 are skipped, since their stride never matters, and a tensor with zero elements is always contiguous.</td><td><a href="{{ src(tc, 215, 223) }}">L215</a></td></tr>
+      <tr><td><code>IsContiguous</code></td><td><code>bool IsContiguous() const</code></td><td>True when the strides are row-major. Axes of size 1 are skipped, since their stride never matters, and a tensor with zero elements is always contiguous.</td><td><a href="{{ src(tc, 307, 315) }}">L307</a></td></tr>
     </tbody>
   </table>
 </div>
@@ -244,24 +245,38 @@
   <table>
     <thead><tr><th>Item</th><th>Copies?</th><th>Meaning</th><th>Source</th></tr></thead>
     <tbody>
-      <tr><td><code>View</code></td><td>never</td><td>New shape with contiguous strides. Aborts unless the tensor is contiguous and the element count matches. Accepts one <code>-1</code> dimension, inferred from the count.</td><td><a href="{{ src(tc, 257, 270) }}">L257</a></td></tr>
-      <tr><td><code>Reshape</code></td><td>only if not contiguous</td><td><code>View</code> when possible, otherwise <code>Contiguous().View(...)</code>, like <code>torch.reshape</code>.</td><td><a href="{{ src(tc, 272, 278) }}">L272</a></td></tr>
-      <tr><td><code>Transpose</code>, <code>Permute</code></td><td>never</td><td>Reorder shape and strides together. <code>Permute</code> aborts on a repeated axis. Neither works on quantized tensors, because that would move the block axis.</td><td><a href="{{ src(tc, 280, 307) }}">L280</a></td></tr>
-      <tr><td><code>Slice</code></td><td>never</td><td>Python slicing on one axis: negative bounds count from the end, out-of-range bounds clamp, and <code>step</code> multiplies the stride. On a quantized row, start and length must be whole blocks and the step must be 1.</td><td><a href="{{ src(tc, 309, 330) }}">L309</a></td></tr>
-      <tr><td><code>Select</code>, <code>Squeeze</code>, <code>Unsqueeze</code></td><td>never</td><td>Remove an axis at an index, remove a size-1 axis, or insert one.</td><td><a href="{{ src(tc, 332, 360) }}">L332</a></td></tr>
-      <tr><td><code>Expand</code></td><td>never</td><td>Broadcast to a shape by setting stride 0 (see <a href="#broadcasting">Broadcasting</a>).</td><td><a href="{{ src(tc, 362, 368) }}">L362</a></td></tr>
-      <tr><td><code>Contiguous</code></td><td>only if not contiguous</td><td>Returns <code>*this</code> when the tensor is already contiguous, so callers can use it freely before a kernel.</td><td><a href="{{ src(tc, 372, 372) }}">L372</a></td></tr>
-      <tr><td><code>Clone</code>, <code>CopyFrom</code></td><td>always</td><td>A fresh contiguous buffer, filled by <code>StridedCopy</code>. <code>CopyFrom</code> writes into an existing view, so a slice can be filled in place.</td><td><a href="{{ src(tc, 374, 385) }}">L374</a></td></tr>
-      <tr><td><code>To</code></td><td>always</td><td>Converts between f32, f16, bf16, i32 and i8; float to int truncates. Quantizing is not here, it is in <code>rml/quant</code>.</td><td><a href="{{ src(tc, 387, 405) }}">L387</a></td></tr>
+      <tr><td><code>View</code></td><td>never</td><td>New shape with contiguous strides. Aborts unless the tensor is contiguous and the element count matches. Accepts one <code>-1</code> dimension, inferred from the count.</td><td><a href="{{ src(tc, 349, 362) }}">L349</a></td></tr>
+      <tr><td><code>Reshape</code></td><td>only if not contiguous</td><td><code>View</code> when possible, otherwise <code>Contiguous().View(...)</code>, like <code>torch.reshape</code>.</td><td><a href="{{ src(tc, 364, 370) }}">L364</a></td></tr>
+      <tr><td><code>Transpose</code>, <code>Permute</code></td><td>never</td><td>Reorder shape and strides together. <code>Permute</code> aborts on a repeated axis. Neither works on quantized tensors, because that would move the block axis.</td><td><a href="{{ src(tc, 372, 399) }}">L372</a></td></tr>
+      <tr><td><code>Slice</code></td><td>never</td><td>Python slicing on one axis: negative bounds count from the end, out-of-range bounds clamp, and <code>step</code> multiplies the stride. On a quantized row, start and length must be whole blocks and the step must be 1.</td><td><a href="{{ src(tc, 401, 422) }}">L401</a></td></tr>
+      <tr><td><code>Select</code>, <code>Squeeze</code>, <code>Unsqueeze</code></td><td>never</td><td>Remove an axis at an index, remove a size-1 axis, or insert one.</td><td><a href="{{ src(tc, 424, 452) }}">L424</a></td></tr>
+      <tr><td><code>Expand</code></td><td>never</td><td>Broadcast to a shape by setting stride 0 (see <a href="#broadcasting">Broadcasting</a>).</td><td><a href="{{ src(tc, 454, 460) }}">L454</a></td></tr>
+      <tr><td><code>Contiguous</code></td><td>only if not contiguous</td><td>Returns <code>*this</code> when the tensor is already contiguous, so callers can use it freely before a kernel.</td><td><a href="{{ src(tc, 464, 464) }}">L464</a></td></tr>
+      <tr><td><code>Clone</code>, <code>CopyFrom</code></td><td>always</td><td>A fresh contiguous buffer, filled by <code>StridedCopy</code>. <code>CopyFrom</code> writes into an existing view, so a slice can be filled in place.</td><td><a href="{{ src(tc, 466, 477) }}">L466</a></td></tr>
+      <tr><td><code>To</code></td><td>always</td><td>Converts between f32, f16, bf16, i32 and i8; float to int truncates. Quantizing is not here, it is in <code>rml/quant</code>.</td><td><a href="{{ src(tc, 479, 497) }}">L479</a></td></tr>
     </tbody>
   </table>
 </div>
 
 <p>
-  <a href="{{ src(tc, 61, 93) }}"><code>StridedCopy</code></a> has three paths. When both sides are contiguous
-  it is one <code>memcpy</code>. Quantized data is copied a row at a time with <code>memcpy</code>, and rows
-  must be contiguous because a block has no element stride. Everything else dispatches on the dtype and
-  copies element by element through <code>ForEachRow&lt;2&gt;</code>.
+  <a href="{{ src(tc, 161, 185) }}"><code>StridedCopy</code></a> backs <code>Contiguous</code>, <code>Clone</code> and
+  <code>CopyFrom</code>, and has three paths. When both sides are contiguous it is one <code>memcpy</code>.
+  Quantized data is copied a row at a time with <code>memcpy</code>, and rows must be contiguous because a block
+  has no element stride. Everything else first goes through
+  <a href="{{ src(tc, 72, 95) }}"><code>CoalesceAxes</code></a>, which drops size-1 axes and merges adjacent axes
+  that both sides step through as one, so most views shrink to two or three axes.
+  <a href="{{ src(tc, 97, 119) }}"><code>CopyBlock</code></a> then copies the innermost two axes as one block:
+  each row is a <code>memcpy</code> when both inner strides are 1, a <code>fill_n</code> when the destination
+  stride is 1 and the source stride is 0 (a broadcast), and a strided loop otherwise.
+  <a href="{{ src(tc, 139, 159) }}"><code>CopyPlain</code></a> splits the outer blocks over the default thread pool
+  once a copy has 2<sup>16</sup> elements or more and at least two blocks.
+</p>
+
+<p>
+  The old loop handled one innermost row per callback on one thread. Upstream measured the U-Net graphs at
+  batch 64 on 4 threads: the nearest-2&times; upsample's reshape went from 8.2 to 1.7 ms for PyTorch and 7.5 to
+  1.6 ms for TensorFlow, and concat from 4.7 to 2.7 and 9.0 to 4.2 ms
+  (<a href="{{ src('docs/kernels.md', 230, 256) }}">kernels.md L230–256</a>).
 </p>
 
 <h2 id="ops">Reference ops</h2>
@@ -334,12 +349,13 @@
     <tbody>
       <tr><td><a href="{{ src('rml/core/dtype_test.cc') }}"><code>dtype_test.cc</code></a></td><td>9</td><td>Storage sizes, partial blocks aborting, ties to even, and every f16 and bf16 value round-tripping.</td></tr>
       <tr><td><a href="{{ src('rml/core/shape_test.cc') }}"><code>shape_test.cc</code></a></td><td>8</td><td>The rank limit, contiguous strides, negative axes, and compatible and incompatible broadcasts.</td></tr>
-      <tr><td><a href="{{ src('rml/core/tensor_test.cc') }}"><code>tensor_test.cc</code></a></td><td>23</td><td>Which methods share storage and which copy:
+      <tr><td><a href="{{ src('rml/core/tensor_test.cc') }}"><code>tensor_test.cc</code></a></td><td>24</td><td>Which methods share storage and which copy:
         <a href="{{ src('rml/core/tensor_test.cc', 72, 81) }}">transpose swaps strides</a>,
         <a href="{{ src('rml/core/tensor_test.cc', 83, 90) }}">reshape of a non-contiguous tensor copies</a>,
         <a href="{{ src('rml/core/tensor_test.cc', 137, 144) }}">expand uses zero strides</a>,
-        <a href="{{ src('rml/core/tensor_test.cc', 180, 189) }}"><code>FromBuffer</code> keeps its owner alive</a>, and
-        <a href="{{ src('rml/core/tensor_test.cc', 191, 199) }}">quantized views stay block-aligned</a>.</td></tr>
+        <a href="{{ src('rml/core/tensor_test.cc', 156, 179) }}"><code>Contiguous</code> of broadcast, permuted, sliced and transposed views matches their strides element by element</a>,
+        <a href="{{ src('rml/core/tensor_test.cc', 215, 224) }}"><code>FromBuffer</code> keeps its owner alive</a>, and
+        <a href="{{ src('rml/core/tensor_test.cc', 226, 234) }}">quantized views stay block-aligned</a>.</td></tr>
       <tr><td><a href="{{ src('rml/core/ops_test.cc') }}"><code>ops_test.cc</code></a></td><td>24</td><td>Each op family against hand-computed values, ops on non-contiguous views, higher-rank broadcasting, softmax rows summing to one, and <code>IndexAdd</code> as the adjoint of <code>IndexSelect</code>.</td></tr>
     </tbody>
   </table>
