@@ -3,15 +3,16 @@
 Running log for the rml build loop and the daily Routine. Read this first, update it last.
 The contract is `specs/rml.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-24 (second daily run). Pin moved to `22c99d3`; `benchmarks`, `nn` and `training` shipped. The next run follows upstream, then builds `data-metrics`, `classical`, `retrieval`.
+**Last updated:** 2026-10-25 (daily run). Pin moved to `2b04eb6`; `data-metrics`, `classical` and `retrieval` shipped. The next run follows upstream, then builds `quantization`, `model-files`, `tokenizers`.
 
 ## Upstream pin
 
-`rayaq-siddiqui/rml@22c99d34d69cc591201e729f68707dc86381adb7` (committed 2026-10-24,
-"graph: fuse an LSTM step across its gate slices"), rml 0.1.0, Apache-2.0, analyzed
-2026-10-24. Moved from `a948ac7` (3 commits: multi-output fusion groups with independent
-members, leading-1 reshapes and row-strided views; `docs/kernels.md` packed-weight timings; the
-export venv on Python 3.12). Held in `rml_docs.UPSTREAM`. The repository is
+`rayaq-siddiqui/rml@2b04eb6a782de499de7865cefb7ccae7275acf24` (committed 2026-10-25,
+"examples: tiny_models, a CNN, an LSTM and a transformer from PyTorch, JAX and TensorFlow run
+in C++"), rml 0.1.0, Apache-2.0, analyzed 2026-10-25. Moved from `22c99d3` (11 commits: GEMM
+column balancing, a blocked and threaded strided copy, the conv bias fold, a thread-pool
+benchmark, every rml benchmark cell re-run, the `tiny_net` and `tiny_models` examples, and
+`docs/kernels.md` / `docs/progress.md` updates). Held in `rml_docs.UPSTREAM`. The repository is
 private, so pinned links 404 until it is public.
 
 ## §10 acceptance criteria
@@ -22,7 +23,7 @@ private, so pinned links 404 until it is public.
 - [ ] Every Inference stack page is ready and `stack` has its layer diagram.
 - [ ] Every source link is pinned; §7.5 tests exist and pass.
 - [x] Homepage card links to `/rml`.
-- [x] Mobile at 390px: no horizontal page scroll (`/rml`, `/rml/tensors`, `/rml/runtime`, `/rml/linalg`, `/rml/random`, `/rml/autograd`, `/rml/stack`, `/rml/exporters`, `/rml/graph-ir`, `/rml/executor`, `/rml/lowering`, `/rml/benchmarks`, `/rml/nn`, `/rml/training`; rerun per page).
+- [x] Mobile at 390px: no horizontal page scroll (`/rml`, `/rml/tensors`, `/rml/runtime`, `/rml/linalg`, `/rml/random`, `/rml/autograd`, `/rml/stack`, `/rml/exporters`, `/rml/graph-ir`, `/rml/executor`, `/rml/lowering`, `/rml/benchmarks`, `/rml/nn`, `/rml/training`, `/rml/data-metrics`, `/rml/classical`, `/rml/retrieval`; rerun per page).
 - [x] The daily Routine has run at least once and cloned rml.
 
 ## Queue
@@ -47,9 +48,9 @@ Spec v2 order, Inference stack first:
 12. ~~`benchmarks`~~
 13. ~~`nn`~~
 14. ~~`training`~~
-15. `data-metrics`
-16. `classical`
-17. `retrieval`
+15. ~~`data-metrics`~~
+16. ~~`classical`~~
+17. ~~`retrieval`~~
 18. `quantization`
 19. `model-files`
 20. `tokenizers`
@@ -104,6 +105,15 @@ session-only `/loop` jobs that built pages earlier are retired.
   `docs/kernels.md` line ranges moved everywhere. `3abe91e` `benchmarks` page; `ff29950` `nn`
   page; `c81dae4` `training` page. All 1066 tests pass; mobile check passes on every ready page.
 
+- 2026-10-25 — daily run. `849a599` follow upstream to `2b04eb6`: benchmarks (results rewritten
+  from the re-run report), lowering (GEMM column balancing, dropped recurrence fold, new conv bias
+  section, strided copy, results), executor (conv2d+add fold), linalg (`UnitColumns`,
+  `BM_GemmPackedB`), tensors (`StridedCopy`), runtime, exporters (new "Exact tiny examples"
+  section; `tiny_net` and `tiny_models` added to `EXAMPLES`), stack, index; moved line ranges
+  everywhere. `61efbeb` `data-metrics` page; `0e12d60` `classical` page (registry summary now
+  says fifteen estimators); `1790c62` `retrieval` page. All 1067 tests pass; mobile check passes
+  on every ready page.
+
 ## Deliberate deviations
 
 - **Commit-message numbers are not quoted.** Several upstream commits carry timings in their
@@ -112,27 +122,27 @@ session-only `/loop` jobs that built pages earlier are retired.
 
 ## Open gaps / questions for the owner
 
-- **rml's checklist lags its code.** At `22c99d3`, `docs/progress.md` L163 (export-time layer
-  norm and GELU fusion) and L166 (small ops on the calling thread) are unchecked, though
-  `passes.py` has `fuse_layer_norm`/`fuse_gelu` and the grains landed; L166 also quotes 92 of
-  171 slow 4-thread cells where `frameworks.md` now says 51. L167 (time the StableHLO route)
-  is unchecked though `frameworks.md` has that table. The pages call the first two "in
-  progress" and quote `frameworks.md`. `docs/graph_ir.md`'s Execution section still says ops
-  call `rml/nn`'s conv and pool and that the loader rejects unknown ops; the pages describe
-  the code (direct conv, op checks in `Executor::Create`).
+- **`docs/graph_ir.md` lags the executor.** At `2b04eb6` its Execution section still says ops
+  call `rml/nn`'s conv and pool and that the loader rejects unknown ops; the pages describe the
+  code (direct conv, op checks in `Executor::Create`). (The checklist lag logged earlier is
+  resolved: L163 and L170 are now checked and L169 quotes the report's 38 of 171.)
 - **Spec §3.6 lists landed work as planned.** It names the StableHLO route, the kernel-level
   IR and the fast-CPU items as planned at spec v2; all have landed. The section follows
   §3.6's rule (flip when landed); the owner may want to refresh that sentence.
-- **The benchmark report predates the LSTM work.** `docs/progress.md` L165 and
-  `docs/kernels.md` L67–70 quote LSTM and MLP speedups from packed weights and multi-output
-  fusion, but `docs/bench/frameworks.md` was not re-run, so `benchmarks` and `lowering` quote
-  the report's older LSTM cells and give the newer numbers separately. Update both pages when
-  the report is regenerated.
 - **`rml/nn/attention.h` names a module that does not exist.** Its L9–10 say the inference
   engine's fused attention kernel in `rml/backend` is tested against the readable version;
   there is no `rml/backend` at the pin and `rml/llm` includes nothing from `rml/nn`. The `nn`
   page marks it planned. Likewise `conv.h` describes Conv2d as unfold plus a product while the
   code builds patch rows (`PatchRowsFunction`); the page describes the code.
+- **Spec §5 says "all 11 classical models".** `rml/classical` has fifteen public estimator
+  classes in ten model headers (eleven headers counting `common.h`). The page and the registry
+  summary say fifteen; the owner may want to update the spec row.
+- **`gradient_boosting.h` and its code differ by a factor.** Its L13–15 give the split gain "up
+  to a factor 1/2", and `Score` leaves the ½ out; the best split is the same. The `classical` page
+  notes it. Random forest, gradient boosting and the decision-tree classifier have no
+  scikit-learn fixture, and the k-means test checks only inertia.
+- **`rml/data` preprocessing and splits and all of `rml/metrics` have no callers outside their
+  tests.** Only `TensorDataset` and `DataLoader` are used (by 13 examples); `data-metrics` says so.
 - **Arena is unused outside `rml/core`.** `docs/architecture.md` says per-step scratch
   comes from an arena reset each step, but no code outside `rml/core` uses `Arena` at the
   pin (re-checked at `a948ac7`; the graph executor uses a `BufferPool` instead). The
