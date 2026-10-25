@@ -1,0 +1,479 @@
+{% set c = "rml/classical/" %}
+{% set fx = "tools/make_sklearn_fixtures.py" %}
+<header class="jj-header">
+  <h1>Classical models</h1>
+  <p class="tagline">
+    <code>rml/classical</code> is the scikit-learn corner of rml: linear and logistic regression, nearest
+    neighbors, k-means, PCA, naive Bayes, decision trees, random forests, gradient-boosted trees and a kernel
+    SVM, fifteen estimator classes in ten headers. They take and return {{ link('tensors', 'tensors') }}, do
+    their arithmetic in double, and are checked against scikit-learn on committed fixtures.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: every model has the same shape. <code>Fit</code> takes an f32 <code>[n, d]</code> tensor (and
+  f32 targets or i32 labels), copies it into a double <code>linalg::Matrix</code> through one shared helper,
+  and returns a <code>Status</code>; <code>Predict</code> (and <code>PredictProba</code> where it makes sense)
+  converts the answer back to f32 or i32 tensors. Options are plain structs with scikit-learn's defaults where
+  there is one. The solvers are the textbook ones, written out: Cholesky normal equations or gradient descent,
+  Newton with a line search, Lloyd's algorithm after k-means++ seeding, an SVD, counting, a CART sweep,
+  bootstrap forests, LightGBM-style histogram boosting and LIBSVM-style SMO. Randomness comes from seeded
+  Philox generators and parallel loops from the {{ link('runtime', 'thread pool') }}, so results do not depend
+  on the thread count. Nothing here trains through autograd, and the inference stack does not use it.
+</p>
+
+<p>
+  Each header links its concept page on /ml-models: {{ ml('linear-regression', 'linear regression') }} and
+  {{ ml('regularization', 'regularization') }}, {{ ml('logistic-regression', 'logistic regression') }},
+  {{ ml('nearest-neighbors', 'nearest neighbors') }}, {{ ml('clustering', 'clustering') }},
+  {{ ml('pca', 'PCA') }}, {{ ml('bayes-rule', "Bayes' rule") }}, {{ ml('decision-trees', 'decision trees') }},
+  {{ ml('random-forests', 'random forests') }}, {{ ml('gradient-boosting', 'gradient boosting') }} and
+  {{ ml('support-vector-machines', 'support vector machines') }}.
+</p>
+
+<h2 id="shape">The shared shape</h2>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 330" role="img" aria-labelledby="cl-shape-title cl-shape-desc">
+    <title id="cl-shape-title">How a classical model moves data between tensors and double matrices</title>
+    <desc id="cl-shape-desc">An f32 tensor x of shape n by d and a target tensor y go through
+      internal::Features and internal::Targets or ClassLabels, which check dtype and shape and copy them into a
+      double linalg::Matrix and std::vector. Fit runs the model's algorithm, using linalg for Cholesky and SVD,
+      random for Philox generators and the core thread pool for ParallelFor, and stores the fitted state as f32
+      tensors or matrices. Predict copies the queries the same way, checking the fitted column count, and
+      returns an f32 tensor through VectorTensor or an i32 tensor through ArgMaxRows or LabelTensor. Two users
+      outside the module: retrieval's IvfIndex trains its lists with KMeans, and the time_series example fits
+      LinearRegression.</desc>
+
+    <rect class="d-box" x="20" y="24" width="160" height="52" rx="5"/>
+    <text x="100" y="46" text-anchor="middle">x: f32 [n, d]</text>
+    <text class="d-muted" x="100" y="65" text-anchor="middle" font-size="12">y: f32 [n] or i32 [n]</text>
+    <line class="d-line" x1="180" y1="50" x2="220" y2="50"/>
+    <rect class="d-box" x="220" y="24" width="180" height="52" rx="5"/>
+    <text x="310" y="46" text-anchor="middle">internal::Features</text>
+    <text class="d-muted" x="310" y="65" text-anchor="middle" font-size="12">Targets / ClassLabels</text>
+    <line class="d-line" x1="400" y1="50" x2="440" y2="50"/>
+    <rect class="d-box" x="440" y="24" width="160" height="52" rx="5"/>
+    <text x="520" y="46" text-anchor="middle">linalg::Matrix</text>
+    <text class="d-muted" x="520" y="65" text-anchor="middle" font-size="12">double, a copy</text>
+
+    <line class="d-line" x1="520" y1="76" x2="520" y2="110"/>
+    <rect class="d-box d-accent" x="220" y="110" width="380" height="64" rx="6"/>
+    <text x="410" y="134" text-anchor="middle">Fit: the model's algorithm, returns Status</text>
+    <text class="d-muted" x="410" y="155" text-anchor="middle" font-size="12">state kept as f32 tensors (coef, centers) or matrices</text>
+    <rect class="d-box" x="20" y="110" width="160" height="64" rx="5"/>
+    <text x="100" y="130" text-anchor="middle" font-size="13">linalg, random, core</text>
+    <text class="d-muted" x="100" y="148" text-anchor="middle" font-size="12">Cholesky, SVD</text>
+    <text class="d-muted" x="100" y="164" text-anchor="middle" font-size="12">Philox, ParallelFor</text>
+    <line class="d-line" x1="180" y1="142" x2="220" y2="142"/>
+
+    <line class="d-line" x1="410" y1="174" x2="410" y2="206"/>
+    <rect class="d-box" x="220" y="206" width="380" height="52" rx="5"/>
+    <text x="410" y="228" text-anchor="middle">Predict / PredictProba / Transform</text>
+    <text class="d-muted" x="410" y="247" text-anchor="middle" font-size="12">Features(x, fitted d): the column count must match</text>
+    <line class="d-line" x1="220" y1="232" x2="180" y2="232"/>
+    <rect class="d-box" x="20" y="206" width="160" height="52" rx="5"/>
+    <text x="100" y="228" text-anchor="middle" font-size="13">f32 or i32 out</text>
+    <text class="d-muted" x="100" y="247" text-anchor="middle" font-size="12">VectorTensor, ArgMaxRows</text>
+
+    <text class="d-muted" x="20" y="290" font-size="12">Users outside the module: rml/retrieval's IvfIndex::Train runs KMeans (num_init 1, 50 iterations),</text>
+    <text class="d-muted" x="20" y="308" font-size="12">and examples/time_series fits LinearRegression on lagged values.</text>
+  </svg>
+  <figcaption>One path for every model. The copy into double is deliberate: these are small-data algorithms
+    where accuracy matters more than memory (<a href="{{ src('rml/linalg/matrix.h', 9, 9) }}">matrix.h L9</a>
+    describes the same convention for the decompositions).</figcaption>
+</figure>
+
+<p>
+  The helpers in <code>internal</code> are the only shared code
+  (<a href="{{ src(c ~ 'common.h', 12, 31) }}">common.h L12–31</a>). Their checks are <code>RML_CHECK</code>s,
+  so a wrong dtype or shape is a programmer error that aborts; data problems a caller cannot rule out in
+  advance (singular systems, too few classes, <code>k &gt; n</code>, non-convergence) come back as a
+  <code>Status</code>.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Helper</th><th>Signature</th><th>What it does</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Features</code></td><td><code>linalg::Matrix(const Tensor&amp; x)</code>, and <code>(x, num_features)</code></td><td>Checks f32, rank 2, at least one row, and copies into a Matrix. The two-argument form, used by every <code>Predict</code>, also checks the column count against the fitted data.</td><td><a href="{{ src(c ~ 'common.cc', 16, 26) }}">common.cc L16–26</a></td></tr>
+      <tr><td><code>Targets</code></td><td><code>vector&lt;double&gt;(const Tensor&amp; y, int64_t n)</code></td><td>Rank-1 f32 of length n.</td><td><a href="{{ src(c ~ 'common.cc', 28, 34) }}">L28–34</a></td></tr>
+      <tr><td><code>ClassLabels</code></td><td><code>vector&lt;int32_t&gt;(const Tensor&amp; y, int64_t n)</code></td><td>Rank-1 i32 of length n, every label ≥ 0.</td><td><a href="{{ src(c ~ 'common.cc', 36, 44) }}">L36–44</a></td></tr>
+      <tr><td><code>NumClasses</code></td><td><code>int(const vector&lt;int32_t&gt;&amp;)</code></td><td>1 + the largest label, so classes are always <code>0..K−1</code> even when some are missing.</td><td><a href="{{ src(c ~ 'common.cc', 46, 48) }}">L46–48</a></td></tr>
+      <tr><td><code>VectorTensor</code>, <code>LabelTensor</code></td><td><code>Tensor(const vector&lt;double&gt;&amp;)</code>, <code>Tensor(const vector&lt;int32_t&gt;&amp;)</code></td><td>Back to f32 <code>[n]</code> and i32 <code>[n]</code>.</td><td><a href="{{ src(c ~ 'common.cc', 50, 61) }}">L50–61</a></td></tr>
+      <tr><td><code>ArgMaxRows</code></td><td><code>Tensor(const linalg::Matrix&amp;)</code></td><td>Index of each row's largest entry, first one on ties, which is why every classifier's <code>Predict</code> breaks ties toward the smallest label.</td><td><a href="{{ src(c ~ 'common.cc', 63, 73) }}">L63–73</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="models">The models at a glance</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Header</th><th>Classes</th><th>Fit</th><th>Defaults</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(c ~ 'linear_regression.h') }}"><code>linear_regression.h</code></a></td><td><code>LinearRegression</code></td><td>Centered normal equations by Cholesky, or gradient descent</td><td>l2 0, intercept on, normal equations; GD lr 0.1, 10,000 iterations, tol 1e-7 (<a href="{{ src(c ~ 'linear_regression.h', 30, 39) }}">L30–39</a>)</td></tr>
+      <tr><td><a href="{{ src(c ~ 'logistic_regression.h') }}"><code>logistic_regression.h</code></a></td><td><code>LogisticRegression</code></td><td>Newton with Armijo backtracking</td><td>C 1, intercept on, 100 iterations, tol 1e-8 (<a href="{{ src(c ~ 'logistic_regression.h', 29, 36) }}">L29–36</a>)</td></tr>
+      <tr><td><a href="{{ src(c ~ 'knn.h') }}"><code>knn.h</code></a></td><td><code>KNeighborsClassifier</code>, <code>KNeighborsRegressor</code></td><td>Stores the data; brute-force search per query</td><td>k 5, uniform weights (<a href="{{ src(c ~ 'knn.h', 25, 30) }}">L25–30</a>)</td></tr>
+      <tr><td><a href="{{ src(c ~ 'kmeans.h') }}"><code>kmeans.h</code></a></td><td><code>KMeans</code></td><td>k-means++ then Lloyd, best of several restarts</td><td>k 8, 4 restarts, 300 iterations, tol 1e-4, seed 0 (<a href="{{ src(c ~ 'kmeans.h', 30, 38) }}">L30–38</a>)</td></tr>
+      <tr><td><a href="{{ src(c ~ 'pca.h') }}"><code>pca.h</code></a></td><td><code>Pca</code></td><td>SVD of the centered data</td><td>all min(n, d) components, no whitening (<a href="{{ src(c ~ 'pca.h', 26, 31) }}">L26–31</a>)</td></tr>
+      <tr><td><a href="{{ src(c ~ 'naive_bayes.h') }}"><code>naive_bayes.h</code></a></td><td><code>GaussianNb</code>, <code>MultinomialNb</code></td><td>Counting, in log space</td><td>var_smoothing 1e-9; alpha 1 (<a href="{{ src(c ~ 'naive_bayes.h', 32, 34) }}">L32–34</a>, <a href="{{ src(c ~ 'naive_bayes.h', 59, 61) }}">L59–61</a>)</td></tr>
+      <tr><td><a href="{{ src(c ~ 'decision_tree.h') }}"><code>decision_tree.h</code></a></td><td><code>DecisionTreeClassifier</code>, <code>DecisionTreeRegressor</code></td><td>Greedy CART: sort and sweep each feature</td><td>Gini; unlimited depth, split 2, leaf 1, all features (<a href="{{ src(c ~ 'decision_tree.h', 38, 46) }}">L38–46</a>)</td></tr>
+      <tr><td><a href="{{ src(c ~ 'random_forest.h') }}"><code>random_forest.h</code></a></td><td><code>RandomForestClassifier</code>, <code>RandomForestRegressor</code></td><td>Bootstrap samples, one tree each, in parallel</td><td>100 trees, bootstrap on; √d features per split for the classifier, all for the regressor (<a href="{{ src(c ~ 'random_forest.h', 29, 35) }}">L29–35</a>, <a href="{{ src(c ~ 'random_forest.h', 60, 65) }}">L60–65</a>)</td></tr>
+      <tr><td><a href="{{ src(c ~ 'gradient_boosting.h') }}"><code>gradient_boosting.h</code></a></td><td><code>GradientBoostingRegressor</code>, <code>GradientBoostingClassifier</code></td><td>Histogram trees grown best-first on gradients and Hessians</td><td>100 rounds, lr 0.1, 31 leaves, unlimited depth, leaf 20, l2 0, 255 bins (<a href="{{ src(c ~ 'gradient_boosting.h', 35, 43) }}">L35–43</a>)</td></tr>
+      <tr><td><a href="{{ src(c ~ 'svm.h') }}"><code>svm.h</code></a></td><td><code>SupportVectorClassifier</code></td><td>SMO on the dual with a full kernel matrix</td><td>RBF, C 1, gamma "scale", degree 3, coef0 0, tol 1e-3, 10<sup>7</sup> iterations (<a href="{{ src(c ~ 'svm.h', 46, 56) }}">L46–56</a>)</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="linear">Linear models</h2>
+
+<h3 id="linear-regression">LinearRegression</h3>
+
+<p>
+  The objective is ‖y − Xw − b‖² + l2‖w‖², ordinary least squares at <code>l2 = 0</code>
+  (<a href="{{ src(c ~ 'linear_regression.h', 8, 19) }}">linear_regression.h L8–19</a>). <code>Fit</code>
+  centers X and y when <code>fit_intercept</code> is on, which removes the intercept from the problem and keeps
+  it unpenalized, solves for w, then recovers b = mean(y) − mean(x)·w
+  (<a href="{{ src(c ~ 'linear_regression.cc', 67, 102) }}">linear_regression.cc L67–102</a>).
+</p>
+
+<ul>
+  <li><strong>Normal equations.</strong> Forms XcᵀXc + l2·I and factors it with
+    {{ link('linalg', 'Cholesky', '#cholesky') }}; a failed factorization is the singular case and returns
+    <code>InvalidArgument</code> with "set l2 &gt; 0 for ridge regression"
+    (<a href="{{ src(c ~ 'linear_regression.cc', 19, 31) }}">L19–31</a>).</li>
+  <li><strong>Gradient descent.</strong> Full-batch steps on the objective divided by n, stopping once the
+    gradient's largest entry is below <code>tolerance</code>; a non-finite gradient returns "gradient descent
+    diverged; lower the learning rate" (<a href="{{ src(c ~ 'linear_regression.cc', 33, 63) }}">L33–63</a>). The
+    header states the convergence condition, lr &lt; 2 / λ<sub>max</sub>, and says to standardize first.</li>
+</ul>
+
+<h3 id="logistic-regression">LogisticRegression</h3>
+
+<p>
+  Binary problems fit one weight row through a sigmoid, K &gt; 2 classes fit K rows through a softmax. The
+  objective is the summed negative log-likelihood plus ‖W‖²/(2C), scikit-learn's, so the optimum is the same
+  and the intercept is unpenalized (<a href="{{ src(c ~ 'logistic_regression.h', 7, 18) }}">logistic_regression.h
+  L7–18</a>). Parameters are packed one output at a time as <code>[w_0 … w_{d−1}, b]</code> against an
+  augmented input <code>[x, 1]</code> (<a href="{{ src(c ~ 'logistic_regression.cc', 20, 34) }}">logistic_regression.cc
+  L20–34</a>).
+</p>
+
+<ol>
+  <li>Each iteration builds the full gradient and Hessian: residual p − y and curvature p(1 − p) (binary) or
+    diag(p) − ppᵀ (softmax), plus 1/C on the weights and a 10<sup>−8</sup> jitter on the whole diagonal, since a
+    softmax's biases are only fixed up to a constant (<a href="{{ src(c ~ 'logistic_regression.cc', 93, 143) }}">L93–143</a>).</li>
+  <li>The Newton step solves H·d = g by Cholesky; then Armijo backtracking halves t until the objective drops by
+    10<sup>−4</sup>·t·gᵀd, up to 50 halvings (<a href="{{ src(c ~ 'logistic_regression.cc', 171, 189) }}">L171–189</a>).</li>
+  <li>It stops when the largest gradient entry is under <code>tolerance</code>, or when no step lowers the
+    objective at all, which it treats as converged at double precision
+    (<a href="{{ src(c ~ 'logistic_regression.cc', 163, 199) }}">L163–199</a>). The loss uses
+    max(z, 0) + log1p(e<sup>−|z|</sup>) − yz, so separable data never overflows
+    (<a href="{{ src(c ~ 'logistic_regression.cc', 72, 75) }}">L72–75</a>).</li>
+</ol>
+
+<p>
+  <code>coef()</code> is <code>[1, d]</code> for two classes, the class-1 weights as in scikit-learn, and
+  <code>[K, d]</code> otherwise (<a href="{{ src(c ~ 'logistic_regression.h', 49, 54) }}">L49–54</a>). The Hessian
+  has (outputs·(d + 1))² entries, so the header scopes the class to small d.
+</p>
+
+<h2 id="neighbors">Neighbors and clusters</h2>
+
+<h3 id="knn">k-nearest neighbors</h3>
+
+<p>
+  <code>Fit</code> stores the training matrix and fails when <code>k &gt; n</code>
+  (<a href="{{ src(c ~ 'knn.cc', 63, 78) }}">knn.cc L63–78</a>). Each query computes every squared distance,
+  <code>partial_sort</code>s the k smallest with ties broken by training-row order, and takes square roots only
+  of those (<a href="{{ src(c ~ 'knn.cc', 21, 39) }}">L21–39</a>). Weights are uniform or 1/r; when the nearest
+  neighbor is at distance 0, only the exact matches count, since their weight would be infinite
+  (<a href="{{ src(c ~ 'knn.cc', 41, 55) }}">L41–55</a>). Queries run under <code>ParallelFor</code> with a grain
+  of 16 (<a href="{{ src(c ~ 'knn.cc', 61, 61) }}">L61</a>); each writes only its own output row.
+</p>
+
+<h3 id="kmeans">KMeans</h3>
+
+<ul>
+  <li><strong>Seeding.</strong> <code>KMeansPlusPlus</code> picks the first center uniformly, then each next
+    one with probability proportional to its squared distance from the nearest chosen center; with fewer
+    distinct points than k it falls back to a uniform pick (<a href="{{ src(c ~ 'kmeans.cc', 104, 140) }}">kmeans.cc
+    L104–140</a>).</li>
+  <li><strong>Lloyd.</strong> Assign every point to its nearest center (lowest index on ties), move every
+    center to its points' mean, stop when the summed squared center shift is at most the tolerance
+    (<a href="{{ src(c ~ 'kmeans.cc', 60, 98) }}">L60–98</a>). An empty cluster restarts at the point
+    farthest from its center (<a href="{{ src(c ~ 'kmeans.cc', 78, 84) }}">L78–84</a>).</li>
+  <li><strong>Tolerance and restarts.</strong> <code>tolerance</code> is relative: it is multiplied by the
+    data's mean per-feature variance (<a href="{{ src(c ~ 'kmeans.cc', 151, 160) }}">L151–160</a>). Restart r draws from
+    <code>Generator(seed, r)</code>, and the run with the least inertia wins
+    (<a href="{{ src(c ~ 'kmeans.cc', 144, 174) }}">L144–174</a>).</li>
+</ul>
+
+<h2 id="pca-nb">PCA and naive Bayes</h2>
+
+<h3 id="pca">Pca</h3>
+
+<p>
+  <code>Fit</code> centers X and takes its {{ link('linalg', 'SVD', '#svd') }} rather than eigendecomposing the
+  covariance, which would square the condition number
+  (<a href="{{ src(c ~ 'pca.h', 7, 15) }}">pca.h L7–15</a>). The components are the first c columns of V, the
+  explained variance is s²/(n − 1), and the ratio divides by the total over all singular values
+  (<a href="{{ src(c ~ 'pca.cc', 19, 62) }}">pca.cc L19–62</a>). The sign convention that makes components match
+  scikit-learn, largest-magnitude entry positive, lives in <code>SvdFactor</code> itself
+  (<a href="{{ src('rml/linalg/svd.h', 24, 24) }}">svd.h L24</a>). <code>Transform</code> projects and, with
+  <code>whiten</code>, divides by √variance; <code>InverseTransform</code> undoes both
+  (<a href="{{ src(c ~ 'pca.cc', 64, 104) }}">L64–104</a>).
+</p>
+
+<h3 id="naive-bayes">GaussianNb and MultinomialNb</h3>
+
+<p>
+  Both fit by counting and score in log space, normalizing each row with log-sum-exp
+  (<a href="{{ src(c ~ 'naive_bayes.cc', 30, 45) }}">naive_bayes.cc L30–45</a>). Every class in
+  <code>0..max(y)</code> needs at least one sample, or <code>Fit</code> returns <code>InvalidArgument</code>
+  (<a href="{{ src(c ~ 'naive_bayes.cc', 20, 28) }}">L20–28</a>).
+</p>
+
+<ul>
+  <li><strong>Gaussian.</strong> Per-class means and population variances, plus
+    <code>var_smoothing</code> times the largest variance of any feature over the whole data, so a feature that
+    is constant within a class does not divide by zero (<a href="{{ src(c ~ 'naive_bayes.cc', 57, 104) }}">L57–104</a>).</li>
+  <li><strong>Multinomial.</strong> Smoothed log-probabilities log(count + α) − log(total + dα); negative
+    counts return <code>InvalidArgument</code>, and a zero count skips its term so α = 0 cannot give 0·log 0
+    (<a href="{{ src(c ~ 'naive_bayes.cc', 134, 184) }}">L134–184</a>).</li>
+</ul>
+
+<h2 id="trees">Trees</h2>
+
+<p>
+  The tree code is split into a public pair of estimators and an <code>internal</code> grower that the forest
+  reuses (<a href="{{ src(c ~ 'decision_tree.h', 48, 89) }}">decision_tree.h L48–89</a>). A <code>Tree</code> is a
+  flat vector of <code>TreeNode</code>s with the root at index 0; a node with <code>feature = −1</code> is a
+  leaf, and <code>value</code> holds class frequencies or the one mean target.
+</p>
+
+<h3 id="cart">Growing a CART tree</h3>
+
+<ol>
+  <li><strong>Leaf test.</strong> A node is a leaf at <code>max_depth</code>, below
+    <code>min_samples_split</code>, below twice <code>min_samples_leaf</code>, or with impurity ≤ 10<sup>−12</sup>
+    (<a href="{{ src(c ~ 'decision_tree.cc', 191, 193) }}">decision_tree.cc L191–193</a>).</li>
+  <li><strong>Sweep.</strong> For each candidate feature, sort the node's (value, row) pairs, then move rows
+    one at a time from a right <code>Stats</code> to a left one, which keeps counts (or sum and sum of squares)
+    up to date in O(1). Each boundary between distinct values that leaves both sides ≥
+    <code>min_samples_leaf</code> is scored by n<sub>L</sub>·I<sub>L</sub> + n<sub>R</sub>·I<sub>R</sub>, and the
+    threshold is the midpoint (<a href="{{ src(c ~ 'decision_tree.cc', 128, 158) }}">L128–158</a>).</li>
+  <li><strong>Zero-gain splits.</strong> The best split is taken even when it lowers impurity by nothing, which
+    XOR needs before its second level pays off (<a href="{{ src(c ~ 'decision_tree.h', 15, 18) }}">decision_tree.h
+    L15–18</a>).</li>
+  <li><strong>Recurse.</strong> <code>std::partition</code> the rows in place, add n·I − (n<sub>L</sub>I<sub>L</sub> +
+    n<sub>R</sub>I<sub>R</sub>) to the feature's importance, and recompute a regression child's variance in two
+    passes, so a constant child is exactly pure (<a href="{{ src(c ~ 'decision_tree.cc', 180, 220) }}">L180–220</a>).</li>
+</ol>
+
+<p>
+  <strong>Worked example.</strong> The first tree test fits x = 1, 2, 3, 10, 11, 12 with labels 0, 0, 0, 1, 1,
+  1 (<a href="{{ src(c ~ 'decision_tree_test.cc', 23, 33) }}">decision_tree_test.cc L23–33</a>). The root's Gini
+  impurity is 1 − (0.5² + 0.5²) = 0.5. The sweep scores five boundaries:
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 250" role="img" aria-labelledby="cl-sweep-title cl-sweep-desc">
+    <title id="cl-sweep-title">The CART sweep on six one-feature points</title>
+    <desc id="cl-sweep-desc">Six points on a number line: 1, 2 and 3 of class 0, and 10, 11 and 12 of class 1.
+      Candidate thresholds sit halfway between neighbours: 1.5, 2.5, 6.5, 10.5 and 11.5. Their weighted child
+      impurities, n left times Gini left plus n right times Gini right, are 2.4, 1.5, 0, 1.5 and 2.4. The split
+      at 6.5 has weighted impurity 0 and wins; it adds 6 times 0.5 minus 0, which is 3, to feature 0's importance,
+      and gives a tree of depth 1 with two pure leaves.</desc>
+
+    <line class="d-line" x1="40" y1="110" x2="600" y2="110"/>
+    <circle cx="60" cy="110" r="9" class="d-box"/>
+    <circle cx="107" cy="110" r="9" class="d-box"/>
+    <circle cx="155" cy="110" r="9" class="d-box"/>
+    <circle cx="485" cy="110" r="9" class="d-box d-accent"/>
+    <circle cx="533" cy="110" r="9" class="d-box d-accent"/>
+    <circle cx="580" cy="110" r="9" class="d-box d-accent"/>
+    <text class="d-muted" x="60" y="140" text-anchor="middle" font-size="12">1</text>
+    <text class="d-muted" x="107" y="140" text-anchor="middle" font-size="12">2</text>
+    <text class="d-muted" x="155" y="140" text-anchor="middle" font-size="12">3</text>
+    <text class="d-muted" x="485" y="140" text-anchor="middle" font-size="12">10</text>
+    <text class="d-muted" x="533" y="140" text-anchor="middle" font-size="12">11</text>
+    <text class="d-muted" x="580" y="140" text-anchor="middle" font-size="12">12</text>
+    <text x="107" y="30" text-anchor="middle">class 0</text>
+    <text x="533" y="30" text-anchor="middle">class 1</text>
+
+    <line class="d-line" x1="84" y1="56" x2="84" y2="94" stroke-dasharray="3 3"/>
+    <line class="d-line" x1="131" y1="56" x2="131" y2="94" stroke-dasharray="3 3"/>
+    <line class="d-line" x1="509" y1="56" x2="509" y2="94" stroke-dasharray="3 3"/>
+    <line class="d-line" x1="556" y1="56" x2="556" y2="94" stroke-dasharray="3 3"/>
+    <rect class="d-box d-accent" x="318" y="50" width="4" height="78"/>
+    <text class="d-muted" x="84" y="50" text-anchor="middle" font-size="12">2.4</text>
+    <text class="d-muted" x="131" y="50" text-anchor="middle" font-size="12">1.5</text>
+    <text class="d-muted" x="509" y="50" text-anchor="middle" font-size="12">1.5</text>
+    <text class="d-muted" x="556" y="50" text-anchor="middle" font-size="12">2.4</text>
+    <text x="320" y="40" text-anchor="middle">t = 6.5: weighted 0</text>
+
+    <text class="d-muted" x="40" y="176" font-size="12">Score at each boundary: nL·Gini(L) + nR·Gini(R). At t = 2.5: 2·0 + 4·(1 − 1/16 − 9/16) = 1.5.</text>
+    <text class="d-muted" x="40" y="196" font-size="12">Winner t = 6.5 = 3 + (10 − 3)/2. Importance of feature 0 += 6·0.5 − 0 = 3.</text>
+    <text class="d-muted" x="40" y="216" font-size="12">Result: depth 1, two pure leaves; the test predicts 6.4 → 0, 6.6 → 1 and −100 → 0.</text>
+  </svg>
+  <figcaption>The sweep behind <code>SplitsHalfwayBetweenClasses</code>: one sort, five candidate thresholds,
+    each scored from running class counts.</figcaption>
+</figure>
+
+<h3 id="tree-api">Limits and feature subsets</h3>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>SplitCriterion</code></td><td><code>kGini</code> (1 − Σp²) or <code>kEntropy</code> (−Σp log₂ p) for classifiers; regressors always use variance.</td><td><a href="{{ src(c ~ 'decision_tree.cc', 41, 61) }}">decision_tree.cc L41–61</a></td></tr>
+      <tr><td><code>TreeLimits</code></td><td><code>max_depth</code> −1 (unlimited), <code>min_samples_split</code> 2, <code>min_samples_leaf</code> 1, <code>max_features</code> 0, <code>feature_subset</code> <code>kAll</code>.</td><td><a href="{{ src(c ~ 'decision_tree.h', 38, 46) }}">decision_tree.h L38–46</a></td></tr>
+      <tr><td><code>FeaturesPerSplit</code></td><td><code>max_features</code> when positive, else ⌊√d⌋ or ⌊log₂ d⌋ for <code>kSqrt</code> / <code>kLog2</code>, clamped to [1, d].</td><td><a href="{{ src(c ~ 'decision_tree.cc', 237, 248) }}">L237–248</a></td></tr>
+      <tr><td>Subsampling</td><td>With fewer than d features per split, a partial Fisher–Yates shuffle draws features until enough <em>non-constant</em> ones have been tried, so constant features never use up the budget.</td><td><a href="{{ src(c ~ 'decision_tree.cc', 160, 178) }}">L160–178</a></td></tr>
+      <tr><td><code>feature_importances()</code></td><td>The summed impurity decreases normalized to 1; all zero for a single leaf.</td><td><a href="{{ src(c ~ 'decision_tree.cc', 271, 279) }}">L271–279</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="forest">Random forests</h3>
+
+<p>
+  <code>GrowForest</code> grows tree t inside a <code>ParallelFor</code> with grain 1, drawing the bootstrap
+  rows and the feature subsets from <code>Generator(seed, t)</code>, so the forest depends on the seed and not
+  on which thread grew which tree (<a href="{{ src(c ~ 'random_forest.cc', 22, 43) }}">random_forest.cc
+  L22–43</a>). Bootstrap rows may repeat, which <code>GrowTree</code> accepts. The classifier's default limits
+  are <code>{-1, 2, 1, 0, FeatureSubset::kSqrt}</code> (<a href="{{ src(c ~ 'random_forest.h', 32, 32) }}">random_forest.h
+  L32</a>); the regressor uses all features. Predictions average the trees' leaf values (class frequencies or
+  means), and importances average each tree's normalized importances
+  (<a href="{{ src(c ~ 'random_forest.cc', 45, 55) }}">L45–55</a>).
+</p>
+
+<h2 id="boosting">Gradient boosting</h2>
+
+<p>
+  Boosting fits F(x) = F₀ + Σ lr·f<sub>t</sub>(x), each tree on the per-sample gradient g and Hessian h of the
+  loss at the current scores. A leaf with sums G and H outputs the Newton step −G/(H + l2), and a split's gain is
+  G<sub>L</sub>²/(H<sub>L</sub> + l2) + G<sub>R</sub>²/(H<sub>R</sub> + l2) − G²/(H + l2)
+  (<a href="{{ src(c ~ 'gradient_boosting.h', 7, 24) }}">gradient_boosting.h L7–24</a>). The shared loop is
+  <code>internal::Booster</code>; the regressor uses squared error, the classifier log loss with one tree per
+  round for two classes and one per class otherwise (<a href="{{ src(c ~ 'gradient_boosting.h', 76, 102) }}">L76–102</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Piece</th><th>What it does</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>FitBinMapper</code></td><td>Per feature: midpoints between distinct values when there are at most <code>max_bins</code> of them, otherwise quantile thresholds that always stay below the column's maximum, so the top bin is never empty. <code>max_bins</code> must be in [2, 256], since bins are <code>uint8_t</code>.</td><td><a href="{{ src(c ~ 'gradient_boosting.cc', 30, 55) }}">gradient_boosting.cc L30–55</a></td></tr>
+      <tr><td><code>BinnedData</code></td><td>Every value's bin, stored feature-major so one feature's histogram reads one contiguous column.</td><td><a href="{{ src(c ~ 'gradient_boosting.cc', 98, 129) }}">L98–129</a></td></tr>
+      <tr><td><code>BuildHistogram</code></td><td>Sums (g, h, count) per bin, one feature per <code>ParallelFor</code> task, each writing its own slice of the histogram.</td><td><a href="{{ src(c ~ 'gradient_boosting.cc', 176, 190) }}">L176–190</a></td></tr>
+      <tr><td><code>FindSplit</code></td><td>Sweeps each feature's bins left to right; skips splits with a child under <code>min_samples_leaf</code> or with Hessian under 10<sup>−3</sup>; keeps only positive gain.</td><td><a href="{{ src(c ~ 'gradient_boosting.cc', 194, 216) }}">L194–216</a></td></tr>
+      <tr><td><code>SplitLeaf</code></td><td>Partitions the rows, builds the <em>smaller</em> child's histogram and gets the larger one by subtracting it from the parent's.</td><td><a href="{{ src(c ~ 'gradient_boosting.cc', 218, 256) }}">L218–256</a></td></tr>
+      <tr><td><code>Grow</code></td><td>Best-first: repeatedly splits the leaf whose best split has the largest gain until <code>max_leaf_nodes</code> leaves or no positive gain, then writes −lr·G/(H + l2) into each leaf and adds it to the training scores.</td><td><a href="{{ src(c ~ 'gradient_boosting.cc', 138, 173) }}">L138–173</a></td></tr>
+      <tr><td><code>Booster::Fit</code></td><td>Starts from the mean target, the log-odds of the prior (binary), or log priors (multiclass, clamped to [10<sup>−15</sup>, 1 − 10<sup>−15</sup>]); each round computes g and h (F − y and 1; p − y and p(1 − p), per class under softmax), grows one tree per column, and records the mean training loss.</td><td><a href="{{ src(c ~ 'gradient_boosting.cc', 283, 370) }}">L283–370</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <strong>Worked example.</strong> One round with lr 1, l2 2 and leaf size 1 on x = 0, 1, 2, 3, y = 0, 0, 10, 10
+  (<a href="{{ src(c ~ 'gradient_boosting_test.cc', 52, 70) }}">gradient_boosting_test.cc L52–70</a>): the
+  baseline is the mean, 5, so g = F − y = 5, 5, −5, −5 and h = 1. The split at 1.5 has G<sub>L</sub> = 10,
+  H<sub>L</sub> = 2 on the left, so that leaf outputs −10/(2 + 2) = −2.5 and the right one +2.5, and the
+  predictions are 2.5 and 7.5. Its gain is 10²/4 + 10²/4 − 0 = 50; the code drops the factor ½ the header
+  mentions, which does not change which split wins.
+</p>
+
+<h2 id="svm">Support vector machine</h2>
+
+<p>
+  <code>SupportVectorClassifier</code> is binary, labels 0 and 1 mapped to −1 and +1, and solves the
+  soft-margin dual, min ½ Σ α<sub>i</sub>α<sub>j</sub>y<sub>i</sub>y<sub>j</sub>K<sub>ij</sub> − Σ α<sub>i</sub>
+  subject to 0 ≤ α ≤ C and Σ α<sub>i</sub>y<sub>i</sub> = 0, by sequential minimal optimization
+  (<a href="{{ src(c ~ 'svm.h', 8, 27) }}">svm.h L8–27</a>). The full n × n kernel matrix is computed once, which
+  the header scopes to a few thousand points.
+</p>
+
+<ol>
+  <li><strong>Kernel and gamma.</strong> Linear x·z, polynomial (γx·z + coef0)<sup>degree</sup> or RBF
+    exp(−γ‖x − z‖²); <code>gamma = 0</code> resolves to 1/(d·Var(x)) over every entry, scikit-learn's
+    <code>"scale"</code> (<a href="{{ src(c ~ 'svm.cc', 24, 49) }}">svm.cc L24–49</a>).</li>
+  <li><strong>Working set.</strong> The gradient Qα − 1 starts at −1 with α = 0. Each step picks i, the largest
+    violator −y<sub>t</sub>G<sub>t</sub> among indices that can move up, and j, the index in the low set with the
+    largest guaranteed decrease b²/a, LIBSVM's second-order rule, flooring the curvature a at 10<sup>−12</sup>
+    (<a href="{{ src(c ~ 'svm.cc', 81, 128) }}">L81–128</a>).</li>
+  <li><strong>Stop.</strong> When the maximal violation is under <code>tolerance</code> (1e-3, LIBSVM's default);
+    reaching <code>max_iterations</code> first returns <code>Internal</code>
+    (<a href="{{ src(c ~ 'svm.cc', 129, 134) }}">L129–134</a>).</li>
+  <li><strong>Step.</strong> Move α<sub>i</sub> and α<sub>j</sub> along the line that keeps Σαy fixed, to the
+    parabola's minimum clipped to the box, snap values within 10<sup>−12</sup>·C of a bound onto it, and update
+    the gradient in O(n) (<a href="{{ src(c ~ 'svm.cc', 136, 153) }}">L136–153</a>).</li>
+  <li><strong>Bias and support.</strong> b averages over the free support vectors, or takes the midpoint of the
+    interval the bounded ones allow when none is free; the support vectors (α &gt; 0) and their α·y are kept for
+    prediction (<a href="{{ src(c ~ 'svm.cc', 156, 194) }}">L156–194</a>).</li>
+</ol>
+
+<h2 id="sklearn">Checked against scikit-learn</h2>
+
+<p>
+  <code>{{ fx }}</code> writes <code>rml/classical/testdata/sklearn.json</code>: small datasets from a
+  <code>default_rng(0)</code> stream, rounded through float32 so both sides see identical inputs, and what
+  scikit-learn fits on them (<a href="{{ src(fx, 27, 29) }}">make_sklearn_fixtures.py L27–29</a>). The committed
+  file records scikit-learn 1.9.1. <code>sklearn_fixture_test</code> reads it with nlohmann/json, so
+  <code>bazel test</code> needs no Python (<a href="{{ src(c ~ 'sklearn_fixture_test.cc', 29, 36) }}">sklearn_fixture_test.cc
+  L29–36</a>, <a href="{{ src(c ~ 'BUILD.bazel', 275, 292) }}">BUILD.bazel L275–292</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Fixture</th><th>Data and scikit-learn settings</th><th>What rml must match</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>linear</code></td><td>40 × 3, y = x·[1.5, −2, 0.5] + 0.3 + noise; <code>LinearRegression</code>, <code>Ridge(alpha=1.5)</code></td><td>OLS and ridge coefficients and intercepts to 1e-5</td><td><a href="{{ src(fx, 40, 49) }}">L40–49</a>, <a href="{{ src(c ~ 'sklearn_fixture_test.cc', 66, 81) }}">test L66–81</a></td></tr>
+      <tr><td><code>logistic_binary</code>, <code>logistic_multinomial</code></td><td>60 × 2 at C = 0.5; three 30-point blobs at C = 1; <code>tol=1e-12</code></td><td>Coefficients and intercepts to 1e-4, the first five probability rows to 1e-5 (one <code>TEST_P</code>, two cases)</td><td><a href="{{ src(fx, 51, 68) }}">L51–68</a>, <a href="{{ src(c ~ 'sklearn_fixture_test.cc', 83, 98) }}">test L83–98</a></td></tr>
+      <tr><td><code>pca</code></td><td>50 × 4 correlated, 3 components</td><td>Explained variance and singular values to 1e-4, ratios to 1e-6, and |cos| between matching components within 1e-5 of 1</td><td><a href="{{ src(fx, 70, 78) }}">L70–78</a>, <a href="{{ src(c ~ 'sklearn_fixture_test.cc', 100, 119) }}">test L100–119</a></td></tr>
+      <tr><td><code>gaussian_nb</code>, <code>multinomial_nb</code></td><td>45 points in three blobs; 30 Poisson count rows at α = 0.5</td><td>Priors, means, smoothed variances, log-probabilities and the first five probability rows</td><td><a href="{{ src(fx, 80, 98) }}">L80–98</a>, <a href="{{ src(c ~ 'sklearn_fixture_test.cc', 121, 142) }}">test L121–142</a></td></tr>
+      <tr><td><code>knn</code></td><td>40 × 2 XOR-signed labels; k = 5 distance-weighted classifier, k = 4 uniform regressor; 10 queries</td><td>Probabilities and predictions to 1e-5</td><td><a href="{{ src(fx, 100, 110) }}">L100–110</a>, <a href="{{ src(c ~ 'sklearn_fixture_test.cc', 144, 160) }}">test L144–160</a></td></tr>
+      <tr><td><code>decision_tree_regressor</code></td><td>60 points of a noisy sine, one feature so split ties cannot differ; depth 3, leaf 3</td><td>Predictions at 13 query points to 1e-5</td><td><a href="{{ src(fx, 112, 121) }}">L112–121</a>, <a href="{{ src(c ~ 'sklearn_fixture_test.cc', 162, 170) }}">test L162–170</a></td></tr>
+      <tr><td><code>kmeans</code></td><td>80 points in four well-separated blobs, <code>n_init=10</code></td><td>Inertia to 1e-3 (rml run with tolerance 1e-10); the fixture's centers are not compared</td><td><a href="{{ src(fx, 123, 131) }}">L123–131</a>, <a href="{{ src(c ~ 'sklearn_fixture_test.cc', 172, 180) }}">test L172–180</a></td></tr>
+      <tr><td><code>svm</code></td><td>80 overlapping points; RBF (<code>"scale"</code>), linear, and degree-3 polynomial with γ 0.5, coef0 1; C = 2, <code>tol=1e-6</code></td><td>The resolved gamma, the exact support set, the intercept and decision values at 10 queries to 1e-4</td><td><a href="{{ src(fx, 133, 146) }}">L133–146</a>, <a href="{{ src(c ~ 'sklearn_fixture_test.cc', 182, 206) }}">test L182–206</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Random forests, gradient boosting and the tree classifier have no fixture: their results depend on random
+  draws and tie-breaking that scikit-learn makes differently, so their own tests check properties instead.
+</p>
+
+<h2 id="users">Who uses it</h2>
+
+<p>
+  Two callers outside the module. {{ link('retrieval', 'Retrieval') }}'s <code>IvfIndex::Train</code> clusters a
+  sample into its inverted lists with <code>KMeans</code> at one restart and 50 iterations
+  (<a href="{{ src('rml/retrieval/ivf.cc', 39, 47) }}">ivf.cc L39–47</a>), and the time-series example fits its
+  seasonal autoregression with <code>LinearRegression</code>
+  (<a href="{{ src('examples/time_series/time_series.cc', 115, 130) }}">time_series.cc L115–130</a>). The
+  {{ link('stack', 'inference stack') }} leaves classical ML out of scope.
+</p>
+
+<h2 id="tests">Tests</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Tests</th><th>What they pin down</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(c ~ 'linear_regression_test.cc') }}"><code>linear_regression_test.cc</code></a></td><td>6</td><td>An exact linear map recovered, fits through the origin without an intercept, ridge shrinking toward zero, collinear features failing until l2 &gt; 0, gradient descent agreeing with the normal equations, and divergence reported.</td></tr>
+      <tr><td><a href="{{ src(c ~ 'logistic_regression_test.cc') }}"><code>logistic_regression_test.cc</code></a></td><td>6</td><td>The symmetric two-point closed form w = 2σ(−w) ≈ 0.6748 with b = 0, a stationary binary fit, a stronger penalty shrinking weights, multinomial blobs separated, separable data staying finite, one class an error.</td></tr>
+      <tr><td><a href="{{ src(c ~ 'knn_test.cc') }}"><code>knn_test.cc</code></a></td><td>5</td><td>Votes among the nearest, distance weights favoring closer points, deterministic tie-breaks, k &gt; n an error, the regressor's mean.</td></tr>
+      <tr><td><a href="{{ src(c ~ 'kmeans_test.cc') }}"><code>kmeans_test.cc</code></a></td><td>6</td><td>Separated blobs recovered, inertia against a hand computation, same seed same result, distinct k-means++ seeds, more clusters than distinct points, k &gt; n an error.</td></tr>
+      <tr><td><a href="{{ src(c ~ 'pca_test.cc') }}"><code>pca_test.cc</code></a></td><td>6</td><td>The long axis found, uncorrelated projections with the component variances, a full inverse round trip, unit-variance whitening, truncated reconstruction dropping minor variance, bad component counts rejected.</td></tr>
+      <tr><td><a href="{{ src(c ~ 'naive_bayes_test.cc') }}"><code>naive_bayes_test.cc</code></a></td><td>5</td><td>A hand-computed Gaussian posterior, smoothing over constant features, a missing class an error, Laplace-smoothed multinomial estimates, negative counts an error.</td></tr>
+      <tr><td><a href="{{ src(c ~ 'decision_tree_test.cc') }}"><code>decision_tree_test.cc</code></a></td><td>10</td><td>The halfway split above, XOR through a zero-gain split under both criteria, depth 0 as the class prior, importance on the informative feature, leaf and split limits, seeded feature subsampling, <code>FeaturesPerSplit</code>, a regression stump's side means, memorizing distinct points, a constant target as one leaf.</td></tr>
+      <tr><td><a href="{{ src(c ~ 'random_forest_test.cc') }}"><code>random_forest_test.cc</code></a></td><td>4</td><td>A forest beating a single tree by 3 points on noisy data, same seed same forest, one tree without bootstrap or subsampling equal to a decision tree, averaging lowering regression test error.</td></tr>
+      <tr><td><a href="{{ src(c ~ 'gradient_boosting_test.cc') }}"><code>gradient_boosting_test.cc</code></a></td><td>9</td><td>Midpoint and quantile bins, the one-round Newton step above, zero rounds predicting the mean or the prior, a noisy sine, a curved binary boundary, multiclass blobs, one class an error.</td></tr>
+      <tr><td><a href="{{ src(c ~ 'svm_test.cc') }}"><code>svm_test.cc</code></a></td><td>7</td><td>The maximum-margin line on separable blobs, a smaller C giving a wider soft margin, XOR by RBF and by a degree-2 polynomial, the scaled gamma, bad labels rejected, non-convergence reported.</td></tr>
+      <tr><td><a href="{{ src(c ~ 'sklearn_fixture_test.cc') }}"><code>sklearn_fixture_test.cc</code></a></td><td>9</td><td>The fixture table above: eight <code>TEST</code>s and one <code>TEST_P</code> run for the binary and multinomial logistic fixtures.</td></tr>
+    </tbody>
+  </table>
+</div>

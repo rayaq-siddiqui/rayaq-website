@@ -221,10 +221,10 @@ PAGES = [
         "slug": "classical",
         "title": "Classical models",
         "group": "Classical & retrieval",
-        "summary": "The eleven classical models from linear regression to gradient boosting, "
-        "and the tests that hold them to scikit-learn fixtures.",
+        "summary": "The fifteen classical estimators, from linear regression to gradient "
+        "boosting, and the tests that hold them to scikit-learn fixtures.",
         "sources": ["rml/classical", "tools/make_sklearn_fixtures.py"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "retrieval",
