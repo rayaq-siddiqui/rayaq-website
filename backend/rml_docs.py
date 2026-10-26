@@ -250,7 +250,7 @@ PAGES = [
         "summary": "Memory-mapped files, safetensors, GGUF and checkpoints, and how weights "
         "stay mapped rather than copied.",
         "sources": ["rml/io"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "tokenizers",

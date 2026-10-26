@@ -1,0 +1,372 @@
+{% set io = "rml/io/" %}
+<header class="jj-header">
+  <h1>Model files</h1>
+  <p class="tagline">
+    <code>rml/io</code> opens weight files without reading them: one read-only memory map per file, safetensors
+    and GGUF parsers that check every length and offset against it, tensors that view the mapped bytes and keep
+    the mapping alive, and training checkpoints stored as ordinary safetensors.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: <code>MappedFile</code> maps a whole file read-only and is shared by everything that views it.
+  <code>SafetensorsReader</code> parses the 8-byte length and JSON header, and <code>SafetensorsModel</code>
+  joins the shards of a Hugging Face checkpoint through its index. <code>GgufReader</code> parses llama.cpp's
+  container (versions 2 and 3), reverses each tensor's dims into rml's row-major order, and hands out raw byte
+  spans for any ggml type or <code>Tensor</code> views for the few rml has dtypes for. Parsing touches only
+  headers; tensor bytes are paged in by the OS the first time a kernel reads them. Every header field is bounds
+  checked, so a truncated or hostile file is an error, never a read past the mapping. Checkpoints write a model's
+  parameters, buffers and optimizer state as one safetensors file and load it back strictly.
+</p>
+
+<p>
+  The concepts are on /ml-models: {{ ml('checkpointing', 'checkpointing') }} and
+  {{ ml('quantization', 'quantization') }}. The module is five libraries, one per header, each with a test
+  (<a href="{{ src(io ~ 'BUILD.bazel') }}">BUILD.bazel</a>). rml's architecture notes state the rule this module
+  implements: weights are never copied into the heap, so resident memory is the pages the OS has faulted in
+  (<a href="{{ src('docs/architecture.md', 66, 70) }}">architecture.md L66–70</a>).
+</p>
+
+<h2 id="mapped-file">Mapping a file</h2>
+
+<p>
+  The header gives the reason in three lines: the OS pages mapped weights in on first touch and can drop clean
+  pages under memory pressure, so a model larger than free RAM still loads, and loading costs nothing until a
+  tensor is used (<a href="{{ src(io ~ 'mapped_file.h', 4, 8) }}">mapped_file.h L4–8</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Signature</th><th>Behaviour</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Open</code></td><td><code>static Expected&lt;shared_ptr&lt;const MappedFile&gt;&gt;(const string&amp; path)</code></td><td><code>open</code>, <code>fstat</code>, then <code>mmap(PROT_READ, MAP_PRIVATE)</code> of the whole file, and the descriptor is closed at once since the mapping outlives it. A missing file is <code>NotFound</code>, any other failure <code>IoError</code> with <code>strerror</code>. An empty file is a valid empty mapping, because <code>mmap</code> of zero bytes fails.</td><td><a href="{{ src(io ~ 'mapped_file.h', 22, 23) }}">.h L22–23</a>, <a href="{{ src(io ~ 'mapped_file.cc', 18, 44) }}">.cc L18–44</a></td></tr>
+      <tr><td>accessors</td><td><code>data()</code>, <code>size()</code>, <code>bytes()</code>, <code>path()</code></td><td>The mapped bytes as a pointer, a size or a <code>span&lt;const byte&gt;</code>.</td><td><a href="{{ src(io ~ 'mapped_file.h', 29, 32) }}">.h L29–32</a></td></tr>
+      <tr><td>destructor</td><td><code>~MappedFile()</code></td><td><code>munmap</code>. Copying is deleted; sharing is through the <code>shared_ptr</code>, so the last holder unmaps.</td><td><a href="{{ src(io ~ 'mapped_file.h', 25, 27) }}">.h L25–27</a>, <a href="{{ src(io ~ 'mapped_file.cc', 46, 48) }}">.cc L46–48</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Nothing in rml calls <code>madvise</code> at this commit. rml's memory notes plan layer-by-layer golden runs of
+  an 8B model at bf16 that drop each layer's pages with <code>madvise(MADV_DONTNEED)</code>; that is
+  <span class="rml-planned">planned</span> (<a href="{{ src('docs/models.md', 41, 43) }}">models.md L41–43</a>, see
+  {{ link('models-memory', 'Models and memory') }}).
+</p>
+
+<h2 id="keep-alive">How weights stay mapped</h2>
+
+<p>
+  A tensor that views a mapping must keep it alive, and a reader must be able to go away first. rml does this
+  with one shared owner. <code>Tensor::FromBuffer(data, shape, dtype, owner)</code> wraps external memory with a
+  <code>shared_ptr&lt;const void&gt;</code> keep-alive handle (<a href="{{ src('rml/core/tensor.h', 88, 89) }}">tensor.h
+  L88–89</a>, {{ link('tensors', 'Tensors and dtypes') }}), and both readers pass their <code>MappedFile</code> as
+  that owner.
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 340" role="img" aria-labelledby="mf-own-title mf-own-desc">
+    <title id="mf-own-title">Who holds the mapping</title>
+    <desc id="mf-own-desc">A MappedFile, owned through a shared pointer, maps the whole file read-only. A
+      SafetensorsReader and a GgufReader each hold that shared pointer. A Tensor returned by either reader's Get
+      wraps the mapped bytes and holds the same shared pointer as its keep-alive owner, so it outlives the reader.
+      GgufReader::Bytes returns a plain span with no owner, which is how the LLM WeightSource reads GGUF: it keeps
+      the reader itself alive in a shared pointer, and its WeightMatrix views are spans into the mapping. The OS
+      faults pages in when a kernel first reads them.</desc>
+
+    <rect class="d-box d-accent" x="150" y="20" width="340" height="50" rx="5"/>
+    <text x="320" y="42" text-anchor="middle">MappedFile</text>
+    <text class="d-muted" x="320" y="60" text-anchor="middle" font-size="12">mmap(PROT_READ, MAP_PRIVATE), whole file</text>
+
+    <line class="d-line" x1="250" y1="70" x2="140" y2="110"/>
+    <line class="d-line" x1="390" y1="70" x2="500" y2="110"/>
+    <text class="d-muted" x="320" y="96" text-anchor="middle" font-size="12">shared_ptr file_</text>
+
+    <rect class="d-box" x="20" y="110" width="240" height="50" rx="5"/>
+    <text x="140" y="132" text-anchor="middle">SafetensorsReader</text>
+    <text class="d-muted" x="140" y="150" text-anchor="middle" font-size="12">one per shard in SafetensorsModel</text>
+    <rect class="d-box" x="380" y="110" width="220" height="50" rx="5"/>
+    <text x="490" y="132" text-anchor="middle">GgufReader</text>
+    <text class="d-muted" x="490" y="150" text-anchor="middle" font-size="12">metadata parsed eagerly</text>
+
+    <line class="d-line" x1="140" y1="160" x2="140" y2="200"/>
+    <line class="d-line" x1="450" y1="160" x2="330" y2="200"/>
+    <line class="d-line" x1="530" y1="160" x2="530" y2="200"/>
+
+    <rect class="d-box" x="20" y="200" width="380" height="54" rx="5"/>
+    <text x="210" y="222" text-anchor="middle">Get(name) → Tensor view</text>
+    <text class="d-muted" x="210" y="242" text-anchor="middle" font-size="12">FromBuffer(…, owner = file_): outlives the reader</text>
+    <rect class="d-box" x="420" y="200" width="180" height="54" rx="5"/>
+    <text x="510" y="222" text-anchor="middle">Bytes(name)</text>
+    <text class="d-muted" x="510" y="242" text-anchor="middle" font-size="12">span, no owner</text>
+
+    <line class="d-line" x1="510" y1="254" x2="510" y2="276"/>
+    <rect class="d-box" x="300" y="276" width="300" height="50" rx="5"/>
+    <text x="450" y="297" text-anchor="middle">llm::WeightSource → WeightMatrix</text>
+    <text class="d-muted" x="450" y="315" text-anchor="middle" font-size="12">keeps the reader in a shared_ptr</text>
+
+    <text class="d-muted" x="20" y="290" font-size="12">Pages are read from disk</text>
+    <text class="d-muted" x="20" y="308" font-size="12">when a kernel first touches them.</text>
+  </svg>
+  <figcaption>The ownership chain. <code>SafetensorsTest.TensorsViewTheMappingAndOutliveTheReader</code> checks
+    the left branch (<a href="{{ src(io ~ 'safetensors_test.cc', 84, 94) }}">safetensors_test.cc L84–94</a>); the
+    right one is <a href="{{ src('rml/llm/weight_source.h', 65, 66) }}">weight_source.h L65–66</a>.</figcaption>
+</figure>
+
+<p>
+  The mapping is read-only but <code>Tensor</code>'s data pointer is not const, so both readers
+  <code>const_cast</code> it and document that callers must not write through it
+  (<a href="{{ src(io ~ 'safetensors.cc', 191, 193) }}">safetensors.cc L191–193</a>,
+  <a href="{{ src(io ~ 'gguf.cc', 577, 579) }}">gguf.cc L577–579</a>). A write would fault, which is why
+  <code>LoadCheckpoint</code> copies values into the model's own tensors rather than keeping views (below).
+</p>
+
+<h2 id="safetensors">safetensors</h2>
+
+<p>
+  The format is an 8-byte little-endian header length, a JSON object mapping each tensor name to
+  <code>{dtype, shape, data_offsets}</code> plus an optional <code>__metadata__</code> object of string pairs, then
+  the raw little-endian bytes (<a href="{{ src(io ~ 'safetensors.h', 4, 11) }}">safetensors.h L4–11</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Signature</th><th>Behaviour</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>WriteSafetensors</code></td><td><code>Status(path, const NamedTensors&amp;, const Metadata&amp; = {})</code></td><td>Writes in the given order, each tensor made contiguous first, so strided views are stored in logical order. The JSON is padded with spaces so the data starts 8-byte aligned, as the reference implementation does. A duplicate name or <code>__metadata__</code> is <code>InvalidArgument</code>; a dtype outside F32, F16, BF16, I32 and I8 (the block-quantized ones) is <code>Unsupported</code>.</td><td><a href="{{ src(io ~ 'safetensors.h', 32, 34) }}">.h L32–34</a>, <a href="{{ src(io ~ 'safetensors.cc', 69, 111) }}">.cc L69–111</a></td></tr>
+      <tr><td><code>SafetensorsReader::Open</code></td><td><code>static Expected&lt;SafetensorsReader&gt;(path)</code></td><td>Maps the file and parses the header without exceptions. Rejects a file under 8 bytes, a header length over 100 MiB or past the end, a header that is not an object, non-string metadata, a malformed entry, an unknown dtype, a dimension or element count above 2<sup>40</sup>, offsets outside the data, and a byte size that disagrees with dtype and shape. Names are kept sorted by data offset (stable), which is file order.</td><td><a href="{{ src(io ~ 'safetensors.cc', 28, 29) }}">.cc L28–29</a>, <a href="{{ src(io ~ 'safetensors.cc', 113, 185) }}">L113–185</a></td></tr>
+      <tr><td><code>Get</code></td><td><code>Expected&lt;Tensor&gt;(name) const</code></td><td>A view onto the mapping. If the bytes are not aligned for the element type, which other writers can produce, it returns a heap copy instead of making unaligned loads. A missing name is <code>NotFound</code>.</td><td><a href="{{ src(io ~ 'safetensors.cc', 187, 202) }}">.cc L187–202</a></td></tr>
+      <tr><td><code>GetAll</code>, <code>names</code>, <code>metadata</code>, <code>Contains</code></td><td></td><td>Every tensor in file order; the metadata map; membership.</td><td><a href="{{ src(io ~ 'safetensors.h', 40, 48) }}">.h L40–48</a>, <a href="{{ src(io ~ 'safetensors.cc', 204, 212) }}">.cc L204–212</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="sharded">Sharded checkpoints</h3>
+
+<p>
+  Large Hugging Face checkpoints split their tensors across files such as
+  <code>model-00001-of-00004.safetensors</code>, with <code>model.safetensors.index.json</code> mapping each name
+  to its shard under <code>weight_map</code>. <code>SafetensorsModel</code> maps every shard, so opening an
+  8B-parameter model costs only the headers (<a href="{{ src(io ~ 'safetensors_model.h', 4, 10) }}">safetensors_model.h
+  L4–10</a>).
+</p>
+
+<ul>
+  <li><strong>What it opens.</strong> A <code>.safetensors</code> file, an index <code>.json</code>, or a
+    directory, where it prefers the index and falls back to <code>model.safetensors</code>
+    (<a href="{{ src(io ~ 'safetensors_model.cc', 48, 60) }}">safetensors_model.cc L48–60</a>).</li>
+  <li><strong>The index.</strong> <code>weight_map</code> must be an object of strings, and each shard must be a
+    plain file name: a path with a directory part is <code>InvalidArgument</code>, so an index cannot point
+    outside its own directory (<a href="{{ src(io ~ 'safetensors_model.cc', 24, 44) }}">L24–44</a>).</li>
+  <li><strong>Agreement.</strong> Each shard is opened once, the first time the index names it, and every name
+    the index assigns to a shard must actually be in that shard's header
+    (<a href="{{ src(io ~ 'safetensors_model.cc', 62, 76) }}">L62–76</a>).</li>
+  <li><strong>Lookup.</strong> <code>names()</code> is sorted (a <code>std::map</code>), and <code>Get</code>
+    forwards to the shard's reader (<a href="{{ src(io ~ 'safetensors_model.cc', 79, 90) }}">L79–90</a>).</li>
+</ul>
+
+<h2 id="gguf">GGUF</h2>
+
+<p>
+  GGUF is llama.cpp's single-file container: metadata (architecture, hyperparameters, the tokenizer's
+  vocabulary) and every tensor in one file. The header comment is the format description rml works from
+  (<a href="{{ src(io ~ 'gguf.h', 4, 21) }}">gguf.h L4–21</a>):
+</p>
+
+<ul>
+  <li><code>"GGUF"</code>, u32 version, u64 tensor count, u64 metadata count;</li>
+  <li>metadata: a string key, a u32 value type and the value, where an array holds an element type, a u64
+    count and the elements, and a string is a u64 length and its bytes;</li>
+  <li>the tensor table: a string name, u32 n_dims, u64 dims, a u32 ggml type and a u64 offset into the data
+    section;</li>
+  <li>padding to <code>general.alignment</code> (default 32), then the data.</li>
+</ul>
+
+<p>
+  GGUF lists dims innermost first, so a PyTorch weight of shape <code>[out, in]</code> is stored as
+  <code>{in, out}</code>; the reader reverses them into rml's row-major <code>Shape</code>. The format is read in
+  place as little-endian, which a <code>static_assert</code> on the host's byte order guarantees
+  (<a href="{{ src(io ~ 'gguf.cc', 27, 30) }}">gguf.cc L27–30</a>).
+</p>
+
+<h3 id="gguf-example">A worked example: the hand-built file</h3>
+
+<p>
+  <code>gguf_test</code> builds a file byte by byte from the spec, one string key and one 2 × 3 f32 tensor
+  (<a href="{{ src(io ~ 'gguf_test.cc', 43, 63) }}">gguf_test.cc L43–63</a>). Its layout:
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 300" role="img" aria-labelledby="mf-gguf-title mf-gguf-desc">
+    <title id="mf-gguf-title">Byte offsets of the hand-built GGUF test file</title>
+    <desc id="mf-gguf-desc">Bytes 0 to 24 are the header: the magic GGUF, version 3, one tensor and one metadata
+      key. Bytes 24 to 69 are the metadata entry general.architecture of type 8, string, with value llama. Bytes
+      69 to 110 are the tensor table entry: name t, two dims stored as 3 then 2, ggml type 0 which is F32, and
+      offset 0. Bytes 110 to 128 are zero padding to the 32-byte alignment. Bytes 128 to 152 are the six floats
+      0 to 5. The reader reverses the dims to the row-major shape 2 by 3, so element [1, 0] is 3.</desc>
+
+    <rect class="d-box" x="20" y="24" width="120" height="58" rx="4"/>
+    <text x="80" y="44" text-anchor="middle">header</text>
+    <text class="d-muted" x="80" y="60" text-anchor="middle" font-size="12">GGUF, v3,</text>
+    <text class="d-muted" x="80" y="74" text-anchor="middle" font-size="12">1 tensor, 1 key</text>
+    <rect class="d-box" x="140" y="24" width="160" height="58" rx="4"/>
+    <text x="220" y="44" text-anchor="middle">metadata</text>
+    <text class="d-muted" x="220" y="60" text-anchor="middle" font-size="12">general.architecture</text>
+    <text class="d-muted" x="220" y="74" text-anchor="middle" font-size="12">type 8 = "llama"</text>
+    <rect class="d-box d-accent" x="300" y="24" width="140" height="58" rx="4"/>
+    <text x="370" y="44" text-anchor="middle">tensor table</text>
+    <text class="d-muted" x="370" y="60" text-anchor="middle" font-size="12">"t", dims {3, 2}</text>
+    <text class="d-muted" x="370" y="74" text-anchor="middle" font-size="12">type 0, offset 0</text>
+    <rect class="d-box" x="440" y="24" width="60" height="58" rx="4"/>
+    <text x="470" y="58" text-anchor="middle" font-size="12">pad</text>
+    <rect class="d-box" x="500" y="24" width="100" height="58" rx="4"/>
+    <text x="550" y="44" text-anchor="middle">data</text>
+    <text class="d-muted" x="550" y="60" text-anchor="middle" font-size="12">6 × f32:</text>
+    <text class="d-muted" x="550" y="74" text-anchor="middle" font-size="12">0 1 2 3 4 5</text>
+
+    <text class="d-muted" x="20" y="100" font-size="12">0</text>
+    <text class="d-muted" x="140" y="100" font-size="12" text-anchor="middle">24</text>
+    <text class="d-muted" x="300" y="100" font-size="12" text-anchor="middle">69</text>
+    <text class="d-muted" x="440" y="100" font-size="12" text-anchor="middle">110</text>
+    <text class="d-muted" x="500" y="100" font-size="12" text-anchor="middle">128</text>
+    <text class="d-muted" x="600" y="100" font-size="12" text-anchor="end">152</text>
+
+    <line class="d-line" x1="370" y1="82" x2="250" y2="140"/>
+    <line class="d-line" x1="550" y1="82" x2="450" y2="140"/>
+
+    <rect class="d-box" x="100" y="140" width="300" height="70" rx="5"/>
+    <text x="250" y="162" text-anchor="middle">GgufTensorInfo</text>
+    <text class="d-muted" x="250" y="182" text-anchor="middle" font-size="12">shape [2, 3] (dims reversed), F32</text>
+    <text class="d-muted" x="250" y="200" text-anchor="middle" font-size="12">offset 0, bytes 6 / 1 · 4 = 24</text>
+    <rect class="d-box d-accent" x="420" y="140" width="180" height="70" rx="5"/>
+    <text x="510" y="162" text-anchor="middle">data_start_ = 128</text>
+    <text class="d-muted" x="510" y="182" text-anchor="middle" font-size="12">AlignUp(110, 32)</text>
+    <text class="d-muted" x="510" y="200" text-anchor="middle" font-size="12">tensor at 128 + 0</text>
+
+    <rect class="d-box" x="100" y="232" width="500" height="50" rx="5"/>
+    <text x="350" y="253" text-anchor="middle">Get("t"): [[0, 1, 2], [3, 4, 5]], a view on the mapping</text>
+    <text class="d-muted" x="350" y="271" text-anchor="middle" font-size="12">t[1, 0] = 3, t[1, 2] = 5, as the test checks</text>
+  </svg>
+  <figcaption>Offsets are from the test's construction: the key length sits at byte 24 and the tensor count at
+    byte 8, which is where the malformed-file test plants a huge length and a 2<sup>60</sup> count
+    (<a href="{{ src(io ~ 'gguf_test.cc', 196, 230) }}">gguf_test.cc L196–230</a>).</figcaption>
+</figure>
+
+<h3 id="gguf-reader">The reader</h3>
+
+<p>
+  <code>GgufReader::Open</code> walks the mapping with a small <code>Cursor</code> that copies each field out with
+  <code>memcpy</code> and refuses to run past the end (<a href="{{ src(io ~ 'gguf.cc', 101, 128) }}">gguf.cc
+  L101–128</a>). The checks, in order (<a href="{{ src(io ~ 'gguf.cc', 413, 499) }}">L413–499</a>):
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Step</th><th>Rejects</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td>Header</td><td>Wrong magic (<code>0x46554747</code>, "GGUF" as a little-endian u32); a short header; a version other than 2 or 3</td><td><code>InvalidArgument</code>; version is <code>Unsupported</code></td></tr>
+      <tr><td>Metadata count</td><td>More keys than the remaining bytes could hold at 12 bytes each, before anything is allocated</td><td><code>InvalidArgument</code> ("truncated")</td></tr>
+      <tr><td>Each key</td><td>A truncated key or value; a value type above 12; an array of arrays (<code>Unsupported</code>); an array count larger than the remaining bytes allow at the element's minimum size (8 for strings); a duplicate key</td><td><code>InvalidArgument</code> (<a href="{{ src(io ~ 'gguf.cc', 183, 209) }}">L183–209</a>)</td></tr>
+      <tr><td><code>general.alignment</code></td><td>Not an integer, not positive, above 2<sup>20</sup>, or not a power of two</td><td><code>InvalidArgument</code></td></tr>
+      <tr><td>Tensor count</td><td>More entries than the remaining bytes could hold at 24 bytes each</td><td><code>InvalidArgument</code></td></tr>
+      <tr><td>Each tensor</td><td>Rank 0 or above 4; a zero dim, a dim above 2<sup>40</sup> or more than 2<sup>48</sup> elements; an unknown ggml type (<code>Unsupported</code>); rows that are not whole blocks; an offset not a multiple of the alignment; a duplicate name</td><td><code>InvalidArgument</code></td></tr>
+      <tr><td>Data</td><td>The data section starts at the table's end rounded up to the alignment; any tensor that runs past the end of the file</td><td><code>InvalidArgument</code></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Metadata values are parsed into <code>GgufValue</code>: integers and bools in <code>ints</code>, floats in
+  <code>floats</code>, strings in <code>strings</code>, with the element type kept for arrays
+  (<a href="{{ src(io ~ 'gguf.h', 42, 83) }}">gguf.h L42–83</a>). Tensors are only recorded as
+  <code>GgufTensorInfo</code> (row-major shape, type, offset, byte size); their bytes are not read.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Accessor</th><th>Returns</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>GetInt</code>, <code>GetFloat</code>, <code>GetString</code></td><td>One scalar. <code>NotFound</code> for a missing key, <code>InvalidArgument</code> for the wrong kind; <code>GetInt</code> accepts any integer type or bool, <code>GetFloat</code> F32 or F64.</td><td><a href="{{ src(io ~ 'gguf.h', 116, 120) }}">.h L116–120</a>, <a href="{{ src(io ~ 'gguf.cc', 507, 529) }}">.cc L507–529</a></td></tr>
+      <tr><td><code>GetInts</code>, <code>GetFloats</code>, <code>GetStrings</code></td><td>An array of that kind, such as a tokenizer's token list.</td><td><a href="{{ src(io ~ 'gguf.cc', 531, 554) }}">.cc L531–554</a></td></tr>
+      <tr><td><code>tensors</code>, <code>Info</code></td><td>The table in file order, or one entry by name.</td><td><a href="{{ src(io ~ 'gguf.h', 125, 127) }}">.h L125–127</a></td></tr>
+      <tr><td><code>Bytes</code></td><td>The raw mapped bytes of a tensor of any known type, Q4_K included: what the LLM runtime reads.</td><td><a href="{{ src(io ~ 'gguf.cc', 562, 567) }}">.cc L562–567</a></td></tr>
+      <tr><td><code>Get</code></td><td>A read-only <code>Tensor</code> view for the types rml has a dtype for (F32, F16, BF16, I8, I32, Q8_0, Q4_0); <code>Unsupported</code> for the K-quants and the rest.</td><td><a href="{{ src(io ~ 'gguf.cc', 32, 51) }}">.cc L32–51</a>, <a href="{{ src(io ~ 'gguf.cc', 569, 580) }}">L569–580</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="gguf-writer">The writer</h3>
+
+<p>
+  rml also writes GGUF: the <code>llm</code> tests and the decoder benchmark build their files with it. The raw form takes
+  <code>GgufTensorData</code> (name, shape, ggml type, bytes) and an alignment
+  (<a href="{{ src(io ~ 'gguf.cc', 326, 396) }}">gguf.cc L326–396</a>): always version 3; a power-of-two
+  alignment, written as a leading <code>general.alignment</code> key only when it is not 32 (passing that key
+  yourself is an error); each tensor checked for whole-block rows, rank 1 to 4 and the exact byte count; dims
+  written innermost first; and every tensor's offset rounded up to the alignment, with the header and gaps
+  zero-padded. The <code>Tensor</code> overload makes each tensor contiguous and maps its dtype to a ggml type
+  (<a href="{{ src(io ~ 'gguf.cc', 398, 411) }}">L398–411</a>).
+</p>
+
+<h2 id="checkpoints">Training checkpoints</h2>
+
+<p>
+  A checkpoint is one safetensors file holding a model's parameters and buffers, an optimizer's state and
+  free-form metadata, so training can stop and resume exactly. Keys are <code>model.</code> plus the dotted
+  parameter or buffer path and <code>optim.</code> plus the optimizer's state name, and any safetensors tool can
+  read the file (<a href="{{ src(io ~ 'checkpoint.h', 4, 11) }}">checkpoint.h L4–11</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Function</th><th>Signature</th><th>Behaviour</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>SaveCheckpoint</code></td><td><code>Status(path, const nn::Module&amp;, const optim::Optimizer* = nullptr, const Metadata&amp; = {})</code></td><td>Collects <code>NamedParameters()</code> and <code>NamedBuffers()</code>, then the optimizer's <code>NamedState()</code> when one is given, and writes them with <code>WriteSafetensors</code>.</td><td><a href="{{ src(io ~ 'checkpoint.cc', 21, 43) }}">.cc L21–43</a></td></tr>
+      <tr><td><code>LoadCheckpoint</code></td><td><code>Expected&lt;Metadata&gt;(path, nn::Module&amp;, optim::Optimizer* = nullptr)</code></td><td>Strict: every model tensor must be present with the same shape and dtype (<code>NotFound</code> or <code>InvalidArgument</code>), and an unknown <code>model.</code> key or a key with neither prefix is <code>InvalidArgument</code>. Values are copied into the model's existing tensors with <code>CopyFrom</code>. With an optimizer, its state is required and restored through <code>LoadState</code>. On error the model may be partly loaded. Returns the saved metadata.</td><td><a href="{{ src(io ~ 'checkpoint.h', 26, 32) }}">.h L26–32</a>, <a href="{{ src(io ~ 'checkpoint.cc', 45, 81) }}">.cc L45–81</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The state each optimizer saves is on {{ link('training', 'Losses and optimizers') }}, and the modules whose
+  parameters are named here on {{ link('nn', 'Neural network layers') }}. No example or other module calls the
+  checkpoint functions at this commit; their test is the user.
+</p>
+
+<h2 id="users">Who uses it</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Caller</th><th>Reads</th><th>How</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>llm::WeightSource</code></td><td>GGUF or sharded safetensors</td><td>Looks tensors up by GGUF name, mapping Hugging Face names to them, and builds <code>WeightMatrix</code> views over the mapped bytes; only norm weights and biases are copied out as f32. For GGUF it takes <code>Bytes</code> directly; for safetensors it takes a tensor's <code>raw_data()</code>.</td><td><a href="{{ src('rml/llm/weight_source.h', 4, 11) }}">weight_source.h L4–11</a>, <a href="{{ src('rml/llm/weight_source.cc', 134, 149) }}">.cc L134–149</a></td></tr>
+      <tr><td><code>llm</code> config and tokenizers</td><td>GGUF metadata, <code>config.json</code>, <code>tokenizer.json</code></td><td>Hyperparameters and vocabularies from GGUF keys, or from Hugging Face JSON files opened through <code>MappedFile</code>.</td><td><a href="{{ src('rml/llm/config.cc', 370, 370) }}">config.cc L370</a>, <a href="{{ src('rml/llm/hf_tokenizer.cc', 296, 296) }}">hf_tokenizer.cc L296</a></td></tr>
+      <tr><td><code>graph::LoadGraph</code></td><td><code>&lt;stem&gt;.safetensors</code></td><td>Opens the weights next to an rml-graph JSON file, if present, and takes each constant as a view.</td><td><a href="{{ src('rml/graph/graph.cc', 208, 224) }}">graph.cc L208–224</a>, {{ link('graph-ir', 'The rml-graph IR') }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  One edge in <code>WeightSource::Raw</code>: when a safetensors tensor is misaligned, <code>Get</code> returns a heap
+  copy, and <code>Raw</code> keeps only a span of that copy's bytes while the copy itself goes out of scope at the
+  end of the function, so the span would outlive its storage. Aligned files, which is what rml's writer and the
+  usual Hugging Face files produce, take the view path and are unaffected
+  (<a href="{{ src('rml/llm/weight_source.cc', 143, 148) }}">weight_source.cc L143–148</a>). How the decoder uses
+  these views is on {{ link('decoder', 'The decoder') }}, the GGUF tokenizer on
+  {{ link('tokenizers', 'Tokenizers') }}, and the block formats behind <code>Bytes</code> on
+  {{ link('quantization', 'Quantization') }}.
+</p>
+
+<h2 id="tests">Tests</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Tests</th><th>What they pin down</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(io ~ 'mapped_file_test.cc') }}"><code>mapped_file_test.cc</code></a></td><td>3</td><td>The mapping holds the file's bytes; an empty file maps to zero bytes; a missing file is <code>NotFound</code>.</td></tr>
+      <tr><td><a href="{{ src(io ~ 'safetensors_test.cc') }}"><code>safetensors_test.cc</code></a></td><td>8</td><td>Every dtype round-trips; strided views are written in logical order; tensors outlive the reader; <code>GetAll</code> is file order; duplicate, reserved and quantized writes fail; a missing name is <code>NotFound</code>; eleven malformed files (bad JSON, an array header, missing offsets, F64, past the end, size mismatch, a negative or a huge shape, non-string metadata, too short, header length past the end) are <code>InvalidArgument</code>; a misaligned F32 tensor is copied and read correctly.</td></tr>
+      <tr><td><a href="{{ src(io ~ 'safetensors_model_test.cc') }}"><code>safetensors_model_test.cc</code></a></td><td>5</td><td>A sharded directory, the index file directly, a single file or its directory all open; an index naming a tensor its shard lacks, a shard path with <code>../</code>, an index that is not JSON, and a missing shard are errors.</td></tr>
+      <tr><td><a href="{{ src(io ~ 'gguf_test.cc') }}"><code>gguf_test.cc</code></a></td><td>5</td><td>The hand-built file above; every metadata type and array kind round-trips with f32, transposed-view, f16 and Q8_0 tensors, each at an aligned offset; a raw Q4_K tensor at alignment 64 reads back byte for byte and <code>Get</code> refuses it, while alignment 48 and half-block rows are refused on write; every proper prefix of the file fails to open; bad magic, version 9, a misaligned offset, type 4, a huge string length and a 2<sup>60</sup> tensor count are rejected.</td></tr>
+      <tr><td><a href="{{ src(io ~ 'checkpoint_test.cc') }}"><code>checkpoint_test.cc</code></a></td><td>5</td><td>Training 3 Adam steps, saving, loading into a model built from another seed and training 3 more matches 6 uninterrupted steps; a loaded parameter can be written (no aliasing of the read-only mapping); keys carry the two prefixes; mismatched models are rejected; optimizer state is required when an optimizer is passed.</td></tr>
+    </tbody>
+  </table>
+</div>
