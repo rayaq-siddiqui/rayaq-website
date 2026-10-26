@@ -21,7 +21,8 @@
   XLA's StableHLO stage). Both call one shared <code>Builder</code>, which computes a NumPy example value
   for every op, so each lowering is shape-checked node by node and ops on constants fold away. Clean-up
   passes then cancel transposes, drop broadcasts, merge repeated work and fuse written-out means,
-  softmaxes, layer norms and GELUs back into single ops. A fixture script exports all 19 zoo models by all
+  softmaxes, layer norms and GELUs back into single ops, and hoist an unrolled loop's per-step input
+  projection into one product. A fixture script exports all 19 zoo models by all
   six routes, and C++ tests require rml to match every framework and all twelve results per model to agree.
 </p>
 
@@ -189,26 +190,28 @@
 <p>
   Lowering leaves debris: identity reshapes, stacked transposes, the NHWC ↔ NCHW pairs TensorFlow's
   convolutions produce, the explicit broadcasts StableHLO spells out, and layer norms, softmaxes and GELUs
-  written out as chains of elementwise ops. <a href="{{ src(passes, 1, 12) }}"><code>passes.py</code></a>
+  written out as chains of elementwise ops, and the per-step input projections JAX and TensorFlow leave inside
+  an unrolled recurrent loop. <a href="{{ src(passes, 1, 13) }}"><code>passes.py</code></a>
   removes it before the graph is written, running the passes until none changes anything and dropping dead
-  code after each round (<code>run_passes</code>, <a href="{{ src(passes, 523, 528) }}">L523–528</a>).
+  code after each round (<code>run_passes</code>, <a href="{{ src(passes, 586, 591) }}">L586–591</a>).
 </p>
 
 <div class="jj-table-wrap">
   <table>
     <thead><tr><th>Pass</th><th>Rewrite</th><th>Source</th></tr></thead>
     <tbody>
-      <tr><td><code>simplify_shape_ops</code></td><td>Drops identity reshapes and transposes, collapses reshape-of-reshape, composes transposes (transpose(transpose(y, p), q) = transpose(y, p[q])), and turns a reshape of a reduction back to its input's rank into the reduction with <code>keep_dims</code>.</td><td><a href="{{ src(passes, 38, 77) }}">L38–77</a></td></tr>
-      <tr><td><code>sink_transposes</code></td><td>Rewrites f(transpose(x)) as transpose(f(x)) for elementwise f, permuting a constant other operand to match; only single-reader transposes move. Sinking below a conv's bias add and ReLU brings it next to the next layer's inverse transpose, where the two cancel.</td><td><a href="{{ src(passes, 80, 120) }}">L80–120</a></td></tr>
-      <tr><td><code>drop_implicit_broadcasts</code></td><td>Removes <code>broadcast_to</code>, and reshapes that only prepend size-1 axes, when every reader is a binary op that broadcasts anyway.</td><td><a href="{{ src(passes, 128, 159) }}">L128–159</a></td></tr>
-      <tr><td><code>shrink_broadcast_constants</code></td><td>A constant folded from a broadcast repeats along some axes; it is shrunk back to the slice it repeats.</td><td><a href="{{ src(passes, 162, 196) }}">L162–196</a></td></tr>
-      <tr><td><code>unbatch_matmul_weights</code></td><td>A constant matmul weight of rank &gt; 2 whose batch slices are all equal (PyTorch's LSTM input projection) becomes one 2-D slice, so the executor runs the batch as one matrix product.</td><td><a href="{{ src(passes, 199, 224) }}">L199–224</a></td></tr>
-      <tr><td><code>fuse_reductions</code></td><td><code>reduce_sum(x) / N</code> becomes <code>reduce_mean</code>; exp(x − max x) / sum exp(x − max x) over one axis becomes <code>softmax</code>.</td><td><a href="{{ src(passes, 243, 280) }}">L243–280</a></td></tr>
-      <tr><td><code>eliminate_common_subexpressions</code></td><td>Merges nodes applying the same op with the same attributes to the same inputs.</td><td><a href="{{ src(passes, 283, 301) }}">L283–301</a></td></tr>
-      <tr><td><code>fuse_layer_norm</code></td><td>(x − mean x) · rsqrt(mean (x − mean x)² + eps) over the last axis becomes <code>layer_norm</code>, folding a following constant · weight + bias.</td><td><a href="{{ src(passes, 368, 407) }}">L368–407</a></td></tr>
-      <tr><td><code>fuse_gelu</code></td><td>0.5 x (1 + tanh(√(2/π)(x + 0.044715 x³))) and 0.5 x (1 + erf(x/√2)), multiplied in any order, become <code>gelu</code> with the matching <code>approximate</code>.</td><td><a href="{{ src(passes, 464, 483) }}">L464–483</a></td></tr>
-      <tr><td><code>share_identical_constants</code></td><td>Points every reader at one copy of each distinct constant array, preferring a named one. Unrolled loops fold the same weight once per step, and sharing keeps it in cache.</td><td><a href="{{ src(passes, 486, 506) }}">L486–506</a></td></tr>
-      <tr><td><code>eliminate_dead_code</code></td><td>Drops nodes and constants nothing reads.</td><td><a href="{{ src(passes, 509, 520) }}">L509–520</a></td></tr>
+      <tr><td><code>simplify_shape_ops</code></td><td>Drops identity reshapes and transposes, collapses reshape-of-reshape, composes transposes (transpose(transpose(y, p), q) = transpose(y, p[q])), and turns a reshape of a reduction back to its input's rank into the reduction with <code>keep_dims</code>.</td><td><a href="{{ src(passes, 41, 80) }}">L41–80</a></td></tr>
+      <tr><td><code>sink_transposes</code></td><td>Rewrites f(transpose(x)) as transpose(f(x)) for elementwise f, permuting a constant other operand to match; only single-reader transposes move. Sinking below a conv's bias add and ReLU brings it next to the next layer's inverse transpose, where the two cancel.</td><td><a href="{{ src(passes, 83, 123) }}">L83–123</a></td></tr>
+      <tr><td><code>drop_implicit_broadcasts</code></td><td>Removes <code>broadcast_to</code>, and reshapes that only prepend size-1 axes, when every reader is a binary op that broadcasts anyway.</td><td><a href="{{ src(passes, 131, 162) }}">L131–162</a></td></tr>
+      <tr><td><code>shrink_broadcast_constants</code></td><td>A constant folded from a broadcast repeats along some axes; it is shrunk back to the slice it repeats.</td><td><a href="{{ src(passes, 165, 199) }}">L165–199</a></td></tr>
+      <tr><td><code>unbatch_matmul_weights</code></td><td>A constant matmul weight of rank &gt; 2 whose batch slices are all equal (PyTorch's LSTM input projection) becomes one 2-D slice, so the executor runs the batch as one matrix product.</td><td><a href="{{ src(passes, 202, 227) }}">L202–227</a></td></tr>
+      <tr><td><code>hoist_step_projections</code></td><td>Products <code>reshape(slice(X, axis, [t, t+1])) @ W</code> that share one X, one axis and one constant 2-D W (an unrolled RNN or LSTM's input projection, step by step) become a single <code>X @ W</code> inserted before the first of them, each step reading its slice of the result. PyTorch's export already has that shape; this gives JAX and TensorFlow the same, taking their <code>lstm_b64</code> graphs from 128 to 65 matmuls. TensorFlow's slices also name the axes they keep whole, which the match skips.</td><td><a href="{{ src(passes, 230, 288) }}">L230–288</a></td></tr>
+      <tr><td><code>fuse_reductions</code></td><td><code>reduce_sum(x) / N</code> becomes <code>reduce_mean</code>; exp(x − max x) / sum exp(x − max x) over one axis becomes <code>softmax</code>.</td><td><a href="{{ src(passes, 306, 343) }}">L306–343</a></td></tr>
+      <tr><td><code>eliminate_common_subexpressions</code></td><td>Merges nodes applying the same op with the same attributes to the same inputs.</td><td><a href="{{ src(passes, 346, 364) }}">L346–364</a></td></tr>
+      <tr><td><code>fuse_layer_norm</code></td><td>(x − mean x) · rsqrt(mean (x − mean x)² + eps) over the last axis becomes <code>layer_norm</code>, folding a following constant · weight + bias.</td><td><a href="{{ src(passes, 431, 470) }}">L431–470</a></td></tr>
+      <tr><td><code>fuse_gelu</code></td><td>0.5 x (1 + tanh(√(2/π)(x + 0.044715 x³))) and 0.5 x (1 + erf(x/√2)), multiplied in any order, become <code>gelu</code> with the matching <code>approximate</code>.</td><td><a href="{{ src(passes, 527, 546) }}">L527–546</a></td></tr>
+      <tr><td><code>share_identical_constants</code></td><td>Points every reader at one copy of each distinct constant array, preferring a named one. Unrolled loops fold the same weight once per step, and sharing keeps it in cache.</td><td><a href="{{ src(passes, 549, 569) }}">L549–569</a></td></tr>
+      <tr><td><code>eliminate_dead_code</code></td><td>Drops nodes and constants nothing reads.</td><td><a href="{{ src(passes, 572, 583) }}">L572–583</a></td></tr>
     </tbody>
   </table>
 </div>
@@ -235,7 +238,9 @@
   <code>tiny_gpt</code> take int32 token ids (<code>TOKEN_MODELS</code>,
   <a href="{{ src(ex ~ 'zoo/weights.py', 16, 16) }}">L16</a>). Recurrent models are unrolled: JAX's
   <code>lax.scan</code> by the exporter, PyTorch's <code>nn.RNN</code> / <code>nn.LSTM</code> by
-  <code>torch.export</code>, and TensorFlow's by a Python loop over time steps.
+  <code>torch.export</code>, and TensorFlow's by a Python loop over time steps. Unrolled JAX and TensorFlow
+  graphs then multiply each step's input by the same weight; <code>hoist_step_projections</code> turns those
+  products back into one (<a href="#passes">Clean-up passes</a>).
 </p>
 
 <p>
@@ -273,7 +278,7 @@
 
 <p>
   Which <code>/ml-models</code> page each model covers is mapped in rml's
-  <a href="{{ src('docs/progress.md', 187, 205) }}"><code>docs/progress.md</code></a>.
+  <a href="{{ src('docs/progress.md', 189, 207) }}"><code>docs/progress.md</code></a>.
 </p>
 
 <h2 id="fixtures">Fixtures and golden tests</h2>
@@ -325,7 +330,10 @@
     1e-4. It also checks that rml repeats itself bit for bit on one thread and agrees across 1 and 4
     threads (<a href="{{ src(xft, 214, 224) }}">L214–224</a>), and that an op rml-graph lacks fails the
     export by name in every framework and in the StableHLO importer
-    (<a href="{{ src(xft, 227, 270) }}">L227–270</a>).</li>
+    (<a href="{{ src(xft, 227, 270) }}">L227–270</a>). <code>HoistStepProjectionsTest</code> exports the tiny
+    JAX and TensorFlow <code>rnn</code> and <code>lstm</code>, runs the passes, and checks that steps + 1
+    matmuls remain and that the NumPy evaluation is unchanged bit for bit
+    (<a href="{{ src(xft, 273, 296) }}">L273–296</a>).</li>
 </ul>
 
 <p>
@@ -376,7 +384,7 @@
   framework detail: <code>torch.nn.LayerNorm</code>'s one-pass CPU kernel rounds the variance by an ulp once a
   row's mean exceeds about 1/6, so the PyTorch block uses a two-pass layer norm like JAX and TensorFlow
   (<a href="{{ src('tools/make_tiny_models.py', 338, 351) }}">make_tiny_models.py L338–351</a>,
-  <a href="{{ src('docs/progress.md', 172, 172) }}">progress.md L172</a>).
+  <a href="{{ src('docs/progress.md', 174, 174) }}">progress.md L174</a>).
 </p>
 
 <pre><code>bazel run //examples/tiny_net:tiny-net         # three exports, exact check
@@ -392,7 +400,7 @@ bazel run //examples/tiny_models:tiny-models   # nine exports, exact check</code
       <tr><td><code>make_graph_fixtures.py</code></td><td>The written graph, evaluated in NumPy, against the framework's outputs</td><td>1e-5 + 1e-4 |x|</td><td><a href="{{ src(fx, 109, 113) }}">L109</a></td></tr>
       <tr><td><code>golden_test.cc</code></td><td>rml's executor against the framework's outputs, every fixture</td><td>1e-5 absolute</td><td><a href="{{ src('rml/graph/golden_test.cc', 25, 54) }}">L25</a></td></tr>
       <tr><td><code>cross_framework_test.cc</code></td><td>All twelve results per model, pairwise</td><td>1e-5 absolute</td><td><a href="{{ src('rml/graph/cross_framework_test.cc', 80, 136) }}">L80</a></td></tr>
-      <tr><td><code>cross_framework_test.py</code></td><td>Three live frameworks and six rml runs, nine input cases, determinism, unsupported ops</td><td>1e-5 + 1e-5 |b| (bench 1e-4)</td><td><a href="{{ src(xft, 184, 211) }}">L184</a></td></tr>
+      <tr><td><code>cross_framework_test.py</code></td><td>Three live frameworks and six rml runs, nine input cases, determinism, unsupported ops, the step-projection hoist</td><td>1e-5 + 1e-5 |b| (bench 1e-4)</td><td><a href="{{ src(xft, 184, 211) }}">L184</a></td></tr>
       <tr><td><code>tiny_net_test.cc</code>, <code>tiny_models_test.cc</code></td><td>Three and nine framework exports run by the executor, fused and unfused, against the exact reference output</td><td>Bit for bit</td><td><a href="{{ src('examples/tiny_models/tiny_models_test.cc', 38, 58) }}">L38</a></td></tr>
       <tr><td><code>rml_infer_example.py</code></td><td>One classifier in three frameworks and in rml</td><td>1e-5 absolute</td><td><a href="{{ src('tools/rml_infer_example.py', 148, 179) }}">L148</a></td></tr>
     </tbody>

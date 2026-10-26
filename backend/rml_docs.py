@@ -6,11 +6,11 @@ import ml_models_docs
 
 UPSTREAM = {
     "repo": "https://github.com/rayaq-siddiqui/rml",
-    "commit": "2b04eb6a782de499de7865cefb7ccae7275acf24",
+    "commit": "13234ae977ad00839b7f68f919fd81540247fa7f",
     "commit_date": "2026-10-25",
     "version": "0.1.0",
     "license": "Apache-2.0",
-    "analyzed_on": "2026-10-25",
+    "analyzed_on": "2026-10-26",
 }
 
 GROUPS = [
