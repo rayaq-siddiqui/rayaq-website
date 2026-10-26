@@ -3,16 +3,14 @@
 Running log for the rml build loop and the daily Routine. Read this first, update it last.
 The contract is `specs/rml.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-25 (daily run). Pin moved to `2b04eb6`; `data-metrics`, `classical` and `retrieval` shipped. The next run follows upstream, then builds `quantization`, `model-files`, `tokenizers`.
+**Last updated:** 2026-10-26 (daily run). Pin moved to `13234ae`; `quantization`, `model-files` and `tokenizers` shipped. The next run follows upstream, then builds `decoder` (flagship, §8), `generation`, `kernels`.
 
 ## Upstream pin
 
-`rayaq-siddiqui/rml@2b04eb6a782de499de7865cefb7ccae7275acf24` (committed 2026-10-25,
-"examples: tiny_models, a CNN, an LSTM and a transformer from PyTorch, JAX and TensorFlow run
-in C++"), rml 0.1.0, Apache-2.0, analyzed 2026-10-25. Moved from `22c99d3` (11 commits: GEMM
-column balancing, a blocked and threaded strided copy, the conv bias fold, a thread-pool
-benchmark, every rml benchmark cell re-run, the `tiny_net` and `tiny_models` examples, and
-`docs/kernels.md` / `docs/progress.md` updates). Held in `rml_docs.UPSTREAM`. The repository is
+`rayaq-siddiqui/rml@13234ae977ad00839b7f68f919fd81540247fa7f` (committed 2026-10-25,
+"perf: copy im2col row segments with plain loops"), rml 0.1.0, Apache-2.0, analyzed
+2026-10-26. Moved from `2b04eb6` (2 commits: the `hoist_step_projections` export pass and
+plain cloned loops in `Im2ColPositions`, each with a `docs/progress.md` item). Held in `rml_docs.UPSTREAM`. The repository is
 private, so pinned links 404 until it is public.
 
 ## §10 acceptance criteria
@@ -23,7 +21,7 @@ private, so pinned links 404 until it is public.
 - [ ] Every Inference stack page is ready and `stack` has its layer diagram.
 - [ ] Every source link is pinned; §7.5 tests exist and pass.
 - [x] Homepage card links to `/rml`.
-- [x] Mobile at 390px: no horizontal page scroll (`/rml`, `/rml/tensors`, `/rml/runtime`, `/rml/linalg`, `/rml/random`, `/rml/autograd`, `/rml/stack`, `/rml/exporters`, `/rml/graph-ir`, `/rml/executor`, `/rml/lowering`, `/rml/benchmarks`, `/rml/nn`, `/rml/training`, `/rml/data-metrics`, `/rml/classical`, `/rml/retrieval`; rerun per page).
+- [x] Mobile at 390px: no horizontal page scroll (`/rml`, `/rml/tensors`, `/rml/runtime`, `/rml/linalg`, `/rml/random`, `/rml/autograd`, `/rml/stack`, `/rml/exporters`, `/rml/graph-ir`, `/rml/executor`, `/rml/lowering`, `/rml/benchmarks`, `/rml/nn`, `/rml/training`, `/rml/data-metrics`, `/rml/classical`, `/rml/retrieval`, `/rml/quantization`, `/rml/model-files`, `/rml/tokenizers`; rerun per page).
 - [x] The daily Routine has run at least once and cloned rml.
 
 ## Queue
@@ -51,9 +49,9 @@ Spec v2 order, Inference stack first:
 15. ~~`data-metrics`~~
 16. ~~`classical`~~
 17. ~~`retrieval`~~
-18. `quantization`
-19. `model-files`
-20. `tokenizers`
+18. ~~`quantization`~~
+19. ~~`model-files`~~
+20. ~~`tokenizers`~~
 21. `decoder` (flagship, §8)
 22. `generation`
 23. `kernels`
@@ -113,6 +111,13 @@ session-only `/loop` jobs that built pages earlier are retired.
   everywhere. `61efbeb` `data-metrics` page; `0e12d60` `classical` page (registry summary now
   says fifteen estimators); `1790c62` `retrieval` page. All 1067 tests pass; mobile check passes
   on every ready page.
+- 2026-10-26 — daily run. `bf5ed85` follow upstream to `13234ae`: exporters (new
+  `hoist_step_projections` row, test bullet and unrolled-RNN note; every `passes.py` range
+  moved), lowering (two new gap rows, LSTM note on the hoist, an im2col paragraph under "Conv
+  bias and im2col", `kernels.cc` and `passes.py` ranges moved), benchmarks (both A/B gains
+  postdate the report), stack and index (`progress.md` ranges). `3aa9b6e` `quantization` page;
+  `595e31b` `model-files` page; `ba63103` `tokenizers` page. All 1067 tests pass; mobile check
+  passes on every ready page.
 
 ## Deliberate deviations
 
@@ -121,6 +126,19 @@ session-only `/loop` jobs that built pages earlier are retired.
   `docs/kernels.md` and `docs/bench/frameworks.md`.
 
 ## Open gaps / questions for the owner
+
+- **`WeightSource::Raw` can keep a span of a freed copy.** At `13234ae`,
+  `rml/llm/weight_source.cc` L143–148 takes `raw_data()` of a local `Tensor` from
+  `SafetensorsModel::Get`; for a misaligned tensor `Get` returns a heap copy rather than a view
+  of the mapping, and that copy is destroyed when `Raw` returns, leaving the `WeightMatrix`
+  span dangling. Aligned files (rml's writer, usual Hugging Face files) take the view path.
+  `model-files` notes it; the owner may want an upstream fix.
+- **`make_quant_fixtures.py` misses its d = 0 case.** L58 zeroes `x[40:72]` with the comment
+  "An all-zero block has d = 0", but elements 40–71 straddle blocks 1 and 2, so no Q8_0/Q4_0
+  quantize fixture block is all zero. `quantization` says so.
+- **`tokenizer.h` L92–93 overstates `Create`.** It says byte-level vocabularies are checked to
+  cover all 256 bytes; `tokenizer.cc` L153–155 deliberately allows gaps (SmolLM2). The page
+  describes the code.
 
 - **`docs/graph_ir.md` lags the executor.** At `2b04eb6` its Execution section still says ops
   call `rml/nn`'s conv and pool and that the loader rejects unknown ops; the pages describe the
