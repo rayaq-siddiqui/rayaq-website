@@ -264,7 +264,7 @@ PAGES = [
             "rml/llm/chat_template.h", "tools/make_tokenizer_fixtures.py",
             "tools/make_pretokenizer_fixtures.py", "tools/make_unicode_tables.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "decoder",
