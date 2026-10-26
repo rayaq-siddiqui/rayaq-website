@@ -241,7 +241,7 @@ PAGES = [
         "summary": "GGML block types, dequantization, and the quantized dot products the "
         "decoder runs on.",
         "sources": ["rml/quant", "tools/make_quant_fixtures.py"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "model-files",

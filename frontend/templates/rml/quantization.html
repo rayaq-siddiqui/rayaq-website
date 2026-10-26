@@ -1,0 +1,478 @@
+{% set q = "rml/quant/" %}
+{% set kd = "docs/kernels.md" %}
+{% set fx = "tools/make_quant_fixtures.py" %}
+<header class="jj-header">
+  <h1>Quantization</h1>
+  <p class="tagline">
+    <code>rml/quant</code> reads the weight formats llama.cpp's GGUF files use: ggml's type table, the byte
+    layout of every block type, scalar dequantization, round-to-nearest quantization, and the integer dot
+    products the decoder's matrix-vector products run on.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: a quantized row is a run of fixed-size blocks, 32 elements for the legacy types (Q4_0 to Q8_1) and
+  256 for the K-quants (Q2_K to Q8_K), each carrying its own f16 scale and, in some types, a minimum. The
+  K-quants split a block into 8 or 16 sub-blocks with small integer scales of their own, scaled again by the
+  block's f16 <code>d</code>. <code>DequantizeRow</code> turns any of them into f32 one block at a time, written
+  to mirror the format rather than to be fast, and is checked against gguf-py. For decoding,
+  <code>VecDot</code> never expands a weight to f32: the activations are quantized to int8 once (Q8_0 or Q8_K
+  blocks that line up with the weight's), every product inside a block is an exact int32 sum, and only the
+  block scales are float. That keeps the optimized kernel exactly comparable with its scalar reference, and
+  on Apple Silicon each 16 multiply-adds are one <code>sdot</code>.
+</p>
+
+<p>
+  The concepts are on /ml-models: {{ ml('quantization', 'quantization') }} and
+  {{ ml('decoder-only-llm', 'decoder-only LLMs') }}. The module is four libraries, <code>ggml_type</code>,
+  <code>blocks</code> (a header), <code>dequantize</code> and <code>dot</code>, with three tests and one
+  benchmark (<a href="{{ src(q ~ 'BUILD.bazel') }}">BUILD.bazel</a>). rml's checklist records the module
+  (<a href="{{ src('docs/progress.md', 51, 51) }}">progress.md L51</a>) and the quantized GEMV on top of it
+  (<a href="{{ src('docs/progress.md', 65, 65) }}">L65</a>).
+</p>
+
+<h2 id="types">The type table</h2>
+
+<p>
+  <code>GgmlType</code> numbers each element type exactly as ggml does, because that number is what a GGUF
+  tensor record stores (<a href="{{ src(q ~ 'ggml_type.h', 18, 40) }}">ggml_type.h L18–40</a>). A row is
+  always whole blocks, so n elements of a type take n / elems · bytes bytes
+  (<a href="{{ src(q ~ 'ggml_type.h', 7, 10) }}">L7–10</a>). One private <code>Layout</code> switch holds the
+  name, block elements and block bytes of every known id and returns <code>nullopt</code> for the rest
+  (<a href="{{ src(q ~ 'ggml_type.cc', 17, 61) }}">ggml_type.cc L17–61</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>GgmlTypeIsKnown</code></td><td><code>bool(uint32_t type)</code></td><td>False for ids the switch does not list: 4, 5, 16–23, 29 and anything above 30.</td><td><a href="{{ src(q ~ 'ggml_type.h', 42, 43) }}">.h L42–43</a>, <a href="{{ src(q ~ 'ggml_type.cc', 65, 65) }}">.cc L65</a></td></tr>
+      <tr><td><code>GgmlTypeName</code></td><td><code>string_view(GgmlType)</code></td><td><code>"Q4_K"</code> and so on; <code>"unknown"</code> otherwise.</td><td><a href="{{ src(q ~ 'ggml_type.cc', 67, 70) }}">.cc L67–70</a></td></tr>
+      <tr><td><code>GgmlBlockElems</code>, <code>GgmlBlockBytes</code></td><td><code>size_t(GgmlType)</code></td><td>1, 32 or 256 elements, and the block's bytes; 0 for unknown types, which callers treat as "unsupported".</td><td><a href="{{ src(q ~ 'ggml_type.h', 45, 47) }}">.h L45–47</a>, <a href="{{ src(q ~ 'ggml_type.cc', 72, 80) }}">.cc L72–80</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>Every type the switch knows, with bits per weight worked out as block bytes · 8 / block elements:</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Type</th><th>Id</th><th>Elements</th><th>Bytes</th><th>Bits per weight</th><th>Dequantize</th><th>Quantized dot</th></tr></thead>
+    <tbody>
+      <tr><td>F32, F16, BF16</td><td>0, 1, 30</td><td>1</td><td>4, 2, 2</td><td>32, 16, 16</td><td>yes</td><td>no (f32 path)</td></tr>
+      <tr><td>Q4_0</td><td>2</td><td>32</td><td>18</td><td>4.5</td><td>yes</td><td>against Q8_0</td></tr>
+      <tr><td>Q4_1</td><td>3</td><td>32</td><td>20</td><td>5</td><td>yes</td><td>no</td></tr>
+      <tr><td>Q5_0</td><td>6</td><td>32</td><td>22</td><td>5.5</td><td>yes</td><td>no</td></tr>
+      <tr><td>Q5_1</td><td>7</td><td>32</td><td>24</td><td>6</td><td>yes</td><td>no</td></tr>
+      <tr><td>Q8_0</td><td>8</td><td>32</td><td>34</td><td>8.5</td><td>yes</td><td>against Q8_0</td></tr>
+      <tr><td>Q8_1</td><td>9</td><td>32</td><td>36</td><td>9</td><td>yes</td><td>no</td></tr>
+      <tr><td>Q2_K</td><td>10</td><td>256</td><td>84</td><td>2.625</td><td>yes</td><td>no</td></tr>
+      <tr><td>Q3_K</td><td>11</td><td>256</td><td>110</td><td>3.4375</td><td>yes</td><td>no</td></tr>
+      <tr><td>Q4_K</td><td>12</td><td>256</td><td>144</td><td>4.5</td><td>yes</td><td>against Q8_K</td></tr>
+      <tr><td>Q5_K</td><td>13</td><td>256</td><td>176</td><td>5.5</td><td>yes</td><td>against Q8_K</td></tr>
+      <tr><td>Q6_K</td><td>14</td><td>256</td><td>210</td><td>6.5625</td><td>yes</td><td>against Q8_K</td></tr>
+      <tr><td>Q8_K</td><td>15</td><td>256</td><td>292</td><td>9.125</td><td>yes</td><td>(the activation side)</td></tr>
+      <tr><td>I8, I16, I32, I64, F64</td><td>24–28</td><td>1</td><td>1, 2, 4, 8, 8</td><td>—</td><td><code>Unsupported</code></td><td>no</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Q4_K costs the same 4.5 bits as Q4_0 yet spends them better, which is the argument the module's header
+  makes for K-quants (<a href="{{ src(q ~ 'blocks.h', 11, 17) }}">blocks.h L11–17</a>); rml's memory notes use the
+  same figures and put a llama.cpp <code>Q4_K_M</code> file, a mix of K-quant types, at about 4.9
+  (<a href="{{ src('docs/models.md', 12, 13) }}">models.md L12–13</a>, more on
+  {{ link('models-memory', 'Models and memory') }}).
+</p>
+
+<h2 id="layouts">Block layouts</h2>
+
+<p>
+  <code>blocks.h</code> declares each block as a plain struct whose bytes match a GGUF file exactly, pinned by a
+  <code>static_assert</code> on every size (<a href="{{ src(q ~ 'blocks.h', 111, 120) }}">blocks.h L111–120</a>).
+  Q8_0 and Q4_0 live in <code>rml/core/dtype.h</code> instead, because <code>Tensor</code> stores them as native
+  dtypes ({{ link('tensors', 'Tensors and dtypes') }},
+  <a href="{{ src('rml/core/dtype.h', 65, 82) }}">dtype.h L65–82</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Block</th><th>Fields</th><th>Value of element i</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>BlockQ8_0</code></td><td><code>Float16 d; int8 qs[32]</code></td><td>d · qs[i]</td><td><a href="{{ src('rml/core/dtype.h', 67, 71) }}">dtype.h L67–71</a></td></tr>
+      <tr><td><code>BlockQ4_0</code></td><td><code>Float16 d; uint8 qs[16]</code></td><td>d · (q − 8), q in [0, 16): low nibble of qs[i] for i &lt; 16, high nibble of qs[i − 16] after</td><td><a href="{{ src('rml/core/dtype.h', 73, 78) }}">dtype.h L73–78</a></td></tr>
+      <tr><td><code>BlockQ4_1</code></td><td><code>d, m; qs[16]</code></td><td>d · q + m, same nibble order</td><td><a href="{{ src(q ~ 'blocks.h', 28, 33) }}">L28–33</a></td></tr>
+      <tr><td><code>BlockQ5_0</code></td><td><code>d; qh[4]; qs[16]</code></td><td>d · (q − 16), q in [0, 32); bit i of the 32-bit <code>qh</code> is element i's fifth bit</td><td><a href="{{ src(q ~ 'blocks.h', 35, 40) }}">L35–40</a></td></tr>
+      <tr><td><code>BlockQ5_1</code></td><td><code>d, m; qh[4]; qs[16]</code></td><td>d · q + m, q in [0, 32)</td><td><a href="{{ src(q ~ 'blocks.h', 42, 48) }}">L42–48</a></td></tr>
+      <tr><td><code>BlockQ8_1</code></td><td><code>d, s; int8 qs[32]</code></td><td>d · qs[i]; s = d · Σq is cached for dot products</td><td><a href="{{ src(q ~ 'blocks.h', 50, 55) }}">L50–55</a></td></tr>
+      <tr><td><code>BlockQ2_K</code></td><td><code>scales[16]; qs[64]; d, dmin</code></td><td>16 sub-blocks of 16; each scale byte packs a 4-bit scale (low) and 4-bit min (high): d · scale · q − dmin · min, q in [0, 4)</td><td><a href="{{ src(q ~ 'blocks.h', 57, 64) }}">L57–64</a></td></tr>
+      <tr><td><code>BlockQ3_K</code></td><td><code>hmask[32]; qs[64]; scales[12]; d</code></td><td>16 sub-blocks of 16 with 6-bit signed scales (offset 32): d · (scale − 32) · (q − 4), the low two bits of q in qs and the third in hmask, a set bit meaning no −4</td><td><a href="{{ src(q ~ 'blocks.h', 66, 74) }}">L66–74</a></td></tr>
+      <tr><td><code>BlockQ4_K</code></td><td><code>d, dmin; scales[12]; qs[128]</code></td><td>8 sub-blocks of 32 with 6-bit scales and mins: d · scale · q − dmin · min, q in [0, 16)</td><td><a href="{{ src(q ~ 'blocks.h', 76, 83) }}">L76–83</a></td></tr>
+      <tr><td><code>BlockQ5_K</code></td><td><code>d, dmin; scales[12]; qh[32]; qs[128]</code></td><td>Q4_K plus a fifth bit per element in qh, q in [0, 32)</td><td><a href="{{ src(q ~ 'blocks.h', 85, 92) }}">L85–92</a></td></tr>
+      <tr><td><code>BlockQ6_K</code></td><td><code>ql[128]; qh[64]; int8 scales[16]; d</code></td><td>16 sub-blocks of 16 with int8 scales: d · scale · (q − 32), the low four bits of q in ql and the high two in qh</td><td><a href="{{ src(q ~ 'blocks.h', 94, 101) }}">L94–101</a></td></tr>
+      <tr><td><code>BlockQ8_K</code></td><td><code>float d; int8 qs[256]; int16 bsums[16]</code></td><td>d · qs[i]; the sum of each group of 16 q is kept for K-quant dot products. It is the activation side of those products.</td><td><a href="{{ src(q ~ 'blocks.h', 103, 109) }}">L103–109</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 330" role="img" aria-labelledby="qt-q4k-title qt-q4k-desc">
+    <title id="qt-q4k-title">The 144 bytes of a Q4_K block and how element i is decoded</title>
+    <desc id="qt-q4k-desc">A Q4_K block holds 256 elements in 144 bytes: an f16 d, an f16 dmin, 12 bytes of packed
+      scales and 128 bytes of nibbles. The 12 scale bytes hold eight 6-bit scale and min pairs, one per sub-block of
+      32 elements; pairs 0 to 3 are the low six bits of bytes 0 to 3 and 4 to 7, pairs 4 to 7 take low nibbles
+      from bytes 8 to 11 and top bits from the spare bits of bytes 0 to 7. The nibbles are four 64-element chunks
+      of 32 bytes each, the low nibble holding the chunk's first 32 elements and the high nibble the second 32.
+      Element i uses pair i / 32 and nibble i, and decodes to d times scale times q minus dmin times min.</desc>
+
+    <text x="20" y="22" font-weight="bold">BlockQ4_K: 256 elements in 144 bytes</text>
+    <rect class="d-box" x="20" y="36" width="80" height="44" rx="4"/>
+    <text x="60" y="56" text-anchor="middle">d</text>
+    <text class="d-muted" x="60" y="72" text-anchor="middle" font-size="12">f16, 2 B</text>
+    <rect class="d-box" x="100" y="36" width="80" height="44" rx="4"/>
+    <text x="140" y="56" text-anchor="middle">dmin</text>
+    <text class="d-muted" x="140" y="72" text-anchor="middle" font-size="12">f16, 2 B</text>
+    <rect class="d-box d-accent" x="180" y="36" width="140" height="44" rx="4"/>
+    <text x="250" y="56" text-anchor="middle">scales[12]</text>
+    <text class="d-muted" x="250" y="72" text-anchor="middle" font-size="12">8 × (6-bit scale, min)</text>
+    <rect class="d-box" x="320" y="36" width="280" height="44" rx="4"/>
+    <text x="460" y="56" text-anchor="middle">qs[128]</text>
+    <text class="d-muted" x="460" y="72" text-anchor="middle" font-size="12">256 nibbles, q in [0, 16)</text>
+
+    <line class="d-line" x1="250" y1="80" x2="160" y2="120"/>
+    <line class="d-line" x1="460" y1="80" x2="460" y2="120"/>
+
+    <rect class="d-box" x="20" y="120" width="280" height="86" rx="4"/>
+    <text x="34" y="142" font-size="13">pairs 0–3: bytes 0–3 &amp; 63 (scale),</text>
+    <text x="34" y="160" font-size="13">bytes 4–7 &amp; 63 (min)</text>
+    <text x="34" y="180" font-size="13">pairs 4–7: low 4 bits from bytes 8–11,</text>
+    <text x="34" y="198" font-size="13">top 2 bits from bytes 0–7's bits 6–7</text>
+
+    <rect class="d-box" x="320" y="120" width="280" height="86" rx="4"/>
+    <text x="334" y="142" font-size="13">4 chunks of 64 elements, 32 bytes each:</text>
+    <text x="334" y="160" font-size="13">low nibble = elements 0–31 of the chunk,</text>
+    <text x="334" y="178" font-size="13">high nibble = elements 32–63</text>
+    <text class="d-muted" x="334" y="198" font-size="12">byte (i / 64) · 32 + i % 32</text>
+
+    <line class="d-line" x1="160" y1="206" x2="230" y2="246"/>
+    <line class="d-line" x1="460" y1="206" x2="390" y2="246"/>
+
+    <rect class="d-box d-accent" x="120" y="246" width="380" height="50" rx="5"/>
+    <text x="310" y="268" text-anchor="middle">x[i] = d · scale<tspan font-size="11" dy="4">j</tspan><tspan dy="-4"> · q[i] − dmin · min</tspan><tspan font-size="11" dy="4">j</tspan></text>
+    <text class="d-muted" x="310" y="288" text-anchor="middle" font-size="12">j = i / 32, the sub-block of element i</text>
+
+    <text class="d-muted" x="20" y="320" font-size="12">Q5_K is the same plus qh[32]: bit k of qh byte l is the fifth bit of element 32 k + l.</text>
+  </svg>
+  <figcaption>The most common K-quant, field by field (<a href="{{ src(q ~ 'blocks.h', 76, 83) }}">blocks.h
+    L76–83</a>), with the unpacking from <code>ScaleMin</code> and <code>Nibble</code>
+    (<a href="{{ src(q ~ 'dequantize.cc', 116, 135) }}">dequantize.cc L116–135</a>).</figcaption>
+</figure>
+
+<h3 id="unpacking">Unpacking the packed fields</h3>
+
+<p>
+  Every bit trick lives in small helpers in <code>dequantize.cc</code>, each with a comment stating the layout
+  it reads. They are the readable definition of the formats:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Helper</th><th>Used by</th><th>Reads</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>HighBit(qh, j)</code></td><td>Q5_0, Q5_1</td><td>Copies the 4 qh bytes into a <code>uint32_t</code> and moves bit j to bit 4, so elements j and j + 16 get their fifth bit from bits j and j + 16.</td><td><a href="{{ src(q ~ 'dequantize.cc', 42, 47) }}">L42–47</a></td></tr>
+      <tr><td><code>TwoBits(qs, i)</code></td><td>Q2_K, Q3_K</td><td>Within each 128-element half, byte l of its 32 bytes holds elements l, l + 32, l + 64 and l + 96 in bit pairs 0–1, 2–3, 4–5, 6–7.</td><td><a href="{{ src(q ~ 'dequantize.cc', 78, 86) }}">L78–86</a></td></tr>
+      <tr><td><code>Q3Scale(s, j)</code></td><td>Q3_K</td><td>The low four bits of scale j are a nibble of bytes 0–7 (low nibbles for j &lt; 8), the high two come from bytes 8–11; minus 32 for the sign.</td><td><a href="{{ src(q ~ 'dequantize.cc', 98, 104) }}">L98–104</a></td></tr>
+      <tr><td><code>ScaleMin(s, j, scale, min)</code></td><td>Q4_K, Q5_K</td><td>The figure's eight 6-bit pairs. <code>dot.cc</code> keeps an identical copy for the kernels.</td><td><a href="{{ src(q ~ 'dequantize.cc', 116, 128) }}">L116–128</a>, <a href="{{ src(q ~ 'dot.cc', 46, 57) }}">dot.cc L46–57</a></td></tr>
+      <tr><td><code>Nibble(qs, i)</code></td><td>Q4_K, Q5_K</td><td>The figure's 64-element chunks.</td><td><a href="{{ src(q ~ 'dequantize.cc', 130, 135) }}">L130–135</a></td></tr>
+      <tr><td>inline in <code>Q6_K</code></td><td>Q6_K</td><td>Each 128-element half uses 64 ql bytes and 32 qh bytes: its quarters take the low nibbles of ql bytes 0–31 and 32–63, then the high nibbles of the same bytes; quarter k's top two bits are bit pair k of qh.</td><td><a href="{{ src(q ~ 'dequantize.cc', 163, 179) }}">L163–179</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Element 200 of a Q4_K block, traced through the helpers: it is in sub-block j = 200 / 32 = 6, so
+  <code>ScaleMin</code> takes the pair-4-to-7 branch, scale = (s[10] &amp; 0xF) | ((s[2] &gt;&gt; 6) &lt;&lt; 4) and
+  min = (s[10] &gt;&gt; 4) | ((s[6] &gt;&gt; 6) &lt;&lt; 4). It is in chunk 200 / 64 = 3 at position 200 % 64 = 8, which
+  is below 32, so q is the low nibble of qs[3 · 32 + 8] = qs[104]. Then x = d · scale · q − dmin · min
+  (<a href="{{ src(q ~ 'dequantize.cc', 137, 147) }}">dequantize.cc L137–147</a>).
+</p>
+
+<h2 id="dequantize">Dequantization</h2>
+
+<p>
+  The header calls these "the scalar definitions every optimized kernel is tested against": one block at a time,
+  shaped like the format description, not tuned (<a href="{{ src(q ~ 'dequantize.h', 4, 9) }}">dequantize.h
+  L4–9</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Function</th><th>Signature</th><th>Behaviour</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>DequantizeRow</code></td><td><code>Status(GgmlType, span&lt;const byte&gt; src, span&lt;float&gt; dst)</code></td><td>Decodes <code>dst.size()</code> elements from whole blocks packed back to back. <code>InvalidArgument</code> for an unknown type, or when <code>dst</code> is not whole blocks or <code>src</code> is not exactly their bytes (the message gives both counts); <code>Unsupported</code> for I8–I64 and F64. F32, F16 and BF16 are converted element by element.</td><td><a href="{{ src(q ~ 'dequantize.h', 22, 25) }}">.h L22–25</a>, <a href="{{ src(q ~ 'dequantize.cc', 210, 272) }}">.cc L210–272</a></td></tr>
+      <tr><td><code>Dequantize</code></td><td><code>Expected&lt;Tensor&gt;(GgmlType, span&lt;const byte&gt;, const Shape&amp;)</code></td><td>A new contiguous f32 tensor of the shape, filled by <code>DequantizeRow</code>; the size check rejects a shape that does not match the bytes.</td><td><a href="{{ src(q ~ 'dequantize.h', 27, 28) }}">.h L27–28</a>, <a href="{{ src(q ~ 'dequantize.cc', 274, 279) }}">.cc L274–279</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Block data comes straight from a memory-mapped file, where a 34-byte or 210-byte block need not sit on its
+  struct's alignment. So the generic <code>DecodeBlocks</code> copies each block into a local struct with
+  <code>memcpy</code> before decoding it, and <code>DecodeScalars</code> does the same per element
+  (<a href="{{ src(q ~ 'dequantize.cc', 185, 206) }}">L185–206</a>). The dot products below make the opposite
+  choice and require aligned pointers.
+</p>
+
+<h2 id="quantize">Quantization</h2>
+
+<p>
+  rml quantizes only what it must produce itself: Q8_0 and Q4_0 rows, by round to nearest as ggml's reference
+  does, and the activation formats the dot products need. It does not write K-quants; those come from GGUF
+  files.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Function</th><th>Scale</th><th>Rounding</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>QuantizeRowQ8_0</code></td><td>d = max|x| / 127, stored as f16; an all-zero block has d = 0 and inverse 0</td><td><code>lround(x / d)</code>: halves away from zero</td><td><a href="{{ src(q ~ 'dequantize.cc', 281, 294) }}">dequantize.cc L281–294</a></td></tr>
+      <tr><td><code>QuantizeRowQ4_0</code></td><td>d = x<sub>m</sub> / −8, where x<sub>m</sub> is the first value of largest magnitude, sign included</td><td><code>min(15, int(x / d + 8.5))</code>: the argument is never negative, so the truncating cast rounds halves up</td><td><a href="{{ src(q ~ 'dequantize.cc', 296, 317) }}">L296–317</a></td></tr>
+      <tr><td><code>QuantizeRowQ8_K</code></td><td>d = max|x| / 127, kept in f32</td><td><code>nearbyint(x / d)</code>, then each group of 16 q summed into <code>bsums</code></td><td><a href="{{ src(q ~ 'dot.cc', 299, 318) }}">dot.cc L299–318</a></td></tr>
+      <tr><td><code>QuantizeActivations</code></td><td colspan="2">Dispatches to Q8_0 or Q8_K; <code>InvalidArgument</code> for any other type, a source that is not whole blocks, or a destination that is not exactly their bytes</td><td><a href="{{ src(q ~ 'dot.h', 36, 38) }}">dot.h L36–38</a>, <a href="{{ src(q ~ 'dot.cc', 320, 337) }}">dot.cc L320–337</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="q4-example">A worked example: Q4_0</h3>
+
+<p>
+  Take a block whose first four values are −2.0, 1.3, 2.0 and 0.1 and whose other 28 are 0. The first value
+  of largest magnitude is −2.0 (the later 2.0 ties and does not replace it, since the test is strict), so
+  d = −2.0 / −8 = 0.25, exact in f16, and 1 / d = 4:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>x</th><th>x · 4 + 8.5</th><th>q</th><th>Decoded d · (q − 8)</th><th>Error</th></tr></thead>
+    <tbody>
+      <tr><td>−2.0</td><td>0.5</td><td>0</td><td>−2.0</td><td>0</td></tr>
+      <tr><td>1.3</td><td>13.7</td><td>13</td><td>1.25</td><td>0.05</td></tr>
+      <tr><td>2.0</td><td>16.5</td><td>15 (clamped from 16)</td><td>1.75</td><td>0.25</td></tr>
+      <tr><td>0.1</td><td>8.9</td><td>8</td><td>0</td><td>0.1</td></tr>
+      <tr><td>0</td><td>8.5</td><td>8</td><td>0</td><td>0</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Mapping the extreme onto q = 0 uses all sixteen levels, −8 to +7 steps, so the value with the largest
+  magnitude is exact; the price is that the opposite sign reaches only seven steps, and the 2.0 here comes back
+  as 1.75 (<a href="{{ src(q ~ 'dequantize.h', 30, 35) }}">dequantize.h L30–35</a>). Packed, element j goes in the
+  low nibble of qs[j] and element j + 16 in the high one, so with d's f16 bits 0x3400 stored little-endian the
+  block begins <code>00 34 80 8D 8F 88</code>: each high nibble is 8, element j + 16's zero.
+</p>
+
+<h2 id="dot">Quantized dot products</h2>
+
+<p>
+  <code>VecDot(weight, w, x, n)</code> is one weight row in its stored format against activations already
+  quantized to int8, the inner loop of a decode-time matrix-vector product
+  (<a href="{{ src(q ~ 'dot.h', 4, 15) }}">dot.h L4–15</a>). Each weight type is paired with an activation format
+  whose blocks line up with its own, and within a block every product is an exact int32 sum:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Weight</th><th>Activations</th><th>Per block</th><th>Kernel</th></tr></thead>
+    <tbody>
+      <tr><td>Q8_0</td><td>Q8_0</td><td>w.d · x.d · Σ w<sub>i</sub> x<sub>i</sub> over 32</td><td><a href="{{ src(q ~ 'dot.cc', 88, 96) }}">DotQ8_0 L88–96</a></td></tr>
+      <tr><td>Q4_0</td><td>Q8_0</td><td>the 16 bytes unpacked to 32 int8 (q − 8), then as Q8_0</td><td><a href="{{ src(q ~ 'dot.cc', 98, 111) }}">DotQ4_0 L98–111</a></td></tr>
+      <tr><td>Q4_K</td><td>Q8_K</td><td>x.d · (d · Σ<sub>j</sub> scale<sub>j</sub> · (q · a)<sub>j</sub> − dmin · Σ<sub>j</sub> min<sub>j</sub> · (bsums[2j] + bsums[2j+1]))</td><td><a href="{{ src(q ~ 'dot.cc', 124, 148) }}">SumWithMins, DotQ4_K L124–148</a></td></tr>
+      <tr><td>Q5_K</td><td>Q8_K</td><td>as Q4_K after OR-ing each element's fifth bit in from qh</td><td><a href="{{ src(q ~ 'dot.cc', 150, 166) }}">DotQ5_K L150–166</a></td></tr>
+      <tr><td>Q6_K</td><td>Q8_K</td><td>x.d · d · Σ<sub>s</sub> scale<sub>s</sub> · (q · a)<sub>s</sub> over 16 sub-blocks of 16, q − 32 in [−32, 32)</td><td><a href="{{ src(q ~ 'dot.cc', 168, 198) }}">DotQ6_K L168–198</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <code>DotActivationType</code> returns that pairing and <code>nullopt</code> for every other type
+  (<a href="{{ src(q ~ 'dot.cc', 285, 297) }}">dot.cc L285–297</a>), and <code>VecDot</code> on an unpaired type is a
+  programmer error (<code>RML_CHECK</code>, <a href="{{ src(q ~ 'dot.cc', 339, 356) }}">L339–356</a>). The
+  <code>bsums</code> are what make the K-quant minimum cheap: the sub-block's min term is
+  min · Σa, and Σa over 32 activations is two of the stored 16-sums, one multiply instead of 32
+  (<a href="{{ src(kd, 117, 123) }}">kernels.md L117–123</a>).
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 400" role="img" aria-labelledby="qt-dot-title qt-dot-desc">
+    <title id="qt-dot-title">One Q4_K block of VecDot against Q8_K activations</title>
+    <desc id="qt-dot-desc">On the left, the f32 activations are quantized once per input row by QuantizeRowQ8_K into
+      a BlockQ8_K with an f32 scale, 256 int8 values and 16 group sums. On the right, the weight row's Q4_K block,
+      read in place from the file mapping, is unpacked by UnpackNibbles into 256 int8 values in element order. For
+      each of the 8 sub-blocks, DotI8 of 32 lanes gives an int32 sum that is multiplied by the sub-block's scale and
+      added to sumi, and the sub-block's min times two group sums is added to summs; on Apple Silicon DotI8 is two
+      sdot instructions. KBlockWithMin then combines them in float: x.d times d times sumi minus dmin times summs,
+      added to the row's running sum.</desc>
+
+    <rect class="d-box" x="20" y="20" width="270" height="44" rx="5"/>
+    <text x="155" y="40" text-anchor="middle">f32 activations x[256 · nb]</text>
+    <text class="d-muted" x="155" y="56" text-anchor="middle" font-size="12">once per input row</text>
+    <rect class="d-box" x="330" y="20" width="270" height="44" rx="5"/>
+    <text x="465" y="40" text-anchor="middle">weight row, BlockQ4_K × nb</text>
+    <text class="d-muted" x="465" y="56" text-anchor="middle" font-size="12">in place in the file mapping</text>
+
+    <line class="d-line" x1="155" y1="64" x2="155" y2="90"/>
+    <line class="d-line" x1="465" y1="64" x2="465" y2="90"/>
+
+    <rect class="d-box" x="20" y="90" width="270" height="62" rx="5"/>
+    <text x="155" y="110" text-anchor="middle">QuantizeRowQ8_K → BlockQ8_K</text>
+    <text class="d-muted" x="155" y="128" text-anchor="middle" font-size="12">float d = max|x| / 127, int8 qs[256]</text>
+    <text class="d-muted" x="155" y="144" text-anchor="middle" font-size="12">int16 bsums[16]: Σ of each 16 q</text>
+    <rect class="d-box" x="330" y="90" width="270" height="62" rx="5"/>
+    <text x="465" y="110" text-anchor="middle">UnpackNibbles → int8 q[256]</text>
+    <text class="d-muted" x="465" y="128" text-anchor="middle" font-size="12">shifts and masks, element order,</text>
+    <text class="d-muted" x="465" y="144" text-anchor="middle" font-size="12">on the stack, 16-byte aligned</text>
+
+    <line class="d-line" x1="155" y1="152" x2="250" y2="186"/>
+    <line class="d-line" x1="465" y1="152" x2="370" y2="186"/>
+
+    <rect class="d-box d-accent" x="90" y="186" width="440" height="96" rx="5"/>
+    <text x="310" y="208" text-anchor="middle">for each sub-block j = 0 … 7</text>
+    <text x="310" y="230" text-anchor="middle" font-size="13">sumi += scale<tspan font-size="10" dy="3">j</tspan><tspan dy="-3"> · DotI8&lt;32&gt;(q + 32j, x.qs + 32j)</tspan></text>
+    <text x="310" y="252" text-anchor="middle" font-size="13">summs += min<tspan font-size="10" dy="3">j</tspan><tspan dy="-3"> · (bsums[2j] + bsums[2j+1])</tspan></text>
+    <text class="d-muted" x="310" y="272" text-anchor="middle" font-size="12">exact int32; DotI8&lt;32&gt; is two sdot + one add on Apple Silicon</text>
+
+    <line class="d-line" x1="310" y1="282" x2="310" y2="310"/>
+
+    <rect class="d-box" x="90" y="310" width="440" height="50" rx="5"/>
+    <text x="310" y="331" text-anchor="middle">KBlockWithMin: sum += x.d · (d · sumi − dmin · summs)</text>
+    <text class="d-muted" x="310" y="349" text-anchor="middle" font-size="12">the only float step, shared with VecDotRef</text>
+
+    <text class="d-muted" x="20" y="388" font-size="12">scale_j and min_j come from ScaleMin on the block's 12 scale bytes; d, dmin are its f16 fields.</text>
+  </svg>
+  <figcaption>The work for one Q4_K block (<a href="{{ src(q ~ 'dot.cc', 113, 148) }}">dot.cc L113–148</a>). The
+    activation side is done once per input row and reused for every weight row.</figcaption>
+</figure>
+
+<h3 id="kernels">Kernels and references</h3>
+
+<p>
+  The kernels and the references share one float step per block (<code>LegacyBlock</code>,
+  <code>KBlockWithMin</code>, <code>KBlock</code>, <a href="{{ src(q ~ 'dot.cc', 25, 38) }}">dot.cc L25–38</a>), so
+  they can differ only in how they reach the int32 sums. The design is one comment block
+  (<a href="{{ src(q ~ 'dot.cc', 59, 68) }}">L59–68</a>):
+</p>
+
+<ul>
+  <li><strong>Unpack, then dot.</strong> Each kernel unpacks a block into a small aligned int8 array in element
+    order, a few shifts and masks per byte that the compiler vectorizes, then takes int8 × int8 → int32 dot
+    products over 16 or 32 lanes.</li>
+  <li><strong><code>sdot</code> where it exists.</strong> <code>DotI8&lt;N&gt;</code> uses
+    <code>vdotq_s32</code> when the compiler targets ARMv8.4 dotprod, which every Apple Silicon core has: one
+    instruction multiplies 16 int8 pairs and adds each group of four into an int32 lane, so a 32-element block
+    is two instructions and a horizontal add. Elsewhere it is a plain widening loop, which baseline SSE2
+    vectorizes through int16 and <code>pmaddwd</code> (<a href="{{ src(q ~ 'dot.cc', 70, 86) }}">L70–86</a>).
+    The <code>sdot</code> path is compiled and tested only on rml's <code>macos-14</code> CI
+    (<a href="{{ src(kd, 130, 136) }}">kernels.md L130–136</a>).</li>
+  <li><strong>References decode element by element.</strong> <code>VecDotRef</code> computes each q on its own,
+    exactly as <code>blocks.h</code> describes it, and accumulates the same int32 sums; the K-quant reference sums
+    min · a<sub>i</sub> one element at a time instead of using <code>bsums</code>
+    (<a href="{{ src(q ~ 'dot.cc', 200, 281) }}">L200–281</a>, <a href="{{ src(q ~ 'dot.cc', 358, 375) }}">L358–375</a>).</li>
+  <li><strong>Aligned input.</strong> Unlike <code>DequantizeRow</code>, the dot products cast the pointers to
+    block arrays, so both must be aligned for their block types, as file mappings and vector buffers are; a
+    debug check catches a misaligned pointer (<a href="{{ src(q ~ 'dot.h', 40, 44) }}">dot.h L40–44</a>,
+    <a href="{{ src(q ~ 'dot.cc', 40, 44) }}">dot.cc L40–44</a>).</li>
+  <li><strong>No overflow.</strong> rml's notes bound Q6_K's worst sub-block sum at 16 · 32 · 128 · 128, far
+    inside int32 (<a href="{{ src(kd, 120, 123) }}">kernels.md L120–123</a>).</li>
+</ul>
+
+<h3 id="benchmark">The benchmark</h3>
+
+<p>
+  <code>dot_benchmark</code> times one 4096-element row against quantized activations, kernel and reference,
+  with random block bytes (masked with <code>0x3B</code>) so the result means nothing but the work is real
+  (<a href="{{ src(q ~ 'dot_benchmark.cc', 13, 41) }}">dot_benchmark.cc L13–41</a>). rml's published numbers
+  (<a href="{{ src(kd, 138, 147) }}">kernels.md L138–147</a>):
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Linux x86_64 container, GCC 13 <code>-O3</code>, SSE2, 4096 elements, 1 thread</th><th>Reference</th><th>Kernel</th></tr></thead>
+    <tbody>
+      <tr><td>Q8_0</td><td>1.2 µs</td><td>1.2 µs</td></tr>
+      <tr><td>Q4_0</td><td>3.9 µs</td><td>1.3 µs</td></tr>
+      <tr><td>Q4_K</td><td>12.9 µs</td><td>1.1 µs</td></tr>
+      <tr><td>Q5_K</td><td>—</td><td>1.4 µs</td></tr>
+      <tr><td>Q6_K</td><td>13.7 µs</td><td>2.9 µs</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The unpack-then-dot shape is what turns Q4_K from the slowest reference into the fastest kernel. SSE2 has no
+  int8 multiply, so every x86 product goes through int16; rml calls these numbers a floor, with the
+  <code>sdot</code> path as the target. No Apple Silicon numbers for <code>VecDot</code> are published at this
+  commit. The benchmark registers no reference for Q5_K, hence the dash.
+</p>
+
+<h2 id="fixtures">Fixtures from gguf-py</h2>
+
+<p>
+  <code>tools/make_quant_fixtures.py</code> checks rml against an independent implementation: gguf-py, MIT, from
+  llama.cpp (<a href="{{ src(fx, 1, 12) }}">L1–12</a>). With NumPy's generator seeded at 0 it writes, for each of
+  ten block types, two blocks of random bytes whose f16 scale fields (listed by byte offset in
+  <code>BLOCKS</code>) are overwritten with finite values in ±0.05, and the f32 values gguf-py dequantizes them
+  to; then, for Q8_0 and Q4_0, 96 normal values scaled by 2, with element 5 and elements 40–71 set to zero, and
+  the bytes gguf-py quantizes them to
+  (<a href="{{ src(fx, 23, 35) }}">L23–35</a>, <a href="{{ src(fx, 38, 65) }}">L38–65</a>). The result,
+  <a href="{{ src(q ~ 'testdata/gguf_quants.json') }}"><code>testdata/gguf_quants.json</code></a>, is about 55 KB
+  and committed, so the C++ tests need no Python.
+</p>
+
+<p>
+  The script's comment on that range says an all-zero block has d = 0, but elements 40–71 straddle the second
+  block (32–63) and the third (64–95), so neither is all zero and the d = 0 case is not in the fixture
+  (<a href="{{ src(fx, 55, 62) }}">L55–62</a>). The C++ <code>ZeroActivationsGiveZero</code> test does quantize an
+  all-zero row, through <code>QuantizeActivations</code>.
+</p>
+
+<h2 id="users">Who uses it</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Caller</th><th>Uses</th><th>How</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>io::GgufReader</code></td><td><code>GgmlTypeIsKnown</code>, block sizes</td><td>Rejects a tensor of unknown type as <code>Unsupported</code> and one whose rows are not whole blocks, and computes each tensor's byte size.</td><td><a href="{{ src('rml/io/gguf.cc', 470, 483) }}">gguf.cc L470–483</a></td></tr>
+      <tr><td><code>llm::WeightMatrix</code></td><td>block sizes, <code>DequantizeRow</code></td><td>A <code>[rows, cols]</code> view of any ggml type in place; <code>MakeWeightMatrix</code> checks whole blocks and the byte count and dequantizes one probe block, which rejects integer types.</td><td><a href="{{ src('rml/llm/kernels.h', 22, 37) }}">kernels.h L22–37</a>, <a href="{{ src('rml/llm/kernels.cc', 43, 64) }}">kernels.cc L43–64</a></td></tr>
+      <tr><td><code>llm::MatMul</code> and friends</td><td><code>QuantizeActivations</code>, <code>VecDot</code></td><td>With caller scratch of <code>QuantizedInputBytes</code>, the input is quantized once for every matrix that shares its activation format (q, k and v; gate and up), then each output is one <code>VecDot</code>. Without scratch, or for float weights, each row is dequantized 256 elements at a time and reused for every token.</td><td><a href="{{ src('rml/llm/kernels.h', 42, 60) }}">kernels.h L42–60</a>, <a href="{{ src('rml/llm/kernels.cc', 93, 145) }}">kernels.cc L93–145</a></td></tr>
+      <tr><td><code>llm::WeightSource::Vector</code></td><td><code>DequantizeRow</code></td><td>Norm weights and other vectors, from any stored type to f32.</td><td><a href="{{ src('rml/llm/weight_source.cc', 199, 208) }}">weight_source.cc L199–208</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Rounding activations to int8 moves the toy models' logits by about 1e-2 against the float reference, which
+  rml notes is what llama.cpp does too (<a href="{{ src(kd, 149, 155) }}">kernels.md L149–155</a>). The decoder
+  that drives these products is on {{ link('decoder', 'The decoder') }}, the GGUF reader on
+  {{ link('model-files', 'Model files') }}, and the threading and fusions of the products on
+  {{ link('kernels', 'LLM kernels') }}.
+</p>
+
+<h2 id="tests">Tests</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Tests</th><th>What they pin down</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(q ~ 'ggml_type_test.cc') }}"><code>ggml_type_test.cc</code></a></td><td>2</td><td>Block elements and bytes for F32, Q4_K and Q6_K; Q8_0 and Q4_0 sizes equal <code>Tensor</code>'s dtype storage; names; ids 4 and 99 unknown with 0 bytes, 30 (BF16) known.</td></tr>
+      <tr><td><a href="{{ src(q ~ 'dequantize_test.cc') }}"><code>dequantize_test.cc</code></a></td><td>7 (one parameterized over 10 types)</td><td>Every block type dequantizes to gguf-py's values within 1e-6 + 1e-6 |x|; Q8_0 and Q4_0 quantize to gguf-py's bytes exactly; a Q8_0 round trip stays within half a step plus the scale's f16 rounding; F16 and BF16, Q8_K and Q8_1 decode exactly; <code>Dequantize</code> fills a tensor and rejects mismatched shapes; integer types are <code>Unsupported</code> and id 99 <code>InvalidArgument</code>.</td></tr>
+      <tr><td><a href="{{ src(q ~ 'dot_test.cc') }}"><code>dot_test.cc</code></a></td><td>7 (four parameterized over the 5 paired types)</td><td>Kernel equals reference (<code>EXPECT_FLOAT_EQ</code>) for 1, 2, 3, 8 and 17 blocks; the reference equals the f64 dot of the dequantized rows within 1e-5 of the magnitude; the kernel is within 2% of the magnitude of the true float dot; zero activations give exactly 0; the pairing; Q8_K rounding and group sums; <code>QuantizeActivations</code> size and type errors.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The random weights in <code>dot_test</code> overwrite every f16 scale with a finite value in [0.01, 0.06) so the
+  product is a number (<a href="{{ src(q ~ 'dot_test.cc', 28, 55) }}">dot_test.cc L28–55</a>). The kernel test runs
+  under ASan and UBSan as well (<a href="{{ src(kd, 135, 136) }}">kernels.md L135–136</a>).
+</p>
