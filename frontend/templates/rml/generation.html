@@ -1,0 +1,325 @@
+{% set l = "rml/llm/" %}
+{% set c = "examples/rml_chat/" %}
+<header class="jj-header">
+  <h1>Generation</h1>
+  <p class="tagline">
+    What happens to the decoder's logits: a sampler that filters and draws the next token, a session that feeds it
+    back and keeps one conversation's KV cache between turns, speculative decoding with a small draft model, and
+    <code>rml-chat</code>, the command-line program that puts them together.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: <code>Sampler</code> applies Hugging Face's steps in order (repetition penalty, temperature, top-k, top-p,
+  min-p) and draws from what is left, with ties broken by token id so a seeded run is reproducible; temperature 0 is
+  greedy. <code>Session::Generate</code> takes the whole context so far, keeps the part of its KV cache that the new
+  prompt shares, runs the rest as one prefill, then samples, reports and feeds back one token at a time until a stop
+  id, the token limit, a full cache or the caller says stop. <code>SpeculativeSession</code> lets a smaller model
+  guess up to k tokens, checks them all in one batched target pass and keeps each with probability min(1, p / q), so
+  the output distribution is exactly the target's. <code>rml-chat</code> loads a GGUF file or Hugging Face directory
+  with its tokenizer and chat format and streams replies, optionally with a draft model.
+</p>
+
+<p>
+  The concepts are on /ml-models: {{ ml('decoding', 'decoding') }} and
+  {{ ml('autoregressive-models', 'autoregressive models') }}. The code is <code>sampler</code>, <code>generation</code>
+  and <code>speculative</code> in <a href="{{ tree('rml/llm') }}"><code>rml/llm</code></a>, and
+  <a href="{{ tree('examples/rml_chat') }}"><code>examples/rml_chat</code></a>. The forward pass that produces the
+  logits is on {{ link('decoder', 'The decoder') }}, the chat formats and token bytes on
+  {{ link('tokenizers', 'Tokenizers') }}.
+</p>
+
+<h2 id="sampler">The sampler</h2>
+
+<p>
+  The header lists the steps in the order they run (<a href="{{ src(l ~ 'sampler.h', 4, 21) }}">sampler.h L4–21</a>):
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Step</th><th><code>SamplerConfig</code> field (default)</th><th>What it does</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>1. Repetition penalty</td><td><code>repetition_penalty</code> (1, off), <code>penalty_window</code> (64; 0 = all)</td><td>Each <em>distinct</em> token among the last <code>penalty_window</code> has its logit divided by the penalty if positive, multiplied if negative (CTRL), so it always becomes less likely. A flag array makes a repeated token count once.</td><td><a href="{{ src(l ~ 'sampler.cc', 49, 67) }}">L49–67</a></td></tr>
+      <tr><td>2. Temperature</td><td><code>temperature</code> (1; 0 = greedy)</td><td>Greedy returns the arg max, the lowest id on ties. Otherwise logits are divided by T as probabilities are formed.</td><td><a href="{{ src(l ~ 'sampler.cc', 84, 90) }}">L84–90</a></td></tr>
+      <tr><td>3. Top-k</td><td><code>top_k</code> (0, off)</td><td><code>std::nth_element</code> moves the k best to the front; no full sort.</td><td><a href="{{ src(l ~ 'sampler.cc', 95, 99) }}">L95–99</a></td></tr>
+      <tr><td>4. Top-p</td><td><code>top_p</code> (1, off)</td><td>Sort the candidates, then keep the shortest prefix whose mass reaches p of the total.</td><td><a href="{{ src(l ~ 'sampler.cc', 118, 130) }}">L118–130</a></td></tr>
+      <tr><td>5. Min-p</td><td><code>min_p</code> (0, off)</td><td>Keep tokens whose probability is at least <code>min_p</code> times the best one's.</td><td><a href="{{ src(l ~ 'sampler.cc', 132, 144) }}">L132–144</a></td></tr>
+      <tr><td>6. Draw</td><td><code>seed</code> (0)</td><td>One uniform double from rml's Philox generator times the kept mass, walked down the candidates.</td><td><a href="{{ src(l ~ 'sampler.cc', 148, 163) }}">L148–163</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <code>Filter</code> does steps 1–5 on a copy of the logits (<a href="{{ src(l ~ 'sampler.cc', 75, 146) }}">L75–146</a>).
+  Probabilities are kept unnormalized, relative to the best candidate, which gets exactly 1:
+  exp((logit − best) / T) (<a href="{{ src(l ~ 'sampler.cc', 105, 116) }}">L105–116</a>). That makes min-p a plain
+  comparison against <code>min_p</code>, and the draw needs only the running total. Ranking compares logits and breaks
+  ties by the lower id (<a href="{{ src(l ~ 'sampler.cc', 69, 73) }}">L69–73</a>). All scratch (a logit copy, the
+  candidate list, the probabilities, the penalty flags) is sized to the vocabulary when the sampler is made, so
+  <code>Sample</code> never allocates (<a href="{{ src(l ~ 'sampler.cc', 41, 47) }}">L41–47</a>). <code>Create</code>
+  rejects a negative or non-finite temperature, a negative top-k, top-p outside (0, 1], min-p outside [0, 1), a
+  non-positive penalty and a negative window (<a href="{{ src(l ~ 'sampler.cc', 16, 39) }}">L16–39</a>).
+</p>
+
+<p>
+  Speculative decoding needs the distribution itself, not just a draw, so the sampler exposes two more calls:
+  <code>Distribution</code> writes the filtered, normalized probabilities densely over the vocabulary (all mass on the
+  arg max when greedy), and <code>Draw</code> samples from any non-negative weights
+  (<a href="{{ src(l ~ 'sampler.h', 54, 63) }}">sampler.h L54–63</a>;
+  <a href="{{ src(l ~ 'sampler.cc', 165, 196) }}">sampler.cc L165–196</a>).
+</p>
+
+<h3 id="sampler-example">Worked example</h3>
+
+<p>
+  Four tokens with logits [2, 1, 0, −1], temperature 1, top-p 0.9, min-p 0.05. Relative to the best, the
+  probabilities are e<sup>0</sup>, e<sup>−1</sup>, e<sup>−2</sup>, e<sup>−3</sup> = 1, 0.368, 0.135, 0.050, total 1.553.
+  Top-p sorts them and keeps adding until the running sum reaches 0.9 × 1.553 = 1.398: after two tokens it is 1.368,
+  after three 1.503, so three are kept. Min-p then keeps those at least 0.05 of the best, which all three are (the
+  fourth, at 0.0498, would have fallen to min-p anyway). The draw is over 1, 0.368 and 0.135, so 66.5%, 24.5% and 9.0%.
+  With <code>repetition_penalty</code> 1.1 and token 0 in the window, its logit would first become 2 / 1.1 = 1.82; a
+  logit of −1 would become −1.1.
+</p>
+
+<h2 id="loop">The generation loop</h2>
+
+<p>
+  A <code>Session</code> keeps one conversation's KV cache between calls. Each call passes the whole context so far,
+  the session finds how much of it the cache already holds and runs only the rest, so a chat turn costs its new
+  tokens, not the history (<a href="{{ src(l ~ 'generation.h', 4, 11) }}">generation.h L4–11</a>).
+  <code>Session::Create(model, sampler, context_size, stop_ids, kv_dtype = kF16)</code> makes the sampler and a cache
+  through <code>DecoderLM::NewCache</code> (<a href="{{ src(l ~ 'generation.cc', 27, 33) }}">generation.cc L27–33</a>).
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 520" role="img" aria-labelledby="gen-loop-title gen-loop-desc">
+    <title id="gen-loop-title">Session::Generate</title>
+    <desc id="gen-loop-desc">Generate takes the whole prompt. It finds the longest prefix the cached tokens share with
+      it, keeping at least one prompt token to run, truncates the cache to that prefix, and runs the rest of the prompt
+      as one Forward call, which leaves the last position's logits. Then it loops: the sampler picks a token from the
+      logits and the context so far; a stop id ends generation without reporting the token; otherwise the token goes
+      to the callback, which may stop; the token limit or a full cache stop; otherwise Forward runs the one token and
+      the loop repeats.</desc>
+
+    <rect class="d-box" x="110" y="12" width="420" height="44" rx="5"/>
+    <text x="320" y="32" text-anchor="middle">Generate(prompt, max_new_tokens, on_token)</text>
+    <text class="d-muted" x="320" y="48" text-anchor="middle" font-size="12">prompt = the whole conversation so far</text>
+    <line class="d-line" x1="320" y1="56" x2="320" y2="74"/>
+
+    <rect class="d-box" x="110" y="74" width="420" height="44" rx="5"/>
+    <text x="320" y="94" text-anchor="middle">reused = min(shared prefix, prompt − 1)</text>
+    <text class="d-muted" x="320" y="110" text-anchor="middle" font-size="12">cache.Truncate(reused): later turns skip the history</text>
+    <line class="d-line" x1="320" y1="118" x2="320" y2="136"/>
+
+    <rect class="d-box d-accent" x="110" y="136" width="420" height="44" rx="5"/>
+    <text x="320" y="156" text-anchor="middle">prefill: Forward(prompt[reused:])</text>
+    <text class="d-muted" x="320" y="172" text-anchor="middle" font-size="12">one call; logits for the last position</text>
+    <line class="d-line" x1="320" y1="180" x2="320" y2="198"/>
+
+    <rect class="d-box" x="150" y="198" width="340" height="44" rx="5"/>
+    <text x="320" y="218" text-anchor="middle">token = sampler.Sample(logits, context)</text>
+    <text class="d-muted" x="320" y="234" text-anchor="middle" font-size="12">penalty · T · top-k · top-p · min-p · draw</text>
+
+    <line class="d-line" x1="320" y1="242" x2="320" y2="260"/>
+    <rect class="d-box" x="150" y="260" width="340" height="34" rx="5"/>
+    <text x="320" y="282" text-anchor="middle">stop id? → kStopToken (not reported)</text>
+    <line class="d-line" x1="320" y1="294" x2="320" y2="312"/>
+    <rect class="d-box" x="150" y="312" width="340" height="34" rx="5"/>
+    <text x="320" y="334" text-anchor="middle">on_token(token) false? → kCallerStopped</text>
+    <line class="d-line" x1="320" y1="346" x2="320" y2="364"/>
+    <rect class="d-box" x="150" y="364" width="340" height="44" rx="5"/>
+    <text x="320" y="384" text-anchor="middle">limit reached? → kMaxTokens</text>
+    <text class="d-muted" x="320" y="400" text-anchor="middle" font-size="12">cache full? → kContextFull</text>
+    <line class="d-line" x1="320" y1="408" x2="320" y2="426"/>
+
+    <rect class="d-box d-accent" x="150" y="426" width="340" height="44" rx="5"/>
+    <text x="320" y="446" text-anchor="middle">decode: Forward({token})</text>
+    <text class="d-muted" x="320" y="462" text-anchor="middle" font-size="12">no allocation; context += token</text>
+    <line class="d-line" x1="490" y1="448" x2="570" y2="448"/>
+    <line class="d-line" x1="570" y1="448" x2="570" y2="220"/>
+    <line class="d-line" x1="570" y1="220" x2="490" y2="220"/>
+    <text class="d-muted" x="320" y="500" text-anchor="middle" font-size="12">stats: prompt, reused and generated tokens, prefill and decode seconds</text>
+  </svg>
+  <figcaption><code>Session::Generate</code> (<a href="{{ src(l ~ 'generation.cc', 54, 103) }}">generation.cc L54–103</a>).
+    The prefill and decode boxes are the two shapes of <code>DecoderLM::Forward</code>.</figcaption>
+</figure>
+
+<p>Details worth knowing:</p>
+
+<ul>
+  <li><strong>Prefix reuse.</strong> <code>std::mismatch</code> finds how many cached tokens the new prompt starts
+    with; at most prompt − 1 are reused, so there is always one token to run and logits to sample from. The cache is
+    truncated to that length (<a href="{{ src(l ~ 'generation.cc', 63, 70) }}">L63–70</a>).</li>
+  <li><strong>The context the sampler sees</strong> is the session's cached tokens, so the repetition penalty covers
+    the prompt and the reply so far.</li>
+  <li><strong>Stop order.</strong> A stop id ends the call before it is counted or reported; then the callback; then
+    the token limit; then a full cache. The token that hits the limit is reported but never run, so the next call's
+    prefix match stops just before it (<a href="{{ src(l ~ 'generation.cc', 85, 102) }}">L85–102</a>).</li>
+  <li><strong>Errors.</strong> An empty prompt or non-positive limit is <code>InvalidArgument</code>; a prompt longer
+    than the cache is <code>OutOfRange</code>; a failed <code>Forward</code> is returned as is
+    (<a href="{{ src(l ~ 'generation.cc', 54, 61) }}">L54–61</a>).</li>
+  <li><strong>Stats.</strong> <code>GenerationStats</code> records prompt tokens run, tokens reused, tokens generated and
+    the prefill and decode wall-clock seconds (<a href="{{ src(l ~ 'generation.h', 34, 40) }}">generation.h L34–40</a>).</li>
+</ul>
+
+<h3 id="architecture-loop">Against the documented decode loop</h3>
+
+<p>
+  <code>docs/architecture.md</code> describes the decode loop in three steps: load (parse, mmap, tokenizer, size the KV
+  cache and a step arena), prefill in chunks of up to 512 tokens with logits only for the last position, and a per-token
+  decode whose every buffer is preallocated (<a href="{{ src('docs/architecture.md', 92, 101) }}">architecture.md L92–101</a>).
+  The code matches on the decode step (the order of operations, logits for the last position only, zero allocations,
+  tested by <code>decoder_alloc_test</code>), with two differences at the pin:
+</p>
+
+<ul>
+  <li>Scratch is <code>DecoderLM</code>'s workspace of vectors that grow to the largest call, not an <code>Arena</code>
+    reset each step.</li>
+  <li><code>Generate</code> runs the whole unmatched prompt as one <code>Forward</code> call; chunked prefill is
+    <span class="rml-planned">planned</span>. So is the <code>backend</code> dispatch table the same document has the
+    decode loop call through (<a href="{{ src('docs/architecture.md', 83, 90) }}">L83–90</a>); today
+    <code>DecoderLM</code> calls the kernels in <code>rml/llm/kernels.h</code> directly.</li>
+</ul>
+
+<h2 id="speculative">Speculative decoding</h2>
+
+<p>
+  Each round the draft samples k tokens from its distributions q<sub>1..k</sub>; the target runs the pending token and the
+  k guesses as one batch, giving p<sub>1..k+1</sub>. Guess i is kept with probability min(1, p<sub>i</sub>(x<sub>i</sub>) /
+  q<sub>i</sub>(x<sub>i</sub>)); the first rejected one is replaced by a draw from max(0, p<sub>i</sub> − q<sub>i</sub>),
+  renormalized, and the round ends; if every guess is kept a bonus token comes from p<sub>k+1</sub>. Every kept token is
+  then distributed exactly as the target alone would sample it (Leviathan et al. 2023; Chen et al. 2023), so the draft
+  changes the speed and never the output; with greedy sampling the output is the target's token for token
+  (<a href="{{ src(l ~ 'speculative.h', 4, 20) }}">speculative.h L4–20</a>).
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 370" role="img" aria-labelledby="gen-spec-title gen-spec-desc">
+    <title id="gen-spec-title">One speculative round with k = 3</title>
+    <desc id="gen-spec-desc">The context ends with a pending token t whose keys are not cached in the target yet. The
+      draft catches up on any context it lacks and samples three guesses, x1, x2 and x3, keeping each q distribution.
+      The target runs t, x1, x2 and x3 as one Forward with all logits, giving p1 to p4. Guess x1 is accepted, x2 is
+      rejected and replaced by a draw from the residual max(0, p2 minus q2); the round ends with two new tokens, and
+      both caches are truncated to hold every context token but the last.</desc>
+
+    <text x="20" y="28" font-size="13">context … t</text>
+    <rect class="d-box" x="20" y="40" width="270" height="70" rx="5"/>
+    <text x="155" y="62" text-anchor="middle">draft: k steps</text>
+    <text class="d-muted" x="155" y="80" text-anchor="middle" font-size="12">q_i = Distribution(draft logits)</text>
+    <text class="d-muted" x="155" y="98" text-anchor="middle" font-size="12">x_i = Draw(q_i), fed back one at a time</text>
+
+    <rect class="d-box d-accent" x="330" y="40" width="270" height="70" rx="5"/>
+    <text x="465" y="62" text-anchor="middle">target: one Forward</text>
+    <text class="d-muted" x="465" y="80" text-anchor="middle" font-size="12">[t, x1, x2, x3], all_logits</text>
+    <text class="d-muted" x="465" y="98" text-anchor="middle" font-size="12">→ p1, p2, p3, p4</text>
+    <line class="d-line" x1="290" y1="75" x2="330" y2="75"/>
+
+    <line class="d-line" x1="465" y1="110" x2="465" y2="140"/>
+    <line class="d-line" x1="155" y1="110" x2="155" y2="140"/>
+
+    <rect class="d-box" x="20" y="140" width="180" height="60" rx="5"/>
+    <text x="110" y="162" text-anchor="middle">x1: u·q1 &lt; p1</text>
+    <text class="d-muted" x="110" y="182" text-anchor="middle" font-size="12">kept</text>
+    <rect class="d-box" x="220" y="140" width="200" height="60" rx="5"/>
+    <text x="320" y="162" text-anchor="middle">x2: u·q2 ≥ p2</text>
+    <text class="d-muted" x="320" y="182" text-anchor="middle" font-size="12">rejected → Draw(max(0, p2 − q2))</text>
+    <rect class="d-box" x="440" y="140" width="160" height="60" rx="5"/>
+    <text x="520" y="162" text-anchor="middle">x3, p3, p4</text>
+    <text class="d-muted" x="520" y="182" text-anchor="middle" font-size="12">unused this round</text>
+
+    <line class="d-line" x1="320" y1="200" x2="320" y2="230"/>
+    <rect class="d-box" x="110" y="230" width="420" height="50" rx="5"/>
+    <text x="320" y="251" text-anchor="middle">context += x1, x2′ (2 tokens this round)</text>
+    <text class="d-muted" x="320" y="269" text-anchor="middle" font-size="12">all k kept → a bonus token from p_{k+1}: k + 1 tokens</text>
+    <line class="d-line" x1="320" y1="280" x2="320" y2="304"/>
+    <rect class="d-box" x="110" y="304" width="420" height="50" rx="5"/>
+    <text x="320" y="325" text-anchor="middle">TruncateContext: both caches ≤ context − 1</text>
+    <text class="d-muted" x="320" y="343" text-anchor="middle" font-size="12">the last token is the next round's pending token</text>
+  </svg>
+  <figcaption><code>SpeculativeSession::Round</code> (<a href="{{ src(l ~ 'speculative.cc', 100, 149) }}">speculative.cc L100–149</a>)
+    and <code>internal::AcceptOrResample</code> (<a href="{{ src(l ~ 'speculative.cc', 23, 42) }}">L23–42</a>).</figcaption>
+</figure>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Piece</th><th>What the code does</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Create</code></td><td>Target and draft must have the same vocabulary size, and <code>num_draft</code> must be positive; one sampler, two caches of the same size and dtype. Buffers for k draft distributions and k + 1 target logit rows are sized here.</td><td><a href="{{ src(l ~ 'speculative.cc', 46, 80) }}">L46–80</a></td></tr>
+      <tr><td>Cache invariant</td><td>The target cache holds every context token but the last, which the next round feeds; the draft cache holds a prefix of the context, and catches up at the start of a round.</td><td><a href="{{ src(l ~ 'speculative.h', 77, 80) }}">h L77–80</a>, <a href="{{ src(l ~ 'speculative.cc', 93, 98) }}">cc L93–98</a></td></tr>
+      <tr><td>Drafting</td><td>The sampler's <code>Distribution</code> on the draft's logits gives q<sub>i</sub>, <code>Draw</code> picks x<sub>i</sub>; the draft runs each guess except the last.</td><td><a href="{{ src(l ~ 'speculative.cc', 104, 121) }}">L104–121</a></td></tr>
+      <tr><td>Verifying</td><td>One target <code>Forward</code> over the last k + 1 tokens with <code>all_logits</code>, then for each row the target's filtered <code>Distribution</code>. The same sampler settings shape both p and q, so the guarantee holds for the filtered distribution.</td><td><a href="{{ src(l ~ 'speculative.cc', 123, 146) }}">L123–146</a></td></tr>
+      <tr><td><code>AcceptOrResample</code></td><td>Accepts when u · q(x) &lt; p(x), avoiding a division; on rejection overwrites q with max(0, p − q) and draws from it. If rounding leaves no residual mass, it draws from p.</td><td><a href="{{ src(l ~ 'speculative.cc', 23, 42) }}">L23–42</a></td></tr>
+      <tr><td><code>Generate</code></td><td>The same prefix reuse as <code>Session</code>, then rounds of min(num_draft, tokens still allowed − 1, room left) drafts; a round with 0 drafts is a plain target step. New tokens are checked for stop ids, the callback and the limit one by one, and the context is cut back to exactly what was reported.</td><td><a href="{{ src(l ~ 'speculative.cc', 151, 203) }}">L151–203</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <strong>Measured.</strong> rml's own run, on the 4-core x86 development container: SmolLM2-360M-Instruct with the 135M
+  model as draft gives greedy replies byte-identical to the 360M model alone, but decodes slower, 8.3 tok/s with 3
+  drafted tokens at 50% acceptance against 12.7 tok/s alone, because a batched pass over 4 tokens costs about two
+  single steps there and the draft is only 2.7× smaller. A real speedup needs a memory-bound target (8B at Q4 on the
+  Mac) and is unmeasured (<a href="{{ src('docs/progress.md', 77, 77) }}">progress.md L77</a>); that measurement is
+  <span class="rml-planned">planned</span> (<a href="{{ src('docs/progress.md', 290, 291) }}">L290–291</a>).
+</p>
+
+<h2 id="rml-chat">rml-chat</h2>
+
+<p>
+  <code>examples/rml_chat</code> keeps its logic in a library, <code>chat_lib</code> (<code>chat.h</code> /
+  <code>chat.cc</code>), with a thin <code>main.cc</code> that parses flags and prints, as the project's rule for entry
+  points asks (<a href="{{ src(c ~ 'BUILD.bazel') }}">BUILD.bazel</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>LoadChatModel</code></td><td><code>(path, format?) → Expected&lt;ChatModel&gt;</code></td><td>A directory loads <code>DecoderLM::FromHf</code>, <code>tokenizer.json</code> and the chat template from <code>tokenizer_config.json</code> (a string, or the list entry named "default"); a file loads GGUF, its tokenizer and <code>tokenizer.chat_template</code>. A <code>--format</code> name overrides detection; no template and no format is <code>Unsupported</code>.</td><td><a href="{{ src(c ~ 'chat.cc', 30, 65) }}">L30–65</a>, <a href="{{ src(c ~ 'chat.cc', 120, 139) }}">L120–139</a></td></tr>
+      <tr><td><code>StopIds</code></td><td><code>(config, tokenizer, format)</code></td><td>The tokenizer's EOS ids, the config's, and the format's turn terminator (<code>&lt;|im_end|&gt;</code>, <code>&lt;|eot_id|&gt;</code>, <code>&lt;|endoftext|&gt;</code>, <code>&lt;/s&gt;</code>, <code>&lt;end_of_turn&gt;</code>) if the vocabulary has it, sorted and deduplicated.</td><td><a href="{{ src(c ~ 'chat.cc', 86, 118) }}">L86–118</a></td></tr>
+      <tr><td><code>ChatOptions</code></td><td>struct</td><td>Sampler settings, context 4096, f16 KV cache, 512 new tokens, a system prompt, 4 draft tokens.</td><td><a href="{{ src(c ~ 'chat.h', 48, 56) }}">h L48–56</a></td></tr>
+      <tr><td><code>Chat::Create</code></td><td><code>(model, options, draft = nullptr)</code></td><td>A <code>Session</code>, or a <code>SpeculativeSession</code> when there is a draft whose every token's bytes match the model's tokenizer; a tokenizer larger than the model's vocabulary is refused.</td><td><a href="{{ src(c ~ 'chat.cc', 141, 162) }}">L141–162</a></td></tr>
+      <tr><td><code>Chat::Send</code></td><td><code>(message, on_text) → Expected&lt;string&gt;</code></td><td>Appends the user turn, formats the whole conversation, encodes it and generates; each non-control token's bytes are streamed. The conversation changes only if generation succeeds. With a draft, prefill time runs to the first token.</td><td><a href="{{ src(c ~ 'chat.cc', 185, 228) }}">L185–228</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Because <code>Send</code> re-encodes the whole conversation and the session reuses the shared prefix, a second turn
+  runs only the new user message and the tokens around it. The command line
+  (<a href="{{ src(c ~ 'main.cc', 33, 55) }}">main.cc L33–55</a>):
+</p>
+
+<pre><code>rml-chat MODEL [-p TEXT] [--system TEXT] [--format NAME]
+         [--temp 0.7] [--top-k 40] [--top-p 0.95] [--min-p 0.05] [--repeat-penalty 1.1]
+         [--seed 0] [--ctx 4096] [--kv f16|f32|i8] [--max-tokens 512] [--threads N]
+         [--draft MODEL] [--draft-tokens 4]</code></pre>
+
+<p>
+  The defaults above are <code>rml-chat</code>'s, set in <code>ParseFlags</code>
+  (<a href="{{ src(c ~ 'main.cc', 83, 89) }}">L83–89</a>), not <code>SamplerConfig</code>'s. With <code>-p</code> it
+  answers once and exits; otherwise each line is a user turn, <code>/reset</code> starts over and an empty line quits.
+  After each reply it prints prompt tokens (and how many were cached), prefill and decode tok/s, and with a draft the
+  acceptance rate and tokens per round to stderr (<a href="{{ src(c ~ 'main.cc', 154, 175) }}">L154–175</a>). A draft is
+  loaded with the main model's chat format, and <code>--threads</code> gives both models one pool
+  (<a href="{{ src(c ~ 'main.cc', 191, 243) }}">L191–243</a>).
+</p>
+
+<h2 id="tests">Tests</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Tests</th><th>What they pin down</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(l ~ 'sampler_test.cc') }}"><code>sampler_test.cc</code></a></td><td>14</td><td>Greedy ties to the lowest id; unfiltered draws match the softmax; temperature; top-k, top-p and min-p each and composed; <code>Distribution</code> is what <code>Sample</code> draws from; <code>Draw</code> follows unnormalized weights; the penalty divides and multiplies once and sees only its window; same seed, same tokens; bad configs; size and history checks die.</td></tr>
+      <tr><td><a href="{{ src(l ~ 'generation_test.cc') }}"><code>generation_test.cc</code></a></td><td>7</td><td>Greedy generation equals rerunning from scratch; the next prompt's cached prefix is reused; stop tokens end generation unreported; caller and context limits; bad requests; the cache dtype is selectable; <code>Reset</code> forgets the context.</td></tr>
+      <tr><td><a href="{{ src(l ~ 'speculative_test.cc') }}"><code>speculative_test.cc</code></a></td><td>6 (one over draft lengths 1, 3, 5, 8)</td><td>Kept tokens follow the target distribution; a token the target likes more is kept; greedy output matches the target alone; a draft equal to the target is always accepted; stopping matches the target alone; bad requests.</td></tr>
+      <tr><td><a href="{{ src(c ~ 'chat_test.cc') }}"><code>chat_test.cc</code></a></td><td>11</td><td>Stop ids gain the format's terminator; replies stream; later turns reuse the cache; greedy replies are deterministic; reset keeps the system prompt; a failed turn leaves the conversation; bad options; with a draft, greedy replies match the model alone and a same-model draft is always accepted; a draft with another tokenizer is refused; a missing file fails.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  These run on the toy models from <code>tools/make_llm_fixtures.py</code> (see {{ link('decoder', 'The decoder') }}).
+  The program itself is listed with the others on {{ link('examples', 'Examples') }}.
+</p>

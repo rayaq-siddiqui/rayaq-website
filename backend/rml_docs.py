@@ -291,9 +291,10 @@ PAGES = [
         "and the decode loop end to end.",
         "sources": [
             "rml/llm/sampler.h", "rml/llm/generation.h", "rml/llm/speculative.h",
-            "examples/rml_chat", "docs/architecture.md",
+            "examples/rml_chat", "docs/architecture.md", "rml/llm/sampler.cc",
+            "rml/llm/generation.cc", "rml/llm/speculative.cc",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "kernels",
