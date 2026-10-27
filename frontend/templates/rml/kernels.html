@@ -1,0 +1,373 @@
+{% set k = "docs/kernels.md" %}
+<header class="jj-header">
+  <h1>Kernels</h1>
+  <p class="tagline">
+    The kernels rml's <code>docs/kernels.md</code> records: the packed f32 GEMM, quantized dot products, online-softmax
+    attention, the decoder's fusions and strided copies, each paired with the scalar reference it is tested against,
+    with the speeds rml measured, the experiment it threw away, and the work still planned.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: every optimized kernel in rml sits next to a slow, obviously correct reference and a test that holds the
+  two together (exact for integer arithmetic, a stated tolerance for floating point). Five kernel families exist at the
+  pin: <code>Gemm</code> (Goto/BLIS packing with AVX-512, AVX2 and portable micro-kernels chosen at run time, plus
+  matrix-vector and small-batch streaming paths), <code>VecDot</code> (weights in their GGML block format against
+  int8 activations, with <code>sdot</code> on Apple Silicon), <code>Attend</code> (tiled online softmax over an f32, f16
+  or int8 KV cache), the decoder fusions in <code>rml/llm/kernels.h</code>, and <code>StridedCopy</code>. All numbers
+  so far come from the 4-vCPU Linux x86_64 development container, not the Apple Silicon target; the NEON paths are
+  compiled and tested only in macOS CI, and the Accelerate comparison, the <code>smmla</code> prefill path, Metal and
+  the <code>backend</code> dispatch module are planned.
+</p>
+
+<p>
+  The rule comes from the project's guidance: every optimized kernel has a scalar reference and a test comparing the two
+  (<a href="{{ src('AGENTS.md', 62, 63) }}">AGENTS.md L62–63</a>), and each section of
+  <a href="{{ src(k) }}"><code>docs/kernels.md</code></a> states what the kernel computes, its reference, its tiling and
+  register budget, its test, and measured speed (<a href="{{ src(k, 1, 7) }}">kernels.md L1–7</a>). The concepts behind
+  them are on /ml-models: {{ ml('matrix-multiplication', 'matrix multiplication') }},
+  {{ ml('quantization', 'quantization') }}, {{ ml('attention', 'attention') }} and {{ ml('profiling', 'profiling') }}.
+</p>
+
+<h2 id="map">Which kernel runs where</h2>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 400" role="img" aria-labelledby="kn-map-title kn-map-desc">
+    <title id="kn-map-title">The kernels and their callers</title>
+    <desc id="kn-map-desc">Two callers sit at the top: the LLM decoder in rml/llm and the graph executor in rml/graph.
+      The decoder calls the fused MatMul, MatMulMany and MatMulGlu in rml/llm/kernels.h, which call the quantized VecDot
+      in rml/quant/dot.h, and it calls Attend over the KV cache. The graph executor calls Gemm and GemmPackedB in
+      rml/linalg/gemm.h, its own fast elementwise kernels in rml/graph/kernels.h, and StridedCopy in rml/core. Each
+      kernel has a scalar reference beside it. A planned backend module, drawn dashed, would sit between callers and
+      kernels as a dispatch table.</desc>
+
+    <rect class="d-box" x="20" y="14" width="270" height="44" rx="5"/>
+    <text x="155" y="34" text-anchor="middle">DecoderLM (rml/llm)</text>
+    <text class="d-muted" x="155" y="50" text-anchor="middle" font-size="12">token-by-token decode, prefill</text>
+    <rect class="d-box" x="310" y="14" width="290" height="44" rx="5"/>
+    <text x="455" y="34" text-anchor="middle">graph executor (rml/graph)</text>
+    <text class="d-muted" x="455" y="50" text-anchor="middle" font-size="12">exported PyTorch, JAX, TF models</text>
+
+    <rect class="rml-planned" x="20" y="82" width="580" height="34" rx="5"/>
+    <text x="310" y="104" text-anchor="middle">backend: dispatch table (planned)</text>
+
+    <line class="d-line" x1="95" y1="58" x2="95" y2="150"/>
+    <line class="d-line" x1="230" y1="58" x2="230" y2="150"/>
+    <line class="d-line" x1="335" y1="58" x2="335" y2="150"/>
+    <line class="d-line" x1="440" y1="58" x2="440" y2="150"/>
+    <line class="d-line" x1="550" y1="58" x2="550" y2="150"/>
+
+    <rect class="d-box d-accent" x="20" y="150" width="150" height="58" rx="5"/>
+    <text x="95" y="172" text-anchor="middle">MatMul · Glu</text>
+    <text class="d-muted" x="95" y="190" text-anchor="middle" font-size="12">llm/kernels.h</text>
+    <rect class="d-box d-accent" x="180" y="150" width="100" height="58" rx="5"/>
+    <text x="230" y="172" text-anchor="middle">Attend</text>
+    <text class="d-muted" x="230" y="190" text-anchor="middle" font-size="12">llm/attention.h</text>
+    <rect class="d-box d-accent" x="290" y="150" width="100" height="58" rx="5"/>
+    <text x="340" y="172" text-anchor="middle">Gemm</text>
+    <text class="d-muted" x="340" y="190" text-anchor="middle" font-size="12">linalg/gemm.h</text>
+    <rect class="d-box d-accent" x="400" y="150" width="90" height="58" rx="5"/>
+    <text x="445" y="172" text-anchor="middle">*Fast</text>
+    <text class="d-muted" x="445" y="190" text-anchor="middle" font-size="12">graph/kernels</text>
+    <rect class="d-box d-accent" x="500" y="150" width="100" height="58" rx="5"/>
+    <text x="550" y="172" text-anchor="middle" font-size="13">StridedCopy</text>
+    <text class="d-muted" x="550" y="190" text-anchor="middle" font-size="12">core/tensor.cc</text>
+
+    <line class="d-line" x1="95" y1="208" x2="95" y2="236"/>
+    <rect class="d-box d-accent" x="20" y="236" width="150" height="50" rx="5"/>
+    <text x="95" y="257" text-anchor="middle">VecDot</text>
+    <text class="d-muted" x="95" y="275" text-anchor="middle" font-size="12">quant/dot.h</text>
+    <text class="d-muted" x="390" y="257" text-anchor="middle" font-size="12">MatMul, MatMulMany and MatMulGlu call VecDot</text>
+    <text class="d-muted" x="390" y="275" text-anchor="middle" font-size="12">when the weights are quantized</text>
+
+    <rect class="d-box" x="20" y="316" width="580" height="60" rx="5"/>
+    <text x="310" y="338" text-anchor="middle">references: MatMulRef · VecDotRef · AttendRef · GemmRef · UnaryRef …</text>
+    <text class="d-muted" x="310" y="358" text-anchor="middle" font-size="12">each fast kernel's test compares it with the reference beside it</text>
+  </svg>
+  <figcaption>Callers and kernels at the pin. Accented boxes are optimized kernels; the dashed layer is the
+    <code>backend</code> module <a href="{{ src('docs/architecture.md', 83, 90) }}">architecture.md L83–90</a>
+    describes, which does not exist yet: today callers include the kernels directly.</figcaption>
+</figure>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Kernel</th><th>Reference</th><th>Test</th><th>Benchmark</th><th>In kernels.md</th><th>Deep dive</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src('rml/linalg/gemm.h', 48, 50) }}"><code>Gemm</code></a>, <code>GemmPackedB</code></td><td><a href="{{ src('rml/linalg/gemm.h', 43, 44) }}"><code>GemmRef</code></a> (double accumulator)</td><td><code>gemm_test</code></td><td><a href="{{ src('rml/linalg/gemm_benchmark.cc') }}"><code>gemm_benchmark</code></a></td><td><a href="{{ src(k, 9, 110) }}">L9–110</a></td><td>{{ link('linalg', 'Linear algebra') }}</td></tr>
+      <tr><td><a href="{{ src('rml/quant/dot.h', 44, 44) }}"><code>VecDot</code></a></td><td><a href="{{ src('rml/quant/dot.h', 48, 48) }}"><code>VecDotRef</code></a></td><td><code>dot_test</code></td><td><a href="{{ src('rml/quant/dot_benchmark.cc') }}"><code>dot_benchmark</code></a></td><td><a href="{{ src(k, 112, 155) }}">L112–155</a></td><td>{{ link('quantization', 'Quantization') }}</td></tr>
+      <tr><td><a href="{{ src('rml/llm/attention.h', 39, 43) }}"><code>Attend</code></a></td><td><a href="{{ src('rml/llm/attention.h', 45, 47) }}"><code>AttendRef</code></a></td><td><code>attention_test</code></td><td><a href="{{ src('rml/llm/attention_benchmark.cc') }}"><code>attention_benchmark</code></a></td><td><a href="{{ src(k, 157, 194) }}">L157–194</a></td><td>{{ link('decoder', 'The decoder', '#attend') }}</td></tr>
+      <tr><td><a href="{{ src('rml/llm/kernels.h', 46, 71) }}"><code>MatMul</code>, <code>MatMulMany</code>, <code>MatMulGlu</code></a></td><td><a href="{{ src('rml/llm/kernels.h', 72, 73) }}"><code>MatMulRef</code></a>; the unfused sequence</td><td><code>kernels_test</code></td><td><a href="{{ src('rml/llm/decoder_benchmark.cc') }}"><code>decoder_benchmark</code></a></td><td><a href="{{ src(k, 196, 228) }}">L196–228</a></td><td>{{ link('decoder', 'The decoder', '#kernels') }}</td></tr>
+      <tr><td><a href="{{ src('rml/core/tensor.cc', 161, 161) }}"><code>StridedCopy</code></a></td><td>The views' own strides, element by element</td><td><code>tensor_test</code></td><td>U-Net graph timings</td><td><a href="{{ src(k, 230, 256) }}">L230–256</a></td><td>{{ link('tensors', 'Tensors and dtypes') }}</td></tr>
+      <tr><td><a href="{{ src('rml/graph/kernels.h', 4, 12) }}">graph <code>*Fast</code> kernels</a></td><td><code>*Ref</code> (libm, double accumulation)</td><td><code>kernels_test</code> (graph)</td><td><a href="{{ src('rml/graph/kernels_benchmark.cc') }}"><code>kernels_benchmark</code></a></td><td>no section</td><td>{{ link('lowering', 'Lowering and fast CPU') }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="gemm">GEMM</h2>
+
+<p>
+  <code>C = alpha · A B + beta · C</code> on f32, over <code>MatrixView</code>s with a row and a column stride, so a
+  transpose is a view (<a href="{{ src(k, 9, 17) }}">kernels.md L9–17</a>). <code>GemmRef</code> is the textbook triple
+  loop accumulating in <code>double</code>, slow on purpose so that tolerances on faster kernels reflect only their own
+  rounding. <code>Gemm</code> is the Goto/BLIS scheme with a micro-kernel picked at run time from the CPU's features
+  (<a href="{{ src(k, 19, 30) }}">L19–30</a>):
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Micro-kernel</th><th>Tile (MR × NR)</th><th>Registers</th><th>Where</th></tr></thead>
+    <tbody>
+      <tr><td>AVX-512 (<code>_mm512_fmadd_ps</code>)</td><td>12 × 32</td><td>24 zmm accumulators, 2 B, 1 broadcast</td><td>x86-64 with AVX-512F</td></tr>
+      <tr><td>AVX2 + FMA</td><td>6 × 16</td><td>12 ymm accumulators, 2 B, 1 broadcast</td><td>x86-64 with AVX2 and FMA</td></tr>
+      <tr><td>Portable (GCC/Clang vector extensions)</td><td>6 × 8 SSE, 8 × 12 NEON</td><td>12 accumulators of 16 registers; 24 of NEON's 32</td><td>everywhere</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The x86 kernels are compiled with <code>__attribute__((target(...)))</code> so a baseline build still runs on any
+  x86-64 (<a href="{{ src('rml/linalg/gemm.cc', 133, 133) }}">gemm.cc L133</a>,
+  <a href="{{ src('rml/linalg/gemm.cc', 163, 163) }}">L163</a>), and the portable tile is 8 × 12 on
+  <code>__aarch64__</code>, 6 × 8 elsewhere (<a href="{{ src('rml/linalg/gemm.cc', 97, 104) }}">L97–104</a>). The
+  design points (<a href="{{ src(k, 32, 80) }}">kernels.md L32–80</a>):
+</p>
+
+<ul>
+  <li><strong>Blocking.</strong> k in 256-deep slices; B packed into NR-column panels and each 96-row block of A into
+    MR-row panels, so the micro-kernel reads two contiguous streams whatever the strides. A packed A block (96 KB) sits
+    in L2, a B panel (at most 32 KB) in L1.</li>
+  <li><strong>Matrix-vector</strong> (one row of A, the decode shape) skips packing: each row of B is added, scaled, into
+    a chunk of C with a vectorized axpy, split across threads.</li>
+  <li><strong>Up to 32 rows</strong> also skip packing: register tiles of 8 × 48 (AVX-512) or 4 × 24 (AVX2), fully
+    unrolled (GCC otherwise spilled all 24 accumulators every step, halving speed), with B rows prefetched 8 steps
+    ahead by hand.</li>
+  <li><strong>Threads</strong> split (row block, column chunk) pairs; with fewer than four pairs per thread the driver
+    widens chunks to balance the slowest thread.</li>
+  <li><strong>Constant weights</strong> with more than 32 rows on the other side are packed once when a graph compiles
+    (<code>PackedB</code> / <code>GemmPackedB</code>).</li>
+</ul>
+
+<p>
+  <code>gemm_test</code> compares every kernel the CPU supports with <code>GemmRef</code> over shapes from 1 × 1 × 1 to
+  200 × 401 × 257, every transpose, non-trivial alpha and beta, a padded <code>ldc</code> and 1–8 threads, within
+  4e-6 · (k + 1), also under ASan, UBSan and TSan; the NEON tile only in CI on <code>macos-14</code>
+  (<a href="{{ src(k, 82, 97) }}">L82–97</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Linux x86_64 container (4 vCPUs, Xeon @ 2.8 GHz, AVX-512), GCC 13 <code>-O3</code></th><th>1 thread</th><th>4 threads</th></tr></thead>
+    <tbody>
+      <tr><td><code>GemmRef</code> 256³</td><td>1.5 GFLOP/s</td><td>—</td></tr>
+      <tr><td><code>Gemm</code> 64³</td><td>67 GFLOP/s</td><td>67 GFLOP/s</td></tr>
+      <tr><td><code>Gemm</code> 256³</td><td>117 GFLOP/s</td><td>152 GFLOP/s</td></tr>
+      <tr><td><code>Gemm</code> 1024³</td><td>113 GFLOP/s</td><td>376 GFLOP/s</td></tr>
+      <tr><td><code>Gemm</code> 1 × 1024 × 1024 (matrix-vector)</td><td>26 GB/s</td><td>33 GB/s</td></tr>
+      <tr><td><code>Gemm</code> 1 × 4096 × 4096 (matrix-vector)</td><td>19 GB/s</td><td>60 GB/s</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <a href="{{ src(k, 99, 110) }}">kernels.md L99–110</a>. The AVX-512 kernel is 6–7× the SSE-only portable kernel it
+  replaced on that machine. The streaming path's numbers (80 GFLOP/s for 8 × 256 × 1024 on one core) and the effect of
+  balanced chunks and packed weights on the zoo's graphs are on {{ link('linalg', 'Linear algebra') }} and
+  {{ link('lowering', 'Lowering and fast CPU') }}.
+</p>
+
+<h2 id="quantized-dot">Quantized dot products</h2>
+
+<p>
+  <code>VecDot(type, w, x, n)</code> is one weight row in its stored format against activations quantized to int8 on
+  the fly (<a href="{{ src(k, 112, 136) }}">kernels.md L112–136</a>). Q8_0 and Q4_0 pair with Q8_0 activations (32
+  int8 and an f16 scale per block); Q4_K, Q5_K and Q6_K with Q8_K (256 int8, an f32 scale, and the sum of every 16, so a
+  K-quant's minimum term costs one multiply). Within a block every product is exact int32; only block scales are float.
+  Each block is unpacked to an aligned int8 array and dotted 16 or 32 lanes at a time: <code>sdot</code> with ARMv8.4
+  dotprod (every Apple Silicon core; <a href="{{ src('rml/quant/dot.cc', 11, 11) }}">dot.cc L11</a>), a widening loop
+  that SSE2 lowers to <code>pmaddwd</code> elsewhere. Because both functions share the float step,
+  <code>VecDotRef</code> and <code>VecDot</code> are compared with <code>EXPECT_FLOAT_EQ</code>.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Linux x86_64 container, GCC 13 <code>-O3</code>, SSE2, 4096 elements, 1 thread</th><th>Reference</th><th>Kernel</th></tr></thead>
+    <tbody>
+      <tr><td>Q8_0</td><td>1.2 µs</td><td>1.2 µs</td></tr>
+      <tr><td>Q4_0</td><td>3.9 µs</td><td>1.3 µs</td></tr>
+      <tr><td>Q4_K</td><td>12.9 µs</td><td>1.1 µs</td></tr>
+      <tr><td>Q5_K</td><td>—</td><td>1.4 µs</td></tr>
+      <tr><td>Q6_K</td><td>13.7 µs</td><td>2.9 µs</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <a href="{{ src(k, 138, 147) }}">kernels.md L138–147</a>: SSE2 has no int8 multiply, so these are a floor; the target
+  is the <code>sdot</code> path, verified only on <code>macos-14</code> CI. <code>llm::MatMul</code> uses them whenever
+  the caller passes scratch for the quantized input, which <code>DecoderLM</code> sizes once, so decoding stays
+  allocation-free; rounding activations to int8 moves toy-model logits by about 1e-2, as in llama.cpp
+  (<a href="{{ src(k, 149, 155) }}">L149–155</a>).
+</p>
+
+<h2 id="attention">Attention</h2>
+
+<p>
+  <code>Attend</code> is one pass of online softmax over the KV cache: a task is one kv head and one query position, so
+  the query heads sharing a kv head read each key and value row once; keys are tiled 32 at a time, the running output
+  stays in L1, and the output is rescaled once per tile. The test holds it within 2e-5 of <code>AttendRef</code> and
+  threaded output bit-identical to serial (<a href="{{ src(k, 157, 168) }}">kernels.md L157–168</a>). One decode step of a
+  Llama-3-8B layer (32 heads, 8 kv heads, 128 dims) on one x86 core, <code>--config=opt</code>:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Context</th><th><code>AttendRef</code></th><th><code>Attend</code> f32 KV</th><th>f16 KV</th><th>int8 KV</th></tr></thead>
+    <tbody>
+      <tr><td>512</td><td>3.3 ms</td><td>1.3 ms</td><td>1.6 ms</td><td>1.3 ms</td></tr>
+      <tr><td>4096</td><td>64 ms</td><td>25 ms</td><td>32 ms</td><td>19 ms</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <a href="{{ src(k, 170, 178) }}">kernels.md L170–178</a>; the int8 column was measured in a later session, in which
+  f32 took 1.8 / 23 ms and f16 1.7 / 25 ms. An f16 row is widened by <code>HalfToFloat</code>
+  (<a href="{{ src('rml/core/dtype.h', 63, 63) }}">dtype.h L63</a>), branch-free and bit-exact against
+  <code>Float16::ToFloat</code> on all 65536 halves; without F16C on SSE2 that costs more than the halved traffic
+  saves, while on Apple Silicon <code>fcvtl</code> makes it nearly free. int8 widens with one multiply and is under half
+  of f16's size, so it is the fastest of the three at 4096 tokens there (<a href="{{ src(k, 180, 194) }}">L180–194</a>).
+  The kernel itself is drawn on {{ link('decoder', 'The decoder', '#attend') }}.
+</p>
+
+<h2 id="decoder-fusions">Decoder fusions</h2>
+
+<p>Each fusion in <code>rml/llm/kernels.h</code> removes a pass over an activation buffer, or the buffer
+  (<a href="{{ src(k, 196, 212) }}">kernels.md L196–212</a>):</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Fusion</th><th>What it removes</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Shared input (<code>MatMulMany</code>)</td><td>q, k and v (and gate and up) off one normalized input: one int8 quantization and one <code>ParallelFor</code> instead of three. In effect the RMSNorm + quantize fusion.</td><td><a href="{{ src('rml/llm/kernels.h', 56, 60) }}">kernels.h L56–60</a></td></tr>
+      <tr><td>Gated FFN (<code>MatMulGlu</code>)</td><td>A gate row and its up row in one task, writing act(gate) · up directly; the <code>up</code> buffer is gone. SiLU for SwiGLU, tanh GELU for GeGLU.</td><td><a href="{{ src('rml/llm/kernels.h', 62, 71) }}">L62–71</a></td></tr>
+      <tr><td>Residual add (<code>accumulate = true</code>)</td><td>The output and down projections add into the residual stream: no <code>proj</code> or <code>ffn_out</code> buffer, no add loop. MoE adds each expert's weighted output the same way.</td><td><a href="{{ src('rml/llm/kernels.h', 46, 54) }}">L46–54</a></td></tr>
+      <tr><td>RoPE in place</td><td>Already applied in place to q and k.</td><td><a href="{{ src('rml/llm/rope.h', 45, 47) }}">rope.h L45–47</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th><code>decoder_benchmark</code>: Linux x86_64 container, 4 cores, SSE2, median of 3 (2 runs each)</th><th>Unfused</th><th>Fused</th></tr></thead>
+    <tbody>
+      <tr><td>Q8_0, context 128, 1 thread</td><td>38.6 / 43.2 ms</td><td>43.5 / 40.3 ms</td></tr>
+      <tr><td>Q8_0, context 1024, 4 threads</td><td>18.0 / 17.8 ms</td><td>16.0 / 17.3 ms</td></tr>
+      <tr><td>Q4_0, context 128, 4 threads</td><td>15.2 / 15.8 ms</td><td>15.1 / 15.7 ms</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <a href="{{ src(k, 214, 228) }}">kernels.md L214–228</a>. The model is random-weight and Llama-shaped (hidden 2048,
+  2 layers, FFN 5632, vocab 8192), and the times are one decode step. The difference is within run-to-run noise:
+  at decode the weight reads dominate and the buffers removed are a few KB. What the fusions buy is fewer pool
+  dispatches per dense layer (4 instead of 7) and a smaller workspace, which rml expects to matter more at Apple Silicon's
+  per-token speeds. <code>kernels_test</code> holds every fused kernel bit-identical to the unfused sequence for F32,
+  F16, Q8_0 and Q4_0, serial and pooled.
+</p>
+
+<h2 id="strided-copies">Strided copies</h2>
+
+<p>
+  <code>Contiguous</code>, <code>Clone</code> and <code>CopyFrom</code> all go through <code>StridedCopy</code>, which
+  graph ops call whenever a view must be materialized (a reshape of a broadcast, a concat, a conv input). It drops
+  size-1 axes and merges axes both operands step through as one, copies the innermost two axes as a block
+  (<code>memcpy</code> for unit strides, <code>fill_n</code> for a broadcast source, a strided loop otherwise), and splits
+  copies of 64K elements or more over the default pool (<a href="{{ src(k, 230, 247) }}">kernels.md L230–247</a>;
+  <a href="{{ src('rml/core/tensor.cc', 161, 161) }}">tensor.cc L161</a>). The old loop handled one innermost row per
+  callback on one thread, about 4 ns an element on a nearest-2× upsample's 2-element rows.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Graph (batch 64, 4 threads)</th><th>Step</th><th>Before (ms)</th><th>After (ms)</th></tr></thead>
+    <tbody>
+      <tr><td>torch_unet_b64</td><td>reshape</td><td>8.2</td><td>1.7</td></tr>
+      <tr><td>torch_unet_b64</td><td>concat</td><td>4.7</td><td>2.7</td></tr>
+      <tr><td>tf_unet_b64</td><td>reshape</td><td>7.5</td><td>1.6</td></tr>
+      <tr><td>tf_unet_b64</td><td>concat</td><td>9.0</td><td>4.2</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p><a href="{{ src(k, 249, 256) }}">kernels.md L249–256</a>.</p>
+
+<h2 id="negative-result">A negative result: folding the recurrence bias</h2>
+
+<p>
+  An RNN or LSTM step at batch 64 is one 64 × 256 × N GEMM followed by bias and input-projection adds and a fused gate
+  epilogue. Three attempts folded the adds (and then the activation) into the GEMM, or ran all column slices in one
+  dispatch; none beat the unfused path at 4 threads on <code>torch_rnn_b64</code> or <code>torch_lstm_b64</code>. In
+  <code>BM_RnnSteps</code> a step took 103 µs fused against 86 µs unfused on one thread, and 54–62 µs against 58–62 µs
+  on four. The per-step GEMM already runs at 245–290 GFLOP/s on 4 threads, about the machine's peak, so the code was not
+  kept; the LSTM's remaining gap to PyTorch (8.8 ms against 13–16 ms) is the GEMM itself
+  (<a href="{{ src(k, 258, 273) }}">kernels.md L258–273</a>). The same story from the graph side is on
+  {{ link('lowering', 'Lowering and fast CPU') }}.
+</p>
+
+<h2 id="graph-kernels">The graph kernels</h2>
+
+<p>
+  <code>docs/kernels.md</code> has no section for <code>rml/graph/kernels.h</code>, the graph executor's fast f32 kernels
+  for elementwise math, broadcasting binary ops, softmax, layer norm, row reductions, im2col and pooling. Its header
+  states the same contract: each fast kernel has a scalar reference (libm, double accumulation) that the tests compare
+  it with; loops are compiled once per instruction set (AVX-512, AVX2, baseline) with <code>target_clones</code> and
+  chosen at load time; the transcendental functions are branch-free polynomials so the loops vectorize
+  (<a href="{{ src('rml/graph/kernels.h', 4, 12) }}">kernels.h L4–12</a>). They are described with the fusion layer
+  that drives them on {{ link('lowering', 'Lowering and fast CPU') }}.
+</p>
+
+<h2 id="planned">Planned</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Status at the pin</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>cblas_sgemm</code> (Accelerate) in the GEMM benchmark, macOS only</td><td><span class="rml-planned">planned</span>; no Accelerate code in the tree</td><td><a href="{{ src(k, 275, 277) }}">kernels.md L275–277</a>, <a href="{{ src('docs/progress.md', 64, 64) }}">progress.md L64</a></td></tr>
+      <tr><td><code>smmla</code> (ARMv8.6 i8mm) for prefill: two weight rows against two activation rows per instruction, M2 and later</td><td><span class="rml-planned">planned</span></td><td><a href="{{ src(k, 278, 279) }}">kernels.md L278–279</a>, <a href="{{ src('docs/progress.md', 66, 66) }}">progress.md L66</a></td></tr>
+      <tr><td>Benchmarks next to llama.cpp: prefill and decode tok/s, time to first token, GB/s, peak RSS</td><td><span class="rml-planned">planned</span></td><td><a href="{{ src('docs/progress.md', 71, 71) }}">progress.md L71</a></td></tr>
+      <tr><td>Metal backend (macOS only)</td><td><span class="rml-planned">planned</span></td><td><a href="{{ src('docs/progress.md', 78, 78) }}">progress.md L78</a></td></tr>
+      <tr><td><code>backend</code> module: kernel dispatch chosen at load time from <code>__ARM_NEON</code>, <code>__ARM_FEATURE_DOTPROD</code>, <code>__ARM_FEATURE_MATMUL_INT8</code>, Accelerate and Metal</td><td><span class="rml-planned">planned</span>; no <code>rml/backend</code> directory. Dispatch today is local: GEMM picks a micro-kernel at run time, <code>dot.cc</code> and the graph kernels use compile-time checks and <code>target_clones</code></td><td><a href="{{ src('docs/architecture.md', 83, 90) }}">architecture.md L83–90</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Done in Phase 5 (<a href="{{ src('docs/progress.md', 61, 71) }}">progress.md L61–71</a>): the packed f32 GEMM, the
+  quantized GEMV with on-the-fly int8 activations (its <code>sdot</code> path verified only on macOS CI), fused tiled
+  attention, the f16 KV cache, the decoder fusions, and zero allocations per decoded token, verified by
+  <code>decoder_alloc_test</code>. The Mac comparison against llama.cpp, which rml's headline goal (decode within about
+  1.5× of llama.cpp's CPU speed; <a href="{{ src('AGENTS.md', 13, 15) }}">AGENTS.md L13–15</a>) depends on, has not been
+  run.
+</p>
+
+<h2 id="tests">Tests</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Tests</th><th>Fast kernel against reference</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src('rml/linalg/gemm_test.cc') }}"><code>gemm_test.cc</code></a></td><td>6</td><td>Every supported micro-kernel and <code>kAuto</code> against <code>GemmRef</code>, within 4e-6 · (k + 1).</td></tr>
+      <tr><td><a href="{{ src('rml/quant/dot_test.cc') }}"><code>dot_test.cc</code></a></td><td>7</td><td><code>VecDot</code> equal to <code>VecDotRef</code>; the reference against the f64 dot of dequantized rows and the true f32 dot.</td></tr>
+      <tr><td><a href="{{ src('rml/llm/attention_test.cc') }}"><code>attention_test.cc</code></a></td><td>4</td><td><code>Attend</code> within 2e-5 of <code>AttendRef</code> for f32, f16 and int8 caches; threaded equal to serial.</td></tr>
+      <tr><td><a href="{{ src('rml/llm/kernels_test.cc') }}"><code>kernels_test.cc</code></a> (llm)</td><td>14</td><td><code>MatMul</code> against <code>MatMulRef</code>; fused kernels bit-identical to the unfused sequence.</td></tr>
+      <tr><td><a href="{{ src('rml/graph/kernels_test.cc') }}"><code>kernels_test.cc</code></a> (graph)</td><td>7</td><td>Each <code>*Fast</code> kernel against its <code>*Ref</code>.</td></tr>
+      <tr><td><a href="{{ src('rml/core/tensor_test.cc') }}"><code>tensor_test.cc</code></a></td><td>24</td><td><code>StridedCopy</code> through <code>Contiguous</code>, checked element by element against the views' strides (<a href="{{ src('rml/core/tensor_test.cc', 156, 156) }}">L156</a> on).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  How these run in CI, including the <code>macos-14</code> jobs that are the only place the NEON and <code>sdot</code>
+  paths execute, is on {{ link('testing', 'Build and testing') }}.
+</p>

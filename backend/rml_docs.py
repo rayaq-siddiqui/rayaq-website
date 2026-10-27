@@ -302,8 +302,11 @@ PAGES = [
         "group": "Project",
         "summary": "What docs/kernels.md describes: the GEMM, quantized dot, attention and "
         "fused decoder kernels that exist, and the ones still planned.",
-        "sources": ["docs/kernels.md", "rml/llm/kernels.h"],
-        "ready": False,
+        "sources": [
+            "docs/kernels.md", "rml/llm/kernels.h", "rml/linalg/gemm.h", "rml/quant/dot.h",
+            "rml/llm/attention.h", "rml/graph/kernels.h", "rml/core/tensor.cc",
+        ],
+        "ready": True,
     },
     {
         "slug": "models-memory",
