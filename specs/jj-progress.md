@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-26 (seventieth run): followed upstream `d1878e6..7ca39e5` (0.46.0). **The
+**Last updated:** 2026-10-27 (seventy-first run): followed upstream `7ca39e5..531b682` (0.46.0). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@7ca39e55793eaab0bd133dc500c3c4ee4a0a17b6` (committed 2026-10-26, version
-0.46.0), analyzed 2026-10-26. Held in `jj_docs.UPSTREAM`. Previous pin: `d1878e6`.
+`jj-vcs/jj@531b682046880c47ac06a7106c5852e56c046d71` (committed 2026-10-27, version
+0.46.0), analyzed 2026-10-27. Held in `jj_docs.UPSTREAM`. Previous pin: `7ca39e5`.
 
 ## §10 acceptance criteria
 
@@ -31,28 +31,23 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to seventieth runs: pin bumped).
+      run: pin bumped; fiftieth to seventy-first runs: pin bumped).
 
-## Sixty-fourth to seventieth runs (2026-10-20 to 2026-10-26)
+## Sixty-fourth to seventy-first runs (2026-10-20 to 2026-10-27)
 
-- `9d37e33` `d1878e6..7ca39e5`: git import diffs only changed Git refs against `git_refs`, op
-  restore keeps `git_refs` (re-import after undo prints `Nothing changed.`, export then makes Git
-  match), export failures aren't imported back (git-import, git-export); `workspace add` ops are
-  attributed to the invoking workspace (workspace-add); `Workspace::load_at` (cli). Publishing
-  TODO gone; 88 templates remapped; registry and protos unchanged.
-- `e65bbae` `4142aa8..d1878e6`: push stops updating Git's `refs/remotes/*` (negative fetch
-  refspec) and commits if all ok or some pushed (git-push); `WorkspaceRef.current_workspace()`
-  and the default list's `(current)` marker (workspace-list); op-store temp files get default
-  permissions (storage). 42 templates remapped; registry and protos unchanged.
-- `b70be32` `9ab2e84..4142aa8`: store caches are `CachedLoader` LRUs sharing concurrent loads
-  (backends); evolog, log graph mode and op diff load commits concurrently (evolog, log,
-  operation-diff); Git backend drops the root from merge parents instead of erroring (backends,
-  commits); op log/show pass the workspace name to `merge_operations`. 3 registry source lines
-  moved; protos unchanged; 32 files (relinks). `templates.toml` alias refactor quoted nowhere.
-- `ad64adf` `c84cc0a..9ab2e84` (batched export ref deletes, git-export; `TreeEntry` values,
-  file-list); `cdc336a` `7f96d3e..c84cc0a` (`SimpleOpStore` inherent impl; revset depth limit).
-- `60897df` `..7f96d3e` (`flake.lock` only); `117f376` `..5176b1d` (five modules to `core/src`,
-  `specs/jj.md` still names `lib/src`; `*_stream` renames; `jj run` marker style).
+- `fa45a4c` `7ca39e5..531b682`: config files saved atomically via a temp file renamed over the
+  target (config-set, config-unset); indirect graph edges deduplicated (log); invalid tree entry
+  names are read errors, not panics (backends); default store initializers moved to
+  `default_backend_factories.rs` (storage); `Workspace::load` removed. About 60 templates
+  remapped; registry and protos unchanged.
+- `9d37e33` `d1878e6..7ca39e5`: git import diffs only changed refs, op restore keeps `git_refs`
+  (git-import, git-export); `workspace add` ops attributed to the invoker (workspace-add).
+- `e65bbae` `4142aa8..d1878e6`: push stops updating `refs/remotes/*` (git-push); `(current)`
+  marker (workspace-list); op-store temp file permissions (storage).
+- `b70be32` `9ab2e84..4142aa8`: `CachedLoader` LRU store caches (backends); concurrent commit
+  loads (evolog, log, operation-diff); root dropped from merge parents (backends, commits).
+- `ad64adf` `..9ab2e84` (batched export deletes), `cdc336a` `..c84cc0a`, `60897df` `..7f96d3e`,
+  `117f376` `..5176b1d` (five modules to `core/src`; `specs/jj.md` still names `lib/src`).
 
 ## Fifty-third to sixty-third runs (2026-10-09 to 2026-10-19)
 
