@@ -1,0 +1,629 @@
+{% set l = "rml/llm/" %}
+<header class="jj-header">
+  <h1>The decoder</h1>
+  <p class="tagline">
+    How rml runs a real open-weight LLM: one config-driven <code>DecoderLM</code> that reads Llama, Mistral, Mixtral,
+    Qwen2, Qwen3, Qwen3-MoE, Gemma 3 and OLMoE from Hugging Face safetensors or GGUF, keeps every weight matrix in
+    the file mapping, and turns token ids into next-token logits through pre-norm blocks, grouped-query attention
+    over a paged KV cache, rotary positions and a dense or mixture-of-experts feed-forward network.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: there is one model class and no per-family code. <code>ModelConfig</code> is a base recipe (pre-norm
+  RMSNorm, RoPE, grouped-query attention, a gated FFN) plus a dozen switches (q/k/v bias, QK-norm, sliding window,
+  sandwich norms, embedding scale, experts), read from <code>config.json</code> or GGUF metadata. <code>WeightSource</code>
+  names every tensor by its GGUF name and maps Hugging Face names onto it, so both formats load through the same
+  code, and matrices stay views into the mmapped file. <code>DecoderLM::Forward</code> runs any number of tokens at
+  positions <code>cache.size()</code> onward: embed, then per layer norm → q/k/v → RoPE → store in the KV cache →
+  one-pass online-softmax attention → output projection added into the residual, then norm → FFN (or top-k experts)
+  added into the residual. After a prefill, decoding one token at a time allocates nothing, and each family is
+  pinned by golden logits from a float64 reference on toy models in both formats, plus real-checkpoint goldens.
+</p>
+
+<p>
+  The concepts are on /ml-models: {{ ml('decoder-only-llm', 'decoder-only LLMs') }}, {{ ml('attention', 'attention') }},
+  {{ ml('kv-cache', 'the KV cache') }}, {{ ml('positional-encoding', 'positional encoding') }} and
+  {{ ml('mixture-of-experts', 'mixture of experts') }}. The code is in <a href="{{ tree('rml/llm') }}"><code>rml/llm</code></a>:
+  <code>config</code>, <code>weight_source</code>, <code>decoder</code>, <code>attention</code>, <code>rope</code>,
+  <code>kv_cache</code> and <code>kernels</code>. The files it reads are on {{ link('model-files', 'Model files') }},
+  the weight formats it multiplies on {{ link('quantization', 'Quantization') }}, the token ids it takes on
+  {{ link('tokenizers', 'Tokenizers') }}, and what is done with its logits on {{ link('generation', 'Generation') }}.
+</p>
+
+<h2 id="config">The model config</h2>
+
+<p>
+  <code>config.h</code> states the design in its header: every supported model is one recipe with switches, and
+  the architectures differ only in which switches they flip
+  (<a href="{{ src(l ~ 'config.h', 4, 20) }}">config.h L4–20</a>). <code>ModelConfig</code> carries the sizes and
+  those switches (<a href="{{ src(l ~ 'config.h', 59, 111) }}">L59–111</a>):
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Type / default</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>architecture</code></td><td><code>std::string</code></td><td>The Hugging Face <code>model_type</code> (<code>"llama"</code>, <code>"qwen3_moe"</code>); it also selects tensor names.</td><td><a href="{{ src(l ~ 'config.h', 60, 61) }}">L60–61</a></td></tr>
+      <tr><td><code>vocab_size</code>, <code>hidden_size</code>, <code>intermediate_size</code>, <code>num_layers</code></td><td><code>int64</code>, 0</td><td>Sizes. For a mixture of experts <code>intermediate_size</code> is each expert's width.</td><td><a href="{{ src(l ~ 'config.h', 62, 66) }}">L62–66</a></td></tr>
+      <tr><td><code>num_heads</code>, <code>num_kv_heads</code>, <code>head_dim</code>, <code>max_position</code></td><td><code>int64</code>, 0</td><td>Attention shape; <code>q_size()</code> = heads × head_dim, <code>kv_size()</code> = kv heads × head_dim.</td><td><a href="{{ src(l ~ 'config.h', 67, 70) }}">L67–70</a>, <a href="{{ src(l ~ 'config.h', 109, 110) }}">L109–110</a></td></tr>
+      <tr><td><code>rms_norm_eps</code>, <code>rope_theta</code>, <code>rope_scaling</code></td><td>1e-6, 10000, none</td><td>Norm epsilon, RoPE base and one of five scaling schemes (see <a href="#rope">RoPE</a>).</td><td><a href="{{ src(l ~ 'config.h', 71, 73) }}">L71–73</a></td></tr>
+      <tr><td><code>tie_word_embeddings</code></td><td><code>bool</code>, false</td><td>The output head reuses the embedding matrix.</td><td><a href="{{ src(l ~ 'config.h', 74, 75) }}">L74–75</a></td></tr>
+      <tr><td><code>attention_bias</code>, <code>qk_norm</code>, <code>qk_norm_whole</code></td><td><code>bool</code>, false</td><td>Biases on q, k and v; RMSNorm on each head's queries and keys, or (OLMoE) across all heads at once.</td><td><a href="{{ src(l ~ 'config.h', 76, 79) }}">L76–79</a></td></tr>
+      <tr><td><code>activation</code></td><td><code>GluActivation</code>, <code>kSilu</code></td><td>SiLU (SwiGLU) or GELU-tanh (GeGLU).</td><td><a href="{{ src(l ~ 'config.h', 80, 80) }}">L80</a></td></tr>
+      <tr><td><code>embedding_scale</code>, <code>sandwich_norms</code>, <code>attention_scale</code></td><td>1, false, unset</td><td>Gemma's switches: embeddings times a constant, a second norm on each branch's output, and a query-key scale other than 1/√head_dim.</td><td><a href="{{ src(l ~ 'config.h', 81, 87) }}">L81–87</a></td></tr>
+      <tr><td><code>sliding_window</code>, <code>sliding_layers</code>, <code>rope_local_theta</code></td><td>unset, empty, unset</td><td>A window each token attends within; which layers use it (empty means all); the RoPE base of sliding layers.</td><td><a href="{{ src(l ~ 'config.h', 88, 95) }}">L88–95</a></td></tr>
+      <tr><td><code>num_experts</code>, <code>num_experts_per_token</code>, <code>normalize_expert_weights</code></td><td>0, 0, true</td><td>Zero experts means a dense FFN; otherwise top-k routing, with the chosen weights optionally renormalized to sum to one.</td><td><a href="{{ src(l ~ 'config.h', 96, 100) }}">L96–100</a></td></tr>
+      <tr><td><code>bos_token_id</code>, <code>eos_token_ids</code></td><td>optional, list</td><td>Special ids the chat example uses as stop tokens.</td><td><a href="{{ src(l ~ 'config.h', 101, 102) }}">L101–102</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="config-hf">From <code>config.json</code></h3>
+
+<p>
+  <code>ParseHfConfig</code> accepts eight <code>model_type</code>s: <code>llama</code>, <code>mistral</code>,
+  <code>mixtral</code>, <code>qwen2</code>, <code>qwen3</code>, <code>qwen3_moe</code>, <code>gemma3_text</code> and
+  <code>olmoe</code> (<a href="{{ src(l ~ 'config.cc', 23, 24) }}">config.cc L23–24</a>), and returns
+  <code>Unsupported</code> for anything else (<a href="{{ src(l ~ 'config.cc', 292, 367) }}">L292–367</a>). Along the way it:
+</p>
+
+<ul>
+  <li>takes the activation from <code>hidden_activation</code> or <code>hidden_act</code> (SiLU or <code>gelu_pytorch_tanh</code>) and rejects <code>mlp_bias</code>;</li>
+  <li>defaults <code>num_key_value_heads</code> to the head count and <code>head_dim</code> to hidden / heads, and <code>rms_norm_eps</code> to 1e-5 for Mixtral and OLMoE, 1e-6 otherwise, the defaults of transformers' config classes (<a href="{{ src(l ~ 'config.cc', 326, 329) }}">L326–329</a>);</li>
+  <li>reads RoPE from <code>rope_parameters</code> (preferring its <code>full_attention</code> set) or <code>rope_scaling</code> (<a href="{{ src(l ~ 'config.cc', 83, 113) }}">L83–113</a>);</li>
+  <li>derives the switches from the architecture: Gemma ties its head by default; Qwen2 always has q/k/v bias; Qwen3, Qwen3-MoE, Gemma and OLMoE have QK-norm, OLMoE's spanning every head (<a href="{{ src(l ~ 'config.cc', 339, 345) }}">L339–345</a>);</li>
+  <li>rejects OLMo's <code>clip_qkv</code> and Qwen's <code>use_sliding_window</code>, and reads <code>sliding_window</code> only for non-Qwen models, since Qwen configs carry one they do not use (<a href="{{ src(l ~ 'config.cc', 346, 356) }}">L346–356</a>);</li>
+  <li>reads the expert keys per family (<a href="{{ src(l ~ 'config.cc', 185, 206) }}">ParseMoe, L185–206</a>) and Gemma's extras (<a href="{{ src(l ~ 'config.cc', 115, 162) }}">ParseGemma, L115–162</a>), then the BOS and EOS ids, and finally <code>ValidateConfig</code>.</li>
+</ul>
+
+<p>
+  <code>ValidateConfig</code> checks every size is positive, the heads split evenly into kv groups, head_dim is even
+  (RoPE rotates pairs), the epsilon, theta, scaling factor and scales are positive, <code>sliding_layers</code> has one
+  flag per layer, and experts per token lie in [1, num_experts]
+  (<a href="{{ src(l ~ 'config.cc', 257, 290) }}">L257–290</a>).
+</p>
+
+<h3 id="config-gguf">From GGUF metadata</h3>
+
+<p>
+  <code>ModelConfigFromGguf</code> reads <code>general.architecture</code> and then the <code>&lt;arch&gt;.*</code> keys
+  (<a href="{{ src(l ~ 'config.cc', 379, 493) }}">L379–493</a>). GGUF names differ: <code>llama</code> becomes
+  <code>mixtral</code> when it has an <code>expert_count</code>, <code>qwen3moe</code> becomes <code>qwen3_moe</code> and
+  <code>gemma3</code> becomes <code>gemma3_text</code>. rml's fixtures write Mistral as <code>llama</code> with an
+  <code>attention.sliding_window</code> key (<a href="{{ src('tools/make_llm_fixtures.py', 196, 197) }}">make_llm_fixtures.py L196–197</a>),
+  so it loads as a Llama with a window. Partial rotary embeddings are rejected. The switches GGUF has no key for are read off the tensor table
+  instead (<a href="{{ src(l ~ 'config.cc', 467, 473) }}">L467–473</a>): a missing <code>output.weight</code> means a tied
+  head, a <code>blk.0.attn_q.bias</code> means q/k/v bias, a <code>blk.0.attn_q_norm.weight</code> means QK-norm (whole when
+  its length is not head_dim), and a <code>rope_freqs.weight</code> tensor means Llama 3.1's precomputed frequency factors.
+  The vocabulary size falls back to the embedding's row count.
+</p>
+
+<p>
+  Expert weights are renormalized for every MoE architecture but OLMoE unless the file has
+  <code>expert_weights_norm</code>, following llama.cpp (<a href="{{ src(l ~ 'config.cc', 421, 436) }}">L421–436</a>). Gemma 3's
+  GGUF keys get their own reader: an explicit <code>gemma3.attention.scale</code>, or llama.cpp's default (the 27B model,
+  62 blocks, scales by hidden / heads, the rest by head_dim); the local RoPE base; and the sliding pattern as a period or
+  one flag per layer (<a href="{{ src(l ~ 'config.cc', 208, 253) }}">L208–253</a>).
+</p>
+
+<p>
+  <code>ParameterCount</code> counts attention, FFN or experts plus router, two or four norms per layer, the final
+  norm and the embedding, the head only when untied (<a href="{{ src(l ~ 'config.cc', 495, 506) }}">L495–506</a>);
+  rml's memory tables are built from that count ({{ link('models-memory', 'Models and memory') }}).
+</p>
+
+<h2 id="weights">Weights: <code>WeightSource</code></h2>
+
+<p>
+  A model's tensors are looked up by their GGUF names whichever file holds them; a Hugging Face checkpoint is read
+  through the matching name, and matrices are views into the mapped files while only norm weights and biases are
+  copied out as f32 (<a href="{{ src(l ~ 'weight_source.h', 4, 11) }}">weight_source.h L4–11</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>GGUF name (after <code>blk.N.</code>)</th><th>Hugging Face name (after <code>model.layers.N.</code>)</th></tr></thead>
+    <tbody>
+      <tr><td><code>attn_norm.weight</code></td><td><code>input_layernorm.weight</code></td></tr>
+      <tr><td><code>attn_q</code> / <code>attn_k</code> / <code>attn_v</code> <code>.weight</code>, <code>.bias</code></td><td><code>self_attn.q_proj</code> / <code>k_proj</code> / <code>v_proj</code> <code>.weight</code>, <code>.bias</code></td></tr>
+      <tr><td><code>attn_output.weight</code></td><td><code>self_attn.o_proj.weight</code></td></tr>
+      <tr><td><code>attn_q_norm.weight</code>, <code>attn_k_norm.weight</code></td><td><code>self_attn.q_norm.weight</code>, <code>self_attn.k_norm.weight</code></td></tr>
+      <tr><td><code>ffn_norm.weight</code></td><td><code>post_attention_layernorm.weight</code> (Gemma: <code>pre_feedforward_layernorm.weight</code>)</td></tr>
+      <tr><td><code>post_attention_norm.weight</code>, <code>post_ffw_norm.weight</code></td><td>Gemma only: <code>post_attention_layernorm.weight</code>, <code>post_feedforward_layernorm.weight</code></td></tr>
+      <tr><td><code>ffn_gate</code> / <code>ffn_up</code> / <code>ffn_down</code> <code>.weight</code></td><td><code>mlp.gate_proj</code> / <code>up_proj</code> / <code>down_proj</code> <code>.weight</code></td></tr>
+      <tr><td><code>ffn_gate_inp.weight</code> (router)</td><td><code>block_sparse_moe.gate.weight</code> (Mixtral) or <code>mlp.gate.weight</code></td></tr>
+      <tr><td><code>token_embd</code>, <code>output_norm</code>, <code>output</code> (global)</td><td><code>model.embed_tokens</code>, <code>model.norm</code>, <code>lm_head</code></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <a href="{{ src(l ~ 'weight_source.cc', 33, 88) }}">weight_source.cc L33–88</a>. Note how Gemma reuses the name
+  <code>post_attention_layernorm</code> for a different norm: in Llama it is the norm before the FFN, in Gemma the
+  sandwich norm after attention, so Gemma's table is checked first.
+</p>
+
+<p>
+  <code>Matrix(name, rows, cols)</code> fetches the raw bytes, checks the shape, and wraps them in a
+  <code>WeightMatrix</code>: a type, a row and column count, and a span of the mapping
+  (<a href="{{ src(l ~ 'weight_source.cc', 134, 167) }}">L134–167</a>; <a href="{{ src(l ~ 'kernels.h', 22, 37) }}">kernels.h L22–37</a>).
+  GGUF tensors keep their stored type (F32, F16, BF16, Q8_0, Q4_K, …); safetensors tensors must be f32, f16 or bf16.
+  <code>MakeWeightMatrix</code> checks the columns are whole blocks and the byte count is exact, and dequantizes one
+  block as a probe so integer types, which have block layouts but no meaning as weights, are refused
+  (<a href="{{ src(l ~ 'kernels.cc', 43, 64) }}">kernels.cc L43–64</a>).
+</p>
+
+<p>
+  Experts come two ways (<a href="{{ src(l ~ 'weight_source.cc', 169, 197) }}">L169–197</a>): GGUF stacks each
+  layer's experts into one <code>[experts, rows, cols]</code> tensor (<code>ffn_gate_exps</code>, <code>ffn_up_exps</code>,
+  <code>ffn_down_exps</code>) and expert <em>e</em> is the <em>e</em>-th slice of its bytes; Hugging Face stores one matrix
+  per expert, <code>block_sparse_moe.experts.E.w1/w3/w2</code> in Mixtral and <code>mlp.experts.E.gate_proj/up_proj/down_proj</code>
+  in Qwen3-MoE and OLMoE. <code>Vector</code> converts a norm or bias to f32, and adds 1 to a Hugging Face Gemma norm
+  weight, because Gemma's RMSNorm scales by (1 + w) and GGUF converters already store 1 + w
+  (<a href="{{ src(l ~ 'weight_source.cc', 199, 217) }}">L199–217</a>). One <code>RmsNorm</code> then serves every family.
+  A known gap: for a safetensors tensor that is not aligned, <code>Raw</code> keeps a span of a copy that is freed when it
+  returns; see {{ link('model-files', 'Model files') }}.
+</p>
+
+<p>
+  <code>DecoderLM::LoadLayers</code> asks for every tensor the config implies (q/k/v biases only with
+  <code>attention_bias</code>, q/k norms only with <code>qk_norm</code>, sandwich norms only for Gemma, a router and
+  <code>num_experts</code> × 3 expert matrices instead of a dense FFN for MoE), so a missing or misshapen tensor fails
+  at load with its file name and shapes, not mid-forward (<a href="{{ src(l ~ 'decoder.cc', 100, 159) }}">decoder.cc L100–159</a>).
+  The embedding is a <code>WeightMatrix</code> too; <code>Forward</code> dequantizes just the rows of the tokens it sees
+  (<a href="{{ src(l ~ 'decoder.cc', 226, 233) }}">L226–233</a>).
+</p>
+
+<h2 id="forward-pass">One forward pass</h2>
+
+<p>
+  Each block is pre-norm: <code>x += o_proj(attention(rope(q(norm(x))), rope(k(norm(x))), v(norm(x))))</code> then
+  <code>x += ffn(norm(x))</code>, and Gemma normalizes each branch's output too before the add
+  (<a href="{{ src(l ~ 'decoder.h', 10, 25) }}">decoder.h L10–25</a>).
+  <code>Forward(tokens, cache, logits, all_logits)</code> runs <em>n</em> tokens at positions
+  <code>cache.size()</code> onward; the same call is a prefill (n = prompt length) or one decode step (n = 1)
+  (<a href="{{ src(l ~ 'decoder.cc', 204, 273) }}">decoder.cc L204–273</a>).
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 600" role="img" aria-labelledby="dec-fwd-title dec-fwd-desc">
+    <title id="dec-fwd-title">One decoder layer in DecoderLM::Forward</title>
+    <desc id="dec-fwd-desc">The residual stream x enters the layer. RMSNorm with attn_norm writes normed. MatMulMany
+      computes q, k and v from it in one dispatch; biases are added if present, and QK-norm is applied if present.
+      RoPE rotates q and k, and k and v are stored in the KV cache at their positions. Attend computes online-softmax
+      attention over the cache, and the output projection is added into the residual stream, through a sandwich norm
+      for Gemma. Then RMSNorm with ffn_norm, and either the dense MatMulGlu and down projection, or a router softmax
+      that picks the top-k experts and adds each expert's weighted output, again added into the residual. After the
+      last layer, output_norm and the output head produce logits.</desc>
+
+    <rect class="d-box" x="200" y="12" width="240" height="34" rx="5"/>
+    <text x="320" y="34" text-anchor="middle">x: n × hidden (residual)</text>
+    <line class="d-line" x1="320" y1="46" x2="320" y2="62"/>
+
+    <rect class="d-box" x="200" y="62" width="240" height="34" rx="5"/>
+    <text x="320" y="84" text-anchor="middle">RmsNorm(attn_norm) → normed</text>
+    <line class="d-line" x1="320" y1="96" x2="320" y2="112"/>
+
+    <rect class="d-box d-accent" x="100" y="112" width="440" height="44" rx="5"/>
+    <text x="320" y="132" text-anchor="middle">MatMulMany(q, k, v): one quantize, one dispatch</text>
+    <text class="d-muted" x="320" y="148" text-anchor="middle" font-size="12">+ bias (Qwen2) · QK-norm (Qwen3, Gemma, OLMoE)</text>
+    <line class="d-line" x1="320" y1="156" x2="320" y2="172"/>
+
+    <rect class="d-box" x="140" y="172" width="360" height="44" rx="5"/>
+    <text x="320" y="192" text-anchor="middle">RoPE on q and k · cache.Store(l, pos, k, v)</text>
+    <text class="d-muted" x="320" y="208" text-anchor="middle" font-size="12">sliding layers use the local RoPE (Gemma)</text>
+    <line class="d-line" x1="320" y1="216" x2="320" y2="232"/>
+
+    <rect class="d-box d-accent" x="140" y="232" width="360" height="44" rx="5"/>
+    <text x="320" y="252" text-anchor="middle">Attend: online softmax over the cache</text>
+    <text class="d-muted" x="320" y="268" text-anchor="middle" font-size="12">causal, GQA, optional sliding window</text>
+    <line class="d-line" x1="320" y1="276" x2="320" y2="292"/>
+
+    <rect class="d-box" x="140" y="292" width="360" height="44" rx="5"/>
+    <text x="320" y="312" text-anchor="middle">o_proj, accumulate = true → x +=</text>
+    <text class="d-muted" x="320" y="328" text-anchor="middle" font-size="12">Gemma: into branch, NormEach, then x += branch</text>
+    <line class="d-line" x1="320" y1="336" x2="320" y2="352"/>
+
+    <rect class="d-box" x="200" y="352" width="240" height="34" rx="5"/>
+    <text x="320" y="374" text-anchor="middle">RmsNorm(ffn_norm) → normed</text>
+    <line class="d-line" x1="280" y1="386" x2="170" y2="406"/>
+    <line class="d-line" x1="360" y1="386" x2="470" y2="406"/>
+
+    <rect class="d-box" x="20" y="406" width="290" height="58" rx="5"/>
+    <text x="165" y="426" text-anchor="middle">dense: MatMulGlu(gate, up)</text>
+    <text class="d-muted" x="165" y="443" text-anchor="middle" font-size="12">act(x·gateᵀ) * (x·upᵀ), SiLU or GELU-tanh</text>
+    <text class="d-muted" x="165" y="458" text-anchor="middle" font-size="12">then down, accumulate → x +=</text>
+
+    <rect class="d-box" x="330" y="406" width="270" height="58" rx="5"/>
+    <text x="465" y="426" text-anchor="middle">MoE: router → softmax → top-k</text>
+    <text class="d-muted" x="465" y="443" text-anchor="middle" font-size="12">per token, per chosen expert:</text>
+    <text class="d-muted" x="465" y="458" text-anchor="middle" font-size="12">x += w_e · down_e(glu_e(x))</text>
+
+    <line class="d-line" x1="165" y1="464" x2="280" y2="490"/>
+    <line class="d-line" x1="465" y1="464" x2="360" y2="490"/>
+    <rect class="d-box" x="140" y="490" width="360" height="34" rx="5"/>
+    <text x="320" y="512" text-anchor="middle">× num_layers, then output_norm</text>
+    <line class="d-line" x1="320" y1="524" x2="320" y2="540"/>
+    <rect class="d-box" x="140" y="540" width="360" height="44" rx="5"/>
+    <text x="320" y="560" text-anchor="middle">output head (or tied embedding)</text>
+    <text class="d-muted" x="320" y="576" text-anchor="middle" font-size="12">last token's logits, or every token's</text>
+  </svg>
+  <figcaption>One layer (<a href="{{ src(l ~ 'decoder.cc', 244, 264) }}">decoder.cc L244–264</a>,
+    <a href="{{ src(l ~ 'decoder.cc', 289, 369) }}">L289–369</a>). Accented boxes are where the time goes at decode:
+    the weight reads of the projections, and the cache reads of attention.</figcaption>
+</figure>
+
+<p>Step by step:</p>
+
+<ol>
+  <li><strong>Checks.</strong> An empty input, an id outside the vocabulary, a <code>logits</code> span of the wrong size
+    or a cache made for another model is <code>InvalidArgument</code>; a full cache is <code>OutOfRange</code> from
+    <code>cache.Extend(n)</code>, and in every case nothing has changed yet (<a href="{{ src(l ~ 'decoder.cc', 206, 223) }}">L206–223</a>).</li>
+  <li><strong>Scratch.</strong> <code>Reserve(n)</code> grows each <code>Workspace</code> buffer to the largest call so
+    far: x, normed, q, k, v, the attention output, Gemma's branch buffer, the gate, the router scores, the cos and sin
+    tables, and the int8 input scratch sized for the largest matrix (<a href="{{ src(l ~ 'decoder.cc', 165, 197) }}">L165–197</a>).
+    After a prefill, a one-token step never grows anything.</li>
+  <li><strong>Embed.</strong> Each token's embedding row is dequantized into x, times <code>embedding_scale</code>
+    (√hidden for Gemma); then the cos and sin of every rotary pair are computed once per position, for the global RoPE
+    and, when there is one, the local one (<a href="{{ src(l ~ 'decoder.cc', 226, 242) }}">L226–242</a>).</li>
+  <li><strong>Attention half.</strong> <code>RmsNorm</code> each row into normed, then <code>Residual</code> runs
+    <code>Attention</code> into the stream (<a href="{{ src(l ~ 'decoder.cc', 289, 325) }}">L289–325</a>):
+    <code>MatMulMany</code> computes q, k and v; biases are added; QK-norm normalizes each head (or each whole row);
+    RoPE rotates q and k in place; k and v go to the cache; <code>Attend</code> writes the attention output; and the
+    output projection is a <code>MatMul</code> with <code>accumulate = true</code>, so it adds straight into x.</li>
+  <li><strong>FFN half.</strong> <code>RmsNorm</code> again, then <code>DenseFfn</code> (<code>MatMulGlu</code> writes
+    act(gate) × up, the down projection accumulates into x) or <code>MoeFfn</code>
+    (<a href="{{ src(l ~ 'decoder.cc', 327, 331) }}">L327–331</a>).</li>
+  <li><strong>Sandwich norms.</strong> With <code>sandwich_norms</code>, <code>Residual</code> zeroes a branch buffer,
+    runs the block into it, normalizes each row with the post norm and only then adds it to x
+    (<a href="{{ src(l ~ 'decoder.cc', 275, 287) }}">L275–287</a>).</li>
+  <li><strong>Logits.</strong> Only the rows that need logits (the last, or all with <code>all_logits</code>) get the
+    final norm and the output product (<a href="{{ src(l ~ 'decoder.cc', 266, 272) }}">L266–272</a>).</li>
+</ol>
+
+<h3 id="kernels">The kernels underneath</h3>
+
+<p>
+  The arithmetic lives in <code>kernels.h</code>, written as plain loops over f32 activations and weights in their
+  stored format; a quantized row is expanded a few blocks at a time, never as a whole matrix
+  (<a href="{{ src(l ~ 'kernels.h', 4, 10) }}">kernels.h L4–10</a>). Everything here is parallel over the output rows
+  of the weight in grains of 16 (<a href="{{ src(l ~ 'kernels.cc', 149, 156) }}">kernels.cc L149–156</a>) and never allocates.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Function</th><th>Signature</th><th>What it does</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>MatMul</code></td><td><code>(w, x, n, y, pool, scratch, accumulate)</code></td><td>y[n, rows] = x · wᵀ. With scratch for a quantized type, x is quantized to int8 once and each output is <code>quant::VecDot</code> against the stored row; otherwise each weight row is expanded 256 elements at a time on the stack and reused for up to 64 tokens. <code>accumulate</code> makes it y +=.</td><td><a href="{{ src(l ~ 'kernels.cc', 173, 190) }}">L173–190</a></td></tr>
+      <tr><td><code>MatMulMany</code></td><td><code>(ws, x, n, ys, pool, scratch)</code></td><td>Several matrices sharing an input (q, k, v): one quantization, every row of every matrix in one <code>ParallelFor</code>.</td><td><a href="{{ src(l ~ 'kernels.cc', 192, 216) }}">L192–216</a></td></tr>
+      <tr><td><code>MatMulGlu</code></td><td><code>(gate, up, act, x, n, y, pool, scratch)</code></td><td>The gate and matching up row in one task, writing act(g) × u directly; no gate or up buffer.</td><td><a href="{{ src(l ~ 'kernels.cc', 218, 238) }}">L218–238</a></td></tr>
+      <tr><td><code>RmsNorm</code></td><td><code>(x, weight, size, eps, out)</code></td><td>x / √(mean(x²) + eps) × weight.</td><td><a href="{{ src(l ~ 'kernels.cc', 250, 259) }}">L250–259</a></td></tr>
+      <tr><td><code>Glu</code>, <code>Softmax</code></td><td></td><td>SiLU x / (1 + e⁻ˣ) or PyTorch's tanh GELU, times up; max-subtracted softmax in place.</td><td><a href="{{ src(l ~ 'kernels.cc', 158, 169) }}">L158–169</a>, <a href="{{ src(l ~ 'kernels.cc', 261, 278) }}">L261–278</a></td></tr>
+      <tr><td><code>MatMulRef</code></td><td><code>(w, x, n, y)</code></td><td>The reference: expand a whole row, then dot.</td><td><a href="{{ src(l ~ 'kernels.cc', 240, 248) }}">L240–248</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The three fusions (shared input, gated FFN, residual add as accumulate) and their measurements are on
+  {{ link('kernels', 'Kernels') }}; the int8 dot products on {{ link('quantization', 'Quantization') }}.
+</p>
+
+<h2 id="attention-kv-cache">Attention and the KV cache</h2>
+
+<h3 id="kv-cache">The paged cache</h3>
+
+<p>
+  <code>KvCache</code> keeps every earlier token's keys and values, in pages of <code>page_size</code> tokens
+  (<code>NewCache</code> uses 16), each page holding that span for every layer. A page table maps a position to its
+  page, and all pages come out of one arena reserved up front, so nothing is allocated while decoding and untouched
+  pages are never made resident (<a href="{{ src(l ~ 'kv_cache.h', 4, 19) }}">kv_cache.h L4–19</a>). The arena is
+  <code>calloc</code>ed because large zeroed allocations come straight from mmap
+  (<a href="{{ src(l ~ 'kv_cache.cc', 20, 62) }}">kv_cache.cc L20–62</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Signature</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>Create</code></td><td><code>(config, max_tokens, page_size = 16, dtype = kF32)</code></td><td>Room for max_tokens rounded up to pages; f32, f16 or i8. (<code>DecoderLM::NewCache</code> defaults to f16.)</td><td><a href="{{ src(l ~ 'kv_cache.h', 41, 44) }}">h L41–44</a></td></tr>
+      <tr><td><code>Extend</code></td><td><code>(n) → Status</code></td><td>Counts n more positions and maps pages from the free stack; <code>OutOfRange</code>, changing nothing, past capacity.</td><td><a href="{{ src(l ~ 'kv_cache.cc', 100, 112) }}">cc L100–112</a></td></tr>
+      <tr><td><code>Truncate</code>, <code>Clear</code></td><td><code>(size)</code></td><td>Forget positions from size on and push whole pages back; the last freed is reused first. Generation reuses a shared prefix and speculative decoding rolls back rejected drafts with it.</td><td><a href="{{ src(l ~ 'kv_cache.cc', 114, 121) }}">cc L114–121</a></td></tr>
+      <tr><td><code>Store</code></td><td><code>(layer, position, key, value)</code></td><td>Writes kv_size floats of each, converted to the cache's dtype.</td><td><a href="{{ src(l ~ 'kv_cache.cc', 64, 82) }}">cc L64–82</a></td></tr>
+      <tr><td><code>Key</code>/<code>Value</code>, <code>KeyF16</code>/…, <code>KeyI8</code>/…</td><td><code>(layer, position)</code></td><td>One position's row in the cache's own dtype; an int8 row is its scales then its values.</td><td><a href="{{ src(l ~ 'kv_cache.h', 71, 94) }}">h L71–94</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  A row is one position's keys (or values) for one layer, all kv heads: <code>kv_size</code> entries. Inside the arena
+  rows are ordered page, then layer, then key/value, then slot:
+  <code>row = ((page · num_layers + layer) · 2 + which) · page_size + position mod page_size</code>
+  (<a href="{{ src(l ~ 'kv_cache.h', 102, 109) }}">kv_cache.h L102–109</a>), so one layer's keys for a page are
+  <code>page_size</code> contiguous rows.
+</p>
+
+<p>
+  An int8 cache stores each group of channels as round(x / s) with one f32 scale s = max|x| / 127. The group is the
+  largest power of two dividing head_dim, at most 32, so groups never straddle two heads, and a row is its scales
+  first (keeping them 4-byte aligned) then its values padded to a multiple of 4
+  (<a href="{{ src(l ~ 'kv_cache.cc', 37, 46) }}">L37–46</a>, <a href="{{ src(l ~ 'kv_cache.cc', 84, 98) }}">L84–98</a>).
+</p>
+
+<p><strong>Worked example: Llama 3.1 8B.</strong> 32 layers, 8 kv heads of 128, so kv_size = 1024.</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>dtype</th><th>row_bytes</th><th>per token (32 layers × K and V)</th><th>8192 tokens</th></tr></thead>
+    <tbody>
+      <tr><td>f32</td><td>4096</td><td>256 KiB</td><td>2 GiB</td></tr>
+      <tr><td>f16 (default)</td><td>2048</td><td>128 KiB</td><td>1 GiB (1.07 GB, as <a href="{{ src('docs/models.md', 33, 39) }}">models.md L33–39</a> budgets)</td></tr>
+      <tr><td>i8 (group 32: 32 scales + 1024 values)</td><td>128 + 1024 = 1152</td><td>72 KiB</td><td>576 MiB</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 id="attend">Attend</h3>
+
+<p>
+  Query <em>i</em> at position start + <em>i</em> attends to every cached position <em>j</em> from the window start (0,
+  or pos − window + 1) to itself, through the kv head its query head shares with its group, and <code>Attend</code>
+  does it in one pass of online softmax: a running maximum and normalizer per query head, the partial output rescaled
+  when the maximum grows, no score array ever materialized (<a href="{{ src(l ~ 'attention.h', 4, 16) }}">attention.h L4–16</a>).
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 430" role="img" aria-labelledby="dec-att-title dec-att-desc">
+    <title id="dec-att-title">Attend over the paged KV cache</title>
+    <desc id="dec-att-desc">The page table maps logical pages of 16 positions to physical pages in one calloc'd arena.
+      Each physical page holds, for every layer, 16 key rows then 16 value rows, each row kv_size entries of f32, f16
+      or int8. One Attend task is one query position and one kv head: the group of query heads sharing that kv head
+      reads each key row once, 32 keys per tile, computes the group's scores into a group by 32 stack array, folds the
+      tile maximum into the running maximum, rescales the running output once, then accumulates the values. Tasks over
+      positions times kv heads run on the thread pool with grain 1.</desc>
+
+    <text x="20" y="26" font-size="13">page table</text>
+    <rect class="d-box" x="20" y="36" width="44" height="26"/><text x="42" y="54" text-anchor="middle" font-size="12">0→5</text>
+    <rect class="d-box" x="64" y="36" width="44" height="26"/><text x="86" y="54" text-anchor="middle" font-size="12">1→4</text>
+    <rect class="d-box" x="108" y="36" width="44" height="26"/><text x="130" y="54" text-anchor="middle" font-size="12">2→3</text>
+    <text class="d-muted" x="20" y="80" font-size="12">positions 0–15, 16–31, 32–47</text>
+
+    <line class="d-line" x1="152" y1="49" x2="250" y2="49"/>
+    <text x="250" y="26" font-size="13">arena: physical page 3 (16 positions)</text>
+    <rect class="d-box" x="250" y="36" width="350" height="26"/>
+    <text x="425" y="54" text-anchor="middle" font-size="12">layer 0: K rows 0–15 · V rows 0–15</text>
+    <rect class="d-box" x="250" y="62" width="350" height="26"/>
+    <text x="425" y="80" text-anchor="middle" font-size="12">layer 1: K rows 0–15 · V rows 0–15</text>
+    <rect class="d-box" x="250" y="88" width="350" height="26"/>
+    <text x="425" y="106" text-anchor="middle" font-size="12">… layer L−1</text>
+    <text class="d-muted" x="425" y="132" text-anchor="middle" font-size="12">a row: kv_size entries, f32 · f16 · (i8: scales, values)</text>
+
+    <rect class="d-box d-accent" x="40" y="160" width="560" height="54" rx="5"/>
+    <text x="320" y="182" text-anchor="middle">one task = (query position i, kv head h)</text>
+    <text class="d-muted" x="320" y="202" text-anchor="middle" font-size="12">group = num_heads / num_kv_heads query heads share each K and V row read</text>
+
+    <line class="d-line" x1="320" y1="214" x2="320" y2="232"/>
+    <rect class="d-box" x="40" y="232" width="270" height="70" rx="5"/>
+    <text x="175" y="254" text-anchor="middle">tile of 32 keys</text>
+    <text class="d-muted" x="175" y="272" text-anchor="middle" font-size="12">widen row (f16 / i8 → f32)</text>
+    <text class="d-muted" x="175" y="290" text-anchor="middle" font-size="12">scores[g][t] = q_g · k_t × scale</text>
+
+    <rect class="d-box" x="330" y="232" width="270" height="70" rx="5"/>
+    <text x="465" y="254" text-anchor="middle">fold the tile's max</text>
+    <text class="d-muted" x="465" y="272" text-anchor="middle" font-size="12">c = exp(old max − new max)</text>
+    <text class="d-muted" x="465" y="290" text-anchor="middle" font-size="12">sum = sum·c + Σ exp; acc ×= c once</text>
+
+    <line class="d-line" x1="175" y1="302" x2="280" y2="322"/>
+    <line class="d-line" x1="465" y1="302" x2="360" y2="322"/>
+    <rect class="d-box" x="140" y="322" width="360" height="44" rx="5"/>
+    <text x="320" y="342" text-anchor="middle">acc[g] += p · v_t (each V row read once)</text>
+    <text class="d-muted" x="320" y="358" text-anchor="middle" font-size="12">acc: group × head_dim floats, ≤ 32 KiB, in L1</text>
+    <line class="d-line" x1="320" y1="366" x2="320" y2="384"/>
+    <text x="320" y="404" text-anchor="middle" font-size="13">out[g] = acc[g] / sum[g] after the last tile</text>
+  </svg>
+  <figcaption>The cache layout and one attention task (<a href="{{ src(l ~ 'kv_cache.h', 102, 109) }}">kv_cache.h L102–109</a>,
+    <a href="{{ src(l ~ 'attention.cc', 67, 129) }}">attention.cc L67–129</a>). The page-table entries shown are
+    illustrative; free pages are handed out from the top of a stack.</figcaption>
+</figure>
+
+<p>
+  <code>Attend</code> picks <code>AttendGroup&lt;float&gt;</code>, <code>&lt;Float16&gt;</code> or
+  <code>&lt;int8_t&gt;</code> by the cache's dtype and runs <em>n</em> × num_kv_heads tasks on the pool with grain 1
+  (<a href="{{ src(l ~ 'attention.cc', 141, 166) }}">attention.cc L141–166</a>). Inside a task
+  (<a href="{{ src(l ~ 'attention.cc', 67, 129) }}">L67–129</a>) keys are taken 32 at a time, each key row widened to
+  f32 into a stack buffer as it is read (<a href="{{ src(l ~ 'attention.cc', 42, 65) }}">HeadRow, L42–65</a>) and dotted
+  against every query in the group with four partial sums (<a href="{{ src(l ~ 'attention.cc', 24, 37) }}">L24–37</a>).
+  Per-task state lives on the stack, which is why the group is limited to 16 query heads and head_dim to 512
+  (<a href="{{ src(l ~ 'attention.h', 34, 37) }}">attention.h L34–37</a>). <code>AttendRef</code> is the definition:
+  every score, a softmax, a weighted sum (<a href="{{ src(l ~ 'attention.cc', 168, 213) }}">L168–213</a>).
+</p>
+
+<p>
+  For Llama 3.1 8B a decode step is 8 tasks per layer, each serving 4 query heads. rml's own measurement of one decode
+  step's attention at that shape, on one x86 core of the development container: 1.3 ms at 512 tokens and 25 ms at 4096
+  with an f32 cache, against 3.3 and 64 ms for <code>AttendRef</code>; 32 ms with f16 (no F16C on that SSE2 build) and
+  19 ms with int8 at 4096 (<a href="{{ src('docs/kernels.md', 170, 194) }}">kernels.md L170–194</a>, from
+  <a href="{{ src(l ~ 'attention_benchmark.cc') }}"><code>attention_benchmark</code></a>).
+</p>
+
+<h2 id="rope">Rotary embeddings</h2>
+
+<p>
+  Pair <em>i</em> of a head's dimensions turns at inv_freq[i] = θ<sup>−2i / head_dim</sup> radians per position, so
+  q · k depends only on the distance between two tokens; the scaling schemes stretch the slow pairs so a model trained
+  on a short context reads positions beyond it (<a href="{{ src(l ~ 'rope.h', 4, 11) }}">rope.h L4–11</a>).
+  <code>Rope::Create</code> computes the frequencies and applies the scaling once
+  (<a href="{{ src(l ~ 'rope.cc', 73, 112) }}">rope.cc L73–112</a>); <code>Angles</code> gives each pair's cos and sin at a
+  position, times YaRN's attention factor (<a href="{{ src(l ~ 'rope.cc', 114, 121) }}">L114–121</a>); <code>Apply</code>
+  rotates heads in place (<a href="{{ src(l ~ 'rope.cc', 123, 140) }}">L123–140</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Scaling</th><th>What it does to inv_freq</th><th>Read from</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>kNone</code></td><td>Unchanged.</td><td><code>"default"</code>, or no key</td><td></td></tr>
+      <tr><td><code>kLinear</code></td><td>Every frequency ÷ factor (position interpolation).</td><td><code>"linear"</code>; GGUF <code>rope.scaling.type</code></td><td><a href="{{ src(l ~ 'rope.cc', 91, 93) }}">L91–93</a></td></tr>
+      <tr><td><code>kLlama3</code></td><td>Wavelengths longer than original / low_freq_factor ÷ factor; shorter than original / high_freq_factor kept; a smooth blend between.</td><td><code>"llama3"</code></td><td><a href="{{ src(l ~ 'rope.cc', 20, 37) }}">L20–37</a></td></tr>
+      <tr><td><code>kFrequencyFactors</code></td><td>Each frequency ÷ its entry in <code>rope_freqs.weight</code>: the same ramp, precomputed per dimension.</td><td>GGUF Llama 3.1 files</td><td><a href="{{ src(l ~ 'rope.cc', 97, 106) }}">L97–106</a></td></tr>
+      <tr><td><code>kYarn</code></td><td>Pairs turning more than beta_fast times over the original context kept, fewer than beta_slow times ÷ factor, a linear ramp between; cos and sin × (0.1 ln factor + 1).</td><td><code>"yarn"</code>; GGUF</td><td><a href="{{ src(l ~ 'rope.cc', 39, 69) }}">L39–69</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <strong>Worked example: Llama 3.1 8B</strong> (factor 8, low and high frequency factors 1 and 4, original context
+  8192; <a href="{{ src('docs/models.md', 26, 28) }}">models.md L26–28</a>). Pairs whose wavelength 2π / inv_freq is
+  under 8192 / 4 = 2048 positions keep their frequency, those over 8192 / 1 = 8192 turn eight times slower, and between
+  them smooth = (8192 / wavelength − 1) / 3 blends the two, so a pair with a wavelength of 4096 positions gets
+  (1 − 1/3) of the slowed frequency plus 1/3 of the original.
+</p>
+
+<p>
+  <strong>Which dimensions pair.</strong> Hugging Face's <code>rotate_half</code> pairs dimension i with i + head_dim/2
+  (<code>kHalf</code>); llama.cpp's converter permutes Llama-family q and k rows so that pairs are adjacent, (2i, 2i + 1)
+  (<code>kInterleaved</code>) (<a href="{{ src(l ~ 'rope.h', 22, 29) }}">rope.h L22–29</a>). rml does not undo the
+  permutation: it rotates in whichever order the file uses. <code>FromHf</code> always uses <code>kHalf</code>;
+  <code>FromGguf</code> uses <code>kInterleaved</code> for llama, mistral and mixtral and <code>kHalf</code> for the rest
+  (<a href="{{ src(l ~ 'decoder.cc', 51, 56) }}">decoder.cc L51–56</a>, <a href="{{ src(l ~ 'decoder.cc', 66, 79) }}">L66–79</a>).
+</p>
+
+<p>
+  <strong>Two bases.</strong> When the config has <code>rope_local_theta</code> (Gemma 3), <code>Create</code> builds a
+  second <code>Rope</code> with that base and no scaling, and sliding layers use it while global layers use the main
+  one (<a href="{{ src(l ~ 'decoder.cc', 81, 98) }}">decoder.cc L81–98</a>, <a href="{{ src(l ~ 'decoder.cc', 307, 311) }}">L307–311</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Family</th><th>RoPE in rml's tests and targets</th></tr></thead>
+    <tbody>
+      <tr><td>Llama 3.1</td><td><code>llama3</code> scaling from <code>config.json</code>; <code>kFrequencyFactors</code> from GGUF. The toy <code>llama</code> fixture uses <code>llama3</code> scaling with an original context of 64.</td></tr>
+      <tr><td>Qwen2, Qwen3</td><td>No scaling at θ = 10⁶ for Qwen3 8B (<a href="{{ src('docs/models.md', 53, 54) }}">models.md L53–54</a>); YaRN is supported and the toy <code>qwen3</code> fixture uses it (factor 4).</td></tr>
+      <tr><td>Gemma 3</td><td>Global layers at <code>rope_theta</code> with its scaling (the toy fixture: linear, factor 2); sliding layers at <code>rope_local_base_freq</code> (default 10000), unscaled.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Fixture settings from <a href="{{ src('tools/make_llm_fixtures.py', 47, 98) }}">make_llm_fixtures.py L47–98</a>.
+</p>
+
+<h2 id="moe">Mixture of experts</h2>
+
+<p>
+  With experts, the FFN half is <code>MoeFfn</code> (<a href="{{ src(l ~ 'decoder.cc', 333, 369) }}">decoder.cc L333–369</a>).
+  The router is one more <code>WeightMatrix</code> (<code>ffn_gate_inp</code>, [num_experts, hidden]); a
+  <code>MatMul</code> scores every token against every expert, and then, token by token:
+</p>
+
+<ol>
+  <li>softmax the token's router scores over all experts;</li>
+  <li>pick the top k by repeated selection, ties going to the lower expert id, summing the chosen probabilities;</li>
+  <li>for each chosen expert, weight = p<sub>e</sub> / total when <code>normalize_expert_weights</code>, else p<sub>e</sub>;
+    run that expert's <code>MatMulGlu</code> and down projection on the one token, and add weight × output into the
+    residual stream.</li>
+</ol>
+
+<p>
+  Experts run one token at a time, so the gate buffer is one row wide (<a href="{{ src(l ~ 'decoder.cc', 174, 177) }}">L174–177</a>),
+  and chosen ids sit in a stack array of 256, the most experts a model may have
+  (<a href="{{ src(l ~ 'decoder.cc', 339, 342) }}">L339–342</a>). In a prefill that means one expert product per token per
+  chosen expert rather than grouping tokens by expert; at decode, where n = 1, it is the same work.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Family</th><th>Experts and width</th><th>Renormalize top-k?</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Mixtral</td><td><code>num_local_experts</code>, <code>num_experts_per_tok</code>; width <code>intermediate_size</code></td><td>Always</td><td><a href="{{ src(l ~ 'config.cc', 186, 189) }}">config.cc L186–189</a></td></tr>
+      <tr><td>Qwen3-MoE</td><td><code>num_experts</code>, <code>num_experts_per_tok</code>; width <code>moe_intermediate_size</code>. A <code>decoder_sparse_step</code> other than 1 or any <code>mlp_only_layers</code> (dense layers mixed in) is <code>Unsupported</code>.</td><td><code>norm_topk_prob</code>, default false</td><td><a href="{{ src(l ~ 'config.cc', 190, 199) }}">L190–199</a></td></tr>
+      <tr><td>OLMoE</td><td><code>num_experts</code>, <code>num_experts_per_tok</code></td><td><code>norm_topk_prob</code>, default false (GGUF: off unless <code>expert_weights_norm</code>)</td><td><a href="{{ src(l ~ 'config.cc', 200, 204) }}">L200–204</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  OLMoE-1B-7B (64 experts, 8 active) is rml's MoE proof on a real checkpoint; Qwen3-30B-A3B does not fit the 16 GB
+  budget (<a href="{{ src('docs/models.md', 73, 96) }}">models.md L73–96</a>).
+</p>
+
+<h2 id="families">The eight families</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Family (<code>model_type</code>)</th><th>What differs from the base recipe</th><th>GGUF architecture</th><th>Golden tests</th></tr></thead>
+    <tbody>
+      <tr><td>Llama (<code>llama</code>)</td><td>The base: RMSNorm, RoPE (Llama 3 scaling), GQA, SwiGLU.</td><td><code>llama</code>, interleaved RoPE</td><td>toy <code>llama</code> (safetensors, GGUF, Q8_0 GGUF); real SmolLM2-135M-Instruct, TinyLlama-1.1B-Chat</td></tr>
+      <tr><td>Mistral (<code>mistral</code>)</td><td>A sliding window on every layer.</td><td><code>llama</code> + <code>attention.sliding_window</code></td><td>toy <code>mistral</code> (window 4)</td></tr>
+      <tr><td>Mixtral (<code>mixtral</code>)</td><td>Routed experts (eight, two per token in the real model), always renormalized.</td><td><code>llama</code> + <code>expert_count</code></td><td>toy <code>mixtral</code> (4 experts, top 2)</td></tr>
+      <tr><td>Qwen2 (<code>qwen2</code>)</td><td>Biases on q, k and v; its unused <code>sliding_window</code> ignored.</td><td><code>qwen2</code>, half RoPE</td><td>toy <code>qwen2</code></td></tr>
+      <tr><td>Qwen3 (<code>qwen3</code>)</td><td>Per-head RMSNorm on q and k; explicit head_dim.</td><td><code>qwen3</code></td><td>toy <code>qwen3</code> (YaRN); real Qwen3-0.6B</td></tr>
+      <tr><td>Qwen3-MoE (<code>qwen3_moe</code>)</td><td>Qwen3 with routed experts of <code>moe_intermediate_size</code>.</td><td><code>qwen3moe</code></td><td>toy <code>qwen3_moe</code></td></tr>
+      <tr><td>Gemma 3 (<code>gemma3_text</code>)</td><td>GeGLU (tanh GELU), (1 + w) RMSNorm, sandwich norms, √hidden embedding scale, 1/√<code>query_pre_attn_scalar</code>, sliding layers (every 6th global by default) with their own RoPE base, tied head; logit soft-capping rejected.</td><td><code>gemma3</code></td><td>toy <code>gemma3</code> (one sliding, one global layer); real gemma-3-1b-it</td></tr>
+      <tr><td>OLMoE (<code>olmoe</code>)</td><td>Experts without renormalization; QK-norm across all heads; eps 1e-5.</td><td><code>olmoe</code></td><td>toy <code>olmoe</code>; real OLMoE-1B-7B-0924-Instruct</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Sources: <a href="{{ src(l ~ 'config.cc', 292, 367) }}">config.cc L292–367</a>,
+  <a href="{{ src(l ~ 'decoder_test.cc', 100, 115) }}">decoder_test.cc L100–115</a>,
+  <a href="{{ src(l ~ 'real_model_test.cc', 130, 134) }}">real_model_test.cc L130–134</a>. The <code>config.h</code> header's
+  family list (<a href="{{ src(l ~ 'config.h', 13, 20) }}">L13–20</a>) names seven and leaves out OLMoE, which the parser
+  supports.
+</p>
+
+<h3 id="goldens">How the goldens are made</h3>
+
+<p>
+  <code>tools/make_llm_fixtures.py</code> writes one two-layer toy model per family, a few thousand parameters (vocab 64,
+  hidden 32, 4 heads over 2 kv heads), twice: a Hugging Face directory with bf16 safetensors, and a GGUF file laid out
+  as llama.cpp's converter lays it out (f16 matrices, f32 vectors, Llama q/k rows permuted, experts stacked, Gemma norms
+  as 1 + w). The weights are exactly representable in both bf16 and f16, so both files hold the same model, and
+  <code>logits.json</code> holds every prompt position's logits from a float64 numpy forward pass that follows the
+  Hugging Face modeling code (<a href="{{ src('tools/make_llm_fixtures.py', 1, 16) }}">L1–16</a>,
+  <a href="{{ src('tools/make_llm_fixtures.py', 31, 45) }}">L31–45</a>). The Llama variant also gets a Q8_0 GGUF.
+</p>
+
+<p>
+  <code>real_model_test</code> checks downloaded checkpoints against goldens from
+  <code>tools/make_real_model_goldens.py</code>: tokenizer ids, the chat prompt, the top-8 logits at every prompt
+  position within 2e-3, and an 8-token greedy continuation. It skips when <code>RML_MODELS_DIR</code> lacks the model
+  (<a href="{{ src(l ~ 'real_model_test.cc', 1, 6) }}">real_model_test.cc L1–6</a>,
+  <a href="{{ src(l ~ 'real_model_test.cc', 31, 33) }}">L31–33</a>). rml reports worst f32 logit errors of 1.4e-4
+  (SmolLM2-135M-Instruct), 1.1e-4 (TinyLlama-1.1B-Chat and Qwen3-0.6B), 1.7e-4 (Gemma 3 1B) and 1.3e-4
+  (OLMoE-1B-7B-Instruct), run in the development container; CI downloads only SmolLM2. Llama 3.1 8B at Q8_0 / Q4, the
+  milestone model, has no golden yet and is <span class="rml-planned">planned</span>
+  (<a href="{{ src('docs/progress.md', 58, 59) }}">progress.md L58–59</a>).
+</p>
+
+<h2 id="tests">Tests</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Tests</th><th>What they pin down</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src(l ~ 'config_test.cc') }}"><code>config_test.cc</code></a></td><td>19</td><td>SmolLM2 and Llama 3.1 configs; Qwen2 bias and ignored window; Qwen3 QK-norm and head_dim; Mistral window; each MoE family's keys; OLMoE whole-row norms; Gemma 3 from <code>sliding_window_pattern</code> and from <code>layer_types</code> and <code>rope_parameters</code>; GGUF metadata, tensor-table switches, Llama-with-experts as Mixtral, Gemma 3 keys; unsupported and malformed inputs.</td></tr>
+      <tr><td><a href="{{ src(l ~ 'weight_source_test.cc') }}"><code>weight_source_test.cc</code></a></td><td>2</td><td>GGUF matrices, vectors and expert slices; safetensors read through Hugging Face names.</td></tr>
+      <tr><td><a href="{{ src(l ~ 'decoder_test.cc') }}"><code>decoder_test.cc</code></a></td><td>2 × 17 cases, + 5</td><td>Prefill and token-by-token decoding (page size 4, so several pages) match the float64 reference for every family in both formats, within 2e-4 plus 2e-4 relative (3e-2 for Q8_0, whose activations are rounded to int8); bad inputs leave the cache untouched; f16 within 1e-2 and int8 within 5% of an f32 cache; threaded output bit-identical to serial on Mixtral.</td></tr>
+      <tr><td><a href="{{ src(l ~ 'decoder_alloc_test.cc') }}"><code>decoder_alloc_test.cc</code></a></td><td>1 × 8 cases</td><td>Sixteen decode steps after a prefill make zero heap allocations (it counts every <code>operator new</code>), serial and on 4 threads, dense, Q8_0, Qwen3, three MoE models, and an int8 cache.</td></tr>
+      <tr><td><a href="{{ src(l ~ 'attention_test.cc') }}"><code>attention_test.cc</code></a></td><td>2 × 9 shapes, + 2</td><td><code>Attend</code> within 2e-5 of <code>AttendRef</code> for f32, f16 and int8 caches, threaded equal to serial, windows and GQA groups up to 16; finite for large scores; a single key copies its value; oversized groups die.</td></tr>
+      <tr><td><a href="{{ src(l ~ 'rope_test.cc') }}"><code>rope_test.cc</code></a></td><td>9</td><td>Frequencies follow θ; half and interleaved styles agree on permuted heads; scores depend only on distance; each scaling scheme; odd head_dim rejected.</td></tr>
+      <tr><td><a href="{{ src(l ~ 'kv_cache_test.cc') }}"><code>kv_cache_test.cc</code></a></td><td>11</td><td>Growth a page at a time; disjoint slots; truncation returns pages; overflow changes nothing; f16 rounding; int8 group sizes and per-group quantization, zero rows.</td></tr>
+      <tr><td><a href="{{ src(l ~ 'kernels_test.cc') }}"><code>kernels_test.cc</code></a></td><td>14 (five parameterized)</td><td><code>MatMul</code> equals the reference for every type; the quantized path is the int8 dot of each row and falls back without scratch; fused kernels bit-identical to their unfused sequence; RMSNorm, SwiGLU, GeGLU, stable softmax.</td></tr>
+      <tr><td><a href="{{ src(l ~ 'real_model_test.cc') }}"><code>real_model_test.cc</code></a></td><td>3 × 5 models</td><td>Real checkpoints, when downloaded (above).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Two benchmarks go with them: <a href="{{ src(l ~ 'attention_benchmark.cc') }}"><code>attention_benchmark</code></a> (one
+  decode step of a Llama-3-8B layer's attention, per cache dtype) and
+  <a href="{{ src(l ~ 'decoder_benchmark.cc') }}"><code>decoder_benchmark</code></a> (one decode step of a random-weight
+  model with TinyLlama-1.1B's layer shape but two layers and an 8192-token vocabulary, Q8_0 and Q4_0, at 1 and 4
+  threads; <a href="{{ src(l ~ 'decoder_benchmark.cc', 28, 38) }}">L28–38</a>). Their results are on
+  {{ link('kernels', 'Kernels') }}. Comparisons against llama.cpp on the Mac are still
+  <span class="rml-planned">planned</span> (<a href="{{ src('docs/progress.md', 71, 71) }}">progress.md L71</a>).
+</p>

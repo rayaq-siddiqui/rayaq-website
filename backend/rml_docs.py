@@ -277,9 +277,11 @@ PAGES = [
             "rml/llm/decoder.cc", "rml/llm/attention.h", "rml/llm/rope.h",
             "rml/llm/kv_cache.h", "rml/llm/kernels.h", "rml/llm/attention_benchmark.cc",
             "rml/llm/decoder_alloc_test.cc", "rml/llm/decoder_benchmark.cc",
-            "rml/llm/real_model_test.cc",
+            "rml/llm/real_model_test.cc", "rml/llm/config.cc", "rml/llm/weight_source.cc",
+            "rml/llm/attention.cc", "rml/llm/rope.cc", "rml/llm/kv_cache.cc", "rml/llm/kernels.cc",
+            "tools/make_llm_fixtures.py",
         ],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "generation",
