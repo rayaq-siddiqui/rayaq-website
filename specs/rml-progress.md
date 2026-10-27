@@ -3,13 +3,13 @@
 Running log for the rml build loop and the daily Routine. Read this first, update it last.
 The contract is `specs/rml.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-26 (daily run). Pin moved to `13234ae`; `quantization`, `model-files` and `tokenizers` shipped. The next run follows upstream, then builds `decoder` (flagship, §8), `generation`, `kernels`.
+**Last updated:** 2026-10-27 (daily run). Upstream unchanged at `13234ae` (re-checked); `decoder` (flagship, §8), `generation` and `kernels` shipped. The next run follows upstream, then builds `models-memory`, `examples`, `testing` (the last three pages).
 
 ## Upstream pin
 
 `rayaq-siddiqui/rml@13234ae977ad00839b7f68f919fd81540247fa7f` (committed 2026-10-25,
 "perf: copy im2col row segments with plain loops"), rml 0.1.0, Apache-2.0, analyzed
-2026-10-26. Moved from `2b04eb6` (2 commits: the `hoist_step_projections` export pass and
+2026-10-27 (origin/main still at the pin). Moved on 2026-10-26 from `2b04eb6` (2 commits: the `hoist_step_projections` export pass and
 plain cloned loops in `Im2ColPositions`, each with a `docs/progress.md` item). Held in `rml_docs.UPSTREAM`. The repository is
 private, so pinned links 404 until it is public.
 
@@ -17,11 +17,11 @@ private, so pinned links 404 until it is public.
 
 - [ ] `/rml` renders the §6 diagram and lists every §5 page.
 - [ ] Every §5 page exists, meets its "Must cover" column, and is marked ready.
-- [ ] `decoder` meets §8 with at least two SVG diagrams.
-- [ ] Every Inference stack page is ready and `stack` has its layer diagram.
+- [x] `decoder` meets §8 with at least two SVG diagrams.
+- [x] Every Inference stack page is ready and `stack` has its layer diagram.
 - [ ] Every source link is pinned; §7.5 tests exist and pass.
 - [x] Homepage card links to `/rml`.
-- [x] Mobile at 390px: no horizontal page scroll (`/rml`, `/rml/tensors`, `/rml/runtime`, `/rml/linalg`, `/rml/random`, `/rml/autograd`, `/rml/stack`, `/rml/exporters`, `/rml/graph-ir`, `/rml/executor`, `/rml/lowering`, `/rml/benchmarks`, `/rml/nn`, `/rml/training`, `/rml/data-metrics`, `/rml/classical`, `/rml/retrieval`, `/rml/quantization`, `/rml/model-files`, `/rml/tokenizers`; rerun per page).
+- [x] Mobile at 390px: no horizontal page scroll (`/rml`, `/rml/tensors`, `/rml/runtime`, `/rml/linalg`, `/rml/random`, `/rml/autograd`, `/rml/stack`, `/rml/exporters`, `/rml/graph-ir`, `/rml/executor`, `/rml/lowering`, `/rml/benchmarks`, `/rml/nn`, `/rml/training`, `/rml/data-metrics`, `/rml/classical`, `/rml/retrieval`, `/rml/quantization`, `/rml/model-files`, `/rml/tokenizers`, `/rml/decoder`, `/rml/generation`, `/rml/kernels`; rerun per page).
 - [x] The daily Routine has run at least once and cloned rml.
 
 ## Queue
@@ -52,9 +52,9 @@ Spec v2 order, Inference stack first:
 18. ~~`quantization`~~
 19. ~~`model-files`~~
 20. ~~`tokenizers`~~
-21. `decoder` (flagship, §8)
-22. `generation`
-23. `kernels`
+21. ~~`decoder` (flagship, §8)~~
+22. ~~`generation`~~
+23. ~~`kernels`~~
 24. `models-memory`
 25. `examples`
 26. `testing`
@@ -118,6 +118,12 @@ session-only `/loop` jobs that built pages earlier are retired.
   postdate the report), stack and index (`progress.md` ranges). `3aa9b6e` `quantization` page;
   `595e31b` `model-files` page; `ba63103` `tokenizers` page. All 1067 tests pass; mobile check
   passes on every ready page.
+- 2026-10-27 — daily run. rml's origin/main still at `13234ae`, so no page changed for upstream;
+  `analyzed_on` moved to today. `2b2368c` `decoder` page (§8 sections in order, two SVGs: one
+  layer's forward pass and the paged KV cache with an `Attend` task); `444a99c` `generation`
+  page (sampler with a worked example, `Session::Generate` and speculative-round SVGs, rml-chat);
+  `4d4f3df` `kernels` page (caller map SVG, each kernel beside its reference, the planned
+  Phase 5 work). All 1067 tests pass; mobile check passes on every ready page.
 
 ## Deliberate deviations
 
@@ -126,6 +132,19 @@ session-only `/loop` jobs that built pages earlier are retired.
   `docs/kernels.md` and `docs/bench/frameworks.md`.
 
 ## Open gaps / questions for the owner
+
+- **`docs/progress.md` disagrees with itself on Gemma 3.** At `13234ae`, L59 reports a real
+  Gemma 3 1B golden run in the container (worst logit error 1.7e-4, and
+  `rml/llm/testdata/goldens/gemma-3-1b-it.json` exists), while L79 still says real Gemma 3
+  weights, tokenizer and chat template are untested. `decoder` follows L59 and the golden file.
+- **`config.h` L13–20 lists seven families.** The header comment leaves out OLMoE, which
+  `ParseHfConfig` and the golden tests support; `decoder` notes it.
+- **`docs/architecture.md`'s decode loop is ahead of the code.** L92–101 describe chunked prefill
+  (up to 512 tokens) and a step arena; `Session::Generate` runs the whole unmatched prompt in one
+  `Forward` and `DecoderLM` grows a vector workspace. `generation` marks chunked prefill planned.
+- **`docs/kernels.md` has no section for `rml/graph/kernels.h`.** The graph's fast kernels follow
+  the reference-plus-test rule but are documented only in their header; `kernels` links to
+  `lowering` for them.
 
 - **`WeightSource::Raw` can keep a span of a freed copy.** At `13234ae`,
   `rml/llm/weight_source.cc` L143–148 takes `raw_data()` of a local `Tensor` from

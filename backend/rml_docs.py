@@ -10,7 +10,7 @@ UPSTREAM = {
     "commit_date": "2026-10-25",
     "version": "0.1.0",
     "license": "Apache-2.0",
-    "analyzed_on": "2026-10-26",
+    "analyzed_on": "2026-10-27",
 }
 
 GROUPS = [
