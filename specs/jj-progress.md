@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-27 (seventy-first run): followed upstream `7ca39e5..531b682` (0.46.0). **The
+**Last updated:** 2026-10-28 (seventy-second run): followed upstream `531b682..c3bf0b1` (0.46.0). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@531b682046880c47ac06a7106c5852e56c046d71` (committed 2026-10-27, version
-0.46.0), analyzed 2026-10-27. Held in `jj_docs.UPSTREAM`. Previous pin: `7ca39e5`.
+`jj-vcs/jj@c3bf0b1990057493513e88310e6adfeac589db34` (committed 2026-10-28, version
+0.46.0), analyzed 2026-10-28. Held in `jj_docs.UPSTREAM`. Previous pin: `531b682`.
 
 ## §10 acceptance criteria
 
@@ -31,10 +31,11 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to seventy-first runs: pin bumped).
+      run: pin bumped; fiftieth to seventy-second runs: pin bumped).
 
-## Sixty-fourth to seventy-first runs (2026-10-20 to 2026-10-27)
+## Sixty-fourth to seventy-second runs (2026-10-20 to 2026-10-28)
 
+- `91b7044` pin-only `531b682..c3bf0b1` (`GOVERNANCE.md`; `RepoLoader` built via `Self::new`).
 - `fa45a4c` `7ca39e5..531b682`: config files saved atomically via a temp file renamed over the
   target (config-set, config-unset); indirect graph edges deduplicated (log); invalid tree entry
   names are read errors, not panics (backends); default store initializers moved to
