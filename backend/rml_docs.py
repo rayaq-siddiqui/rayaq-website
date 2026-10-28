@@ -337,7 +337,7 @@ PAGES = [
             "tools/llm_reference.py", "tools/make_llm_fixtures.py",
             "tools/make_real_model_goldens.py",
         ],
-        "ready": False,
+        "ready": True,
     },
 ]
 
