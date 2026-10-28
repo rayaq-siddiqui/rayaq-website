@@ -10,7 +10,7 @@ UPSTREAM = {
     "commit_date": "2026-10-25",
     "version": "0.1.0",
     "license": "Apache-2.0",
-    "analyzed_on": "2026-10-27",
+    "analyzed_on": "2026-10-28",
 }
 
 GROUPS = [
@@ -315,7 +315,7 @@ PAGES = [
         "summary": "Target models and the memory math behind them, and the status of each "
         "model family.",
         "sources": ["docs/models.md", "README.md", "tools/download_model.py"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "examples",

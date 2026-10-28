@@ -1,0 +1,362 @@
+{% set m = "docs/models.md" %}
+<header class="jj-header">
+  <h1>Models and memory</h1>
+  <p class="tagline">
+    Which open-weight models rml targets, the arithmetic that decides whether each one fits a 16 GB Mac, and how far
+    each model has actually got: config parsing, golden tests on real weights, or still planned.
+  </p>
+</header>
+
+<p class="jj-note">
+  In short: rml's budget is a 16 GB Apple Silicon Mac with the inference process under about 11 GB peak RSS, and
+  <code>docs/models.md</code> works the numbers for each target from its <code>config.json</code>: weights at a given
+  bits per weight, plus a KV cache, prefill scratch and runtime overhead. Llama 3.1 8B fits at Q8_0 (about 10.2 GB, tight)
+  and Q4_K_M (about 6.6 GB, the performance target) but not bf16; Qwen3 8B is the second dense architecture;
+  Qwen3-30B-A3B does not fit, so OLMoE-1B-7B proves the MoE path. In the code, <code>ParameterCount</code> reproduces the
+  parameter counts and its tests pin them. Five real checkpoints, from SmolLM2-135M to OLMoE-1B-7B, pass golden tests;
+  the 8B milestone models and every measurement of peak RSS are still <span class="rml-planned">planned</span>.
+</p>
+
+<p>
+  The models page sits beside the rest of rml's planning documents: the milestone in
+  <a href="{{ src('docs/progress.md', 5, 8) }}">progress.md L5–8</a> is that <code>rml-chat</code> loads Llama 3.1 8B
+  Instruct at 4-bit by mmap, stays under about 11 GB peak RSS, matches the reference top-1 tokens and decodes within
+  1.5× of llama.cpp, and the README's goal says the same (<a href="{{ src('README.md', 8, 10) }}">README.md L8–10</a>).
+  How weights stay mapped is on {{ link('model-files', 'Model files') }}; the block formats behind "bits per weight" are on
+  {{ link('quantization', 'Quantization') }}; the concepts are {{ ml('quantization', 'quantization') }} and
+  {{ ml('kv-cache', 'the KV cache') }}.
+</p>
+
+<h2 id="budget">The budget and the formula</h2>
+
+<p>
+  The process gets about 11 GB so macOS, the window server and a browser keep about 5 GB. Weights are mmapped and only
+  count toward RSS as pages are touched, but decode touches every weight on every token, so in steady state the whole
+  file is resident: the document plans as if it all counts (<a href="{{ src(m, 3, 6) }}">models.md L3–6</a>). Every
+  table on the page is built from the same parts (<a href="{{ src(m, 8, 22) }}">L8–22</a>):
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Formula or figure</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>P</code></td><td>attention + MLP + norms + embeddings + LM head</td><td>Parameter count computed from each <code>config.json</code>, not taken from the model's marketing name.</td><td><a href="{{ src(m, 10, 11) }}">L10–11</a></td></tr>
+      <tr><td>Bits per weight</td><td>bf16 16, Q8_0 8.5, Q4_0 4.5, Q4_K ≈ 4.5; a llama.cpp Q4_K_M file ≈ 4.9</td><td>Q8_0 is 32 int8 values plus one f16 scale per block; Q4_K_M keeps part of <code>ffn_down</code>, <code>attn_v</code> and the output at Q6_K.</td><td><a href="{{ src(m, 12, 14) }}">L12–14</a></td></tr>
+      <tr><td>KV cache</td><td><code>2 × layers × kv_heads × head_dim × context × bytes</code></td><td>Keys and values for every layer and position.</td><td><a href="{{ src(m, 15, 15) }}">L15</a></td></tr>
+      <tr><td>Activations</td><td>&lt; 10 MB for decode; <code>512 × max(ffn, q_dim)</code> floats per buffer for a 512-token prefill chunk</td><td>A few hidden-size vectors per layer when decoding; at most a few hundred MB for prefill. Logits only for the last prompt token.</td><td><a href="{{ src(m, 16, 18) }}">L16–18</a></td></tr>
+      <tr><td>Runtime</td><td>300 MB</td><td>Code, tokenizer tables, thread stacks, allocator slack.</td><td><a href="{{ src(m, 19, 19) }}">L19</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Figures are decimal GB, and the document asks that they be checked against the downloaded file size before anyone
+  relies on them (<a href="{{ src(m, 21, 22) }}">L21–22</a>). Two of its assumptions run ahead of the code. The prefill
+  row assumes 512-token chunks, but <code>Session::Generate</code> runs the whole unmatched prompt in one
+  <code>Forward</code> at the pin, so chunked prefill is <span class="rml-planned">planned</span> (see
+  {{ link('generation', 'Generation', '#loop') }}). And no code at the pin calls <code>madvise</code>, so dropping each
+  layer's pages after a full-precision golden run (<a href="{{ src(m, 41, 43) }}">L41–43</a>) is
+  <span class="rml-planned">planned</span> too.
+</p>
+
+<h3 id="parameter-count">The parameter count in code</h3>
+
+<p>
+  <a href="{{ src('rml/llm/config.h', 129, 130) }}"><code>ParameterCount(const ModelConfig&amp;)</code></a> is the same
+  sum, counting a tied head once (<a href="{{ src('rml/llm/config.cc', 495, 506) }}">config.cc L495–506</a>): per layer,
+  the Q, K, V and output projections, any q/k/v bias and QK-norm weights, three <code>hidden × intermediate</code>
+  matrices per expert (one expert for a dense model) plus the router, and two norm vectors (four with Gemma 3's sandwich
+  norms); then the final norm and the embedding, doubled when the head is untied. The config tests pin it for each
+  family, so the numbers <code>docs/models.md</code> quotes are checked in CI:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Config</th><th><code>ParameterCount</code></th><th>models.md says</th><th>Test</th></tr></thead>
+    <tbody>
+      <tr><td>SmolLM2-135M (committed <code>smollm2_135m.config.json</code>)</td><td>134,515,008</td><td>0.135 B</td><td><a href="{{ src('rml/llm/config_test.cc', 27, 50) }}">config_test.cc L27–50</a></td></tr>
+      <tr><td>Llama 3.1 8B (committed <code>llama31_8b.config.json</code>)</td><td>8,030,261,248</td><td>8.03 B</td><td><a href="{{ src('rml/llm/config_test.cc', 52, 65) }}">L52–65</a></td></tr>
+      <tr><td>Qwen2 0.5B-shaped (inline)</td><td>494,032,768</td><td>—</td><td><a href="{{ src('rml/llm/config_test.cc', 67, 80) }}">L67–80</a></td></tr>
+      <tr><td>Qwen3 0.6B-shaped (inline)</td><td>596,049,920</td><td>—</td><td><a href="{{ src('rml/llm/config_test.cc', 82, 95) }}">L82–95</a></td></tr>
+      <tr><td>Mixtral 8×7B-shaped (inline)</td><td>46,702,792,704</td><td>—</td><td><a href="{{ src('rml/llm/config_test.cc', 107, 120) }}">L107–120</a></td></tr>
+      <tr><td>OLMoE-1B-7B (inline)</td><td>6,919,161,856</td><td>6.9 B</td><td><a href="{{ src('rml/llm/config_test.cc', 136, 161) }}">L136–161</a></td></tr>
+      <tr><td>Gemma 3 1B (inline)</td><td>999,885,952</td><td>—</td><td><a href="{{ src('rml/llm/config_test.cc', 163, 186) }}">L163–186</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Qwen3 8B and Qwen3-30B-A3B have no config in the tests; their counts (8.19 B and 30.5 B) come only from the document.
+</p>
+
+<h2 id="llama">Milestone: Llama 3.1 8B Instruct</h2>
+
+<p>
+  32 layers, hidden 4096, 32 query heads and 8 KV heads (GQA 4:1), head_dim 128, SwiGLU FFN 14336, vocab 128256, an
+  untied head, RoPE θ = 500000 with <code>llama3</code> frequency scaling (factor 8, low/high factors 1 and 4, original
+  context 8192). <code>P</code> = 8.03 B, of which the embedding and the untied head are 0.53 B each
+  (<a href="{{ src(m, 24, 31) }}">models.md L24–31</a>); the same scaling fields are what
+  <a href="{{ src('rml/llm/config_test.cc', 52, 65) }}"><code>ParsesLlama31RopeScaling</code></a> checks.
+</p>
+
+<figure class="jj-diagram">
+  <svg viewBox="0 0 640 296" role="img" aria-labelledby="mm-budget-title mm-budget-desc">
+    <title id="mm-budget-title">Llama 3.1 8B memory at three precisions</title>
+    <desc id="mm-budget-desc">Three horizontal stacked bars on a gigabyte scale, each made of weights, an 8K-token f16
+      KV cache of 1.07 GB, and 0.6 GB of prefill scratch and runtime. bf16 weights are 16.06 GB, total about 17.7 GB,
+      past both the 11 GB budget line and the 16 GB physical RAM line. Q8_0 weights are 8.53 GB, total about 10.2 GB,
+      just under the 11 GB line. Q4_K_M weights are about 4.9 GB, total about 6.6 GB, well under it.</desc>
+
+    <line class="d-line" x1="407" y1="36" x2="407" y2="216" stroke-dasharray="5 4"/>
+    <text x="407" y="26" text-anchor="middle" font-size="12">11 GB budget</text>
+    <line class="d-line" x1="542" y1="36" x2="542" y2="216"/>
+    <text x="542" y="26" text-anchor="middle" font-size="12">16 GB RAM</text>
+
+    <text x="20" y="64">bf16</text>
+    <rect class="d-box d-accent" x="110" y="44" width="434" height="30"/>
+    <text x="327" y="64" text-anchor="middle" font-size="12">weights 16.06</text>
+    <rect class="d-box" x="544" y="44" width="29" height="30"/>
+    <rect class="d-muted" x="573" y="44" width="16" height="30"/>
+    <text class="d-muted" x="110" y="90" font-size="12">≈ 17.7 GB: does not fit</text>
+
+    <text x="20" y="124">Q8_0</text>
+    <rect class="d-box d-accent" x="110" y="104" width="230" height="30"/>
+    <text x="225" y="124" text-anchor="middle" font-size="12">weights 8.53</text>
+    <rect class="d-box" x="340" y="104" width="29" height="30"/>
+    <rect class="d-muted" x="369" y="104" width="16" height="30"/>
+    <text class="d-muted" x="110" y="150" font-size="12">≈ 10.2 GB: fits, about 0.8 GB to spare</text>
+
+    <text x="20" y="184">Q4_K_M</text>
+    <rect class="d-box d-accent" x="110" y="164" width="132" height="30"/>
+    <text x="176" y="184" text-anchor="middle" font-size="12">≈ 4.9</text>
+    <rect class="d-box" x="242" y="164" width="29" height="30"/>
+    <rect class="d-muted" x="271" y="164" width="16" height="30"/>
+    <text class="d-muted" x="110" y="210" font-size="12">≈ 6.6 GB: fits; the performance target</text>
+
+    <line class="d-line" x1="110" y1="228" x2="596" y2="228"/>
+    <line class="d-line" x1="110" y1="224" x2="110" y2="232"/>
+    <text class="d-muted" x="110" y="246" text-anchor="middle" font-size="12">0</text>
+    <line class="d-line" x1="218" y1="224" x2="218" y2="232"/>
+    <text class="d-muted" x="218" y="246" text-anchor="middle" font-size="12">4</text>
+    <line class="d-line" x1="326" y1="224" x2="326" y2="232"/>
+    <text class="d-muted" x="326" y="246" text-anchor="middle" font-size="12">8</text>
+    <line class="d-line" x1="434" y1="224" x2="434" y2="232"/>
+    <text class="d-muted" x="434" y="246" text-anchor="middle" font-size="12">12</text>
+    <line class="d-line" x1="542" y1="224" x2="542" y2="232"/>
+    <text class="d-muted" x="542" y="246" text-anchor="middle" font-size="12">16 GB</text>
+
+    <rect class="d-box d-accent" x="110" y="264" width="16" height="14"/>
+    <text x="132" y="276" font-size="12">weights</text>
+    <rect class="d-box" x="210" y="264" width="16" height="14"/>
+    <text x="232" y="276" font-size="12">KV, 8K ctx, f16 (1.07)</text>
+    <rect class="d-muted" x="400" y="264" width="16" height="14"/>
+    <text x="422" y="276" font-size="12">scratch + runtime (0.6)</text>
+  </svg>
+  <figcaption>The table at <a href="{{ src(m, 33, 39) }}">models.md L33–39</a>, drawn to scale (27 px per GB).
+    These are the document's estimates; rml has not measured peak RSS for any model at the pin.</figcaption>
+</figure>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>bf16</th><th>Q8_0</th><th>Q4_K_M</th></tr></thead>
+    <tbody>
+      <tr><td>Weights</td><td>16.06 GB</td><td>8.53 GB</td><td>~4.9 GB</td></tr>
+      <tr><td>KV cache, 8K ctx, f16</td><td>1.07 GB</td><td>1.07 GB</td><td>1.07 GB</td></tr>
+      <tr><td>Prefill scratch (512-token chunk)</td><td>0.3 GB</td><td>0.3 GB</td><td>0.3 GB</td></tr>
+      <tr><td>Runtime</td><td>0.3 GB</td><td>0.3 GB</td><td>0.3 GB</td></tr>
+      <tr><td><strong>Total</strong></td><td>~17.7 GB, does not fit</td><td>~10.2 GB, fits, tight</td><td>~6.6 GB, fits</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The consequences (<a href="{{ src(m, 41, 45) }}">L41–45</a>): bf16 cannot be the runtime format, so full-precision
+  checks on the 8B model either page through the mmap layer by layer or run Q8_0 against bf16 reference logits; Q8_0 fits
+  with about 0.8 GB to spare and an int8 KV cache adds headroom; Q4_K_M is the main performance target. rml can run both
+  quantized formats: <code>DotActivationType</code> pairs Q8_0 and Q4_0 weights with Q8_0 activations, and Q4_K, Q5_K
+  and Q6_K (the mix inside a Q4_K_M file) with Q8_K (<a href="{{ src('rml/quant/dot.cc', 285, 297) }}">dot.cc
+  L285–297</a>).
+</p>
+
+<h3 id="kv-worked">Worked example: the KV cache</h3>
+
+<p>
+  With the Llama 3.1 8B shape, one position in one layer stores <code>kv_heads × head_dim</code> = 8 × 128 = 1024 keys
+  and as many values. At f16 and an 8192-token context:
+</p>
+
+<pre><code>2 (K, V) × 32 layers × 8 kv_heads × 128 head_dim × 8192 tokens × 2 bytes
+  = 1,073,741,824 bytes ≈ 1.07 GB</code></pre>
+
+<p>
+  rml's <code>KvCache</code> holds exactly that per position and layer as a row of <code>row_bytes()</code>
+  (<a href="{{ src('rml/llm/kv_cache.h', 55, 56) }}">kv_cache.h L55–56</a>): 4096 bytes at f32, 2048 at f16. Its int8
+  mode is not quite half of f16, because each group of <code>quant_group()</code> channels (at most 32) carries one f32
+  scale, 1.125 bytes per entry (<a href="{{ src('rml/llm/kv_cache.h', 13, 18) }}">L13–18</a>): a 1152-byte row here,
+  so about 0.60 GB for 8K tokens where <a href="{{ src(m, 44, 44) }}">models.md L44</a> rounds the int8 cache to 0.54 GB
+  by leaving the scales out. The cache grows a 16-token page at a time out of an arena reserved up front, and pages it
+  never touches are never made resident. <code>KvCache::Create</code> defaults to f32
+  (<a href="{{ src('rml/llm/kv_cache.h', 40, 43) }}">L40–43</a>), but <code>rml-chat</code> asks for f16 and a 4096-token
+  context unless told otherwise (<a href="{{ src('examples/rml_chat/main.cc', 48, 49) }}">main.cc L48–49</a>), which is
+  0.54 GB for this model. The layout is drawn on {{ link('decoder', 'The decoder', '#attention-kv-cache') }}.
+</p>
+
+<h3 id="bandwidth">Why the memory number is also the speed number</h3>
+
+<p>
+  Decode is memory bound: each token reads every weight once. At Q4_K_M (about 4.9 GB a token) the ceiling is about
+  14 tok/s on an M1 (68 GB/s), 20 on an M2 or M3 (100 GB/s) and 24 on an M4 (120 GB/s), and achieved GB/s as a fraction
+  of that is meant to be the headline benchmark (<a href="{{ src(m, 47, 49) }}">L47–49</a>). That benchmark, beside
+  llama.cpp on the same file, is <span class="rml-planned">planned</span>
+  (<a href="{{ src('docs/progress.md', 71, 71) }}">progress.md L71</a>); see {{ link('kernels', 'Kernels', '#planned') }}.
+</p>
+
+<h2 id="qwen3">Second architecture: Qwen3 8B</h2>
+
+<p>
+  36 layers, hidden 4096, 32 query and 8 KV heads, head_dim 128, FFN 12288, vocab 151936, an untied head, per-head
+  RMSNorm on Q and K before RoPE, θ = 1000000; <code>P</code> = 8.19 B
+  (<a href="{{ src(m, 51, 56) }}">models.md L51–56</a>).
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Q8_0</th><th>Q4_K_M</th></tr></thead>
+    <tbody>
+      <tr><td>Weights</td><td>8.70 GB</td><td>~5.0 GB</td></tr>
+      <tr><td>KV cache, 8K, f16</td><td>1.21 GB</td><td>1.21 GB</td></tr>
+      <tr><td>Scratch + runtime</td><td>0.6 GB</td><td>0.6 GB</td></tr>
+      <tr><td><strong>Total</strong></td><td>~10.5 GB, fits, very tight</td><td>~6.8 GB, fits</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The table is <a href="{{ src(m, 58, 63) }}">L58–63</a>. Qwen3 differs from Llama only in config-driven ways, which is
+  the point of choosing it: the config-driven <code>DecoderLM</code> has to absorb QK-norm, a different θ and no RoPE
+  scaling with no new model class (<a href="{{ src(m, 65, 66) }}">L65–66</a>); how it does is on
+  {{ link('decoder', 'The decoder', '#families') }}. The document also flags that newer releases (Qwen3.5, newer Gemma
+  and Llama generations) could not be checked from a sandbox without Hugging Face access, and asks that the table be
+  redone before Phase 6, preferring a newer dense ~8B model if one fits (<a href="{{ src(m, 68, 71) }}">L68–71</a>).
+</p>
+
+<h2 id="moe">Mixture of experts</h2>
+
+<p>
+  A sparse model touches only its active experts per token, but the whole file still has to be stored somewhere.
+  {{ ml('mixture-of-experts', 'Mixture of experts') }} explains the routing; here is what it does to the budget
+  (<a href="{{ src(m, 73, 96) }}">models.md L73–96</a>):
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Model</th><th>Shape</th><th><code>P</code> (total / active)</th><th>Footprint</th><th>Verdict</th></tr></thead>
+    <tbody>
+      <tr><td>Qwen3-30B-A3B</td><td>48 layers, hidden 2048, 128 experts (8 active, FFN 768), 4 KV heads</td><td>30.5 B / 3.0 B</td><td>Q4_K_M ~19 GB with KV; Q3_K_M ~15 GB</td><td>Does not fit: over physical RAM, or over the 11 GB budget</td></tr>
+      <tr><td>OLMoE-1B-7B</td><td>16 layers, hidden 2048, 64 experts (8 active, FFN 1024), 16 KV heads, vocab 50304</td><td>6.9 B / ~1.3 B</td><td>Q8_0 ~8.5 GB, Q4_K_M ~5.2 GB with a 4K f16 cache</td><td>The MoE path proof</td></tr>
+      <tr><td>Qwen1.5-MoE-A2.7B</td><td>—</td><td>14.3 B</td><td>~8.8 GB at Q4</td><td>Fallback if OLMoE's router needed special handling</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Streaming experts from SSD through the page cache is rejected: which experts a token touches changes every token, so
+  the resident set still grows toward the whole file and the OS would thrash (<a href="{{ src(m, 83, 85) }}">L83–85</a>).
+  OLMoE won out without special handling; its real-weight golden passes, and a Qwen1.5-MoE golden is listed only as a
+  later step (<a href="{{ src('docs/progress.md', 292, 292) }}">progress.md L292</a>).
+</p>
+
+<h2 id="status">Status per model</h2>
+
+<p>
+  Three sources describe where each model stands, and they are not equally current. The README's table
+  (<a href="{{ src('README.md', 249, 256) }}">README.md L249–256</a>) lists only the targets and test models;
+  <a href="{{ src('docs/progress.md', 58, 59) }}">progress.md L58–59</a> lists the real-weight goldens that have run; and
+  the code says what is actually checked: <code>real_model_test</code>'s case list
+  (<a href="{{ src('rml/llm/real_model_test.cc', 130, 134) }}">real_model_test.cc L130–134</a>) and the golden files
+  under <a href="{{ tree('rml/llm/testdata/goldens') }}"><code>rml/llm/testdata/goldens</code></a>.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Model</th><th>Role</th><th>Formats (README)</th><th>Real-weight golden</th><th>Status at the pin</th></tr></thead>
+    <tbody>
+      <tr><td>Llama 3.1 8B Instruct</td><td>Milestone</td><td>GGUF Q4_K_M, Q8_0; safetensors bf16</td><td>none</td><td><span class="rml-planned">planned</span>: needs the Mac (<a href="{{ src('docs/progress.md', 290, 291) }}">progress.md L290–291</a>); config and parameter count tested</td></tr>
+      <tr><td>Qwen3 8B</td><td>Second architecture</td><td>GGUF Q4_K_M, Q8_0</td><td>none</td><td><span class="rml-planned">planned</span>; the family is covered by Qwen3-0.6B's golden</td></tr>
+      <tr><td>OLMoE-1B-7B-0924-Instruct</td><td>MoE proof</td><td>GGUF Q4_K_M, Q8_0; safetensors bf16</td><td><code>OLMoE-1B-7B-0924-Instruct.json</code></td><td>Golden-tested, worst logit error 1.3e-4</td></tr>
+      <tr><td>SmolLM2-135M-Instruct</td><td>CI test model</td><td>safetensors, GGUF</td><td><code>SmolLM2-135M-Instruct.json</code></td><td>Golden-tested (1.4e-4), and the only checkpoint CI downloads</td></tr>
+      <tr><td>TinyLlama-1.1B-Chat-v1.0</td><td>Local test model, Llama-shaped</td><td>safetensors, GGUF</td><td><code>TinyLlama-1.1B-Chat-v1.0.json</code></td><td>Golden-tested (1.1e-4)</td></tr>
+      <tr><td>Qwen3-0.6B</td><td>Qwen3 family check</td><td>not in the README</td><td><code>Qwen3-0.6B.json</code></td><td>Golden-tested (1.1e-4)</td></tr>
+      <tr><td>gemma-3-1b-it</td><td>Gemma 3 family check</td><td>not in the README</td><td><code>gemma-3-1b-it.json</code></td><td>Golden-tested (1.7e-4); <a href="{{ src('docs/progress.md', 79, 79) }}">progress.md L79</a> still calls real Gemma 3 weights untested</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The worst-error figures are the ones <a href="{{ src('docs/progress.md', 58, 59) }}">progress.md L58–59</a> reports, all
+  in f32 and all run in the development container; the test itself allows 2e-3 per logit
+  (<a href="{{ src('rml/llm/real_model_test.cc', 33, 33) }}">real_model_test.cc L33</a>). The README's status line
+  says phases 1–7 are done apart from the macOS-only work: real-weight golden tests, NEON and Metal kernels, and the
+  llama.cpp comparison (<a href="{{ src('README.md', 15, 16) }}">README.md L15–16</a>).
+</p>
+
+<h3 id="test-models">Test models</h3>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Model</th><th>Shape</th><th><code>P</code></th><th>bf16</th><th>Q8_0</th><th>Use</th></tr></thead>
+    <tbody>
+      <tr><td>Random toy config</td><td>2 layers, hidden 64, 4 heads, 2 KV heads, vocab 256</td><td>~0.1 M</td><td>—</td><td>—</td><td>Unit tests, no download</td></tr>
+      <tr><td>SmolLM2-135M</td><td>30 layers, hidden 576, 9 heads, 3 KV heads, tied head</td><td>0.135 B</td><td>0.27 GB</td><td>0.14 GB</td><td>CI golden tests</td></tr>
+      <tr><td>TinyLlama 1.1B</td><td>22 layers, hidden 2048, 32 heads, 4 KV heads</td><td>1.10 B</td><td>2.20 GB</td><td>1.17 GB</td><td>Local golden tests</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  SmolLM2-135M uses the Llama block with a tied head and GQA 3:1, so it runs the same code path as the 8B target at a
+  size CI can download and run in seconds (<a href="{{ src(m, 98, 107) }}">models.md L98–107</a>). The toy configs are
+  generated by <code>tools/make_llm_fixtures.py</code> and live in the repository; how they and the real goldens are made
+  is on {{ link('testing', 'Build and testing') }}.
+</p>
+
+<h2 id="download">Getting the weights</h2>
+
+<p>
+  Weights live in a gitignored <code>models/</code> directory and are never committed
+  (<a href="{{ src('AGENTS.md', 40, 40) }}">AGENTS.md L40</a>).
+  <a href="{{ src('tools/download_model.py') }}"><code>tools/download_model.py</code></a> fetches a Hugging Face
+  checkpoint into <code>models/&lt;name&gt;</code> using only the standard library:
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Item</th><th>Behaviour</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Arguments</td><td><code>repo</code> (owner/name), <code>--revision</code> (default <code>main</code>), <code>--dest</code> (default <code>models/&lt;name&gt;</code>)</td><td><a href="{{ src('tools/download_model.py', 49, 55) }}">L49–55</a></td></tr>
+      <tr><td>Files</td><td>The six configs rml reads (<code>config.json</code>, <code>generation_config.json</code>, <code>model.safetensors.index.json</code>, <code>special_tokens_map.json</code>, <code>tokenizer.json</code>, <code>tokenizer_config.json</code>) and top-level <code>*.safetensors</code>, sharded or not</td><td><a href="{{ src('tools/download_model.py', 34, 45) }}">L34–45</a></td></tr>
+      <tr><td>Pinning</td><td>Resolves the revision to a commit through the hub API and downloads every file from that commit</td><td><a href="{{ src('tools/download_model.py', 57, 68) }}">L57–68</a></td></tr>
+      <tr><td>Resume</td><td>Skips a file already present at the expected size; writes to <code>.partial</code> and retries a short transfer up to 3 times</td><td><a href="{{ src('tools/download_model.py', 64, 78) }}">L64–78</a></td></tr>
+      <tr><td>Gated models</td><td>Llama and Gemma need a token with access in <code>$HF_TOKEN</code>, sent as a bearer header</td><td><a href="{{ src('tools/download_model.py', 27, 31) }}">L27–31</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Only safetensors are downloaded; GGUF files such as the README's <code>llama-3.1-8b-q4_k_m.gguf</code> are fetched by
+  hand. CI uses the script for one model, SmolLM2-135M-Instruct at a pinned revision, cached between runs
+  (<a href="{{ src('.github/workflows/ci.yml', 48, 48) }}">ci.yml L48</a>,
+  <a href="{{ src('.github/workflows/ci.yml', 56, 63) }}">L56–63</a>).
+</p>
+
+<h2 id="tests">Tests</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Tests</th><th>What it pins</th></tr></thead>
+    <tbody>
+      <tr><td><a href="{{ src('rml/llm/config_test.cc') }}"><code>config_test.cc</code></a></td><td>19</td><td>Each family's parsed config, and <code>ParameterCount</code> for seven of them, including the committed Llama 3.1 8B and SmolLM2-135M configs.</td></tr>
+      <tr><td><a href="{{ src('rml/llm/real_model_test.cc') }}"><code>real_model_test.cc</code></a></td><td>3 per model, 5 models</td><td>Tokenizer ids, the chat prompt, and top-8 logits plus an 8-token greedy continuation against each golden; skipped when <code>$RML_MODELS_DIR</code> has no copy (<a href="{{ src('rml/llm/real_model_test.cc', 1, 6) }}">L1–6</a>).</td></tr>
+    </tbody>
+  </table>
+</div>
