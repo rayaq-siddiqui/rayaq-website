@@ -3,25 +3,25 @@
 Running log for the rml build loop and the daily Routine. Read this first, update it last.
 The contract is `specs/rml.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-27 (daily run). Upstream unchanged at `13234ae` (re-checked); `decoder` (flagship, §8), `generation` and `kernels` shipped. The next run follows upstream, then builds `models-memory`, `examples`, `testing` (the last three pages).
+**Last updated:** 2026-10-28 (daily run). rml build complete; maintaining daily. Upstream unchanged at `13234ae` (re-checked); `models-memory`, `examples` and `testing` shipped, so every §5 page is ready. The next run follows upstream: when rml's origin/main moves, re-check every affected page and move the pin.
 
 ## Upstream pin
 
 `rayaq-siddiqui/rml@13234ae977ad00839b7f68f919fd81540247fa7f` (committed 2026-10-25,
 "perf: copy im2col row segments with plain loops"), rml 0.1.0, Apache-2.0, analyzed
-2026-10-27 (origin/main still at the pin). Moved on 2026-10-26 from `2b04eb6` (2 commits: the `hoist_step_projections` export pass and
+2026-10-28 (origin/main still at the pin). Moved on 2026-10-26 from `2b04eb6` (2 commits: the `hoist_step_projections` export pass and
 plain cloned loops in `Im2ColPositions`, each with a `docs/progress.md` item). Held in `rml_docs.UPSTREAM`. The repository is
 private, so pinned links 404 until it is public.
 
 ## §10 acceptance criteria
 
-- [ ] `/rml` renders the §6 diagram and lists every §5 page.
-- [ ] Every §5 page exists, meets its "Must cover" column, and is marked ready.
+- [x] `/rml` renders the §6 diagram and lists every §5 page.
+- [x] Every §5 page exists, meets its "Must cover" column, and is marked ready.
 - [x] `decoder` meets §8 with at least two SVG diagrams.
 - [x] Every Inference stack page is ready and `stack` has its layer diagram.
-- [ ] Every source link is pinned; §7.5 tests exist and pass.
+- [x] Every source link is pinned; §7.5 tests exist and pass.
 - [x] Homepage card links to `/rml`.
-- [x] Mobile at 390px: no horizontal page scroll (`/rml`, `/rml/tensors`, `/rml/runtime`, `/rml/linalg`, `/rml/random`, `/rml/autograd`, `/rml/stack`, `/rml/exporters`, `/rml/graph-ir`, `/rml/executor`, `/rml/lowering`, `/rml/benchmarks`, `/rml/nn`, `/rml/training`, `/rml/data-metrics`, `/rml/classical`, `/rml/retrieval`, `/rml/quantization`, `/rml/model-files`, `/rml/tokenizers`, `/rml/decoder`, `/rml/generation`, `/rml/kernels`; rerun per page).
+- [x] Mobile at 390px: no horizontal page scroll (`/rml`, `/rml/tensors`, `/rml/runtime`, `/rml/linalg`, `/rml/random`, `/rml/autograd`, `/rml/stack`, `/rml/exporters`, `/rml/graph-ir`, `/rml/executor`, `/rml/lowering`, `/rml/benchmarks`, `/rml/nn`, `/rml/training`, `/rml/data-metrics`, `/rml/classical`, `/rml/retrieval`, `/rml/quantization`, `/rml/model-files`, `/rml/tokenizers`, `/rml/decoder`, `/rml/generation`, `/rml/kernels`, `/rml/models-memory`, `/rml/examples`, `/rml/testing`; rerun per page).
 - [x] The daily Routine has run at least once and cloned rml.
 
 ## Queue
@@ -55,13 +55,15 @@ Spec v2 order, Inference stack first:
 21. ~~`decoder` (flagship, §8)~~
 22. ~~`generation`~~
 23. ~~`kernels`~~
-24. `models-memory`
-25. `examples`
-26. `testing`
+24. ~~`models-memory`~~
+25. ~~`examples`~~
+26. ~~`testing`~~
+
+The queue is empty. New modules or examples upstream get a row here (spec §5 "New code upstream").
 
 ## Daily Routine
 
-"rayaq.ca/rml — architecture reference agent" (`trig_01S4ui62EMp6wDGtW96h22La`), daily
+"rayaq.ca/rml — architecture reference agent" (`trig_013XRvvZHP2ya9Z56nrmi7B1`), daily
 12:44 UTC on Opus 5.5, fresh session per run (weekly on Saturdays until 2026-10-24). Each
 run follows rml upstream first (re-checks ready pages, moves the pin), then builds up to
 three queued pages; once the queue is empty it keeps following upstream daily. The
@@ -124,6 +126,14 @@ session-only `/loop` jobs that built pages earlier are retired.
   page (sampler with a worked example, `Session::Generate` and speculative-round SVGs, rml-chat);
   `4d4f3df` `kernels` page (caller map SVG, each kernel beside its reference, the planned
   Phase 5 work). All 1067 tests pass; mobile check passes on every ready page.
+- 2026-10-28 — daily run. rml's origin/main still at `13234ae`, so no page changed for upstream;
+  `analyzed_on` moved to today. `f3460a3` `models-memory` page (budget formula, `ParameterCount`
+  and its tests, a to-scale Llama 3.1 8B budget SVG, a worked KV-cache example, status per model,
+  `download_model.py`); `94e4f7e` `examples` page (the library/binary/test split with an SVG, all
+  32 examples in six groups with modules, concept and tests, coverage, the four tools, headline
+  tests); `b22d79d` `testing` page (MODULE.bazel, configs, `rml_cc_*` macros, GoogleTest,
+  Benchmark and death tests, the golden pipeline SVG, fixture tools, the CI jobs SVG). Queue
+  empty: rml build complete. All 1067 tests pass; mobile check passes on all 25 ready pages.
 
 ## Deliberate deviations
 
@@ -132,6 +142,17 @@ session-only `/loop` jobs that built pages earlier are retired.
   `docs/kernels.md` and `docs/bench/frameworks.md`.
 
 ## Open gaps / questions for the owner
+
+- **`docs/models.md` L44 rounds the int8 KV cache to half of f16.** It gives 0.54 GB for Llama
+  3.1 8B at 8K tokens, but `KvCache`'s int8 rows carry one f32 scale per 32 channels
+  (`kv_cache.h` L13–18, 1.125 bytes per entry), which is about 0.60 GB. `models-memory` gives both.
+- **Two `docs/models.md` assumptions are ahead of the code.** The prefill-scratch row assumes
+  512-token chunks (chunked prefill is not implemented; see the `architecture.md` gap below), and
+  L41–43 describe dropping layer pages with `madvise(MADV_DONTNEED)`, which no code at the pin
+  calls. `models-memory` marks both planned.
+- **The README's model table lags `docs/progress.md`.** README L249–256 lists OLMoE as the only
+  golden-tested model; Qwen3-0.6B and gemma-3-1b-it have goldens and pass (progress.md L59) but
+  are not in the table, and TinyLlama is listed only as a test model.
 
 - **`docs/progress.md` disagrees with itself on Gemma 3.** At `13234ae`, L59 reports a real
   Gemma 3 1B golden run in the container (worst logit error 1.7e-4, and
