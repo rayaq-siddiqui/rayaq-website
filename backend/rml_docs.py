@@ -324,7 +324,7 @@ PAGES = [
         "summary": "Every example program, what it builds from the library, and the concept "
         "it demonstrates.",
         "sources": ["examples"],
-        "ready": False,
+        "ready": True,
     },
     {
         "slug": "testing",
