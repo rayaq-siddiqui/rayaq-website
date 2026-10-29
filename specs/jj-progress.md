@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-28 (seventy-second run): followed upstream `531b682..c3bf0b1` (0.46.0). **The
+**Last updated:** 2026-10-29 (seventy-third run): followed upstream `c3bf0b1..af83d29` (0.46.0). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@c3bf0b1990057493513e88310e6adfeac589db34` (committed 2026-10-28, version
-0.46.0), analyzed 2026-10-28. Held in `jj_docs.UPSTREAM`. Previous pin: `531b682`.
+`jj-vcs/jj@af83d2968838b2e83651c2324619505a5c894e5a` (committed 2026-10-29, version
+0.46.0), analyzed 2026-10-29. Held in `jj_docs.UPSTREAM`. Previous pin: `c3bf0b1`.
 
 ## §10 acceptance criteria
 
@@ -31,9 +31,13 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to seventy-second runs: pin bumped).
+      run: pin bumped; fiftieth to seventy-third runs: pin bumped).
 
-## Sixty-fourth to seventy-second runs (2026-10-20 to 2026-10-28)
+## Sixty-fourth to seventy-third runs (2026-10-20 to 2026-10-29)
+
+- `ff87734` `c3bf0b1..af83d29`: converge/next/prev prompts take an index or a change ID prefix
+  (`parse_index_or_change_id_choice`), no `q` at the change/target prompt, EOF errors (converge,
+  next, prev); registry source lines for converge and diff shifted; about 75 templates remapped.
 
 - `91b7044` pin-only `531b682..c3bf0b1` (`GOVERNANCE.md`; `RepoLoader` built via `Self::new`).
 - `fa45a4c` `7ca39e5..531b682`: config files saved atomically via a temp file renamed over the
@@ -41,10 +45,8 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
   names are read errors, not panics (backends); default store initializers moved to
   `default_backend_factories.rs` (storage); `Workspace::load` removed. About 60 templates
   remapped; registry and protos unchanged.
-- `9d37e33` `d1878e6..7ca39e5`: git import diffs only changed refs, op restore keeps `git_refs`
-  (git-import, git-export); `workspace add` ops attributed to the invoker (workspace-add).
-- `e65bbae` `4142aa8..d1878e6`: push stops updating `refs/remotes/*` (git-push); `(current)`
-  marker (workspace-list); op-store temp file permissions (storage).
+- `9d37e33` `..7ca39e5` (git import/export refs, workspace-add), `e65bbae` `..d1878e6` (git-push
+  stops updating `refs/remotes/*`; workspace-list `(current)`; op-store permissions).
 - `b70be32` `9ab2e84..4142aa8`: `CachedLoader` LRU store caches (backends); concurrent commit
   loads (evolog, log, operation-diff); root dropped from merge parents (backends, commits).
 - `ad64adf` `..9ab2e84` (batched export deletes), `cdc336a` `..c84cc0a`, `60897df` `..7f96d3e`,
