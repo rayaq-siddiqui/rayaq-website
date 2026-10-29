@@ -3,13 +3,13 @@
 Running log for the rml build loop and the daily Routine. Read this first, update it last.
 The contract is `specs/rml.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-28 (daily run). rml build complete; maintaining daily. Upstream unchanged at `13234ae` (re-checked); `models-memory`, `examples` and `testing` shipped, so every §5 page is ready. The next run follows upstream: when rml's origin/main moves, re-check every affected page and move the pin.
+**Last updated:** 2026-10-29 (daily run). rml build complete; maintaining daily. Upstream unchanged at `13234ae` (re-checked); every §5 page is ready. The next run follows upstream: when rml's origin/main moves, re-check every affected page and move the pin.
 
 ## Upstream pin
 
 `rayaq-siddiqui/rml@13234ae977ad00839b7f68f919fd81540247fa7f` (committed 2026-10-25,
 "perf: copy im2col row segments with plain loops"), rml 0.1.0, Apache-2.0, analyzed
-2026-10-28 (origin/main still at the pin). Moved on 2026-10-26 from `2b04eb6` (2 commits: the `hoist_step_projections` export pass and
+2026-10-29 (origin/main still at the pin). Moved on 2026-10-26 from `2b04eb6` (2 commits: the `hoist_step_projections` export pass and
 plain cloned loops in `Im2ColPositions`, each with a `docs/progress.md` item). Held in `rml_docs.UPSTREAM`. The repository is
 private, so pinned links 404 until it is public.
 
@@ -134,6 +134,8 @@ session-only `/loop` jobs that built pages earlier are retired.
   tests); `b22d79d` `testing` page (MODULE.bazel, configs, `rml_cc_*` macros, GoogleTest,
   Benchmark and death tests, the golden pipeline SVG, fixture tools, the CI jobs SVG). Queue
   empty: rml build complete. All 1067 tests pass; mobile check passes on all 25 ready pages.
+- 2026-10-29 — daily run. rml's origin/main still at `13234ae`; no page changed, `analyzed_on`
+  moved to today. All 1067 tests pass; `/rml` and all 25 ready pages return 200.
 
 ## Deliberate deviations
 
