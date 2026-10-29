@@ -4,28 +4,28 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-22 (second weekly audit). Spec v2 widens the section from model
-architectures to all of machine learning: 12 areas, 95 pages, a seven-step learning path and a
-fixed page format. Every queue item is ready (1-95; audits added `matrix-decompositions` and
-`iterative-solvers`).
+**Last updated:** 2026-10-29 (third weekly audit). Spec v2 widens the section from model
+architectures to all of machine learning: 12 areas, 96 pages, a seven-step learning path and a
+fixed page format. Every queue item is ready (1-96; audits added `matrix-decompositions`,
+`iterative-solvers` and `numerical-stability`).
 Nothing is queued, so the next run is the next weekly audit (spec §8.1).
 
 ## Pins
 
 | Key | Library | Tag | Commit | Committed | License (file) | Analyzed |
 |---|---|---|---|---|---|---|
-| `pytorch` | PyTorch | `v2.14.1` | `5c4886908584029761b579af026dcfb627c84070` | 2026-09-29 | BSD-3-Clause (`LICENSE`) | 2026-10-08 |
+| `pytorch` | PyTorch | `v2.15.0` | `31a77fc9c0a7c6fff15a1ff58c743f53b1a9d457` | 2026-10-27 | BSD-3-Clause (`LICENSE`) | 2026-10-29 |
 | `sklearn` | scikit-learn | `1.9.1` | `866c0f51e7560ef0303cbcc5f159df5382ea9e3f` | 2026-09-10 | BSD-3-Clause (`COPYING`) | 2026-10-08 |
 | `xgboost` | XGBoost | `v3.4.2` | `fdf0888bedddbd444d72994d845c59b3ca182c5b` | 2026-09-15 | Apache-2.0 (`LICENSE`) | 2026-10-08 |
 
 The pins live in `ml_models_docs.PINS`. Each tag was the latest stable release on the analysis
-date; PyTorch `v2.15.0` only had release candidates then. Every `pin:path` source in the spec's
+date. PyTorch moved from `v2.14.1` to `v2.15.0` in the 2026-10-29 audit (`361aea4`). Every `pin:path` source in the spec's
 page tables was checked to exist at its pin with `git cat-file -e`.
 
 To verify line ranges, clone each pin shallow and sparse at its tag, in a scratch directory:
 
 ```bash
-git clone --depth 1 --branch v2.14.1 --filter=blob:none --sparse https://github.com/pytorch/pytorch pt
+git clone --depth 1 --branch v2.15.0 --filter=blob:none --sparse https://github.com/pytorch/pytorch pt
 git clone --depth 1 --branch 1.9.1 --filter=blob:none --sparse https://github.com/scikit-learn/scikit-learn skl
 git clone --depth 1 --branch v3.4.2 --filter=blob:none --sparse https://github.com/dmlc/xgboost xgb
 git -C pt sparse-checkout set --no-cone torch/nn torch/optim torch/amp   # plus what the page needs
@@ -43,7 +43,7 @@ pull, clone the pins, build the `← next` page to §6, maintain the pins, recor
 and push small commits to `main`. The phone check before each push is
 `NODE_PATH=$(npm root -g) node tools/ml_models/check_mobile.js / /ml-models <ready pages>`.
 
-Neither audit so far (2026-10-15, 2026-10-22) had a tool to change a trigger's schedule, so
+No audit so far (2026-10-15, 2026-10-22, 2026-10-29) had a tool to change a trigger's schedule, so
 the trigger still fires every 5 hours. Until the owner switches it to weekly, a run that finds the last audit row less than
 seven days old should record nothing and stop.
 
@@ -51,7 +51,7 @@ seven days old should record nothing and stop.
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [x] Every §5 page is ready and meets its "Must cover" column and §6 (94 of 94 ready, all
+- [x] Every §5 page is ready and meets its "Must cover" column and §6 (96 of 96 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -86,7 +86,7 @@ None yet. Record each script here as script · command · output · seed · libr
 
 ## Verified line ranges at the pins (for upcoming pages)
 
-### PyTorch v2.14.1
+### PyTorch v2.14.1 (recheck at v2.15.0 before linking)
 
 Ranges already cited by built pages live in their templates (and in `git log -p` on this
 file); this list keeps ranges checked but not yet linked, for audits and new §5 rows.
@@ -224,10 +224,32 @@ Open gaps from these runs:
 
 | Date | Checked | Found | Added |
 |---|---|---|---|
+| 2026-10-29 | Pins (`git ls-remote --tags`); Hugging Face model cards and reports for recent open-weight releases; the foundations area for floating point and conditioning | PyTorch `v2.15.0` is final (2026-10-27); scikit-learn 1.9.1 and XGBoost v3.4.2 are still the latest stable. No open-weight release qualified: Reflection Beam 1.0's report is still "coming", Muse Spark Open has only an evaluation-methodology note, Mistral Large 4 weights are due 2026-10-31, MiniMax M3.1-Flash could not be verified. Foundations had no page on rounding error, conditioning or stable rewrites | `361aea4` the PyTorch pin to v2.15.0 (every linked range rechecked); `bfc791c` the `numerical-stability` page (§5 row, registry, queue 96) |
 | 2026-10-22 | Pins (`git ls-remote --tags`); Hugging Face model cards and reports for recent open-weight releases; the foundations area for numerical linear algebra beyond factorizations | No pin moved (PyTorch v2.15.0 is still rc7). DeepSeek-V4.1-Flash has weights and a report (cross-layer KV sharing, FP4 KV cache); Muse Spark Open, Reflection Beam and Mistral Large 4 have no report or open weights yet, so they were skipped. Foundations had no iterative solvers (CG, Krylov, preconditioning) | `15c05d9` a cross-layer sharing and FP4 section on `kv-cache` plus its `UPCOMING_MODELS` entry; `ab96a0f` the `iterative-solvers` page (§5 row, registry, queue 95) |
 | 2026-10-15 | Pins (`git ls-remote --tags`); the Kimi K2, DeepSeek-V3.2-Exp and MiMo-V2-Flash reports; `torch/optim/_muon.py`; the foundations area against `torch.linalg` | No pin moved (PyTorch v2.15.0 is still rc only). Muon and QK-Clip had no coverage; foundations stopped at eigen/SVD with no LU, QR, Cholesky, least squares or matrix norms | `063d6ab` three `UPCOMING_MODELS` entries; `045a59f` a Muon/QK-Clip section on `optimizers`; `736023a` the `matrix-decompositions` page (§5 row, registry, queue 94) |
 
-Notes from the 2026-10-22 audit:
+Notes from the 2026-10-29 audit:
+
+- The v2.15.0 diff over the linked files moved line ranges only, plus new APIs not yet
+  described: FSDP2 `MixedPrecisionPolicy.param_dtype_override_fn` and
+  `set_manual_backward_finalization`, DDP `lazy_bucket_allocation`, `aoti_load_package`
+  `num_runners`/`use_stream_affinity`, profiler `export_chrome_trace`
+  `cuda_graph_annotations`/`graph_lanes`, more MPS deterministic-algorithm entries and an
+  MI300 TF32 note. Candidates for a later audit.
+- Linked at the pins for `numerical-stability`: PyTorch `_refs/__init__.py` `log_softmax`
+  909-919, `logsumexp` 922-942, `logaddexp` 1711-1737; `_decomp/decompositions.py`
+  `_softmax` 1302-1321, `_log_softmax` 1345-1365, `log_sigmoid_forward` 3591-3602,
+  `binary_cross_entropy_with_logits` 5231-5248; `SumKernel.cpp` `multi_row_sum` 312-409,
+  `cascade_sum` 568-645; `testing/_comparison.py` `_DTYPE_PRECISIONS` 96-104. scikit-learn
+  `_loss/_loss.pyx.tp` `log1pexp` 250-267, `sum_exp_minus_max` 269-303;
+  `utils/extmath.py` `_safe_accumulator_op` 1063-1115, `_incremental_mean_and_var`
+  1118-1264, `stable_cumsum` 1289-1334 (deprecated in 1.8).
+- research.meta.ai was unreachable. Recheck Mistral Large 4 next audit.
+- Gaps: Goldberg, Higham, Trefethen–Bau, Kahan, Welford, Chan–Golub–LeVeque, Mächler,
+  Blanchard–Higham–Higham and IEEE 754 are cited from memory without links; the PyTorch
+  snippet was not run under real PyTorch.
+
+Notes from the 2026-10-22 audit (condensed):
 
 - WebFetch could not reach most domains, so reports were read through Hugging Face. The
   DeepSeek-V4.1-Flash report link is pinned to HF commit `314113f8`, not `blob/main`.
@@ -238,7 +260,6 @@ Notes from the 2026-10-22 audit:
 - Gaps: Hestenes–Stiefel, Shewchuk, Saad, Paige–Saunders, Knyazev, Pearlmutter, Martens and
   GPyTorch are cited from memory without links (the GPyTorch arXiv id could not be verified).
   The FP4 layout (E2M1 values, one E4M3 scale per 16) follows the DeepSeek report.
-- Candidate for a later audit: numerical precision in linear algebra beyond `mixed-precision`.
 
 Notes from the 2026-10-15 audit (condensed):
 
