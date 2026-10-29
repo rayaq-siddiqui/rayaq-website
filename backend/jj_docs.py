@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "c3bf0b1990057493513e88310e6adfeac589db34",
-    "commit_date": "2026-10-28",
+    "commit": "af83d2968838b2e83651c2324619505a5c894e5a",
+    "commit_date": "2026-10-29",
     "version": "0.46.0",
-    "analyzed_on": "2026-10-28",
+    "analyzed_on": "2026-10-29",
 }
 
 TOPICS = [
@@ -347,7 +347,7 @@ COMMANDS = [
         "category": 'Moving and combining changes',
         "tier": 'A',
         "summary": 'Converge divergent changes',
-        "source": ('cli/src/commands/converge.rs', 96),
+        "source": ('cli/src/commands/converge.rs', 97),
     },
     {
         "command": 'revert',
@@ -501,7 +501,7 @@ COMMANDS = [
         "category": 'Inspecting history',
         "tier": 'B',
         "summary": 'Compare file contents between two revisions',
-        "source": ('cli/src/commands/diff.rs', 55),
+        "source": ('cli/src/commands/diff.rs', 54),
     },
     {
         "command": 'interdiff',
