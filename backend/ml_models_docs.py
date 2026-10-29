@@ -194,6 +194,23 @@ PAGES = [
         "ready": True,
     },
     {
+        "slug": "numerical-stability",
+        "title": "Floating point, conditioning and numerical stability",
+        "area": "foundations",
+        "level": "core",
+        "summary": "Why rounding error grows, which formulas lose accuracy, and the stable rewrites behind logsumexp, losses on logits and streaming variance.",
+        "prerequisites": ["matrix-decompositions", "expectation-and-variance"],
+        "sources": [
+            "pytorch:torch/_refs/__init__.py",
+            "pytorch:torch/_decomp/decompositions.py",
+            "pytorch:aten/src/ATen/native/cpu/SumKernel.cpp",
+            "pytorch:torch/testing/_comparison.py",
+            "sklearn:sklearn/utils/extmath.py",
+            "sklearn:sklearn/_loss/_loss.pyx.tp",
+        ],
+        "ready": True,
+    },
+    {
         "slug": "derivatives-and-gradients",
         "title": "Derivatives and gradients",
         "area": "foundations",
@@ -2639,6 +2656,217 @@ def iterative_example(ex=ITERATIVE_EXAMPLE):
     large["pcg_bound"] = cg_steps_bound(large["kappa_jacobi"], ex["tol"])
     large["sd_bound"] = steepest_descent_steps_bound(large["kappa"], ex["tol"])
     return {"small": small, "large": large}
+
+
+STABILITY_EXAMPLE = {
+    "toy_bits": 2,
+    "toy_exponents": [-1, 0, 1, 2],
+    "addend": 0.1,
+    "count": 100_000,
+    "trace_every": 2_500,
+    "variance_data": [4.0, 7.0, 13.0, 16.0],
+    "variance_shifts": [0.0, 1e4, 1e8, 1e9],
+    "logits": [1000.0, 999.0, 998.0],
+    "softplus_points": [-800.0, -40.0, -1.0, 20.0, 40.0, 800.0],
+    "hilbert_sizes": [4, 5, 6, 7, 8, 9, 10],
+    "adam_eps": 1e-8,
+}
+
+FLOAT_PRECISIONS = [
+    {"dtype": "float16", "bits": 10, "rtol": 1e-3, "atol": 1e-5},
+    {"dtype": "bfloat16", "bits": 7, "rtol": 1.6e-2, "atol": 1e-5},
+    {"dtype": "float32", "bits": 23, "rtol": 1.3e-6, "atol": 1e-5},
+    {"dtype": "float64", "bits": 52, "rtol": 1e-7, "atol": 1e-7},
+]
+
+
+def toy_floats(bits, exponents):
+    return [(1 + m / 2 ** bits) * 2.0 ** e for e in exponents for m in range(2 ** bits)]
+
+
+def f32_naive_sum(values, trace_every=None):
+    total, trace = 0.0, []
+    for k, value in enumerate(values, start=1):
+        total = f32(total + value)
+        if trace_every and k % trace_every == 0:
+            trace.append(total)
+    return (total, trace) if trace_every else total
+
+
+def f32_pairwise_sum(values, block=8):
+    if len(values) <= block:
+        return f32_naive_sum(values)
+    half = len(values) // 2
+    return f32(f32_pairwise_sum(values[:half], block) + f32_pairwise_sum(values[half:], block))
+
+
+def f32_kahan_sum(values, trace_every=None):
+    total = carry = 0.0
+    trace = []
+    for k, value in enumerate(values, start=1):
+        y = f32(value - carry)
+        t = f32(total + y)
+        carry = f32(f32(t - total) - y)
+        total = t
+        if trace_every and k % trace_every == 0:
+            trace.append(total)
+    return (total, trace) if trace_every else total
+
+
+def naive_variance(values):
+    n = len(values)
+    total, squares = sum(values), sum(v * v for v in values)
+    return (squares - total * total / n) / (n - 1)
+
+
+def two_pass_variance(values):
+    centre = sum(values) / len(values)
+    return sum((v - centre) ** 2 for v in values) / (len(values) - 1)
+
+
+def welford_variance(values):
+    mean = m2 = 0.0
+    steps = []
+    for k, value in enumerate(values, start=1):
+        delta = value - mean
+        mean += delta / k
+        m2 += delta * (value - mean)
+        steps.append({"k": k, "value": value, "mean": mean, "m2": m2})
+    return {"variance": m2 / (len(values) - 1), "steps": steps}
+
+
+def _exp_or_inf(x):
+    try:
+        return math.exp(x)
+    except OverflowError:
+        return math.inf
+
+
+def naive_logsumexp(values):
+    total = sum(_exp_or_inf(v) for v in values)
+    return math.log(total) if total else -math.inf
+
+
+def stable_logsumexp(values):
+    top = max(values)
+    if math.isinf(top):
+        return top
+    return top + math.log(sum(math.exp(v - top) for v in values))
+
+
+def naive_softmax(values):
+    exps = [_exp_or_inf(v) for v in values]
+    total = sum(exps)
+    return [e / total if not math.isinf(total) else math.nan for e in exps]
+
+
+def stable_softmax(values):
+    top = max(values)
+    exps = [math.exp(v - top) for v in values]
+    total = sum(exps)
+    return [e / total for e in exps]
+
+
+def naive_softplus(x):
+    return math.log(1 + _exp_or_inf(x))
+
+
+def log1pexp(x):
+    if x <= -37:
+        return math.exp(x)
+    if x <= -2:
+        return math.log1p(math.exp(x))
+    if x <= 18:
+        return math.log(1 + math.exp(x))
+    if x <= 33.3:
+        return x + math.exp(-x)
+    return x
+
+
+def naive_bce(logit, target):
+    p = 1 / (1 + _exp_or_inf(-logit))
+    q = p if target else 1 - p
+    return -math.log(q) if q > 0 else math.inf
+
+
+def bce_with_logits(logit, target):
+    return (1 - target) * logit - min(logit, 0.0) + math.log1p(math.exp(-abs(logit)))
+
+
+def hilbert(n):
+    return [[1.0 / (i + j + 1) for j in range(n)] for i in range(n)]
+
+
+def hilbert_solve(n):
+    matrix = hilbert(n)
+    b = [sum(row) for row in matrix]
+    x = lu_solve(lu_factor(matrix), b)
+    residual = [bi - dot_product(row, x) for row, bi in zip(matrix, b)]
+    kappa = condition_number(matrix)
+    return {
+        "n": n,
+        "kappa": kappa,
+        "forward": vector_norm([xi - 1.0 for xi in x]) / math.sqrt(n),
+        "backward": vector_norm(residual) / vector_norm(b),
+        "bound": kappa * 2.0 ** -53,
+    }
+
+
+def stability_example(ex=STABILITY_EXAMPLE):
+    value = f32(ex["addend"])
+    values = [value] * ex["count"]
+    naive, naive_trace = f32_naive_sum(values, ex["trace_every"])
+    kahan, kahan_trace = f32_kahan_sum(values, ex["trace_every"])
+    exact = value * ex["count"]
+    u32 = 2.0 ** -24
+    sums = {
+        "value": value,
+        "exact": exact,
+        "naive": naive,
+        "pairwise": f32_pairwise_sum(values),
+        "kahan": kahan,
+        "u": u32,
+        "naive_bound": (ex["count"] - 1) * u32 * exact,
+        "pairwise_bound": math.ceil(math.log2(ex["count"])) * u32 * exact,
+        "kahan_bound": 2 * u32 * exact,
+        "trace": [
+            {"k": (i + 1) * ex["trace_every"], "naive": a - value * (i + 1) * ex["trace_every"], "kahan": b - value * (i + 1) * ex["trace_every"]}
+            for i, (a, b) in enumerate(zip(naive_trace, kahan_trace))
+        ],
+    }
+    variance = []
+    for shift in ex["variance_shifts"]:
+        data = [shift + v for v in ex["variance_data"]]
+        variance.append({
+            "shift": shift,
+            "naive": naive_variance(data),
+            "two_pass": two_pass_variance(data),
+            "welford": welford_variance(data)["variance"],
+        })
+    logits = ex["logits"]
+    softplus = [
+        {"x": x, "naive": naive_softplus(x), "stable": log1pexp(x), "bce_naive": naive_bce(x, 1.0), "bce_stable": bce_with_logits(x, 1.0)}
+        for x in ex["softplus_points"]
+    ]
+    return {
+        "toy": toy_floats(ex["toy_bits"], ex["toy_exponents"]),
+        "assoc": {"left": (0.1 + 0.2) + 0.3, "right": 0.1 + (0.2 + 0.3)},
+        "sums": sums,
+        "variance": variance,
+        "welford": welford_variance([ex["variance_shifts"][-1] + v for v in ex["variance_data"]]),
+        "softmax": {
+            "naive_lse": naive_logsumexp(logits),
+            "stable_lse": stable_logsumexp(logits),
+            "naive": naive_softmax(logits),
+            "stable": stable_softmax(logits),
+            "shifted": [v - max(logits) for v in logits],
+        },
+        "softplus": softplus,
+        "hilbert": [hilbert_solve(n) for n in ex["hilbert_sizes"]],
+        "precisions": [dict(row, eps=2.0 ** -row["bits"]) for row in FLOAT_PRECISIONS],
+        "adam_eps_f16": to_float16(ex["adam_eps"]),
+        "f16_tiny": 2.0 ** -24,
+    }
 
 
 def unit_circle_image(matrix, count=72):
@@ -15198,6 +15426,8 @@ def render(slug, render_template):
         "decomposition_example": decomposition_example,
         "iterative_settings": ITERATIVE_EXAMPLE,
         "iterative_example": iterative_example,
+        "stability_settings": STABILITY_EXAMPLE,
+        "stability_example": stability_example,
         "quadratic_contour": quadratic_contour,
         "jacobi_eigh": jacobi_eigh,
         "power_iteration": power_iteration,

@@ -1,0 +1,660 @@
+{% set ex = stability_settings %}
+{% set run = stability_example(ex) %}
+{% set sums = run.sums %}
+{% set sm = run.softmax %}
+{% macro g(x, digits=4) -%}{% if x == 0 %}0{% else %}{{ ("%." ~ digits ~ "g")|format(x) }}{% endif %}{%- endmacro %}
+{% macro e(x) -%}{% if x == 0 %}0{% else %}{{ "%.1e"|format(x) }}{% endif %}{%- endmacro %}
+{% macro f(x) -%}{{ "{:,}".format(x) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Floating point, conditioning and numerical stability</h1>
+  <p class="tagline">
+    A computer stores numbers with a fixed number of significant bits, so almost every operation
+    rounds. Usually the rounding is invisible. Sometimes it adds up over a long sum, wipes out a
+    variance, turns a softmax into NaN or makes a solve lose most of its digits. This page gives
+    the one model of rounding error that explains all of these, separates what the problem is
+    sensitive to (conditioning) from what the algorithm adds (stability), and walks through the
+    stable rewrites PyTorch and scikit-learn use: max-shifted logsumexp, <code>log1p</code>,
+    losses on logits, cascade summation and Welford-style variance.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Add 0.1 to itself {{ f(ex.count) }} times in float32, one term at a time, and the answer is
+  {{ "%.4f"|format(sums.naive) }} rather than 10,000. Compute the variance of four readings near
+  10⁹ with the textbook shortcut E[x²] − E[x]² in float64 and it comes out
+  <em>negative</em>. Evaluate a softmax over the logits {{ ex.logits|map("int")|join(", ") }} and
+  every probability is NaN. None of these is a bug in the code that ran: each is ordinary rounding,
+  amplified by the way the formula was arranged.
+</p>
+<p>
+  Machine learning runs into all of them because it works at scale and at low precision. Sums run
+  over millions of terms, logits and log-probabilities span huge ranges, statistics are accumulated
+  over streams, and training increasingly happens in
+  <a href="{{ url_for('ml_models', slug='mixed-precision') }}">float16, bfloat16 and smaller</a>,
+  where each rounding is a thousand times coarser than in float32. Knowing which formulas lose
+  accuracy, and what to use instead, is the difference between a model that trains and one that
+  silently produces garbage.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  A floating-point number is a significand with a fixed number of bits times a power of two. Within
+  one power of two (one <em>binade</em>) the representable numbers are evenly spaced, and the
+  spacing doubles at every power of two. So the <em>absolute</em> gap between neighbours grows with
+  the size of the number, while the <em>relative</em> gap stays roughly constant. That relative
+  gap is the whole story: every operation is exact up to a relative error of at most half of it.
+</p>
+
+<div class="jj-diagram">
+  {% set x0, sc, axis = 30, 82, 80 %}
+  <svg viewBox="0 0 680 170" role="img" aria-labelledby="ns-grid-title ns-grid-desc">
+    <title id="ns-grid-title">The representable numbers of a toy float format</title>
+    <desc id="ns-grid-desc">
+      A number line from 0 to 8 with a tick at every positive number a toy format with
+      {{ ex.toy_bits }} fraction bits can represent between 0.5 and 8: {{ run.toy|join(", ") }}. The
+      ticks are evenly spaced within each power-of-two interval and the spacing doubles from one
+      interval to the next: 0.125, 0.25, 0.5 and 1. A value of 5.4 sits between 5 and 6 and
+      rounds to 5, an error of 0.4, which is 7% of 5.4.
+    </desc>
+    <line x1="{{ x0 }}" y1="{{ axis }}" x2="{{ x0 + 8 * sc }}" y2="{{ axis }}" class="d-line"></line>
+    {% for v in run.toy %}
+      <line x1="{{ '%.1f'|format(x0 + v * sc) }}" y1="{{ axis - 10 }}" x2="{{ '%.1f'|format(x0 + v * sc) }}" y2="{{ axis + 10 }}" stroke-width="2" style="stroke: var(--jj-accent)"></line>
+    {% endfor %}
+    {% for v in [0, 1, 2, 4, 8] %}
+      <line x1="{{ x0 + v * sc }}" y1="{{ axis + 10 }}" x2="{{ x0 + v * sc }}" y2="{{ axis + 26 }}" class="d-line" opacity="0.5"></line>
+      <text x="{{ x0 + v * sc }}" y="{{ axis + 40 }}" font-size="12" text-anchor="middle">{{ v }}</text>
+    {% endfor %}
+    {% for lo, hi, gap in [(0.5, 1, "0.125"), (1, 2, "0.25"), (2, 4, "0.5"), (4, 8, "1")] %}
+      <text x="{{ '%.1f'|format(x0 + (lo + hi) / 2 * sc) }}" y="{{ axis - 22 }}" font-size="11" text-anchor="middle" class="d-muted">gap {{ gap }}</text>
+    {% endfor %}
+    <circle cx="{{ '%.1f'|format(x0 + 5.4 * sc) }}" cy="{{ axis }}" r="5" style="fill: var(--jj-amber)"></circle>
+    <path d="M {{ '%.1f'|format(x0 + 5.4 * sc) }} {{ axis - 8 }} Q {{ '%.1f'|format(x0 + 5.2 * sc) }} {{ axis - 44 }} {{ '%.1f'|format(x0 + 5 * sc) }} {{ axis - 12 }}" fill="none" stroke-width="1.5" style="stroke: var(--jj-amber)"></path>
+    <text x="{{ '%.1f'|format(x0 + 5.2 * sc) }}" y="{{ axis - 50 }}" font-size="11" text-anchor="middle" style="fill: var(--jj-amber)">5.4 rounds to 5</text>
+    <text x="340" y="{{ axis + 70 }}" font-size="11" text-anchor="middle" class="d-muted">every gap is a quarter of the binade's start (2 fraction bits), so the worst relative rounding error is the same in every binade</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  The numbers come from <code>toy_floats</code> in the page's helpers. float32 is the same picture
+  with 23 fraction bits instead of 2, so its relative gap is 2⁻²³ ≈ 1.2 × 10⁻⁷ instead of ¼.
+</p>
+
+<p>
+  With that picture, two distinct questions decide whether a computed answer can be trusted.
+  <strong>Conditioning</strong> belongs to the problem: if the inputs move by a tiny relative
+  amount, how far can the exact answer move? <strong>Stability</strong> belongs to the algorithm:
+  does it add more error than the unavoidable rounding of its inputs would cause anyway? A stable
+  algorithm on a well-conditioned problem gives an accurate answer. On an ill-conditioned problem
+  even a perfect algorithm cannot, and an unstable algorithm can ruin a well-conditioned one.
+</p>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="rounding-model">The rounding model</h3>
+
+<p>
+  IEEE 754 arithmetic rounds the exact result of each +, −, ×, ÷ and √ to the nearest
+  representable number. With p significand bits (counting the implicit leading 1), that gives the
+  standard model
+</p>
+<p class="ml-formula">
+  fl(x ∘ y) = (x ∘ y)(1 + δ),&nbsp;&nbsp; |δ| ≤ u = 2<sup>−p</sup>,
+</p>
+<p>
+  where u is the <strong>unit roundoff</strong>: 2⁻²⁴ ≈ 6.0 × 10⁻⁸ for float32 and 2⁻⁵³ ≈
+  1.1 × 10⁻¹⁶ for float64. The <strong>machine epsilon</strong> that
+  <code>torch.finfo(dtype).eps</code> reports is the gap above 1.0, which is 2u. Two consequences
+  follow at once. Rounding is relative, so a quantity is only known to about log₁₀(1/u) significant
+  digits: 7 in float32, 16 in float64, 3 in float16 and 2 to 3 in bfloat16. And floating-point
+  addition is not associative: (0.1 + 0.2) + 0.3 = {{ run.assoc.left }} but 0.1 + (0.2 + 0.3) =
+  {{ run.assoc.right }} in float64. Any reduction whose order changes, across threads, GPU blocks
+  or devices, changes the last bits of the result, which is why bitwise
+  <a href="{{ url_for('ml_models', slug='reproducibility') }}">reproducibility</a> needs a fixed
+  order.
+</p>
+
+<h3 id="summation">Summation</h3>
+
+<p>
+  Adding n numbers one at a time rounds after every addition, and each rounding is relative to the
+  running total, not to the term. The error bound for this <em>recursive</em> summation is
+</p>
+<p class="ml-formula">
+  |ŝ − s| ≤ (n − 1) u Σ|x<sub>i</sub>| + O(u²),
+</p>
+<p>
+  linear in n. Once the total is large, small terms lose most of their bits on the way in. Three
+  standard fixes:
+</p>
+<ul>
+  <li><strong>Pairwise (cascade) summation</strong> adds neighbours, then sums of neighbours, in a
+    tree. Each term passes through only ⌈log₂ n⌉ additions, so the bound becomes
+    ⌈log₂ n⌉ u Σ|x<sub>i</sub>|. PyTorch's CPU <code>sum</code> does this: it accumulates blocks of
+    at least 16 elements into four levels of partial sums so that only numbers of similar size are
+    added together.</li>
+  <li><strong>Compensated (Kahan) summation</strong> keeps a second variable holding the low-order
+    bits each addition dropped and feeds them back into the next term. The bound is
+    2u Σ|x<sub>i</sub>| + O(nu²)Σ|x<sub>i</sub>|, essentially independent of n, for four
+    operations per term instead of one.</li>
+  <li><strong>A wider accumulator</strong>: sum float16 or float32 inputs in float32 or float64.
+    scikit-learn's <code>_safe_accumulator_op</code> runs sums and dot products in float64, and
+    GPU kernels accumulate half-precision products in float32.</li>
+</ul>
+
+<div class="jj-diagram">
+  {% set left, right, top, bottom = 70, 650, 30, 190 %}
+  {% set ymin, ymax = -2, 6 %}
+  {% set peak = sums.trace|max(attribute="naive") %}
+  {% set xs = (right - left) / ex.count %}
+  {% set ys = (bottom - top) / (ymax - ymin) %}
+  <svg viewBox="0 0 680 240" role="img" aria-labelledby="ns-sum-title ns-sum-desc">
+    <title id="ns-sum-title">Error of a running float32 sum of 0.1</title>
+    <desc id="ns-sum-desc">
+      The error of the running total, after k additions of float32(0.1), against the exact sum k ×
+      float32(0.1), for k up to {{ f(ex.count) }}, sampled every {{ f(ex.trace_every) }} terms. The
+      plain running sum drifts in straight segments whose slope changes each time the total crosses
+      a power of two: down, then up to {{ "%.2f"|format(peak.naive) }} near k = {{ f(peak.k) }}, then
+      down again to {{ "%.3f"|format(sums.trace[-1].naive) }}, so the final error understates the
+      worst one along the way. The Kahan-compensated sum stays at zero on this
+      scale, ending {{ e(sums.trace[-1].kahan) }} away, which is just the rounding of the final
+      total to float32.
+    </desc>
+    <line x1="{{ left }}" y1="{{ top }}" x2="{{ left }}" y2="{{ bottom }}" class="d-line"></line>
+    <line x1="{{ left }}" y1="{{ bottom }}" x2="{{ right }}" y2="{{ bottom }}" class="d-line"></line>
+    {% for v in [6, 4, 2, 0, -2] %}
+      {% set y = top + (ymax - v) * ys %}
+      <line x1="{{ left - 4 }}" y1="{{ '%.1f'|format(y) }}" x2="{{ right }}" y2="{{ '%.1f'|format(y) }}" class="d-line" opacity="{{ 0.5 if v == 0 else 0.12 }}"></line>
+      <text x="{{ left - 8 }}" y="{{ '%.1f'|format(y + 4) }}" font-size="11" text-anchor="end" class="d-muted">{{ v }}</text>
+    {% endfor %}
+    {% for k in [0, 25000, 50000, 75000, 100000] %}
+      <text x="{{ '%.1f'|format(left + k * xs) }}" y="{{ bottom + 16 }}" font-size="11" text-anchor="middle" class="d-muted">{{ f(k) }}</text>
+    {% endfor %}
+    <polyline points="{{ left }},{{ '%.1f'|format(top + ymax * ys) }} {% for p in sums.trace %}{{ '%.1f'|format(left + p.k * xs) }},{{ '%.1f'|format(top + (ymax - p.naive) * ys) }} {% endfor %}" fill="none" stroke-width="2" style="stroke: var(--jj-amber)"></polyline>
+    <polyline points="{{ left }},{{ '%.1f'|format(top + ymax * ys) }} {% for p in sums.trace %}{{ '%.1f'|format(left + p.k * xs) }},{{ '%.1f'|format(top + (ymax - p.kahan) * ys) }} {% endfor %}" fill="none" stroke-width="2" style="stroke: var(--jj-green)"></polyline>
+    <text x="{{ '%.1f'|format(left + peak.k * xs) }}" y="{{ '%.1f'|format(top + (ymax - peak.naive) * ys - 8) }}" font-size="11" text-anchor="end" style="fill: var(--jj-amber)">plain running sum</text>
+    <text x="{{ right - 4 }}" y="{{ '%.1f'|format(top + ymax * ys + 16) }}" font-size="11" text-anchor="end" style="fill: var(--jj-green)">Kahan</text>
+    <text x="{{ (left + right) / 2 }}" y="{{ bottom + 36 }}" font-size="11" text-anchor="middle" class="d-muted">terms added, k</text>
+    <text x="16" y="{{ (top + bottom) / 2 }}" font-size="11" text-anchor="middle" class="d-muted" transform="rotate(-90 16 {{ (top + bottom) / 2 }})">error</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Both traces from <code>f32_naive_sum</code> and <code>f32_kahan_sum</code>, which round to float32
+  after every operation with <code>struct</code>. Between powers of two the total's gap is fixed,
+  so each addition of 0.1 rounds the same way and the error grows linearly; at each power of two
+  (8,192, 16,384, 32,768, 65,536) the gap doubles and the direction or size of the drift changes.
+</p>
+
+<h3 id="cancellation">Catastrophic cancellation</h3>
+
+<p>
+  Subtracting two nearly equal numbers is itself exact, but it removes their shared leading digits
+  and leaves only the trailing ones, which are exactly the digits earlier roundings corrupted. If a
+  and b each carry a relative error u, then a − b carries a relative error up to
+  u(|a| + |b|)/|a − b|, which is enormous when a ≈ b. The textbook variance
+  Σx²/n − (Σx/n)² is the classic case: both terms are about the square of the mean, their
+  difference is the much smaller variance, and every digit of the variance smaller than u times
+  the mean squared is lost. Subtract the mean first (two passes), or update the mean and the sum
+  of squared deviations together as each point arrives (Welford's algorithm), and the large
+  common part never enters a subtraction.
+</p>
+
+<h3 id="conditioning">Conditioning and backward stability</h3>
+
+<p>
+  The <strong>condition number</strong> of a problem is the worst-case ratio of the relative change
+  in the answer to the relative change in the input. For solving Ax = b it is
+  κ(A) = ‖A‖‖A⁻¹‖ = σ<sub>max</sub>/σ<sub>min</sub>, met on the
+  <a href="{{ url_for('ml_models', slug='linear-algebra-toolkit') }}">linear algebra toolkit</a>
+  page. An algorithm is <strong>backward stable</strong> if its computed answer is the exact answer
+  for a slightly perturbed input, with a relative perturbation of order u. Then the two ideas
+  combine into the rule of numerical analysis:
+</p>
+<p class="ml-formula">
+  forward error ≲ κ × backward error ≈ κ u.
+</p>
+<p>
+  LU with partial pivoting, Cholesky and Householder QR are backward stable in practice, so their
+  error is as small as the problem allows: you lose about log₁₀ κ digits, and no algorithm can do
+  better in that precision. Forming XᵀX for least squares squares κ before a solver ever sees it,
+  which is why the <a href="{{ url_for('ml_models', slug='matrix-decompositions') }}">QR route</a>
+  is preferred. The residual b − Ax̂ measures the backward error, so a tiny residual proves the
+  algorithm did its job, not that x̂ is accurate.
+</p>
+
+<h3 id="stable-rewrites">Stable rewrites in machine learning</h3>
+
+<p>
+  Most of the numerically delicate code in a deep learning framework is one of a few rewrites, each
+  keeping a large intermediate from overflowing or a small one from vanishing:
+</p>
+<ul>
+  <li><strong>logsumexp and softmax</strong>: with m = max<sub>i</sub> x<sub>i</sub>,
+    log Σ e<sup>x<sub>i</sub></sup> = m + log Σ e<sup>x<sub>i</sub> − m</sup>. Every shifted
+    exponent is at most 0, so nothing overflows, and one term equals 1, so the sum is between 1 and
+    n and the log never sees 0. Softmax is e<sup>x − m</sup> / Σ e<sup>x − m</sup>, and
+    log-softmax is x − logsumexp(x), computed directly instead of as log(softmax(x)), whose small
+    probabilities would underflow to log 0.</li>
+  <li><strong>log1p and expm1</strong>: for small z, 1 + z rounds away z's low digits before the log
+    sees them; <code>log1p(z)</code> computes log(1 + z) without forming 1 + z.</li>
+  <li><strong>softplus</strong>, log(1 + eˣ): overflows for large x and loses everything for very
+    negative x. The stable form switches regimes: eˣ when x is very negative, log1p(eˣ), then
+    x + e⁻ˣ, then just x. PyTorch's <code>Softplus</code> returns x once βx exceeds a threshold
+    (20 by default).</li>
+  <li><strong>losses on logits</strong>: binary cross-entropy through sigmoid and log loses
+    accuracy once σ(z) rounds to 0 or 1. On the logit z directly,
+    −log σ(z) = max(−z, 0) + log1p(e<sup>−|z|</sup>), which is what
+    <code>BCEWithLogitsLoss</code> and <code>cross_entropy</code> compute. See
+    <a href="{{ url_for('ml_models', slug='entropy-and-kl') }}">entropy and KL</a> and
+    <a href="{{ url_for('ml_models', slug='loss-functions') }}">loss functions</a>.</li>
+  <li><strong>epsilons in denominators</strong>: normalization layers divide by
+    √(var + ε) and Adam by √v̂ + ε, so a zero variance or second moment does not divide by zero.
+    The ε must be representable in the dtype the division runs in: Adam's default 10⁻⁸ is below
+    float16's smallest positive number, {{ e(run.f16_tiny) }}, and rounds to
+    {{ g(run.adam_eps_f16) }}.</li>
+</ul>
+
+<p>The pieces of PyTorch and scikit-learn that implement these rules:</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>torch.logsumexp</code> (reference)</td>
+        <td><code>self</code>, <code>dim</code>, <code>keepdim</code></td>
+        <td>Subtracts the amax along <code>dim</code>, with infinite maxima masked to 0 so all-−∞ rows give −∞ rather than NaN, then adds it back after the log.</td>
+        <td><a href="{{ src('torch/_refs/__init__.py', 922, 942) }}"><code>_refs/__init__.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>torch.log_softmax</code> (reference)</td>
+        <td><code>a</code>, <code>dim</code>, <code>dtype</code></td>
+        <td>x − logsumexp(x, keepdim=True), never log(softmax(x)).</td>
+        <td><a href="{{ src('torch/_refs/__init__.py', 909, 919) }}"><code>_refs/__init__.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>torch.logaddexp</code> (reference)</td>
+        <td><code>a</code>, <code>b</code></td>
+        <td>max + log1p(exp(min − max)), the two-term logsumexp, with a mask for equal infinities.</td>
+        <td><a href="{{ src('torch/_refs/__init__.py', 1711, 1737) }}"><code>_refs/__init__.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>aten._softmax</code> decomposition</td>
+        <td><code>x</code>, <code>dim</code>, <code>half_to_float</code></td>
+        <td>Upcasts low-precision input to its computation dtype, subtracts the max and normalizes; <code>_log_softmax</code> is the same with a log of the sum.</td>
+        <td><a href="{{ src('torch/_decomp/decompositions.py', 1302, 1321) }}"><code>decompositions.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>log_sigmoid_forward</code></td>
+        <td><code>self</code></td>
+        <td>log σ(x) = min(x, 0) − log1p(exp(−|x|)): no exponential of a positive number.</td>
+        <td><a href="{{ src('torch/_decomp/decompositions.py', 3591, 3602) }}"><code>decompositions.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>binary_cross_entropy_with_logits</code></td>
+        <td><code>self</code> [logits], <code>target</code>, <code>pos_weight</code></td>
+        <td>(1 − y)·z − log σ(z), built on <code>logsigmoid</code>; the stable form of sigmoid followed by BCE.</td>
+        <td><a href="{{ src('torch/_decomp/decompositions.py', 5231, 5248) }}"><code>decompositions.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.BCELoss</code></td>
+        <td>probabilities in, <code>reduction</code></td>
+        <td>Clamps each log term to ≥ −100 so a probability of exactly 0 or 1 gives a finite loss; <code>BCEWithLogitsLoss</code>, which takes logits, describes itself as the more numerically stable choice.</td>
+        <td><a href="{{ src('torch/nn/modules/loss.py', 633, 716) }}"><code>loss.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>nn.Softplus</code></td>
+        <td><code>beta=1</code>, <code>threshold=20</code></td>
+        <td>(1/β)·log(1 + e<sup>βx</sup>), reverting to x when βx &gt; threshold.</td>
+        <td><a href="{{ src('torch/nn/modules/activation.py', 959, 1007) }}"><code>activation.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>multi_row_sum</code>, <code>cascade_sum</code></td>
+        <td>4 levels, blocks of ≥ 16</td>
+        <td>The CPU <code>sum</code> kernel for floating types: tree-like accumulation so that only partial sums of similar size meet.</td>
+        <td><a href="{{ src('aten/src/ATen/native/cpu/SumKernel.cpp', 312, 409) }}"><code>SumKernel.cpp</code></a>, <a href="{{ src('aten/src/ATen/native/cpu/SumKernel.cpp', 568, 645) }}">cascade</a></td>
+      </tr>
+      <tr>
+        <td><code>_DTYPE_PRECISIONS</code></td>
+        <td>dtype → (rtol, atol)</td>
+        <td>The default tolerances of <code>torch.testing.assert_close</code>, scaled to each dtype's precision.</td>
+        <td><a href="{{ src('torch/testing/_comparison.py', 96, 104) }}"><code>_comparison.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>log1pexp</code></td>
+        <td>double <code>x</code></td>
+        <td>scikit-learn's softplus with cutoffs at −37, −2, 18 and 33.3; the comment notes that only 18 matters for accuracy.</td>
+        <td><a href="{{ skl('sklearn/_loss/_loss.pyx.tp', 250, 267) }}"><code>_loss.pyx.tp</code></a></td>
+      </tr>
+      <tr>
+        <td><code>sum_exp_minus_max</code></td>
+        <td>one row of raw predictions</td>
+        <td>The shared max-shift for the multinomial loss, its gradient and its probabilities.</td>
+        <td><a href="{{ skl('sklearn/_loss/_loss.pyx.tp', 269, 303) }}"><code>_loss.pyx.tp</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_incremental_mean_and_var</code></td>
+        <td><code>X</code> batch, running mean, variance, count</td>
+        <td>Merges a batch into running statistics with the corrected two-pass update of Chan, Golub and LeVeque; behind <code>StandardScaler.partial_fit</code>.</td>
+        <td><a href="{{ skl('sklearn/utils/extmath.py', 1118, 1264) }}"><code>extmath.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>_safe_accumulator_op</code></td>
+        <td><code>op</code>, <code>x</code></td>
+        <td>Runs a reduction with a float64 accumulator when <code>x</code> is a smaller float.</td>
+        <td><a href="{{ skl('sklearn/utils/extmath.py', 1063, 1115) }}"><code>extmath.py</code></a></td>
+      </tr>
+      <tr>
+        <td><code>stable_cumsum</code></td>
+        <td><code>arr</code>, <code>rtol</code>, <code>atol</code></td>
+        <td>Cumulative sum in float64 that warns if its last element disagrees with <code>sum</code>; deprecated in 1.8 in favour of a float64 <code>cumulative_sum</code>.</td>
+        <td><a href="{{ skl('sklearn/utils/extmath.py', 1289, 1334) }}"><code>extmath.py</code></a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<div class="ml-worked">
+  <h3 id="worked-sum">Summing 0.1, {{ f(ex.count) }} times, in float32</h3>
+  <p>
+    float32(0.1) is {{ "%.11f"|format(sums.value) }}, so the exact sum of {{ f(ex.count) }} copies
+    is {{ "%.6f"|format(sums.exact) }}. With u = 2⁻²⁴:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Method</th><th>float32 result</th><th>Error</th><th>Bound</th></tr></thead>
+      <tbody>
+        <tr><td>One at a time</td><td>{{ "%.4f"|format(sums.naive) }}</td><td>{{ "%.3f"|format(sums.naive - sums.exact) }}</td><td>(n − 1)uΣ|x| = {{ "%.1f"|format(sums.naive_bound) }}</td></tr>
+        <tr><td>Pairwise, blocks of 8</td><td>{{ "%.4f"|format(sums.pairwise) }}</td><td>{{ e(sums.pairwise - sums.exact) }}</td><td>⌈log₂ n⌉uΣ|x| = {{ "%.3f"|format(sums.pairwise_bound) }}</td></tr>
+        <tr><td>Kahan</td><td>{{ "%.4f"|format(sums.kahan) }}</td><td>{{ e(sums.kahan - sums.exact) }}</td><td>2uΣ|x| = {{ "%.4f"|format(sums.kahan_bound) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The one-at-a-time sum is off in the fourth significant digit, far inside its loose bound but
+    about 10,000 times worse than necessary. Pairwise and Kahan both return 10,000, the nearest float32
+    to the exact sum, so their only error is the final rounding.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-variance">A negative variance</h3>
+  <p>
+    Take the readings {{ ex.variance_data|map("int")|join(", ") }}, whose sample variance is 30, and
+    add a constant c to all of them. The variance must not change. In float64:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Shift c</th><th>(Σx² − (Σx)²/n)/(n − 1)</th><th>Two-pass</th><th>Welford</th></tr></thead>
+      <tbody>
+        {% for row in run.variance %}
+          <tr><td>{{ "%g"|format(row.shift) }}</td><td>{{ g(row.naive, 6) }}</td><td>{{ g(row.two_pass, 6) }}</td><td>{{ g(row.welford, 6) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    At c = 10⁹, Σx² is about 4 × 10¹⁸, where adjacent float64 values are 512 apart. The difference
+    the formula needs is 90, smaller than one gap, so it is pure rounding noise and comes out
+    negative. Welford's update never forms those squares:
+  </p>
+  <ol>
+    {% for s in run.welford.steps %}
+      <li>x = {{ "%.0f"|format(s.value) }}: mean = {{ "%.1f"|format(s.mean) }}, M₂ = {{ g(s.m2) }}</li>
+    {% endfor %}
+  </ol>
+  <p>and M₂/(n − 1) = {{ g(run.welford.variance) }}.</p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-softmax">Softmax of large logits</h3>
+  <p>
+    For x = [{{ ex.logits|map("int")|join(", ") }}], e¹⁰⁰⁰ overflows float64, so the direct
+    logsumexp is {{ sm.naive_lse }} and every softmax entry is ∞/∞ = NaN. Shifting by m = 1000 gives
+    x − m = [{{ sm.shifted|map("int")|join(", ") }}], and
+  </p>
+  <p class="ml-formula">
+    logsumexp(x) = 1000 + log(1 + e⁻¹ + e⁻²) = {{ "%.6f"|format(sm.stable_lse) }},&nbsp;&nbsp;
+    softmax(x) = [{% for p in sm.stable %}{{ "%.4f"|format(p) }}{% if not loop.last %}, {% endif %}{% endfor %}].
+  </p>
+  <p>The same comparison for softplus and for the cross-entropy of a positive label, −log σ(z):</p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>z</th><th>log(1 + eᶻ)</th><th>stable softplus</th><th>−log(sigmoid(z))</th><th>on the logit</th></tr></thead>
+      <tbody>
+        {% for row in run.softplus %}
+          <tr><td>{{ "%g"|format(row.x) }}</td><td>{{ g(row.naive) }}</td><td>{{ g(row.stable) }}</td><td>{{ g(row.bce_naive) }}</td><td>{{ g(row.bce_stable) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    At z = −40, 1 + e⁻⁴⁰ rounds to exactly 1 and the direct softplus returns 0, losing the whole
+    answer; at z = −800 the sigmoid underflows to 0 and the loss becomes infinite, so the gradient
+    is useless. The logit forms are accurate everywhere.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-hilbert">Conditioning: Hilbert systems</h3>
+  <p>
+    The Hilbert matrix H<sub>ij</sub> = 1/(i + j − 1) is famously ill-conditioned. Solve
+    Hx = b with b chosen so that x = [1, …, 1], using LU with partial pivoting in float64
+    (u ≈ 1.1 × 10⁻¹⁶):
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>n</th><th>κ(H)</th><th>Forward error ‖x̂ − x‖/‖x‖</th><th>κu</th><th>Backward error ‖b − Hx̂‖/‖b‖</th></tr></thead>
+      <tbody>
+        {% for row in run.hilbert %}
+          <tr><td>{{ row.n }}</td><td>{{ e(row.kappa) }}</td><td>{{ e(row.forward) }}</td><td>{{ e(row.bound) }}</td><td>{{ e(row.backward) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The residual stays at the level of u for every n: LU is backward stable. The forward error
+    tracks κu, and by n = 10 only about four correct digits are left. Nothing about the algorithm
+    can fix that; only a better-conditioned formulation or more precision can.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  {% set left, right, top, bottom = 70, 600, 24, 204 %}
+  {% set lmin, lmax = -17, 0 %}
+  {% set hs = run.hilbert %}
+  {% set xs = (right - left) / (hs|length - 1) %}
+  {% set ys = (bottom - top) / (lmax - lmin) %}
+  {% macro py(v) -%}{{ '%.1f'|format(top + (lmax - log10(v)) * ys) }}{%- endmacro %}
+  <svg viewBox="0 0 680 250" role="img" aria-labelledby="ns-hilbert-title ns-hilbert-desc">
+    <title id="ns-hilbert-title">Forward and backward error of LU on Hilbert systems</title>
+    <desc id="ns-hilbert-desc">
+      A log-scale chart for Hilbert systems of size {{ hs[0].n }} to {{ hs[-1].n }}. The line κu
+      rises from {{ e(hs[0].bound) }} to {{ e(hs[-1].bound) }}. The measured forward error rises
+      just under it, from {{ e(hs[0].forward) }} to {{ e(hs[-1].forward) }}. The backward error, the
+      relative residual, stays flat between 10⁻¹⁷ and 10⁻¹⁵ for every size.
+    </desc>
+    <line x1="{{ left }}" y1="{{ top }}" x2="{{ left }}" y2="{{ bottom }}" class="d-line"></line>
+    <line x1="{{ left }}" y1="{{ bottom }}" x2="{{ right }}" y2="{{ bottom }}" class="d-line"></line>
+    {% for p in [0, -4, -8, -12, -16] %}
+      {% set y = top + (lmax - p) * ys %}
+      <line x1="{{ left - 4 }}" y1="{{ '%.1f'|format(y) }}" x2="{{ right }}" y2="{{ '%.1f'|format(y) }}" class="d-line" opacity="0.12"></line>
+      <text x="{{ left - 8 }}" y="{{ '%.1f'|format(y + 4) }}" font-size="11" text-anchor="end" class="d-muted">1e{{ p }}</text>
+    {% endfor %}
+    {% for row in hs %}
+      <text x="{{ '%.1f'|format(left + loop.index0 * xs) }}" y="{{ bottom + 16 }}" font-size="11" text-anchor="middle" class="d-muted">{{ row.n }}</text>
+    {% endfor %}
+    {% for key, colour, dash in [("bound", "var(--jj-accent)", "5 4"), ("forward", "var(--jj-amber)", ""), ("backward", "var(--jj-green)", "")] %}
+      <polyline points="{% for row in hs %}{{ '%.1f'|format(left + loop.index0 * xs) }},{{ py(row[key]) }} {% endfor %}" fill="none" stroke-width="2" stroke-dasharray="{{ dash }}" style="stroke: {{ colour }}"></polyline>
+      {% for row in hs %}<circle cx="{{ '%.1f'|format(left + loop.index0 * xs) }}" cy="{{ py(row[key]) }}" r="3" style="fill: {{ colour }}"></circle>{% endfor %}
+    {% endfor %}
+    <text x="{{ right + 8 }}" y="{{ py(hs[-1].bound) }}" font-size="11" style="fill: var(--jj-accent)">κu</text>
+    <text x="{{ right + 8 }}" y="{{ '%.1f'|format(top + (lmax - log10(hs[-1].forward)) * ys + 12) }}" font-size="11" style="fill: var(--jj-amber)">forward</text>
+    <text x="{{ right + 8 }}" y="{{ py(hs[-1].backward) }}" font-size="11" style="fill: var(--jj-green)">backward</text>
+    <text x="{{ (left + right) / 2 }}" y="{{ bottom + 36 }}" font-size="11" text-anchor="middle" class="d-muted">matrix size n</text>
+  </svg>
+</div>
+<p class="ml-caption">
+  Computed by <code>hilbert_solve</code> with the page's <code>lu_factor</code> and
+  <code>lu_solve</code>; κ from its singular values. The gap between forward and backward error is
+  the condition number at work.
+</p>
+
+<h2 id="implementation">Implementation</h2>
+
+<pre><code class="language-python">import math
+
+def logsumexp(xs):
+    m = max(xs)
+    if math.isinf(m):
+        return m                       # all -inf, or an inf present
+    return m + math.log(sum(math.exp(x - m) for x in xs))
+
+def softmax(xs):
+    m = max(xs)
+    exps = [math.exp(x - m) for x in xs]
+    total = sum(exps)
+    return [v / total for v in exps]
+
+def softplus(x):                       # log(1 + e^x), cutoffs as in scikit-learn
+    if x &lt;= -37: return math.exp(x)
+    if x &lt;= -2:  return math.log1p(math.exp(x))
+    if x &lt;= 18:  return math.log(1 + math.exp(x))
+    if x &lt;= 33.3: return x + math.exp(-x)
+    return x
+
+def bce_with_logits(z, y):             # -[y log s(z) + (1 - y) log(1 - s(z))]
+    return (1 - y) * z - min(z, 0.0) + math.log1p(math.exp(-abs(z)))
+
+def kahan_sum(xs):
+    total = carry = 0.0
+    for x in xs:
+        y = x - carry
+        t = total + y
+        carry = (t - total) - y        # the low bits that did not fit in t
+        total = t
+    return total
+
+def welford(xs):
+    n = mean = m2 = 0
+    for x in xs:
+        n += 1
+        delta = x - mean
+        mean += delta / n
+        m2 += delta * (x - mean)
+    return mean, m2 / (n - 1)
+
+welford([1e9 + 4, 1e9 + 7, 1e9 + 13, 1e9 + 16])   # (1000000010.0, 30.0)</code></pre>
+
+<p>The same habits in PyTorch and scikit-learn:</p>
+
+<pre><code class="language-python">import torch
+import torch.nn.functional as F
+
+logits = torch.tensor([1000., 999., 998.])
+torch.logsumexp(logits, dim=0)               # 1000.4076, not inf
+F.log_softmax(logits, dim=0)                 # not softmax(...).log()
+F.binary_cross_entropy_with_logits(z, y)     # not F.binary_cross_entropy(torch.sigmoid(z), y)
+F.cross_entropy(logits_batch, labels)        # takes logits, applies log_softmax inside
+
+x = torch.randn(10_000_000, dtype=torch.float16)
+x.sum(dtype=torch.float32)                   # accumulate in a wider type
+torch.finfo(torch.float16).eps, torch.finfo(torch.bfloat16).eps   # 0.000977, 0.0078
+
+torch.testing.assert_close(actual, expected)                  # per-dtype rtol/atol defaults
+torch.testing.assert_close(a, b, rtol=1e-4, atol=1e-6)         # or explicit ones
+
+torch.linalg.cond(A)                         # κ before trusting a solve
+torch.linalg.lstsq(X, y)                     # QR/SVD based, not solve(X.T @ X, X.T @ y)
+
+from sklearn.preprocessing import StandardScaler
+scaler = StandardScaler()
+for batch in batches:                        # streaming mean and variance, float64 accumulators
+    scaler.partial_fit(batch)</code></pre>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li>
+    <strong>Precision against speed and memory.</strong> float64 makes most of these problems
+    disappear and costs 2× the memory and, on GPUs, often 30× or more the time. Deep learning
+    instead runs low precision where errors average out (matrix products with wide accumulators)
+    and keeps float32 for the parts that accumulate: reductions, normalization statistics,
+    optimizer state and the loss.
+  </li>
+  <li>
+    <strong>Compensated sums cost operations.</strong> Kahan summation does four floating-point
+    operations per term and a serial dependency; pairwise summation is nearly free and parallel,
+    which is why libraries default to it. Compilers allowed to reassociate (<code>-ffast-math</code>)
+    can optimize the compensation away entirely.
+  </li>
+  <li>
+    <strong>Stable rewrites change the graph.</strong> A fused <code>log_softmax</code> or a loss on
+    logits is both faster and more accurate than composing the pieces, but only if the model
+    exposes logits; putting a sigmoid or softmax inside the model and a log in the loss throws the
+    stability away.
+  </li>
+  <li>
+    <strong>Determinism against throughput.</strong> Fixing the reduction order makes results
+    bitwise reproducible, but rules out atomics and some fast kernels. Differences in the last few
+    bits between runs are expected; differences larger than the tolerances below are bugs.
+  </li>
+  <li>
+    <strong>Tolerances must match the dtype.</strong> Compare with a relative tolerance a few times
+    the dtype's epsilon plus a small absolute floor for values near zero.
+    <code>assert_close</code>'s defaults:
+  </li>
+</ul>
+
+<div class="jj-table-wrap">
+  <table class="ml-numbers">
+    <thead><tr><th>dtype</th><th>Fraction bits</th><th>eps = 2⁻ᵇⁱᵗˢ</th><th>default rtol</th><th>default atol</th></tr></thead>
+    <tbody>
+      {% for row in run.precisions %}
+        <tr><td><code>{{ row.dtype }}</code></td><td>{{ row.bits }}</td><td>{{ e(row.eps) }}</td><td>{{ "%g"|format(row.rtol) }}</td><td>{{ "%g"|format(row.atol) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h3 id="check-yourself">Check yourself</h3>
+
+<details class="ml-quiz">
+  <summary>Why does float32 sum 0.1 accurately for the first few thousand terms but not for a hundred thousand?</summary>
+  <p>Each addition rounds relative to the running total. While the total is small its gap is tiny compared with 0.1; once it passes 8,192 the gap is 2⁻¹⁰ ≈ 0.001, and past 65,536 it is 2⁻⁷ ≈ 0.008, so every 0.1 is rounded by up to a few percent of itself, the same way for thousands of terms in a row. Pairwise summation keeps both operands of each addition small.</p>
+</details>
+<details class="ml-quiz">
+  <summary>A model outputs probabilities through a sigmoid and is trained with <code>BCELoss</code>. Some losses are pinned at 100. What happened, and what is the fix?</summary>
+  <p>The sigmoid saturated to exactly 0 or 1 for confidently wrong examples, the log became −∞, and <code>BCELoss</code> clamped it to −100, which also zeroes the gradient. Output logits and use <code>BCEWithLogitsLoss</code>, which computes the loss from the logit with log1p and never rounds σ(z) to 0.</p>
+</details>
+<details class="ml-quiz">
+  <summary>A linear solve returns a residual of 10⁻¹⁵ relative to ‖b‖. Is the answer accurate to 15 digits?</summary>
+  <p>Only if the matrix is well-conditioned. The residual is the backward error; the forward error can be up to κ times larger. With κ = 10¹⁰ expect about 5 or 6 correct digits, as in the n = 8 Hilbert row.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why subtract the maximum in softmax, rather than, say, the mean?</summary>
+  <p>Subtracting the max makes every exponent ≤ 0, so nothing overflows, and makes one term exactly 1, so the denominator is at least 1 and the log of it can never be log 0. Subtracting the mean still lets a logit far above the mean overflow.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Goldberg. <em>What Every Computer Scientist Should Know About Floating-Point Arithmetic.</em> ACM Computing Surveys 23(1), 5–48, 1991.</li>
+  <li>Higham. <em>Accuracy and Stability of Numerical Algorithms</em>, 2nd ed. SIAM, 2002: chapters 2 (the rounding model), 4 (summation) and 7–9 (conditioning and LU).</li>
+  <li>Trefethen and Bau. <em>Numerical Linear Algebra.</em> SIAM, 1997: lectures 12–15 on conditioning and backward stability.</li>
+  <li>Kahan. <em>Further Remarks on Reducing Truncation Errors.</em> Communications of the ACM 8(1), 40, 1965.</li>
+  <li>Welford. <em>Note on a Method for Calculating Corrected Sums of Squares and Products.</em> Technometrics 4(3), 419–420, 1962.</li>
+  <li>Chan, Golub and LeVeque. <em>Algorithms for Computing the Sample Variance: Analysis and Recommendations.</em> The American Statistician 37(3), 242–247, 1983.</li>
+  <li>Mächler. <em>Accurately Computing log(1 − exp(−|a|)), Assessed by the Rmpfr Package.</em> 2012, the note scikit-learn's <code>log1pexp</code> follows.</li>
+  <li>Blanchard, Higham and Higham. <em>Accurately Computing the Log-Sum-Exp and Softmax Functions.</em> IMA Journal of Numerical Analysis 41(4), 2311–2330, 2021.</li>
+  <li>IEEE. <em>754-2019, Standard for Floating-Point Arithmetic.</em> 2019.</li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/_refs/__init__.py', 922, 942) }}"><code>logsumexp</code></a>, <a href="{{ src('torch/_decomp/decompositions.py', 1345, 1365) }}"><code>_log_softmax</code></a>, <a href="{{ src('torch/nn/modules/loss.py', 719, 844) }}"><code>BCEWithLogitsLoss</code></a>, <a href="{{ src('aten/src/ATen/native/cpu/SumKernel.cpp', 568, 645) }}"><code>cascade_sum</code></a>, <a href="{{ src('torch/testing/_comparison.py', 96, 104) }}"><code>_DTYPE_PRECISIONS</code></a>.</li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/_loss/_loss.pyx.tp', 250, 267) }}"><code>log1pexp</code></a>, <a href="{{ skl('sklearn/utils/extmath.py', 1118, 1264) }}"><code>_incremental_mean_and_var</code></a>, <a href="{{ skl('sklearn/utils/extmath.py', 1063, 1115) }}"><code>_safe_accumulator_op</code></a>.</li>
+</ul>

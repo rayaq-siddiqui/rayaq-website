@@ -5979,3 +5979,73 @@ def test_quadratic_contour_lies_on_its_level_set():
     for point in ml_models_docs.quadratic_contour(a, center, 4.0, count=12):
         e = [p - c for p, c in zip(point, center)]
         assert 0.5 * sum(e[i] * a[i][j] * e[j] for i in range(2) for j in range(2)) == pytest.approx(4.0)
+
+
+def test_toy_floats_double_their_spacing_each_binade():
+    values = ml_models_docs.toy_floats(2, [-1, 0, 1, 2])
+    gaps = [b - a for a, b in zip(values, values[1:])]
+
+    assert len(values) == 16 and values[0] == 0.5 and values[-1] == 7.0
+    assert sorted(set(gaps)) == [0.125, 0.25, 0.5, 1.0]
+
+
+def test_float32_sums_of_a_tenth_follow_their_error_bounds():
+    run = ml_models_docs.stability_example()
+    sums = run["sums"]
+
+    assert run["assoc"]["left"] != run["assoc"]["right"]
+    assert sums["value"] == pytest.approx(0.10000000149011612)
+    assert sums["naive"] == 9998.556640625
+    assert sums["pairwise"] == sums["kahan"] == 10000.0
+    assert abs(sums["naive"] - sums["exact"]) <= sums["naive_bound"]
+    assert abs(sums["pairwise"] - sums["exact"]) <= sums["pairwise_bound"]
+    assert abs(sums["kahan"] - sums["exact"]) <= sums["kahan_bound"]
+    assert len(sums["trace"]) == 40
+    assert sums["trace"][-1]["naive"] == pytest.approx(-1.4435, abs=1e-4)
+    assert abs(sums["trace"][-1]["kahan"]) < 1e-3
+
+
+def test_one_pass_variance_cancels_but_welford_does_not():
+    rows = ml_models_docs.stability_example()["variance"]
+
+    assert all(row["two_pass"] == pytest.approx(30) and row["welford"] == pytest.approx(30) for row in rows)
+    assert rows[0]["naive"] == pytest.approx(30)
+    assert rows[-1]["shift"] == 1e9 and rows[-1]["naive"] < 0
+    steps = ml_models_docs.welford_variance([1e9 + v for v in [4.0, 7.0, 13.0, 16.0]])["steps"]
+    assert [s["m2"] for s in steps] == pytest.approx([0, 4.5, 42, 90])
+
+
+def test_shifted_logsumexp_and_logit_losses_stay_finite():
+    run = ml_models_docs.stability_example()
+    sm = run["softmax"]
+
+    assert sm["naive_lse"] == math.inf
+    assert all(math.isnan(p) for p in sm["naive"])
+    assert sm["stable_lse"] == pytest.approx(1000.4076059644444)
+    assert sm["stable"] == pytest.approx([0.66524, 0.24473, 0.09003], abs=1e-5)
+    assert sum(sm["stable"]) == pytest.approx(1)
+    for x in [-800.0, -40.0, -1.0, 20.0, 40.0, 800.0]:
+        assert ml_models_docs.log1pexp(x) == pytest.approx(math.log1p(math.exp(x)) if x < 700 else x, rel=1e-12)
+        assert ml_models_docs.bce_with_logits(x, 1) == pytest.approx(ml_models_docs.log1pexp(-x), rel=1e-12)
+    assert ml_models_docs.naive_softplus(-40.0) == 0
+    assert ml_models_docs.naive_bce(-800.0, 1) == math.inf
+    assert ml_models_docs.bce_with_logits(-800.0, 1) == pytest.approx(800)
+    assert run["adam_eps_f16"] == 0 and run["f16_tiny"] == 2 ** -24
+
+
+def test_hilbert_forward_error_tracks_kappa_while_the_residual_stays_tiny():
+    rows = ml_models_docs.stability_example()["hilbert"]
+
+    assert [row["n"] for row in rows] == list(range(4, 11))
+    for row in rows:
+        assert row["forward"] <= row["bound"]
+        assert row["backward"] < 1e-15
+    assert [row["kappa"] for row in rows] == sorted(row["kappa"] for row in rows)
+    assert rows[-1]["kappa"] == pytest.approx(1.6e13, rel=0.05)
+
+
+def test_dtype_precisions_match_assert_close_defaults():
+    rows = {row["dtype"]: row for row in ml_models_docs.stability_example()["precisions"]}
+
+    assert rows["float32"]["eps"] == 2 ** -23 and rows["bfloat16"]["eps"] == 2 ** -7
+    assert rows["float16"]["rtol"] == 1e-3 and rows["float32"]["rtol"] == 1.3e-6
