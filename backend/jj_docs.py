@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "af83d2968838b2e83651c2324619505a5c894e5a",
-    "commit_date": "2026-10-29",
+    "commit": "bdefa37df587d2e8c2090ac2275216774440c81b",
+    "commit_date": "2026-10-30",
     "version": "0.46.0",
-    "analyzed_on": "2026-10-29",
+    "analyzed_on": "2026-10-30",
 }
 
 TOPICS = [
@@ -340,7 +340,7 @@ COMMANDS = [
         "category": 'Moving and combining changes',
         "tier": 'A',
         "summary": 'Interactively arrange the commit graph.',
-        "source": ('cli/src/commands/arrange.rs', 75),
+        "source": ('cli/src/commands/arrange.rs', 76),
     },
     {
         "command": 'converge',
