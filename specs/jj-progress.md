@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-29 (seventy-third run): followed upstream `c3bf0b1..af83d29` (0.46.0). **The
+**Last updated:** 2026-10-30 (seventy-fourth run): followed upstream `af83d29..bdefa37` (0.46.0). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@af83d2968838b2e83651c2324619505a5c894e5a` (committed 2026-10-29, version
-0.46.0), analyzed 2026-10-29. Held in `jj_docs.UPSTREAM`. Previous pin: `c3bf0b1`.
+`jj-vcs/jj@bdefa37df587d2e8c2090ac2275216774440c81b` (committed 2026-10-30, version
+0.46.0), analyzed 2026-10-30. Held in `jj_docs.UPSTREAM`. Previous pin: `af83d29`.
 
 ## §10 acceptance criteria
 
@@ -31,26 +31,22 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to seventy-third runs: pin bumped).
+      run: pin bumped; fiftieth to seventy-fourth runs: pin bumped).
 
-## Sixty-fourth to seventy-third runs (2026-10-20 to 2026-10-29)
+## Sixty-fourth to seventy-fourth runs (2026-10-20 to 2026-10-30)
 
+- `98975c9` `af83d29..bdefa37`: new `jj-frontend` crate (`frontend/src/`) takes the snapshot, Git
+  import/export and transaction helpers; links remapped (94 templates). Import re-exports even when
+  clean (git-import/export); arrange batches key presses; workspace add rejects
+  `--ignore-working-copy`/`--no-integrate-operation`; `(absent)` conflict terms (bookmark/tag list).
 - `ff87734` `c3bf0b1..af83d29`: converge/next/prev prompts take an index or a change ID prefix
   (`parse_index_or_change_id_choice`), no `q` at the change/target prompt, EOF errors (converge,
   next, prev); registry source lines for converge and diff shifted; about 75 templates remapped.
-
 - `91b7044` pin-only `531b682..c3bf0b1` (`GOVERNANCE.md`; `RepoLoader` built via `Self::new`).
-- `fa45a4c` `7ca39e5..531b682`: config files saved atomically via a temp file renamed over the
-  target (config-set, config-unset); indirect graph edges deduplicated (log); invalid tree entry
-  names are read errors, not panics (backends); default store initializers moved to
-  `default_backend_factories.rs` (storage); `Workspace::load` removed. About 60 templates
-  remapped; registry and protos unchanged.
-- `9d37e33` `..7ca39e5` (git import/export refs, workspace-add), `e65bbae` `..d1878e6` (git-push
-  stops updating `refs/remotes/*`; workspace-list `(current)`; op-store permissions).
-- `b70be32` `9ab2e84..4142aa8`: `CachedLoader` LRU store caches (backends); concurrent commit
-  loads (evolog, log, operation-diff); root dropped from merge parents (backends, commits).
-- `ad64adf` `..9ab2e84` (batched export deletes), `cdc336a` `..c84cc0a`, `60897df` `..7f96d3e`,
-  `117f376` `..5176b1d` (five modules to `core/src`; `specs/jj.md` still names `lib/src`).
+- `fa45a4c` `7ca39e5..531b682`: atomic config saves (config-set/unset); deduplicated indirect graph
+  edges (log); invalid tree entry names are read errors (backends); `default_backend_factories.rs`.
+- Earlier: `9d37e33`, `e65bbae` (git-push stops updating `refs/remotes/*`), `b70be32` (`CachedLoader`
+  caches; concurrent commit loads), `ad64adf`, `cdc336a`, `60897df`, `117f376` (modules to `core/src`).
 
 ## Fifty-third to sixty-third runs (2026-10-09 to 2026-10-19)
 
@@ -61,12 +57,8 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
 
 ## Fiftieth to fifty-second runs (2026-10-06 to 2026-10-08)
 
-- `d7ebdbf` maintenance `320f7e6..3935c0f` (release 0.46.0): revset/fileset parsers and grammars moved to
-  the new `jj-dsl` crate (`dsl/src/`); `revsets` says so; `git init` help remapped. Held a day by a
-  permission denial until the owner allowed pushes to `main`.
-- `7eafa56` pin-only `3935c0f..26bcd69` (unused `pest` deps dropped from `lib/Cargo.toml`).
-- `58584d3` maintenance `4df5265..320f7e6` (17 commits, 49 pages re-pinned). New pages: `39e7fb0`
-  `file delete`, `8e737cf` `file edit`, and the Tier C pages (`437a375` through `901d340`).
+- `d7ebdbf` `320f7e6..3935c0f` (0.46.0; parsers to the `jj-dsl` crate), `7eafa56` `..26bcd69`,
+  `58584d3` `4df5265..320f7e6`; new pages `file delete`/`edit` and Tier C (`437a375`..`901d340`).
 
 ## Thirty-ninth to forty-ninth runs (2026-10-05 to 2026-10-06)
 
@@ -134,6 +126,9 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
 
 ## Open gaps / questions for the owner
 
+- **`jj-frontend` crate.** Since `bdefa37`, snapshot, Git import/export and finishing transactions
+  live in `frontend/src/` (`runner.rs`'s `RunnerEvent`, `RunnerOptions`, `WorkspaceEnvironment`).
+  Links follow the moved code, but the `cli` page doesn't describe the new layer yet.
 - **`tree_rewriter.rs` depth.** The trees page summarizes the shared rewriter (visitor, dedup,
   concurrency limit) but no page walks `rewrite_trees` step by step; add one only if asked.
 - **`jj util diff --tool`.** `show_diff_bytes` has a TODO and prints nothing for a tool format; the
