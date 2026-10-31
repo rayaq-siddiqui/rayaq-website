@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-30 (seventy-fourth run): followed upstream `af83d29..bdefa37` (0.46.0). **The
+**Last updated:** 2026-10-31 (seventy-fifth run): followed upstream `bdefa37..96884b7` (0.46.0). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@bdefa37df587d2e8c2090ac2275216774440c81b` (committed 2026-10-30, version
-0.46.0), analyzed 2026-10-30. Held in `jj_docs.UPSTREAM`. Previous pin: `af83d29`.
+`jj-vcs/jj@96884b77947026b16a8c114a205bf4dc64a151fa` (committed 2026-10-31, version
+0.46.0), analyzed 2026-10-31. Held in `jj_docs.UPSTREAM`. Previous pin: `bdefa37`.
 
 ## §10 acceptance criteria
 
@@ -31,10 +31,12 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to seventy-fourth runs: pin bumped).
+      run: pin bumped; fiftieth to seventy-fifth runs: pin bumped).
 
-## Sixty-fourth to seventy-fourth runs (2026-10-20 to 2026-10-30)
+## Sixty-fourth to seventy-fifth runs (2026-10-20 to 2026-10-31)
 
+- `ad45a9e` `bdefa37..96884b7`: tree rewriter reuses unchanged trees (trees); recovery commit
+  records the workspace name (workspace-update-stale); op-diff/op-show ranges remapped.
 - `98975c9` `af83d29..bdefa37`: new `jj-frontend` crate (`frontend/src/`) takes the snapshot, Git
   import/export and transaction helpers; links remapped (94 templates). Import re-exports even when
   clean (git-import/export); arrange batches key presses; workspace add rejects
@@ -45,8 +47,7 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
 - `91b7044` pin-only `531b682..c3bf0b1` (`GOVERNANCE.md`; `RepoLoader` built via `Self::new`).
 - `fa45a4c` `7ca39e5..531b682`: atomic config saves (config-set/unset); deduplicated indirect graph
   edges (log); invalid tree entry names are read errors (backends); `default_backend_factories.rs`.
-- Earlier: `9d37e33`, `e65bbae` (git-push stops updating `refs/remotes/*`), `b70be32` (`CachedLoader`
-  caches; concurrent commit loads), `ad64adf`, `cdc336a`, `60897df`, `117f376` (modules to `core/src`).
+- Earlier: `9d37e33`, `e65bbae`, `b70be32` (`CachedLoader`), `ad64adf`, `cdc336a`, `60897df`, `117f376`.
 
 ## Fifty-third to sixty-third runs (2026-10-09 to 2026-10-19)
 
