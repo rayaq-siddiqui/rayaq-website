@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-10-31 (seventy-fifth run): followed upstream `bdefa37..96884b7` (0.46.0). **The
+**Last updated:** 2026-11-01 (seventy-sixth run): followed upstream `96884b7..e6a695a` (0.46.0). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@96884b77947026b16a8c114a205bf4dc64a151fa` (committed 2026-10-31, version
-0.46.0), analyzed 2026-10-31. Held in `jj_docs.UPSTREAM`. Previous pin: `bdefa37`.
+`jj-vcs/jj@e6a695a32274761e4446fce80771018e8dab57dd` (committed 2026-11-01, version
+0.46.0), analyzed 2026-11-01. Held in `jj_docs.UPSTREAM`. Previous pin: `96884b7`.
 
 ## §10 acceptance criteria
 
@@ -31,10 +31,14 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to seventy-fifth runs: pin bumped).
+      run: pin bumped; fiftieth to seventy-sixth runs: pin bumped).
 
-## Sixty-fourth to seventy-fifth runs (2026-10-20 to 2026-10-31)
+## Sixty-fourth to seventy-sixth runs (2026-10-20 to 2026-11-01)
 
+- `2440230` `96884b7..e6a695a`: new `jj-git-backend` (`git-backend/src/`: `git_backend.rs`,
+  `secret_backend.rs`, `git_store.proto`) and `jj-local-util` (`local-util/src/`: `file_util.rs`,
+  `lock/`, `stacked_table.rs`, `subprocess_util.rs`) crates; `gen-protos` at the root. Paths repointed,
+  738 links remapped. `GitBackendSettings` replaces the `GitSettings` lookup (git-root, protobufs).
 - `ad45a9e` `bdefa37..96884b7`: tree rewriter reuses unchanged trees (trees); recovery commit
   records the workspace name (workspace-update-stale); op-diff/op-show ranges remapped.
 - `98975c9` `af83d29..bdefa37`: new `jj-frontend` crate (`frontend/src/`) takes the snapshot, Git
@@ -44,10 +48,7 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
 - `ff87734` `c3bf0b1..af83d29`: converge/next/prev prompts take an index or a change ID prefix
   (`parse_index_or_change_id_choice`), no `q` at the change/target prompt, EOF errors (converge,
   next, prev); registry source lines for converge and diff shifted; about 75 templates remapped.
-- `91b7044` pin-only `531b682..c3bf0b1` (`GOVERNANCE.md`; `RepoLoader` built via `Self::new`).
-- `fa45a4c` `7ca39e5..531b682`: atomic config saves (config-set/unset); deduplicated indirect graph
-  edges (log); invalid tree entry names are read errors (backends); `default_backend_factories.rs`.
-- Earlier: `9d37e33`, `e65bbae`, `b70be32` (`CachedLoader`), `ad64adf`, `cdc336a`, `60897df`, `117f376`.
+- Earlier: `91b7044`, `fa45a4c`, `9d37e33`, `e65bbae`, `b70be32` (`CachedLoader`), `ad64adf`, `cdc336a`, `60897df`, `117f376`.
 
 ## Fifty-third to sixty-third runs (2026-10-09 to 2026-10-19)
 
@@ -127,6 +128,9 @@ To mark a command page ready, add its slug to `COMMAND_PAGE_OVERRIDES` with
 
 ## Open gaps / questions for the owner
 
+- **`jj-git-backend` and `jj-local-util` crates.** Since `e6a695a` the Git backend and the
+  filesystem helpers are separate crates. Links follow the moves; the `backends` and `storage`
+  pages don't describe the crate split itself yet.
 - **`jj-frontend` crate.** Since `bdefa37`, snapshot, Git import/export and finishing transactions
   live in `frontend/src/` (`runner.rs`'s `RunnerEvent`, `RunnerOptions`, `WorkspaceEnvironment`).
   Links follow the moved code, but the `cli` page doesn't describe the new layer yet.
