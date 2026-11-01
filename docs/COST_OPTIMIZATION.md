@@ -4,22 +4,25 @@ Maintained by the weekly "rayaq.ca — weekly server cost optimization" Routine.
 each run; **Considered and rejected** carries forward. Scope is application code only —
 server configuration (Caddy, gunicorn, systemd, the VM) is out of scope by the owner's choice.
 
-## 2026-10-25
+## 2026-11-01
 
-**Verdict:** one fix landed: the slowest cold render on the site (`/leetcode/segment-trees`)
-went from 5.6 s to 0.47 s with byte-identical output. `/assembly-agents` and
-`showcase.json` still don't exist in the app, so the smoke list's 404 there is expected.
+**Verdict:** nothing landed. The code that changed this week (the `/ml-models`
+numerical-stability page, five new `/rml` pages, pin bumps in the jj sections) adds no
+measurable per-request cost. `/assembly-agents` and `showcase.json` still don't exist in the
+app, so the smoke list's 404 there is expected.
 
 ### Landed
 
-- **`e3bfcef` perf: build each segment tree once when sizing queries.**
-  `segment_tree_sizes` traced every (left, right) range through `segment_query_trace`, and
-  each trace rebuilt the tree: ~33k rebuilds for n = 256. The first render blocked the only
-  sync worker for **5587 ms → 465 ms**. The HTML is byte-identical, and a new test checks
-  the shared tree against per-range tracing for n = 1..16.
+Nothing. Measured in a fresh process across all 333 routes (all 200):
 
-Warm requests are unchanged: `/` 0.22 ms, `/resume` 0.35 ms, and cached reference pages
-(310 ready, `/rml` included) and `/health` about 0.12 ms.
+- Cold first renders of the new pages: `/ml-models/numerical-stability` 182 ms, `/rml/kernels`
+  25 ms, `/rml/examples` 29 ms, `/rml/generation` 16 ms, `/rml/models-memory` 14 ms,
+  `/rml/testing` 16 ms. Each is paid once per worker start, then served from the page cache.
+- Rendering all 333 pages cold takes 19.6 s in total, spread across first requests. Most of that
+  is the `/ml-models` simulation pages (item 3 below).
+- `/leetcode/segment-trees`, fixed last run in `e3bfcef`, now renders cold in 569 ms.
+- Warm requests: `/` 0.34 ms, `/resume` 0.48 ms, cached reference pages ~0.15 ms, `/health`
+  0.16 ms.
 
 ### Needs the owner
 
@@ -35,9 +38,9 @@ Warm requests are unchanged: `/` 0.22 ms, `/resume` 0.35 ms, and cached referenc
    serve `backend/`, so they cost nothing at runtime, only clone and pull size. They came
    from another Routine's commit, so they're left for the owner to delete.
 3. **Slow first renders of simulation pages in `/ml-models`.** Four pages run real
-   simulations at render time: random-forests 1292 ms, distillation 1085 ms,
-   vector-indexes 912 ms, diffusion-models 759 ms (about 1M `random.gauss` calls). Each costs
-   that once per worker start. Making them faster means precomputing their figures offline
+   simulations at render time: random-forests 1647 ms, distillation 1459 ms,
+   vector-indexes 1151 ms, diffusion-models 968 ms, measured 2026-11-01 (about 1M
+   `random.gauss` calls). Each costs that once per worker start. Making them faster means precomputing their figures offline
    into committed data, the way torch figures already are, or changing the simulations,
    and either risks float-level changes to the pages. That is the ml-models Routine's call.
 
