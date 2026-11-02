@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-11-01 (seventy-sixth run): followed upstream `96884b7..e6a695a` (0.46.0). **The
+**Last updated:** 2026-11-02 (seventy-seventh run): followed upstream `e6a695a..8cb1106` (0.46.0). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@e6a695a32274761e4446fce80771018e8dab57dd` (committed 2026-11-01, version
-0.46.0), analyzed 2026-11-01. Held in `jj_docs.UPSTREAM`. Previous pin: `96884b7`.
+`jj-vcs/jj@8cb11061a9bbe1dbf9331c206e844284e0ccdd28` (committed 2026-11-02, version
+0.46.0), analyzed 2026-11-02. Held in `jj_docs.UPSTREAM`. Previous pin: `e6a695a`.
 
 ## §10 acceptance criteria
 
@@ -31,16 +31,18 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to seventy-sixth runs: pin bumped).
+      run: pin bumped; fiftieth to seventy-seventh runs: pin bumped).
 
-## Sixty-fourth to seventy-sixth runs (2026-10-20 to 2026-11-01)
+## Sixty-fourth to seventy-seventh runs (2026-10-20 to 2026-11-02)
 
+- `211755a` `e6a695a..8cb1106`: new `jj-default-index` crate (`default-index/src/`, proto in
+  `default-index/src/protos/`); `conflicts.rs`, `union_find.rs` and the op-walk ancestry helpers moved
+  to `core/src`; `reset_head` takes (old, new) commits and resets the index only on a change switch
+  (git-colocation); empty merge commits upload (gerrit-upload). 442 links remapped in 89 templates.
 - `2440230` `96884b7..e6a695a`: new `jj-git-backend` (`git-backend/src/`: `git_backend.rs`,
   `secret_backend.rs`, `git_store.proto`) and `jj-local-util` (`local-util/src/`: `file_util.rs`,
   `lock/`, `stacked_table.rs`, `subprocess_util.rs`) crates; `gen-protos` at the root. Paths repointed,
   738 links remapped. `GitBackendSettings` replaces the `GitSettings` lookup (git-root, protobufs).
-- `ad45a9e` `bdefa37..96884b7`: tree rewriter reuses unchanged trees (trees); recovery commit
-  records the workspace name (workspace-update-stale); op-diff/op-show ranges remapped.
 - `98975c9` `af83d29..bdefa37`: new `jj-frontend` crate (`frontend/src/`) takes the snapshot, Git
   import/export and transaction helpers; links remapped (94 templates). Import re-exports even when
   clean (git-import/export); arrange batches key presses; workspace add rejects
@@ -48,7 +50,7 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
 - `ff87734` `c3bf0b1..af83d29`: converge/next/prev prompts take an index or a change ID prefix
   (`parse_index_or_change_id_choice`), no `q` at the change/target prompt, EOF errors (converge,
   next, prev); registry source lines for converge and diff shifted; about 75 templates remapped.
-- Earlier: `91b7044`, `fa45a4c`, `9d37e33`, `e65bbae`, `b70be32` (`CachedLoader`), `ad64adf`, `cdc336a`, `60897df`, `117f376`.
+- Earlier: `ad45a9e`, `91b7044`, `fa45a4c`, `9d37e33`, `e65bbae`, `b70be32` (`CachedLoader`), `ad64adf`, `cdc336a`, `60897df`, `117f376`.
 
 ## Fifty-third to sixty-third runs (2026-10-09 to 2026-10-19)
 
@@ -57,15 +59,10 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
   `970fe53` (sign-on-push), `ca92ab5` (concurrent diff walk), `148c9e1` (tree-read streams),
   `c3d8c40`/`b4bc7c5` (ranges; refactor wave), `937e560` `..0558176` (`resolve` `:editor`).
 
-## Fiftieth to fifty-second runs (2026-10-06 to 2026-10-08)
+## Thirty-ninth to fifty-second runs (2026-10-05 to 2026-10-08)
 
-- `d7ebdbf` `320f7e6..3935c0f` (0.46.0; parsers to the `jj-dsl` crate), `7eafa56` `..26bcd69`,
-  `58584d3` `4df5265..320f7e6`; new pages `file delete`/`edit` and Tier C (`437a375`..`901d340`).
-
-## Thirty-ninth to forty-ninth runs (2026-10-05 to 2026-10-06)
-
-Pin `4df5265`. Tier B: `72c938f` `file annotate` (plus the Tier B sections test) through `bb0eb21`
-`config gc`, ending with `git root`, `workspace list`/`root` and `config *` on the forty-ninth run.
+- `d7ebdbf` `320f7e6..3935c0f` (0.46.0; parsers to `jj-dsl`), `7eafa56`, `58584d3`; pages `file
+  delete`/`edit` and Tier C (`437a375`..`901d340`); Tier B `72c938f` through `bb0eb21` (pin `4df5265`).
 
 ## Twenty-seventh to thirty-eighth runs (2026-10-04)
 
