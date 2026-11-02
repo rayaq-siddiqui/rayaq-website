@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "e6a695a32274761e4446fce80771018e8dab57dd",
-    "commit_date": "2026-11-01",
+    "commit": "8cb11061a9bbe1dbf9331c206e844284e0ccdd28",
+    "commit_date": "2026-11-02",
     "version": "0.46.0",
-    "analyzed_on": "2026-11-01",
+    "analyzed_on": "2026-11-02",
 }
 
 TOPICS = [
@@ -34,7 +34,7 @@ TOPICS = [
             "lib/src/workspace.rs",
             "lib/src/simple_op_store.rs",
             "lib/src/simple_op_heads_store.rs",
-            "lib/src/default_index/store.rs",
+            "default-index/src/store.rs",
             "lib/src/local_working_copy.rs",
             "lib/src/simple_workspace_store.rs",
             "git-backend/src/git_backend.rs",
@@ -83,7 +83,7 @@ TOPICS = [
         "sources": [
             "core/src/merge.rs",
             "core/src/conflict_labels.rs",
-            "lib/src/conflicts.rs",
+            "core/src/conflicts.rs",
             "core/src/tree_merge.rs",
             "core/src/files.rs",
             "docs/technical/conflicts.md",
@@ -102,6 +102,7 @@ TOPICS = [
             "lib/src/simple_op_heads_store.rs",
             "lib/src/simple_op_store.rs",
             "lib/src/op_walk.rs",
+            "core/src/op_walk.rs",
             "docs/technical/concurrency.md",
             "docs/operation-log.md",
             "lib/src/repo.rs",
@@ -158,7 +159,7 @@ TOPICS = [
         "sources": [
             "core/src/index.rs",
             "core/src/index_store.rs",
-            "lib/src/default_index/",
+            "default-index/src/",
             "lib/src/id_prefix.rs",
         ],
         "template": "jj/commit-index.html",
@@ -174,7 +175,7 @@ TOPICS = [
             "core/src/revset_backend.rs",
             "dsl/src/revset_parser.rs",
             "dsl/src/revset.pest",
-            "lib/src/default_index/revset_engine.rs",
+            "default-index/src/revset_engine.rs",
             "lib/src/fileset.rs",
             "core/src/fileset_backend.rs",
             "docs/technical/revset-evaluation.md",
@@ -203,13 +204,14 @@ TOPICS = [
         "summary": "All seven .proto files, every message, enum and field, and the Rust types they map to.",
         "sources": [
             "lib/src/protos/",
+            "default-index/src/protos/",
             "git-backend/src/protos/",
             "gen-protos/src/main.rs",
             "lib/src/simple_backend.rs",
             "lib/src/simple_op_store.rs",
             "git-backend/src/git_backend.rs",
             "lib/src/local_working_copy.rs",
-            "lib/src/default_index/store.rs",
+            "default-index/src/store.rs",
             "lib/src/simple_workspace_store.rs",
             "lib/src/secure_config.rs",
         ],
@@ -1461,6 +1463,7 @@ COMMAND_PAGE_OVERRIDES = {
         "sources": [
             "cli/src/commands/operation/abandon.rs",
             "lib/src/op_walk.rs",
+            "core/src/op_walk.rs",
             "lib/src/op_heads_store.rs",
         ],
         "ready": True,
@@ -1502,7 +1505,7 @@ COMMAND_PAGE_OVERRIDES = {
             "cli/src/commands/bisect/mod.rs",
             "lib/src/bisect.rs",
             "lib/src/repo.rs",
-            "lib/src/default_index/revset_engine.rs",
+            "default-index/src/revset_engine.rs",
         ],
         "ready": True,
     },
@@ -1574,7 +1577,7 @@ COMMAND_PAGE_OVERRIDES = {
         "sources": [
             "cli/src/commands/file/annotate.rs",
             "lib/src/annotate.rs",
-            "lib/src/default_index/revset_graph_iterator.rs",
+            "default-index/src/revset_graph_iterator.rs",
             "cli/src/commit_templater.rs",
             "cli/src/config/templates.toml",
         ],
@@ -1597,7 +1600,7 @@ COMMAND_PAGE_OVERRIDES = {
         "sources": [
             "cli/src/commands/file/search.rs",
             "core/src/str_util.rs",
-            "lib/src/conflicts.rs",
+            "core/src/conflicts.rs",
             "core/src/merged_tree.rs",
             "lib/src/fileset.rs",
             "core/src/fileset_backend.rs",
@@ -1608,7 +1611,7 @@ COMMAND_PAGE_OVERRIDES = {
         "title": "How jj file show works",
         "sources": [
             "cli/src/commands/file/show.rs",
-            "lib/src/conflicts.rs",
+            "core/src/conflicts.rs",
             "core/src/merged_tree.rs",
             "local-util/src/file_util.rs",
             "core/src/fileset_backend.rs",
@@ -1656,7 +1659,7 @@ COMMAND_PAGE_OVERRIDES = {
             "cli/src/merge_tools/builtin.rs",
             "cli/src/config/merge_tools.toml",
             "cli/src/description_util.rs",
-            "lib/src/conflicts.rs",
+            "core/src/conflicts.rs",
             "cli/src/command_error.rs",
             "cli/src/cli_util.rs",
         ],
@@ -1980,7 +1983,7 @@ COMMAND_PAGE_OVERRIDES = {
         "sources": [
             "cli/src/commands/log.rs",
             "core/src/graph.rs",
-            "lib/src/default_index/revset_graph_iterator.rs",
+            "default-index/src/revset_graph_iterator.rs",
             "cli/src/graphlog.rs",
             "cli/src/cli_util.rs",
         ],
@@ -2034,6 +2037,7 @@ COMMAND_PAGE_OVERRIDES = {
         "sources": [
             "cli/src/commands/evolog.rs",
             "lib/src/evolution.rs",
+            "core/src/op_walk.rs",
             "core/src/operation.rs",
             "cli/src/diff_util.rs",
         ],
@@ -2066,6 +2070,7 @@ COMMAND_PAGE_OVERRIDES = {
             "cli/src/commands/operation/log.rs",
             "cli/src/cli_util.rs",
             "lib/src/op_walk.rs",
+            "core/src/op_walk.rs",
             "core/src/dag_walk_async.rs",
             "cli/src/operation_templater.rs",
         ],
