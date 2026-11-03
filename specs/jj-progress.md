@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-11-02 (seventy-seventh run): followed upstream `e6a695a..8cb1106` (0.46.0). **The
+**Last updated:** 2026-11-03 (seventy-eighth run): followed upstream `8cb1106..92c5b4a` (0.46.0). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@8cb11061a9bbe1dbf9331c206e844284e0ccdd28` (committed 2026-11-02, version
-0.46.0), analyzed 2026-11-02. Held in `jj_docs.UPSTREAM`. Previous pin: `e6a695a`.
+`jj-vcs/jj@92c5b4aa1827fe451d3888e102b0b3eb972ae74d` (committed 2026-11-03, version
+0.46.0), analyzed 2026-11-03. Held in `jj_docs.UPSTREAM`. Previous pin: `8cb1106`.
 
 ## §10 acceptance criteria
 
@@ -31,10 +31,13 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to seventy-seventh runs: pin bumped).
+      run: pin bumped; fiftieth to seventy-eighth runs: pin bumped).
 
-## Sixty-fourth to seventy-seventh runs (2026-10-20 to 2026-11-02)
+## Sixty-fourth to seventy-eighth runs (2026-10-20 to 2026-11-03)
 
+- `2c11591` `8cb1106..92c5b4a`: git push treats remote tags as known heads, so commits already on
+  the remote as a tag skip validation (git-push); jj holds `index.lock` while rewriting Git's index,
+  waiting up to 1s (git-colocation). 82 links remapped in 14 templates; commands and protos unchanged.
 - `211755a` `e6a695a..8cb1106`: new `jj-default-index` crate (`default-index/src/`, proto in
   `default-index/src/protos/`); `conflicts.rs`, `union_find.rs` and the op-walk ancestry helpers moved
   to `core/src`; `reset_head` takes (old, new) commits and resets the index only on a change switch
@@ -47,10 +50,7 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
   import/export and transaction helpers; links remapped (94 templates). Import re-exports even when
   clean (git-import/export); arrange batches key presses; workspace add rejects
   `--ignore-working-copy`/`--no-integrate-operation`; `(absent)` conflict terms (bookmark/tag list).
-- `ff87734` `c3bf0b1..af83d29`: converge/next/prev prompts take an index or a change ID prefix
-  (`parse_index_or_change_id_choice`), no `q` at the change/target prompt, EOF errors (converge,
-  next, prev); registry source lines for converge and diff shifted; about 75 templates remapped.
-- Earlier: `ad45a9e`, `91b7044`, `fa45a4c`, `9d37e33`, `e65bbae`, `b70be32` (`CachedLoader`), `ad64adf`, `cdc336a`, `60897df`, `117f376`.
+- Earlier: `ff87734` (converge/next/prev prompts), `ad45a9e`, `91b7044`, `fa45a4c`, `9d37e33`, `e65bbae`, `b70be32` (`CachedLoader`), `ad64adf`, `cdc336a`, `60897df`, `117f376`.
 
 ## Fifty-third to sixty-third runs (2026-10-09 to 2026-10-19)
 
