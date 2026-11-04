@@ -3,14 +3,15 @@
 Running log for the rml build loop and the daily Routine. Read this first, update it last.
 The contract is `specs/rml.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-11-03 (daily run). rml build complete; maintaining daily. Upstream unchanged at `13234ae` (re-checked); every §5 page is ready. The next run follows upstream: when rml's origin/main moves, re-check every affected page and move the pin.
+**Last updated:** 2026-11-04 (daily run). rml build complete; maintaining daily. Followed upstream to `0950246` (a same-day re-run of every benchmark cell: rml is now 0.96× the best framework, 46 of 114 cells); `benchmarks`, `stack` and `lowering` re-checked against it. The next run follows upstream: when rml's origin/main moves, re-check every affected page and move the pin.
 
 ## Upstream pin
 
-`rayaq-siddiqui/rml@13234ae977ad00839b7f68f919fd81540247fa7f` (committed 2026-10-25,
-"perf: copy im2col row segments with plain loops"), rml 0.1.0, Apache-2.0, analyzed
-2026-11-03 (origin/main still at the pin). Moved on 2026-10-26 from `2b04eb6` (2 commits: the `hoist_step_projections` export pass and
-plain cloned loops in `Im2ColPositions`, each with a `docs/progress.md` item). Held in `rml_docs.UPSTREAM`. The repository is
+`rayaq-siddiqui/rml@09502465f18bad4e6ca4ec73ba2fb851fecedcd5` (committed 2026-11-03,
+"bench: same-day re-run of every framework and rml cell"), rml 0.1.0, Apache-2.0, analyzed
+2026-11-04. Moved on 2026-11-04 from `13234ae` (1 commit: `docs/bench/frameworks.md` regenerated
+from one sweep on a 2.30 GHz Xeon container, and a `docs/progress.md` item replacing the overstated
+summary; the fast-CPU item moved to L172 with 32 of 171 cells). Held in `rml_docs.UPSTREAM`. The repository is
 private, so pinned links 404 until it is public.
 
 ## §10 acceptance criteria
@@ -151,6 +152,13 @@ session-only `/loop` jobs that built pages earlier are retired.
 - 2026-11-03 — daily run. rml's origin/main still at `13234ae`; no page changed, `analyzed_on`
   moved to today (`09afa65`). All 1073 tests pass; `/rml` and all 25 ready pages return 200; mobile
   check passes on every ready page.
+- 2026-11-04 — daily run. Followed upstream `13234ae` → `0950246` (`a2e8002`): rml re-ran every
+  framework and rml cell in one sweep and found the previous summary overstated rml. `benchmarks`
+  rewritten from the new report (summary and corner tables, wins, the six trailing models with
+  rml's stated causes, the LSTM worked example, 32 of 171 thread cells, StableHLO within 2–13%,
+  caveats for a single sweep); `stack` and `lowering` carry the same headline (0.96×, 46 of 114);
+  `docs/progress.md` line references after L171 shifted by one on six pages. All 1073 tests pass;
+  `/rml` and all 25 ready pages return 200; mobile check passes on every ready page. No SVG changed.
 
 ## Deliberate deviations
 
