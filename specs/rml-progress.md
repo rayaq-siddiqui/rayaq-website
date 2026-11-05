@@ -3,13 +3,13 @@
 Running log for the rml build loop and the daily Routine. Read this first, update it last.
 The contract is `specs/rml.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-11-04 (daily run). rml build complete; maintaining daily. Followed upstream to `0950246` (a same-day re-run of every benchmark cell: rml is now 0.96× the best framework, 46 of 114 cells); `benchmarks`, `stack` and `lowering` re-checked against it. The next run follows upstream: when rml's origin/main moves, re-check every affected page and move the pin.
+**Last updated:** 2026-11-05 (daily run). rml build complete; maintaining daily. rml's origin/main is still `0950246`, so no page changed; only `analyzed_on` moved. The next run follows upstream: when rml's origin/main moves, re-check every affected page and move the pin.
 
 ## Upstream pin
 
 `rayaq-siddiqui/rml@09502465f18bad4e6ca4ec73ba2fb851fecedcd5` (committed 2026-11-03,
 "bench: same-day re-run of every framework and rml cell"), rml 0.1.0, Apache-2.0, analyzed
-2026-11-04. Moved on 2026-11-04 from `13234ae` (1 commit: `docs/bench/frameworks.md` regenerated
+2026-11-05 (re-confirmed current). Moved on 2026-11-04 from `13234ae` (1 commit: `docs/bench/frameworks.md` regenerated
 from one sweep on a 2.30 GHz Xeon container, and a `docs/progress.md` item replacing the overstated
 summary; the fast-CPU item moved to L172 with 32 of 171 cells). Held in `rml_docs.UPSTREAM`. The repository is
 private, so pinned links 404 until it is public.
@@ -159,6 +159,9 @@ session-only `/loop` jobs that built pages earlier are retired.
   caveats for a single sweep); `stack` and `lowering` carry the same headline (0.96×, 46 of 114);
   `docs/progress.md` line references after L171 shifted by one on six pages. All 1073 tests pass;
   `/rml` and all 25 ready pages return 200; mobile check passes on every ready page. No SVG changed.
+- 2026-11-05 — daily run. rml's origin/main unchanged at `0950246` (2026-11-03); no page
+  changed, `analyzed_on` moved to 2026-11-05. Queue empty. All 1073 tests pass; `/rml` and all
+  25 ready pages return 200; mobile check passes on every ready page.
 
 ## Deliberate deviations
 
