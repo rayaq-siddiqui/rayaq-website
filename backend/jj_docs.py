@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "92c5b4aa1827fe451d3888e102b0b3eb972ae74d",
-    "commit_date": "2026-11-03",
-    "version": "0.46.0",
-    "analyzed_on": "2026-11-03",
+    "commit": "da21259199343a78d80da1a8d31d07bc615f80cd",
+    "commit_date": "2026-11-10",
+    "version": "0.47.1",
+    "analyzed_on": "2026-11-10",
 }
 
 TOPICS = [
@@ -435,7 +435,7 @@ COMMANDS = [
         "category": 'Content and conflicts',
         "tier": 'B',
         "summary": 'Search for content in files',
-        "source": ('cli/src/commands/file/search.rs', 43),
+        "source": ('cli/src/commands/file/search.rs', 44),
     },
     {
         "command": 'file show',
@@ -757,7 +757,7 @@ COMMANDS = [
         "category": 'Git and remotes',
         "tier": 'A',
         "summary": 'Push to a Git remote',
-        "source": ('cli/src/commands/git/push.rs', 123),
+        "source": ('cli/src/commands/git/push.rs', 120),
     },
     {
         "command": 'git remote',
@@ -974,7 +974,7 @@ COMMANDS = [
         "category": 'Utilities and internals',
         "tier": 'C',
         "summary": 'Low-level commands not intended for users',
-        "source": ('cli/src/commands/debug/mod.rs', 73),
+        "source": ('cli/src/commands/debug/mod.rs', 70),
     },
     {
         "command": 'bench',
