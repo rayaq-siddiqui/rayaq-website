@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-11-03 (seventy-eighth run): followed upstream `8cb1106..92c5b4a` (0.46.0). **The
+**Last updated:** 2026-11-10 (seventy-ninth run): followed upstream `92c5b4a..da21259` (0.47.1). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@92c5b4aa1827fe451d3888e102b0b3eb972ae74d` (committed 2026-11-03, version
-0.46.0), analyzed 2026-11-03. Held in `jj_docs.UPSTREAM`. Previous pin: `8cb1106`.
+`jj-vcs/jj@da21259199343a78d80da1a8d31d07bc615f80cd` (committed 2026-11-10, version
+0.47.1), analyzed 2026-11-10. Held in `jj_docs.UPSTREAM`. Previous pin: `92c5b4a`.
 
 ## §10 acceptance criteria
 
@@ -31,17 +31,18 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to seventy-eighth runs: pin bumped).
+      run: pin bumped; fiftieth to seventy-ninth runs: pin bumped).
 
-## Sixty-fourth to seventy-eighth runs (2026-10-20 to 2026-11-03)
+## Sixty-fourth to seventy-ninth runs (2026-10-20 to 2026-11-10)
 
-- `2c11591` `8cb1106..92c5b4a`: git push treats remote tags as known heads, so commits already on
-  the remote as a tag skip validation (git-push); jj holds `index.lock` while rewriting Git's index,
-  waiting up to 1s (git-colocation). 82 links remapped in 14 templates; commands and protos unchanged.
-- `211755a` `e6a695a..8cb1106`: new `jj-default-index` crate (`default-index/src/`, proto in
-  `default-index/src/protos/`); `conflicts.rs`, `union_find.rs` and the op-walk ancestry helpers moved
-  to `core/src`; `reset_head` takes (old, new) commits and resets the index only on a change switch
-  (git-colocation); empty merge commits upload (gerrit-upload). 442 links remapped in 89 templates.
+- `2f4d106` `92c5b4a..da21259` (1295 links remapped in 109 templates): `revsets.git-sign-on-push`
+  replaces the old sign-on-push setting, immutable commits are skipped with a warning, and "Nothing
+  changed." is gone (git-push, sign); store factories moved from `repo.rs` to `store_factories.rs`
+  (backends, git-root, storage); `debug snapshot` deleted, fourteen debug commands (debug); workspace
+  add resolves parents before creating anything (workspace-add); `--binary-as-text`/`--skip-binary`
+  and "Binary file matches" (file-search); annotate prefetches parents (file-annotate).
+- `2c11591` `8cb1106..92c5b4a` (remote tags as known heads; `index.lock` while rewriting Git's index),
+  `211755a` `e6a695a..8cb1106` (`jj-default-index` crate; modules to `core/src`).
 - `2440230` `96884b7..e6a695a`: new `jj-git-backend` (`git-backend/src/`: `git_backend.rs`,
   `secret_backend.rs`, `git_store.proto`) and `jj-local-util` (`local-util/src/`: `file_util.rs`,
   `lock/`, `stacked_table.rs`, `subprocess_util.rs`) crates; `gen-protos` at the root. Paths repointed,
