@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "da21259199343a78d80da1a8d31d07bc615f80cd",
-    "commit_date": "2026-11-10",
+    "commit": "41bca844170f80409a43c432bbbeef8fd3a1cac1",
+    "commit_date": "2026-11-11",
     "version": "0.47.1",
-    "analyzed_on": "2026-11-10",
+    "analyzed_on": "2026-11-11",
 }
 
 TOPICS = [
@@ -505,14 +505,14 @@ COMMANDS = [
         "category": 'Inspecting history',
         "tier": 'B',
         "summary": 'Compare file contents between two revisions',
-        "source": ('cli/src/commands/diff.rs', 54),
+        "source": ('cli/src/commands/diff.rs', 53),
     },
     {
         "command": 'interdiff',
         "category": 'Inspecting history',
         "tier": 'B',
-        "summary": 'Show differences between the diffs of two revisions',
-        "source": ('cli/src/commands/interdiff.rs', 63),
+        "summary": 'Show differences between the diffs of two revsets',
+        "source": ('cli/src/commands/interdiff.rs', 81),
     },
     {
         "command": 'status',
@@ -715,7 +715,7 @@ COMMANDS = [
         "category": 'Git and remotes',
         "tier": 'A',
         "summary": 'Create a new repo backed by a clone of a Git repo',
-        "source": ('cli/src/commands/git/clone.rs', 59),
+        "source": ('cli/src/commands/git/clone.rs', 60),
     },
     {
         "command": 'git colocation',
