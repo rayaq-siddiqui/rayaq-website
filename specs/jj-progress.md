@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-11-10 (seventy-ninth run): followed upstream `92c5b4a..da21259` (0.47.1). **The
+**Last updated:** 2026-11-11 (eightieth run): followed upstream `da21259..41bca84` (0.47.1). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@da21259199343a78d80da1a8d31d07bc615f80cd` (committed 2026-11-10, version
-0.47.1), analyzed 2026-11-10. Held in `jj_docs.UPSTREAM`. Previous pin: `92c5b4a`.
+`jj-vcs/jj@41bca844170f80409a43c432bbbeef8fd3a1cac1` (committed 2026-11-11, version
+0.47.1), analyzed 2026-11-11. Held in `jj_docs.UPSTREAM`. Previous pin: `da21259`.
 
 ## §10 acceptance criteria
 
@@ -31,18 +31,22 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to seventy-ninth runs: pin bumped).
+      run: pin bumped; fiftieth to eightieth runs: pin bumped).
 
-## Sixty-fourth to seventy-ninth runs (2026-10-20 to 2026-11-10)
+## Sixty-fourth to eightieth runs (2026-10-20 to 2026-11-11)
 
+- `92a32a9`, `33737b0`, `4be801c` `da21259..41bca84`: interdiff takes revsets for `--from`/`--to`,
+  rebases each range's diff and rejects gapped ranges via `check_diff_revset_has_no_gaps`, now in
+  `diff_util.rs` (interdiff rewritten; diff, show, evolog, util-diff relinked); jj-lib maps Git's
+  object-format errors to `ObjectFormatMismatch` and `git clone` retries once with the other hash
+  unless `--object-hash` was given (git-clone, git-fetch, git-push); `SecretBackend` matches SHA-256
+  blob IDs (backends). Command registry regenerated; no proto changes.
 - `2f4d106` `92c5b4a..da21259` (1295 links remapped in 109 templates): `revsets.git-sign-on-push`
   replaces the old sign-on-push setting, immutable commits are skipped with a warning, and "Nothing
   changed." is gone (git-push, sign); store factories moved from `repo.rs` to `store_factories.rs`
   (backends, git-root, storage); `debug snapshot` deleted, fourteen debug commands (debug); workspace
   add resolves parents before creating anything (workspace-add); `--binary-as-text`/`--skip-binary`
   and "Binary file matches" (file-search); annotate prefetches parents (file-annotate).
-- `2c11591` `8cb1106..92c5b4a` (remote tags as known heads; `index.lock` while rewriting Git's index),
-  `211755a` `e6a695a..8cb1106` (`jj-default-index` crate; modules to `core/src`).
 - `2440230` `96884b7..e6a695a`: new `jj-git-backend` (`git-backend/src/`: `git_backend.rs`,
   `secret_backend.rs`, `git_store.proto`) and `jj-local-util` (`local-util/src/`: `file_util.rs`,
   `lock/`, `stacked_table.rs`, `subprocess_util.rs`) crates; `gen-protos` at the root. Paths repointed,
@@ -51,7 +55,7 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
   import/export and transaction helpers; links remapped (94 templates). Import re-exports even when
   clean (git-import/export); arrange batches key presses; workspace add rejects
   `--ignore-working-copy`/`--no-integrate-operation`; `(absent)` conflict terms (bookmark/tag list).
-- Earlier: `ff87734` (converge/next/prev prompts), `ad45a9e`, `91b7044`, `fa45a4c`, `9d37e33`, `e65bbae`, `b70be32` (`CachedLoader`), `ad64adf`, `cdc336a`, `60897df`, `117f376`.
+- Earlier: `2c11591` (remote tags as known heads), `211755a` (`jj-default-index`), `ff87734` (converge/next/prev prompts), `ad45a9e`, `91b7044`, `fa45a4c`, `9d37e33`, `e65bbae`, `b70be32` (`CachedLoader`), `ad64adf`, `cdc336a`, `60897df`, `117f376`.
 
 ## Fifty-third to sixty-third runs (2026-10-09 to 2026-10-19)
 
