@@ -165,6 +165,30 @@
   cache stays in FP8. The report gives about 890 bytes of global K/V per token, a quarter of its predecessor's.
 </p>
 
+<h3 id="agentic-penalty">When compression costs: the agentic penalty</h3>
+<p>
+  Every saving above is usually judged by perplexity and knowledge benchmarks. Mistral Large 4's report (2026) shows
+  that can mislead. Its first design cut the cache 16× against full attention by stacking three of these ideas:
+  one layer in four used full attention and the rest a 512-token sliding window, every other full-attention layer reused
+  the previous one's cache (CLA), and the full-attention layers in the second half read the first half's cache (YOCO).
+  Early ablations showed little or no cost in perplexity. But after supervised fine-tuning, intermediate checkpoints
+  scored lower than expected on long-context agentic tasks such as SWE-bench Verified: the score fell going from full
+  attention to sliding windows, and fell again with CLA. Knowledge benchmarks showed no such gap. Models with the same
+  language-modelling loss behaved very differently on long-horizon work.
+</p>
+<p>
+  The fix was <strong>model surgery</strong> on the end-of-phase-1 pretraining checkpoint. Sliding-window layers were
+  allowed to attend to the whole context, and each layer that had read a shared cache got its own K/V projections,
+  initialised by copying the weights of the nearest earlier layer that produced its own. Removing YOCO as well hurt in
+  a scaled-up test, so the shipped model keeps YOCO sharing in the second half and drops the windows and CLA. Learned
+  rotary frequencies (LeRoPE) and a learned per-head query scaling (Scalable-Softmax) let the lengthened layers adapt;
+  the converted layers ended up putting about 55% of their attention beyond 512 tokens, against 67% for the native
+  full-attention layers. To win back speed the model then moved to DeepSeek Sparse Attention: light indexers, first
+  trained alone for about 15.1B tokens to match the main model's attention by KL divergence, then trained jointly for
+  198B tokens, pick the top 2,048 keys for each query. The cache is still full-length; sparse attention cuts the work
+  of reading it, not its size.
+</p>
+
 <div class="jj-diagram">
   <svg viewBox="0 0 700 250" role="img" aria-labelledby="kv-layers-title kv-layers-desc">
     <title id="kv-layers-title">Which layers write a K/V cache: standard, cross-layer attention, and a causal encoder-decoder</title>
@@ -389,7 +413,9 @@ class CachedAttention(torch.nn.Module):
     At 4 bits the per-block scales are essential and the model generally has to be trained for it.</li>
   <li><strong>Sharing across layers</strong> (CLA, YOCO-style encoder-decoders) divides the cache by the sharing factor
     and, for YOCO, roughly halves prefill, but the layers that read a shared cache lose their own view of the prefix,
-    which costs quality, and the architecture must be chosen before pre-training.</li>
+    which costs quality, and the architecture must be chosen before pre-training. Measure that cost on long-context
+    and agentic tasks, not only perplexity: Mistral Large 4 cut its cache 16× at little cost in perplexity and still lost
+    ground on SWE-bench Verified.</li>
   <li><strong>Paging</strong> improves utilisation and allows prefix sharing, at the cost of a more complex attention kernel
     that follows the block table.</li>
   <li><strong>Pitfalls.</strong> Passing <code>is_causal=True</code> with a one-token query and a longer key
@@ -425,6 +451,7 @@ class CachedAttention(torch.nn.Module):
   <li>Brandon, Mishra, Nrusimha, Panda and Ragan-Kelley. <em>Reducing Transformer Key-Value Cache Size with Cross-Layer Attention.</em> NeurIPS, 2024 (<a href="https://arxiv.org/abs/2405.12981">arXiv 2405.12981</a>).</li>
   <li>Sun, Dong, Zhu, Huang, Wang, Ma, Zhang, Wang and Wei. <em>You Only Cache Once: Decoder-Decoder Architectures for Language Models.</em> NeurIPS, 2024 (<a href="https://arxiv.org/abs/2405.05254">arXiv 2405.05254</a>).</li>
   <li>DeepSeek-AI. <em>DeepSeek-V4.1-Flash: Pushing the Limits of KV Cache Compression.</em> 2026 (<a href="https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/314113f8a7dadb388215396ba5fbee2c610a04d6/DeepSeek_V41_Tech_Report.pdf">technical report</a>).</li>
+  <li>Mistral AI. <em>Mistral Large 4.</em> 2026 (<a href="https://huggingface.co/mistralai/Mistral-Large-4-1T-A52B/blob/af26e7869af601441d5cdf75a1272469ddc3d059/assets/technical_report.pdf">technical report</a>), sections 3.1-3.2.</li>
   <li>Vaswani et al. <em>Attention Is All You Need.</em> NeurIPS, 2017 (<a href="https://arxiv.org/abs/1706.03762">arXiv 1706.03762</a>).</li>
   <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/nn/functional.py', 6414, 6453) }}"><code>scaled_dot_product_attention</code></a>, <a href="{{ src('torch/nn/modules/activation.py', 1090, 1573) }}"><code>MultiheadAttention</code></a>.</li>
 </ul>
