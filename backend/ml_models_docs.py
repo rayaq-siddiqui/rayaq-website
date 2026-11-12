@@ -1314,6 +1314,20 @@ PAGES = [
         "ready": True,
     },
     {
+        "slug": "speculative-decoding",
+        "title": "Speculative decoding",
+        "area": "inference",
+        "level": "advanced",
+        "summary": "Draft several tokens cheaply, verify them in one target pass, and keep the target's exact distribution.",
+        "prerequisites": ["decoding", "kv-cache", "latency-and-throughput"],
+        "sources": [
+            "pytorch:torch/nn/attention/bias.py",
+            "pytorch:torch/_torch_docs.py",
+            "pytorch:torch/nn/functional.py",
+        ],
+        "ready": True,
+    },
+    {
         "slug": "monitoring-and-drift",
         "title": "Monitoring and drift",
         "area": "inference",

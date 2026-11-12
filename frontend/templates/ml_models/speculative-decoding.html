@@ -1,0 +1,472 @@
+{% set ex = spec_decode_example() %}
+{% set e = ex.example %}
+{% set t = ex.trace %}
+{% set bt = ex.bonus_trace %}
+{% set cache = ex.cache %}
+{% set fast = ex.speedups["1/20"] %}
+{% set slow = ex.speedups["1/5"] %}
+{% macro pct(x, d=1) -%}{{ ("%." ~ d ~ "f")|format(x * 100) }}%{%- endmacro %}
+{% macro n(x, d=2) -%}{{ ("%." ~ d ~ "f")|format(x) }}{%- endmacro %}
+{% macro row(probs) -%}({% for p in probs %}{{ p }}{% if not loop.last %}, {% endif %}{% endfor %}){%- endmacro %}
+<header class="jj-header">
+  <h1>Speculative decoding</h1>
+  <p class="tagline">
+    A large model decoding one token at a time leaves almost all of its arithmetic idle, because each step
+    is bound by reading the weights. Speculative decoding lets a cheap drafter guess several tokens, then
+    checks all of them in one pass of the large model with an accept-or-resample rule that keeps the
+    output distribution exactly the large model's. This page proves that rule, counts the tokens a round
+    yields, finds the draft length that maximizes speedup, and shows the attention mask and cache
+    bookkeeping that make verification work.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  On the <a href="/ml-models/latency-and-throughput">latency and throughput</a> page, one decode step of
+  an 8B model at small batch reads every weight to produce one token per sequence, and the GPU's
+  arithmetic units sit almost entirely idle. Running the same weights over several positions at once
+  costs nearly the same time, because the bytes read do not change, only the FLOPs. The trouble is that
+  autoregressive decoding needs token <var>t</var> before it can compute token <var>t</var> + 1, so there is
+  nothing to put in those extra positions.
+</p>
+<p>
+  Speculative decoding fills them with guesses. The question is how to use guesses without changing what
+  the model says. A sampled chatbot must still sample from the large model's distribution, not from a
+  blend of it with a weaker model's, or the quality you evaluated is no longer the quality you serve.
+  The <a href="/ml-models/decoding#speculative">decoding page</a> showed one step of the rule; this page
+  covers the whole algorithm.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Think of a junior writer and an editor. The junior drafts the next few words quickly. The editor reads
+  the whole draft at once and keeps the longest prefix they would plausibly have written themselves, crosses out
+  the first word they disagree with, and writes their own word in its place. If the editor agrees with
+  every drafted word, they also add the next word, since they have already read the whole draft. Each round
+  therefore costs one read by the editor and produces at least one word, often several.
+</p>
+<p>
+  The probabilistic part is how the editor "disagrees". A drafted token that the target likes at least
+  as much as the drafter did (p ≥ q) is always kept. A token the drafter liked more than the target
+  is kept only with probability p/q, and on rejection the replacement is drawn from the tokens the
+  drafter under-proposed. Those two pieces add up to exactly p, so nothing about the output changes except
+  how many target passes it took.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 250" role="img" aria-labelledby="sd-round-title sd-round-desc">
+    <title id="sd-round-title">One speculative round: draft {{ e.gamma }} tokens, verify them in one target pass, accept, reject and resample</title>
+    <desc id="sd-round-desc">
+      Top row: the drafter runs {{ e.gamma }} cheap steps from context "{{ e.context }}", proposing
+      {{ t.drafted|join(", ") }}. Middle: one target pass reads the last emitted token and the {{ e.gamma }}
+      drafts together and returns the target's distribution at every position. Bottom: the first draft
+      "{{ t.rows[0].token }}" is accepted with probability {{ t.rows[0].ratio }}; the second,
+      "{{ t.rows[1].token }}", is accepted only with probability {{ t.rows[1].ratio }} and is rejected, so a
+      replacement "{{ t.final }}" is drawn from the residual. The third draft is discarded unchecked. The
+      round emits {{ t.emitted|length }} tokens for one target pass.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      <text x="70" y="30" class="d-muted">drafter (cost c each)</text>
+      {% for tok in t.drafted %}
+        {% set x = 170 + loop.index0 * 120 %}
+        <rect x="{{ x }}" y="12" width="96" height="30" rx="5" class="d-box ml-op"></rect>
+        <text x="{{ x + 48 }}" y="31">draft {{ loop.index }}: “{{ tok }}”</text>
+        {% if not loop.last %}<line x1="{{ x + 96 }}" y1="27" x2="{{ x + 120 }}" y2="27" class="d-line"></line>{% endif %}
+      {% endfor %}
+      <text x="70" y="96" class="d-muted">target (1 pass)</text>
+      <rect x="150" y="70" width="500" height="44" rx="6" class="d-box ml-op"></rect>
+      <text x="400" y="88">one forward pass over {{ e.gamma + 1 }} positions</text>
+      <text x="400" y="104" class="d-muted">inputs: last token “{{ e.context }}”, {{ t.drafted|join(", ") }}</text>
+      {% for i in range(e.gamma + 1) %}
+        {% set x = 170 + i * 120 %}
+        <line x1="{{ x + 48 }}" y1="114" x2="{{ x + 48 }}" y2="140" class="d-line"></line>
+        <rect x="{{ x }}" y="140" width="96" height="26" rx="4" class="d-box ml-tensor"></rect>
+        <text x="{{ x + 48 }}" y="157">p at pos {{ i + 1 }}</text>
+      {% endfor %}
+      <text x="70" y="200" class="d-muted">verify</text>
+      {% for r in t.rows %}
+        {% set x = 170 + loop.index0 * 120 %}
+        <text x="{{ x + 48 }}" y="192">min(1, p/q) = {{ r.ratio }}</text>
+        {% if r.accepted %}
+          <text x="{{ x + 48 }}" y="210" style="fill:var(--jj-green)">u = {{ n(r.u, 3) }} → keep “{{ r.token }}”</text>
+        {% else %}
+          <text x="{{ x + 48 }}" y="210" style="fill:var(--jj-red)">u = {{ n(r.u, 3) }} → reject</text>
+          <text x="{{ x + 48 }}" y="228" style="fill:var(--jj-accent)">resample “{{ t.final }}”</text>
+        {% endif %}
+      {% endfor %}
+      {% for i in range(t.rows|length, e.gamma) %}
+        {% set x = 170 + i * 120 %}
+        <text x="{{ x + 48 }}" y="200" class="d-muted">discarded</text>
+      {% endfor %}
+      <text x="578" y="200" class="d-muted">bonus only if</text>
+      <text x="578" y="214" class="d-muted">all accepted</text>
+      <text x="360" y="246">emitted this round: {{ t.emitted|join(" ") }} ({{ t.emitted|length }} tokens, 1 target pass)</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="mechanics-round">One round</h3>
+<p>
+  Let the target model give p(· | prefix) and the drafter q(· | prefix). With draft length γ:
+</p>
+<ol>
+  <li><strong>Draft.</strong> Sample x₁ ~ q(· | prefix), x₂ ~ q(· | prefix, x₁), …, up to x<sub>γ</sub>. This
+    is γ sequential steps of the cheap model.</li>
+  <li><strong>Verify.</strong> Run the target once over the γ + 1 new positions (the last emitted token and the
+    γ drafts) to get p at every position, p(· | prefix, x₁, …, x<sub>i−1</sub>) for <var>i</var> = 1 … γ + 1.</li>
+  <li><strong>Accept left to right.</strong> For each <var>i</var>, draw u ~ Uniform(0, 1) and keep x<sub>i</sub>
+    if u &lt; min(1, p(x<sub>i</sub>)/q(x<sub>i</sub>)). Stop at the first rejection.</li>
+  <li><strong>Correct.</strong> On a rejection at position <var>i</var>, sample a replacement from the residual
+    r = max(0, p − q) / Σ max(0, p − q), using that position's p and q, and end the round.</li>
+  <li><strong>Bonus.</strong> If all γ drafts are accepted, sample one more token from p at position γ + 1,
+    which the verification pass already computed.</li>
+</ol>
+<p>
+  Every round emits between 1 and γ + 1 tokens, so it is never slower in tokens per target pass than plain
+  decoding; it only spends the drafter's time.
+</p>
+
+<h3 id="mechanics-proof">Why the output is exactly the target's</h3>
+<p>
+  Fix one position with target p and draft q. The token emitted there is <var>x</var> if the drafter proposed
+  <var>x</var> and it survived, or if any proposal was rejected and the residual drew <var>x</var>:
+</p>
+<p class="ml-formula">P(emit x) = q(x) · min(1, p(x)/q(x)) + (1 − α) · r(x)</p>
+<p>
+  The first term is min(p(x), q(x)). The probability of a rejection is 1 − α, where
+</p>
+<p class="ml-formula">α = Σₓ min(p(x), q(x)) = 1 − TV(p, q)</p>
+<p>
+  is the acceptance rate (TV is total variation distance). Since min(p, q) + max(0, p − q) = p, summing over
+  <var>x</var> gives Σ max(0, p − q) = 1 − α, so (1 − α) · r(x) = max(0, p(x) − q(x)). The two terms add to
+  min(p, q) + max(0, p − q) = p(x). The emitted token is distributed exactly as p. The next position is then
+  conditioned on a prefix whose distribution is already the target's, so the argument repeats position by
+  position. Rejected and discarded drafts never reach the output, which is why the bonus token, drawn from
+  the target's own p, is safe too.
+</p>
+<p>
+  The rule needs q(x) &gt; 0 whenever the drafter proposes <var>x</var>, which holds by construction. Temperature,
+  top-p and any penalties must be applied to p and q before the test, because the rule preserves exactly the p it is
+  given, no more.
+</p>
+
+<h3 id="mechanics-greedy">The greedy case</h3>
+<p>
+  At temperature 0, p puts all its mass on argmax p. Then min(1, p/q) is 1 when the draft equals the target's argmax and
+  0 otherwise, and the residual is the target's argmax. So greedy verification is: keep drafts while they match
+  the target's argmax at each position, replace the first mismatch with the target's argmax, and add the bonus argmax if
+  all match. The output equals plain greedy decoding token for token, up to floating point: the target evaluates
+  γ + 1 positions in one batched call, which can round differently from one position at a time and flip a
+  near-tie.
+</p>
+
+<h3 id="mechanics-speedup">Tokens per round and speedup</h3>
+<p>
+  If every position had the same acceptance rate α, the number of accepted drafts K would satisfy
+  P(K ≥ k) = α<sup>k</sup> for k ≤ γ, and a round emits K + 1 tokens, so
+</p>
+<p class="ml-formula">E[tokens per round] = Σ<sub>k=0..γ</sub> α<sup>k</sup> = (1 − α<sup>γ+1</sup>) / (1 − α)</p>
+<p>
+  Let c be the cost of one drafter step relative to one target step. A round costs γc + 1 target-step units,
+  and plain decoding emits one token per unit, so the speedup in wall-clock time is
+</p>
+<p class="ml-formula">speedup(α, γ, c) = (1 − α<sup>γ+1</sup>) / ((1 − α)(γc + 1))</p>
+<p>
+  The numerator saturates at 1/(1 − α) while the denominator keeps growing with γ, so there is a best draft length:
+  longer for a better-aligned drafter (higher α) and for a cheaper one (lower c). Two assumptions hide in this formula.
+  It assumes verifying γ + 1 positions costs the same as one decode step, which holds only while decoding is
+  bound by memory bandwidth. And real acceptance varies with context, so the i.i.d. formula is an approximation;
+  the worked example measures the gap.
+</p>
+
+<h3 id="mechanics-mask">Verification attention and the cache</h3>
+<p>
+  The verification pass feeds γ + 1 query positions into a model whose <a href="/ml-models/kv-cache">KV cache</a>
+  already holds <var>n</var> keys for the prefix. After appending the new keys there are n + γ + 1 keys, and query
+  <var>i</var> (0-based among the new ones) may attend to keys 0 … n + <var>i</var>. That is a causal mask aligned to the
+  lower-right corner of the score matrix. The upper-left alignment, which <code>is_causal=True</code> uses in
+  <code>scaled_dot_product_attention</code> when the matrix is not square, would let the first new query see only key 0,
+  which is wrong. PyTorch's <code>causal_lower_right</code> bias encodes the correct variant.
+</p>
+<p>
+  After verification the cache contains entries for all γ + 1 new positions, including drafts that were rejected or
+  discarded. If <var>k</var> drafts were accepted, keep the first n + k + 1 entries (the old prefix, the last token, the
+  accepted drafts) and truncate the rest. The newly sampled replacement or bonus token has no cache entry yet; it is
+  the "last token" of the next round. The drafter's own cache needs the same rollback.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 230" role="img" aria-labelledby="sd-mask-title sd-mask-desc">
+    <title id="sd-mask-title">Verification mask: {{ e.gamma + 1 }} new queries against {{ e.cached }} cached keys plus {{ e.gamma + 1 }} new keys</title>
+    <desc id="sd-mask-desc">
+      Two grids of {{ e.gamma + 1 }} rows (new queries) by {{ e.cached + e.gamma + 1 }} columns (keys). In the left grid,
+      lower-right aligned, the first query sees the {{ e.cached }} cached keys plus itself, and each later query sees one more key,
+      so the rows have {{ ex.mask|map("sum")|join(", ") }} visible keys. The right grid, upper-left aligned, gives the rows
+      {{ ex.mask_wrong|map("sum")|join(", ") }} visible keys, hiding the cached prefix from the drafts. The left is correct.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      {% for grid in [{"cells": ex.mask, "x": 40, "label": "lower-right (correct)"}, {"cells": ex.mask_wrong, "x": 400, "label": "upper-left (wrong here)"}] %}
+        <text x="{{ grid.x + 126 }}" y="20">{{ grid.label }}</text>
+        {% for r in grid.cells %}
+          {% set qi = loop.index0 %}
+          <text x="{{ grid.x - 14 }}" y="{{ 52 + qi * 30 }}" class="d-muted">q{{ qi }}</text>
+          {% for visible in r %}
+            {% set kx = grid.x + loop.index0 * 28 %}
+            <rect x="{{ kx }}" y="{{ 34 + qi * 30 }}" width="24" height="26" rx="3" class="d-box{% if visible %} ml-heat{% endif %}"{% if visible and loop.index0 >= e.cached %} style="opacity:0.6"{% endif %}></rect>
+          {% endfor %}
+        {% endfor %}
+        {% for k in range(e.cached + e.gamma + 1) %}
+          <text x="{{ grid.x + k * 28 + 12 }}" y="170" class="d-muted">{{ k }}</text>
+        {% endfor %}
+        <line x1="{{ grid.x }}" y1="182" x2="{{ grid.x + e.cached * 28 - 4 }}" y2="182" class="d-line"></line>
+        <text x="{{ grid.x + e.cached * 14 }}" y="198">cached prefix</text>
+        <line x1="{{ grid.x + e.cached * 28 }}" y1="182" x2="{{ grid.x + (e.cached + e.gamma + 1) * 28 - 4 }}" y2="182" class="d-line"></line>
+        <text x="{{ grid.x + e.cached * 28 + (e.gamma + 1) * 14 }}" y="198">new: last + drafts</text>
+      {% endfor %}
+      <text x="360" y="224" class="d-muted">filled = query may attend to that key</text>
+    </g>
+  </svg>
+</div>
+
+<h3 id="mechanics-drafters">Where drafts come from</h3>
+<ul>
+  <li><strong>A small model of the same family</strong> (the original papers): shares the tokenizer, cheap per step, but
+    must be trained and served alongside and run sequentially for γ steps.</li>
+  <li><strong>Extra heads on the target.</strong> Medusa adds several decoding heads that each predict a token further
+    ahead from the target's last hidden state. Multi-token-prediction (MTP) modules trained with the model, as in DeepSeek-V3
+    and MiMo-V2-Flash, can be reused as drafters at inference.</li>
+  <li><strong>Feature-level drafters.</strong> EAGLE trains a light autoregressive head on the target's hidden features instead
+    of on tokens, which raises α; EAGLE-3 fuses features from several target layers.</li>
+  <li><strong>No model at all.</strong> Prompt lookup or n-gram drafting copies a continuation from earlier in the context
+    when the last few tokens match. It is nearly free (c ≈ 0) and works well for editing, retrieval and code, where outputs
+    repeat inputs.</li>
+</ul>
+<p>
+  Two extensions change the verification. <strong>Tree verification</strong> (SpecInfer) drafts several candidate branches
+  and verifies the whole tree in one pass with a tree-shaped attention mask, raising expected accepted length at the
+  cost of more positions. <strong>Block verification</strong> (Sun et al., ICLR 2025) decides on the drafted block jointly instead of
+  token by token, which provably accepts at least as many tokens on average while preserving the target distribution.
+</p>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  A three-token vocabulary {a, b, c} where each model's next-token distribution depends only on the previous token.
+  These are exact fractions, computed by tested helpers in <code>ml_models_docs.py</code>:
+</p>
+
+<div class="jj-table-wrap">
+  <table class="ml-numbers">
+    <thead><tr><th>Previous token</th><th>Target p (a, b, c)</th><th>Draft q (a, b, c)</th><th>α = Σ min(p, q)</th><th>Residual r</th></tr></thead>
+    <tbody>
+      {% for v in e.vocab %}
+        <tr><td>{{ v }}</td><td>{{ row(e.target[v]) }}</td><td>{{ row(e.draft[v]) }}</td><td>{{ ex.alphas[v] }}</td><td>{{ row(ex.residuals[v]) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-round">A round with a rejection</h3>
+  <p>
+    Starting after "{{ e.context }}" with γ = {{ e.gamma }} and seed {{ e.seeds.rejected }}, the drafter proposes
+    {{ t.drafted|join(", ") }}.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Position</th><th>After</th><th>Draft</th><th>p</th><th>q</th><th>min(1, p/q)</th><th>u</th><th>Result</th></tr></thead>
+      <tbody>
+        {% for r in t.rows %}
+          <tr><td>{{ loop.index }}</td><td>{{ r.context }}</td><td>{{ r.token }}</td><td>{{ r.p }}</td><td>{{ r.q }}</td><td>{{ r.ratio }}</td><td>{{ n(r.u, 3) }}</td><td>{{ "accept" if r.accepted else "reject" }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The second draft "{{ t.rows[1].token }}" was over-proposed (q = {{ t.rows[1].q }} &gt; p = {{ t.rows[1].p }}), and u fell above
+    {{ t.rows[1].ratio }}. The residual after "{{ t.residual_context }}" is {{ row(t.residual) }}: of the three tokens, only "a" has
+    p &gt; q there, so the replacement must be "{{ t.final }}". The third draft is never checked. The round emits
+    <strong>{{ t.emitted|join(" ") }}</strong>, {{ t.emitted|length }} tokens for one target pass. With seed {{ e.seeds.bonus }} instead,
+    all three drafts ({{ bt.drafted|join(", ") }}) pass and the bonus token makes it {{ bt.emitted|length }}: {{ bt.emitted|join(" ") }}.
+  </p>
+  <p>
+    The cache held {{ cache.before }} entries before verification and {{ cache.written }} after it. With {{ t.accepted }}
+    draft accepted it keeps {{ cache.kept }} (the prefix, the last token and the accepted draft) and drops {{ cache.dropped }}.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-exact">The output distribution is exactly the target's</h3>
+  <p>
+    Enumerating every draft and every accept or reject outcome of a round from "{{ e.context }}" gives {{ ex.outcome_count }}
+    distinct emitted sequences. Chaining rounds until two tokens are out, the joint probability of each two-token
+    continuation matches the target's own exactly:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Next two tokens</th><th>Speculative</th><th>Target</th></tr></thead>
+      <tbody>
+        {% for r in ex.two_tokens %}
+          <tr><td>{{ r.tokens|join(" ") }}</td><td>{{ r.spec }}</td><td>{{ r.target }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The tests check the same equality for three tokens from every starting context.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-expected">Tokens per round: exact against the formula</h3>
+  <p>
+    From "{{ e.context }}", the probability of accepting 0, 1, 2 or 3 drafts is
+    {% for p in ex.accepted_dist %}{{ p }}{% if not loop.last %}, {% endif %}{% endfor %}. So a round emits
+    {{ ex.expected }} = {{ n(ex.expected) }} tokens on average. The i.i.d. formula with α = {{ ex.alphas[e.context] }} predicts
+    {{ n(ex.iid_expected, 3) }}. It overestimates because only the first position is drafted after "a", where α is
+    {{ ex.alphas["a"] }}; later positions follow "b" or "c", where it is {{ ex.alphas["b"] }}. Plug a measured average
+    acceptance length into capacity plans, not a single-position α.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-speedup">Speedup against draft length</h3>
+  <p>
+    The formula with a drafter costing c = 1/20 of a target step, and c = 1/5. The best γ is searched over 1 to {{ e.search_gamma }}:
+  </p>
+  {% for label, rows in [("c = 1/20", fast), ("c = 1/5", slow)] %}
+    <div class="jj-table-wrap">
+      <table class="ml-numbers">
+        <thead><tr><th>{{ label }}</th>{% for g in e.gammas %}<th>γ = {{ g }}</th>{% endfor %}<th>Best γ</th></tr></thead>
+        <tbody>
+          {% for r in rows %}
+            <tr><td>α = {{ n(r.alpha, 1) }}</td>{% for s in r.speedups %}<td>{{ n(s) }}×</td>{% endfor %}<td>{{ r.best }} ({{ n(r.best_speedup) }}×)</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endfor %}
+  <p>
+    A cheap, well-aligned drafter wants long drafts: at α = 0.9 and c = 1/20 the best is γ = {{ fast[2].best }}, for
+    {{ n(fast[2].best_speedup) }}×. A drafter costing a fifth of the target caps the gain near {{ n(slow[2].best_speedup) }}×,
+    and at α = 0.6 with γ = 8 it is slower than plain decoding ({{ n(slow[0].speedups[4]) }}×).
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  One sampled round in PyTorch for a batch of one, with models that take a cache and return logits for every new position.
+  The cache objects are assumed to support <code>crop(length)</code>:
+</p>
+<pre><code>import torch
+from torch.nn.attention.bias import causal_lower_right
+
+@torch.inference_mode()
+def speculative_round(target, draft, last_tok, t_cache, d_cache, gamma, temp=1.0):
+    n = t_cache.length                                     # cached prefix length
+    drafts, q_rows, tok = [], [], last_tok
+    for _ in range(gamma):                                 # gamma cheap sequential steps
+        logits, d_cache = draft(tok, cache=d_cache)
+        q = torch.softmax(logits[:, -1] / temp, dim=-1)
+        tok = torch.multinomial(q, 1)
+        drafts.append(tok); q_rows.append(q)
+    new = torch.cat([last_tok] + drafts, dim=1)            # [1, gamma + 1]
+    mask = causal_lower_right(gamma + 1, n + gamma + 1)    # queries see the whole prefix
+    logits, t_cache = target(new, cache=t_cache, attn_mask=mask)
+    p_rows = torch.softmax(logits[0] / temp, dim=-1)       # [gamma + 1, V]
+    out = []
+    for i, tok in enumerate(drafts):
+        x = tok.item()
+        p, q = p_rows[i], q_rows[i][0]
+        if torch.rand(()) &lt; torch.clamp(p[x] / q[x], max=1.0):
+            out.append(x); continue
+        residual = torch.clamp(p - q, min=0)
+        out.append(torch.multinomial(residual / residual.sum(), 1).item())
+        break
+    else:
+        out.append(torch.multinomial(p_rows[gamma], 1).item())   # bonus token
+    accepted = len(out) - 1
+    t_cache.crop(n + accepted + 1)                         # drop rejected drafts
+    d_cache.crop(n + accepted + 1)
+    return out, t_cache, d_cache</code></pre>
+<p>
+  The drafter's cache in this sketch is one position behind on a full accept, because the last draft was never fed to it; real
+  implementations run one more drafter step or feed it next round. Production servers do this for many sequences at once,
+  where each sequence accepts a different number of tokens, which is what makes batched speculative decoding fiddly: caches of
+  ragged lengths, and padding or paged blocks that can be truncated per sequence.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>causal_lower_right</code></td><td><code>(seq_len_q, seq_len_kv)</code></td><td>Causal bias aligned so the last query sees every key; what verification over a cached prefix needs.</td><td><a href="{{ src('torch/nn/attention/bias.py', 342, 377) }}">bias.py 342–377</a></td></tr>
+      <tr><td><code>causal_upper_left</code></td><td><code>(seq_len_q, seq_len_kv)</code></td><td>The standard causal mask anchored at the top-left; wrong for γ + 1 queries after a cache.</td><td><a href="{{ src('torch/nn/attention/bias.py', 308, 339) }}">bias.py 308–339</a></td></tr>
+      <tr><td><code>CausalVariant</code></td><td><code>UPPER_LEFT</code>, <code>LOWER_RIGHT</code></td><td>The two alignments, with 3 × 4 examples of each in the docstring.</td><td><a href="{{ src('torch/nn/attention/bias.py', 33, 83) }}">bias.py 33–83</a></td></tr>
+      <tr><td><code>CausalBias</code></td><td><code>variant</code>, <code>seq_len_q</code>, <code>seq_len_kv</code></td><td>A lazy mask object that <code>scaled_dot_product_attention</code> accepts as <code>attn_mask</code> without materializing it.</td><td><a href="{{ src('torch/nn/attention/bias.py', 86, 306) }}">bias.py 86–306</a></td></tr>
+      <tr><td><code>scaled_dot_product_attention</code></td><td><code>[B, H, L, E]</code>, <code>[B, H, S, E]</code>, <code>is_causal</code></td><td>Fused attention; its <code>is_causal</code> uses the upper-left alignment when L ≠ S.</td><td><a href="{{ src('torch/nn/functional.py', 6414, 6587) }}">functional.py 6414–6587</a></td></tr>
+      <tr><td><code>softmax</code></td><td><code>dim</code></td><td>Turns each position's logits into p or q; apply the same temperature to both.</td><td><a href="{{ src('torch/nn/functional.py', 2176, 2216) }}">functional.py 2176–2216</a></td></tr>
+      <tr><td><code>torch.multinomial</code></td><td><code>[V]</code> or <code>[B, V]</code>, <code>num_samples</code></td><td>Draws drafts, residual replacements and the bonus token; accepts unnormalized weights.</td><td><a href="{{ src('torch/_torch_docs.py', 8089, 8142) }}">_torch_docs.py 8089–8142</a></td></tr>
+      <tr><td><code>Categorical.sample</code></td><td><code>sample_shape</code></td><td>The distributions-API route to the same draw, implemented with <code>multinomial</code>.</td><td><a href="{{ src('torch/distributions/categorical.py', 144, 149) }}">categorical.py 144–149</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Gains shrink as the batch grows.</strong> The speedup formula assumes verifying γ + 1 positions is as cheap as one
+    step. At large batch, decoding approaches the compute ridge on the <a href="/ml-models/latency-and-throughput">roofline</a>, so each extra
+    position costs real FLOPs and rejected drafts become wasted work. Speculation buys per-user latency (interactivity)
+    most at low concurrency, and servers often shorten γ or switch it off as load rises.</li>
+  <li><strong>The drafter costs memory and engineering.</strong> A separate model needs its own weights, cache and serving path.
+    Heads on the target (MTP, Medusa, EAGLE) share the target's features and avoid a second tokenizer, but must be trained per
+    target model and retrained when it changes.</li>
+  <li><strong>Acceptance depends on the workload.</strong> Code, extraction and templated text accept long drafts; open-ended creative
+    sampling at high temperature accepts few. Measure acceptance length on your own traffic, not on a benchmark average.</li>
+  <li><strong>Exactness is a property of the rule, not the system.</strong> Mismatched temperature or top-p between p and q, a
+    drafter applying a penalty the target does not, or nondeterministic kernels each break "identical distribution" quietly.</li>
+  <li><strong>It is a latency tool before a cost tool.</strong> It spends extra FLOPs to cut wall-clock time per token. Mistral
+    Large 4's report gives the scale a production stack sees: with its DSpark speculator and block verification, decode
+    interactivity rose 90% over no speculation and 15% over an EAGLE-3 drafter, both at eight concurrent requests.</li>
+  <li><strong>Distillation helps the drafter.</strong> Training the drafter on the target's outputs, as on the
+    <a href="/ml-models/distillation">distillation</a> page, raises α directly, since α is one minus the total variation distance
+    between the two.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>The drafter proposes a token with q = 0.4 where the target has p = 0.1. How often is it kept?</summary>
+  <p>With probability min(1, 0.1/0.4) = 0.25. A token with p ≥ q is always kept.</p>
+</details>
+<details class="ml-quiz">
+  <summary>With α = 0.8 and γ = 4, how many tokens does a round emit on average under the i.i.d. model?</summary>
+  <p>(1 − 0.8⁵)/(1 − 0.8) = 3.36: up to four drafts plus the correction or bonus token.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why does passing <code>is_causal=True</code> for the verification pass give wrong results?</summary>
+  <p>With γ + 1 queries and n + γ + 1 keys, <code>is_causal</code> aligns the mask to the upper-left, so the first new query sees only the first key and the drafts lose the prefix. Verification needs the lower-right alignment.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>Leviathan, Kalman and Matias. <em>Fast Inference from Transformers via Speculative Decoding.</em> ICML, 2023.</li>
+  <li>Chen et al. <em>Accelerating Large Language Model Decoding with Speculative Sampling.</em> 2023.</li>
+  <li>Stern, Shazeer and Uszkoreit. <em>Blockwise Parallel Decoding for Deep Autoregressive Models.</em> NeurIPS, 2018.</li>
+  <li>Miao et al. <em>SpecInfer: Accelerating Large Language Model Serving with Tree-based Speculative Inference and Verification.</em> ASPLOS, 2024.</li>
+  <li>Cai et al. <em>Medusa: Simple LLM Inference Acceleration Framework with Multiple Decoding Heads.</em> ICML, 2024.</li>
+  <li>Li, Wei, Zhang and Zhang. <em>EAGLE: Speculative Sampling Requires Rethinking Feature Uncertainty.</em> ICML, 2024; <em>EAGLE-3: Scaling up Inference Acceleration of Large Language Models via Training-Time Test.</em> NeurIPS, 2025.</li>
+  <li>Sun, Mendlovic, Leviathan, Aharoni, Ro, Beirami and Suresh. <em>Block Verification Accelerates Speculative Decoding.</em> ICLR, 2025.</li>
+  <li>DeepSeek-AI. <em>DeepSeek-V3 Technical Report</em> (multi-token prediction). 2024.</li>
+  <li>Mistral AI. <em>Mistral Large 4.</em> 2026 (<a href="https://huggingface.co/mistralai/Mistral-Large-4-1T-A52B/blob/af26e7869af601441d5cdf75a1272469ddc3d059/assets/technical_report.pdf">technical report</a>), section on inference optimizations and Figure 16.</li>
+  <li>PyTorch {{ pins.pytorch.tag }}: <a href="{{ src('torch/nn/attention/bias.py', 342, 377) }}"><code>causal_lower_right</code></a>, <a href="{{ src('torch/nn/functional.py', 6414, 6587) }}"><code>scaled_dot_product_attention</code></a>, <a href="{{ src('torch/_torch_docs.py', 8089, 8142) }}"><code>torch.multinomial</code></a>.</li>
+</ul>
