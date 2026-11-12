@@ -3,13 +3,13 @@
 Running log for the weekly jj-dojo maintenance Routine. Read this first, update it last.
 The contract is `specs/jj-dojo.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-10-29 (tenth run, weekly maintenance). **The build is complete:** all nine §5 pages are
+**Last updated:** 2026-11-12 (eleventh run, weekly maintenance). **The build is complete:** all nine §5 pages are
 ready and every §10 criterion is met. From here the Routine runs weekly in maintenance mode only.
 
 ## Upstream pin
 
-`jj-vcs/jj-dojo@0d6f5e5d3b085833de20121fcea062c89480063b` (committed 2026-10-27), analyzed
-2026-10-29. `package.json` version still 0.0.1. Held in `jj_dojo_docs.UPSTREAM`.
+`jj-vcs/jj-dojo@574832c734464296bef59275155dccae3731489e` (committed 2026-11-10), analyzed
+2026-11-12. `package.json` version still 0.0.1. Held in `jj_dojo_docs.UPSTREAM`.
 
 ## §10 acceptance criteria
 
@@ -25,7 +25,18 @@ ready and every §10 criterion is met. From here the Routine runs weekly in main
 - [x] Mobile at 390px: no horizontal page scroll on `/jj-dojo` and every ready page (checked in
       headless Chromium this run).
 - [x] The Routine has run in maintenance mode (second to fourth runs: no upstream change;
-      fifth and eighth to tenth runs: pin bumped; sixth and seventh runs: no upstream change). It now runs weekly.
+      fifth and eighth to eleventh runs: pin bumped; sixth and seventh runs: no upstream change). It now runs weekly.
+
+## Eleventh run (2026-11-12): maintenance
+
+| Commit | What |
+|---|---|
+| `ff1ea79` | Pin bump `0d6f5e5` → `574832c`. Activation now builds `SubprocessClient` → `ApiImpl` → `JjUi(context, api)` (returns early with no workspace folder) and registers a read-only, case-sensitive `jj-commits` file system (`CommitIdFileSystemProvider`). `roadmap` gains a file system providers section; index diagram, map and status rows mark the client and providers landed |
+| `ed7e9ff` | `Commit.isElidedRevisions`: `~` glyph, italic title in `--jj-elided-revisions-color`, never draggable, never a drop target, no-op inserts. `newRepo` can `activate` with a `FakeExtensionContext` and disposes after each test; CI `jj` 0.45.1 → 0.47.1; `restrict-merge.yaml` removed. Every line link re-swept against the new pin; `graph-protocol` caption ranges re-synced |
+
+Moved from planned to implemented: the client layer (wired, though the graph still gets the fake
+state; only file reads go through it) and the `jj-commits` file system. `PROTOCOL_TYPES` unchanged
+(one new optional field). Suite green (1073 tests); smoke test passes.
 
 ## Tenth run (2026-10-29): maintenance
 
@@ -50,16 +61,10 @@ green (1058 tests across all sections); smoke test, pinned-link check (793 links
 
 ## Eighth run (2026-10-15): maintenance
 
-| Commit | What |
-|---|---|
-| `948323c` | Pin bump `67c5c1f` → `5fecc7a`. Upstream turned `//` comments into `/** */` doc comments across 27 files, so every shifted link on `activation`, `graph-layout`, `graph-protocol`, `graph-webview`, `merge-conflicts` and `utils` was re-anchored (difflib line map, unmapped endpoints checked by hand). `graph-webview` also covers the split chip passing hover to both halves and empty chips rendering nothing |
-| `b352ebf` | New upstream code, none of it wired into activation, so it goes on `roadmap` (deviation below): §3 rewritten around the `Client` interface and `SubprocessClient` (`snapshotWithoutIntegrating`, `getCommits`, the template, display IDs, divergence, six integration tests); `//src/api` commit types; new §4 for the bare `OpHeadWatcher`, `NetworkReconnectWatcher` and `Telemetry` interfaces; watcher §5 updated (relative paths, `realpath`, 20 tests). Index repository map and status rows; `build-and-test` gains the `newRepo` helper and the `//src/client` test target |
-
-Moved from planned: JJ PubSub is now *in progress* (the `OpHeadWatcher` interface, no
-implementation); the client layer has a real `SubprocessClient`, still unwired. Not in the plan
-but now on `roadmap`: `NetworkReconnectWatcher` and `Telemetry` interfaces. Suite green (1034
-tests across all sections); smoke test and pinned-link check pass; 390 px check clean on all
-ten changed pages.
+`948323c` bumped `67c5c1f` → `5fecc7a` and re-anchored every link shifted by upstream's
+`//` → `/** */` comment conversion; `b352ebf` put the `Client` interface, `SubprocessClient`,
+`OpHeadWatcher`, `NetworkReconnectWatcher` and `Telemetry` on `roadmap` (unwired). JJ PubSub
+moved to *in progress*. Suite green (1034 tests); smoke, link and 390 px checks pass.
 
 ## Sixth run (2026-10-08): build complete
 
@@ -98,6 +103,11 @@ undescribed field; the `graph-layout` worked-example SVGs come from compiling th
 11. ~~`roadmap`, which also covers `src/client/` and `src/file_system_watcher/` (deliberate addition,
     see below)~~
 
+Proposed (owner's call, not built): a `file-system-providers` page (`src/ui/file_system_providers/`,
+now wired); a `state` page for `OptimisticStateEstimator` (`src/state/`, not yet wired); the
+gitignore matcher; `src/ui/config/` (focus-mode and write-back config caches); `src/ui/commands/`
+(command types and hooks). Until then they are on `roadmap` or logged below.
+
 The build queue is empty. Weekly maintenance: diff upstream against the pin, update affected
 pages, refresh `PROTOCOL_TYPES`, and move items from planned to implemented on `roadmap`, the
 index's implemented-vs-planned table and the §6 diagram as they land. When a new module is wired
@@ -105,16 +115,16 @@ into activation, propose a page for it here first.
 
 ## Deliberate deviations
 
-- **No elided range in the worked example.** §8 items 3 and 7 ask how elided ranges are
-  represented and want one in the example. The layout has no such concept at this pin:
-  every input commit is drawn, and every `childrenHashes` entry must be present. The page
-  says so in its "Lanes and edges" section and uses a four-parent merge as the example.
+- **No elided range in the worked example.** §8 items 3 and 7. Since `574832c` an elided range
+  is an ordinary node with `isElidedRevisions` (drawn as `~`); the layout has no other concept
+  of it. The page says so and keeps the four-parent merge as the example.
 - **"How ranges are merged" (§8 item 5).** `RangeManager` never merges ranges. It only
   appends and checks for collisions. The page describes that instead.
-- **New modules go on `roadmap`, not new pages.** `src/client/` (now `SubprocessClient`, since
-  `5fecc7a`), `src/api/`, `src/file_system_watcher/` and the `op_head_watcher`,
-  `network_reconnect_watcher` and `telemetry` interfaces are code of the planned layers that
-  activation does not reach. Proposal, recorded as a deliberate addition: `roadmap` must also cover what each
+- **New modules go on `roadmap`, not new pages.** `src/client/` (`SubprocessClient`), `src/api/`
+  and `src/ui/file_system_providers/` have been wired into activation since `574832c`, but each is
+  still a section of `roadmap` (page proposals under Queue). `src/file_system_watcher/`,
+  `src/state/` and the `op_head_watcher`, `network_reconnect_watcher` and `telemetry` interfaces
+  are still not reached from activation. Proposal, recorded as a deliberate addition: `roadmap` must also cover what each
   module does today, that neither is wired into activation, and its tests; sources
   `src/client/*`, `src/file_system_watcher/*`. They get their own pages only once they are wired in.
 - **`graph-webview` defers tiles, glyphs and lines to `graph-layout`.** Those components are
@@ -154,7 +164,7 @@ into activation, propose a page for it here first.
 - **"Minimap" is the overview ruler.** Upstream's decorator test says minimap; the code sets
   only `overviewRulerColor`/`overviewRulerLane`. The page uses the accurate term and notes it.
 - **The graph has no real data yet.** `createFakeWebviewState` sends one hard-coded commit.
-  `SubprocessClient` landed in `5fecc7a` but nothing calls it. Revisit once it is wired in.
+  Since `574832c` `SubprocessClient` is wired in, but only the `jj-commits` file reads use it.
 - **Two commit types.** `src/api` defines its own `Commit`, separate from the webview's
   `api/types.ts` one; nothing converts between them yet. On `roadmap#gaps`.
 - **10 MiB output cap.** Since `0d6f5e5` the subprocess helper caps output at 10 MiB; larger logs or
