@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-11-11 (eightieth run): followed upstream `da21259..41bca84` (0.47.1). **The
+**Last updated:** 2026-11-12 (eighty-first run): followed upstream `41bca84..eea2166` (0.47.1). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@41bca844170f80409a43c432bbbeef8fd3a1cac1` (committed 2026-11-11, version
-0.47.1), analyzed 2026-11-11. Held in `jj_docs.UPSTREAM`. Previous pin: `da21259`.
+`jj-vcs/jj@eea216643ad290a5230ea686decf582211e51482` (committed 2026-11-12, version
+0.47.1), analyzed 2026-11-12. Held in `jj_docs.UPSTREAM`. Previous pin: `41bca84`.
 
 ## §10 acceptance criteria
 
@@ -31,10 +31,13 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to eightieth runs: pin bumped).
+      run: pin bumped; fiftieth to eighty-first runs: pin bumped).
 
-## Sixty-fourth to eightieth runs (2026-10-20 to 2026-11-11)
+## Sixty-fourth to eighty-first runs (2026-10-20 to 2026-11-12)
 
+- `f52b294` `41bca84..eea2166`: git error types wrap `gix::Error` via `#[from]`, gain
+  `GitRepoAtWorkdir` variants, and HEAD read errors propagate (only unborn HEAD is `None`). No prose
+  change; 139 links remapped in 13 templates (git-*, gerrit-upload, workspace-add, config-get, cli).
 - `92a32a9`, `33737b0`, `4be801c` `da21259..41bca84`: interdiff takes revsets for `--from`/`--to`,
   rebases each range's diff and rejects gapped ranges via `check_diff_revset_has_no_gaps`, now in
   `diff_util.rs` (interdiff rewritten; diff, show, evolog, util-diff relinked); jj-lib maps Git's
@@ -47,15 +50,7 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
   (backends, git-root, storage); `debug snapshot` deleted, fourteen debug commands (debug); workspace
   add resolves parents before creating anything (workspace-add); `--binary-as-text`/`--skip-binary`
   and "Binary file matches" (file-search); annotate prefetches parents (file-annotate).
-- `2440230` `96884b7..e6a695a`: new `jj-git-backend` (`git-backend/src/`: `git_backend.rs`,
-  `secret_backend.rs`, `git_store.proto`) and `jj-local-util` (`local-util/src/`: `file_util.rs`,
-  `lock/`, `stacked_table.rs`, `subprocess_util.rs`) crates; `gen-protos` at the root. Paths repointed,
-  738 links remapped. `GitBackendSettings` replaces the `GitSettings` lookup (git-root, protobufs).
-- `98975c9` `af83d29..bdefa37`: new `jj-frontend` crate (`frontend/src/`) takes the snapshot, Git
-  import/export and transaction helpers; links remapped (94 templates). Import re-exports even when
-  clean (git-import/export); arrange batches key presses; workspace add rejects
-  `--ignore-working-copy`/`--no-integrate-operation`; `(absent)` conflict terms (bookmark/tag list).
-- Earlier: `2c11591` (remote tags as known heads), `211755a` (`jj-default-index`), `ff87734` (converge/next/prev prompts), `ad45a9e`, `91b7044`, `fa45a4c`, `9d37e33`, `e65bbae`, `b70be32` (`CachedLoader`), `ad64adf`, `cdc336a`, `60897df`, `117f376`.
+- Earlier: `2440230` (`jj-git-backend`, `jj-local-util` crates), `98975c9` (`jj-frontend` crate), `2c11591` (remote tags as known heads), `211755a` (`jj-default-index`), `ff87734` (converge/next/prev prompts), `ad45a9e`, `91b7044`, `fa45a4c`, `9d37e33`, `e65bbae`, `b70be32` (`CachedLoader`), `ad64adf`, `cdc336a`, `60897df`, `117f376`.
 
 ## Fifty-third to sixty-third runs (2026-10-09 to 2026-10-19)
 
