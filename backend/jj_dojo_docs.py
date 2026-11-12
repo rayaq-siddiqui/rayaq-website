@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj-dojo",
-    "commit": "0d6f5e5d3b085833de20121fcea062c89480063b",
-    "commit_date": "2026-10-27",
+    "commit": "574832c734464296bef59275155dccae3731489e",
+    "commit_date": "2026-11-10",
     "version": "0.0.1",
-    "analyzed_on": "2026-10-29",
+    "analyzed_on": "2026-11-12",
 }
 
 PAGES = [
@@ -76,7 +76,10 @@ PAGES = [
         "sources": [
             "docs/intro.md",
             "docs/resources/architecture.svg",
+            "src/api/",
             "src/client/",
+            "src/state/",
+            "src/ui/file_system_providers/",
             "src/file_system_watcher/",
         ],
         "ready": True,

@@ -15,6 +15,14 @@
 {% set localtest = "src/file_system_watcher/local_file_system_watcher_test.ts" %}
 {% set fswbuild = "src/file_system_watcher/BUILD.bazel" %}
 {% set srcbuild = "src/BUILD.bazel" %}
+{% set apiimpl = "src/api/api_impl.ts" %}
+{% set ext = "src/extension.ts" %}
+{% set ui = "src/ui/ui.ts" %}
+{% set basefs = "src/ui/file_system_providers/base_file_system_provider.ts" %}
+{% set cidfs = "src/ui/file_system_providers/commit_id_file_system_provider.ts" %}
+{% set cidfstest = "src/ui/file_system_providers/commit_id_file_system_provider_test.ts" %}
+{% set emptyfs = "src/ui/file_system_providers/empty_file_system_provider.ts" %}
+{% set estimator = "src/state/optimistic_state_estimator.ts" %}
 {% macro page(slug) -%}{{ url_for('jj_dojo', slug=slug) }}{%- endmacro %}
 {% macro box(x, y, w, title, sub, link, planned=False) -%}
   <a href="{{ link }}">
@@ -36,10 +44,12 @@
   In short: <a href="{{ src(intro) }}"><code>docs/intro.md</code></a> splits the extension into a UI layer, an
   API layer and a client layer. Most of the UI layer can be shared with the internal build. The API and
   client layers need external implementations, built on the <code>jj</code> CLI where Google uses gRPC-web
-  servers. At this pin, the commit graph and the conflict highlighter have landed. Several pieces of the
-  lower layers are in the tree but nothing calls them yet: a <code>Client</code> interface with a
-  <code>SubprocessClient</code> that reads the commit graph through <code>jj</code>, a
-  <code>@parcel/watcher</code>-based <code>FileSystemWatcher</code>, and bare interfaces for an op-head
+  servers. At this pin, the commit graph, the conflict highlighter and the first file system provider
+  have landed. <code>activate</code> now builds a <code>SubprocessClient</code> and wraps it in an
+  <code>ApiImpl</code>, whose one method reads files for the <code>jj-commits</code> provider; the graph
+  still gets fake data. Other lower-layer pieces are in the tree but nothing calls them yet: a
+  <code>@parcel/watcher</code>-based <code>FileSystemWatcher</code>, an <code>OptimisticStateEstimator</code>
+  that takes the place of the plan's PendingSnapshotsManager, and bare interfaces for an op-head
   watcher, a network-reconnect watcher and telemetry. Everything else is
   <span class="dojo-planned-badge">planned</span>. The M1–M4 labels on this page come from the four-milestone
   timeline <code>intro.md</code> carried until this pin; it now points to a GitHub project board instead
@@ -62,11 +72,12 @@
     <desc id="dojo-roadmap-desc">
       Three rows. The UI layer has seven components. The commit graph, the conflict highlighter,
       package.json and the commands are in the tree, though the only commands so far are the two
-      merge-conflict ones. The split editor, the commit dialog and the file system providers are planned.
-      The API layer has seven components. The FileSystemWatcher is in the tree but not wired in. JJ PubSub has
-      an interface only. ApiStateManager, WorkspaceStateManager, PendingSnapshotsManager, ActionsQueue and
-      the Forge Manager are planned. The client layer has the jj subprocess client, in progress: it reads
-      the commit graph but nothing calls it. A daemon client is a possibility for later. Below the client layer is the jj CLI.
+      merge-conflict ones. The file system providers have landed as a jj-commits provider. The split
+      editor and the commit dialog are planned. The API layer has seven components. The FileSystemWatcher
+      and the OptimisticStateEstimator, which stands in for PendingSnapshotsManager, are in the tree but not
+      wired in. JJ PubSub has an interface only. ApiStateManager, WorkspaceStateManager, ActionsQueue and
+      the Forge Manager are planned. The client layer has the jj subprocess client, in progress: activate
+      builds it and the jj-commits provider reads files through it, but the graph doesn't use it. A daemon client is a possibility for later. Below the client layer is the jj CLI.
     </desc>
     <text x="10" y="22" font-size="13" font-weight="600">UI layer: mostly shared</text>
     {{ box(10, 32, 100, "commit graph", "done (M1)", page('graph-webview')) }}
@@ -75,19 +86,19 @@
     {{ box(328, 32, 100, "commands", "2 of them so far", page('activation') ~ '#package-json') }}
     {{ box(434, 32, 100, "split editor", "planned", src(intro, 17), True) }}
     {{ box(540, 32, 100, "commit dialog", "planned (M3)", src(intro, 18), True) }}
-    {{ box(646, 32, 104, "FS providers", "planned", src(intro, 19), True) }}
+    {{ box(646, 32, 104, "FS providers", "jj-commits", '#fs-providers') }}
 
     <text x="10" y="128" font-size="13" font-weight="600">API layer: separate implementations</text>
     {{ box(10, 138, 100, "FileSystem", "Watcher (M2)", '#file-system-watcher', True) }}
     {{ box(116, 138, 100, "ApiState", "Manager", src(intro, 25), True) }}
     {{ box(222, 138, 100, "WorkspaceState", "Manager", src(intro, 26), True) }}
-    {{ box(328, 138, 100, "PendingSnapshots", "Manager (M2)", src(intro, 27), True) }}
+    {{ box(328, 138, 100, "OptimisticState", "Estimator (M2)", src(estimator, 34, 40), True) }}
     {{ box(434, 138, 100, "ActionsQueue", "M3", src(intro, 28), True) }}
     {{ box(540, 138, 100, "JJ PubSub", "interface (M2)", '#interfaces', True) }}
     {{ box(646, 138, 104, "Forge Manager", "M4", src(intro, 31), True) }}
 
     <text x="10" y="234" font-size="13" font-weight="600">Client layer: jj CLI externally</text>
-    {{ box(10, 244, 360, "jj subprocess client", "in progress (M1): reads the graph, unwired", '#subprocess-client', True) }}
+    {{ box(10, 244, 360, "jj subprocess client", "in progress (M1): file reads wired, graph not", '#subprocess-client', True) }}
     {{ box(390, 244, 360, "daemon client", "long-term possibility", src(intro, 33), True) }}
 
     <text x="380" y="340" text-anchor="middle" font-size="12" class="d-muted">jj CLI with templates, run against the repository</text>
@@ -105,15 +116,38 @@
     <thead><tr><th>Component</th><th>The plan says</th><th>At this pin</th></tr></thead>
     <tbody>
       <tr><td>VS Code commands</td><td>Mostly shared. Forge commands such as upload, sync and submit are not.</td><td>Two commands, both for merge conflicts: <code>jj.mergeConflict.acceptAllSides</code> and <code>acceptOneSide</code> (<a href="{{ page('activation') }}#package-json">activation</a>). Upstreaming the "Open Diff" commands is part of M1.</td></tr>
-      <tr><td>Commit graph</td><td>Shared.</td><td>Landed, and marked <em>Done</em> in M1. The <a href="{{ page('graph-protocol') }}">protocol</a>, <a href="{{ page('graph-layout') }}">layout</a> and <a href="{{ page('graph-webview') }}">webview</a> pages cover it. The host still feeds it fake data, since nothing calls the client yet.</td></tr>
+      <tr><td>Commit graph</td><td>Shared.</td><td>Landed, and marked <em>Done</em> in M1. The <a href="{{ page('graph-protocol') }}">protocol</a>, <a href="{{ page('graph-layout') }}">layout</a> and <a href="{{ page('graph-webview') }}">webview</a> pages cover it. The host still feeds it fake data: the client is constructed, but only file reads go through it.</td></tr>
       <tr><td>Split editor</td><td>Shared.</td><td><span class="dojo-planned-badge">planned</span> Not in the tree.</td></tr>
       <tr><td>Commit dialog</td><td>"Very hard to externalize due to its strong internal ties."</td><td><span class="dojo-planned-badge">planned</span> M3 needs a commit dialog webview for <code>jj describe</code> and <code>jj commit</code>.</td></tr>
-      <tr><td>File system providers</td><td>Shared.</td><td><span class="dojo-planned-badge">planned</span> Nothing calls <code>registerFileSystemProvider</code>.</td></tr>
+      <tr><td>File system providers</td><td>Shared.</td><td>Landed. <code>JjUiBase</code> registers a read-only <code>CommitIdFileSystemProvider</code> for the <code>jj-commits</code> scheme (<a href="{{ src(ui, 33, 46) }}">source</a>), though nothing opens such a URI yet. See <a href="#fs-providers">below</a>.</td></tr>
       <tr><td>Conflict marker highlighter</td><td>Shared.</td><td>Landed. See <a href="{{ page('merge-conflicts') }}">merge-conflict support</a>.</td></tr>
       <tr><td><code>package.json</code></td><td>"Hard to share due to very different contents."</td><td>The public manifest is small. See <a href="{{ page('activation') }}#package-json">activation</a>.</td></tr>
     </tbody>
   </table>
 </div>
+
+<h3 id="fs-providers">File system providers</h3>
+<p>
+  The providers live in <code>src/ui/file_system_providers/</code>. An abstract
+  <a href="{{ src(basefs, 27, 107) }}"><code>BaseFileSystemProvider</code></a> owns the
+  <code>onDidChangeFile</code> emitter, gives <code>watch</code> a no-op, and makes
+  <code>readDirectory</code>, <code>writeFile</code>, <code>createDirectory</code>, <code>delete</code>
+  and <code>rename</code> throw internal errors, leaving subclasses only <code>stat</code> and
+  <code>readFile</code>.
+</p>
+<p>
+  <a href="{{ src(cidfs, 42, 73) }}"><code>CommitIdFileSystemProvider</code></a> serves URIs of the form
+  <code>jj-commits://&lt;path&gt;?commitId=&lt;id&gt;</code>, with an optional <code>opId</code> and a
+  <code>showParents</code> flag that reads the merged file of the commit's parents instead
+  (<a href="{{ src(cidfs, 23, 41) }}">source</a>). <code>stat</code> always returns an <code>mtime</code> of
+  0, since a commit's file never changes. <code>readFile</code> parses the query, requiring
+  <code>commitId</code>, turns the path into a workspace-relative one, and calls
+  <code>Api.readFileAtCommit</code>; a missing file becomes empty bytes, "most likely a new file"
+  (<a href="{{ src(cidfs, 59, 105) }}">source</a>). Six tests cover the stat, each query parameter, the
+  missing file and the missing <code>commitId</code> (<a href="{{ src(cidfstest, 26, 132) }}">source</a>).
+  A tested <a href="{{ src(emptyfs) }}"><code>EmptyFileSystemProvider</code></a> sits beside it, but nothing
+  registers it.
+</p>
 
 <h3 id="api-layer">API layer</h3>
 
@@ -128,11 +162,12 @@
     <tbody>
       <tr><td>ApiStateManager</td><td>The orchestration layer, combining what every other API-layer component knows.</td><td><span class="dojo-planned-badge">planned</span> Not named in a milestone.</td></tr>
       <tr><td>WorkspaceStateManager</td><td>Fetches workspace state from the client (gRPC-web internally, the CLI externally) and caches it. It refetches on FileSystemWatcher events.</td><td><span class="dojo-planned-badge">planned</span> Not named in a milestone.</td></tr>
-      <tr><td>PendingSnapshotsManager</td><td>Optional. Turns FileSystemWatcher events into an <em>estimated</em> workspace state from the changed files, to hide latency.</td><td><span class="dojo-planned-badge">planned</span> To be upstreamed in M2.</td></tr>
+      <tr><td>PendingSnapshotsManager</td><td>Optional. Turns FileSystemWatcher events into an <em>estimated</em> workspace state from the changed files, to hide latency.</td><td><span class="dojo-planned-badge">in progress</span> M2. It arrived as <a href="{{ src(estimator, 34, 40) }}"><code>OptimisticStateEstimator</code></a> in <code>src/state/</code>: it buffers <code>SnapshotDelta</code>s, drops them when <code>stateChanged</code> is set, and estimates the working copy's file list, marking newly seen files <code>UNKNOWN</code>. It is tested and in <code>//src</code>'s <code>deps</code>, but nothing constructs one.</td></tr>
       <tr><td>ActionsQueue</td><td>Runs every write operation one at a time, so writes neither race nor cause divergence.</td><td><span class="dojo-planned-badge">planned</span> To be upstreamed in M3.</td></tr>
       <tr><td>FileSystemWatcher</td><td>Watches for file changes and feeds WorkspaceStateManager and PendingSnapshotsManager.</td><td><span class="dojo-planned-badge">in progress</span> The interface and a local implementation are in the tree and tested, but nothing constructs one. See <a href="#file-system-watcher">§5</a>.</td></tr>
       <tr><td>JJ PubSub</td><td>Watches for changes to jj's global op head (see <a href="{{ url_for('jj', slug='operations') }}">operations</a>).</td><td><span class="dojo-planned-badge">in progress</span> M2. Only an <code>OpHeadWatcher</code> interface with a <code>subscribe</code> method, and no implementation. See <a href="#interfaces">§4</a>.</td></tr>
       <tr><td>Forge Manager</td><td>Internally <code>ChangelistStateManager</code>, which tracks CL state with one CL per commit and a single remote. Externally it needs one implementation per forge. GitHub pull requests map to many commits, and several remotes may be needed.</td><td><span class="dojo-planned-badge">planned</span> M4.</td></tr>
+      <tr><td><code>Api</code> facade</td><td>Not named in the plan; the "API exposed to the UI layer".</td><td>Landed with one method, <code>readFileAtCommit</code>. <code>ApiImpl</code> passes it straight to the client (<a href="{{ src(api, 243, 265) }}">source</a>, <a href="{{ src(apiimpl, 21, 32) }}">source</a>), and <code>activate</code> hands it to the UI (<a href="{{ src(ext, 36, 40) }}">source</a>).</td></tr>
       <tr><td>NetworkReconnectWatcher, Telemetry</td><td>Not in the plan.</td><td>Interfaces only, with no implementation and no callers. See <a href="#interfaces">§4</a>.</td></tr>
     </tbody>
   </table>
@@ -147,7 +182,7 @@
   warns that a CLI client is harder than it looks. The internal server exposes things the CLI doesn't, such
   as file IDs, and answers in one request what may take several CLI commands. The plan says the internal
   server and the CLI may need to converge as part of open-sourcing. At this pin the client reads the
-  commit graph through the CLI, but nothing calls it; see <a href="#subprocess-client">§3</a>.
+  commit graph through the CLI, but only its file reads are called; see <a href="#subprocess-client">§3</a>.
 </p>
 
 <h2 id="milestones">2. Milestones</h2>
@@ -165,8 +200,8 @@
   <table>
     <thead><tr><th>Milestone</th><th>Goal</th><th>Items</th><th>At this pin</th></tr></thead>
     <tbody>
-      <tr><td>M1<br>Oct–Nov 2026</td><td>Show the commit graph and modified files, without refreshes</td><td>Open-source the commit graph <em>[Done]</em>; the jj subprocess client <em>[In progress]</em>; upstream the "Open Diff" commands</td><td>The graph has landed. <code>SubprocessClient</code> has landed and is tested, but the graph doesn't use it yet. The "Open Diff" commands haven't landed.</td></tr>
-      <tr><td>M2<br>Nov 2026–Feb 2027</td><td>Support refreshes</td><td>FileSystemWatcher <em>[In progress]</em>; upstream PendingSnapshotsManager; JJ PubSub; multi-workspace support</td><td>The watcher has landed but isn't wired in. JJ PubSub has an interface only. <code>SubprocessClient</code> can now add workspaces and reports each commit's working copies, but nothing uses that yet.</td></tr>
+      <tr><td>M1<br>Oct–Nov 2026</td><td>Show the commit graph and modified files, without refreshes</td><td>Open-source the commit graph <em>[Done]</em>; the jj subprocess client <em>[In progress]</em>; upstream the "Open Diff" commands</td><td>The graph has landed. <code>SubprocessClient</code> has landed, is tested and now fills in each commit's modified files; <code>activate</code> builds it, but the graph doesn't use it yet. The "Open Diff" commands haven't landed, though the <code>jj-commits</code> provider they would open has.</td></tr>
+      <tr><td>M2<br>Nov 2026–Feb 2027</td><td>Support refreshes</td><td>FileSystemWatcher <em>[In progress]</em>; upstream PendingSnapshotsManager; JJ PubSub; multi-workspace support</td><td>The watcher has landed but isn't wired in. PendingSnapshotsManager's replacement, <code>OptimisticStateEstimator</code>, is in the tree but unused. JJ PubSub has an interface only. <code>SubprocessClient</code> can now add workspaces and reports each commit's working copies, but nothing uses that yet.</td></tr>
       <tr><td>M3<br>Feb–Apr 2027</td><td>Basic mutating operations</td><td>Upstream ActionsQueue; <code>jj new</code>/<code>edit</code>/<code>squash</code> commands; <code>jj describe</code>/<code>commit</code> commands with the commit dialog webview</td><td><span class="dojo-planned-badge">planned</span></td></tr>
       <tr><td>M4<br>Apr–Jun 2027</td><td>Forge integration</td><td>Publishing to GitHub, and possibly Gerrit; upload and sync</td><td><span class="dojo-planned-badge">planned</span></td></tr>
     </tbody>
@@ -177,9 +212,9 @@
 
 <p class="jj-source">
   <a href="{{ src(client) }}">client.ts</a> (88 lines),
-  <a href="{{ src(sclient) }}">subprocess_client.ts</a> (437 lines),
+  <a href="{{ src(sclient) }}">subprocess_client.ts</a> (512 lines),
   <a href="{{ src(sub) }}">subprocess_util.ts</a> (90 lines), their tests,
-  <a href="{{ src(api) }}">src/api/api.ts</a> and <a href="{{ src(subbuild, 21, 59) }}">BUILD.bazel</a>
+  <a href="{{ src(api) }}">src/api/api.ts</a> and <a href="{{ src(subbuild, 21, 61) }}">BUILD.bazel</a>
 </p>
 
 <p>
@@ -196,8 +231,8 @@
   (<a href="{{ src(client, 84, 87) }}">source</a>). The other two read file contents as bytes.
   <code>readFileAtCommit</code> reads a path at a commit, or at its combined parents when
   <code>showParent</code> is set, and returns <code>undefined</code> if the file isn't there. It takes an
-  <code>opHead</code> because on the Git backend <code>jj file show</code> only finds commits reachable
-  from the operation it runs at; the comment says Google's commit cloud may ignore it.
+  optional <code>opId</code> because on the Git backend <code>jj file show</code> only finds commits
+  reachable from the operation it runs at; the comment says Google's commit cloud may ignore it.
   <code>readFileById</code> reads a file by its <code>FileId</code>
   (<a href="{{ src(client, 53, 82) }}">source</a>).
 </p>
@@ -211,8 +246,11 @@
   <li>its ID and change ID, <code>parentIds</code> and <code>childIds</code>;</li>
   <li>whether it is immutable: the root commit or an ancestor of <code>immutable_heads()</code>;</li>
   <li><code>files</code>, the files it modifies, each a <code>CommitFile</code> with a path, a
-    modification type and its metadata as a <a href="{{ page('utils') }}#files"><code>Merge</code></a>
-    that may be conflicted (<a href="{{ src(api, 209, 239) }}">source</a>);</li>
+    modification type (<code>ADDED</code>, <code>MODIFIED</code>, <code>DELETED</code>,
+    <code>RENAMED</code>, <code>COPIED</code>, <code>CONFLICTED</code> or <code>UNKNOWN</code>), its
+    metadata as a <a href="{{ page('utils') }}#files"><code>Merge</code></a> of optional file IDs that may
+    be conflicted, and, for a move or copy, the <code>source</code> path
+    (<a href="{{ src(api, 209, 241) }}">source</a>);</li>
   <li>whether it is the working copy (<code>active</code>) or a parent of it
     (<code>isWorkingCopyParentCommit</code>);</li>
   <li>its full description and a <code>descriptionTitle</code>, "usually" the first line;</li>
@@ -238,45 +276,49 @@
 </p>
 
 <p>
-  <a href="{{ src(sclient, 42, 161) }}"><code>SubprocessClient</code></a> answers
+  <a href="{{ src(sclient, 46, 165) }}"><code>SubprocessClient</code></a> answers
   <code>getWorkspaceState</code> with two <code>jj</code> calls:
 </p>
 
 <ol>
-  <li><a href="{{ src(sclient, 219, 238) }}"><code>snapshotWithoutIntegrating</code></a> runs
+  <li><a href="{{ src(sclient, 237, 256) }}"><code>snapshotWithoutIntegrating</code></a> runs
     <code>jj --no-integrate-operation op log -n=1 --no-graph -T=id</code>. Running any command snapshots
     the working copy, and <code>--no-integrate-operation</code> keeps the resulting operation out of the
     op log, so this returns the ID of an unpublished operation (see
     <a href="{{ url_for('jj', slug='operations') }}">operations</a>). A TODO notes that
     <code>--no-graph</code> drops jj's elided edges, which the commit graph can't draw either.</li>
-  <li><a href="{{ src(sclient, 240, 346) }}"><code>getCommits</code></a> runs
+  <li><a href="{{ src(sclient, 258, 377) }}"><code>getCommits</code></a> runs
     <code>jj --at-op &lt;op&gt; log --no-graph</code> with a template that prints one JSON object per
-    commit, including its bookmarks and working copies (<a href="{{ src(sclient, 254, 281) }}">source</a>).
+    commit, including its bookmarks, working copies and modified files (<a href="{{ src(sclient, 262, 300) }}">source</a>).
     The template is built field by field by
-    <a href="{{ src(sclient, 192, 217) }}"><code>toJsonObjectTemplate</code></a>. No revset is passed, so it
+    <a href="{{ src(sclient, 210, 235) }}"><code>toJsonObjectTemplate</code></a>. No revset is passed, so it
     shows whatever the user's default <code>log</code> revset selects. It then:
     <ul>
       <li>makes every display ID as long as the longest shortest unique prefix, and at least 4 characters
-        (<a href="{{ src(sclient, 292, 299) }}">source</a>);</li>
+        (<a href="{{ src(sclient, 323, 330) }}">source</a>);</li>
       <li>builds each commit's child list from the parent lists, and marks the working copy's parents
-        (<a href="{{ src(sclient, 301, 317) }}">source</a>);</li>
+        (<a href="{{ src(sclient, 332, 348) }}">source</a>);</li>
       <li>gives the working-copy commit a <code>default</code> workspace rooted at the client's directory
         when jj reports none, which jj does when there is only one workspace. A comment admits this is
         "technically not correct" for a renamed default workspace
-        (<a href="{{ src(sclient, 319, 331) }}">source</a>);</li>
+        (<a href="{{ src(sclient, 350, 362) }}">source</a>);</li>
       <li>fills in every commit's ancestors and descendants with
         <a href="{{ page('utils') }}#commit-topology"><code>commit_topology</code></a>
-        (<a href="{{ src(sclient, 342, 345) }}">source</a>).</li>
+        (<a href="{{ src(sclient, 373, 375) }}">source</a>).</li>
     </ul>
-    <a href="{{ src(sclient, 348, 390) }}"><code>rawCommitToApiCommit</code></a> appends
+    <a href="{{ src(sclient, 379, 419) }}"><code>rawCommitToApiCommit</code></a> appends
     <code>/&lt;offset&gt;</code> to a divergent commit's display ID, takes the first line as the title, and
     sets <code>needsUpload</code> for a local bookmark that is neither synced nor conflicted.
-    <code>isImmutable</code> comes straight from the template. <code>files</code> is always empty: a TODO
-    waits for a jj release that includes jj PR 10430 (<a href="{{ src(sclient, 369, 371) }}">source</a>).</li>
+    <code>isImmutable</code> comes straight from the template. <code>files</code> now comes from the
+    template's <code>diff.files()</code> (<a href="{{ src(sclient, 400) }}">source</a>): jj's status maps to
+    a modification type, with a conflicted file becoming <code>CONFLICTED</code> and an unknown status
+    logged as an internal error and returned as <code>UNKNOWN</code>; <code>source</code> is set when the
+    source path differs; and the metadata is a <code>Merge</code> built from the file IDs on each side
+    (<a href="{{ src(sclient, 429, 473) }}">source</a>).</li>
 </ol>
 
 <p>
-  <a href="{{ src(sclient, 96, 131) }}"><code>workspaceAdd</code></a> runs
+  <a href="{{ src(sclient, 100, 135) }}"><code>workspaceAdd</code></a> runs
   <code>jj workspace add --name=&lt;basename&gt; -- &lt;root&gt;</code>. It names the workspace after the
   last path component itself, because <code>jj workspace add</code> prints nothing machine-readable, then
   finds that name in <code>jj workspace list --ignore-working-copy</code> and returns it. The
@@ -287,14 +329,15 @@
 </p>
 
 <p>
-  <a href="{{ src(sclient, 54, 67) }}"><code>readFileAtCommit</code></a> calls
-  <a href="{{ src(sclient, 400, 437) }}"><code>fileShow</code></a>, which runs
+  <a href="{{ src(sclient, 58, 71) }}"><code>readFileAtCommit</code></a> calls
+  <a href="{{ src(sclient, 475, 512) }}"><code>fileShow</code></a>, which runs
   <code>jj --at-op=&lt;op&gt; --color=never file show -r=&lt;id&gt; -- root:"&lt;path&gt;"</code>, adding
-  <code>-</code> after the ID for <code>showParent</code>. The quoted <code>root:</code> pattern makes the
+  <code>-</code> after the ID for <code>showParent</code>. Without an operation ID it passes
+  <code>--ignore-working-copy</code> instead of <code>--at-op</code>. The quoted <code>root:</code> pattern makes the
   path match literally instead of as a glob. jj exits with 1 for every user error, so a missing file is
   recognised by the text <code>Error: No such path:</code> and turned into <code>undefined</code>. A TODO
   notes that <code>-</code> fails on a merge commit until jj PR 10464 makes <code>parents_of()</code>
-  usable. <a href="{{ src(sclient, 69, 94) }}"><code>readFileById</code></a> runs
+  usable. <a href="{{ src(sclient, 73, 98) }}"><code>readFileById</code></a> runs
   <code>jj debug object file -- &lt;path&gt; &lt;id&gt;</code>; its comment says there is no stable API
   for this yet, a <code>jj file show --id</code> was rejected upstream, and <code>git cat-file</code> would
   only work on the Git backend.
@@ -314,26 +357,27 @@
 </p>
 
 <p>
-  The 28 <code>SubprocessClient</code> tests run the pinned <code>jj</code> (see
+  The 31 <code>SubprocessClient</code> tests run the pinned <code>jj</code> (see
   <a href="{{ page('build-and-test') }}#rule-jj">the jj rule</a>) in fresh repositories from
-  <a href="{{ page('build-and-test') }}#new-repo"><code>newRepo</code></a>. Eleven cover a new repository, the
-  returned <code>opHead</code>,
+  <a href="{{ page('build-and-test') }}#new-repo"><code>newRepo</code></a>. Thirteen cover a new repository, the
+  returned <code>opHead</code>, modified files of every kind including a symlink, conflicted files,
   descriptions (including binary data and a multi-line title), divergent commits with their change
   offsets, a conflict, ancestors and descendants across several commits, a second workspace, and a
   workspace path that starts with <code>-</code>. The snapshot test reads the op log the same unpublished
   way. A clean working copy adds no operation. A dirty file shows one "snapshot working copy" operation on
   top, and once the file is removed, the op log is back to what it was. Nothing was ever published
-  (<a href="{{ src(sctest, 239, 280) }}">source</a>). Five more run against a local repository with a
+  (<a href="{{ src(sctest, 240, 281) }}">source</a>). Five more run against a local repository with a
   remote and check local, conflicted, synced, unsynced and diverged remote bookmarks
-  (<a href="{{ src(sctest, 402, 575) }}">source</a>). Eight read files at a commit: text, binary data, a
-  missing file, glob characters taken literally, <code>showParent</code> on a normal commit, and files
+  (<a href="{{ src(sctest, 524, 697) }}">source</a>). Nine read files at a commit: text, text read without
+  an operation ID, binary data, a missing file, glob characters taken literally, <code>showParent</code> on a normal commit, and files
   just under and just over the buffer limit. On a merge commit the <code>showParent</code> reads are
-  expected to fail until the TODO above is fixed (<a href="{{ src(sctest, 577, 778) }}">source</a>). Four
+  expected to fail until the TODO above is fixed (<a href="{{ src(sctest, 699, 916) }}">source</a>). Four
   read files by ID, which the test gets from <code>jj debug tree</code>
-  (<a href="{{ src(sctest, 780, 858) }}">source</a>). The <code>subprocess_util</code> test still runs
-  <code>jj version</code> (<a href="{{ src(subtest, 23, 32) }}">source</a>). No file outside
-  <code>src/client/</code> imports the client, and <code>//src</code>'s <code>deps</code> don't include it
-  (<a href="{{ src(srcbuild, 27, 40) }}">source</a>).
+  (<a href="{{ src(sctest, 918, 997) }}">source</a>). The <code>subprocess_util</code> test still runs
+  <code>jj version</code> (<a href="{{ src(subtest, 23, 32) }}">source</a>). <code>extension.ts</code>
+  constructs the client, and <code>//src</code>'s <code>deps</code> now include
+  <code>//src/client:subprocess_client</code> and <code>//src/api:api_impl</code>
+  (<a href="{{ src(srcbuild, 27, 44) }}">source</a>).
 </p>
 
 <h2 id="interfaces">4. Interfaces without implementations</h2>
@@ -357,8 +401,8 @@
 <h2 id="file-system-watcher">5. The file-system watcher</h2>
 
 <p class="jj-source">
-  <a href="{{ src(fsw) }}">file_system_watcher.ts</a> (58 lines),
-  <a href="{{ src(local) }}">local_file_system_watcher.ts</a> (204 lines),
+  <a href="{{ src(fsw) }}">file_system_watcher.ts</a> (65 lines),
+  <a href="{{ src(local) }}">local_file_system_watcher.ts</a> (205 lines),
   <a href="{{ src(localtest) }}">local_file_system_watcher_test.ts</a> (20 tests) and
   <a href="{{ src(fswbuild) }}">BUILD.bazel</a>
 </p>
@@ -367,9 +411,10 @@
   The package follows the interface/implementation split from the plan's design notes. The
   <code>file_system_watcher</code> target holds only the interface and depends only on
   <code>@types/vscode</code>. <code>local_file_system_watcher</code> adds <code>@parcel/watcher</code>,
-  <code>@types/node</code> and the logging and error packages (<a href="{{ src(fswbuild, 21, 40) }}">source</a>).
-  The interface's doc comment says the abstraction exists so the extension can work with virtual file
-  systems, and that internally it corresponds to a citc pubsub (<a href="{{ src(fsw, 20, 24) }}">source</a>).
+  <code>@types/node</code> and the logging and error packages. A third target, <code>gitignore</code>, holds
+  a 553-line gitignore matcher with no dependencies that nothing imports yet
+  (<a href="{{ src(fswbuild, 21, 45) }}">source</a>). The interface's doc comment describes a watcher
+  "compatible with both local and virtual file systems" (<a href="{{ src(fsw, 20, 23) }}">source</a>).
 </p>
 
 <h3 id="fsw-interface">The interface</h3>
@@ -378,11 +423,11 @@
   <table>
     <thead><tr><th>Field</th><th>Type</th><th>Meaning</th><th>Source</th></tr></thead>
     <tbody>
-      <tr><td><code>FileSystemWatcher.subscribe(cb)</code></td><td><code>vscode.Disposable</code></td><td>Registers a callback. An <code>undefined</code> delta means "anything may have changed", for example after a network interruption or an OS event-queue overflow.</td><td><a href="{{ src(fsw, 25, 39) }}">25–39</a></td></tr>
-      <tr><td><code>FileChangeType</code></td><td>enum</td><td><code>ADDED</code>, <code>MODIFIED</code>, <code>DELETED</code></td><td><a href="{{ src(fsw, 41, 45) }}">41–45</a></td></tr>
-      <tr><td><code>SnapshotDelta.stateChanged</code></td><td><code>boolean</code></td><td>True when <code>.jj/working_copy/checkout</code> changed, meaning jj itself moved the working copy (see <a href="{{ url_for('jj', slug='working-copy') }}">working copy</a>).</td><td><a href="{{ src(fsw, 48, 49) }}">48–49</a></td></tr>
-      <tr><td><code>SnapshotDelta.snapshotNumber</code></td><td><code>number</code></td><td>Must increase monotonically.</td><td><a href="{{ src(fsw, 50, 51) }}">50–51</a></td></tr>
-      <tr><td><code>SnapshotDelta.fileChanges</code></td><td><code>readonly FileChange[]</code></td><td>Each change's <code>path</code>, relative to the workspace root, and <code>type</code>.</td><td><a href="{{ src(fsw, 52, 59) }}">52–59</a></td></tr>
+      <tr><td><code>FileSystemWatcher.subscribe(cb)</code></td><td><code>vscode.Disposable</code></td><td>Registers a callback. An <code>undefined</code> delta means "anything may have changed", for example after a network interruption or an OS event-queue overflow.</td><td><a href="{{ src(fsw, 24, 38) }}">24–38</a></td></tr>
+      <tr><td><code>FileChangeType</code></td><td>enum</td><td><code>ADDED</code>, <code>MODIFIED</code>, <code>DELETED</code></td><td><a href="{{ src(fsw, 40, 44) }}">40–44</a></td></tr>
+      <tr><td><code>SnapshotDelta.stateChanged</code></td><td><code>boolean</code></td><td>True when a version-control or workspace state transition happened, which invalidates estimating from file changes alone. Locally that is a change to <code>.jj/working_copy/checkout</code>, which jj writes last when it moves the working copy (see <a href="{{ url_for('jj', slug='working-copy') }}">working copy</a>).</td><td><a href="{{ src(fsw, 47, 55) }}">47–55</a></td></tr>
+      <tr><td><code>SnapshotDelta.snapshotNumber</code></td><td><code>number</code></td><td>Must increase monotonically.</td><td><a href="{{ src(fsw, 56, 57) }}">56–57</a></td></tr>
+      <tr><td><code>SnapshotDelta.fileChanges</code></td><td><code>readonly FileChange[]</code></td><td>Each change's <code>path</code>, relative to the workspace root, and <code>type</code>.</td><td><a href="{{ src(fsw, 58, 65) }}">58–65</a></td></tr>
     </tbody>
   </table>
 </div>
@@ -430,7 +475,7 @@
 <p>
   <code>//src</code> lists <code>//src/file_system_watcher</code> in its <code>deps</code>, which is the
   interface target, but nothing in the extension creates a watcher yet
-  (<a href="{{ src(srcbuild, 27, 40) }}">source</a>).
+  (<a href="{{ src(srcbuild, 27, 44) }}">source</a>).
 </p>
 
 <h2 id="design">6. Design considerations</h2>
@@ -447,18 +492,20 @@
     importing TypeScript libraries into Google. The extension's runtime dependencies at this pin are
     <code>@parcel/watcher</code>, <code>@vscode-elements/elements</code>, <code>@vscode/codicons</code>,
     <code>jsonc-parser</code>, <code>lit</code> and <code>safevalues</code>
-    (<a href="{{ src('package.json', 101, 108) }}">source</a>).</li>
+    (<a href="{{ src('package.json', 109, 116) }}">source</a>).</li>
   <li><strong>Reads should stay reads.</strong> Read commands will pass
     <code>--no-integrate-operation</code> and <code>--ignore-working-copy</code>, so a read neither causes
     divergence nor adds entries to the user's op log (see <a href="{{ url_for('jj', slug='operations') }}">operations</a>
     and <a href="{{ url_for('jj', slug='working-copy') }}">working copy</a>). <code>SubprocessClient</code>
     passes <code>--no-integrate-operation</code> and reads at that operation with <code>--at-op</code>, but
     not <code>--ignore-working-copy</code>: it snapshots on purpose, so the graph reflects unsaved file
-    changes without publishing an operation.</li>
+    changes without publishing an operation. A file read with no operation ID passes
+    <code>--ignore-working-copy</code>.</li>
   <li><strong>Different defaults internally and externally.</strong> Google developers are used to settings
     such as <code>jj.includeWorkingCopyInParentDiffs</code> and <code>threeWayMerge.enabled</code> being
     on. The plan says to check whether those defaults suit external users. At this pin
-    <code>contributes.configuration</code> is empty, so neither setting exists.</li>
+    <code>contributes.configuration</code> holds only <code>jj.graph.focusMode</code>, so neither setting
+    exists.</li>
   <li><strong>Missing features in parallel.</strong> Features the internal extension still lacks, such as
     blame and squashing part of a file, are open for outside contributors while externalization goes
     on.</li>
@@ -480,9 +527,14 @@
     whole log in one call, so a very large repository would still make it reject, and a file over the cap
     can't be read at all.</li>
   <li><strong>Two commit types.</strong> The client returns <code>//src/api</code> commits, while the graph
-    takes its own protocol types. Something still has to convert one into the other before the graph can
-    show real data.</li>
-  <li><strong>Nothing new is reachable from <code>activate</code>.</strong> The client, the watcher and the
-    three interfaces are built, and the first two are tested, on every CI run, but none affects the shipped
-    extension. They move from "in progress" to implemented once a state manager uses them.</li>
+    takes its own protocol types, and the <code>Api</code> facade has no method that returns commits yet.
+    Something still has to convert one into the other before the graph can show real data.</li>
+  <li><strong>A provider nothing opens.</strong> <code>activate</code> now reaches the client, but only
+    through the <code>jj-commits</code> provider, and no command or view opens a <code>jj-commits</code>
+    URI yet. The watcher, the estimator, the gitignore matcher, the command hooks under
+    <code>src/ui/commands/</code>, the focus-mode setting cache in <code>src/ui/config/</code> (only
+    <code>dispose</code> touches it) and the three interfaces are built and
+    mostly tested on every CI run without affecting the shipped extension, as is the unregistered
+    <code>EmptyFileSystemProvider</code>. They move from "in progress" to implemented once something
+    uses them.</li>
 </ul>
