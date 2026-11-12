@@ -1,5 +1,6 @@
 import bisect
 import collections
+import fractions
 import functools
 import hashlib
 import heapq
@@ -4294,6 +4295,197 @@ def speculative_step(target, draft):
 
 def speculative_tokens_per_pass(acceptance, draft_tokens):
     return sum(acceptance**i for i in range(draft_tokens + 1))
+
+
+def _fractions(text):
+    return [fractions.Fraction(x) for x in text.split()]
+
+
+SPEC_DECODE_EXAMPLE = {
+    "vocab": ["a", "b", "c"],
+    "target": {"a": _fractions("6/10 3/10 1/10"), "b": _fractions("2/10 5/10 3/10"), "c": _fractions("3/10 2/10 5/10")},
+    "draft": {"a": _fractions("5/10 4/10 1/10"), "b": _fractions("4/10 3/10 3/10"), "c": _fractions("1/10 2/10 7/10")},
+    "context": "a",
+    "gamma": 3,
+    "seeds": {"rejected": 2, "bonus": 0},
+    "cached": 5,
+    "costs": [fractions.Fraction(1, 20), fractions.Fraction(1, 5)],
+    "alphas": [fractions.Fraction(6, 10), fractions.Fraction(8, 10), fractions.Fraction(9, 10)],
+    "gammas": [1, 2, 4, 6, 8, 12],
+    "search_gamma": 32,
+}
+
+
+def spec_acceptance(target, draft):
+    return sum(min(p, q) for p, q in zip(target, draft))
+
+
+def spec_residual(target, draft):
+    residual = [max(p - q, 0) for p, q in zip(target, draft)]
+    norm = sum(residual)
+    return [r / norm for r in residual]
+
+
+def _pick(probs, u):
+    total = 0
+    for index, p in enumerate(probs):
+        total += p
+        if u < total:
+            return index
+    return max(i for i, p in enumerate(probs) if p > 0)
+
+
+def spec_round(example, context, seed):
+    vocab, target, draft, gamma = example["vocab"], example["target"], example["draft"], example["gamma"]
+    rng = random.Random(seed)
+    drafted, prev = [], context
+    for _ in range(gamma):
+        token = vocab[_pick(draft[prev], rng.random())]
+        drafted.append(token)
+        prev = token
+    rows, emitted, prev = [], [], context
+    for token in drafted:
+        index = vocab.index(token)
+        p, q = target[prev][index], draft[prev][index]
+        ratio = min(fractions.Fraction(1), p / q)
+        u = rng.random()
+        accepted = u < ratio
+        rows.append({"context": prev, "token": token, "p": p, "q": q, "ratio": ratio, "u": u, "accepted": accepted})
+        if not accepted:
+            residual = spec_residual(target[prev], draft[prev])
+            final = vocab[_pick(residual, rng.random())]
+            emitted.append(final)
+            return {"drafted": drafted, "rows": rows, "residual": residual, "residual_context": prev,
+                    "final": final, "bonus": False, "emitted": emitted, "accepted": len(rows) - 1}
+        emitted.append(token)
+        prev = token
+    final = vocab[_pick(target[prev], rng.random())]
+    emitted.append(final)
+    return {"drafted": drafted, "rows": rows, "residual": None, "residual_context": None,
+            "final": final, "bonus": True, "emitted": emitted, "accepted": gamma}
+
+
+def spec_round_outcomes(example, context):
+    vocab, target, draft, gamma = example["vocab"], example["target"], example["draft"], example["gamma"]
+    outcomes = {}
+
+    def walk(prev, emitted, prob, depth):
+        if depth == gamma:
+            for i, p in enumerate(target[prev]):
+                if p:
+                    key = tuple(emitted + [vocab[i]])
+                    outcomes[key] = outcomes.get(key, 0) + prob * p
+            return
+        q_row, p_row = draft[prev], target[prev]
+        residual = None
+        for i, q in enumerate(q_row):
+            if not q:
+                continue
+            accept = min(fractions.Fraction(1), p_row[i] / q)
+            if accept:
+                walk(vocab[i], emitted + [vocab[i]], prob * q * accept, depth + 1)
+            if accept < 1:
+                residual = residual or spec_residual(p_row, q_row)
+                for j, r in enumerate(residual):
+                    if r:
+                        key = tuple(emitted + [vocab[j]])
+                        outcomes[key] = outcomes.get(key, 0) + prob * q * (1 - accept) * r
+
+    walk(context, [], fractions.Fraction(1), 0)
+    return outcomes
+
+
+def spec_prefix_distribution(example, context, length):
+    result = {}
+
+    def run(prev, emitted, prob):
+        if len(emitted) >= length:
+            key = tuple(emitted[:length])
+            result[key] = result.get(key, 0) + prob
+            return
+        for tokens, p in spec_round_outcomes(example, prev).items():
+            run(tokens[-1], emitted + list(tokens), prob * p)
+
+    run(context, [], fractions.Fraction(1))
+    return result
+
+
+def target_prefix_distribution(example, context, length):
+    vocab, target = example["vocab"], example["target"]
+    result = {(): fractions.Fraction(1)}
+    for _ in range(length):
+        grown = {}
+        for prefix, prob in result.items():
+            prev = prefix[-1] if prefix else context
+            for i, p in enumerate(target[prev]):
+                if p:
+                    grown[prefix + (vocab[i],)] = prob * p
+        result = grown
+    return result
+
+
+def spec_expected_tokens(alpha, gamma):
+    if alpha == 1:
+        return gamma + 1
+    return (1 - alpha ** (gamma + 1)) / (1 - alpha)
+
+
+def spec_speedup(alpha, gamma, cost):
+    return spec_expected_tokens(alpha, gamma) / (gamma * cost + 1)
+
+
+def spec_best_gamma(alpha, cost, search):
+    return max(range(1, search + 1), key=lambda g: spec_speedup(alpha, g, cost))
+
+
+def spec_speedup_table(alphas, gammas, cost, search):
+    rows = []
+    for alpha in alphas:
+        best = spec_best_gamma(alpha, cost, search)
+        rows.append({"alpha": alpha, "speedups": [spec_speedup(alpha, g, cost) for g in gammas],
+                     "best": best, "best_speedup": spec_speedup(alpha, best, cost)})
+    return rows
+
+
+def verification_mask(cached, gamma, variant="lower_right"):
+    queries, keys = gamma + 1, cached + gamma + 1
+    offset = keys - queries if variant == "lower_right" else 0
+    return [[k <= q + offset for k in range(keys)] for q in range(queries)]
+
+
+def spec_cache_after(cached, gamma, accepted):
+    return {"before": cached, "written": cached + gamma + 1, "kept": cached + accepted + 1,
+            "dropped": gamma - accepted}
+
+
+def spec_decode_example():
+    ex = SPEC_DECODE_EXAMPLE
+    vocab, target, draft, context = ex["vocab"], ex["target"], ex["draft"], ex["context"]
+    alphas = {v: spec_acceptance(target[v], draft[v]) for v in vocab}
+    trace = spec_round(ex, context, ex["seeds"]["rejected"])
+    outcomes = spec_round_outcomes(ex, context)
+    expected = sum(len(k) * p for k, p in outcomes.items())
+    accepted_dist = {}
+    for tokens, p in outcomes.items():
+        accepted_dist[len(tokens) - 1] = accepted_dist.get(len(tokens) - 1, 0) + p
+    spec_two = spec_prefix_distribution(ex, context, 2)
+    target_two = target_prefix_distribution(ex, context, 2)
+    return {
+        "example": ex,
+        "alphas": alphas,
+        "residuals": {v: spec_residual(target[v], draft[v]) for v in vocab},
+        "trace": trace,
+        "bonus_trace": spec_round(ex, context, ex["seeds"]["bonus"]),
+        "cache": spec_cache_after(ex["cached"], ex["gamma"], trace["accepted"]),
+        "outcome_count": len(outcomes),
+        "expected": expected,
+        "iid_expected": spec_expected_tokens(alphas[context], ex["gamma"]),
+        "accepted_dist": [accepted_dist.get(k, 0) for k in range(ex["gamma"] + 1)],
+        "two_tokens": [{"tokens": k, "spec": spec_two.get(k, 0), "target": target_two[k]} for k in sorted(target_two)],
+        "speedups": {str(c): spec_speedup_table(ex["alphas"], ex["gammas"], c, ex["search_gamma"]) for c in ex["costs"]},
+        "mask": verification_mask(ex["cached"], ex["gamma"]),
+        "mask_wrong": verification_mask(ex["cached"], ex["gamma"], "upper_left"),
+    }
 
 
 KV_CONFIG = {"layers": 32, "q_heads": 32, "kv_heads": 8, "head_dim": 128, "bytes_per_value": 2}
@@ -15366,6 +15558,7 @@ def render(slug, render_template):
         "greedy_path": greedy_path,
         "speculative_step": speculative_step,
         "speculative_tokens_per_pass": speculative_tokens_per_pass,
+        "spec_decode_example": spec_decode_example,
         "entropy": entropy,
         "logistic_example": LOGISTIC_EXAMPLE,
         "boundary_example": BOUNDARY_EXAMPLE,

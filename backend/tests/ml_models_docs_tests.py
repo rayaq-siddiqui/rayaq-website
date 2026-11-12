@@ -6049,3 +6049,74 @@ def test_dtype_precisions_match_assert_close_defaults():
 
     assert rows["float32"]["eps"] == 2 ** -23 and rows["bfloat16"]["eps"] == 2 ** -7
     assert rows["float16"]["rtol"] == 1e-3 and rows["float32"]["rtol"] == 1.3e-6
+
+
+def test_speculative_rounds_reproduce_the_targets_joint_distribution_exactly():
+    ex = ml_models_docs.SPEC_DECODE_EXAMPLE
+    for context in ex["vocab"]:
+        outcomes = ml_models_docs.spec_round_outcomes(ex, context)
+        assert sum(outcomes.values()) == 1
+        first = {}
+        for tokens, p in outcomes.items():
+            first[tokens[0]] = first.get(tokens[0], 0) + p
+        assert [first.get(v, 0) for v in ex["vocab"]] == ex["target"][context]
+        for length in (2, 3):
+            assert ml_models_docs.spec_prefix_distribution(ex, context, length) == ml_models_docs.target_prefix_distribution(ex, context, length)
+    rows = ml_models_docs.spec_decode_example()["two_tokens"]
+    assert len(rows) == 9 and all(row["spec"] == row["target"] for row in rows)
+
+
+def test_speculative_acceptance_and_residual():
+    from fractions import Fraction as F
+
+    target, draft = [F(1, 2), F(1, 4), F(1, 4)], [F(1, 4), F(1, 2), F(1, 4)]
+    assert ml_models_docs.spec_acceptance(target, draft) == F(3, 4)
+    assert ml_models_docs.spec_residual(target, draft) == [1, 0, 0]
+    alphas = ml_models_docs.spec_decode_example()["alphas"]
+    assert alphas == {"a": F(9, 10), "b": F(4, 5), "c": F(4, 5)}
+
+
+def test_speculative_traces_show_a_rejection_and_a_bonus_token():
+    result = ml_models_docs.spec_decode_example()
+    trace = result["trace"]
+    assert trace["drafted"] == ["c", "c", "a"]
+    assert [row["accepted"] for row in trace["rows"]] == [True, False]
+    assert str(trace["rows"][1]["ratio"]) == "5/7"
+    assert trace["residual_context"] == "c" and trace["residual"] == [1, 0, 0]
+    assert trace["emitted"] == ["c", "a"] and trace["accepted"] == 1 and not trace["bonus"]
+    bonus = result["bonus_trace"]
+    assert bonus["accepted"] == 3 and bonus["bonus"] and len(bonus["emitted"]) == 4
+    assert result["cache"] == {"before": 5, "written": 9, "kept": 7, "dropped": 2}
+
+
+def test_speculative_expected_tokens_exact_and_iid_formula():
+    from fractions import Fraction as F
+
+    result = ml_models_docs.spec_decode_example()
+    assert result["accepted_dist"] == [F(1, 10), F(13, 100), F(61, 500), F(81, 125)]
+    assert sum(result["accepted_dist"]) == 1
+    assert result["expected"] == F(1659, 500)
+    assert result["iid_expected"] == ml_models_docs.spec_expected_tokens(F(9, 10), 3) == F(3439, 1000)
+    assert ml_models_docs.spec_expected_tokens(1, 4) == 5
+    uniform = dict(ml_models_docs.SPEC_DECODE_EXAMPLE, draft={v: ml_models_docs.SPEC_DECODE_EXAMPLE["target"][v] for v in "abc"})
+    outcomes = ml_models_docs.spec_round_outcomes(uniform, "a")
+    assert set(len(k) for k in outcomes) == {4}
+
+
+def test_speculative_speedup_table_and_best_gamma():
+    tables = ml_models_docs.spec_decode_example()["speedups"]
+    fast, slow = tables["1/20"], tables["1/5"]
+    assert [row["best"] for row in fast] == [4, 8, 13]
+    assert [row["best"] for row in slow] == [2, 4, 7]
+    assert round(float(fast[2]["best_speedup"]), 2) == 4.67
+    assert float(slow[0]["speedups"][-1]) < 1
+    assert ml_models_docs.spec_speedup(0.8, 4, 0.05) == pytest.approx((1 - 0.8 ** 5) / 0.2 / 1.2)
+
+
+def test_verification_mask_is_lower_right_aligned():
+    mask = ml_models_docs.verification_mask(5, 3)
+    assert len(mask) == 4 and len(mask[0]) == 9
+    assert [sum(row) for row in mask] == [6, 7, 8, 9]
+    wrong = ml_models_docs.verification_mask(5, 3, "upper_left")
+    assert [sum(row) for row in wrong] == [1, 2, 3, 4]
+    assert ml_models_docs.verification_mask(0, 3) == [[k <= q for k in range(4)] for q in range(4)]
