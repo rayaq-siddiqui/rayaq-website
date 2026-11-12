@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-10-29 (third weekly audit). Spec v2 widens the section from model
-architectures to all of machine learning: 12 areas, 96 pages, a seven-step learning path and a
-fixed page format. Every queue item is ready (1-96; audits added `matrix-decompositions`,
-`iterative-solvers` and `numerical-stability`).
+**Last updated:** 2026-11-12 (fourth weekly audit). Spec v2 widens the section from model
+architectures to all of machine learning: 12 areas, 97 pages, a seven-step learning path and a
+fixed page format. Every queue item is ready (1-97; audits added `matrix-decompositions`,
+`iterative-solvers`, `numerical-stability` and `speculative-decoding`).
 Nothing is queued, so the next run is the next weekly audit (spec §8.1).
 
 ## Pins
@@ -43,7 +43,7 @@ pull, clone the pins, build the `← next` page to §6, maintain the pins, recor
 and push small commits to `main`. The phone check before each push is
 `NODE_PATH=$(npm root -g) node tools/ml_models/check_mobile.js / /ml-models <ready pages>`.
 
-No audit so far (2026-10-15, 2026-10-22, 2026-10-29) had a tool to change a trigger's schedule, so
+No audit so far (2026-10-15, 2026-10-22, 2026-10-29, 2026-11-12) had a tool to change a trigger's schedule, so
 the trigger still fires every 5 hours. Until the owner switches it to weekly, a run that finds the last audit row less than
 seven days old should record nothing and stop.
 
@@ -51,7 +51,7 @@ seven days old should record nothing and stop.
 
 - [x] The index shows the framing, the learning path, the map, the vocabulary, the pins and
       every page grouped by area with its level (tested).
-- [x] Every §5 page is ready and meets its "Must cover" column and §6 (96 of 96 ready, all
+- [x] Every §5 page is ready and meets its "Must cover" column and §6 (97 of 97 ready, all
       in the §6 format).
 - [x] Every link into a pinned repository uses that pin's commit (tested).
 - [x] §7.5 tests exist and pass, including the §6 section order for every ready page.
@@ -210,8 +210,8 @@ Open gaps from these runs:
   remark was confirmed only through secondary quotes.
 - The end lines of the HistGradientBoosting regressor `__init__`, `_incremental_fit_estimator`
   and `Lasso` were inferred.
-- Topics named in plain text with no page: `contrastive-learning` and `speculative-decoding`
-  (run 37 pages); candidates for §5 rows in an audit.
+- Topic named in plain text with no page: `contrastive-learning` (run 37 pages); a candidate
+  for a §5 row in an audit. `speculative-decoding` got its page in the 2026-11-12 audit.
 - No pin implements a UNet, LoRA/PEFT, NF4, an ANN index or logQ correction; the two-tower
   serving numbers are an invented, labelled configuration.
 - PSI's 0.1/0.25 thresholds are an industry convention; Whisper, EnCodec, Flamingo and LLaVA
@@ -224,59 +224,52 @@ Open gaps from these runs:
 
 | Date | Checked | Found | Added |
 |---|---|---|---|
+| 2026-11-12 | Pins (`git ls-remote --tags`); Hugging Face model cards and reports for recent open-weight releases; the inference area against topics pages name but do not cover | No pin moved: PyTorch v2.15.0, scikit-learn 1.9.1 and XGBoost v3.4.2 are still the latest stable. Mistral Large 4 qualified (open weights and a technical report): a 16× smaller KV cache that cost little perplexity but lost ground on SWE-bench Verified, then mid-pretraining surgery to DeepSeek Sparse Attention, and a DSpark speculator with block verification. Kimi K3.1 Pro has no report, Hy4 has no open weights, GLM-5.2 is not new. Speculative decoding was named on several pages with no page of its own | `eade8dc` an "agentic penalty" section on `kv-cache` plus the Mistral Large 4 `UPCOMING_MODELS` entry; `4d78fca` exact speculative-decoding helpers and tests; `9f30a4e` the `speculative-decoding` page (§5 row, registry, queue 97) |
 | 2026-10-29 | Pins (`git ls-remote --tags`); Hugging Face model cards and reports for recent open-weight releases; the foundations area for floating point and conditioning | PyTorch `v2.15.0` is final (2026-10-27); scikit-learn 1.9.1 and XGBoost v3.4.2 are still the latest stable. No open-weight release qualified: Reflection Beam 1.0's report is still "coming", Muse Spark Open has only an evaluation-methodology note, Mistral Large 4 weights are due 2026-10-31, MiniMax M3.1-Flash could not be verified. Foundations had no page on rounding error, conditioning or stable rewrites | `361aea4` the PyTorch pin to v2.15.0 (every linked range rechecked); `bfc791c` the `numerical-stability` page (§5 row, registry, queue 96) |
 | 2026-10-22 | Pins (`git ls-remote --tags`); Hugging Face model cards and reports for recent open-weight releases; the foundations area for numerical linear algebra beyond factorizations | No pin moved (PyTorch v2.15.0 is still rc7). DeepSeek-V4.1-Flash has weights and a report (cross-layer KV sharing, FP4 KV cache); Muse Spark Open, Reflection Beam and Mistral Large 4 have no report or open weights yet, so they were skipped. Foundations had no iterative solvers (CG, Krylov, preconditioning) | `15c05d9` a cross-layer sharing and FP4 section on `kv-cache` plus its `UPCOMING_MODELS` entry; `ab96a0f` the `iterative-solvers` page (§5 row, registry, queue 95) |
 | 2026-10-15 | Pins (`git ls-remote --tags`); the Kimi K2, DeepSeek-V3.2-Exp and MiMo-V2-Flash reports; `torch/optim/_muon.py`; the foundations area against `torch.linalg` | No pin moved (PyTorch v2.15.0 is still rc only). Muon and QK-Clip had no coverage; foundations stopped at eigen/SVD with no LU, QR, Cholesky, least squares or matrix norms | `063d6ab` three `UPCOMING_MODELS` entries; `045a59f` a Muon/QK-Clip section on `optimizers`; `736023a` the `matrix-decompositions` page (§5 row, registry, queue 94) |
 
-Notes from the 2026-10-29 audit:
+Notes from the 2026-11-12 audit:
 
-- The v2.15.0 diff over the linked files moved line ranges only, plus new APIs not yet
-  described: FSDP2 `MixedPrecisionPolicy.param_dtype_override_fn` and
-  `set_manual_backward_finalization`, DDP `lazy_bucket_allocation`, `aoti_load_package`
-  `num_runners`/`use_stream_affinity`, profiler `export_chrome_trace`
-  `cuda_graph_annotations`/`graph_lanes`, more MPS deterministic-algorithm entries and an
-  MI300 TF32 note. Candidates for a later audit.
-- Linked at the pins for `numerical-stability`: PyTorch `_refs/__init__.py` `log_softmax`
-  909-919, `logsumexp` 922-942, `logaddexp` 1711-1737; `_decomp/decompositions.py`
-  `_softmax` 1302-1321, `_log_softmax` 1345-1365, `log_sigmoid_forward` 3591-3602,
-  `binary_cross_entropy_with_logits` 5231-5248; `SumKernel.cpp` `multi_row_sum` 312-409,
-  `cascade_sum` 568-645; `testing/_comparison.py` `_DTYPE_PRECISIONS` 96-104. scikit-learn
-  `_loss/_loss.pyx.tp` `log1pexp` 250-267, `sum_exp_minus_max` 269-303;
-  `utils/extmath.py` `_safe_accumulator_op` 1063-1115, `_incremental_mean_and_var`
-  1118-1264, `stable_cumsum` 1289-1334 (deprecated in 1.8).
-- research.meta.ai was unreachable. Recheck Mistral Large 4 next audit.
+- The Mistral Large 4 report is read from its Hugging Face repository, pinned to commit
+  `af26e786`. Facts used: sections 3.1-3.2 for the KV-cache surgery, and the inference
+  section and Figure 16 for DSpark (+90% decode interactivity over no speculation, +15% over
+  EAGLE-3, both at eight concurrent requests, with block verification).
+- Linked at PyTorch v2.15.0 for `speculative-decoding`: `nn/attention/bias.py`
+  `CausalVariant` 33-83, `CausalBias` 86-306, `causal_upper_left` 308-339,
+  `causal_lower_right` 342-377; `nn/functional.py` `softmax` 2176-2216,
+  `scaled_dot_product_attention` 6414-6587 (its `is_causal` note on upper-left alignment is
+  at 6542-6545); `_torch_docs.py` `multinomial` 8089-8142; `distributions/categorical.py`
+  `Categorical.sample` 144-149.
+- Candidates for later audits: NVFP4 (Mistral Large 4 quantizes its routed experts to it,
+  606 GB on 4×GB300) on `quantization`; prefill–decode disaggregation and context
+  parallelism on `model-serving`; DSpark itself once its paper can be read.
+- Gaps: arxiv.org is still unreachable, so Leviathan et al., Chen et al., Stern et al.,
+  SpecInfer, Medusa, EAGLE/EAGLE-3, block verification (Sun et al.) and DeepSeek-V3 are cited
+  from memory without links. The block-verification claim (it accepts at least as many
+  tokens as token-wise checks) follows the paper's title and abstract as remembered. The
+  page's PyTorch snippet was not run under real PyTorch, and its `crop` cache method is a
+  stated assumption, not a PyTorch API.
+- There is still no tool to change the trigger's schedule, so it fires every 5 hours.
+
+Notes from the 2026-10-29 audit (condensed):
+
+- The v2.15.0 diff moved line ranges only, plus new APIs not yet described (FSDP2
+  `param_dtype_override_fn`, DDP `lazy_bucket_allocation`, `aoti_load_package` runners,
+  profiler `graph_lanes`). Ranges linked for `numerical-stability` live in its template.
 - Gaps: Goldberg, Higham, Trefethen–Bau, Kahan, Welford, Chan–Golub–LeVeque, Mächler,
-  Blanchard–Higham–Higham and IEEE 754 are cited from memory without links; the PyTorch
-  snippet was not run under real PyTorch.
+  Blanchard–Higham–Higham and IEEE 754 are cited from memory without links.
 
-Notes from the 2026-10-22 audit (condensed):
+Notes from the 2026-10-15 and 2026-10-22 audits (condensed):
 
-- WebFetch could not reach most domains, so reports were read through Hugging Face. The
-  DeepSeek-V4.1-Flash report link is pinned to HF commit `314113f8`, not `blob/main`.
-- Linked at the pins: scikit-learn `utils/optimize.py` `_cg` 173-259 and `_newton_cg`
-  262-403, `linear_model/_ridge.py` `_solve_sparse_cg` 86-156 and `_solve_lsqr` 159-212;
-  PyTorch `_lobpcg.py` `lobpcg` 343-580 and `_lobpcg` 583-697, `autograd/functional.py`
-  `vhp` 997-1093 and `hvp` 1098-1210.
-- Gaps: Hestenes–Stiefel, Shewchuk, Saad, Paige–Saunders, Knyazev, Pearlmutter, Martens and
-  GPyTorch are cited from memory without links (the GPyTorch arXiv id could not be verified).
-  The FP4 layout (E2M1 values, one E4M3 scale per 16) follows the DeepSeek report.
-
-Notes from the 2026-10-15 audit (condensed):
-
-- arxiv.org is unreachable, so model reports were read as PDFs in their GitHub repositories.
-- Muon at the pin: `_zeropower_via_newtonschulz` 31-70, `_adjust_lr` 73-86, `Muon` 89-205,
-  `_single_tensor_muon` 318-351.
-- `torch/linalg/__init__.py` docstring ranges at v2.14.1: `cholesky` 71-146, `cholesky_ex`
-  148-212, `eigh` 642-763, `lstsq` 1078-1200, `norm` 1353-1489, `matrix_norm` 1570-1644, `svd`
-  1734-1886, `cond` 1938-2054, `solve` 2260-2363, `solve_triangular` 2365-2443, `lu_factor`
-  2445-2529, `lu` 2641-2729, `qr` 2865-2966; `nn/init.py` `orthogonal_` 672-720.
-- On the Läuchli matrix the normal equations lose accuracy as κ² (error 1.1e-3 at ε = 1e-7)
-  and fail at ε = 1e-8, where 1 + ε² rounds to 1; Householder QR stays at or below 2.5e-16.
-  Classical Gram–Schmidt on the 6 × 6 Hilbert matrix loses orthogonality to 7.1e-5, modified
-  to 2.7e-10.
-- Gaps: the Muon post, Moonshot's scaling paper, *Deriving Muon*, Trefethen–Bau, Golub–Van
-  Loan, Higham, Läuchli and Rasmussen–Williams are cited from memory. Neither the Muon nor the
-  decompositions snippet was run under real PyTorch (the wheel download is still blocked).
+- WebFetch and arxiv.org were unreachable, so reports were read as PDFs on GitHub or Hugging
+  Face, pinned to commits (DeepSeek-V4.1-Flash at HF `314113f8`). Ranges those audits linked
+  live in the `optimizers`, `kv-cache`, `matrix-decompositions` and `iterative-solvers`
+  templates.
+- Gaps: the Muon post, Moonshot's scaling paper, Hestenes–Stiefel, Shewchuk, Saad,
+  Paige–Saunders, Knyazev, Pearlmutter, Martens, GPyTorch, Trefethen–Bau, Golub–Van Loan,
+  Higham, Läuchli and Rasmussen–Williams are cited from memory. No snippet ran under real
+  PyTorch (the wheel download is blocked).
 
 ## Queue
 
