@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-11-12 (eighty-first run): followed upstream `41bca84..eea2166` (0.47.1). **The
+**Last updated:** 2026-11-13 (eighty-second run): followed upstream `eea2166..4725494` (0.47.1). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@eea216643ad290a5230ea686decf582211e51482` (committed 2026-11-12, version
-0.47.1), analyzed 2026-11-12. Held in `jj_docs.UPSTREAM`. Previous pin: `41bca84`.
+`jj-vcs/jj@47254941c45867e87f6467a4a9c84c9a08374c85` (committed 2026-11-13, version
+0.47.1), analyzed 2026-11-13. Held in `jj_docs.UPSTREAM`. Previous pin: `eea2166`.
 
 ## §10 acceptance criteria
 
@@ -31,10 +31,14 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to eighty-first runs: pin bumped).
+      run: pin bumped; fiftieth to eighty-second runs: pin bumped).
 
-## Sixty-fourth to eighty-first runs (2026-10-20 to 2026-11-12)
+## Sixty-fourth to eighty-second runs (2026-10-20 to 2026-11-13)
 
+- `9bf7238` `eea2166..4725494`: `MergedTree::has_dir` added and used by status to collapse
+  untracked paths (status rewritten, trees gains a row; `trees()` and `TreeMergeExt` now
+  crate-internal); log, evolog and op log warn when `ui.log-word-wrap` meets a top-level `json()`.
+  480 links remapped in 74 templates; four command source lines synced; no proto changes.
 - `f52b294` `41bca84..eea2166`: git error types wrap `gix::Error` via `#[from]`, gain
   `GitRepoAtWorkdir` variants, and HEAD read errors propagate (only unborn HEAD is `None`). No prose
   change; 139 links remapped in 13 templates (git-*, gerrit-upload, workspace-add, config-get, cli).
@@ -44,13 +48,7 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
   object-format errors to `ObjectFormatMismatch` and `git clone` retries once with the other hash
   unless `--object-hash` was given (git-clone, git-fetch, git-push); `SecretBackend` matches SHA-256
   blob IDs (backends). Command registry regenerated; no proto changes.
-- `2f4d106` `92c5b4a..da21259` (1295 links remapped in 109 templates): `revsets.git-sign-on-push`
-  replaces the old sign-on-push setting, immutable commits are skipped with a warning, and "Nothing
-  changed." is gone (git-push, sign); store factories moved from `repo.rs` to `store_factories.rs`
-  (backends, git-root, storage); `debug snapshot` deleted, fourteen debug commands (debug); workspace
-  add resolves parents before creating anything (workspace-add); `--binary-as-text`/`--skip-binary`
-  and "Binary file matches" (file-search); annotate prefetches parents (file-annotate).
-- Earlier: `2440230` (`jj-git-backend`, `jj-local-util` crates), `98975c9` (`jj-frontend` crate), `2c11591` (remote tags as known heads), `211755a` (`jj-default-index`), `ff87734` (converge/next/prev prompts), `ad45a9e`, `91b7044`, `fa45a4c`, `9d37e33`, `e65bbae`, `b70be32` (`CachedLoader`), `ad64adf`, `cdc336a`, `60897df`, `117f376`.
+- Earlier: `2f4d106` (`git-sign-on-push`, `store_factories.rs`), `2440230` (`jj-git-backend`, `jj-local-util` crates), `98975c9` (`jj-frontend` crate), `2c11591` (remote tags as known heads), `211755a` (`jj-default-index`), `ff87734` (converge/next/prev prompts), `ad45a9e`, `91b7044`, `fa45a4c`, `9d37e33`, `e65bbae`, `b70be32` (`CachedLoader`), `ad64adf`, `cdc336a`, `60897df`, `117f376`.
 
 ## Fifty-third to sixty-third runs (2026-10-09 to 2026-10-19)
 
