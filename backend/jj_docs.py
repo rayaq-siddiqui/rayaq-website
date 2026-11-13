@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "eea216643ad290a5230ea686decf582211e51482",
-    "commit_date": "2026-11-12",
+    "commit": "47254941c45867e87f6467a4a9c84c9a08374c85",
+    "commit_date": "2026-11-13",
     "version": "0.47.1",
-    "analyzed_on": "2026-11-12",
+    "analyzed_on": "2026-11-13",
 }
 
 TOPICS = [
@@ -491,7 +491,7 @@ COMMANDS = [
         "category": 'Inspecting history',
         "tier": 'B',
         "summary": 'Show revision history',
-        "source": ('cli/src/commands/log.rs', 73),
+        "source": ('cli/src/commands/log.rs', 74),
     },
     {
         "command": 'show',
@@ -519,14 +519,14 @@ COMMANDS = [
         "category": 'Inspecting history',
         "tier": 'B',
         "summary": 'Show high-level repo status [default alias: st]',
-        "source": ('cli/src/commands/status.rs', 62),
+        "source": ('cli/src/commands/status.rs', 61),
     },
     {
         "command": 'evolog',
         "category": 'Inspecting history',
         "tier": 'B',
         "summary": 'Show how a change has evolved over time',
-        "source": ('cli/src/commands/evolog.rs', 49),
+        "source": ('cli/src/commands/evolog.rs', 50),
     },
     {
         "command": 'root',
@@ -582,7 +582,7 @@ COMMANDS = [
         "category": 'Operation log',
         "tier": 'B',
         "summary": 'Show the operation log',
-        "source": ('cli/src/commands/operation/log.rs', 53),
+        "source": ('cli/src/commands/operation/log.rs', 54),
     },
     {
         "command": 'operation restore',
