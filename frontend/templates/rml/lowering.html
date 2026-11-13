@@ -38,7 +38,7 @@
   (<a href="{{ src(prog, 128, 133) }}">progress.md L128–133</a>): rml beat every framework only on the
   batch-1 CNN, and was 2–20× slower wherever GEMM dominated. Only GEMM was threaded, and the JAX and
   TensorFlow graphs arrived with layer norm, softmax and GELU decomposed. The plan that followed
-  (<a href="{{ src(prog, 157, 173) }}">L157–173</a>) has one item per gap:
+  (<a href="{{ src(prog, 157, 174) }}">L157–174</a>) has one item per gap:
 </p>
 
 <div class="jj-table-wrap">
@@ -53,9 +53,10 @@
       <tr><td>Layer norm and GELU still decomposed</td><td><code>fuse_layer_norm</code> and <code>fuse_gelu</code> in <code>passes.py</code> (<a href="{{ src(prog, 163, 163) }}">L163</a>)</td><td>Built</td><td><a href="#export-fusion">At export</a></td></tr>
       <tr><td>Threads idle on few-task GEMMs (an RNN step at batch 64)</td><td>GEMM column chunks balanced across threads, <code>torch_rnn_b64</code> about 15 to 8.5 ms on 4 threads; folding the recurrence adds into the step GEMM gave nothing and was dropped (<a href="{{ src(prog, 166, 166) }}">L166</a>)</td><td>Built</td><td><a href="#gemm">SIMD GEMM</a></td></tr>
       <tr><td>Slow view copies and separate conv bias adds (the U-Net)</td><td>A coalesced, blocked, threaded strided copy, and a per-channel constant add folded into the conv before it, <code>tf</code>/<code>jax</code> <code>unet_b64</code> about 46 to 37 ms on 4 threads (<a href="{{ src(prog, 167, 167) }}">L167</a>)</td><td>Built</td><td><a href="#conv-bias">Conv bias</a>, <a href="#buffers">Buffers</a></td></tr>
-      <tr><td>Four threads slower than one on small cells</td><td>Larger grains so small ops stay on the calling thread; the checklist item is open, now at 32 of 171 cells (<a href="{{ src(prog, 172, 172) }}">L172</a>)</td><td>In progress</td><td><a href="#threads">Threads</a></td></tr>
+      <tr><td>Four threads slower than one on small cells</td><td>Larger grains so small ops stay on the calling thread; the checklist item is open, now at 32 of 171 cells (<a href="{{ src(prog, 173, 173) }}">L173</a>)</td><td>In progress</td><td><a href="#threads">Threads</a></td></tr>
       <tr><td>JAX and TensorFlow RNNs project their input once per step</td><td><code>hoist_step_projections</code> makes the per-step <code>x[:, t] @ W</code> one product sliced per step, as PyTorch's export has it: <code>lstm_b64</code> from 128 to 65 matmuls, <code>jax</code>/<code>tf</code> <code>lstm_b64</code> about 1.15–1.2× faster on 4 threads (<a href="{{ src(prog, 169, 169) }}">L169</a>)</td><td>Built</td><td><a href="#lstm">An LSTM step</a></td></tr>
       <tr><td>im2col as slow as the conv's GEMM</td><td><code>Im2ColPositions</code> copies and zero-fills each output-row segment with plain cloned loops instead of <code>std::copy</code> / <code>std::fill</code>, about 2.3× faster; <code>unet_b64</code> about 1.25–1.5× faster on 4 threads (<a href="{{ src(prog, 170, 170) }}">L170</a>)</td><td>Built</td><td><a href="#conv-bias">Conv bias</a></td></tr>
+      <tr><td>A patch matrix built for every convolution</td><td><code>ShiftedConv2d</code> runs a stride-1 convolution with at least 8 channels as one GEMM per tap against the padded image read in place; <code>unet_b64</code> 1.2–1.4× and <code>cnn_b64</code> about 1.15–1.2× faster on 4 threads (<a href="{{ src(prog, 172, 172) }}">L172</a>)</td><td>Built</td><td><a href="#conv-bias">Conv bias</a></td></tr>
     </tbody>
   </table>
 </div>
@@ -279,14 +280,14 @@
   <table>
     <thead><tr><th>Kernel</th><th>Computes</th><th>Reference</th><th>Source</th></tr></thead>
     <tbody>
-      <tr><td><code>UnaryFast</code></td><td>18 functions: the 13 unary ops, both GELUs, square, cube, reciprocal</td><td><code>UnaryRef</code>, libm in double</td><td><a href="{{ src(kc, 556, 559) }}">L556</a></td></tr>
-      <tr><td><code>BinaryFast</code></td><td>add, sub, mul, div, max, min over <code>[rows, n]</code> with full, row, column or scalar operands</td><td><code>BinaryRef</code></td><td><a href="{{ src(kc, 571, 578) }}">L571</a></td></tr>
-      <tr><td><code>SoftmaxFast</code></td><td>Softmax or log-softmax per row: max, exp-shifted sum in double, scale</td><td><code>SoftmaxRef</code></td><td><a href="{{ src(kc, 594, 608) }}">L594–608</a></td></tr>
-      <tr><td><code>LayerNormFast</code></td><td>(x − mean) / √(var + eps) per row, then weight and bias when given</td><td><code>LayerNormRef</code></td><td><a href="{{ src(kc, 628, 657) }}">L628</a></td></tr>
-      <tr><td><code>ReduceRowsFast</code></td><td>Sum, mean, max or min of each row</td><td><code>ReduceRowsRef</code></td><td><a href="{{ src(kc, 659, 678) }}">L659</a></td></tr>
-      <tr><td><code>Pool2dFast</code></td><td>Max or average over k × k windows of independent planes</td><td><code>Pool2dRef</code></td><td><a href="{{ src(kc, 518, 526) }}">L518</a></td></tr>
-      <tr><td><code>Im2ColPositions</code></td><td>One image's patch columns for a range of output positions, for conv2d by GEMM; each output-row segment copied or zero-filled by plain loops</td><td><code>Im2Col</code></td><td><a href="{{ src(kc, 446, 493) }}">L446</a></td></tr>
-      <tr><td><code>UnaryTile</code>, <code>BinaryTile</code></td><td>Single-threaded loops over one tile, the steps of fused programs</td><td>the same references</td><td><a href="{{ src(kc, 528, 546) }}">L528–546</a></td></tr>
+      <tr><td><code>UnaryFast</code></td><td>18 functions: the 13 unary ops, both GELUs, square, cube, reciprocal</td><td><code>UnaryRef</code>, libm in double</td><td><a href="{{ src(kc, 567, 570) }}">L567</a></td></tr>
+      <tr><td><code>BinaryFast</code></td><td>add, sub, mul, div, max, min over <code>[rows, n]</code> with full, row, column or scalar operands</td><td><code>BinaryRef</code></td><td><a href="{{ src(kc, 582, 589) }}">L582</a></td></tr>
+      <tr><td><code>SoftmaxFast</code></td><td>Softmax or log-softmax per row: max, exp-shifted sum in double, scale</td><td><code>SoftmaxRef</code></td><td><a href="{{ src(kc, 605, 619) }}">L605–619</a></td></tr>
+      <tr><td><code>LayerNormFast</code></td><td>(x − mean) / √(var + eps) per row, then weight and bias when given</td><td><code>LayerNormRef</code></td><td><a href="{{ src(kc, 639, 668) }}">L639</a></td></tr>
+      <tr><td><code>ReduceRowsFast</code></td><td>Sum, mean, max or min of each row</td><td><code>ReduceRowsRef</code></td><td><a href="{{ src(kc, 670, 689) }}">L670</a></td></tr>
+      <tr><td><code>Pool2dFast</code></td><td>Max or average over k × k windows of independent planes</td><td><code>Pool2dRef</code></td><td><a href="{{ src(kc, 529, 537) }}">L529</a></td></tr>
+      <tr><td><code>Im2ColPositions</code></td><td>One image's patch columns for a range of output positions, for conv2d by GEMM; each output-row segment copied or zero-filled by plain loops, the tap advanced without a division per row; used for convolutions <code>ShiftedConv2d</code> does not take</td><td><code>Im2Col</code></td><td><a href="{{ src(kc, 446, 504) }}">L446</a></td></tr>
+      <tr><td><code>UnaryTile</code>, <code>BinaryTile</code></td><td>Single-threaded loops over one tile, the steps of fused programs</td><td>the same references</td><td><a href="{{ src(kc, 539, 557) }}">L539–557</a></td></tr>
     </tbody>
   </table>
 </div>
@@ -305,7 +306,7 @@
   portable vector-extension kernel; a single-row product skips packing and streams B once as axpys; products
   of at most 32 rows also skip packing and keep an 8 × 48 or 4 × 24 tile of C in registers. In the graph, a
   constant <code>matmul</code> weight is packed once when the executor is built rather than on every call
-  (<a href="{{ src('rml/graph/ops.cc', 929, 944) }}">ops.cc L929–944</a>). In two interleaved runs on four
+  (<a href="{{ src('rml/graph/ops.cc', 1021, 1036) }}">ops.cc L1021–1036</a>). In two interleaved runs on four
   threads that took <code>torch_lstm_b64</code> from 53 / 45 ms to 33 / 37 ms and <code>torch_mlp_b64</code>
   from 1.05 / 1.39 ms to 0.82 / 0.82 ms (<a href="{{ src(kd, 75, 78) }}">kernels.md L75–78</a>). When a
   product has fewer than four (row block, column chunk) units per thread, the driver widens each task's
@@ -342,7 +343,7 @@
   (<a href="{{ src(kd, 58, 63) }}">L58–63</a>).
 </p>
 
-<h2 id="conv-bias">Conv bias and im2col</h2>
+<h2 id="conv-bias">Conv bias, im2col and shifted products</h2>
 
 <p>
   JAX and TensorFlow export a convolution's bias as a separate <code>add</code> of a per-channel constant.
@@ -359,15 +360,46 @@
 <p>
   The convolution's other half is building the patch columns. <code>Im2ColPositions</code> fills each row of
   <code>cols</code> (one channel and kernel tap) output row by output row, each a strided read of one input
-  row with zeros where the tap lands in the padding. It now computes that valid range once per tap and fills
-  the segments with plain loops, cloned for AVX-512 and AVX2 like the other kernels, not
+  row with zeros where the tap lands in the padding. It computes that valid range once per tap, advances the tap
+  (c, i, j) incrementally so that nothing divides per row (a division costs as much as copying a short row),
+  and fills the segments with plain loops, cloned for AVX-512 and AVX2 like the other kernels, not
   <code>std::copy</code> / <code>std::fill</code>: a segment is one output row, often 16 or 32 floats, where a
-  library call per segment cost more than the copy (<a href="{{ src(kc, 446, 493) }}">kernels.cc
-  L446–493</a>). rml's checklist has im2col about 2.3× faster on the U-Net shapes, and in interleaved A/B runs
+  library call per segment cost more than the copy (<a href="{{ src(kc, 446, 504) }}">kernels.cc
+  L446–504</a>). rml's checklist has im2col about 2.3× faster on the U-Net shapes, and in interleaved A/B runs
   in its Linux container <code>unet_b64</code> about 1.25–1.5× faster on 4 threads and 1.4× on 1, with
   <code>unet_b8</code> and <code>cnn_b64</code> 1.3× (<a href="{{ src(prog, 170, 170) }}">progress.md
   L170</a>). It records only ratios, because that host ran about 40% slower than when the benchmark report
   was measured.
+</p>
+
+<p>
+  A stride-1 convolution with enough channels now skips the patch matrix altogether. For a stride-1
+  convolution, pad the input to H<sub>p</sub> × W<sub>p</sub> and lay the output out on the same row pitch
+  W<sub>p</sub>: output position oy·W<sub>p</sub> + ox reads tap (i, j) from padded position
+  (oy + i)·W<sub>p</sub> + ox + j. Every tap's patch columns are therefore the padded image itself, shifted by
+  i·W<sub>p</sub> + j. <code>ShiftedConv2d</code> runs k·k GEMMs, each one tap's filters <code>[O, C]</code>
+  (a strided view of w: row stride C·k·k, column stride k·k) against that shifted image read in place,
+  summing into an <code>[O, rows·W<sub>p</sub>]</code> buffer; the last k − 1 columns of each row wrap into
+  the next and are dropped when the result is copied out with the bias added
+  (<a href="{{ src('rml/graph/ops.cc', 167, 239) }}">ops.cc L167–239</a>). The filters go in groups of at most
+  32 rows (<code>kShiftedConvGroup</code>), Gemm's limit for its streaming path, so it reads the image where it
+  lies instead of packing it. Each task pads one band of output rows, its height chosen so the
+  C·(band + k − 1)·W<sub>p</sub> padded floats fit the same 1 MB budget as im2col, and with fewer images than
+  threads each image is split into more bands.
+</p>
+
+<p>
+  <code>UseShiftedConv</code> takes this path only for stride 1, a kernel wider than 1, at least 8 input
+  channels and 4·(k − 1) ≤ OW (<a href="{{ src('rml/graph/ops.cc', 161, 166) }}">ops.cc L161–166</a>).
+  For a 3 × 3 convolution with padding 1 on a 32-wide image, W<sub>p</sub> is 34, tap (1, 2) is the image
+  shifted by 36 floats, and 2 of every 34 accumulated columns (about 6%) are thrown away. With one input
+  channel, as in the CNN's first convolution, each tap is a rank-1 update and im2col was faster in rml's
+  A/B, hence the channel floor. Strided, few-channel and narrow convolutions keep using im2col. In
+  interleaved A/B runs against the previous build rml's checklist has <code>unet_b64</code> 1.2–1.4× faster on
+  4 threads and 1.3× on 1 for all three frameworks' exports, <code>unet_b8</code> 1.3–1.4×,
+  <code>cnn_b64</code> about 1.15–1.2× and <code>unet_b1</code> level on 4 threads; packing B for the blocked
+  GEMM through an im2col callback was tried and dropped, 20–30% slower
+  (<a href="{{ src(prog, 172, 172) }}">progress.md L172</a>). The benchmark report predates this change.
 </p>
 
 <h2 id="buffers">Buffers</h2>
@@ -425,7 +457,7 @@
   workers also spin briefly before sleeping. The open item is the result: on the latest run, four threads is
   slower than one in 32 of 171 rml cells, almost all at batch 1 with sub-millisecond times
   (<a href="{{ src(bench, 375, 376) }}">frameworks.md L375–376</a>,
-  <a href="{{ src(prog, 172, 172) }}">progress.md L172</a>).
+  <a href="{{ src(prog, 173, 173) }}">progress.md L173</a>).
 </p>
 
 <h2 id="results">Where it stands</h2>
@@ -459,7 +491,7 @@
   (<a href="{{ src(bench, 344, 347) }}">L344–347</a>). The models furthest behind are named in the findings
   (<a href="{{ src(bench, 371, 374) }}">L371–374</a>): the U-Net (0.48×, against torch.compile's
   convolutions), the GCN (0.6×, against PyTorch eager on four threads), the LSTM (0.64×), the SSM, the CNN and
-  the RNN, with the attention models at 0.9–0.96×. None of these models has a checklist item of its own yet.
+  the RNN, with the attention models at 0.9–0.96×. The shifted-product convolution, which landed after this report, is the first checklist item aimed at two of them, the U-Net and the CNN (<a href="#conv-bias">Conv bias</a>); the others have none yet.
   Cell by cell results and the method are on
   {{ link('benchmarks', 'Benchmarks against the frameworks') }}. Apple Silicon numbers (NEON, Accelerate) have
   not been produced (<a href="{{ src(bench, 349, 349) }}">L349</a>).
