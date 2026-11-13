@@ -3,16 +3,17 @@
 Running log for the rml build loop and the daily Routine. Read this first, update it last.
 The contract is `specs/rml.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-11-11 (daily run). rml build complete; maintaining daily. rml's origin/main is still `0950246`, so no page changed; only `analyzed_on` moved. The next run follows upstream: when rml's origin/main moves, re-check every affected page and move the pin.
+**Last updated:** 2026-11-13 (daily run). rml build complete; maintaining daily. Followed rml to `b5c2fb9` (stride-1 convolutions as shifted products of the padded image): `executor`, `lowering` and `benchmarks` describe it, and line links on nine pages moved. The next run follows upstream: when rml's origin/main moves, re-check every affected page and move the pin.
 
 ## Upstream pin
 
-`rayaq-siddiqui/rml@09502465f18bad4e6ca4ec73ba2fb851fecedcd5` (committed 2026-11-03,
-"bench: same-day re-run of every framework and rml cell"), rml 0.1.0, Apache-2.0, analyzed
-2026-11-11 (re-confirmed current). Moved on 2026-11-04 from `13234ae` (1 commit: `docs/bench/frameworks.md` regenerated
-from one sweep on a 2.30 GHz Xeon container, and a `docs/progress.md` item replacing the overstated
-summary; the fast-CPU item moved to L172 with 32 of 171 cells). Held in `rml_docs.UPSTREAM`. The repository is
-private, so pinned links 404 until it is public.
+`rayaq-siddiqui/rml@b5c2fb9be317dbd1d1836483170c9feaab51f4f2` (committed 2026-11-11,
+"perf: run stride-1 convs as shifted products of the padded image"), rml 0.1.0, Apache-2.0,
+analyzed 2026-11-13. Moved on 2026-11-13 from `0950246` (1 commit: `ShiftedConv2d` and
+`UseShiftedConv` in `rml/graph/ops.cc`, an im2col loop without a per-row division in
+`rml/graph/kernels.cc`, a new `ShiftedConv2dMatchesDirectLoop` executor test (29 in the file), and
+`docs/progress.md` L172 recording A/B ratios only; `docs/bench/frameworks.md` unchanged). Held in
+`rml_docs.UPSTREAM`. The repository is private, so pinned links 404 until it is public.
 
 ## §10 acceptance criteria
 
@@ -181,6 +182,16 @@ session-only `/loop` jobs that built pages earlier are retired.
 - 2026-11-11 — daily run. rml's origin/main unchanged at `0950246` (2026-11-03); no page
   changed, `analyzed_on` moved to 2026-11-11. Queue empty. All 1073 tests pass; `/rml` and every
   ready page return 200 and pass the 390px check.
+- 2026-11-13 — daily run. rml's origin/main moved `0950246` → `b5c2fb9` (2026-11-11), one commit
+  adding shifted-product convolutions. `d71ba05`: `executor` conv2d row covers `ShiftedConv2d` and
+  its gate, test count 28 → 29 with the new test; `lowering` gains a gap-table row, a section on the
+  shifted-image derivation with a 3×3 worked example and the A/B ratios (progress.md L172), and the
+  `Im2ColPositions` row notes the incremental tap; `benchmarks` and `lowering` "Where it stands" note
+  that the change postdates the 2026-11-03 sweep; `graph-ir` test count 29. Every link into
+  `ops.cc` (+84/+92 lines), `kernels.cc`, `executor_test.cc` and `progress.md` (≥ L172 +1) remapped
+  by diff on `executor`, `graph-ir`, `lowering`, `linalg`, `stack`, `index`, `exporters`,
+  `generation`, `models-memory`. No SVG changed. All 1079 tests pass; `/rml` and all 25 ready pages
+  return 200 and pass the 390px check.
 
 ## Deliberate deviations
 
