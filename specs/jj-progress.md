@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-11-13 (eighty-second run): followed upstream `eea2166..4725494` (0.47.1). **The
+**Last updated:** 2026-11-14 (eighty-third run): followed upstream `4725494..213e93a` (0.47.1). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@47254941c45867e87f6467a4a9c84c9a08374c85` (committed 2026-11-13, version
-0.47.1), analyzed 2026-11-13. Held in `jj_docs.UPSTREAM`. Previous pin: `eea2166`.
+`jj-vcs/jj@213e93a916699f709384c39428b7b9666202fe97` (committed 2026-11-14, version
+0.47.1), analyzed 2026-11-14. Held in `jj_docs.UPSTREAM`. Previous pin: `4725494`.
 
 ## §10 acceptance criteria
 
@@ -31,10 +31,11 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to eighty-second runs: pin bumped).
+      run: pin bumped; fiftieth to eighty-third runs: pin bumped).
 
-## Sixty-fourth to eighty-second runs (2026-10-20 to 2026-11-13)
+## Sixty-fourth to eighty-third runs (2026-10-20 to 2026-11-14)
 
+- `fe34bb6` `4725494..213e93a`: docs-only (`jj st` renamed to `jj status` in docs); pin bumped.
 - `9bf7238` `eea2166..4725494`: `MergedTree::has_dir` added and used by status to collapse
   untracked paths (status rewritten, trees gains a row; `trees()` and `TreeMergeExt` now
   crate-internal); log, evolog and op log warn when `ui.log-word-wrap` meets a top-level `json()`.
