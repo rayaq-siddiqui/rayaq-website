@@ -3,13 +3,13 @@
 Running log for the rml build loop and the daily Routine. Read this first, update it last.
 The contract is `specs/rml.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-11-13 (daily run). rml build complete; maintaining daily. Followed rml to `b5c2fb9` (stride-1 convolutions as shifted products of the padded image): `executor`, `lowering` and `benchmarks` describe it, and line links on nine pages moved. The next run follows upstream: when rml's origin/main moves, re-check every affected page and move the pin.
+**Last updated:** 2026-11-14 (daily run). rml build complete; maintaining daily. rml's origin/main unchanged at `b5c2fb9` (2026-11-11); `analyzed_on` moved to today. The next run follows upstream: when rml's origin/main moves, re-check every affected page and move the pin.
 
 ## Upstream pin
 
 `rayaq-siddiqui/rml@b5c2fb9be317dbd1d1836483170c9feaab51f4f2` (committed 2026-11-11,
 "perf: run stride-1 convs as shifted products of the padded image"), rml 0.1.0, Apache-2.0,
-analyzed 2026-11-13. Moved on 2026-11-13 from `0950246` (1 commit: `ShiftedConv2d` and
+analyzed 2026-11-14. Moved on 2026-11-13 from `0950246` (1 commit: `ShiftedConv2d` and
 `UseShiftedConv` in `rml/graph/ops.cc`, an im2col loop without a per-row division in
 `rml/graph/kernels.cc`, a new `ShiftedConv2dMatchesDirectLoop` executor test (29 in the file), and
 `docs/progress.md` L172 recording A/B ratios only; `docs/bench/frameworks.md` unchanged). Held in
@@ -192,6 +192,9 @@ session-only `/loop` jobs that built pages earlier are retired.
   by diff on `executor`, `graph-ir`, `lowering`, `linalg`, `stack`, `index`, `exporters`,
   `generation`, `models-memory`. No SVG changed. All 1079 tests pass; `/rml` and all 25 ready pages
   return 200 and pass the 390px check.
+- 2026-11-14 — daily run. rml's origin/main unchanged at `b5c2fb9` (2026-11-11); no page
+  changed, `analyzed_on` moved to today. All 1079 tests pass; `/rml` and all 25 ready pages return
+  200 and pass the 390px check. Open gaps unchanged (no upstream change).
 
 ## Deliberate deviations
 
