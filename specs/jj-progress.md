@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-11-14 (eighty-third run): followed upstream `4725494..213e93a` (0.47.1). **The
+**Last updated:** 2026-11-15 (eighty-fourth run): followed upstream `213e93a..632115a` (0.47.1). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@213e93a916699f709384c39428b7b9666202fe97` (committed 2026-11-14, version
-0.47.1), analyzed 2026-11-14. Held in `jj_docs.UPSTREAM`. Previous pin: `4725494`.
+`jj-vcs/jj@632115a5ead0c44a55054ca5ebb1648c9a653cb1` (committed 2026-11-15, version
+0.47.1), analyzed 2026-11-15. Held in `jj_docs.UPSTREAM`. Previous pin: `213e93a`.
 
 ## §10 acceptance criteria
 
@@ -31,11 +31,11 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to eighty-third runs: pin bumped).
+      run: pin bumped; fiftieth to eighty-fourth runs: pin bumped).
 
-## Sixty-fourth to eighty-third runs (2026-10-20 to 2026-11-14)
+## Sixty-fourth to eighty-fourth runs (2026-10-20 to 2026-11-15)
 
-- `fe34bb6` `4725494..213e93a`: docs-only (`jj st` renamed to `jj status` in docs); pin bumped.
+- `83f2bf8` `213e93a..632115a`: `HexPrefix::min_prefix_bytes` renamed `lower_bound_bytes` (no page names it), and `fe34bb6` `4725494..213e93a` docs-only; pins bumped.
 - `9bf7238` `eea2166..4725494`: `MergedTree::has_dir` added and used by status to collapse
   untracked paths (status rewritten, trees gains a row; `trees()` and `TreeMergeExt` now
   crate-internal); log, evolog and op log warn when `ui.log-word-wrap` meets a top-level `json()`.
