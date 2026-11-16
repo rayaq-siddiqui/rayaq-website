@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-11-15 (eighty-fourth run): followed upstream `213e93a..632115a` (0.47.1). **The
+**Last updated:** 2026-11-16 (eighty-fifth run): followed upstream `632115a..4351061` (0.47.1). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@632115a5ead0c44a55054ca5ebb1648c9a653cb1` (committed 2026-11-15, version
-0.47.1), analyzed 2026-11-15. Held in `jj_docs.UPSTREAM`. Previous pin: `213e93a`.
+`jj-vcs/jj@4351061bba89b3c503d133170952f94a2c95cdfd` (committed 2026-11-16, version
+0.47.1), analyzed 2026-11-16. Held in `jj_docs.UPSTREAM`. Previous pin: `632115a`.
 
 ## §10 acceptance criteria
 
@@ -31,25 +31,24 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to eighty-fourth runs: pin bumped).
+      run: pin bumped; fiftieth to eighty-fifth runs: pin bumped).
 
-## Sixty-fourth to eighty-fourth runs (2026-10-20 to 2026-11-15)
+## Sixty-fourth to eighty-fifth runs (2026-10-20 to 2026-11-16)
 
-- `83f2bf8` `213e93a..632115a`: `HexPrefix::min_prefix_bytes` renamed `lower_bound_bytes` (no page names it), and `fe34bb6` `4725494..213e93a` docs-only; pins bumped.
+- `22fcce5` `632115a..4351061`: the tree rewriter writes identical trees once (BLAKE2b content
+  keys across conflict terms, empty subtrees skipped, writes deferred until base reads finish;
+  trees rewritten); templater type-erasure refactor and docs edits shifted 41 links in 18 pages.
 - `9bf7238` `eea2166..4725494`: `MergedTree::has_dir` added and used by status to collapse
   untracked paths (status rewritten, trees gains a row; `trees()` and `TreeMergeExt` now
   crate-internal); log, evolog and op log warn when `ui.log-word-wrap` meets a top-level `json()`.
   480 links remapped in 74 templates; four command source lines synced; no proto changes.
-- `f52b294` `41bca84..eea2166`: git error types wrap `gix::Error` via `#[from]`, gain
-  `GitRepoAtWorkdir` variants, and HEAD read errors propagate (only unborn HEAD is `None`). No prose
-  change; 139 links remapped in 13 templates (git-*, gerrit-upload, workspace-add, config-get, cli).
 - `92a32a9`, `33737b0`, `4be801c` `da21259..41bca84`: interdiff takes revsets for `--from`/`--to`,
   rebases each range's diff and rejects gapped ranges via `check_diff_revset_has_no_gaps`, now in
   `diff_util.rs` (interdiff rewritten; diff, show, evolog, util-diff relinked); jj-lib maps Git's
   object-format errors to `ObjectFormatMismatch` and `git clone` retries once with the other hash
   unless `--object-hash` was given (git-clone, git-fetch, git-push); `SecretBackend` matches SHA-256
   blob IDs (backends). Command registry regenerated; no proto changes.
-- Earlier: `2f4d106` (`git-sign-on-push`, `store_factories.rs`), `2440230` (`jj-git-backend`, `jj-local-util` crates), `98975c9` (`jj-frontend` crate), `2c11591` (remote tags as known heads), `211755a` (`jj-default-index`), `ff87734` (converge/next/prev prompts), `ad45a9e`, `91b7044`, `fa45a4c`, `9d37e33`, `e65bbae`, `b70be32` (`CachedLoader`), `ad64adf`, `cdc336a`, `60897df`, `117f376`.
+- Earlier: `f52b294` (git error types), `83f2bf8` (`lower_bound_bytes`), `fe34bb6` (docs), `2f4d106` (`git-sign-on-push`, `store_factories.rs`), `2440230` (`jj-git-backend`, `jj-local-util` crates), `98975c9` (`jj-frontend` crate), `2c11591` (remote tags as known heads), `211755a` (`jj-default-index`), `ff87734` (converge/next/prev prompts), `ad45a9e`, `91b7044`, `fa45a4c`, `9d37e33`, `e65bbae`, `b70be32` (`CachedLoader`), `ad64adf`, `cdc336a`, `60897df`, `117f376`.
 
 ## Fifty-third to sixty-third runs (2026-10-09 to 2026-10-19)
 
