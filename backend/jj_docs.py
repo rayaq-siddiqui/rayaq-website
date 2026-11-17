@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "4351061bba89b3c503d133170952f94a2c95cdfd",
-    "commit_date": "2026-11-16",
+    "commit": "a7d462050a5612fc9338da447adbda4eb7bdab50",
+    "commit_date": "2026-11-17",
     "version": "0.47.1",
-    "analyzed_on": "2026-11-16",
+    "analyzed_on": "2026-11-17",
 }
 
 TOPICS = [
@@ -778,7 +778,7 @@ COMMANDS = [
         "category": 'Git and remotes',
         "tier": 'A',
         "summary": 'Upload changes to Gerrit for code review, or update existing changes',
-        "source": ('cli/src/commands/gerrit/upload.rs', 85),
+        "source": ('cli/src/commands/gerrit/upload.rs', 88),
     },
     {
         "command": 'workspace add',
