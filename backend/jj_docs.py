@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "a7d462050a5612fc9338da447adbda4eb7bdab50",
-    "commit_date": "2026-11-17",
+    "commit": "0dda8233a36178e9560aba3475ee4db2153e6ae3",
+    "commit_date": "2026-11-18",
     "version": "0.47.1",
-    "analyzed_on": "2026-11-17",
+    "analyzed_on": "2026-11-18",
 }
 
 TOPICS = [
@@ -32,8 +32,8 @@ TOPICS = [
         "sources": [
             "lib/src/repo.rs",
             "lib/src/workspace.rs",
-            "lib/src/simple_op_store.rs",
-            "lib/src/simple_op_heads_store.rs",
+            "simple-stores/src/simple_op_store.rs",
+            "simple-stores/src/simple_op_heads_store.rs",
             "default-index/src/store.rs",
             "lib/src/local_working_copy.rs",
             "lib/src/simple_workspace_store.rs",
@@ -98,9 +98,9 @@ TOPICS = [
         "sources": [
             "core/src/op_store.rs",
             "core/src/operation.rs",
-            "lib/src/op_heads_store.rs",
-            "lib/src/simple_op_heads_store.rs",
-            "lib/src/simple_op_store.rs",
+            "core/src/op_heads_store.rs",
+            "simple-stores/src/simple_op_heads_store.rs",
+            "simple-stores/src/simple_op_store.rs",
             "lib/src/op_walk.rs",
             "core/src/op_walk.rs",
             "docs/technical/concurrency.md",
@@ -191,7 +191,7 @@ TOPICS = [
             "core/src/backend.rs",
             "core/src/store.rs",
             "git-backend/src/git_backend.rs",
-            "lib/src/simple_backend.rs",
+            "simple-stores/src/simple_backend.rs",
             "git-backend/src/secret_backend.rs",
             "lib/src/default_backend_factories.rs",
         ],
@@ -207,8 +207,8 @@ TOPICS = [
             "default-index/src/protos/",
             "git-backend/src/protos/",
             "gen-protos/src/main.rs",
-            "lib/src/simple_backend.rs",
-            "lib/src/simple_op_store.rs",
+            "simple-stores/src/simple_backend.rs",
+            "simple-stores/src/simple_op_store.rs",
             "git-backend/src/git_backend.rs",
             "lib/src/local_working_copy.rs",
             "default-index/src/store.rs",
@@ -1030,7 +1030,7 @@ COMMAND_PAGE_OVERRIDES = {
         "title": "How jj util gc works",
         "sources": [
             "cli/src/commands/util/gc.rs",
-            "lib/src/simple_op_store.rs",
+            "simple-stores/src/simple_op_store.rs",
             "git-backend/src/git_backend.rs",
         ],
         "ready": True,
@@ -1464,7 +1464,7 @@ COMMAND_PAGE_OVERRIDES = {
             "cli/src/commands/operation/abandon.rs",
             "lib/src/op_walk.rs",
             "core/src/op_walk.rs",
-            "lib/src/op_heads_store.rs",
+            "core/src/op_heads_store.rs",
         ],
         "ready": True,
     },
@@ -1472,7 +1472,7 @@ COMMAND_PAGE_OVERRIDES = {
         "title": "How jj operation integrate works",
         "sources": [
             "cli/src/commands/operation/integrate.rs",
-            "lib/src/op_heads_store.rs",
+            "core/src/op_heads_store.rs",
             "lib/src/repo.rs",
             "cli/src/cli_util.rs",
         ],
