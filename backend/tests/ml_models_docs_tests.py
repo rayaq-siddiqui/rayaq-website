@@ -6120,3 +6120,71 @@ def test_verification_mask_is_lower_right_aligned():
     wrong = ml_models_docs.verification_mask(5, 3, "upper_left")
     assert [sum(row) for row in wrong] == [1, 2, 3, 4]
     assert ml_models_docs.verification_mask(0, 3) == [[k <= q for k in range(4)] for q in range(4)]
+
+
+def test_student_t_two_sided_p_matches_known_values():
+    assert ml_models_docs.student_t_two_sided_p(2.262, 9) == pytest.approx(0.05, abs=2e-4)
+    assert ml_models_docs.student_t_two_sided_p(1.0, 1) == pytest.approx(0.5)
+    assert ml_models_docs.student_t_two_sided_p(0.0, 5) == pytest.approx(1.0)
+    assert ml_models_docs.student_t_two_sided_p(1.96, 10_000) == pytest.approx(0.05, abs=1e-3)
+    assert ml_models_docs.student_t_quantile(0.95, 9) == pytest.approx(2.2622, abs=1e-3)
+
+
+def test_exact_mcnemar_equals_a_brute_force_sign_flip():
+    for b, c in [(5, 1), (3, 3), (0, 4), (7, 2)]:
+        n = b + c
+        observed = abs(b - c)
+        hits = sum(abs(2 * bin(mask).count("1") - n) >= observed for mask in range(2 ** n))
+        assert ml_models_docs.mcnemar_exact_p(b, c) == pytest.approx(hits / 2 ** n)
+        assert ml_models_docs.cmp_signflip_exact_p(b, c) == pytest.approx(hits / 2 ** n)
+    assert ml_models_docs.mcnemar_exact_p(0, 0) == 1.0
+
+
+def test_mcnemar_chi2_uses_only_the_discordant_cells():
+    result = ml_models_docs.mcnemar_chi2(35, 15)
+    assert result["statistic"] == pytest.approx(19 ** 2 / 50)
+    assert ml_models_docs.mcnemar_chi2(35, 15, correction=False)["statistic"] == pytest.approx(8.0)
+    assert result["p"] == pytest.approx(0.00721, abs=1e-4)
+
+
+def test_wilson_interval_stays_inside_zero_one_where_wald_does_not():
+    wald = ml_models_docs.cmp_wald_ci(1, 20, 0.95)
+    wilson = ml_models_docs.cmp_wilson_ci(1, 20, 0.95)
+    assert wald["lo"] < 0
+    assert 0 < wilson["lo"] < 0.05 < wilson["hi"] < 1
+    assert ml_models_docs.cmp_wilson_ci(0, 20, 0.95)["lo"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_holm_rejects_at_least_what_bonferroni_does():
+    pvalues = [0.0066, 0.0137, 0.0488, 0.65, 0.0025]
+    bonf = ml_models_docs.bonferroni(pvalues, 0.05)
+    holm = ml_models_docs.holm(pvalues, 0.05)
+    assert [r["reject"] for r in bonf] == [True, False, False, False, True]
+    assert [r["reject"] for r in holm] == [True, True, False, False, True]
+    assert [r["rank"] for r in holm] == [2, 3, 4, 5, 1]
+    adjusted = [r["adjusted"] for r in sorted(holm, key=lambda r: r["rank"])]
+    assert adjusted == sorted(adjusted)
+
+
+def test_corrected_resampled_t_widens_the_naive_interval():
+    result = ml_models_docs.corrected_resampled_t([0.02, 0.045, 0.0, 0.04, -0.01, 0.03, 0.01, 0.05, -0.005, 0.02], 900, 100)
+    assert result["mean"] == pytest.approx(0.02)
+    assert result["variance"] == pytest.approx(0.00045)
+    assert result["inflation"] == pytest.approx(math.sqrt((0.1 + 1 / 9) / 0.1))
+    assert result["naive_p"] < 0.05 < result["corrected_p"]
+
+
+def test_model_comparison_example_pairs_beat_the_unpaired_test():
+    e = ml_models_docs.model_comparison_example()
+    assert (e["n"], e["acc_a"], e["acc_b"], e["discordant"]) == (500, 0.82, 0.78, 50)
+    assert e["unpaired"]["diff"] == pytest.approx(e["paired"]["diff"])
+    assert e["unpaired"]["p"] > 0.05 > e["paired"]["p"]
+    assert e["unpaired"]["lo"] < 0 < e["paired"]["lo"]
+    assert e["mcnemar_exact"] < 0.01
+    assert e["signflip"] == pytest.approx(e["mcnemar_exact"], abs=0.003)
+    assert 0 < e["bootstrap"]["lo"] < 0.04 < e["bootstrap"]["hi"]
+    assert e["bootstrap"]["se"] == pytest.approx(e["paired"]["se"], rel=0.1)
+    assert sum(e["histogram"]) == e["example"]["bootstrap"]["resamples"]
+    assert [v["holm"]["reject"] for v in e["variants"]].count(True) == 3
+    assert [v["bonferroni"]["reject"] for v in e["variants"]].count(True) == 2
+    assert [round(row["mde"], 2) for row in e["mde"]] == [0.03, 0.04, 0.06]

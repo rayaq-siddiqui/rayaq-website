@@ -12404,6 +12404,242 @@ def uncertainty_example():
         "histogram_edges": edges,
     }
 
+
+MODEL_COMPARISON_EXAMPLE = {
+    "table": {"both": 375, "a_only": 35, "b_only": 15, "neither": 75},
+    "level": 0.95,
+    "bootstrap": {"resamples": 2000, "seed": 7, "lo": -0.02, "hi": 0.1, "step": 0.005},
+    "signflip": {"draws": 20000, "seed": 11},
+    "cv": {"rows": 1000, "folds": 10,
+           "diffs": [0.02, 0.045, 0.0, 0.04, -0.01, 0.03, 0.01, 0.05, -0.005, 0.02]},
+    "variants": [("B", 35, 15), ("C", 30, 13), ("D", 29, 15), ("E", 24, 20), ("F", 33, 12)],
+    "alpha": 0.05,
+    "sizes": [100, 1000, 10000],
+    "size_accuracy": 0.8,
+    "power": 0.8,
+    "disc_rates": [0.05, 0.1, 0.2],
+    "effects": [0.01, 0.02, 0.04],
+}
+
+
+def cmp_z(level):
+    return statistics.NormalDist().inv_cdf(1 - (1 - level) / 2)
+
+
+def cmp_two_sided_normal_p(z):
+    return math.erfc(abs(z) / math.sqrt(2))
+
+
+def cmp_wald_ci(correct, n, level):
+    p = correct / n
+    half = cmp_z(level) * math.sqrt(p * (1 - p) / n)
+    return {"p": p, "lo": p - half, "hi": p + half, "half": half}
+
+
+def cmp_wilson_ci(correct, n, level):
+    z = cmp_z(level)
+    p = correct / n
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return {"p": p, "lo": centre - half, "hi": centre + half, "half": half, "centre": centre}
+
+
+def cmp_unpaired(acc_a, acc_b, n, level):
+    se = math.sqrt(acc_a * (1 - acc_a) / n + acc_b * (1 - acc_b) / n)
+    diff = acc_a - acc_b
+    half = cmp_z(level) * se
+    return {"diff": diff, "se": se, "z": diff / se, "p": cmp_two_sided_normal_p(diff / se),
+            "lo": diff - half, "hi": diff + half}
+
+
+def cmp_paired(a_only, b_only, n, level):
+    diff = (a_only - b_only) / n
+    variance = (a_only + b_only) / n - diff * diff
+    se = math.sqrt(variance / n)
+    half = cmp_z(level) * se
+    return {"diff": diff, "se": se, "z": diff / se, "p": cmp_two_sided_normal_p(diff / se),
+            "lo": diff - half, "hi": diff + half}
+
+
+def mcnemar_exact_p(b, c):
+    n = b + c
+    if n == 0:
+        return 1.0
+    tail = sum(math.comb(n, i) for i in range(min(b, c) + 1))
+    return min(1.0, 2 * tail / 2 ** n)
+
+
+def mcnemar_chi2(b, c, correction=True):
+    statistic = (max(abs(b - c) - (1 if correction else 0), 0)) ** 2 / (b + c)
+    return {"statistic": statistic, "p": math.erfc(math.sqrt(statistic / 2))}
+
+
+def cmp_signflip_exact_p(b, c):
+    n, observed = b + c, abs(b - c)
+    hits = sum(math.comb(n, plus) for plus in range(n + 1) if abs(2 * plus - n) >= observed)
+    return hits / 2 ** n
+
+
+def cmp_signflip_p(b, c, draws, rng):
+    n, observed = b + c, abs(b - c)
+    hits = 0
+    for _ in range(draws):
+        plus = sum(rng.random() < 0.5 for _ in range(n))
+        hits += abs(2 * plus - n) >= observed
+    return (hits + 1) / (draws + 1)
+
+
+def cmp_outcomes(table):
+    return [1] * table["a_only"] + [-1] * table["b_only"] + [0] * (table["both"] + table["neither"])
+
+
+def cmp_paired_bootstrap(outcomes, resamples, level, rng):
+    n = len(outcomes)
+    stats = sorted(sum(rng.choices(outcomes, k=n)) / n for _ in range(resamples))
+    tail = (1 - level) / 2
+    mean = sum(stats) / resamples
+    return {"stats": stats, "lo": unc_quantile(stats, tail), "hi": unc_quantile(stats, 1 - tail),
+            "se": math.sqrt(sum((s - mean) ** 2 for s in stats) / (resamples - 1)),
+            "below_zero": sum(s <= 0 for s in stats)}
+
+
+def _incomplete_beta_fraction(a, b, x):
+    tiny, qab, qap, qam = 1e-300, a + b, a + 1, a - 1
+    c, d = 1.0, 1 - qab * x / qap
+    d = 1 / (d if abs(d) > tiny else tiny)
+    h = d
+    for m in range(1, 300):
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1 + aa * d
+        d = 1 / (d if abs(d) > tiny else tiny)
+        c = 1 + aa / c if abs(1 + aa / c) > tiny else tiny
+        h *= d * c
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1 + aa * d
+        d = 1 / (d if abs(d) > tiny else tiny)
+        c = 1 + aa / c if abs(1 + aa / c) > tiny else tiny
+        delta = d * c
+        h *= delta
+        if abs(delta - 1) < 1e-15:
+            break
+    return h
+
+
+def regularized_incomplete_beta(a, b, x):
+    if x <= 0:
+        return 0.0
+    if x >= 1:
+        return 1.0
+    front = math.exp(math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log(1 - x))
+    if x < (a + 1) / (a + b + 2):
+        return front * _incomplete_beta_fraction(a, b, x) / a
+    return 1 - front * _incomplete_beta_fraction(b, a, 1 - x) / b
+
+
+def student_t_two_sided_p(t, df):
+    return regularized_incomplete_beta(df / 2, 0.5, df / (df + t * t))
+
+
+def student_t_quantile(level, df):
+    lo, hi = 0.0, 100.0
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        if student_t_two_sided_p(mid, df) > 1 - level:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
+def corrected_resampled_t(diffs, n_train, n_test):
+    k = len(diffs)
+    mean = sum(diffs) / k
+    variance = sum((d - mean) ** 2 for d in diffs) / (k - 1)
+    naive_se = math.sqrt(variance / k)
+    corrected_se = math.sqrt((1 / k + n_test / n_train) * variance)
+    naive_t, corrected_t = mean / naive_se, mean / corrected_se
+    return {"k": k, "mean": mean, "variance": variance, "sd": math.sqrt(variance), "ratio": n_test / n_train,
+            "naive_se": naive_se, "corrected_se": corrected_se,
+            "naive_t": naive_t, "corrected_t": corrected_t, "df": k - 1,
+            "naive_p": student_t_two_sided_p(naive_t, k - 1),
+            "corrected_p": student_t_two_sided_p(corrected_t, k - 1),
+            "inflation": corrected_se / naive_se}
+
+
+def bonferroni(pvalues, alpha):
+    m = len(pvalues)
+    return [{"p": p, "adjusted": min(1.0, p * m), "reject": p * m <= alpha} for p in pvalues]
+
+
+def holm(pvalues, alpha):
+    m = len(pvalues)
+    order = sorted(range(m), key=lambda i: pvalues[i])
+    result = [None] * m
+    running, stopped = 0.0, False
+    for rank, i in enumerate(order):
+        running = max(running, min(1.0, (m - rank) * pvalues[i]))
+        stopped = stopped or pvalues[i] > alpha / (m - rank)
+        result[i] = {"p": pvalues[i], "rank": rank + 1, "threshold": alpha / (m - rank),
+                     "adjusted": running, "reject": not stopped}
+    return result
+
+
+def min_detectable_effect(n, disc_rate, level, power):
+    return (cmp_z(level) + statistics.NormalDist().inv_cdf(power)) * math.sqrt(disc_rate / n)
+
+
+def rows_for_effect(effect, disc_rate, level, power):
+    return math.ceil(((cmp_z(level) + statistics.NormalDist().inv_cdf(power)) / effect) ** 2 * disc_rate)
+
+
+@functools.lru_cache(maxsize=None)
+def model_comparison_example():
+    e = MODEL_COMPARISON_EXAMPLE
+    t, level, b = e["table"], e["level"], e["bootstrap"]
+    n = sum(t.values())
+    correct_a, correct_b = t["both"] + t["a_only"], t["both"] + t["b_only"]
+    boot = cmp_paired_bootstrap(cmp_outcomes(t), b["resamples"], level, random.Random(b["seed"]))
+    count = int(round((b["hi"] - b["lo"]) / b["step"]))
+    edges = [round(b["lo"] + b["step"] * i, 6) for i in range(count + 1)]
+    histogram = [sum(lo <= s < hi for s in boot["stats"]) for lo, hi in zip(edges, edges[1:])]
+    pvalues = [mcnemar_exact_p(vb, vc) for _, vb, vc in e["variants"]]
+    cv = e["cv"]
+    n_test = cv["rows"] // cv["folds"]
+    return {
+        "example": e,
+        "n": n,
+        "correct_a": correct_a,
+        "correct_b": correct_b,
+        "acc_a": correct_a / n,
+        "acc_b": correct_b / n,
+        "discordant": t["a_only"] + t["b_only"],
+        "wald_a": cmp_wald_ci(correct_a, n, level),
+        "wilson_a": cmp_wilson_ci(correct_a, n, level),
+        "wald_b": cmp_wald_ci(correct_b, n, level),
+        "wilson_b": cmp_wilson_ci(correct_b, n, level),
+        "z": cmp_z(level),
+        "unpaired": cmp_unpaired(correct_a / n, correct_b / n, n, level),
+        "paired": cmp_paired(t["a_only"], t["b_only"], n, level),
+        "mcnemar_exact": mcnemar_exact_p(t["a_only"], t["b_only"]),
+        "mcnemar_cc": mcnemar_chi2(t["a_only"], t["b_only"]),
+        "mcnemar_plain": mcnemar_chi2(t["a_only"], t["b_only"], correction=False),
+        "signflip": cmp_signflip_p(t["a_only"], t["b_only"], e["signflip"]["draws"], random.Random(e["signflip"]["seed"])),
+        "bootstrap": {k: v for k, v in boot.items() if k != "stats"},
+        "histogram": histogram,
+        "histogram_edges": edges,
+        "cv": corrected_resampled_t(cv["diffs"], cv["rows"] - n_test, n_test),
+        "t_crit": student_t_quantile(level, cv["folds"] - 1),
+        "variants": [{"name": name, "b": vb, "c": vc, "bonferroni": bf, "holm": hm}
+                     for (name, vb, vc), bf, hm in zip(e["variants"], bonferroni(pvalues, e["alpha"]), holm(pvalues, e["alpha"]))],
+        "sizes": [{"n": size, "wald": cmp_wald_ci(round(e["size_accuracy"] * size), size, level),
+                   "wilson": cmp_wilson_ci(round(e["size_accuracy"] * size), size, level)} for size in e["sizes"]],
+        "mde": [{"disc_rate": r, "mde": min_detectable_effect(n, r, level, e["power"]),
+                 "rows": [rows_for_effect(eff, r, level, e["power"]) for eff in e["effects"]]} for r in e["disc_rates"]],
+    }
+
+
 VIT_EXAMPLE = {
     "configs": [
         {"name": "ViT-Ti/16", "image": 224, "patch": 16, "channels": 3, "dim": 192, "depth": 12, "heads": 3, "mlp": 768, "classes": 1000},
@@ -15573,6 +15809,7 @@ def render(slug, render_template):
         "speculative_step": speculative_step,
         "speculative_tokens_per_pass": speculative_tokens_per_pass,
         "spec_decode_example": spec_decode_example,
+        "model_comparison_example": model_comparison_example,
         "entropy": entropy,
         "logistic_example": LOGISTIC_EXAMPLE,
         "boundary_example": BOUNDARY_EXAMPLE,
