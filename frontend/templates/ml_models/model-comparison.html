@@ -1,0 +1,537 @@
+{% set ex = model_comparison_example() %}
+{% set e = ex.example %}
+{% set tb = e.table %}
+{% set cv = ex.cv %}
+{% set boot = ex.bootstrap %}
+{% macro pct(x, d=1) -%}{{ ("%." ~ d ~ "f")|format(x * 100) }}%{%- endmacro %}
+{% macro n(x, d=2) -%}{{ ("%." ~ d ~ "f")|format(x) }}{%- endmacro %}
+{% macro px(v) -%}{{ "%.1f"|format(60 + (v - e.bootstrap.lo) * 600 / (e.bootstrap.hi - e.bootstrap.lo)) }}{%- endmacro %}
+<header class="jj-header">
+  <h1>Comparing models: confidence intervals and significance tests</h1>
+  <p class="tagline">
+    Model A scores {{ pct(ex.acc_a) }} on a test set and model B scores {{ pct(ex.acc_b) }}. Is A better, or did
+    it get a luckier test set? This page puts error bars on a single score, shows why comparing two models on
+    the same rows is far more sensitive than comparing two separate scores, works McNemar's test, a paired
+    bootstrap and a sign-flip permutation test on one example, corrects the t-test for overlapping
+    cross-validation folds, and handles comparing many variants at once.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Every number on the <a href="/ml-models/classification-metrics">classification metrics</a> page is computed
+  from a finite test set, so it is an estimate with sampling error. Draw another {{ ex.n }} rows from the same
+  distribution and the accuracy moves by a few points even though the model has not changed. A
+  {{ pct(ex.acc_a - ex.acc_b, 0) }} gap between two models can be that noise.
+</p>
+<p>
+  The questions this page answers are practical. How wide is the error bar on one score? When two models are
+  scored on the same rows, which test should you use, and why does the obvious one throw away most of the
+  information? Can you run a t-test on cross-validation folds? What happens when you compare ten variants and
+  keep the best? And how many test rows do you need before a one-point gain is detectable at all?
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Two models scored on the same test set mostly agree. Both get the easy rows right and both get the hardest
+  rows wrong; those rows say nothing about which model is better. All of the evidence is in the rows where they
+  disagree. In this page's example, {{ tb.both + tb.neither }} of {{ ex.n }} rows are agreements and only
+  {{ ex.discordant }} are disagreements: A alone is right on {{ tb.a_only }}, B alone on {{ tb.b_only }}.
+</p>
+<p>
+  If the two models were equally good, each disagreement would be a fair coin: as likely to favour A as B.
+  So the comparison reduces to asking whether {{ tb.a_only }} heads in {{ ex.discordant }} flips is a surprising
+  result for a fair coin. It is (p ≈ {{ n(ex.mcnemar_exact, 4) }}). Comparing the two accuracies as if they came
+  from separate test sets instead treats all the shared easy and hard rows as independent noise, inflates the
+  standard error by {{ n(ex.unpaired.se / ex.paired.se, 1) }}×, and finds nothing (p ≈ {{ n(ex.unpaired.p, 2) }}).
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 265" role="img" aria-labelledby="mc-table-title mc-table-desc">
+    <title id="mc-table-title">The 2 × 2 table of two models' outcomes on the same {{ ex.n }} test rows</title>
+    <desc id="mc-table-desc">
+      Rows are model A right or wrong, columns are model B right or wrong. Both right: {{ tb.both }}. A right, B
+      wrong: {{ tb.a_only }}. A wrong, B right: {{ tb.b_only }}. Both wrong: {{ tb.neither }}. The two agreement
+      cells are greyed out because they carry no information about which model is better; the two discordant
+      cells, {{ tb.a_only }} and {{ tb.b_only }}, are highlighted. McNemar's test uses only those:
+      ({{ tb.a_only }} − {{ tb.b_only }})² / ({{ tb.a_only }} + {{ tb.b_only }}) = {{ n(ex.mcnemar_plain.statistic, 1) }} without
+      correction, p ≈ {{ n(ex.mcnemar_plain.p, 4) }}.
+    </desc>
+    <g font-size="12" text-anchor="middle">
+      <text x="270" y="22">model B</text>
+      <text x="200" y="44" class="d-muted">right</text>
+      <text x="340" y="44" class="d-muted">wrong</text>
+      <text x="40" y="150" transform="rotate(-90 40 150)">model A</text>
+      <text x="90" y="100" class="d-muted">right</text>
+      <text x="90" y="190" class="d-muted">wrong</text>
+      <rect x="130" y="56" width="140" height="80" rx="4" class="d-box"></rect>
+      <text x="200" y="92" class="d-muted">both right</text>
+      <text x="200" y="114" class="d-muted" font-size="18">{{ tb.both }}</text>
+      <rect x="270" y="56" width="140" height="80" rx="4" class="d-box" style="stroke:var(--jj-green);stroke-width:3"></rect>
+      <text x="340" y="92" style="fill:var(--jj-green)">A right, B wrong: b</text>
+      <text x="340" y="114" font-size="18" style="fill:var(--jj-green)">{{ tb.a_only }}</text>
+      <rect x="130" y="136" width="140" height="80" rx="4" class="d-box" style="stroke:var(--jj-red);stroke-width:3"></rect>
+      <text x="200" y="172" style="fill:var(--jj-red)">A wrong, B right: c</text>
+      <text x="200" y="194" font-size="18" style="fill:var(--jj-red)">{{ tb.b_only }}</text>
+      <rect x="270" y="136" width="140" height="80" rx="4" class="d-box"></rect>
+      <text x="340" y="172" class="d-muted">both wrong</text>
+      <text x="340" y="194" class="d-muted" font-size="18">{{ tb.neither }}</text>
+      <text x="270" y="236" class="d-muted">acc A = ({{ tb.both }} + {{ tb.a_only }}) / {{ ex.n }} = {{ n(ex.acc_a) }}</text>
+      <text x="270" y="252" class="d-muted">acc B = ({{ tb.both }} + {{ tb.b_only }}) / {{ ex.n }} = {{ n(ex.acc_b) }}</text>
+    </g>
+    <g font-size="11" text-anchor="start">
+      <text x="440" y="70">Only the discordant cells</text>
+      <text x="440" y="88">differ between A and B:</text>
+      <text x="440" y="116">acc A − acc B = (b − c) / n</text>
+      <text x="440" y="134">= ({{ tb.a_only }} − {{ tb.b_only }}) / {{ ex.n }} = {{ n(ex.paired.diff) }}</text>
+      <text x="440" y="166">Under "equally good", each of the</text>
+      <text x="440" y="184">b + c = {{ ex.discordant }} disagreements is a fair coin:</text>
+      <text x="440" y="202" style="fill:var(--jj-accent)">b ~ Binomial({{ ex.discordant }}, ½)</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="mechanics-one-score">Error bars on one score</h3>
+<p>
+  Accuracy on <var>n</var> independent test rows is a mean of 0/1 outcomes, so the number correct is
+  Binomial(<var>n</var>, <var>p</var>) and the standard error of the accuracy is √(p(1 − p)/n) (the variance of a
+  Bernoulli mean, from <a href="/ml-models/expectation-and-variance">expectation and variance</a>). The textbook
+  (Wald) 95% interval is p̂ ± 1.96 · √(p̂(1 − p̂)/n). It is fine when <var>n</var>p̂ and <var>n</var>(1 − p̂) are both
+  large, but near 0 or 1 it is too narrow and can leave [0, 1]: with 1 error in 20 rows it gives a negative
+  lower bound for the error rate. The Wilson interval inverts the score test instead:
+</p>
+<p class="ml-formula">centre = (p̂ + z²/2n) / (1 + z²/n),  half-width = z · √(p̂(1 − p̂)/n + z²/4n²) / (1 + z²/n)</p>
+<p>
+  It always stays inside [0, 1], pulls the centre slightly towards ½, and has close to nominal coverage even
+  for small <var>n</var>. The half-width shrinks like 1/√n, so quartering the error bar needs sixteen times the rows.
+  The <a href="/ml-models/uncertainty#mechanics-bootstrap">uncertainty page</a> gets the same kind of interval
+  by resampling for metrics with no closed form.
+</p>
+
+<h3 id="mechanics-paired">Paired versus unpaired</h3>
+<p>
+  Write d<sub>i</sub> = 1[A right on row i] − 1[B right on row i], which is +1 on the b rows where only A is right,
+  −1 on the c rows where only B is right, and 0 elsewhere. The accuracy difference is the mean of d, and its
+  standard error comes from the variance of d:
+</p>
+<p class="ml-formula">Var(acc A − acc B) = Var(A)/n + Var(B)/n − 2 Cov(A, B)/n</p>
+<p>
+  The unpaired formula drops the covariance term, which is the right thing only for two separate test sets.
+  On one shared test set the models' errors are strongly positively correlated, so the covariance term is large
+  and the paired standard error is much smaller. Pairing is free: it uses the same predictions, just
+  without throwing away which row each one came from. Never compare two models on different test sets, or on
+  differently shuffled splits, if you can avoid it.
+</p>
+
+<h3 id="mechanics-mcnemar">McNemar's test</h3>
+<p>
+  Under the null hypothesis that A and B have the same accuracy, a disagreement is equally likely to go either
+  way, so given b + c disagreements, b ~ Binomial(b + c, ½). The <strong>exact</strong> McNemar test is the
+  two-sided binomial test:
+</p>
+<p class="ml-formula">p = min(1, 2 · Σ<sub>i ≤ min(b, c)</sub> C(b + c, i) / 2<sup>b+c</sup>)</p>
+<p>
+  The classic large-sample version uses the statistic (|b − c| − 1)² / (b + c), compared with χ² with one degree of
+  freedom; the −1 is a continuity correction. Use the exact test when b + c is below about 25, and it is never
+  wrong to use it. The agreement counts appear nowhere: a million rows that both models get right change
+  neither the statistic nor the p-value, only the size of the effect you report.
+</p>
+
+<h3 id="mechanics-bootstrap">The paired bootstrap</h3>
+<p>
+  McNemar answers "is there a difference?" but a decision usually needs "how big, give or take?" Resample the
+  test rows with replacement, recompute both models' metrics <em>on the same resampled rows</em>, and record the
+  difference. The 2.5th and 97.5th percentiles of those differences are a 95% percentile interval. Resampling rows,
+  not each model separately, is what keeps it paired. This works for any metric, including F1, AUC and BLEU,
+  where there is no tidy binomial, and it is how most published "± CI" figures on a single benchmark are made.
+  Resample whatever unit is independent: whole documents, users or conversations rather than tokens or turns.
+</p>
+
+<h3 id="mechanics-permutation">Permutation tests, and what scikit-learn's tests</h3>
+<p>
+  A paired permutation test asks: if the model labels were exchangeable on every row, how often would a random
+  relabelling produce a difference as large as the observed one? Swapping A and B on a row flips the sign of
+  d<sub>i</sub>, so the test draws random signs for every row and recomputes |Σ d|. Rows with d = 0 are unchanged by a
+  flip, so only the b + c discordant rows matter, and the permutation distribution of their sum is exactly the
+  Binomial(b + c, ½) of the exact McNemar test. For accuracy the two tests are the same test; for other metrics
+  the sign-flip version still works and McNemar does not apply.
+</p>
+<p>
+  scikit-learn's <code>permutation_test_score</code> is a different test. It shuffles <var>y</var>, refits the
+  estimator under cross-validation for each shuffle, and reports
+  (#{permuted scores ≥ observed} + 1) / (n_permutations + 1). That tests one model against chance, "does this
+  model find any real dependence between X and y?", not one model against another.
+</p>
+
+<h3 id="mechanics-cv">Comparing cross-validation scores</h3>
+<p>
+  With k-fold <a href="/ml-models/cross-validation">cross-validation</a> both models get k scores on the same folds,
+  so the natural move is a paired t-test on the k per-fold differences, with standard error s/√k. That is
+  wrong, and anti-conservative. Each pair of training sets shares (k − 2)/(k − 1) of its rows, so the fold
+  differences are positively correlated, and s/√k underestimates the real variability of the mean. Nadeau and
+  Bengio's corrected resampled t-test replaces 1/k with 1/k + n<sub>test</sub>/n<sub>train</sub>:
+</p>
+<p class="ml-formula">t = mean(d) / √((1/k + n<sub>test</sub>/n<sub>train</sub>) · s²),  with k − 1 degrees of freedom</p>
+<p>
+  For 10-fold CV, n<sub>test</sub>/n<sub>train</sub> = 1/9, so the variance term more than doubles and the standard error
+  grows by about {{ n(cv.inflation, 2) }}×. The same correction applies to repeated CV (r × k folds, with 1/(rk) +
+  n<sub>test</sub>/n<sub>train</sub>). Dietterich's 5 × 2 cv test is an older alternative: five repetitions of 2-fold
+  CV, a variance estimate from each repetition, and a t-statistic with 5 degrees of freedom. Both are
+  approximations; the point of both is that k fold scores are not k independent measurements.
+</p>
+<p>
+  For comparing algorithms across many datasets, use a Wilcoxon signed-rank test on per-dataset differences,
+  or the Friedman test with a post-hoc test for more than two algorithms (Demšar).
+</p>
+
+<h3 id="mechanics-multiple">Many comparisons</h3>
+<p>
+  Test m variants at α = 0.05 each and, even if none is better, the chance that at least one looks significant is
+  1 − 0.95<sup>m</sup>: 40% for m = 10. Two standard fixes control that family-wise error rate:
+</p>
+<ul>
+  <li><strong>Bonferroni.</strong> Reject only when p ≤ α/m. Simple, valid under any dependence, and conservative.</li>
+  <li><strong>Holm.</strong> Sort the p-values from smallest; compare the i-th smallest with α/(m − i + 1) and stop at
+    the first one that fails. It controls the same error rate under the same assumptions and rejects everything
+    Bonferroni rejects, and sometimes more, so there is no reason to prefer Bonferroni.</li>
+</ul>
+<p>
+  The same arithmetic is why a leaderboard winner picked from dozens of hyperparameter runs overstates its
+  true score, and why the test set should be touched once: every look you take and act on is another comparison.
+</p>
+
+<h3 id="mechanics-size">How many test rows?</h3>
+<p>
+  For a paired accuracy comparison, the standard error of the difference is roughly √(p<sub>disc</sub>/n), where
+  p<sub>disc</sub> = (b + c)/n is the disagreement rate. To detect a true difference δ with a two-sided level α and
+  power 1 − β you need
+</p>
+<p class="ml-formula">n ≈ ((z<sub>1−α/2</sub> + z<sub>1−β</sub>) / δ)² · p<sub>disc</sub></p>
+<p>
+  With α = 0.05 and 80% power the constant is (1.96 + 0.84)² ≈ 7.85. Two similar models that disagree on 10%
+  of rows need about 2,000 rows to detect a 2-point difference, and 8,000 for 1 point. Halving δ quadruples
+  <var>n</var>. Run this before building a test set, not after.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 720 230" role="img" aria-labelledby="mc-ci-title mc-ci-desc">
+    <title id="mc-ci-title">Three 95% intervals for the same accuracy difference of {{ n(ex.paired.diff) }}</title>
+    <desc id="mc-ci-desc">
+      A number line from {{ e.bootstrap.lo }} to {{ e.bootstrap.hi }} with a dashed line at zero. The unpaired
+      normal interval runs from {{ n(ex.unpaired.lo, 3) }} to {{ n(ex.unpaired.hi, 3) }} and crosses zero. The paired
+      normal interval runs from {{ n(ex.paired.lo, 3) }} to {{ n(ex.paired.hi, 3) }} and the paired bootstrap interval
+      from {{ n(boot.lo, 3) }} to {{ n(boot.hi, 3) }}; neither crosses zero. All three are centred on {{ n(ex.paired.diff) }}.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      <line x1="60" y1="180" x2="660" y2="180" class="d-line"></line>
+      {% for tick in [-0.02, 0.0, 0.02, 0.04, 0.06, 0.08, 0.1] %}
+        <line x1="{{ px(tick) }}" y1="176" x2="{{ px(tick) }}" y2="184" class="d-line"></line>
+        <text x="{{ px(tick) }}" y="198" class="d-muted">{{ "%+.2f"|format(tick) if tick else "0" }}</text>
+      {% endfor %}
+      <text x="360" y="220" class="d-muted">accuracy of A minus accuracy of B</text>
+      <line x1="{{ px(0) }}" y1="20" x2="{{ px(0) }}" y2="180" class="d-line" stroke-dasharray="4 3"></line>
+      {% for label, lo, hi, color, y in [("unpaired normal", ex.unpaired.lo, ex.unpaired.hi, "--jj-red", 50),
+                                         ("paired normal", ex.paired.lo, ex.paired.hi, "--jj-green", 100),
+                                         ("paired bootstrap", boot.lo, boot.hi, "--jj-green", 150)] %}
+        <line x1="{{ px(lo) }}" y1="{{ y }}" x2="{{ px(hi) }}" y2="{{ y }}" style="stroke:var({{ color }});stroke-width:3"></line>
+        <line x1="{{ px(lo) }}" y1="{{ y - 7 }}" x2="{{ px(lo) }}" y2="{{ y + 7 }}" style="stroke:var({{ color }});stroke-width:2"></line>
+        <line x1="{{ px(hi) }}" y1="{{ y - 7 }}" x2="{{ px(hi) }}" y2="{{ y + 7 }}" style="stroke:var({{ color }});stroke-width:2"></line>
+        <circle cx="{{ px(ex.paired.diff) }}" cy="{{ y }}" r="4" class="d-box ml-op"></circle>
+        <text x="{{ px(ex.paired.diff) }}" y="{{ y - 12 }}">{{ label }}: [{{ n(lo, 3) }}, {{ n(hi, 3) }}]</text>
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+
+<h2 id="worked-example">Worked example</h2>
+
+<p>
+  Two classifiers are scored on the same {{ ex.n }} test rows; the counts are in the table diagram above. Every
+  number below is computed by the stdlib helpers that render this page.
+</p>
+
+<div class="ml-worked">
+  <h3 id="worked-intervals">Error bars on each model</h3>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Model</th><th>Correct</th><th>Accuracy</th><th>Wald 95%</th><th>Wilson 95%</th></tr></thead>
+      <tbody>
+        <tr><td>A</td><td>{{ ex.correct_a }} / {{ ex.n }}</td><td>{{ n(ex.acc_a, 3) }}</td><td>[{{ n(ex.wald_a.lo, 3) }}, {{ n(ex.wald_a.hi, 3) }}]</td><td>[{{ n(ex.wilson_a.lo, 3) }}, {{ n(ex.wilson_a.hi, 3) }}]</td></tr>
+        <tr><td>B</td><td>{{ ex.correct_b }} / {{ ex.n }}</td><td>{{ n(ex.acc_b, 3) }}</td><td>[{{ n(ex.wald_b.lo, 3) }}, {{ n(ex.wald_b.hi, 3) }}]</td><td>[{{ n(ex.wilson_b.lo, 3) }}, {{ n(ex.wilson_b.hi, 3) }}]</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The two intervals overlap heavily. That is often read as "no significant difference", but overlapping
+    individual intervals do not imply an insignificant difference, even for independent samples, and here the
+    samples are not independent at all.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-paired">Unpaired against paired</h3>
+  <p>
+    Unpaired: SE = √({{ n(ex.acc_a) }} · {{ n(1 - ex.acc_a) }} / {{ ex.n }} + {{ n(ex.acc_b) }} · {{ n(1 - ex.acc_b) }} / {{ ex.n }}) =
+    {{ n(ex.unpaired.se, 4) }}, z = {{ n(ex.paired.diff) }} / {{ n(ex.unpaired.se, 4) }} = {{ n(ex.unpaired.z) }}.
+  </p>
+  <p>
+    Paired: d has mean {{ n(ex.paired.diff) }} and variance (b + c)/n − mean² = {{ ex.discordant }}/{{ ex.n }} −
+    {{ n(ex.paired.diff) }}² = {{ n(ex.discordant / ex.n - ex.paired.diff ** 2, 4) }}, so SE =
+    √({{ n(ex.discordant / ex.n - ex.paired.diff ** 2, 4) }} / {{ ex.n }}) = {{ n(ex.paired.se, 4) }} and
+    z = {{ n(ex.paired.z) }}.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Method</th><th>Statistic</th><th>p (two-sided)</th><th>95% interval for the difference</th></tr></thead>
+      <tbody>
+        <tr><td>Unpaired z (wrong here)</td><td>z = {{ n(ex.unpaired.z) }}</td><td>{{ n(ex.unpaired.p, 3) }}</td><td>[{{ n(ex.unpaired.lo, 3) }}, {{ n(ex.unpaired.hi, 3) }}]</td></tr>
+        <tr><td>Paired z</td><td>z = {{ n(ex.paired.z) }}</td><td>{{ n(ex.paired.p, 4) }}</td><td>[{{ n(ex.paired.lo, 3) }}, {{ n(ex.paired.hi, 3) }}]</td></tr>
+        <tr><td>McNemar χ², no correction</td><td>({{ tb.a_only }} − {{ tb.b_only }})²/{{ ex.discordant }} = {{ n(ex.mcnemar_plain.statistic, 2) }}</td><td>{{ n(ex.mcnemar_plain.p, 4) }}</td><td>—</td></tr>
+        <tr><td>McNemar χ², continuity-corrected</td><td>{{ (tb.a_only - tb.b_only)|abs - 1 }}²/{{ ex.discordant }} = {{ n(ex.mcnemar_cc.statistic, 2) }}</td><td>{{ n(ex.mcnemar_cc.p, 4) }}</td><td>—</td></tr>
+        <tr><td>McNemar exact (binomial)</td><td>b = {{ tb.a_only }} of {{ ex.discordant }}</td><td>{{ n(ex.mcnemar_exact, 4) }}</td><td>—</td></tr>
+        <tr><td>Sign-flip permutation, {{ "{:,}".format(e.signflip.draws) }} draws</td><td>|b − c| = {{ (tb.a_only - tb.b_only)|abs }}</td><td>{{ n(ex.signflip, 4) }}</td><td>—</td></tr>
+        <tr><td>Paired bootstrap, {{ "{:,}".format(e.bootstrap.resamples) }} resamples</td><td>SE = {{ n(boot.se, 4) }}</td><td>—</td><td>[{{ n(boot.lo, 3) }}, {{ n(boot.hi, 3) }}]</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The paired standard error is {{ n(ex.unpaired.se / ex.paired.se, 2) }}× smaller, which is the whole story: the
+    unpaired test sees a 4-point gap inside a ±5-point error bar, while every paired method agrees the gap is real.
+    The Monte Carlo sign-flip p-value lands on the exact McNemar value, as the argument above says it must, and the
+    bootstrap standard error ({{ n(boot.se, 4) }}) matches the paired formula ({{ n(ex.paired.se, 4) }}).
+  </p>
+</div>
+
+<div class="jj-diagram">
+  {% set peak = ex.histogram|max %}
+  <svg viewBox="0 0 720 240" role="img" aria-labelledby="mc-boot-title mc-boot-desc">
+    <title id="mc-boot-title">Histogram of {{ "{:,}".format(e.bootstrap.resamples) }} paired-bootstrap accuracy differences</title>
+    <desc id="mc-boot-desc">
+      Bars in bins of width {{ e.bootstrap.step }} from {{ e.bootstrap.lo }} to {{ e.bootstrap.hi }}. The distribution
+      is centred near {{ n(ex.paired.diff) }}. The 95% percentile interval, from {{ n(boot.lo, 3) }} to {{ n(boot.hi, 3) }},
+      is marked with two vertical lines, and a dashed line marks zero. Only {{ boot.below_zero }} of the
+      {{ "{:,}".format(e.bootstrap.resamples) }} resampled differences are at or below zero.
+    </desc>
+    <g font-size="11" text-anchor="middle">
+      {% for count in ex.histogram %}
+        {% set lo = ex.histogram_edges[loop.index0] %}
+        {% set hi = ex.histogram_edges[loop.index] %}
+        {% set h = 150 * count / peak %}
+        <rect x="{{ px(lo) }}" y="{{ "%.1f"|format(190 - h) }}" width="{{ "%.1f"|format(600 * e.bootstrap.step / (e.bootstrap.hi - e.bootstrap.lo) - 1) }}" height="{{ "%.1f"|format(h) }}"
+              class="d-box {{ 'ml-heat' if lo >= boot.lo and hi <= boot.hi else 'ml-tensor' }}"></rect>
+      {% endfor %}
+      <line x1="60" y1="190" x2="660" y2="190" class="d-line"></line>
+      {% for tick in [-0.02, 0.0, 0.02, 0.04, 0.06, 0.08, 0.1] %}
+        <text x="{{ px(tick) }}" y="206" class="d-muted">{{ "%+.2f"|format(tick) if tick else "0" }}</text>
+      {% endfor %}
+      <line x1="{{ px(0) }}" y1="25" x2="{{ px(0) }}" y2="190" class="d-line" stroke-dasharray="4 3"></line>
+      <line x1="{{ px(boot.lo) }}" y1="25" x2="{{ px(boot.lo) }}" y2="190" style="stroke:var(--jj-green);stroke-width:2"></line>
+      <line x1="{{ px(boot.hi) }}" y1="25" x2="{{ px(boot.hi) }}" y2="190" style="stroke:var(--jj-green);stroke-width:2"></line>
+      <text x="{{ px(boot.lo) }}" y="18" style="fill:var(--jj-green)">2.5%: {{ n(boot.lo, 3) }}</text>
+      <text x="{{ px(boot.hi) }}" y="18" style="fill:var(--jj-green)">97.5%: {{ n(boot.hi, 3) }}</text>
+      <text x="{{ px(0) | float - 6 }}" y="40" class="d-muted" text-anchor="end">≤ 0: {{ boot.below_zero }}</text>
+      <text x="360" y="228" class="d-muted">resampled accuracy of A minus accuracy of B</text>
+    </g>
+  </svg>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-cv">Ten folds, naive and corrected</h3>
+  <p>
+    A separate, illustrative case: {{ e.cv.rows }} rows, {{ e.cv.folds }}-fold CV, so each fold trains on
+    {{ e.cv.rows - e.cv.rows // e.cv.folds }} rows and tests on {{ e.cv.rows // e.cv.folds }}. The per-fold accuracy
+    differences (A − B) are {{ e.cv.diffs|join(", ") }}.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Test</th><th>Variance of the mean</th><th>SE</th><th>t ({{ cv.df }} df)</th><th>p (two-sided)</th></tr></thead>
+      <tbody>
+        <tr><td>Naive paired t</td><td>s²/k = {{ n(cv.variance * 10000, 2) }}e-4 / {{ cv.k }}</td><td>{{ n(cv.naive_se, 4) }}</td><td>{{ n(cv.naive_t) }}</td><td style="color:var(--jj-red)">{{ n(cv.naive_p, 3) }}</td></tr>
+        <tr><td>Corrected resampled t</td><td>(1/{{ cv.k }} + 1/9) · s²</td><td>{{ n(cv.corrected_se, 4) }}</td><td>{{ n(cv.corrected_t) }}</td><td>{{ n(cv.corrected_p, 3) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The mean difference is {{ n(cv.mean, 3) }} and s = {{ n(cv.sd, 4) }}. The naive test clears the 5% bar
+    (|t| &gt; {{ n(ex.t_crit, 3) }}); after accounting for the overlapping training sets it does not. The difference may
+    well be real, but ten folds of 100 rows do not show it.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-multiple">Five variants against one baseline</h3>
+  <p>
+    Five candidate models are each compared with the baseline on the same test set by exact McNemar, at
+    family-wise α = {{ e.alpha }}.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Variant</th><th>b, c</th><th>Raw p</th><th>Bonferroni (p · {{ ex.variants|length }})</th><th>Holm rank, threshold</th><th>Holm adjusted</th></tr></thead>
+      <tbody>
+        {% for v in ex.variants %}
+          <tr><td>{{ v.name }}</td><td>{{ v.b }}, {{ v.c }}</td><td>{{ n(v.holm.p, 4) }}{% if v.holm.p <= e.alpha %} *{% endif %}</td>
+            <td>{{ n(v.bonferroni.adjusted, 4) }} → {{ "reject" if v.bonferroni.reject else "keep" }}</td>
+            <td>{{ v.holm.rank }}, α/{{ ex.variants|length - v.holm.rank + 1 }} = {{ n(v.holm.threshold, 4) }}</td>
+            <td>{{ n(v.holm.adjusted, 4) }} → {{ "reject" if v.holm.reject else "keep" }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% set raw = ex.variants|selectattr("holm.p", "le", e.alpha)|list|length %}
+  {% set by_holm = ex.variants|selectattr("holm.reject")|list|length %}
+  {% set by_bonf = ex.variants|selectattr("bonferroni.reject")|list|length %}
+  <p>
+    Uncorrected, {{ raw }} variants look better (marked *). Bonferroni confirms {{ by_bonf }} and Holm confirms {{ by_holm }}:
+    variant C's p of {{ n(ex.variants[1].holm.p, 4) }} fails Bonferroni's α/5 = 0.01 but passes Holm's third
+    threshold, α/3. Variant D, significant only before correction, is the kind of result that often fails to replicate.
+  </p>
+</div>
+
+<div class="ml-worked">
+  <h3 id="worked-size">How big a test set?</h3>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Rows</th><th>Wald half-width at accuracy {{ e.size_accuracy }}</th><th>Wilson interval</th></tr></thead>
+      <tbody>
+        {% for s in ex.sizes %}
+          <tr><td>{{ "{:,}".format(s.n) }}</td><td>± {{ pct(s.wald.half) }}</td><td>[{{ n(s.wilson.lo, 3) }}, {{ n(s.wilson.hi, 3) }}]</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>Disagreement rate</th><th>Detectable at n = {{ ex.n }}</th>{% for eff in e.effects %}<th>Rows to detect {{ pct(eff, 0) }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for r in ex.mde %}
+          <tr><td>{{ pct(r.disc_rate, 0) }}</td><td>{{ pct(r.mde) }}</td>{% for rows in r.rows %}<td>{{ "{:,}".format(rows) }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Power {{ pct(e.power, 0) }}, two-sided α = 0.05. This example's {{ ex.n }} rows with a
+    {{ pct(ex.discordant / ex.n, 0) }} disagreement rate can just about detect its own {{ pct(ex.paired.diff, 0) }}
+    gap. A 1-point gain between two models that disagree on 10% of rows needs around eight thousand test rows.
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  scikit-learn has the resampling and cross-validation pieces; the paired tests are a few lines on top of the
+  two models' per-row correctness. Links point to scikit-learn {{ pins.sklearn.tag }}.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>accuracy_score</code></td><td><code>y_true</code>, <code>y_pred</code>, <code>normalize</code></td><td>With <code>normalize=False</code> it returns the count correct, the binomial numerator.</td><td><a href="{{ skl('sklearn/metrics/_classification.py', 340, 415) }}">_classification.py 340–415</a></td></tr>
+      <tr><td><code>confusion_matrix</code></td><td><code>(n_classes, n_classes)</code></td><td>Per-model counts; the 2 × 2 McNemar table is built from the two models' correctness vectors instead.</td><td><a href="{{ skl('sklearn/metrics/_classification.py', 428, 623) }}">_classification.py 428–623</a></td></tr>
+      <tr><td><code>resample</code></td><td><code>*arrays</code>, <code>replace=True</code>, <code>n_samples</code>, <code>stratify</code></td><td>Draws the same row indices for every array passed, which is what keeps a bootstrap paired.</td><td><a href="{{ skl('sklearn/utils/_indexing.py', 428, 612) }}">_indexing.py 428–612</a></td></tr>
+      <tr><td><code>check_random_state</code></td><td><code>seed</code></td><td>Turns an int or <code>None</code> into a <code>RandomState</code>; seed the resampling so intervals are reproducible.</td><td><a href="{{ skl('sklearn/utils/validation.py', 1455, 1485) }}">validation.py 1455–1485</a></td></tr>
+      <tr><td><code>cross_validate</code></td><td><code>cv</code>, <code>scoring</code>, <code>return_indices</code></td><td>Per-fold scores; run both models with the same <code>cv</code> object so folds pair up.</td><td><a href="{{ skl('sklearn/model_selection/_validation.py', 101, 427) }}">_validation.py 101–427</a></td></tr>
+      <tr><td><code>cross_val_score</code></td><td>returns <code>[n_splits]</code></td><td>The <code>test_score</code> column of <code>cross_validate</code>; the k values the corrected t-test uses.</td><td><a href="{{ skl('sklearn/model_selection/_validation.py', 512, 667) }}">_validation.py 512–667</a></td></tr>
+      <tr><td><code>permutation_test_score</code></td><td><code>n_permutations=100</code>, <code>random_state=0</code></td><td>Shuffles <var>y</var> and refits; p = (#{≥ score} + 1)/(n_permutations + 1). Tests a model against chance.</td><td><a href="{{ skl('sklearn/model_selection/_validation.py', 1477, 1721) }}">_validation.py 1477–1721</a></td></tr>
+      <tr><td><code>_shuffle</code></td><td><code>y</code>, <code>groups</code></td><td>Permutes labels, within groups when groups are given, so exchangeability respects the grouping.</td><td><a href="{{ skl('sklearn/model_selection/_validation.py', 1743, 1752) }}">_validation.py 1743–1752</a></td></tr>
+      <tr><td><code>StratifiedKFold</code></td><td><code>n_splits</code>, <code>shuffle</code>, <code>random_state</code></td><td>Fixed, class-balanced folds; reuse one instance (fixed seed) for both models.</td><td><a href="{{ skl('sklearn/model_selection/_split.py', 687, 889) }}">_split.py 687–889</a></td></tr>
+      <tr><td><code>RepeatedStratifiedKFold</code></td><td><code>n_splits=5</code>, <code>n_repeats=10</code></td><td>r × k folds for the repeated version of the corrected t-test.</td><td><a href="{{ skl('sklearn/model_selection/_split.py', 1749, 1859) }}">_split.py 1749–1859</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<pre><code>import numpy as np
+from scipy.stats import binomtest, t as student_t
+from sklearn.model_selection import StratifiedKFold, cross_val_score
+
+right_a = model_a.predict(X_test) == y_test
+right_b = model_b.predict(X_test) == y_test
+
+# McNemar, exact: only the discordant rows matter
+b = int(np.sum(right_a &amp; ~right_b))
+c = int(np.sum(~right_a &amp; right_b))
+p_mcnemar = binomtest(b, b + c, 0.5).pvalue
+
+# Paired bootstrap CI for the accuracy difference (same rows for both models)
+rng = np.random.default_rng(0)
+d = right_a.astype(float) - right_b.astype(float)
+idx = rng.integers(0, len(d), size=(2000, len(d)))
+diffs = d[idx].mean(axis=1)
+ci = np.percentile(diffs, [2.5, 97.5])
+
+# Corrected resampled t-test on paired CV folds
+cv = StratifiedKFold(n_splits=10, shuffle=True, random_state=0)
+fold_d = cross_val_score(model_a, X, y, cv=cv) - cross_val_score(model_b, X, y, cv=cv)
+k = len(fold_d)
+t_stat = fold_d.mean() / np.sqrt((1 / k + 1 / (k - 1)) * fold_d.var(ddof=1))
+p_cv = 2 * student_t.sf(abs(t_stat), df=k - 1)</code></pre>
+
+<p>
+  The fixed <code>random_state</code> on the splitter is what makes the two <code>cross_val_score</code> calls use
+  identical folds; with <code>shuffle=True</code> and no seed the folds differ and the differences are no longer
+  paired. For 10-fold CV, n<sub>test</sub>/n<sub>train</sub> = 1/(k − 1), which is where the 1/(k − 1) comes from.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<ul>
+  <li><strong>Exact versus approximate.</strong> Exact McNemar is valid at any size and costs nothing; the χ² form is a
+    large-sample shortcut. The paired bootstrap is approximate and can undercover with few rows or heavily skewed
+    metrics, but it gives an interval, which a p-value does not.</li>
+  <li><strong>Significant is not important.</strong> With a million test rows a 0.05-point difference is significant and
+    useless. Report the difference with its interval, then decide whether the low end of the interval is worth
+    the cost of the switch.</li>
+  <li><strong>The unit of independence.</strong> Every method here assumes independent rows. Tokens within a document,
+    frames within a video and queries from one user are not; resample or permute at the level of the independent
+    unit, or the intervals will be too narrow.</li>
+  <li><strong>Test-set reuse.</strong> A test set used to pick among many models is no longer an unbiased estimate of the
+    winner. Use validation data for selection and look at the test set once, or correct for every look.</li>
+  <li><strong>Test-set error versus algorithm comparison.</strong> McNemar and the bootstrap compare two fitted models on
+    this test set. Whether algorithm A beats algorithm B on new training data of this kind is a different
+    question with extra variance from training, which is what the cross-validation tests try (imperfectly) to
+    capture; Bengio and Grandvalet showed no unbiased estimator of k-fold CV variance exists.</li>
+</ul>
+
+<details class="ml-quiz">
+  <summary>Two models disagree on 8 rows: A is right on 7 of them, B on 1. Is that significant at 5%?</summary>
+  <p>Exact McNemar: p = 2 · (C(8,0) + C(8,1)) / 2⁸ = 2 · 9/256 ≈ {{ n(9 / 128, 3) }}. No, despite the 7-to-1 split.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Adding 10,000 rows that both models get right: what happens to McNemar's p-value?</summary>
+  <p>Nothing. It depends only on b and c. The accuracy difference shrinks because n grew, but the evidence about which model is better has not changed.</p>
+</details>
+<details class="ml-quiz">
+  <summary>Why is a paired t-test on 10 CV folds anti-conservative?</summary>
+  <p>The folds' training sets overlap by 8/9, so the per-fold differences are positively correlated and s²/k understates the variance of their mean. The corrected test adds n<sub>test</sub>/n<sub>train</sub> to 1/k.</p>
+</details>
+
+<h2 id="connections">Connections</h2>
+
+<p>
+  The interval for a single metric extends the bootstrap on the <a href="/ml-models/uncertainty#mechanics-bootstrap">uncertainty</a>
+  page; the fold correlation is the "how noisy is a CV score?" question from
+  <a href="/ml-models/cross-validation#variance">cross-validation</a>, now made quantitative; and the same tests
+  decide whether a drop flagged by <a href="/ml-models/monitoring-and-drift">monitoring and drift</a> is real.
+</p>
+
+{% include "ml_models/_connections.html" %}
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>McNemar. <em>Note on the Sampling Error of the Difference Between Correlated Proportions or Percentages.</em> Psychometrika, 1947.</li>
+  <li>Wilson. <em>Probable Inference, the Law of Succession, and Statistical Inference.</em> Journal of the American Statistical Association, 1927.</li>
+  <li>Dietterich. <em>Approximate Statistical Tests for Comparing Supervised Classification Learning Algorithms.</em> Neural Computation, 1998.</li>
+  <li>Nadeau and Bengio. <em>Inference for the Generalization Error.</em> Machine Learning, 2003.</li>
+  <li>Bouckaert and Frank. <em>Evaluating the Replicability of Significance Tests for Comparing Learning Algorithms.</em> PAKDD, 2004.</li>
+  <li>Bengio and Grandvalet. <em>No Unbiased Estimator of the Variance of K-Fold Cross-Validation.</em> Journal of Machine Learning Research, 2004.</li>
+  <li>Demšar. <em>Statistical Comparisons of Classifiers over Multiple Data Sets.</em> Journal of Machine Learning Research, 2006.</li>
+  <li>Holm. <em>A Simple Sequentially Rejective Multiple Test Procedure.</em> Scandinavian Journal of Statistics, 1979.</li>
+  <li>Efron and Tibshirani. <em>An Introduction to the Bootstrap.</em> Chapman &amp; Hall, 1993.</li>
+  <li>scikit-learn {{ pins.sklearn.tag }}: <a href="{{ skl('sklearn/model_selection/_validation.py', 1477, 1721) }}"><code>permutation_test_score</code></a>, <a href="{{ skl('sklearn/utils/_indexing.py', 428, 612) }}"><code>resample</code></a>, <a href="{{ skl('sklearn/model_selection/_split.py', 1749, 1859) }}"><code>RepeatedStratifiedKFold</code></a>.</li>
+</ul>

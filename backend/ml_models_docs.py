@@ -501,6 +501,21 @@ PAGES = [
         "ready": True,
     },
     {
+        "slug": "model-comparison",
+        "title": "Comparing models: confidence intervals and significance tests",
+        "area": "data-evaluation",
+        "level": "core",
+        "summary": "Error bars on a test score, paired tests such as McNemar and the paired bootstrap, corrected CV t-tests and multiple comparisons.",
+        "prerequisites": ["cross-validation", "classification-metrics", "expectation-and-variance"],
+        "sources": [
+            "sklearn:sklearn/model_selection/_validation.py",
+            "sklearn:sklearn/utils/_indexing.py",
+            "sklearn:sklearn/metrics/_classification.py",
+            "sklearn:sklearn/model_selection/_split.py",
+        ],
+        "ready": True,
+    },
+    {
         "slug": "linear-regression",
         "title": "Linear regression",
         "area": "classical-ml",

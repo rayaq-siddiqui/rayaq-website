@@ -370,6 +370,7 @@ Notes from the 2026-10-15 and 2026-10-22 audits (condensed):
 95. `iterative-solvers` ✓
 96. `numerical-stability` ✓
 97. `speculative-decoding` ✓
+98. `model-comparison` ✓
 
 Nothing is queued. Each audit appends at most two pages here. From now on the Routine runs the weekly audit (spec §8.1): for each pin it checks for a newer stable release (never an rc, beta or dev tag). When one
 exists, it diffs every file the ready pages link to between the pin and that tag, updates the
