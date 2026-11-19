@@ -3,13 +3,13 @@
 Running log for the weekly jj-dojo maintenance Routine. Read this first, update it last.
 The contract is `specs/jj-dojo.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-11-12 (eleventh run, weekly maintenance). **The build is complete:** all nine §5 pages are
+**Last updated:** 2026-11-19 (twelfth run, weekly maintenance). **The build is complete:** all nine §5 pages are
 ready and every §10 criterion is met. From here the Routine runs weekly in maintenance mode only.
 
 ## Upstream pin
 
-`jj-vcs/jj-dojo@574832c734464296bef59275155dccae3731489e` (committed 2026-11-10), analyzed
-2026-11-12. `package.json` version still 0.0.1. Held in `jj_dojo_docs.UPSTREAM`.
+`jj-vcs/jj-dojo@e4a1514676d19cc3a83af0f93eda501b44a76087` (committed 2026-11-18, 11 commits after `574832c`), analyzed
+2026-11-19. `package.json` version still 0.0.1. Held in `jj_dojo_docs.UPSTREAM`.
 
 ## §10 acceptance criteria
 
@@ -25,7 +25,22 @@ ready and every §10 criterion is met. From here the Routine runs weekly in main
 - [x] Mobile at 390px: no horizontal page scroll on `/jj-dojo` and every ready page (checked in
       headless Chromium this run).
 - [x] The Routine has run in maintenance mode (second to fourth runs: no upstream change;
-      fifth and eighth to eleventh runs: pin bumped; sixth and seventh runs: no upstream change). It now runs weekly.
+      fifth and eighth to twelfth runs: pin bumped; sixth and seventh runs: no upstream change). It now runs weekly.
+
+## Twelfth run (2026-11-19): maintenance
+
+| Commit | What |
+|---|---|
+| `7a39d12` | Pin bump `574832c` → `e4a1514`, every line range remapped on nine pages. `roadmap`: the second provider (`FileIdFileSystemProvider`, `jj-file-id`), `RepoState.conflictedFiles`/`currentWorkspace`, 36 client tests, the watcher's gitignore/VCS filtering (`WorkspaceIgnoreManager`, two-pass batches); `SelectedCommitManager` added to the unwired list |
+| `067306a` | `activation` and `graph-protocol`: the `jj-file-id` registration and `SelectedCommitManager` (tested, unwired) |
+| `c366a68` | `utils`, `graph-webview`, `graph-layout`: topology helper changes, search matching full change-ID prefixes, the real-jj layout and focus-mode tests |
+| `74dd7d4` | `build-and-test` (watcher BUILD deps, `FakeTextEdit`, nine `//src/testing` users, wider `newRepo` use), `merge-conflicts` (activation tests against conflicts the pinned jj writes), index (two providers) |
+| `b4e7a38`, `record progress` | Index: client test count 31 → 36; `build-and-test`: twelve `:tests` packages (adds `//src/state`, `//src/ui/commands`), plus this log |
+
+Moved from planned to implemented: the `jj-file-id` provider (registered on activation). Still
+unwired: the watcher, the estimator, `SelectedCommitManager`; the graph still gets the fake
+state. `PROTOCOL_TYPES` unchanged (`CommitNode.changeId` is optional and no host code fills it
+yet). Suite green (1079 tests); smoke test and pinned-link check (816 links) pass.
 
 ## Eleventh run (2026-11-12): maintenance
 
@@ -48,36 +63,16 @@ Nothing moved from planned to implemented: the client's file reads and `Merge` a
 unwired. `PROTOCOL_TYPES` unchanged (`api/` untouched). Suite green (1067 tests); smoke test
 and pinned-link check pass.
 
-## Ninth run (2026-10-22): maintenance
+## Eighth and ninth runs (2026-10-15, 10-22)
 
-| Commit | What |
-|---|---|
-| `a74e0be` | Pin bump `5fecc7a` → `4cff5a1` across ten pages. `utils` gains the commit-topology helpers and their 19 tests; `graph-protocol` the multi-select message pair; `graph-layout` and `graph-webview` the one-SVG-per-tile rendering (priority-sorted `<g>` line groups, z-index from the top priority) and the hint renderers as functions; `build-and-test` the `license_header.txt` template (`npm run addlicense` now fixes, CI checks), `fakeCommit`, `newRepo({remote})`, the Git ≥ 2.41 `PATH` fix and the sixth `//src/testing` user; `roadmap` and index status rows. Every displayed line range now matches its link |
-| `record progress` | `L…` labels on `graph-protocol` and `utils` re-synced to their (already correct) links, plus this log |
+`948323c`, `b352ebf` (`67c5c1f` → `5fecc7a`): comment-style re-anchoring; `Client`,
+`SubprocessClient` and the watcher interfaces on `roadmap`. `a74e0be` (`5fecc7a` → `4cff5a1`):
+commit-topology helpers, multi-select messages, one-SVG-per-tile rendering, `newRepo({remote})`.
 
-Nothing moved from planned to implemented: the new code is helpers and protocol messages that
-activation does not reach. `PROTOCOL_TYPES` unchanged (`api/` only gained license lines). Suite
-green (1058 tests across all sections); smoke test, pinned-link check (793 links) and 390 px check on all ten pages pass.
+## Sixth and seventh runs (2026-10-08)
 
-## Eighth run (2026-10-15): maintenance
-
-`948323c` bumped `67c5c1f` → `5fecc7a` and re-anchored every link shifted by upstream's
-`//` → `/** */` comment conversion; `b352ebf` put the `Client` interface, `SubprocessClient`,
-`OpHeadWatcher`, `NetworkReconnectWatcher` and `Telemetry` on `roadmap` (unwired). JJ PubSub
-moved to *in progress*. Suite green (1034 tests); smoke, link and 390 px checks pass.
-
-## Sixth run (2026-10-08): build complete
-
-| Commit | What |
-|---|---|
-| `a955a9c` | `icon-theme` page: finding the theme, parsing, the `IconTheme` model, icon resolution order, `FileIcon` and the webview URIs, caching, tests |
-| `5919dd5` | `utils` page: `HashMap`/`HashSet` and why they exist, `check`, `dispose`, `time` |
-| `fa0c1b6` | `build-and-test` page: `MODULE.bazel`, root targets, the `deps` scheme, the in-repo Bazel rules, the pinned `jj`, the Jasmine helpers and fake VS Code API, CI, the enum generator. Also fixed a wrong claim on `utils` (the `ts_library` macro drops `*_test.ts`) and linked `icon-theme`'s tests to the new page |
-| `a7e00b3` | `roadmap` page: the three layers with a status SVG, milestones, `src/client/` and `src/file_system_watcher/` (the deliberate addition), design considerations including the read-only jj flags |
-
-Maintenance: upstream `HEAD` still at `67c5c1f`, so the pin stayed (also on the seventh run,
-2026-10-08). Mobile check (390 px,
-headless Chromium): no page overflow on any of the four new pages.
+`a955a9c` `icon-theme`, `5919dd5` `utils`, `fa0c1b6` `build-and-test`, `a7e00b3` `roadmap`; the
+build was complete. No upstream change on the seventh run.
 
 ## First to fifth runs (2026-10-03 to 10-07)
 
@@ -104,7 +99,7 @@ undescribed field; the `graph-layout` worked-example SVGs come from compiling th
     see below)~~
 
 Proposed (owner's call, not built): a `file-system-providers` page (`src/ui/file_system_providers/`,
-now wired); a `state` page for `OptimisticStateEstimator` (`src/state/`, not yet wired); the
+both providers wired); a `state` page for `OptimisticStateEstimator` (`src/state/`, not yet wired); the
 gitignore matcher; `src/ui/config/` (focus-mode and write-back config caches); `src/ui/commands/`
 (command types and hooks). Until then they are on `roadmap` or logged below.
 
@@ -164,15 +159,16 @@ into activation, propose a page for it here first.
 - **"Minimap" is the overview ruler.** Upstream's decorator test says minimap; the code sets
   only `overviewRulerColor`/`overviewRulerLane`. The page uses the accurate term and notes it.
 - **The graph has no real data yet.** `createFakeWebviewState` sends one hard-coded commit.
-  Since `574832c` `SubprocessClient` is wired in, but only the `jj-commits` file reads use it.
+  `SubprocessClient` is wired in, but only the `jj-commits` and `jj-file-id` reads use it.
+  `CommitNode.changeId` (for search prefix matching) is never set by host code yet.
 - **Two commit types.** `src/api` defines its own `Commit`, separate from the webview's
   `api/types.ts` one; nothing converts between them yet. On `roadmap#gaps`.
 - **10 MiB output cap.** Since `0d6f5e5` the subprocess helper caps output at 10 MiB; larger logs or
   files would fail. On `roadmap#gaps`.
 - **Milestones moved off-repo (`roadmap`).** `intro.md` now links a GitHub project board instead of
   M1–M4. A board can't be pinned, so the page keeps the old timeline, labelled as such.
-- **File reads are partial.** `Commit.files` is always `[]` (waits on jj PR 10430), and
-  `showParent` fails on merge commits (jj PR 10464); upstream TODOs, stated on `roadmap`.
+- **Merge-commit parents.** `showParent` fails on merge commits until jj PR 10464 (upstream TODO,
+  stated on `roadmap`). `Commit.files` is now filled from `diff.files()`, so that gap is closed.
 - **Contribution scope.** The README now limits contributions to Google developers. Not on any page.
 - **Context-menu items are defined nowhere in the repo (`graph-webview`).** Rows, chips and top-bar
   split buttons send contexts with origins such as `commitRow` and `commitRowMultiSelected`, but
@@ -186,13 +182,14 @@ into activation, propose a page for it here first.
   `extensionApi`, `state` and `node` properties. Not on the page; worth an upstream fix.
 - **No CSP in the webview HTML.** `getHtmlForWebview` sets no Content-Security-Policy meta tag. The
   page states the fact without judging it.
-- **`@parcel/watcher` loose ends.** The `vsix` target has a TODO about packaging the native module,
-  and `LocalFileSystemWatcher` subscribes without an ignore list. Both are on `roadmap#gaps`.
-  The earlier symlink gap is resolved: since `5fecc7a` the watcher `realpath`s its root.
-- **Multi-select is not wired (`graph-protocol`).** `MultiSelectManager` landed with tests, but
-  nothing else constructs it, so the host still ignores `$onClick`. Revisit when it is wired in.
+- **`@parcel/watcher` loose ends.** The `vsix` target has a TODO about packaging the native module
+  (on `roadmap#gaps`). Resolved: the symlink gap (`5fecc7a`, the root is `realpath`ed) and the
+  missing ignore list (`e4a1514`, `WorkspaceIgnoreManager` supplies one).
+- **Selection is not wired (`graph-protocol`).** `MultiSelectManager` and, since `e4a1514`,
+  `SelectedCommitManager` have tests, but nothing constructs either, so the host still ignores
+  `$onClick`. Revisit when they are wired in.
 - **Unused topology helpers (`utils`).** Four commit-topology functions have no callers outside
   their tests; only `SubprocessClient.getCommits` uses the rest. The page states this.
 - **`//:test` does not exist (`build-and-test`).** The spec's "Must cover" names a `//:test`
-  target. There is none at this pin: `npm test` runs `bazel test //...` over ten `:tests` targets.
+  target. There is none at this pin: `npm test` runs `bazel test //...` over twelve `:tests` targets.
   The page describes what exists.
