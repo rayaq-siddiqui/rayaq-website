@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-11-18 (eighty-seventh run): followed upstream `a7d4620..0dda823` (0.47.1). **The
+**Last updated:** 2026-11-19 (eighty-eighth run): followed upstream `0dda823..52518a6` (0.47.1). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@0dda8233a36178e9560aba3475ee4db2153e6ae3` (committed 2026-11-18, version
-0.47.1), analyzed 2026-11-18. Held in `jj_docs.UPSTREAM`. Previous pin: `a7d4620`.
+`jj-vcs/jj@52518a6511707af0a367874b1eb92ea1b8a7d07a` (committed 2026-11-18, version
+0.47.1), analyzed 2026-11-19. Held in `jj_docs.UPSTREAM`. Previous pin: `0dda823`.
 
 ## §10 acceptance criteria
 
@@ -31,13 +31,14 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to eighty-seventh runs: pin bumped).
+      run: pin bumped; fiftieth to eighty-eighth runs: pin bumped).
 
-## Sixty-fourth to eighty-seventh runs (2026-10-20 to 2026-11-18)
+## Sixty-fourth to eighty-eighth runs (2026-10-20 to 2026-11-19)
 
+- `684717f`, `ee3224c` `0dda823..52518a6`: commit templater went type-erased (ranges on 9 pages, a stale
+  `write()` link fixed); converge describes the author retry at the earliest timestamp; id_prefix async.
 - `0f64e87` `a7d4620..0dda823`: the simple backend, op store and op heads store moved into the new
-  `jj-simple-stores` crate (`simple-stores/`) and `op_heads_store.rs` into jj-core; registry source
-  sets, the index diagram, the protobufs crate-private list and 563 links in 94 pages follow.
+  `jj-simple-stores` crate and `op_heads_store.rs` into jj-core; source sets, a diagram and 563 links in 94 pages follow.
 - `8b640c7` `4351061..a7d4620`: `gerrit upload` now uploads `(remote_bookmarks(remote=R) | root())..revisions`
   and runs `check_rewritable` on all of it (gerrit-upload rewritten); an object-format hint was
   added to the git-fetch, git-push, git-clone and gerrit-upload error tables; 10 more pages relinked.
