@@ -4,10 +4,10 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-11-12 (fourth weekly audit). Spec v2 widens the section from model
-architectures to all of machine learning: 12 areas, 97 pages, a seven-step learning path and a
-fixed page format. Every queue item is ready (1-97; audits added `matrix-decompositions`,
-`iterative-solvers`, `numerical-stability` and `speculative-decoding`).
+**Last updated:** 2026-11-19 (fifth weekly audit). Spec v2 widens the section from model
+architectures to all of machine learning: 12 areas, 98 pages, a seven-step learning path and a
+fixed page format. Every queue item is ready (1-98; audits added `matrix-decompositions`,
+`iterative-solvers`, `numerical-stability`, `speculative-decoding` and `model-comparison`).
 Nothing is queued, so the next run is the next weekly audit (spec §8.1).
 
 ## Pins
@@ -224,33 +224,37 @@ Open gaps from these runs:
 
 | Date | Checked | Found | Added |
 |---|---|---|---|
+| 2026-11-19 | Pins (`git ls-remote --tags`); Hugging Face model cards for recent open-weight releases; the data-evaluation area for comparing models | No pin moved: PyTorch v2.15.0, scikit-learn 1.9.1 and XGBoost v3.4.2 are still the latest stable. No open-weight release qualified: Kimi K3.1 Pro, Inkling 2 Small, Ripple-65B Preview and Hy4 flash (open weights since 2026-11-17) have no paper or technical report. Data evaluation had no page on whether one model really beats another (paired tests, McNemar, bootstrap intervals, corrected CV tests, multiple comparisons) | `b00e98f` model comparison helpers and tests; `e1f82d3` the `model-comparison` page (§5 row, registry, queue 98) |
 | 2026-11-12 | Pins (`git ls-remote --tags`); Hugging Face model cards and reports for recent open-weight releases; the inference area against topics pages name but do not cover | No pin moved: PyTorch v2.15.0, scikit-learn 1.9.1 and XGBoost v3.4.2 are still the latest stable. Mistral Large 4 qualified (open weights and a technical report): a 16× smaller KV cache that cost little perplexity but lost ground on SWE-bench Verified, then mid-pretraining surgery to DeepSeek Sparse Attention, and a DSpark speculator with block verification. Kimi K3.1 Pro has no report, Hy4 has no open weights, GLM-5.2 is not new. Speculative decoding was named on several pages with no page of its own | `eade8dc` an "agentic penalty" section on `kv-cache` plus the Mistral Large 4 `UPCOMING_MODELS` entry; `4d78fca` exact speculative-decoding helpers and tests; `9f30a4e` the `speculative-decoding` page (§5 row, registry, queue 97) |
 | 2026-10-29 | Pins (`git ls-remote --tags`); Hugging Face model cards and reports for recent open-weight releases; the foundations area for floating point and conditioning | PyTorch `v2.15.0` is final (2026-10-27); scikit-learn 1.9.1 and XGBoost v3.4.2 are still the latest stable. No open-weight release qualified: Reflection Beam 1.0's report is still "coming", Muse Spark Open has only an evaluation-methodology note, Mistral Large 4 weights are due 2026-10-31, MiniMax M3.1-Flash could not be verified. Foundations had no page on rounding error, conditioning or stable rewrites | `361aea4` the PyTorch pin to v2.15.0 (every linked range rechecked); `bfc791c` the `numerical-stability` page (§5 row, registry, queue 96) |
 | 2026-10-22 | Pins (`git ls-remote --tags`); Hugging Face model cards and reports for recent open-weight releases; the foundations area for numerical linear algebra beyond factorizations | No pin moved (PyTorch v2.15.0 is still rc7). DeepSeek-V4.1-Flash has weights and a report (cross-layer KV sharing, FP4 KV cache); Muse Spark Open, Reflection Beam and Mistral Large 4 have no report or open weights yet, so they were skipped. Foundations had no iterative solvers (CG, Krylov, preconditioning) | `15c05d9` a cross-layer sharing and FP4 section on `kv-cache` plus its `UPCOMING_MODELS` entry; `ab96a0f` the `iterative-solvers` page (§5 row, registry, queue 95) |
 | 2026-10-15 | Pins (`git ls-remote --tags`); the Kimi K2, DeepSeek-V3.2-Exp and MiMo-V2-Flash reports; `torch/optim/_muon.py`; the foundations area against `torch.linalg` | No pin moved (PyTorch v2.15.0 is still rc only). Muon and QK-Clip had no coverage; foundations stopped at eigen/SVD with no LU, QR, Cholesky, least squares or matrix norms | `063d6ab` three `UPCOMING_MODELS` entries; `045a59f` a Muon/QK-Clip section on `optimizers`; `736023a` the `matrix-decompositions` page (§5 row, registry, queue 94) |
 
-Notes from the 2026-11-12 audit:
+Notes from the 2026-11-19 audit:
 
-- The Mistral Large 4 report is read from its Hugging Face repository, pinned to commit
-  `af26e786`. Facts used: sections 3.1-3.2 for the KV-cache surgery, and the inference
-  section and Figure 16 for DSpark (+90% decode interactivity over no speculation, +15% over
-  EAGLE-3, both at eight concurrent requests, with block verification).
-- Linked at PyTorch v2.15.0 for `speculative-decoding`: `nn/attention/bias.py`
-  `CausalVariant` 33-83, `CausalBias` 86-306, `causal_upper_left` 308-339,
-  `causal_lower_right` 342-377; `nn/functional.py` `softmax` 2176-2216,
-  `scaled_dot_product_attention` 6414-6587 (its `is_causal` note on upper-left alignment is
-  at 6542-6545); `_torch_docs.py` `multinomial` 8089-8142; `distributions/categorical.py`
-  `Categorical.sample` 144-149.
-- Candidates for later audits: NVFP4 (Mistral Large 4 quantizes its routed experts to it,
-  606 GB on 4×GB300) on `quantization`; prefill–decode disaggregation and context
-  parallelism on `model-serving`; DSpark itself once its paper can be read.
-- Gaps: arxiv.org is still unreachable, so Leviathan et al., Chen et al., Stern et al.,
-  SpecInfer, Medusa, EAGLE/EAGLE-3, block verification (Sun et al.) and DeepSeek-V3 are cited
-  from memory without links. The block-verification claim (it accepts at least as many
-  tokens as token-wise checks) follows the paper's title and abstract as remembered. The
-  page's PyTorch snippet was not run under real PyTorch, and its `crop` cache method is a
+- `model-comparison` links scikit-learn 1.9.1 ranges (`accuracy_score`, `confusion_matrix`,
+  `resample`, `check_random_state`, `cross_validate`, `cross_val_score`,
+  `permutation_test_score`, `_shuffle`, `StratifiedKFold`, `RepeatedStratifiedKFold`); the
+  ranges live in its template. Its worked values come from stdlib helpers in
+  `ml_models_docs.py` (exact McNemar, sign flips, a seeded paired bootstrap, a Student t from
+  the regularized incomplete beta), tested against brute force and known t values.
+- Candidates for later audits, once reports exist: Gated DSA and MXFP4/MXFP8 QAT (Kimi K3.1
+  Pro), native NVFP4 training (Inkling 2 Small), IndexPool sparse attention, LatentMoE and the
+  DFly2 drafter (Hy4 flash). Nemotron 3.5 and Nemotron-Labs-Sigma were not examined in depth.
+- Gaps: arxiv.org and the Ripple launch blog are unreachable, so McNemar, Wilson, Dietterich,
+  Nadeau–Bengio, Bouckaert–Frank, Bengio–Grandvalet, Demšar, Holm and Efron–Tibshirani are
+  cited from memory without links. The page's numpy/scipy/sklearn snippet was not run. There
+  is still no tool to change the trigger's schedule, so it fires every 5 hours.
+
+Notes from the 2026-11-12 audit (condensed):
+
+- The Mistral Large 4 report is read from its Hugging Face repository at `af26e786`.
+  Ranges linked for `speculative-decoding` live in its template.
+- Candidates: NVFP4 on `quantization`; prefill–decode disaggregation and context parallelism
+  on `model-serving`; DSpark once its paper can be read.
+- Gaps: Leviathan et al., Chen et al., Stern et al., SpecInfer, Medusa, EAGLE/EAGLE-3, block
+  verification and DeepSeek-V3 are cited from memory; the page's `crop` cache method is a
   stated assumption, not a PyTorch API.
-- There is still no tool to change the trigger's schedule, so it fires every 5 hours.
 
 Notes from the 2026-10-29 audit (condensed):
 
