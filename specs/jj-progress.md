@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-11-20 (eighty-ninth run): followed upstream `52518a6..3f0353a` (0.47.1). **The
+**Last updated:** 2026-11-21 (ninetieth run): followed upstream `3f0353a..5b884f7` (0.47.1). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@3f0353a8a2795c19835356948a08fc897c0221da` (committed 2026-11-19, version
-0.47.1), analyzed 2026-11-20. Held in `jj_docs.UPSTREAM`. Previous pin: `52518a6`.
+`jj-vcs/jj@5b884f799145074227beb819f6596932bd25bc35` (committed 2026-11-21, version
+0.47.1), analyzed 2026-11-21. Held in `jj_docs.UPSTREAM`. Previous pin: `3f0353a`.
 
 ## §10 acceptance criteria
 
@@ -31,10 +31,13 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to eighty-ninth runs: pin bumped).
+      run: pin bumped; fiftieth to ninetieth runs: pin bumped).
 
-## Sixty-fourth to eighty-ninth runs (2026-10-20 to 2026-11-20)
+## Sixty-fourth to ninetieth runs (2026-10-20 to 2026-11-21)
 
+- `6b63c9d`, `1d359fb` `3f0353a..5b884f7`: `bookmark move`/`set` now warn "Moving bookmarks backwards or
+  sideways" and move anyway; `-B` is hidden and a no-op (both pages rewritten, advance fixed);
+  templater list methods went type-erased (link ranges only); 97 links in 16 pages remapped.
 - `52518a6..3f0353a`: repo init/load moved to `store_factories.rs` (`StoreInitializers::init_repo`,
   `StoreFactories::load_repo`); Git export applies all ref edits in one `edit_references` transaction
   with a per-ref fallback (git-export rewritten; backends, storage, git-root, conflicts, file-list); 326 links remapped.
