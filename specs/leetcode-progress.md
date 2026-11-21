@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-11-14 (thirteenth audit run). All 58 pages are ready and the queue is empty. This audit found no gaps, so **the build is still complete**. This session had no `update_trigger` tool either (see Known gaps). **The next run is an audit run** (spec §8.1). Before any other work, it moves this Routine to weekly: `update_trigger` on `trig_01XkmtUwbN1iL5esk5KeGRPa` with `CRON_TZ=America/Los_Angeles 14 4 * * 2`.
+**Last updated:** 2026-11-21 (fourteenth audit run). All 58 pages are ready and the queue is empty. This audit found and fixed one gap (unreadable diagram labels on highlighted fills), so **the next run is another audit run** (spec §8.1). This session had no `update_trigger` tool either (see Known gaps). Before any other work, the next run moves this Routine to weekly: `update_trigger` on `trig_01XkmtUwbN1iL5esk5KeGRPa` with `CRON_TZ=America/Los_Angeles 14 4 * * 2`.
 
 ## The Routine
 
@@ -181,13 +181,19 @@ build once research is done.
   the literature. A false statement is a gap even when the code and tables are right. Captions that
   describe example values bind them from the helper rather than restating numbers by hand.
 
+- **Diagram labels are readable (2026-11-21).** Every SVG label must reach 4.5:1 contrast
+  (`--jj-text`) or 3:1 (`--jj-muted`) against the colour actually behind it, including the
+  translucent `lc-fill-*` highlights composited over `--jj-bg` or `--jj-surface-2`. The
+  highlight fills are now 0.3 opacity. `test_diagram_labels_stay_readable_on_highlight_fills`
+  enforces it from the CSS tokens; audit runs also measure every rendered label in a browser.
+
 ## Known gaps and questions for the owner
 
 - **Schedule not yet weekly (2026-10-13).** The owner asked for weekly audits, but the session that
   recorded the request had no `update_trigger` tool. The next run calls `update_trigger` on
   `trig_01XkmtUwbN1iL5esk5KeGRPa` with `CRON_TZ=America/Los_Angeles 14 4 * * 2` and clears this
   gap. If it can't, the owner can change the schedule by hand under the Routine's settings at
-  claude.ai/code. The seventh through thirteenth audits' sessions had no `update_trigger` tool either. The build is
+  claude.ai/code. The seventh through fourteenth audits' sessions had no `update_trigger` tool either. The build is
   complete (tenth audit), so the 5-hour schedule now only re-runs audits; please move it to weekly by hand. The tenth through thirteenth audits ran exactly a week apart (all Saturdays), so the schedule may already be weekly, but on Saturdays rather than the Tuesdays 04:14 the owner asked for; please confirm it under the Routine's settings.
 
 ## Run log
@@ -585,3 +591,22 @@ unchanged at 100% (Blind 75 75/75, Grind 169 169/169, NeetCode 150 150/150, Neet
 pytest green (1079 passed); `/leetcode` and all 58 pages return 200 and the phone check passed on
 `/`, `/leetcode` and every ready page. This session had no `update_trigger` tool, so the schedule
 could not be moved. Next: another audit run, which moves the schedule first.
+
+### 2026-11-21 — audit run (fourteenth)
+
+Fourteenth audit run. Nothing in this section changed since the thirteenth audit. New check this
+run: a browser pass over `/leetcode` and all 58 pages measured the contrast of every SVG text
+label against the colour actually painted behind it (highlight fills composited with their
+opacity). One gap: 98 labels on 9 pages were hard to read, because the `lc-fill-*` highlights
+(amber 0.7, green 0.55, blue 0.6 opacity) left muted labels at 1.3–2.2:1 and white labels on
+amber at 2.9:1. The worst were the range labels on the recomputed nodes of `segment-trees` and
+`fenwick-trees`; `grid-dp`, `interval-dp`, `matrix-manipulation`, `number-math`,
+`bit-manipulation`, `constraint-backtracking` and `interview-approach` were also affected. All
+three fills are now 0.3 opacity (labels at 3.3:1 or more for muted text and 7.4:1 or more for
+main text), the browser pass finds none below 3:1, and a new test checks the fills from the CSS
+tokens. `grid-dp`'s route-count diagram called its blocked cell "dark"; it is amber, and now says
+so. No helpers or other content changed. Coverage is unchanged at 100% (Blind 75 75/75, Grind 169
+169/169, NeetCode 150 150/150, NeetCode 250 250/250). pytest green (1087 passed); `/leetcode` and
+all 58 pages return 200 and the phone check passed on `/`, `/leetcode` and every ready page. This
+session had no `update_trigger` tool, so the schedule could not be moved. Next: another audit
+run, which moves the schedule first.
