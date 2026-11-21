@@ -2072,3 +2072,47 @@ def test_prose_tracks_the_values_it_describes():
     assert "within the n - 1 = 4 bound" in text("bellman-ford")
     assert "lower-numbered one" not in text("dijkstra")
     assert "eight unions" not in text("union-find")
+
+
+def _css(name):
+    with open(os.path.join(ROOT, "frontend", "static", name)) as f:
+        return f.read()
+
+
+def _hex_rgb(value):
+    value = value.lstrip("#")
+    return tuple(int(value[i : i + 2], 16) for i in (0, 2, 4))
+
+
+def _luminance(rgb):
+    def channel(v):
+        v /= 255
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (channel(v) for v in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _contrast(a, b):
+    high, low = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+def test_diagram_labels_stay_readable_on_highlight_fills():
+    tokens = {
+        name: _hex_rgb(value)
+        for name, value in re.findall(r"--(jj-[a-z0-9-]+):\s*(#[0-9a-fA-F]{6})", _css("jj.css"))
+    }
+    fills = re.findall(
+        r"\.lc-fill-\w+\s*\{\s*fill:\s*var\(--(jj-[a-z]+)\);\s*opacity:\s*([\d.]+);",
+        _css("leetcode.css"),
+    )
+    assert len(fills) == 3
+    for token, opacity in fills:
+        alpha = float(opacity)
+        for base in ("jj-bg", "jj-surface-2"):
+            mixed = tuple(
+                c * alpha + b * (1 - alpha) for c, b in zip(tokens[token], tokens[base])
+            )
+            assert _contrast(tokens["jj-text"], mixed) >= 4.5, (token, base)
+            assert _contrast(tokens["jj-muted"], mixed) >= 3, (token, base)
