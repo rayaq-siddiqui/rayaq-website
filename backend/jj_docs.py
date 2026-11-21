@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "3f0353a8a2795c19835356948a08fc897c0221da",
-    "commit_date": "2026-11-19",
+    "commit": "5b884f799145074227beb819f6596932bd25bc35",
+    "commit_date": "2026-11-21",
     "version": "0.47.1",
-    "analyzed_on": "2026-11-20",
+    "analyzed_on": "2026-11-21",
 }
 
 TOPICS = [
@@ -645,7 +645,7 @@ COMMANDS = [
         "category": 'Bookmarks and tags',
         "tier": 'A',
         "summary": 'Move existing bookmarks to target revision',
-        "source": ('cli/src/commands/bookmark/move.rs', 47),
+        "source": ('cli/src/commands/bookmark/move.rs', 45),
     },
     {
         "command": 'bookmark rename',
@@ -659,7 +659,7 @@ COMMANDS = [
         "category": 'Bookmarks and tags',
         "tier": 'A',
         "summary": 'Create a new bookmark, or update an existing one by name',
-        "source": ('cli/src/commands/bookmark/set.rs', 40),
+        "source": ('cli/src/commands/bookmark/set.rs', 39),
     },
     {
         "command": 'bookmark track',
