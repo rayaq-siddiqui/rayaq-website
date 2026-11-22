@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-11-21 (ninetieth run): followed upstream `3f0353a..5b884f7` (0.47.1). **The
+**Last updated:** 2026-11-22 (ninety-first run): followed upstream `5b884f7..0f7f4ce` (0.47.1). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@5b884f799145074227beb819f6596932bd25bc35` (committed 2026-11-21, version
-0.47.1), analyzed 2026-11-21. Held in `jj_docs.UPSTREAM`. Previous pin: `3f0353a`.
+`jj-vcs/jj@0f7f4ced8c1a24bef5a7fd8b9be64fbc63ddb3e0` (committed 2026-11-22, version
+0.47.1), analyzed 2026-11-22. Held in `jj_docs.UPSTREAM`. Previous pin: `5b884f7`.
 
 ## §10 acceptance criteria
 
@@ -31,10 +31,13 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to ninetieth runs: pin bumped).
+      run: pin bumped; fiftieth to ninety-first runs: pin bumped).
 
-## Sixty-fourth to ninetieth runs (2026-10-20 to 2026-11-21)
+## Sixty-fourth to ninety-first runs (2026-10-20 to 2026-11-22)
 
+- `9fd72ac`..`44d36fa`, `0c6ad8c` `5b884f7..0f7f4ce`: templater refactors (link ranges only); the
+  colocated Git backend setup moved into `git_backend_initializer()` (git-root relinked);
+  `config list` source line 38 to 39; 396 links in 79 pages remapped.
 - `6b63c9d`, `1d359fb` `3f0353a..5b884f7`: `bookmark move`/`set` now warn "Moving bookmarks backwards or
   sideways" and move anyway; `-B` is hidden and a no-op (both pages rewritten, advance fixed);
   templater list methods went type-erased (link ranges only); 97 links in 16 pages remapped.
@@ -45,10 +48,7 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
   `write()` link fixed); converge describes the author retry at the earliest timestamp; id_prefix async.
 - `0f64e87` `a7d4620..0dda823`: the simple backend, op store and op heads store moved into the new
   `jj-simple-stores` crate and `op_heads_store.rs` into jj-core; source sets, a diagram and 563 links in 94 pages follow.
-- `8b640c7` `4351061..a7d4620`: `gerrit upload` now uploads `(remote_bookmarks(remote=R) | root())..revisions`
-  and runs `check_rewritable` on all of it (gerrit-upload rewritten); an object-format hint was
-  added to the git-fetch, git-push, git-clone and gerrit-upload error tables; 10 more pages relinked.
-- Earlier: `92a32a9`/`33737b0`/`4be801c` (interdiff revsets, object-format retry), `22fcce5` (tree rewriter dedup), `9bf7238` (`MergedTree::has_dir`, status collapse), `f52b294` (git error types), `83f2bf8` (`lower_bound_bytes`), `fe34bb6` (docs), `2f4d106` (`git-sign-on-push`, `store_factories.rs`), `2440230` (`jj-git-backend`, `jj-local-util` crates), `98975c9` (`jj-frontend` crate), `2c11591` (remote tags as known heads), `211755a` (`jj-default-index`), `ff87734` (converge/next/prev prompts), `ad45a9e`, `91b7044`, `fa45a4c`, `9d37e33`, `e65bbae`, `b70be32` (`CachedLoader`), `ad64adf`, `cdc336a`, `60897df`, `117f376`.
+- Earlier: `8b640c7` (gerrit upload range, object-format hint), `92a32a9`/`33737b0`/`4be801c` (interdiff revsets, object-format retry), `22fcce5` (tree rewriter dedup), `9bf7238` (`MergedTree::has_dir`, status collapse), `f52b294` (git error types), `83f2bf8` (`lower_bound_bytes`), `fe34bb6` (docs), `2f4d106` (`git-sign-on-push`, `store_factories.rs`), `2440230` (`jj-git-backend`, `jj-local-util` crates), `98975c9` (`jj-frontend` crate), `2c11591` (remote tags as known heads), `211755a` (`jj-default-index`), `ff87734` (converge/next/prev prompts), `ad45a9e`, `91b7044`, `fa45a4c`, `9d37e33`, `e65bbae`, `b70be32` (`CachedLoader`), `ad64adf`, `cdc336a`, `60897df`, `117f376`.
 
 ## Fifty-third to sixty-third runs (2026-10-09 to 2026-10-19)
 
