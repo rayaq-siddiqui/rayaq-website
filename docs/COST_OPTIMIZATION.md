@@ -4,26 +4,25 @@ Maintained by the weekly "rayaq.ca — weekly server cost optimization" Routine.
 each run; **Considered and rejected** carries forward. Scope is application code only —
 server configuration (Caddy, gunicorn, systemd, the VM) is out of scope by the owner's choice.
 
-## 2026-11-15
+## 2026-11-22
 
-**Verdict:** nothing landed. Since 2026-11-01 the code changes are content and pin moves in
-the reference sections (`/jj`, `/jj-dojo`, `/jj-vfs-poc`, `/rml`) and one new `/ml-models`
-page; none adds a measurable per-request cost. `/assembly-agents` and `showcase.json` still
-don't exist in the app, so the smoke list's 404 there is expected.
+**Verdict:** nothing landed. Since 2026-11-15 the code changes are content and pin moves in
+`/jj` and `/rml`, a CSS colour fix in `/leetcode`, and the new `/ml-models/model-comparison`
+page with its stdlib statistics helpers; none adds a measurable per-request cost.
+`/assembly-agents` and `showcase.json` still don't exist in the app.
 
 ### Landed
 
-Nothing. Measured in a fresh process across all 334 routes (all 200):
+Nothing. Measured in a fresh process across all 335 routes (all 200):
 
-- Rendering every page cold takes 19.6 s in total, the same as two weeks ago, spread across
-  first requests. The slowest are still the `/ml-models` simulation pages (item 3 below):
-  random-forests 1567 ms, distillation 1440 ms, vector-indexes 1191 ms, diffusion-models
-  970 ms.
-- The pages that are new or changed since the last run render cold quickly:
-  `/ml-models/speculative-decoding` 61 ms, `/jj/status` 35 ms, `/rml` 27 ms, `/jj/trees`
-  17 ms. Each is paid once per worker start, then served from the page cache.
-- Warm requests: `/` 0.28 ms, `/resume` 0.48 ms, cached reference pages ~0.15 ms.
-- `import app` is 180 ms, 122 ms of it Flask, which matches the last run.
+- Rendering every page cold takes 16.5 s in total (19.6 s last run, same code paths;
+  the difference is machine noise). The slowest are still the `/ml-models` simulation
+  pages (item 3 below): random-forests 1398 ms, distillation 1124 ms, vector-indexes
+  987 ms, diffusion-models 768 ms.
+- The new model-comparison page (2000 bootstrap resamples and 20000 sign-flip draws at
+  render time) is under 440 ms cold, paid once per worker start, then cached.
+- Warm requests: `/` 0.21 ms, `/resume` 0.41 ms; all 335 cached pages re-served in 48 ms.
+- `import app` is 195 ms, mostly Flask, in line with earlier runs.
 
 ### Needs the owner
 
@@ -39,8 +38,8 @@ Nothing. Measured in a fresh process across all 334 routes (all 200):
    serve `backend/`, so they cost nothing at runtime, only clone and pull size. They came
    from another Routine's commit, so they're left for the owner to delete.
 3. **Slow first renders of simulation pages in `/ml-models`.** Four pages run real
-   simulations at render time: random-forests 1567 ms, distillation 1440 ms,
-   vector-indexes 1191 ms, diffusion-models 970 ms, measured 2026-11-15 (about 1M
+   simulations at render time: random-forests 1398 ms, distillation 1124 ms,
+   vector-indexes 987 ms, diffusion-models 768 ms, measured 2026-11-22 (about 1M
    `random.gauss` calls). Each costs that once per worker start. Making them faster means precomputing their figures offline
    into committed data, the way torch figures already are, or changing the simulations,
    and either risks float-level changes to the pages. That is the ml-models Routine's call.
@@ -71,4 +70,4 @@ Nothing. Measured in a fresh process across all 334 routes (all 200):
 
 Versioned static assets with year-long caching, the per-city weather TTL cache, and the
 reference page cache (bytes, bounded by the number of ready pages and section indexes,
-331 today).
+335 today).
