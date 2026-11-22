@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "5b884f799145074227beb819f6596932bd25bc35",
-    "commit_date": "2026-11-21",
+    "commit": "0f7f4ced8c1a24bef5a7fd8b9be64fbc63ddb3e0",
+    "commit_date": "2026-11-22",
     "version": "0.47.1",
-    "analyzed_on": "2026-11-21",
+    "analyzed_on": "2026-11-22",
 }
 
 TOPICS = [
@@ -869,7 +869,7 @@ COMMANDS = [
         "category": 'Configuration',
         "tier": 'B',
         "summary": 'List variables set in config files, along with their values.',
-        "source": ('cli/src/commands/config/list.rs', 38),
+        "source": ('cli/src/commands/config/list.rs', 39),
     },
     {
         "command": 'config path',
