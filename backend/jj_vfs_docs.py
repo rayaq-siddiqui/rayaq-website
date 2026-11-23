@@ -6,7 +6,7 @@ UPSTREAM = {
     "commit_date": "2026-09-03",
     "version": "0.1.0",
     "jj_lib_version": "0.43.0",
-    "analyzed_on": "2026-11-16",
+    "analyzed_on": "2026-11-23",
 }
 
 JJ_REPO = "https://github.com/jj-vcs/jj"
