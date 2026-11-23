@@ -36,8 +36,7 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
 ## Sixty-fourth to ninety-second runs (2026-10-20 to 2026-11-23)
 
 - `d822004` `0f7f4ce..8f7518a`: `builtin_*_methods` tables became `register_*_methods` on a
-  `TemplateSymbolTable`; `config list` keywords became `AnnotatedConfigValue` methods. 23 links in
-  9 pages relinked (bookmark/tag/workspace/file/operation list, config list, evolog).
+  `TemplateSymbolTable`; `config list` keywords became methods. 23 links in 9 pages relinked.
 - `9fd72ac`..`44d36fa`, `0c6ad8c` `5b884f7..0f7f4ce`: templater refactors (link ranges only); the
   colocated Git backend setup moved into `git_backend_initializer()` (git-root relinked);
   `config list` source line 38 to 39; 396 links in 79 pages remapped.
