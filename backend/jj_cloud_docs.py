@@ -4,10 +4,10 @@ import jj_docs
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj-commit-cloud-poc",
-    "commit": "4b1c77b9db365e426e49846669a1626698fd5fa6",
-    "commit_date": "2026-09-01",
+    "commit": "0428ba53c97d3f5de9ecb9e16a6df941d298ffa1",
+    "commit_date": "2026-11-25",
     "jj_lib_version": "0.43.0",
-    "analyzed_on": "2026-10-03",
+    "analyzed_on": "2026-11-25",
 }
 
 JJ_REPO = "https://github.com/jj-vcs/jj"
