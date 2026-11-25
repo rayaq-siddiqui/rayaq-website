@@ -3,13 +3,13 @@
 Running log for the daily jj-commit-cloud-poc architecture Routine. Read this first, update it last.
 The contract is `specs/jj-commit-cloud-poc.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-11-18 (eleventh run). Upstream unchanged since the pin; maintenance only, no
-page changes. The build is complete.
+**Last updated:** 2026-11-25 (twelfth run). Upstream moved; pin followed to `0428ba5` and eight
+pages updated. The build is complete.
 
 ## Upstream pin
 
-`jj-vcs/jj-commit-cloud-poc@4b1c77b9db365e426e49846669a1626698fd5fa6` (committed 2026-09-01,
-`jj-lib`/`jj-cli` 0.43.0), analyzed 2026-10-03. Held in `jj_cloud_docs.UPSTREAM`. jj links point
+`jj-vcs/jj-commit-cloud-poc@0428ba53c97d3f5de9ecb9e16a6df941d298ffa1` (committed 2026-11-25,
+`jj-lib`/`jj-cli` 0.43.0), analyzed 2026-11-25. Held in `jj_cloud_docs.UPSTREAM`. jj links point
 at the `v0.43.0` tag of `jj-vcs/jj`.
 
 ## §10 acceptance criteria
@@ -26,7 +26,18 @@ at the `v0.43.0` tag of `jj-vcs/jj`.
 - [x] Mobile at 390px: no horizontal page scroll on the index and every ready page (headless
       Chromium, fourth run; no page changed since).
 - [x] The daily Routine has run in maintenance mode (runs two to eleven: no upstream
-      change).
+      change; run twelve followed upstream to `0428ba5`).
+
+## Twelfth run (2026-11-25)
+
+Upstream moved `4b1c77b` → `0428ba5` (five commits): `gix` 0.68.0 → 0.85.0, `compute_hash` now
+returns a `Result` (unwrapped with `expect`; a `FIXME` on the blob hash), `common/build.rs` falls
+back to a vendored `protoc`, `testutils/build.rs` reworked (release profile, clippy wrappers,
+`JJ_CC_SERVER_BIN`, Cargo 1.98+ layout), `uuid` dropped from `cc-lib`, clippy allows shifted lines,
+plus `rust-toolchain.toml`, `.cargo/config.toml`, AGENTS.md and three `docs/` design notes.
+`e3cdcf2` remapped every line link and visible line number and updated index, object-ids,
+protobufs and testing (plus line-only fixes on server, storage, client-backend, client-op-store).
+Suite green (1087 tests); all 12 routes 200.
 
 ## Fifth to eleventh runs (2026-10-07 to 2026-11-18)
 
@@ -133,5 +144,12 @@ Each is stated on the relevant page from the code.
   Possibly unintended.
 - **Operation and view encodings aren't injective.** Two verified collisions, both with unusual
   inputs.
-- Resolved this run: the earlier note that the binary can't open ordinary repositories was wrong.
+- **Worked-example IDs not recomputed under `gix` 0.85.0.** They are plain Git object hashes, so
+  they shouldn't change, but upstream's `cargo test` wasn't run this run to re-confirm.
+- **`docs/design.md`, `data-model.md`, `spanner-and-gcs-design.md`** (added at `0428ba5`) describe
+  a proposed Spanner/GCS design, not code. No page covers them; add one only if the owner wants
+  proposals shown, marked *planned*.
+- **`JJ_CC_SERVER_BIN` is exported but unused**: `testutils` still finds the server next to the
+  test executable, which relies on the best-effort copy.
+- Resolved earlier: the note that the binary can't open ordinary repositories was wrong.
   jj-cli merges the added factories into its defaults.
