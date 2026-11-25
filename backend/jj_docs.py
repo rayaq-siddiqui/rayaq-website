@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "63602f49f386dac1a2c18309ab83c73deb075e11",
+    "commit": "f38d30270f9718261b75f922c9fd54767512cd39",
     "commit_date": "2026-11-24",
     "version": "0.47.1",
-    "analyzed_on": "2026-11-24",
+    "analyzed_on": "2026-11-25",
 }
 
 TOPICS = [
@@ -255,7 +255,7 @@ COMMANDS = [
         "category": 'Creating and editing changes',
         "tier": 'A',
         "summary": 'Update the change description or other metadata [default alias: desc]',
-        "source": ('cli/src/commands/describe.rs', 51),
+        "source": ('cli/src/commands/describe.rs', 50),
     },
     {
         "command": 'commit',
