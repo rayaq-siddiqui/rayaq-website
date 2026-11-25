@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-11-24 (ninety-third run): followed upstream `8f7518a..63602f4` (0.47.1). **The
+**Last updated:** 2026-11-25 (ninety-fourth run): followed upstream `63602f4..f38d302` (0.47.1). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@63602f49f386dac1a2c18309ab83c73deb075e11` (committed 2026-11-24, version
-0.47.1), analyzed 2026-11-24. Held in `jj_docs.UPSTREAM`. Previous pin: `8f7518a`.
+`jj-vcs/jj@f38d30270f9718261b75f922c9fd54767512cd39` (committed 2026-11-24, version
+0.47.1), analyzed 2026-11-25. Held in `jj_docs.UPSTREAM`. Previous pin: `63602f4`.
 
 ## §10 acceptance criteria
 
@@ -31,14 +31,14 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
       `util completion`/`config-schema`/`exec`/`gc`/`install-man-pages`/`markdown-help`/`snapshot`/
       `diff`/`backend`, `debug`, `bench`). Per-command lists are in the registry and `git log`.
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
-      run: pin bumped; fiftieth to ninety-third runs: pin bumped).
+      run: pin bumped; fiftieth to ninety-fourth runs: pin bumped).
 
-## Sixty-fourth to ninety-third runs (2026-10-20 to 2026-11-24)
+## Sixty-fourth to ninety-fourth runs (2026-10-20 to 2026-11-25)
 
+- `a4b73f2`..`2ce31f3` `63602f4..f38d302`: `for_rewrite_from`, `rewrite_commit`, `reparent` went async;
+  455 links in 80 pages remapped, describe source line 51 to 50, a stale describe label fixed.
 - `d647e78`..`b59d631` `8f7518a..63602f4`: crates `jj-config`/`jj-working-copy`/`jj-local-working-copy` split
   out (~105 pages relinked); two-pass revsets; graph line colors; `fix -r` refuses; op-heads ID tie-break.
-- `d822004` `0f7f4ce..8f7518a`: `builtin_*_methods` tables became `register_*_methods` on a
-  `TemplateSymbolTable`; `config list` keywords became methods. 23 links in 9 pages relinked.
 - `9fd72ac`..`44d36fa`, `0c6ad8c` `5b884f7..0f7f4ce`: templater refactors (link ranges only); the
   colocated Git backend setup moved into `git_backend_initializer()` (git-root relinked);
   `config list` source line 38 to 39; 396 links in 79 pages remapped.
@@ -48,7 +48,7 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
 - `52518a6..3f0353a`: repo init/load moved to `store_factories.rs` (`StoreInitializers::init_repo`,
   `StoreFactories::load_repo`); Git export applies all ref edits in one `edit_references` transaction
   with a per-ref fallback (git-export rewritten; backends, storage, git-root, conflicts, file-list); 326 links remapped.
-- Earlier: `684717f` (type-erased commit templater), `0f64e87` (simple backend/op store moves), `8b640c7` (gerrit upload range, object-format hint), `92a32a9`/`33737b0`/`4be801c` (interdiff revsets, object-format retry), `22fcce5` (tree rewriter dedup), `9bf7238` (`MergedTree::has_dir`, status collapse), `f52b294` (git error types), `83f2bf8` (`lower_bound_bytes`), `fe34bb6` (docs), `2f4d106` (`git-sign-on-push`, `store_factories.rs`), `2440230` (`jj-git-backend`, `jj-local-util` crates), `98975c9` (`jj-frontend` crate), `2c11591` (remote tags as known heads), `211755a` (`jj-default-index`), `ff87734` (converge/next/prev prompts), `ad45a9e`, `91b7044`, `fa45a4c`, `9d37e33`, `e65bbae`, `b70be32` (`CachedLoader`), `ad64adf`, `cdc336a`, `60897df`, `117f376`.
+- Earlier: `d822004` (`register_*_methods` tables), `684717f` (type-erased commit templater), `0f64e87` (simple backend/op store moves), `8b640c7` (gerrit upload range, object-format hint), `92a32a9`/`33737b0`/`4be801c` (interdiff revsets, object-format retry), `22fcce5` (tree rewriter dedup), `9bf7238` (`MergedTree::has_dir`, status collapse), `f52b294` (git error types), `83f2bf8` (`lower_bound_bytes`), `fe34bb6` (docs), `2f4d106` (`git-sign-on-push`, `store_factories.rs`), `2440230` (`jj-git-backend`, `jj-local-util` crates), `98975c9` (`jj-frontend` crate), `2c11591` (remote tags as known heads), `211755a` (`jj-default-index`), `ff87734` (converge/next/prev prompts), `ad45a9e`, `91b7044`, `fa45a4c`, `9d37e33`, `e65bbae`, `b70be32` (`CachedLoader`), `ad64adf`, `cdc336a`, `60897df`, `117f376`.
 
 ## Fifty-third to sixty-third runs (2026-10-09 to 2026-10-19)
 
