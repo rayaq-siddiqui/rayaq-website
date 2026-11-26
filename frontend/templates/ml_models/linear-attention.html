@@ -1,0 +1,331 @@
+{% set ex = linear_attention_example() %}
+{% set e = ex.example %}
+{% set mem = e.memory %}
+{% macro f(x, d=3) -%}{{ ("%." ~ d ~ "f")|format(0.0 if x|abs < 0.5 * 10 ** (-d) else x)|replace("-", "−") }}{%- endmacro %}
+{% macro vec(v, d=2) -%}({% for x in v %}{{ f(x, d) }}{% if not loop.last %}, {% endif %}{% endfor %}){%- endmacro %}
+{% macro big(x) -%}{{ "{:,}".format(x|int) }}{%- endmacro %}
+{% macro gib(b) -%}{{ "%.2f"|format(b / 1024 ** 3) }} GiB{%- endmacro %}
+{% set gc4 = "https://github.com/salute-developers/gigachat4/blob/81b0dd849dcbbd4c2f909214386c7e5e90680327/GigaChat_4.pdf" %}
+<header class="jj-header">
+  <h1>Linear attention and the delta rule</h1>
+  <p class="tagline">
+    Remove the softmax from <a href="/ml-models/attention">attention</a> and the sum over past tokens folds into a fixed-size matrix, so a layer runs as a recurrence with constant memory per token. Plain linear attention can only add to that matrix; the delta rule makes it correct what it stored, and a gate lets it forget. Gated DeltaNet layers built this way, mixed with a few full-attention layers, are the sequence mixer in several 2026 open-weight models.
+    This page checks that the parallel and recurrent forms give the same {{ e.tokens|length }} outputs, writes and overwrites a small associative memory under all three update rules, and counts the cost and memory of a hybrid stack. Every number is computed and every library link is pinned.
+  </p>
+</header>
+
+<h2 id="problem">Problem</h2>
+
+<p>
+  Causal softmax attention compares each token with every earlier one. A prefill of <var>n</var> tokens costs time proportional to <var>n</var>², and each generated token reads a <a href="/ml-models/kv-cache">KV cache</a> that grows by one entry per token per layer. At a million tokens of context the cache, not the weights, decides how many requests fit on a GPU.
+</p>
+<p>
+  <a href="/ml-models/state-space-models">State-space models</a> solve the memory problem with a fixed-size state, but their state is a vector per channel, updated by a decay and an input. Linear attention reaches the same place from the attention side: it keeps queries, keys and values, and stores the past as a <var>d<sub>k</sub></var> × <var>d<sub>v</sub></var> matrix. The open problem is what to write into that matrix so it stays useful when the context is far longer than the matrix can hold, and that is what the delta rule and its gate answer.
+</p>
+
+<h2 id="intuition">Intuition</h2>
+
+<p>
+  Read attention as a lookup in a key-value memory: the query is compared with every stored key and returns a blend of the matching values. If the comparison is a plain dot product instead of a softmax, the whole memory can be summarised by one matrix <var>S</var> = Σ <var>k</var><sub><var>j</var></sub><var>v</var><sub><var>j</var></sub><sup>T</sup>, and reading is <var>S</var><sup>T</sup><var>q</var>. With orthonormal keys that read is exact. Storing a pair costs one outer product, whatever the length of the sequence.
+</p>
+<p>
+  The trouble is that adding is the only operation. Store a new value under a key that is already there and the read returns the sum of the old and new values. Schlag, Irie and Schmidhuber (2021) pointed out that this matrix is a "fast weight" memory and borrowed the fix from the Widrow–Hoff delta rule: before writing, read what the memory currently returns for the key, and write only the error. Gated DeltaNet (Yang, Kautz and Hatamizadeh, 2024) adds a decay α that fades the whole memory each step, so it can clear space when the context changes.
+</p>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 270" role="img" aria-labelledby="la-views-title la-views-desc">
+    <title id="la-views-title">Softmax attention keeps every key; linear attention keeps one matrix</title>
+    <desc id="la-views-desc">Left: causal softmax attention at step t compares the query with all t cached keys and values; the cache grows by one row per token. Right: linear attention keeps a d_k by d_v state matrix S. Each token adds the outer product of its key and value to S, and the output is S transposed times the query. The state's size is the same at token 10 and at token one million.</desc>
+    <g font-size="12">
+      <text x="20" y="22" font-weight="bold">softmax attention: cache grows with t</text>
+      {% for t in range(6) %}
+      <rect x="30" y="{{ 40 + t * 26 }}" width="110" height="20" rx="4" class="d-box ml-tensor"></rect>
+      <text x="85" y="{{ 54 + t * 26 }}" text-anchor="middle">k{{ t + 1 }}, v{{ t + 1 }}</text>
+      {% endfor %}
+      <text x="85" y="210" text-anchor="middle" class="d-muted">… one row per token</text>
+      <rect x="190" y="105" width="90" height="30" rx="6" class="d-box ml-op"></rect>
+      <text x="235" y="124" text-anchor="middle">softmax(Kq)</text>
+      <line x1="140" y1="120" x2="190" y2="120" class="d-line"></line>
+      <text x="235" y="160" text-anchor="middle" class="d-muted">reads t rows</text>
+      <text x="360" y="22" font-weight="bold">linear attention: fixed state</text>
+      <rect x="400" y="70" width="110" height="110" rx="6" class="d-box ml-heat"></rect>
+      <text x="455" y="120" text-anchor="middle">S</text>
+      <text x="455" y="138" text-anchor="middle" class="d-muted">d_k × d_v</text>
+      <text x="455" y="58" text-anchor="middle">S ← S + k vᵀ</text>
+      <line x1="455" y1="44" x2="455" y2="35" class="d-line"></line>
+      <text x="455" y="30" text-anchor="middle" class="d-muted">token t: k, v</text>
+      <line x1="510" y1="125" x2="560" y2="125" class="d-line"></line>
+      <text x="590" y="129" text-anchor="middle">o = Sᵀq</text>
+      <text x="455" y="210" text-anchor="middle" class="d-muted">same size at t = 10 and t = 10⁶</text>
+      <text x="320" y="255" text-anchor="middle" style="fill:var(--jj-accent)">dropping the softmax lets Σ (qᵀkⱼ) vⱼ become qᵀ(Σ kⱼvⱼᵀ)</text>
+    </g>
+  </svg>
+  <p class="ml-caption">The step that matters is reassociation: (<var>q</var><sup>T</sup><var>k</var><sub><var>j</var></sub>)<var>v</var><sub><var>j</var></sub> summed over <var>j</var> equals <var>q</var><sup>T</sup> times the summed outer products. The softmax's normalisation over all <var>j</var> is what prevents it.</p>
+</div>
+
+<h2 id="mechanics">Mechanics</h2>
+
+<h3 id="kernel-trick">From softmax to a feature map</h3>
+<p>
+  Causal softmax attention computes <var>o</var><sub><var>i</var></sub> = Σ<sub><var>j</var>≤<var>i</var></sub> sim(<var>q</var><sub><var>i</var></sub>, <var>k</var><sub><var>j</var></sub>) <var>v</var><sub><var>j</var></sub> / Σ<sub><var>j</var>≤<var>i</var></sub> sim(<var>q</var><sub><var>i</var></sub>, <var>k</var><sub><var>j</var></sub>) with sim = exp(<var>q</var><sup>T</sup><var>k</var>/√<var>d</var>). Katharopoulos, Vyas, Pappas and Fleuret (2020) replace sim with a kernel φ(<var>q</var>)<sup>T</sup>φ(<var>k</var>) for a positive feature map φ. Then:
+</p>
+<p class="ml-formula">
+  <var>S</var><sub><var>i</var></sub> = <var>S</var><sub><var>i</var>−1</sub> + φ(<var>k</var><sub><var>i</var></sub>)<var>v</var><sub><var>i</var></sub><sup>T</sup>, &nbsp; <var>z</var><sub><var>i</var></sub> = <var>z</var><sub><var>i</var>−1</sub> + φ(<var>k</var><sub><var>i</var></sub>), &nbsp; <var>o</var><sub><var>i</var></sub> = <var>S</var><sub><var>i</var></sub><sup>T</sup>φ(<var>q</var><sub><var>i</var></sub>) / <var>z</var><sub><var>i</var></sub><sup>T</sup>φ(<var>q</var><sub><var>i</var></sub>)
+</p>
+<p>
+  Their choice is φ(<var>x</var>) = <a href="{{ src('torch/nn/functional.py', 1869, 1880) }}"><code>elu</code></a>(<var>x</var>) + 1, which is positive so the weights stay positive and sum to 1. The paper's title states the result: with this form a Transformer layer is an RNN whose hidden state is (<var>S</var>, <var>z</var>). Training still sees the whole sequence, so it can compute the same outputs with a prefix sum (<a href="{{ src('torch/_torch_docs.py', 3561, 3591) }}"><code>cumsum</code></a>) of the outer products, or in chunks: full attention-style matrix products inside each chunk and the recurrence between chunks.
+</p>
+
+<h3 id="delta-rule">The delta rule</h3>
+<p>
+  Later linear-attention models drop the normaliser <var>z</var> and the feature map, normalise <var>q</var> and <var>k</var> to unit length instead, and change the write. With state <var>S</var> of shape <var>d<sub>k</sub></var> × <var>d<sub>v</sub></var> and a write strength β<sub><var>t</var></sub> ∈ (0, 1) from a sigmoid:
+</p>
+<p class="ml-formula">
+  <var>v</var>̂<sub><var>t</var></sub> = <var>S</var><sub><var>t</var>−1</sub><sup>T</sup><var>k</var><sub><var>t</var></sub>, &nbsp; <var>S</var><sub><var>t</var></sub> = <var>S</var><sub><var>t</var>−1</sub> + β<sub><var>t</var></sub> <var>k</var><sub><var>t</var></sub>(<var>v</var><sub><var>t</var></sub> − <var>v</var>̂<sub><var>t</var></sub>)<sup>T</sup> = (<var>I</var> − β<sub><var>t</var></sub><var>k</var><sub><var>t</var></sub><var>k</var><sub><var>t</var></sub><sup>T</sup>)<var>S</var><sub><var>t</var>−1</sub> + β<sub><var>t</var></sub><var>k</var><sub><var>t</var></sub><var>v</var><sub><var>t</var></sub><sup>T</sup>, &nbsp; <var>o</var><sub><var>t</var></sub> = <var>S</var><sub><var>t</var></sub><sup>T</sup><var>q</var><sub><var>t</var></sub>
+</p>
+<p>
+  <var>v</var>̂ is what the memory currently returns for <var>k</var>. With β = 1 and a unit key, the update replaces it with <var>v</var> exactly and leaves every direction orthogonal to <var>k</var> untouched. It is one step of gradient descent on the loss ½‖<var>S</var><sup>T</sup><var>k</var> − <var>v</var>‖² with learning rate β, which is where the Widrow–Hoff name comes from. The transition matrix <var>I</var> − β<var>kk</var><sup>T</sup> has eigenvalue 1 − β along <var>k</var> and 1 elsewhere, so with unit keys and β in (0, 1) the state cannot blow up; that is why <var>q</var> and <var>k</var> are <a href="{{ src('torch/nn/functional.py', 6143, 6178) }}">L2-normalised</a>.
+</p>
+<p>
+  The product of such matrices is not a simple cumulative sum, so the prefix-sum trick no longer applies. Yang, Wang, Zhang, Shen and Kim (2024) showed that a product of these Householder-like matrices has a compact WY representation, which gives a chunkwise algorithm built from matrix multiplications that trains in parallel over the sequence.
+</p>
+
+<h3 id="gating">The gated delta rule</h3>
+<p>
+  Gated DeltaNet multiplies the old state by a data-dependent decay α<sub><var>t</var></sub> = exp(<var>g</var><sub><var>t</var></sub>) ∈ (0, 1] before the delta write:
+</p>
+<p class="ml-formula">
+  <var>S</var><sub><var>t</var></sub> = α<sub><var>t</var></sub>(<var>I</var> − β<sub><var>t</var></sub><var>k</var><sub><var>t</var></sub><var>k</var><sub><var>t</var></sub><sup>T</sup>)<var>S</var><sub><var>t</var>−1</sub> + β<sub><var>t</var></sub><var>k</var><sub><var>t</var></sub><var>v</var><sub><var>t</var></sub><sup>T</sup>
+</p>
+<p>
+  α near 1 keeps everything; α near 0 wipes the memory, which a pure delta rule can only do one key direction at a time. The gate is Mamba-2's scalar decay, so the paper presents the layer as a combination of the two: the delta rule gives precise, targeted edits, and the gate gives fast forgetting. Computed in log space, the decays of a chunk are a <a href="{{ src('torch/_torch_docs.py', 3561, 3591) }}"><code>cumsum</code></a> of <var>g</var> values from a <a href="{{ src('torch/nn/functional.py', 2049, 2058) }}"><code>logsigmoid</code></a> or similar.
+</p>
+
+<h3 id="block">A Gated DeltaNet block</h3>
+<p>
+  In the <a href="{{ gc4 }}">GigaChat 4 technical report</a>'s architecture figure, a GDN block projects the input to <var>q</var>, <var>k</var>, <var>v</var>, α and β with linear layers, passes <var>q</var>, <var>k</var> and <var>v</var> through a short causal convolution, L2-normalises <var>q</var> and <var>k</var>, runs the gated delta rule, normalises the output with RMSNorm and multiplies it by a gate computed from the input before the output projection. Several heads run in parallel, each with its own state matrix.
+</p>
+
+<h3 id="hybrids">Hybrid stacks</h3>
+<p>
+  A fixed-size state cannot hold an arbitrary long context exactly, so current large models keep some full-attention layers. GigaChat 4 (2026) has 64 layers: 48 GDN and 16 multi-head latent attention (MLA) layers, a 3:1 schedule, with 256 routed experts (8 active plus 1 shared) in its <a href="/ml-models/mixture-of-experts">mixture of experts</a>, about 708B total and 41B active parameters, and a 1,048,576-token context. Only the 16 MLA layers keep a KV cache, and at long context they use DeepSeek Sparse Attention with top-2,048 key selection; the GDN layers are unchanged. Its predecessor GigaChat 3.5 used the same 3:1 ratio over 40 layers (30 GDN, 10 MLA). The Ternary Bonsai 2 whitepaper describes its base model, Qwen3.8-27B, as a similar hybrid of about three-quarters linear-attention layers.
+</p>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Component</th><th>Shape/Params</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Feature map φ</td><td>elementwise, (<var>B</var>, <var>H</var>, <var>L</var>, <var>d<sub>k</sub></var>)</td><td>elu(<var>x</var>) + 1 keeps the kernel positive (Katharopoulos et al.)</td><td><a href="{{ src('torch/nn/functional.py', 1869, 1880) }}">functional.py 1869-1880</a></td></tr>
+      <tr><td>Prefix sum of <var>kv</var><sup>T</sup></td><td>(<var>B</var>, <var>H</var>, <var>L</var>, <var>d<sub>k</sub></var>, <var>d<sub>v</sub></var>)</td><td>Parallel form of the additive recurrence</td><td><a href="{{ src('torch/_torch_docs.py', 3561, 3591) }}">_torch_docs.py 3561-3591</a></td></tr>
+      <tr><td>Outer products and reads</td><td><code>einsum</code> over <var>d<sub>k</sub></var>, <var>d<sub>v</sub></var></td><td><var>kv</var><sup>T</sup> writes, <var>S</var><sup>T</sup><var>q</var> reads</td><td><a href="{{ src('torch/functional.py', 175, 382) }}">functional.py 175-382</a></td></tr>
+      <tr><td>L2 norm on <var>q</var>, <var>k</var></td><td>over <var>d<sub>k</sub></var></td><td>Unit keys keep the delta update stable</td><td><a href="{{ src('torch/nn/functional.py', 6143, 6178) }}">functional.py 6143-6178</a></td></tr>
+      <tr><td>β (write strength)</td><td>(<var>B</var>, <var>H</var>, <var>L</var>) in (0, 1)</td><td>How far to move the stored value toward <var>v</var></td><td><a href="{{ src('torch/nn/functional.py', 2350, 2357) }}">functional.py 2350-2357</a></td></tr>
+      <tr><td>α = exp(<var>g</var>) (decay)</td><td>(<var>B</var>, <var>H</var>, <var>L</var>), <var>g</var> ≤ 0</td><td>Fades the whole state each step</td><td><a href="{{ src('torch/nn/functional.py', 2049, 2058) }}">functional.py 2049-2058</a></td></tr>
+      <tr><td>State <var>S</var></td><td>(<var>B</var>, <var>H</var>, <var>d<sub>k</sub></var>, <var>d<sub>v</sub></var>) per layer</td><td>All a linear layer carries between tokens</td><td>Yang, Kautz and Hatamizadeh §2</td></tr>
+      <tr><td>Full-attention layers</td><td>16 of 64 in GigaChat 4</td><td>Exact recall over the whole context; the only KV cache</td><td><a href="{{ src('torch/nn/functional.py', 6414, 6587) }}">functional.py 6414-6587</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>Why does linear attention need a feature map like elu + 1, while the delta rule uses L2-normalised q and k instead?</summary>
+  <p>Linear attention keeps the normaliser <var>z</var> and divides by φ(<var>q</var>)<sup>T</sup><var>z</var>, so the weights must be positive or the denominator can reach zero. The delta rule has no normaliser: it treats <var>S</var> as a regression from keys to values, and what it needs is that <var>I</var> − β<var>kk</var><sup>T</sup> does not amplify the state, which unit-length keys guarantee for β in (0, 1).</p>
+</details>
+
+<h2 id="worked-example">Worked example</h2>
+
+<h3 id="example-equivalence">Parallel and recurrent forms agree</h3>
+<div class="ml-worked">
+  <p>
+    Four tokens with two-dimensional queries, keys and values, φ = elu + 1. The parallel form builds the weights φ(<var>q</var><sub><var>i</var></sub>)<sup>T</sup>φ(<var>k</var><sub><var>j</var></sub>) for <var>j</var> ≤ <var>i</var>; the recurrent form keeps only <var>S</var> (2 × 2) and <var>z</var> (2). The largest difference between their outputs is {{ "%.1e"|format(ex.max_gap) }}, rounding error.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>token</th><th><var>q</var></th><th><var>k</var></th><th><var>v</var></th><th>φ(<var>k</var>)</th><th>output (parallel)</th><th>output (recurrent)</th></tr></thead>
+      <tbody>
+        {% for i in range(e.tokens|length) %}
+        <tr><td>{{ e.tokens[i] }}</td><td>{{ vec(e.queries[i], 1) }}</td><td>{{ vec(e["keys"][i], 1) }}</td><td>{{ vec(e["values"][i], 1) }}</td><td>{{ vec(ex.features["keys"][i], 3) }}</td><td>{{ vec(ex.parallel.outputs[i], 3) }}</td><td>{{ vec(ex.recurrent.outputs[i], 3) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The weights are not the softmax's. For the last token, linear attention spreads its weight as {{ vec(ex.parallel.weights[-1], 2) }}, while softmax over the same dot products gives {{ vec(ex.softmax_weights[-1], 2) }}. The kernel is smoother: it cannot make one token dominate the way exp can, which is one reason plain linear attention trailed softmax on language modelling.
+  </p>
+</div>
+
+<h3 id="example-memory">Writing, overwriting and forgetting</h3>
+<div class="ml-worked">
+  <p>
+    Three writes into a 2 × 2 memory with unit keys: {{ mem.names|join(", ") }}, where v1 = {{ vec(mem["values"][0], 0) }}, v2 = {{ vec(mem["values"][1], 0) }} and the third write stores v1′ = {{ vec(mem["values"][2], 0) }} under k1 again. β = {{ f(mem.beta, 0) }}, and the gated rule uses α = {{ f(mem.alpha, 1) }} every step. "Recalled" is <var>S</var><sup>T</sup><var>k</var> just before each write, after the decay.
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>write</th><th>rule</th><th>recalled</th><th>written along <var>k</var></th><th>row k1 of <var>S</var></th><th>row k2 of <var>S</var></th></tr></thead>
+      <tbody>
+        {% for rule in ["linear", "delta", "gated-delta"] %}
+        {% for step in ex.traces[rule] %}
+        <tr><td>{{ mem.names[loop.index0] }}</td><td>{{ rule }}</td><td>{{ vec(step.recalled, 1) }}</td><td>{{ vec(step.write, 1) }}</td><td>{{ vec(step.state[0], 1) }}</td><td>{{ vec(step.state[1], 1) }}</td></tr>
+        {% endfor %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Reading with k1 afterwards: linear attention returns {{ vec(ex.reads.linear.k1, 0) }}, the sum v1 + v1′, because it can only add. The delta rule returns {{ vec(ex.reads.delta.k1, 0) }}: at the third write it recalled v1, wrote the difference, and replaced it. The gated rule also returns {{ vec(ex.reads["gated-delta"].k1, 0) }}, because the delta write corrects whatever the decay left; but k2 now reads {{ vec(ex.reads["gated-delta"].k2, 1) }} instead of {{ vec(ex.reads.delta.k2, 0) }}, faded by α twice. That is the gate's trade: room for new content at the price of old content.
+  </p>
+</div>
+
+<div class="jj-diagram">
+  <svg viewBox="0 0 640 250" role="img" aria-labelledby="la-mem-title la-mem-desc">
+    <title id="la-mem-title">The memory after three writes under each rule</title>
+    <desc id="la-mem-desc">Three columns, one per rule, each showing the value read back for k1 and k2 after writing v1 = (2, 0) under k1, v2 = (0, 3) under k2, and v1 prime = (5, 1) under k1 again. Linear attention reads (7, 1) for k1, mixing old and new. The delta rule reads (5, 1), the new value. The gated delta rule reads (5, 1) for k1 but only (0, 1.5) for k2, which has decayed.</desc>
+    <g font-size="12">
+      {% for rule in ["linear", "delta", "gated-delta"] %}
+      {% set x = 20 + loop.index0 * 210 %}
+      <text x="{{ x + 90 }}" y="24" text-anchor="middle" font-weight="bold">{{ rule }}</text>
+      {% for name in ["k1", "k2"] %}
+      {% set y = 50 + loop.index0 * 80 %}
+      {% set read = ex.reads[rule][name] %}
+      {% set want = mem["values"][2] if name == "k1" else mem["values"][1] %}
+      <rect x="{{ x }}" y="{{ y }}" width="180" height="56" rx="6" class="d-box ml-tensor"></rect>
+      <text x="{{ x + 90 }}" y="{{ y + 22 }}" text-anchor="middle">read {{ name }} → {{ vec(read, 1) }}</text>
+      {% if read == want %}
+      <text x="{{ x + 90 }}" y="{{ y + 42 }}" text-anchor="middle" style="fill:var(--jj-green)">latest value</text>
+      {% elif name == "k1" %}
+      <text x="{{ x + 90 }}" y="{{ y + 42 }}" text-anchor="middle" style="fill:var(--jj-red)">old + new mixed</text>
+      {% else %}
+      <text x="{{ x + 90 }}" y="{{ y + 42 }}" text-anchor="middle" style="fill:var(--jj-accent)">faded by α²</text>
+      {% endif %}
+      {% endfor %}
+      {% endfor %}
+      <text x="320" y="225" text-anchor="middle" class="d-muted">writes: k1 → {{ vec(mem["values"][0], 0) }}, k2 → {{ vec(mem["values"][1], 0) }}, k1 → {{ vec(mem["values"][2], 0) }}</text>
+    </g>
+  </svg>
+  <p class="ml-caption">With orthogonal keys there is no interference between k1 and k2. Real keys are not orthogonal: a <var>d<sub>k</sub></var>-dimensional state can hold at most <var>d<sub>k</sub></var> independent directions, and every further write disturbs the others a little.</p>
+</div>
+
+<h3 id="example-cost">Cost and memory at long context</h3>
+<div class="ml-worked">
+  <p>
+    Per head with <var>d</var> = {{ e.head_dim }}, counting a multiply-add as two operations: causal softmax prefill is about 4<var>n</var>²<var>d</var> (scores and weighted sum, without the causal halving), linear prefill 4<var>n</var><var>d</var>²; one decode step reads <var>n</var> cached keys and values (4<var>nd</var>) or updates and reads one <var>d</var> × <var>d</var> state (4<var>d</var>²).
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th><var>n</var></th><th>softmax prefill</th><th>linear prefill</th><th>ratio</th><th>softmax decode step</th><th>linear decode step</th></tr></thead>
+      <tbody>
+        {% for c in ex.costs %}
+        <tr><td>{{ big(c.n) }}</td><td>{{ big(c.softmax_prefill) }}</td><td>{{ big(c.linear_prefill) }}</td><td>{{ big(c.softmax_prefill / c.linear_prefill) }}×</td><td>{{ big(c.softmax_decode) }}</td><td>{{ big(c.linear_decode) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The ratio is <var>n</var>/<var>d</var>: below <var>n</var> = <var>d</var> linear attention does more work, which is why it only pays at long context.
+  </p>
+  <p>
+    Memory, with an illustrative layer, not any one model's: a full-attention layer caches {{ e.layer.kv_heads }} KV heads of dimension {{ e.layer.kv_head_dim }} in BF16, {{ big(ex.kv_per_token) }} bytes per token; a linear layer keeps {{ e.layer.state_heads }} heads of {{ e.layer.d_k }} × {{ e.layer.d_v }} FP32 state, {{ big(ex.state_bytes) }} bytes whatever the length. The state costs less than the cache after {{ big(ex.crossover) }} tokens. Mixing them in GigaChat 4's proportions, {{ e.hybrid.linear }} linear and {{ e.hybrid.full }} full layers out of {{ e.hybrid.layers }}:
+  </p>
+  <div class="jj-table-wrap">
+    <table class="ml-numbers">
+      <thead><tr><th>context</th><th>{{ e.hybrid.layers }} full-attention layers</th><th>{{ e.hybrid.full }} full + {{ e.hybrid.linear }} linear</th><th>hybrid / full</th></tr></thead>
+      <tbody>
+        {% for h in ex.hybrid %}
+        <tr><td>{{ big(h.tokens) }}</td><td>{{ gib(h.full_only) }}</td><td>{{ gib(h.hybrid) }}</td><td>{{ f(h.ratio, 3) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The ratio falls toward {{ e.hybrid.full }}/{{ e.hybrid.layers }} = {{ f(e.hybrid.full / e.hybrid.layers, 2) }}: at long context the hybrid's memory is almost all the full-attention layers' cache. Further savings must come from those layers, which is why GigaChat 4 also uses MLA's compressed cache and sparse attention there (see <a href="/ml-models/kv-cache">KV cache</a>).
+  </p>
+</div>
+
+<h2 id="implementation">Implementation</h2>
+
+<p>
+  PyTorch has no linear-attention module, so both forms are written from primitives: the causal linear attention with <a href="{{ src('torch/_torch_docs.py', 3561, 3591) }}"><code>cumsum</code></a> and <a href="{{ src('torch/functional.py', 175, 382) }}"><code>einsum</code></a>, and the gated delta rule as the reference loop that fast chunked kernels are tested against.
+</p>
+
+<pre><code>import torch
+import torch.nn.functional as F
+
+def causal_linear_attention(q, k, v):            # (batch, heads, L, d)
+    q, k = F.elu(q) + 1, F.elu(k) + 1
+    kv = torch.einsum("bhld,bhle->bhlde", k, v).cumsum(dim=2)   # S_i for every i
+    z = k.cumsum(dim=2)                                       # z_i for every i
+    num = torch.einsum("bhld,bhlde->bhle", q, kv)
+    den = torch.einsum("bhld,bhld->bhl", q, z).unsqueeze(-1)
+    return num / den                              # O(L d^2) memory here; chunk it in practice
+
+def gated_delta_rule(q, k, v, beta, g):           # q, k, v: (batch, heads, L, d); beta, g: (batch, heads, L)
+    q = F.normalize(q, dim=-1) / q.shape[-1] ** 0.5
+    k = F.normalize(k, dim=-1)
+    S = q.new_zeros(q.shape[0], q.shape[1], k.shape[-1], v.shape[-1])
+    out = []
+    for t in range(q.shape[2]):
+        S = S * g[:, :, t, None, None].exp()                     # decay: alpha = exp(g)
+        recalled = torch.einsum("bhde,bhd->bhe", S, k[:, :, t])  # S^T k
+        write = beta[:, :, t, None] * (v[:, :, t] - recalled)    # delta: write the error
+        S = S + torch.einsum("bhd,bhe->bhde", k[:, :, t], write)
+        out.append(torch.einsum("bhde,bhd->bhe", S, q[:, :, t]))
+    return torch.stack(out, dim=2)
+
+# beta = torch.sigmoid(x @ W_beta);  g = F.logsigmoid(x @ W_g)  (one common choice)</code></pre>
+
+<p>
+  The snippet has not been run against PyTorch here; it uses only the calls linked above, and the helpers behind this page compute the same recurrences in plain Python. Scaling <var>q</var> by 1/√<var>d<sub>k</sub></var> follows common reference code and is a convention, not part of the rule. The loop is <var>O</var>(<var>L</var>) sequential steps; production kernels split the sequence into chunks of 64 or so, use the WY representation inside each chunk, and pass the state between chunks.
+</p>
+
+<h2 id="tradeoffs">Tradeoffs</h2>
+
+<div class="jj-table-wrap">
+  <table>
+    <thead><tr><th>Choice</th><th>Gains</th><th>Costs</th></tr></thead>
+    <tbody>
+      <tr><td>Linear instead of softmax attention</td><td>Constant memory and cost per generated token; linear prefill cost</td><td>A fixed state cannot recall an arbitrary token exactly; weights are less sharp than a softmax's</td></tr>
+      <tr><td>Additive vs delta update</td><td>Additive: a cumulative sum, trivially parallel</td><td>Additive cannot overwrite, so old associations pile up; the delta rule needs a chunked WY algorithm to train in parallel</td></tr>
+      <tr><td>Adding a decay gate</td><td>Clears stale content quickly when the context changes</td><td>Fades content that was still needed; one more projection per head</td></tr>
+      <tr><td>Linear attention vs a Mamba-style SSM</td><td>Matrix-valued state (<var>d<sub>k</sub></var> × <var>d<sub>v</sub></var> per head) with keyed writes and reads</td><td>Larger state per layer; Mamba-2's scalar decay is the gate alone, without targeted overwrite</td></tr>
+      <tr><td>Hybrid (3:1 linear to full)</td><td>Exact recall from the full layers, about a quarter of an all-attention cache at long context</td><td>The full layers still dominate long-context memory; two kinds of kernel and cache to serve, and speculative decoding must roll back recurrent state</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<details class="ml-quiz">
+  <summary>Speculative decoding drafts several tokens and may reject some. Why is that harder with linear-attention layers than with a KV cache?</summary>
+  <p>Rejecting tokens from a KV cache only means truncating it: the entries for rejected positions are dropped. A recurrent state has already absorbed the rejected tokens, and the update cannot be subtracted back out in general. The server must keep the state from before the draft, or enough per-step inputs to replay the accepted ones; the GigaChat 4 report describes replaying compact per-step updates for its GDN layers instead of storing a full state at every draft position.</p>
+</details>
+
+<details class="ml-quiz">
+  <summary>With β = 1 and a unit key, what does the delta rule do to the value stored under a key orthogonal to k?</summary>
+  <p>Nothing. The update adds <var>k</var>(<var>v</var> − <var>v</var>̂)<sup>T</sup>, and reading with an orthogonal key <var>u</var> gives <var>u</var><sup>T</sup><var>k</var> = 0 times that change. Only the stored value along <var>k</var> moves, and with β = 1 it moves all the way to <var>v</var>.</p>
+</details>
+
+<h3 id="check-yourself">Check yourself</h3>
+<ul>
+  <li>Which step turns causal linear attention into a recurrence, and why does the softmax prevent it?</li>
+  <li>Write the delta rule's update and say what <var>v</var>̂ is.</li>
+  <li>What does α do that the delta rule alone cannot?</li>
+  <li>In a 3:1 hybrid, why does memory approach a quarter of an all-attention stack's, and not less?</li>
+</ul>
+
+<h2 id="connections">Connections</h2>
+
+{% include "ml_models/_connections.html" %}
+
+<p>
+  Linear attention starts from softmax <a href="/ml-models/attention">attention</a> and ends close to <a href="/ml-models/state-space-models">state-space models</a>: the gate is Mamba-2's decay, and Mamba-2 itself is a masked linear attention. The memory comparison is with the <a href="/ml-models/kv-cache">KV cache</a>, and rolling back recurrent state matters for <a href="/ml-models/speculative-decoding">speculative decoding</a>. The delta rule is one step of gradient descent on a regression loss (see <a href="/ml-models/optimizers">optimizers</a>), the same update as the LMS rule behind <a href="/ml-models/linear-regression">linear regression</a> fitted online. Hybrid models built from these layers are trained like any <a href="/ml-models/decoder-only-llm">decoder-only LLM</a> and usually use a <a href="/ml-models/mixture-of-experts">mixture of experts</a> for the feed-forward part.
+</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li>PyTorch {{ upstream.tag }}: <a href="{{ src('torch/nn/functional.py', 1869, 1880) }}"><code>elu</code></a>, <a href="{{ src('torch/nn/functional.py', 6143, 6178) }}"><code>normalize</code></a>, <a href="{{ src('torch/nn/functional.py', 2350, 2357) }}"><code>sigmoid</code></a>, <a href="{{ src('torch/nn/functional.py', 2049, 2058) }}"><code>logsigmoid</code></a>, <a href="{{ src('torch/functional.py', 175, 382) }}"><code>einsum</code></a>, <a href="{{ src('torch/_torch_docs.py', 3561, 3591) }}"><code>cumsum</code></a>, <a href="{{ src('torch/nn/functional.py', 6414, 6587) }}"><code>scaled_dot_product_attention</code></a>.</li>
+  <li>Katharopoulos, Vyas, Pappas and Fleuret. <em>Transformers are RNNs: Fast Autoregressive Transformers with Linear Attention.</em> ICML 2020. <a href="https://arxiv.org/abs/2006.16236">arXiv:2006.16236</a></li>
+  <li>Schlag, Irie and Schmidhuber. <em>Linear Transformers Are Secretly Fast Weight Programmers.</em> ICML 2021. <a href="https://arxiv.org/abs/2102.11174">arXiv:2102.11174</a></li>
+  <li>Yang, Wang, Zhang, Shen and Kim. <em>Parallelizing Linear Transformers with the Delta Rule over Sequence Length.</em> NeurIPS 2024. <a href="https://arxiv.org/abs/2406.06484">arXiv:2406.06484</a></li>
+  <li>Yang, Kautz and Hatamizadeh. <em>Gated Delta Networks: Improving Mamba2 with Delta Rule.</em> ICLR 2025. <a href="https://arxiv.org/abs/2412.06464">arXiv:2412.06464</a></li>
+  <li>Widrow and Hoff. <em>Adaptive Switching Circuits.</em> IRE WESCON Convention Record, 1960.</li>
+  <li>GigaChat Team. <em>GigaChat 4: Technical Report.</em> 2026. <a href="{{ gc4 }}">PDF in the model's GitHub repository, pinned commit</a></li>
+</ul>

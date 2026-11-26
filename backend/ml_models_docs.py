@@ -875,6 +875,20 @@ PAGES = [
         "ready": True,
     },
     {
+        "slug": "linear-attention",
+        "title": "Linear attention and the delta rule",
+        "area": "architectures",
+        "level": "advanced",
+        "summary": "Attention without the softmax runs as a recurrence over a fixed matrix; the gated delta rule makes that memory overwrite and forget.",
+        "prerequisites": ["attention", "state-space-models", "kv-cache"],
+        "sources": [
+            "pytorch:torch/nn/functional.py",
+            "pytorch:torch/functional.py",
+            "pytorch:torch/_torch_docs.py",
+        ],
+        "ready": True,
+    },
+    {
         "slug": "autoregressive-models",
         "title": "Autoregressive models",
         "area": "generative",
@@ -1512,6 +1526,8 @@ UPCOMING_MODELS = [
             {"name": "MiMo-V2-Flash", "year": "2026", "idea": "309B total, 15B active; five 128-token sliding-window layers per global layer with a learnable attention sink, and its multi-token-prediction heads reused as a speculative-decoding draft.", "paper": "LLM-Core Xiaomi, MiMo-V2-Flash Technical Report, 2026", "url": _arxiv("2601.02780"), "slug": "decoding"},
             {"name": "DeepSeek-V4.1-Flash", "year": "2026", "idea": "Shrinks the KV cache along all three of its axes: decoder layers reuse the global K/V the middle layer computed (a causal encoder-decoder after YOCO), most attention layers reuse a neighbour's cache and top-k indices, and the main cache is stored in FP4 with one 8-bit scale per 16 channels, about 890 bytes of global KV per token.", "paper": "DeepSeek-AI, DeepSeek-V4.1-Flash: Pushing the Limits of KV Cache Compression, 2026 (report in the model's Hugging Face repository)", "url": None, "slug": "kv-cache"},
             {"name": "Mistral Large 4", "year": "2026", "idea": "A 1T-parameter mixture of experts (about 52B active) built with a 16× smaller KV cache (sliding windows, CLA, YOCO) that cost little perplexity but lost ground on agentic coding, so it was operated on mid-pretraining: windows and CLA removed, YOCO kept, then moved to DeepSeek Sparse Attention with top-2,048 key selection.", "paper": "Mistral AI, Mistral Large 4, 2026 (technical report in the model's Hugging Face repository)", "url": None, "slug": "kv-cache"},
+            {"name": "GigaChat 4", "year": "2026", "idea": "708B total, about 41B active: 48 Gated DeltaNet layers and 16 MLA layers (a 3:1 schedule) over 64, so only a quarter of the layers keep a KV cache; the MLA layers switch to DeepSeek Sparse Attention (top-2,048) for a 1,048,576-token context.", "paper": "GigaChat Team, GigaChat 4: Technical Report, 2026 (report in the model's GitHub repository)", "url": None, "slug": "linear-attention"},
+            {"name": "Ternary Bonsai 2 27B", "year": "2026", "idea": "Qwen3.8-27B with its large weight matrices in {-1, 0, +1} times one FP16 scale per 128 weights (about 1.71 bits per weight, 5.80 GB against 53.80 GB in FP16), a blockwise Walsh-Hadamard rotation, and the linear-attention state path and norms kept in high precision; it averages 83.9 against the FP16 model's 85.4 on a 20-benchmark suite.", "paper": "PrismML, Ternary Bonsai 2 27B whitepaper, 2026 (in the Bonsai-demo GitHub repository)", "url": None, "slug": "quantization"},
         ],
     },
 ]
