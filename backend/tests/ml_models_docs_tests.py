@@ -6188,3 +6188,66 @@ def test_model_comparison_example_pairs_beat_the_unpaired_test():
     assert [v["holm"]["reject"] for v in e["variants"]].count(True) == 3
     assert [v["bonferroni"]["reject"] for v in e["variants"]].count(True) == 2
     assert [round(row["mde"], 2) for row in e["mde"]] == [0.03, 0.04, 0.06]
+
+
+def test_linear_attention_parallel_and_recurrent_forms_agree():
+    result = ml_models_docs.linear_attention_example()
+    assert result["max_gap"] < 1e-12
+    for row in result["parallel"]["weights"]:
+        assert abs(sum(row) - 1.0) < 1e-12
+        assert all(w > 0 for w in row)
+    assert result["parallel"]["outputs"][0] == [1.0, 0.0]
+    assert ml_models_docs.phi_elu([1.0, 0.0, -1.0]) == [2.0, 1.0, math.exp(-1.0)]
+
+
+def test_linear_attention_state_size_does_not_grow():
+    states = ml_models_docs.linear_attention_example()["recurrent"]["states"]
+    assert len({(len(s["state"]), len(s["state"][0]), len(s["norm"])) for s in states}) == 1
+
+
+def test_delta_rule_overwrites_where_linear_attention_accumulates():
+    reads = ml_models_docs.linear_attention_example()["reads"]
+    assert reads["linear"]["k1"] == [7.0, 1.0]
+    assert reads["delta"]["k1"] == [5.0, 1.0]
+    assert reads["delta"]["k2"] == [0.0, 3.0]
+    assert reads["gated-delta"]["k1"] == [5.0, 1.0]
+    assert reads["gated-delta"]["k2"] == [0.0, 1.5]
+
+
+def test_gated_delta_trace_matches_the_matrix_form():
+    ex = ml_models_docs.LINEAR_ATTENTION_EXAMPLE["memory"]
+    trace = ml_models_docs.linear_attention_example()["traces"]["gated-delta"]
+    assert trace[2]["recalled"] == [0.5, 0.0]
+    assert trace[2]["write"] == [4.5, 1.0]
+    state = [[0.0, 0.0], [0.0, 0.0]]
+    for step, (k, v) in enumerate(zip(ex["keys"], ex["values"])):
+        state = ml_models_docs.delta_rule_matrix_step(state, k, v, ex["beta"], ex["alpha"])
+        for r in range(2):
+            for c in range(2):
+                assert abs(state[r][c] - trace[step]["state"][r][c]) < 1e-12
+    skewed = [0.6, 0.8]
+    start = [[1.0, 2.0], [3.0, -1.0]]
+    via_matrix = ml_models_docs.delta_rule_matrix_step(start, skewed, [1.0, 1.0], 0.5, 0.9)
+    decayed = [[0.9 * x for x in row] for row in start]
+    recalled = ml_models_docs.memory_read(decayed, skewed)
+    write = [0.5 * (1.0 - r) for r in recalled]
+    direct = [[decayed[r][c] + skewed[r] * write[c] for c in range(2)] for r in range(2)]
+    for r in range(2):
+        for c in range(2):
+            assert abs(via_matrix[r][c] - direct[r][c]) < 1e-12
+
+
+def test_linear_attention_costs_and_hybrid_memory():
+    result = ml_models_docs.linear_attention_example()
+    first = result["costs"][0]
+    assert first["softmax_prefill"] / first["linear_prefill"] == 1024 / 128
+    assert all(c["linear_decode"] == 4 * 128 * 128 for c in result["costs"])
+    assert result["kv_per_token"] == 4096
+    assert result["state_bytes"] == 1048576
+    assert result["crossover"] == 256
+    ratios = [h["ratio"] for h in result["hybrid"]]
+    assert ratios == sorted(ratios, reverse=True)
+    assert abs(ratios[-1] - 0.25) < 0.001
+    hybrid = ml_models_docs.LINEAR_ATTENTION_EXAMPLE["hybrid"]
+    assert hybrid["linear"] + hybrid["full"] == hybrid["layers"]
+    assert hybrid["linear"] == 3 * hybrid["full"]

@@ -4517,6 +4517,148 @@ def spec_decode_example():
     }
 
 
+LINEAR_ATTENTION_EXAMPLE = {
+    "tokens": ["a", "b", "c", "d"],
+    "queries": [[1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [0.5, -1.0]],
+    "keys": [[1.0, 0.0], [0.0, 1.0], [1.0, -1.0], [-1.0, 0.5]],
+    "values": [[1.0, 0.0], [0.0, 1.0], [2.0, 2.0], [-1.0, 1.0]],
+    "memory": {
+        "names": ["k1 → v1", "k2 → v2", "k1 → v1′"],
+        "keys": [[1.0, 0.0], [0.0, 1.0], [1.0, 0.0]],
+        "values": [[2.0, 0.0], [0.0, 3.0], [5.0, 1.0]],
+        "beta": 1.0,
+        "alpha": 0.5,
+    },
+    "lengths": [1024, 8192, 131072, 1048576],
+    "head_dim": 128,
+    "layer": {"kv_heads": 8, "kv_head_dim": 128, "kv_bytes": 2,
+              "state_heads": 16, "d_k": 128, "d_v": 128, "state_bytes": 4},
+    "hybrid": {"layers": 64, "linear": 48, "full": 16},
+}
+
+
+def phi_elu(vector):
+    return [x + 1.0 if x > 0 else math.exp(x) for x in vector]
+
+
+def linear_attention_parallel(queries, keys, values, feature=phi_elu):
+    fq, fk = [feature(q) for q in queries], [feature(k) for k in keys]
+    outputs, weights = [], []
+    for i, q in enumerate(fq):
+        row = [sum(a * b for a, b in zip(q, fk[j])) for j in range(i + 1)]
+        total = sum(row)
+        weights.append([w / total for w in row])
+        outputs.append([sum(row[j] * values[j][c] for j in range(i + 1)) / total
+                        for c in range(len(values[0]))])
+    return {"outputs": outputs, "weights": weights}
+
+
+def linear_attention_recurrent(queries, keys, values, feature=phi_elu):
+    d_k, d_v = len(feature(keys[0])), len(values[0])
+    state = [[0.0] * d_v for _ in range(d_k)]
+    norm = [0.0] * d_k
+    outputs, states = [], []
+    for q, k, v in zip(queries, keys, values):
+        fq, fk = feature(q), feature(k)
+        for r in range(d_k):
+            norm[r] += fk[r]
+            for c in range(d_v):
+                state[r][c] += fk[r] * v[c]
+        denominator = sum(a * b for a, b in zip(fq, norm))
+        outputs.append([sum(fq[r] * state[r][c] for r in range(d_k)) / denominator for c in range(d_v)])
+        states.append({"state": [row[:] for row in state], "norm": norm[:]})
+    return {"outputs": outputs, "states": states}
+
+
+def memory_read(state, query):
+    return [sum(query[r] * state[r][c] for r in range(len(query))) for c in range(len(state[0]))]
+
+
+def delta_memory_trace(keys, values, rule, beta=1.0, alpha=1.0):
+    d_k, d_v = len(keys[0]), len(values[0])
+    state = [[0.0] * d_v for _ in range(d_k)]
+    steps = []
+    for k, v in zip(keys, values):
+        decay = alpha if rule == "gated-delta" else 1.0
+        state = [[decay * x for x in row] for row in state]
+        recalled = memory_read(state, k)
+        if rule == "linear":
+            write = list(v)
+        else:
+            write = [beta * (v[c] - recalled[c]) for c in range(d_v)]
+        for r in range(d_k):
+            for c in range(d_v):
+                state[r][c] += k[r] * write[c]
+        steps.append({"recalled": recalled, "write": write, "state": [row[:] for row in state]})
+    return steps
+
+
+def delta_rule_matrix_step(state, key, value, beta, alpha):
+    d_k, d_v = len(key), len(value)
+    transition = [[alpha * ((1.0 if r == c else 0.0) - beta * key[r] * key[c]) for c in range(d_k)]
+                  for r in range(d_k)]
+    return [[sum(transition[r][m] * state[m][c] for m in range(d_k)) + beta * key[r] * value[c]
+             for c in range(d_v)] for r in range(d_k)]
+
+
+def attention_costs(n, head_dim):
+    return {"softmax_prefill": 4 * n * n * head_dim, "linear_prefill": 4 * n * head_dim * head_dim,
+            "softmax_decode": 4 * n * head_dim, "linear_decode": 4 * head_dim * head_dim}
+
+
+def layer_memory(layer, n):
+    kv = 2 * layer["kv_heads"] * layer["kv_head_dim"] * layer["kv_bytes"] * n
+    state = layer["state_heads"] * layer["d_k"] * layer["d_v"] * layer["state_bytes"]
+    return {"kv": kv, "state": state}
+
+
+def hybrid_memory(layer, hybrid, n):
+    per = layer_memory(layer, n)
+    full_only = hybrid["layers"] * per["kv"]
+    mixed = hybrid["full"] * per["kv"] + hybrid["linear"] * per["state"]
+    return {"tokens": n, "full_only": full_only, "hybrid": mixed, "ratio": mixed / full_only}
+
+
+def linear_attention_example():
+    ex = LINEAR_ATTENTION_EXAMPLE
+    q, k, v = ex["queries"], ex["keys"], ex["values"]
+    parallel = linear_attention_parallel(q, k, v)
+    recurrent = linear_attention_recurrent(q, k, v)
+    mem = ex["memory"]
+    traces = {
+        "linear": delta_memory_trace(mem["keys"], mem["values"], "linear"),
+        "delta": delta_memory_trace(mem["keys"], mem["values"], "delta", mem["beta"]),
+        "gated-delta": delta_memory_trace(mem["keys"], mem["values"], "gated-delta", mem["beta"], mem["alpha"]),
+    }
+    probes = {"k1": mem["keys"][0], "k2": mem["keys"][1]}
+    reads = {rule: {name: memory_read(trace[-1]["state"], probe) for name, probe in probes.items()}
+             for rule, trace in traces.items()}
+    softmax_rows = []
+    for i, query in enumerate(q):
+        scores = [math.exp(sum(a * b for a, b in zip(query, k[j]))) for j in range(i + 1)]
+        total = sum(scores)
+        softmax_rows.append([s / total for s in scores])
+    layer = ex["layer"]
+    per_token_kv = layer_memory(layer, 1)["kv"]
+    state = layer_memory(layer, 1)["state"]
+    return {
+        "example": ex,
+        "features": {"queries": [phi_elu(x) for x in q], "keys": [phi_elu(x) for x in k]},
+        "parallel": parallel,
+        "recurrent": recurrent,
+        "softmax_weights": softmax_rows,
+        "max_gap": max(abs(a - b) for row_p, row_r in zip(parallel["outputs"], recurrent["outputs"])
+                       for a, b in zip(row_p, row_r)),
+        "traces": traces,
+        "reads": reads,
+        "costs": [dict(n=n, **attention_costs(n, ex["head_dim"])) for n in ex["lengths"]],
+        "kv_per_token": per_token_kv,
+        "state_bytes": state,
+        "crossover": state / per_token_kv,
+        "hybrid": [hybrid_memory(layer, ex["hybrid"], n) for n in ex["lengths"]],
+    }
+
+
 KV_CONFIG = {"layers": 32, "q_heads": 32, "kv_heads": 8, "head_dim": 128, "bytes_per_value": 2}
 
 PAGED_EXAMPLE = {"lengths": [37, 120, 5, 64], "block_size": 16, "reserved": 128}
@@ -15824,6 +15966,7 @@ def render(slug, render_template):
         "speculative_step": speculative_step,
         "speculative_tokens_per_pass": speculative_tokens_per_pass,
         "spec_decode_example": spec_decode_example,
+        "linear_attention_example": linear_attention_example,
         "model_comparison_example": model_comparison_example,
         "entropy": entropy,
         "logistic_example": LOGISTIC_EXAMPLE,
