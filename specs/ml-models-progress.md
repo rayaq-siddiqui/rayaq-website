@@ -4,10 +4,11 @@ This is the running log for the daily ml-models Routine. Read it first and updat
 The contract is `specs/ml-models.md` (spec v2, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-11-19 (fifth weekly audit). Spec v2 widens the section from model
-architectures to all of machine learning: 12 areas, 98 pages, a seven-step learning path and a
-fixed page format. Every queue item is ready (1-98; audits added `matrix-decompositions`,
-`iterative-solvers`, `numerical-stability`, `speculative-decoding` and `model-comparison`).
+**Last updated:** 2026-11-26 (sixth weekly audit). Spec v2 widens the section from model
+architectures to all of machine learning: 12 areas, 99 pages, a seven-step learning path and a
+fixed page format. Every queue item is ready (1-99; audits added `matrix-decompositions`,
+`iterative-solvers`, `numerical-stability`, `speculative-decoding`, `model-comparison` and
+`linear-attention`).
 Nothing is queued, so the next run is the next weekly audit (spec §8.1).
 
 ## Pins
@@ -224,27 +225,38 @@ Open gaps from these runs:
 
 | Date | Checked | Found | Added |
 |---|---|---|---|
+| 2026-11-26 | Pins (`git ls-remote --tags`); Hugging Face model cards and the Hugging Face papers API for recent open-weight releases; the architectures area against hybrid linear-attention models | No pin moved: PyTorch v2.15.0, scikit-learn 1.9.1 and XGBoost v3.4.2 are still the latest stable. GigaChat 4 (open weights and a technical report: 48 Gated DeltaNet and 16 MLA layers, DSA in the MLA layers, a 1M-token context) and Ternary Bonsai 2 27B (open weights and a whitepaper: ternary weights at about 1.71 bits per weight with a Walsh-Hadamard rotation) qualified. ERNIE 5.5 Flash Preview and Kimi K3.1 Pro have no report of their own; Raon-1 mini's report could not be confirmed; Kolibri-1.1's site was unreachable. No page covered linear attention, the delta rule or hybrid GDN stacks, though `state-space-models` and several models already relied on them | `09d8468` linear-attention helpers and tests; `5d52625` the `linear-attention` page (§5 row, registry, queue 99) plus the GigaChat 4 and Ternary Bonsai 2 27B `UPCOMING_MODELS` entries |
 | 2026-11-19 | Pins (`git ls-remote --tags`); Hugging Face model cards for recent open-weight releases; the data-evaluation area for comparing models | No pin moved: PyTorch v2.15.0, scikit-learn 1.9.1 and XGBoost v3.4.2 are still the latest stable. No open-weight release qualified: Kimi K3.1 Pro, Inkling 2 Small, Ripple-65B Preview and Hy4 flash (open weights since 2026-11-17) have no paper or technical report. Data evaluation had no page on whether one model really beats another (paired tests, McNemar, bootstrap intervals, corrected CV tests, multiple comparisons) | `b00e98f` model comparison helpers and tests; `e1f82d3` the `model-comparison` page (§5 row, registry, queue 98) |
 | 2026-11-12 | Pins (`git ls-remote --tags`); Hugging Face model cards and reports for recent open-weight releases; the inference area against topics pages name but do not cover | No pin moved: PyTorch v2.15.0, scikit-learn 1.9.1 and XGBoost v3.4.2 are still the latest stable. Mistral Large 4 qualified (open weights and a technical report): a 16× smaller KV cache that cost little perplexity but lost ground on SWE-bench Verified, then mid-pretraining surgery to DeepSeek Sparse Attention, and a DSpark speculator with block verification. Kimi K3.1 Pro has no report, Hy4 has no open weights, GLM-5.2 is not new. Speculative decoding was named on several pages with no page of its own | `eade8dc` an "agentic penalty" section on `kv-cache` plus the Mistral Large 4 `UPCOMING_MODELS` entry; `4d78fca` exact speculative-decoding helpers and tests; `9f30a4e` the `speculative-decoding` page (§5 row, registry, queue 97) |
 | 2026-10-29 | Pins (`git ls-remote --tags`); Hugging Face model cards and reports for recent open-weight releases; the foundations area for floating point and conditioning | PyTorch `v2.15.0` is final (2026-10-27); scikit-learn 1.9.1 and XGBoost v3.4.2 are still the latest stable. No open-weight release qualified: Reflection Beam 1.0's report is still "coming", Muse Spark Open has only an evaluation-methodology note, Mistral Large 4 weights are due 2026-10-31, MiniMax M3.1-Flash could not be verified. Foundations had no page on rounding error, conditioning or stable rewrites | `361aea4` the PyTorch pin to v2.15.0 (every linked range rechecked); `bfc791c` the `numerical-stability` page (§5 row, registry, queue 96) |
 | 2026-10-22 | Pins (`git ls-remote --tags`); Hugging Face model cards and reports for recent open-weight releases; the foundations area for numerical linear algebra beyond factorizations | No pin moved (PyTorch v2.15.0 is still rc7). DeepSeek-V4.1-Flash has weights and a report (cross-layer KV sharing, FP4 KV cache); Muse Spark Open, Reflection Beam and Mistral Large 4 have no report or open weights yet, so they were skipped. Foundations had no iterative solvers (CG, Krylov, preconditioning) | `15c05d9` a cross-layer sharing and FP4 section on `kv-cache` plus its `UPCOMING_MODELS` entry; `ab96a0f` the `iterative-solvers` page (§5 row, registry, queue 95) |
 | 2026-10-15 | Pins (`git ls-remote --tags`); the Kimi K2, DeepSeek-V3.2-Exp and MiMo-V2-Flash reports; `torch/optim/_muon.py`; the foundations area against `torch.linalg` | No pin moved (PyTorch v2.15.0 is still rc only). Muon and QK-Clip had no coverage; foundations stopped at eigen/SVD with no LU, QR, Cholesky, least squares or matrix norms | `063d6ab` three `UPCOMING_MODELS` entries; `045a59f` a Muon/QK-Clip section on `optimizers`; `736023a` the `matrix-decompositions` page (§5 row, registry, queue 94) |
 
-Notes from the 2026-11-19 audit:
+Notes from the 2026-11-26 audit:
 
-- `model-comparison` links scikit-learn 1.9.1 ranges (`accuracy_score`, `confusion_matrix`,
-  `resample`, `check_random_state`, `cross_validate`, `cross_val_score`,
-  `permutation_test_score`, `_shuffle`, `StratifiedKFold`, `RepeatedStratifiedKFold`); the
-  ranges live in its template. Its worked values come from stdlib helpers in
-  `ml_models_docs.py` (exact McNemar, sign flips, a seeded paired bootstrap, a Student t from
-  the regularized incomplete beta), tested against brute force and known t values.
-- Candidates for later audits, once reports exist: Gated DSA and MXFP4/MXFP8 QAT (Kimi K3.1
-  Pro), native NVFP4 training (Inkling 2 Small), IndexPool sparse attention, LatentMoE and the
-  DFly2 drafter (Hy4 flash). Nemotron 3.5 and Nemotron-Labs-Sigma were not examined in depth.
-- Gaps: arxiv.org and the Ripple launch blog are unreachable, so McNemar, Wilson, Dietterich,
-  Nadeau–Bengio, Bouckaert–Frank, Bengio–Grandvalet, Demšar, Holm and Efron–Tibshirani are
-  cited from memory without links. The page's numpy/scipy/sklearn snippet was not run. There
-  is still no tool to change the trigger's schedule, so it fires every 5 hours.
+- The GigaChat 4 report is read from `salute-developers/gigachat4` at `81b0dd84`, and the
+  page links it there. The Ternary Bonsai 2 27B whitepaper is read from
+  `PrismML-Eng/Bonsai-demo` on `main` (a 2.5 whitepaper with the same format plus an MTP head
+  appeared 2026-11-24), so its entry has no link. `linear-attention` links PyTorch v2.15.0
+  ranges (`elu`, `normalize`, `sigmoid`, `logsigmoid`, `einsum`, `cumsum`,
+  `scaled_dot_product_attention`); the ranges live in its template.
+- Candidates: ternary weights, Hadamard rotation and NVFP4/MXFP4 on `quantization` (Bonsai 2,
+  Kimi K3.1 Pro, Inkling 2 Small); GDN replay for MTP speculative decoding on
+  `speculative-decoding` (GigaChat 4); MemT-1.0 was not examined in depth.
+- Gaps: arxiv.org and sebastianraschka.com are unreachable, so paper metadata came from the
+  Hugging Face papers API and Widrow–Hoff is cited from memory without a link. The page's
+  PyTorch loop was not run (the wheel download is blocked). There is still no tool to change
+  the trigger's schedule, so it fires every 5 hours.
+
+Notes from the 2026-11-19 audit (condensed):
+
+- `model-comparison` ranges (scikit-learn 1.9.1) live in its template; its worked values come
+  from stdlib helpers tested against brute force and known t values.
+- Candidates: Gated DSA (Kimi K3.1 Pro), IndexPool sparse attention, LatentMoE and the DFly2
+  drafter (Hy4 flash) once reports exist; Nemotron 3.5 and Nemotron-Labs-Sigma.
+- Gaps: McNemar, Wilson, Dietterich, Nadeau–Bengio, Bouckaert–Frank, Bengio–Grandvalet,
+  Demšar, Holm and Efron–Tibshirani are cited from memory; the page's numpy/scipy/sklearn
+  snippet was not run.
 
 Notes from the 2026-11-12 audit (condensed):
 
