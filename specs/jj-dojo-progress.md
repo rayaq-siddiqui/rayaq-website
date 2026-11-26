@@ -3,13 +3,13 @@
 Running log for the weekly jj-dojo maintenance Routine. Read this first, update it last.
 The contract is `specs/jj-dojo.md` (spec v1); this file records where the build actually stands.
 
-**Last updated:** 2026-11-19 (twelfth run, weekly maintenance). **The build is complete:** all nine §5 pages are
+**Last updated:** 2026-11-26 (thirteenth run, weekly maintenance). **The build is complete:** all nine §5 pages are
 ready and every §10 criterion is met. From here the Routine runs weekly in maintenance mode only.
 
 ## Upstream pin
 
-`jj-vcs/jj-dojo@e4a1514676d19cc3a83af0f93eda501b44a76087` (committed 2026-11-18, 11 commits after `574832c`), analyzed
-2026-11-19. `package.json` version still 0.0.1. Held in `jj_dojo_docs.UPSTREAM`.
+`jj-vcs/jj-dojo@8fb0fd5eaa495f16e1624b73eb5cfaeb7b48d522` (committed 2026-11-23, 5 commits after `e4a1514`), analyzed
+2026-11-26. `package.json` version still 0.0.1. Held in `jj_dojo_docs.UPSTREAM`.
 
 ## §10 acceptance criteria
 
@@ -25,7 +25,17 @@ ready and every §10 criterion is met. From here the Routine runs weekly in main
 - [x] Mobile at 390px: no horizontal page scroll on `/jj-dojo` and every ready page (checked in
       headless Chromium this run).
 - [x] The Routine has run in maintenance mode (second to fourth runs: no upstream change;
-      fifth and eighth to twelfth runs: pin bumped; sixth and seventh runs: no upstream change). It now runs weekly.
+      fifth and eighth to thirteenth runs: pin bumped; sixth and seventh runs: no upstream change). It now runs weekly.
+
+## Thirteenth run (2026-11-26): maintenance
+
+| Commit | What |
+|---|---|
+| `e18853e` | Pin bump `e4a1514` → `8fb0fd5`. `build-and-test`: jj now comes from `versions.bzl` plus a `jj` module extension (six platforms, Windows arm64 included), `copy_jj_<slug>` per version; `jasmine_test` gains `use_jj`/`jj_versions`/`tags`/`size` and builds one test per jj version; `install_global_jj` uses `hermetic_jj.ts`; `newRepo` checks `JJ_VERSION`; CI cache keys include `tools/bazel/jj/*.bzl`. `graph-layout`: the real-jj blocks moved to `*_integration_test.ts`. `graph-webview`: display-ID search no longer lowercases per row. `roadmap`, `utils`: link remaps |
+| `31b08ae`, `record progress` | `build-and-test`: thirteen `:tests` packages (adds `//src/testing`), algorithms' `:integration_tests`; this log |
+
+Nothing moved from planned to implemented. `PROTOCOL_TYPES` unchanged (`api/` untouched).
+Suite green (1087 tests); smoke test passes.
 
 ## Twelfth run (2026-11-19): maintenance
 
@@ -55,13 +65,8 @@ state; only file reads go through it) and the `jj-commits` file system. `PROTOCO
 
 ## Tenth run (2026-10-29): maintenance
 
-| Commit | What |
-|---|---|
-| `1a1e2d3` | Pin bump `4cff5a1` → `0d6f5e5` across seven pages. `roadmap` §3: `readFileAtCommit`/`readFileById` (`jj file show` with a literal `root:` path, `jj debug object file`), `RepoState.opHead`, `Commit.isImmutable`/`files`, the 10 MiB cap and `subprocessBuffer`, 28 client tests; the M1–M4 table relabelled as the timeline `intro.md` carried until this pin. `utils` gains `merge.ts` (`Merge`, 15 tests). `build-and-test` and `activation`: pnpm version single-sourced via `packageManager`, `dep:*` scripts. `graph-webview`: the search box hides with `display: none`. Index status row |
-
-Nothing moved from planned to implemented: the client's file reads and `Merge` are still
-unwired. `PROTOCOL_TYPES` unchanged (`api/` untouched). Suite green (1067 tests); smoke test
-and pinned-link check pass.
+`1a1e2d3`: pin `4cff5a1` → `0d6f5e5` across seven pages (client file reads, `Merge`, pnpm via `packageManager`).
+Nothing moved to implemented; suite green (1067 tests).
 
 ## Eighth and ninth runs (2026-10-15, 10-22)
 
@@ -191,5 +196,5 @@ into activation, propose a page for it here first.
 - **Unused topology helpers (`utils`).** Four commit-topology functions have no callers outside
   their tests; only `SubprocessClient.getCommits` uses the rest. The page states this.
 - **`//:test` does not exist (`build-and-test`).** The spec's "Must cover" names a `//:test`
-  target. There is none at this pin: `npm test` runs `bazel test //...` over twelve `:tests` targets.
+  target. There is none at this pin: `npm test` runs `bazel test //...` over thirteen `:tests` targets.
   The page describes what exists.
