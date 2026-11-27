@@ -3,13 +3,13 @@
 Running log for the daily jj architecture Routine. Read this first, update it last.
 The contract is `specs/jj.md` (spec v2); this file records where the build actually stands.
 
-**Last updated:** 2026-11-26 (ninety-fifth run): followed upstream `f38d302..429cf81` (0.47.1). **The
+**Last updated:** 2026-11-27 (ninety-sixth run): followed upstream `429cf81..5680d67` (0.47.1). **The
 build is complete: every §8A.1 command and every §5 topic has a page.** Later runs are maintenance only.
 
 ## Upstream pin
 
-`jj-vcs/jj@429cf81edc5d2972a5850feacdc6e14d7e64bb64` (committed 2026-11-26, version
-0.47.1), analyzed 2026-11-26. Held in `jj_docs.UPSTREAM`. Previous pin: `f38d302`.
+`jj-vcs/jj@5680d67b3fec0669ff4b3bcea39fbc74dba382e1` (committed 2026-11-27, version
+0.47.1), analyzed 2026-11-27. Held in `jj_docs.UPSTREAM`. Previous pin: `429cf81`.
 
 ## §10 acceptance criteria
 
@@ -33,8 +33,11 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
 - [x] The daily Routine has run in maintenance mode (second and third runs: no change; fourth
       run: pin bumped; fiftieth to ninety-fifth runs: pin bumped).
 
-## Sixty-fourth to ninety-fifth runs (2026-10-20 to 2026-11-26)
+## Sixty-fourth to ninety-sixth runs (2026-10-20 to 2026-11-27)
 
+- `76398b8`, `1f10da9` `429cf81..5680d67`: `jj run --keep-changes` (failures kept and warned, then a
+  "failed N time(s)" error); `AnnotationLine.hunk_index()`; `TreeMerger` queue is `PrioritizedFutures`;
+  run source line 650 to 658; 88 links in 5 pages remapped.
 - `34a1441`..`d69c6c4` `f38d302..429cf81`: `jj git push` gains `git.confirm-before-push` (`Continue?`
   prompt; `--dry-run` stops first); `workspace add` defaults its parents to `revsets.workspace-add`
   (`heads(::@ & immutable())`) with a status note (both pages rewritten); 36 pages relinked.
@@ -45,10 +48,7 @@ build is complete: every §8A.1 command and every §5 topic has a page.** Later 
 - `9fd72ac`..`44d36fa`, `0c6ad8c` `5b884f7..0f7f4ce`: templater refactors (link ranges only); the
   colocated Git backend setup moved into `git_backend_initializer()` (git-root relinked);
   `config list` source line 38 to 39; 396 links in 79 pages remapped.
-- `6b63c9d`, `1d359fb` `3f0353a..5b884f7`: `bookmark move`/`set` now warn "Moving bookmarks backwards or
-  sideways" and move anyway; `-B` is hidden and a no-op (both pages rewritten, advance fixed);
-  templater list methods went type-erased (link ranges only); 97 links in 16 pages remapped.
-- Earlier: `52518a6..3f0353a` (`store_factories.rs` init/load, one-transaction Git export), `d822004` (`register_*_methods` tables), `684717f` (type-erased commit templater), `0f64e87` (simple backend/op store moves), `8b640c7` (gerrit upload range, object-format hint), `92a32a9`/`33737b0`/`4be801c` (interdiff revsets, object-format retry), `22fcce5` (tree rewriter dedup), `9bf7238` (`MergedTree::has_dir`, status collapse), `f52b294` (git error types), `83f2bf8` (`lower_bound_bytes`), `fe34bb6` (docs), `2f4d106` (`git-sign-on-push`, `store_factories.rs`), `2440230` (`jj-git-backend`, `jj-local-util` crates), `98975c9` (`jj-frontend` crate), `2c11591` (remote tags as known heads), `211755a` (`jj-default-index`), `ff87734` (converge/next/prev prompts), `ad45a9e`, `91b7044`, `fa45a4c`, `9d37e33`, `e65bbae`, `b70be32` (`CachedLoader`), `ad64adf`, `cdc336a`, `60897df`, `117f376`.
+- Earlier: `3f0353a..5b884f7` (`bookmark move`/`set` backwards warning, `-B` no-op), `52518a6..3f0353a` (`store_factories.rs` init/load, one-transaction Git export), `d822004` (`register_*_methods` tables), `684717f` (type-erased commit templater), `0f64e87` (simple backend/op store moves), `8b640c7` (gerrit upload range, object-format hint), `92a32a9`/`33737b0`/`4be801c` (interdiff revsets, object-format retry), `22fcce5` (tree rewriter dedup), `9bf7238` (`MergedTree::has_dir`, status collapse), `f52b294` (git error types), `83f2bf8` (`lower_bound_bytes`), `fe34bb6` (docs), `2f4d106` (`git-sign-on-push`, `store_factories.rs`), `2440230` (`jj-git-backend`, `jj-local-util` crates), `98975c9` (`jj-frontend` crate), `2c11591` (remote tags as known heads), `211755a` (`jj-default-index`), `ff87734` (converge/next/prev prompts), `ad45a9e`, `91b7044`, `fa45a4c`, `9d37e33`, `e65bbae`, `b70be32` (`CachedLoader`), `ad64adf`, `cdc336a`, `60897df`, `117f376`.
 
 ## Fifty-third to sixty-third runs (2026-10-09 to 2026-10-19)
 
