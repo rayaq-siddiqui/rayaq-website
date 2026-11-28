@@ -2,10 +2,10 @@ import re
 
 UPSTREAM = {
     "repo": "https://github.com/jj-vcs/jj",
-    "commit": "5680d67b3fec0669ff4b3bcea39fbc74dba382e1",
-    "commit_date": "2026-11-27",
+    "commit": "ea9f774836cab32c7855f7677d75b5c026ff4ca3",
+    "commit_date": "2026-11-28",
     "version": "0.47.1",
-    "analyzed_on": "2026-11-27",
+    "analyzed_on": "2026-11-28",
 }
 
 TOPICS = [
@@ -780,7 +780,7 @@ COMMANDS = [
         "category": 'Git and remotes',
         "tier": 'A',
         "summary": 'Upload changes to Gerrit for code review, or update existing changes',
-        "source": ('cli/src/commands/gerrit/upload.rs', 88),
+        "source": ('cli/src/commands/gerrit/upload.rs', 90),
     },
     {
         "command": 'workspace add',
@@ -871,7 +871,7 @@ COMMANDS = [
         "category": 'Configuration',
         "tier": 'B',
         "summary": 'List variables set in config files, along with their values.',
-        "source": ('cli/src/commands/config/list.rs', 43),
+        "source": ('cli/src/commands/config/list.rs', 44),
     },
     {
         "command": 'config path',
