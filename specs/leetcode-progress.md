@@ -4,7 +4,7 @@ This is the running log for the leetcode Routine. Read it first and update it la
 contract is `specs/leetcode.md` (spec v1, read-only without the owner's say-so). This file
 records where the build actually stands.
 
-**Last updated:** 2026-11-21 (fourteenth audit run). All 58 pages are ready and the queue is empty. This audit found and fixed one gap (unreadable diagram labels on highlighted fills), so **the next run is another audit run** (spec §8.1). This session had no `update_trigger` tool either (see Known gaps). Before any other work, the next run moves this Routine to weekly: `update_trigger` on `trig_01XkmtUwbN1iL5esk5KeGRPa` with `CRON_TZ=America/Los_Angeles 14 4 * * 2`.
+**Last updated:** 2026-11-28 (fifteenth audit run). All 58 pages are ready and the queue is empty. This audit found and fixed one gap (diagram labels clipped by their SVG's viewBox), so **the next run is another audit run** (spec §8.1). This session had no `update_trigger` tool either (see Known gaps). Before any other work, the next run moves this Routine to weekly: `update_trigger` on `trig_01XkmtUwbN1iL5esk5KeGRPa` with `CRON_TZ=America/Los_Angeles 14 4 * * 2`.
 
 ## The Routine
 
@@ -187,13 +187,19 @@ build once research is done.
   highlight fills are now 0.3 opacity. `test_diagram_labels_stay_readable_on_highlight_fills`
   enforces it from the CSS tokens; audit runs also measure every rendered label in a browser.
 
+- **Diagram labels fit their viewBox (2026-11-28).** An inline SVG clips anything outside its
+  `viewBox`, so every `<text>` label's bounding box (including descenders) must sit inside it.
+  Diagrams whose width depends on helper data size the `viewBox` from that data (or a minimum
+  that fits the title label). `tools/leetcode/check_mobile.js` now fails on any clipped label,
+  so the phone check before each push enforces it.
+
 ## Known gaps and questions for the owner
 
 - **Schedule not yet weekly (2026-10-13).** The owner asked for weekly audits, but the session that
   recorded the request had no `update_trigger` tool. The next run calls `update_trigger` on
   `trig_01XkmtUwbN1iL5esk5KeGRPa` with `CRON_TZ=America/Los_Angeles 14 4 * * 2` and clears this
   gap. If it can't, the owner can change the schedule by hand under the Routine's settings at
-  claude.ai/code. The seventh through fourteenth audits' sessions had no `update_trigger` tool either. The build is
+  claude.ai/code. The seventh through fifteenth audits' sessions had no `update_trigger` tool either. The build is
   complete (tenth audit), so the 5-hour schedule now only re-runs audits; please move it to weekly by hand. The tenth through thirteenth audits ran exactly a week apart (all Saturdays), so the schedule may already be weekly, but on Saturdays rather than the Tuesdays 04:14 the owner asked for; please confirm it under the Routine's settings.
 
 ## Run log
@@ -610,3 +616,20 @@ so. No helpers or other content changed. Coverage is unchanged at 100% (Blind 75
 all 58 pages return 200 and the phone check passed on `/`, `/leetcode` and every ready page. This
 session had no `update_trigger` tool, so the schedule could not be moved. Next: another audit
 run, which moves the schedule first.
+
+### 2026-11-28 — audit run (fifteenth)
+
+Fifteenth audit run. Nothing in this section changed since the fourteenth audit. New check this
+run: a browser pass compared every SVG text label's bounding box on `/leetcode` and all 58 pages
+with its diagram's `viewBox`, and looked for overlapping labels (none). One gap: six labels on five
+pages were cut off at the diagram's edge. `grid-dp`'s route-count and longest-path headings lost
+their last words ("…is amber)", "…there (large)"), `top-k-elements` lost most of the "bar" label,
+`dijkstra` lost half of the last distance (8), `in-place-array-tricks` clipped the bottom of its
+cyclic-sort caption, and `complexity-analysis` clipped the descender of "input size n". Each
+`viewBox` now fits its labels; the data-driven ones (`dijkstra`, `top-k-elements`, `grid-dp`) are
+sized from the helper values. `tools/leetcode/check_mobile.js` now also fails on any clipped label.
+No helpers or prose changed. Coverage is unchanged at 100% (Blind 75 75/75, Grind 169 169/169,
+NeetCode 150 150/150, NeetCode 250 250/250). pytest green (1092 passed); `/leetcode` and all 58
+pages return 200 and the phone check passed on `/`, `/leetcode` and every ready page. This session
+had no `update_trigger` tool, so the schedule could not be moved. Next: another audit run, which
+moves the schedule first.
